@@ -721,6 +721,15 @@ func chooseBackend(policy SandboxPolicy, host HostFacts, net bool) (Backend, *Re
 // than in envvars.
 const npmConfigCacheEnv = "npm_config_cache"
 
+// npm's config-file location variables, like npmConfigCacheEnv not evener's own.
+// npm reads its environment configuration case-insensitively, so the probe
+// matches these with envValueFold.
+const (
+	npmConfigUserConfigEnv   = "npm_config_userconfig"
+	npmConfigGlobalConfigEnv = "npm_config_globalconfig"
+	npmConfigPrefixEnv       = "npm_config_prefix"
+)
+
 // defaultCacheRoots are the language cache directories served under the cache
 // strategy, expressed relative to $HOME. $XDG_CACHE_HOME joins ~/.cache when
 // set, npm's and cargo's join ~/.npm and ~/.cargo when $npm_config_cache and
@@ -747,7 +756,7 @@ func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 		for _, rel := range defaultCacheRoots {
 			out = append(out, filepath.Join(host.Home, rel))
 		}
-		roots := guardedHostRoots(slices.Concat(out, npmCargoCacheRoots(host), goCacheRoots(host)), host.Home, worktree)
+		roots := guardedHostRoots(slices.Concat(out, npmCargoCacheRoots(host, worktree), goCacheRoots(host)), host.Home, worktree)
 		// A root that is not a directory yet (a file, a dangling link to an
 		// unmounted drive) stays: each spawn decides whether it is overlaid
 		// (liveCacheRoots), so one that becomes available is served.
@@ -913,11 +922,19 @@ func goCacheRoots(host HostFacts) []string {
 }
 
 // npmCargoCacheRoots are the cache directories npm and cargo move with the
-// environment: $npm_config_cache and $CARGO_HOME. A relative value, which each
-// tool resolves against its own working directory, is not a stable root and
+// environment or npm's .npmrc files: $npm_config_cache and $CARGO_HOME, plus
+// the absolute `cache=` values the probe read from the user and global .npmrc
+// and the project one under worktree (#4542). A relative value, which each tool
+// resolves against its own working directory, is not a stable root and
 // contributes nothing — the go command's rule for its cache settings.
-func npmCargoCacheRoots(host HostFacts) []string {
-	return absRoots(host.NpmConfigCache, host.CargoHome)
+func npmCargoCacheRoots(host HostFacts, worktree string) []string {
+	roots := absRoots(host.NpmConfigCache, host.CargoHome)
+	// The probe only records absolute values from .npmrc files.
+	roots = append(roots, host.NpmrcCaches...)
+	if worktree != "" {
+		roots = append(roots, readNpmrcCacheRoots(hostProbeSystem{}, filepath.Join(worktree, ".npmrc"))...)
+	}
+	return roots
 }
 
 // absRoots returns the absolute entries of dirs, in order, dropping the rest: a

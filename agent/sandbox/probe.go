@@ -169,11 +169,14 @@ type HostFacts struct {
 	XDGCacheHome string
 
 	// NpmConfigCache and CargoHome are $npm_config_cache and $CARGO_HOME, which
-	// move npm's and cargo's cache directories; empty when unset. They are read
-	// from the environment alone: cargo keeps no file for CARGO_HOME, and npm's
-	// .npmrc `cache=` is not consulted (a cache moved only there stays unserved).
+	// move npm's and cargo's cache directories; empty when unset. Cargo keeps no
+	// file for CARGO_HOME. npm also reads a `cache=` setting from its .npmrc
+	// files; NpmrcCaches holds the absolute values this host's user and global
+	// files set (the project file is read at resolution, where the worktree is
+	// known), so an overlay serves a cache moved only there (#4542).
 	NpmConfigCache string
 	CargoHome      string
+	NpmrcCaches    []string
 
 	// OverlayLowerOK reports whether bwrap can mount an unprivileged overlay
 	// with a given directory as its lower on this host. Whether overlay is
@@ -374,6 +377,7 @@ func probeHost(system probeSystem) HostFacts {
 	facts.XDGCacheHome = system.getenv(envvars.XDGCacheHome.Name)
 	facts.NpmConfigCache = envValueFold(system.environ(), npmConfigCacheEnv)
 	facts.CargoHome = system.getenv(envvars.CargoHome.Name)
+	facts.NpmrcCaches = probeNpmrcCaches(system, facts.Home)
 
 	if path, err := system.lookPath("bwrap"); err == nil {
 		facts.BwrapPath = path
@@ -419,6 +423,78 @@ const (
 	gitConfigSystemEnv   = "GIT_CONFIG_SYSTEM"
 	gitConfigNoSystemEnv = "GIT_CONFIG_NOSYSTEM"
 )
+
+// probeNpmrcCaches returns the absolute `cache=` values npm resolves from the
+// .npmrc files whose locations do not depend on a project: the user config
+// ($npm_config_userconfig, else ~/.npmrc) and the global config
+// ($npm_config_globalconfig, else $npm_config_prefix/etc/npmrc). npm reads a
+// `cache=` setting in either, so a host that moves its cache only there would
+// otherwise leave it outside every overlay root, read-only (#4542).
+//
+// npm's default global config lives beside its Node installation, which the
+// probe cannot locate without running npm, so it is consulted only when the
+// environment names it. A relative or absent file contributes nothing, and the
+// value is judged absolute later, as a relative cache resolves against npm's
+// own working directory.
+func probeNpmrcCaches(system probeSystem, home string) []string {
+	environ := system.environ()
+	user := envValueFold(environ, npmConfigUserConfigEnv)
+	if user == "" && home != "" {
+		user = filepath.Join(home, ".npmrc")
+	}
+	global := envValueFold(environ, npmConfigGlobalConfigEnv)
+	if global == "" {
+		if prefix := envValueFold(environ, npmConfigPrefixEnv); prefix != "" {
+			global = filepath.Join(prefix, "etc", "npmrc")
+		}
+	}
+	var roots []string
+	for _, path := range []string{user, global} {
+		roots = append(roots, readNpmrcCacheRoots(system, path)...)
+	}
+	return roots
+}
+
+// readNpmrcCacheRoots reads the absolute `cache=` values in the .npmrc at
+// path. The probe's bounded, non-blocking read refuses a FIFO, a device or an
+// oversized file, so a hostile file costs only its setting (#4542).
+func readNpmrcCacheRoots(system probeSystem, path string) []string {
+	if path == "" || !filepath.IsAbs(path) {
+		return nil
+	}
+	data, err := system.readFile(path)
+	if err != nil {
+		return nil
+	}
+	return parseNpmrcCacheRoots(data)
+}
+
+// parseNpmrcCacheRoots returns the absolute values of `cache=` lines in an npm
+// config file. npm's file format is INI-like: blank lines, `#`/`;` comments and
+// `[section]` headers carry no setting, and a quoted value is unquoted. Only
+// an absolute value names a stable directory; a relative one resolves against
+// npm's own working directory, which is not the overlay's.
+func parseNpmrcCacheRoots(data []byte) []string {
+	var roots []string
+	for line := range strings.SplitSeq(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "[") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok || !strings.EqualFold(strings.TrimSpace(key), "cache") {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if len(value) >= 2 && (value[0] == '"' || value[0] == '\'') && value[len(value)-1] == value[0] {
+			value = value[1 : len(value)-1]
+		}
+		if filepath.IsAbs(value) {
+			roots = append(roots, value)
+		}
+	}
+	return roots
+}
 
 // probeGitGlobalConfigPaths returns the user's global git config files that
 // exist on this host, in git's own precedence order (git-config(1), FILES):

@@ -461,6 +461,44 @@ func TestCacheRootsFollowNpmAndCargoSettings(t *testing.T) {
 	}
 }
 
+// npm also resolves its cache from .npmrc files. The probe reads the user and
+// global ones; the project file lives in the worktree, so cacheRootsFor reads
+// it here (#4542).
+func TestCacheRootsFollowTheProjectNpmrc(t *testing.T) {
+	worktree := t.TempDir()
+	if err := os.WriteFile(filepath.Join(worktree, ".npmrc"), []byte("cache=/custom/project/npm\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: "/home/tester"}, worktree)
+	if !slices.Contains(roots, "/custom/project/npm") {
+		t.Errorf("cache roots %v must serve the project .npmrc cache", roots)
+	}
+	// A relative project cache is workspace-relative and contributes nothing.
+	if err := os.WriteFile(filepath.Join(worktree, ".npmrc"), []byte("cache=./.npm\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plain := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: "/home/tester"}, worktree)
+	if slices.Contains(plain, "./.npm") || slices.Contains(plain, filepath.Join(worktree, ".npm")) {
+		t.Errorf("a relative project npmrc cache must add no root: %v", plain)
+	}
+}
+
+// The probe's npmrc values are served alongside the environment value, since
+// npm's precedence decides which one is in effect but every candidate cache
+// directory must be writable where npm may write it.
+func TestCacheRootsFollowProbedNpmrcCaches(t *testing.T) {
+	roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{
+		Home:           "/home/tester",
+		NpmConfigCache: "/from/env/npm",
+		NpmrcCaches:    []string{"/from/user/npm", "/from/global/npm"},
+	}, "/work/project")
+	for _, want := range []string{"/from/env/npm", "/from/user/npm", "/from/global/npm"} {
+		if !slices.Contains(roots, want) {
+			t.Errorf("cache roots %v must include %q", roots, want)
+		}
+	}
+}
+
 // An overlay over a directory that holds the worktree would hide the real
 // worktree behind a discarded upper layer, so edits would vanish at session end.
 // A cache root at, above or inside the worktree (or at or above home, or a

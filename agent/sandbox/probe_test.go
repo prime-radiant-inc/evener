@@ -305,6 +305,64 @@ func TestProbeReadsNpmCacheEnvCaseInsensitively(t *testing.T) {
 	}
 }
 
+// npm resolves its cache location from .npmrc files too, so a host that moves
+// it only there must still get the root overlaid (#4542). The probe reads the
+// user and global files; the project file is read at resolution.
+type npmrcProbeSystem struct {
+	stubProbeSystem
+	files map[string][]byte
+}
+
+func (s npmrcProbeSystem) readFile(path string) ([]byte, error) {
+	if data, ok := s.files[path]; ok {
+		return data, nil
+	}
+	return nil, errors.New("no such file")
+}
+
+func TestProbeReadsNpmCacheFromConfigFiles(t *testing.T) {
+	t.Parallel()
+	const user, global = "/home/tester/npmrc-user", "/home/tester/npmrc-global"
+	facts := probeHost(npmrcProbeSystem{
+		stubProbeSystem: stubProbeSystem{env: map[string]string{
+			"NPM_CONFIG_USERCONFIG":   user,
+			"npm_config_globalconfig": global,
+		}},
+		files: map[string][]byte{
+			user:   []byte("# user config\ncache = /from/user/npm\n"),
+			global: []byte("[npm]\n; global config\ncache=\"/from/global/npm\"\n"),
+		},
+	})
+	if want := []string{"/from/user/npm", "/from/global/npm"}; !slices.Equal(facts.NpmrcCaches, want) {
+		t.Errorf("probeHost NpmrcCaches = %v, want %v", facts.NpmrcCaches, want)
+	}
+}
+
+func TestProbeReadsDefaultUserNpmrcAndPrefixGlobalNpmrc(t *testing.T) {
+	t.Parallel()
+	// stubProbeSystem's user home is /Users/tester; the global file follows a
+	// configured npm prefix.
+	facts := probeHost(npmrcProbeSystem{
+		stubProbeSystem: stubProbeSystem{env: map[string]string{"npm_config_prefix": "/opt/node"}},
+		files: map[string][]byte{
+			"/Users/tester/.npmrc": []byte("cache=/from/default/user\n"),
+			"/opt/node/etc/npmrc":  []byte("cache=/from/prefix/global\n"),
+		},
+	})
+	if want := []string{"/from/default/user", "/from/prefix/global"}; !slices.Equal(facts.NpmrcCaches, want) {
+		t.Errorf("probeHost NpmrcCaches = %v, want %v", facts.NpmrcCaches, want)
+	}
+	// A relative cache resolves against npm's working directory, so it names no
+	// stable root and is not served.
+	rel := probeHost(npmrcProbeSystem{
+		stubProbeSystem: stubProbeSystem{env: map[string]string{"npm_config_userconfig": "/u/npmrc"}},
+		files:           map[string][]byte{"/u/npmrc": []byte("cache=relative/npm\n")},
+	})
+	if len(rel.NpmrcCaches) != 0 {
+		t.Errorf("a relative npmrc cache must add no root, got %v", rel.NpmrcCaches)
+	}
+}
+
 // TestRealProberOptIn exercises the real host prober, but only when explicitly
 // opted in (EVENER_SANDBOX_PROBE_HOST=1). CI unit runs skip it so they never shell
 // out to bwrap — probing is off the hermetic unit
