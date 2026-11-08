@@ -170,8 +170,13 @@ func assertPreparedRequestHistory(t *testing.T, s *Session, history []llm.Messag
 // stationary background rate lands in both windows alike and cancels, while
 // the preparation's own allocation is present in every round and never
 // cancels. The control window opens on the preparation window's closing
-// snapshot, so the two windows tile with no unmeasured gap between them, and
-// it busy-waits rather than sleeps. Staying runnable matters: on a single-P
+// snapshot, so the two windows tile with no unmeasured gap between them,
+// and its length is the preparation alone, not the preparation plus its
+// reads: each window then carries exactly one load-sensitive memstats lead
+// (the preparation window ends with its closing read, the control window
+// with its own), so a burst-slowed snapshot inflates both spans alike
+// rather than inflating only the control window's. The control window
+// busy-waits rather than sleeps. Staying runnable matters: on a single-P
 // runtime a sleeping window would lend its processor to background
 // allocators that the preparation window starves, and the subtraction would
 // strip real preparation bytes along with the background. The cancellation
@@ -199,11 +204,11 @@ func measureRequestHistoryBytesPerPreparation(t *testing.T, s *Session) int64 {
 	var rounds []int64
 	for range requestHistoryMeasurementRounds {
 		var before, after runtime.MemStats
-		started := time.Now()
 		runtime.ReadMemStats(&before)
+		started := time.Now()
 		prepareRequestHistoryRound(t, s)
-		runtime.ReadMemStats(&after)
 		elapsed := time.Since(started)
+		runtime.ReadMemStats(&after)
 		// Deliberately empty: the control window busy-waits; rationale in
 		// the function doc. It opens on the `after` snapshot above, tiling
 		// against the preparation window with no gap.
