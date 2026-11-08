@@ -410,8 +410,9 @@ func guardedHostRoots(candidates []string, home, worktree string) []string {
 // Resolve turns a policy request plus host facts and the session's cwd into a
 // ResolvedPolicy, or a typed *RefusalError when the host cannot enforce the
 // request (the fail-closed floor). It is a pure function of its inputs (reads no
-// process environment): the credential denylist anchors on host.Home, and the
-// git layout is resolved structurally from cwd's on-disk .git entries.
+// process environment): the credential denylist anchors on host.Home, the git
+// layout is resolved structurally from cwd's on-disk .git entries, and the
+// project .npmrc is read from the worktree it names.
 //
 // PLAIN off short-circuits before any host check, so it resolves on every host
 // (including Windows) — it is today's behavior with no containment. A WRITE-BLOCKED
@@ -562,6 +563,9 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 	rp.FileTool.WriteRoots = filterMasked(rp.FileTool.WriteRoots, rp)
 	rp.Spawned.ReadRoots = filterMasked(rp.Spawned.ReadRoots, wholeMask)
 	rp.Spawned.WriteRoots = filterMasked(rp.Spawned.WriteRoots, rp)
+	// Caches are overlaid, and a missing root is created on the host, so a
+	// cache root must never be a masked path either (#4542 review).
+	rp.CacheRoots = filterMasked(rp.CacheRoots, wholeMask)
 	rp.CacheRoots = dropCacheRootsSharingWriteRoots(rp.CacheRoots, bwrapWriteRoots(rp))
 
 	// File-tool read roots: restricted needs the grant, and the read-anywhere
@@ -932,7 +936,7 @@ func npmCargoCacheRoots(host HostFacts, worktree string) []string {
 	// The probe only records absolute values from .npmrc files.
 	roots = append(roots, host.NpmrcCaches...)
 	if worktree != "" {
-		roots = append(roots, readNpmrcCacheRoots(hostProbeSystem{}, filepath.Join(worktree, ".npmrc"))...)
+		roots = append(roots, readProjectNpmrcCacheRoots(filepath.Join(worktree, ".npmrc"), host)...)
 	}
 	return roots
 }

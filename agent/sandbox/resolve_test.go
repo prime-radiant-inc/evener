@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -466,12 +467,29 @@ func TestCacheRootsFollowNpmAndCargoSettings(t *testing.T) {
 // it here (#4542).
 func TestCacheRootsFollowTheProjectNpmrc(t *testing.T) {
 	worktree := t.TempDir()
-	if err := os.WriteFile(filepath.Join(worktree, ".npmrc"), []byte("cache=/custom/project/npm\n"), 0o644); err != nil {
+	cacheDir, err := os.MkdirTemp("/var/tmp", "evener-npm-cache-")
+	if err != nil {
+		t.Skipf("needs a writable directory outside /tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(cacheDir) })
+	if err := os.WriteFile(filepath.Join(worktree, ".npmrc"), []byte("cache="+cacheDir+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: "/home/tester"}, worktree)
-	if !slices.Contains(roots, "/custom/project/npm") {
+	if !slices.Contains(roots, cacheDir) {
 		t.Errorf("cache roots %v must serve the project .npmrc cache", roots)
+	}
+	// An untrusted project file never makes resolution create a host directory.
+	missing := cacheDir + "-missing"
+	if err := os.WriteFile(filepath.Join(worktree, ".npmrc"), []byte("cache="+missing+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	roots = cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: "/home/tester"}, worktree)
+	if slices.Contains(roots, missing) {
+		t.Errorf("a project .npmrc cache that does not exist must not be served: %v", roots)
+	}
+	if _, err := os.Stat(missing); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("resolution created %q from worktree content: %v", missing, err)
 	}
 	// A relative project cache is workspace-relative and contributes nothing.
 	if err := os.WriteFile(filepath.Join(worktree, ".npmrc"), []byte("cache=./.npm\n"), 0o644); err != nil {
@@ -495,6 +513,29 @@ func TestCacheRootsFollowProbedNpmrcCaches(t *testing.T) {
 	for _, want := range []string{"/from/env/npm", "/from/user/npm", "/from/global/npm"} {
 		if !slices.Contains(roots, want) {
 			t.Errorf("cache roots %v must include %q", roots, want)
+		}
+	}
+}
+
+// A cache root derived from worktree content must not escape the mask: the
+// overlay would sit on a credential directory and a missing root is created on
+// the host at wrapper creation (#4542 review).
+func TestResolvedCacheRootsExcludeMaskedPaths(t *testing.T) {
+	home := overlayFixtureDir(t)
+	maskedCache := filepath.Join(home, ".ssh", "npm-cache")
+	if err := os.MkdirAll(maskedCache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	worktree := mainRepo(t)
+	if err := os.WriteFile(filepath.Join(worktree, ".npmrc"), []byte("cache="+maskedCache+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	host := bwrapHost()
+	host.Home = home
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeWorkspaceWrite}, host, worktree)
+	for _, root := range rp.CacheRoots {
+		if identifier.PathUnder(root, filepath.Join(home, ".ssh")) {
+			t.Errorf("resolved cache root %q is under the masked .ssh directory", root)
 		}
 	}
 }

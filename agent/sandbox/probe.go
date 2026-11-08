@@ -466,15 +466,58 @@ func readNpmrcCacheRoots(system probeSystem, path string) []string {
 	if err != nil {
 		return nil
 	}
-	return parseNpmrcCacheRoots(data)
+	return parseNpmrcCacheRoots(data, npmrcEnvLookup(system.environ()))
+}
+
+// readProjectNpmrcCacheRoots reads the worktree's .npmrc. It is untrusted
+// repository content, so a final-component symlink is refused (O_NOFOLLOW) and
+// a cache it names is served only where it is already a directory: resolution
+// must never create a host directory on repository say-so.
+func readProjectNpmrcCacheRoots(path string, host HostFacts) []string {
+	if path == "" || !filepath.IsAbs(path) {
+		return nil
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|openNonblock|openNoFollow, 0)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = f.Close() }()
+	data, err := readGoEnvFile(f, path)
+	if err != nil {
+		return nil
+	}
+	// Resolve reads no process environment, so only the host facts it already
+	// holds expand a project value. npm fills the rest from its own env.
+	lookup := func(name string) string {
+		switch name {
+		case envvars.Home.Name:
+			return host.Home
+		case envvars.XDGCacheHome.Name:
+			return host.XDGCacheHome
+		}
+		return ""
+	}
+	var roots []string
+	for _, root := range parseNpmrcCacheRoots(data, lookup) {
+		if fi, err := os.Stat(root); err == nil && fi.IsDir() {
+			roots = append(roots, root)
+		}
+	}
+	return roots
+}
+
+// npmrcEnvLookup expands npm's ${NAME} references from the probe's environment.
+func npmrcEnvLookup(environ []string) func(string) string {
+	return func(name string) string { return envValueFold(environ, name) }
 }
 
 // parseNpmrcCacheRoots returns the absolute values of `cache=` lines in an npm
-// config file. npm's file format is INI-like: blank lines, `#`/`;` comments and
-// `[section]` headers carry no setting, and a quoted value is unquoted. Only
-// an absolute value names a stable directory; a relative one resolves against
-// npm's own working directory, which is not the overlay's.
-func parseNpmrcCacheRoots(data []byte) []string {
+// config file, with npm's ${NAME} references expanded by lookup. npm's file
+// format is INI-like: blank lines, `#`/`;` comments and `[section]` headers
+// carry no setting, and a quoted value is unquoted. Only an absolute value
+// names a stable directory; a relative one resolves against npm's own working
+// directory, which is not the overlay's.
+func parseNpmrcCacheRoots(data []byte, lookup func(string) string) []string {
 	var roots []string
 	for line := range strings.SplitSeq(string(data), "\n") {
 		line = strings.TrimSpace(line)
@@ -485,7 +528,7 @@ func parseNpmrcCacheRoots(data []byte) []string {
 		if !ok || !strings.EqualFold(strings.TrimSpace(key), "cache") {
 			continue
 		}
-		value = strings.TrimSpace(value)
+		value = expandNpmrcVars(strings.TrimSpace(value), lookup)
 		if len(value) >= 2 && (value[0] == '"' || value[0] == '\'') && value[len(value)-1] == value[0] {
 			value = value[1 : len(value)-1]
 		}
@@ -494,6 +537,32 @@ func parseNpmrcCacheRoots(data []byte) []string {
 		}
 	}
 	return roots
+}
+
+// expandNpmrcVars replaces npm's ${NAME} references with lookup(NAME). An
+// unknown name expands to nothing, so the value is then relative or empty and
+// contributes no root.
+func expandNpmrcVars(value string, lookup func(string) string) string {
+	if !strings.Contains(value, "${") {
+		return value
+	}
+	var out strings.Builder
+	for {
+		start := strings.Index(value, "${")
+		if start < 0 {
+			out.WriteString(value)
+			return out.String()
+		}
+		out.WriteString(value[:start])
+		rest := value[start+2:]
+		end := strings.IndexByte(rest, '}')
+		if end < 0 {
+			out.WriteString(value[start:])
+			return out.String()
+		}
+		out.WriteString(lookup(rest[:end]))
+		value = rest[end+1:]
+	}
 }
 
 // probeGitGlobalConfigPaths returns the user's global git config files that

@@ -363,6 +363,20 @@ func TestProbeReadsDefaultUserNpmrcAndPrefixGlobalNpmrc(t *testing.T) {
 	}
 }
 
+func TestProbeExpandsNpmrcVariables(t *testing.T) {
+	t.Parallel()
+	facts := probeHost(npmrcProbeSystem{
+		stubProbeSystem: stubProbeSystem{env: map[string]string{
+			"npm_config_userconfig": "/home/u/.npmrc",
+			"HOME":                  "/home/u",
+		}},
+		files: map[string][]byte{"/home/u/.npmrc": []byte("cache=${HOME}/.npm-cache\n")},
+	})
+	if want := []string{"/home/u/.npm-cache"}; !slices.Equal(facts.NpmrcCaches, want) {
+		t.Errorf("probeHost NpmrcCaches = %v, want the expanded %v", facts.NpmrcCaches, want)
+	}
+}
+
 // TestRealProberOptIn exercises the real host prober, but only when explicitly
 // opted in (EVENER_SANDBOX_PROBE_HOST=1). CI unit runs skip it so they never shell
 // out to bwrap — probing is off the hermetic unit
