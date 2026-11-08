@@ -74,6 +74,40 @@ construction and history fencing; after a stale cursor, a client refreshes the
 latest selected window without discarding unsent work. Source/index repair and
 transport recovery remain owned by their existing subsystems.
 
+## Manager bounded transcript reads
+
+Manager `read_transcript` hub reads add a compact, non-subscribing view over the
+same live and saved history owners. A request selects one turn window: latest,
+one exact turn, a bounded forward window since a turn, or a bounded backward
+window before a turn. Exact `itemTypes` filtering happens before the per-turn
+item cap; `messages` selects user messages, agent messages and human steering
+according to recorded source metadata. Message and tool-output body bounds apply
+without removing item identity or lifecycle metadata.
+
+The existing history packer owns both ordinary and Manager views. Its Manager
+mode measures complete encoded fragments under the requested content budget,
+with a 16 KiB floor and headroom below the outer 256 KiB tool-result cap. It
+keeps at least one bounded fragment, trims only whole turns in the window's
+direction, and limits cursor-bearing item lines to ten. Each affected turn has
+one aggregate record separating items excluded by type, withheld by the item
+cap, truncated beyond that cursor limit and elided by the content budget. The
+record names whether to continue within the same view or re-read a wider view.
+
+Window and item cursors are hub-owned and bind the requested ref, source
+incarnation and projection. Window continuations retain the original selection
+and bounds. A settled truncated item can carry a version-fenced fetch cursor;
+fetch responses return base64 ranges of that item's canonical JSON and another
+cursor until complete. Live daemons serve their own canonical ranges. Saved and
+remote reads resolve at the hub, after remote structural translation. Older
+daemons receive only a legacy latest-page read: the hub applies the same packer,
+refuses other window forms with a typed upgrade path, and pages compatibility
+fetch recovery backward only when that daemon advertises `PageBefore`.
+
+A cursor mismatch refreshes the view. A changed reachable item reports its new
+version. A remote or compatibility item outside the bounded recovery path reports
+the named degradation instead of returning partial bytes. These recovery reads
+do not change the ordinary client subscription or its selected history view.
+
 ## Original transcript authors
 
 Optional `ThreadItem.authorship` records an original author and an `inherited`
