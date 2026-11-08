@@ -1016,51 +1016,61 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 			resp.Thread = enrichSourcedThreadImages(source, resp.Thread)
 		} else {
 			latestExecutionTurnID := resp.LatestExecutionTurnID
-			var candidates transcriptItemCandidateResult
-			var candidateErr error
-			if hubCompatibility {
-				candidates, candidateErr = compatibilityItemCandidateResultForRead(ctx, source, params, resp)
+			_, remoteWindow := source.(*appsource.RemoteHubSource)
+			if remoteWindow && params.TurnWindow != nil && resp.Window != nil && !hubCompatibility {
+				// A current remote hub already applied this exact window and
+				// RemoteHubSource re-owned every cursor in the controller namespace.
+				// Packing its bounded page again loses continuation metadata and can
+				// preserve an inner fetch cursor the controller cannot resolve.
+				resp.Thread = enrichSourcedThreadImages(source, resp.Thread)
+				resp.LatestExecutionTurnID = latestExecutionTurnID
 			} else {
-				candidates, candidateErr = sourceItemCandidateResultForRead(ctx, source, params, resp)
-			}
-			if candidateErr != nil {
-				read.finish(false)
-				return appwire.ThreadReadResponse{}, candidateErr
-			}
-			pack := func(candidates transcriptItemCandidateResult, enrich func(appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error)) (appwire.ThreadReadResponse, error) {
-				if params.TurnWindow != nil {
-					if hubCompatibility {
+				var candidates transcriptItemCandidateResult
+				var candidateErr error
+				if hubCompatibility {
+					candidates, candidateErr = compatibilityItemCandidateResultForRead(ctx, source, params, resp)
+				} else {
+					candidates, candidateErr = sourceItemCandidateResultForRead(ctx, source, params, resp)
+				}
+				if candidateErr != nil {
+					read.finish(false)
+					return appwire.ThreadReadResponse{}, candidateErr
+				}
+				pack := func(candidates transcriptItemCandidateResult, enrich func(appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error)) (appwire.ThreadReadResponse, error) {
+					if params.TurnWindow != nil {
+						if hubCompatibility {
+							return packThreadReadWindowItemCandidates(candidates, enrich, transcriptWindowOptionsFor(
+								candidates, params.ThreadWindowParams, itemLimit,
+								transcriptWindowAppliedByHubCompat, appitempaging.FetchCursorOriginHubCompat,
+							))
+						}
+						fetchOrigin := appitempaging.FetchCursorOriginServingDaemon
+						if _, remote := source.(*appsource.RemoteHubSource); remote {
+							fetchOrigin = appitempaging.FetchCursorOriginRemoteSource
+						}
 						return packThreadReadWindowItemCandidates(candidates, enrich, transcriptWindowOptionsFor(
 							candidates, params.ThreadWindowParams, itemLimit,
-							transcriptWindowAppliedByHubCompat, appitempaging.FetchCursorOriginHubCompat,
+							transcriptWindowAppliedByServingDaemon, fetchOrigin,
 						))
 					}
-					fetchOrigin := appitempaging.FetchCursorOriginServingDaemon
-					if _, remote := source.(*appsource.RemoteHubSource); remote {
-						fetchOrigin = appitempaging.FetchCursorOriginRemoteSource
-					}
-					return packThreadReadWindowItemCandidates(candidates, enrich, transcriptWindowOptionsFor(
-						candidates, params.ThreadWindowParams, itemLimit,
-						transcriptWindowAppliedByServingDaemon, fetchOrigin,
-					))
+					return packThreadReadItemCandidates(candidates, enrich, itemLimit)
 				}
-				return packThreadReadItemCandidates(candidates, enrich, itemLimit)
+				packed, packErr := pack(candidates, func(response appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error) {
+					response.Thread = threadWithPackedTurns(resp.Thread, response.Thread.Turns)
+					// A live daemon's turns carry sha-addressed tool-result descriptors
+					// with no route on them (the daemon does not serve the bytes; this
+					// hub does), so route stamping stays inside the final packer.
+					response.Thread = enrichSourcedThreadImages(source, response.Thread)
+					return response, nil
+				})
+				if packErr != nil {
+					read.finish(false)
+					return appwire.ThreadReadResponse{}, packErr
+				}
+				resp = withReadHistoryIdentity(packed, read.response)
+				resp.LatestExecutionTurnID = latestExecutionTurnID
+				resp.Changes = withDroppedWindowItems(source, resp.Changes, candidates, resp.Thread)
 			}
-			packed, packErr := pack(candidates, func(response appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error) {
-				response.Thread = threadWithPackedTurns(resp.Thread, response.Thread.Turns)
-				// A live daemon's turns carry sha-addressed tool-result descriptors
-				// with no route on them (the daemon does not serve the bytes; this
-				// hub does), so route stamping stays inside the final packer.
-				response.Thread = enrichSourcedThreadImages(source, response.Thread)
-				return response, nil
-			})
-			if packErr != nil {
-				read.finish(false)
-				return appwire.ThreadReadResponse{}, packErr
-			}
-			resp = withReadHistoryIdentity(packed, read.response)
-			resp.LatestExecutionTurnID = latestExecutionTurnID
-			resp.Changes = withDroppedWindowItems(source, resp.Changes, candidates, resp.Thread)
 		}
 	} else {
 		// A live daemon's turns carry sha-addressed tool-result descriptors with

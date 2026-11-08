@@ -1388,6 +1388,27 @@ func registerThreadHandlers(
 		if err := appwire.ValidateThreadTurnsListParams(params); err != nil {
 			return appwire.ThreadTurnsListResponse{}, err
 		}
+		if params.TurnWindow != nil && params.Cursor != "" {
+			source, srcErr := sourceForThreadWithDeletionFence(ctx, cfg, sources, params.Ref, params.ThreadID)
+			if isTargetDeletedError(srcErr) {
+				return appwire.ThreadTurnsListResponse{}, srcErr
+			}
+			if srcErr == nil {
+				page, continuationErr := continueLiveTranscriptWindow(ctx, source, params)
+				if continuationErr == nil {
+					return page, nil
+				}
+				srcErr = continuationErr
+			}
+			page, ok, pastErr := pastThreadTurnsList(ctx, cfg, params)
+			if pastErr != nil {
+				return appwire.ThreadTurnsListResponse{}, daemonlessReadError(pastErr)
+			}
+			if ok {
+				return page, nil
+			}
+			return appwire.ThreadTurnsListResponse{}, srcErr
+		}
 		params, err := appitempaging.ApplyBefore(params)
 		if err != nil {
 			return appwire.ThreadTurnsListResponse{}, err

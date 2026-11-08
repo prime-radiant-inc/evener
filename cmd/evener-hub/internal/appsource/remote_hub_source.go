@@ -534,6 +534,9 @@ func (s *RemoteHubSource) ReadThread(ctx context.Context, params appwire.ThreadR
 	if err := s.call(ctx, appwire.MethodThreadRead, remote, &out); err != nil {
 		return appwire.ThreadReadResponse{}, err
 	}
+	if err := translateRemoteWindowCursors(out.Thread.Turns, out.Window, ref.String(), remoteItemPagingKey(s.id, ref.ThreadID)); err != nil {
+		return appwire.ThreadReadResponse{}, err
+	}
 	return out, nil
 }
 
@@ -565,11 +568,59 @@ func (s *RemoteHubSource) ListTurns(ctx context.Context, params appwire.ThreadTu
 	// threadId the remote cannot resolve is rejected, while an empty one lets
 	// the remote resolve the (stable-aware) ref.
 	remote.ThreadID = params.ThreadID
+	controllerRef := remoteItemPagingKey(s.id, ref.ThreadID)
+	if remote.TurnWindow != nil && remote.Cursor != "" {
+		remote.Cursor, err = appitempaging.TranslateWindowCursorRef(remote.Cursor, controllerRef, ref.String())
+		if err != nil {
+			return appwire.ThreadTurnsListResponse{}, err
+		}
+	}
 	var out appwire.ThreadTurnsListResponse
 	if err := s.call(ctx, appwire.MethodThreadTurnsList, remote, &out); err != nil {
 		return appwire.ThreadTurnsListResponse{}, err
 	}
+	if err := translateRemoteWindowCursors(out.Data, out.Window, ref.String(), controllerRef); err != nil {
+		return appwire.ThreadTurnsListResponse{}, err
+	}
 	return out, nil
+}
+
+// translateRemoteWindowCursors makes a packed remote page belong to the
+// controller namespace without packing its already-bounded items a second
+// time. Fetches stay controller-resolved; window continuations are translated
+// back to the owning hub only when RemoteHubSource.ListTurns follows them.
+func translateRemoteWindowCursors(turns []appwire.Turn, window *appwire.ThreadWindowResult, remoteRef, controllerRef string) error {
+	for turnIndex := range turns {
+		turn := &turns[turnIndex]
+		for itemIndex := range turn.Items {
+			item := &turn.Items[itemIndex]
+			if item.FetchCursor == "" {
+				continue
+			}
+			translated, err := appitempaging.TranslateFetchCursorRef(
+				item.FetchCursor, remoteRef, controllerRef, appitempaging.FetchCursorOriginRemoteSource,
+			)
+			if err != nil {
+				return err
+			}
+			item.FetchCursor = translated
+		}
+		if turn.Elision != nil && turn.Elision.ContinuationCursor != "" {
+			translated, err := appitempaging.TranslateWindowCursorRef(turn.Elision.ContinuationCursor, remoteRef, controllerRef)
+			if err != nil {
+				return err
+			}
+			turn.Elision.ContinuationCursor = translated
+		}
+	}
+	if window != nil && window.ContinuationCursor != "" {
+		translated, err := appitempaging.TranslateWindowCursorRef(window.ContinuationCursor, remoteRef, controllerRef)
+		if err != nil {
+			return err
+		}
+		window.ContinuationCursor = translated
+	}
+	return nil
 }
 
 // FetchSessionImage fetches one image out of the owning host's own local
@@ -880,16 +931,31 @@ func (s *RemoteHubSource) FetchTranscriptItem(
 	if !ok {
 		return appwire.SessionFetchResponse{}, appwire.TranscriptItemCursorStale()
 	}
-	result, err := s.ReadItemCandidates(ctx, appwire.ThreadReadParams{Ref: ref})
+	readParams := appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: string(appwire.TurnItemsViewFragment), ItemLimit: appwire.TranscriptItemPageLimit}
+	response, err := s.ReadThread(ctx, readParams)
 	if err != nil {
 		return appwire.SessionFetchResponse{}, err
 	}
-	candidate, ok := remoteCandidateAt(result.Candidates.Candidates, cursor.Position)
+	candidates, err := appitempaging.CandidatesFromTurns(response.Thread.Turns)
+	if err != nil {
+		return appwire.SessionFetchResponse{}, err
+	}
+	candidate, ok := remoteCandidateAt(candidates, cursor.Position)
 	if !ok {
 		return appwire.SessionFetchResponse{}, appwire.FetchUnavailableRemote()
 	}
-	if result.Identity.ThreadRef != identity.ThreadRef || result.Identity.Incarnation != sourceIncarnation {
-		return appwire.SessionFetchResponse{}, appwire.TranscriptItemCursorStale()
+	if response.Snapshot != nil {
+		if response.Snapshot.Incarnation != sourceIncarnation {
+			return appwire.SessionFetchResponse{}, appwire.TranscriptItemCursorStale()
+		}
+	} else {
+		result, err := s.ItemCandidatesFromRead(ctx, readParams, response)
+		if err != nil {
+			return appwire.SessionFetchResponse{}, err
+		}
+		if result.Identity.ThreadRef != identity.ThreadRef || result.Identity.Incarnation != sourceIncarnation {
+			return appwire.SessionFetchResponse{}, appwire.TranscriptItemCursorStale()
+		}
 	}
 	return appitempaging.BuildFetchResponse(candidate.Item, identity, cursor)
 }

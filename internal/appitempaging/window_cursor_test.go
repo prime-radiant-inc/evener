@@ -32,6 +32,31 @@ func TestWindowCursorRoundTripByDirection(t *testing.T) {
 	}
 }
 
+func TestWindowCursorTranslatesHubNamespace(t *testing.T) {
+	remote := CursorIdentity{ThreadRef: "local:thread", Incarnation: "messages-view", ProjectionVersion: 2}
+	position := appwire.ThreadItemPosition{Entry: 23, Item: 6, Sub: 1}
+	encoded, err := EncodeWindowCursor(remote, WindowCursorDirectionBackward, position)
+	if err != nil {
+		t.Fatal(err)
+	}
+	translated, err := TranslateWindowCursorRef(encoded, remote.ThreadRef, "host-b:thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller := remote
+	controller.ThreadRef = "host-b:thread"
+	got, err := DecodeWindowCursor(translated, controller, WindowCursorDirectionBackward)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != position {
+		t.Fatalf("translated window position = %+v, want %+v", got, position)
+	}
+	if _, err := DecodeWindowCursor(translated, remote, WindowCursorDirectionBackward); err == nil {
+		t.Fatal("translated window cursor retained remote hub ownership")
+	}
+}
+
 func TestWindowCursorRejectsDirectionConfusion(t *testing.T) {
 	identity := CursorIdentity{ThreadRef: "local:thread", Incarnation: "messages-view", ProjectionVersion: 2}
 	position := appwire.ThreadItemPosition{Entry: 23, Item: 6}

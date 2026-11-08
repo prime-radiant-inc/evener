@@ -379,6 +379,94 @@ func TestSessionOperationsLabelsIncompleteOlderDaemonLatestWindow(t *testing.T) 
 	}
 }
 
+func TestSessionOperationsContinuesOlderRemoteHubWindowWithoutForwardingWindowFields(t *testing.T) {
+	newestPosition := appwire.ThreadItemPosition{Entry: 2}
+	olderPosition := appwire.ThreadItemPosition{Entry: 1}
+	remoteLegacyCursor, err := appitempaging.EncodeCursor(appitempaging.CursorIdentity{
+		ThreadRef: "local:legacy-remote", Incarnation: "legacy-remote-history", ProjectionVersion: appitempaging.TranscriptItemProjectionVersion,
+	}, newestPosition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reads, pages atomic.Int64
+	remote, _ := newScriptedRemoteHub(t, func(method string, raw json.RawMessage) any {
+		switch method {
+		case appwire.MethodInitialize:
+			return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
+		case appwire.MethodThreadList:
+			return appwire.ThreadListResponse{Data: []appwire.Thread{{
+				ID: "legacy-remote", Source: "local", Evener: appwire.EvenerThread{Ref: "local:legacy-remote"},
+			}}}
+		case appwire.MethodThreadRead:
+			reads.Add(1)
+			var params appwire.ThreadReadParams
+			if err := json.Unmarshal(raw, &params); err != nil {
+				return appwire.InternalError(err.Error())
+			}
+			if params.TurnWindow != nil || len(params.ItemTypes) != 0 || params.PreviewBytes != 0 || params.MessageBytes != 0 || params.WindowBudgetBytes != 0 {
+				return appwire.InvalidParams("older remote hub rejected window fields")
+			}
+			return appwire.ThreadReadResponse{
+				Thread: appwire.Thread{ID: "legacy-remote", Source: "local", Evener: appwire.EvenerThread{Ref: "local:legacy-remote"}, Turns: []appwire.Turn{{
+					ID: "turn-2", Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFull,
+					Items: []appwire.ThreadItem{{ID: "message-2", TranscriptKey: "message-2", TurnID: "turn-2", Type: "agentMessage", Text: "newest", Position: &newestPosition, Version: 1}},
+				}}},
+				OlderCursor: remoteLegacyCursor, Snapshot: &appwire.SnapshotIdentity{Incarnation: "legacy-remote-history", Length: 2},
+			}
+		case appwire.MethodThreadTurnsList:
+			pages.Add(1)
+			var params appwire.ThreadTurnsListParams
+			if err := json.Unmarshal(raw, &params); err != nil {
+				return appwire.InternalError(err.Error())
+			}
+			if params.Cursor != remoteLegacyCursor || params.TurnWindow != nil || len(params.ItemTypes) != 0 || params.PreviewBytes != 0 || params.MessageBytes != 0 || params.WindowBudgetBytes != 0 {
+				return appwire.InvalidParams("older remote hub rejected continuation shape")
+			}
+			return appwire.ThreadTurnsListResponse{
+				Data: []appwire.Turn{{
+					ID: "turn-1", Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFragment,
+					Items: []appwire.ThreadItem{{ID: "message-1", TranscriptKey: "message-1", TurnID: "turn-1", Type: "agentMessage", Text: "older", Position: &olderPosition, Version: 1}},
+				}},
+				Snapshot: &appwire.SnapshotIdentity{Incarnation: "legacy-remote-history", Length: 2},
+			}
+		default:
+			return appwire.EmptyResponse{}
+		}
+	})
+	source := appsource.NewRemoteHubSource("host-b", nil, func(context.Context, string) (*appwire.Client, error) { return remote, nil })
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	operations := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
+	caller := appwire.ManagerView{Ref: "local:manager", Manager: true}
+	params := appwire.ThreadTurnsListParams{
+		Ref: "host-b:legacy-remote", ItemLimit: 7,
+		TurnWindow: &appwire.ThreadTurnWindow{Latest: 2}, ItemTypes: []string{"messages"},
+		PreviewBytes: 321, MessageBytes: 654, WindowBudgetBytes: transcriptWindowBudgetFloorBytes,
+	}
+
+	initial, err := operations.Invoke(t.Context(), caller, appwire.SessionOperationRequest{Turns: &params})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initial.Turns == nil || initial.Turns.Window == nil || initial.Turns.Window.ContinuationCursor == "" {
+		t.Fatalf("initial older-remote window = %+v, want compatibility continuation", initial.Turns)
+	}
+	params.Cursor = initial.Turns.Window.ContinuationCursor
+	continued, err := operations.Invoke(t.Context(), caller, appwire.SessionOperationRequest{Turns: &params})
+	if err != nil {
+		t.Fatalf("older-remote compatibility continuation: %v", err)
+	}
+	if reads.Load() != 2 || pages.Load() != 1 {
+		t.Fatalf("older-remote compatibility calls = reads %d pages %d, want 2 and 1", reads.Load(), pages.Load())
+	}
+	if continued.Turns == nil || continued.Turns.Window == nil || continued.Turns.Window.AppliedBy != transcriptWindowAppliedByHubCompat ||
+		len(continued.Turns.Data) != 1 || continued.Turns.Data[0].ID != "turn-1" {
+		t.Fatalf("older-remote compatibility continuation = %+v, want older hub-compat page", continued.Turns)
+	}
+}
+
 func TestSessionOperationsRetriesStalePositiveWindowProbeAsHubCompatibility(t *testing.T) {
 	position := appwire.ThreadItemPosition{Entry: 1}
 	var requests atomic.Int64
@@ -808,10 +896,18 @@ func TestSessionOperationsFetchesTranslatedRemoteItem(t *testing.T) {
 			if read.FetchCursor != "" {
 				t.Fatalf("controller forwarded fetch cursor to remote hub: %+v", read)
 			}
-			return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			response := appwire.ThreadReadResponse{Thread: appwire.Thread{
 				ID: "remote", Source: "local", Evener: appwire.EvenerThread{Ref: "local:remote", Capabilities: appwire.ThreadCapabilities{WindowRead: true}},
 				Turns: []appwire.Turn{{ID: "turn-remote", Status: appwire.TurnStatusInProgress, ItemsView: appwire.TurnItemsViewFull, Items: []appwire.ThreadItem{item}}},
-			}, Overlay: []appwire.OverlayItem{{Key: "tool:remote-tool-running", Kind: appwire.OverlayTool, TurnID: "turn-remote", Item: inFlight}}}
+			}, Snapshot: &appwire.SnapshotIdentity{Incarnation: "remote-history", Length: 1}, Overlay: []appwire.OverlayItem{{Key: "tool:remote-tool-running", Kind: appwire.OverlayTool, TurnID: "turn-remote", Item: inFlight}}}
+			if read.TurnWindow != nil {
+				var err error
+				response, err = packCurrentRemoteHubRead(response, read.ThreadWindowParams, read.ItemLimit)
+				if err != nil {
+					return appwire.InternalError(err.Error())
+				}
+			}
+			return response
 		default:
 			return appwire.EmptyResponse{}
 		}
@@ -872,6 +968,139 @@ func TestSessionOperationsFetchesTranslatedRemoteItem(t *testing.T) {
 	if reads < 2 {
 		t.Fatalf("remote thread reads = %d, want initial window plus fetch reread", reads)
 	}
+}
+
+func TestSessionOperationsContinuesCurrentRemoteHubWindow(t *testing.T) {
+	const turnCount = 80
+	turns := make([]appwire.Turn, 0, turnCount)
+	for index := range turnCount {
+		position := appwire.ThreadItemPosition{Entry: uint64(index + 1)}
+		turnID := fmt.Sprintf("turn-%03d", index)
+		turns = append(turns, appwire.Turn{
+			ID: turnID, Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFull,
+			Items: []appwire.ThreadItem{{
+				ID: "message-" + turnID, TranscriptKey: "message-" + turnID, TurnID: turnID, Type: "agentMessage", Text: strings.Repeat("remote-window", 100),
+				Position: &position, Version: 1,
+			}},
+		})
+	}
+	remote, _ := newScriptedRemoteHub(t, func(method string, params json.RawMessage) any {
+		switch method {
+		case appwire.MethodInitialize:
+			return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
+		case appwire.MethodThreadList:
+			return appwire.ThreadListResponse{Data: []appwire.Thread{{
+				ID: "remote", Source: "local", Evener: appwire.EvenerThread{Ref: "local:remote", Capabilities: appwire.ThreadCapabilities{WindowRead: true}},
+			}}}
+		case appwire.MethodThreadRead:
+			var read appwire.ThreadReadParams
+			if err := json.Unmarshal(params, &read); err != nil {
+				t.Fatal(err)
+			}
+			response := appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID: "remote", Source: "local", Evener: appwire.EvenerThread{Ref: "local:remote", Capabilities: appwire.ThreadCapabilities{WindowRead: true}}, Turns: turns,
+			}, Snapshot: &appwire.SnapshotIdentity{Incarnation: "remote-history", Length: turnCount}}
+			packed, err := packCurrentRemoteHubRead(response, read.ThreadWindowParams, read.ItemLimit)
+			if err != nil {
+				return appwire.InternalError(err.Error())
+			}
+			return packed
+		case appwire.MethodThreadTurnsList:
+			var list appwire.ThreadTurnsListParams
+			if err := json.Unmarshal(params, &list); err != nil {
+				return appwire.InternalError(err.Error())
+			}
+			page, err := packCurrentRemoteHubPage(turns, list.ThreadWindowParams, list.ItemLimit, list.Cursor)
+			if err != nil {
+				if wire, ok := errors.AsType[appwire.WireError](err); ok {
+					return wire
+				}
+				return appwire.InternalError(err.Error())
+			}
+			return page
+		default:
+			return appwire.EmptyResponse{}
+		}
+	})
+	source := appsource.NewRemoteHubSource("host-b", nil, func(context.Context, string) (*appwire.Client, error) { return remote, nil })
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	operations := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
+	caller := appwire.ManagerView{Ref: "local:manager", Manager: true}
+	params := appwire.ThreadTurnsListParams{
+		Ref: "host-b:remote", TurnWindow: &appwire.ThreadTurnWindow{Latest: turnCount}, ItemTypes: []string{"agentMessage"},
+		PreviewBytes: 64, WindowBudgetBytes: transcriptWindowBudgetFloorBytes,
+	}
+
+	initial, err := operations.Invoke(t.Context(), caller, appwire.SessionOperationRequest{Turns: &params})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initial.Turns == nil || initial.Turns.Window == nil || initial.Turns.Window.ContinuationCursor == "" {
+		t.Fatalf("initial remote window = %+v, want usable continuation metadata", initial.Turns)
+	}
+	oldestInitial := initial.Turns.Data[0].ID
+	params.Cursor = initial.Turns.Window.ContinuationCursor
+	continued, err := operations.Invoke(t.Context(), caller, appwire.SessionOperationRequest{Turns: &params})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if continued.Turns == nil || len(continued.Turns.Data) == 0 || continued.Turns.Data[len(continued.Turns.Data)-1].ID >= oldestInitial {
+		t.Fatalf("continued remote window = %+v, want turns older than %q", continued.Turns, oldestInitial)
+	}
+}
+
+func packCurrentRemoteHubRead(response appwire.ThreadReadResponse, params appwire.ThreadWindowParams, requestedLimit int) (appwire.ThreadReadResponse, error) {
+	itemLimit, err := appwire.NormalizeTranscriptItemLimit(requestedLimit)
+	if err != nil {
+		return appwire.ThreadReadResponse{}, err
+	}
+	candidates, err := itemCandidateResultFromReadResponse(response)
+	if err != nil {
+		return appwire.ThreadReadResponse{}, err
+	}
+	candidates.Identity = appitempaging.CursorIdentity{ThreadRef: "local:remote", Incarnation: "remote-history", ProjectionVersion: appitempaging.TranscriptItemProjectionVersion}
+	candidates.Exhausted = true
+	candidates, err = appendReadOverlayCandidates(candidates, response)
+	if err != nil {
+		return appwire.ThreadReadResponse{}, err
+	}
+	packed, err := packThreadReadWindowItemCandidates(candidates, func(packed appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error) {
+		packed.Thread = threadWithPackedTurns(response.Thread, packed.Thread.Turns)
+		return packed, nil
+	}, transcriptWindowOptionsFor(candidates, params, itemLimit, transcriptWindowAppliedByServingDaemon, appitempaging.FetchCursorOriginServingDaemon))
+	if err != nil {
+		return appwire.ThreadReadResponse{}, err
+	}
+	response.Snapshot.Incarnation = params.ViewIncarnation(response.Snapshot.Incarnation, itemLimit)
+	return withReadHistoryIdentity(packed, response), nil
+}
+
+func packCurrentRemoteHubPage(turns []appwire.Turn, params appwire.ThreadWindowParams, requestedLimit int, cursor string) (appwire.ThreadTurnsListResponse, error) {
+	itemLimit, err := appwire.NormalizeTranscriptItemLimit(requestedLimit)
+	if err != nil {
+		return appwire.ThreadTurnsListResponse{}, err
+	}
+	candidates, err := itemCandidateResultFromTurns(turns, "")
+	if err != nil {
+		return appwire.ThreadTurnsListResponse{}, err
+	}
+	candidates.Identity = appitempaging.CursorIdentity{ThreadRef: "local:remote", Incarnation: "remote-history", ProjectionVersion: appitempaging.TranscriptItemProjectionVersion}
+	candidates.Exhausted = true
+	candidates, err = spendTranscriptWindowCursor(candidates, params, itemLimit, cursor)
+	if err != nil {
+		return appwire.ThreadTurnsListResponse{}, err
+	}
+	page, err := packThreadTurnsWindowItemCandidates(candidates, func(page appwire.ThreadTurnsListResponse) (appwire.ThreadTurnsListResponse, error) {
+		return page, nil
+	}, transcriptWindowOptionsFor(candidates, params, itemLimit, transcriptWindowAppliedByServingDaemon, appitempaging.FetchCursorOriginServingDaemon))
+	if err != nil {
+		return appwire.ThreadTurnsListResponse{}, err
+	}
+	page.Snapshot = &appwire.SnapshotIdentity{Incarnation: params.ViewIncarnation("remote-history", itemLimit), Length: int64(len(turns))}
+	return page, nil
 }
 
 func TestSessionOperationsReportsRemoteItemLostBeforeFetch(t *testing.T) {

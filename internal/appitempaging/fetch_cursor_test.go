@@ -58,6 +58,34 @@ func TestFetchCursorDecodesIdentityFromFetchOnlyRequest(t *testing.T) {
 	}
 }
 
+func TestFetchCursorTranslatesHubNamespaceAndResolver(t *testing.T) {
+	remote := CursorIdentity{ThreadRef: "local:thread", Incarnation: "window-view", ProjectionVersion: TranscriptItemProjectionVersion}
+	want := FetchCursor{
+		Position: appwire.ThreadItemPosition{Entry: 9, Item: 2}, ItemVersion: 7,
+		Origin: FetchCursorOriginRemoteSource, Offset: 41,
+	}
+	inner := want
+	inner.Origin = FetchCursorOriginServingDaemon
+	encoded, err := EncodeFetchCursor(remote, inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	translated, err := TranslateFetchCursorRef(encoded, remote.ThreadRef, "host-b:thread", FetchCursorOriginRemoteSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, identity, err := DecodeFetchCursorForRef(translated, "host-b:thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want || identity.Incarnation != remote.Incarnation || identity.ProjectionVersion != remote.ProjectionVersion {
+		t.Fatalf("translated fetch cursor = %+v, %+v; want %+v under source view %+v", got, identity, want, remote)
+	}
+	if _, _, err := DecodeFetchCursorForRef(translated, remote.ThreadRef); err == nil {
+		t.Fatal("translated fetch cursor retained remote hub ownership")
+	}
+}
+
 func TestFetchCursorRejectsLegacyMalformedAndWrongIdentity(t *testing.T) {
 	identity := CursorIdentity{ThreadRef: "local:thread", Incarnation: "view-7", ProjectionVersion: 3}
 	legacy, err := EncodeCursor(identity, appwire.ThreadItemPosition{Entry: 17, Item: 4})

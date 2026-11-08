@@ -122,6 +122,15 @@ func (o *sessionOperations) turns(ctx context.Context, p appwire.ThreadTurnsList
 }
 
 func continueLiveTranscriptWindow(ctx context.Context, source appsource.Source, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+	if remote, ok := source.(*appsource.RemoteHubSource); ok && sourceAdvertisesWindowRead(ctx, source, params.Ref, params.ThreadID) {
+		page, err := remote.ListTurns(ctx, params)
+		if err != nil {
+			return appwire.ThreadTurnsListResponse{}, err
+		}
+		thread := enrichSourcedThreadImages(source, appwire.Thread{Turns: page.Data})
+		page.Data = thread.Turns
+		return page, nil
+	}
 	itemLimit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
 	if err != nil {
 		return appwire.ThreadTurnsListResponse{}, err

@@ -120,6 +120,20 @@ func DecodeFetchCursorForRef(encoded, threadRef string) (FetchCursor, CursorIden
 	}, identity, nil
 }
 
+// TranslateFetchCursorRef replaces one hub's thread namespace with another's
+// while preserving the source view, item and range fence. The destination owns
+// remote fetch resolution, so it also supplies the origin that will resolve the
+// translated cursor.
+func TranslateFetchCursorRef(encoded, fromThreadRef, toThreadRef string, origin FetchCursorOrigin) (string, error) {
+	cursor, identity, err := DecodeFetchCursorForRef(encoded, fromThreadRef)
+	if err != nil || toThreadRef == "" || !validFetchCursorOrigin(origin) {
+		return "", appwire.TranscriptItemCursorStale()
+	}
+	identity.ThreadRef = toThreadRef
+	cursor.Origin = origin
+	return EncodeFetchCursor(identity, cursor)
+}
+
 func validFetchCursorWire(wire fetchCursorDecodeWire, want CursorIdentity) bool {
 	return validFetchCursorShape(wire) &&
 		wire.ThreadRef != nil && *wire.ThreadRef == want.ThreadRef &&
@@ -206,13 +220,39 @@ func DecodeWindowCursor(encoded string, want CursorIdentity, wantDirection Windo
 	return wire.Position.position(), nil
 }
 
+// TranslateWindowCursorRef replaces one hub's thread namespace with another's
+// while preserving the source view, direction and boundary. Strict decoding
+// prevents a remote peer from smuggling an unknown cursor form through the
+// controller under its namespace.
+func TranslateWindowCursorRef(encoded, fromThreadRef, toThreadRef string) (string, error) {
+	var wire windowCursorDecodeWire
+	if err := decodeCursorForm(encoded, &wire); err != nil || !validWindowCursorShape(wire) || *wire.ThreadRef != fromThreadRef || toThreadRef == "" {
+		return "", appwire.TranscriptItemCursorStale()
+	}
+	identity := CursorIdentity{
+		ThreadRef:         toThreadRef,
+		Incarnation:       *wire.Incarnation,
+		ProjectionVersion: *wire.ProjectionVersion,
+	}
+	return EncodeWindowCursor(identity, *wire.Direction, wire.Position.position())
+}
+
 func validWindowCursorWire(wire windowCursorDecodeWire, want CursorIdentity, wantDirection WindowCursorDirection) bool {
-	return wire.Version != nil && *wire.Version == cursorFormVersion &&
-		wire.Kind != nil && *wire.Kind == windowCursorKind &&
+	return validWindowCursorShape(wire) &&
 		wire.ThreadRef != nil && *wire.ThreadRef == want.ThreadRef &&
 		wire.Incarnation != nil && *wire.Incarnation == want.Incarnation &&
 		wire.ProjectionVersion != nil && *wire.ProjectionVersion == want.ProjectionVersion &&
-		wire.Direction != nil && *wire.Direction == wantDirection && validWindowCursorDirection(*wire.Direction) &&
+		wire.Direction != nil && *wire.Direction == wantDirection
+}
+
+func validWindowCursorShape(wire windowCursorDecodeWire) bool {
+	if wire.ThreadRef == nil || wire.Incarnation == nil || wire.ProjectionVersion == nil {
+		return false
+	}
+	return wire.Version != nil && *wire.Version == cursorFormVersion &&
+		wire.Kind != nil && *wire.Kind == windowCursorKind &&
+		validIdentity(CursorIdentity{ThreadRef: *wire.ThreadRef, Incarnation: *wire.Incarnation, ProjectionVersion: *wire.ProjectionVersion}) &&
+		wire.Direction != nil && validWindowCursorDirection(*wire.Direction) &&
 		validCursorPosition(wire.Position)
 }
 
