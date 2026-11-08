@@ -37,7 +37,7 @@ func TestReplaceSyncsFileThenRenamesThenSyncsDirectory(t *testing.T) {
 	if syncFile < 0 || rename < 0 || syncDir < 0 {
 		t.Fatalf("Replace operations = %v, want file sync, rename, directory sync", ops)
 	}
-	if !(syncFile < rename && rename < syncDir) {
+	if syncFile >= rename || rename >= syncDir {
 		t.Fatalf("Replace order = %v, want file sync before rename before directory sync", ops)
 	}
 }
@@ -47,7 +47,7 @@ func TestReplaceDirectorySyncFailureReportsPublished(t *testing.T) {
 	fs := fsfake.NewSyncFS(afero.NewMemMapFs())
 	fs.FailOpen = func(name string) bool { return name == "/state/tasks" }
 	path := "/state/tasks/session.json"
-	if err := fs.Fs.MkdirAll("/state/tasks", 0o755); err != nil {
+	if err := fs.MkdirAll("/state/tasks", 0o755); err != nil {
 		t.Fatal(err)
 	}
 	err := Replace(fs, path, []byte("new"), 0o644)

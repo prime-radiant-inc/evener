@@ -3,6 +3,7 @@ package agent
 import (
 	"errors"
 	"os"
+	"slices"
 	"sync"
 	"testing"
 
@@ -32,12 +33,7 @@ func (r *recordingSyncFS) recorded() []string {
 }
 
 func (r *recordingSyncFS) sawSync(name string) bool {
-	for _, op := range r.recorded() {
-		if op == "sync:"+name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(r.recorded(), "sync:"+name)
 }
 
 func (r *recordingSyncFS) Open(name string) (afero.File, error) {

@@ -3,6 +3,7 @@ package fsfake
 
 import (
 	"os"
+	"slices"
 	"strings"
 	"sync"
 
@@ -40,12 +41,7 @@ func (r *SyncFS) Ops() []string {
 
 // SawSync reports whether name was synced.
 func (r *SyncFS) SawSync(name string) bool {
-	for _, op := range r.Ops() {
-		if op == "sync:"+name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(r.Ops(), "sync:"+name)
 }
 
 // SawSyncUnder reports whether a file under dir was synced.
