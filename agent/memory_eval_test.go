@@ -424,8 +424,8 @@ func TestMemoryEvalVerifierStopsRunner(t *testing.T) {
 			}
 			// The failing stage's identity, reason and Go diagnostic must survive
 			// the stop, rather than dying with the stage value that was dropped.
-			var stop *memoryEvalVerifierStop
-			if !errors.As(runErr, &stop) {
+			stop, ok := errors.AsType[*memoryEvalVerifierStopError](runErr)
+			if !ok {
 				t.Fatalf("verifier stop did not carry its stage: %v", runErr)
 			}
 			phase := "final"

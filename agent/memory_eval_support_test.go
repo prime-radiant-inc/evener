@@ -580,11 +580,11 @@ type memoryEvalEpisode struct {
 	Elapsed  time.Duration
 }
 
-// memoryEvalVerifierStop is the terminal error for a stage whose verifier could
+// memoryEvalVerifierStopError is the terminal error for a stage whose verifier could
 // not run. It carries the failing stage's evidence, so every caller can report
 // or retain the diagnostic from the error alone, and it unwraps to the
 // verifier's own failure.
-type memoryEvalVerifierStop struct {
+type memoryEvalVerifierStopError struct {
 	Phase    string // "initial" or "final"
 	Pair     string
 	Disabled bool
@@ -593,11 +593,11 @@ type memoryEvalVerifierStop struct {
 	Cause    error
 }
 
-func (e *memoryEvalVerifierStop) Error() string {
+func (e *memoryEvalVerifierStopError) Error() string {
 	return fmt.Sprintf("memory eval %s verifier infrastructure failure, pair %s disabled=%t stage %s: %v", e.Phase, e.Pair, e.Disabled, e.Stage, e.Cause)
 }
 
-func (e *memoryEvalVerifierStop) Unwrap() error { return e.Cause }
+func (e *memoryEvalVerifierStopError) Unwrap() error { return e.Cause }
 
 // memoryEvalStopVerifier records the failing stage, publishes its redacted
 // evidence, and fails the run before returning the terminal error that carries
@@ -607,7 +607,7 @@ func (e *memoryEvalVerifierStop) Unwrap() error { return e.Cause }
 // redactor, so nothing this run marked sensitive is retained raw.
 func memoryEvalStopVerifier(t *testing.T, b *memoryEvalAdmission, phase, pair string, disabled bool, evidence memoryEvalStageEvidence, cause error) error {
 	t.Helper()
-	stop := &memoryEvalVerifierStop{Phase: phase, Pair: pair, Disabled: disabled, Stage: evidence.Name, Cause: cause}
+	stop := &memoryEvalVerifierStopError{Phase: phase, Pair: pair, Disabled: disabled, Stage: evidence.Name, Cause: cause}
 	evidence.Verifier = b.redact(t, evidence.Verifier)
 	evidence.Failure = b.redact(t, stop.Error())
 	stop.Evidence = evidence

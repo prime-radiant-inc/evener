@@ -166,8 +166,7 @@ func memoryEvalLivePairsOnHost(t *testing.T, discover func() (string, string, er
 	}()
 	episodes, err := memoryEvalRunPairs(t, b, c, p, home, nil)
 	if err != nil {
-		var stop *memoryEvalVerifierStop
-		if errors.As(err, &stop) {
+		if stop, ok := errors.AsType[*memoryEvalVerifierStopError](err); ok {
 			t.Fatalf("%v (failing stage %s retained under %s)", err, stop.Stage, evidenceRoot)
 		}
 		t.Fatal(err)
