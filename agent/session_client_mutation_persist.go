@@ -189,6 +189,11 @@ func saveClientMutationSnapshotFS(
 			return true, err
 		}
 	}
+	if faults.SnapshotDirSync != nil {
+		if err := faults.SnapshotDirSync(); err != nil {
+			return true, fmt.Errorf("%w: %w", fsatomic.ErrPublished, err)
+		}
+	}
 	// The rename is the publication point; syncing its directory is the
 	// durability barrier that ends the returned-error window. A failure here
 	// reports the snapshot as published but not confirmed durable.

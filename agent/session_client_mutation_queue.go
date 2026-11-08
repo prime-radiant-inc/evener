@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/execsupport/fsatomic"
 	"primeradiant.com/evener/llm"
 )
 
@@ -1514,7 +1515,7 @@ func (s *Session) markClaimedUserTranscriptIncorporated(clientMutationID string)
 	if clientMutationID == "" {
 		return nil
 	}
-	return s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+	err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		pending, ok := snapshot.PendingExecutions[clientMutationID]
 		if !ok {
 			return nil
@@ -1534,6 +1535,13 @@ func (s *Session) markClaimedUserTranscriptIncorporated(clientMutationID string)
 		snapshot.PendingExecutions[clientMutationID] = pending
 		return nil
 	})
+	if err != nil && !errors.Is(err, fsatomic.ErrPublished) {
+		return err
+	}
+	if errors.Is(err, fsatomic.ErrPublished) {
+		s.emitClientMutationDurabilityWarning(err)
+	}
+	return nil
 }
 
 func (s *Session) clientMutationUserTranscriptIncorporated(clientMutationID, stableTurnID string) bool {

@@ -16,8 +16,10 @@ import (
 
 	"github.com/spf13/afero"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/execsupport/fsatomic"
 )
 
 var (
@@ -374,7 +376,10 @@ func (s *Session) acceptClientMutation(spec clientMutationSpec, prepare, effect 
 		return nil
 	}, effect)
 	if err != nil {
-		return clientMutationLookup{}, err
+		if !errors.Is(err, fsatomic.ErrPublished) || lookup.Record.ClientMutationID == "" {
+			return clientMutationLookup{}, err
+		}
+		s.emitClientMutationDurabilityWarning(err)
 	}
 	if lookup.Record.OperationState == clientMutationOperationRejected {
 		return clientMutationLookup{}, clientMutationRejectionError(lookup.Record)
@@ -779,12 +784,28 @@ func (s *Session) claimClientMutationStart() (queuedInput, bool, error) {
 		return nil
 	})
 	if err != nil {
-		return queuedInput{}, false, err
+		if !errors.Is(err, fsatomic.ErrPublished) {
+			return queuedInput{}, false, err
+		}
+		if claimed.ClientMutationID != "" {
+			s.emitClientMutationDurabilityWarning(err)
+		}
 	}
 	if claimedQueue {
 		s.reflectDurableInputQueue()
 	}
 	return claimed, claimed.ClientMutationID != "", nil
+}
+
+// emitClientMutationDurabilityWarning surfaces a snapshot whose rename was
+// published but whose directory-sync barrier failed. The mutation is accepted —
+// the published generation is authoritative — and the warning carries the
+// uncertainty without blocking the projection and wake that follow.
+func (s *Session) emitClientMutationDurabilityWarning(err error) {
+	s.emitDiagnosticWarning(events.WarningData{
+		Message: fmt.Sprintf("client mutation accepted but its durability is unconfirmed: %v", err),
+		Code:    "client_mutation_durability_unconfirmed",
+	})
 }
 
 // SimulateCrashMidExecutionForTest claims the pending client-mutation start,
@@ -1552,6 +1573,10 @@ type clientMutationFaults struct {
 	AfterReservation           func() error
 	BeforeEffectSnapshotRename func() error
 	AfterEffectSnapshotRename  func() error
+	// SnapshotDirSync runs before the real directory sync of every snapshot
+	// write; an error simulates a published write whose durability barrier
+	// failed (fsatomic.ErrPublished).
+	SnapshotDirSync func() error
 }
 
 type clientMutationOwner struct {
@@ -1750,6 +1775,12 @@ func (s *clientMutationStore) executeAtomic(
 		s.commitStateLocked(next)
 	}
 	if err != nil {
+		if errors.Is(err, fsatomic.ErrPublished) {
+			return clientMutationLookup{
+				Disposition: clientMutationDispositionReserved,
+				Record:      cloneClientMutationRecord(current),
+			}, err
+		}
 		return clientMutationLookup{}, err
 	}
 	if !renamed {

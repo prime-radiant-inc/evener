@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/execsupport/fsatomic"
 	"primeradiant.com/evener/llm"
 )
 
@@ -577,8 +578,14 @@ func (s *Session) popQueueHeadRefusingPoison() (queuedInput, error) {
 		return queuedInput{}, err
 	}
 	if err != nil {
-		s.emit(events.WarningData{Message: fmt.Sprintf("claim queued input failed: %v", err)})
-		return queuedInput{}, nil
+		if errors.Is(err, fsatomic.ErrPublished) {
+			if queued.ClientMutationID != "" {
+				s.emitClientMutationDurabilityWarning(err)
+			}
+		} else {
+			s.emit(events.WarningData{Message: fmt.Sprintf("claim queued input failed: %v", err)})
+			return queuedInput{}, nil
+		}
 	}
 	if queued.ClientMutationID != "" {
 		s.reflectDurableInputQueue()
