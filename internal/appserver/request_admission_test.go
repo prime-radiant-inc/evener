@@ -92,10 +92,14 @@ func TestRecoveryConnectionReachesHandlerWhilePrimaryQueueIsFull(t *testing.T) {
 	primary := dialRawAppWire(t, hub)
 	initializeRaw(t, primary)
 	frames := collectFrames(primary)
-	for id := int64(2); id < 68; id++ {
+	// Park the serial worker on request 2 before filling the queue, so the
+	// fill happens with the worker already holding one request and request
+	// 67 finds the queue deterministically full.
+	sendRaw(t, primary, rawRequest(t, 2, appwire.MethodThreadList, appwire.ThreadListParams{}))
+	waitFor(t, "stalled primary worker", started)
+	for id := int64(3); id < 68; id++ {
 		sendRaw(t, primary, rawRequest(t, id, appwire.MethodThreadList, appwire.ThreadListParams{}))
 	}
-	waitFor(t, "stalled primary worker", started)
 	requireQueueRefusal(t, "full primary queue", waitForFrameID(t, frames, 67), 67, "", appwire.RetryDispositionNone)
 	recovery := dialAppWireClient(t, hub)
 	if err := recovery.Request(t.Context(), appwire.MethodEvenerThreadForceStop, appwire.ThreadForceStopParams{Ref: "local:owner"}, nil); err != nil {
@@ -140,10 +144,14 @@ func TestConnectionAdmissionPrecedesUnreadBacklog(t *testing.T) {
 	primary := dialRawAppWire(t, hub)
 	initializeRaw(t, primary)
 	frames := collectFrames(primary)
-	for id := int64(2); id < 68; id++ {
+	// Park the serial worker on request 2 before filling the queue, so the
+	// fill cannot race the worker's first dequeue: requests 3..66 then fill
+	// the queue exactly and 67, 68 and 69 are all refused before dispatch.
+	sendRaw(t, primary, rawRequest(t, 2, appwire.MethodThreadList, appwire.ThreadListParams{}))
+	waitFor(t, "stalled worker", started)
+	for id := int64(3); id < 68; id++ {
 		sendRaw(t, primary, rawRequest(t, id, appwire.MethodThreadList, appwire.ThreadListParams{}))
 	}
-	waitFor(t, "stalled worker", started)
 	requireQueueRefusal(t, "full queue before recovery", waitForFrameID(t, frames, 67), 67, "", appwire.RetryDispositionNone)
 	sendRaw(t, primary, rawRequest(t, 68, appwire.MethodThreadResume, appwire.ThreadResumeParams{Ref: "local:owner"}))
 	sendRaw(t, primary, rawRequest(t, 69, appwire.MethodThreadReasoningEffortSet, appwire.ThreadReasoningEffortSetParams{Ref: "local:owner", ReasoningEffort: "high"}))
