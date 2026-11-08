@@ -17,8 +17,8 @@ import (
 
 	"github.com/spf13/afero"
 
+	"primeradiant.com/evener/agent/internal/durablefile"
 	"primeradiant.com/evener/agent/internal/runetrim"
-	"primeradiant.com/evener/execsupport/fsatomic"
 )
 
 // ErrOutputPruned is returned by output reads when the durable record remains
@@ -946,17 +946,7 @@ func writeOutputMetaBytes(f afero.File, b []byte, syncWrites bool) error {
 }
 
 func syncParentDir(fs afero.Fs, path string) error {
-	dir, err := fs.Open(filepath.Dir(path))
-	if err != nil {
-		return fmt.Errorf("jobstore: open output metadata directory: %w", err)
-	}
-	defer func() {
-		_ = dir.Close()
-	}()
-	if err := dir.Sync(); err != nil && !fsatomic.SyncUnsupported(err) {
-		return fmt.Errorf("jobstore: sync output metadata directory: %w", err)
-	}
-	return nil
+	return durablefile.SyncDir(fs, filepath.Dir(path))
 }
 
 func outputMetaPath(path string) string {
