@@ -10,9 +10,9 @@ import type {
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
 } from "react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useOptionalNeedsYou } from "../../shell/NeedsYouProvider";
-import type { NeedsYouChoice } from "../../shell/needsYouActions";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useOptionalNeedsYou, useOptionalNeedsYouController } from "../../shell/NeedsYouProvider";
+import type { NeedsYouChoice, NeedsYouSnapshot } from "../../shell/needsYouActions";
 import { Button, IconButton, ListRow, Popover } from "../../widgets";
 import { LONG_PRESS_MS, POINTER_CLICK_WINDOW_MS } from "../../widgets/hovercard";
 import { requireClass } from "../../widgets/internal/requireClass";
@@ -22,6 +22,44 @@ export interface NextNeedsYouProps {
   sessionRef: string;
   viewId: string;
   hidden: boolean;
+}
+
+// Whether the control has anything to offer right now: the one predicate both
+// the control's own render gate and ConversationBody's slot-mounting decision
+// read, so a control with nothing to show never pads the stack it floats in.
+// A loaded page holding only the current session is not the whole queue:
+// demand stays visible while another page may exist, a read failed, or a page
+// is loading. On a cold shell the first manifest read is also enough to offer
+// page zero; after a manifest was known, reconnects stay quiet until the
+// queue returns or a read fails.
+export function nextNeedsYouVisible(snapshot: NeedsYouSnapshot, hidden: boolean): boolean {
+  return (
+    !hidden &&
+    !snapshot.blocked &&
+    (snapshot.nextRef !== null ||
+      snapshot.readFailed ||
+      (snapshot.canLoadMore && (snapshot.choices.length > 0 || snapshot.loading || snapshot.canLoadInitialPage)))
+  );
+}
+
+// The same decision as one subscribed boolean, for consumers far larger than
+// the control itself (ConversationBody). The controller comes from the stable
+// controller-only context: the full needs-you value changes on every queue
+// snapshot - loading toggles, refreshState cycles, palette and modal
+// blocked-flips - and reading it would re-render the whole pane on every one
+// of those, so here Object.is on one boolean decides the re-render instead.
+// `hidden` is the caller's own gate (IME composition, a pending question or
+// approval) and changes re-render the caller itself, so the closure below
+// always reads the current value; the controller is stable across snapshot
+// changes, so the subscription itself does not churn.
+export function useNextNeedsYouMount(hidden: boolean): boolean {
+  const controller = useOptionalNeedsYouController();
+  const subscribe = useCallback((listener: () => void) => controller?.subscribe(listener) ?? (() => {}), [controller]);
+  const getMount = useCallback(
+    () => (controller ? nextNeedsYouVisible(controller.getSnapshot(), hidden) : false),
+    [controller, hidden],
+  );
+  return useSyncExternalStore(subscribe, getMount, getMount);
 }
 
 const HOLD_SLOP_PX = 10;
@@ -78,17 +116,7 @@ function OwnedNextNeedsYou({
   const nextChoice = snapshot.choices.find((choice) => choice.summary.ref === snapshot.nextRef);
   const nextTitle = nextChoice?.summary.title?.trim() ?? "";
   const otherChoices = snapshot.choices.filter((choice) => choice.summary.ref !== sessionRef);
-  // A loaded page holding only the current session is not the whole queue.
-  // Keep demand visible while another page may exist, a read failed, or a page
-  // is loading. On a cold shell, the first manifest read is also enough to
-  // offer page zero; after a manifest was known, reconnects stay quiet until
-  // the queue returns or a read fails.
-  const visible =
-    !hidden &&
-    !snapshot.blocked &&
-    (snapshot.nextRef !== null ||
-      snapshot.readFailed ||
-      (snapshot.canLoadMore && (snapshot.choices.length > 0 || snapshot.loading || snapshot.canLoadInitialPage)));
+  const visible = nextNeedsYouVisible(snapshot, hidden);
 
   const moreRef = useRef<HTMLButtonElement>(null);
   const listRef = useRef<HTMLElement>(null);

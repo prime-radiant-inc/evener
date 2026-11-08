@@ -3,7 +3,7 @@ import { keyID } from "@evener/appwire-client/state/navigation";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { capability, manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { resetActivitySidebarStoreForTests } from "../../shell/activitybar/activitySidebarStore";
@@ -34,7 +34,7 @@ import { resetTranscriptPagingForTests } from "./transcript/useTranscript";
 import "./testing/editorGeometry";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectReadyFakeClient } from "../../testing/connectionTestUtils";
-import { readResponse, versionedReadResponse } from "./sessionTestUtils";
+import { readResponse, scrollRootOf, stubScrolledAway, versionedReadResponse } from "./sessionTestUtils";
 
 // The session footer's composer boundary is swapped for a visible stub here
 // ONLY to prove Session.tsx mounts it with the right ref and no longer adds a
@@ -465,11 +465,14 @@ test("a focused draft stays visible and composition suppression clears without l
   await waitFor(() => expect(screen.getByTestId("next-needs-you")).toBeTruthy());
 
   // An in-progress IME composition suppresses it, and composition end returns
-  // it automatically.
+  // it automatically. The slot itself unmounts, not just its content: an
+  // empty slot would pad the stack's measured height and its end clearance.
   fireEvent.compositionStart(editor);
   await waitFor(() => expect(screen.queryByTestId("next-needs-you")).toBeNull());
+  expect(screen.queryByTestId("flow-overlay-attention")).toBeNull();
   fireEvent.compositionEnd(editor);
   await waitFor(() => expect(screen.getByTestId("next-needs-you")).toBeTruthy());
+  expect(screen.getByTestId("flow-overlay-attention").contains(screen.getByTestId("next-needs-you"))).toBe(true);
   expect(readDraft("ref_a")).toBe("keep this draft");
 });
 
@@ -495,9 +498,15 @@ test("the measured attention stack becomes transcript end clearance", async ({ o
   workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
   window.history.replaceState({}, "", "/s/ref_a");
 
-  renderAttentionSession(fake, pane);
+  const view = renderAttentionSession(fake, pane);
   await screen.findByRole("textbox", { name: "Message" });
   await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(screen.getByTestId("next-needs-you")).toBeTruthy());
+  // Both stack slots must carry real content for the ordering claim below to
+  // mean anything, and the pill slot mounts only while the pill would render:
+  // put the reader away from the bottom so the pill offers its jump to latest.
+  stubScrolledAway(scrollRootOf(view.container));
+  fireEvent.scroll(scrollRootOf(view.container));
   await waitFor(() => expect(screen.getByTestId("transcript-end-clearance")).toBeTruthy());
 
   // The stack's committed measurement reaches the synthetic trailing row
@@ -508,6 +517,174 @@ test("the measured attention stack becomes transcript end clearance", async ({ o
   const pill = screen.getByTestId("flow-overlay-pill");
   const attention = screen.getByTestId("flow-overlay-attention");
   expect(pill.compareDocumentPosition(attention) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  view.unmount();
+});
+
+// Each stack slot mounts only while its control would actually render, so
+// the stack and its reserved end clearance disappear while nothing floats
+// instead of pinning an empty band over the content pane's bottom.
+test("nothing floating: the stack and its slots stay unmounted", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => attentionRead("ref_a"));
+  const pane = attentionSession("empty-stack-pane");
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  window.history.replaceState({}, "", "/s/ref_a");
+
+  renderAttentionSession(fake, pane);
+  await screen.findByTestId("composer-slot");
+  await flushPendingTurnsProjectionForTests();
+
+  // At rest the reader sits at the bottom with nothing unseen, so the pill
+  // renders nothing by its own gate; with no needs-you queue and no manifest
+  // the Next control has nothing to offer either.
+  expect(screen.queryByTestId("new-content-pill")).toBeNull();
+  expect(screen.queryByTestId("next-needs-you")).toBeNull();
+  expect(screen.queryByTestId("flow-overlay-stack")).toBeNull();
+  expect(screen.queryByTestId("flow-overlay-pill")).toBeNull();
+  expect(screen.queryByTestId("flow-overlay-attention")).toBeNull();
+  expect(screen.queryByTestId("transcript-end-clearance")).toBeNull();
+});
+
+test("a visible Next control mounts its slot without an empty pill slot above it", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => attentionRead("ref_a"));
+  installNeedsYouRows(["ref_a", "ref_b"]);
+  const pane = attentionSession("next-only-pane");
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  window.history.replaceState({}, "", "/s/ref_a");
+
+  renderAttentionSession(fake, pane);
+  await screen.findByTestId("composer-slot");
+  await flushPendingTurnsProjectionForTests();
+
+  await waitFor(() => expect(screen.getByTestId("next-needs-you")).toBeTruthy());
+  const stack = screen.getByTestId("flow-overlay-stack");
+  const attention = screen.getByTestId("flow-overlay-attention");
+  expect(stack.contains(attention)).toBe(true);
+  // The reader is at the bottom with nothing new, so the pill renders
+  // nothing: its slot stays unmounted rather than padding the stack's
+  // measured height with an empty row and the flex gap it carries.
+  expect(screen.queryByTestId("new-content-pill")).toBeNull();
+  expect(within(stack).queryByTestId("flow-overlay-pill")).toBeNull();
+});
+
+test("a visible pill mounts its slot without an empty attention slot below it", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => attentionRead("ref_a"));
+  const pane = attentionSession("pill-only-pane");
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  window.history.replaceState({}, "", "/s/ref_a");
+
+  const view = renderAttentionSession(fake, pane);
+  await screen.findByTestId("composer-slot");
+  await flushPendingTurnsProjectionForTests();
+
+  const root = scrollRootOf(view.container);
+  stubScrolledAway(root);
+  fireEvent.scroll(root);
+  await waitFor(() => expect(screen.getByTestId("new-content-pill")).toBeTruthy());
+
+  const stack = screen.getByTestId("flow-overlay-stack");
+  const pillSlot = screen.getByTestId("flow-overlay-pill");
+  expect(stack.contains(pillSlot)).toBe(true);
+  expect(pillSlot.contains(screen.getByTestId("new-content-pill"))).toBe(true);
+  // No needs-you queue and no manifest: the Next control has nothing to
+  // offer, so its slot stays unmounted rather than padding the stack's
+  // measured height with an empty row and the flex gap it carries.
+  expect(screen.queryByTestId("next-needs-you")).toBeNull();
+  expect(within(stack).queryByTestId("flow-overlay-attention")).toBeNull();
+  view.unmount();
+});
+
+// The attention slot's mount gate owns the control's suppression contract: a
+// navigation the reader armed before suppression began must not land after
+// the gate unmounts the control, exactly as the control's own visible-to-
+// hidden effect enforced while it stayed mounted.
+test("a navigation armed before suppression does not land once suppression unmounts the control", async ({
+  onTestFinished,
+}) => {
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+    stubSessionSlots();
+  });
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", (params) => attentionRead(params.ref ?? "ref_a"));
+  const manifestGate = deferred<void>();
+  const sectionGate = deferred<void>();
+  let sectionRequested = false;
+  fake.on("evener/navigation/read", (params) => {
+    if (params.resource === "manifest") {
+      return manifestGate.promise.then(() =>
+        wireSnapshot(
+          params,
+          manifest({
+            generation_id: "delayed-needs-you",
+            sections: { live: { count: 0 }, needs_you: { count: 2 }, pin_sections: { count: 0 } },
+          }),
+          '"manifest"',
+          1,
+          "delayed-needs-you",
+        ),
+      );
+    }
+    if (params.resource === "section" && params.section === "needs_you") {
+      sectionRequested = true;
+      return sectionGate.promise.then(() =>
+        wireSnapshot(
+          params,
+          {
+            sessions: [
+              { ref: "ref_a", state: "awaiting" },
+              { ref: "ref_b", state: "awaiting" },
+            ],
+            remaining: 0,
+          },
+          '"page"',
+          1,
+          "delayed-needs-you",
+        ),
+      );
+    }
+    throw new Error(`unexpected navigation resource ${params.resource}`);
+  });
+  const releaseNavigation = navigationStore.init(fake, capability("delayed-needs-you"));
+  const manifestRead = navigationStore.getState().loadManifest();
+  const pane = attentionSession("delayed-needs-you-pane");
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  window.history.replaceState({}, "", "/s/ref_a");
+  const view = renderAttentionSession(fake, pane);
+
+  try {
+    const editor = await screen.findByRole("textbox", { name: "Message" });
+    await flushPendingTurnsProjectionForTests();
+    const next = await screen.findByTestId("next-needs-you-next");
+
+    // The Next click arms a navigation whose page read stays pending.
+    fireEvent.click(next);
+    await waitFor(() => expect(sectionRequested).toBe(true));
+
+    // Suppression starts mid-flight and unmounts the control.
+    fireEvent.compositionStart(editor);
+    await waitFor(() => expect(screen.queryByTestId("next-needs-you")).toBeNull());
+
+    // The delayed page reply arrives while the reader is mid-composition: it
+    // must not navigate their pane away.
+    await act(async () => {
+      sectionGate.resolve(undefined);
+    });
+    expect(window.location.pathname).toBe("/s/ref_a");
+
+    // Suppression clearing returns the control with the queue intact.
+    fireEvent.compositionEnd(editor);
+    await waitFor(() => expect(screen.getByTestId("next-needs-you")).toBeTruthy());
+    expect(window.location.pathname).toBe("/s/ref_a");
+  } finally {
+    view.unmount();
+    releaseNavigation();
+    manifestGate.resolve();
+    await manifestRead;
+  }
 });
 
 test("the measured clearance does not toggle New Content or move an end-following reader", async ({

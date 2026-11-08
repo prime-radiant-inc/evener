@@ -1,7 +1,8 @@
 import { configFingerprint, formatQuoteBlock, projectThread, resolveEffectiveConfig } from "@evener/appwire-client";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { focusedSessionRef } from "../../shell/focusedSession";
+import { useOptionalNeedsYouController } from "../../shell/NeedsYouProvider";
 import { navigate, paneToURL, refParam } from "../../shell/routing";
 import { cadenceStateFor } from "../../shell/sessionStatus";
 import { workspaceStore } from "../../shell/workspace";
@@ -26,12 +27,12 @@ import { requestQuoteInsert } from "./composer/quoteInsert";
 import type { ComposerSourceState } from "./composer/sourceState";
 import { NOW_TICK_MS, SessionNowContext, useNowTick } from "./liveness";
 import { useMarkSessionSeenOnOpen } from "./markSeen";
-import { NextNeedsYou } from "./NextNeedsYou";
+import { NextNeedsYou, useNextNeedsYouMount } from "./NextNeedsYou";
 import { PendingChips } from "./pending/PendingChips";
 import styles from "./session.module.css";
 import { LivenessLine } from "./transcript/flow/LivenessLine";
 import { LoadOlderRow } from "./transcript/flow/LoadOlderRow";
-import { NewContentPill } from "./transcript/flow/NewContentPill";
+import { NewContentPill, newContentPillVisible } from "./transcript/flow/NewContentPill";
 import { useSeenDivider } from "./transcript/flow/useSeenDivider";
 import { useTranscriptScroll } from "./transcript/flow/useTranscriptScroll";
 import { useTranscriptScrollKeys } from "./transcript/flow/useTranscriptScrollKeys";
@@ -231,10 +232,10 @@ function StandardConversationBody({
   }, [attentionOwner]);
   const attentionHidden = editing || askPending || approvalPending;
   // Production panes borrow the shell's shared owner; a bare conversation
-  // fixture outside AppShell has no floating control.
-  const attentionOverlay = attentionOwner ? (
-    <NextNeedsYou sessionRef={ref} viewId={seat.readView?.id ?? seat.viewFallbackId} hidden={attentionHidden} />
-  ) : undefined;
+  // fixture outside AppShell has no floating control. The mount flag is one
+  // subscribed boolean (see useNextNeedsYouMount), so queue churn re-renders
+  // the small control, not this whole pane.
+  const nextNeedsYouMounts = useNextNeedsYouMount(attentionHidden);
   const pendingEntries = usePendingTurnEntries(ref);
   const queueStripIds = useQueueStripMutationIds(ref);
   const heldSteers = useMemo(() => heldSteerEntries(pendingEntries, queueStripIds), [pendingEntries, queueStripIds]);
@@ -318,6 +319,35 @@ function StandardConversationBody({
     onPositioningCommand: seat.readView?.supersedePositioning,
   });
 
+  // Each floating slot mounts only while its control would actually render
+  // (the pill through its shared gate, Next through its shared predicate), so
+  // an empty control never pads the stack; with both hidden the stack and
+  // the transcript-end clearance it reserves disappear entirely.
+  const pillWouldRender = newContentPillVisible({
+    visible: flow.pillVisible,
+    count: flow.pillCount,
+    error: flow.pillError,
+  });
+  const attentionMounted = attentionOwner && nextNeedsYouMounts;
+  const attentionOverlay = attentionMounted ? (
+    <NextNeedsYou sessionRef={ref} viewId={seat.readView?.id ?? seat.viewFallbackId} hidden={attentionHidden} />
+  ) : undefined;
+
+  // The mount gate owns the control's suppression contract. While the control
+  // stayed mounted through a visible-to-hidden flip, its own effect cancelled
+  // the controller's deferred navigation so a late reply could not act; the
+  // flip now unmounts it, so the gate performs the cancellation. Focus loss
+  // needs none: the controller's reader guard drops a deferred navigation
+  // when the focused reader changes.
+  const attentionController = useOptionalNeedsYouController();
+  const wasAttentionMountedRef = useRef(attentionMounted);
+  useLayoutEffect(() => {
+    const wasMounted = wasAttentionMountedRef.current;
+    wasAttentionMountedRef.current = attentionMounted;
+    if (!wasMounted || attentionMounted || !attentionOwner) return;
+    attentionController?.cancel();
+  }, [attentionMounted, attentionOwner, attentionController]);
+
   const showColdStartSkeleton = useColdStartSkeleton(ref, model);
   const seenDividerTurnId = useSeenDivider(ref, model);
 
@@ -384,14 +414,16 @@ function StandardConversationBody({
           )
         }
         liveOverlay={
-          <NewContentPill
-            count={flow.pillCount}
-            visible={flow.pillVisible}
-            needsYou={flow.pillNeedsYou}
-            error={flow.pillError}
-            pillArrowDirection={flow.pillArrowDirection}
-            onClick={flow.jumpToBottom}
-          />
+          pillWouldRender ? (
+            <NewContentPill
+              count={flow.pillCount}
+              visible={flow.pillVisible}
+              needsYou={flow.pillNeedsYou}
+              error={flow.pillError}
+              pillArrowDirection={flow.pillArrowDirection}
+              onClick={flow.jumpToBottom}
+            />
+          ) : undefined
         }
         attentionOverlay={attentionOverlay}
         onOverlayHeightChange={handleOverlayHeightChange}
