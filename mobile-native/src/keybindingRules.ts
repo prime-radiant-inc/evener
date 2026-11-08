@@ -11,6 +11,12 @@ import { parseKeybinding } from "tinykeys";
 
 const actionIds = new Set(ACTION_DISPLAY_ROWS.map((row) => row.actionId));
 
+/** A shortcut the editor refuses while composing the write. Its message is
+ * user-facing and safe to show; a request failure is not, so the screen tells
+ * the two apart by type and renders the model's sanitized failure copy for
+ * everything else. */
+export class KeybindingInputError extends Error {}
+
 function resolveModifierAlias(chord: string, platform: KeybindingsPlatform) {
 	const modifier = platform === "apple" ? "Meta" : "Control";
 	// Use tinykeys' press and modifier boundaries; the final token is a key
@@ -36,7 +42,7 @@ export function replaceKeybindingRule(
 	actionId: string,
 	chord?: string | null,
 ): KeybindingsRule[] {
-	if (!actionIds.has(actionId)) throw new Error("This shortcut belongs to a newer version of Evener.");
+	if (!actionIds.has(actionId)) throw new KeybindingInputError("This shortcut belongs to a newer version of Evener.");
 	return [
 		...rules.filter((rule) => rule.action !== actionId),
 		...(chord === undefined ? [] : [{ action: actionId, chord }]),
@@ -99,6 +105,6 @@ export function checkedKeybindingChange(
 					old.conflictWith === warning.conflictWith,
 			),
 	);
-	if (added) throw new Error(added.message);
+	if (added) throw new KeybindingInputError(added.message);
 	return next;
 }
