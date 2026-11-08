@@ -268,6 +268,13 @@ function processArgvMatches(actual, def, report) {
     const address = typeof bound === 'string' && bound.match(/^(?:\[([^\]]+)\]|([^:]+)):(\d+)$/);
     if (!address || bound.includes('%') || !isIP(address[1] || address[2]) || Number(address[3]) < 1 || Number(address[3]) > 65535) return false;
     const ephemeral = value => typeof value === 'string' && /^(?:\[[^\]]+\]|[^:]*):0?$/.test(value);
+    // An ephemeral listener still names the host it listens on. Compare that
+    // host rather than accepting any ephemeral port: a report for a different
+    // installation must not select this service for an in-place rewrite.
+    const ephemeralHost = value => {
+        const address = ephemeral(value) && value.match(/^(?:\[([^\]]*)\]|([^:]*)):(?:\d*)$/);
+        return address ? (address[1] ?? address[2]).toLowerCase() : null;
+    };
     const expected = [...def.argv];
     let index = -1, inline = false;
     for (let i = 2; i < def.argv.length; i++) {
@@ -283,9 +290,12 @@ function processArgvMatches(actual, def, report) {
         const published = r.listen_source === 'config' && ephemeral(r.requested_listen_addr);
         const env = def.env.EVENER_HUB_LISTEN_ADDR;
         // The endpoint report carries the normalized spelling of the environment
-        // listener, so compare its ephemeral shape rather than the raw value.
-        const fromEnv = ephemeral(env) && ((report.listen_source === 'env' && ephemeral(report.configured_listen_addr)) ||
-            (r.listen_source === 'env' && ephemeral(r.requested_listen_addr)));
+        // listener, so compare the ephemeral hosts rather than the raw values.
+        const envHost = ephemeralHost(env);
+        const configuredEnvHost = report.listen_source === 'env' ? ephemeralHost(report.configured_listen_addr) : null;
+        const publishedEnvHost = r.listen_source === 'env' ? ephemeralHost(r.requested_listen_addr) : null;
+        const fromEnv = envHost !== null && ((configuredEnvHost !== null && configuredEnvHost === envHost) ||
+            (publishedEnvHost !== null && publishedEnvHost === envHost));
         if (!configured && !published && !fromEnv) return false;
         expected.push('-addr', bound);
     } else if (inline) expected[index] = def.argv[index].split('=')[0]+'='+bound;

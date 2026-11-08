@@ -261,6 +261,7 @@ cases=[
  ('inplace_config',{'inplace':True,'toml_listener':True},[],True,(1,1)),
  ('inplace_environment',{'inplace':True,'env_listener':True,'listener':'0.0.0.0:0'},[],True,(1,1)),
  ('inplace_environment_normalized',{'inplace':True,'env_listener_normalized':True,'listener':'localhost:0'},[],True,(1,1)),
+ ('inplace_environment_wrong_host',{'inplace':True,'env_listener':True,'listener':'127.0.0.1:0'},[],False,(0,0)),
  ('inplace_fixed_change',{'inplace':True,'listener':'127.0.0.1:9180'},[],False,(0,0)),
  ('inplace_no_ephemeral_evidence',{'inplace':True,'toml_listener':True,'listener':'127.0.0.1:9180'},[],False,(0,0)),
  ('inplace_non_listener',{'inplace':True,'inplace_extra':True},[],False,(0,0)),
