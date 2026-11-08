@@ -347,7 +347,15 @@ export function VirtualList({
         // even before the DOM sizer grows enough to accept those writes.
         const offset = instance.scrollOffset ?? instance.scrollElement?.scrollTop ?? 0;
         const backward = instance.scrollDirection === "backward" || backwardMovementRef.current;
-        return item.start < offset && (!instance.itemSizeCache.has(item.key) || !backward || item.end <= offset);
+        // A delayed growth of the tall row the reader already entered must not
+        // push them to a later row after backward movement.
+        const growsAcrossBackwardReader =
+          _delta > 0 && backward && instance.itemSizeCache.has(item.key) && item.start < offset && item.end > offset;
+        return (
+          !growsAcrossBackwardReader &&
+          item.start < offset &&
+          (!instance.itemSizeCache.has(item.key) || !backward || item.end <= offset)
+        );
       }
     : undefined;
 
