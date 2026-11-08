@@ -45,6 +45,7 @@ const (
 	ErrorMutationOutcomeUnknown      ErrorInfo = "mutationOutcomeUnknown"
 	ErrorTranscriptItemCursorStale   ErrorInfo = "transcriptItemCursorStale"
 	ErrorTranscriptItemChanged      ErrorInfo = "item-changed"
+	ErrorFetchUnavailableRemote      ErrorInfo = "fetch-unavailable-remote"
 	ErrorTranscriptTurnNotFound      ErrorInfo = "transcriptTurnNotFound"
 	ErrorSessionActivityCursorStale  ErrorInfo = "sessionActivityCursorStale"
 	ErrorJobOutputPruned             ErrorInfo = "jobOutputPruned"
@@ -711,6 +712,14 @@ func TranscriptItemChanged(newVersion uint64) WireError {
 			ErrorData:  ErrorData{EvenerErrorInfo: ErrorTranscriptItemChanged},
 			NewVersion: newVersion,
 		},
+	}
+}
+
+func FetchUnavailableRemote() WireError {
+	return WireError{
+		Code:    CodeUnavailable,
+		Message: "remote transcript item is unavailable; re-read the window",
+		Data:    ErrorData{EvenerErrorInfo: ErrorFetchUnavailableRemote},
 	}
 }
 

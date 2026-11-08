@@ -866,6 +866,34 @@ func (s *RemoteHubSource) ReadItemCandidates(ctx context.Context, params appwire
 	return s.ItemCandidatesFromRead(ctx, params, out)
 }
 
+// FetchTranscriptItem re-reads a remote item through the ordinary translated
+// read path. The controller's fetch cursor never crosses the remote boundary:
+// its source identity and addressed position are resolved here, after actor,
+// authorship, ref, and image routes have their controller-visible spellings.
+func (s *RemoteHubSource) FetchTranscriptItem(
+	ctx context.Context,
+	ref string,
+	identity appitempaging.CursorIdentity,
+	cursor appitempaging.FetchCursor,
+) (appwire.SessionFetchResponse, error) {
+	sourceIncarnation, ok := appwire.ThreadWindowSourceIncarnation(identity.Incarnation)
+	if !ok {
+		return appwire.SessionFetchResponse{}, appwire.TranscriptItemCursorStale()
+	}
+	result, err := s.ReadItemCandidates(ctx, appwire.ThreadReadParams{Ref: ref})
+	if err != nil {
+		return appwire.SessionFetchResponse{}, err
+	}
+	candidate, ok := remoteCandidateAt(result.Candidates.Candidates, cursor.Position)
+	if !ok {
+		return appwire.SessionFetchResponse{}, appwire.FetchUnavailableRemote()
+	}
+	if result.Identity.ThreadRef != identity.ThreadRef || result.Identity.Incarnation != sourceIncarnation {
+		return appwire.SessionFetchResponse{}, appwire.TranscriptItemCursorStale()
+	}
+	return appitempaging.BuildFetchResponse(candidate.Item, identity, cursor)
+}
+
 // ItemCandidatesFromRead converts an already-materialized remote item read
 // into the controller's candidate contract without issuing another read, so
 // the cursor minted from thread/read stays continuable through

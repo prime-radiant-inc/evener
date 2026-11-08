@@ -61,6 +61,11 @@ func TestSessionOperationsFetchesServingDaemonItem(t *testing.T) {
 		ID: "tool-large", Type: "commandExecution", TurnID: "turn_1", TranscriptKey: "tool-large", ToolName: "shell", Output: strings.Repeat("output", 50_000),
 		Position: &position, Version: 4,
 	}
+	inFlightPosition := appwire.ThreadItemPosition{Entry: 8}
+	inFlight := appwire.ThreadItem{
+		ID: "tool-running", Type: "commandExecution", TurnID: "turn_1", TranscriptKey: "tool-running", ToolName: "shell",
+		Output: strings.Repeat("running", 20_000), Position: &inFlightPosition,
+	}
 	const nativeIncarnation = "daemon-index-incarnation"
 
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
@@ -68,7 +73,7 @@ func TestSessionOperationsFetchesServingDaemonItem(t *testing.T) {
 		thread := appwire.Thread{ID: "windowed", SessionID: "windowed", Evener: appwire.EvenerThread{Ref: params.Ref}}
 		snapshot := &appwire.SnapshotIdentity{Incarnation: nativeIncarnation, Length: 10}
 		if params.FetchCursor == "" {
-			thread.Turns = []appwire.Turn{{ID: "turn_1", Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFull, Items: []appwire.ThreadItem{item}}}
+			thread.Turns = []appwire.Turn{{ID: "turn_1", Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFull, Items: []appwire.ThreadItem{item, inFlight}}}
 			return appwire.ThreadReadResponse{Thread: thread, Snapshot: snapshot}, nil
 		}
 		cursor, identity, err := appitempaging.DecodeFetchCursorForRef(params.FetchCursor, params.Ref)
@@ -106,8 +111,11 @@ func TestSessionOperationsFetchesServingDaemonItem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if window.Turns == nil || len(window.Turns.Data) != 1 || len(window.Turns.Data[0].Items) != 1 || window.Turns.Data[0].Items[0].FetchCursor == "" {
-		t.Fatalf("bounded window = %+v, want one fetchable tool item", window.Turns)
+	if window.Turns == nil || len(window.Turns.Data) != 1 || len(window.Turns.Data[0].Items) != 2 || window.Turns.Data[0].Items[0].FetchCursor == "" {
+		t.Fatalf("bounded window = %+v, want fetchable settled and labeled in-flight tool items", window.Turns)
+	}
+	if got := window.Turns.Data[0].Items[1]; !got.InFlight || got.FetchCursor != "" {
+		t.Fatalf("in-flight bounded item = %+v, want label without fetch cursor", got)
 	}
 
 	want, err := json.Marshal(item)
@@ -141,6 +149,138 @@ func TestSessionOperationsFetchesServingDaemonItem(t *testing.T) {
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("fetched canonical bytes differ: got %d bytes, want %d", len(got), len(want))
+	}
+}
+
+func TestSessionOperationsFetchesTranslatedRemoteItem(t *testing.T) {
+	position := appwire.ThreadItemPosition{Entry: 11, Item: 2}
+	item := appwire.ThreadItem{
+		ID: "remote-tool", Type: "commandExecution", TurnID: "turn-remote", TranscriptKey: "remote-tool", ToolName: "shell",
+		ArgumentsJSON: `{"emoji":"🌒"}`, Output: strings.Repeat("remote-output", 30_000), Raw: json.RawMessage(`{"nested":"remote"}`),
+		Actor: &appwire.SessionActor{Kind: "manager", ManagerRef: "local:manager-on-remote"}, Position: &position, Version: 9,
+	}
+	remote, calls := newScriptedRemoteHub(t, func(method string, params json.RawMessage) any {
+		switch method {
+		case appwire.MethodInitialize:
+			return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
+		case appwire.MethodThreadRead:
+			var read appwire.ThreadReadParams
+			if err := json.Unmarshal(params, &read); err != nil {
+				t.Fatal(err)
+			}
+			if read.FetchCursor != "" {
+				t.Fatalf("controller forwarded fetch cursor to remote hub: %+v", read)
+			}
+			return appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID: "remote", Source: "local", Evener: appwire.EvenerThread{Ref: "local:remote"},
+				Turns: []appwire.Turn{{ID: "turn-remote", Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFull, Items: []appwire.ThreadItem{item}}},
+			}}
+		default:
+			return appwire.EmptyResponse{}
+		}
+	})
+	source := appsource.NewRemoteHubSource("host-b", nil, func(context.Context, string) (*appwire.Client, error) { return remote, nil })
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	operations := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
+	caller := appwire.ManagerView{Ref: "local:manager", Manager: true}
+
+	window, err := operations.Invoke(t.Context(), caller, appwire.SessionOperationRequest{Turns: &appwire.ThreadTurnsListParams{
+		Ref: "host-b:remote", ThreadWindowParams: appwire.ThreadWindowParams{
+			TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn-remote"}, ItemTypes: []string{"commandExecution"}, PreviewBytes: 64,
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if window.Turns == nil || len(window.Turns.Data) != 1 || len(window.Turns.Data[0].Items) != 1 || window.Turns.Data[0].Items[0].FetchCursor == "" {
+		t.Fatalf("bounded remote window = %+v, want one fetchable tool item", window.Turns)
+	}
+
+	wantItem := item
+	wantActor := *item.Actor
+	wantActor.ManagerRef = "host-b:manager-on-remote"
+	wantItem.Actor = &wantActor
+	want, err := json.Marshal(wantItem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor := window.Turns.Data[0].Items[0].FetchCursor
+	var got []byte
+	for cursor != "" {
+		response, err := operations.Invoke(t.Context(), caller, appwire.SessionOperationRequest{Fetch: &appwire.SessionFetchRequest{Ref: "host-b:remote", FetchCursor: cursor}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		fragment, err := base64.StdEncoding.DecodeString(response.Fetch.Data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, fragment...)
+		cursor = response.Fetch.FetchCursor
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("fetched translated canonical bytes differ: got %d bytes, want %d", len(got), len(want))
+	}
+	reads := 0
+	for _, call := range calls() {
+		if call.method == appwire.MethodThreadRead {
+			reads++
+		}
+	}
+	if reads < 2 {
+		t.Fatalf("remote thread reads = %d, want initial window plus fetch reread", reads)
+	}
+}
+
+func TestSessionOperationsReportsRemoteItemLostBeforeFetch(t *testing.T) {
+	position := appwire.ThreadItemPosition{Entry: 3}
+	item := appwire.ThreadItem{
+		ID: "remote-tool", Type: "commandExecution", TurnID: "turn-remote", TranscriptKey: "remote-tool", ToolName: "shell",
+		Output: strings.Repeat("remote-output", 100), Position: &position, Version: 2,
+	}
+	var reads atomic.Int32
+	remote, _ := newScriptedRemoteHub(t, func(method string, _ json.RawMessage) any {
+		switch method {
+		case appwire.MethodInitialize:
+			return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
+		case appwire.MethodThreadRead:
+			thread := appwire.Thread{ID: "remote", Source: "local", Evener: appwire.EvenerThread{Ref: "local:remote"}}
+			if reads.Add(1) == 1 {
+				thread.Turns = []appwire.Turn{{ID: "turn-remote", Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFull, Items: []appwire.ThreadItem{item}}}
+			}
+			return appwire.ThreadReadResponse{Thread: thread}
+		default:
+			return appwire.EmptyResponse{}
+		}
+	})
+	source := appsource.NewRemoteHubSource("host-b", nil, func(context.Context, string) (*appwire.Client, error) { return remote, nil })
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	operations := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
+	caller := appwire.ManagerView{Ref: "local:manager", Manager: true}
+
+	window, err := operations.Invoke(t.Context(), caller, appwire.SessionOperationRequest{Turns: &appwire.ThreadTurnsListParams{
+		Ref: "host-b:remote", ThreadWindowParams: appwire.ThreadWindowParams{
+			TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn-remote"}, ItemTypes: []string{"commandExecution"}, PreviewBytes: 8,
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor := window.Turns.Data[0].Items[0].FetchCursor
+	_, err = operations.Invoke(t.Context(), caller, appwire.SessionOperationRequest{Fetch: &appwire.SessionFetchRequest{Ref: "host-b:remote", FetchCursor: cursor}})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) {
+		t.Fatalf("lost remote item error = %T %v", err, err)
+	}
+	data, ok := appwire.DecodedErrorData(wireErr.Data)
+	if !ok || data.EvenerErrorInfo != appwire.ErrorFetchUnavailableRemote {
+		t.Fatalf("lost remote item error data = %#v", wireErr.Data)
 	}
 }
 

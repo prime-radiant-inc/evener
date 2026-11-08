@@ -432,6 +432,16 @@ func (o *sessionOperations) fetch(ctx context.Context, request appwire.SessionFe
 			return appwire.SessionFetchResponse{}, appwire.TranscriptItemCursorStale()
 		}
 		return *read.Fetch, nil
+	case appitempaging.FetchCursorOriginRemoteSource:
+		source, err := sourceForThreadWithDeletionFence(ctx, o.cfg, o.sources, request.Ref, "")
+		if err != nil {
+			return appwire.SessionFetchResponse{}, err
+		}
+		remote, ok := source.(*appsource.RemoteHubSource)
+		if !ok {
+			return appwire.SessionFetchResponse{}, appwire.TranscriptItemCursorStale()
+		}
+		return remote.FetchTranscriptItem(ctx, request.Ref, identity, cursor)
 	case appitempaging.FetchCursorOriginSavedIndex:
 		return fetchSavedTranscriptItem(ctx, o.cfg, request.Ref, identity, cursor)
 	default:
