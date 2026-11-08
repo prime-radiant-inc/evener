@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
+import type { LaunchOptionSchemaResponse } from "@evener/appwire-client";
 import {
 	accessOf,
 	knownAccess,
 	effortLabel,
 	modelFromId,
 	moveToHost,
+	memoryRowShows,
 	networkApplies,
 	ownedOverrides,
 	projectName,
+	schemaOffersMemory,
 	setupOf,
 	withOwnedOverrides,
 } from "./launchSetup";
@@ -42,6 +45,35 @@ describe("the overrides the sheet owns", () => {
 			sandbox: "read-only",
 			env: { A: "1" },
 		});
+	});
+});
+
+describe("the Memory row's place on More options", () => {
+	const schemaOf = (wireFields: readonly string[]): LaunchOptionSchemaResponse => ({
+		options: wireFields.map((wireField) => ({
+			field: wireField,
+			wireField,
+			label: wireField,
+			group: "Agent",
+			kind: "boolean",
+			perLaunch: true,
+		})),
+	});
+
+	it("shows when the hub's schema names the field, whatever is chosen", () => {
+		expect(schemaOffersMemory(schemaOf(["contextStrategy", "memoryEnabled"]))).toBe(true);
+		expect(memoryRowShows(true, undefined)).toBe(true);
+		expect(memoryRowShows(true, false)).toBe(true);
+	});
+
+	it("hides against a hub whose schema lacks it, until a choice is set", () => {
+		expect(schemaOffersMemory(schemaOf(["contextStrategy"]))).toBe(false);
+		expect(schemaOffersMemory(null)).toBe(false);
+		expect(memoryRowShows(false, undefined)).toBe(false);
+		// A choice kept from a hub that offered it stays visible against one
+		// that doesn't, so the choice Start is held over can be seen and cleared.
+		expect(memoryRowShows(false, false)).toBe(true);
+		expect(memoryRowShows(false, true)).toBe(true);
 	});
 });
 

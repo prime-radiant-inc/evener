@@ -8,6 +8,7 @@ import { View } from "react-native";
 import { useStore } from "zustand";
 import { GroupedPage, GroupFooter, GroupLabel, Segmented, SwitchRow } from "../sheet/Grouped";
 import { SheetStatus } from "../sheet/SheetStatus";
+import { memoryRowShows, schemaOffersMemory } from "./launchSetup";
 import { useNewSession } from "./newSessionContext";
 
 type Field = "contextStrategy" | "maxSubagentDepth" | "maxRounds" | "memoryEnabled";
@@ -63,10 +64,13 @@ export function MoreOptions() {
 		setLaunchOverrides(next);
 	};
 	// Memory rides a launch-config field this hub build may not know, so it
-	// shows only when the hub's schema names it: against an older hub the row
-	// would be a toggle that silently did nothing.
-	const offersMemory = (launchSchema?.options ?? []).some((option) => option.wireField === "memoryEnabled");
-	const settings = offersMemory ? SETTINGS : SETTINGS.filter((setting) => setting.field !== "memoryEnabled");
+	// shows when the hub's schema names it: against an older hub the row would
+	// be a toggle that silently did nothing. A kept choice stays visible even
+	// so, so the choice Start is held over can be seen and cleared.
+	const offersMemory = schemaOffersMemory(launchSchema);
+	const settings = memoryRowShows(offersMemory, launchOverrides.memoryEnabled)
+		? SETTINGS
+		: SETTINGS.filter((setting) => setting.field !== "memoryEnabled");
 	return (
 		<GroupedPage>
 			<SheetStatus />

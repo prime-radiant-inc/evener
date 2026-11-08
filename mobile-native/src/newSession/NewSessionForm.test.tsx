@@ -1,3 +1,4 @@
+import type { LaunchOptionSchemaResponse } from "@evener/appwire-client";
 import { type HostRow, type ModelDescriptor, type PluginPreviewResponse, WireError } from "@evener/appwire-client";
 import type { NativeStackNavigationOptions, NativeStackScreenProps } from "@react-navigation/native-stack";
 import type { ReactElement } from "react";
@@ -70,6 +71,20 @@ const glm: ModelDescriptor = {
 	reasoningEffortLevels: ["low", "medium", "high", "xhigh", "max"],
 };
 
+/** The hub's launch schema for the chosen host, as evener/launch/schema answers. */
+const launchSchemaOf = (wireFields: readonly string[]): LaunchOptionSchemaResponse => ({
+	options: wireFields.map((wireField) => ({
+		field: wireField,
+		wireField,
+		label: wireField,
+		group: "Agent",
+		kind: "boolean",
+		perLaunch: true,
+	})),
+});
+const SCHEMA_WITH_MEMORY = launchSchemaOf(["contextStrategy", "memoryEnabled"]);
+const SCHEMA_WITHOUT_MEMORY = launchSchemaOf(["contextStrategy"]);
+
 interface Options {
 	hosts?: HostRow[];
 	draft?: Partial<CreationDraft>;
@@ -95,6 +110,8 @@ interface Options {
 	defaults?: Record<string, unknown>;
 	/** evener/launch/resolve fails, so the hub's defaults stay unknown. */
 	refuseDefaults?: boolean;
+	/** The hub's launch schema for the chosen host; null while unanswered. */
+	schema?: LaunchOptionSchemaResponse | null;
 }
 
 /** The form inside a context as NewSessionSheet builds it: a real creation
@@ -169,7 +186,13 @@ async function mount(options: Options = {}) {
 	const hosts = new HostsController(client as never, undefined, options.hostPollMs);
 	const live = new LiveSessionsReader(client as never);
 	const memory = new LaunchMemory(memoryStorage(), "hub-1");
-	let context = sheetContext(store, { client: client as never, hosts, live, memory });
+	let context = sheetContext(store, {
+		client: client as never,
+		hosts,
+		live,
+		memory,
+		launchSchema: options.schema ?? null,
+	});
 	// The app's real alert center, so a start the form can no longer open
 	// reaches the banner.
 	const alerts = new AlertCenter({
@@ -357,6 +380,56 @@ it("never starts on an offline host, and says why (Review Focus 3)", async () =>
 	expect(start.props.disabled).toBe(true);
 	await act(async () => start.props.onPress());
 	expect(form.calls.some((call) => call.method === "thread/start")).toBe(false);
+	form.dispose();
+});
+
+it("holds Start over a Memory choice this hub can't honor, and clearing it frees Start", async () => {
+	const form = await mount({
+		schema: SCHEMA_WITHOUT_MEMORY,
+		draft: { cwd: "/home/jesse/git/evener", prompt: "go", launchOverrides: { memoryEnabled: false } },
+	});
+	expect(startBlocks(form.tree)).toEqual(["moreOptions"]);
+	expect(withTestID(form.tree, "start-block:moreOptions").map(textOf).join("")).toContain("magic-kingdom");
+	const start = form.header("headerRight");
+	expect(start.props.disabled).toBe(true);
+	await act(async () => start.props.onPress());
+	expect(form.calls.some((call) => call.method === "thread/start")).toBe(false);
+	// The block's way through: clear the choice in More options.
+	await act(async () => form.store.getState().setLaunchOverrides({}));
+	expect(startBlocks(form.tree)).toEqual([]);
+	const freed = form.header("headerRight");
+	expect(freed.props.disabled).toBe(false);
+	await act(async () => freed.props.onPress());
+	expect(form.calls.some((call) => call.method === "thread/start")).toBe(true);
+	form.dispose();
+});
+
+it("starts with Memory off once the hub offers the field, and names the choice on the form", async () => {
+	const form = await mount({
+		schema: SCHEMA_WITH_MEMORY,
+		draft: { cwd: "/home/jesse/git/evener", prompt: "go", launchOverrides: { memoryEnabled: false } },
+	});
+	expect(form.row("More options")?.props.accessibilityLabel).toBe(
+		"More options, Context strategy, subagent depth, turn limit, memory, Custom",
+	);
+	expect(startBlocks(form.tree)).toEqual([]);
+	const start = form.header("headerRight");
+	expect(start.props.disabled).toBe(false);
+	await act(async () => start.props.onPress());
+	expect(form.calls.some((call) => call.method === "thread/start")).toBe(true);
+	form.dispose();
+});
+
+it("waits for the hub's schema without holding Start, and still names a kept Memory choice", async () => {
+	const form = await mount({
+		schema: null,
+		draft: { cwd: "/home/jesse/git/evener", prompt: "go", launchOverrides: { memoryEnabled: false } },
+	});
+	expect(form.row("More options")?.props.accessibilityLabel).toBe(
+		"More options, Context strategy, subagent depth, turn limit, memory, Custom",
+	);
+	expect(startBlocks(form.tree)).toEqual([]);
+	expect(form.header("headerRight").props.disabled).toBe(false);
 	form.dispose();
 });
 

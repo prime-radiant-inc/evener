@@ -183,15 +183,24 @@ it("says the hub's memory default is unknown until the hub says it", async () =>
 	expect(page.footer("memoryEnabled")).toEqual({ hubDefault: "unknown", text: expect.stringMatching(/\S/) });
 });
 
-it("hides Memory against a hub whose schema lacks it, and leaves a remembered value alone", async () => {
-	const page = await mount({ memoryEnabled: true }, { memoryEnabled: false }, SCHEMA_WITHOUT_MEMORY);
-	const groups = page.tree.root.findAll(
-		(node) => node.props.accessibilityRole === "radiogroup" && node.props.accessibilityLabel === "Memory",
-	);
-	expect(groups).toHaveLength(0);
-	// A start remembered on a newer hub keeps its value; the older hub drops it
-	// at decode, so the row never lies about a toggle that does nothing.
-	expect(page.store.getState().launchOverrides.memoryEnabled).toBe(false);
+it("hides Memory against a hub whose schema lacks it, until a choice is set", async () => {
+	const page = await mount({}, {}, SCHEMA_WITHOUT_MEMORY);
+	const memoryRows = () =>
+		page.tree.root.findAll(
+			(node) => node.props.accessibilityRole === "radiogroup" && node.props.accessibilityLabel === "Memory",
+		);
+	expect(memoryRows()).toHaveLength(0);
+	// A choice kept from a hub that offered it stays visible against one that
+	// doesn't, so the choice Start is held over can be seen and cleared.
+	await act(async () => page.store.getState().setLaunchOverrides({ memoryEnabled: false }));
+	expect(memoryRows()).toHaveLength(1);
+	expect(page.segments("Memory")).toEqual([
+		["Default", false],
+		["On", false],
+		["Off", true],
+	]);
+	await act(async () => page.choose("Memory", "Default"));
+	expect(page.store.getState().launchOverrides.memoryEnabled).toBeUndefined();
 });
 
 it("hides Memory while the hub's schema has not answered", async () => {
@@ -200,4 +209,13 @@ it("hides Memory while the hub's schema has not answered", async () => {
 		(node) => node.props.accessibilityRole === "radiogroup" && node.props.accessibilityLabel === "Memory",
 	);
 	expect(groups).toHaveLength(0);
+});
+
+it("shows a kept Memory choice even before the hub's schema answers", async () => {
+	const page = await mount({}, { memoryEnabled: false }, null);
+	expect(page.segments("Memory")).toEqual([
+		["Default", false],
+		["On", false],
+		["Off", true],
+	]);
 });

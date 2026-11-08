@@ -1,7 +1,7 @@
 // A new session's setup (spec 11): where it runs and how. The sheet's rows,
 // the latest start it opens on, and a host change all speak in this shape,
 // and every rule applied to it is a pure function here.
-import { basename, type LaunchConfigLayer } from "@evener/appwire-client";
+import { basename, type LaunchConfigLayer, type LaunchOptionSchemaResponse } from "@evener/appwire-client";
 import { effortName } from "../session/sessionFacts";
 
 /** The launch overrides the sheet owns: Plugins, Access and More options.
@@ -52,6 +52,20 @@ export function withOwnedOverrides(layer: LaunchConfigLayer, owned: OwnedOverrid
 	const next: LaunchConfigLayer = { ...layer };
 	for (const field of OWNED_FIELDS) delete next[field];
 	return { ...next, ...ownedOverrides(owned) };
+}
+
+/** Whether the hub's launch schema names the memory option for the chosen
+ * host: what this hub build can launch a session with. */
+export function schemaOffersMemory(schema: LaunchOptionSchemaResponse | null): boolean {
+	return (schema?.options ?? []).some((option) => option.wireField === "memoryEnabled");
+}
+
+/** Whether the Memory row belongs on More options: it shows when the hub
+ * offers the field, and also while a choice is set — a choice kept from a hub
+ * that offered it must stay visible (and clearable) against one that doesn't,
+ * or the Start gate's block would name a row that isn't there. */
+export function memoryRowShows(offersMemory: boolean, choice: boolean | undefined): boolean {
+	return offersMemory || choice !== undefined;
 }
 
 export interface HostMove {
