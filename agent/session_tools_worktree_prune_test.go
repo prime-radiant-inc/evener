@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -211,6 +212,16 @@ func (r *wtRepo) addOrphanedBranchLaneFixture(t *testing.T, name, branch string)
 // list
 // ============================================================
 
+// failAllWorktreeGit makes every lifecycle git call fail at the session's git
+// boundary, the way a host with no usable git binary does, so the operation
+// under test produces its failure in-process instead of forking a git command
+// and waiting it out.
+func failAllWorktreeGit(s *Session) {
+	scriptedGitRunner(s, func([]string) (string, error, bool) {
+		return "", errors.New(`exec: "git": executable file not found in $PATH`), true
+	})
+}
+
 // TestWorktreeList_NotInGitRepo covers worktreeList's own "not in a git
 // repository" guard.
 func TestWorktreeList_NotInGitRepo(t *testing.T) {
@@ -228,8 +239,7 @@ func TestWorktreeList_NotInGitRepo(t *testing.T) {
 func TestWorktreeList_ListWorktreesErrorsWhenGitUnavailable(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
-	restore := hideGitInRepo(t, r.mainRoot)
-	defer restore()
+	failAllWorktreeGit(r.s)
 
 	_, err := r.listOp(t)
 	if err == nil || !strings.Contains(err.Error(), "listing worktrees") {
@@ -251,19 +261,17 @@ func TestWorktreePrune_NotInGitRepo(t *testing.T) {
 
 // TestWorktreePrune_Sweep1ErrorPropagatesWhenGitUnavailable covers
 // worktreePrune's own error-propagation from collectRegisteredLanes (the FIRST
-// sweep it calls): with git hidden, sweep 1's own `worktree list
+// sweep it calls): with every git call failing, sweep 1's own `worktree list
 // --porcelain` call fails and worktreePrune must surface that error rather
 // than continuing to sweep 2/3.
 func TestWorktreePrune_Sweep1ErrorPropagatesWhenGitUnavailable(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
-	r.addManagedWorktreeFixture(t, "lane")
-	restore := hideGitInRepo(t, r.mainRoot)
-	defer restore()
+	failAllWorktreeGit(r.s)
 
 	_, err := r.pruneOp(t)
-	if err == nil {
-		t.Fatal("expected prune to fail when git is unavailable for sweep 1")
+	if err == nil || !strings.Contains(err.Error(), "listing worktrees") {
+		t.Fatalf("prune with git unavailable for sweep 1: err = %v, want the listing-worktrees error", err)
 	}
 }
 
