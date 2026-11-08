@@ -1,6 +1,7 @@
 package chatcompletions
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -96,13 +97,15 @@ func TestToChatMessages_TextPartsJoinWithNewline(t *testing.T) {
 }
 
 // TestToChatMessages_ImagePartShapes pins the multimodal image walk: a nil
-// image part is skipped, inline bytes with no claimed media type default to
-// png, and an image part with neither URL nor data is dropped.
+// image part is skipped, inline bytes with no claimed media type derive their
+// png type from the bytes, and an image part with neither URL nor data is
+// dropped.
 func TestToChatMessages_ImagePartShapes(t *testing.T) {
+	png := testPNG(t)
 	msg := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
 		{Kind: llm.ContentText, Text: "look"},
 		{Kind: llm.ContentImage, Image: nil},
-		{Kind: llm.ContentImage, Image: &llm.ImageData{Data: []byte{1, 2, 3}, MediaType: ""}},
+		{Kind: llm.ContentImage, Image: &llm.ImageData{Data: png}},
 		{Kind: llm.ContentImage, Image: &llm.ImageData{}},
 	}}}
 	out, err := toChatMessages(msg, registry.Caps{}, false)
@@ -117,8 +120,9 @@ func TestToChatMessages_ImagePartShapes(t *testing.T) {
 		t.Fatalf("parts[0] = %v, want the text part first", parts[0])
 	}
 	imageURL, _ := parts[1]["image_url"].(map[string]any)
-	if parts[1]["type"] != "image_url" || imageURL["url"] != "data:image/png;base64,AQID" {
-		t.Fatalf("image part = %v, want a png data URI from the claimed media type default", parts[1])
+	wantURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)
+	if parts[1]["type"] != "image_url" || imageURL["url"] != wantURL {
+		t.Fatalf("image part = %v, want a png data URI derived from the bytes", parts[1])
 	}
 }
 

@@ -1,6 +1,7 @@
 package google
 
 import (
+	"encoding/base64"
 	"errors"
 	"reflect"
 	"testing"
@@ -93,16 +94,18 @@ func TestToGeminiContents_ToolDocumentsStayOffTheWire(t *testing.T) {
 
 func TestToGeminiContents_ToolImagesKeepTheirDelivery(t *testing.T) {
 	t.Parallel()
+	png := testPNG(t)
+	encoded := base64.StdEncoding.EncodeToString(png)
 	for _, mediaType := range []string{"", " \t", "image/png"} {
 		_, contents, err := toGeminiContents("gemini", []llm.Message{{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
-			ToolCallID: "call-4463", Name: "read_file", Content: "result-4463", ImageData: []byte{1}, ImageMediaType: mediaType,
+			ToolCallID: "call-4463", Name: "read_file", Content: "result-4463", ImageData: png, ImageMediaType: mediaType,
 		}}}}}, true)
 		if err != nil {
 			t.Fatal(err)
 		}
 		want := []map[string]any{{"role": "user", "parts": []map[string]any{{"functionResponse": map[string]any{
 			"name": "read_file", "response": map[string]any{"result": "result-4463"},
-			"parts": []map[string]any{{"inlineData": map[string]any{"mimeType": "image/png", "data": "AQ=="}}},
+			"parts": []map[string]any{{"inlineData": map[string]any{"mimeType": "image/png", "data": encoded}}},
 		}}}}}
 		if !reflect.DeepEqual(contents, want) {
 			t.Errorf("media=%q: contents=%#v, want image delivery", mediaType, contents)
