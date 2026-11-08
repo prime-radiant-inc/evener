@@ -75,6 +75,53 @@ func TestLiveThreadReadHonorsTurnWindows(t *testing.T) {
 	}
 }
 
+func TestLiveThreadReadExactWindowPreservesEmptyCheckpointTurn(t *testing.T) {
+	st := newServedTranscript(t, NewServer(ServerConfig{}), "th_empty_checkpoint",
+		inExecution("turn_empty", true, schema.Turn{Kind: schema.TurnCheckpoint}),
+	)
+
+	response, err := st.srv.appThreadReadSnapshotChecked(appwire.ThreadReadParams{
+		ThreadID:     st.threadID,
+		IncludeTurns: true,
+		TurnWindow:   &appwire.ThreadTurnWindow{Turn: "turn_empty"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Thread.Turns) != 1 {
+		t.Fatalf("turns = %+v, want one selected turn shell", response.Thread.Turns)
+	}
+	if turn := response.Thread.Turns[0]; turn.ID != "turn_empty" || len(turn.Items) != 0 {
+		t.Fatalf("selected turn = %+v, want empty turn_empty shell", turn)
+	}
+}
+
+func TestLiveThreadReadSinceWindowPreservesEmptyCheckpointFrontier(t *testing.T) {
+	st := newServedTranscript(t, NewServer(ServerConfig{}), "th_empty_checkpoint_since",
+		inExecution("turn_visible", true, schema.NewTurn(schema.TurnUserInput, llm.User("visible"))),
+		inExecution("turn_empty", true, schema.Turn{Kind: schema.TurnCheckpoint}),
+		inExecution("turn_after", true, schema.NewTurn(schema.TurnUserInput, llm.User("after"))),
+	)
+
+	response, err := st.srv.appThreadReadSnapshotChecked(appwire.ThreadReadParams{
+		ThreadID:     st.threadID,
+		IncludeTurns: true,
+		TurnWindow:   &appwire.ThreadTurnWindow{Since: "turn_visible", Limit: 2},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Thread.Turns) != 2 {
+		t.Fatalf("turns = %+v, want empty checkpoint and following turn", response.Thread.Turns)
+	}
+	if empty := response.Thread.Turns[0]; empty.ID != "turn_empty" || len(empty.Items) != 0 {
+		t.Fatalf("first unseen turn = %+v, want empty turn_empty shell", empty)
+	}
+	if response.Thread.Turns[1].ID != "turn_after" {
+		t.Fatalf("second unseen turn = %+v, want turn_after", response.Thread.Turns[1])
+	}
+}
+
 func TestLiveThreadReadAdvertisesWindowReadCapability(t *testing.T) {
 	st := newServedTranscript(t, NewServer(ServerConfig{}), "th_window_capability",
 		inExecution("turn_m1", true, schema.NewTurn(schema.TurnUserInput, llm.User("one"))),

@@ -356,6 +356,7 @@ var pastTranscriptIndexes = transcriptindex.NewCacheWithOpen(transcriptindex.Def
 // transcript index.
 type pastItemPage struct {
 	Candidates            []appitempaging.TranscriptItemCandidate
+	TurnIDs               []string
 	LatestExecutionTurnID string
 	Identity              appitempaging.CursorIdentity
 	Exhausted             bool
@@ -380,6 +381,7 @@ type pastDerivedTotals struct {
 func (p pastItemPage) candidateResult() transcriptItemCandidateResult {
 	return transcriptItemCandidateResult{
 		Candidates: appitempaging.TranscriptItemWindow{Candidates: p.Candidates},
+		TurnIDs:    p.TurnIDs,
 		Identity:   p.Identity,
 		Exhausted:  p.Exhausted,
 	}
@@ -547,6 +549,7 @@ func pastEntryTurnWindowItems(ctx context.Context, entry hubcore.PastEntry, sele
 		}
 		page = pastItemPage{
 			Candidates:            resolved.Candidates,
+			TurnIDs:               resolved.TurnIDs,
 			LatestExecutionTurnID: latest.LatestExecutionTurnID,
 			Identity:              pastCursorIdentity(entry, resolved.Incarnation),
 			Exhausted:             true,

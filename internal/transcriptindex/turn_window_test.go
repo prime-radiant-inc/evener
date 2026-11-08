@@ -2,6 +2,8 @@ package transcriptindex
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -118,6 +120,42 @@ func TestSnapshotResolveTurnWindowUsesTheSharedSelection(t *testing.T) {
 		[]string{"turn_3", "t_identified_1"},
 		[]string{"legacy two", "legacy answer two", "identified one", "identified answer one"},
 	)
+}
+
+func TestCatchUpPreservesEmptyCheckpointInTurnFrontier(t *testing.T) {
+	fx := fixture{
+		header: transcript.Header{SessionID: "turn_window_catchup"},
+		lines: []fixtureLine{
+			entryLine(opens("turn_visible", schema.TurnSpanExecution, user("visible"))),
+			entryLine(opens("turn_empty", schema.TurnSpanExecution, standalone(schema.TurnCheckpoint, ""))),
+		},
+	}
+	header, lines := fx.encode(t)
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	if err := os.WriteFile(path, append(header, lines[0]...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	x := openIndex(t, path, t.TempDir())
+	appendBytes(t, path, lines[1])
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := x.CatchUpTo(info.Size()); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := x.ResolveTurnWindow(appwire.ThreadTurnWindow{Turn: "turn_empty"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.TurnIDs, []string{"turn_empty"}) || len(got.Candidates) != 0 {
+		t.Fatalf("resolved empty turn = IDs %v, candidates %v", got.TurnIDs, got.Candidates)
+	}
+	wantFrontier := TurnFrontier{OldestTurnID: "turn_visible", NewestTurnID: "turn_empty", TurnCount: 2}
+	if got.Frontier != wantFrontier {
+		t.Fatalf("frontier = %+v, want %+v", got.Frontier, wantFrontier)
+	}
 }
 
 func openTurnWindowFixture(t testing.TB) *Index {

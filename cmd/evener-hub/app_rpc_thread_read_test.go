@@ -68,6 +68,50 @@ func TestHubRPCThreadReadRoutesToDaemon(t *testing.T) {
 	}
 }
 
+func TestSessionOperationsExactWindowPreservesEmptyCheckpointTurn(t *testing.T) {
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleThreadHistory(daemon.Router(), func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{
+			Thread: appwire.Thread{
+				ID: "windowed", SessionID: "windowed", Evener: appwire.EvenerThread{Ref: params.Ref},
+				Turns: []appwire.Turn{{ID: "turn_empty", ItemsView: appwire.TurnItemsViewFragment}},
+			},
+			Snapshot: &appwire.SnapshotIdentity{Incarnation: "empty-checkpoint-incarnation", Length: 1},
+		}, nil
+	}, func(_ context.Context, _ appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+		t.Fatal("exact empty checkpoint window unexpectedly paged daemon history")
+		return appwire.ThreadTurnsListResponse{}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		return []appsource.LocalDaemonEntry{{
+			Entry: rendezvous.Entry{
+				Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"), SourceID: "local",
+				ThreadID: "windowed", SessionID: "windowed", WorkspaceRef: "local:windowed",
+			},
+			Capabilities: appwire.ThreadCapabilities{WindowRead: true}, CapabilitiesKnown: true,
+		}}
+	}, http.DefaultClient)
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	operations := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
+
+	response, err := operations.Invoke(t.Context(), appwire.ManagerView{Ref: "local:manager", Manager: true}, appwire.SessionOperationRequest{
+		Turns: &appwire.ThreadTurnsListParams{
+			Ref: "local:windowed", TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn_empty"}, ItemTypes: []string{"messages"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Turns == nil || len(response.Turns.Data) != 1 || response.Turns.Data[0].ID != "turn_empty" || len(response.Turns.Data[0].Items) != 0 {
+		t.Fatalf("exact empty checkpoint window = %+v, want one empty turn shell", response.Turns)
+	}
+}
+
 func TestSessionOperationsFetchesServingDaemonItem(t *testing.T) {
 	position := appwire.ThreadItemPosition{Entry: 7}
 	item := appwire.ThreadItem{

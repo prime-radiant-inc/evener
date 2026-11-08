@@ -112,7 +112,9 @@ func spendTranscriptWindowCursor(result transcriptItemCandidateResult, params ap
 				break
 			}
 		}
-		result.Candidates = appitempaging.TranscriptItemWindow{Candidates: append([]appitempaging.TranscriptItemCandidate(nil), candidates[first:]...)}
+		selected := append([]appitempaging.TranscriptItemCandidate(nil), candidates[first:]...)
+		result.Candidates = appitempaging.TranscriptItemWindow{Candidates: selected}
+		result.TurnIDs = turnIDsFromCandidateRange(result.TurnIDs, selected, transcriptWindowContinuationForward, "")
 		result.Exhausted = true
 		return result, nil
 	}
@@ -126,9 +128,52 @@ func spendTranscriptWindowCursor(result transcriptItemCandidateResult, params ap
 	if err := appitempaging.ValidateWindowCursorBoundary(candidates, cursor); err != nil {
 		return transcriptItemCandidateResult{}, err
 	}
-	result.Candidates = appitempaging.TranscriptItemWindow{Candidates: appitempaging.CandidatesBefore(candidates, cursor.Position, len(candidates))}
+	selected := appitempaging.CandidatesBefore(candidates, cursor.Position, len(candidates))
+	boundaryTurnID := ""
+	for _, candidate := range candidates {
+		if candidate.Position == cursor.Position {
+			boundaryTurnID = candidate.TurnID
+			break
+		}
+	}
+	result.Candidates = appitempaging.TranscriptItemWindow{Candidates: selected}
+	result.TurnIDs = turnIDsFromCandidateRange(result.TurnIDs, selected, transcriptWindowContinuationBackward, boundaryTurnID)
 	result.Exhausted = true
 	return result, nil
+}
+
+// turnIDsFromCandidateRange keeps empty turn shells on the same side of a
+// continuation as the positioned items around them. A backward page can have
+// no positioned items before its boundary, so boundaryTurnID identifies the
+// first turn outside that page in that case.
+func turnIDsFromCandidateRange(
+	turnIDs []string,
+	candidates []appitempaging.TranscriptItemCandidate,
+	direction transcriptWindowContinuationDirection,
+	boundaryTurnID string,
+) []string {
+	if len(turnIDs) == 0 {
+		return nil
+	}
+	if len(candidates) > 0 {
+		if direction == transcriptWindowContinuationForward {
+			firstIndex := slices.Index(turnIDs, candidates[0].TurnID)
+			if firstIndex >= 0 {
+				return append([]string(nil), turnIDs[firstIndex:]...)
+			}
+			return nil
+		}
+		lastIndex := slices.Index(turnIDs, candidates[len(candidates)-1].TurnID)
+		if lastIndex >= 0 {
+			return append([]string(nil), turnIDs[:lastIndex+1]...)
+		}
+		return nil
+	}
+	boundaryIndex := slices.Index(turnIDs, boundaryTurnID)
+	if boundaryIndex < 0 {
+		return nil
+	}
+	return append([]string(nil), turnIDs[:boundaryIndex]...)
 }
 
 type packItemCandidatesOptions struct {
@@ -161,6 +206,7 @@ type transcriptWindowPreparedTurn struct {
 // fields are serialized into the response.
 type transcriptItemCandidateResult struct {
 	Candidates appitempaging.TranscriptItemWindow
+	TurnIDs    []string
 	Identity   appitempaging.CursorIdentity
 	Exhausted  bool
 	History    appsource.HistoryIdentity
@@ -189,8 +235,22 @@ func itemCandidateResultFromTurns(turns []appwire.Turn, olderCursor string) (tra
 			Candidates:  candidates,
 			OlderCursor: olderCursor,
 		},
+		TurnIDs:   turnIDsFromTurns(turns),
 		Exhausted: olderCursor == "",
 	}, nil
+}
+
+func turnIDsFromTurns(turns []appwire.Turn) []string {
+	seen := make(map[string]bool, len(turns))
+	turnIDs := make([]string, 0, len(turns))
+	for _, turn := range turns {
+		if turn.ID == "" || seen[turn.ID] {
+			continue
+		}
+		seen[turn.ID] = true
+		turnIDs = append(turnIDs, turn.ID)
+	}
+	return turnIDs
 }
 
 func sourceItemCandidateResultForRead(ctx context.Context, source appsource.Source, params appwire.ThreadReadParams, response appwire.ThreadReadResponse) (transcriptItemCandidateResult, error) {
@@ -199,7 +259,9 @@ func sourceItemCandidateResultForRead(ctx context.Context, source appsource.Sour
 		if err != nil {
 			return transcriptItemCandidateResult{}, err
 		}
-		return appendReadOverlayCandidates(transcriptItemCandidateResultFromSource(result), response)
+		converted := transcriptItemCandidateResultFromSource(result)
+		converted.TurnIDs = turnIDsFromTurns(response.Thread.Turns)
+		return appendReadOverlayCandidates(converted, response)
 	}
 	result, err := itemCandidateResultFromReadResponse(response)
 	if err != nil {
@@ -267,7 +329,9 @@ func sourceItemCandidateResultForList(ctx context.Context, source appsource.Sour
 		if err != nil {
 			return transcriptItemCandidateResult{}, err
 		}
-		return transcriptItemCandidateResultFromSource(result), nil
+		converted := transcriptItemCandidateResultFromSource(result)
+		converted.TurnIDs = turnIDsFromTurns(response.Data)
+		return converted, nil
 	}
 	result, err := itemCandidateResultFromTurns(response.Data, response.NextCursor)
 	result.History = appsource.PageHistoryIdentity(response)
@@ -428,6 +492,24 @@ func packItemCandidates[T any](
 				candidateTurns = append(candidateTurns, transcriptWindowCandidateTurn{turn: candidate.Turn})
 			}
 			candidateTurns[len(candidateTurns)-1].candidates = append(candidateTurns[len(candidateTurns)-1].candidates, candidate)
+		}
+		candidateTurnShells := make([]appwire.Turn, len(candidateTurns))
+		for index := range candidateTurns {
+			candidateTurnShells[index] = candidateTurns[index].turn
+		}
+		selectedTurns := appitempaging.PreserveSelectedTurnShells(candidateTurnShells, result.TurnIDs)
+		if len(selectedTurns) != len(candidateTurns) {
+			withShells := make([]transcriptWindowCandidateTurn, 0, len(selectedTurns))
+			candidateIndex := 0
+			for _, turn := range selectedTurns {
+				if candidateIndex < len(candidateTurns) && candidateTurns[candidateIndex].turn.ID == turn.ID {
+					withShells = append(withShells, candidateTurns[candidateIndex])
+					candidateIndex++
+					continue
+				}
+				withShells = append(withShells, transcriptWindowCandidateTurn{turn: turn})
+			}
+			candidateTurns = withShells
 		}
 
 		prepared := make([]transcriptWindowPreparedTurn, 0, len(candidateTurns))

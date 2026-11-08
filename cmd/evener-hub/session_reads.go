@@ -212,6 +212,7 @@ func continueHubCompatibilityTranscriptWindow(
 	}
 	if selected := appitempaging.CandidatesBefore(result.Candidates.Candidates, boundaryCursor.Position, len(result.Candidates.Candidates)); len(selected) > 0 {
 		result.Candidates = appitempaging.TranscriptItemWindow{Candidates: selected}
+		result.TurnIDs = turnIDsFromCandidateRange(result.TurnIDs, selected, transcriptWindowContinuationBackward, "")
 		return result, nil
 	}
 
@@ -240,6 +241,7 @@ func continueHubCompatibilityTranscriptWindow(
 		selected := appitempaging.CandidatesBefore(pageCandidates, boundaryCursor.Position, len(pageCandidates))
 		if len(selected) > 0 {
 			result.Candidates = appitempaging.TranscriptItemWindow{Candidates: selected}
+			result.TurnIDs = turnIDsFromCandidateRange(turnIDsFromTurns(page.Data), selected, transcriptWindowContinuationBackward, "")
 			result.Exhausted = page.NextCursor == ""
 			result.History = appsource.PageHistoryIdentity(page)
 			return result, nil

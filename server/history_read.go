@@ -124,6 +124,7 @@ func (h *threadHistory) turnWindow(c historyCapture, threadRef string, selector 
 	if err != nil {
 		return nil, appwire.SnapshotIdentity{}, "", nil, err
 	}
+	turns = appitempaging.PreserveSelectedTurnShells(turns, resolved.TurnIDs)
 	overlay = make([]appwire.OverlayItem, 0, len(c.overlay))
 	for _, item := range c.overlay {
 		if h.overlay.Contains(item.Key) {
