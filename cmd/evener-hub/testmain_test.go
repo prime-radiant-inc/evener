@@ -111,16 +111,21 @@ func TestTestMainSurvivesOutsideTheCheckout(t *testing.T) {
 }
 
 // reexecSelf runs this test binary with run as its -test.run selection and
-// extraEnv appended to the inherited environment. The executable, count flag,
-// and environment assembly live here so a fourth self re-exec cannot forget
-// one of them.
+// extraEnv appended to the inherited environment.
 func reexecSelf(t *testing.T, testRun string, extraEnv ...string) ([]byte, error) {
+	return reexecSelfArgs(t, []string{"-test.run=" + testRun}, extraEnv...)
+}
+
+// reexecSelfArgs is reexecSelf for a child that needs more testing flags. The
+// executable, count flag, and environment assembly live here so a self re-exec
+// cannot forget one of them.
+func reexecSelfArgs(t *testing.T, flags []string, extraEnv ...string) ([]byte, error) {
 	t.Helper()
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(exe, "-test.run="+testRun, "-test.count=1")
+	cmd := exec.Command(exe, append([]string{"-test.count=1"}, flags...)...)
 	cmd.Env = append(os.Environ(), extraEnv...)
 	return cmd.CombinedOutput()
 }
@@ -194,6 +199,27 @@ func fakeGo(t *testing.T, buildMarker string) string {
 	return dir
 }
 
+// reexecWarmAttempt runs a child whose only `go` records a build attempt and
+// fails it. A pass means TestMain reached the warm; the output is for failure
+// messages.
+func reexecWarmAttempt(t *testing.T, flags []string, extraEnv ...string) []byte {
+	t.Helper()
+	buildMarker := filepath.Join(t.TempDir(), "build-ran")
+	dir := fakeGo(t, buildMarker)
+	env := make([]string, 0, len(extraEnv)+3)
+	env = append(env, extraEnv...)
+	env = append(env, liveStackWarmEnv+"=", liveStackBinEnv+"=",
+		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	out, err := reexecSelfArgs(t, flags, env...)
+	if err == nil {
+		t.Fatalf("TestMain skipped the live-stack warm:\n%s", out)
+	}
+	if _, statErr := os.Stat(buildMarker); statErr != nil {
+		t.Fatalf("TestMain did not attempt the live-stack build: %v\n%s", statErr, out)
+	}
+	return out
+}
+
 // TestTestMainSkipsTheWarmWithoutALiveStackSelection re-executes itself on a
 // unit-only selection with no `go` on PATH. A warm attempt fails before m.Run
 // and leaves no probe marker; a skipped warm reaches the probe branch and
@@ -224,18 +250,50 @@ func TestTestMainWarmsWhenALiveStackTestIsSelected(t *testing.T) {
 		return
 	}
 	probeMarker := filepath.Join(t.TempDir(), "body-ran")
-	buildMarker := filepath.Join(t.TempDir(), "build-ran")
-	dir := fakeGo(t, buildMarker)
-	extra := append(probeReexecEnv(t, probeMarker), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	out, err := reexecSelf(t, "^TestTestMainWarmsWhenALiveStackTestIsSelected$", extra...)
-	if err == nil {
-		t.Fatalf("a live-stack -run selection skipped the warm:\n%s", out)
-	}
-	if _, err := os.Stat(buildMarker); err != nil {
-		t.Fatalf("TestMain did not attempt the live-stack build: %v\n%s", err, out)
-	}
+	out := reexecWarmAttempt(t,
+		[]string{"-test.run=^TestTestMainWarmsWhenALiveStackTestIsSelected$"},
+		probeReexecEnv(t, probeMarker)...)
 	if _, err := os.Stat(probeMarker); err == nil {
 		t.Fatalf("the live-stack test ran, so TestMain skipped the warm:\n%s", out)
+	}
+}
+
+// TestTestMainWarmsWhenOnlyASubtestIsSkipped selects the real retire-overlap
+// test with only its /resume case skipped. The test skips under -short, so the
+// observable work is whether TestMain attempted the warm build.
+func TestTestMainWarmsWhenOnlyASubtestIsSkipped(t *testing.T) {
+	out := reexecWarmAttempt(t, []string{
+		"-test.run=^TestE2E_RetireOverlappedByAnotherOwnershipAction$",
+		"-test.skip=^TestE2E_RetireOverlappedByAnotherOwnershipAction$/resume",
+		"-test.short",
+		"-test.v",
+	})
+	// The warm runs in TestMain before m.Run. A `=== RUN` line means m.Run
+	// reached the body, which would also invoke the fake go for a lazy build;
+	// the marker alone cannot tell those apart.
+	if strings.Contains(string(out), "=== RUN   TestE2E_RetireOverlappedByAnotherOwnershipAction") {
+		t.Fatalf("the test body ran, so TestMain skipped the warm:\n%s", out)
+	}
+}
+
+// TestTestMainSkipsTheWarmWhenTheWholeTestIsSkipped is the negative control
+// for the subtest case: a single-element skip of the same live-stack test must
+// not warm, and this also pins that -test.skip reaches TestMain end to end.
+func TestTestMainSkipsTheWarmWhenTheWholeTestIsSkipped(t *testing.T) {
+	buildMarker := filepath.Join(t.TempDir(), "build-ran")
+	dir := fakeGo(t, buildMarker)
+	out, err := reexecSelfArgs(t, []string{
+		"-test.run=^TestE2E_RetireOverlappedByAnotherOwnershipAction$",
+		"-test.skip=^TestE2E_RetireOverlappedByAnotherOwnershipAction$",
+		"-test.short",
+	},
+		liveStackWarmEnv+"=", liveStackBinEnv+"=",
+		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err != nil {
+		t.Fatalf("a fully skipped live-stack test warmed the binaries: %v\n%s", err, out)
+	}
+	if _, statErr := os.Stat(buildMarker); statErr == nil {
+		t.Fatalf("TestMain attempted the live-stack build for a fully skipped test:\n%s", out)
 	}
 }
 
@@ -500,15 +558,24 @@ func liveStackTestSelected(run, skip string) bool {
 	if !ok || len(names) == 0 {
 		return true
 	}
-	runPattern, err := regexp.Compile(topLevelPattern(run))
+	runTop, _ := splitTestSelector(run)
+	runPattern, err := regexp.Compile(runTop)
 	if err != nil {
 		return true
 	}
+	// A skip pattern with a subtest selector skips only that subtest: the
+	// top-level test still runs, and its body may start the stack before it
+	// reaches its subtests. A slash inside a top-level alternation is treated
+	// the same way: warming there is conservative, and parsing testing's full
+	// splitter would be more machinery than an occasional extra build is worth.
 	var skipPattern *regexp.Regexp
 	if skip != "" {
-		skipPattern, err = regexp.Compile(topLevelPattern(skip))
-		if err != nil {
-			return true
+		skipTop, topLevelOnly := splitTestSelector(skip)
+		if topLevelOnly {
+			skipPattern, err = regexp.Compile(skipTop)
+			if err != nil {
+				return true
+			}
 		}
 	}
 	for name := range names {
@@ -523,11 +590,13 @@ func liveStackTestSelected(run, skip string) bool {
 	return false
 }
 
-// topLevelPattern is the part of a testing -run/-skip regex that can select a
-// top-level test. testing matches each '/'-separated element against one level
-// of test name.
-func topLevelPattern(pattern string) string {
-	return strings.SplitN(pattern, "/", 2)[0]
+// splitTestSelector returns the first '/'-separated element of a testing
+// -run/-skip regex and whether the pattern names only the top level. testing
+// matches each element against one level of test name, so a pattern with a
+// subtest selector leaves the top-level test itself running.
+func splitTestSelector(pattern string) (top string, topLevelOnly bool) {
+	top, _, hasSubtest := strings.Cut(pattern, "/")
+	return top, !hasSubtest
 }
 
 // liveStackEntryPoints are the test helpers that reach a live stack. A test is
@@ -640,6 +709,7 @@ func TestLiveStackTestSelection(t *testing.T) {
 		{"a test that reuses the shared binary", "^TestModelListExplicitRefreshRecoversProvider$", "", true},
 		{"a test whose cross-file helper reaches the shared binary", "^TestTutorialConfigRunningIdentityBeforePromptSave$", "", true},
 		{"a live-stack test skipped by the selection", "^TestE2E_TurnControlReachesTheSession$", "^TestE2E_TurnControlReachesTheSession$", false},
+		{"a live-stack test with one subtest skipped", "^TestE2E_RetireOverlappedByAnotherOwnershipAction$", "^TestE2E_RetireOverlappedByAnotherOwnershipAction$/resume", true},
 		{"a unit test", "^TestGoSubprocessesCacheOutsideTheTestRoot$", "", false},
 		{"the shard wiring test", "^TestMainAppliesTheShardRunFile$", "", false},
 		{"nothing", "^TestNoSuchTest$", "", false},
