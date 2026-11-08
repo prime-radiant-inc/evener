@@ -23,17 +23,16 @@ func TestAttentionCarriesOnePendingAskSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var got struct {
-		PendingQuestion   *appwire.PendingQuestion `json:"pendingQuestion"`
-		AskBootGeneration string                   `json:"askBootGeneration"`
-		AskRevision       uint64                   `json:"askRevision"`
-		CompositeList     []appwire.PendingAskCall `json:"compositeList"`
-		CompositeTotal    int                      `json:"compositeTotal"`
-		CalllessCount     int                      `json:"calllessCount"`
-		AskPageable       bool                     `json:"askPageable"`
-		PublishedAt       int64                    `json:"publishedAt"`
-		NeedsResponse     bool                     `json:"needsResponse"`
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatal(err)
 	}
+	for _, key := range []string{"pendingQuestion", "askBootGeneration", "askRevision", "compositeList", "compositeTotal", "calllessCount", "askPageable", "publishedAt"} {
+		if _, ok := fields[key]; !ok {
+			t.Errorf("attention omitted wire field %s", key)
+		}
+	}
+	var got appwire.AttentionEntry
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatal(err)
 	}
