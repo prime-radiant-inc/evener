@@ -573,16 +573,31 @@ func (a *grepAccum) feedLargeFile(ctx context.Context, r io.ReadSeeker) (stop bo
 // naming it directly.
 func (a *grepAccum) finishWalk(excludedByIgnore, oversized int) string {
 	out, notes := a.finishNotes()
-	if oversized > 0 {
-		notes = append(notes, grepOversizeNote(oversized))
-	}
-	if out == "" && excludedByIgnore > 0 {
-		notes = append(notes, fmt.Sprintf("0 matches; %d dotfile/gitignored path(s) were excluded from the search", excludedByIgnore))
-	}
+	notes = grepOmissionNotes(notes, out, oversized, excludedByIgnore)
 	if len(notes) > 0 {
 		return searchresult.WithNotes(out, notes...)
 	}
 	return out
+}
+
+// grepOmissionNotes appends the notes both grep arms owe for files they left
+// out: over-cap files first, then — only when nothing matched — the ignore
+// rules' exclusions. out is the result text the notes describe.
+func grepOmissionNotes(notes []string, out string, oversized, excludedByIgnore int) []string {
+	if oversized > 0 {
+		notes = append(notes, grepOversizeNote(oversized))
+	}
+	if out == "" && excludedByIgnore > 0 {
+		notes = append(notes, grepExclusionNote(excludedByIgnore))
+	}
+	return notes
+}
+
+// grepExclusionNote explains an empty result that the default dotfile and
+// gitignore rules could have made empty. Both grep arms compose it, so a
+// fully-filtered search reads the same with and without ripgrep (#4222).
+func grepExclusionNote(excludedByIgnore int) string {
+	return fmt.Sprintf("0 matches; %d dotfile/gitignored path(s) were excluded from the search", excludedByIgnore)
 }
 
 // grepTreeWalk is the directory walk both native grep arms run: the
@@ -613,21 +628,33 @@ type grepTreeWalk struct {
 	// it is past the read cap, instead of leaving it out as an oversize file.
 	namedFile      bool
 	largeNamedFile func(rel string) error
+	// countOnly stops at the ignore decision: the caller wants only how many
+	// paths the default exclusions skipped, so no file is selected or read.
+	countOnly bool
 }
 
 func (w grepTreeWalk) isMasked(abs string) bool { return w.masked != nil && w.masked(abs) }
 
 func (w grepTreeWalk) run() (string, error) {
+	excludedByIgnore, oversized, err := w.runCounts()
+	if err != nil {
+		return "", err
+	}
+	return w.acc.finishWalk(excludedByIgnore, oversized), nil
+}
+
+// runCounts walks the tree and returns how many paths the default dotfile and
+// gitignore rules skipped, and how many files the read cap left out. run uses
+// both; the rg arm's empty-result disclosure uses the first.
+func (w grepTreeWalk) runCounts() (excludedByIgnore, oversized int, err error) {
 	// Never list or read into a masked subtree while collecting .gitignore rules.
 	ignores, err := loadIgnoreSet(w.ctx, w.ignoreFS, func(rel string) bool {
 		abs := filepath.Join(w.root, rel)
 		return w.isMasked(abs) || walkSkipsPseudoDir(w.root, abs)
 	}, w.budget, wholeBaseIgnoreScope())
 	if err != nil {
-		return "", err
+		return 0, 0, err
 	}
-	excludedByIgnore := 0
-	oversized := 0
 	err = w.walk(func(p string, d fs.DirEntry, walkErr error) error {
 		if cancelErr := w.ctx.Err(); cancelErr != nil {
 			return cancelErr
@@ -693,6 +720,9 @@ func (w grepTreeWalk) run() (string, error) {
 			excludedByIgnore++
 			return nil
 		}
+		if w.countOnly {
+			return nil
+		}
 		if selected, selErr := grepFileSelected(d.Name(), rel, w.globFilters, w.skip); !selected {
 			return selErr
 		}
@@ -715,12 +745,12 @@ func (w grepTreeWalk) run() (string, error) {
 		return nil
 	})
 	if err != nil {
-		return "", err
+		return 0, 0, err
 	}
 	if err := w.ctx.Err(); err != nil {
-		return "", err
+		return 0, 0, err
 	}
-	return w.acc.finishWalk(excludedByIgnore, oversized), nil
+	return excludedByIgnore, oversized, nil
 }
 
 // grepTruncationNote is the note on a grep result the cap cut short, so a
