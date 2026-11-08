@@ -976,9 +976,13 @@ func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *tes
 	t.Run("notification yield cannot return cleanly without one bounded recovery nudge", func(t *testing.T) {
 		fixture := newColdDelegateFixture(t, "")
 		var root *Session
+		nudgeUpdate := make(chan bool, 1)
 		fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 			func(llm.Request) llm.Response {
 				sub := root.subagents.get(fixture.childID)
+				updateSessionTestConfig(sub.sess, func(cfg *testConfig) {
+					cfg.subagentNudgeSelected = func(updated bool) { nudgeUpdate <- updated }
+				})
 				sub.sess.enqueueJobNotification(jobNotification{Kind: jobNotificationKindWatch, JobID: "watch-test", Status: jobNotificationEventWatch})
 				return agenttest.CommunicateResponse(false, "work before notification")
 			},
@@ -991,6 +995,14 @@ func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *tes
 		outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "inspect", 60_000)
 		abortUnpersistedDelegateOutcome(t, outcome)
 		assertSingleRecoveryNudge(t, fixture.adapter)
+		select {
+		case updated := <-nudgeUpdate:
+			if !updated {
+				t.Fatal("the reminder ignored the non-terminal update across the notification turn")
+			}
+		default:
+			t.Fatal("the recovery nudge selected no reminder")
+		}
 	})
 
 	t.Run("goal-controlled cap cannot return cleanly without one bounded recovery nudge", func(t *testing.T) {
@@ -4410,9 +4422,12 @@ func assertSingleRecoveryNudge(t *testing.T, adapter *fakeAdapter) {
 	if len(requests) == 0 {
 		t.Fatal("provider received no requests")
 	}
-	nudge := communicateNudge("communicate")
 	last := requests[len(requests)-1]
-	if got := countMessageText(last.Messages, nudge); got != 1 {
+	// The reminder text depends on whether the delegate already sent a
+	// non-terminal update; either way exactly one reminder must land.
+	got := countMessageText(last.Messages, wrapHookContext(communicateNudge("communicate"))) +
+		countMessageText(last.Messages, wrapHookContext(communicateUpdateNudge("communicate")))
+	if got != 1 {
 		t.Fatalf("recovery nudge count in final request = %d, want exactly one: %#v", got, last.Messages)
 	}
 }

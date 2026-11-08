@@ -434,6 +434,11 @@ const (
 	// EntryDelegateAttention is a controller-owned stable delegate generation
 	// whose exact model-bound input is already durable in the receiver transcript.
 	EntryDelegateAttention
+	// EntryRuntime is a daemon-authored recovery turn. It records no user turn:
+	// the steering queued for it (a delegate's missing-report reminder) is the
+	// model's whole prompt, so recovery cannot masquerade as caller instruction
+	// in history, events, hooks, or compaction (#3734).
+	EntryRuntime
 	// entryKindCount is the number of EntryKind values. Keep it last: the
 	// turn-opening audit (entrykind_audit_test.go) iterates up to it, so a kind
 	// added above this line must declare how its turn acquires an identity
@@ -621,6 +626,13 @@ func (s *Session) processInputWithProvenance(ctx context.Context, input string, 
 	// a client's message. Keep that evidence distinct from session placement.
 	ctx = context.WithValue(ctx, internalTranscriptInputKey{}, true)
 	return s.processInputKindWithProvenance(ctx, input, images, EntryUserInput, p)
+}
+
+// processRuntimeInput runs a daemon-authored recovery turn. It records no user
+// input of its own: the steering queued for it is the model's whole prompt, so
+// the turn cannot be mistaken for the caller speaking (#3734).
+func (s *Session) processRuntimeInput(ctx context.Context, p *provenance.Causal) (string, error) {
+	return s.processInputKindWithProvenance(ctx, "", nil, EntryRuntime, p)
 }
 
 func (s *Session) processInputKindWithProvenance(ctx context.Context, input string, images []ImageAttachment, kind EntryKind, inputProvenance *provenance.Causal) (string, error) {
@@ -1410,7 +1422,7 @@ func (s *Session) transcriptRefusalForWrite(writeErr error) error {
 
 func delegateEntryRequiresReport(kind EntryKind) bool {
 	switch kind {
-	case EntryUserInput, EntryContinuation:
+	case EntryUserInput, EntryContinuation, EntryRuntime:
 		return true
 	default:
 		return false
@@ -1563,7 +1575,17 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	s.restGeneration++
 	s.restMu.Unlock()
 	s.turnStartedAt = s.sclock().Now()
+	// A housekeeping input — a job notification, a goal continuation, or the
+	// runtime recovery — runs inside the same delegate generation as the
+	// non-terminal update it follows. Preserve that evidence so a later
+	// missing-report reminder still knows the delegate reached its parent; a new
+	// caller input or attention generation starts fresh.
+	preserveUpdate := kind != EntryUserInput && kind != EntryDelegateAttention
+	updated := s.comm.updated
 	s.comm = communicateResult{}
+	if preserveUpdate {
+		s.comm.updated = updated
+	}
 	// A claimed answering steering carrier has already crossed its durable
 	// admission boundary before this carrier turn runs, so preserve its
 	// established entry-clear behavior. Ordinary user input clears only after
@@ -1719,6 +1741,8 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		rootAttentionAccepted = true
 	} else if kind == EntryDelegateAttention {
 		s.acceptDelegateAttentionInput()
+	} else if kind == EntryRuntime {
+		s.acceptRuntimeInput(inputProvenance)
 	} else if err := s.acceptUserInputWithSkillSelection(ctx, input, images, inputProvenance, kind == EntryUserInput, skillSelection); err != nil {
 		if errors.Is(err, errSteeringCarrierStoodDown) {
 			// A carrier that stood down ran no model turn. Record it so the
@@ -2429,6 +2453,15 @@ func (s *Session) acceptContinuationInput(_ context.Context, input, stableTurnID
 func (s *Session) acceptDelegateAttentionInput() {
 	s.replaceActiveProvenance(nil)
 	s.repairOrphanedToolResults(context.Background(), "before accepting delegate attention")
+}
+
+// acceptRuntimeInput starts a daemon-authored recovery turn. It records no
+// turn of its own: the steering already queued for this turn carries the
+// runtime reminder, and draining it is what gives the model its prompt.
+func (s *Session) acceptRuntimeInput(p *provenance.Causal) {
+	s.replaceActiveProvenance(p)
+	s.repairOrphanedToolResults(context.Background(), "before accepting runtime input")
+	s.injectDrainedSteering()
 }
 
 // acceptNotificationInput records a job-completion notification turn at the

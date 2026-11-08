@@ -5698,6 +5698,7 @@ export const STEERING_KINDS = [
   "notification",
   "provider-failure",
   "human-note",
+  "delegate-nudge",
 ] as const;
 
 export type SteeringKind = (typeof STEERING_KINDS)[number];

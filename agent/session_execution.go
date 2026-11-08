@@ -495,6 +495,11 @@ func (s *Session) deliverCommunicate(data events.CommunicateData) error {
 	}
 	s.mu.Lock()
 	s.noteAgentMessageLocked(data.Message)
+	if !data.EndTurn {
+		// A non-terminal update is not a result, but the delegate did reach its
+		// parent; the missing-report reminder must not claim otherwise (#3734).
+		s.comm.updated = true
+	}
 	s.mu.Unlock()
 	s.emitWithProvenance(data, causal)
 	return nil

@@ -308,6 +308,7 @@ func TestSteeringKindConstants(t *testing.T) {
 		"notification":        SteeringKindNotification,
 		"provider-failure":    SteeringKindProviderFailure,
 		"human-note":          SteeringKindHumanNote,
+		"delegate-nudge":      SteeringKindDelegateNudge,
 	}
 	for literal, got := range want {
 		if got != literal {

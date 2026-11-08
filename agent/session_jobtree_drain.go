@@ -1033,7 +1033,13 @@ func (s *Session) keepingReport(process func(context.Context, string, []ImageAtt
 		}
 		s.mu.Lock()
 		if !s.comm.called {
+			// The restore replaces the report fields, not the fact that this
+			// input sent a non-terminal update: keeping it makes a later
+			// missing-report reminder acknowledge that update instead of
+			// claiming the delegate never communicated (#3734).
+			updated := s.comm.updated
 			s.comm = s.latestReport
+			s.comm.updated = updated
 			if isNoReportFailure(err) {
 				err = nil
 			}

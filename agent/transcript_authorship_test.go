@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/spf13/afero"
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -379,6 +380,7 @@ func TestTranscriptAuthorshipInternalNudgeAndExplicitHuman(t *testing.T) {
 		t.Fatal(err)
 	}
 	var inputs []schema.Turn
+	var reminders []schema.Turn
 	var repliesBeforeInput []int
 	replies := 0
 	for _, e := range data.Entries {
@@ -389,14 +391,22 @@ func TestTranscriptAuthorshipInternalNudgeAndExplicitHuman(t *testing.T) {
 			inputs = append(inputs, e.Turn)
 			repliesBeforeInput = append(repliesBeforeInput, replies)
 		}
+		if e.Turn.Kind == schema.TurnSteering && e.Turn.SteeringKind == events.SteeringKindDelegateNudge {
+			reminders = append(reminders, e.Turn)
+		}
 	}
 	// The empty cold transcript receives our instruction, four bare replies,
-	// one harness input, then the terminal reply. No production wording selects it.
-	if len(inputs) != 2 || inputs[0].Message.Text() != "inspect" || !reflect.DeepEqual(repliesBeforeInput, []int{0, 4}) || replies != 5 {
+	// one runtime reminder, then the terminal reply. The reminder is a daemon
+	// steering turn, not a user input, so no production wording can select it as
+	// caller speech.
+	if len(inputs) != 1 || inputs[0].Message.Text() != "inspect" || !reflect.DeepEqual(repliesBeforeInput, []int{0}) || replies != 5 {
 		t.Fatalf("inputs=%d replies before inputs=%v total replies=%d", len(inputs), repliesBeforeInput, replies)
 	}
-	if inputs[1].Authorship != nil {
-		t.Fatal("harness nudge labeled human")
+	if len(reminders) != 1 {
+		t.Fatalf("runtime reminders = %d, want one unlabeled daemon steer", len(reminders))
+	}
+	if reminders[0].Authorship != nil {
+		t.Fatal("runtime reminder labeled human")
 	}
 	// The same child accepts explicit human/client input without borrowing the
 	// harness origin or its parent. No provider call is needed to accept it.
