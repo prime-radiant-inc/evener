@@ -11,7 +11,7 @@ import type {
   PointerEvent as ReactPointerEvent,
 } from "react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
-import { useOptionalNeedsYou } from "../../shell/NeedsYouProvider";
+import { useOptionalNeedsYou, useOptionalNeedsYouController } from "../../shell/NeedsYouProvider";
 import type { NeedsYouChoice, NeedsYouSnapshot } from "../../shell/needsYouActions";
 import { Button, IconButton, ListRow, Popover } from "../../widgets";
 import { LONG_PRESS_MS, POINTER_CLICK_WINDOW_MS } from "../../widgets/hovercard";
@@ -43,16 +43,17 @@ export function nextNeedsYouVisible(snapshot: NeedsYouSnapshot, hidden: boolean)
 }
 
 // The same decision as one subscribed boolean, for consumers far larger than
-// the control itself (ConversationBody). A raw context read would re-render
-// the whole pane on every queue change - loading toggles, refreshState
-// cycles, palette and modal blocked-flips - so this binds the controller to
-// the predicate and lets Object.is on one boolean decide the re-render.
+// the control itself (ConversationBody). The controller comes from the stable
+// controller-only context: the full needs-you value changes on every queue
+// snapshot - loading toggles, refreshState cycles, palette and modal
+// blocked-flips - and reading it would re-render the whole pane on every one
+// of those, so here Object.is on one boolean decides the re-render instead.
 // `hidden` is the caller's own gate (IME composition, a pending question or
 // approval) and changes re-render the caller itself, so the closure below
 // always reads the current value; the controller is stable across snapshot
 // changes, so the subscription itself does not churn.
 export function useNextNeedsYouMount(hidden: boolean): boolean {
-  const controller = useOptionalNeedsYou()?.controller;
+  const controller = useOptionalNeedsYouController();
   const subscribe = useCallback((listener: () => void) => controller?.subscribe(listener) ?? (() => {}), [controller]);
   const getMount = useCallback(
     () => (controller ? nextNeedsYouVisible(controller.getSnapshot(), hidden) : false),

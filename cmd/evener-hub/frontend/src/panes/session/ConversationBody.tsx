@@ -1,7 +1,8 @@
 import { configFingerprint, formatQuoteBlock, projectThread, resolveEffectiveConfig } from "@evener/appwire-client";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { focusedSessionRef } from "../../shell/focusedSession";
+import { useOptionalNeedsYouController } from "../../shell/NeedsYouProvider";
 import { navigate, paneToURL, refParam } from "../../shell/routing";
 import { cadenceStateFor } from "../../shell/sessionStatus";
 import { workspaceStore } from "../../shell/workspace";
@@ -327,10 +328,25 @@ function StandardConversationBody({
     count: flow.pillCount,
     error: flow.pillError,
   });
-  const attentionOverlay =
-    attentionOwner && nextNeedsYouMounts ? (
-      <NextNeedsYou sessionRef={ref} viewId={seat.readView?.id ?? seat.viewFallbackId} hidden={attentionHidden} />
-    ) : undefined;
+  const attentionMounted = attentionOwner && nextNeedsYouMounts;
+  const attentionOverlay = attentionMounted ? (
+    <NextNeedsYou sessionRef={ref} viewId={seat.readView?.id ?? seat.viewFallbackId} hidden={attentionHidden} />
+  ) : undefined;
+
+  // The mount gate owns the control's suppression contract. While the control
+  // stayed mounted through a visible-to-hidden flip, its own effect cancelled
+  // the controller's deferred navigation so a late reply could not act; the
+  // flip now unmounts it, so the gate performs the cancellation. Focus loss is
+  // not suppression: the reader moved away, and the navigation they armed
+  // still lands in this conversation.
+  const attentionController = useOptionalNeedsYouController();
+  const wasAttentionMountedRef = useRef(attentionMounted);
+  useLayoutEffect(() => {
+    const wasMounted = wasAttentionMountedRef.current;
+    wasAttentionMountedRef.current = attentionMounted;
+    if (!wasMounted || attentionMounted || !attentionOwner) return;
+    attentionController?.cancel();
+  }, [attentionMounted, attentionOwner, attentionController]);
 
   const showColdStartSkeleton = useColdStartSkeleton(ref, model);
   const seenDividerTurnId = useSeenDivider(ref, model);

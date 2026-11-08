@@ -596,6 +596,97 @@ test("a visible pill mounts its slot without an empty attention slot below it", 
   view.unmount();
 });
 
+// The attention slot's mount gate owns the control's suppression contract: a
+// navigation the reader armed before suppression began must not land after
+// the gate unmounts the control, exactly as the control's own visible-to-
+// hidden effect enforced while it stayed mounted.
+test("a navigation armed before suppression does not land once suppression unmounts the control", async ({
+  onTestFinished,
+}) => {
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+    stubSessionSlots();
+  });
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", (params) => attentionRead(params.ref ?? "ref_a"));
+  const manifestGate = deferred<void>();
+  const sectionGate = deferred<void>();
+  let sectionRequested = false;
+  fake.on("evener/navigation/read", (params) => {
+    if (params.resource === "manifest") {
+      return manifestGate.promise.then(() =>
+        wireSnapshot(
+          params,
+          manifest({
+            generation_id: "delayed-needs-you",
+            sections: { live: { count: 0 }, needs_you: { count: 2 }, pin_sections: { count: 0 } },
+          }),
+          '"manifest"',
+          1,
+          "delayed-needs-you",
+        ),
+      );
+    }
+    if (params.resource === "section" && params.section === "needs_you") {
+      sectionRequested = true;
+      return sectionGate.promise.then(() =>
+        wireSnapshot(
+          params,
+          {
+            sessions: [
+              { ref: "ref_a", state: "awaiting" },
+              { ref: "ref_b", state: "awaiting" },
+            ],
+            remaining: 0,
+          },
+          '"page"',
+          1,
+          "delayed-needs-you",
+        ),
+      );
+    }
+    throw new Error(`unexpected navigation resource ${params.resource}`);
+  });
+  const releaseNavigation = navigationStore.init(fake, capability("delayed-needs-you"));
+  const manifestRead = navigationStore.getState().loadManifest();
+  const pane = attentionSession("delayed-needs-you-pane");
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  window.history.replaceState({}, "", "/s/ref_a");
+  const view = renderAttentionSession(fake, pane);
+
+  try {
+    const editor = await screen.findByRole("textbox", { name: "Message" });
+    await flushPendingTurnsProjectionForTests();
+    const next = await screen.findByTestId("next-needs-you-next");
+
+    // The Next click arms a navigation whose page read stays pending.
+    fireEvent.click(next);
+    await waitFor(() => expect(sectionRequested).toBe(true));
+
+    // Suppression starts mid-flight and unmounts the control.
+    fireEvent.compositionStart(editor);
+    await waitFor(() => expect(screen.queryByTestId("next-needs-you")).toBeNull());
+
+    // The delayed page reply arrives while the reader is mid-composition: it
+    // must not navigate their pane away.
+    await act(async () => {
+      sectionGate.resolve(undefined);
+    });
+    expect(window.location.pathname).toBe("/s/ref_a");
+
+    // Suppression clearing returns the control with the queue intact.
+    fireEvent.compositionEnd(editor);
+    await waitFor(() => expect(screen.getByTestId("next-needs-you")).toBeTruthy());
+    expect(window.location.pathname).toBe("/s/ref_a");
+  } finally {
+    view.unmount();
+    releaseNavigation();
+    manifestGate.resolve();
+    await manifestRead;
+  }
+});
+
 test("the measured clearance does not toggle New Content or move an end-following reader", async ({
   onTestFinished,
 }) => {
