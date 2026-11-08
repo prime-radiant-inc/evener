@@ -23,7 +23,7 @@ interface RailRevealInputs {
   onRevealConsumed: (() => void) | undefined;
   resources: RailResources;
   archivedLists: Record<string, ArchivedList>;
-  expandedOverrides: ReadonlyMap<string, boolean>;
+  expansion: ReadonlyMap<string, boolean>;
   isExpanded: (id: string, defaultOpen: boolean) => boolean;
   setExpanded: (id: string, value: boolean) => void;
   groupingMode: RailGroupingMode;
@@ -38,7 +38,7 @@ export function useRailReveal({
   onRevealConsumed,
   resources,
   archivedLists,
-  expandedOverrides,
+  expansion,
   isExpanded,
   setExpanded,
   groupingMode,
@@ -136,7 +136,7 @@ export function useRailReveal({
       ...revealExpansionIds(resources.testRuns, [], revealTarget, "flat"),
       ...revealExpansionIds(resources.archivedProjects, [], revealTarget, "flat", { rowsUnderProjectNode: true }),
     ];
-    const nextFold = chain.find((id) => expandedOverrides.get(id) !== true);
+    const nextFold = chain.find((id) => expansion.get(id) !== true);
     if (nextFold) {
       setExpanded(nextFold, true);
       return;
@@ -204,7 +204,7 @@ export function useRailReveal({
         ...revealExpansionIds(resources.testRuns, [], carrierRef, "flat"),
         ...revealExpansionIds(resources.archivedProjects, [], carrierRef, "flat", { rowsUnderProjectNode: true }),
       ];
-      const nextCarrierFold = carrierChain.find((id) => expandedOverrides.get(id) !== true);
+      const nextCarrierFold = carrierChain.find((id) => expansion.get(id) !== true);
       if (nextCarrierFold) {
         setExpanded(nextCarrierFold, true);
         return;
@@ -217,7 +217,7 @@ export function useRailReveal({
         return;
       }
       const projectID = projectNodeExpansionKey(location.project_key);
-      if (expandedOverrides.get(projectID) !== true) {
+      if (expansion.get(projectID) !== true) {
         setExpanded(projectID, true);
         return;
       }
@@ -282,7 +282,7 @@ export function useRailReveal({
   }, [
     revealTarget,
     resources,
-    expandedOverrides,
+    expansion,
     groupingMode,
     consumeReveal,
     setExpanded,

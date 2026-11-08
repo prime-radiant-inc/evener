@@ -53,14 +53,7 @@ import {
 import styles from "./Rail.module.css";
 import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
 import { RailRow, type RailRowActions } from "./RailRow";
-import {
-  ARCHIVED_SECTION_KEY,
-  LIVE_SECTION_KEY,
-  loadExpansion,
-  PROJECTS_SECTION_KEY,
-  saveExpansion,
-  TEST_RUNS_SECTION_KEY,
-} from "./railExpansion";
+import { ARCHIVED_SECTION_KEY, LIVE_SECTION_KEY, PROJECTS_SECTION_KEY, TEST_RUNS_SECTION_KEY } from "./railExpansion";
 import { GearIcon, SearchIcon, SidebarIcon, TuneIcon } from "./railIcons";
 import {
   archivedCount,
@@ -499,7 +492,6 @@ function NavigationRail({
   const selectedSessionRef = useWorkspaceStore(currentSessionRef);
   const isRowSelected = (node: RailNode): boolean | undefined =>
     node.kind === "session" ? node.session.ref === selectedSessionRef : undefined;
-  const [expandedOverrides, setExpandedOverrides] = useState<ReadonlyMap<string, boolean>>(loadExpansion);
   const [deleteTarget, setDeleteTarget] = useState<RailProject | null>(null);
   const [pending, setPending] = useState<readonly PendingOp[]>([]);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -516,7 +508,7 @@ function NavigationRail({
     () => applyPending(base, pending, { pinSources: buildPinSourceIndex(base) }),
     [base, pending],
   );
-  const isExpanded = useMemo(() => overrideLookup(expandedOverrides), [expandedOverrides]);
+  const isExpanded = useMemo(() => overrideLookup(expanded), [expanded]);
   useEffect(() => {
     if (navigationMode !== "v3") return;
     if (!manifest)
@@ -526,15 +518,9 @@ function NavigationRail({
         .catch(() => undefined);
   }, [navigationMode, manifest]);
 
-  const setExpanded = useCallback(
-    (id: string, value: boolean) => {
-      const next = new Map(expandedOverrides);
-      next.set(id, value);
-      setExpandedOverrides(next);
-      saveExpansion(next);
-    },
-    [expandedOverrides],
-  );
+  const setExpanded = useCallback((id: string, value: boolean) => {
+    navigationStore.getState().setRowExpanded(id, value);
+  }, []);
   const { rootLoadsInFlight, loadProjectRoot, projectRetryCallback } = useProjectRootLoads(
     resources,
     navigationMode,
@@ -571,7 +557,7 @@ function NavigationRail({
     onRevealConsumed,
     resources,
     archivedLists,
-    expandedOverrides,
+    expansion: expanded,
     isExpanded,
     setExpanded,
     groupingMode,
@@ -959,11 +945,11 @@ function NavigationRail({
       seenHostFolds.current = new Set(hostFoldIds);
       return;
     }
-    // One fold per pass, the reveal idiom: setExpanded closes over this
-    // render's override map, so a second call in one pass would clobber the
-    // first. The override change re-runs this effect and opens the rest,
-    // all before paint.
-    const next = [...hostFoldIds].find((id) => !handled.has(id) && expandedOverrides.get(id) !== false);
+    // One fold per pass, the reveal idiom: this effect reads the render's
+    // expansion map, so a second call in one pass would act on one decision
+    // twice. The store change re-runs this effect and opens the rest, all
+    // before paint.
+    const next = [...hostFoldIds].find((id) => !handled.has(id) && expanded.get(id) !== false);
     if (next) {
       seenHostFolds.current = new Set([...handled, next]);
       setExpanded(next, true);
@@ -973,7 +959,7 @@ function NavigationRail({
     // the tree drop out so a fold that returns re-opens (its rows came
     // back).
     seenHostFolds.current = new Set(hostFoldIds);
-  }, [projectsSectionNodes, hostFoldIds, expandedOverrides, setExpanded]);
+  }, [projectsSectionNodes, hostFoldIds, expanded, setExpanded]);
   const liveNodes = [
     // Live answers "which machine" the same way in either mode: rows group
     // under host subheaders exactly while they span more than one host
