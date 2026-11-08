@@ -20,6 +20,7 @@ import {
   Badge,
   Button,
   Card,
+  Chevron,
   Chip,
   Disclosure,
   EmptyState,
@@ -423,29 +424,46 @@ function dotState(plugin: MockPlugin): "idle" | "failed" | "ended" {
 // (status, or "installed" on a catalog row), and the meta line.
 // ---------------------------------------------------------------------------
 
-function InstalledPluginRow({ plugin, countsInMeta }: { plugin: MockPlugin; countsInMeta?: boolean }) {
-  const counts = countsInMeta ? ` · ${countsSummary(plugin.contents)}` : "";
+function InstalledPluginRow({ plugin }: { plugin: MockPlugin }) {
   return (
     <ListRow
       leading={<StatusDot state={dotState(plugin)} />}
       label={plugin.name}
       chips={statusChips(plugin).length > 0 ? statusChips(plugin) : undefined}
-      meta={`@ ${plugin.marketplace} · v${plugin.version || "unknown"}${counts}`}
+      meta={`@ ${plugin.marketplace} · v${plugin.version || "unknown"} · ${countsSummary(plugin.contents)}`}
       onSelect={() => {}}
     />
   );
 }
 
+// Decision 1 ("both"): a browse row that is a drill-in target AND carries a
+// trailing Install control. Today's ListRow cannot do this (its interactive
+// variant is one whole-row button; a nested button is invalid), so the row
+// ListRow will grow is a container whose main area is the tap target and
+// whose trailing slot holds the control - composed here with the same
+// tokens so the spec has the visual.
 function CatalogPluginRow({ plugin }: { plugin: MockPlugin }) {
-  const chips = plugin.installed
-    ? [
-        <Chip key="installed" kind="installed">
-          Installed
-        </Chip>,
-      ]
-    : undefined;
-  const meta = plugin.category ? `${plugin.description} · ${plugin.category}` : plugin.description;
-  return <ListRow label={plugin.name} chips={chips} meta={meta} onSelect={() => {}} />;
+  return (
+    <div className={styles.composedRow}>
+      <button type="button" className={styles.composedMain} onClick={() => {}}>
+        <span className={styles.composedLabel}>
+          {plugin.name}
+          {plugin.installed && <Chip kind="installed">Installed</Chip>}
+        </span>
+        <span className={mpStyles.rowMeta}>
+          {plugin.category ? `${plugin.description} · ${plugin.category}` : plugin.description}
+        </span>
+      </button>
+      <span className={styles.composedTrailing}>
+        {!plugin.installed && (
+          <Button size="sm" onClick={() => {}}>
+            Install
+          </Button>
+        )}
+        <Chevron direction="right" />
+      </span>
+    </div>
+  );
 }
 
 function LauncherSwitchRow({ plugin }: { plugin: MockPlugin }) {
@@ -507,19 +525,21 @@ function DetailBody({ plugin, mode, diagnostics }: { plugin: MockPlugin; mode: S
     <>
       {chips.length > 0 && <div className={mpStyles.chipRow}>{chips}</div>}
       <p className={mpStyles.sheetDesc}>{plugin.description}</p>
-      <div className={styles.contents}>
-        <Eyebrow as="h3">Contents</Eyebrow>
-        {present.length === 0 ? (
-          <p className={styles.noContents}>Manifest only - no skills, agents, commands, hooks, or MCP servers.</p>
-        ) : (
-          <div className={styles.contentsList}>
-            {present.map(([key, label]) => (
-              <ContentsRow key={key} label={label} names={plugin.contents[key]} />
-            ))}
-          </div>
-        )}
-        {diagnostics}
-      </div>
+      {mode !== "catalog" && (
+        <div className={styles.contents}>
+          <Eyebrow as="h3">Contents</Eyebrow>
+          {present.length === 0 ? (
+            <p className={styles.noContents}>Manifest only - no skills, agents, commands, hooks, or MCP servers.</p>
+          ) : (
+            <div className={styles.contentsList}>
+              {present.map(([key, label]) => (
+                <ContentsRow key={key} label={label} names={plugin.contents[key]} />
+              ))}
+            </div>
+          )}
+          {diagnostics}
+        </div>
+      )}
       <div className={mpStyles.metaList}>
         <PropertyList rows={metaRows} />
       </div>
@@ -826,15 +846,6 @@ function SettingsDemo() {
               </li>
             )}
           </ul>
-          <p className={styles.frameNote}>Option - counts in row meta:</p>
-          <ul aria-label="Counts in meta option" className={mpStyles.list}>
-            <li>
-              <InstalledPluginRow plugin={SUPERPOWERS_CHROME} countsInMeta />
-            </li>
-            <li>
-              <InstalledPluginRow plugin={DESIGN} countsInMeta />
-            </li>
-          </ul>
         </section>
       ) : (
         <section className={mpStyles.section}>
@@ -845,23 +856,6 @@ function SettingsDemo() {
             {BROWSE_TREES.map((node) => (
               <BrowseTreeNode key={node.marketplace} marketplace={node.marketplace} plugins={node.plugins} />
             ))}
-          </ul>
-          <p className={styles.frameNote}>
-            Alternative kept on the table - a read-only row with a trailing Install action preserves one-tap install,
-            but it is a second row shape:
-          </p>
-          <ul aria-label="Inline install alternative" className={mpStyles.list}>
-            <li>
-              <ListRow
-                label={EPISODIC_MEMORY.name}
-                meta={EPISODIC_MEMORY.description}
-                action={
-                  <Button size="sm" onClick={() => {}}>
-                    Install
-                  </Button>
-                }
-              />
-            </li>
           </ul>
         </section>
       )}
@@ -874,10 +868,11 @@ function SharedRowSection() {
     <section id="rows" className={styles.section}>
       <h2 className={styles.sectionTitle}>2 · One row, every list</h2>
       <p className={styles.sectionNote}>
-        Installed and to-install render from one ListRow composition. Context supplies the differences: the installed
-        rows carry the status dot and status chips; catalog rows carry the description (and an &quot;installed&quot;
-        chip when the plugin is already on this host); every row is a single tap target that opens the detail sheet,
-        where Install, Upgrade, Remove, Enabled and Auto-upgrade live. The filter and the segments work on this page.
+        Installed and to-install render from one row composition. Installed rows carry the status dot, status chips, and
+        counts in meta (decision 3). Browse rows carry the description and an inline Install button, and still open the
+        detail sheet (decision 1: both) - which today&apos;s ListRow cannot express, so the browse row below is composed
+        from tokens; ListRow grows that trailing-control shape in the implementation. Upgrade, Remove, Enabled and
+        Auto-upgrade live in the sheet. The filter and the segments work on this page.
       </p>
       <SettingsDemo />
     </section>
@@ -934,10 +929,10 @@ function SheetSection({ live }: { live: boolean }) {
         />
         <SheetFrame
           live={live}
-          plugin={EPISODIC_MEMORY}
+          plugin={ATLASSIAN}
           mode="catalog"
           label="To-install - catalog mode"
-          note="Same sheet, no switches; Install replaces Remove. Contents shown before install require a new hub read that fetches and inspects the candidate (open question 2) - names here are illustrative."
+          note="Same sheet, no switches; Install replaces Remove. Contents are deferred (decision 2): the catalog index carries name/description/category/author only, so this sheet shows catalog metadata; the Contents block appears once a plugin is installed."
         />
       </div>
     </section>
@@ -986,7 +981,7 @@ function LauncherSection({ live }: { live: boolean }) {
             </div>
           </Card>
           <p className={styles.frameNote}>
-            Variant - drill-in rows, toggle lives in the sheet (one extra tap per toggle):
+            Rejected alternative (decision 4): drill-in rows with the toggle in the sheet - one extra tap per toggle:
           </p>
           <ul aria-label="Drill-in launcher variant" className={mpStyles.list}>
             <li>
@@ -1029,9 +1024,8 @@ function SpecSection() {
               unsupported/unknown hooks). The loader already produces all of it; only the RPC surface is new.
             </li>
             <li>
-              Catalog plugin detail: contents for a not-yet-installed plugin require fetching the candidate from its
-              marketplace and inspecting it without installing - cacheable, the same code path install uses. The catalog
-              index itself carries name/description/category/author/homepage only.
+              ListRow grows an interactive variant with a trailing control (decision 1): the row becomes a container
+              whose main area is the tap target, with the control in the trailing slot - no nested buttons.
             </li>
             <li>
               Shared view model: PluginEntry (installed status), MarketplaceCatalogPlugin (catalog metadata), and
@@ -1055,26 +1049,24 @@ function SpecSection() {
           </ul>
         </div>
       </div>
-      <Eyebrow as="h3">Open questions</Eyebrow>
+      <Eyebrow as="h3">Decisions (Jesse, 2026-11-08)</Eyebrow>
       <ol className={styles.questionList}>
         <li>
-          <strong>Where Install lives.</strong> Mocked: every row opens the sheet, Install sits in its footer (one row
-          shape everywhere, matching the design rule that a row is one tap target). Alternative shown in section 2: a
-          read-only row with a trailing Install action - one-tap install, but two row shapes. My call: sheet only.
+          <strong>Install placement: both.</strong> Browse rows keep an inline Install button and open the detail sheet.
+          Needs the ListRow extension above; the composed rows in section 2 are the visual.
         </li>
         <li>
-          <strong>Contents before install.</strong> Showing contents on to-install rows needs the hub to fetch and
-          inspect candidates (new capability, cacheable). Defer it and catalog rows show description/author/category
-          only until installed. My call: build it now; it is most of the point of browsing.
+          <strong>Pre-install contents: deferred.</strong> To-install sheets show catalog metadata (description, author,
+          category, marketplace, source); the Contents block is installed-only for now. The fetch-and-inspect read is
+          the natural follow-up when wanted.
         </li>
         <li>
-          <strong>Counts in list rows.</strong> Section 2 shows the option appended to installed row meta (1 skill · 1
-          agent · 1 MCP server). My call: include them - the rows become self-describing and the vocabulary already
-          exists in the launcher.
+          <strong>Counts in list rows: included.</strong> Installed row meta reads &quot;@ marketplace · v1.2.3 · 7
+          skills · 9 MCP servers&quot;. Catalog rows gain counts too if the pre-install read lands later.
         </li>
         <li>
-          <strong>Launcher rows.</strong> Primary mocked: Switch rows with the shared vocabulary. Variant: drill-in rows
-          with the toggle in the sheet. My call: primary - one-tap toggling is the launcher&apos;s job.
+          <strong>Launcher rows: Switch rows, shared vocabulary.</strong> One-tap toggling unchanged, description speaks
+          the shared source · counts language, and rows open the same detail sheet for contents.
         </li>
       </ol>
       <p className={styles.sectionNote}>
@@ -1097,8 +1089,8 @@ export default function PluginsMockups() {
       <p className={styles.intro}>
         Mockups for unifying the plugins UI: the settings screens (Installed and Browse), the plugin detail sheet with
         its contents, and the session launcher&apos;s plugin list - all rendered from the real widgets and the real
-        section styles. Fixture data comes from this machine&apos;s real install set and marketplace indexes; contents
-        for not-yet-installed plugins are illustrative. Nothing is live, and nothing you click here persists.
+        section styles. Fixture data comes from this machine&apos;s real install set and marketplace indexes. Nothing is
+        live, and nothing you click here persists. Section 5 records the decisions already made on this page.
       </p>
       <Switch
         checked={liveSheets}
