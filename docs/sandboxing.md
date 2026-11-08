@@ -524,7 +524,9 @@ persistent write roots are redirected into session scratch, as detailed below.
 
 - `workspace-write` serves the language cache roots (`~/.cache` alongside a set
   `$XDG_CACHE_HOME`, `~/.npm` and `~/.cargo` alongside a set `$npm_config_cache`,
-  an absolute `.npmrc` `cache=` (user, project, or a configured global file), or
+  an absolute `.npmrc` `cache=` (user, project, or a configured global file;
+  a project value is served only where the directory already exists and never
+  makes Evener create one), or
   `$CARGO_HOME`, the `pkg` directory of your first GOPATH entry and of Go's
   `$HOME/go` default, and a `GOMODCACHE` or `GOCACHE` you set elsewhere) as a
   **read-real, write-private overlay** where the
