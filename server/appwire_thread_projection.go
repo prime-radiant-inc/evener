@@ -114,7 +114,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 		Source:        sourceID,
 		Evener: appwire.EvenerThread{
 			ConversationProvenance: appwire.CloneConversationProvenance(envelope.ConversationProvenance),
-			PendingAsk:             appwire.ClonePendingAsk(envelope.PendingAsk),
+			PendingAsk:             projectPendingAsk(envelope.PendingAsk),
 			Ref:                    ref,
 			InstanceID:             threadID,
 			Profile:                status.Profile,
@@ -423,6 +423,7 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 	steerAvailable := s.retrySafeTurns.Steer != nil
 	clearAvailable := s.clearFunc != nil && !active && !closed && s.clearBlockedReasonLocked() == ""
 	return appwire.ThreadCapabilities{
+		AskFence:                   true,
 		VoicePresentationContextV1: s.retrySafeTurns.Start != nil && steerAvailable,
 		Send:                       !active && !closed,
 		// Steer answers "can this harness steer", not "is there a turn to steer

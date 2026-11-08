@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/envvars/userdirs"
@@ -485,6 +486,11 @@ func run(ctx context.Context, cfg runConfig) error {
 	if err := startupInterrupted(ctx, stepCreatingSession); err != nil {
 		return err
 	}
+	bootGeneration, err := schema.NextBootGeneration(stateDir, sess.ID(), 0)
+	if err != nil {
+		return fmt.Errorf("boot generation: %w", err)
+	}
+	sess.SetBootGeneration(appwire.BootGeneration(bootGeneration))
 
 	// One startup line, loudly, states exactly what this host enforces (read from
 	// the env's resolved policy so it never overstates). Empty for an unsandboxed

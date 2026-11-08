@@ -18,6 +18,8 @@ import (
 // carriers do not sample through it: they patch root/descendant cached state
 // inside CommitProjection. Sampling still runs ON THE DRAIN GOROUTINE, inside
 // the same call that is consuming the session's event stream.
+// Explicit pending-ask pages also use PendingAskSnapshot, outside projection
+// locks, without widening the authoritative consumer's permitted lock set.
 //
 // THE RULE, and it is a deadlock rule rather than a style one:
 //
@@ -65,14 +67,13 @@ type EnvelopeSampling interface {
 	DetailedStatus() DetailedStatus
 	ClientMutationProjection() (appwire.QueueState, []appwire.PendingMutation)
 	ConversationProvenance() *appwire.ConversationProvenanceState
-	PendingAskCalls() *appwire.PendingAskState
+	PendingAskSnapshot() (*appwire.PendingQuestion, *appwire.PendingAskState)
 	TasksWithError() ([]task.Task, error)
 	GoalStatus() (status string, iterations int, ok bool)
 	WorkMillisSnapshot() int64
 	CumulativeUsageSnapshot() llm.Usage
 	ActiveTurnStartedAtMillis() int64
 	FailedToolCallsSnapshot() (count int, measured bool)
-	PendingQuestion() *appwire.PendingQuestion
 	RestingFailure() *appwire.ThreadFailure
 	PendingEscalations() []events.SandboxEscalationRequestedData
 	ReasoningEffort() string

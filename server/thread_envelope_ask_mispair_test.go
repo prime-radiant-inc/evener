@@ -20,6 +20,12 @@ type askMispairEnvelopeSource struct {
 	appended bool
 }
 
+func (s *askMispairEnvelopeSource) PendingAskSnapshot() (*appwire.PendingQuestion, *appwire.PendingAskState) {
+	// An append cannot intervene inside the one source acquisition.
+	s.appended = true
+	return s.PendingQuestion(), s.PendingAskCalls()
+}
+
 func (s *askMispairEnvelopeSource) PendingQuestion() *appwire.PendingQuestion {
 	if s.appended {
 		// The first question is unchanged by the append; the count and the
@@ -47,6 +53,42 @@ func (s *askMispairEnvelopeSource) PendingAskCalls() *appwire.PendingAskState {
 		InstanceID: "root",
 		Revision:   1,
 		Calls:      []appwire.PendingAskCall{{TurnID: "turn-ask-1", CallID: "call-ask-1"}},
+	}
+}
+
+func TestThreadEnvelopeOlderAskSampleKeepsTheNewerExcerpt(t *testing.T) {
+	t.Parallel()
+	newer := &appwire.PendingAskState{Version: 1, InstanceID: "root", Revision: 2,
+		Calls: []appwire.PendingAskCall{{TurnID: "turn-2", CallID: "call-2"}}}
+	older := &appwire.PendingAskState{Version: 1, InstanceID: "root", Revision: 1,
+		Calls: []appwire.PendingAskCall{{TurnID: "turn-1", CallID: "call-1"}}}
+	want := &appwire.PendingQuestion{Count: 2}
+	envelope := threadEnvelope{PendingQuestion: want, PendingAsk: newer}
+	envelope.assign(facetAsk, threadEnvelope{PendingQuestion: &appwire.PendingQuestion{Count: 1}, PendingAsk: older}, false, false, false)
+	if envelope.PendingQuestion != want || envelope.PendingAsk != newer {
+		t.Fatalf("an older sample replaced part of the newer ask snapshot: %+v", envelope)
+	}
+}
+
+func TestThreadEnvelopeOlderBootKeepsTheNewerAskSample(t *testing.T) {
+	t.Parallel()
+	want := &appwire.PendingQuestion{Count: 2}
+	state := &appwire.PendingAskState{InstanceID: "root", BootGeneration: "2", Revision: 1}
+	envelope := threadEnvelope{PendingQuestion: want, PendingAsk: state}
+	envelope.assign(facetAsk, threadEnvelope{PendingQuestion: &appwire.PendingQuestion{Count: 1}, PendingAsk: &appwire.PendingAskState{InstanceID: "root", BootGeneration: "1", Revision: 100}}, false, false, false)
+	if envelope.PendingQuestion != want || envelope.PendingAsk != state {
+		t.Fatalf("older boot replaced newer ask sample: %+v", envelope)
+	}
+}
+
+func TestThreadEnvelopeSourceReplacementClearsBothAskHalves(t *testing.T) {
+	t.Parallel()
+	s := NewServer(ServerConfig{})
+	s.appEnvelope.PendingQuestion = &appwire.PendingQuestion{Count: 1}
+	s.appEnvelope.PendingAsk = &appwire.PendingAskState{InstanceID: "old", Revision: 1}
+	s.SetThreadEnvelopeSource(&stubThreadEnvelopeSource{})
+	if s.appEnvelope.PendingQuestion != nil || s.appEnvelope.PendingAsk != nil {
+		t.Fatalf("source replacement retained part of the retired ask snapshot: question=%+v state=%+v", s.appEnvelope.PendingQuestion, s.appEnvelope.PendingAsk)
 	}
 }
 

@@ -1,5 +1,7 @@
 package appwire
 
+import "slices"
+
 // AttentionEntry is one live session's derived attention level plus the
 // labels notification clients need. Levels: "working" | "needs_you" |
 // "error" | "idle" (spec v5 semantics table). Computed by
@@ -26,7 +28,41 @@ type AttentionEntry struct {
 	// question: its turn ended with end_reason needs_response, asking for a
 	// reply. A plain reply rests idle and never carries it. Additive: an
 	// older hub omits it, decoding as false.
-	NeedsResponse bool `json:"needsResponse,omitempty"`
+	NeedsResponse     bool             `json:"needsResponse,omitempty"`
+	PendingQuestion   *PendingQuestion `json:"pendingQuestion,omitempty"`
+	AskBootGeneration string           `json:"askBootGeneration,omitempty"`
+	AskRevision       uint64           `json:"askRevision,omitempty"`
+	CompositeList     []PendingAskCall `json:"compositeList,omitempty"`
+	CompositeTotal    int              `json:"compositeTotal,omitempty"`
+	CalllessCount     int              `json:"calllessCount,omitempty"`
+	AskPageable       bool             `json:"askPageable,omitempty"`
+	// PublishedAt is the derivation moment, in Unix milliseconds.
+	PublishedAt int64 `json:"publishedAt,omitempty"`
+}
+
+// EqualAttentionEntry compares values, treating absent and empty lists alike.
+func EqualAttentionEntry(a, b AttentionEntry) bool {
+	if a.Ref != b.Ref || a.RosterInstanceID != b.RosterInstanceID || a.ID != b.ID ||
+		a.Title != b.Title || a.Project != b.Project || a.Level != b.Level ||
+		a.AskPending != b.AskPending || a.ApprovalPending != b.ApprovalPending || a.NeedsResponse != b.NeedsResponse ||
+		a.AskBootGeneration != b.AskBootGeneration || a.AskRevision != b.AskRevision ||
+		a.CompositeTotal != b.CompositeTotal || a.CalllessCount != b.CalllessCount ||
+		a.AskPageable != b.AskPageable || a.PublishedAt != b.PublishedAt || !slices.Equal(a.CompositeList, b.CompositeList) {
+		return false
+	}
+	if a.PendingQuestion == nil || b.PendingQuestion == nil {
+		return a.PendingQuestion == b.PendingQuestion
+	}
+	x, y := a.PendingQuestion, b.PendingQuestion
+	return x.Question == y.Question && x.Count == y.Count && x.TurnID == y.TurnID && x.CallID == y.CallID &&
+		slices.Equal(x.Options, y.Options) && equalAttentionFlag(x.Complete, y.Complete) && equalAttentionFlag(x.Truncated, y.Truncated)
+}
+
+func equalAttentionFlag(a, b *bool) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 // AttentionSummary is the authoritative badge count set, computed over the

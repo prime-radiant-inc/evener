@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 type Turn struct {
@@ -344,6 +345,20 @@ type ThreadReadParams struct {
 	// AnswerContinuation requests only a recorded ancestry verdict and its
 	// snapshot identity. It cannot subscribe or include a transcript window.
 	AnswerContinuation *AnswerContinuationQuery `json:"answerContinuation,omitempty"`
+	// A pending-ask page requires the observed pair and an explicit root ref.
+	ExpectedAskRevision       *uint64 `json:"expectedAskRevision,omitempty"`
+	ExpectedAskBootGeneration string  `json:"expectedAskBootGeneration,omitempty"`
+	Offset                    *int    `json:"offset,omitempty"`
+	Limit                     *int    `json:"limit,omitempty"`
+}
+
+// PendingAskPage enumerates call composites, not questions. A nil NextOffset
+// ends iteration, while CalllessCount names the separate legacy population.
+type PendingAskPage struct {
+	Composites    []PendingAskCall `json:"composites"`
+	Total         int              `json:"total"`
+	NextOffset    *int             `json:"nextOffset,omitempty"`
+	CalllessCount int              `json:"calllessCount"`
 }
 
 type AnswerContinuationQuery struct {
@@ -370,7 +385,8 @@ func (p ThreadReadParams) ValidateAnswerContinuation() error {
 }
 
 type ThreadReadResponse struct {
-	Thread Thread `json:"thread"`
+	Thread         Thread          `json:"thread"`
+	PendingAskPage *PendingAskPage `json:"pendingAskPage,omitempty"`
 	// TargetSessionToolsSupported reports whether the daemon serving this thread
 	// negotiated session tools. Omission means the serving hub cannot attest it.
 	TargetSessionToolsSupported *bool `json:"targetSessionToolsSupported,omitempty"`
@@ -531,6 +547,28 @@ func (p *ThreadReadParams) UnmarshalJSON(data []byte) error {
 	var decoded wire
 	if err := decodeStrictJSON(data, &decoded); err != nil {
 		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	page := false
+	for key, value := range fields {
+		switch strings.ToLower(key) {
+		case "expectedaskrevision", "expectedaskbootgeneration", "offset", "limit":
+			page = true
+			if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+				return InvalidParams("pending ask page fields cannot be null")
+			}
+		}
+	}
+	if page {
+		if decoded.ExpectedAskRevision == nil {
+			return InvalidParams("pending ask pages require an observed ask pair")
+		}
+		if err := ValidateThreadReadParams(ThreadReadParams(decoded)); err != nil {
+			return err
+		}
 	}
 	*p = ThreadReadParams(decoded)
 	return nil
@@ -755,12 +793,14 @@ type ThreadForkResponse struct {
 }
 
 type TurnStartParams struct {
-	ManagerProof       *SessionActorProof `json:"managerProof,omitempty"`
-	Ref                string             `json:"ref,omitempty"`
-	ThreadID           string             `json:"threadId,omitempty"`
-	ClientMutationID   string             `json:"clientMutationId"`
-	ExpectedInstanceID string             `json:"expectedInstanceId"`
-	Input              []InputItem        `json:"input,omitempty"`
+	ManagerProof              *SessionActorProof `json:"managerProof,omitempty"`
+	Ref                       string             `json:"ref,omitempty"`
+	ThreadID                  string             `json:"threadId,omitempty"`
+	ClientMutationID          string             `json:"clientMutationId"`
+	ExpectedInstanceID        string             `json:"expectedInstanceId"`
+	Input                     []InputItem        `json:"input,omitempty"`
+	ExpectedAskRevision       *uint64            `json:"expectedAskRevision,omitempty"`
+	ExpectedAskBootGeneration string             `json:"expectedAskBootGeneration,omitempty"`
 }
 
 type TurnStartResponse struct {
@@ -776,12 +816,14 @@ type TurnStartResponse struct {
 // can survive thread/clear while its live session instance changes, and a
 // delayed old-generation intent must not run against the replacement.
 type TurnSteerParams struct {
-	ManagerProof       *SessionActorProof `json:"managerProof,omitempty"`
-	Ref                string             `json:"ref,omitempty"`
-	ThreadID           string             `json:"threadId,omitempty"`
-	ClientMutationID   string             `json:"clientMutationId"`
-	ExpectedInstanceID string             `json:"expectedInstanceId"`
-	Input              []InputItem        `json:"input,omitempty"`
+	ManagerProof              *SessionActorProof `json:"managerProof,omitempty"`
+	Ref                       string             `json:"ref,omitempty"`
+	ThreadID                  string             `json:"threadId,omitempty"`
+	ClientMutationID          string             `json:"clientMutationId"`
+	ExpectedInstanceID        string             `json:"expectedInstanceId"`
+	Input                     []InputItem        `json:"input,omitempty"`
+	ExpectedAskRevision       *uint64            `json:"expectedAskRevision,omitempty"`
+	ExpectedAskBootGeneration string             `json:"expectedAskBootGeneration,omitempty"`
 }
 
 // TurnInterruptParams cancels whatever turn the session is running. The receipt
@@ -798,11 +840,13 @@ type TurnInterruptParams struct {
 // after the active turn completes. The daemon enqueues immediately and returns;
 // no turn id is reserved or returned.
 type TurnQueueParams struct {
-	ManagerProof       *SessionActorProof `json:"managerProof,omitempty"`
-	Ref                string             `json:"ref"`
-	ClientMutationID   string             `json:"clientMutationId"`
-	ExpectedInstanceID string             `json:"expectedInstanceId"`
-	Input              []InputItem        `json:"input,omitempty"`
+	ManagerProof              *SessionActorProof `json:"managerProof,omitempty"`
+	Ref                       string             `json:"ref"`
+	ClientMutationID          string             `json:"clientMutationId"`
+	ExpectedInstanceID        string             `json:"expectedInstanceId"`
+	Input                     []InputItem        `json:"input,omitempty"`
+	ExpectedAskRevision       *uint64            `json:"expectedAskRevision,omitempty"`
+	ExpectedAskBootGeneration string             `json:"expectedAskBootGeneration,omitempty"`
 }
 
 type MutationProjectionState string

@@ -198,6 +198,19 @@ func TestEnvelopeSamplingNeverBlocksOnAnEmitHeldLock(t *testing.T) {
 	}
 }
 
+func TestEnvelopeSamplingUsesAtomicPendingAskSnapshot(t *testing.T) {
+	t.Parallel()
+	iface := reflect.TypeFor[EnvelopeSampling]()
+	if _, ok := iface.MethodByName("PendingAskSnapshot"); !ok {
+		t.Fatal("EnvelopeSampling does not exercise the atomic pending-ask accessor")
+	}
+	for _, separate := range []string{"PendingQuestion", "PendingAskCalls"} {
+		if _, ok := iface.MethodByName(separate); ok {
+			t.Errorf("EnvelopeSampling exposes separate %s read instead of the atomic pair", separate)
+		}
+	}
+}
+
 // TestEverySamplingRelevantMutexIsClassified is the completeness half. The test
 // above can only check the locks the table names, so a mutex added to Session or
 // subagent must be classified as permitted or forbidden before it can be

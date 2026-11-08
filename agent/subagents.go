@@ -24,6 +24,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -908,6 +909,12 @@ func (s *Session) prepareSubagentRunFromSelection(
 	disposeUnadopted := func() {
 		disposeUnadoptedSubagentSession(subSess)
 	}
+	bootGeneration, err := schema.NextBootGeneration(subSess.stateDir, subSess.ID(), 0)
+	if err != nil {
+		disposeUnadopted()
+		return nil, fmt.Errorf("child boot generation: %w", err)
+	}
+	subSess.SetBootGeneration(appwire.BootGeneration(bootGeneration))
 	if len(canonicalGrantTools) > 0 {
 		var missing []string
 		for _, toolName := range canonicalGrantTools {

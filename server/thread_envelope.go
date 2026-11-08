@@ -127,12 +127,13 @@ type threadEnvelope struct {
 // reports. cmd/evener/serve.go implements it over the running agent.Session.
 //
 // The root is seeded through it before the bridge starts, and the bridge samples
-// it at retained checkpoint/legacy moments -- never on a read. Direct task/goal
+// it at retained checkpoint/legacy moments, never under a read cut. Explicit
+// pending-ask pages sample only the ask snapshot outside projection locks. Direct task/goal
 // carriers bypass it and patch cached projections. That is the whole point of
 // the interface: it collapses sixteen separately
 // injected read-time callbacks into one seam with one caller, so a reader can
 // see at a glance where session state enters the daemon's projection and can be
-// sure it is not the read path.
+// sure it is not under the ordinary read cut.
 //
 // ADDING A METHOD HERE IS A CONCURRENCY DECISION, not just a wiring one. The
 // sampling runs on the authoritative consumer's drain goroutine, so a sample
@@ -151,9 +152,8 @@ type ThreadEnvelopeSource interface {
 	TaskAggregate() *appwire.TaskAggregate
 	WorkMetrics() (workMillis int64, usage *appwire.EvenerUsage, activeTurnStartedAt int64)
 	FailedToolCalls() (count int, measured bool)
-	// PendingQuestion is the first question of the session's pending ask, nil
-	// while none waits. The thread's AskPending is its presence.
-	PendingQuestion() *appwire.PendingQuestion
+	// PendingAskSnapshot returns the excerpt and complete pending set together.
+	PendingAskSnapshot() (*appwire.PendingQuestion, *appwire.PendingAskState)
 	// RestingFailure summarizes the failed turn the session rests on, nil
 	// when it rests on none.
 	RestingFailure() *appwire.ThreadFailure
@@ -324,6 +324,7 @@ func (s *Server) SetThreadEnvelopeSource(src ThreadEnvelopeSource) {
 	s.mu.Lock()
 	s.appEnvelopeSource = src
 	s.appEnvelopeSourceGeneration++
+	s.appEnvelope.PendingQuestion = nil
 	s.appEnvelope.PendingAsk = nil
 	s.mu.Unlock()
 }
@@ -418,12 +419,9 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 		}
 	}
 	if facets&facetAsk != 0 {
-		next.PendingQuestion = src.PendingQuestion()
-		if pending, ok := src.(interface {
-			PendingAskCalls() *appwire.PendingAskState
-		}); ok {
-			next.PendingAsk = appwire.ClonePendingAsk(pending.PendingAskCalls())
-		}
+		next.PendingQuestion, next.PendingAsk = src.PendingAskSnapshot()
+		next.PendingQuestion = appwire.ClonePendingQuestion(next.PendingQuestion)
+		next.PendingAsk = appwire.ClonePendingAsk(next.PendingAsk)
 	}
 	if facets&facetTurnFailure != 0 {
 		next.Failure = src.RestingFailure()
@@ -566,10 +564,13 @@ func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope, cwdSt
 		e.FailedToolCalls = next.FailedToolCalls
 	}
 	if facets&facetAsk != 0 {
-		e.PendingQuestion = next.PendingQuestion
-		// Revisions are comparable only within one installed source and instance.
-		// Source replacement clears PendingAsk before accepting its reset counter.
-		if next.PendingAsk != nil && (e.PendingAsk == nil || e.PendingAsk.InstanceID != next.PendingAsk.InstanceID || e.PendingAsk.Revision < next.PendingAsk.Revision) {
+		// The excerpt and state are one sample. Revisions only order samples
+		// within a boot, and a source replacement resets the stored state.
+		if e.PendingAsk == nil || next.PendingAsk != nil &&
+			(e.PendingAsk.InstanceID != next.PendingAsk.InstanceID ||
+				appwire.CompareBootGeneration(e.PendingAsk.BootGeneration, next.PendingAsk.BootGeneration) == appwire.BootGenerationReplace ||
+				e.PendingAsk.BootGeneration == next.PendingAsk.BootGeneration && e.PendingAsk.Revision < next.PendingAsk.Revision) {
+			e.PendingQuestion = next.PendingQuestion
 			e.PendingAsk = next.PendingAsk
 		}
 	}

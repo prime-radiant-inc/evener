@@ -120,8 +120,13 @@ func (r SessionOperationRequest) Validate() error {
 	if r.Stop != nil {
 		return r.Stop.Validate()
 	}
-	if r.Read != nil && (r.Read.Subscribe || r.Read.IncludeTurns) {
-		return InvalidParams("status reads do not subscribe or include history")
+	if r.Read != nil {
+		if r.Read.Subscribe || r.Read.IncludeTurns {
+			return InvalidParams("status reads do not subscribe or include history")
+		}
+		if err := ValidateThreadReadParams(*r.Read); err != nil {
+			return err
+		}
 	}
 	if r.Turns != nil && (r.Turns.Ref == "" || r.Turns.ThreadID != "" || r.Turns.Before != nil || r.Turns.ItemsView != "" || r.Turns.ThreadContentParams != (ThreadContentParams{})) {
 		return InvalidParams("Manager history requires a ref and cursor; local ranges and content filters are unsupported")

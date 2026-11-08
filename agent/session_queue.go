@@ -1004,6 +1004,7 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) steeringConsumptio
 	t.StableTurnID = msg.StableTurnID
 	if steeringAnswersAsk(msg.Source, steeringOrigin{kind: msg.Kind}, "") {
 		answerToTurnIDs := s.pendingAskTurnIDs()
+		t.AskResolution = s.clientMutationAskResolution(msg.ClientMutationID)
 		if s.clientMutations != nil && msg.ClientMutationID != "" {
 			record := s.clientMutations.snapshot().Journal[msg.ClientMutationID]
 			answerToTurnIDs = appendAnswerTurnIDs(answerToTurnIDs, record.AnswerToTurnIDs...)
@@ -1013,6 +1014,9 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) steeringConsumptio
 		s.mu.Lock()
 		activeExecution := s.execution.turnID
 		s.mu.Unlock()
+		if t.AskResolution != nil {
+			answerToTurnIDs = askResolutionTurnIDs(t.AskResolution, activeExecution)
+		}
 		if activeExecution != "" {
 			answerToTurnIDs = slices.DeleteFunc(answerToTurnIDs, func(id string) bool { return id == activeExecution })
 		}
@@ -1154,6 +1158,15 @@ func (s *Session) recordFailedSteeringSelection(msg steeringMessage, cause error
 	turn.Error = &schema.TurnFailureInfo{
 		Message:         cause.Error(),
 		SteeringCarrier: steeringCarrier,
+	}
+	if steeringCarrier {
+		turn.AskResolution = s.clientMutationAskResolution(msg.ClientMutationID)
+		if turn.AskResolution != nil {
+			s.mu.Lock()
+			activeExecution := s.execution.turnID
+			s.mu.Unlock()
+			turn.AnswerToTurnIDs = askResolutionTurnIDs(turn.AskResolution, activeExecution)
+		}
 	}
 	if len(input.SkillNames) > 0 {
 		turn.SkillState = &schema.SkillTurnState{Input: skillInputRecordFromQueued(input)}

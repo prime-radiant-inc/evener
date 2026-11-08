@@ -71,3 +71,21 @@ func TestVoiceSpeechTextRequiresExactSuccessfulPendingQuestion(t *testing.T) {
 		})
 	}
 }
+
+func TestVoiceAskPageDriftUsesHistoryRecovery(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		info appwire.ErrorInfo
+		want bool
+	}{
+		{appwire.ErrorAskFenceMismatch, true},
+		{appwire.ErrorTranscriptItemCursorStale, true},
+		{appwire.ErrorAskFenceUnsupportedOnDaemon, false},
+		{appwire.ErrorConflict, false},
+	} {
+		err := appwire.WireError{Code: appwire.CodeConflict, Data: appwire.ErrorData{EvenerErrorInfo: tc.info}}
+		if got := voiceHistoryCursorStale(err); got != tc.want {
+			t.Errorf("history recovery for %s=%v, want %v", tc.info, got, tc.want)
+		}
+	}
+}

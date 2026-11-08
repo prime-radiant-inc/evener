@@ -598,7 +598,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 	}
 	source, err := sourceForThreadWithDeletionFence(ctx, cfg, sources, params.Ref, params.ThreadID)
 	if err != nil {
-		if isTargetDeletedError(err) {
+		if isTargetDeletedError(err) || params.IsPendingAskPage() {
 			return appwire.ThreadReadResponse{}, err
 		}
 		resp, ok, pastErr := unavailableThreadReadResponse(ctx, cfg, sources, params)
@@ -609,6 +609,29 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 			return resp, nil
 		}
 		return appwire.ThreadReadResponse{}, err
+	}
+	if params.IsPendingAskPage() {
+		// Pages name a live ask set. Saved history and relay subscriptions cannot
+		// answer that request or establish its capability on an older daemon.
+		row, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: params.Ref, ThreadID: params.ThreadID})
+		if err != nil {
+			return appwire.ThreadReadResponse{}, err
+		}
+		if err := requireAskFenceSupport(row.Thread.Evener.Capabilities.AskFence); err != nil {
+			return appwire.ThreadReadResponse{}, err
+		}
+		forward := params
+		forward.LiveOnly = false
+		page, err := source.ReadThread(ctx, forward)
+		if err != nil {
+			return appwire.ThreadReadResponse{}, err
+		}
+		if page.PendingAskPage == nil {
+			return appwire.ThreadReadResponse{}, appwire.Unavailable("the target returned no pending ask page")
+		}
+		page.Thread = applyHubCapabilities(cfg, page.Thread)
+		page.RequestGeneration = params.RequestGeneration
+		return page, nil
 	}
 	// LiveOnly is a hub-internal fallback decision. Never forward it to the
 	// source: older daemons and remote hubs decode thread/read params strictly.

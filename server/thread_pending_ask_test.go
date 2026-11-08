@@ -13,9 +13,9 @@ type pendingAskEnvelopeSource struct {
 	calls  atomic.Int32
 }
 
-func (s *pendingAskEnvelopeSource) PendingAskCalls() *appwire.PendingAskState {
+func (s *pendingAskEnvelopeSource) PendingAskSnapshot() (*appwire.PendingQuestion, *appwire.PendingAskState) {
 	s.calls.Add(1)
-	return s.sample()
+	return s.PendingQuestion(), s.sample()
 }
 
 // This is a projection concurrency test, not a session execution test.

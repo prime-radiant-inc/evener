@@ -139,14 +139,14 @@ func (s wireProbeEnvelopeSource) WorkMetrics() (int64, *appwire.EvenerUsage, int
 	return 0, nil, 0
 }
 func (s wireProbeEnvelopeSource) FailedToolCalls() (int, bool) { return 0, false }
-func (s wireProbeEnvelopeSource) PendingQuestion() *appwire.PendingQuestion {
+func (s wireProbeEnvelopeSource) PendingAskSnapshot() (*appwire.PendingQuestion, *appwire.PendingAskState) {
 	if s.question != nil {
-		return s.question
+		return s.question, nil
 	}
 	if s.askPending {
-		return &appwire.PendingQuestion{Count: 1}
+		return &appwire.PendingQuestion{Count: 1}, nil
 	}
-	return nil
+	return nil, nil
 }
 func (s wireProbeEnvelopeSource) RestingFailure() *appwire.ThreadFailure { return s.failure }
 func (s wireProbeEnvelopeSource) PendingEscalations() []appwire.SandboxEscalationRequested {
@@ -273,6 +273,7 @@ func TestStatusProberCarriesDaemonCapabilities(t *testing.T) {
 		t.Fatal("CapabilitiesKnown = false, want true: the probe must carry the daemon's capabilities answer")
 	}
 	want := appwire.ThreadCapabilities{
+		AskFence:                   true,
 		VoicePresentationContextV1: true,
 		Send:                       true, Steer: true, Interrupt: true, Queue: true,
 		Compact: true, Clear: true, Shutdown: true, ChangeModel: true,

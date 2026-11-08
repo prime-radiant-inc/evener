@@ -114,10 +114,10 @@ func TestHubRosterWatchDeliveredFrame(t *testing.T) {
 	}
 	n := delivered[0].notification
 	entries := rosterFrameEntries(t, n.watchSendFrame)
-	if len(entries) != 1 || entries[0] != want {
+	if len(entries) != 1 || !equalRosterEvent(entries[0], want) {
 		t.Fatalf("delivered entries=%+v, want %+v", entries, want)
 	}
-	if block := formatJobNotificationBlock(n, notificationExcerpt{}, false); len(rosterFrameEntries(t, block)) != 1 || rosterFrameEntries(t, block)[0] != want {
+	if block := formatJobNotificationBlock(n, notificationExcerpt{}, false); len(rosterFrameEntries(t, block)) != 1 || !equalRosterEvent(rosterFrameEntries(t, block)[0], want) {
 		t.Fatalf("model-visible frame=%s", block)
 	}
 }
@@ -153,12 +153,12 @@ func TestHubRosterWatchSettledRebindDeliversDelta(t *testing.T) {
 	}
 	frame := formatJobNotificationBlock(delivered[0].notification, notificationExcerpt{}, false)
 	entries := rosterFrameEntries(t, frame)
-	if len(entries) != 1 || entries[0] != b {
+	if len(entries) != 1 || !equalRosterEvent(entries[0], b) {
 		t.Fatalf("rebind entries=%+v, want only changed B=%+v", entries, b)
 	}
 	jm.mu.Lock()
 	_, cfg, ok := jm.watchConfigByIDLocked(result.WatchID)
-	retained := ok && len(cfg.rosterBaseline) == 2 && cfg.rosterBaseline[a.Ref] == a.AttentionEntry && cfg.rosterBaseline[b.Ref] == b.AttentionEntry
+	retained := ok && len(cfg.rosterBaseline) == 2 && appwire.EqualAttentionEntry(cfg.rosterBaseline[a.Ref], a.AttentionEntry) && appwire.EqualAttentionEntry(cfg.rosterBaseline[b.Ref], b.AttentionEntry)
 	jm.mu.Unlock()
 	if !retained {
 		t.Fatal("rebind baseline lost unchanged A or changed B")
@@ -230,7 +230,7 @@ func TestHubRosterWatchPendingAppendFailureRecoversFullSnapshot(t *testing.T) {
 	}
 	frame := formatJobNotificationBlock(delivered[0].notification, notificationExcerpt{}, false)
 	entries := rosterFrameEntries(t, frame)
-	if len(entries) != 2 || entries[0] != a || entries[1] != b {
+	if len(entries) != 2 || !equalRosterEvent(entries[0], a) || !equalRosterEvent(entries[1], b) {
 		t.Fatalf("recovery entries=%+v, want A and B", entries)
 	}
 	if rosterFrameField(frame, "roster_initial: ") != "true" || rosterFrameField(frame, "roster_resync: ") != "" {
@@ -321,7 +321,7 @@ func TestHubRosterWatchPendingInitialMarkerSurvivesDelta(t *testing.T) {
 			}
 			frame := formatJobNotificationBlock(delivered[0].notification, notificationExcerpt{}, false)
 			entries := rosterFrameEntries(t, frame)
-			if len(entries) != 2 || entries[0] != a || entries[1] != b {
+			if len(entries) != 2 || !equalRosterEvent(entries[0], a) || !equalRosterEvent(entries[1], b) {
 				t.Fatalf("coalesced initial entries=%+v, want A and B", entries)
 			}
 			if rosterFrameField(frame, "roster_initial: ") != "true" {
@@ -359,7 +359,7 @@ func TestHubRosterWatchWorkerClearBaseline(t *testing.T) {
 	}
 	jm.mu.Lock()
 	_, cfg, ok := jm.watchConfigByIDLocked(result.WatchID)
-	retained := ok && len(cfg.rosterBaseline) == 1 && cfg.rosterBaseline[entry.Ref] == entry.AttentionEntry
+	retained := ok && len(cfg.rosterBaseline) == 1 && appwire.EqualAttentionEntry(cfg.rosterBaseline[entry.Ref], entry.AttentionEntry)
 	jm.mu.Unlock()
 	if !retained {
 		t.Fatal("worker Clear lost the live workspace from the daemon baseline")

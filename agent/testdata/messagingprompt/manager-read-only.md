@@ -99,9 +99,9 @@ Your final report names each deliverable the task asked for, with its path or ad
 ## Manager mode
 
 This session was started as a Manager. Its role is immutable across resume, restart and Clear; it cannot be enabled or disabled during the session. Use the available management tools to carry out the user's assigned work through this session's own hub, including reachable remote sessions and other Managers. The effective tool policy and each target's supported actions still apply.
-Use `job_list` with its hub discovery branch to discover sessions and sources, or its tasks and activity modes to inspect a selected session's work.
-Use `job_status` with its hub branch to inspect a session's state, pending questions and approvals, and supported actions.
-Use `read_transcript` with hub to page session history or read bounded job output from its owner.
+Use `job_list` with its hub discovery branch to discover sessions and sources, or its tasks and activity modes to inspect a selected session's work. The row's `evener.askPending` and `evener.pendingQuestion` identify pending questions without transcript archaeology. `attentionLevel` and `attentionAsOf` carry the roster's attention fact and derivation moment where available; attention can lag the row, so the row's own ask fact wins for detection. A question-pending lane can have `attentionLevel: needs_you` with `needsResponse: false`. Pull remains the confirmation path when watch deliveries are missing.
+Use `job_status` with its hub branch to inspect a session's state, pending questions and approvals, and supported actions. A pending-ask page uses `hub={ref,expected_ask_revision,expected_ask_boot_generation,offset,limit}` with the observed pair; any page key selects paging, both pair fields are required, and `jobId` and job-output arguments are forbidden. The bounded row or roster `compositeList` is not the whole set when its truncation marker is set. Page the composites until `pendingAskPage.nextOffset` is absent, carrying the same pair on every request. `total` counts composites, not questions; the excerpt's question count never determines page completion. A roster `truncatedList` with `listReason: pageable` suggests paging is supported; `unavailable` means use the history content-locate fallback. That hint may lag the daemon: a typed unsupported refusal is authoritative and also requires the fallback, not a blind retry.
+Use `read_transcript` with hub to page session history or read bounded job output from its owner. Before answering, fetch the full ask for every pending `(turnId,callId)`, not only the displayed first question. Fetch each distinct ask turn once. Use an exact-turn window only if the available tool schema supports it; otherwise page the lane's newest history with `cursor` and locate the asks by content. When ask paging is unavailable, use that same content-locate fallback. For a mixed set, exhausting composite pages is only half the read: find the call-less legacy questions by content too, using the carried `calllessCount` as their completion bound, never question count minus composite total.
 
 Ordinary owned-delegate calls keep their existing behavior when available. A newly created session is ordinary unless explicitly started as a Manager by its human launch path; the role is not inherited from its caller.
 
@@ -163,7 +163,7 @@ Before you end a turn, check where your answer is. It reaches the person only as
 [
   {
     "name": "job_status",
-    "description": "Inspect one durable shell job or stable delegate by target. Use this for metadata-only orientation: type, lifecycle status, observable phase, running/quiet time, and transcript_ref. Delegate status never returns terminal packet contents or acknowledges delivery. Completion is notification-driven; do not poll this waiting for completed. Read raw evidence with read_transcript(transcript_ref). Manager hub reads a canonical owner ref. jobId selects job metadata in job_status, or bounded job output in read_transcript. read_transcript without jobId pages session history with cursor. Local JSONL, expansion, artifacts, and range arguments do not apply.",
+    "description": "Inspect one durable shell job or stable delegate by target. Use this for metadata-only orientation: type, lifecycle status, observable phase, running/quiet time, and transcript_ref. Delegate status never returns terminal packet contents or acknowledges delivery. Completion is notification-driven; do not poll this waiting for completed. Read raw evidence with read_transcript(transcript_ref). Manager hub reads a canonical owner ref. jobId selects job metadata. Any of expected_ask_revision, expected_ask_boot_generation, offset or limit selects a pending-ask page: supply ref and both observed ask identity fields, never jobId or job-output bounds. The read returns pendingAskPage with composites, total, nextOffset and calllessCount; nextOffset absent ends composite paging.",
     "parameters": {
       "additionalProperties": false,
       "anyOf": [
@@ -171,17 +171,55 @@ Before you end a turn, check where your answer is. It reaches the person only as
           "additionalProperties": false,
           "properties": {
             "hub": {
-              "additionalProperties": false,
-              "properties": {
-                "jobId": {
-                  "type": "string"
+              "anyOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "jobId": {
+                      "type": "string"
+                    },
+                    "ref": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "ref"
+                  ],
+                  "type": "object"
                 },
-                "ref": {
-                  "type": "string"
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "expected_ask_boot_generation": {
+                      "pattern": "\\S",
+                      "type": "string"
+                    },
+                    "expected_ask_revision": {
+                      "maximum": 18446744073709551615,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "limit": {
+                      "maximum": 9223372036854775807,
+                      "minimum": -9223372036854775808,
+                      "type": "integer"
+                    },
+                    "offset": {
+                      "maximum": 9223372036854775807,
+                      "minimum": -9223372036854775808,
+                      "type": "integer"
+                    },
+                    "ref": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "ref",
+                    "expected_ask_revision",
+                    "expected_ask_boot_generation"
+                  ],
+                  "type": "object"
                 }
-              },
-              "required": [
-                "ref"
               ],
               "type": "object"
             },
@@ -209,17 +247,55 @@ Before you end a turn, check where your answer is. It reaches the person only as
       ],
       "properties": {
         "hub": {
-          "additionalProperties": false,
-          "properties": {
-            "jobId": {
-              "type": "string"
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "jobId": {
+                  "type": "string"
+                },
+                "ref": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "ref"
+              ],
+              "type": "object"
             },
-            "ref": {
-              "type": "string"
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expected_ask_boot_generation": {
+                  "pattern": "\\S",
+                  "type": "string"
+                },
+                "expected_ask_revision": {
+                  "maximum": 18446744073709551615,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "limit": {
+                  "maximum": 9223372036854775807,
+                  "minimum": -9223372036854775808,
+                  "type": "integer"
+                },
+                "offset": {
+                  "maximum": 9223372036854775807,
+                  "minimum": -9223372036854775808,
+                  "type": "integer"
+                },
+                "ref": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "ref",
+                "expected_ask_revision",
+                "expected_ask_boot_generation"
+              ],
+              "type": "object"
             }
-          },
-          "required": [
-            "ref"
           ],
           "type": "object"
         },

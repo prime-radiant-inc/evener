@@ -1545,6 +1545,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// since it reads the client-mutation journal, not session state.
 	queuedIdentity := queuedClientMutationFromContext(ctx)
 	carrierAnswersAsk := s.steeringCarrierClaimAnswersAsk(queuedIdentity)
+	carrierAskResolution := s.clientMutationAskResolution(queuedIdentity.ClientMutationID)
 
 	// restMu: a needs_response rest arming right now announces first.
 	if hook := s.cfg.testOnly.turnStartBeforeRestMu; hook != nil {
@@ -1593,7 +1594,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// failed MaxTurns, environment, or transcript admission must leave the
 	// pending ask available for the next real reply and for restore.
 	if carrierAnswersAsk && queuedIdentity.SteeringCarrier {
-		s.setAskPendingLocked(nil)
+		s.clearAskPendingResolutionLocked(carrierAskResolution)
 	}
 	s.mu.Unlock()
 	s.delegateDeliveryMu.Unlock()
@@ -2242,7 +2243,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 	if queuedIdentity.ClientMutationID != "" &&
 		s.clientMutationUserTranscriptIncorporated(queuedIdentity.ClientMutationID, queuedIdentity.StableTurnID) {
 		s.injectDrainedSteering()
-		s.clearAskPending()
+		s.clearAskPendingResolution(s.clientMutationAskResolution(queuedIdentity.ClientMutationID))
 		return nil
 	}
 
@@ -2333,7 +2334,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 				recoveryErr := s.recoverClientMutationFailures(true)
 				userRecorded := s.clientMutationTranscriptItems(queuedIdentity.ClientMutationID, queuedIdentity.StableTurnID).User
 				if userRecorded {
-					s.clearAskPending()
+					s.clearAskPendingResolution(s.clientMutationAskResolution(queuedIdentity.ClientMutationID))
 				}
 				if recoveryErr != nil {
 					return errors.Join(failure, fmt.Errorf("record client start failure: %w", recoveryErr))
@@ -2352,7 +2353,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 				return failure
 			}
 		}
-		turn.AnswerToTurnIDs = s.pendingAskTurnIDs()
+		s.setClientMutationAskEvidence(&turn, queuedIdentity.ClientMutationID, "")
 		if err := s.appendTurnAfterTranscriptWrite(
 			turn,
 			func() error { return s.appendClientMutationTranscriptLocked(turn) },
@@ -2365,7 +2366,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 		}
 		// The claimed user turn is now durable. Resolve the pending ask only
 		// after this admission point; failures before it must preserve the ask.
-		s.clearAskPending()
+		s.clearAskPendingResolution(turn.AskResolution)
 		if err := s.markClaimedUserTranscriptIncorporated(queuedIdentity.ClientMutationID); err != nil {
 			return fmt.Errorf("incorporate claimed user input: %w", err)
 		}
@@ -2656,7 +2657,7 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, identity queue
 		// askPending set, so its failure must not be a resolution boundary
 		// either, or restore would diverge from live.
 		if s.steeringCarrierClaimAnswersAsk(identity) {
-			s.emitSteeringCarrierTurnFailure(errorDataFromError(err))
+			s.emitSteeringCarrierTurnFailure(errorDataFromError(err), identity.ClientMutationID)
 		} else {
 			s.emitTurnFailure(errorDataFromError(err))
 		}

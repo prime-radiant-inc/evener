@@ -159,6 +159,68 @@ delta is complete. `job_list` discovery is a secondary read and may be
 unavailable independently of the roster watch. See the
 [roster design record](superpowers/specs/2026-11-04-manager-roster-watch-design.md).
 
+### Manager questions and fenced answers
+
+A question notice carries `pendingQuestion`, the session instance identity,
+`askBootGeneration`, `askRevision`, `compositeList`, `compositeTotal`, and
+`calllessCount`. The excerpt's call identity is `(turnId, callId)`, not call ID
+alone. An append and a daemon restart can each deliver a new `needs_you` notice
+while `askPending` and the attention level stay unchanged. Discovery also
+carries `attentionLevel` and its published `attentionAsOf` observation, so lost
+notices do not hide a waiting question. That observation can be older than the
+row's current status.
+
+Answer directly from an excerpt only when `complete:true`, `truncated:false`,
+and `count:1` are explicit and its identities are accepted. Otherwise fetch the
+canonical content for every pending composite. `read_transcript`'s hub branch
+reads newest history and pages backward; match both turn and call, including
+several calls in one turn. Excerpt flags absent after restore are unknown.
+
+Rows and roster notices carry at most ten composites. When `truncatedList` has
+`listReason:"pageable"`, enumerate the whole set with `job_status`:
+
+```json
+{"hub":{"ref":"local:WORKSPACE_ID","expected_ask_revision":7,"expected_ask_boot_generation":"OBSERVED_BOOT","offset":0,"limit":100}}
+```
+
+Use the observed pair, not the example values. The result's
+`read.pendingAskPage` carries `composites`, `total`, `nextOffset` and
+`calllessCount`. Keep the pair and follow `nextOffset` until absent, then fetch
+the named canonical questions. `total` counts composite calls; the excerpt's
+question count cannot drive page completion. A mixed legacy set also requires
+finding `calllessCount` questions by content in history. Page keys cannot be
+combined with `jobId`, and this page grammar belongs to `job_status`, not
+`read_transcript`.
+
+Relay the evaluated answer through `delegate_send` with the observed
+`expected_instance_id`, `expected_ask_revision`, and
+`expected_ask_boot_generation`, alongside its existing mutation ID and input
+mode. The ask pair is optional, but both fields must travel together; revision
+zero is a real observation. The hub checks the target's `AskFence` capability
+for start, queue and steer, reusing start's prepared row. Unfenced ordinary text
+queue and steer keep their no-extra-read path.
+
+The daemon compares the pair during admission. `ask-fence-mismatch` refuses the
+answer without consuming questions; the same mutation ID replays that refusal.
+Read the changed set and decide again before sending a new mutation. An
+admitted reply resolves the captured set, leaving later appends pending through
+consumption and restore. Clear still uses the separate instance precondition.
+
+`listReason:"unavailable"` marks a truncated list without page support. A
+fenced page or answer on an older daemon returns
+`ask-fence-unsupported-on-daemon` before dispatch. Use bounded history reads to
+locate full question content and the existing unfenced input path only with its
+ordinary semantics; do not claim conditional protection that peer lacks. A
+large old remote row can still exceed the Manager whole-read cap and return a
+typed refusal instead of a partial answer.
+
+A bounded roster segment can omit whole lane entries. Its `roster_dropped`
+count, bounded dropped refs and `roster_recovery` instruction survive
+coalescing. Read the named lanes with `job_status` and `read_transcript`;
+discovery helps recover the rest of a small fleet, but it is not a guarantee
+that every lane in a large fleet fits one call. A truncation recovery marker is
+separate from `roster_resync`, which still asks for watch re-registration.
+
 ## Manager discovery, status and bounded reads
 
 An authenticated live Manager runtime can use `job_list` with

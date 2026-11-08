@@ -17,8 +17,9 @@ import {
 import type { AppwireClientLike } from "./clientLike";
 import { ConnectionClosedError, errorText, RequestTimeoutError, WireError } from "./errors";
 import { FAKE_INITIALIZE_RESULT, FakeSocket } from "./testing/fakeSocket";
+import { wireThread } from "./testing/notifications";
 import { rpcURLFromLocation } from "./transport";
-import type { InitializeResponse } from "./types.gen";
+import type { AttentionChangedPayload, InitializeResponse, ThreadReadParams, ThreadReadResponse } from "./types.gen";
 
 const DEFAULT_CLIENT_INFO = { name: "evener-web", version: "0.1.0" };
 const DEFAULT_CAPABILITIES = { experimentalApi: false };
@@ -587,6 +588,130 @@ describe("AppwireClient", () => {
     fake.receive({ id: frame.id, result: { data: [], nextCursor: "" } });
 
     await expect(reqPromise).resolves.toEqual({ data: [], nextCursor: "" });
+  });
+
+  test("question fields survive response and notification decoding with their page request", async () => {
+    const fake = new FakeSocket({ autoInitialize: true });
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
+    await connectReady(fake, client);
+    const call = { turnId: "turn_token", callId: "call_token" };
+    const calls = [call];
+    const question = {
+      question: "QUESTION_TOKEN",
+      options: ["OPTION_A", "OPTION_B"],
+      count: 1,
+      turnId: call.turnId,
+      callId: call.callId,
+      complete: false,
+      truncated: true,
+    };
+    const thread = wireThread("local:instance_token");
+    thread.evener = {
+      ...thread.evener,
+      capabilities: { ...thread.evener.capabilities, askFence: true },
+      attentionLevel: "needs_you",
+      attentionAsOf: 17,
+      pendingQuestion: question,
+      pendingAsk: {
+        version: 1,
+        instanceId: "instance_token",
+        revision: 0,
+        bootGeneration: "4",
+        calls,
+        compositeTotal: 2,
+        calllessCount: 1,
+        callsTruncated: true,
+      },
+    };
+    const params = {
+      ref: thread.evener.ref,
+      expectedAskRevision: 0,
+      expectedAskBootGeneration: "4",
+      offset: 0,
+      limit: 0,
+    } satisfies ThreadReadParams;
+    const result = {
+      thread,
+      pendingAskPage: { composites: calls, total: 2, nextOffset: 1, calllessCount: 1 },
+    } satisfies ThreadReadResponse;
+    const response = client.request("thread/read", params);
+    const frame = lastSentFrame(fake);
+    expect(frame.params).toEqual(params);
+    fake.receive({ id: frame.id, result });
+    await expect(response).resolves.toEqual(result);
+
+    const attention = {
+      changed: [
+        {
+          ref: thread.evener.ref,
+          rosterInstanceId: "instance_token",
+          threadId: thread.id,
+          title: "TITLE_TOKEN",
+          project: "PROJECT_TOKEN",
+          level: "needs_you",
+          prevLevel: "working",
+          askPending: true,
+          pendingQuestion: question,
+          askBootGeneration: "4",
+          askRevision: 0,
+          compositeList: calls,
+          compositeTotal: 2,
+          calllessCount: 1,
+          askPageable: true,
+          publishedAt: 17,
+        },
+      ],
+      summary: { needsYou: 1, error: 0, working: 0 },
+    } satisfies AttentionChangedPayload;
+    const received: AnyNotification[] = [];
+    client.onNotification((notification) => received.push(notification));
+    const notifications = [
+      { method: "thread/started", params: { threadId: thread.id, ref: thread.evener.ref, thread } },
+      {
+        method: "thread/status/changed",
+        params: {
+          threadId: thread.id,
+          ref: thread.evener.ref,
+          status: thread.status,
+          capabilities: thread.evener.capabilities,
+        },
+      },
+      { method: "evener/attention/changed", params: attention },
+    ] satisfies AnyNotification[];
+    for (const notification of notifications) fake.receive(notification);
+    expect(received).toEqual(notifications);
+    client.close();
+  });
+
+  test("empty pending pages and false capability values survive decoding", async () => {
+    const fake = new FakeSocket({ autoInitialize: true });
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
+    await connectReady(fake, client);
+    const thread = wireThread();
+    thread.evener = {
+      ...thread.evener,
+      capabilities: { ...thread.evener.capabilities, askFence: false },
+      attentionLevel: "idle",
+      attentionAsOf: 0,
+      pendingAsk: {
+        version: 1,
+        instanceId: "instance_token",
+        revision: 0,
+        bootGeneration: "4",
+        calls: [],
+        compositeTotal: 0,
+        calllessCount: 0,
+        callsTruncated: false,
+      },
+    };
+    const result = {
+      thread,
+      pendingAskPage: { composites: [], total: 0, calllessCount: 0 },
+    } satisfies ThreadReadResponse;
+    const response = client.request("thread/read", { ref: thread.evener.ref });
+    fake.receive({ id: lastSentFrame(fake).id, result });
+    await expect(response).resolves.toEqual(result);
+    client.close();
   });
 
   test("request rejects with WireError on error response", async () => {

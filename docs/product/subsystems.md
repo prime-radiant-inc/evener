@@ -102,6 +102,17 @@ hydration, replay, page merging and derived caches. Absent metadata does not pro
 either an author or inheritance. See
 [original transcript authors](history-content.md#original-transcript-authors).
 
+For [session questions](session-questions.md), **S09** owns the atomic pending
+set and its boot/revision identity. **S11** compares an answer's expected pair
+at admission and persists the captured composite calls and legacy-question
+count. **S10** retains that exact resolution evidence so replay preserves later
+questions. **S05** owns the bounded row and pair-fenced page contract;
+**S06–S07** preserve it through local and remote capability gates. The hub
+roster derives attention and Manager notices from those facts, joins discovery
+through its existing workspace identities, and owns bounded segment recovery.
+**S02–S03** retain their presentation behavior. **S06** resolves voice question
+membership through the same pending-call pages when the row prefix is truncated.
+
 For [voice conversations](voice.md), **S03** owns native microphone processing,
 local playback and played-sample acknowledgements. **S06** owns the scoped
 device/manager binding and provider bridge. Arm requires authoritative

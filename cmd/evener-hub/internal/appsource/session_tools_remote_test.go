@@ -16,7 +16,8 @@ func TestSessionToolsRemoteQualifiedInputCapabilities(t *testing.T) {
 	full := allRemoteThreadCapabilities()
 	full.CommandInput = true
 	want := appwire.ThreadCapabilities{
-		Send: true, Queue: true, Steer: true, SkillInput: true,
+		AskFence: true,
+		Send:     true, Queue: true, Steer: true, SkillInput: true,
 		CommandInput: true, Shutdown: true, Interrupt: true, Compact: true,
 		Clear: true, ForkFromTurn: true, ChangeModel: true, ChangeVisionModel: true,
 		Goal: true, SharedNotes: true, Rename: true, StopSubagent: true,
@@ -25,6 +26,7 @@ func TestSessionToolsRemoteQualifiedInputCapabilities(t *testing.T) {
 		t.Fatalf("qualified input mask = %+v, want %+v", got, want)
 	}
 	wantWithoutFeatures := appwire.ThreadCapabilities{
+		AskFence:  true,
 		Interrupt: true, Compact: true, ChangeModel: true, ChangeVisionModel: true,
 		Queue: true, Goal: true, SharedNotes: true, Rename: true,
 		SkillInput: true, CommandInput: true, StopSubagent: true,

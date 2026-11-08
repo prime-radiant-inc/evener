@@ -7,6 +7,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/santhosh-tekuri/jsonschema/v5"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/responses"
@@ -58,7 +59,9 @@ func managerProviderSchemas(t *testing.T) (*Session, map[string]map[string]any) 
 			} `json:"tools"`
 		} `json:"input"`
 	}
-	if err := json.Unmarshal(raw, &wire); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&wire); err != nil {
 		t.Fatal(err)
 	}
 	out := map[string]map[string]any{}
@@ -102,6 +105,49 @@ func managerProviderSchemas(t *testing.T) (*Session, map[string]map[string]any) 
 		}
 	}
 	return root, out
+}
+
+func TestManagerProviderSchemaPreservesNumericBounds(t *testing.T) {
+	t.Parallel()
+	root, wire := managerProviderSchemas(t)
+	for _, name := range []string{"delegate_send", "job_status"} {
+		raw, err := json.Marshal(wire[name])
+		if err != nil {
+			t.Fatal(err)
+		}
+		serialized, err := jsonschema.CompileString("https://manager.test/numeric/"+name+".json", string(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, tc := range []struct {
+			revision string
+			valid    bool
+		}{
+			{"-1", false},
+			{"0", true},
+			{"18446744073709551615", true},
+			{"18446744073709551616", false},
+		} {
+			t.Run(name+"/"+tc.revision, func(t *testing.T) {
+				pair := map[string]any{"expected_ask_revision": json.Number(tc.revision), "expected_ask_boot_generation": "boot-sentinel"}
+				var args map[string]any
+				if name == "delegate_send" {
+					args = pair
+					args["to"], args["input_mode"], args["message"] = "local:worker", "queue", "answer-sentinel"
+					args["client_mutation_id"], args["expected_instance_id"] = "mutation-sentinel", "instance-sentinel"
+				} else {
+					pair["ref"] = "local:worker"
+					args = map[string]any{"hub": pair}
+				}
+				args["intent"] = "numeric sentinel"
+				for boundary, schema := range map[string]*jsonschema.Schema{"registered": root.reg.Get(name).Schema, "serialized": serialized} {
+					if err := schema.Validate(args); (err == nil) != tc.valid {
+						t.Errorf("%s schema valid=%v, want %v: %v", boundary, err == nil, tc.valid, err)
+					}
+				}
+			})
+		}
+	}
 }
 
 func TestManagerProviderSchemasHaveExplicitTypes(t *testing.T) {

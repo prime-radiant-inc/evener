@@ -96,6 +96,7 @@ type LocalDaemonEntry struct {
 	// hub's sessions names the question as a local probe would. A read-only
 	// alias has none.
 	PendingQuestion *appwire.PendingQuestion
+	PendingAskState *appwire.PendingAskState
 	// Failure mirrors hubcore.LiveEntry.Failure: the summary of the failed turn
 	// the root rests on (S1c). threadFromEntry carries it into
 	// appwire.EvenerThread.Failure, so a controller hub says why a remote
@@ -1525,6 +1526,7 @@ func (s *LocalDaemonSource) threadFromEntryAt(item LocalDaemonEntry, builtAt tim
 			Capabilities:        listRowCapabilities(item, status),
 			AskPending:          item.PendingAsk,
 			PendingQuestion:     appwire.ClonePendingQuestion(item.PendingQuestion),
+			PendingAsk:          appwire.ClonePendingAsk(item.PendingAskState),
 			Failure:             appwire.CloneThreadFailure(item.Failure),
 			PendingEscalations:  append([]appwire.SandboxEscalationRequested(nil), item.PendingEscalations...),
 			LastTurnEndedAt:     item.LastTurnEndedAt,
@@ -1691,9 +1693,17 @@ func localDaemonRendezvousEntry(item LocalDaemonEntry) rendezvous.Entry {
 }
 
 func localDaemonWorkspaceRef(sourceID string, entry rendezvous.Entry, threadID string) string {
+	return LocalDaemonWorkspaceRef(sourceID, entry, threadID)
+}
+
+// LocalDaemonWorkspaceRef is the shared roster/discovery workspace identity.
+// An explicit workspace survives Clear. Legacy entries fall back to the live
+// session before an older thread alias, regardless of the projection's ID.
+func LocalDaemonWorkspaceRef(sourceID string, entry rendezvous.Entry, threadID string) string {
 	if ref, err := appwire.ParseRef(strings.TrimSpace(entry.WorkspaceRef)); err == nil && ref.SourceID == sourceID {
 		return ref.String()
 	}
+	threadID = firstLocalNonEmpty(entry.SessionID, threadID, entry.ThreadID)
 	return appwire.Ref{SourceID: sourceID, ThreadID: threadID}.String()
 }
 

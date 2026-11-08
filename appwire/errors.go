@@ -28,20 +28,25 @@ const (
 	// way HostEntry's json tags spell it). It shares CodeInvalidParams with
 	// plain validation refusals, so a client that wants to place a message on
 	// an input must match this discriminant, never the code.
-	ErrorInvalidHostField           ErrorInfo = "invalidHostField"
-	ErrorResourceNotFound           ErrorInfo = "resourceNotFound"
-	ErrorMethodNotFound             ErrorInfo = "methodNotFound"
-	ErrorProviderUnavailable        ErrorInfo = "providerUnavailable"
-	ErrorSessionUnavailable         ErrorInfo = "sessionUnavailable"
-	ErrorConflict                   ErrorInfo = "conflict"
-	ErrorActionUnavailable          ErrorInfo = "actionUnavailable"
-	ErrorHubLaunch                  ErrorInfo = "hubLaunch"
-	ErrorQueuedDrainPartial         ErrorInfo = "queuedDrainPartial"
-	ErrorMutationOutcomeUnknown     ErrorInfo = "mutationOutcomeUnknown"
-	ErrorTranscriptItemCursorStale  ErrorInfo = "transcriptItemCursorStale"
-	ErrorSessionActivityCursorStale ErrorInfo = "sessionActivityCursorStale"
-	ErrorJobOutputPruned            ErrorInfo = "jobOutputPruned"
-	ErrorInternal                   ErrorInfo = "internal"
+	ErrorInvalidHostField    ErrorInfo = "invalidHostField"
+	ErrorResourceNotFound    ErrorInfo = "resourceNotFound"
+	ErrorMethodNotFound      ErrorInfo = "methodNotFound"
+	ErrorProviderUnavailable ErrorInfo = "providerUnavailable"
+	ErrorSessionUnavailable  ErrorInfo = "sessionUnavailable"
+	ErrorConflict            ErrorInfo = "conflict"
+	// ErrorAskFenceMismatch refuses an answer or page against a changed ask set.
+	ErrorAskFenceMismatch ErrorInfo = "ask-fence-mismatch"
+	// ErrorAskFenceUnsupportedOnDaemon refuses fenced work before forwarding it
+	// to a daemon that cannot enforce the expected pair.
+	ErrorAskFenceUnsupportedOnDaemon ErrorInfo = "ask-fence-unsupported-on-daemon"
+	ErrorActionUnavailable           ErrorInfo = "actionUnavailable"
+	ErrorHubLaunch                   ErrorInfo = "hubLaunch"
+	ErrorQueuedDrainPartial          ErrorInfo = "queuedDrainPartial"
+	ErrorMutationOutcomeUnknown      ErrorInfo = "mutationOutcomeUnknown"
+	ErrorTranscriptItemCursorStale   ErrorInfo = "transcriptItemCursorStale"
+	ErrorSessionActivityCursorStale  ErrorInfo = "sessionActivityCursorStale"
+	ErrorJobOutputPruned             ErrorInfo = "jobOutputPruned"
+	ErrorInternal                    ErrorInfo = "internal"
 	// ErrorTranscriptHistoryFailed marks a read of a thread whose history
 	// entered its failed state: its projection or rebuild failed for a reason
 	// outside the entries (I/O, a corrupt index) three times in a row, and a

@@ -10,6 +10,9 @@ import (
 
 func (o *sessionOperations) Start(ctx context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 	cfg, sources, relays := o.cfg, o.sources, o.relays
+	if err := appwire.ValidateAskFence(params.ExpectedAskRevision, params.ExpectedAskBootGeneration); err != nil {
+		return appwire.TurnStartResponse{}, err
+	}
 	if err := validateAppWireInputItems(params.Input); err != nil {
 		return appwire.TurnStartResponse{}, appwire.InvalidParams(err.Error())
 	}
@@ -132,6 +135,9 @@ func (o *sessionOperations) Start(ctx context.Context, params appwire.TurnStartP
 
 func (o *sessionOperations) Steer(ctx context.Context, params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
 	cfg, sources := o.cfg, o.sources
+	if err := appwire.ValidateAskFence(params.ExpectedAskRevision, params.ExpectedAskBootGeneration); err != nil {
+		return appwire.TurnSteerResponse{}, err
+	}
 	if err := validateAppWireInputItems(params.Input); err != nil {
 		return appwire.TurnSteerResponse{}, appwire.InvalidParams(err.Error())
 	}
@@ -139,7 +145,7 @@ func (o *sessionOperations) Steer(ctx context.Context, params appwire.TurnSteerP
 		return appwire.TurnSteerResponse{}, err
 	}
 	resp, err := relayOwnedMutation(ctx, cfg, sources, params.Ref, params.ThreadID, params.ClientMutationID, func(source appsource.Source) (appwire.TurnSteerResponse, error) {
-		if err := ensureSkillInputSupported(ctx, source, params.Ref, params.ThreadID, params.Input); err != nil {
+		if err := prepareInputMode(ctx, source, params.Ref, params.ThreadID, params.Input, params.ExpectedAskRevision, params.ExpectedAskBootGeneration, nil); err != nil {
 			return appwire.TurnSteerResponse{}, err
 		}
 		return source.SteerTurn(ctx, params)
@@ -150,6 +156,9 @@ func (o *sessionOperations) Steer(ctx context.Context, params appwire.TurnSteerP
 
 func (o *sessionOperations) Queue(ctx context.Context, params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
 	cfg, sources := o.cfg, o.sources
+	if err := appwire.ValidateAskFence(params.ExpectedAskRevision, params.ExpectedAskBootGeneration); err != nil {
+		return appwire.TurnQueueResponse{}, err
+	}
 	if err := validateAppWireInputItems(params.Input); err != nil {
 		return appwire.TurnQueueResponse{}, appwire.InvalidParams(err.Error())
 	}
@@ -170,7 +179,7 @@ func (o *sessionOperations) Queue(ctx context.Context, params appwire.TurnQueueP
 		if err != nil {
 			return appwire.TurnQueueResponse{}, err
 		}
-		if err := ensureSkillInputSupported(ctx, source, params.Ref, "", params.Input); err != nil {
+		if err := prepareInputMode(ctx, source, params.Ref, "", params.Input, params.ExpectedAskRevision, params.ExpectedAskBootGeneration, nil); err != nil {
 			return appwire.TurnQueueResponse{}, err
 		}
 		return source.QueueTurn(ctx, params)

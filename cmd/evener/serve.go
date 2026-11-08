@@ -785,6 +785,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		sess.Close()
 		return fmt.Errorf("boot generation: %w", err)
 	}
+	sess.SetBootGeneration(appwire.BootGeneration(startGeneration))
 	// servedBootGeneration is the generation of the served identity; a
 	// thread/clear replacement serves above it (see the clear func).
 	var servedBootGeneration atomic.Uint64
@@ -1117,17 +1118,18 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// merely inelegant here: undoing a published identity means emitting a
 		// second thread/closed, and every subscriber has already been told the
 		// thread it is watching ended.
-		prepared, err := deps.prepareAppIdentity("local", newSess.ID(), workspaceRef, newSess.TranscriptPath())
-		if err != nil {
-			newSess.Close() // disposes clearEnv
-			return fmt.Errorf("prepare app identity: %w", err)
-		}
 		// The replacement serves the same workspace ref, so it serves above
 		// the generation its clients hold, or they would ignore it.
 		clearGeneration, err := schema.NextBootGeneration(sd, newSess.ID(), servedBootGeneration.Load())
 		if err != nil {
 			newSess.Close() // disposes clearEnv
 			return fmt.Errorf("boot generation: %w", err)
+		}
+		newSess.SetBootGeneration(appwire.BootGeneration(clearGeneration))
+		prepared, err := deps.prepareAppIdentity("local", newSess.ID(), workspaceRef, newSess.TranscriptPath())
+		if err != nil {
+			newSess.Close() // disposes clearEnv
+			return fmt.Errorf("prepare app identity: %w", err)
 		}
 		// The rendezvous is the last fallible step and the daemon's public
 		// address for this thread. Moving it before the replacement means a

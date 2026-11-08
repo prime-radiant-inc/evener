@@ -54,6 +54,7 @@ type LiveEntry struct {
 	// set, and rosterFingerprint hashes it: a question answered and another
 	// asked between two probes leaves PendingAsk and Status where they were.
 	PendingQuestion *appwire.PendingQuestion
+	PendingAskState *appwire.PendingAskState
 	// Failure summarizes the failed turn the session rests on (S1c), from the
 	// same root row as Status; the daemon sends it only while that status is
 	// systemError. rosterFingerprint hashes it: a turn retried and failed
@@ -160,6 +161,7 @@ type ProbeResult struct {
 	// PendingQuestion mirrors LiveEntry.PendingQuestion: the first pending
 	// question from the same root row as PendingAsk (S1b).
 	PendingQuestion *appwire.PendingQuestion
+	PendingAskState *appwire.PendingAskState
 	// Failure mirrors LiveEntry.Failure: the failure summary from the same
 	// root row as Status (S1c).
 	Failure *appwire.ThreadFailure
@@ -255,6 +257,7 @@ func CloneLiveEntry(in LiveEntry) LiveEntry {
 	out.ActiveFlags = append([]string(nil), in.ActiveFlags...)
 	out.PendingEscalations = append([]appwire.SandboxEscalationRequested(nil), in.PendingEscalations...)
 	out.PendingQuestion = appwire.ClonePendingQuestion(in.PendingQuestion)
+	out.PendingAskState = appwire.ClonePendingAsk(in.PendingAskState)
 	out.Failure = appwire.CloneThreadFailure(in.Failure)
 	out.RunningSubagentIDs = append([]string(nil), in.RunningSubagentIDs...)
 	out.RunningSubagentStates = cloneSubagentStates(in.RunningSubagentStates)

@@ -120,11 +120,12 @@ func (s *Session) AcceptClientMutationQueue(params appwire.TurnQueueParams) (app
 func (s *Session) AcceptClientMutationQueueAs(params appwire.TurnQueueParams, actor schema.SessionActor) (appwire.TurnQueueResponse, error) {
 	var response appwire.TurnQueueResponse
 	lookup, err := s.acceptClientMutation(clientMutationSpec{
-		actor:   actor,
-		method:  clientMutationMethodQueue,
-		id:      params.ClientMutationID,
-		payload: &params,
-		input:   &params.Input,
+		actor:         actor,
+		method:        clientMutationMethodQueue,
+		id:            params.ClientMutationID,
+		payload:       &params,
+		input:         &params.Input,
+		preconditions: clientMutationPreconditions{ExpectedAskRevision: params.ExpectedAskRevision, ExpectedAskBootGeneration: params.ExpectedAskBootGeneration},
 	}, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
 		if len(params.Input) == 0 {
 			rejectClientMutation(record, appwire.InvalidParams("input is required"))
@@ -415,7 +416,11 @@ func (s *Session) claimSteeringCarrierInput() (queuedInput, error) {
 			}
 			if steeringAnswersAsk(events.SteeringSourceUser, steeringOriginFromJournal(snapshot.Journal, id), "") {
 				record := snapshot.Journal[id]
-				record.AnswerToTurnIDs = appendAnswerTurnIDs(record.AnswerToTurnIDs, answerToTurnIDs...)
+				if resolution := record.Preconditions.askResolution(); resolution != nil {
+					record.AnswerToTurnIDs = askResolutionTurnIDs(resolution, turnID)
+				} else {
+					record.AnswerToTurnIDs = appendAnswerTurnIDs(record.AnswerToTurnIDs, answerToTurnIDs...)
+				}
 				snapshot.Journal[id] = record
 			}
 			snapshot.ActiveTurnID = turnID
@@ -756,11 +761,12 @@ func (s *Session) AcceptClientMutationSteer(params appwire.TurnSteerParams) (app
 func (s *Session) AcceptClientMutationSteerAs(params appwire.TurnSteerParams, actor schema.SessionActor) (appwire.TurnSteerResponse, error) {
 	var response appwire.TurnSteerResponse
 	lookup, err := s.acceptClientMutation(clientMutationSpec{
-		actor:   actor,
-		method:  clientMutationMethodSteer,
-		id:      params.ClientMutationID,
-		payload: &params,
-		input:   &params.Input,
+		actor:         actor,
+		method:        clientMutationMethodSteer,
+		id:            params.ClientMutationID,
+		payload:       &params,
+		input:         &params.Input,
+		preconditions: clientMutationPreconditions{ExpectedAskRevision: params.ExpectedAskRevision, ExpectedAskBootGeneration: params.ExpectedAskBootGeneration},
 	}, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
 		if len(params.Input) == 0 {
 			rejectClientMutation(record, appwire.InvalidParams("input is required"))
@@ -899,6 +905,7 @@ func (s *Session) AcceptClientMutationDrainAsSteerAs(params appwire.TurnDrainAsS
 		// (issue #174).
 		snapshot.SteeringHeld = false
 		carrySelectedCommandPreparations(snapshot, record, entries)
+		carryAskCaptures(snapshot, record, entries, len(params.Input) > 0)
 		for _, entry := range entries {
 			removeQueuedMutationSource(snapshot, entry, "transformed")
 		}
@@ -1023,6 +1030,7 @@ func (s *Session) AcceptClientMutationPromoteQueuedAsSteerAs(params appwire.Turn
 		snapshot.SteeringHeld = false
 		entry := snapshot.InputQueue[index]
 		carrySelectedCommandPreparations(snapshot, record, []clientMutationQueueEntry{entry})
+		carryAskCaptures(snapshot, record, []clientMutationQueueEntry{entry}, false)
 		snapshot.InputQueue = append(snapshot.InputQueue[:index], snapshot.InputQueue[index+1:]...)
 		snapshot.QueueRevision++
 		removeQueuedMutationSource(snapshot, entry, "transformed")
@@ -1698,6 +1706,7 @@ func (s *Session) recordClientMutationFailure(
 		attachVoicePresentation(&turn, queued.VoicePresentation, clientMutationID)
 		turn.Actor = s.clientMutationActor(clientMutationID)
 		turn.StableTurnID = pending.TurnID
+		s.setClientMutationAskEvidence(&turn, clientMutationID, "")
 		// The typed selection must ride the persisted failed input before the
 		// journal payload cleanup below clears it: the record keeps both the
 		// names and the original prose for correction and explicit retry.

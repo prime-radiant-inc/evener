@@ -157,7 +157,16 @@ func ClonePendingQuestion(value *PendingQuestion) *PendingQuestion {
 	}
 	clone := *value
 	clone.Options = append([]string(nil), value.Options...)
+	clone.Complete = ClonePointer(value.Complete)
+	clone.Truncated = ClonePointer(value.Truncated)
 	return &clone
+}
+
+// CloneAttentionEntry keeps roster snapshots independent across subscribers.
+func CloneAttentionEntry(value AttentionEntry) AttentionEntry {
+	value.PendingQuestion = ClonePendingQuestion(value.PendingQuestion)
+	value.CompositeList = append([]PendingAskCall(nil), value.CompositeList...)
+	return value
 }
 
 // CloneThreadFailure returns a copy of value whose cause is its own; nil stays
