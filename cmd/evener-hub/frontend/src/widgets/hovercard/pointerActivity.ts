@@ -23,22 +23,30 @@ export interface PointerActivityHandle {
 
 interface PointerActivityState {
   refCount: number;
-  readonly pressed: Set<number>;
+  /** Pointer ids still down, with the time each press began. */
+  readonly pressed: Map<number, number>;
   lastReleaseAt: number;
   readonly press: (event: PointerEvent) => void;
   readonly releasePointer: (event: PointerEvent) => void;
 }
 
+/** How long a press keeps counting as the pointer's own when its pointerup and
+ * pointercancel never arrive. A hoverless device cannot deliver keyboard or
+ * assistive-technology focus while a finger holds the screen, so a focus this
+ * long after the press began is not the press's. Without a bound a single lost
+ * release would suppress those reveals for the life of the Document's owner. */
+export const POINTER_PRESS_MAX_MS = 10_000;
+
 const states = new WeakMap<Document, PointerActivityState>();
 
 function createState(): PointerActivityState {
-  const pressed = new Set<number>();
+  const pressed = new Map<number, number>();
   const state: PointerActivityState = {
     refCount: 0,
     pressed,
     lastReleaseAt: Number.NEGATIVE_INFINITY,
     press: (event) => {
-      pressed.add(event.pointerId);
+      pressed.set(event.pointerId, Date.now());
     },
     // A release drops only the pointer that lifted. A multi-touch gesture can
     // leave another pointer still pressed, which stays counted as focus.
@@ -75,7 +83,11 @@ export function acquirePointerActivity(owner: Document): PointerActivityHandle {
   let released = false;
   return {
     isPointerFocus(windowMs) {
-      return held.pressed.size > 0 || Date.now() - held.lastReleaseAt <= windowMs;
+      const now = Date.now();
+      for (const [pointerId, pressedAt] of held.pressed) {
+        if (now - pressedAt > POINTER_PRESS_MAX_MS) held.pressed.delete(pointerId);
+      }
+      return held.pressed.size > 0 || now - held.lastReleaseAt <= windowMs;
     },
     release() {
       if (released) return;

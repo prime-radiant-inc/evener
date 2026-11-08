@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { acquirePointerActivity } from "./pointerActivity";
+import { acquirePointerActivity, POINTER_PRESS_MAX_MS } from "./pointerActivity";
 import { POINTER_CLICK_WINDOW_MS } from "./useFloatingLabel";
 
 afterEach(() => {
@@ -104,6 +104,28 @@ test("holds the compatibility window to exactly 350ms", () => {
     clock.advance(POINTER_CLICK_WINDOW_MS);
     expect(handle.isPointerFocus(POINTER_CLICK_WINDOW_MS)).toBe(true);
     clock.advance(1);
+    expect(handle.isPointerFocus(POINTER_CLICK_WINDOW_MS)).toBe(false);
+  } finally {
+    handle.release();
+  }
+});
+
+test("a press whose release never arrives stops counting as focus", () => {
+  const clock = startClock();
+  const owner = secondDocument();
+  const handle = acquirePointerActivity(owner);
+  try {
+    // The browser never sends pointerup or pointercancel for this id.
+    dispatchPointer(owner, "pointerdown", 31);
+    clock.advance(POINTER_PRESS_MAX_MS);
+    expect(handle.isPointerFocus(POINTER_CLICK_WINDOW_MS)).toBe(true);
+    clock.advance(1);
+    expect(handle.isPointerFocus(POINTER_CLICK_WINDOW_MS)).toBe(false);
+    // The stale id is gone rather than merely ignored, so a reused id cannot
+    // resurrect the press.
+    dispatchPointer(owner, "pointerdown", 31);
+    dispatchPointer(owner, "pointerup", 31);
+    clock.advance(POINTER_CLICK_WINDOW_MS + 1);
     expect(handle.isPointerFocus(POINTER_CLICK_WINDOW_MS)).toBe(false);
   } finally {
     handle.release();
