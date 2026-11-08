@@ -485,6 +485,9 @@ func mergePastMetadataForList(ctx context.Context, cfg hubcore.WebConfig, source
 	if live.Evener.Profile == "" {
 		live.Evener.Profile = past.Evener.Profile
 	}
+	if live.Evener.ForkLabel == "" {
+		live.Evener.ForkLabel = past.Evener.ForkLabel
+	}
 	return live, nil
 }
 

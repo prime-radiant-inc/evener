@@ -917,6 +917,12 @@ export interface EvenerThread {
   instanceId?: string;
   parentRef?: string;
   kind?: string;
+  /**
+   * ForkLabel names the snapshotted original of an edited message. A remote
+   * projection needs it to nest that original beneath the continuation that
+   * superseded it; the label is also the tree row's display suffix.
+   */
+  forkLabel?: string;
   profile?: string;
   /**
    * TurnCount is the daemon's total completed model-response count. It stays

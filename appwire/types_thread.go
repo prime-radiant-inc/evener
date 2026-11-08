@@ -91,7 +91,11 @@ type EvenerThread struct {
 	InstanceID         string `json:"instanceId,omitempty"`
 	ParentRef          string `json:"parentRef,omitempty"`
 	Kind               string `json:"kind,omitempty"`
-	Profile            string `json:"profile,omitempty"`
+	// ForkLabel names the snapshotted original of an edited message. A remote
+	// projection needs it to nest that original beneath the continuation that
+	// superseded it; the label is also the tree row's display suffix.
+	ForkLabel string `json:"forkLabel,omitempty"`
+	Profile   string `json:"profile,omitempty"`
 	// TurnCount is the daemon's total completed model-response count. It stays
 	// independent of Turns so a bounded metadata read never loads the transcript.
 	TurnCount        int                `json:"turnCount,omitempty"`
