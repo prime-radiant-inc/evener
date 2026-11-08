@@ -34,7 +34,7 @@ type LiveEntry struct {
 	// that a previously observed turn is still running.
 	ActiveTurnID        string
 	ActiveTurnStartedAt int64
-	ProbeState          string
+	ProbeState          appwire.ThreadProbeState
 	Crashed             bool // true only for a retained record whose daemon PID is confirmed gone
 	PendingAsk          bool // true while the daemon reports an unanswered ask_user question
 	PendingEscalation   bool // true while the daemon reports a blocked sandbox-exemption escalation (M7)
@@ -928,7 +928,7 @@ func classifyMissedProbe(prev LiveEntry, had bool, e rendezvous.Entry, identity 
 }
 
 func retainedProbeEntry(entry LiveEntry) LiveEntry {
-	entry.ProbeState = "retained"
+	entry.ProbeState = appwire.ThreadProbeStateRetained
 	entry.ActiveTurnID = ""
 	entry.ActiveTurnStartedAt = 0
 	entry.Activity = nil
@@ -1298,7 +1298,7 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 		ActiveFlags:           result.ActiveFlags,
 		ActiveTurnID:          result.ActiveTurnID,
 		ActiveTurnStartedAt:   result.ActiveTurnStartedAt,
-		ProbeState:            "fresh",
+		ProbeState:            appwire.ThreadProbeStateFresh,
 		Capabilities:          result.Capabilities,
 		CapabilitiesKnown:     result.CapabilitiesKnown,
 		RunningSubagentIDs:    result.RunningSubagentIDs,

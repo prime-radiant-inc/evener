@@ -171,6 +171,23 @@ existing behavior. Explicit tool-policy denials still apply.
 Discovery is shallow: it lists source-qualified sessions and every configured
 host, including an empty or offline host. It does not mark a session seen,
 acknowledge a report, or reveal SSH paths, keys or host administration rows.
+The response carries one `builtAt` moment for the whole snapshot. Each `Sources`
+row says whether that source `answered`, was `attempted-failed`, was
+`skipped-unattached`, or was `not-selected` by an explicit filter. Explicitly
+naming multiple sources preserves fail-whole behavior: one named source's typed
+failure fails the read rather than serving a partial list.
+
+Locally probed roster rows report `probeState` as `fresh` or `retained`.
+A fresh row can carry its running `activeTurnId` and
+`activeTurnStartedAt`; a working row with no running subagent can also carry
+`quietForMs`, measured at `builtAt`. A retained row keeps durable facts but
+omits those volatile turn and activity facts. A crashed local lane remains in
+discovery with `status.type: systemError`, `crashed: true`, and retained probe
+state, but cannot receive a live read, model query, session-tool binding, or
+route. Disk-index and read-only alias rows carry no fleet facts. Remote rows
+keep the remote source's ordinary status, question and failure facts but omit
+the local hub's active-turn, quiet, probe-state and crash fields.
+
 Use `job_list` with `hub:{mode:"activity",ref,resource:"summary"}` for
 counts/context, or `resource:"delegates"`, `"jobs"`, or `"watches"` with
 `cursor` and `limit` for the corresponding bounded collection. The owner

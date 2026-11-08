@@ -58,7 +58,7 @@ type LocalDaemonEntry struct {
 	// them empty.
 	ActiveTurnID        string
 	ActiveTurnStartedAt int64
-	ProbeState          string
+	ProbeState          appwire.ThreadProbeState
 	Activity            *appwire.ThreadActivity
 	Crashed             bool
 	// ReadOnlyAlias addresses an in-process descendant through its owner's

@@ -462,6 +462,8 @@ func TestManagerDiscoveryCarriesFreshLocalActiveTurn(t *testing.T) {
 		},
 		SessionID:           sessionID,
 		Status:              appwire.ThreadStatusActive,
+		PendingAsk:          true,
+		PendingQuestion:     &appwire.PendingQuestion{Question: "Choose the safe path", Options: []string{"keep", "stop"}, Count: 1},
 		ActiveTurnID:        "turn-running",
 		ActiveTurnStartedAt: 1_790_000_000_123,
 		ProbeState:          "fresh",
@@ -484,9 +486,19 @@ func TestManagerDiscoveryCarriesFreshLocalActiveTurn(t *testing.T) {
 	if got.ProbeState != "fresh" {
 		t.Fatalf("probe state = %q, want fresh", got.ProbeState)
 	}
+	if !got.AskPending || got.PendingQuestion == nil || got.PendingQuestion.Count != 1 || len(got.PendingQuestion.Options) != 2 {
+		t.Fatalf("existing question facts did not survive fleet enrichment: %+v", got)
+	}
 	wantQuiet := response.Discover.BuiltAt - lastActivityAt
 	if got.QuietForMS == nil || *got.QuietForMS != wantQuiet {
 		t.Fatalf("quiet time = %v, want %d from discovery builtAt", got.QuietForMS, wantQuiet)
+	}
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded) > managerReadMaxJSONBytes {
+		t.Fatalf("fleet discovery encoded to %d bytes, limit %d", len(encoded), managerReadMaxJSONBytes)
 	}
 }
 

@@ -2,22 +2,12 @@ package appsource
 
 import (
 	"context"
-	"reflect"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/rendezvous"
 )
-
-func setLocalDaemonFleetField(t *testing.T, entry *LocalDaemonEntry, name string, value any) {
-	t.Helper()
-	field := reflect.ValueOf(entry).Elem().FieldByName(name)
-	if !field.IsValid() {
-		t.Fatalf("LocalDaemonEntry has no %s field", name)
-	}
-	field.Set(reflect.ValueOf(value))
-}
 
 func TestLocalDaemonSourceListUsesDiscoveryMomentForQuietTime(t *testing.T) {
 	builtAt := time.UnixMilli(1_790_000_010_000)
@@ -28,12 +18,12 @@ func TestLocalDaemonSourceListUsesDiscoveryMomentForQuietTime(t *testing.T) {
 			ThreadID:  "th_quiet",
 			SessionID: "sess_quiet",
 		},
-		Status: appwire.ThreadStatusActive,
+		Status:     appwire.ThreadStatusActive,
+		ProbeState: appwire.ThreadProbeStateFresh,
+		Activity: &appwire.ThreadActivity{
+			LastActivityAt: builtAt.Add(-7500 * time.Millisecond).UnixMilli(),
+		},
 	}
-	setLocalDaemonFleetField(t, &entry, "ProbeState", "fresh")
-	setLocalDaemonFleetField(t, &entry, "Activity", &appwire.ThreadActivity{
-		LastActivityAt: builtAt.Add(-7500 * time.Millisecond).UnixMilli(),
-	})
 	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry { return []LocalDaemonEntry{entry} }, nil)
 
 	response, err := source.ListThreads(WithThreadListBuiltAt(context.Background(), builtAt), appwire.ThreadListParams{})
@@ -57,10 +47,10 @@ func TestLocalDaemonSourceListCarriesFreshActiveTurn(t *testing.T) {
 			ThreadID:  "th_active",
 			SessionID: "sess_active",
 		},
-		Status: appwire.ThreadStatusActive,
+		Status:              appwire.ThreadStatusActive,
+		ActiveTurnID:        "turn-running",
+		ActiveTurnStartedAt: 1_790_000_000_123,
 	}
-	setLocalDaemonFleetField(t, &entry, "ActiveTurnID", "turn-running")
-	setLocalDaemonFleetField(t, &entry, "ActiveTurnStartedAt", int64(1_790_000_000_123))
 	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry { return []LocalDaemonEntry{entry} }, nil)
 
 	response, err := source.ListThreads(context.Background(), appwire.ThreadListParams{})

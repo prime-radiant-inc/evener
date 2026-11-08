@@ -366,6 +366,32 @@ func TestFeatureSetTranscriptDisplayJSONField(t *testing.T) {
 	}
 }
 
+func TestThreadProbeStateGeneratedAsClosedUnion(t *testing.T) {
+	generated, err := os.ReadFile("../appwire-client/typescript/types.gen.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(generated, []byte("probeState?: ThreadProbeState;")) {
+		t.Fatal("generated EvenerThread probe state is not a named type")
+	}
+	if !bytes.Contains(generated, []byte("export type ThreadProbeState = (typeof THREAD_PROBE_STATES)[number];")) {
+		t.Fatal("generated thread probe states are not a closed union")
+	}
+}
+
+func TestSessionSourceStateGeneratedAsClosedUnion(t *testing.T) {
+	generated, err := os.ReadFile("../appwire-client/typescript/types.gen.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(generated, []byte("state: SessionSourceState;")) {
+		t.Fatal("generated discovery source state is not a named type")
+	}
+	if !bytes.Contains(generated, []byte("export type SessionSourceState = (typeof SESSION_SOURCE_STATES)[number];")) {
+		t.Fatal("generated discovery source states are not a closed union")
+	}
+}
+
 func TestJobsListReplacementTreeWireShape(t *testing.T) {
 	payload := JobActivityTree{
 		Revision: 7,

@@ -38,6 +38,15 @@ func TestFleetProbeStateLifecycle(t *testing.T) {
 	if retained.entry.Failure == nil {
 		t.Fatal("retained probe dropped durable failure")
 	}
+	recovered := liveEntryFromProbe(entry, ProbeResult{
+		SessionID: entry.SessionID,
+		Status:    "idle",
+		OK:        true,
+	})
+	if recovered.ProbeState != appwire.ThreadProbeStateFresh {
+		t.Fatalf("recovered probe state = %q, want fresh", recovered.ProbeState)
+	}
+	assertFleetVolatileFactsAbsent(t, recovered)
 
 	crashed := classifyMissedProbe(fresh, true, entry, ProcessNotOwner, nil)
 	if crashed.kind != missCrashed {

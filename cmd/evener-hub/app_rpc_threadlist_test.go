@@ -31,6 +31,9 @@ func TestHubThreadListChildAliasCarriesItsOwnWatches(t *testing.T) {
 		},
 		SessionID:             "sess_root",
 		Status:                appwire.ThreadStatusIdle,
+		ActiveTurnID:          "turn-root",
+		ActiveTurnStartedAt:   1_790_000_000_123,
+		ProbeState:            appwire.ThreadProbeStateFresh,
 		RunningSubagentIDs:    []string{"sess_child", "sess_bare_child"},
 		RunningSubagentStates: map[string]string{"sess_child": appwire.ThreadStatusIdle, "sess_bare_child": appwire.ThreadStatusIdle},
 		Watches:               []appwire.EvenerWatchInfo{{ID: "watch-root", Source: "timer", Events: []string{"output"}}},
@@ -66,6 +69,14 @@ func TestHubThreadListChildAliasCarriesItsOwnWatches(t *testing.T) {
 	// A read-only child with no watches still has no diagnostics at all.
 	if bare.Evener.Diagnostics != nil {
 		t.Fatalf("bare child diagnostics = %+v, want none", bare.Evener.Diagnostics)
+	}
+	if root.Evener.ActiveTurnID != "turn-root" || root.Evener.ProbeState != appwire.ThreadProbeStateFresh {
+		t.Fatalf("root fleet facts = %+v, want its own current probe", root.Evener)
+	}
+	for _, alias := range []appwire.Thread{child, bare} {
+		if alias.Evener.ActiveTurnID != "" || alias.Evener.ActiveTurnStartedAt != 0 || alias.Evener.QuietForMS != nil || alias.Evener.ProbeState != "" || alias.Evener.Crashed {
+			t.Fatalf("read-only alias inherited root fleet facts: %+v", alias.Evener)
+		}
 	}
 }
 
@@ -155,6 +166,12 @@ func TestHubRPCThreadListUsesRosterStatusAndSessionID(t *testing.T) {
 	if thread.Status.Type != appwire.ThreadStatusAwaiting {
 		t.Fatalf("status=%q, want %q", thread.Status.Type, appwire.ThreadStatusAwaiting)
 	}
+	if thread.Evener.ActiveTurnID != "" || thread.Evener.ActiveTurnStartedAt != 0 || thread.Evener.QuietForMS != nil || thread.Evener.Crashed {
+		t.Fatalf("older daemon fabricated unsupported fleet facts: %+v", thread.Evener)
+	}
+	if thread.Evener.ProbeState != appwire.ThreadProbeStateFresh {
+		t.Fatalf("older daemon probe state = %q, want roster-owned fresh", thread.Evener.ProbeState)
+	}
 }
 
 func TestHubRPCThreadListIncludesPastThreads(t *testing.T) {
@@ -171,6 +188,10 @@ func TestHubRPCThreadListIncludesPastThreads(t *testing.T) {
 	}
 	if len(resp.Data) != 1 || resp.Data[0].ID != sessionID || resp.Data[0].Status.Type != appwire.ThreadStatusNotLoaded {
 		t.Fatalf("threads=%+v", resp.Data)
+	}
+	thread := resp.Data[0].Evener
+	if thread.ActiveTurnID != "" || thread.ActiveTurnStartedAt != 0 || thread.QuietForMS != nil || thread.ProbeState != "" || thread.Crashed {
+		t.Fatalf("disk-only row fabricated fleet facts: %+v", thread)
 	}
 }
 
