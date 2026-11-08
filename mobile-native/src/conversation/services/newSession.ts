@@ -13,6 +13,7 @@ import type {
 	InputItem,
 	LaunchConfigLayer,
 	LaunchConfigResolved,
+	LaunchOptionSchemaResponse,
 	MethodTypes,
 	ModelListParams,
 	ModelListResponse,
@@ -48,6 +49,7 @@ export interface NewSessionService {
 	/** The project's current branch, or null outside a repository. */
 	branch(host: string, cwd: string): Promise<string | null>;
 	resolveLaunch(host: string, cwd: string, launchOverrides: LaunchConfigLayer): Promise<LaunchConfigResolved>;
+	launchSchema(host?: string): Promise<LaunchOptionSchemaResponse>;
 }
 
 export function createNewSessionService(client: ConversationClientLike): NewSessionService {
@@ -111,6 +113,10 @@ export function createNewSessionService(client: ConversationClientLike): NewSess
 				cwd,
 				...(Object.keys(launchOverrides).length > 0 ? { launchOverrides } : {}),
 			});
+		},
+
+		async launchSchema(host) {
+			return hostRequest(client, host, "evener/launch/schema", {});
 		},
 	};
 }

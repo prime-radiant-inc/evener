@@ -29,6 +29,7 @@ type Layer struct {
 	MaxConcurrentDelegateTurns  *int              `toml:"max_concurrent_delegate_turns,omitempty"`
 	MaxRetainedTerminal         *int              `toml:"max_retained_terminal,omitempty"`
 	NonInteractive              *bool             `toml:"non_interactive,omitempty"`
+	MemoryEnabled               *bool             `toml:"memory_enabled,omitempty"`
 	AppReplaySize               *int              `toml:"app_replay_size,omitempty"`
 	SkillsDirs                  []string          `toml:"skills_dirs,omitempty"`
 	PluginDirs                  []string          `toml:"plugin_dirs,omitempty"`

@@ -1,4 +1,4 @@
-import { deferred } from "@evener/appwire-client/testing/deferred";
+import { type Deferred, deferred } from "@evener/appwire-client/testing/deferred";
 import "../session/testing/editorGeometry";
 import type { HostForwardedResult, HostRequestParams, ThreadStartParams } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
@@ -28,6 +28,51 @@ import {
   setWorkingDir,
   workingDir,
 } from "./spawnTestUtils";
+
+/** A launch schema naming the memory option, the way a current hub answers. */
+const SCHEMA_OFFERING_MEMORY = {
+  options: [
+    {
+      field: "memory_enabled",
+      wireField: "memoryEnabled",
+      label: "Memory",
+      group: "Agent",
+      kind: "boolean" as const,
+      perLaunch: true,
+    },
+  ],
+};
+
+/** The same schema plus a second boolean, for edits made away from home. */
+const SCHEMA_MEMORY_AND_LOG = {
+  options: [
+    ...SCHEMA_OFFERING_MEMORY.options,
+    {
+      field: "api_log",
+      wireField: "apiLog",
+      label: "API log",
+      group: "Agent",
+      kind: "boolean" as const,
+      perLaunch: true,
+    },
+  ],
+};
+
+/** The offering schema plus a command-kind path field, whose stored value a host switch re-judges. */
+const SCHEMA_MEMORY_AND_PATH = {
+  options: [
+    ...SCHEMA_OFFERING_MEMORY.options,
+    {
+      field: "agent_command",
+      wireField: "agentCommand",
+      label: "Agent command",
+      group: "Agent",
+      kind: "path" as const,
+      pathKind: "command",
+      perLaunch: true,
+    },
+  ],
+};
 
 /** Every evener/host/attach the pane issued, for the picker's attach assertions. */
 function attachCalls(fake: FakeClient): { host: string }[] {
@@ -299,6 +344,240 @@ test("choosing a non-local host sends source and persists it in the draft", asyn
   const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
   expect(params.source).toBe("buildbox");
   expect(completionDraft("/tmp/host-target").fields.getState().source).toBe("buildbox");
+});
+
+// A Memory Off is consent, not preference: the host-switch reconciliation
+// may drop a preference the new host never heard of, but silently re-enabling
+// memory the person turned off is the one drop this pane must not make. The
+// choice survives the switch, Start is held over it, and the hold offers its
+// own way out: clearing the choice.
+test("an explicit Memory Off survives a host switch that can't honor it, and Start is held until it is cleared", async () => {
+  const user = setupUser();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => {
+    // local offers the field; buildbox's routed answer (routedDiscoveryDefault)
+    // names no options, so the switch crosses a capability boundary.
+    f.on("evener/launch/schema", () => SCHEMA_OFFERING_MEMORY);
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/memory-hold");
+  renderSpawn(fake);
+  await settled();
+
+  const draft = completionDraft("/tmp/memory-hold");
+  await act(async () => {
+    setDraftField(draft, "advancedOverrides", { memoryEnabled: false });
+  });
+  await fillPrompt(user, "typed before the switch");
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+
+  // The choice survived the switch, and Start is held over it.
+  expect(draft.fields.getState().advancedOverrides.memoryEnabled).toBe(false);
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+  await user.click(screen.getByTestId("spawn-submit"));
+  expect(fake.calls.some((call) => call.method === "thread/start")).toBe(false);
+
+  // The hold's way through: the notice's clear action.
+  fireEvent.click(screen.getByTestId("spawn-memory-clear"));
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.source).toBe("buildbox");
+  expect(params.launchOverrides ?? {}).not.toHaveProperty("memoryEnabled");
+});
+
+// Settlement alone normally releases Start: the host refuses what it cannot
+// serve at launch. A refused schema answer is the exception for a Memory Off -
+// an older host does not refuse the field, it silently drops it, so Start
+// stays held until the choice is cleared or a schema that offers the field
+// answers.
+test("a Memory Off holds Start when the selected host's schema answer fails", async () => {
+  const user = setupUser();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => {
+    f.on("evener/launch/schema", () => SCHEMA_OFFERING_MEMORY);
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method === "evener/launch/schema") throw new Error("schema away");
+      return routedDiscoveryDefault(forwarded.method);
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/memory-hold-fail");
+  renderSpawn(fake);
+  await settled();
+
+  const draft = completionDraft("/tmp/memory-hold-fail");
+  await act(async () => {
+    setDraftField(draft, "advancedOverrides", { memoryEnabled: false });
+  });
+  await fillPrompt(user, "typed before the switch");
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+
+  expect(draft.fields.getState().advancedOverrides.memoryEnabled).toBe(false);
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true));
+  expect(fake.calls.some((call) => call.method === "thread/start")).toBe(false);
+});
+
+// The ⌘/Ctrl+Enter chord reaches the submit handler directly, past the
+// disabled Start button - the same reason every other blocked state has its
+// own guard inside handleSpawn. A held Memory Off must never ride a submission
+// an older host would silently honor by dropping the field.
+test("the Mod+Enter chord cannot submit past a held Memory Off", async () => {
+  const user = setupUser();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => {
+    f.on("evener/launch/schema", () => SCHEMA_OFFERING_MEMORY);
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/memory-chord");
+  renderSpawn(fake);
+  await settled();
+
+  const draft = completionDraft("/tmp/memory-chord");
+  await act(async () => {
+    setDraftField(draft, "advancedOverrides", { memoryEnabled: false });
+  });
+  await fillPrompt(user, "chord while held");
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true));
+
+  fireEvent.keyDown(promptField(), { key: "Enter", metaKey: true });
+  await settled();
+  expect(fake.calls.some((call) => call.method === "thread/start")).toBe(false);
+});
+
+// The values half of the preservation keeps a Memory Off alive while the
+// overrides half is re-collected against the unoffering host's schema on any
+// later edit. Once an offering host answers again, that choice must ride the
+// submission - the panel only re-collects on edit, so the wire value has to be
+// restored from the values or the toggle would show Off while the submission
+// silently drops it.
+test("a Memory Off kept across an unoffering host rides the submission again once an offering host answers", async () => {
+  const user = setupUser();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => {
+    f.on("evener/launch/schema", () => SCHEMA_MEMORY_AND_LOG);
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method === "evener/launch/schema") {
+        return { options: SCHEMA_MEMORY_AND_LOG.options.filter((option) => option.wireField !== "memoryEnabled") };
+      }
+      return routedDiscoveryDefault(forwarded.method);
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/memory-restore");
+  renderSpawn(fake);
+  await settled();
+
+  // Choose Memory Off on local, whose schema offers the field, through the panel.
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.selectOptions(screen.getByLabelText("Memory"), "false");
+  await fillPrompt(user, "typed before the switch");
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+
+  // On buildbox the field is unoffered; an edit to another option re-collects
+  // the overrides against buildbox's schema.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+  if (screen.queryByLabelText("API log") === null) {
+    await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  }
+  await user.selectOptions(screen.getByLabelText("API log"), "true");
+
+  // Back on local, whose schema offers the field again: the choice rides the
+  // submission again, not silently dropped by the edit made while away.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "local" } });
+  await settled();
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.launchOverrides).toMatchObject({ memoryEnabled: false });
+});
+
+// A stored path value is re-judged on every target change, and the re-judge
+// fired at a switch runs against the schema captured before the new host's
+// answer lands. When that validation settles after the returning host's schema,
+// its re-collection must not silently drop the kept Memory choice: the toggle
+// still shows Off, so the submission has to carry it or the session starts
+// with memory on.
+test("a Memory Off kept across a host switch still rides the submission when its re-judged path validation lands late", async () => {
+  const user = setupUser();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const command = "late-validation-agent";
+  const commandValidations: Deferred<{ path: string; valid: boolean }>[] = [];
+  const fake = readyClient((f) => {
+    f.on("evener/launch/schema", () => SCHEMA_MEMORY_AND_PATH);
+    f.on("evener/path/validate", (params) => {
+      const { path } = params as { path: string };
+      if (path !== command) return { path, valid: true };
+      const validation = deferred<{ path: string; valid: boolean }>();
+      commandValidations.push(validation);
+      return validation.promise;
+    });
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method === "evener/launch/schema") {
+        return { options: SCHEMA_MEMORY_AND_PATH.options.filter((option) => option.wireField !== "memoryEnabled") };
+      }
+      return routedDiscoveryDefault(forwarded.method);
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/late-validation");
+  renderSpawn(fake);
+  await settled();
+
+  // Choose Memory Off and a command value on local, whose schema offers both.
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.selectOptions(screen.getByLabelText("Memory"), "false");
+  fireEvent.change(screen.getByLabelText("Agent command"), { target: { value: command } });
+  await waitFor(() => expect(commandValidations.length).toBe(1));
+  await act(async () => commandValidations[0]!.resolve({ path: command, valid: true }));
+  await fillPrompt(user, "typed before the switch");
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+
+  // Away on buildbox the field is unoffered. Back on local, the stored command
+  // is re-judged for the returning target while local's schema answer is
+  // still in flight, so the validation lands after the schema settled and
+  // Start has released.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "local" } });
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+  await waitFor(() => expect(commandValidations.length).toBe(2));
+  await act(async () => commandValidations[1]!.resolve({ path: command, valid: true }));
+
+  // The toggle still shows the person's choice, so the submission carries it.
+  expect((screen.getByLabelText("Memory") as HTMLSelectElement).value).toBe("false");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.launchOverrides).toMatchObject({ memoryEnabled: false });
 });
 
 // --- host picker: the working directory is resolved over the selected host ---

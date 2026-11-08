@@ -2218,6 +2218,7 @@ export interface LaunchConfigLayer {
   maxConcurrentDelegateTurns?: number;
   maxRetainedTerminal?: number;
   nonInteractive?: boolean;
+  memoryEnabled?: boolean;
   appReplaySize?: number;
   skillsDirs?: string[];
   pluginDirs?: string[];

@@ -469,6 +469,7 @@ type LaunchConfigLayer struct {
 	MaxConcurrentDelegateTurns  *int              `json:"maxConcurrentDelegateTurns,omitempty"`
 	MaxRetainedTerminal         *int              `json:"maxRetainedTerminal,omitempty"`
 	NonInteractive              *bool             `json:"nonInteractive,omitempty"`
+	MemoryEnabled               *bool             `json:"memoryEnabled,omitempty"`
 	AppReplaySize               *int              `json:"appReplaySize,omitempty"`
 	SkillsDirs                  []string          `json:"skillsDirs,omitempty"`
 	PluginDirs                  []string          `json:"pluginDirs,omitempty"`
