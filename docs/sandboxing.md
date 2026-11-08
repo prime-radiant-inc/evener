@@ -271,6 +271,14 @@ An individual filesystem call already in progress may still block until it retur
   are granted. With them, `git --version` and a full `git commit` succeed under
   `restricted` against the configuration the developer really has.
 
+  `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` are followed, because they change
+  which files git reads. When `GIT_CONFIG_GLOBAL` names an existing absolute
+  file, git reads that file **instead of** both FILES, so the grant names it
+  instead. `GIT_CONFIG_SYSTEM` is granted when it overrides the built-in
+  `/etc/gitconfig` (the built-in already lies under the `/etc` system read root),
+  unless `GIT_CONFIG_NOSYSTEM` turns the system config off. Both are subject to
+  the same admission and denylist rules as the FILES.
+
   The grant is deliberately narrow, and what it does **not** change matters as
   much as what it does:
 
@@ -298,6 +306,10 @@ An individual filesystem call already in progress may still block until it retur
   - The candidates pass through the **same shared-tree guard** as the toolchain
     directories, so a configured path at or above your home, the worktree, or a
     temp root is refused rather than granted.
+  - **Environment overrides are followed, not ignored.** A relative or
+    nonexistent `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` contributes no grant:
+    git resolves a relative value against its working directory, which is not a
+    stable file to grant, and a missing one names no config git can read.
   - It reaches the **spawned layer only**. The model's file tools stay confined to
     the worktree and cannot browse the config.
 

@@ -973,7 +973,7 @@ func scopesFor(policy SandboxPolicy, host HostFacts, layout GitLayout, worktree 
 		// anywhere-minus-the-denylist, which covers any hook/MCP/toolchain path that
 		// is not masked — and a masked one must stay masked in every mode.
 		devRoots := guardedHostRoots(host.DeveloperToolRoots, host.Home, worktree)
-		gitConfig := guardedHostRoots(host.GitGlobalConfigPaths, host.Home, worktree)
+		gitConfig := guardedHostRoots(slices.Concat(host.GitGlobalConfigPaths, host.GitSystemConfigPaths), host.Home, worktree)
 		readSpawn := dedupeRoots(slices.Concat(readFile, layout.ReadGrantPaths, defaultSystemReadRoots, devRoots, gitConfig, policy.InfraReadRoots))
 		writeSpawn := dedupeRoots(slices.Concat(writeFile, layout.WritablePaths))
 		fileTool = AccessScope{Read: ReadWorktreeOnly, ReadRoots: readFile, WriteRoots: writeFile}
