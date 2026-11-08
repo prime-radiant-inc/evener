@@ -102,15 +102,19 @@ func TestMemoryRunAndServeResumeLaunch(t *testing.T) {
 				}
 				stop := errors.New("fixture resume reached")
 				captured := false
+				exportPath := filepath.Join(t.TempDir(), "trajectory.json")
 				capture := func(_ *llm.Client, _ *provider.Profile, env execenv.ExecutionEnvironment, meta schema.SessionMeta, cfg agent.RestoreSessionConfig) (*agent.Session, error) {
 					defer env.Cleanup()
 					captured = true
 					if cfg.MemoryStateRoot != mustStateRoot(t) || cfg.DisableMemory != disabled || meta.Config.MemoryProjectID != "saved-binding" {
 						t.Errorf("resume root=%q disable=%t saved project=%q", cfg.MemoryStateRoot, cfg.DisableMemory, meta.Config.MemoryProjectID)
 					}
+					if cfg.ExportATIFPath != exportPath || cfg.ExportATIFProviderHandles != "raw-local" {
+						t.Errorf("resume export = %q %q, want %q raw-local", cfg.ExportATIFPath, cfg.ExportATIFProviderHandles, exportPath)
+					}
 					return nil, stop
 				}
-				args := []string{"--dir", dir, "--state-dir", state, "--resume", id}
+				args := []string{"--dir", dir, "--state-dir", state, "--resume", id, "--export-atif", exportPath, "--export-atif-provider-handles", "raw-local"}
 				if disabled {
 					args = append(args, "--disable-memory")
 				}
