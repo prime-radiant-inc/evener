@@ -16,17 +16,14 @@ var runHubSelfUpgrade = selfupdate.Upgrade
 // hubUpdateApply over selfupdate's fixed .tmp install path, and always
 // releases it before returning since it never execs.
 func hubUpgrade(ctx context.Context, params appwire.UpgradeParams) (appwire.UpgradeResponse, error) {
-	// A worktree build is replaced only by an explicit local build; the
-	// Settings Install action reaches this RPC, and a cached check from
-	// another hub must not turn it into a release install.
-	if isDevBuild() {
-		return appwire.UpgradeResponse{}, errDevBuildUpdate
-	}
 	if err := tryLockHubUpdate(); err != nil {
 		return appwire.UpgradeResponse{}, err
 	}
 	defer hubUpdateMu.Unlock()
 
+	if localBuildInstallRefused() {
+		return appwire.UpgradeResponse{}, errLocalBuildInstallTarget
+	}
 	prefix, binDir, shareBinDir := hubInstallDirs()
 	result, err := runHubSelfUpgradeWithTimeout(ctx, selfupdate.Options{
 		Requested:      params.Requested,
