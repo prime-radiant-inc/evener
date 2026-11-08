@@ -216,13 +216,17 @@ func (s *LocalDaemonSource) ItemCandidatesFromRead(
 	if err := s.itemSnapshots.putContext(ctx, resolved.pagingRef, next); err != nil {
 		return ItemCandidateResult{}, err
 	}
+	cursorIncarnation := incarnation
+	if params.TurnWindow != nil && response.Snapshot != nil && response.Snapshot.Incarnation != "" {
+		cursorIncarnation = response.Snapshot.Incarnation
+	}
 	return ItemCandidateResult{
 		// The daemon cursor has its own identity. Exhausted retains its truth, but
 		// the hub mints a source-owned cursor from Identity below.
 		Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates},
 		Identity: appitempaging.CursorIdentity{
 			ThreadRef:         resolved.pagingRef,
-			Incarnation:       incarnation,
+			Incarnation:       cursorIncarnation,
 			ProjectionVersion: localDaemonItemCursorProjectionVersion,
 		},
 		Exhausted: response.OlderCursor == "",

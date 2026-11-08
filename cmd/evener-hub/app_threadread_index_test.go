@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -264,6 +265,73 @@ func TestDaemonlessThreadReadHonorsTurnWindows(t *testing.T) {
 	data, ok := wireErr.Data.(appwire.TranscriptTurnNotFoundErrorData)
 	if !ok || data.TurnID != "missing" || data.OldestTurnID != "turn_m1" || data.NewestTurnID != "turn_m3" || data.TurnCount != 3 {
 		t.Fatalf("missing saved turn data = %#v", wireErr.Data)
+	}
+}
+
+func TestSessionOperationsFetchesSavedItemCanonicalRanges(t *testing.T) {
+	text := strings.Repeat("界", 100_000)
+	cfg, entry, path := seedIndexedPastSession(t,
+		execution("turn_m1", schema.NewTurn(schema.TurnAssistant, llm.Assistant(text))),
+		completedExecution("turn_m1"),
+	)
+	ref := "local:" + entry.Meta.ID
+	window, err := dispatchDaemonlessThreadRead(t, cfg, appwire.ThreadReadParams{
+		Ref: ref, IncludeTurns: true,
+		ThreadWindowParams: appwire.ThreadWindowParams{
+			TurnWindow:   &appwire.ThreadTurnWindow{Turn: "turn_m1"},
+			ItemTypes:    []string{"agentMessage"},
+			MessageBytes: 64,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := flattenTestItems(window.Thread.Turns)
+	if len(items) != 1 || items[0].FetchCursor == "" {
+		t.Fatalf("bounded item = %+v, want one fetchable item", items)
+	}
+
+	indexed := indexLatestWindow(t, path, appwire.TranscriptItemPageLimit)
+	if len(indexed.Candidates) != 1 {
+		t.Fatalf("indexed candidates = %d, want 1", len(indexed.Candidates))
+	}
+	want, err := json.Marshal(indexed.Candidates[0].Item)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	operations := &sessionOperations{cfg: cfg, sources: appsource.NewRegistry()}
+	cursor := items[0].FetchCursor
+	var got []byte
+	for cursor != "" {
+		response, err := operations.Invoke(t.Context(), appwire.ManagerView{Ref: "local:manager", Manager: true}, appwire.SessionOperationRequest{
+			Fetch: &appwire.SessionFetchRequest{Ref: ref, FetchCursor: cursor},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.Fetch == nil {
+			t.Fatal("FETCH response omitted fetch payload")
+		}
+		encoded, err := json.Marshal(response)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(encoded) > managerReadMaxJSONBytes {
+			t.Fatalf("encoded FETCH response = %d bytes, cap %d", len(encoded), managerReadMaxJSONBytes)
+		}
+		fragment, err := base64.StdEncoding.DecodeString(response.Fetch.Data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.Fetch.Offset != uint64(len(got)) {
+			t.Fatalf("range offset = %d, want %d", response.Fetch.Offset, len(got))
+		}
+		got = append(got, fragment...)
+		cursor = response.Fetch.FetchCursor
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("fetched canonical bytes differ: got %d bytes, want %d", len(got), len(want))
 	}
 }
 

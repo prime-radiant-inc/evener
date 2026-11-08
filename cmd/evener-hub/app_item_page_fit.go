@@ -69,7 +69,9 @@ func transcriptWindowOptionsFor(
 	return transcriptWindowPackOptions{
 		Params: params, ItemLimit: itemLimit, AppliedBy: appliedBy,
 		MintFetchCursor: func(candidate appitempaging.TranscriptItemCandidate) (string, error) {
-			return appitempaging.EncodeFetchCursor(identity, appitempaging.FetchCursor{
+			fetchIdentity := identity
+			fetchIdentity.ProjectionVersion = appitempaging.TranscriptItemProjectionVersion
+			return appitempaging.EncodeFetchCursor(fetchIdentity, appitempaging.FetchCursor{
 				Position: candidate.Position, ItemVersion: candidate.Item.Version, Origin: fetchOrigin,
 			})
 		},

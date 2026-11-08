@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/rendezvous"
@@ -50,6 +52,86 @@ func TestHubRPCThreadReadRoutesToDaemon(t *testing.T) {
 	}
 	if resp.Thread.ID != "th_1" || resp.Thread.Evener.Ref != "local:th_1" {
 		t.Fatalf("thread=%+v", resp.Thread)
+	}
+}
+
+func TestSessionOperationsFetchesServingDaemonItem(t *testing.T) {
+	position := appwire.ThreadItemPosition{Entry: 7}
+	item := appwire.ThreadItem{
+		ID: "tool-large", Type: "commandExecution", TurnID: "turn_1", TranscriptKey: "tool-large", ToolName: "shell", Output: strings.Repeat("output", 50_000),
+		Position: &position, Version: 4,
+	}
+	const nativeIncarnation = "daemon-index-incarnation"
+
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		thread := appwire.Thread{ID: "windowed", SessionID: "windowed", Evener: appwire.EvenerThread{Ref: params.Ref}}
+		snapshot := &appwire.SnapshotIdentity{Incarnation: nativeIncarnation, Length: 10}
+		if params.FetchCursor == "" {
+			thread.Turns = []appwire.Turn{{ID: "turn_1", Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFull, Items: []appwire.ThreadItem{item}}}
+			return appwire.ThreadReadResponse{Thread: thread, Snapshot: snapshot}, nil
+		}
+		cursor, identity, err := appitempaging.DecodeFetchCursorForRef(params.FetchCursor, params.Ref)
+		if err != nil {
+			return appwire.ThreadReadResponse{}, err
+		}
+		sourceIncarnation, ok := appwire.ThreadWindowSourceIncarnation(identity.Incarnation)
+		if !ok || sourceIncarnation != nativeIncarnation {
+			return appwire.ThreadReadResponse{}, appwire.TranscriptItemCursorStale()
+		}
+		fetch, err := appitempaging.BuildFetchResponse(item, identity, cursor)
+		return appwire.ThreadReadResponse{Thread: thread, Snapshot: snapshot, Fetch: &fetch}, err
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		return []appsource.LocalDaemonEntry{{Entry: rendezvous.Entry{
+			Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"), SourceID: "local",
+			ThreadID: "windowed", SessionID: "windowed", WorkspaceRef: "local:windowed",
+		}}}
+	}, http.DefaultClient)
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	operations := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
+	caller := appwire.ManagerView{Ref: "local:manager", Manager: true}
+
+	window, err := operations.Invoke(t.Context(), caller, appwire.SessionOperationRequest{Turns: &appwire.ThreadTurnsListParams{
+		Ref: "local:windowed",
+		ThreadWindowParams: appwire.ThreadWindowParams{
+			TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn_1"}, ItemTypes: []string{"commandExecution"}, PreviewBytes: 64,
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if window.Turns == nil || len(window.Turns.Data) != 1 || len(window.Turns.Data[0].Items) != 1 || window.Turns.Data[0].Items[0].FetchCursor == "" {
+		t.Fatalf("bounded window = %+v, want one fetchable tool item", window.Turns)
+	}
+
+	want, err := json.Marshal(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor := window.Turns.Data[0].Items[0].FetchCursor
+	var got []byte
+	for cursor != "" {
+		response, err := operations.Invoke(t.Context(), caller, appwire.SessionOperationRequest{Fetch: &appwire.SessionFetchRequest{
+			Ref: "local:windowed", FetchCursor: cursor,
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		fragment, err := base64.StdEncoding.DecodeString(response.Fetch.Data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, fragment...)
+		cursor = response.Fetch.FetchCursor
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("fetched canonical bytes differ: got %d bytes, want %d", len(got), len(want))
 	}
 }
 

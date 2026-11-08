@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/transcriptindex"
 )
 
 type sessionOperations struct {
@@ -262,6 +263,12 @@ func (o *sessionOperations) Invoke(ctx context.Context, caller appwire.ManagerVi
 		if page.NextCursor != "" {
 			response.FollowUps = []appwire.SessionStatusFollowUp{{Tool: "read_transcript", Arguments: appwire.SessionStatusArguments{Hub: appwire.SessionStatusTarget{Ref: request.Turns.Ref, Cursor: page.NextCursor, ItemLimit: request.Turns.ItemLimit}}}}
 		}
+	} else if request.Fetch != nil {
+		fetch, err := o.fetch(ctx, *request.Fetch)
+		if err != nil {
+			return response, err
+		}
+		response.Fetch = &fetch
 	} else if request.Activity != nil {
 		page, err := o.activity(ctx, *request.Activity)
 		if err != nil {
@@ -399,12 +406,65 @@ func (o *sessionOperations) Invoke(ctx context.Context, caller appwire.ManagerVi
 		}
 		response.Stop = &stop
 	}
-	if request.Discover != nil || request.Read != nil || request.Turns != nil || request.Activity != nil || request.Tasks != nil || request.Job != nil || request.JobOutput != nil || request.Models != nil {
+	if request.Discover != nil || request.Read != nil || request.Turns != nil || request.Fetch != nil || request.Activity != nil || request.Tasks != nil || request.Job != nil || request.JobOutput != nil || request.Models != nil {
 		if err := managerReadWithinCap(response); err != nil {
 			return appwire.SessionOperationResponse{}, err
 		}
 	}
 	return response, nil
+}
+
+func (o *sessionOperations) fetch(ctx context.Context, request appwire.SessionFetchRequest) (appwire.SessionFetchResponse, error) {
+	cursor, identity, err := appitempaging.DecodeFetchCursorForRef(request.FetchCursor, request.Ref)
+	if err != nil {
+		return appwire.SessionFetchResponse{}, err
+	}
+	switch cursor.Origin {
+	case appitempaging.FetchCursorOriginServingDaemon:
+		read, err := o.read(ctx, appwire.ThreadReadParams{Ref: request.Ref, FetchCursor: request.FetchCursor}, false)
+		if err != nil {
+			return appwire.SessionFetchResponse{}, err
+		}
+		if read.Fetch == nil {
+			return appwire.SessionFetchResponse{}, appwire.TranscriptItemCursorStale()
+		}
+		return *read.Fetch, nil
+	case appitempaging.FetchCursorOriginSavedIndex:
+		return fetchSavedTranscriptItem(ctx, o.cfg, request.Ref, identity, cursor)
+	default:
+		return appwire.SessionFetchResponse{}, appwire.TranscriptItemCursorStale()
+	}
+}
+
+func fetchSavedTranscriptItem(
+	ctx context.Context,
+	cfg hubcore.WebConfig,
+	ref string,
+	identity appitempaging.CursorIdentity,
+	cursor appitempaging.FetchCursor,
+) (appwire.SessionFetchResponse, error) {
+	entry, ok := pastEntryForRead(cfg, appwire.ThreadReadParams{Ref: ref})
+	if !ok {
+		return appwire.SessionFetchResponse{}, appwire.TranscriptItemCursorStale()
+	}
+	var response appwire.SessionFetchResponse
+	err := withPastTranscriptIndex(ctx, entry, func(index *transcriptindex.Index) error {
+		incarnation, err := index.Incarnation()
+		if err != nil {
+			return err
+		}
+		sourceIncarnation, ok := appwire.ThreadWindowSourceIncarnation(identity.Incarnation)
+		if !ok || sourceIncarnation != incarnation {
+			return appwire.TranscriptItemCursorStale()
+		}
+		candidate, err := index.CandidateAt(cursor.Position)
+		if err != nil {
+			return err
+		}
+		response, err = appitempaging.BuildFetchResponse(candidate.Item, identity, cursor)
+		return err
+	})
+	return response, err
 }
 
 func statusFollowUp(ref string) appwire.SessionStatusFollowUp {
