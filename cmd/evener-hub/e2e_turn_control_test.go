@@ -503,7 +503,7 @@ func (s hubStack) dialRPC(ctx context.Context, t *testing.T) *appwire.Client {
 	if err != nil {
 		t.Fatalf("dial hub rpc: %v", err)
 	}
-	client := appwire.NewClient(transport)
+	client := appwire.NewClient(withoutClientKeepalive{transport})
 	// Registered before any thread exists, so the LIFO cleanup order leaves
 	// the socket open for the thread/shutdown the test registers later.
 	t.Cleanup(func() { _ = client.Close() })
@@ -517,6 +517,43 @@ func (s hubStack) dialRPC(ctx context.Context, t *testing.T) *appwire.Client {
 		t.Fatalf("appwire initialize: %v", err)
 	}
 	return client
+}
+
+// withoutClientKeepalive hides an AppWire transport's Ping capability from
+// appwire.NewClient, so the client runs no keepalive goroutine.
+//
+// The production client keepalive exists to bound a silently dropped peer, but
+// it is also wall-clock scheduling: it closes the socket when a pong does not
+// arrive within 10s of a 15s ping. A hub process starved for ~25s under
+// concurrent full-gate load therefore tears the socket down while it is still
+// alive, and every later request fails with "use of closed network connection"
+// (issue #154). These e2e clients bound every request with a context, so they
+// do not need a second wall-clock detector to fail a hung hub; leaving it on
+// makes unrelated assertions fail on host load instead of on the behavior they
+// name. The keepalive itself stays covered by the appwire unit tests. This is
+// the opt-out internal/sshconn's lossWatchingTransport already takes, where
+// SSH's own ServerAlive keeps the link honest.
+type withoutClientKeepalive struct {
+	appwire.Transport
+}
+
+// pingingTransport is an appwire.Transport that also advertises Pinger, the
+// capability a WebSocket transport carries.
+type pingingTransport struct{ appwire.Transport }
+
+func (pingingTransport) Ping(context.Context) error { return nil }
+
+// TestHubStackControlClientSkipsTheClientKeepalive pins that the e2e control
+// transport does not advertise Ping, the capability appwire.Client keys its
+// keepalive on (appwire/client.go's startWithKeepalive). See
+// withoutClientKeepalive for why the harness opts out.
+func TestHubStackControlClientSkipsTheClientKeepalive(t *testing.T) {
+	if _, ok := any(pingingTransport{}).(appwire.Pinger); !ok {
+		t.Fatal("the test transport does not implement appwire.Pinger, so the wrapper assertion would be vacuous")
+	}
+	if _, ok := any(withoutClientKeepalive{pingingTransport{}}).(appwire.Pinger); ok {
+		t.Fatal("the e2e control transport advertises Ping, so appwire.NewClient runs the keepalive")
+	}
 }
 
 // liveStackBinaries builds evener once per test binary and hands every stack
