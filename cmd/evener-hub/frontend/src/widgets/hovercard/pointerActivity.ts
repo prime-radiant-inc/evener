@@ -15,7 +15,9 @@
 export interface PointerActivityHandle {
   /** Whether a pointer is currently pressed on the owner, or was released
    * within the compatibility window a touch browser leaves between pointerup
-   * and the mouse/focus/click it sends afterwards. */
+   * and the mouse/focus/click it sends afterwards. A press whose release never
+   * arrives stops counting after POINTER_PRESS_MAX_MS, so a focus that late is
+   * reported as the keyboard's rather than the press's. */
   isPointerFocus(windowMs: number): boolean;
   /** Release this handle's reference. Idempotent: a second call does nothing. */
   release(): void;
@@ -43,7 +45,7 @@ export const POINTER_PRESS_MAX_MS = 10_000;
 
 const states = new WeakMap<Document, PointerActivityState>();
 
-function createState(): PointerActivityState {
+function createState(owner: Document): PointerActivityState {
   const pressed = new Map<number, number>();
   const state: PointerActivityState = {
     refCount: 0,
@@ -61,18 +63,26 @@ function createState(): PointerActivityState {
       state.lastReleaseAt = Date.now();
     },
     // A move is the pointer's own evidence about the press: no button down
-    // means the release was lost, and a held button means the press is still
-    // down, so it stays fresh past the elapsed bound.
+    // means the release was lost, and the primary button bit (the contact a
+    // press is made of) means the press is still down, so it stays fresh past
+    // the elapsed bound. A secondary or barrel button alone is not that press.
     observeMove: (event) => {
+      if (pressed.size === 0) return;
       const pressedAt = pressed.get(event.pointerId);
       if (pressedAt === undefined) return;
-      if (event.buttons === 0) pressed.delete(event.pointerId);
-      else pressed.set(event.pointerId, Date.now());
+      if (event.buttons === 0) {
+        pressed.delete(event.pointerId);
+        return;
+      }
+      // Only a press near the backstop needs its time moved forward; a drag
+      // otherwise pays a Map write per move for nothing.
+      const now = Date.now();
+      if ((event.buttons & 1) !== 0 && now - pressedAt > POINTER_PRESS_MAX_MS / 2) pressed.set(event.pointerId, now);
     },
     // A hidden page cannot keep a pointer down, so every press ended. This
     // also bounds ids on documents that never read isPointerFocus.
-    releaseHidden: (event) => {
-      if ((event.currentTarget as Document | null)?.visibilityState === "hidden") pressed.clear();
+    releaseHidden: () => {
+      if (owner.visibilityState === "hidden") pressed.clear();
     },
   };
   return state;
@@ -103,7 +113,7 @@ function uninstall(owner: Document, state: PointerActivityState): void {
 export function acquirePointerActivity(owner: Document): PointerActivityHandle {
   let state = states.get(owner);
   if (state === undefined) {
-    state = createState();
+    state = createState(owner);
     install(owner, state);
     states.set(owner, state);
   }

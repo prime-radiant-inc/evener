@@ -323,11 +323,15 @@ test("shares pointer tracking across any number of mounted consumers", () => {
       expect(tally.net("pointerdown", true)).toBe(1);
       expect(tally.net("pointerup", true)).toBe(1);
       expect(tally.net("pointercancel", true)).toBe(1);
+      expect(tally.net("pointermove", true)).toBe(1);
+      expect(tally.net("visibilitychange", true)).toBe(1);
 
       view.unmount();
       expect(tally.net("pointerdown", true)).toBe(0);
       expect(tally.net("pointerup", true)).toBe(0);
       expect(tally.net("pointercancel", true)).toBe(0);
+      expect(tally.net("pointermove", true)).toBe(0);
+      expect(tally.net("visibilitychange", true)).toBe(0);
     }
   } finally {
     tally.restore();
@@ -372,11 +376,15 @@ test("a StrictMode remount settles on one shared owner", () => {
     expect(tally.net("pointerdown", true)).toBe(1);
     expect(tally.net("pointerup", true)).toBe(1);
     expect(tally.net("pointercancel", true)).toBe(1);
+    expect(tally.net("pointermove", true)).toBe(1);
+    expect(tally.net("visibilitychange", true)).toBe(1);
 
     view.unmount();
     expect(tally.net("pointerdown", true)).toBe(0);
     expect(tally.net("pointerup", true)).toBe(0);
     expect(tally.net("pointercancel", true)).toBe(0);
+    expect(tally.net("pointermove", true)).toBe(0);
+    expect(tally.net("visibilitychange", true)).toBe(0);
   } finally {
     tally.restore();
   }
