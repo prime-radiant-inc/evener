@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/spf13/afero"
+	"primeradiant.com/evener/agent/internal/durablefile"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -328,9 +329,11 @@ func (s *TaskStore) save() error {
 	return s.saveTasks(s.tasks)
 }
 
-// saveTasks writes a supplied task snapshot atomically without changing the
-// in-memory store. It lets a combined mutation persist its fully validated
-// staged state before committing that state under the data lock.
+// saveTasks writes a supplied task snapshot atomically and durably without
+// changing the in-memory store. It lets a combined mutation persist its fully
+// validated staged state before committing that state under the data lock. A
+// post-rename directory-sync failure returns fsatomic.ErrPublished: the new
+// snapshot is visible, only its durability is unconfirmed.
 func (s *TaskStore) saveTasks(tasks []Task) error {
 	dir := filepath.Dir(s.path)
 	if err := s.fs.MkdirAll(dir, 0o755); err != nil {
@@ -342,13 +345,8 @@ func (s *TaskStore) saveTasks(tasks []Task) error {
 		return fmt.Errorf("marshal tasks: %w", err)
 	}
 
-	tmp := s.path + ".tmp"
-	if err := afero.WriteFile(s.fs, tmp, data, 0o644); err != nil {
-		return fmt.Errorf("write temp: %w", err)
-	}
-	if err := s.fs.Rename(tmp, s.path); err != nil {
-		_ = s.fs.Remove(tmp)
-		return fmt.Errorf("rename: %w", err)
+	if err := durablefile.Replace(s.fs, s.path, data, 0o644); err != nil {
+		return fmt.Errorf("save tasks: %w", err)
 	}
 	return nil
 }

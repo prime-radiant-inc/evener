@@ -15,6 +15,7 @@ import (
 
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/envctx"
+	"primeradiant.com/evener/agent/internal/durablefile"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -515,16 +516,16 @@ func SessionsDirListable(fs afero.Fs, dir string) bool {
 }
 
 // SaveSessionMeta writes a SessionMeta to <dir>/sessions/<id>.meta.json using
-// atomic rename and compact JSON (no indentation).
+// atomic, durable replace and compact JSON (no indentation).
 func SaveSessionMeta(dir string, meta SessionMeta) error {
 	return SaveSessionMetaWithFS(sessionMetaFS, dir, meta)
 }
 
-// SaveSessionMetaWithFS writes a SessionMeta through fs using the same atomic
-// temp-file and rename sequence as SaveSessionMeta: mkdir plus a temp write and
-// rename, all through the injected filesystem. Tests and fuzzers inject an
-// in-memory or sandboxed filesystem to exercise persistence without touching
-// real disk.
+// SaveSessionMetaWithFS writes a SessionMeta through fs using the same durable
+// sequence as SaveSessionMeta: mkdir, a temp write, file fsync, rename, and a
+// directory fsync, all through the injected filesystem. Tests and fuzzers
+// inject an in-memory or sandboxed filesystem to exercise persistence without
+// touching real disk.
 func SaveSessionMetaWithFS(fs afero.Fs, dir string, meta SessionMeta) error {
 	if err := ValidateSessionID(meta.ID); err != nil {
 		return err
@@ -655,8 +656,10 @@ func withExistingSessionsDirLock(fs afero.Fs, dir, id string, fn func() error) e
 }
 
 // writeSessionMetaLocked loads the current meta, unions ObservedBy, bumps
-// Revision, and writes atomically. It assumes the caller holds both locks, so
-// the read-modify-write cannot interleave with another writer.
+// Revision, and writes atomically and durably. It assumes the caller holds both
+// locks, so the read-modify-write cannot interleave with another writer. A
+// post-rename directory-sync failure returns fsatomic.ErrPublished: the new
+// meta is visible, only its durability is unconfirmed.
 func writeSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta) error {
 	// A deleted session's tombstone is written under this same lock; refuse to
 	// recreate the metadata so an in-flight out-of-process autosave cannot
@@ -685,14 +688,8 @@ func writeSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta) error {
 	}
 
 	target := SessionMetaPath(dir, meta.ID)
-	tmp := target + ".tmp"
-
-	if err := afero.WriteFile(fs, tmp, data, 0o644); err != nil {
-		return fmt.Errorf("write temp file: %w", err)
-	}
-	if err := fs.Rename(tmp, target); err != nil {
-		_ = fs.Remove(tmp)
-		return fmt.Errorf("rename temp to target: %w", err)
+	if err := durablefile.Replace(fs, target, data, 0o644); err != nil {
+		return fmt.Errorf("write session meta: %w", err)
 	}
 	return nil
 }

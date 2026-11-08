@@ -5,6 +5,7 @@ package schema
 import (
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,8 +59,14 @@ func FuzzSchemaPersistenceFaultProgram(f *testing.F) {
 		if err := SaveSessionMetaWithFS(schemaFuzzFaultFS{Fs: renameBase, renameErr: renameSentinel}, "/state", meta); !errors.Is(err, renameSentinel) {
 			t.Fatalf("rename fault = %v", err)
 		}
-		if exists, err := afero.Exists(renameBase, "/state/sessions/"+id+".meta.json.tmp"); err != nil || exists {
-			t.Fatalf("rename failure left temp file: exists=%v err=%v", exists, err)
+		entries, err := afero.ReadDir(renameBase, "/state/sessions")
+		if err != nil {
+			t.Fatalf("read sessions dir after rename failure: %v", err)
+		}
+		for _, entry := range entries {
+			if strings.Contains(entry.Name(), ".tmp-") {
+				t.Fatalf("rename failure left temp file %q", entry.Name())
+			}
 		}
 
 		mkdirSentinel := errors.New("mkdir fault")

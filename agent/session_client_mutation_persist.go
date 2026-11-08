@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/afero"
 
+	"primeradiant.com/evener/agent/internal/durablefile"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/execsupport/fsatomic"
 )
@@ -187,6 +188,12 @@ func saveClientMutationSnapshotFS(
 		if err := faults.AfterEffectSnapshotRename(); err != nil {
 			return true, err
 		}
+	}
+	// The rename is the publication point; syncing its directory is the
+	// durability barrier that ends the returned-error window. A failure here
+	// reports the snapshot as published but not confirmed durable.
+	if err := durablefile.SyncDir(fs, dir); err != nil {
+		return true, fmt.Errorf("%w: %w", fsatomic.ErrPublished, err)
 	}
 	return true, nil
 }

@@ -1,11 +1,16 @@
 package task
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/spf13/afero"
+	"primeradiant.com/evener/execsupport/fsatomic"
 	"primeradiant.com/evener/fuzz/fault"
 )
 
@@ -40,9 +45,12 @@ func FuzzTaskStoreFaultProgram(f *testing.F) {
 
 		taskFaultHealthyRoundTrip(t, input)
 		taskFaultLifecycleMatrix(t, input)
-		for failAt := range 4 {
+		for failAt := range 6 {
 			taskFaultAppendFailure(t, input, failAt)
 			taskFaultUpdateFailure(t, input, failAt)
+		}
+		for failAt := 6; failAt <= 7; failAt++ {
+			taskFaultBarrierFailure(t, input, failAt)
 		}
 		for failAt := range 2 {
 			taskFaultLoadFailure(t, input, failAt)
@@ -245,9 +253,7 @@ func taskFaultAppendFailure(t *testing.T, input TaskInput, failAt int) {
 		t.Fatalf("Append fault %d = %#v, %v", failAt, added, err)
 	}
 	taskFaultRequireAbsent(t, base, s.path, "failed Append persisted final file")
-	if failAt == 3 {
-		taskFaultRequireAbsent(t, base, s.path+".tmp", "rename failure left temporary file")
-	}
+	taskFaultRequireNoTemp(t, base, "/state/tasks")
 }
 
 func taskFaultUpdateFailure(t *testing.T, input TaskInput, failAt int) {
@@ -273,9 +279,51 @@ func taskFaultUpdateFailure(t *testing.T, input TaskInput, failAt int) {
 	if len(view) != 1 || view[0].Status != TaskOpen || view[0].CompletedAt != nil {
 		t.Fatalf("failed Update replaced durable snapshot: %#v", view)
 	}
-	if failAt == 3 {
-		taskFaultRequireAbsent(t, base, s.path+".tmp", "rename failure left temporary file")
+	taskFaultRequireNoTemp(t, base, "/state/tasks")
+}
+
+// taskFaultBarrierFailure faults the steps after the rename: the new snapshot
+// is already published, so the caller must see fsatomic.ErrPublished rather
+// than a plain failure that implies nothing changed.
+func taskFaultBarrierFailure(t *testing.T, input TaskInput, failAt int) {
+	t.Helper()
+	base := afero.NewMemMapFs()
+	seed := taskFaultStore(base)
+	if _, err := seed.Append([]TaskInput{input}); err != nil {
+		t.Fatalf("setup Append: %v", err)
 	}
+	before, err := afero.ReadFile(base, "/state/tasks/fault.json")
+	if err != nil {
+		t.Fatalf("read seeded tasks: %v", err)
+	}
+
+	s := taskFaultStore(base)
+	if err := s.Load(); err != nil {
+		t.Fatalf("load seeded tasks: %v", err)
+	}
+	s.SetFs(fault.FS(base, fault.FromBytes(taskFaultPlan(failAt))))
+	added, err := s.Append([]TaskInput{input})
+	if !errors.Is(err, fault.ErrInjected) || len(added) != 1 {
+		t.Fatalf("Append barrier fault %d = %#v, %v", failAt, added, err)
+	}
+	if !errors.Is(err, fsatomic.ErrPublished) {
+		t.Fatalf("Append barrier fault %d = %v, want fsatomic.ErrPublished", failAt, err)
+	}
+	after, readErr := afero.ReadFile(base, "/state/tasks/fault.json")
+	if readErr != nil {
+		t.Fatalf("read published tasks: %v", readErr)
+	}
+	if bytes.Equal(before, after) {
+		t.Fatalf("Append barrier fault %d left the pre-batch snapshot: before=%d bytes after=%d bytes", failAt, len(before), len(after))
+	}
+	var published []Task
+	if err := json.Unmarshal(after, &published); err != nil {
+		t.Fatalf("decode published tasks: %v", err)
+	}
+	if len(published) != 2 {
+		t.Fatalf("published tasks after barrier fault %d = %#v, want both tasks", failAt, published)
+	}
+	taskFaultRequireNoTemp(t, base, "/state/tasks")
 }
 
 func taskFaultLoadFailure(t *testing.T, input TaskInput, failAt int) {
@@ -316,6 +364,22 @@ func taskFaultRequireAbsent(t *testing.T, fs afero.Fs, path, message string) {
 	exists, err := afero.Exists(fs, path)
 	if err != nil || exists {
 		t.Fatalf("%s: exists=%v err=%v", message, exists, err)
+	}
+}
+
+func taskFaultRequireNoTemp(t *testing.T, fs afero.Fs, dir string) {
+	t.Helper()
+	entries, err := afero.ReadDir(fs, dir)
+	if os.IsNotExist(err) {
+		return
+	}
+	if err != nil {
+		t.Fatalf("read %s: %v", dir, err)
+	}
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), ".tmp-") {
+			t.Fatalf("failed save left temporary file %q", entry.Name())
+		}
 	}
 }
 
