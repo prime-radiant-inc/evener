@@ -423,7 +423,16 @@ async function nativePositioningInterruption(input) {
   // failed this exact assertion).
   let before = await settledReadingPoint(sourcePortExpr, "native interruption before width");
   if (!insideUsefulTallEntry(before)) {
+    // The Verbosity dialog's full-screen scrim covers the reader, so the
+    // native wheel's hit test cannot reach the port. Close it, reposition the
+    // reader, then reopen it and resample the settled geometry before arming
+    // the measurement hold (RoboRev review of #5791).
+    await key("Escape", 27);
+    await wait('document.querySelector("[data-testid=transcript-detail-control]") === null',
+      "Verbosity closes before the reader is repositioned");
     await readInsideTallEntry(sourcePortExpr, "native interruption before width");
+    const reopened = await openSourceVerbosity();
+    assert.equal(reopened.selected, "Chat", "the reopened Verbosity keeps the Chat baseline");
     // readInsideTallEntry returns the first sample that satisfies the tall-entry
     // predicate; every other before point in this journey is a settled reading,
     // so re-read it here before it becomes observation.before.
