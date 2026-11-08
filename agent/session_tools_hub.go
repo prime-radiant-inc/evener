@@ -181,6 +181,7 @@ func (s *Session) composeHubRegistry() {
 		registered.Execute = nil
 		if name == "job_status" {
 			registered.UnmarshalArgs = unmarshalManagerQuestionArguments
+			registered.PreValidate = managerQuestionPrevalidator(registered.PreValidate)
 		}
 		registered.Exec = func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			if _, ok := args["hub"]; ok {
@@ -629,6 +630,7 @@ func (s *Session) composeHubInputTools() {
 		registered.Schema = nil
 		registered.Execute = nil
 		registered.UnmarshalArgs = unmarshalManagerQuestionArguments
+		registered.PreValidate = managerQuestionPrevalidator(registered.PreValidate)
 		registered.Exec = func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			to, _ := args["to"].(string)
 			if _, err := appwire.ParseRef(to); err == nil {

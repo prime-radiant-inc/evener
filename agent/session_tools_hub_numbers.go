@@ -4,7 +4,39 @@ import (
 	"bytes"
 	"encoding/json"
 	"maps"
+
+	"primeradiant.com/evener/appwire"
 )
+
+// Selected numeric tokens must satisfy the wire integer decoder before schema
+// validation. Ordinary fields and repairable strings retain their existing path.
+func managerQuestionPrevalidator(previous func(map[string]any) error) func(map[string]any) error {
+	return func(args map[string]any) error {
+		if previous != nil {
+			if err := previous(args); err != nil {
+				return err
+			}
+		}
+		hub, _ := args["hub"].(map[string]any)
+		for _, fields := range []map[string]any{args, hub} {
+			if number, ok := fields["expected_ask_revision"].(json.Number); ok {
+				var revision uint64
+				if err := json.Unmarshal([]byte(number), &revision); err != nil {
+					return appwire.InvalidParams(err.Error())
+				}
+			}
+		}
+		for _, key := range []string{"offset", "limit"} {
+			if number, ok := hub[key].(json.Number); ok {
+				var bound int
+				if err := json.Unmarshal([]byte(number), &bound); err != nil {
+					return appwire.InvalidParams(err.Error())
+				}
+			}
+		}
+		return nil
+	}
+}
 
 // Only the fence revision and pending-page bounds bypass float64. All ordinary
 // arguments retain the default decoder's values, types and JSON error handling.

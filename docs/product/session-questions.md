@@ -79,6 +79,11 @@ retain the typed refusal. Other arguments and tools keep their existing float64
 decoding. An unrelated decode failure retains the existing whole-hook fallback:
 no partial update applies, and the original call remains the execution input.
 
+The same two registrations compose the existing `PreValidate` hook, preserving
+any prior validator first. Selected numeric tokens must pass the wire's uint64
+revision or native-int page decoder before generic schema validation. This check
+does not change other fields or numeric-string repair.
+
 An admitted input captures the exact composites and the legacy-question count
 present at admission. Consumption and restore resolve only that capture, so a
 question appended later survives both. `schema.Turn.AskResolution` retains this
