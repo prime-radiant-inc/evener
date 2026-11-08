@@ -119,12 +119,14 @@ test("a malformed / non-mutation task_list with no error renders nothing", () =>
   expect(screen.queryByTestId("tool-call-item")).toBe(null);
 });
 
-test("an update that changes no task status renders nothing (a reopen, a notes-only touch)", () => {
-  // Wire-true fixture: the Go tool rejects a status-less update, so the real
-  // status-less mutations are a reopen to "open" and a note-carrying
-  // reassertion. Under the rework the card exists to carry UPDATES; with no
-  // touch to name, neither the folded line nor the recap has anything true
-  // to say, so the whole row stays suppressed.
+test("an update that changes no task status renders nothing (a reopen, a note-carrying reassertion)", () => {
+  // Both fixtures carry a status word, so neither is the #2257 status-less
+  // note case: a reopen to "open" earns no mutation row, and a note-carrying
+  // reassertion is suppressed by its started/settled marker. The daemon does
+  // accept a genuinely notes-only update (agent/session_tools_task.go); that
+  // shape is covered by the fallback note-row tests below. With no touch to
+  // name and no status-less note, neither the folded line nor the recap has
+  // anything true to say, so the whole row stays suppressed.
   const { unmount } = renderItem(
     taskItem({ action: "update", updates: [{ id: 1, status: "open", notes: "added a caveat" }] }, "Updated 1→open."),
   );
@@ -241,13 +243,46 @@ test("a batch that touches a task away from terminal and back renders the fresh 
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("☑ bounced settle");
 });
 
-test("a pure notes update on an open task renders nothing (no status changed)", () => {
+test("a pure notes update on an open task renders its note in the window (a fresh note is never lost)", () => {
+  // The update carries no status word at all, so under the old "only a
+  // status change earns a row" contract the whole card was suppressed and
+  // the note vanished. Jesse's ruling on #2257 softens that contract for
+  // notes: a fresh note on a status-less task must not be lost. With the
+  // authoritative state present, the window's next slot carries it.
   renderItem(
-    taskItem({ action: "update", updates: [{ id: 6, status: "open", notes: "still blocked" }] }, "Updated 6→open.", {
+    taskItem(
+      { action: "update", updates: [{ id: 6, notes: "still blocked" }] },
+      "Updated 6. Progress: 6/7 tasks complete.",
+      {
+        raw: sevenTaskState(),
+      },
+    ),
+  );
+  openRow();
+  const rows = screen.getAllByTestId("task-card-row");
+  expect(rows.map((row) => row.getAttribute("data-kind"))).toEqual(["settled", "current", "next"]);
+  expect(within(rows[2]!).getByText("still blocked")).toBeTruthy();
+});
+
+test("a status-less note outside the window gets its own row on the raw path", () => {
+  // The window can only carry notes for its three slots. A status-less note
+  // on any other task still earns its own row rather than disappearing from
+  // a card that renders for some sibling update.
+  renderItem(
+    taskItem({ action: "update", updates: [{ id: 7, notes: "watch the flake" }] }, "Updated 7.", {
       raw: sevenTaskState(),
     }),
   );
-  expect(screen.queryByTestId("tool-call-item")).toBe(null);
+  openRow();
+  const rows = screen.getAllByTestId("task-card-row");
+  expect(rows.map((row) => row.getAttribute("data-kind"))).toEqual(["settled", "current", "next", "note"]);
+  // The window's rows container ends at the last slot, so the spine hairline
+  // cannot paint into the note row appended after it.
+  expect(rows[2]!.parentElement?.lastElementChild).toBe(rows[2]!);
+  // The raw path knows the description, so the note row names the task the
+  // same way its window row does.
+  expect(rows[3]!.textContent).toContain("seventh");
+  expect(rows[3]!.textContent).toContain("watch the flake");
 });
 
 // ---- the folded line: only the most recent update ---------------------
@@ -1217,4 +1252,118 @@ test("current add and update arguments without raw render argument-only mutation
   const row = screen.getByTestId("task-card-row");
   expect(row.getAttribute("data-touch")).toBe("cancelled");
   expect(row.textContent).toContain("no longer needed");
+});
+
+test("a status-less note in a mixed batch gets its own fallback row beside the status rows", () => {
+  // The issue's shape: task 1 changes status, task 2 gets a notes-only touch
+  // and no status word. The fallback has no state-derived slot for task 2,
+  // so it renders the note as its own row - the note is not lost.
+  renderItem(
+    taskItem(
+      {
+        action: "update",
+        updates: [
+          { id: 1, status: "done" },
+          { id: 2, notes: "fresh" },
+        ],
+      },
+      "Updated 1→done, 2. Progress: 1/2 tasks complete.",
+    ),
+  );
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("☑ #1");
+  openRow();
+  const rows = screen.getAllByTestId("task-card-row");
+  expect(rows).toHaveLength(2);
+  expect(rows[0]!.getAttribute("data-touch")).toBe("done");
+  expect(rows[1]!.getAttribute("data-kind")).toBe("note");
+  expect(rows[1]!.textContent).toContain("#2");
+  expect(rows[1]!.textContent).toContain("fresh");
+  // A note is not a status touch: its row carries no checkbox glyph.
+  expect(within(rows[1]!).queryByTestId("task-check")).toBeNull();
+});
+
+test("the current update shape carries a status-less note into its own fallback row too", () => {
+  // The daemon's current call shape has no "action" key; the same note row
+  // must render from args.update as from the historical action:"update".
+  renderItem(
+    taskItem(
+      {
+        update: [
+          { id: 1, status: "done" },
+          { id: 2, notes: "fresh" },
+        ],
+      },
+      "Updated 1→done, 2. Progress: 1/2 tasks complete.",
+    ),
+  );
+  openRow();
+  const rows = screen.getAllByTestId("task-card-row");
+  expect(rows).toHaveLength(2);
+  expect(rows[0]!.getAttribute("data-touch")).toBe("done");
+  expect(rows[1]!.getAttribute("data-kind")).toBe("note");
+  expect(rows[1]!.textContent).toContain("#2");
+  expect(rows[1]!.textContent).toContain("fresh");
+});
+
+test("a lone status-less note still renders a card, in its own fallback row", () => {
+  // No sibling status change renders the card, so the note itself must be
+  // enough to make the row visible - otherwise the whole call is suppressed.
+  renderItem(taskItem({ action: "update", updates: [{ id: 2, notes: "fresh" }] }, "Updated 2."));
+  openRow();
+  const rows = screen.getAllByTestId("task-card-row");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]!.getAttribute("data-kind")).toBe("note");
+  expect(rows[0]!.textContent).toContain("#2");
+  expect(rows[0]!.textContent).toContain("fresh");
+});
+
+test("duplicate status-less notes on one id keep only the last note in one row", () => {
+  renderItem(
+    taskItem(
+      {
+        action: "update",
+        updates: [
+          { id: 2, notes: "early" },
+          { id: 2, notes: "late" },
+        ],
+      },
+      "Updated 2.",
+    ),
+  );
+  openRow();
+  const rows = screen.getAllByTestId("task-card-row");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]!.textContent).toContain("late");
+  expect(rows[0]!.textContent).not.toContain("early");
+});
+
+test("a status word in the batch keeps the note out of a note row even when it earns no status row", () => {
+  // A separate notes-only touch for an id whose status word is suppressed by
+  // its settled:false marker: the ruling covers a task with NO status word, so
+  // this note stays with the suppressed status (no card), not a note row.
+  renderItem(
+    taskItem(
+      {
+        action: "update",
+        updates: [
+          { id: 1, status: "done" },
+          { id: 1, notes: "with a caveat" },
+        ],
+      },
+      "Updated 1→done, 1. Progress: 1/1 tasks complete.",
+      {
+        raw: [
+          {
+            id: 1,
+            type: "implement",
+            description: "already finished",
+            prompt: "",
+            status: "done",
+            settled: false,
+          },
+        ],
+      },
+    ),
+  );
+  expect(screen.queryByTestId("tool-call-item")).toBe(null);
 });

@@ -667,6 +667,7 @@ export {
   SUMMARY_MARK,
   type TaskListStep,
   type TouchedRow,
+  taskLabel,
   taskMutationRecap,
   taskMutationSummary,
 } from "./taskListStep";
