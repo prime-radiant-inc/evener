@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -989,6 +990,7 @@ func spawnSharedDescendantLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 	// load: holdSharedDescendantAnnounce must register the hold before the
 	// spawn, and the test releases it once the spawn turn has closed.
 	if len(notificationTurn) > 0 && notificationTurn[0] != nil && takenAnnounceHold == nil {
+		signalSharedDescendantRefusal(t)
 		t.Fatalf("a scripted presentation step for lane %q requires a registered announce hold: call holdSharedDescendantAnnounce(%q) before spawning, or drop the scripted step for the bare-text fallback", laneName, laneName)
 	}
 	var lanePath string
@@ -1104,32 +1106,49 @@ func spawnSharedDescendantLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 }
 
 // sharedDescendantUnheldPresentationHelperEnv marks the re-exec that exercises
-// the fixture's unheld-step refusal.
+// the fixture's unheld-step refusal. sharedDescendantRefusalSignalEnv names
+// the file the fixture writes before it refuses, so the parent can assert the
+// refusal without matching diagnostic text.
 const sharedDescendantUnheldPresentationHelperEnv = "EVENER_SHARED_DESCENDANT_UNHELD_PRESENTATION_HELPER"
+const sharedDescendantRefusalSignalEnv = "EVENER_SHARED_DESCENDANT_REFUSAL_SIGNAL"
+
+// signalSharedDescendantRefusal writes the regression child's structured
+// refusal signal. It is a no-op outside that child, which is the only process
+// the signal environment is set for.
+func signalSharedDescendantRefusal(t *testing.T) {
+	t.Helper()
+	path := os.Getenv(sharedDescendantRefusalSignalEnv)
+	if path == "" {
+		return
+	}
+	if err := os.WriteFile(path, []byte("refused\n"), 0o600); err != nil {
+		t.Fatalf("write announce-hold refusal signal: %v", err)
+	}
+}
 
 // Regression for #5717: a scripted presentation step with no announce hold
 // let the retained child's report be consumed inside the delegate's spawn
 // window. The fixture refuses the step with a t.Fatalf, so assert that refusal
-// from a re-exec: the helper process must fail and name the announce-hold
-// contract.
+// from a re-exec: the helper process must fail and write the refusal signal.
 func TestSharedDescendantLaneRefusesUnheldScriptedPresentation(t *testing.T) {
 	t.Parallel()
 	if os.Getenv(sharedDescendantUnheldPresentationHelperEnv) == "1" {
 		// The guard fires before spawn reads the repo, so the refusal path
-		// needs none; a removed guard still fails the parent's message check.
+		// needs none; a removed guard writes no signal, so the parent fails.
 		spawnSharedDescendantLane(t, nil, "unheld-scripted-presentation", "dlg_unheldpresent01", "034unheldpresent01", func(llm.Request) llm.Response {
 			return agenttest.FinalResponse("done")
 		})
 		t.Fatal("spawnSharedDescendantLane accepted a scripted presentation step without an announce hold")
 	}
+	signalPath := filepath.Join(t.TempDir(), "announce-hold-refusal")
 	cmd := exec.Command(os.Args[0], "-test.run=^TestSharedDescendantLaneRefusesUnheldScriptedPresentation$", "-test.v")
-	cmd.Env = append(os.Environ(), sharedDescendantUnheldPresentationHelperEnv+"=1")
+	cmd.Env = append(os.Environ(), sharedDescendantUnheldPresentationHelperEnv+"=1", sharedDescendantRefusalSignalEnv+"="+signalPath)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("the unheld scripted presentation was accepted; want the fixture's announce-hold refusal\n%s", out)
 	}
-	if !strings.Contains(string(out), "requires a registered announce hold") {
-		t.Fatalf("the unheld scripted presentation failed for another reason; want the announce-hold refusal\n%s", out)
+	if _, statErr := os.Stat(signalPath); statErr != nil {
+		t.Fatalf("the helper process failed without the announce-hold refusal signal (%v); want the fixture's refusal\n%s", statErr, out)
 	}
 }
 
