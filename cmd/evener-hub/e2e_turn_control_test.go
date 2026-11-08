@@ -544,7 +544,9 @@ type pingingTransport struct{ appwire.Transport }
 func (pingingTransport) Ping(context.Context) error { return nil }
 
 // TestHubStackControlClientSkipsTheClientKeepalive pins that the e2e control
-// transport does not advertise Ping; see withoutClientKeepalive for why.
+// transport does not advertise Ping, the capability appwire keys its keepalive
+// on; TestClientWithoutPingerHasNoKeepalive pins the client side of that chain.
+// See withoutClientKeepalive for why the harness opts out.
 func TestHubStackControlClientSkipsTheClientKeepalive(t *testing.T) {
 	if _, ok := any(withoutClientKeepalive{pingingTransport{}}).(appwire.Pinger); ok {
 		t.Fatal("the e2e control transport advertises Ping, so appwire.NewClient runs the keepalive")
