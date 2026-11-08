@@ -10,7 +10,6 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
@@ -511,9 +510,6 @@ func (c *delegateTreeController) acknowledgeRetryableStopDeliveriesLocked(stop *
 		if receipt == nil || receipt.token != token || !receipt.retryable || receipt.inline {
 			continue
 		}
-		if observe := observeStopDeliveryAck.Load(); observe != nil {
-			(*observe)(token)
-		}
 		ackPlans, err := c.completeDeliveryLocked(token, true)
 		if err != nil {
 			if errors.Is(err, errDelegateStaleLease) {
@@ -521,7 +517,12 @@ func (c *delegateTreeController) acknowledgeRetryableStopDeliveriesLocked(stop *
 			}
 			c.dropDeliveryPlanClaimsLocked(plans)
 			plans.deliveries = nil
-			if errors.Is(err, errDelegateNotControllable) {
+			if errors.Is(err, errDelegateNotControllable) ||
+				errors.Is(err, delegatestore.ErrStoreUnusable) ||
+				errors.Is(err, delegatestore.ErrStoreClosed) {
+				// Permanent store failures join errDelegateNotControllable:
+				// production never swaps c.store, so the retry would poll
+				// forever.
 				return plans, wakes, fmt.Errorf("acknowledge stopped delegate delivery %s: %w", token.deliveryID, err)
 			}
 			// A transient append failure keeps the receipt tracked. Re-arm the
@@ -539,11 +540,6 @@ func (c *delegateTreeController) acknowledgeRetryableStopDeliveriesLocked(stop *
 	return plans, wakes, nil
 }
 
-// observeStopDeliveryAck, when stored, runs under c.mu before the stop retries
-// one tracked receipt's acknowledgment. Tests store it to close the store
-// between two acknowledgments; empty in production.
-var observeStopDeliveryAck atomic.Pointer[func(delegateDeliveryToken)]
-
 // delegateStopDeliveryRetryDelay spaces retries of a stop delivery
 // acknowledgment whose append failed, so a store outage does not hot-loop the
 // drain.
@@ -553,16 +549,22 @@ const delegateStopDeliveryRetryDelay = 50 * time.Millisecond
 // acknowledgment failure. The caller holds c.mu; the drain parks on progress
 // until that wake, so repeated failures do not stack timers.
 func (c *delegateTreeController) rearmStopDeliveryRetryLocked(stop *delegateStopState) {
-	if stop == nil || stop.retryArmed {
+	if stop == nil {
 		return
 	}
-	stop.retryArmed = true
 	// Take back the progress signal the failed attempt just queued: the drain
 	// must park until this retry rather than spin on the same store error.
+	// Drain it even when a retry is already armed: the failed attempt queued
+	// its own token, and leaving it would let the drain spin to the armed
+	// timer instead of parking.
 	select {
 	case <-stop.progress:
 	default:
 	}
+	if stop.retryArmed {
+		return
+	}
+	stop.retryArmed = true
 	time.AfterFunc(delegateStopDeliveryRetryDelay, func() {
 		c.mu.Lock()
 		defer c.mu.Unlock()

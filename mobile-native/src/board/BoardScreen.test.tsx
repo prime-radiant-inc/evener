@@ -92,6 +92,8 @@ const harness = vi.hoisted(() => ({
 	reduceMotion: false,
 	/** Dynamic Type's scale, as useWindowDimensions reports it. */
 	fontScale: 1,
+	/** The window's safe-area insets, as the landscape and split tests set them. */
+	insets: { top: 47, bottom: 34, left: 0, right: 0 },
 	/** AppState's change listeners. */
 	appState: new Set<(state: string) => void>(),
 	announce: vi.fn(),
@@ -169,7 +171,7 @@ vi.mock("../reader/nativeDocumentMemory", async (importOriginal) => {
 });
 
 vi.mock("react-native-safe-area-context", () => ({
-	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
+	useSafeAreaInsets: () => harness.insets,
 }));
 
 // Focus follows harness.focused, which setFocused changes on demand; like
@@ -223,6 +225,7 @@ beforeEach(() => {
 	harness.stack = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
 	harness.reduceMotion = false;
 	harness.fontScale = 1;
+	harness.insets = { top: 47, bottom: 34, left: 0, right: 0 };
 	harness.readerMemory = null;
 	harness.actionSheet.mockClear();
 });
@@ -732,6 +735,39 @@ it("reports a Board tap to the Duo split instead of the root stack", async () =>
 	act(() => rowTitled(tree, "Fix retry loop").props.onPress());
 	expect(opened).toHaveBeenCalledWith({ hubId: id, ref: "local:fail", title: "Fix retry loop" });
 	expect(nav.navigate).not.toHaveBeenCalledWith("Conversation", expect.anything());
+});
+
+it("insets the Board inside the landscape safe areas, and the split pane only on its left", async () => {
+	const id = hubId();
+	connect(id, hub(fleet).client, "ready");
+	harness.insets = { top: 0, bottom: 21, left: 21, right: 21 };
+	const nav = navigation();
+	const tree = await mount(nav);
+	expect(boardScroller(tree).props.contentContainerStyle).toMatchObject({ paddingLeft: 21, paddingRight: 21 });
+	expect(tree.root.findByProps({ testID: "board-chips" }).props.style).toMatchObject({
+		paddingLeft: 21,
+		paddingRight: 21,
+	});
+	expect(tree.root.findByProps({ testID: "board-toast" }).props.style).toMatchObject({ left: 21, right: 21 });
+	const compose = tree.root
+		.findAll((node) => node.props.accessibilityLabel === "New session" && typeof node.props.style === "function")
+		.at(-1);
+	expect(compose?.props.style({ pressed: false })).toMatchObject({ right: 16 + 21 });
+
+	const split = render(
+		<BoardScreen navigation={nav as never} route={{ key: "Sessions", name: "Sessions" } as never} duoEmbedded />,
+	);
+	await settleMicrotasks();
+	expect(boardScroller(split).props.contentContainerStyle).toMatchObject({ paddingLeft: 21, paddingRight: 0 });
+	expect(split.root.findByProps({ testID: "board-chips" }).props.style).toMatchObject({
+		paddingLeft: 21,
+		paddingRight: 0,
+	});
+	expect(split.root.findByProps({ testID: "duo-board-header" }).props.style).toMatchObject({ paddingLeft: 21 });
+	const splitCompose = split.root
+		.findAll((node) => node.props.accessibilityLabel === "New session" && typeof node.props.style === "function")
+		.at(-1);
+	expect(splitCompose?.props.style({ pressed: false })).toMatchObject({ right: 16 });
 });
 
 it("renders the fleet's bands in order with their counts, and Idle starts folded", async () => {

@@ -27,6 +27,7 @@ import {
 	View,
 	useWindowDimensions,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { fonts, type Palette, scaledType, space, uiType } from "../design/tokens";
 import { haptic } from "../haptics";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
@@ -40,11 +41,12 @@ const GLYPH = 22;
  * that brings something into view itself, such as a form's refusal. */
 export function GroupedPage({ children, scrollRef }: { children: ReactNode; scrollRef?: Ref<ScrollView> }) {
 	const { palette } = useColors();
+	const { left, right } = useSafeAreaInsets();
 	return (
 		<ScrollView
 			ref={scrollRef}
 			style={{ flex: 1, backgroundColor: palette.canvas }}
-			contentContainerStyle={{ paddingBottom: 32 }}
+			contentContainerStyle={{ paddingBottom: 32, paddingLeft: left, paddingRight: right }}
 			keyboardShouldPersistTaps="handled"
 			keyboardDismissMode="on-drag"
 			automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}

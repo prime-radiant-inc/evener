@@ -9,6 +9,7 @@ import (
 	"errors"
 	"image/jpeg"
 	"net/http"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/llm"
@@ -27,7 +28,6 @@ type imageRecovery struct {
 	lastSize       int
 	requireSmaller bool
 	managed        bool
-	hasImagePart   bool
 	warnings       []llm.Warning
 	sent           map[[sha256.Size]byte]bool
 }
@@ -37,8 +37,7 @@ type imageRecovery struct {
 func runImageRecovery[T any](ctx context.Context, p *Protocol, req llm.Request, res registry.Resolved, stream bool, send func(*protocolhttp.Call, *imageRecovery) (T, error)) (T, error) {
 	var zero T
 	recovery := &imageRecovery{
-		sent:         make(map[[sha256.Size]byte]bool),
-		hasImagePart: requestHasImagePart(req.Messages),
+		sent: make(map[[sha256.Size]byte]bool),
 	}
 	var originalErr, lastErr error
 	for {
@@ -116,9 +115,11 @@ func (r *imageRecovery) prepare(ctx context.Context, body map[string]any) error 
 	}
 	// Stage 0 only seeds the digest and original size so a later repair stage
 	// can tell whether it produced a distinct, smaller body. repairMessages
-	// touches only image_url parts, so a request whose typed messages emit no
-	// image can never advance a repair stage; skip the serialization (#5489).
-	if r.stage == 0 && !r.hasImagePart {
+	// touches only image_url parts, so a final wire body with none can never
+	// advance a repair stage; skip the serialization (#5489). The final body,
+	// not req.Messages, is authoritative: provider options, transport body
+	// constants, and RequestPreparers can replace its messages.
+	if r.stage == 0 && !finalBodyHasImagePart(body) {
 		return nil
 	}
 	encoded, err := json.Marshal(body)
@@ -137,6 +138,65 @@ func (r *imageRecovery) prepare(ctx context.Context, body map[string]any) error 
 		return ctx.Err()
 	}
 	return nil
+}
+
+// finalBodyHasImagePart reports whether the final wire body's messages carry
+// an image_url part. A messages value of another type (a transport constant's
+// json.RawMessage, or a custom marshaler) is not walked and keeps the
+// serialization, so a later repair stage still has a size baseline.
+func finalBodyHasImagePart(body map[string]any) bool {
+	switch messages := body["messages"].(type) {
+	case []map[string]any:
+		return slices.ContainsFunc(messages, func(message map[string]any) bool {
+			return contentHasImagePart(message["content"])
+		})
+	case []any:
+		for _, value := range messages {
+			message, _ := value.(map[string]any)
+			if message == nil || contentHasImagePart(message["content"]) {
+				return true
+			}
+		}
+		return false
+	default:
+		return true
+	}
+}
+
+// contentHasImagePart reports whether a message content value carries an
+// image_url part. An unknown non-scalar shape may still marshal to one, so
+// keep the stage-0 serialization for it.
+func contentHasImagePart(content any) bool {
+	switch parts := content.(type) {
+	case nil, string:
+		return false
+	case []map[string]any:
+		for _, part := range parts {
+			if image, unknown := imageURLPart(part); image || unknown {
+				return true
+			}
+		}
+		return false
+	case []any:
+		for _, value := range parts {
+			part, _ := value.(map[string]any)
+			if image, unknown := imageURLPart(part); image || unknown {
+				return true
+			}
+		}
+		return false
+	default:
+		return true
+	}
+}
+
+// imageURLPart reports whether a wire content part carries the image_url type.
+// unknown is true for a non-string type value, which this walk cannot compare
+// but JSON decoding could still read as image_url; stage 0 keeps the marshal
+// for it.
+func imageURLPart(part map[string]any) (image, unknown bool) {
+	partType, ok := part["type"].(string)
+	return partType == "image_url", !ok
 }
 
 // repairMessages copies the final wire subtree, including typed overlays and
@@ -166,7 +226,8 @@ func repairMessages(ctx context.Context, body map[string]any, mode imagerepair.M
 			part, _ := value.(map[string]any)
 			imageURL, _ := part["image_url"].(map[string]any)
 			uri, _ := imageURL["url"].(string)
-			if part["type"] != "image_url" || imageURL == nil {
+			image, _ := imageURLPart(part)
+			if !image || imageURL == nil {
 				if repaired != nil {
 					repaired = append(repaired, value)
 				}

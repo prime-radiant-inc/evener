@@ -689,19 +689,33 @@ function domainContent(domain) {
   return domain.items.map((i) => (i.text ?? "") + (i.output ?? "")).join("\n");
 }
 
-// composeReconnectWindow folds the reads the new connection issued into the
-// one window the model applied. The first read that returned turns is the
+// composeReconnectWindow folds the reads the connection that owns the applied
+// model issued into the one window the model applied. A connection change
+// means the socket reconnected again: the new connection's first read replaces
+// the model's history, so composition restarts (clearing turns/byTurn) rather
+// than merging the previous connection's turns, which the model no longer
+// holds. Within one connection, the first read that returned turns is the
 // reconnect's initial replacement: its turns and recorded items are the base.
 // A later read on the same connection is a merge into what the model already
 // holds: applyReadResponse (appwire-client/typescript/transcriptHistory.ts) is
 // the authority, and it keeps the reader's older edge, joins items to their
 // turn by identity, and lets a later copy of a shared item supersede the
 // base's. A window-capped read can stop in the middle of a turn, so one turn's
-// items legitimately arrive from two reads.
+// items legitimately arrive from two reads. It returns the composed turns and
+// the reads of the connection they belong to, so the caller's edge-read search
+// uses the same grouping.
 function composeReconnectWindow(newConnectionReads) {
+  let connection;
+  let composedFrom = 0;
   const turns = [];
   const byTurn = new Map();
-  for (const read of newConnectionReads) {
+  for (const [readIndex, read] of newConnectionReads.entries()) {
+    if (read.connection !== connection) {
+      connection = read.connection;
+      composedFrom = readIndex;
+      turns.length = 0;
+      byTurn.clear();
+    }
     if (!Array.isArray(read.window) || read.window.length === 0) continue;
     for (const responseTurn of read.window) {
       const turnId = responseTurn.turnId ?? null;
@@ -718,7 +732,7 @@ function composeReconnectWindow(newConnectionReads) {
       }
     }
   }
-  return turns;
+  return { turns, reads: newConnectionReads.slice(composedFrom) };
 }
 
 // Owning reconnect validator (finding 4): the reconnect's authoritative read
@@ -751,16 +765,17 @@ function reconnectValidator(before, evidence, applied = {}) {
   // follow-up refresh). The model keeps the older edge it already holds, so its
   // cursor stays the edge read's, but a window-capped read can stop in the
   // middle of a turn: the follow-up then supplies the rest of that same turn,
-  // and the applied window is the ordered union of every new-connection read,
-  // not any one read's window. Compose that union and compare the applied model
-  // against it turn by turn; the cursor must still be the edge read's (the one
-  // that returned the union's oldest turn).
+  // and the applied window is the ordered union of the reads on that
+  // connection, not any one read's window. If the socket drops again, the next
+  // connection's reads replace that history, so composition restarts there and
+  // the cursor must be an edge read on the latest connection. Compose the union
+  // and compare the applied model against it turn by turn.
   const recordedItems = (items) => (items ?? []).filter((item) => item.type !== "systemMessage");
-  const expectedWindow = composeReconnectWindow(newConnectionReads);
+  const { turns: expectedWindow, reads: composedReads } = composeReconnectWindow(newConnectionReads);
   const edgeRead =
     expectedWindow.length === 0
       ? undefined
-      : newConnectionReads.find(
+      : composedReads.find(
           (read) =>
             Array.isArray(read.window) &&
             read.window.length > 0 &&
@@ -787,6 +802,7 @@ function reconnectValidator(before, evidence, applied = {}) {
     newConnectionReads: newConnectionReads.length,
     responseCursor: reported?.olderCursor ?? "",
     responseWindow: reported?.window ?? null,
+    expectedWindow,
     appliedWindow,
     appliedCursor,
     appliedMatches,

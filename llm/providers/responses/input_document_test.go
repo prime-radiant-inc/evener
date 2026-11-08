@@ -76,3 +76,22 @@ func TestToResponsesInput_DocumentBytesStillUseFileData(t *testing.T) {
 		t.Fatalf("a bytes document carried file_url: %v", file)
 	}
 }
+
+// TestToResponsesInput_DocumentFilenameOnlyIsDropped pins the source gate: an
+// input_file with only a filename has no file_data or file_url (and no
+// file_id on this wire), so the provider rejects the whole request. The part
+// is dropped instead.
+func TestToResponsesInput_DocumentFilenameOnlyIsDropped(t *testing.T) {
+	_, items, err := toResponsesInput([]llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
+		{Kind: llm.ContentDocument, Document: &llm.DocumentData{FileName: "report.pdf"}},
+	}}}, "")
+	if err != nil {
+		t.Fatalf("toResponsesInput: %v", err)
+	}
+	if files := inputFilesFromItems(t, items); len(files) != 0 {
+		t.Fatalf("input_file items = %v, want none for a source-less document", files)
+	}
+	if len(items) != 0 {
+		t.Fatalf("items = %v, want no message item for a source-less document", items)
+	}
+}

@@ -74,8 +74,15 @@ final class VoiceAudioDevice {
               session.currentRoute.outputs.allSatisfy({ $0.portType == .builtInSpeaker || $0.portType == .builtInReceiver }),
               !session.currentRoute.inputs.isEmpty else { throw VoiceFailure("route_unqualified") }
         route = session.currentRoute.outputs.map(\.portName).joined(separator: ", ")
-        engine = AVAudioEngine(); player = AVAudioPlayerNode()
+        // One engine for the device's lifetime: replacing it here deallocates the
+        // previous AVAudioEngine, and its AURemoteIO teardown can deadlock the
+        // audio RPC and abort the app.
+        #if !targetEnvironment(simulator)
+        // Voice processing is a device path; the simulator's AURemoteIO can time
+        // out just initializing it.
         try engine.inputNode.setVoiceProcessingEnabled(true)
+        #endif
+        engine.prepare()
         let hardwareInput = engine.inputNode.outputFormat(forBus: 0)
         let hardwareOutput = engine.outputNode.inputFormat(forBus: 0)
         guard hardwareInput.sampleRate > 0, hardwareInput.channelCount > 0,

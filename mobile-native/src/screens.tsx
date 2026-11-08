@@ -35,6 +35,7 @@ import {
 } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { useDetailPaneWidth } from "./duo/paneWidth";
 import {
 	type AskBatch,
 	type AskQuestionRef,
@@ -426,6 +427,7 @@ function ConversationScreenView({
 	const focused = useScreenInFront(route.key);
 	const colors = useColors();
 	const textScale = useTextScale();
+	const detailPaneWidth = useDetailPaneWidth();
 	const displayChoices = useDisplayChoices();
 	const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
 	// Find in session (ruling 29), open while non-null. The current match is
@@ -3418,7 +3420,10 @@ function ConversationScreenView({
 	);
 
 	return (
-		<SafeAreaView edges={["left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
+		<SafeAreaView
+			edges={detailPaneWidth === null ? ["left", "right"] : ["right"]}
+			style={[styles.fill, { backgroundColor: colors.background }]}
+		>
 			{sessionMenuOpen ? (
 				<SessionMenu
 					title={conversation?.name || route.params.title}

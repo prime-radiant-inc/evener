@@ -12,9 +12,11 @@ at least 600 points on both sides is an inner display. The Duo outer display is
 landscape stays below the height boundary. The boundary is `isDuoInner` in
 `src/duo/duoLayout.ts`.
 
-The app stays portrait. Both Duo displays are taller than wide, and the inner
-split works in portrait. Landscape on a regular iPhone is a follow-up: it needs
-left/right safe-area handling before the app declares it.
+The app supports landscape. Both Duo displays rotate, the inner display keeps
+the split when it is wide enough, and a regular iPhone in landscape keeps the
+single-pane Board and conversation. The Board's rows, chips and compose button,
+the conversation, the agent and job screens, the reader and Hub pages, and the
+alert banner stay inside the left/right safe areas.
 
 ## Wide layout
 

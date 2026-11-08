@@ -307,12 +307,17 @@ type Server struct {
 	appDescendantLiveWatchesFunc func(threadIDs []string) map[string][]agent.WatchStatusInfo
 	// appSubagentTallyFunc reads the root session's whole-tree subagent tally
 	// for the thread list's root row (S3); nil disables it.
-	appSubagentTallyFunc       func() (appwire.SubagentTally, bool)
-	retrySafeTurns             RetrySafeTurnFunctions
-	resolveManagerActor        func(appwire.SessionActorProof) (schema.SessionActor, error)
-	sandboxEscalationResolveAs func(string, bool, schema.SessionActor) error
-	cancelFunc                 context.CancelFunc
-	goalFunc                   func(objective string) (bool, error)
+	appSubagentTallyFunc func() (appwire.SubagentTally, bool)
+	retrySafeTurns       RetrySafeTurnFunctions
+	resolveManagerActor  func(appwire.SessionActorProof) (schema.SessionActor, error)
+	// testOnlySessionToolsPublished observes a freshly selected runtime registry
+	// immediately before it is published to the session, with its lock held. The
+	// installation ordering is otherwise unobservable, and a publish before the
+	// first binding strands a Manager tool woken by SetHubClient.
+	testOnlySessionToolsPublished func(*runtimeHubClients)
+	sandboxEscalationResolveAs    func(string, bool, schema.SessionActor) error
+	cancelFunc                    context.CancelFunc
+	goalFunc                      func(objective string) (bool, error)
 	// notesHumanSetFunc is called by the appwire notes/human/set method. The
 	// callback returns the full atomic acceptance result, including its receipt.
 	notesHumanSetFunc func(outerID, note string) (appwire.NotesHumanSetResponse, error)

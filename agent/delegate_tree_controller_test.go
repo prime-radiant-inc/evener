@@ -781,9 +781,11 @@ func newDelegateControllerTestHarness(t testing.TB, turnLimit, driveLimit int) (
 
 func seedDelegateControllerIdle(t *testing.T, c *delegateTreeController, id, parentID string) {
 	t.Helper()
+	created := delegateControllerCreatedEvent(id, parentID)
+	created.Created.Descriptor.OwnerSessionID = c.rootSessionID
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, err := c.appendLocked(delegateControllerCreatedEvent(id, parentID))
+	_, err := c.appendLocked(created)
 	if err != nil {
 		t.Fatalf("seed delegate %s: %v", id, err)
 	}

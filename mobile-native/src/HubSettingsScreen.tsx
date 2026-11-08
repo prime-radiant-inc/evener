@@ -195,7 +195,7 @@ function HubSettings({
 	const data = state.data;
 	const hub = data?.hub;
 	return (
-		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.palette.canvas }]}>
+		<SafeAreaView edges={["bottom"]} style={[styles.fill, { backgroundColor: colors.palette.canvas }]}>
 			<GroupedPage>
 				<Group label={hubName} selectableLabel>
 					<Row

@@ -39,7 +39,10 @@ vi.mock("react-native", async () => ({
 	useColorScheme: () => harness.scheme,
 	useWindowDimensions: () => ({ width: 320, height: 568, scale: 2, fontScale: harness.fontScale }),
 }));
-vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
+vi.mock("react-native-safe-area-context", () => ({
+	SafeAreaView: "SafeAreaView",
+	useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
 vi.mock("expo-sqlite/kv-store", () => ({ Storage: harness.storage }));
 vi.mock("./ConnectionProvider", () => ({
 	useConnection: () => harness.connection,

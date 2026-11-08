@@ -128,6 +128,9 @@ func (s *Session) invokeHubStop(ctx context.Context, args map[string]any) (any, 
 	s.mu.Lock()
 	client, enabled := s.hubClient, s.hubEnabled
 	s.mu.Unlock()
+	if client == nil {
+		client = s.waitForHubClient(ctx, hubClientBindingWait)
+	}
 	if !enabled || client == nil {
 		return nil, appwire.InvalidRequest("Manager tool unavailable")
 	}

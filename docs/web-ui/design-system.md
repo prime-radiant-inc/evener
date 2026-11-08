@@ -116,11 +116,13 @@ losing the conversation that made the evidence relevant.
   counts. A count click focuses the owning pane before opening the matching Overview category.
   The shared sidebar retains its scope breadcrumb and an accessible, visually hidden
   “Overview kind” label. About is the fifth category and has no footer counter.
-  Phones keep the same footer at the pane's bottom edge, where it is the touch surface:
-  the working-directory line takes a row of its own, and the chips sit on a row below at
-  the 44px tap floor, scrolling sideways rather than shrinking a target when they outgrow
-  the width. Chips show their glyph and count when the width cannot also carry a name.
-  The caption-height path row shows the branch unlinked, below the touch floor. The bar
+  Phones keep the same footer at the pane's bottom edge, where it is the touch surface,
+  and keep it on one line: the working-directory line takes the flexible width and the
+  chips sit at its end at the 44px tap floor. A phone chip shows its glyph, its name when
+  the width can carry it, and a single active count (settled for Tasks); the full
+  active/total fraction stays in its accessible name, tooltip and the Overview. The path
+  truncates before a target shrinks, and the bar never wraps to a second row. The
+  caption-height path shows the branch unlinked, below the touch floor. The bar
   owns the home-indicator band, so the composer dock above it gives that inset up; the
   inset yields when the on-screen keyboard covers that area. The bar hides while the
   composer is editing and returns when focus or a press leaves the composer; the composer
