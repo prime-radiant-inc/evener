@@ -736,15 +736,18 @@ function composeReconnectWindow(newConnectionReads) {
 }
 
 // Owning reconnect validator (finding 4): the reconnect's authoritative read
-// must arrive on a connection NOT seen before, and the applied model window
-// (cursor) must match that read's response. A same-connection refresh is not a
-// reconnect.
+// must arrive on a connection NOT seen before, and the applied model must hold
+// that read's window and cursor — or, when a same-connection follow-up
+// replaced it, the follow-up read's window and cursor (see below). A
+// same-connection refresh alone is not a reconnect.
 function reconnectValidator(before, evidence, applied = {}) {
   const beforeConnections = new Set(before?.connections ?? []);
   const reads = (evidence?.readConnections ?? []).map((connection, index) => ({
     connection,
     olderCursor: (evidence?.readResponseCursors ?? [])[index] ?? "",
     window: (evidence?.readResponseWindows ?? [])[index] ?? null,
+    snapshotLength: (evidence?.readResponseSnapshotLengths ?? [])[index] ?? null,
+    generation: (evidence?.readResponseGenerations ?? [])[index] ?? null,
   }));
   const newConnectionReads = reads.filter((r) => !beforeConnections.has(r.connection));
   const newReads = (evidence?.readResponses ?? 0) - (before?.readResponses ?? 0);
@@ -772,6 +775,24 @@ function reconnectValidator(before, evidence, applied = {}) {
   // and compare the applied model against it turn by turn.
   const recordedItems = (items) => (items ?? []).filter((item) => item.type !== "systemMessage");
   const { turns: expectedWindow, reads: composedReads } = composeReconnectWindow(newConnectionReads);
+  // Per returned turn, require the read's RECORDED items, in order, to be
+  // exactly the applied model's items for that turn. The model may also carry
+  // held turns outside the read's window (the reader's older pages, or the
+  // replayed tail of a replacement); extra recorded items INSIDE a returned
+  // turn are still a mismatch.
+  const windowMatchesRead = (window) => {
+    if (!Array.isArray(appliedWindow)) return false;
+    let lastIndex = -1;
+    return window.every((expectedTurn) => {
+      const appliedIndex = appliedWindow.findIndex((turn) => turn.turnId === expectedTurn.turnId);
+      if (appliedIndex === -1 || appliedIndex <= lastIndex) return false;
+      lastIndex = appliedIndex;
+      return orderedHistoryEqual(
+        recordedItems(expectedTurn.items),
+        recordedItems(appliedWindow[appliedIndex].items),
+      );
+    });
+  };
   const edgeRead =
     expectedWindow.length === 0
       ? undefined
@@ -782,20 +803,60 @@ function reconnectValidator(before, evidence, applied = {}) {
             (read.window[0].turnId ?? "") === (expectedWindow[0].turnId ?? "") &&
             read.olderCursor === appliedCursor,
         );
-  let lastAppliedIndex = -1;
-  const windowMatches =
-    Array.isArray(appliedWindow) &&
-    expectedWindow.every((expectedTurn) => {
-      const appliedIndex = appliedWindow.findIndex((turn) => turn.turnId === expectedTurn.turnId);
-      if (appliedIndex === -1 || appliedIndex <= lastAppliedIndex) return false;
-      lastAppliedIndex = appliedIndex;
-      return orderedHistoryEqual(
-        recordedItems(expectedTurn.items),
-        recordedItems(appliedWindow[appliedIndex].items),
-      );
-    });
-  const appliedMatches = edgeRead !== undefined && windowMatches;
-  const reported = appliedMatches ? edgeRead : newConnectionReads[newConnectionReads.length - 1];
+  const windowMatches = edgeRead !== undefined && windowMatchesRead(expectedWindow);
+  // A same-connection follow-up does not always MERGE. applyCacheGapRule
+  // (stores/cacheLifetime.ts) replaces the loaded pages when a reconciling
+  // read's window starts above the cached shell's captured anchor, and
+  // readDisposition replaces on an invalidated history. The model then carries
+  // THAT read's cursor and exactly its (narrower, newest-edge-capped) window,
+  // and the composed union is not what the product applied. Identify that read
+  // by the product's own ordering: readDisposition DISCARDS a response whose
+  // request generation is older than the newest issued one, and within one
+  // incarnation it discards a response with a SHORTER snapshot length. So the
+  // applied read is the window-bearing read with the greatest request
+  // generation, and the greatest snapshot length within that generation (the
+  // later read wins a tie; synthetic evidence with neither falls back to the
+  // last read). Accept the model when that read's cursor is the model's and the
+  // model holds its window; the exact per-turn comparison still rejects a model
+  // that lost, changed, or reordered the read's recorded content, and the union
+  // above still covers the merge case. This cannot tell a cache-gap replace
+  // from a merge that dropped the older edge; the later paged-back-sentinel
+  // phase re-fetches and proves that retained range. An incarnation/epoch
+  // change at the same request generation would still need those identity
+  // fields; this journey does not recreate the target's history, so the
+  // reconnect connection keeps one incarnation.
+  let replacementCandidate;
+  if (!windowMatches) {
+    let maxGeneration = -1;
+    const generationReads = [];
+    for (const read of composedReads) {
+      if (!Array.isArray(read.window) || read.window.length === 0) continue;
+      const generation = typeof read.generation === "number" ? read.generation : -1;
+      if (generation > maxGeneration) {
+        maxGeneration = generation;
+        generationReads.length = 0;
+      }
+      if (generation === maxGeneration) generationReads.push(read);
+    }
+    for (const read of generationReads) {
+      if (
+        replacementCandidate === undefined ||
+        (read.snapshotLength ?? -1) >= (replacementCandidate.snapshotLength ?? -1)
+      ) {
+        replacementCandidate = read;
+      }
+    }
+  }
+  const replacementRead =
+    replacementCandidate !== undefined &&
+    replacementCandidate.olderCursor === appliedCursor &&
+    windowMatchesRead(replacementCandidate.window)
+      ? replacementCandidate
+      : undefined;
+  const appliedMatches = windowMatches || replacementRead !== undefined;
+  const reported = appliedMatches
+    ? replacementRead ?? edgeRead
+    : newConnectionReads[newConnectionReads.length - 1];
   return {
     reconnected,
     newReads,
@@ -2041,7 +2102,34 @@ async function runEntryProductionJourney(driver, harnessUrl) {
   driver.milestone("done", { mode: "entry-production" });
 }
 
-function nativeEntryEvidenceExpression(ref = SESSION_B) {
+// selectTranscriptMeta is embedded in nativeEntryEvidenceExpression via
+// toString(), so it must close over nothing. transcriptMeta is keyed by
+// historyKey: a ref can own more than one metadata row (an earlier history
+// after a Clear, or a new incarnation), and the guard must read the rows of the
+// history the renderer's route currently uses. Exported for the unit test.
+export function selectTranscriptMeta(rows, ref, clientId, historyKey) {
+  const matching = (rows ?? []).filter((row) =>
+    row.resolvedIdentity?.clientId === clientId &&
+    row.requestedRefs?.some((binding) => binding.ref === ref && binding.clientId === clientId),
+  );
+  // The route's own key is the history the renderer is showing. When it is not
+  // exposed yet, fall back to the closest matching row by savedAt (production's
+  // getSessionForRequestedRef also applies its cache TTL; the guard has no TTL
+  // contract, and this branch only runs before the route exposes a key). When
+  // the key is exposed but its row is not written yet, return nothing so the
+  // caller's wait keeps polling instead of joining the renderer against a stale
+  // history.
+  if (historyKey) {
+    return matching.find((row) => row.historyKey === historyKey);
+  }
+  let selected;
+  for (const row of matching) {
+    if (selected === undefined || (row.savedAt ?? 0) > (selected.savedAt ?? 0)) selected = row;
+  }
+  return selected;
+}
+
+export function nativeEntryEvidenceExpression(ref = SESSION_B) {
   return `(async () => {
     const evidence = window.backgroundTranscriptEvidence;
     const databaseName = evidence.entryCacheDatabase;
@@ -2065,7 +2153,9 @@ function nativeEntryEvidenceExpression(ref = SESSION_B) {
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     })));
-    const metadata = values[3].find((row) => row.requestedRefs?.some((binding) => binding.ref === ref && binding.clientId === location.origin));
+    ${selectTranscriptMeta.toString()}
+    const route = evidence.entryRoute?.(ref);
+    const metadata = selectTranscriptMeta(values[3], ref, location.origin, route?.historyKey ?? null);
     if (!metadata) { db.close(); return null; }
     const historyKey = metadata.historyKey;
     const rows = values[0].filter((row) => row.historyKey === historyKey);
@@ -2585,6 +2675,8 @@ function targetPagingEvidence(ref, tracePath = TRACE_PATH) {
   const readConnections = [];
   const readResponseCursors = [];
   const readResponseWindows = [];
+  const readResponseSnapshotLengths = [];
+  const readResponseGenerations = [];
   const pending = new Map();
   for (const { connection, direction, frame } of frames) {
     if (frame?.method && frame.id !== undefined) {
@@ -2613,6 +2705,8 @@ function targetPagingEvidence(ref, tracePath = TRACE_PATH) {
       readConnections.push(connection);
       readResponseCursors.push(cursor);
       readResponseWindows.push(normalizeWindowFromWire(frame.result.thread?.turns));
+      readResponseSnapshotLengths.push(frame.result.snapshot?.length ?? null);
+      readResponseGenerations.push(frame.result.requestGeneration ?? null);
     } else if (held.frame.method === "thread/turns/list") {
       pageCursors.push(frame.result.nextCursor ?? "");
     }
@@ -2625,6 +2719,8 @@ function targetPagingEvidence(ref, tracePath = TRACE_PATH) {
     readConnections,
     readResponseCursors,
     readResponseWindows,
+    readResponseSnapshotLengths,
+    readResponseGenerations,
     pageCursors,
     pages: pageCursors.length,
     lastCursor: pageCursors.length > 0 ? pageCursors[pageCursors.length - 1] : "",

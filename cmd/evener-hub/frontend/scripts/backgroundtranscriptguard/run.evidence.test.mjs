@@ -19,9 +19,11 @@ import {
   countTargetRequestsInWindow,
   EVIDENCE_EXPR,
   narrowViewportContentPreserved,
+  nativeEntryEvidenceExpression,
   readTraceFrames,
   reduceProducedPeak,
   samplePeaksOnce,
+  selectTranscriptMeta,
   targetPagingEvidence,
   traceBytes,
 } from "./run.mjs";
@@ -74,6 +76,85 @@ describe("real journey placement acceptance", () => {
   });
   test("rejects a vacuous close control that already read latest", () => {
     expect(() => assertNewPaneLatest(latest(), latest())).toThrow();
+  });
+});
+
+// --- entry-completed native evidence must read the renderer's own history ---
+//
+// transcriptMeta is keyed by historyKey, so a ref can own an earlier history's
+// metadata row (a Clear, or a new incarnation) beside the current one. The
+// production lookup (stores/sessionEntryCache.ts getSessionForRequestedRef)
+// resolves that set; the guard's previous `.find` took whichever row came first
+// in key order, so it could join renderer items against a different history's
+// rows and report item_user_237 as having no native row — the failure recorded
+// in #4832's linked CI job 119577335495 (run 39703296928).
+describe("native entry evidence selects the renderer's history", () => {
+  const binding = (ref) => [{ clientId: "https://hub.test", ref }];
+  const stale = {
+    historyKey: "history-old",
+    requestedRefs: binding("local:tgt"),
+    resolvedIdentity: { clientId: "https://hub.test" },
+    savedAt: 50,
+    accessedAt: 50,
+  };
+  const current = {
+    historyKey: "history-current",
+    requestedRefs: binding("local:tgt"),
+    resolvedIdentity: { clientId: "https://hub.test" },
+    savedAt: 100,
+    accessedAt: 100,
+  };
+  const otherRef = {
+    historyKey: "history-other",
+    requestedRefs: binding("local:other"),
+    resolvedIdentity: { clientId: "https://hub.test" },
+    savedAt: 900,
+    accessedAt: 900,
+  };
+  const otherClient = {
+    historyKey: "history-other-client",
+    requestedRefs: binding("local:tgt"),
+    resolvedIdentity: { clientId: "https://other.example" },
+    savedAt: 500,
+    accessedAt: 500,
+  };
+
+  test("the route's historyKey wins even when an older row sorts first", () => {
+    expect(selectTranscriptMeta([stale, current, otherRef], "local:tgt", "https://hub.test", "history-current")).toBe(
+      current,
+    );
+  });
+
+  test("another ref's newer row is never selected", () => {
+    expect(selectTranscriptMeta([stale, current, otherRef], "local:tgt", "https://hub.test", "history-current")).not.toBe(
+      otherRef,
+    );
+  });
+
+  test("without a route key the newest matching row matches production's recency rule", () => {
+    expect(selectTranscriptMeta([stale, current], "local:tgt", "https://hub.test", null)).toBe(current);
+  });
+
+  test("a route key with no matching row yet yields no metadata instead of a stale history", () => {
+    expect(selectTranscriptMeta([stale], "local:tgt", "https://hub.test", "history-current")).toBeUndefined();
+  });
+
+  test("a row resolved to another client is never selected", () => {
+    expect(selectTranscriptMeta([otherClient, stale, current], "local:tgt", "https://hub.test", null)).toBe(current);
+  });
+
+  test("the route's key does not override a different resolved identity", () => {
+    expect(
+      selectTranscriptMeta([otherClient, stale], "local:tgt", "https://hub.test", "history-other-client"),
+    ).toBeUndefined();
+  });
+
+  test("the generated page expression parses as the driver evaluates it", () => {
+    // The expression embeds helper source via toString(). A declaration
+    // spliced under `const` (the #4832 fix's first form) is a page-side
+    // SyntaxError that no unit test of the helper itself can see.
+    const expression = nativeEntryEvidenceExpression("local:tgt");
+    expect(() => new Function(`return (${expression})`)).not.toThrow();
   });
 });
 
