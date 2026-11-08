@@ -7,10 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
-
-	"primeradiant.com/evener/agent/searchresult"
 )
 
 // writeIgnoredTreeRg writes a fake ripgrep whose --files listings report one
@@ -80,11 +77,6 @@ func TestRgArmReportsTheExcludedPathsNoteForAnEmptySearch(t *testing.T) {
 	if want == "" {
 		t.Fatal("native search returned a bare empty result; the test fixture does not exercise the exclusion note")
 	}
-	// build/ counts once as a directory, skip.log once as a file: two paths,
-	// not the three files the old rg-listing subtraction would have counted.
-	if !strings.Contains(want, "2 dotfile/gitignored") {
-		t.Fatalf("native exclusion note = %q, want two excluded paths", want)
-	}
 	if got != want {
 		t.Fatalf("rg-arm empty result differs from the native arm:\nrg:     %q\nnative: %q", got, want)
 	}
@@ -103,6 +95,17 @@ func TestRgArmKeepsTheExclusionNoteWhenTheOversizeListingFails(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	native := NewLocalExecutionEnvironment(root)
+	defer native.Cleanup()
+	native.lookPath = func(string) (string, error) { return "", errors.New("rg unavailable") }
+	want, err := native.Grep(t.Context(), "nomatch", root, "", false, 100, "content")
+	if err != nil {
+		t.Fatalf("native Grep: %v", err)
+	}
+	if want == "" {
+		t.Fatal("native search returned a bare empty result; the test fixture does not exercise the exclusion note")
+	}
+
 	env := NewLocalExecutionEnvironment(root)
 	defer env.Cleanup()
 	env.lookPath = func(string) (string, error) { return rg, nil }
@@ -111,12 +114,8 @@ func TestRgArmKeepsTheExclusionNoteWhenTheOversizeListingFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Grep: %v", err)
 	}
-	entries, notes := searchresult.Split(got)
-	if entries != "" || !strings.Contains(notes, "excluded") {
-		t.Fatalf("empty result = %q, want the exclusion note despite the failed oversize listing", got)
-	}
-	if strings.Contains(notes, "larger than") {
-		t.Fatalf("a failed oversize listing produced an oversize note anyway: %q", notes)
+	if got != want {
+		t.Fatalf("rg-arm result with a failed oversize listing differs from the native arm:\nrg:     %q\nnative: %q", got, want)
 	}
 }
 

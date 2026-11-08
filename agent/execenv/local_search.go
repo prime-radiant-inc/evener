@@ -555,7 +555,10 @@ func (e *LocalExecutionEnvironment) countNativeExcluded(ctx context.Context, dir
 		return 0, err
 	}
 	info, err := os.Stat(dir)
-	if err != nil || !info.IsDir() {
+	if err != nil {
+		return 0, err
+	}
+	if !info.IsDir() {
 		// A named file is searched deliberately: the default exclusions never
 		// apply to it, so there is nothing to disclose.
 		return 0, nil
