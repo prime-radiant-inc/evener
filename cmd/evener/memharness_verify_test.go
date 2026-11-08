@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
@@ -119,7 +121,7 @@ func (e *memHarnessVerifyFailure) Error() string {
 	if e.ClientMutationID != "" {
 		fmt.Fprintf(&b, " input %s", e.ClientMutationID)
 	}
-	if e.Round >= 0 && (e.Check == memHarnessCheckToolName || e.Check == memHarnessCheckToolMissing || e.Check == memHarnessCheckToolError || e.Check == memHarnessCheckToolOutput || e.Check == memHarnessCheckToolOutputMiddle || e.Check == memHarnessCheckToolOutputFull) {
+	if e.Round >= 0 {
 		fmt.Fprintf(&b, " round %d", e.Round)
 	}
 	if e.Want != "" || e.Got != "" {
@@ -365,16 +367,13 @@ func memHarnessVerifyShellOutput(want memHarnessTranscriptExpectation, turnID, m
 		}
 		return nil
 	}
-	path := filepath.Join(want.StateDir, "sessions", want.SessionID, "jobs", state.JobID+".log")
+	path := filepath.Join(schema.SessionWorkDir(want.StateDir, want.SessionID), "jobs", state.JobID+".log")
 	full, err := os.ReadFile(path)
 	if err != nil {
 		return memHarnessFail(memHarnessCheckToolOutputFull, turnID, mutationID, round, "readable job output journal", err.Error())
 	}
 	if !bytes.Equal(full, expected) {
 		return memHarnessFail(memHarnessCheckToolOutputFull, turnID, mutationID, round, fmt.Sprintf("%d recorded output bytes", len(expected)), fmt.Sprintf("%d job-log bytes (first difference at byte %d)", len(full), memHarnessFirstDifference(full, expected)))
-	}
-	if !bytes.Contains(full, middle) {
-		return memHarnessFail(memHarnessCheckToolOutputMiddle, turnID, mutationID, round, fmt.Sprintf("journal holding %q", middle), "middle absent")
 	}
 	// A windowed result's inline form is a head/tail digest; the journal above
 	// holds every byte. The digest must be shorter than the output it names,
@@ -442,6 +441,40 @@ func memHarnessClip(s string) string {
 	return s[:limit] + "…"
 }
 
+// The adapter and the harness's expectation both answer from the same authored
+// script, so pin the script itself literally: changing its formula must fail
+// here rather than move both sides of the verification together.
+func TestMemHarnessScriptMatchesAuthoredTable(t *testing.T) {
+	for _, want := range []struct {
+		turn, round int
+		command     string
+		outputBytes int
+	}{
+		{1, 0, "head -c 30000 /dev/zero | tr '\\0' 'x' | fold -w 100", 30_000},
+		{1, 1, "head -c 8000 /dev/zero | tr '\\0' 'x' | fold -w 100", 8_000},
+		{3, 4, "head -c 16000 /dev/zero | tr '\\0' 'x' | fold -w 100", 16_000},
+		{4, 4, "head -c 2000 /dev/zero | tr '\\0' 'x' | fold -w 100", 2_000},
+	} {
+		script := memHarnessRoundScriptFor(want.turn, want.round)
+		if script.Command != want.command || script.OutputBytes != want.outputBytes {
+			t.Fatalf("script(%d,%d) = %q/%d, want %q/%d", want.turn, want.round, script.Command, script.OutputBytes, want.command, want.outputBytes)
+		}
+	}
+	if got, want := memHarnessInputText(3), "turn 3: please do more work"; got != want {
+		t.Fatalf("input text = %q, want %q", got, want)
+	}
+	if got, want := memHarnessShellCallID(2, 1), "call_t2_r1"; got != want {
+		t.Fatalf("shell call id = %q, want %q", got, want)
+	}
+	if got, want := memHarnessDelegateCallID(2), "call_t2_delegate"; got != want {
+		t.Fatalf("delegate call id = %q, want %q", got, want)
+	}
+	output := memHarnessShellOutput(2_000)
+	if len(output) != 2_019 || output[len(output)-1] != 'x' {
+		t.Fatalf("shell output = %d bytes ending %q, want 2019 ending 'x'", len(output), output[len(output)-1])
+	}
+}
+
 // memHarnessFixtureTurn builds one hand-authored recorded turn set for the
 // verifier's always-running tests.
 type memHarnessFixture struct {
@@ -466,21 +499,9 @@ func newMemHarnessFixture(t *testing.T, dir string) *memHarnessFixture {
 		turnID:     "turn_m1",
 		jobLogs:    map[string][]byte{},
 	}
-	f.shellSmall = memHarnessFixtureOutput(120)
-	f.shellLarge = memHarnessFixtureOutput(4096)
+	f.shellSmall = memHarnessShellOutput(120)
+	f.shellLarge = memHarnessShellOutput(4096)
 	return f
-}
-
-func memHarnessFixtureOutput(size int) []byte {
-	var b bytes.Buffer
-	for start := 0; start < size; start += 100 {
-		end := min(start+100, size)
-		b.WriteString(strings.Repeat("x", end-start))
-		if end < size {
-			b.WriteByte('\n')
-		}
-	}
-	return b.Bytes()
 }
 
 // build records two shell rounds plus communicate, with provenance, completion
@@ -605,6 +626,20 @@ func TestMemHarnessVerifierAcceptsAuthoredTranscript(t *testing.T) {
 	}
 }
 
+// The queued path is chosen from the typed conflict, not its message: product
+// copy is not a protocol, and a copy-only error is not that refusal.
+func TestMemHarnessTurnActiveUsesTypedConflict(t *testing.T) {
+	if !memHarnessTurnActive(appwire.Conflict("turn is already active")) {
+		t.Fatal("typed active-turn conflict not recognized")
+	}
+	if memHarnessTurnActive(errors.New("turn is already active")) {
+		t.Fatal("copy alone recognized as the active-turn conflict")
+	}
+	if memHarnessTurnActive(appwire.InvalidParams("turn is already active")) {
+		t.Fatal("non-conflict wire error recognized as the active-turn conflict")
+	}
+}
+
 // TestMemHarnessTranscriptMutationTurnFindsQueuedInput pins the queued path's
 // correlation: a turn/queue receipt names no turn id, so the harness reads the
 // turn id the transcript recorded for that client mutation.
@@ -612,11 +647,11 @@ func TestMemHarnessTranscriptMutationTurnFindsQueuedInput(t *testing.T) {
 	f := newMemHarnessFixture(t, t.TempDir())
 	f.build()
 	path := f.write()
-	turnID, ok := memHarnessTranscriptMutationTurn(path, f.mutationID)
-	if !ok || turnID != f.turnID {
+	turnID, ok, err := memHarnessTranscriptMutationTurn(path, f.mutationID)
+	if err != nil || !ok || turnID != f.turnID {
 		t.Fatalf("mutation turn = %q, %v; want %q, true", turnID, ok, f.turnID)
 	}
-	if turnID, ok := memHarnessTranscriptMutationTurn(path, "memharness-run-start-9"); ok {
+	if turnID, ok, err := memHarnessTranscriptMutationTurn(path, "memharness-run-start-9"); err != nil || ok {
 		t.Fatalf("absent mutation named turn %q", turnID)
 	}
 }
@@ -762,7 +797,7 @@ func TestMemHarnessVerifierRejectsAuthorshipMismatches(t *testing.T) {
 			},
 			check: memHarnessCheckToolOutputFull,
 			round: 1,
-			want:  fmt.Sprintf("%d recorded output bytes", len(memHarnessFixtureOutput(4096))),
+			want:  fmt.Sprintf("%d recorded output bytes", len(memHarnessShellOutput(4096))),
 		},
 		{
 			name: "missing protocol identity",

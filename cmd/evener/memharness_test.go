@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -330,13 +331,28 @@ func memHarnessAuthoritativeRead(t *testing.T, ctx context.Context, client *appw
 
 var errMemHarnessTranscriptHit = errors.New("memharness transcript hit")
 
+// memHarnessTurnActive reports the typed turn/start refusal for a turn that is
+// already running, so the harness queues behind it without matching copy.
+func memHarnessTurnActive(err error) bool {
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+		return false
+	}
+	data, _ := appwire.DecodedErrorData(wire.Data)
+	return data.EvenerErrorInfo == appwire.ErrorConflict
+}
+
 // memHarnessTranscriptMutationTurn reads the recorded turn id for one client
 // mutation. The queued path has no receipt turn id, so it learns the identity
-// the transcript recorded (an entry is persisted before it is announced).
-func memHarnessTranscriptMutationTurn(path, mutationID string) (string, bool) {
+// the transcript recorded (an entry is persisted before it is announced). A
+// transcript that cannot be read is an error, not absence.
+func memHarnessTranscriptMutationTurn(path, mutationID string) (string, bool, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return "", false
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", false, nil
+		}
+		return "", false, err
 	}
 	defer f.Close()
 	found := ""
@@ -347,10 +363,13 @@ func memHarnessTranscriptMutationTurn(path, mutationID string) (string, bool) {
 		}
 		return nil
 	})
-	if !errors.Is(err, errMemHarnessTranscriptHit) {
-		return "", false
+	if errors.Is(err, errMemHarnessTranscriptHit) {
+		return found, found != "", nil
 	}
-	return found, found != ""
+	if err != nil {
+		return "", false, err
+	}
+	return "", false, nil
 }
 
 // TestMemHarness drives a real in-process serve daemon through many turns with
@@ -393,10 +412,14 @@ func TestMemHarness(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime.MemProfileRate = 4096
-	adapter := &memHarnessAdapter{roundsPerTurn: *memHarnessRounds, delegates: *memHarnessDelegates}
+	// The expected protocol comes from the chosen variant, never from the
+	// adapter: otherwise deleting the modern variant's note would also empty
+	// what the verifier expects.
+	scriptedProtocol := ""
 	if *memHarnessProvenance == memHarnessProvenanceModern {
-		adapter.protocol = memHarnessScriptedProtocol
+		scriptedProtocol = memHarnessScriptedProtocol
 	}
+	adapter := &memHarnessAdapter{roundsPerTurn: *memHarnessRounds, delegates: *memHarnessDelegates, protocol: scriptedProtocol}
 	oldLoadClient := serveLoadClient
 	serveLoadClient = func(stateDir string) (*llm.Client, error) {
 		// The production client, registry and all, with the scripted adapter
@@ -472,7 +495,7 @@ func TestMemHarness(t *testing.T) {
 		}
 	}()
 
-	transcriptPath := filepath.Join(stateDir, "sessions", entry.SessionID+".transcript.jsonl")
+	transcriptPath := schema.SessionTranscriptPath(stateDir, entry.SessionID)
 	reportFile, err := os.OpenFile(filepath.Join(*memHarnessOut, "report.txt"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		t.Fatal(err)
@@ -513,7 +536,9 @@ func TestMemHarness(t *testing.T) {
 	awaitTurn := func(turnID, what string) {
 		t.Helper()
 		deadline := time.Now().Add(5 * time.Minute)
-		nextRead := time.Now().Add(time.Second)
+		// The push usually settles the turn; the read is recovery, so keep it
+		// out of the measured window unless pushes stay silent.
+		nextRead := time.Now().Add(3 * time.Second)
 		for {
 			if status, ok := states.settled(turnID); ok {
 				if status != appwire.TurnStatusCompleted {
@@ -531,7 +556,7 @@ func TestMemHarness(t *testing.T) {
 						states.note(turn.ID, turn.Status)
 					}
 				}
-				nextRead = time.Now().Add(time.Second)
+				nextRead = time.Now().Add(3 * time.Second)
 				continue
 			}
 			if time.Now().After(deadline) {
@@ -548,7 +573,11 @@ func TestMemHarness(t *testing.T) {
 		t.Helper()
 		deadline := time.Now().Add(5 * time.Minute)
 		for {
-			if turnID, ok := memHarnessTranscriptMutationTurn(transcriptPath, mutationID); ok {
+			turnID, found, err := memHarnessTranscriptMutationTurn(transcriptPath, mutationID)
+			if err != nil {
+				t.Fatalf("queued input %s transcript read: %v", mutationID, err)
+			}
+			if found {
 				return turnID
 			}
 			if time.Now().After(deadline) {
@@ -558,32 +587,42 @@ func TestMemHarness(t *testing.T) {
 		}
 	}
 	// requireNoRunOwnedPending believes absence only from an authoritative live
-	// read, and only for the mutations this run sent.
+	// read, and only for the mutations this run sent. The mutation can leave the
+	// pending set a moment after its turn settles, so poll rather than fail a
+	// healthy run on one read; another producer's queue entry is not this run's.
 	requireNoRunOwnedPending := func(what string) {
 		t.Helper()
-		resp := memHarnessAuthoritativeRead(t, ctx, client, ref, false, 0)
-		if depth := resp.Thread.Evener.Queue.Depth; depth != 0 {
-			t.Fatalf("%s: queue depth = %d, want 0", what, depth)
-		}
-		for _, id := range resp.Thread.Evener.Queue.ClientMutationIDs {
-			if ownedMutations[id] {
-				t.Fatalf("%s: run-owned mutation %s is still queued", what, id)
-			}
-		}
-		for _, pending := range resp.Thread.Evener.PendingMutations {
-			if ownedMutations[pending.ClientMutationID] {
-				t.Fatalf("%s: run-owned mutation %s is still pending (%s)", what, pending.ClientMutationID, pending.ExecutionState)
-			}
-			for _, id := range pending.QueueEntryIDs {
-				if ownedQueueEntries[id] {
-					t.Fatalf("%s: run-owned queue entry %s is still pending on mutation %s", what, id, pending.ClientMutationID)
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			resp := memHarnessAuthoritativeRead(t, ctx, client, ref, false, 0)
+			owned := ""
+			for _, id := range resp.Thread.Evener.Queue.ClientMutationIDs {
+				if ownedMutations[id] {
+					owned = "mutation " + id
 				}
 			}
-		}
-		for _, id := range resp.Thread.Evener.Queue.IDs {
-			if ownedQueueEntries[id] {
-				t.Fatalf("%s: run-owned queue entry %s is still present", what, id)
+			for _, id := range resp.Thread.Evener.Queue.IDs {
+				if ownedQueueEntries[id] {
+					owned = "queue entry " + id
+				}
 			}
+			for _, pending := range resp.Thread.Evener.PendingMutations {
+				if ownedMutations[pending.ClientMutationID] {
+					owned = "mutation " + pending.ClientMutationID
+				}
+				for _, id := range pending.QueueEntryIDs {
+					if ownedQueueEntries[id] {
+						owned = "queue entry " + id
+					}
+				}
+			}
+			if owned == "" {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: run-owned %s is still queued or pending", what, owned)
+			}
+			time.Sleep(100 * time.Millisecond)
 		}
 	}
 	sample := func(label string) {
@@ -629,7 +668,11 @@ func TestMemHarness(t *testing.T) {
 				ownedQueueEntries[id] = true
 			}
 			awaitTurn(turnID, fmt.Sprintf("turn %d", i))
-		case strings.Contains(err.Error(), "already active"):
+		case memHarnessTurnActive(err):
+			// The refused attempt still names a mutation the daemon may have
+			// looked at; count it so a stale pending entry is not invisible.
+			ownedMutations[startMutation] = true
+			t.Logf("turn %d: a turn is active, queued behind it", i)
 			mutationID = fmt.Sprintf("memharness-%s-queue-%d", runID, i)
 			var queued appwire.TurnQueueResponse
 			if err := client.Request(ctx, appwire.MethodTurnQueue, appwire.TurnQueueParams{
@@ -680,7 +723,7 @@ func TestMemHarness(t *testing.T) {
 	want := memHarnessTranscriptExpectation{
 		StateDir:                stateDir,
 		SessionID:               entry.SessionID,
-		Protocol:                adapter.protocol,
+		Protocol:                scriptedProtocol,
 		Provider:                memHarnessProvider,
 		Model:                   memHarnessModel,
 		RequireUniqueInputText:  *memHarnessResume == "",
