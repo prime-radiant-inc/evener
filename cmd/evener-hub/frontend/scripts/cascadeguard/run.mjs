@@ -297,12 +297,20 @@ async function nativeReaderWheel(portExpr, deltaY) {
   await wait(`(${portExpr})?.scrollTop !== ${point.scrollTop}`, "native wheel actually moves its intended reader");
 }
 
+// The interruption and reflow measurements need a reading point inside a tall
+// entry, away from the end, so the reader's progress can be told apart from a
+// no-op. One predicate, embedded in the page wait via toString().
+function insideUsefulTallEntry(point) {
+  return Boolean(point && !point.followingBottom && point.height > point.viewport && point.offset < -100);
+}
+
 async function readInsideTallEntry(portExpr, label) {
   await nativeReaderWheel(portExpr, -900);
   return wait(`(() => {
     const point = ${readingPointExpr(portExpr)};
     window.__cascadeReadingAttempt = { label:${q(label)}, point };
-    return point?.useful && !point.followingBottom && point.height > point.viewport && point.offset < -100 ? point : null;
+    ${insideUsefulTallEntry.toString()}
+    return point?.useful && insideUsefulTallEntry(point) ? point : null;
   })()`, `${label}, native wheel selects useful content inside a tall entry`);
 }
 
@@ -317,7 +325,7 @@ async function heightOnlyChange(portExpr, height, label) {
 
 async function viewportReflow(portExpr, width, height, label, changed) {
   const before = await settledReadingPoint(portExpr, `${label} before`);
-  assert.ok(!before.followingBottom && before.height > before.viewport && before.offset < -100, `${label} begins inside a tall entry away from the end`);
+  assert.ok(insideUsefulTallEntry(before), `${label} begins inside a tall entry away from the end`);
   await driver.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor:1, mobile:false });
   const portDimension = changed === "width" ? `clientWidth !== ${before.width}` : `clientHeight !== ${before.viewport}`;
   await wait(`window.innerWidth === ${width} && window.innerHeight === ${height} && (${portExpr})?.${portDimension}`, `${label}, actual reader ${changed} changes`);
@@ -407,8 +415,21 @@ async function nativePositioningInterruption(input) {
     await clickVerbosityChoice("Chat");
     await wait(`document.querySelector('[data-testid="transcript-detail-control"] section[aria-label="Transcript detail editor"] [role="radio"][aria-checked="true"]')?.textContent.trim() === "Chat"`, "the real source has a Chat baseline before the measurement hold");
   }
-  const before = await settledReadingPoint(sourcePortExpr, "native interruption before width");
-  assert.ok(!before.followingBottom && before.height > before.viewport && before.offset < -100,
+  // The interruption measurement must start inside a tall entry, away from the
+  // end. The preceding journeys (and a late reflow) can leave the source at the
+  // bottom, so establish the structural precondition through the reader's own
+  // native wheel when it is not already true, instead of sampling whatever
+  // offset the last step left (issue #4778's run 39370270268 job 118456327626
+  // failed this exact assertion).
+  let before = await settledReadingPoint(sourcePortExpr, "native interruption before width");
+  if (!insideUsefulTallEntry(before)) {
+    await readInsideTallEntry(sourcePortExpr, "native interruption before width");
+    // readInsideTallEntry returns the first sample that satisfies the tall-entry
+    // predicate; every other before point in this journey is a settled reading,
+    // so re-read it here before it becomes observation.before.
+    before = await settledReadingPoint(sourcePortExpr, "native interruption before width");
+  }
+  assert.ok(insideUsefulTallEntry(before),
     "the native interruption starts inside useful tall content away from the end");
   const observation = { kind:`${input}-interruption`, original, baselinePreset:"Chat", before };
   readingPoints.push(observation);
@@ -1829,6 +1850,12 @@ try {
   await wait(cascadeUntitledExpr, "the pane hosts no Agent path nav and no title heading");
   await read('window.__cascadeTraceSource("after-first-drill")');
   await assertSourceDom();
+  // Opening the secondary split narrows the source and reflows its transcript.
+  // The virtualizer can show the top row for a frame before the reading entry
+  // is restored; issue #4778's second recorded occurrence failed exactly here
+  // (actual turn_m1, expected turn_m17) because the assertion ran before that
+  // restore. Wait on the structured anchor, then keep the assertion.
+  await wait(`${sourceAnchorExpr} === ${q(beforeEntryAnchor)}`, "secondary entry restores the visible source row");
   assert.equal(await sourceAnchor(), beforeEntryAnchor, "secondary entry preserves the visible source row");
   driver.milestone("root-child", { sourcePaneId: fixture.sourcePaneId, inspectorPaneId: fixture.inspectorPaneId, sourceAnchor: beforeEntryAnchor });
   for (let level = 2; level <= 6; level++) await drill(fixture.edges[level - 1], level);
