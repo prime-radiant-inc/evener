@@ -57,4 +57,18 @@ func TestPickOpenAIVoiceProvider(t *testing.T) {
 	if _, err := pickOpenAIVoiceProvider("lunaroute", []registry.Instance{gateway}); err == nil {
 		t.Fatal("an OpenAI-protocol gateway alone must not be chosen as the Realtime provider")
 	}
+	// An explicitly configured OpenAI instance with no credential cannot reach
+	// the Realtime endpoint, so it must not make voice look available.
+	credentialless := registry.Instance{
+		Name: "openai", ProviderID: "openai", Base: "openai", Protocol: registry.ProtocolOpenAIResponses,
+		BaseURL: "https://api.openai.com/v1", Auth: registry.AuthBearer, CredentialSource: "none",
+	}
+	if _, err := pickOpenAIVoiceProvider("openai", []registry.Instance{credentialless}); err == nil {
+		t.Fatal("a credentialless OpenAI instance must not be chosen as the Realtime provider")
+	}
+	credentialed := credentialless
+	credentialed.Name, credentialed.ProviderID, credentialed.CredentialSource = "house", "openai", "api_key"
+	if got, err := pickOpenAIVoiceProvider("openai", []registry.Instance{credentialless, credentialed}); err != nil || got != "house" {
+		t.Fatalf("credentialless default pick = %q, %v, want the credentialed instance", got, err)
+	}
 }

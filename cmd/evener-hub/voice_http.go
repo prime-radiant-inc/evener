@@ -138,6 +138,8 @@ func (v *voiceService) handler() http.Handler {
 			v.arm(w, r)
 		case "/api/voice/disarm":
 			v.disarm(w, r)
+		case "/api/voice/status":
+			v.status(w, r)
 		default:
 			voiceHTTPError(w, http.StatusNotFound, "not_found")
 		}
@@ -184,20 +186,8 @@ func (v *voiceService) arm(w http.ResponseWriter, r *http.Request) {
 		voiceHTTPError(w, http.StatusServiceUnavailable, "session_unavailable")
 		return
 	}
-	if read.Thread.Evener.InstanceID != request.ExpectedInstanceID {
-		voiceHTTPError(w, http.StatusConflict, "instance_changed")
-		return
-	}
-	if !read.Thread.Evener.MutationStateAuthoritative || !read.Thread.Evener.Manager {
-		voiceHTTPError(w, http.StatusConflict, "live_manager_required")
-		return
-	}
-	if !read.Thread.Evener.Capabilities.VoicePresentationContextV1 {
-		voiceHTTPError(w, http.StatusConflict, "voice_presentation_unsupported")
-		return
-	}
-	if !validVoiceProvenance(read.Thread.Evener.ConversationProvenance, request.ExpectedInstanceID) {
-		voiceHTTPError(w, http.StatusConflict, "voice_provenance_unavailable")
+	if reason := voiceSessionRefusal(read.Thread.Evener, request.ExpectedInstanceID); reason != "" {
+		voiceHTTPError(w, http.StatusConflict, reason)
 		return
 	}
 	if request.Provider == "" {
@@ -243,6 +233,69 @@ func (v *voiceService) arm(w http.ResponseWriter, r *http.Request) {
 	v.refreshSocket(r.Context(), binding.Ref)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(voiceArmResponse{BindingID: bindingID, Epoch: epoch, Grant: grant, ExpiresAt: expires, SocketPath: "/api/voice/socket", SampleRate: 24000, Policy: currentVoicePolicy(), Provider: request.Provider})
+}
+
+type voiceStatusRequest struct {
+	Ref                string `json:"ref"`
+	ExpectedInstanceID string `json:"expectedInstanceId"`
+}
+
+type voiceStatusResponse struct {
+	Supported bool   `json:"supported"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+// status answers whether arm would succeed for a session, so a client can hide
+// voice where it cannot work instead of offering a button that always refuses.
+func (v *voiceService) status(w http.ResponseWriter, r *http.Request) {
+	var request voiceStatusRequest
+	if !decodeVoiceHTTP(w, r, &request) {
+		return
+	}
+	writeStatus := func(supported bool, reason string) {
+		writeAPIJSON(w, http.StatusOK, voiceStatusResponse{Supported: supported, Reason: reason})
+	}
+	ref, err := appwire.ParseRef(request.Ref)
+	if err != nil || request.Ref != ref.String() || request.ExpectedInstanceID == "" {
+		voiceHTTPError(w, http.StatusBadRequest, "invalid_binding")
+		return
+	}
+	client, err := v.web.voiceClient(r.Context())
+	if err != nil {
+		writeStatus(false, "session_unavailable")
+		return
+	}
+	defer func() { _ = client.Close() }()
+	read, err := client.ThreadRead(r.Context(), appwire.ThreadReadParams{Ref: request.Ref})
+	if err != nil {
+		writeStatus(false, "session_unavailable")
+		return
+	}
+	if reason := voiceSessionRefusal(read.Thread.Evener, request.ExpectedInstanceID); reason != "" {
+		writeStatus(false, reason)
+		return
+	}
+	if _, err := v.web.defaultOpenAIVoiceProvider(); err != nil {
+		writeStatus(false, "voice_provider_unavailable")
+		return
+	}
+	writeStatus(true, "")
+}
+
+// voiceSessionRefusal reports why Arm would refuse this session, or "" when it
+// can arm. Arm and the status preflight share it so the two cannot disagree.
+func voiceSessionRefusal(evener appwire.EvenerThread, expectedInstanceID string) string {
+	switch {
+	case evener.InstanceID != expectedInstanceID:
+		return "instance_changed"
+	case !evener.Manager || !evener.MutationStateAuthoritative:
+		return "live_manager_required"
+	case !evener.Capabilities.VoicePresentationContextV1:
+		return "voice_presentation_unsupported"
+	case !validVoiceProvenance(evener.ConversationProvenance, expectedInstanceID):
+		return "voice_provenance_unavailable"
+	}
+	return ""
 }
 
 func (v *voiceService) refreshSocket(ctx context.Context, ref string) {
@@ -367,15 +420,20 @@ func isOpenAIVoiceInstance(inst registry.Instance) bool {
 }
 
 // pickOpenAIVoiceProvider chooses voice's instance from the hub's default and
-// configured instances.
+// configured instances. An instance whose required credential is absent cannot
+// reach the Realtime endpoint, so voice skips it here rather than advertising a
+// bar that Arm would refuse.
 func pickOpenAIVoiceProvider(defaultName string, instances []registry.Instance) (string, error) {
+	usable := func(inst registry.Instance) bool {
+		return isOpenAIVoiceInstance(inst) && inst.CredentialSource != "none"
+	}
 	for _, inst := range instances {
-		if inst.Name == defaultName && isOpenAIVoiceInstance(inst) {
+		if inst.Name == defaultName && usable(inst) {
 			return inst.Name, nil
 		}
 	}
 	for _, inst := range instances {
-		if isOpenAIVoiceInstance(inst) {
+		if usable(inst) {
 			return inst.Name, nil
 		}
 	}

@@ -34,6 +34,14 @@ choose a target session or execute manager tools.
   same instance, before issuing a grant or replacing an existing binding. A
   restored legacy manager without that evidence remains usable through typed
   input, with its transcript intact, but cannot arm voice.
+  `POST /api/voice/status` answers the same admission checks without binding,
+  so the iPhone offers the voice bar only on a session that can arm now. The bar
+  answers from that preflight and stays hidden otherwise; an armed binding still
+  shows on every session so Talk and Stop keep working. While hidden the bar asks
+  again, so a saved manager that typed input resumes starts offering voice
+  without reopening the screen. A hub that predates the preflight keeps the
+  earlier behavior and still offers the bar. An OpenAI instance with no
+  credential does not count as support; Arm would refuse it at the endpoint.
   The scoped socket grant cannot dispatch general AppWire requests.
 - [`voiceBridge`](../../cmd/evener-hub/voice_bridge.go) accepts ordered utterance
   frames, waits for completed interpretation and uses ordinary `turn/start` or
@@ -250,6 +258,7 @@ only the selected models and notices, not unused pretrained ONNX copies.
 
 The real-stack tests in
 [`e2e_voice_arm_provenance_test.go`](../../cmd/evener-hub/e2e_voice_arm_provenance_test.go),
+[`voice_http_test.go`](../../cmd/evener-hub/voice_http_test.go),
 [`e2e_voice_stop_test.go`](../../cmd/evener-hub/e2e_voice_stop_test.go),
 [`e2e_voice_test.go`](../../cmd/evener-hub/e2e_voice_test.go),
 [`e2e_voice_correction_test.go`](../../cmd/evener-hub/e2e_voice_correction_test.go),

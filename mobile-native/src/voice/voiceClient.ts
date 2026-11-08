@@ -184,6 +184,28 @@ export class VoiceClient {
 			}
 		}
 	}
+	/** Whether this session can run voice right now. The hub answers from the
+	 * admission evidence Arm uses, so a session that would refuse keeps the
+	 * control hidden. A hub that predates the preflight keeps the old behavior. */
+	async status(target: VoiceTarget): Promise<boolean> {
+		if (!target.manager || !target.instanceId) return false;
+		const token = await this.token(target.hub.id);
+		const response = await this.native.authorize(
+			target.hub.origin,
+			"/api/voice/status",
+			token,
+			JSON.stringify({ ref: target.ref, expectedInstanceId: target.instanceId }),
+		);
+		if (response.status === 404) return true;
+		if (response.status < 200 || response.status >= 300) return false;
+		let result: { supported?: unknown } = {};
+		try {
+			result = JSON.parse(response.body);
+		} catch {
+			// An unreadable body reads as unsupported.
+		}
+		return result.supported === true;
+	}
 	private async revoke(binding: { hub: HubProfile; origin: string; bindingId: string; epoch: string }) {
 		if (!this.foreground()) return;
 		const token = await this.token(binding.hub.id);

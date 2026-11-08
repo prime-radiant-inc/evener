@@ -60,6 +60,8 @@ it("arms in one tap with a visible disclosure, keeps takeover explicit, and send
 		voiceAvailable: true,
 	};
 	native.authorize = async (origin, _path, _token, body) => {
+		if (_path === "/api/voice/status")
+			return { origin, status: 200, body: JSON.stringify({ supported: true, reason: "" }) };
 		requests.push(JSON.parse(body));
 		// voiceService.arm in cmd/evener-hub/voice_http.go returns this wire code.
 		if (requests.length === 1) {
@@ -88,6 +90,8 @@ it("arms in one tap with a visible disclosure, keeps takeover explicit, and send
 			<VoiceControls target={target} />
 		</VoiceContext.Provider>,
 	);
+	// The hub's support answer arrives before the bar paints.
+	await act(async () => {});
 	const button = (label: string) =>
 		tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === label)[0];
 	await act(async () => {
@@ -132,6 +136,8 @@ it("arms in one tap with a visible disclosure, keeps takeover explicit, and send
 		button("Turn voice off").props.onPress();
 	});
 	expect(actions).toEqual(["arm", "talk", "stop", "disarm"]);
+	// Turning voice off explains itself in place; it does not collapse the panel.
+	expect(tree.root.findByProps({ testID: "voice-panel" })).toBeDefined();
 });
 
 it("adds no controls when the hub does not advertise voice", () => {
@@ -222,6 +228,8 @@ it("shows measured wake receipts and sends trial labels to the native owner", as
 			/>
 		</VoiceContext.Provider>,
 	);
+	// The hub's support answer arrives before the bar paints.
+	await act(async () => {});
 	const button = (label: string) =>
 		tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === label)[0];
 	await act(async () => {
@@ -289,17 +297,22 @@ it("keeps Stop live while Evener speaks", async () => {
 	const native: NativeVoicePort = {
 		deviceId: async () => "install",
 		validateTransport: async () => {},
-		authorize: async (origin) => ({
-			origin,
-			status: 200,
-			body: JSON.stringify({
-				bindingId: "binding",
-				epoch: "opaque",
-				grant: "fixture",
-				expiresAt: "2030-01-01T00:00:00Z",
-				provider: "openai",
-			}),
-		}),
+		// The session shown here cannot run voice itself, but the armed binding
+		// still belongs on this screen.
+		authorize: async (origin, path) =>
+			path === "/api/voice/status"
+				? { origin, status: 200, body: JSON.stringify({ supported: false, reason: "voice_provenance_unavailable" }) }
+				: {
+						origin,
+						status: 200,
+						body: JSON.stringify({
+							bindingId: "binding",
+							epoch: "opaque",
+							grant: "fixture",
+							expiresAt: "2030-01-01T00:00:00Z",
+							provider: "openai",
+						}),
+					},
 		arm: async () => {},
 		snapshot: async () => armed,
 		addListener: (_event, listener) => {
@@ -331,6 +344,8 @@ it("keeps Stop live while Evener speaks", async () => {
 			<VoiceControls target={target} />
 		</VoiceContext.Provider>,
 	);
+	// The hub's support answer arrives before the bar paints.
+	await act(async () => {});
 	const button = (label: string) =>
 		tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === label)[0];
 	await act(async () => {
@@ -430,6 +445,8 @@ it("calls a routine abort a finished turn, not a stopped voice", async () => {
 			/>
 		</VoiceContext.Provider>,
 	);
+	// The hub's support answer arrives before the bar paints.
+	await act(async () => {});
 	const button = (label: string) =>
 		tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === label)[0];
 	await act(async () => {
@@ -502,8 +519,128 @@ it("names the session voice is on for when the bar belongs to another one", asyn
 			<VoiceControls target={{ ...first, ref: "other" }} />
 		</VoiceContext.Provider>,
 	);
+	// The hub's support answer arrives before the bar paints.
+	await act(async () => {});
 	const button = (label: string) =>
 		tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === label)[0];
 	expect(JSON.stringify(tree.toJSON())).toContain("Voice is on for chief");
 	expect(button("Talk").props.disabled).toBe(true);
+});
+
+it("hides the bar on a session the hub says cannot run voice", async () => {
+	const native: NativeVoicePort = {
+		deviceId: async () => "install",
+		validateTransport: async () => {},
+		authorize: async (origin) => ({
+			origin,
+			status: 200,
+			body: JSON.stringify({ supported: false, reason: "voice_provenance_unavailable" }),
+		}),
+		arm: async () => {
+			throw new Error("an unsupported session must not be armable");
+		},
+		snapshot: async () => ({
+			state: "disarmed",
+			capturing: false,
+			cloudMicrophone: false,
+			route: "",
+			speakerConsentRequired: false,
+			error: "",
+			interpreted: "",
+			custody: "",
+			canonical: "",
+			generated: "",
+			bindingId: "",
+			provider: "",
+		}),
+		addListener: () => ({ remove() {} }),
+		talk: () => {},
+		stopSpeaking: () => {},
+		disarm: () => {},
+		allowSpeaker: () => {},
+		startWakeTrial: async () => {},
+		finishWakeTrial: async () => {},
+	};
+	const client = new VoiceClient(
+		native,
+		async () => "fixture",
+		() => true,
+	);
+	const tree = render(
+		<VoiceContext.Provider value={client}>
+			<VoiceControls
+				target={{
+					hub: { id: "hub", name: "Hub", origin: "http://127.0.0.1:9180" },
+					ref: "local:legacy",
+					instanceId: "instance",
+					manager: true,
+					voiceAvailable: true,
+				}}
+			/>
+		</VoiceContext.Provider>,
+	);
+	await act(async () => {});
+	expect(tree.toJSON()).toBeNull();
+});
+
+it("offers voice once a saved manager becomes armable, without changing identity", async () => {
+	vi.useFakeTimers();
+	let armable = false;
+	const native: NativeVoicePort = {
+		deviceId: async () => "install",
+		validateTransport: async () => {},
+		authorize: async (origin) =>
+			armable
+				? { origin, status: 200, body: JSON.stringify({ supported: true, reason: "" }) }
+				: { origin, status: 200, body: JSON.stringify({ supported: false, reason: "live_manager_required" }) },
+		arm: async () => {},
+		snapshot: async () => ({
+			state: "disarmed",
+			capturing: false,
+			cloudMicrophone: false,
+			route: "",
+			speakerConsentRequired: false,
+			error: "",
+			interpreted: "",
+			custody: "",
+			canonical: "",
+			generated: "",
+			bindingId: "",
+			provider: "",
+		}),
+		addListener: () => ({ remove() {} }),
+		talk: () => {},
+		stopSpeaking: () => {},
+		disarm: () => {},
+		allowSpeaker: () => {},
+		startWakeTrial: async () => {},
+		finishWakeTrial: async () => {},
+	};
+	const client = new VoiceClient(
+		native,
+		async () => "fixture",
+		() => true,
+	);
+	const tree = render(
+		<VoiceContext.Provider value={client}>
+			<VoiceControls
+				target={{
+					hub: { id: "hub", name: "Hub", origin: "http://127.0.0.1:9180" },
+					ref: "local:saved",
+					instanceId: "instance",
+					manager: true,
+					voiceAvailable: true,
+				}}
+			/>
+		</VoiceContext.Provider>,
+	);
+	await act(async () => {});
+	expect(tree.toJSON()).toBeNull();
+	armable = true;
+	await act(async () => {
+		vi.advanceTimersByTime(10_000);
+	});
+	await act(async () => {});
+	expect(tree.root.findByProps({ testID: "voice-controls" })).toBeDefined();
+	vi.useRealTimers();
 });

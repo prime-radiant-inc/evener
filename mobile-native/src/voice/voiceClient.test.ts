@@ -363,3 +363,31 @@ it("cancels pending arm when the foreground changes to a different hub", async (
 	await expect(pending).rejects.toMatchObject({ code: "arm_cancelled" });
 	expect(hardware.actions).toEqual(["disarm"]);
 });
+
+it("reports voice support from the hub preflight and keeps older hubs visible", async () => {
+	const hardware = device();
+	const client = new VoiceClient(
+		hardware.native,
+		async () => "broad-fixture",
+		() => true,
+	);
+	const ask = async (status: number, body: string) => {
+		let path = "";
+		let sent: Record<string, unknown> = {};
+		hardware.native.authorize = async (origin, requestPath, _token, value) => {
+			path = requestPath;
+			sent = JSON.parse(value);
+			return { origin, status, body };
+		};
+		const support = await client.status(target);
+		expect(path).toBe("/api/voice/status");
+		expect(sent).toEqual({ ref: target.ref, expectedInstanceId: target.instanceId });
+		return support;
+	};
+	expect(await ask(200, JSON.stringify({ supported: false, reason: "voice_provenance_unavailable" }))).toBe(false);
+	expect(await ask(200, JSON.stringify({ supported: true }))).toBe(true);
+	// A hub that predates the preflight keeps the control visible, as before.
+	expect(await ask(404, "not found")).toBe(true);
+	expect(await ask(503, JSON.stringify({ code: "voice_provider_unavailable" }))).toBe(false);
+	expect(await client.status({ ...target, instanceId: "" })).toBe(false);
+});
