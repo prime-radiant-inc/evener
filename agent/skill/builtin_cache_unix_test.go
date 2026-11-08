@@ -133,13 +133,14 @@ func TestEnsureTrustedRoot_ChecksTheAncestorChain(t *testing.T) {
 	}
 }
 
-// A read-only mount pins the path it covers: no process confined to this mount
-// namespace can replace or modify it, whoever owns it. That is the sandbox's
-// read-only root bind, whose host-root owner appears as the unmapped overflow uid
-// in a user namespace and would otherwise be refused (issue #4226). A writable
-// mount boundary is no evidence of safety, and an unreadable mount table is no
-// evidence at all.
-func TestEnsureTrustedAncestors_AcceptsAReadOnlyMountAncestor(t *testing.T) {
+// A read-only mount refuses writes through this namespace, but it does not pin
+// the ordinary directories beneath it: another user with a writable mount of the
+// same host filesystem can rename one and replace its subtree, and path lookup
+// here follows the replacement. Only the filesystem root itself is pinned, so an
+// ordinary ancestor keeps every ownership and permission check whichever mount
+// it sits on. A writable mount boundary is no evidence of safety, and an
+// unreadable mount table is no evidence at all.
+func TestEnsureTrustedAncestors_RefusesAReplaceableAncestorOnAReadOnlyMount(t *testing.T) {
 	outer := t.TempDir()
 	inner := filepath.Join(outer, "inner")
 	if err := os.Mkdir(inner, 0o700); err != nil {
@@ -164,15 +165,70 @@ func TestEnsureTrustedAncestors_AcceptsAReadOnlyMountAncestor(t *testing.T) {
 		t.Fatal("accepted a world-writable ancestor on a writable mount")
 	}
 
+	// The shape the finding describes: a world-writable, non-sticky ancestor and
+	// a writable temp directory beneath it, on the sandbox's read-only root bind.
 	readMountInfo = func() []byte {
 		// A complete fake namespace, including the read-only root the sandbox's
-		// host-root bind presents. Without the root entry the walk reaches the
-		// real /, which is the unmapped overflow uid in the very user namespace
-		// this case exists to cover, and refuses before it can exercise `outer`.
-		return []byte("1 0 0:1 / / ro - tmpfs tmpfs rw\n36 25 0:32 / " + outer + " ro,relatime - tmpfs tmpfs rw\n")
+		// host-root bind presents, so the ordinary ancestor is the only component
+		// under test.
+		return []byte("1 0 0:1 / / ro - tmpfs tmpfs rw\n36 1 0:32 / " + outer + " ro,relatime - tmpfs tmpfs rw\n")
 	}
-	if err := ensureTrustedAncestors(inner); err != nil {
-		t.Fatalf("refused a read-only mount ancestor: %v", err)
+	if err := ensureTrustedAncestors(inner); err == nil {
+		t.Fatal("accepted a replaceable ancestor on a read-only mount")
+	}
+}
+
+// The read-only exemption belongs to the filesystem root alone: the mount pins
+// that inode and no parent directory holds its name. An ordinary ancestor on a
+// read-only mount is still replaceable through a writable mount of the same host
+// filesystem, so it keeps the ownership and permission checks. This is the shape
+// of the reviewer's scenario: a world-writable, non-sticky /shared/public on the
+// sandbox's read-only root bind must not let another user rename a directory
+// beneath it.
+func TestReadOnlyFilesystemRoot_OnlyTheFilesystemRootIsExempt(t *testing.T) {
+	otherUser := uint32(os.Getuid()) + 1
+	// The owner is the unmapped overflow uid, which reads as another user here,
+	// so only the root's mount and mode can vouch for it.
+	unverifiableOwner := fakeFileInfo{mode: os.ModeDir | 0o755, uid: otherUser}
+	mounts := parseMountPoints("" +
+		"1 0 0:1 / / ro - tmpfs tmpfs rw\n" +
+		"2 1 0:2 / /work ro - tmpfs tmpfs rw\n")
+	for _, tc := range []struct {
+		name string
+		dir  string
+		want bool
+	}{
+		{"filesystem root", "/", true},
+		{"ordinary ancestor on the root mount", "/shared/public", false},
+		{"ordinary ancestor on a nested read-only mount", "/work/user", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if ancestorDirTrusted(unverifiableOwner) {
+				t.Fatal("ownership predicate trusted an unverifiable owner")
+			}
+			if got := readOnlyFilesystemRoot(unverifiableOwner, mounts, tc.dir); got != tc.want {
+				t.Fatalf("readOnlyFilesystemRoot(%q) = %v, want %v", tc.dir, got, tc.want)
+			}
+		})
+	}
+	// A root other users can write to is replaceable through the host mount, so
+	// it gets no exemption; neither does a writable mount.
+	worldWritableRoot := fakeFileInfo{mode: os.ModeDir | 0o777, uid: otherUser}
+	if readOnlyFilesystemRoot(worldWritableRoot, mounts, "/") {
+		t.Fatal("trusted a world-writable filesystem root")
+	}
+	writableRoot := parseMountPoints("1 0 0:1 / / rw - tmpfs tmpfs rw\n")
+	if readOnlyFilesystemRoot(unverifiableOwner, writableRoot, "/") {
+		t.Fatal("trusted a replaceable ancestor under a writable filesystem root")
+	}
+	// A read-only bind of a directory at / pins that directory's inode, but the
+	// directory's name still lives in its host parent: another user who owns the
+	// parent can rename the source and put another directory there, and path
+	// lookup here follows the replacement. Only a mount of a whole filesystem has
+	// a root that no directory holds.
+	subdirectoryBind := parseMountPoints("1 0 252:0 /srv/shared/rootfs / ro - ext4 /dev/sda rw\n")
+	if readOnlyFilesystemRoot(unverifiableOwner, subdirectoryBind, "/") {
+		t.Fatal("trusted a read-only bind of a subdirectory as the filesystem root")
 	}
 }
 

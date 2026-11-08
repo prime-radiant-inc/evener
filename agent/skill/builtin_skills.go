@@ -433,16 +433,18 @@ func ensureTrustedProcessRoot(root string) error {
 // above a user's own directory is normally root-owned. Ancestors are resolved
 // through symlinks the way path lookup resolves them.
 //
-// A path on a read-only mount is accepted whatever its owner: no process in this
-// mount namespace can replace it, because the mount pins the inode and refuses
-// writes. A sandbox's read-only root bind is exactly that shape, and in a user
-// namespace that does not map host root it appears owned by the overflow uid,
-// which the ownership rule must otherwise refuse (issue #4226). A writable mount
-// boundary is no evidence of safety and gets no such exemption.
+// The filesystem root is accepted when it is on a read-only mount, whatever its
+// owner: the mount pins that inode, no parent directory holds its name, and the
+// mount refuses writes through this namespace, so no other user can replace the
+// root itself. A sandbox's read-only root bind is exactly that shape, and in a
+// user namespace that does not map host root it appears owned by the overflow
+// uid, which the ownership rule must otherwise refuse (issue #4226). Its mode
+// still has to keep other users from replacing names inside it through a
+// writable host mount. An ordinary ancestor gets no exemption at all, even on a
+// read-only mount: the mount only refuses writes through this namespace, while
+// another user with a writable mount of the same host filesystem can rename the
+// directory and replace its subtree, which path lookup here then follows.
 func ensureTrustedAncestors(root string) error {
-	// One mount-table snapshot decides every component: a remount mid-walk would
-	// only be attempted by a process this check already does not defend against.
-	mounts := parseMountPoints(string(readMountInfo()))
 	for dir := filepath.Dir(root); ; {
 		parent := filepath.Dir(dir)
 		info, err := os.Stat(dir)
@@ -452,7 +454,14 @@ func ensureTrustedAncestors(root string) error {
 		if !info.IsDir() {
 			return fmt.Errorf("skill cache ancestor %s is not a directory", dir)
 		}
-		if !ancestorDirTrusted(info) && !readOnlyMountAt(mounts, dir) {
+		trusted := ancestorDirTrusted(info)
+		if !trusted && parent == dir {
+			// Only the filesystem root consults the mount table, and only when
+			// its ownership check failed, so read it once there rather than on
+			// every chain that never needs it.
+			trusted = readOnlyFilesystemRoot(info, parseMountPoints(string(readMountInfo())), dir)
+		}
+		if !trusted {
 			return fmt.Errorf("skill cache ancestor %s can be replaced by other users", dir)
 		}
 		if parent == dir {
@@ -460,6 +469,27 @@ func ensureTrustedAncestors(root string) error {
 		}
 		dir = parent
 	}
+}
+
+// readOnlyFilesystemRoot reports whether dir is the root of the filesystem tree
+// this process sees, the namespace's root mount refuses writes, it is a mount of
+// a whole filesystem rather than a directory bound out of one, and the root's
+// mode keeps other users from replacing the names in it. Its owner check is
+// waived because host root can appear as the unmapped overflow uid, but the
+// mount pins the filesystem root inode, no directory holds its name, and the
+// mode still decides who else may rename a directory beneath it through a
+// writable host mount. A bound subdirectory's name is still held by its host
+// parent, so only the filesystem root itself is pinned.
+func readOnlyFilesystemRoot(info fs.FileInfo, mounts []mountPoint, dir string) bool {
+	if filepath.Clean(dir) != string(filepath.Separator) {
+		return false
+	}
+	root, _, ok := mountTree(mounts)
+	if !ok || filepath.Clean(root.path) != string(filepath.Separator) ||
+		filepath.Clean(root.fsRoot) != string(filepath.Separator) || !root.readOnly {
+		return false
+	}
+	return info.Mode()&os.ModeSticky != 0 || info.Mode().Perm()&0o022 == 0
 }
 
 // ensurePrivateCacheDir creates dir mode 0700 if it is absent and verifies that
