@@ -216,9 +216,11 @@ func (r *wtRepo) addOrphanedBranchLaneFixture(t *testing.T, name, branch string)
 // boundary, the way a host with no usable git binary does, so the operation
 // under test produces its failure in-process instead of forking a git command
 // and waiting it out.
+var errWorktreeGitUnavailable = errors.New(`exec: "git": executable file not found in $PATH`)
+
 func failAllWorktreeGit(s *Session) {
 	scriptedGitRunner(s, func([]string) (string, error, bool) {
-		return "", errors.New(`exec: "git": executable file not found in $PATH`), true
+		return "", errWorktreeGitUnavailable, true
 	})
 }
 
@@ -271,8 +273,8 @@ func TestWorktreePrune_Sweep1ErrorPropagatesWhenGitUnavailable(t *testing.T) {
 	failAllWorktreeGit(r.s)
 
 	_, err := r.pruneOp(t)
-	if err == nil || !strings.Contains(err.Error(), "listing worktrees") {
-		t.Fatalf("prune with git unavailable for sweep 1: err = %v, want the listing-worktrees error", err)
+	if !errors.Is(err, errWorktreeGitUnavailable) {
+		t.Fatalf("prune with git unavailable for sweep 1: err = %v, want the git-unavailable error", err)
 	}
 }
 
