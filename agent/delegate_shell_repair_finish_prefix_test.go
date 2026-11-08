@@ -465,3 +465,89 @@ func watchEndNoticeFrames(t *testing.T, path string) []jobstore.WatchSendState {
 	}
 	return frames
 }
+
+// TestDelegateShellRepairStopPrefixLeavesCallbackWatchForRestore covers a torn
+// batch under a pending subtree stop: the notification is consumed, but the
+// job's no-send callback watch must stay active for the child's restore, which
+// is the only path that can cancel it and tell its receiver. Clearing it here
+// would lose that ancestor receiver's cancellation notice permanently.
+func TestDelegateShellRepairStopPrefixLeavesCallbackWatchForRestore(t *testing.T) {
+	t.Parallel()
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	path := filepath.Join(jobsDir(c.stateDir, "child-dlg_target"), "jobs.jsonl")
+	started := time.Unix(10, 0).UTC()
+	ended := time.Unix(20, 0).UTC()
+	appendDelegateShellEventsAt(t, path,
+		jobstore.Event{
+			Kind:           jobstore.EventJobStarted,
+			TS:             started,
+			JobID:          "job-shell",
+			Type:           jobstore.JobShell,
+			OwnerSessionID: "child-dlg_target",
+			StartedAt:      &started,
+		},
+		jobstore.Event{
+			Kind:    jobstore.EventWatchRegistered,
+			TS:      started,
+			WatchID: "watch-shell",
+			Watch: &jobstore.WatchEvent{
+				Generation:       "watch-generation",
+				OwnerSessionID:   "child-dlg_target",
+				VisibleSessionID: "child-dlg_target",
+				Target:           "job-shell",
+				ConfigHash:       "hash",
+				Condition:        "terminal",
+			},
+		},
+		jobstore.Event{
+			Kind:        jobstore.EventJobFinished,
+			TS:          ended,
+			JobID:       "job-shell",
+			Status:      jobstore.StatusStopped,
+			Reason:      "runtime_lost",
+			EndedAt:     &ended,
+			TerminalGen: "terminal-stop-prefix",
+		},
+		jobstore.Event{
+			Kind:        jobstore.EventJobNotificationPending,
+			TS:          ended,
+			JobID:       "job-shell",
+			TerminalGen: "terminal-stop-prefix",
+		},
+	)
+
+	// A synthetic pending stop avoids starting the stop driver; the repair
+	// only needs c.stopCoversLocked to see dlg_target in the subtree.
+	c.mu.Lock()
+	c.stop = &delegateStopState{members: map[string]struct{}{"dlg_target": {}}}
+	c.mu.Unlock()
+	evidence, err := collectDelegateReconcileEvidence(c.stateDir, c.ReconcileRequirements())
+	if err != nil {
+		t.Fatalf("collectDelegateReconcileEvidence: %v", err)
+	}
+	plans, err := c.Reconcile(evidence)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	var plan *delegateShellRepairPlan
+	for i := range plans.shellRepairs {
+		if plans.shellRepairs[i].delegateID == "dlg_target" {
+			plan = &plans.shellRepairs[i]
+			break
+		}
+	}
+	if plan == nil || !plan.suppressOwnerNotify {
+		t.Fatalf("shell repair plan = %#v, want a stop-covered plan for dlg_target", plans.shellRepairs)
+	}
+	if err := executeDelegateShellRepair(*plan, time.Unix(30, 0).UTC()); err != nil {
+		t.Fatalf("executeDelegateShellRepair: %v", err)
+	}
+	records, watches := readDelegateShellStore(t, path)
+	if record := records["job-shell"]; record == nil || record.NotifyState != jobstore.NotifyConsumed {
+		t.Fatalf("stop-covered notification = %#v, want consumed", record)
+	}
+	if watch := watches["watch-shell"]; watch == nil || !watch.Active {
+		t.Fatalf("callback watch after stop-covered repair = %#v, want left active for restore", watch)
+	}
+}

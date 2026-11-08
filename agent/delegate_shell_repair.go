@@ -344,7 +344,11 @@ func executeDelegateShellRepair(plan delegateShellRepairPlan, now time.Time) (er
 				JobID:       identity.jobID,
 				TerminalGen: identity.terminalGeneration,
 			})
-			clearedJobs[identity.jobID] = struct{}{}
+			// Do not clear this job's watches here. Send watches were cleared
+			// with their durable end notice by the terminalWatchJobIDs loop
+			// above. A no-send callback watch must stay active: the child's
+			// restore is the only path that can cancel it and route its
+			// receiver's cancellation notice.
 		}
 	}
 	for _, jobID := range plan.terminalWatchJobIDs {
