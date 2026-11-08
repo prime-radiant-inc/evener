@@ -773,6 +773,7 @@ func startHubStackWithOptions(t *testing.T, providersTOML, model, evenerBin stri
 		}
 		if t.Failed() && readErr == nil {
 			t.Logf("hub log:\n%s", redactHubStackLog(body))
+			logDaemonLogs(t, string(body))
 		}
 	})
 
@@ -798,6 +799,40 @@ func startHubStackWithOptions(t *testing.T, providersTOML, model, evenerBin stri
 // daemonPIDPattern matches the hub's own spawn line, e.g.
 // "[hub] daemon session=0348... pid=51030 log=...".
 var daemonPIDPattern = regexp.MustCompile(`\bdaemon session=\S+ pid=(\d+)\b`)
+
+// daemonLogPathPattern matches the hub's daemon spawn line's log path. A
+// failure that stalls inside a daemon leaves its evidence only in that file,
+// which the test's temp root removes at cleanup.
+var daemonLogPathPattern = regexp.MustCompile(`\bdaemon session=\S+ pid=\d+ log=(\S+)`)
+
+// maxDaemonLogBytes bounds each dumped daemon log. A stalled daemon's log is
+// short; a busy one can hold a whole session, and the test log is not the place
+// for it.
+const maxDaemonLogBytes = 64 << 10
+
+// logDaemonLogs dumps every daemon log the hub announced when the enclosing
+// test failed. The hub log names the paths; reading them here races the temp
+// root's removal, which is the only other place they exist.
+func logDaemonLogs(t *testing.T, hubLog string) {
+	t.Helper()
+	seen := map[string]bool{}
+	for _, match := range daemonLogPathPattern.FindAllStringSubmatch(hubLog, -1) {
+		path := match[1]
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Logf("daemon log %s: %v", path, err)
+			continue
+		}
+		if len(body) > maxDaemonLogBytes {
+			body = body[len(body)-maxDaemonLogBytes:]
+		}
+		t.Logf("daemon log %s:\n%s", path, redactHubStackLog(body))
+	}
+}
 
 func reapDaemons(t *testing.T, hubLog string) {
 	t.Helper()

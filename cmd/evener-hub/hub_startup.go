@@ -777,7 +777,15 @@ func (r *hubRuntime) wireNavigationInvalidation(web *WebServer) {
 	})
 	r.archive.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
 	r.favorite.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
-	r.remoteCache.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{Sources: true}) })
+	r.remoteCache.SetOnChange(func() {
+		bump()
+		web.navigation.Invalidate(navigationChangeHint{Sources: true})
+		// Same attention-freshness rule as the roster hook above: remote asks
+		// and approvals reach the watcher only through this cache. The change
+		// was published by the refresher or pruned by a host removal, so poke
+		// the watcher and not the refresher.
+		r.pokeAttentionWatcher()
+	})
 	// A connection-state transition flips sshconn.Manager.Attached, which is the
 	// online signal every remote row's liveness and the manifest's
 	// sources[].online are derived from. Roster/PastIndex/remoteCache hooks do not

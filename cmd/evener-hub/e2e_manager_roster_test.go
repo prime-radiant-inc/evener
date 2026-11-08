@@ -140,6 +140,16 @@ func TestManagerRosterEndToEnd(t *testing.T) {
 		t.Helper()
 		call, err := provider.Next(ctx.Done())
 		if err != nil || !call.Contains(opening) {
+			readCtx, cancelRead := context.WithTimeout(context.Background(), 5*time.Second)
+			read, readErr := clientRequest[appwire.ThreadReadResponse](readCtx, human, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: managerRef})
+			cancelRead()
+			if readErr != nil {
+				t.Logf("manager read after model-round timeout: %v", readErr)
+			} else {
+				e := read.Thread.Evener
+				t.Logf("manager read after model-round timeout: id=%s session=%s status=%s activeTurn=%q turnCount=%d resumeRequired=%t queueDepth=%d send=%t",
+					read.Thread.ID, read.Thread.SessionID, read.Thread.Status.Type, e.ActiveTurnID, e.TurnCount, e.ResumeRequired, e.Queue.Depth, e.Capabilities.Send)
+			}
 			t.Fatalf("expected Manager model round: %v, call=%v", err, call)
 		}
 		return call
@@ -228,7 +238,21 @@ func TestManagerRosterEndToEnd(t *testing.T) {
 	if cleared.Thread.Evener.Ref != managerRef || cleared.Thread.SessionID == manager.SessionID || !cleared.Thread.Evener.Manager {
 		t.Fatalf("Clear did not preserve Manager workspace while replacing session ID: old=%+v new=%+v", manager.Evener, cleared.Thread.Evener)
 	}
-	startTurn(cleared.Thread, opening)
+	// Clear replaces the session behind the stable ref. Wait until the hub
+	// resolves the replacement before starting the next turn; a client that
+	// sends into the identity transition can otherwise race the roster's view
+	// of the new session.
+	awaitThread(ctx, t, human, managerRef, "Manager Clear replacement", func(thread appwire.Thread) bool {
+		return thread.SessionID == cleared.Thread.SessionID && thread.Evener.ActiveTurnID == "" && thread.Evener.Capabilities.Send
+	})
+	postClearTurn, err := clientRequest[appwire.TurnStartResponse](ctx, human, appwire.MethodTurnStart, appwire.TurnStartParams{
+		Ref: cleared.Thread.Evener.Ref, ExpectedInstanceID: cleared.Thread.Evener.InstanceID, ClientMutationID: newMutationID(t),
+		Input: []appwire.InputItem{{Type: "text", Text: opening}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("post-Clear turn start: id=%q status=%q error=%+v receipt=%+v", postClearTurn.Turn.ID, postClearTurn.Turn.Status, postClearTurn.Turn.Error, postClearTurn.Receipt)
 	call = managerCall()
 	call.RespondToolCall("job_watch", map[string]any{"operation": "create", "hub": map[string]any{"scope": "top_level"}})
 	call = managerCall()

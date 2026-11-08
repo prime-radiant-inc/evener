@@ -208,6 +208,9 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	}
 	defer func() {
 		if committedClaimHeld {
+			if observer := s.cfg.testOnly.delegateSendRollbackBeforeRedrive; observer != nil {
+				observer(committedChildID)
+			}
 			s.releaseChildCommittedSendStart(committedChildID)
 			// The claim refused every drive for the claimed child that landed
 			// while it was held -- a child notification arriving mid-window runs

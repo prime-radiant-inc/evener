@@ -910,6 +910,9 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 	s.mu.Lock()
 	client, enabled, closing := s.hubClient, s.hubEnabled, s.closing
 	s.mu.Unlock()
+	if client == nil {
+		client = s.waitForHubClient(ctx, hubClientBindingWait)
+	}
 	if client == nil || !enabled || closing {
 		return nil, appwire.InvalidRequest("Manager tool unavailable")
 	}

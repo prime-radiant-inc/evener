@@ -238,3 +238,21 @@ func TestPluginManifestVersionRefusesFIFOWithoutBlocking(t *testing.T) {
 		t.Fatalf("a FIFO plugin.json reported version %q", version)
 	}
 }
+
+// TestValidatePluginDirRefusesFIFOManifestWithoutBlocking pins the install
+// validation path, which is also List's Broken check and doctor's repair probe.
+// A directory-kind marketplace is used in place, so a writerless FIFO at its
+// .claude-plugin/plugin.json must fail validation instead of parking Install
+// (with the store lock held), List, and doctor on the agent loader's open.
+func TestValidatePluginDirRefusesFIFOManifestWithoutBlocking(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	mkfifoAt(t, filepath.Join(dir, ".claude-plugin", "plugin.json"))
+
+	err := withinFIFODeadline(t, "validatePluginDir(FIFO plugin.json)", func() error {
+		return validatePluginDir(dir)
+	})
+	if err == nil {
+		t.Fatal("a FIFO plugin.json passed validation")
+	}
+}

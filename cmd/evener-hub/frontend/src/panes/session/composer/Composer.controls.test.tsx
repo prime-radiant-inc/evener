@@ -1,3 +1,4 @@
+import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
@@ -721,6 +722,15 @@ test("the composer anchor carries its owning ref and pane id for the hold-hint o
   expect(anchor?.getAttribute("data-composer-pane")).toBe("pane_anchor");
 });
 
+// This test makes two macrotask yields of its own: the focus transfer after
+// the press, and the press hold's zero-delay release timer. handleFollowUpBlur
+// collapses the follow-up card on the next animation frame, and that frame can
+// come due in either yield - so keep each one inside act() with the shared
+// nextMacrotask.
+async function waitForMacrotaskInActScope(): Promise<void> {
+  await act(() => nextMacrotask());
+}
+
 test("the composer editing attribute follows the editor, not composer controls", async () => {
   const user = userEvent.setup();
   const fake = connectReadyFakeClient();
@@ -769,9 +779,7 @@ test("the composer editing attribute follows the editor, not composer controls",
   await act(async () => {
     fireEvent.pointerDown(screen.getByTestId("composer-attach"));
   });
-  await new Promise((resolve) => {
-    setTimeout(resolve, 0);
-  });
+  await waitForMacrotaskInActScope();
   await act(async () => {
     editor.blur();
   });
@@ -780,9 +788,7 @@ test("the composer editing attribute follows the editor, not composer controls",
   await act(async () => {
     fireEvent.click(screen.getByTestId("composer-attach"));
   });
-  await new Promise((resolve) => {
-    setTimeout(resolve, 0);
-  });
+  await waitForMacrotaskInActScope();
 
   // A press outside the composer ends it, even when focus stayed on body.
   await act(async () => {
@@ -824,6 +830,10 @@ test("the composer editing attribute follows the editor, not composer controls",
   await act(async () => {
     editor.focus();
     editor.blur();
+    // handleFollowUpBlur collapses the follow-up card on the next animation
+    // frame. Drain it here so the update cannot land outside act after this
+    // test's last scope.
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
   });
   await waitFor(() => expect(anchor?.hasAttribute("data-composer-editing")).toBe(false));
 });

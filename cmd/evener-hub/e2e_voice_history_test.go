@@ -116,7 +116,7 @@ func TestE2E_VoiceSpeechReachesOlderHistoryPages(t *testing.T) {
 func TestE2E_VoiceHistorySnapshotAdvanceKeepsCursor(t *testing.T) {
 	f := newVoiceCorrectionStack(t)
 	_ = f.device.conn.CloseNow()
-	baseline := f.read(t)
+	baseline := f.readLiveManager(t, "live baseline")
 	binding, err := f.journal.Binding(f.ctx, f.armed.BindingID)
 	if err != nil {
 		t.Fatal(err)
@@ -132,7 +132,7 @@ func TestE2E_VoiceHistorySnapshotAdvanceKeepsCursor(t *testing.T) {
 		f.next(t).RespondToolCall("read_file", map[string]any{"file_path": filepath.Join(f.stack.workDir, "NOTES.md"), "intent": "Reading the fixture to advance real history"})
 	}
 	request := f.next(t)
-	stale := f.read(t)
+	stale := f.readLiveManager(t, "stale history before backfill")
 	if stale.OlderCursor == "" || voiceCorrectionItem(stale, "SNAPSHOT-FIRST-191").ID != "" {
 		t.Fatal("fixture lacks an earlier unsaid page")
 	}
