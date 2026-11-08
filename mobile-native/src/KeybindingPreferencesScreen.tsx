@@ -28,6 +28,30 @@ function shortcutLabel(chord: string): string {
 
 const EMPTY_RULES: readonly KeybindingsRule[] = [];
 
+function RuleSummary({ rules }: { rules: readonly KeybindingsRule[] }) {
+	const preview = keybindingPreview(rules);
+	return (
+		<Group>
+			{rules.length === 0 ? (
+				<Row label="All shortcuts use their defaults" />
+			) : (
+				rules.map((rule, index) => (
+					<Row
+						selectable
+						key={JSON.stringify([
+							rule.action,
+							rule.chord,
+							rules.slice(0, index).filter((other) => other.action === rule.action).length,
+						])}
+						label={preview.rows.find((row) => row.actionId === rule.action)?.title ?? rule.action}
+						sub={rule.chord === null ? "Unbound" : shortcutLabel(rule.chord)}
+					/>
+				))
+			)}
+		</Group>
+	);
+}
+
 export function KeybindingPreferencesScreen({
 	route,
 	navigation,
@@ -93,6 +117,26 @@ export function KeybindingPreferencesScreen({
 			},
 		);
 	};
+	const legacy = preferences.legacyKeybindingDraft;
+	const applySaved = (saved: readonly KeybindingsRule[]) => {
+		if (!model) return;
+		run(async () => {
+			await model.applySavedKeybindings(saved);
+			const outcome = preferences.discardLegacyKeybindingDraft();
+			if (outcome !== "removed" && outcome !== "absent" && outcome !== null)
+				throw new Error("The saved changes were applied, but this phone could not remove its old copy.");
+		});
+	};
+	const discardSaved = () => {
+		try {
+			const outcome = preferences.discardLegacyKeybindingDraft();
+			if (outcome === "storageUnavailable" || outcome === "refused")
+				setError("The saved shortcut changes could not be removed from this phone.");
+			else if (outcome !== null) setError(null);
+		} catch {
+			setError("The saved shortcut changes could not be removed from this phone.");
+		}
+	};
 	const shownError = error
 		? { source: "action", message: error.message }
 		: domain?.error
@@ -111,6 +155,42 @@ export function KeybindingPreferencesScreen({
 						testID={shownError ? `keybinding-error:${shownError.source}` : undefined}
 					/>
 				</View>
+				{legacy?.outcome === "readable" && (
+					<>
+						<Copy>Saved shortcut changes from this phone</Copy>
+						<RuleSummary rules={legacy.checkpoint.rules} />
+						{legacy.checkpoint.writeUncertain && <GroupFooter>The hub never confirmed this saved change.</GroupFooter>}
+						{domain?.confirmed && legacy.checkpoint.baseRevision !== domain.confirmed.revision && (
+							<>
+								<GroupFooter>The hub's shortcuts changed since this was saved.</GroupFooter>
+								<Copy>Current on the hub</Copy>
+								<RuleSummary rules={domain.confirmed.rules} />
+							</>
+						)}
+						<Group>
+							<Button
+								primary
+								label="Apply saved changes"
+								accessibilityLabel="Apply saved changes"
+								disabled={busy}
+								onPress={() => applySaved(legacy.checkpoint.rules)}
+							/>
+							<Button text label="Discard saved changes" onPress={discardSaved} />
+						</Group>
+					</>
+				)}
+				{legacy?.outcome === "unreadable" && (
+					<>
+						<Copy>Saved shortcut changes from this phone</Copy>
+						<GroupFooter tone="danger">These saved changes could not be read.</GroupFooter>
+						<Group>
+							<Button text label="Discard saved changes" onPress={discardSaved} />
+						</Group>
+					</>
+				)}
+				{legacy?.outcome === "storageUnavailable" && (
+					<GroupFooter tone="danger">Could not read the saved shortcut changes on this phone.</GroupFooter>
+				)}
 				<Group label={connection.activeProfile.name} selectableLabel>
 					<Row
 						label="Web keyboard shortcuts"

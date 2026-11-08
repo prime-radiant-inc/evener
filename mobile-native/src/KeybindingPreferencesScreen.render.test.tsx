@@ -216,6 +216,54 @@ it("shows a failed immediate edit without closing the editor", async () => {
 	act(() => tree.unmount());
 });
 
+it("recovers a pre-ruling keybinding draft through the immediate path", async () => {
+	const saved = {
+		id: "draft-1",
+		baseRevision: 1,
+		rules: [{ action: "palette.open", chord: "Meta+Shift+P" }],
+		writeUncertain: true,
+	};
+	const key = `evener.native.keybinding-draft.${hub.id}`;
+	harness.values.set(key, JSON.stringify(saved));
+	const connection = clientFixture();
+	const tree = await openReader(connection);
+
+	// The saved proposal is visible but has not been replayed.
+	expect(tree.root.findByProps({ accessibilityLabel: "Apply saved changes" })).toBeDefined();
+	expect(connection.requests.filter((request) => request.method === patchMethod)).toHaveLength(0);
+
+	const patched = connection.nextRequest();
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Apply saved changes" }).props.onPress();
+		await patched;
+	});
+
+	expect(connection.requests.filter((request) => request.method === patchMethod)).toEqual([
+		{
+			method: patchMethod,
+			params: { expectedRevision: 1, config: { version: 1, rules: saved.rules } },
+		},
+	]);
+	expect(harness.values.has(key)).toBe(false);
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Apply saved changes" })).toHaveLength(0);
+	act(() => tree.unmount());
+});
+
+it("discards an unreadable pre-ruling keybinding draft with no hub connected", () => {
+	const key = `evener.native.keybinding-draft.${hub.id}`;
+	harness.values.set(key, "{not json");
+	harness.connection = { activeProfile: hub, client: null, state: "ready", retry: vi.fn() };
+	const tree = render(app());
+
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Apply saved changes" })).toHaveLength(0);
+	const action = tree.root.findByProps({ accessibilityLabel: "Discard saved changes" });
+	act(() => action.props.onPress());
+
+	expect(harness.values.has(key)).toBe(false);
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Discard saved changes" })).toHaveLength(0);
+	act(() => tree.unmount());
+});
+
 it("does not let an earlier edit's reply close an editor opened since", async () => {
 	const connection = clientFixture();
 	const reply = deferred<unknown>();

@@ -219,6 +219,14 @@ export class NativePreferences {
 			.patchOverrides(() => checkedKeybindingChange(this.keybindings.getState().rawOverrides, actionId, chord));
 	}
 
+	/** Applies a saved pre-ruling proposal the user explicitly recovered.
+	 * This is still the one immediate PATCH path: the saved rule set becomes
+	 * the whole payload, and only this call - never the record's presence -
+	 * sends it. The host discards the legacy record after the hub confirms. */
+	applySavedKeybindings(rules: readonly KeybindingsRule[]): Promise<KeybindingsOverrides> {
+		return this.keybindings.getState().patchOverrides(() => rules);
+	}
+
 	async saveTranscript(
 		config?: TranscriptDisplayConfigV1,
 	): Promise<{ revision: number; config: TranscriptDisplayConfigV1 }> {
