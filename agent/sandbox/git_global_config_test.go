@@ -280,9 +280,9 @@ func TestProbeGitGlobalConfigPaths(t *testing.T) {
 			want:   []string{envGlobal},
 		},
 		{
-			name:   "an empty GIT_CONFIG_GLOBAL leaves the FILES",
+			name:   "an explicit empty GIT_CONFIG_GLOBAL names no config",
 			system: gitConfigProbeSystem{stubProbeSystem: stubProbeSystem{env: map[string]string{"GIT_CONFIG_GLOBAL": ""}}, home: home},
-			want:   []string{xdgFile, dotfile},
+			want:   nil,
 		},
 		{
 			name:   "a relative GIT_CONFIG_GLOBAL contributes nothing",
@@ -347,6 +347,31 @@ func TestProbeGitSystemConfigPaths(t *testing.T) {
 			want:   []string{systemConfig},
 		},
 		{
+			name:   "GIT_CONFIG_NOSYSTEM=0x0 leaves the override",
+			system: gitConfigProbeSystem{stubProbeSystem: stubProbeSystem{env: map[string]string{"GIT_CONFIG_SYSTEM": systemConfig, "GIT_CONFIG_NOSYSTEM": "0x0"}}, home: home},
+			want:   []string{systemConfig},
+		},
+		{
+			name:   "GIT_CONFIG_NOSYSTEM=0x1 disables the override",
+			system: gitConfigProbeSystem{stubProbeSystem: stubProbeSystem{env: map[string]string{"GIT_CONFIG_SYSTEM": systemConfig, "GIT_CONFIG_NOSYSTEM": "0x1"}}, home: home},
+			want:   nil,
+		},
+		{
+			name:   "GIT_CONFIG_NOSYSTEM=010 disables the override",
+			system: gitConfigProbeSystem{stubProbeSystem: stubProbeSystem{env: map[string]string{"GIT_CONFIG_SYSTEM": systemConfig, "GIT_CONFIG_NOSYSTEM": "010"}}, home: home},
+			want:   nil,
+		},
+		{
+			name:   "GIT_CONFIG_NOSYSTEM with a leading space and 0 leaves the override",
+			system: gitConfigProbeSystem{stubProbeSystem: stubProbeSystem{env: map[string]string{"GIT_CONFIG_SYSTEM": systemConfig, "GIT_CONFIG_NOSYSTEM": " 0"}}, home: home},
+			want:   []string{systemConfig},
+		},
+		{
+			name:   "a value git rejects as a boolean grants nothing because git will not run",
+			system: gitConfigProbeSystem{stubProbeSystem: stubProbeSystem{env: map[string]string{"GIT_CONFIG_SYSTEM": systemConfig, "GIT_CONFIG_NOSYSTEM": "maybe"}}, home: home},
+			want:   nil,
+		},
+		{
 			name:   "a relative override contributes nothing",
 			system: gitConfigProbeSystem{stubProbeSystem: stubProbeSystem{env: map[string]string{"GIT_CONFIG_SYSTEM": "gitconfig-system"}}, home: home},
 			want:   nil,
@@ -398,5 +423,28 @@ func TestRestrictedGrantsGitConfigOverridesToSpawnedOnly(t *testing.T) {
 		if slices.Contains(rp.FileTool.ReadRoots, f) {
 			t.Errorf("git config %q must NOT reach the file-tool layer: %v", f, rp.FileTool.ReadRoots)
 		}
+	}
+}
+
+// TestGitSystemConfigOverrideLosesToTheDenylist pins that the env-named system
+// file is subject to the same denylist precedence as the global files: a
+// denylisted entry never survives as a spawned read root.
+func TestGitSystemConfigOverrideLosesToTheDenylist(t *testing.T) {
+	t.Parallel()
+	home, dotfile, _ := gitGlobalConfigFiles(t)
+	systemConfig := filepath.Join(home, "gitconfig-system")
+	if err := os.WriteFile(systemConfig, []byte("[user]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	host := darwinHostWithGitGlobalConfig(dotfile)
+	host.Home = home
+	host.GitSystemConfigPaths = []string{systemConfig}
+
+	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, DenylistAdd: []string{systemConfig}}, host, mainRepo(t))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if slices.Contains(rp.Spawned.ReadRoots, systemConfig) {
+		t.Errorf("a denylisted system git config must never survive as a read root: %v", rp.Spawned.ReadRoots)
 	}
 }

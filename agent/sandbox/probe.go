@@ -115,7 +115,10 @@ type HostFacts struct {
 	// config and hook writes stay denied — and loses to the credential denylist,
 	// so a credential.helper line becomes readable while ~/.git-credentials stays
 	// masked. A path that does not exist contributes nothing and never fails
-	// session start.
+	// session start. A non-empty $GIT_CONFIG_GLOBAL replaces both FILES; a
+	// set-but-empty or unreadable value names no config git reads (git ignores
+	// it and the developer's settings are silently absent), so nothing is
+	// granted for it.
 	GitGlobalConfigPaths []string
 
 	// GitSystemConfigPaths are the SYSTEM-WIDE git config FILES git reads on
@@ -422,14 +425,12 @@ const (
 // $XDG_CONFIG_HOME/git/config first, then ~/.gitconfig. git reads BOTH when both
 // exist, so both are probed rather than the first hit.
 //
-// A non-empty $GIT_CONFIG_GLOBAL REPLACES both FILES, matching git's own
-// precedence: the variable names the one global config git reads, so granting
-// the default files instead would both over-grant a file git never opens and
-// leave the file it does open unreadable — silently dropping the developer's
-// settings, or fataling when the variable names a file under $HOME (verified on
-// git 2.43). Only an absolute path to an existing non-directory file is
-// admitted; a relative path is resolved by git against the process's working
-// directory, which is not a stable file to grant.
+// A $GIT_CONFIG_GLOBAL that is SET replaces both FILES, matching git's own
+// precedence. Only an absolute path to an existing non-directory file is
+// admitted; an empty value, a relative path, or a path that names nothing git
+// can read names no config git reads (git resolves a relative value against the
+// process's working directory and ignores an unreadable global file), so
+// granting the default files instead would over-grant files git never opens.
 //
 // $XDG_CONFIG_HOME defaults to the home directory's .config when unset or empty. A NON-ABSOLUTE
 // XDG_CONFIG_HOME is ignored entirely: git would resolve it against the process's
@@ -445,11 +446,8 @@ const (
 // backends grant a root under both its literal and its canonical name, and the
 // literal one is the name git actually opens.
 func probeGitGlobalConfigPaths(system probeSystem) []string {
-	if override := system.getenv(gitConfigGlobalEnv); override != "" {
-		if filepath.IsAbs(override) && system.nonDirectoryFile(override) {
-			return []string{filepath.Clean(override)}
-		}
-		return nil
+	if override, set := environValue(system.environ(), gitConfigGlobalEnv); set {
+		return gitConfigFileOverride(override, system)
 	}
 	home, err := system.userHomeDir()
 	if err != nil || strings.TrimSpace(home) == "" {
@@ -478,28 +476,53 @@ func probeGitGlobalConfigPaths(system probeSystem) []string {
 // $GIT_CONFIG_SYSTEM overrides the built-in /etc/gitconfig location. The
 // built-in location already lies under /etc, a restricted-mode system read
 // root, so only an override needs a grant. $GIT_CONFIG_NOSYSTEM disables the
-// system config entirely; git reads the boolean the way git_env_bool does, so
-// "0" or "false" leaves it enabled.
+// system config entirely; see gitConfigNoSystem for its spellings.
 func probeGitSystemConfigPaths(system probeSystem) []string {
-	override := system.getenv(gitConfigSystemEnv)
-	if override == "" || !filepath.IsAbs(override) || !system.nonDirectoryFile(override) {
+	files := gitConfigFileOverride(system.getenv(gitConfigSystemEnv), system)
+	if len(files) == 0 || gitConfigNoSystem(system.getenv(gitConfigNoSystemEnv)) {
 		return nil
 	}
-	if gitEnvBool(system.getenv(gitConfigNoSystemEnv)) {
-		return nil
-	}
-	return []string{filepath.Clean(override)}
+	return files
 }
 
-// gitEnvBool reports whether v is git's true boolean spelling (git_env_bool:
-// true/yes/on/1 in any case, or a non-zero integer).
-func gitEnvBool(v string) bool {
-	switch strings.ToLower(strings.TrimSpace(v)) {
+// gitConfigFileOverride returns the one config file an environment override
+// names, or nil when the value names nothing git reads as a config file. Only
+// an absolute path to an existing non-directory file is admitted.
+func gitConfigFileOverride(value string, system probeSystem) []string {
+	if value == "" || !filepath.IsAbs(value) || !system.nonDirectoryFile(value) {
+		return nil
+	}
+	return []string{filepath.Clean(value)}
+}
+
+// environValue returns the last value assigned to name and whether it is present
+// at all, so an explicitly empty variable is distinguishable from an unset one.
+func environValue(environ []string, name string) (string, bool) {
+	value, set := "", false
+	for _, kv := range environ {
+		if k, v, ok := strings.Cut(kv, "="); ok && k == name {
+			value, set = v, true
+		}
+	}
+	return value, set
+}
+
+// gitConfigNoSystem reports whether $GIT_CONFIG_NOSYSTEM tells git to skip the
+// system config. It follows git's boolean spelling: true/yes/on in any case and
+// a base-prefixed integer (0 and the empty value are false). A value git
+// rejects as a boolean is treated as true here because git refuses to run and
+// never reads the system file, so a grant for it would be dead weight.
+func gitConfigNoSystem(v string) bool {
+	switch strings.ToLower(v) {
 	case "true", "yes", "on":
 		return true
+	case "false", "no", "off", "":
+		return false
 	}
-	n, err := strconv.Atoi(strings.TrimSpace(v))
-	return err == nil && n != 0
+	if n, err := strconv.ParseInt(strings.TrimLeft(v, " \t\r\n"), 0, 64); err == nil {
+		return n != 0
+	}
+	return true
 }
 
 // evenerContentRoots returns the plugin store's installed plugin files and the
