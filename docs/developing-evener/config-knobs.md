@@ -142,6 +142,8 @@ Dev tooling and test rigs declare these themselves.
 |---|---|---|
 | `BROWSER_GUARD_CONCURRENCY` | none | `cmd/evener-dev` |
 | `EVENER_FUZZ_PERSIST` | [developing-evener/fuzzing.md](../developing-evener/fuzzing.md) | `fuzz/promoter` |
+| `EVENER_HUB_LIVE_STACK_BIN` | none | `internal/devtool/shardrun` |
+| `EVENER_HUB_LIVE_STACK_WARM` | none | `internal/devtool/shardrun` |
 | `EVENER_HUB_TEST_ENV_ROOT` | none | `cmd/evener-hub/internal/hubtestenv` |
 | `EVENER_LIVE_TESTS` | none | `agent/internal/liveeval` |
 | `EVENER_SANDBOXTEST_KEPT_TMPDIR` | none | `agent/sandbox/sandboxtest` |
