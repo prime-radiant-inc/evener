@@ -1831,10 +1831,15 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	// construction-time diagnostic, so it BUFFERS rather than emitting: nothing
 	// may reach the stream before SESSION_START (see emitSessionStartEnvelope).
 	s.rebuildToolDefsCache()
-	if warning := s.refreshSystemPromptCache(env); warning != "" {
+	warning := s.refreshSystemPromptCache(env)
+	if warning != "" {
 		s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings,
 			events.WarningData{Message: warning})
-	} else {
+	}
+	// A disclosed unreadable append degrades the prompt but does not fail the
+	// render: the permanent prompt carrying the role preloads was admitted, so
+	// they still join the skill inventory. Only a failed render skips them.
+	if !s.promptRenderFailed {
 		// Role preloads join the skill inventory only after the permanent
 		// prompt carrying their complete instructions was admitted.
 		s.seedFrozenSkillPreloads()

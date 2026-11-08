@@ -1212,6 +1212,11 @@ type Session struct {
 	systemPromptOverride string
 	cachedSystemPrompt   string
 	promptSourceLog      []promptSource
+	// promptRenderFailed reports whether the most recent renderSystemPrompt
+	// returned diagnostic prose instead of a prompt. refreshSystemPromptCache
+	// uses it to keep the last valid cached prompt; guarded by s.mu like the
+	// cache it describes.
+	promptRenderFailed bool
 }
 
 type sessionDetachedProcess struct {

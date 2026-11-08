@@ -72,10 +72,17 @@ func (s *Session) refreshSystemPromptCache(env execenv.ExecutionEnvironment) str
 	if s.cfg.testOnly.minimalSystemPrompt {
 		s.cachedSystemPrompt = "test system prompt"
 		s.promptSourceLog = nil
+		s.promptRenderFailed = false
 		return ""
 	}
 	prompt, warning := s.renderSystemPrompt(env)
-	s.cachedSystemPrompt = prompt
+	// A failed render returns diagnostic prose, not a prompt. Keep the last
+	// prompt that rendered so dependent work does not run on "Template rendering
+	// failed: ..." text; only a session with no earlier prompt installs that
+	// text, so the model is still told why it has none.
+	if !s.promptRenderFailed || s.cachedSystemPrompt == "" {
+		s.cachedSystemPrompt = prompt
+	}
 	return warning
 }
 
@@ -199,10 +206,13 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 	data.AvailableAgents = s.availableAgentEntries()
 
 	// CLI appends: each file is read once, and that read supplies both the
-	// prompt text and its PROMPT_LOADED source. An unreadable file is skipped.
+	// prompt text and its PROMPT_LOADED source. An unreadable file is skipped,
+	// and its path is recorded so renderSystemPrompt can disclose the omission
+	// instead of leaving the operator's instructions silently missing.
 	for _, p := range s.cfg.SystemPromptAppend {
 		b, err := os.ReadFile(p)
 		if err != nil {
+			data.unreadableAppends = append(data.unreadableAppends, p)
 			continue
 		}
 		data.CLIAppends = append(data.CLIAppends, string(b))
@@ -285,6 +295,7 @@ func sandboxPromptBoundary(rp *sandbox.ResolvedPolicy) string {
 func (s *Session) renderSystemPrompt(env execenv.ExecutionEnvironment) (string, string) {
 	data, inputSources := s.buildPromptData(env)
 	result, err := executeSystemPromptTemplate(data)
+	s.promptRenderFailed = err != nil
 	if err != nil {
 		// The template parsed at package initialization, so an execution error
 		// is a bug. Report it and hand the model a minimal prompt that says so.
@@ -298,5 +309,16 @@ func (s *Session) renderSystemPrompt(env execenv.ExecutionEnvironment) (string, 
 	sources = append(sources, promptSource{Label: systemPromptTemplateLabel, Size: len(result)})
 	sources = append(sources, inputSources...)
 	s.promptSourceLog = sources
-	return result, ""
+	return result, unreadableAppendWarning(data.unreadableAppends)
+}
+
+// unreadableAppendWarning discloses SystemPromptAppend files that could not be
+// read and were therefore left out of the rendered prompt. The contract on
+// SystemPromptAppend says its contents are always applied, so a skip that is
+// not disclosed is a silent loss of operator-supplied instructions (CORE-08).
+func unreadableAppendWarning(paths []string) string {
+	if len(paths) == 0 {
+		return ""
+	}
+	return "system prompt append file(s) could not be read and were skipped: " + strings.Join(paths, ", ")
 }
