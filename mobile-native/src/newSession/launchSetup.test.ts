@@ -19,16 +19,25 @@ describe("the overrides the sheet owns", () => {
 			enabledPlugins: plugins,
 			sandbox: "read-only",
 			maxRounds: 100,
+			memoryEnabled: false,
 			env: { A: "1" },
 			verbose: true,
 		});
-		expect(owned).toEqual({ enabledPlugins: ["superpowers"], sandbox: "read-only", maxRounds: 100 });
+		expect(owned).toEqual({
+			enabledPlugins: ["superpowers"],
+			sandbox: "read-only",
+			maxRounds: 100,
+			memoryEnabled: false,
+		});
 		expect(owned.enabledPlugins).not.toBe(plugins);
 	});
 
 	it("replaces the owned fields and keeps everything else", () => {
 		expect(
-			withOwnedOverrides({ sandbox: "restricted", maxRounds: 5, env: { A: "1" } }, { sandbox: "read-only" }),
+			withOwnedOverrides(
+				{ sandbox: "restricted", maxRounds: 5, memoryEnabled: true, env: { A: "1" } },
+				{ sandbox: "read-only" },
+			),
 		).toEqual({
 			sandbox: "read-only",
 			env: { A: "1" },

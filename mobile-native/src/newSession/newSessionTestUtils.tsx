@@ -35,6 +35,7 @@ export function sheetContext(
 		hostLabel: (host) => (host === "local" ? "magic-kingdom" : host),
 		plugins: { status: "loading" },
 		launchDefaults: null,
+		launchSchema: null,
 		...over,
 	};
 }

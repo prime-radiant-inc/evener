@@ -34,6 +34,7 @@ import { PluginChecklist } from "./PluginChecklist";
 import { ProjectPicker } from "./ProjectPicker";
 import { useSheetPlugins } from "./sheetPlugins";
 import { useSheetLaunchDefaults } from "./useLaunchDefaults";
+import { useSheetLaunchSchema } from "./useLaunchSchema";
 import { seedSharedPrompt, shareSeedLanded } from "./shareSeed";
 import { currentShareIntake } from "../share/shareIntakeHost";
 
@@ -149,6 +150,7 @@ function NewSessionSheetBody({ route }: NativeStackScreenProps<Routes, "NewSessi
 	const hostLabel = useCallback((host: string) => (host === LOCAL_HOST ? hubName : host), [hubName]);
 	const plugins = useSheetPlugins(store, renderClient, ready);
 	const launchDefaults = useSheetLaunchDefaults(store, renderClient, ready);
+	const launchSchema = useSheetLaunchSchema(store, renderClient, ready);
 	const value = useMemo<NewSessionContextValue>(
 		() => ({
 			store,
@@ -162,8 +164,9 @@ function NewSessionSheetBody({ route }: NativeStackScreenProps<Routes, "NewSessi
 			hostLabel,
 			plugins,
 			launchDefaults,
+			launchSchema,
 		}),
-		[store, hubId, hubName, renderClient, ready, hosts, live, memory, hostLabel, plugins, launchDefaults],
+		[store, hubId, hubName, renderClient, ready, hosts, live, memory, hostLabel, plugins, launchDefaults, launchSchema],
 	);
 	return (
 		<NewSessionProvider value={value}>

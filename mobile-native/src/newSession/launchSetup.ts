@@ -13,6 +13,7 @@ export const OWNED_FIELDS = [
 	"contextStrategy",
 	"maxSubagentDepth",
 	"maxRounds",
+	"memoryEnabled",
 ] as const satisfies readonly (keyof LaunchConfigLayer)[];
 
 export type OwnedOverrides = Pick<LaunchConfigLayer, (typeof OWNED_FIELDS)[number]>;
@@ -41,6 +42,7 @@ export function ownedOverrides(layer: LaunchConfigLayer): OwnedOverrides {
 	if (layer.contextStrategy !== undefined) owned.contextStrategy = layer.contextStrategy;
 	if (layer.maxSubagentDepth !== undefined) owned.maxSubagentDepth = layer.maxSubagentDepth;
 	if (layer.maxRounds !== undefined) owned.maxRounds = layer.maxRounds;
+	if (layer.memoryEnabled !== undefined) owned.memoryEnabled = layer.memoryEnabled;
 	return owned;
 }
 

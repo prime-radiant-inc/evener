@@ -1,3 +1,4 @@
+import type { LaunchOptionSchemaResponse } from "@evener/appwire-client";
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import { createNewSessionStore } from "../newSession";
@@ -15,7 +16,40 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
 
-async function mount(defaults: Record<string, unknown> | null, launchOverrides: Record<string, unknown> = {}) {
+const memoryOption = {
+	field: "memory_enabled",
+	wireField: "memoryEnabled",
+	label: "Memory",
+	group: "Agent",
+	kind: "boolean",
+	perLaunch: true,
+};
+
+/** A hub build that knows the memory launch option. */
+const SCHEMA_WITH_MEMORY: LaunchOptionSchemaResponse = {
+	options: [
+		{
+			field: "context_strategy",
+			wireField: "contextStrategy",
+			label: "Context strategy",
+			group: "Limits",
+			kind: "select",
+			perLaunch: true,
+		},
+		memoryOption,
+	],
+};
+
+/** An older hub build: the same schema without the memory option. */
+const SCHEMA_WITHOUT_MEMORY: LaunchOptionSchemaResponse = {
+	options: [SCHEMA_WITH_MEMORY.options[0]],
+};
+
+async function mount(
+	defaults: Record<string, unknown> | null,
+	launchOverrides: Record<string, unknown> = {},
+	schema: LaunchOptionSchemaResponse | null = SCHEMA_WITH_MEMORY,
+) {
 	const calls: { method: string; params: unknown }[] = [];
 	const client = {
 		request: async (method: string, params: unknown) => {
@@ -28,7 +62,7 @@ async function mount(defaults: Record<string, unknown> | null, launchOverrides: 
 	const store = createNewSessionStore("hub-1");
 	store.setState({ source: "paradise-park", cwd: "/Users/jesse/git/evener", launchOverrides });
 	const tree = render(
-		<TestSheet value={sheetContext(store, { client: client as never })}>
+		<TestSheet value={sheetContext(store, { client: client as never, launchSchema: schema })}>
 			<MoreOptions />
 		</TestSheet>,
 	);
@@ -122,4 +156,48 @@ it("speaks of the hub's default without a value until the hub says it", async ()
 	expect(page.footer("maxRounds")).toEqual({ hubDefault: "unknown", text: expect.stringContaining("250") });
 	// A setting left to the hub still says Default follows the hub.
 	expect(page.footer("maxSubagentDepth")).toEqual({ hubDefault: "unknown", text: expect.stringMatching(/\S/) });
+});
+
+it("offers Memory when the hub's schema names it, on Default until set", async () => {
+	const page = await mount({ memoryEnabled: true });
+	expect(page.segments("Memory")).toEqual([
+		["Default", true],
+		["On", false],
+		["Off", false],
+	]);
+	expect(page.footer("memoryEnabled").hubDefault).toBe("known");
+});
+
+it("sets Memory off and on, and Default removes it", async () => {
+	const page = await mount({ memoryEnabled: true }, {});
+	page.choose("Memory", "Off");
+	expect(page.store.getState().launchOverrides.memoryEnabled).toBe(false);
+	page.choose("Memory", "On");
+	expect(page.store.getState().launchOverrides.memoryEnabled).toBe(true);
+	page.choose("Memory", "Default");
+	expect(page.store.getState().launchOverrides.memoryEnabled).toBeUndefined();
+});
+
+it("says the hub's memory default is unknown until the hub says it", async () => {
+	const page = await mount(null, {});
+	expect(page.footer("memoryEnabled")).toEqual({ hubDefault: "unknown", text: expect.stringMatching(/\S/) });
+});
+
+it("hides Memory against a hub whose schema lacks it, and leaves a remembered value alone", async () => {
+	const page = await mount({ memoryEnabled: true }, { memoryEnabled: false }, SCHEMA_WITHOUT_MEMORY);
+	const groups = page.tree.root.findAll(
+		(node) => node.props.accessibilityRole === "radiogroup" && node.props.accessibilityLabel === "Memory",
+	);
+	expect(groups).toHaveLength(0);
+	// A start remembered on a newer hub keeps its value; the older hub drops it
+	// at decode, so the row never lies about a toggle that does nothing.
+	expect(page.store.getState().launchOverrides.memoryEnabled).toBe(false);
+});
+
+it("hides Memory while the hub's schema has not answered", async () => {
+	const page = await mount({}, {}, null);
+	const groups = page.tree.root.findAll(
+		(node) => node.props.accessibilityRole === "radiogroup" && node.props.accessibilityLabel === "Memory",
+	);
+	expect(groups).toHaveLength(0);
 });
