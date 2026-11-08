@@ -517,8 +517,8 @@ func turnKindOf(kind schema.TurnSpanKind) uint32 {
 	}
 }
 
-// findTurn searches the summaries, newest first, for the new-format turn id.
-// Legacy turns never match: a new-format entry never joins one.
+// findTurn searches the summaries, newest first, for the turn id. Persisted
+// identity and legacy ids share one address space for transcript reads.
 func (b *builder) findTurn(id string) (uint64, bool, error) {
 	return b.x.findTurn(context.Background(), id)
 }
@@ -536,7 +536,7 @@ func (x *Index) findTurn(ctx context.Context, id string) (uint64, bool, error) {
 		}
 		for slot := end; slot > start; slot-- {
 			record := decodeTurn(buf[(slot-1-start)*turnRecordSize:])
-			if record.Kind == turnKindLegacy || int(record.ID.Len) != len(id) {
+			if int(record.ID.Len) != len(id) {
 				continue
 			}
 			name, err := x.strings.get(record.ID)
