@@ -818,7 +818,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		// An answer-continuation read is a verdict-only query: it must never
 		// attach a relay, because SubscribeThread reissues the read with a
 		// subscription the query's own validation forbids.
-		if err := relays.startRelay(ctx, source, params, resp.Thread); err != nil {
+		if err := relays.startRelay(ctx, source, sourceParams, resp.Thread); err != nil {
 			return appwire.ThreadReadResponse{}, err
 		}
 	}

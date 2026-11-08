@@ -385,6 +385,64 @@ func TestHubRPCThreadReadBridgeSnapshotPrepareFailureIsRetryable(t *testing.T) {
 	}
 }
 
+// A first live-only read of a remote session starts the controller relay with
+// sanitized params. An older remote hub strictly decodes ThreadReadParams and
+// rejects the hub-internal liveOnly field, so forwarding the original params
+// through startRelay would fail the read after its initial live read succeeded.
+func TestHubRPCThreadReadLiveOnlyRemoteSubscriptionSanitizesParams(t *testing.T) {
+	const sessionID = "02wMz5Txv9yYdSRJat13MZ"
+	var subscribeRequests, liveOnlyRejected atomic.Int32
+	olderPeer := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	olderPeer.Router().Handle(appwire.MethodThreadRead, func(_ context.Context, raw json.RawMessage) (any, error) {
+		var fields map[string]json.RawMessage
+		if len(raw) > 0 {
+			if err := json.Unmarshal(raw, &fields); err != nil {
+				return nil, appwire.InvalidParams(err.Error())
+			}
+		}
+		if _, ok := fields["liveOnly"]; ok {
+			liveOnlyRejected.Add(1)
+			return nil, appwire.InvalidParams(`json: unknown field "liveOnly"`)
+		}
+		var params appwire.ThreadReadParams
+		if len(raw) > 0 {
+			if err := json.Unmarshal(raw, &params); err != nil {
+				return nil, appwire.InvalidParams(err.Error())
+			}
+		}
+		if params.Subscribe {
+			subscribeRequests.Add(1)
+		}
+		return appwire.ThreadReadResponse{Thread: liveRetryingThread(sessionID), BootGeneration: "7"}, nil
+	})
+	hubB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		olderPeer.ServeWebSocket(w, r.WithContext(withHostRoutingOrigin(r.Context(), hostRoutingOriginBridge)))
+	}))
+	t.Cleanup(hubB.Close)
+	remote := dialHubRPCInitialized(t, hubB)
+
+	sourcesA := appsource.NewRegistry()
+	sourcesA.Add(appsource.NewRemoteHubSource("host-b", nil, func(context.Context, string) (*appwire.Client, error) {
+		return remote, nil
+	}))
+	cfgA := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	serverA := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	operationsA := &sessionOperations{cfg: cfgA, sources: sourcesA, relays: newHubRelay(serverA, cfgA, sourcesA), server: serverA}
+	_, err := operationsA.read(t.Context(), appwire.ThreadReadParams{
+		Ref: "host-b:" + sessionID, IncludeTurns: true,
+		ItemLimit: appwire.TranscriptItemPageLimit, LiveOnly: true,
+	}, true)
+	if err != nil {
+		t.Fatalf("first live-only remote read: %v", err)
+	}
+	if got := liveOnlyRejected.Load(); got != 0 {
+		t.Fatalf("subscription requests forwarded liveOnly to the older peer %d times", got)
+	}
+	if got := subscribeRequests.Load(); got == 0 {
+		t.Fatal("the first live-only remote read did not start the controller relay")
+	}
+}
+
 func TestHubRPCThreadReadRoutesReachableErroredDaemon(t *testing.T) {
 	const sessionID = "02wMz5Txv9yYdSRJat13MZ"
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
