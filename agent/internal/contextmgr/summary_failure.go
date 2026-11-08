@@ -74,13 +74,21 @@ func summaryFailure(err error, route summarizationRoute, role string) *summaryFa
 	if resolution, ok := errors.AsType[*cheapmodel.ResolutionError](err); ok {
 		route = summarizationRoute{provider: resolution.Terminal.Provider, model: resolution.Terminal.Model}
 		failure.detail.Terminal = summaryAttempt(route, role, resolution.Terminal.Err)
-		for _, previous := range resolution.Previous[:min(len(resolution.Previous), 2)] {
-			failure.detail.Previous = append(failure.detail.Previous, summaryAttempt(summarizationRoute{provider: previous.Provider, model: previous.Model}, "cheap", previous.Err))
-		}
+		appendPreviousAttempts(failure, resolution.Previous)
 	} else {
 		failure.detail.Terminal = summaryAttempt(route, role, err)
 	}
 	return failure
+}
+
+// appendPreviousAttempts adds bounded resolution provenance as cheap-route
+// evidence, at most two entries. AttemptFailure.Err can contain private
+// provider text, so summaryAttempt extracts only safe metadata from it.
+func appendPreviousAttempts(failure *summaryFailureError, previous []cheapmodel.AttemptFailure) {
+	for _, attempt := range previous[:min(len(previous), 2)] {
+		failure.detail.Previous = append(failure.detail.Previous, summaryAttempt(
+			summarizationRoute{provider: attempt.Provider, model: attempt.Model}, "cheap", attempt.Err))
+	}
 }
 
 // summaryFailureSignature identifies a summary failure by its safe diagnostic
