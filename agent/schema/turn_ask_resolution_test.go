@@ -30,16 +30,13 @@ func TestTurnAskResolutionLegacyAndCapturedEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	var evidence struct {
-		Calls []struct {
-			TurnID string `json:"turnId"`
-			CallID string `json:"callId"`
-		} `json:"calls"`
-		LegacyCount int `json:"legacy_count"`
+		Calls       []map[string]string `json:"calls"`
+		LegacyCount int                 `json:"legacy_count"`
 	}
 	if err := json.Unmarshal(raw["ask_resolution"], &evidence); err != nil {
 		t.Fatal(err)
 	}
-	if len(evidence.Calls) != 1 || evidence.Calls[0].TurnID != "ask-turn" || evidence.Calls[0].CallID != "ask-call" || evidence.LegacyCount != 2 {
+	if len(evidence.Calls) != 1 || evidence.Calls[0]["turnId"] != "ask-turn" || evidence.Calls[0]["callId"] != "ask-call" || evidence.LegacyCount != 2 {
 		t.Fatalf("serialized evidence=%s", raw["ask_resolution"])
 	}
 }

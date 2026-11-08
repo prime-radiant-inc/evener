@@ -51,14 +51,21 @@ func TestHubRosterQuestionListUsesCompositeCountAndCapability(t *testing.T) {
 		t.Fatal(err)
 	}
 	frame := rosterTestEvents(t, jm, id)[0].Frame
-	var got []struct {
-		AskPending      bool                     `json:"askPending"`
-		PendingQuestion *appwire.PendingQuestion `json:"pendingQuestion"`
-		TruncatedList   bool                     `json:"truncatedList"`
-		ListReason      string                   `json:"listReason"`
-	}
-	if err := json.Unmarshal([]byte(rosterFrameField(frame, "roster_events: ")), &got); err != nil {
+	var rawRows []map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(rosterFrameField(frame, "roster_events: ")), &rawRows); err != nil {
 		t.Fatal(err)
+	}
+	got := make([]struct {
+		AskPending      bool
+		PendingQuestion *appwire.PendingQuestion
+		TruncatedList   bool
+		ListReason      string
+	}, len(rawRows))
+	for i, fields := range rawRows {
+		got[i].AskPending = rosterJSONFieldForTest[bool](t, fields, "askPending")
+		got[i].PendingQuestion = rosterJSONFieldForTest[*appwire.PendingQuestion](t, fields, "pendingQuestion")
+		got[i].TruncatedList = rosterJSONFieldForTest[bool](t, fields, "truncatedList")
+		got[i].ListReason = rosterJSONFieldForTest[string](t, fields, "listReason")
 	}
 	if len(got) != 3 || got[0].PendingQuestion == nil || got[0].PendingQuestion.Count != 30 || got[0].TruncatedList || got[0].ListReason != "" || !got[1].TruncatedList || got[1].ListReason != "unavailable" || !got[2].AskPending || got[2].PendingQuestion != nil {
 		t.Fatalf("per-lane list facts=%+v", got)
@@ -67,15 +74,11 @@ func TestHubRosterQuestionListUsesCompositeCountAndCapability(t *testing.T) {
 
 func TestHubRosterLegacyCallListDeclaresUnavailableRemainder(t *testing.T) {
 	t.Parallel()
-	legacy := struct {
-		Version    int                      `json:"version"`
-		InstanceID string                   `json:"instanceId"`
-		Revision   uint64                   `json:"revision"`
-		Calls      []appwire.PendingAskCall `json:"calls"`
-	}{Version: 1, InstanceID: "instance-legacy", Revision: 3}
+	var calls []appwire.PendingAskCall
 	for i := range appwire.MaxPendingAskComposites + 1 {
-		legacy.Calls = append(legacy.Calls, appwire.PendingAskCall{TurnID: "turn-legacy", CallID: "call-" + strconv.Itoa(i)})
+		calls = append(calls, appwire.PendingAskCall{TurnID: "turn-legacy", CallID: "call-" + strconv.Itoa(i)})
 	}
+	legacy := map[string]any{"version": 1, "instanceId": "instance-legacy", "revision": uint64(3), "calls": calls}
 	raw, err := json.Marshal(legacy)
 	if err != nil {
 		t.Fatal(err)
@@ -101,22 +104,23 @@ func TestHubRosterLegacyCallListDeclaresUnavailableRemainder(t *testing.T) {
 	if len(sends) != 1 {
 		t.Fatalf("roster sends=%d, want 1", len(sends))
 	}
-	var rows []struct {
-		appwire.AttentionEntry
-		TruncatedList bool   `json:"truncatedList"`
-		ListReason    string `json:"listReason"`
-	}
-	if err := json.Unmarshal([]byte(rosterFrameField(sends[0].Frame, "roster_events: ")), &rows); err != nil {
+	rows := rosterFrameEntries(t, sends[0].Frame)
+	var rawRows []map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(rosterFrameField(sends[0].Frame, "roster_events: ")), &rawRows); err != nil {
 		t.Fatal(err)
 	}
 	if len(rows) != 1 {
 		t.Fatalf("roster rows=%d, want 1", len(rows))
 	}
-	got := rows[0]
-	if !reflect.DeepEqual(got.CompositeList, legacy.Calls[:appwire.MaxPendingAskComposites]) || got.CompositeTotal != len(legacy.Calls) || !got.TruncatedList || got.ListReason != "unavailable" || got.AskPageable {
+	got := struct {
+		appwire.AttentionEntry
+		TruncatedList bool
+		ListReason    string
+	}{rows[0].AttentionEntry, rosterJSONFieldForTest[bool](t, rawRows[0], "truncatedList"), rosterJSONFieldForTest[string](t, rawRows[0], "listReason")}
+	if !reflect.DeepEqual(got.CompositeList, calls[:appwire.MaxPendingAskComposites]) || got.CompositeTotal != len(calls) || !got.TruncatedList || got.ListReason != "unavailable" || got.AskPageable {
 		t.Errorf("legacy remainder lost: total=%d calls=%d truncated=%v reason=%q pageable=%v", got.CompositeTotal, len(got.CompositeList), got.TruncatedList, got.ListReason, got.AskPageable)
 	}
-	if len(entry.CompositeList) != len(legacy.Calls) || entry.CompositeTotal != 0 {
+	if len(entry.CompositeList) != len(calls) || entry.CompositeTotal != 0 {
 		t.Errorf("frame changed its input: %+v", entry)
 	}
 }

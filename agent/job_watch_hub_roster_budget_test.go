@@ -14,6 +14,17 @@ import (
 const testRosterSegmentRunes = 57344
 const testRosterDroppedRefs = 64
 
+func rosterJSONFieldForTest[T any](t *testing.T, fields map[string]json.RawMessage, key string) T {
+	t.Helper()
+	var value T
+	if raw, ok := fields[key]; ok {
+		if err := json.Unmarshal(raw, &value); err != nil {
+			t.Fatalf("roster field %s: %v", key, err)
+		}
+	}
+	return value
+}
+
 func rosterSegmentForTest(frame string) string {
 	var out strings.Builder
 	for line := range strings.SplitSeq(frame, "\n") {
@@ -38,13 +49,18 @@ func rosterDropForTest(t *testing.T, frame string) (int, []string) {
 	if len(refs) > testRosterDroppedRefs || len(refs) > count {
 		t.Fatalf("dropped=%d refs=%d", count, len(refs))
 	}
-	var recovery struct {
-		PerRef     []string `json:"perRef"`
-		SmallFleet string   `json:"smallFleet"`
-		Unlisted   int      `json:"unlisted"`
-	}
-	if err := json.Unmarshal([]byte(rosterFrameField(frame, "roster_recovery: ")), &recovery); err != nil {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(rosterFrameField(frame, "roster_recovery: ")), &fields); err != nil {
 		t.Fatal(err)
+	}
+	recovery := struct {
+		PerRef     []string
+		SmallFleet string
+		Unlisted   int
+	}{
+		PerRef:     rosterJSONFieldForTest[[]string](t, fields, "perRef"),
+		SmallFleet: rosterJSONFieldForTest[string](t, fields, "smallFleet"),
+		Unlisted:   rosterJSONFieldForTest[int](t, fields, "unlisted"),
 	}
 	if len(recovery.PerRef) != 2 || recovery.PerRef[0] != "job_status" || recovery.PerRef[1] != "read_transcript" || recovery.SmallFleet != "job_list" || recovery.Unlisted != count-len(refs) {
 		t.Fatalf("recovery ladder=%+v", recovery)
@@ -161,17 +177,27 @@ func TestHubRosterSegmentMeasuresCompositeEncodings(t *testing.T) {
 				if n := utf8.RuneCountInString(body); n > 4096 {
 					t.Fatalf("body=%d runes", n)
 				}
-				var encodedRows []struct {
-					CompositeList    []appwire.PendingAskCall `json:"compositeList"`
-					CompositeTotal   int                      `json:"compositeTotal"`
-					TruncatedList    bool                     `json:"truncatedList"`
-					ListReason       string                   `json:"listReason"`
-					CalllessCount    int                      `json:"calllessCount"`
-					RosterInstanceID string                   `json:"rosterInstanceId"`
-					ID               string                   `json:"threadId"`
-				}
-				if err := json.Unmarshal([]byte(rosterFrameField(frame, "roster_events: ")), &encodedRows); err != nil {
+				var rawRows []map[string]json.RawMessage
+				if err := json.Unmarshal([]byte(rosterFrameField(frame, "roster_events: ")), &rawRows); err != nil {
 					t.Fatal(err)
+				}
+				encodedRows := make([]struct {
+					CompositeList    []appwire.PendingAskCall
+					CompositeTotal   int
+					TruncatedList    bool
+					ListReason       string
+					CalllessCount    int
+					RosterInstanceID string
+					ID               string
+				}, len(rawRows))
+				for i, fields := range rawRows {
+					encodedRows[i].CompositeList = rosterJSONFieldForTest[[]appwire.PendingAskCall](t, fields, "compositeList")
+					encodedRows[i].CompositeTotal = rosterJSONFieldForTest[int](t, fields, "compositeTotal")
+					encodedRows[i].TruncatedList = rosterJSONFieldForTest[bool](t, fields, "truncatedList")
+					encodedRows[i].ListReason = rosterJSONFieldForTest[string](t, fields, "listReason")
+					encodedRows[i].CalllessCount = rosterJSONFieldForTest[int](t, fields, "calllessCount")
+					encodedRows[i].RosterInstanceID = rosterJSONFieldForTest[string](t, fields, "rosterInstanceId")
+					encodedRows[i].ID = rosterJSONFieldForTest[string](t, fields, "threadId")
 				}
 				if len(encodedRows) == 0 || len(encodedRows[0].CompositeList) != 10 || encodedRows[0].CompositeTotal != 11 || !encodedRows[0].TruncatedList || encodedRows[0].ListReason != "pageable" || encodedRows[0].CalllessCount != 2 || encodedRows[0].RosterInstanceID != "instance-token" || encodedRows[0].ID != "thread-token" {
 					t.Fatalf("asking payload=%+v", encodedRows)
