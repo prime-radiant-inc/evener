@@ -534,8 +534,8 @@ process. `cmd/evener-hub` takes 205-234s per iteration under `-race` (the
 #1326 report), so `-count=2` is a 7-8 minute run before any host load; when
 the addition or the load pushes it past the default ten minutes it dies with
 a goroutine dump and no assertion failure, which reads as a hang (#1326)
-while the current test is healthy. Pass `-timeout` whenever you ask for
-repeats.
+while the package was still executing tests. Pass `-timeout` whenever you ask
+for repeats.
 
 CI runs the web check as two lanes on separate runners, web-unit (`make
 test-web`) and web-browser (`make test-web-browser`), and the required `web` job
