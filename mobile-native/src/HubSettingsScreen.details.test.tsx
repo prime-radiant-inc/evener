@@ -122,3 +122,24 @@ it.each([
 		expect(machineText).toHaveLength(1);
 	}
 });
+
+it("supplies the zero defaults for a past index that omits its counters", async () => {
+	const hub = new FakeClient("ready");
+	hub.on("evener/settings/overview", () => ({
+		hub: { daemonIdleTimeoutMillis: 3600000, pastIndex: { path: "/fixture/past.db" } },
+	}));
+	harness.connection = screenConnection(hub, "ready");
+	const tree = render(<HubSettingsScreen {...props} />);
+	await act(async () => {});
+	const opener = pressable(tree, "Runtime and storage");
+	if (!opener) throw new Error("Missing Runtime and storage section control");
+	act(() => opener.props.onPress());
+
+	for (const label of ["Indexed sessions, 0", "Past results per page, 0"]) {
+		const row = tree.root.find(
+			(node) =>
+				String(node.type) === "View" && node.props.accessible === true && node.props.accessibilityLabel === label,
+		);
+		expect(row).toBeTruthy();
+	}
+});
