@@ -6837,11 +6837,14 @@ test("a focused draft stays visible and composition suppression clears without l
   await waitFor(() => expect(screen.getByTestId("next-needs-you")).toBeTruthy());
 
   // An in-progress IME composition suppresses it, and composition end returns
-  // it automatically.
+  // it automatically. The slot itself unmounts, not just its content: an
+  // empty slot would pad the stack's measured height and its end clearance.
   fireEvent.compositionStart(editor);
   await waitFor(() => expect(screen.queryByTestId("next-needs-you")).toBeNull());
+  expect(screen.queryByTestId("flow-overlay-attention")).toBeNull();
   fireEvent.compositionEnd(editor);
   await waitFor(() => expect(screen.getByTestId("next-needs-you")).toBeTruthy());
+  expect(screen.getByTestId("flow-overlay-attention").contains(screen.getByTestId("next-needs-you"))).toBe(true);
   expect(readDraft("ref_a")).toBe("keep this draft");
 });
 
@@ -6867,9 +6870,15 @@ test("the measured attention stack becomes transcript end clearance", async ({ o
   workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
   window.history.replaceState({}, "", "/s/ref_a");
 
-  renderAttentionSession(fake, pane);
+  const view = renderAttentionSession(fake, pane);
   await screen.findByRole("textbox", { name: "Message" });
   await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(screen.getByTestId("next-needs-you")).toBeTruthy());
+  // Both stack slots must carry real content for the ordering claim below to
+  // mean anything, and the pill slot mounts only while the pill would render:
+  // put the reader away from the bottom so the pill offers its jump to latest.
+  stubScrolledAway(scrollRootOf(view.container));
+  fireEvent.scroll(scrollRootOf(view.container));
   await waitFor(() => expect(screen.getByTestId("transcript-end-clearance")).toBeTruthy());
 
   // The stack's committed measurement reaches the synthetic trailing row
@@ -6880,6 +6889,83 @@ test("the measured attention stack becomes transcript end clearance", async ({ o
   const pill = screen.getByTestId("flow-overlay-pill");
   const attention = screen.getByTestId("flow-overlay-attention");
   expect(pill.compareDocumentPosition(attention) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  view.unmount();
+});
+
+// Each stack slot mounts only while its control would actually render, so
+// the stack and its reserved end clearance disappear while nothing floats
+// instead of pinning an empty band over the content pane's bottom.
+test("nothing floating: the stack and its slots stay unmounted", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => attentionRead("ref_a"));
+  const pane = attentionSession("empty-stack-pane");
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  window.history.replaceState({}, "", "/s/ref_a");
+
+  renderAttentionSession(fake, pane);
+  await screen.findByTestId("composer-slot");
+  await flushPendingTurnsProjectionForTests();
+
+  // At rest the reader sits at the bottom with nothing unseen, so the pill
+  // renders nothing by its own gate; with no needs-you queue and no manifest
+  // the Next control has nothing to offer either.
+  expect(screen.queryByTestId("new-content-pill")).toBeNull();
+  expect(screen.queryByTestId("next-needs-you")).toBeNull();
+  expect(screen.queryByTestId("flow-overlay-stack")).toBeNull();
+  expect(screen.queryByTestId("flow-overlay-pill")).toBeNull();
+  expect(screen.queryByTestId("flow-overlay-attention")).toBeNull();
+  expect(screen.queryByTestId("transcript-end-clearance")).toBeNull();
+});
+
+test("a visible Next control mounts its slot without an empty pill slot above it", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => attentionRead("ref_a"));
+  installNeedsYouRows(["ref_a", "ref_b"]);
+  const pane = attentionSession("next-only-pane");
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  window.history.replaceState({}, "", "/s/ref_a");
+
+  renderAttentionSession(fake, pane);
+  await screen.findByTestId("composer-slot");
+  await flushPendingTurnsProjectionForTests();
+
+  await waitFor(() => expect(screen.getByTestId("next-needs-you")).toBeTruthy());
+  const stack = screen.getByTestId("flow-overlay-stack");
+  const attention = screen.getByTestId("flow-overlay-attention");
+  expect(stack.contains(attention)).toBe(true);
+  // The reader is at the bottom with nothing new, so the pill renders
+  // nothing: its slot stays unmounted rather than padding the stack's
+  // measured height with an empty row and the flex gap it carries.
+  expect(screen.queryByTestId("new-content-pill")).toBeNull();
+  expect(within(stack).queryByTestId("flow-overlay-pill")).toBeNull();
+});
+
+test("a visible pill mounts its slot without an empty attention slot below it", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => attentionRead("ref_a"));
+  const pane = attentionSession("pill-only-pane");
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  window.history.replaceState({}, "", "/s/ref_a");
+
+  const view = renderAttentionSession(fake, pane);
+  await screen.findByTestId("composer-slot");
+  await flushPendingTurnsProjectionForTests();
+
+  const root = scrollRootOf(view.container);
+  stubScrolledAway(root);
+  fireEvent.scroll(root);
+  await waitFor(() => expect(screen.getByTestId("new-content-pill")).toBeTruthy());
+
+  const stack = screen.getByTestId("flow-overlay-stack");
+  const pillSlot = screen.getByTestId("flow-overlay-pill");
+  expect(stack.contains(pillSlot)).toBe(true);
+  expect(pillSlot.contains(screen.getByTestId("new-content-pill"))).toBe(true);
+  // No needs-you queue and no manifest: the Next control has nothing to
+  // offer, so its slot stays unmounted rather than padding the stack's
+  // measured height with an empty row and the flex gap it carries.
+  expect(screen.queryByTestId("next-needs-you")).toBeNull();
+  expect(within(stack).queryByTestId("flow-overlay-attention")).toBeNull();
+  view.unmount();
 });
 
 test("the measured clearance does not toggle New Content or move an end-following reader", async ({

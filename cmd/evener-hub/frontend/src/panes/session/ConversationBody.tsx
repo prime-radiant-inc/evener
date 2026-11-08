@@ -27,12 +27,12 @@ import { requestQuoteInsert } from "./composer/quoteInsert";
 import type { ComposerSourceState } from "./composer/sourceState";
 import { NOW_TICK_MS, SessionNowContext, useNowTick } from "./liveness";
 import { useMarkSessionSeenOnOpen } from "./markSeen";
-import { NextNeedsYou } from "./NextNeedsYou";
+import { NextNeedsYou, useNextNeedsYouMount } from "./NextNeedsYou";
 import { PendingChips } from "./pending/PendingChips";
 import styles from "./session.module.css";
 import { LivenessLine } from "./transcript/flow/LivenessLine";
 import { LoadOlderRow } from "./transcript/flow/LoadOlderRow";
-import { NewContentPill } from "./transcript/flow/NewContentPill";
+import { NewContentPill, newContentPillVisible } from "./transcript/flow/NewContentPill";
 import { useSeenDivider } from "./transcript/flow/useSeenDivider";
 import { useTranscriptScroll } from "./transcript/flow/useTranscriptScroll";
 import { useTranscriptScrollKeys } from "./transcript/flow/useTranscriptScrollKeys";
@@ -195,10 +195,10 @@ export function ConversationBody({
   }, [attentionOwner]);
   const attentionHidden = editing || askPending || approvalPending;
   // Production panes borrow the shell's shared owner; a bare conversation
-  // fixture outside AppShell has no floating control.
-  const attentionOverlay = attentionOwner ? (
-    <NextNeedsYou sessionRef={ref} viewId={seat.readView?.id ?? seat.viewFallbackId} hidden={attentionHidden} />
-  ) : undefined;
+  // fixture outside AppShell has no floating control. The mount flag is one
+  // subscribed boolean (see useNextNeedsYouMount), so queue churn re-renders
+  // the small control, not this whole pane.
+  const nextNeedsYouMounts = useNextNeedsYouMount(attentionHidden);
   const pendingEntries = usePendingTurnEntries(ref);
   const queueStripIds = useQueueStripMutationIds(ref);
   const heldSteers = useMemo(() => heldSteerEntries(pendingEntries, queueStripIds), [pendingEntries, queueStripIds]);
@@ -282,6 +282,20 @@ export function ConversationBody({
     onPositioningCommand: seat.readView?.supersedePositioning,
   });
 
+  // Each floating slot mounts only while its control would actually render
+  // (the pill through its shared gate, Next through its shared predicate), so
+  // an empty control never pads the stack; with both hidden the stack and
+  // the transcript-end clearance it reserves disappear entirely.
+  const pillWouldRender = newContentPillVisible({
+    visible: flow.pillVisible,
+    count: flow.pillCount,
+    error: flow.pillError,
+  });
+  const attentionOverlay =
+    attentionOwner && nextNeedsYouMounts ? (
+      <NextNeedsYou sessionRef={ref} viewId={seat.readView?.id ?? seat.viewFallbackId} hidden={attentionHidden} />
+    ) : undefined;
+
   const showColdStartSkeleton = useColdStartSkeleton(ref, model);
   const seenDividerTurnId = useSeenDivider(ref, model);
 
@@ -361,14 +375,16 @@ export function ConversationBody({
           )
         }
         liveOverlay={
-          <NewContentPill
-            count={flow.pillCount}
-            visible={flow.pillVisible}
-            needsYou={flow.pillNeedsYou}
-            error={flow.pillError}
-            pillArrowDirection={flow.pillArrowDirection}
-            onClick={flow.jumpToBottom}
-          />
+          pillWouldRender ? (
+            <NewContentPill
+              count={flow.pillCount}
+              visible={flow.pillVisible}
+              needsYou={flow.pillNeedsYou}
+              error={flow.pillError}
+              pillArrowDirection={flow.pillArrowDirection}
+              onClick={flow.jumpToBottom}
+            />
+          ) : undefined
         }
         attentionOverlay={attentionOverlay}
         onOverlayHeightChange={handleOverlayHeightChange}

@@ -292,6 +292,13 @@ committed height becomes end clearance inside the virtual list, so the last
 transcript row can scroll clear of both controls and stays readable. A dormant or
 empty transcript floats the same control above the composer in its own dock.
 
+Each stack slot mounts only while its control would actually render — the New
+Content pill exactly when its own gate would show it, Next only while its
+visibility predicate holds — and the stack, with the end clearance it reserves,
+disappears entirely while neither would. Nothing floats over the transcript's
+bottom edge, and no clearance band pads its end, until there is something to
+float.
+
 The control hides while an IME composition is in progress, while a question or
 approval is pending in the focused conversation, or while the command palette or
 another blocking modal owns interaction. It returns when that state ends. Editor
