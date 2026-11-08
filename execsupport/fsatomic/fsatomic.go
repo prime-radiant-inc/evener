@@ -28,6 +28,7 @@ type File interface {
 	io.Closer
 	Name() string
 	Sync() error
+	Chmod(mode os.FileMode) error
 }
 
 // FS is the filesystem surface a durable replacement needs. WriteFS and
@@ -37,7 +38,6 @@ type FS interface {
 	OpenFile(name string, flag int, perm os.FileMode) (File, error)
 	Open(name string) (File, error)
 	Rename(oldname, newname string) error
-	Chmod(name string, mode os.FileMode) error
 	Remove(name string) error
 }
 
@@ -50,9 +50,10 @@ type FS interface {
 //
 // The parent directory must exist. Write makes the file durable in that
 // directory; it does not sync the entries of directories the caller had to
-// create to get there. A failed write removes its
-// temp file; a crash between the create and the rename leaves a stray "<name>.tmp-*" file behind, which
-// is the cost of never reusing a name another process could plant.
+// create to get there. A failed write removes its temp file; a crash between
+// the create and the rename leaves one stray "<name>.tmp-*" file behind per
+// crash, which nothing sweeps — the cost of never reusing a name another
+// process could plant.
 func Write(path string, data []byte, perm os.FileMode) error {
 	return WriteWithDirSync(path, data, perm, SyncDir)
 }
@@ -103,7 +104,7 @@ func write(fsys FS, path string, data []byte, perm os.FileMode, durable bool, sy
 		_ = temp.Close()
 		return fmt.Errorf("write temp file for %s: %w", path, io.ErrShortWrite)
 	}
-	if err := fsys.Chmod(tempPath, perm); err != nil {
+	if err := temp.Chmod(perm); err != nil {
 		_ = temp.Close()
 		return fmt.Errorf("chmod temp file for %s: %w", path, err)
 	}
@@ -221,7 +222,5 @@ func (osFS) Open(name string) (File, error) {
 }
 
 func (osFS) Rename(oldname, newname string) error { return os.Rename(oldname, newname) }
-
-func (osFS) Chmod(name string, mode os.FileMode) error { return os.Chmod(name, mode) }
 
 func (osFS) Remove(name string) error { return os.Remove(name) }

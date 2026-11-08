@@ -4,71 +4,17 @@ import (
 	"errors"
 	"os"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/spf13/afero"
 
+	"primeradiant.com/evener/agent/internal/fsfake"
 	"primeradiant.com/evener/execsupport/fsatomic"
 )
 
-type recordingFS struct {
-	afero.Fs
-	mu  sync.Mutex
-	ops []string
-	// failOpen, when set, fails Open for a path it returns true for.
-	failOpen func(string) bool
-}
-
-func (r *recordingFS) record(op string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.ops = append(r.ops, op)
-}
-
-func (r *recordingFS) recorded() []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return append([]string(nil), r.ops...)
-}
-
-func (r *recordingFS) Open(name string) (afero.File, error) {
-	if r.failOpen != nil && r.failOpen(name) {
-		return nil, errors.New("injected directory open failure")
-	}
-	f, err := r.Fs.Open(name)
-	if err != nil {
-		return nil, err
-	}
-	return &recordingFile{File: f, rec: r}, nil
-}
-
-func (r *recordingFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
-	f, err := r.Fs.OpenFile(name, flag, perm)
-	if err != nil {
-		return nil, err
-	}
-	return &recordingFile{File: f, rec: r}, nil
-}
-
-func (r *recordingFS) Rename(oldname, newname string) error {
-	r.record("rename")
-	return r.Fs.Rename(oldname, newname)
-}
-
-type recordingFile struct {
-	afero.File
-	rec *recordingFS
-}
-
-func (f *recordingFile) Sync() error {
-	f.rec.record("sync:" + f.Name())
-	return f.File.Sync()
-}
-
 func TestReplaceSyncsFileThenRenamesThenSyncsDirectory(t *testing.T) {
 	t.Parallel()
-	fs := &recordingFS{Fs: afero.NewMemMapFs()}
+	fs := fsfake.NewSyncFS(afero.NewMemMapFs())
 	path := "/state/tasks/session.json"
 	if err := fs.MkdirAll("/state/tasks", 0o755); err != nil {
 		t.Fatal(err)
@@ -76,13 +22,13 @@ func TestReplaceSyncsFileThenRenamesThenSyncsDirectory(t *testing.T) {
 	if err := Replace(fs, path, []byte("new"), 0o644); err != nil {
 		t.Fatalf("Replace: %v", err)
 	}
-	ops := fs.recorded()
+	ops := fs.Ops()
 	syncFile, rename, syncDir := -1, -1, -1
 	for i, op := range ops {
 		switch {
 		case strings.HasPrefix(op, "sync:/state/tasks/session.json.tmp-"):
 			syncFile = i
-		case op == "rename":
+		case strings.HasPrefix(op, "rename:"):
 			rename = i
 		case op == "sync:/state/tasks":
 			syncDir = i
@@ -98,10 +44,8 @@ func TestReplaceSyncsFileThenRenamesThenSyncsDirectory(t *testing.T) {
 
 func TestReplaceDirectorySyncFailureReportsPublished(t *testing.T) {
 	t.Parallel()
-	fs := &recordingFS{
-		Fs:       afero.NewMemMapFs(),
-		failOpen: func(name string) bool { return name == "/state/tasks" },
-	}
+	fs := fsfake.NewSyncFS(afero.NewMemMapFs())
+	fs.FailOpen = func(name string) bool { return name == "/state/tasks" }
 	path := "/state/tasks/session.json"
 	if err := fs.Fs.MkdirAll("/state/tasks", 0o755); err != nil {
 		t.Fatal(err)

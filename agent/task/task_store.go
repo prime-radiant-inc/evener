@@ -482,12 +482,9 @@ func (s *TaskStore) Append(items []TaskInput) ([]Task, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := s.saveTasks(staged.tasks); err != nil {
-		s.adoptPublishedLocked(staged, err)
+	if err := s.commitStagedLocked(staged); err != nil {
 		return added, fmt.Errorf("save: %w", err)
 	}
-	s.tasks = staged.tasks
-	s.nextID = staged.nextID
 	return cloneTasks(added), nil
 }
 
@@ -678,12 +675,9 @@ func (s *TaskStore) PopulateFromTemplates(templates []TaskTemplate, parentTasks 
 		staged.tasks[0].UpdatedAt = staged.stamp()
 	}
 
-	if err := s.saveTasks(staged.tasks); err != nil {
-		s.adoptPublishedLocked(staged, err)
+	if err := s.commitStagedLocked(staged); err != nil {
 		return err
 	}
-	s.tasks = staged.tasks
-	s.nextID = staged.nextID
 	return nil
 }
 
@@ -710,11 +704,9 @@ func (s *TaskStore) UpdateWithSnapshot(updates []TaskUpdate) (TaskUpdateSnapshot
 	if err != nil {
 		return TaskUpdateSnapshot{}, err
 	}
-	if err := s.saveTasks(staged.tasks); err != nil {
-		s.adoptPublishedLocked(staged, err)
+	if err := s.commitStagedLocked(staged); err != nil {
 		return TaskUpdateSnapshot{}, fmt.Errorf("save: %w", err)
 	}
-	s.tasks = staged.tasks
 	return TaskUpdateSnapshot{
 		Before:  before,
 		After:   cloneTasks(staged.tasks),
@@ -885,26 +877,28 @@ func (s *TaskStore) ApplyBatch(adds []TaskInput, updates []TaskUpdate) (TaskUpda
 	if err != nil {
 		return TaskUpdateSnapshot{}, err
 	}
-	if err := s.saveTasks(staged.tasks); err != nil {
-		s.adoptPublishedLocked(staged, err)
+	if err := s.commitStagedLocked(staged); err != nil {
 		return TaskUpdateSnapshot{}, fmt.Errorf("save: %w", err)
 	}
-	s.tasks = staged.tasks
-	s.nextID = staged.nextID
 	return TaskUpdateSnapshot{Before: before, After: cloneTasks(s.tasks), Settled: settled}, nil
 }
 
-// adoptPublishedLocked adopts a staged mutation whose file was published but
-// whose directory sync failed. That published file is what a later save would
-// load, so keeping the older in-memory snapshot would overwrite it. Callers
-// still receive the durability error; only the state a retry would build on is
-// kept consistent with the visible file.
-func (s *TaskStore) adoptPublishedLocked(staged *TaskStore, err error) {
-	if !errors.Is(err, fsatomic.ErrPublished) {
-		return
+// commitStagedLocked persists a staged mutation and adopts it. A directory-sync
+// failure after the rename still published the file, so the staged state is
+// adopted then too: keeping the older in-memory snapshot would let the next
+// save overwrite the visible file. Callers still receive that durability error.
+func (s *TaskStore) commitStagedLocked(staged *TaskStore) error {
+	if err := s.saveTasks(staged.tasks); err != nil {
+		if !errors.Is(err, fsatomic.ErrPublished) {
+			return err
+		}
+		s.tasks = staged.tasks
+		s.nextID = staged.nextID
+		return err
 	}
 	s.tasks = staged.tasks
 	s.nextID = staged.nextID
+	return nil
 }
 
 // validateUpdateIDsLocked enforces the task_list contract that updates in a

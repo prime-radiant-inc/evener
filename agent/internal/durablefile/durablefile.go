@@ -24,8 +24,8 @@ import (
 // directory; it does not sync the entries of directories the caller had to
 // create to get there, the same boundary fsatomic.Write documents. A failed
 // write removes its temp file; a crash between the create and the rename
-// leaves a stray "<name>.tmp-*" file behind, which is the cost of never
-// reusing a name another process could plant.
+// leaves one stray "<name>.tmp-*" file behind per crash, which nothing sweeps
+// — the cost of never reusing a name another process could plant.
 func Replace(fs afero.Fs, path string, data []byte, perm os.FileMode) error {
 	return fsatomic.WriteFS(aferoFS{fs: fs}, path, data, perm)
 }
@@ -48,7 +48,7 @@ func (a aferoFS) OpenFile(name string, flag int, perm os.FileMode) (fsatomic.Fil
 	if err != nil {
 		return nil, err
 	}
-	return f, nil
+	return aferoFile{File: f, fs: a.fs}, nil
 }
 
 func (a aferoFS) Open(name string) (fsatomic.File, error) {
@@ -56,11 +56,24 @@ func (a aferoFS) Open(name string) (fsatomic.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	return f, nil
+	return aferoFile{File: f, fs: a.fs}, nil
 }
 
 func (a aferoFS) Rename(oldname, newname string) error { return a.fs.Rename(oldname, newname) }
 
-func (a aferoFS) Chmod(name string, mode os.FileMode) error { return a.fs.Chmod(name, mode) }
-
 func (a aferoFS) Remove(name string) error { return a.fs.Remove(name) }
+
+// aferoFile keeps the descriptor-based chmod the OS path uses. afero.File has
+// no Chmod, so an OS-backed handle is asserted back to *os.File; a filesystem
+// with no descriptor fallback (the in-memory test filesystem) chmods by path.
+type aferoFile struct {
+	afero.File
+	fs afero.Fs
+}
+
+func (f aferoFile) Chmod(mode os.FileMode) error {
+	if osFile, ok := f.File.(*os.File); ok {
+		return osFile.Chmod(mode)
+	}
+	return f.fs.Chmod(f.Name(), mode)
+}
