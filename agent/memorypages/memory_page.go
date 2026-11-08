@@ -146,7 +146,7 @@ func ParsePage(rel string, raw []byte, modTime time.Time) Page {
 func firstMarkdownHeading(body string) string {
 	var fence mdfence.Tracker
 	for line := range strings.SplitSeq(body, "\n") {
-		if fence.Step(line) || fence.Inside() {
+		if fence.StepInBlock(line) {
 			continue
 		}
 		text := strings.TrimLeft(line, " ")

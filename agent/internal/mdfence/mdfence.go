@@ -45,6 +45,13 @@ type Tracker struct {
 // Inside reports whether the lines stepped so far leave a block open.
 func (t *Tracker) Inside() bool { return t.length > 0 }
 
+// StepInBlock advances over line and reports whether the line belongs to a
+// block: its opening or closing delimiter, or content between them. It is the
+// per-line skip predicate for a scan that keeps only text outside blocks.
+func (t *Tracker) StepInBlock(line string) bool {
+	return t.Step(line) || t.Inside()
+}
+
 // Step advances over line and reports whether it opened or closed a block.
 func (t *Tracker) Step(line string) bool {
 	// A non-blank line indented less than the list item's content leaves the
@@ -80,14 +87,6 @@ func (t *Tracker) Step(line string) bool {
 	return false
 }
 
-// run returns the fence a line starts with, after up to three spaces of
-// indentation: its character, its length and the rest of the line. The length
-// is 0 when the line does not start with a fence (three or more backticks or
-// tildes).
-func run(line string) (char byte, n int, after string) {
-	return runAt(line, 0)
-}
-
 // runAt returns the fence a line starts with when it is indented by base
 // columns of list-container indentation and then by up to three more spaces:
 // its character, its length and the rest of the line. The length is 0 when the
@@ -97,7 +96,7 @@ func runAt(line string, base int) (char byte, n int, after string) {
 		return 0, 0, ""
 	}
 	line = line[base:]
-	indent := len(line) - len(strings.TrimLeft(line, " "))
+	indent := leadingSpaces(line)
 	if indent > 3 || indent == len(line) || (line[indent] != '`' && line[indent] != '~') {
 		return 0, 0, ""
 	}
@@ -121,7 +120,7 @@ func runAt(line string, base int) (char byte, n int, after string) {
 // the fence opens at, and the column the matching closing fence is read from.
 // Its fence is 0 when the line is not a fence on a list item.
 func runInList(line string) (char byte, n, container int) {
-	indent := len(line) - len(strings.TrimLeft(line, " "))
+	indent := leadingSpaces(line)
 	if indent > 3 || indent == len(line) {
 		return 0, 0, 0
 	}
@@ -134,7 +133,7 @@ func runInList(line string) (char byte, n, container int) {
 	if spaces < 1 || spaces > 4 {
 		return 0, 0, 0
 	}
-	char, n, _ = run(after[spaces:])
+	char, n, _ = runAt(after[spaces:], 0)
 	if n == 0 {
 		return 0, 0, 0
 	}
@@ -142,6 +141,12 @@ func runInList(line string) (char byte, n, container int) {
 	// it; the opening fence sits at its start. A closing fence may sit up to
 	// three columns further (runAt allows that), but not less.
 	return char, n, indent + marker + spaces
+}
+
+// leadingSpaces returns the spaces line starts with. Fence indentation is
+// spaces; a tab is content at this level, not indentation.
+func leadingSpaces(line string) int {
+	return len(line) - len(strings.TrimLeft(line, " "))
 }
 
 // listMarker returns the length in bytes of the list marker line starts with:

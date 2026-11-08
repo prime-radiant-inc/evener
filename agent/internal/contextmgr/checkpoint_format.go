@@ -357,8 +357,7 @@ func markdownSectionSpan(text, heading string) (start, body, end int, ok bool) {
 		content := strings.TrimSuffix(line, "\n")
 		switch {
 		// Fence lines and fenced content are never boundaries.
-		case fence.Step(content):
-		case fence.Inside():
+		case fence.StepInBlock(content):
 		case start < 0:
 			if line == heading+"\n" {
 				start, body = offset, offset+len(line)
@@ -381,7 +380,7 @@ func withoutFencedBlocks(text string) string {
 	var b strings.Builder
 	var fence mdfence.Tracker
 	for _, line := range strings.SplitAfter(text, "\n") {
-		if !fence.Step(strings.TrimSuffix(line, "\n")) && !fence.Inside() {
+		if !fence.StepInBlock(strings.TrimSuffix(line, "\n")) {
 			b.WriteString(line)
 		}
 	}
