@@ -197,6 +197,7 @@ func collectShellRuntimeLossEvidence(path string) (shellRuntimeLossEvidence, err
 		return shellRuntimeLossEvidence{}, err
 	}
 	records := jobstore.Fold(events)
+	watches := jobstore.FoldWatches(events)
 	ids := make([]string, 0, len(records))
 	for jobID := range records {
 		ids = append(ids, jobID)
@@ -217,8 +218,23 @@ func collectShellRuntimeLossEvidence(path string) (shellRuntimeLossEvidence, err
 				terminalGeneration: record.TerminalGen,
 			})
 		}
+		if record.Status.IsTerminal() && record.TerminalGen != "" && hasActiveWatchFor(watches, jobID) {
+			evidence.terminalWatchJobIDs = append(evidence.terminalWatchJobIDs, jobID)
+		}
 	}
 	return evidence, nil
+}
+
+// hasActiveWatchFor reports whether a watch that can still be cleared targets
+// jobID. A watch with no generation cannot produce a clear event, so counting
+// it would create a repair plan with nothing to write.
+func hasActiveWatchFor(watches map[string]*jobstore.WatchRecord, jobID string) bool {
+	for _, watch := range watches {
+		if watch != nil && watch.Active && watch.Generation != "" && watch.Target == jobID {
+			return true
+		}
+	}
+	return false
 }
 
 func executeDelegateShellRepair(plan delegateShellRepairPlan, now time.Time) (err error) {
@@ -307,10 +323,6 @@ func executeDelegateShellRepair(plan delegateShellRepairPlan, now time.Time) (er
 		if record == nil || record.Type != jobstore.JobShell || record.TerminalGen != identity.terminalGeneration || record.NotifyState != jobstore.NotifyPending {
 			continue
 		}
-		// The job's terminal event is already durable, so its terminal watches
-		// must be cleared even when this repair only observes a pending
-		// notification: the clear can be the tail of a batch torn by a crash.
-		clearedJobs[identity.jobID] = struct{}{}
 		if plan.suppressOwnerNotify {
 			events = append(events, jobstore.Event{
 				Kind:        jobstore.EventJobNotificationConsumed,
@@ -318,7 +330,17 @@ func executeDelegateShellRepair(plan delegateShellRepairPlan, now time.Time) (er
 				JobID:       identity.jobID,
 				TerminalGen: identity.terminalGeneration,
 			})
+			clearedJobs[identity.jobID] = struct{}{}
 		}
+	}
+	for _, jobID := range plan.terminalWatchJobIDs {
+		record := records[jobID]
+		if record == nil || record.Type != jobstore.JobShell || !record.Status.IsTerminal() || record.TerminalGen == "" {
+			continue
+		}
+		// The terminal event is already durable, so its terminal watches must be
+		// cleared even when this repair only observes the torn prefix.
+		clearedJobs[jobID] = struct{}{}
 	}
 	clearedIDs := make([]string, 0, len(clearedJobs))
 	for jobID := range clearedJobs {

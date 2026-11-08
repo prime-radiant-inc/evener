@@ -37,6 +37,7 @@ type shellNotificationIdentity struct {
 type shellRuntimeLossEvidence struct {
 	runningJobIDs       []string
 	pendingNotification []shellNotificationIdentity
+	terminalWatchJobIDs []string
 }
 
 type delegateAttentionCleanupPlan struct {
@@ -56,6 +57,7 @@ type delegateShellRepairPlan struct {
 	storePath           string
 	runningJobIDs       []string
 	pendingNotification []shellNotificationIdentity
+	terminalWatchJobIDs []string
 	suppressOwnerNotify bool
 }
 
@@ -315,11 +317,13 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 			continue
 		}
 		covered := c.stopCoversLocked(id)
-		// A pending notification can be the durable prefix of a repair batch
-		// whose terminal watch-clear did not land. The plan is still needed
-		// outside a stop to clear that terminal watch; it never consumes the
-		// notification unless the stop covers it.
-		if len(shell.runningJobIDs) == 0 && len(shell.pendingNotification) == 0 {
+		// A plan must have work to do. A pending notification alone outside a
+		// stop is not work: the notification stays pending by design and only a
+		// terminal watch that is still active needs clearing. Planning an empty
+		// repair would make the stop and bootstrap drains treat it as progress
+		// and spin.
+		if len(shell.runningJobIDs) == 0 && len(shell.terminalWatchJobIDs) == 0 &&
+			(!covered || len(shell.pendingNotification) == 0) {
 			continue
 		}
 		plans.shellRepairs = append(plans.shellRepairs, delegateShellRepairPlan{
@@ -327,6 +331,7 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 			storePath:           filepath.Join(jobsDir(c.stateDir, c.durable[id].Descriptor.ChildSessionID), "jobs.jsonl"),
 			runningJobIDs:       append([]string(nil), shell.runningJobIDs...),
 			pendingNotification: append([]shellNotificationIdentity(nil), shell.pendingNotification...),
+			terminalWatchJobIDs: append([]string(nil), shell.terminalWatchJobIDs...),
 			suppressOwnerNotify: covered,
 		})
 	}
@@ -791,6 +796,11 @@ func (c *delegateTreeController) repairableShellEvidenceLocked(delegateID string
 	for _, notification := range evidence.pendingNotification {
 		if _, live := liveJobIDs[notification.jobID]; !live {
 			filtered.pendingNotification = append(filtered.pendingNotification, notification)
+		}
+	}
+	for _, jobID := range evidence.terminalWatchJobIDs {
+		if _, live := liveJobIDs[jobID]; !live {
+			filtered.terminalWatchJobIDs = append(filtered.terminalWatchJobIDs, jobID)
 		}
 	}
 	return filtered, true
