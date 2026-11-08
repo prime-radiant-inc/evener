@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/diagnostic"
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
 )
@@ -176,7 +177,7 @@ func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.
 	// recordSample records one sample: the route it answered on, its
 	// rejection, and its failure evidence. err is the sample's API error, or
 	// nil when the call succeeded and only local validation rejected the reply.
-	recordSample := func(answered summarizationRoute, answeredRole string, callResp llm.Response, err error) {
+	recordSample := func(answered summarizationRoute, answeredRole string, callResp llm.Response, err error, previous []cheapmodel.AttemptFailure) {
 		route, role = answered, answeredRole
 		samplesByRoute[answered]++
 		resp, apiErr = callResp, err
@@ -193,6 +194,11 @@ func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.
 			sampleErr = rejected
 		}
 		failure := summaryFailure(sampleErr, answered, answeredRole)
+		// A cheap caller that fell back internally and then returned a reply
+		// this pass rejected no longer has an error carrying the refusal. Keep
+		// it as prior evidence so the terminal session rejection still explains
+		// that the cheap route was refused rather than untried (#4662).
+		appendPreviousAttempts(failure, previous)
 		// The sample's attempt count is its route's own sample count at this
 		// moment: one plus every same-route resample before it.
 		failure.detail.Terminal.Attempts = samplesByRoute[answered]
@@ -216,11 +222,14 @@ func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.
 	// rung ends without a success.
 	cheapRejected := false
 	for {
-		resp, ranSessionModel, apiErr = cm.cheap.CompleteConfigured(callCtx, profile, req)
+		var previous []cheapmodel.AttemptFailure
+		resp, ranSessionModel, previous, apiErr = cm.cheap.CompleteConfiguredWithProvenance(callCtx, profile, req)
 		if ranSessionModel {
-			recordSample(sessionRoute, "session", resp, apiErr)
+			recordSample(sessionRoute, "session", resp, apiErr, previous)
 		} else {
-			recordSample(routes[0], "cheap", resp, apiErr)
+			// Provenance is non-nil only when a session-model fallback ran, so
+			// the cheap branch never has any.
+			recordSample(routes[0], "cheap", resp, apiErr, nil)
 			cheapRejected = cheapRejected || rejected != nil
 		}
 		if !resample(route, rejected) {
@@ -234,7 +243,7 @@ func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.
 		for {
 			req.Provider, req.Model = sessionRoute.provider, sessionRoute.model
 			resp, apiErr = cm.client.Complete(callCtx, req)
-			recordSample(sessionRoute, "session", resp, apiErr)
+			recordSample(sessionRoute, "session", resp, apiErr, nil)
 			if !resample(route, rejected) {
 				break
 			}
