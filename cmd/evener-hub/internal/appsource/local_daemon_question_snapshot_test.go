@@ -16,8 +16,11 @@ func TestLocalDaemonQuestionSnapshotAndRemoteAskFence(t *testing.T) {
 	}
 	source := NewLocalDaemonSourceWithEntries("local", nil, nil)
 	row := source.threadFromEntry(item)
+	if row.ID != "thread-token" || row.Evener.Ref != "local:thread-token" {
+		t.Fatalf("discovery identity=%+v", row)
+	}
 	p := row.Evener.PendingAsk
-	if p == nil || p.BootGeneration != "boot-token" || p.Revision != 4 || p.CompositeTotal != 2 || p.CalllessCount != 1 || len(p.Calls) != 1 || p.Calls[0].TurnID != "turn-token" {
+	if p == nil || p.InstanceID != "instance-token" || p.BootGeneration != "boot-token" || p.Revision != 4 || p.CompositeTotal != 2 || p.CalllessCount != 1 || len(p.Calls) != 1 || p.Calls[0].TurnID != "turn-token" {
 		t.Errorf("discovery row lost ask snapshot: %+v", row.Evener)
 	}
 	if row.Evener.PendingQuestion.TurnID != "turn-token" || row.Evener.PendingQuestion.Complete == nil {
@@ -29,14 +32,15 @@ func TestLocalDaemonQuestionSnapshotAndRemoteAskFence(t *testing.T) {
 	}
 }
 
-func TestLocalDaemonWorkspaceRefSharesSessionFallback(t *testing.T) {
+func TestLocalDaemonWorkspaceRefUsesProjectedThreadFallback(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		entry        rendezvous.Entry
 		thread, want string
 	}{
 		{rendezvous.Entry{WorkspaceRef: "local:workspace-token", SessionID: "instance-token", ThreadID: "thread-token"}, "thread-token", "local:workspace-token"},
-		{rendezvous.Entry{SessionID: "instance-token", ThreadID: "thread-token"}, "thread-token", "local:instance-token"},
+		{rendezvous.Entry{SessionID: "instance-token", ThreadID: "thread-token"}, "thread-token", "local:thread-token"},
+		{rendezvous.Entry{SessionID: "instance-token", ThreadID: "thread-token"}, "projected-token", "local:projected-token"},
 		{rendezvous.Entry{ThreadID: "thread-token"}, "thread-token", "local:thread-token"},
 	} {
 		if got := localDaemonWorkspaceRef("local", tc.entry, tc.thread); got != tc.want {

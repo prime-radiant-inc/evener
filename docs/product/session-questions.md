@@ -52,6 +52,11 @@ Roster frames also retain the received list length as a lower bound on the
 composite total. When an older daemon omits the total, clamping still sets
 `truncatedList` and `listReason:"unavailable"` for the omitted calls.
 
+Roster, discovery and spawn share one workspace-reference builder. An explicit
+`WorkspaceRef` remains authoritative; without it, the reference uses the projected
+thread ID. The pending set carries its own `instanceId` independently of that
+workspace reference.
+
 The excerpt carries its displayed question's `turnId` and `callId` when known.
 Live append also supplies explicit `complete` and `truncated` flags; restore
 leaves these flags absent rather than claiming to have measured the original

@@ -139,7 +139,8 @@ func TestE2E_ManagerRemoteSharedInput(t *testing.T) {
 	}
 	caps := read.Thread.Evener.Capabilities
 	wantCaps := appwire.ThreadCapabilities{
-		Send: true, Steer: true, Interrupt: true, Compact: true, Clear: true,
+		AskFence: true,
+		Send:     true, Steer: true, Interrupt: true, Compact: true, Clear: true,
 		ForkFromTurn: true, Shutdown: true, ChangeModel: true, ChangeVisionModel: true,
 		Queue: true, Goal: true, SharedNotes: true, Rename: true,
 		SkillInput: true, CommandInput: true, StopSubagent: true,

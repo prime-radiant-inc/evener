@@ -1697,13 +1697,12 @@ func localDaemonWorkspaceRef(sourceID string, entry rendezvous.Entry, threadID s
 }
 
 // LocalDaemonWorkspaceRef is the shared roster/discovery workspace identity.
-// An explicit workspace survives Clear. Legacy entries fall back to the live
-// session before an older thread alias, regardless of the projection's ID.
+// An explicit workspace survives Clear. Without one, the reference uses the
+// projected thread ID.
 func LocalDaemonWorkspaceRef(sourceID string, entry rendezvous.Entry, threadID string) string {
 	if ref, err := appwire.ParseRef(strings.TrimSpace(entry.WorkspaceRef)); err == nil && ref.SourceID == sourceID {
 		return ref.String()
 	}
-	threadID = firstLocalNonEmpty(entry.SessionID, threadID, entry.ThreadID)
 	return appwire.Ref{SourceID: sourceID, ThreadID: threadID}.String()
 }
 

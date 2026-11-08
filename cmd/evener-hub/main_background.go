@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/plugins"
 )
@@ -95,7 +96,8 @@ func rosterIdentities(snapshot navigationSnapshot) func(string) (rosterIdentity,
 		}
 		var ref string
 		if live.SourceID == "" || live.SourceID == appwire.LocalSourceID {
-			ref = localSpawnWorkspaceRef(live.Entry)
+			// The local source projects the probe's current ID as its thread ID.
+			ref = appsource.LocalDaemonWorkspaceRef(appwire.LocalSourceID, live.Entry, live.SessionID)
 		} else if live.ThreadID != "" {
 			ref = (appwire.Ref{SourceID: live.SourceID, ThreadID: live.ThreadID}).String()
 		}
