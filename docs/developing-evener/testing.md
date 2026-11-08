@@ -528,6 +528,17 @@ warm run of a broad scope stays slow; a cache miss adds the compile, link and
 execution costs on top. Measure both halves before concluding which one a
 slowness comes from.
 
+`-count=N` repeats every test in the package inside one test binary, so a
+package's wall time multiplies by N while Go's default ten-minute
+`-test.timeout` covers the whole process. `cmd/evener-hub` takes about four
+minutes per iteration under `-race` (205-234s in the #1326 report), so a
+`-count=2` run needs an explicit budget such as `-timeout 20m`. Without one it
+dies at the default with a goroutine dump and no assertion failure, which
+reads as a hang (#1326) even though both iterations were progressing.
+Repeated runs under host load are slower still. Pass `-timeout` whenever you
+ask for repeats; no gate runs `-count` above 1 (the `-count=1` rule above is
+why).
+
 CI runs the web check as two lanes on separate runners, web-unit (`make
 test-web`) and web-browser (`make test-web-browser`), and the required `web` job
 passes only when both do. The deterministic Go check runs the same way: `tests /
