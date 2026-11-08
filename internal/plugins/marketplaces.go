@@ -216,10 +216,25 @@ func (m *Manager) ensureFetched(ctx context.Context, name string) (MarketplaceRe
 // AddMarketplace fetches src, reads its marketplace.json for the name (unless
 // name is given), and records it. Returns the stored ref.
 //
-// There is no refusal for an already-registered name, so calling it again with
-// the same name and a different source re-sources that marketplace in place; a
-// failed save leaves the previously recorded clone as it was.
+// A name that is already registered is refused with ErrMarketplaceExists:
+// before the fetch when name is explicit, and before the clone is installed
+// when the catalog supplies it. A same-name add used to replace the entry in
+// place, silently re-pointing every <plugin>@<marketplace> key at a different
+// catalog (#1047). ReplaceMarketplace is the explicit re-source path.
 func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (MarketplaceRef, error) {
+	return m.addMarketplace(ctx, name, src, false)
+}
+
+// ReplaceMarketplace is AddMarketplace with an explicit request to re-source
+// an already-registered name. The old clone is renamed aside before the fresh
+// one lands and restored when the save fails, exactly as AddMarketplace's
+// replacement path always did; callers must ask for the replacement on
+// purpose.
+func (m *Manager) ReplaceMarketplace(ctx context.Context, name string, src Source) (MarketplaceRef, error) {
+	return m.addMarketplace(ctx, name, src, true)
+}
+
+func (m *Manager) addMarketplace(ctx context.Context, name string, src Source, replace bool) (MarketplaceRef, error) {
 	if err := refuseDirectoryPin(src); err != nil {
 		return MarketplaceRef{}, err
 	}
@@ -246,6 +261,11 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 	if err != nil {
 		return MarketplaceRef{}, err
 	}
+	if !replace && name != "" {
+		if _, exists := mk[name]; exists {
+			return MarketplaceRef{}, fmt.Errorf("marketplace %q: %w", name, ErrMarketplaceExists)
+		}
+	}
 
 	// Fetch into a staging dir first so a bad marketplace never half-registers.
 	staging := m.marketplaceDir(stagingCloneName)
@@ -270,6 +290,12 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 	if err := validNameComponent("marketplace", name); err != nil {
 		_ = marketplaceRemoveAll(staging)
 		return MarketplaceRef{}, err
+	}
+	if !replace {
+		if _, exists := mk[name]; exists {
+			_ = marketplaceRemoveAll(staging)
+			return MarketplaceRef{}, fmt.Errorf("marketplace %q: %w", name, ErrMarketplaceExists)
+		}
 	}
 
 	installLoc := src.Path // directory source: in place

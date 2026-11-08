@@ -87,6 +87,53 @@ func TestAddListRemoveMarketplace(t *testing.T) {
 	}
 }
 
+// An add naming an already-registered marketplace must refuse, not replace the
+// entry in place: installed <plugin>@<marketplace> keys would keep their names
+// while pointing at a different catalog, and the add form would toast success
+// on an overwrite (#1047).
+func TestAddMarketplace_RefusesATakenExplicitName(t *testing.T) {
+	m, ctx := newManagerCtx(t)
+	first := makeDirectoryMarketplace(t, "acme", "widget")
+	second := makeDirectoryMarketplace(t, "acme", "gadget")
+	mustAddMarketplace(ctx, t, m, "acme", Source{Kind: SourceDirectory, Path: first})
+
+	_, err := m.AddMarketplace(ctx, "acme", Source{Kind: SourceDirectory, Path: second})
+	if !errors.Is(err, ErrMarketplaceExists) {
+		t.Fatalf("error = %v, want ErrMarketplaceExists", err)
+	}
+	list, err := m.ListMarketplaces(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref := list["acme"]; ref.InstallLocation != first {
+		t.Fatalf("listing after refused add = %+v, want the first directory %q", ref, first)
+	}
+	if _, err := os.Stat(second); err != nil {
+		t.Fatalf("the refused source was disturbed: %v", err)
+	}
+}
+
+// A name the catalog supplies is only known after the fetch, so the refusal
+// happens before the clone is installed rather than before the fetch.
+func TestAddMarketplace_RefusesATakenCatalogName(t *testing.T) {
+	m, ctx := newManagerCtx(t)
+	first := makeDirectoryMarketplace(t, "acme", "widget")
+	second := makeDirectoryMarketplace(t, "acme", "gadget")
+	mustAddMarketplace(ctx, t, m, "", Source{Kind: SourceDirectory, Path: first})
+
+	_, err := m.AddMarketplace(ctx, "", Source{Kind: SourceDirectory, Path: second})
+	if !errors.Is(err, ErrMarketplaceExists) {
+		t.Fatalf("error = %v, want ErrMarketplaceExists", err)
+	}
+	list, err := m.ListMarketplaces(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref := list["acme"]; ref.InstallLocation != first {
+		t.Fatalf("listing after refused add = %+v, want the first directory %q", ref, first)
+	}
+}
+
 func TestAddMarketplace_GitSubdirBrowse(t *testing.T) {
 	skipWithoutGit(t)
 	repo := filepath.Join(t.TempDir(), "monorepo")
@@ -1822,13 +1869,12 @@ func TestEditMarketplace_FailedUndoNamesWhatItCouldNotRestore(t *testing.T) {
 	}
 }
 
-// AddMarketplace has no refusal for an already-registered name, so a second
-// call with the same name and a different source re-sources it in place. The
-// swap then displaces the clone the marketplaces file still records, and that
-// clone is the only copy of what a failed save leaves behind: it has to stay
-// aside until the save lands, and go back when it does not. Deleting it at the
-// swap would leave the registered marketplace pointing at the new, then removed,
-// clone - a marketplace whose install location no longer exists.
+// ReplaceMarketplace is the explicit re-source path. Its swap displaces the
+// clone the marketplaces file still records, and that clone is the only copy
+// of what a failed save leaves behind: it has to stay aside until the save
+// lands, and go back when it does not. Deleting it at the swap would leave the
+// registered marketplace pointing at the new, then removed, clone - a
+// marketplace whose install location no longer exists.
 func TestAddMarketplace_SaveFailureRestoresTheOldClone(t *testing.T) {
 	skipWithoutGit(t)
 	repoA := makeMarketplaceRepoWithPlugin(t, "acme", "widget")
@@ -1841,7 +1887,7 @@ func TestAddMarketplace_SaveFailureRestoresTheOldClone(t *testing.T) {
 
 	stubMarketplaceWriteError(t, errors.New("boom"))
 
-	if _, err := m.AddMarketplace(ctx, "acme", Source{Kind: SourceURL, URL: repoB}); err == nil {
+	if _, err := m.ReplaceMarketplace(ctx, "acme", Source{Kind: SourceURL, URL: repoB}); err == nil {
 		t.Fatal("expected the save to fail")
 	}
 
