@@ -1135,6 +1135,11 @@ func applySandboxDefaultAfterParse(fs *flag.FlagSet, mode *string) {
 func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *probeResult, stdout, stderr *bytes.Buffer) error {
 	restoreEnv := maybeClearOpenAIAPIKey(cfg.clearOpenAIAPIKey)
 	defer restoreEnv()
+	// The live harness resolves the sandbox in-process, so the fixture's
+	// repository-discovery bound must be in the environment before provisioning
+	// (fixtureEnv carries it for the CLI child). Restore it for the next probe.
+	restoreCeiling := setFixtureGitCeiling(res.WorkDir)
+	defer restoreCeiling()
 
 	if err := cmdutil.EnsureUserConfigDirs(); err != nil {
 		return err
@@ -1438,6 +1443,30 @@ func fixtureEnv(workDir string) []string {
 		env = append(env, "GIT_CEILING_DIRECTORIES="+parent)
 	}
 	return env
+}
+
+// setFixtureGitCeiling applies the same GIT_CEILING_DIRECTORIES value fixtureEnv
+// gives a CLI child, for a live probe's in-process sandbox resolution. It
+// returns a restore function; an empty work dir is a no-op.
+func setFixtureGitCeiling(workDir string) func() {
+	if strings.TrimSpace(workDir) == "" {
+		return func() {}
+	}
+	parent, err := filepath.Abs(filepath.Dir(workDir))
+	if err != nil {
+		return func() {}
+	}
+	previous, had := os.LookupEnv("GIT_CEILING_DIRECTORIES")
+	if err := os.Setenv("GIT_CEILING_DIRECTORIES", parent); err != nil {
+		return func() {}
+	}
+	return func() {
+		if had {
+			_ = os.Setenv("GIT_CEILING_DIRECTORIES", previous)
+			return
+		}
+		_ = os.Unsetenv("GIT_CEILING_DIRECTORIES")
+	}
 }
 
 func parseEvents(data []byte) (map[string]int, map[string]int, []string) {

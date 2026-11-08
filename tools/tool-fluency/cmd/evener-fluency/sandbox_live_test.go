@@ -255,6 +255,50 @@ func TestRunLiveProbeFailsClosedBeforeSession(t *testing.T) {
 	}
 }
 
+// The live harness resolves its sandbox in-process, so it must apply the same
+// fixture ceiling fixtureEnv gives the CLI child before provisioning, and
+// restore it afterwards. ClassifyWorkspace otherwise finds the enclosing
+// checkout and grants it write access (#3724 review).
+func TestRunLiveProbeAppliesAndRestoresTheFixtureGitCeiling(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(envvars.XDGConfigHome.Name, dir)
+	t.Setenv("GIT_CEILING_DIRECTORIES", "/previous-ceiling")
+
+	oldLoad := runnerLoadClient
+	oldAttach := runnerAttachAPILogger
+	oldHost := runnerProbeSandboxHost
+	t.Cleanup(func() {
+		runnerLoadClient = oldLoad
+		runnerAttachAPILogger = oldAttach
+		runnerProbeSandboxHost = oldHost
+	})
+	runnerLoadClient = func(string) (*llm.Client, error) { return llm.NewClient(), nil }
+	runnerAttachAPILogger = func(*llm.Client, string, io.Writer, ...string) (func() error, error) {
+		return func() error { return nil }, nil
+	}
+	work := filepath.Join(dir, "probe", "work")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var seen string
+	runnerProbeSandboxHost = func() sandbox.HostFacts {
+		seen = os.Getenv("GIT_CEILING_DIRECTORIES")
+		return sandbox.HostFacts{OS: "linux"} // refuse after the probe
+	}
+
+	res := probeResult{StateDir: filepath.Join(dir, "state"), WorkDir: work}
+	err := runLiveProbe(context.Background(), runConfig{model: "openai/m", reasoningEffort: "low", sandbox: "read-only"}, probeFile{Prompt: "hi"}, &res, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil {
+		t.Fatal("runLiveProbe must fail closed on a host with no backend")
+	}
+	if want := filepath.Dir(work); seen != want {
+		t.Fatalf("GIT_CEILING_DIRECTORIES during provisioning = %q, want %q", seen, want)
+	}
+	if got := os.Getenv("GIT_CEILING_DIRECTORIES"); got != "/previous-ceiling" {
+		t.Fatalf("GIT_CEILING_DIRECTORIES after the probe = %q, want the previous value", got)
+	}
+}
+
 type failingLiveAdapter struct{}
 
 func (failingLiveAdapter) Name() string { return "openai" }
