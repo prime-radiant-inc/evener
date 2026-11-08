@@ -633,8 +633,15 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				finalTasks := mutation.After
 
 				if completedAny {
-					// Auto-advance unless the agent already picked what to do next.
-					if manuallyStartedID == 0 {
+					// Auto-advance unless the agent already picked what to do
+					// next, or another task is still the current one. Starting
+					// a second in_progress task would be refused by the store,
+					// and the completed update already succeeded, so leave the
+					// active task alone instead of attempting it.
+					if manuallyStartedID == 0 && taskpkg.Summarize(mutation.After).Current == nil {
+						if hook := deps.taskGuard.beforeAutoAdvance; hook != nil {
+							hook()
+						}
 						eligible := store.NextEligible()
 						if len(eligible) > 0 {
 							next := eligible[0]

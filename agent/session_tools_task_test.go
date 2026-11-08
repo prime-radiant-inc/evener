@@ -24,12 +24,13 @@ type taskToolStateEntry struct {
 }
 
 type taskToolHarness struct {
-	store    *taskpkg.TaskStore
-	dir      string
-	steers   []string
-	steerErr error
-	emitted  []taskToolEvent
-	reg      *tool.Registry
+	store               *taskpkg.TaskStore
+	dir                 string
+	steers              []string
+	steerErr            error
+	emitted             []taskToolEvent
+	reg                 *tool.Registry
+	autoAdvanceAttempts int
 }
 
 type taskToolEvent struct {
@@ -57,6 +58,7 @@ func newTaskToolHarness(t *testing.T, inputs []taskpkg.TaskInput) *taskToolHarne
 		taskGuard: taskGuard{
 			getOrCreateTaskStore: func() *taskpkg.TaskStore { return h.store },
 			markUsed:             func() {},
+			beforeAutoAdvance:    func() { h.autoAdvanceAttempts++ },
 		},
 	}
 	h.reg = tool.NewRegistry()
@@ -460,6 +462,49 @@ func TestTaskTool_AutoAdvanceValidationFailurePreservesCurrentTask(t *testing.T)
 		t.Fatalf("durable recovered state = %#v", got)
 	}
 	assertTasksPersisted(t, "durable recovered state", recoveredState, gotRecovered)
+}
+
+// TestTaskTool_AutoAdvanceLeavesActiveTaskWhenCompletingAnother covers #4763:
+// completing an unrelated task while another task is already the current one
+// is a plain success. Auto-advance must not try to start a second in_progress
+// task, which the store would refuse and the tool would report as a
+// post-commit failure.
+func TestTaskTool_AutoAdvanceLeavesActiveTaskWhenCompletingAnother(t *testing.T) {
+	t.Parallel()
+	h := newTaskToolHarness(t, []taskpkg.TaskInput{
+		{Description: "finished", Prompt: "finished"},
+		{Description: "next", Prompt: "next"},
+		{Description: "active", Prompt: "active"},
+	})
+	if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 3, Status: taskpkg.TaskInProgress}}); err != nil {
+		t.Fatalf("start active task: %v", err)
+	}
+
+	result := h.update(t, map[string]any{"id": 1, "status": "done"})
+	if result.Err != nil || result.IsError {
+		t.Fatalf("complete while another task is active: err=%v isError=%v", result.Err, result.IsError)
+	}
+	if h.autoAdvanceAttempts != 0 {
+		t.Fatalf("auto-advance attempted %d times, want none while task 3 is active", h.autoAdvanceAttempts)
+	}
+	want := map[int]taskpkg.TaskStatus{
+		1: taskpkg.TaskDone, 2: taskpkg.TaskOpen, 3: taskpkg.TaskInProgress,
+	}
+	if got := taskStatusMap(h.store.View()); !reflect.DeepEqual(got, want) {
+		t.Fatalf("state after completion = %#v, want %#v", got, want)
+	}
+	if len(h.steers) != 0 {
+		t.Fatalf("auto-advance steered %d times: %q", len(h.steers), h.steers)
+	}
+	event := taskUpdatedEvent(t, h)
+	if event.Current == nil || event.Current.ID != 3 {
+		t.Fatalf("event current = %+v, want task 3", event.Current)
+	}
+	durable := h.reopened(t).View()
+	if got := taskStatusMap(durable); !reflect.DeepEqual(got, want) {
+		t.Fatalf("durable state = %#v, want %#v", got, want)
+	}
+	assertTasksPersisted(t, "state after completion", h.store.View(), durable)
 }
 
 func TestTaskTool_SteerFailureReassertionPreservesCommittedState(t *testing.T) {
