@@ -113,7 +113,8 @@ through its existing workspace identities, and owns bounded segment recovery.
 **S02–S03** retain their presentation behavior. **S06** resolves voice question
 membership through the same pending-call pages when the row prefix is truncated.
 Manager argument preparation and tool dispatch share an opt-in exact decoder for
-fence revisions and page bounds. Other arguments keep their numeric decoding.
+fence revisions and page bounds, including pre-tool hook views and replacements.
+Other arguments keep their numeric decoding.
 
 For [voice conversations](voice.md), **S03** owns native microphone processing,
 local playback and played-sample acknowledgements. **S06** owns the scoped

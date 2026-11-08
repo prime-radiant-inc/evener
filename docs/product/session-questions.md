@@ -72,9 +72,12 @@ read and evaluate the new set before composing a new answer.
 Manager `delegate_send` and pending-page `job_status` opt into
 `RegisteredTool.UnmarshalArgs` for their fence revision and page bounds.
 Preparation and dispatch use the same decoder, preserving the full uint64
-revision range, including zero and MaxUint64, through JSON repair. Overflow and
-non-integer revisions retain the typed refusal. Other arguments and tools keep
-their existing float64 decoding.
+revision range, including zero and MaxUint64, through JSON repair and pre-tool
+hook updates. Hook input and numeric replacements use that per-call decoder;
+the callback is not part of the hook protocol. Overflow and non-integer revisions
+retain the typed refusal. Other arguments and tools keep their existing float64
+decoding. An unrelated decode failure retains the existing whole-hook fallback:
+no partial update applies, and the original call remains the execution input.
 
 An admitted input captures the exact composites and the legacy-question count
 present at admission. Consumption and restore resolve only that capture, so a
