@@ -328,6 +328,171 @@ func TestWorktreeSwitchByPath_RejectsPointerCreatedUnderCheckoutSubdir(t *testin
 	requireSwitchKeptScope(t, s, sub, repo, otherMain, filepath.Join(otherMain, ".git"))
 }
 
+// A NonGit fixture can also make .git a symlink to an external repository's
+// .git directory. The fixture itself then looks like a checkout, so the
+// control environment must reject the external metadata instead of reading the
+// external worktree registry and switching into one of its checkouts (#3724
+// review).
+func TestWorktreeSwitchByPath_RejectsSymlinkedGitDirOutsideWorkspace(t *testing.T) {
+	otherMain := canonicalFixtureTempDir(t, "worktree-gitlink-main-*")
+	copyWorktreeBaseRepo(t, otherMain)
+	_, head := worktreeBaseRepo(t)
+	otherLinked := canonicalFixtureTempDir(t, "worktree-gitlink-linked-*")
+	wtGit(t, otherMain, "worktree", "add", "-q", "-b", "linked", otherLinked, head)
+
+	fixture := canonicalFixtureTempDir(t, "worktree-gitlink-fixture-*")
+	s, stateDir, env := newSandboxedFixtureSession(t, fixture, "worktree-gitlink-state-*")
+	if env.Sandbox.Git.Kind != sandbox.NonGit {
+		t.Fatalf("fixture sandbox kind = %v, want NonGit", env.Sandbox.Git.Kind)
+	}
+
+	// The fixture's own initial sandbox permits this write. The target is a real
+	// external repository's .git directory with a registered linked checkout.
+	if err := os.Symlink(filepath.Join(otherMain, ".git"), filepath.Join(fixture, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	st := s.worktreeStateSnapshot()
+	if st.mainRepoRoot != fixture {
+		t.Fatalf("project discovery main root = %q, want the fixture %q", st.mainRepoRoot, fixture)
+	}
+
+	r := &wtRepo{s: s, mainRoot: fixture, stateDir: stateDir}
+	result, switchErr := r.switchOp(t, map[string]any{"path": otherLinked})
+	if switchErr == nil {
+		t.Fatalf("switch to the external linked checkout succeeded: %+v", result)
+	}
+	if !errors.Is(switchErr, errUntrustedWorktreeProject) {
+		t.Fatalf("switch error = %v, want the untrusted-project refusal", switchErr)
+	}
+	requireSwitchKeptScope(t, s, fixture, fixture, otherMain, filepath.Join(otherMain, ".git"), otherLinked, filepath.Join(otherLinked, ".git"))
+}
+
+// writeMinimalMainGitDir makes dir/.git a real directory that git accepts as a
+// main worktree's gitdir, without relying on an enclosing checkout.
+func writeMinimalMainGitDir(t *testing.T, dir string) {
+	t.Helper()
+	gitDir := filepath.Join(dir, ".git")
+	for _, sub := range []string{"objects", "refs"} {
+		if err := os.MkdirAll(filepath.Join(gitDir, sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	config := "[core]\n\trepositoryformatversion = 0\n\tbare = false\n"
+	if err := os.WriteFile(filepath.Join(gitDir, "config"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A relative commondir whose path crosses a symlink must be resolved the way
+// git resolves it, not lexically collapsed by filepath.Join; otherwise the
+// containment check validates a path inside the fixture while git follows the
+// symlink to an external repository's .git (#3724 review).
+func TestWorktreeSwitchByPath_RejectsRelativeCommondirThroughSymlink(t *testing.T) {
+	otherMain := canonicalFixtureTempDir(t, "worktree-relcommon-main-*")
+	copyWorktreeBaseRepo(t, otherMain)
+	_, head := worktreeBaseRepo(t)
+	otherLinked := canonicalFixtureTempDir(t, "worktree-relcommon-linked-*")
+	wtGit(t, otherMain, "worktree", "add", "-q", "-b", "linked", otherLinked, head)
+	if err := os.MkdirAll(filepath.Join(otherMain, "aa", "bb"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	fixture := canonicalFixtureTempDir(t, "worktree-relcommon-fixture-*")
+	s, stateDir, env := newSandboxedFixtureSession(t, fixture, "worktree-relcommon-state-*")
+	if env.Sandbox.Git.Kind != sandbox.NonGit {
+		t.Fatalf("fixture sandbox kind = %v, want NonGit", env.Sandbox.Git.Kind)
+	}
+	writeMinimalMainGitDir(t, fixture)
+	if err := os.Symlink(filepath.Join(otherMain, "aa", "bb"), filepath.Join(fixture, ".git", "sub")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fixture, ".git", "commondir"), []byte("sub/../../.git\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &wtRepo{s: s, mainRoot: fixture, stateDir: stateDir}
+	result, switchErr := r.switchOp(t, map[string]any{"path": otherLinked})
+	if switchErr == nil {
+		t.Fatalf("switch with a symlink-crossing relative commondir succeeded: %+v", result)
+	}
+	if !errors.Is(switchErr, errUntrustedWorktreeProject) {
+		t.Fatalf("switch error = %v, want the untrusted-project refusal", switchErr)
+	}
+	requireSwitchKeptScope(t, s, fixture, fixture, otherMain, filepath.Join(otherMain, ".git"), otherLinked, filepath.Join(otherLinked, ".git"))
+}
+
+// The worktree registry the control environment reads is writable from the
+// fixture, so a fabricated entry naming an external checkout must not be
+// adopted as a switch target (#3724 review).
+func TestWorktreeSwitchByPath_RejectsFixtureAuthoredWorktreeRegistry(t *testing.T) {
+	otherMain := canonicalFixtureTempDir(t, "worktree-registry-main-*")
+	copyWorktreeBaseRepo(t, otherMain)
+	_, head := worktreeBaseRepo(t)
+	otherLinked := canonicalFixtureTempDir(t, "worktree-registry-linked-*")
+	wtGit(t, otherMain, "worktree", "add", "-q", "-b", "linked", otherLinked, head)
+
+	fixture := canonicalFixtureTempDir(t, "worktree-registry-fixture-*")
+	s, stateDir, env := newSandboxedFixtureSession(t, fixture, "worktree-registry-state-*")
+	if env.Sandbox.Git.Kind != sandbox.NonGit {
+		t.Fatalf("fixture sandbox kind = %v, want NonGit", env.Sandbox.Git.Kind)
+	}
+	writeMinimalMainGitDir(t, fixture)
+	entry := filepath.Join(fixture, ".git", "worktrees", "evil")
+	if err := os.MkdirAll(entry, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(entry, "gitdir"), []byte(filepath.Join(otherLinked, ".git")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(entry, "HEAD"), []byte("ref: refs/heads/linked\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(entry, "commondir"), []byte("../..\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &wtRepo{s: s, mainRoot: fixture, stateDir: stateDir}
+	result, switchErr := r.switchOp(t, map[string]any{"path": otherLinked})
+	if switchErr == nil {
+		t.Fatalf("switch to a fixture-authored registry target succeeded: %+v", result)
+	}
+	requireSwitchKeptScope(t, s, fixture, fixture, otherMain, filepath.Join(otherMain, ".git"), otherLinked, filepath.Join(otherLinked, ".git"))
+}
+
+// A session launched in a linked worktree has a main checkout outside its own
+// workspace; that root was the repository the sandbox was resolved in, so the
+// containment rule must keep allowing a switch to it (#3724 review).
+func TestWorktreeSwitchByPath_AllowsTheMainCheckoutOfALinkedLaunch(t *testing.T) {
+	mainRoot := canonicalFixtureTempDir(t, "worktree-linked-main-*")
+	copyWorktreeBaseRepo(t, mainRoot)
+	_, head := worktreeBaseRepo(t)
+	lane := canonicalFixtureTempDir(t, "worktree-linked-lane-*")
+	wtGit(t, mainRoot, "worktree", "add", "-q", "-b", "lane", lane, head)
+
+	s, stateDir, env := newSandboxedFixtureSession(t, lane, "worktree-linked-main-state-*")
+	if env.Sandbox.Git.Kind != sandbox.LinkedWorktree {
+		t.Fatalf("lane sandbox kind = %v, want LinkedWorktree", env.Sandbox.Git.Kind)
+	}
+	r := &wtRepo{s: s, mainRoot: mainRoot, stateDir: stateDir}
+	result, switchErr := r.switchOp(t, map[string]any{"path": mainRoot})
+	if switchErr != nil {
+		t.Fatalf("switch to the linked launch's main checkout: %v", switchErr)
+	}
+	if got := result["path"]; got != mainRoot {
+		t.Fatalf("switch path = %v, want the main checkout %s", got, mainRoot)
+	}
+	cur, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatal("session env is no longer a LocalExecutionEnvironment")
+	}
+	if cur.RootDir != mainRoot || cur.Sandbox == nil || cur.Sandbox.Git.WorktreeRoot != mainRoot {
+		t.Fatalf("switch did not enter the main checkout: envRoot=%q sandbox=%+v", cur.RootDir, cur.Sandbox)
+	}
+}
+
 // --- switch by name ---
 
 // REAL git: every lock assertion here is read back out of git's own registry,

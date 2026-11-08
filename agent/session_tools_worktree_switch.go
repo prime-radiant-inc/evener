@@ -76,6 +76,11 @@ func (s *Session) worktreeEnterManagedWithPorcelain(st worktreeState, run worktr
 	if _, err := os.Stat(filepath.Join(target, ".git")); err != nil {
 		return WorktreeSwitchResult{}, fmt.Errorf("manage_worktree switch: no worktree at %s", target)
 	}
+	if st.env != nil {
+		if err := rejectUntrustedSwitchTarget(st.env, target); err != nil {
+			return WorktreeSwitchResult{}, fmt.Errorf("manage_worktree switch: %w", err)
+		}
+	}
 	targetState := worktree.Unlocked
 	if locked {
 		targetState = worktree.ClassifyReason(reason, s.id, "")
@@ -244,6 +249,9 @@ func (s *Session) worktreeSwitchByPath(ctx context.Context, rawPath string) (Wor
 	// managed worktree, it is still unlocked on the way out below.
 	if st.currentWorktree != "" && filepath.Clean(st.currentWorktree) == filepath.Clean(matchedPath) {
 		return WorktreeSwitchResult{Path: matchedPath, Branch: matchedBranch, NoOp: true}, nil
+	}
+	if err := rejectUntrustedSwitchTarget(st.env, matchedPath); err != nil {
+		return WorktreeSwitchResult{}, fmt.Errorf("manage_worktree switch: %w", err)
 	}
 	if err := s.leaveCurrentWorktreeFromPorcelain(run, porcelain); err != nil {
 		return WorktreeSwitchResult{}, err

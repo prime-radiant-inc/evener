@@ -166,6 +166,18 @@ func packageFixtureTempDir(t *testing.T, pattern string) string {
 	return dir
 }
 
+// canonicalFixtureTempDir is packageFixtureTempDir with symlinks resolved, for
+// fixtures whose paths are compared against git's canonical output.
+func canonicalFixtureTempDir(t *testing.T, pattern string) string {
+	t.Helper()
+	dir := packageFixtureTempDir(t, pattern)
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks %s: %v", pattern, err)
+	}
+	return resolved
+}
+
 // wtRepo is a real git repo plus a session rooted at it, with the managed
 // worktree root pointed at an isolated temp state dir so tests never touch the
 // user's real state home.

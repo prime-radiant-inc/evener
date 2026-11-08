@@ -463,31 +463,192 @@ func (s *Session) worktreeControlEnv(mainRepoRoot string) (execenv.ExecutionEnvi
 	if err := s.useWorktreeControlPolicy(control, mainRepoRoot); err != nil {
 		return nil, err
 	}
+	// Validate the policy the control env will actually use, not only the
+	// classification above: UseControlPolicy re-resolves mainRepoRoot, and a
+	// session can swap its metadata between the two resolutions.
+	if control.Sandbox != nil {
+		if err := rejectUntrustedLayout(local, local.Sandbox, control.Sandbox.Git); err != nil {
+			return nil, err
+		}
+	}
 	return control, nil
 }
 
 // errUntrustedWorktreeProject refuses a managed-worktree control environment
-// whose main root does not match the one the retained sandbox layout names.
-var errUntrustedWorktreeProject = errors.New("managed worktree project metadata does not match the sandbox's retained layout")
+// whose resolved main root or Git metadata escapes the roots the retained
+// sandbox layout trusts.
+var errUntrustedWorktreeProject = errors.New("managed worktree project metadata escapes the sandbox's retained layout")
 
-// rejectUntrustedMainRoot refuses a main root other than the one the retained
-// sandbox layout names. The layout was resolved before the session could write
-// any git metadata, so a different main root can only be named by metadata the
-// session wrote afterwards — for example a .git pointer into an enclosing
-// checkout's existing worktree gitdir, or into an arbitrary external
-// repository. Building a control environment there would hand the session
-// write access outside the workspace the sandbox was built for (#3724 review).
+// rejectUntrustedMainRoot applies the containment rule for a control
+// environment: the discovered main root, and every Git metadata path the
+// control policy will use from it, must stay within the roots the retained
+// sandbox layout was resolved with. That layout predates any metadata the
+// session could write, so a root or metadata path that resolves outside it can
+// only be new session-authored redirection — a file pointer, a directory
+// symlink, a commondir, or a symlinked writable leaf — and building a control
+// environment there would hand the session write access outside the workspace
+// the sandbox was built for (#3724 review).
 func rejectUntrustedMainRoot(local *execenv.LocalExecutionEnvironment, mainRepoRoot string) error {
 	policy := local.Sandbox
 	if policy == nil || mainRepoRoot == "" {
 		return nil
 	}
-	root := canonicalOrClean(mainRepoRoot)
-	trusted := trustedMainRoot(local, policy)
-	if root == trusted || (policy.Git.Kind == sandbox.NonGit && identifier.PathUnder(root, trusted)) {
+	layout, err := sandbox.ClassifyWorkspace(mainRepoRoot)
+	if err != nil {
+		return fmt.Errorf("%w: classify Git metadata at %s: %v", errUntrustedWorktreeProject, mainRepoRoot, err)
+	}
+	return rejectUntrustedLayout(local, policy, layout)
+}
+
+// rejectUntrustedLayout validates one resolved Git layout against the retained
+// sandbox policy: the layout's worktree root and every metadata path the
+// control policy will use from it must stay within the retained trusted roots.
+func rejectUntrustedLayout(local *execenv.LocalExecutionEnvironment, retained *sandbox.ResolvedPolicy, layout sandbox.GitLayout) error {
+	if retained == nil {
 		return nil
 	}
-	return fmt.Errorf("%w: main root %s does not match the retained sandbox layout (%s)", errUntrustedWorktreeProject, root, trusted)
+	root := filepath.Clean(layout.WorktreeRoot)
+	trusted := trustedMainRoot(local, retained)
+	if root != trusted && !(retained.Git.Kind == sandbox.NonGit && identifier.PathUnder(root, trusted)) {
+		return fmt.Errorf("%w: main root %s does not match the retained sandbox layout (%s)", errUntrustedWorktreeProject, root, trusted)
+	}
+	metadata, err := gitMetadataPaths(layout)
+	if err != nil {
+		return fmt.Errorf("%w: resolve Git metadata at %s: %v", errUntrustedWorktreeProject, root, err)
+	}
+	trustedMetadata := trustedMetadataRoots(retained, trusted)
+	for _, path := range metadata {
+		resolved, err := resolveMetadataPath(path)
+		if err != nil {
+			return fmt.Errorf("%w: resolve Git metadata %s: %v", errUntrustedWorktreeProject, path, err)
+		}
+		if !identifier.PathUnderAny(resolved, trustedMetadata) {
+			return fmt.Errorf("%w: Git metadata %s escapes the retained workspace", errUntrustedWorktreeProject, resolved)
+		}
+	}
+	return nil
+}
+
+// rejectUntrustedSwitchTarget refuses a switch target whose own Git metadata
+// resolves outside the retained trusted roots. A NonGit workspace can adopt no
+// target outside itself; a Git layout may target a sibling worktree only when
+// its metadata is the retained repository's, so a fabricated worktree registry
+// entry naming an arbitrary external checkout is refused (#3724 review).
+func rejectUntrustedSwitchTarget(local *execenv.LocalExecutionEnvironment, target string) error {
+	policy := local.Sandbox
+	if policy == nil || target == "" {
+		return nil
+	}
+	layout, err := sandbox.ClassifyWorkspace(target)
+	if err != nil {
+		return fmt.Errorf("%w: classify switch target %s: %v", errUntrustedWorktreeProject, target, err)
+	}
+	trusted := trustedMainRoot(local, policy)
+	if policy.Git.Kind == sandbox.NonGit && !identifier.PathUnder(filepath.Clean(layout.WorktreeRoot), trusted) {
+		return fmt.Errorf("%w: switch target %s is outside the non-git workspace %s", errUntrustedWorktreeProject, layout.WorktreeRoot, trusted)
+	}
+	metadata, err := gitMetadataPaths(layout)
+	if err != nil {
+		return fmt.Errorf("%w: resolve switch target metadata at %s: %v", errUntrustedWorktreeProject, target, err)
+	}
+	trustedMetadata := trustedMetadataRoots(policy, trusted)
+	for _, path := range metadata {
+		resolved, err := resolveMetadataPath(path)
+		if err != nil {
+			return fmt.Errorf("%w: resolve switch target metadata %s: %v", errUntrustedWorktreeProject, path, err)
+		}
+		if !identifier.PathUnderAny(resolved, trustedMetadata) {
+			return fmt.Errorf("%w: switch target metadata %s escapes the retained workspace", errUntrustedWorktreeProject, resolved)
+		}
+	}
+	return nil
+}
+
+// gitMetadataPaths lists the Git metadata paths the control policy will use
+// from layout, including the worktree registry grant ControlPolicy adds, plus a
+// commondir redirection git reads but ClassifyWorkspace does not follow.
+// Missing leaves stay in the list: resolveMetadataPath walks their existing
+// prefix, so a symlinked parent is still caught.
+func gitMetadataPaths(layout sandbox.GitLayout) ([]string, error) {
+	paths := []string{layout.GitDir, layout.CommonDir}
+	paths = append(paths, layout.WritablePaths...)
+	paths = append(paths, layout.ReadGrantPaths...)
+	if layout.CommonDir != "" {
+		paths = append(paths, filepath.Join(layout.CommonDir, "worktrees"))
+	}
+	if layout.GitDir == "" {
+		return paths, nil
+	}
+	data, err := os.ReadFile(filepath.Join(layout.GitDir, "commondir"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return paths, nil
+		}
+		return nil, err
+	}
+	common := strings.TrimSpace(string(data))
+	if common == "" {
+		return paths, nil
+	}
+	if !filepath.IsAbs(common) {
+		// Concatenate rather than Join: Join would collapse ".." lexically,
+		// while git resolves ".." after following a symlinked component.
+		common = layout.GitDir + string(filepath.Separator) + common
+	}
+	resolved, err := filepath.EvalSymlinks(common)
+	if err != nil {
+		return nil, err
+	}
+	return append(paths, resolved), nil
+}
+
+// resolveMetadataPath resolves path's existing symlinks, walking up past
+// components that do not exist yet so a symlinked ancestor is still followed. A
+// dangling symlink cannot be resolved safely and is an error.
+func resolveMetadataPath(path string) (string, error) {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved, nil
+	}
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("dangling symlink %s", path)
+		}
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	parent := filepath.Dir(path)
+	if parent == path {
+		return filepath.Clean(path), nil
+	}
+	resolvedParent, err := resolveMetadataPath(parent)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(resolvedParent, filepath.Base(path)), nil
+}
+
+// trustedMetadataRoots returns the roots the retained layout trusts for Git
+// metadata: the trusted main root plus, for a Git layout, its own worktree and
+// git dirs. A NonGit layout was resolved before any Git metadata existed, so
+// only its workspace is trusted. These are the retained, resolved strings:
+// re-resolving them now would let a session-planted symlink make an external
+// target its own trust anchor.
+func trustedMetadataRoots(policy *sandbox.ResolvedPolicy, trustedMain string) []string {
+	roots := []string{trustedMain}
+	if policy.Git.Kind == sandbox.NonGit {
+		return roots
+	}
+	for _, root := range []string{policy.Git.WorktreeRoot, policy.Git.GitDir} {
+		if root != "" {
+			roots = append(roots, filepath.Clean(root))
+		}
+	}
+	for _, root := range policy.Git.ReadGrantPaths {
+		if root != "" {
+			roots = append(roots, filepath.Clean(root))
+		}
+	}
+	return roots
 }
 
 // trustedMainRoot returns the main repository root the retained sandbox layout
@@ -497,15 +658,15 @@ func rejectUntrustedMainRoot(local *execenv.LocalExecutionEnvironment, mainRepoR
 func trustedMainRoot(local *execenv.LocalExecutionEnvironment, policy *sandbox.ResolvedPolicy) string {
 	switch policy.Git.Kind {
 	case sandbox.MainCheckout, sandbox.Submodule:
-		return canonicalOrClean(policy.Git.WorktreeRoot)
+		return filepath.Clean(policy.Git.WorktreeRoot)
 	case sandbox.LinkedWorktree:
-		return canonicalOrClean(filepath.Dir(policy.Git.CommonDir))
+		return filepath.Clean(filepath.Dir(policy.Git.CommonDir))
 	default:
 		workspace := policy.Git.WorktreeRoot
 		if workspace == "" {
 			workspace = local.WorkingDirectory()
 		}
-		return canonicalOrClean(workspace)
+		return filepath.Clean(workspace)
 	}
 }
 

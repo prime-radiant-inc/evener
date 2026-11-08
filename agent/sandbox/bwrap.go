@@ -405,12 +405,7 @@ func bwrapWriteRoots(rp ResolvedPolicy) []string {
 
 // isUnderAnyRoot reports whether path is at or beneath any of roots.
 func isUnderAnyRoot(path string, roots []string) bool {
-	for _, r := range roots {
-		if r != "" && (path == r || identifier.PathUnder(path, r)) {
-			return true
-		}
-	}
-	return false
+	return identifier.PathUnderAny(path, roots)
 }
 
 // maskHandledByNamespace reports whether a masked path is already isolated by a
