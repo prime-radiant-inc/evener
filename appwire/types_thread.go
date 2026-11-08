@@ -646,6 +646,14 @@ type ThreadCapabilities struct {
 	// the hub can join such a page to its remote paging window; an
 	// older hub never sends it.
 	PageBefore bool `json:"pageBefore,omitempty"`
+	// VoiceArm advertises that the iPhone may offer voice for this session now:
+	// it is a live manager whose conversation provenance is authoritative for
+	// this instance, and this hub has an OpenAI voice instance with a
+	// credential. The hub owns the bit, so it refreshes with every read instead
+	// of a client-side preflight. FeatureSet.VoiceArmV1 marks a hub that
+	// stamps it; a client talking to a hub without that feature keeps the
+	// earlier behavior.
+	VoiceArm bool `json:"voiceArm,omitempty"`
 }
 
 // EvenerHookEventStatus describes a single hook event's registration state.

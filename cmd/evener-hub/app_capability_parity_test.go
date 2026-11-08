@@ -128,6 +128,11 @@ func TestCapabilityProjectionsMatchTheDaemonOracle(t *testing.T) {
 		"PageBefore":                 "the hub's own answer: it pages local and saved transcripts from a before position itself (hubPagesBefore)",
 		"VoicePresentationContextV1": "no original daemon has advertised voice support; cold/resume action guarantees are not evidence of that support",
 	}
+	// The hub's own answer, false for a cold session: the daemon never answers
+	// it, so both sides agree on false without the daemon vouching for it.
+	pastAgree := map[string]string{
+		"VoiceArm": "the hub's own answer (hubVoiceArm): false for a cold session, true only for a live, authoritative manager on a hub with a credentialed OpenAI instance",
+	}
 	cold := pastThreadCapabilities()
 	if cold.AskFence {
 		t.Fatal("cold capabilities invent ask fencing without original-daemon evidence")
@@ -135,7 +140,7 @@ func TestCapabilityProjectionsMatchTheDaemonOracle(t *testing.T) {
 	if cold.VoicePresentationContextV1 {
 		t.Fatal("cold capabilities invent voice support without an original-daemon advertisement")
 	}
-	assertCapabilityParity(t, "pastThreadCapabilities", daemon, cold, pastDiffer, nil)
+	assertCapabilityParity(t, "pastThreadCapabilities", daemon, cold, pastDiffer, pastAgree)
 
 	// A probed row mirrors the probe's captured set verbatim. The fallback for
 	// an unprobed row approximates action capabilities at the row's status, but
@@ -216,6 +221,9 @@ func TestCapabilityProjectionsMatchTheDaemonOracle(t *testing.T) {
 			continue
 		}
 		if _, listed := pastDiffer[name]; listed {
+			continue
+		}
+		if _, listed := pastAgree[name]; listed {
 			continue
 		}
 		t.Errorf("daemon oracle answers %s = false with no ledger entry anywhere — wire its seam in hubtest.WireCapabilitySeams, or record why every projection legitimately answers false", name)

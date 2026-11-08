@@ -1135,6 +1135,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 		Features: appwire.FeatureSet{
 			SessionTools:               cfg.HubID != "",
 			Voice:                      true,
+			VoiceArmV1:                 true,
 			VoicePresentationContextV1: true,
 			ThreadList:                 true,
 			ThreadTurnsList:            true,

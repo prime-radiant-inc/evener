@@ -901,9 +901,34 @@ func hubForkIdentityFenced(cfg hubcore.WebConfig, threadID string, owner forkThr
 func applyHubCapabilities(cfg hubcore.WebConfig, thread appwire.Thread) appwire.Thread {
 	thread = applyHubForkCapability(cfg, thread)
 	thread.Evener.Capabilities.PageBefore = hubPagesBefore(cfg, thread.Evener.Ref)
+	thread.Evener.Capabilities.VoiceArm = hubVoiceArm(cfg, thread)
 	thread.Evener.ArtifactsDir = hubArtifactsDir(cfg, thread.Evener.Ref)
 	thread.Evener.ScratchDir = hubScratchDir(cfg, thread.Evener.Ref)
 	return thread
+}
+
+// hubVoiceArm is the hub's answer to ThreadCapabilities.VoiceArm. It combines
+// the admission Arm applies to a session with this hub's OpenAI voice instance,
+// so every read carries the verdict a client would otherwise have to ask for
+// with a separate preflight. The provider list is only consulted once a session
+// passes admission, so the saved rows of a list pay one predicate walk.
+func hubVoiceArm(cfg hubcore.WebConfig, thread appwire.Thread) bool {
+	return voiceSessionRefusal(thread.Evener, thread.Evener.InstanceID) == "" && hubHasOpenAIVoice(cfg)
+}
+
+// hubHasOpenAIVoice reports whether this hub has an OpenAI voice instance that
+// can reach the Realtime endpoint.
+func hubHasOpenAIVoice(cfg hubcore.WebConfig) bool {
+	if cfg.Registry == nil {
+		return false
+	}
+	r := cfg.Registry.Get()
+	if r == nil {
+		return false
+	}
+	defaultName, _, _ := r.DefaultInstance()
+	_, err := pickOpenAIVoiceProvider(defaultName, r.Instances())
+	return err == nil
 }
 
 // hubArtifactsDir is the session's retained artifacts directory, announced on

@@ -1415,6 +1415,7 @@ Underlying Go kind: `string` (no struct fields).
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `voicePresentationContextV1` | bool | yes |  |
+| `voiceArmV1` | bool | yes |  |
 | `conversationProvenance` | bool | yes |  |
 | `voice` | bool | yes |  |
 | `sessionTools` | bool | yes |  |
@@ -4445,6 +4446,7 @@ Underlying Go kind: `string` (no struct fields).
 | `commandInput` | bool | yes |  |
 | `stopSubagent` | bool | yes |  |
 | `pageBefore` | bool | yes |  |
+| `voiceArm` | bool | yes |  |
 
 
 ### `ThreadClearParams`

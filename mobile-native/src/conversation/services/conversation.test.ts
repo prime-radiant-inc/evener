@@ -1121,6 +1121,47 @@ describe("ConversationService", () => {
 			expect(client.calls.filter((c) => c.method === "turn/start")).toHaveLength(1);
 		});
 
+		// voiceArm is the hub's per-session answer, stamped on reads and on the
+		// status frames it relays; a push that races the read must not drop it,
+		// or an eligible session loses its voice controls until the next read.
+		it.each([
+			["an armable session", { voiceArm: true }, true],
+			["a session that cannot arm", { voiceArm: false }, false],
+			["a hub that never says", {}, undefined],
+		] as const)("keeps voiceArm from a push during rehydration, from %s", async (_hub, stamp, expected) => {
+			const { client, service } = setup();
+			await service.open("ref-1");
+			service.subscribeNotifications(() => {});
+			let resolve!: (response: ThreadReadResponse) => void;
+			client.on(
+				"thread/read",
+				() =>
+					new Promise<ThreadReadResponse>((done) => {
+						resolve = done;
+					}),
+			);
+			const hydration = service.readProjection("ref-1");
+			await Promise.resolve();
+			client.emitNotification({
+				method: "thread/status/changed",
+				params: {
+					ref: "ref-1",
+					threadId: "thread-1",
+					status: { type: "active" },
+					capabilities: { ...ALL_TRUE_CAPS, ...stamp },
+				},
+			});
+			resolve(
+				makeReadResponse(
+					makeThread({
+						evener: { ref: "ref-1", capabilities: { ...ALL_TRUE_CAPS, ...stamp }, queue: { revision: 0 } },
+					}),
+				),
+			);
+			const hydrated = await hydration;
+			expect(hydrated.conversation.capabilities.voiceArm).toBe(expected);
+		});
+
 		it("uses the active capability set for mutations and rejects other thread updates", async () => {
 			const { client, service } = setup({
 				thread: makeThread({

@@ -87,6 +87,9 @@ api_key = "fakellm-not-a-secret"
 	if !e.Manager || !e.MutationStateAuthoritative || !e.Capabilities.VoicePresentationContextV1 || e.InstanceID == "" || e.ConversationProvenance == nil || e.ConversationProvenance.Authoritative || e.ConversationProvenance.InstanceID != e.InstanceID {
 		t.Fatalf("legacy restore did not reach the usable-manager/non-authoritative-provenance boundary: %+v", e)
 	}
+	if e.Capabilities.VoiceArm {
+		t.Fatal("legacy restore advertised voice arm")
+	}
 	t.Logf("real restored manager=%s mutationAuthority=true voiceCapability=true provenanceAuthority=false", e.InstanceID)
 	statusCode, statusRaw := voiceTestPost(ctx, t, stack, "/api/voice/status", stack.token, map[string]any{
 		"ref": ref, "expectedInstanceId": e.InstanceID,

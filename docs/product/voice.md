@@ -34,14 +34,14 @@ choose a target session or execute manager tools.
   same instance, before issuing a grant or replacing an existing binding. A
   restored legacy manager without that evidence remains usable through typed
   input, with its transcript intact, but cannot arm voice.
-  `POST /api/voice/status` answers the same admission checks without binding,
-  so the iPhone offers the voice bar only on a session that can arm now. The bar
-  answers from that preflight and stays hidden otherwise; an armed binding still
-  shows on every session so Talk and Stop keep working. While hidden the bar asks
-  again, so a saved manager that typed input resumes starts offering voice
-  without reopening the screen. A hub that predates the preflight keeps the
-  earlier behavior and still offers the bar. An OpenAI instance with no
-  credential does not count as support; Arm would refuse it at the endpoint.
+  The hub stamps `voiceArm` onto every thread read: the same admission checks
+  plus an OpenAI instance with a credential, so the iPhone offers the voice bar
+  only on a session that can arm now, and the verdict refreshes with the read a
+  saved manager publishes when typed input resumes it. An absent `voiceArm` (a
+  hub older than the capability) keeps the earlier behavior and still offers the
+  bar. An armed binding shows on every session so Talk and Stop keep working.
+  `POST /api/voice/status` answers the same checks without binding, for builds
+  that predate the capability.
   The scoped socket grant cannot dispatch general AppWire requests.
 - [`voiceBridge`](../../cmd/evener-hub/voice_bridge.go) accepts ordered utterance
   frames, waits for completed interpretation and uses ordinary `turn/start` or
