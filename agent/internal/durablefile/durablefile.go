@@ -20,10 +20,12 @@ import (
 // fsatomic.ErrPublished: the new contents are already visible at path and only
 // their durability is unconfirmed.
 //
-// The parent directory must exist. A failed write removes its temp file; a
-// crash between the create and the rename leaves a stray "<name>.tmp-*" file
-// behind, which is the cost of never reusing a name another process could
-// plant.
+// The parent directory must exist. Replace makes the file durable in that
+// directory; it does not sync the entries of directories the caller had to
+// create to get there, the same boundary fsatomic.Write documents. A failed
+// write removes its temp file; a crash between the create and the rename
+// leaves a stray "<name>.tmp-*" file behind, which is the cost of never
+// reusing a name another process could plant.
 func Replace(fs afero.Fs, path string, data []byte, perm os.FileMode) error {
 	return fsatomic.WriteFS(aferoFS{fs: fs}, path, data, perm)
 }
