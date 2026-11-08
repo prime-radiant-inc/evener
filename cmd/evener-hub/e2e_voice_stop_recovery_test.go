@@ -286,7 +286,18 @@ func TestE2E_VoiceSessionStopRenewQueuedReadStaysSingleFlight(t *testing.T) {
 	}
 	// Let the run loop process the second renew while the first read is held.
 	f.device.send(`{"type":"renew"}`)
-	time.Sleep(200 * time.Millisecond)
+	// Controls are processed in order. Once this receipt's durable update is
+	// visible, the run loop has already processed the renew sent before it and
+	// queued it behind the held read.
+	f.device.send(fmt.Sprintf(`{"type":"played","deliveryId":%q,"generation":%d,"itemId":%q,"samples":%d}`, old.ID, old.PresentationGeneration, item, 120))
+	f.waitDelivery(t, old.ID, func(d hubcore.SpeechDelivery) bool {
+		for _, received := range d.Items {
+			if received.ItemID == item {
+				return received.PlayedSamples == 120
+			}
+		}
+		return false
+	})
 	close(release)
 	select {
 	case <-second:
