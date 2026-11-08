@@ -162,7 +162,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 			Evener:        appwire.EvenerThread{Ref: ref, InstanceID: localSpawnInstanceID(entry, appwire.Thread{})},
 		}
 		thread = applyHubCapabilities(cfg, thread)
-		annotateThreadProjects([]appwire.Thread{thread})
+		thread = annotateThreadProject(thread)
 		return appwire.ThreadStartResponse{Thread: thread}, nil
 	}
 	startEpoch := sessionRecoveryState(cfg, ref, "").Epoch
@@ -197,7 +197,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	expectedInstanceID := localSpawnInstanceID(entry, threadResp.Thread)
 	createdInstanceID = expectedInstanceID
 	threadResp.Thread = applyHubCapabilities(cfg, threadResp.Thread)
-	annotateThreadProjects([]appwire.Thread{threadResp.Thread})
+	threadResp.Thread = annotateThreadProject(threadResp.Thread)
 	turn := appwire.Turn{}
 	if len(params.Input) > 0 {
 		// Gate the initial input on the capability the spawned session's own read
@@ -806,7 +806,7 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 			if err != nil {
 				return appwire.ThreadResumeResponse{}, appwire.Unavailable(errors.Join(refreshErr, err).Error())
 			}
-			annotateThreadProjects([]appwire.Thread{read.Thread})
+			read.Thread = annotateThreadProject(read.Thread)
 			read.Thread = applyHubCapabilities(cfg, read.Thread)
 			return appwire.ThreadResumeResponse{Thread: read.Thread}, nil
 		}
@@ -1038,7 +1038,7 @@ func hubResumedThreadResponse(ctx context.Context, cfg hubcore.WebConfig, source
 	if err != nil {
 		return appwire.ThreadResumeResponse{}, err
 	}
-	annotateThreadProjects([]appwire.Thread{threadResp.Thread})
+	threadResp.Thread = annotateThreadProject(threadResp.Thread)
 	threadResp.Thread = applyHubCapabilities(cfg, threadResp.Thread)
 	return appwire.ThreadResumeResponse{Thread: threadResp.Thread}, nil
 }

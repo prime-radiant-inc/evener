@@ -195,6 +195,7 @@ func unavailableThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, s
 			matches = thread.Evener.Ref == params.Ref || localAppRef(thread.ID) == params.Ref
 		}
 		if matches && thread.Status.Type == appwire.ThreadStatusRestartRequired {
+			thread = annotateThreadProject(thread)
 			thread = applyHubCapabilities(cfg, thread)
 			return appwire.ThreadReadResponse{Thread: thread}, true, nil
 		}
@@ -1338,9 +1339,7 @@ func projectPastEntryThread(ctx context.Context, cfg hubcore.WebConfig, entry hu
 		thread = reconcileAndEnrichPastThread(entry, thread)
 	}
 	if projection.projects {
-		annotated := []appwire.Thread{thread}
-		annotateThreadProjects(annotated)
-		thread = annotated[0]
+		thread = annotateThreadProject(thread)
 	}
 	return thread, nil
 }

@@ -629,6 +629,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		if page.PendingAskPage == nil {
 			return appwire.ThreadReadResponse{}, appwire.Unavailable("the target returned no pending ask page")
 		}
+		page.Thread = annotateThreadProject(page.Thread)
 		page.Thread = applyHubCapabilities(cfg, page.Thread)
 		page.RequestGeneration = params.RequestGeneration
 		return page, nil
@@ -769,7 +770,6 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 			resp.LatestExecutionTurnID = pastPage.LatestExecutionTurnID
 			resp = withReadHistoryIdentity(resp, fallbackHistoryIdentity(read.response, *pastPage))
 			resp.Thread = enrichSourcedThreadImages(source, resp.Thread)
-			annotateThreadProjects([]appwire.Thread{resp.Thread})
 		} else {
 			latestExecutionTurnID := resp.LatestExecutionTurnID
 			candidates, candidateErr := sourceItemCandidateResultForRead(ctx, source, params, resp)
@@ -783,7 +783,6 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 				// with no route on them (the daemon does not serve the bytes; this
 				// hub does), so route stamping stays inside the final packer.
 				response.Thread = enrichSourcedThreadImages(source, response.Thread)
-				annotateThreadProjects([]appwire.Thread{response.Thread})
 				return response, nil
 			}, itemLimit)
 			if packErr != nil {
@@ -800,8 +799,11 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		// so the route is stamped here before the file-backed pass adds any
 		// /doc/image descriptors of its own.
 		resp.Thread = enrichSourcedThreadImages(source, resp.Thread)
-		annotateThreadProjects([]appwire.Thread{resp.Thread})
 	}
+	// Canonical project identity belongs to the final response: stamping it
+	// once here covers the live item page, the saved item-page merge and the
+	// lean read, and stops the packer re-resolving it on every shrink.
+	resp.Thread = annotateThreadProject(resp.Thread)
 	// Local forks copy persisted history in the hub. A live daemon's
 	// own unsupported fork flag does not describe this hub-owned action.
 	resp.Thread = applyHubCapabilities(cfg, resp.Thread)
