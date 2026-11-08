@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -56,6 +57,12 @@ const (
 	memHarnessCheckModel              = "model"
 )
 
+// memHarnessInlineOutputBudget is the shell ride-whole threshold: the agent
+// keeps completed shell output at or below this size inline and journals
+// anything larger. The verifier may accept inline bytes only under that
+// budget, so an oversized scripted result must name the journal that holds it.
+const memHarnessInlineOutputBudget = 8 * 1024
+
 // memHarnessExpectedRound is one scripted model round of a turn and what the
 // transcript must hold for it.
 type memHarnessExpectedRound struct {
@@ -99,10 +106,10 @@ type memHarnessTranscriptExpectation struct {
 	TolerateExtraToolRounds bool
 }
 
-// memHarnessVerifyFailure is the verifier's structured evidence: which check
+// memHarnessVerifyFailureError is the verifier's structured evidence: which check
 // failed, for which turn/mutation/round, and what was expected against what was
 // recorded. Negative tests assert these fields rather than copy.
-type memHarnessVerifyFailure struct {
+type memHarnessVerifyFailureError struct {
 	Check            string
 	TurnID           string
 	ClientMutationID string
@@ -111,7 +118,7 @@ type memHarnessVerifyFailure struct {
 	Got              string
 }
 
-func (e *memHarnessVerifyFailure) Error() string {
+func (e *memHarnessVerifyFailureError) Error() string {
 	var b strings.Builder
 	b.WriteString("memory harness transcript verification failed: ")
 	b.WriteString(e.Check)
@@ -131,7 +138,7 @@ func (e *memHarnessVerifyFailure) Error() string {
 }
 
 func memHarnessFail(check, turnID, mutationID string, round int, want, got string) error {
-	return &memHarnessVerifyFailure{Check: check, TurnID: turnID, ClientMutationID: mutationID, Round: round, Want: want, Got: got}
+	return &memHarnessVerifyFailureError{Check: check, TurnID: turnID, ClientMutationID: mutationID, Round: round, Want: want, Got: got}
 }
 
 type memHarnessInputRecord struct {
@@ -208,7 +215,7 @@ type memHarnessToolState struct {
 }
 
 // memHarnessVerifyTranscript decodes the whole transcript at path and checks it
-// against want. It returns a *memHarnessVerifyFailure naming the first mismatch.
+// against want. It returns a *memHarnessVerifyFailureError naming the first mismatch.
 func memHarnessVerifyTranscript(ctx context.Context, path string, want memHarnessTranscriptExpectation) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -242,7 +249,7 @@ func memHarnessVerifyTranscript(ctx context.Context, path string, want memHarnes
 			return memHarnessFail(memHarnessCheckInputMissing, expected.TurnID, expected.ClientMutationID, -1, "one recorded input", "none")
 		case 1:
 		default:
-			return memHarnessFail(memHarnessCheckInputDuplicate, expected.TurnID, expected.ClientMutationID, -1, "one recorded input", fmt.Sprintf("%d", len(turn)))
+			return memHarnessFail(memHarnessCheckInputDuplicate, expected.TurnID, expected.ClientMutationID, -1, "one recorded input", strconv.Itoa(len(turn)))
 		}
 		input := turn[0]
 		turnID := expected.TurnID
@@ -260,7 +267,7 @@ func memHarnessVerifyTranscript(ctx context.Context, path string, want memHarnes
 		}
 		previousSeq = input.Seq
 		if want.RequireUniqueInputText && view.inputTexts[expected.InputText] != 1 {
-			return memHarnessFail(memHarnessCheckInputTextDuplicate, turnID, expected.ClientMutationID, -1, "one recorded input with this text", fmt.Sprintf("%d", view.inputTexts[expected.InputText]))
+			return memHarnessFail(memHarnessCheckInputTextDuplicate, turnID, expected.ClientMutationID, -1, "one recorded input with this text", strconv.Itoa(view.inputTexts[expected.InputText]))
 		}
 
 		if err := memHarnessVerifyCompletion(view, turnID, input.Seq, expected.ClientMutationID); err != nil {
@@ -296,7 +303,7 @@ func memHarnessVerifyCompletion(view memHarnessTranscriptView, turnID string, in
 		return memHarnessFail(memHarnessCheckCompletionMissing, turnID, mutationID, -1, string(schema.TurnCompleted), "none")
 	case 1:
 	default:
-		return memHarnessFail(memHarnessCheckCompletionMultiple, turnID, mutationID, -1, "one completion", fmt.Sprintf("%d", len(completions)))
+		return memHarnessFail(memHarnessCheckCompletionMultiple, turnID, mutationID, -1, "one completion", strconv.Itoa(len(completions)))
 	}
 	completion := completions[0]
 	if completion.Seq <= inputSeq {
@@ -315,10 +322,10 @@ func memHarnessVerifyToolRounds(view memHarnessTranscriptView, want memHarnessTr
 	wantEntries := len(expected.Rounds) + 1
 	if want.TolerateExtraToolRounds {
 		if len(entries) < wantEntries {
-			return memHarnessFail(memHarnessCheckToolRounds, turnID, expected.ClientMutationID, -1, fmt.Sprintf("at least %d tool-result entries", wantEntries), fmt.Sprintf("%d", len(entries)))
+			return memHarnessFail(memHarnessCheckToolRounds, turnID, expected.ClientMutationID, -1, fmt.Sprintf("at least %d tool-result entries", wantEntries), strconv.Itoa(len(entries)))
 		}
 	} else if len(entries) != wantEntries {
-		return memHarnessFail(memHarnessCheckToolRounds, turnID, expected.ClientMutationID, -1, fmt.Sprintf("%d tool-result entries", wantEntries), fmt.Sprintf("%d", len(entries)))
+		return memHarnessFail(memHarnessCheckToolRounds, turnID, expected.ClientMutationID, -1, fmt.Sprintf("%d tool-result entries", wantEntries), strconv.Itoa(len(entries)))
 	}
 	for round, expectedRound := range expected.Rounds {
 		if round >= len(entries) {
@@ -365,6 +372,9 @@ func memHarnessVerifyShellOutput(want memHarnessTranscriptExpectation, turnID, m
 	// proves the recorded bytes still hold it.
 	middle := memHarnessMiddleBytes(expected)
 	if state.JobID == "" {
+		if len(expected) > memHarnessInlineOutputBudget {
+			return memHarnessFail(memHarnessCheckToolOutputFull, turnID, mutationID, round, fmt.Sprintf("a job journal for %d recorded output bytes above the %d-byte inline budget", len(expected), memHarnessInlineOutputBudget), "no job_id")
+		}
 		if !strings.Contains(content, string(middle)) {
 			return memHarnessFail(memHarnessCheckToolOutputMiddle, turnID, mutationID, round, fmt.Sprintf("inline output holding %q", middle), memHarnessClip(content))
 		}
@@ -431,7 +441,7 @@ func memHarnessDigestEdges(b []byte) (head, tail string) {
 
 func memHarnessFirstDifference(got, want []byte) int {
 	n := min(len(got), len(want))
-	for i := 0; i < n; i++ {
+	for i := range n {
 		if got[i] != want[i] {
 			return i
 		}
@@ -848,7 +858,17 @@ func TestMemHarnessVerifierRejectsAuthorshipMismatches(t *testing.T) {
 			},
 			check: memHarnessCheckToolOutputFull,
 			round: 1,
-			want:  fmt.Sprintf("%d recorded output bytes", len(memHarnessShellOutput(4096))),
+		},
+		{
+			name: "oversized inline output without its journal",
+			mutate: func(f *memHarnessFixture) {
+				oversized := memHarnessShellOutput(memHarnessInlineOutputBudget + 1)
+				f.entries[2].Turn.Message.Content[0].ToolResult.Content = string(oversized)
+				f.entries[2].Turn.Message.Content[0].ToolResult.ToolState = nil
+				f.expect.Turns[0].Rounds[0].ShellOutput = oversized
+			},
+			check: memHarnessCheckToolOutputFull,
+			round: 0,
 		},
 		{
 			name: "missing protocol identity",
@@ -885,7 +905,6 @@ func TestMemHarnessVerifierRejectsAuthorshipMismatches(t *testing.T) {
 			},
 			check: memHarnessCheckToolRounds,
 			round: -1,
-			want:  "3 tool-result entries",
 		},
 	}
 	for _, tc := range tests {
@@ -897,7 +916,7 @@ func TestMemHarnessVerifierRejectsAuthorshipMismatches(t *testing.T) {
 			if err == nil {
 				t.Fatal("verifier accepted a transcript it must reject")
 			}
-			failure, ok := err.(*memHarnessVerifyFailure)
+			failure, ok := errors.AsType[*memHarnessVerifyFailureError](err)
 			if !ok {
 				t.Fatalf("failure not structured: %T %v", err, err)
 			}

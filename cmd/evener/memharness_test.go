@@ -374,7 +374,7 @@ func (s *memHarnessTurnStates) wait(d time.Duration) {
 // is not part of the daemon's own reply, so this also requires a live-daemon
 // boot generation and rejects a daemonless/saved read. Absence is only trusted
 // from a read that passes both.
-func memHarnessAuthoritativeRead(t *testing.T, ctx context.Context, client *appwire.Client, ref string, includeTurns bool, itemLimit int) appwire.ThreadReadResponse {
+func memHarnessAuthoritativeRead(ctx context.Context, t *testing.T, client *appwire.Client, ref string, includeTurns bool, itemLimit int) appwire.ThreadReadResponse {
 	t.Helper()
 	resp, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: includeTurns, ItemLimit: itemLimit})
 	if err != nil {
@@ -609,7 +609,7 @@ func TestMemHarness(t *testing.T) {
 			if !time.Now().Before(nextRead) {
 				// Push recovery: a missing history/updated still settles from
 				// the live daemon's authoritative snapshot.
-				resp := memHarnessAuthoritativeRead(t, ctx, client, ref, true, appwire.TranscriptItemPageLimit)
+				resp := memHarnessAuthoritativeRead(ctx, t, client, ref, true, appwire.TranscriptItemPageLimit)
 				for _, turn := range resp.Thread.Turns {
 					switch turn.Status {
 					case appwire.TurnStatusCompleted, appwire.TurnStatusFailed, appwire.TurnStatusInterrupted:
@@ -622,10 +622,7 @@ func TestMemHarness(t *testing.T) {
 			if time.Now().After(deadline) {
 				t.Fatalf("%s: no recorded completion for turn %s", what, turnID)
 			}
-			wait := time.Until(deadline)
-			if wait > 500*time.Millisecond {
-				wait = 500 * time.Millisecond
-			}
+			wait := min(time.Until(deadline), 500*time.Millisecond)
 			states.wait(wait)
 		}
 	}
@@ -654,7 +651,7 @@ func TestMemHarness(t *testing.T) {
 		t.Helper()
 		deadline := time.Now().Add(10 * time.Second)
 		for {
-			resp := memHarnessAuthoritativeRead(t, ctx, client, ref, false, 0)
+			resp := memHarnessAuthoritativeRead(ctx, t, client, ref, false, 0)
 			owned := ""
 			for _, id := range resp.Thread.Evener.Queue.ClientMutationIDs {
 				if ownedMutations[id] {

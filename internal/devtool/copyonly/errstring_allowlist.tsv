@@ -206,7 +206,6 @@ cmd/evener-internalcheck/coverage_test.go	1
 cmd/evener/internal/launchcheck/coverage_test.go	4
 cmd/evener/internal/launchcheck/launchcheck_test.go	8
 cmd/evener/internal/rvreg/rvreg_test.go	3
-cmd/evener/memharness_test.go	1
 cmd/evener/run_ask_responder_test.go	1
 cmd/evener/run_drain_wedged_delegate_test.go	1
 cmd/evener/serve_test.go	1
