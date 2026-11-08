@@ -16,6 +16,7 @@ import (
 
 	"primeradiant.com/evener/agent/internal/runetrim"
 
+	"primeradiant.com/evener/agent/internal/mdfence"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/internal/tool/repair"
 	"primeradiant.com/evener/agent/internal/turnwindow"
@@ -1674,38 +1675,10 @@ func writeResultBody(b *strings.Builder, content any, full bool) {
 // fence at least one backtick longer than the longest backtick run in the body.
 func writeFencedBody(b *strings.Builder, body string, full bool) {
 	body = truncateBody(body, full)
-	fence := bodyFence(body)
+	fence := mdfence.Pick(body)
 	fmt.Fprintf(b, "  %s\n", fence)
 	b.WriteString(body)
 	fmt.Fprintf(b, "  %s\n", fence)
-}
-
-// minFenceBackticks is the minimum fenced-code-block fence length (CommonMark).
-const minFenceBackticks = 3
-
-// bodyFence returns a backtick fence guaranteed not to be closed by any backtick
-// run inside body: one backtick longer than the longest run found, never fewer
-// than minFenceBackticks.
-func bodyFence(body string) string {
-	n := max(longestBacktickRun(body)+1, minFenceBackticks)
-	return strings.Repeat("`", n)
-}
-
-// longestBacktickRun returns the length of the longest run of consecutive
-// backtick characters in s (0 if there are none).
-func longestBacktickRun(s string) int {
-	longest, run := 0, 0
-	for _, r := range s {
-		if r == '`' {
-			run++
-			if run > longest {
-				longest = run
-			}
-			continue
-		}
-		run = 0
-	}
-	return longest
 }
 
 // truncateBody returns the indented body text for a result code block. Empty
