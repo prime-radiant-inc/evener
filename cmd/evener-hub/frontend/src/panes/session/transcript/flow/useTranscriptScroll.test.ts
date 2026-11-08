@@ -1958,10 +1958,11 @@ describe("jumpToBottom landing reliability", () => {
     act(() => {
       el.dispatchEvent(touchEvent("touchstart", 400));
       el.dispatchEvent(touchEvent("touchmove", 460));
-      // The finger lifts outside the document, so this port never sees
-      // touchend - but the browser still delivers the implicitly captured
-      // touch pointer's up here. Without that clear the recorded Y survives
-      // and the next move that reaches this port is fabricated into a mark.
+      // A touch's start target can leave the tree mid-gesture (VirtualList
+      // unmounts rows under the finger), so its touchend never reaches this
+      // port while the pointer end still can. Without that clear the recorded
+      // Y survives and the next move that reaches this port is fabricated into
+      // a mark.
       el.dispatchEvent(new Event("scroll"));
       el.dispatchEvent(pointerEvent("pointerup", { pointerType: "touch", button: 0, buttons: 0, isPrimary: true }));
     });
