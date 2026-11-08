@@ -8,11 +8,12 @@ import (
 )
 
 type Turn struct {
-	ID        string        `json:"id"`
-	Items     []ThreadItem  `json:"items,omitempty"`
-	ItemsView TurnItemsView `json:"itemsView"`
-	Status    string        `json:"status"`
-	Error     *TurnError    `json:"error,omitempty"`
+	ID        string             `json:"id"`
+	Items     []ThreadItem       `json:"items,omitempty"`
+	ItemsView TurnItemsView      `json:"itemsView"`
+	Elision   *ThreadTurnElision `json:"elision,omitempty"`
+	Status    string             `json:"status"`
+	Error     *TurnError         `json:"error,omitempty"`
 	// Version is the highest contributing entry ordinal + 1 (0 means an
 	// overlay-only turn with no recorded history yet).
 	Version uint64 `json:"version,omitempty"`
@@ -199,6 +200,10 @@ type ThreadItem struct {
 	Description            string                        `json:"description,omitempty"`
 	Output                 string                        `json:"output,omitempty"`
 	Error                  string                        `json:"error,omitempty"`
+	Truncated              bool                          `json:"truncated,omitempty"`
+	TruncatedBytes         int                           `json:"truncatedBytes,omitempty"`
+	InFlight               bool                          `json:"inFlight,omitempty"`
+	FetchCursor            string                        `json:"fetchCursor,omitempty"`
 	// OutputImages is omitzero; see the nil-vs-empty rule in output_images.go.
 	// Images stays omitempty: nothing removes an item's input images.
 	OutputImages []OutputImage `json:"outputImages,omitzero"`
@@ -386,8 +391,9 @@ func (p ThreadReadParams) ValidateAnswerContinuation() error {
 }
 
 type ThreadReadResponse struct {
-	Thread         Thread          `json:"thread"`
-	PendingAskPage *PendingAskPage `json:"pendingAskPage,omitempty"`
+	Thread         Thread              `json:"thread"`
+	PendingAskPage *PendingAskPage     `json:"pendingAskPage,omitempty"`
+	Window         *ThreadWindowResult `json:"window,omitempty"`
 	// TargetSessionToolsSupported reports whether the daemon serving this thread
 	// negotiated session tools. Omission means the serving hub cannot attest it.
 	TargetSessionToolsSupported *bool `json:"targetSessionToolsSupported,omitempty"`
@@ -621,8 +627,9 @@ type ThreadTurnsListParams struct {
 // generation: backfill pages accumulate within their snapshot in any arrival
 // order, and only latest-window reads are ordered by generation.
 type ThreadTurnsListResponse struct {
-	Data       []Turn `json:"data"`
-	NextCursor string `json:"nextCursor,omitempty"`
+	Data       []Turn              `json:"data"`
+	NextCursor string              `json:"nextCursor,omitempty"`
+	Window     *ThreadWindowResult `json:"window,omitempty"`
 	// BootGeneration is the serving daemon's boot generation for this thread,
 	// as on ThreadReadResponse. See CompareBootGeneration.
 	BootGeneration string `json:"bootGeneration,omitempty"`
@@ -634,6 +641,37 @@ type ThreadTurnsListResponse struct {
 	// Authoritative is true when this page can settle uncertain state; see
 	// ThreadReadResponse.Authoritative.
 	Authoritative bool `json:"authoritative,omitempty"`
+}
+
+type ThreadTurnElision struct {
+	ExcludedByType                     map[string]int `json:"excludedByType,omitempty"`
+	CapWithheld                        int            `json:"capWithheld,omitempty"`
+	TruncatedBeyondCursorLimit         int            `json:"truncatedBeyondCursorLimit,omitempty"`
+	ElidedBeyondCursorLimit            int            `json:"elidedBeyondCursorLimit,omitempty"`
+	ContinuationCursor                 string         `json:"continuationCursor,omitempty"`
+	TypeExcludedRecovery               string         `json:"typeExcludedRecovery,omitempty"`
+	CapWithheldRecovery                string         `json:"capWithheldRecovery,omitempty"`
+	TruncatedBeyondCursorLimitRecovery string         `json:"truncatedBeyondCursorLimitRecovery,omitempty"`
+	ElidedBeyondCursorLimitRecovery    string         `json:"elidedBeyondCursorLimitRecovery,omitempty"`
+}
+
+const (
+	ThreadElisionRecoveryWiderItemTypes = "reread-wider-item-types"
+	ThreadElisionRecoveryContinuation   = "continuation"
+	ThreadElisionRecoveryWiderByteBound = "reread-wider-byte-bound"
+)
+
+type ThreadWindowResult struct {
+	EffectiveBudgetBytes int    `json:"effectiveBudgetBytes"`
+	AppliedBy            string `json:"appliedBy"`
+	ServedTurns          int    `json:"servedTurns"`
+	WithheldTurns        int    `json:"withheldTurns"`
+	FirstServedTurnID    string `json:"firstServedTurnId,omitempty"`
+	LastServedTurnID     string `json:"lastServedTurnId,omitempty"`
+	FirstWithheldTurnID  string `json:"firstWithheldTurnId,omitempty"`
+	LastWithheldTurnID   string `json:"lastWithheldTurnId,omitempty"`
+	TrimmedEnd           string `json:"trimmedEnd,omitempty"`
+	ContinuationCursor   string `json:"continuationCursor,omitempty"`
 }
 
 func (p *ThreadTurnsListParams) UnmarshalJSON(data []byte) error {
