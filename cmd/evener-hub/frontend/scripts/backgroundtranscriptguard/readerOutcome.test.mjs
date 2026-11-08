@@ -46,6 +46,16 @@ const readRes = (connection, id, cursor, turns) =>
     id,
     result: { olderCursor: cursor, ...(turns === undefined ? {} : { thread: { turns } }) },
   });
+const readResWithSnapshot = (connection, id, cursor, turns, length, generation) =>
+  frame(connection, "hub_to_browser", {
+    id,
+    result: {
+      olderCursor: cursor,
+      requestGeneration: generation,
+      snapshot: { incarnation: "inc_a", length },
+      ...(turns === undefined ? {} : { thread: { turns } }),
+    },
+  });
 const sameConnPath = path.join(scratchRoot, "same-connection.jsonl");
 const newConnPath = path.join(scratchRoot, "new-connection.jsonl");
 writeFileSync(
@@ -403,11 +413,13 @@ describe("finding 1: reconnect window", () => {
 //
 // A window-capped read can stop in the middle of a turn. After a reconnect the
 // first new-connection read then ends at item_user_247 and the follow-up read
-// starts at entry 248 of the same turn_m50. The entry route merges the
-// follow-up into the history it holds and keeps the older edge (cursor 243),
-// so the applied turn_m50 is the ordered union of both reads, not either
-// read's own window. The comparison must accept that merge while still
-// rejecting a model that applied only one of the two reads, lost content, or
+// starts at entry 248 of the same turn_m50. The entry route normally merges the
+// follow-up into the history it holds and keeps the older edge (cursor 243), so
+// the applied turn_m50 is the ordered union of both reads. But a reconciling
+// follow-up whose window starts above the cached shell's anchor REPLACES the
+// loaded pages (applyCacheGapRule), leaving the follow-up's own cursor (248) and
+// exactly its window. The comparison must accept the merge and the replacement,
+// while still rejecting a model that ignored the follow-up, lost content, or
 // reordered it.
 describe("finding 1b: overlapping partial-turn reads on the reconnect connection", () => {
   const before = { readResponses: 1, connections: ["conn-1"] };
@@ -527,8 +539,77 @@ describe("finding 1b: overlapping partial-turn reads on the reconnect connection
     expect(validate(initialReplacementDomain()).appliedMatches).toBe(false);
   });
 
-  test("RED: a follow-up window that replaced the reconnect read is rejected", () => {
-    expect(validate(followUpOnlyDomain()).appliedMatches).toBe(false);
+  test("repaired: a same-connection follow-up that replaced the window is accepted", () => {
+    // applyCacheGapRule (stores/cacheLifetime.ts) replaces the loaded pages when a
+    // same-connection reconciling read's window starts above the cached shell's
+    // anchor; readDisposition does the same for an invalidated history. The model
+    // then carries that read's cursor and exactly its window, so a new-connection
+    // read WAS applied and the reconnect observation is satisfied.
+    const domain = followUpOnlyDomain();
+    expect(domain.cursor).toBe("248");
+    expect(validate(domain).appliedMatches).toBe(true);
+  });
+
+  test("control: a follow-up cursor does not excuse a model missing the follow-up's content", () => {
+    const domain = followUpOnlyDomain();
+    const items = domain.items.filter((item) => item.id !== "item_agent_250");
+    expect(validate({ ...domain, items }).appliedMatches).toBe(false);
+  });
+
+  test("repaired: a stale shorter follow-up does not displace the applied longer read", () => {
+    // Responses can arrive out of order. applyReadResponse discards a
+    // same-incarnation response whose snapshot is shorter than the one already
+    // applied, so the model correctly keeps the longer read even though the
+    // shorter response is last in the trace. The validator must use the same
+    // length ordering, not trace position.
+    const stalePath = path.join(scratchRoot, "stale-shorter-follow-up.jsonl");
+    writeFileSync(
+      stalePath,
+      [
+        readReq("conn-1", 1),
+        readRes("conn-1", 1, "c1"),
+        readReq("conn-2", 1),
+        readResWithSnapshot("conn-2", 1, "243", [olderTurn, gapHead], 100),
+        readReq("conn-2", 2),
+        readResWithSnapshot("conn-2", 2, "248", [gapTail, afterTurn], 200),
+        readReq("conn-2", 3),
+        readResWithSnapshot("conn-2", 3, "247", [gapHead], 150),
+      ].join("\n"),
+    );
+    const domain = followUpOnlyDomain();
+    const check = guard.reconnectValidator(before, guard.targetPagingEvidence(REF, stalePath), {
+      cursor: domain.cursor,
+      domain,
+    });
+    expect(check.newConnectionReads).toBe(3);
+    expect(check.appliedMatches).toBe(true);
+  });
+
+  test("repaired: an out-of-order stale longer read does not displace the newer generation", () => {
+    // The client issues gen 1 (longer window) then gen 2 (shorter, newer
+    // snapshot). gen 2's response lands first and is applied; gen 1's older
+    // response arrives last and readDisposition DISCARDS it by generation even
+    // though its snapshot is longer. The trace's response order therefore ends
+    // on a read the product never applied, so the applied read must be chosen
+    // by generation before length.
+    const tracePath = path.join(scratchRoot, "stale-longer-generation.jsonl");
+    writeFileSync(
+      tracePath,
+      [
+        readReq("conn-1", 1),
+        readRes("conn-1", 1, "c1"),
+        readReq("conn-2", 1),
+        readReq("conn-2", 2),
+        readResWithSnapshot("conn-2", 2, "248", [gapTail, afterTurn], 200, 2),
+        readResWithSnapshot("conn-2", 1, "243", [olderTurn, gapHead], 300, 1),
+      ].join("\n"),
+    );
+    const domain = followUpOnlyDomain();
+    const check = guard.reconnectValidator(before, guard.targetPagingEvidence(REF, tracePath), {
+      cursor: domain.cursor,
+      domain,
+    });
+    expect(check.appliedMatches).toBe(true);
   });
 
   test("RED: the merged turn's items reordered are rejected", () => {
