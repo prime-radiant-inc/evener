@@ -625,6 +625,7 @@ describe("AppwireClient", () => {
     };
     const params = {
       ref: thread.evener.ref,
+      includeTurns: false,
       expectedAskRevision: 0,
       expectedAskBootGeneration: "4",
       offset: 0,
@@ -708,7 +709,7 @@ describe("AppwireClient", () => {
       thread,
       pendingAskPage: { composites: [], total: 0, calllessCount: 0 },
     } satisfies ThreadReadResponse;
-    const response = client.request("thread/read", { ref: thread.evener.ref });
+    const response = client.request("thread/read", { ref: thread.evener.ref, includeTurns: false });
     fake.receive({ id: lastSentFrame(fake).id, result });
     await expect(response).resolves.toEqual(result);
     client.close();
