@@ -46,7 +46,7 @@ import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { archiveSessionIdentity, Rail } from "./Rail";
 import railStyles from "./Rail.module.css";
-import { EXPANSION_STORAGE_KEY } from "./railExpansion";
+import { EXPANSION_STORAGE_KEY, loadExpansion } from "./railExpansion";
 import * as railNodeExports from "./railNodes";
 import { projectNodes } from "./railNodes";
 import { RailRenderObserver } from "./railRenderObserver";
@@ -181,7 +181,9 @@ function installState(resources: ResourceState[] = [], m = manifest()) {
     manifest: resource({ kind: "manifest" }, m) as ResourceState<NavigationManifest>,
     resources: new Map(resources.map((entry) => [keyID(entry.key), entry])),
     visibleResourceKeys: new Set(resources.map((entry) => keyID(entry.key))),
-    expanded: new Map(),
+    // The browser store reads the port when it is built; a test's seeded
+    // localStorage is what that build would have read.
+    expanded: loadExpansion(),
     attention: { changed: [], summary: m.attentionSummary },
     loadManifest: vi.fn(),
     loadSection: vi.fn(),
@@ -191,8 +193,6 @@ function installState(resources: ResourceState[] = [], m = manifest()) {
     loadProject: vi.fn(),
     loadProjectPage: vi.fn(),
     lookupLocation: vi.fn(),
-    setExpanded: vi.fn(),
-    toggleExpanded: vi.fn(),
   });
 }
 function sectionResource(section: "live" | "needs_you", rows: NavigationSessionSummary[], remaining = 0) {
@@ -338,12 +338,14 @@ function stubScrollIntoView(): () => void {
 }
 
 beforeEach(() => {
+  // The store reads expansion from the browser port when it resets; clear
+  // storage first so one test's folds cannot seed the next one's.
+  localStorage.clear();
   resetConnectionStoreForTests();
   resetNavigationStoreForTests();
   resetNavigationStoreForTests();
   resetToastStoreForTests();
   resetWorkspaceStoreForTests();
-  localStorage.clear();
 });
 afterEach(() => {
   cleanup();
@@ -553,6 +555,34 @@ describe("resource-backed Rail", () => {
     expect(within(sectionRoot("Projects")).queryByText("Proj")).toBeNull();
     expect(sectionDisclosure(/Archived sessions/).getAttribute("aria-expanded")).toBe("true");
     expect(within(sectionRoot(/Archived sessions/)).getByText("Old project")).toBeTruthy();
+  });
+
+  test("a section fold reads the navigation store's expansion, not a second storage snapshot", () => {
+    localStorage.setItem(EXPANSION_STORAGE_KEY, JSON.stringify({ "section:projects": true }));
+    installState(sectionFoldResources());
+    // The store is the one owner: a value it holds wins over the stale blob.
+    navigationStore.setState({ expanded: new Map([["section:projects", false]]) });
+
+    render(<Rail />);
+
+    expect(sectionDisclosure("Projects").getAttribute("aria-expanded")).toBe("false");
+  });
+
+  test("toggling a row persists the store's whole expansion map, not a second snapshot", () => {
+    installState(sectionFoldResources());
+    navigationStore.setState({ expanded: new Map([["section:projects", false]]) });
+
+    render(<Rail />);
+    fireEvent.click(sectionDisclosure("Live"));
+
+    expect([...loadExpansion()]).toEqual([
+      ["section:projects", false],
+      ["section:live", false],
+    ]);
+    expect([...navigationStore.getState().expanded]).toEqual([
+      ["section:projects", false],
+      ["section:live", false],
+    ]);
   });
 
   // A section fold must not break the /project reveal: the row it asks for can
@@ -1821,7 +1851,7 @@ describe("resource-backed Rail", () => {
     expect(loadProject).toHaveBeenCalledTimes(1);
     expect(loadProject).toHaveBeenCalledWith("p");
   });
-  test("keeps expansion persistence in the rail-local override map", () => {
+  test("persists a project row's expansion under its node key", () => {
     installState([catalogResource([{ key: "p", name: "Proj", session_count: 1 }])]);
     render(<Rail />);
     fireEvent.click(screen.getByText("Proj"));
@@ -3467,6 +3497,10 @@ describe("archived rows come from evener/archived/list", () => {
   // open, so the reveal reaches the list on the count effect's own commit
   // rather than a re-run after it.
   function installRevealIntoCountedProject() {
+    localStorage.setItem(
+      EXPANSION_STORAGE_KEY,
+      JSON.stringify({ "projectnode:p": true, "section:archived": true, "archivedgroup:p": true }),
+    );
     installState([
       archivedCatalog(1),
       projectResource("p", [summary({ ref: "local:now", title: "Now" })]),
@@ -3484,10 +3518,6 @@ describe("archived rows come from evener/archived/list", () => {
         },
       ),
     ]);
-    localStorage.setItem(
-      EXPANSION_STORAGE_KEY,
-      JSON.stringify({ "projectnode:p": true, "section:archived": true, "archivedgroup:p": true }),
-    );
   }
 
   test("a reveal of an archived session in a counted project fetches its list once", async () => {
@@ -3555,9 +3585,9 @@ describe("archived rows come from evener/archived/list", () => {
       kind: "subagent",
       live: false,
     });
+    localStorage.setItem(EXPANSION_STORAGE_KEY, JSON.stringify({ "section:archived": true, "archivedgroup:p": true }));
     installState([archivedCatalog(1), projectResource("p", [summary({ ref: "local:now", title: "Now" })])]);
     installList([{ ...archivedRow(0), children: [original, delegate] }], 1);
-    localStorage.setItem(EXPANSION_STORAGE_KEY, JSON.stringify({ "section:archived": true, "archivedgroup:p": true }));
     render(<Rail />);
     const continuation = screen.getByRole("treeitem", { name: /Old run 0/i });
     expect(continuation.getAttribute("aria-expanded")).toBe("false");
