@@ -24,7 +24,6 @@ import (
 	"runtime"
 	"slices"
 	"strconv"
-	"sync"
 	"testing"
 	"time"
 	"unsafe"
@@ -67,7 +66,9 @@ func requestHistoryPayload(i int) string {
 // temporary state directory and replaces its history with text-only fixture
 // turns. The context strategy is removed so preparation takes the
 // no-fold path, and the missing personal AGENTS.md keeps ambient instructions
-// out of the fixture.
+// out of the fixture. One preparation runs before returning, so every
+// measurement lane starts from a settled projection instead of each caller
+// hand-rolling its own warm-up.
 func newRequestHistoryPreparationSession(tb testing.TB, turns int) *Session {
 	tb.Helper()
 	s, err := NewSession(benchClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(tb.TempDir()), SessionConfig{
@@ -87,6 +88,7 @@ func newRequestHistoryPreparationSession(tb testing.TB, turns int) *Session {
 		s.history = append(s.history, schema.NewTurn(schema.TurnUserInput, llm.User(requestHistoryPayload(i))))
 	}
 	s.mu.Unlock()
+	prepareRequestHistoryRound(tb, s)
 	return s
 }
 
@@ -160,16 +162,16 @@ func assertPreparedRequestHistory(t *testing.T, s *Session, history []llm.Messag
 }
 
 // measureRequestHistoryBytesPerPreparation returns the median attributable
-// allocation observed across repetitions of one preparation. TotalAlloc is a
+// allocation observed across five rounds of one preparation. TotalAlloc is a
 // process-global counter, so in a full test binary on a loaded runner any
 // concurrent background allocation lands in every measured window, and
 // neither a minimum nor a median of bare window deltas can discard it. Each
 // round therefore subtracts a control window that runs no preparation: a
 // stationary background rate lands in both windows alike and cancels, while
 // the preparation's own allocation is present in every round and never
-// cancels. The control window mirrors the preparation window — it spans the
-// same wall-clock length, bounded by its own memstats reads, and it
-// busy-waits rather than sleeps. Staying runnable matters: on a single-P
+// cancels. The control window opens on the preparation window's closing
+// snapshot, so the two windows tile with no unmeasured gap between them, and
+// it busy-waits rather than sleeps. Staying runnable matters: on a single-P
 // runtime a sleeping window would lend its processor to background
 // allocators that the preparation window starves, and the subtraction would
 // strip real preparation bytes along with the background. The cancellation
@@ -178,49 +180,53 @@ func assertPreparedRequestHistory(t *testing.T, s *Session, history []llm.Messag
 // window out-allocates its preparation measures garbage (a burst landing in
 // the control window only) and is discarded; the mirror image, a burst
 // landing only in the preparation window, is absorbed instead — the median
-// tolerates two such rounds of five. The median, not the minimum, summarizes
-// the remaining rounds: a minimum would systematically understate the
-// preparation, and under load that bias would eat the very margin this
-// budget guards. On a quiet process the rounds agree closely, so the median
-// costs nothing there.
-func measureRequestHistoryBytesPerPreparation(t *testing.T, s *Session, repetitions int) int64 {
+// of five tolerates two such rounds. That tolerance is not a license for
+// concurrency: the subtraction cancels only a stationary background, so
+// callers must keep this measurement serial — the package's other tests
+// would inject bursty allocation into every window — and mark those tests
+// with a // Serial: comment. The median, not the minimum, summarizes the
+// rounds: a minimum would systematically understate the preparation, and
+// under load that bias would eat the very margin this budget guards. On a
+// quiet process the rounds agree closely, so the median costs nothing there.
+
+// requestHistoryMeasurementRounds is the round count the helper's median is
+// designed around: five rounds keep the estimator honest under load while the
+// median still absorbs two burst-poisoned rounds.
+const requestHistoryMeasurementRounds = 5
+
+func measureRequestHistoryBytesPerPreparation(t *testing.T, s *Session) int64 {
 	t.Helper()
 	var rounds []int64
-	for range repetitions {
+	for range requestHistoryMeasurementRounds {
 		var before, after runtime.MemStats
 		started := time.Now()
 		runtime.ReadMemStats(&before)
 		prepareRequestHistoryRound(t, s)
 		runtime.ReadMemStats(&after)
 		elapsed := time.Since(started)
-		var idleBefore, idleAfter runtime.MemStats
+		// Deliberately empty: the control window busy-waits; rationale in
+		// the function doc. It opens on the `after` snapshot above, tiling
+		// against the preparation window with no gap.
 		controlStart := time.Now()
-		runtime.ReadMemStats(&idleBefore)
-		// Busy-wait so the control window stays runnable for the same wall
-		// clock the preparation window spans, between its own pair of
-		// memstats reads: both windows must sample the same background, and
-		// a sleeping window on a single-P runtime would lend its processor
-		// to background allocators the preparation window starves.
 		for time.Since(controlStart) < elapsed {
 		}
+		var idleAfter runtime.MemStats
 		runtime.ReadMemStats(&idleAfter)
-		used := int64(after.TotalAlloc-before.TotalAlloc) - int64(idleAfter.TotalAlloc-idleBefore.TotalAlloc)
+		used := int64(after.TotalAlloc-before.TotalAlloc) - int64(idleAfter.TotalAlloc-after.TotalAlloc)
 		if used < 0 {
 			continue
 		}
 		rounds = append(rounds, used)
 	}
 	if len(rounds) == 0 {
-		// Every control window out-allocated its preparation: the process
-		// is too loud to measure a preparation against, and no sentinel
-		// value would mean anything to the caller's arithmetic.
+		// No sentinel value would mean anything to the caller's arithmetic.
 		t.Fatalf("every control window out-allocated its preparation: process too loud to measure")
 	}
 	slices.Sort(rounds)
-	if len(rounds)%2 == 1 {
-		return rounds[len(rounds)/2]
-	}
 	mid := len(rounds) / 2
+	if len(rounds)%2 == 1 {
+		return rounds[mid]
+	}
 	return (rounds[mid-1] + rounds[mid]) / 2
 }
 
@@ -237,10 +243,9 @@ func TestPrepareModelRequestHistoryAllocationBudget(t *testing.T) {
 		t.Run(fmt.Sprintf("%d turns", turns), func(t *testing.T) {
 			s := newRequestHistoryPreparationSession(t, turns)
 
-			// The first warm round lets the notes/memory projection settle. The
-			// second warm round is also the assertion round: source stability
-			// across both, and this round's outputs asserted, before measuring.
-			prepareRequestHistoryRound(t, s)
+			// The session arrives settled; this is the assertion round: source
+			// stability across the settle and this round, and this round's
+			// outputs asserted, before measuring.
 			settledTexts := requestHistorySourceTexts(t, s)
 			settledSnapshot := requestHistorySourceSnapshot(t, s)
 			history, req := prepareRequestHistoryRound(t, s)
@@ -249,7 +254,7 @@ func TestPrepareModelRequestHistoryAllocationBudget(t *testing.T) {
 			if turns != requestHistoryBudgetTurns {
 				return
 			}
-			bytesPerPreparation := measureRequestHistoryBytesPerPreparation(t, s, 5)
+			bytesPerPreparation := measureRequestHistoryBytesPerPreparation(t, s)
 			removable := int64(requestHistoryBudgetTurns) * int64(unsafe.Sizeof(schema.Turn{}))
 			t.Logf("attributable bytes per preparation %d, removable dead copy %d, budget %d", bytesPerPreparation, removable, maxRequestHistoryBytesPerPreparation)
 			if bytesPerPreparation >= maxRequestHistoryBytesPerPreparation {
@@ -273,47 +278,32 @@ func TestPrepareModelRequestHistoryAllocationBudget(t *testing.T) {
 // concurrently running tests would land inside every window it measures.
 func TestPrepareModelRequestHistoryBudgetIgnoresConcurrentBackground(t *testing.T) {
 	s := newRequestHistoryPreparationSession(t, requestHistoryBudgetTurns)
-	prepareRequestHistoryRound(t, s) // settle the projection as the budget test does
-	quiet := measureRequestHistoryBytesPerPreparation(t, s, 5)
-	stop := make(chan struct{})
+	quiet := measureRequestHistoryBytesPerPreparation(t, s)
+	churnCtx, cancelChurn := context.WithCancel(context.Background())
+	t.Cleanup(cancelChurn)
 	churnDone := make(chan struct{})
 	go func() {
 		defer close(churnDone)
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
+		for churnCtx.Err() == nil {
 			sink = make([]byte, 32<<10)
 			time.Sleep(200 * time.Microsecond)
 		}
 	}()
-	var stopChurnOnce sync.Once
-	stopChurn := func() {
-		stopChurnOnce.Do(func() {
-			close(stop)
-			<-churnDone
-		})
-	}
-	t.Cleanup(stopChurn)
-	churned := measureRequestHistoryBytesPerPreparation(t, s, 5)
+	churned := measureRequestHistoryBytesPerPreparation(t, s)
 	// A preparation's attributable allocation settles downward as the
 	// session warms, so the churned phase is judged against quiet
 	// measurements that bracket it in warmth, not only the colder one
 	// taken before the churner started.
-	stopChurn()
-	quietAgain := measureRequestHistoryBytesPerPreparation(t, s, 5)
+	cancelChurn()
+	<-churnDone
+	quietAgain := measureRequestHistoryBytesPerPreparation(t, s)
 	t.Logf("attributable bytes per preparation %d quiet, %d under concurrent churn, %d quiet again, budget %d", quiet, churned, quietAgain, maxRequestHistoryBytesPerPreparation)
 	if churned >= maxRequestHistoryBytesPerPreparation {
 		t.Fatalf("attributable bytes per preparation %d under concurrent churn, budget %d", churned, maxRequestHistoryBytesPerPreparation)
 	}
-	// The churned measurement must not just pass the ceiling: it must measure
-	// the same preparation. Attributing away MORE than the background masks
-	// a real regression just as counting it invents one. The band is wide
-	// because honest spreads live inside it: the churner's background
-	// arrives in coarse ticks, and the session's own per-preparation
-	// allocation drifts as its projections warm.
+	// The band is wide because honest spreads live inside it: the churner's
+	// background arrives in coarse ticks, and the session's own
+	// per-preparation allocation drifts as its projections warm.
 	lo, hi := min(quiet, quietAgain)*6/10, max(quiet, quietAgain)*14/10
 	if churned < lo || churned > hi {
 		t.Fatalf("attributable bytes per preparation %d under concurrent churn, want within [%d, %d] of the quiet measurements %d and %d", churned, lo, hi, quiet, quietAgain)
@@ -332,7 +322,6 @@ func BenchmarkPrepareModelRequestHistory(b *testing.B) {
 	for _, turns := range requestHistoryFixtureTurns {
 		b.Run(strconv.Itoa(turns), func(b *testing.B) {
 			s := newRequestHistoryPreparationSession(b, turns)
-			prepareRequestHistoryRound(b, s) // warm the projection before the timed loop
 			var timings events.RoundTimings
 			b.ReportAllocs()
 			for b.Loop() {
