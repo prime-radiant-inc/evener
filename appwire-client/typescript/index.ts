@@ -656,8 +656,8 @@ export {
   TURN_RUNNING,
 } from "./submitRouting";
 export { ERROR_EVENT_KIND, echoesTurnError, isErrorEvent, systemEventWords } from "./systemEventCopy";
-export type { TaskCounts, TaskRow, TaskStatus } from "./taskListData";
-export { parseTaskListData, taskAggregateLabel, taskSettledCount } from "./taskListData";
+export type { TaskCounts, TaskRow, TaskStatus, TaskStatusValue } from "./taskListData";
+export { isKnownTaskStatus, parseTaskListData, taskAggregateLabel, taskSettledCount } from "./taskListData";
 export type { TaskGroups } from "./taskListGroups";
 export { groupTasks } from "./taskListGroups";
 export {

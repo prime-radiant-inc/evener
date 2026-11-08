@@ -56,7 +56,7 @@ import { Meter, OpenButton, VisuallyHidden } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer, toolCallFailed } from "../toolRenderers";
-import { STATUS_TOUCH, TaskCheck, TOUCH_WORD } from "./taskCheck";
+import { TaskCheck, TOUCH_WORD, taskStatusTouch, taskStatusWord } from "./taskCheck";
 import styles from "./taskcard.module.css";
 
 const CLASS = {
@@ -252,12 +252,12 @@ const SLOT_DESC_CLASS: Record<SlotKind, string> = {
 // the same map the tasks pane's rows use; stateWindow guarantees a slot's
 // kind and its task's status agree.
 function TaskWindowRow({ task, kind, note }: { task: TaskRow; kind: SlotKind; note?: string }) {
-  const touch = STATUS_TOUCH[task.status];
+  const touch = taskStatusTouch(task.status);
   return (
     <div className={`${CLASS.row} ${CLASS.spined}`} data-testid="task-card-row" data-kind={kind}>
       <TaskCheck touch={touch} />
       <div className={CLASS.rowText}>
-        <VisuallyHidden>{TOUCH_WORD[touch]}</VisuallyHidden>
+        <VisuallyHidden>{taskStatusWord(task.status)}</VisuallyHidden>
         <span className={SLOT_DESC_CLASS[kind]}>{task.description}</span>
         {note && <span className={CLASS.note}>{note}</span>}
       </div>
