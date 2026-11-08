@@ -1,7 +1,7 @@
 import { type ComposerSourceState, createComposerSourceState } from "../panes/session/composer/sourceState";
 import type { TranscriptReadView } from "../panes/session/transcript/transcriptReadView";
 import type { JobLogReader } from "../panes/transcript/jobLogReader";
-import { parseZoomParams } from "../panes/zoom/intent";
+import { cascadeSourceOf } from "../panes/zoom/intent";
 import { refParam } from "./routing";
 import { type OpenPaneRecord, onPaneRetype, workspaceStore } from "./workspace";
 
@@ -30,7 +30,7 @@ const lifetimes = new WeakMap<OpenPaneRecord, PaneLifetime>();
 export function conversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime {
   const existing = lifetimes.get(pane);
   if (existing) return existing;
-  const source = pane.type === "sessionZoom" ? parseZoomParams(pane.params)?.source : null;
+  const source = cascadeSourceOf(pane);
   const initialSourceRef = refParam(source?.params ?? pane.params);
   if (initialSourceRef === null) throw new Error("Conversation pane requires a session ref");
   let sourceRef = initialSourceRef;
