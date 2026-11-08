@@ -221,6 +221,16 @@ func collectShellRuntimeLossEvidence(path string) (shellRuntimeLossEvidence, err
 		if record.Status.IsTerminal() && record.TerminalGen != "" && hasActiveWatchFor(watches, jobID) {
 			evidence.terminalWatchJobIDs = append(evidence.terminalWatchJobIDs, jobID)
 		}
+		// A background shell always arms a completion notification. A terminal
+		// background job still at not_armed is the finish-only prefix: the
+		// notification record was lost with the torn batch. Kept-sync
+		// completions are not background jobs, so they stay unnotified.
+		if record.Status.IsTerminal() && record.TerminalGen != "" && record.NotifyState == jobstore.NotifyNotArmed && record.Background {
+			evidence.unnotifiedTerminal = append(evidence.unnotifiedTerminal, shellNotificationIdentity{
+				jobID:              jobID,
+				terminalGeneration: record.TerminalGen,
+			})
+		}
 	}
 	return evidence, nil
 }
@@ -341,6 +351,23 @@ func executeDelegateShellRepair(plan delegateShellRepairPlan, now time.Time) (er
 		// The terminal event is already durable, so its terminal watches must be
 		// cleared even when this repair only observes the torn prefix.
 		clearedJobs[jobID] = struct{}{}
+	}
+	for _, identity := range plan.unnotifiedTerminal {
+		record := records[identity.jobID]
+		if record == nil || record.Type != jobstore.JobShell || !record.Status.IsTerminal() || record.TerminalGen != identity.terminalGeneration || record.NotifyState != jobstore.NotifyNotArmed {
+			continue
+		}
+		kind := jobstore.EventJobNotificationPending
+		if plan.suppressOwnerNotify {
+			kind = jobstore.EventJobNotificationConsumed
+		}
+		events = append(events, jobstore.Event{
+			Kind:        kind,
+			TS:          now,
+			JobID:       identity.jobID,
+			TerminalGen: identity.terminalGeneration,
+		})
+		clearedJobs[identity.jobID] = struct{}{}
 	}
 	clearedIDs := make([]string, 0, len(clearedJobs))
 	for jobID := range clearedJobs {

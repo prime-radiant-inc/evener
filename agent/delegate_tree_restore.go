@@ -38,6 +38,7 @@ type shellRuntimeLossEvidence struct {
 	runningJobIDs       []string
 	pendingNotification []shellNotificationIdentity
 	terminalWatchJobIDs []string
+	unnotifiedTerminal  []shellNotificationIdentity
 }
 
 type delegateAttentionCleanupPlan struct {
@@ -58,6 +59,7 @@ type delegateShellRepairPlan struct {
 	runningJobIDs       []string
 	pendingNotification []shellNotificationIdentity
 	terminalWatchJobIDs []string
+	unnotifiedTerminal  []shellNotificationIdentity
 	suppressOwnerNotify bool
 }
 
@@ -322,7 +324,7 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 		// terminal watch that is still active needs clearing. Planning an empty
 		// repair would make the stop and bootstrap drains treat it as progress
 		// and spin.
-		if len(shell.runningJobIDs) == 0 && len(shell.terminalWatchJobIDs) == 0 &&
+		if len(shell.runningJobIDs) == 0 && len(shell.terminalWatchJobIDs) == 0 && len(shell.unnotifiedTerminal) == 0 &&
 			(!covered || len(shell.pendingNotification) == 0) {
 			continue
 		}
@@ -332,6 +334,7 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 			runningJobIDs:       append([]string(nil), shell.runningJobIDs...),
 			pendingNotification: append([]shellNotificationIdentity(nil), shell.pendingNotification...),
 			terminalWatchJobIDs: append([]string(nil), shell.terminalWatchJobIDs...),
+			unnotifiedTerminal:  append([]shellNotificationIdentity(nil), shell.unnotifiedTerminal...),
 			suppressOwnerNotify: covered,
 		})
 	}
@@ -801,6 +804,11 @@ func (c *delegateTreeController) repairableShellEvidenceLocked(delegateID string
 	for _, jobID := range evidence.terminalWatchJobIDs {
 		if _, live := liveJobIDs[jobID]; !live {
 			filtered.terminalWatchJobIDs = append(filtered.terminalWatchJobIDs, jobID)
+		}
+	}
+	for _, notification := range evidence.unnotifiedTerminal {
+		if _, live := liveJobIDs[notification.jobID]; !live {
+			filtered.unnotifiedTerminal = append(filtered.unnotifiedTerminal, notification)
 		}
 	}
 	return filtered, true

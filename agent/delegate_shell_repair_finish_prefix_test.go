@@ -276,3 +276,108 @@ func TestDelegateStopCompletesWithUnrelatedPendingNotification(t *testing.T) {
 	}
 	t.Fatalf("stop never completed after 5 reconcile passes with an unrelated pending notification")
 }
+
+// TestDelegateShellRepairRestoresBackgroundNotificationFromFinishOnlyPrefix
+// covers the finish-only prefix of a background shell: it must regain the
+// completion notification it was always going to send.
+func TestDelegateShellRepairRestoresBackgroundNotificationFromFinishOnlyPrefix(t *testing.T) {
+	t.Parallel()
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	path := filepath.Join(jobsDir(c.stateDir, "child-dlg_target"), "jobs.jsonl")
+	started := time.Unix(10, 0).UTC()
+	ended := time.Unix(20, 0).UTC()
+	appendDelegateShellEventsAt(t, path,
+		jobstore.Event{
+			Kind:           jobstore.EventJobStarted,
+			TS:             started,
+			JobID:          "job-background",
+			Type:           jobstore.JobShell,
+			OwnerSessionID: "child-dlg_target",
+			Background:     true,
+			StartedAt:      &started,
+		},
+		jobstore.Event{
+			Kind:        jobstore.EventJobFinished,
+			TS:          ended,
+			JobID:       "job-background",
+			Status:      jobstore.StatusCompleted,
+			Reason:      "exit_zero",
+			EndedAt:     &ended,
+			TerminalGen: "terminal-background",
+		},
+	)
+	evidence, err := collectDelegateReconcileEvidence(c.stateDir, c.ReconcileRequirements())
+	if err != nil {
+		t.Fatalf("collectDelegateReconcileEvidence: %v", err)
+	}
+	plans, err := c.Reconcile(evidence)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(plans.shellRepairs) != 1 {
+		t.Fatalf("shell repair plans = %#v, want one plan for the background finish-only prefix", plans.shellRepairs)
+	}
+	if err := executeDelegateShellRepair(plans.shellRepairs[0], time.Unix(30, 0).UTC()); err != nil {
+		t.Fatalf("executeDelegateShellRepair: %v", err)
+	}
+	records, _ := readDelegateShellStore(t, path)
+	if record := records["job-background"]; record == nil || record.NotifyState != jobstore.NotifyPending {
+		t.Fatalf("background shell after repair = %#v, want pending notification", record)
+	}
+
+	evidence, err = collectDelegateReconcileEvidence(c.stateDir, c.ReconcileRequirements())
+	if err != nil {
+		t.Fatalf("collectDelegateReconcileEvidence after repair: %v", err)
+	}
+	plans, err = c.Reconcile(evidence)
+	if err != nil {
+		t.Fatalf("Reconcile after repair: %v", err)
+	}
+	if len(plans.shellRepairs) != 0 {
+		t.Fatalf("notification repair repeated after landing: %#v", plans.shellRepairs)
+	}
+}
+
+// TestDelegateShellRepairConsumesUnnotifiedBackgroundNotification pins the
+// stop-covered variant: the lost completion notification is consumed, not
+// queued for an owner the stop is shutting down.
+func TestDelegateShellRepairConsumesUnnotifiedBackgroundNotification(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "jobs.jsonl")
+	started := time.Unix(10, 0).UTC()
+	ended := time.Unix(20, 0).UTC()
+	appendDelegateShellEventsAt(t, path,
+		jobstore.Event{
+			Kind:           jobstore.EventJobStarted,
+			TS:             started,
+			JobID:          "job-background",
+			Type:           jobstore.JobShell,
+			OwnerSessionID: "child-dlg_target",
+			Background:     true,
+			StartedAt:      &started,
+		},
+		jobstore.Event{
+			Kind:        jobstore.EventJobFinished,
+			TS:          ended,
+			JobID:       "job-background",
+			Status:      jobstore.StatusCompleted,
+			Reason:      "exit_zero",
+			EndedAt:     &ended,
+			TerminalGen: "terminal-background",
+		},
+	)
+	plan := delegateShellRepairPlan{
+		delegateID:          "dlg_target",
+		storePath:           path,
+		unnotifiedTerminal:  []shellNotificationIdentity{{jobID: "job-background", terminalGeneration: "terminal-background"}},
+		suppressOwnerNotify: true,
+	}
+	if err := executeDelegateShellRepair(plan, time.Unix(30, 0).UTC()); err != nil {
+		t.Fatalf("executeDelegateShellRepair: %v", err)
+	}
+	records, _ := readDelegateShellStore(t, path)
+	if record := records["job-background"]; record == nil || record.NotifyState != jobstore.NotifyConsumed {
+		t.Fatalf("suppressed background notification = %#v, want consumed", record)
+	}
+}
