@@ -503,7 +503,7 @@ func (s hubStack) dialRPC(ctx context.Context, t *testing.T) *appwire.Client {
 	if err != nil {
 		t.Fatalf("dial hub rpc: %v", err)
 	}
-	client := appwire.NewClient(transport)
+	client := appwire.NewClient(e2eControlTransport(transport))
 	// Registered before any thread exists, so the LIFO cleanup order leaves
 	// the socket open for the thread/shutdown the test registers later.
 	t.Cleanup(func() { _ = client.Close() })
@@ -517,6 +517,46 @@ func (s hubStack) dialRPC(ctx context.Context, t *testing.T) *appwire.Client {
 		t.Fatalf("appwire initialize: %v", err)
 	}
 	return client
+}
+
+// withoutClientKeepalive hides an AppWire transport's Ping capability from
+// appwire.NewClient, so the client runs no keepalive goroutine.
+//
+// The production client keepalive exists to bound a silently dropped peer, but
+// it is also wall-clock scheduling: it closes the socket when a pong does not
+// arrive within 10s of a 15s ping. A hub process starved for ~25s under
+// concurrent full-gate load therefore tears the socket down while it is still
+// alive, and every later request fails with "use of closed network connection"
+// (issue #154). These e2e clients bound every request with a context, so they
+// do not need a second wall-clock detector to fail a hung hub; leaving it on
+// makes unrelated assertions fail on host load instead of on the behavior they
+// name. The keepalive itself stays covered by the appwire unit tests.
+type withoutClientKeepalive struct {
+	appwire.Transport
+}
+
+// e2eControlTransport is the transport every hubStack RPC client is built
+// over.
+func e2eControlTransport(transport appwire.Transport) appwire.Transport {
+	return withoutClientKeepalive{transport}
+}
+
+// pingingTransport is an appwire.Transport that also advertises Pinger, the
+// capability a WebSocket transport carries.
+type pingingTransport struct{ appwire.Transport }
+
+func (pingingTransport) Ping(context.Context) error { return nil }
+
+// TestHubStackControlClientSkipsTheClientKeepalive pins why the e2e harness
+// wraps its transports: appwire decides whether to run its keepalive from the
+// transport's Pinger capability. If the wrapper ever advertises Ping again, a
+// hub starved past the 25s ping-plus-pong budget tears down a healthy socket
+// and the boundary test fails on host load rather than on the wire behavior it
+// asserts (issue #154).
+func TestHubStackControlClientSkipsTheClientKeepalive(t *testing.T) {
+	if _, ok := any(e2eControlTransport(pingingTransport{})).(appwire.Pinger); ok {
+		t.Fatal("the e2e control transport advertises Ping, so appwire.NewClient runs the production keepalive and closes a hub starved past its pong timeout")
+	}
 }
 
 // liveStackBinaries builds evener once per test binary and hands every stack
