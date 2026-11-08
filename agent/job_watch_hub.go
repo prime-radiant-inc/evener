@@ -466,7 +466,8 @@ func hubObservationIdentity(m appwire.SessionObservationMetadata) string {
 
 // onHubObservation accepts evidence from the bound serving generation. Turn
 // identity, not the serving boot, selects recorded completion evidence. The
-// terminal send is persisted after the watch's clear and before its wake token.
+// terminal send is persisted with the watch's clear, then its wake token is
+// queued, and only then does the live ended row appear.
 func (jm *jobManager) onHubObservation(watchID string, update appwire.SessionWatchUpdate) error {
 	return jm.onHubObservationEvidence(watchID, update, false)
 }
@@ -770,6 +771,23 @@ func (jm *jobManager) endHubWatch(watchID, reason string, completion *watchSendD
 		}
 		return err
 	}
+	// Queue the terminal wake BEFORE the ended state is published. A consumer
+	// that observes the watch ended and then runs the one notification turn its
+	// wake asked for must find the completion frame already pending to drain;
+	// if the ended row came first, that turn could drain only the preceding
+	// communicate token, leaving the completion receipt to a later turn that a
+	// directly-driven Manager never runs. The token resolves against the live
+	// watch until the config moves below, and against the terminal flush entry
+	// after, so it is never orphaned by the detach.
+	if recorded {
+		if state.Key.ResolvedSendTo == runtimeMessageAliasCaller {
+			if !jm.enqueueNotifications([]jobNotification{watchSendTokenNotification("", state)}) {
+				jm.kick()
+			}
+		} else {
+			jm.kick()
+		}
+	}
 	jm.mu.Lock()
 	if jm.watches[key] != cfg {
 		cfg.terminalDeliveryPending = false
@@ -784,15 +802,6 @@ func (jm *jobManager) endHubWatch(watchID, reason string, completion *watchSendD
 	jm.mu.Unlock()
 	if jm.testOnlyAfterHubWatchDetach != nil {
 		jm.testOnlyAfterHubWatchDetach()
-	}
-	if recorded {
-		if state.Key.ResolvedSendTo == runtimeMessageAliasCaller {
-			if !jm.enqueueNotifications([]jobNotification{watchSendTokenNotification("", state)}) {
-				jm.kick()
-			}
-		} else {
-			jm.kick()
-		}
 	}
 	jm.mu.Lock()
 	cfg.terminalDeliveryPending = false

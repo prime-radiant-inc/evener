@@ -39,6 +39,7 @@ type descendantWatchProvider struct {
 	lateTerminal bool
 	wake         <-chan struct{}
 	advanced     chan struct{}
+	advancedOnce sync.Once
 }
 
 type descendantWatchEnvelope struct{ sessionTaskEnvelopeSource }
@@ -75,11 +76,19 @@ func (p *descendantWatchProvider) Complete(ctx context.Context, req llm.Request)
 			case <-ctx.Done():
 				return llm.Response{}, ctx.Err()
 			}
-		case 3:
-			close(p.advanced)
-		case 4:
 		default:
-			return llm.Response{}, fmt.Errorf("unexpected Manager model call step %d", step)
+			// Every later call is the one acknowledgement the Manager makes of a
+			// wake. Which turn runs it is the session's choice: a managed-job
+			// notification landing between the list round and the next one makes
+			// the user turn yield to an EntryNotification turn, so the same
+			// acknowledgement can be the user turn's fourth call, the notification
+			// turn's first, or the turn this harness forces after the completion.
+			// Scripting an exact turn count made the provider answer the model's
+			// retry budget with an unexpected-step error when the yield landed.
+			if step > 8 {
+				return llm.Response{}, fmt.Errorf("unexpected Manager model call step %d", step)
+			}
+			p.advancedOnce.Do(func() { close(p.advanced) })
 		}
 	} else {
 		switch step {
