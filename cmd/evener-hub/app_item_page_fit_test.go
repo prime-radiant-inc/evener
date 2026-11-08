@@ -643,6 +643,96 @@ func TestPackTranscriptItemWindowBudgetMeasuresEncodedTurnsAndTrimsByMode(t *tes
 	}
 }
 
+func TestPackTranscriptItemWindowKeepsEmptyBoundaryOnServedPage(t *testing.T) {
+	candidates := append(
+		testWindowTurnCandidates("turn-1", []appwire.ThreadItem{{
+			Type: "reasoning", ID: "item-1", Text: strings.Repeat("a", 10_000), Version: 1,
+		}}),
+		testWindowTurnCandidates("turn-3", []appwire.ThreadItem{{
+			Type: "reasoning", ID: "item-3", Text: strings.Repeat("c", 10_000), Version: 1,
+		}})...,
+	)
+	for index := range candidates {
+		position := appwire.ThreadItemPosition{Entry: uint64(index)}
+		candidates[index].Position = position
+		candidates[index].Item.Position = &position
+	}
+	result := testWindowCandidateResult(candidates)
+	result.TurnIDs = []string{"turn-1", "turn-2", "turn-3"}
+	var continuation transcriptWindowContinuation
+	options := testWindowPackOptions(appwire.ThreadWindowParams{
+		TurnWindow:        &appwire.ThreadTurnWindow{Latest: 3},
+		WindowBudgetBytes: 1,
+	})
+	options.MintContinuationCursor = func(request transcriptWindowContinuation) (string, error) {
+		continuation = request
+		return "window-continuation", nil
+	}
+
+	got, err := packThreadTurnsWindowItemCandidates(result, nil, options)
+	if err != nil {
+		t.Fatalf("pack: %v", err)
+	}
+	servedTurnIDs := make([]string, len(got.Data))
+	for index := range got.Data {
+		servedTurnIDs[index] = got.Data[index].ID
+	}
+	if !reflect.DeepEqual(servedTurnIDs, []string{"turn-2", "turn-3"}) {
+		t.Fatalf("served turns = %v, want empty turn with newest positioned turn", servedTurnIDs)
+	}
+	if got.Window == nil || got.Window.FirstWithheldTurnID != "turn-1" || got.Window.LastWithheldTurnID != "turn-1" {
+		t.Fatalf("window result = %+v, want only oldest positioned turn withheld", got.Window)
+	}
+	if continuation.Direction != transcriptWindowContinuationBackward || continuation.Position != (appwire.ThreadItemPosition{Entry: 1}) {
+		t.Fatalf("continuation = %+v, want boundary at first served item", continuation)
+	}
+}
+
+func TestPackTranscriptItemWindowMovesTrailingEmptyTurnWithForwardContinuation(t *testing.T) {
+	candidates := append(
+		testWindowTurnCandidates("turn-1", []appwire.ThreadItem{{
+			Type: "reasoning", ID: "item-1", Text: strings.Repeat("a", 10_000), Version: 1,
+		}}),
+		testWindowTurnCandidates("turn-2", []appwire.ThreadItem{{
+			Type: "reasoning", ID: "item-2", Text: strings.Repeat("b", 10_000), Version: 1,
+		}})...,
+	)
+	for index := range candidates {
+		position := appwire.ThreadItemPosition{Entry: uint64(index)}
+		candidates[index].Position = position
+		candidates[index].Item.Position = &position
+	}
+	result := testWindowCandidateResult(candidates)
+	result.TurnIDs = []string{"turn-1", "turn-2", "turn-3"}
+	var continuation transcriptWindowContinuation
+	options := testWindowPackOptions(appwire.ThreadWindowParams{
+		TurnWindow:        &appwire.ThreadTurnWindow{Since: "turn-0", Limit: 3},
+		WindowBudgetBytes: 1,
+	})
+	options.MintContinuationCursor = func(request transcriptWindowContinuation) (string, error) {
+		continuation = request
+		return "window-continuation", nil
+	}
+
+	got, err := packThreadTurnsWindowItemCandidates(result, nil, options)
+	if err != nil {
+		t.Fatalf("pack: %v", err)
+	}
+	servedTurnIDs := make([]string, len(got.Data))
+	for index := range got.Data {
+		servedTurnIDs[index] = got.Data[index].ID
+	}
+	if !reflect.DeepEqual(servedTurnIDs, []string{"turn-1"}) {
+		t.Fatalf("served turns = %v, want oldest positioned turn", servedTurnIDs)
+	}
+	if got.Window == nil || got.Window.FirstWithheldTurnID != "turn-2" || got.Window.LastWithheldTurnID != "turn-3" {
+		t.Fatalf("window result = %+v, want trailing empty turn on withheld page", got.Window)
+	}
+	if continuation.Direction != transcriptWindowContinuationForward || continuation.Position != (appwire.ThreadItemPosition{Entry: 1}) {
+		t.Fatalf("continuation = %+v, want boundary at first withheld item", continuation)
+	}
+}
+
 func TestPackTranscriptItemWindowBudgetsEnrichedImages(t *testing.T) {
 	candidates := testWindowCandidateResult(testWindowTurnCandidates("turn-image", []appwire.ThreadItem{{
 		Type: "commandExecution", ID: "item-image", Version: 1, Output: "created image",

@@ -39,21 +39,27 @@ func (s *transcriptCanonicalStore) putItem(key string, item appwire.ThreadItem) 
 	if len(data) > s.maxBytes {
 		return fmt.Errorf("canonical transcript item is %d bytes, store limit is %d", len(data), s.maxBytes)
 	}
-	s.put(key, data)
+	s.putOwned(key, data)
 	return nil
 }
 
 func (s *transcriptCanonicalStore) put(key string, data []byte) {
+	s.putOwned(key, append([]byte(nil), data...))
+}
+
+// putOwned retains data without copying it. The caller must not mutate data
+// after transferring ownership to the store.
+func (s *transcriptCanonicalStore) putOwned(key string, data []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if current := s.entries[key]; current != nil {
 		entry := current.Value.(*transcriptCanonicalStoreEntry)
 		s.bytes -= len(entry.data)
-		entry.data = append(entry.data[:0], data...)
+		entry.data = data
 		s.bytes += len(entry.data)
 		s.order.MoveToFront(current)
 	} else {
-		entry := &transcriptCanonicalStoreEntry{key: key, data: append([]byte(nil), data...)}
+		entry := &transcriptCanonicalStoreEntry{key: key, data: data}
 		s.entries[key] = s.order.PushFront(entry)
 		s.bytes += len(entry.data)
 	}
@@ -67,6 +73,16 @@ func (s *transcriptCanonicalStore) put(key string, data []byte) {
 }
 
 func (s *transcriptCanonicalStore) get(key string) ([]byte, bool) {
+	data, ok := s.borrow(key)
+	if !ok {
+		return nil, false
+	}
+	return append([]byte(nil), data...), true
+}
+
+// borrow returns immutable store-owned bytes. Callers may retain the slice but
+// must not mutate it; replacement and eviction never reuse its backing array.
+func (s *transcriptCanonicalStore) borrow(key string) ([]byte, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	element := s.entries[key]
@@ -75,5 +91,5 @@ func (s *transcriptCanonicalStore) get(key string) ([]byte, bool) {
 	}
 	s.order.MoveToFront(element)
 	entry := element.Value.(*transcriptCanonicalStoreEntry)
-	return append([]byte(nil), entry.data...), true
+	return entry.data, true
 }

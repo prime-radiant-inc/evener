@@ -188,6 +188,19 @@ type transcriptWindowCandidateTurn struct {
 	candidates []appitempaging.TranscriptItemCandidate
 }
 
+func transcriptWindowBoundaryCandidate(
+	turns []transcriptWindowCandidateTurn,
+	start int,
+	end int,
+) (appitempaging.TranscriptItemCandidate, error) {
+	for index := start; index < end; index++ {
+		if len(turns[index].candidates) > 0 {
+			return turns[index].candidates[0], nil
+		}
+	}
+	return appitempaging.TranscriptItemCandidate{}, errors.New("transcript window continuation has no positioned boundary item")
+}
+
 type transcriptWindowSelectedItem struct {
 	candidate      appitempaging.TranscriptItemCandidate
 	item           appwire.ThreadItem
@@ -782,14 +795,22 @@ func packItemCandidates[T any](
 					windowResult.FirstWithheldTurnID = prepared[0].turn.ID
 					windowResult.LastWithheldTurnID = prepared[start-1].turn.ID
 					request.TurnID = prepared[0].turn.ID
-					request.Position = candidateTurns[start].candidates[0].Position
-					request.Version = candidateTurns[start].candidates[0].Item.Version
+					boundary, boundaryErr := transcriptWindowBoundaryCandidate(candidateTurns, start, end)
+					if boundaryErr != nil {
+						return zero, boundaryErr
+					}
+					request.Position = boundary.Position
+					request.Version = boundary.Item.Version
 				} else if end < len(prepared) {
 					windowResult.FirstWithheldTurnID = prepared[end].turn.ID
 					windowResult.LastWithheldTurnID = prepared[len(prepared)-1].turn.ID
 					request.TurnID = prepared[end].turn.ID
-					request.Position = candidateTurns[end].candidates[0].Position
-					request.Version = candidateTurns[end].candidates[0].Item.Version
+					boundary, boundaryErr := transcriptWindowBoundaryCandidate(candidateTurns, end, len(candidateTurns))
+					if boundaryErr != nil {
+						return zero, boundaryErr
+					}
+					request.Position = boundary.Position
+					request.Version = boundary.Item.Version
 				} else {
 					// An incomplete latest source page proves how many requested turns
 					// are absent but cannot name their IDs. Continue immediately before
@@ -821,6 +842,9 @@ func packItemCandidates[T any](
 			}
 			if direction == transcriptWindowContinuationForward {
 				end--
+				for end > start && len(candidateTurns[end].candidates) == 0 {
+					end--
+				}
 			} else {
 				start++
 			}
@@ -844,7 +868,7 @@ func packItemCandidates[T any](
 	// source cursor) still says that older positions remain outside the window.
 	hasOlder = hasOlder || !result.Exhausted
 	if len(selected) == 0 {
-		if hasOlder || !result.Exhausted {
+		if hasOlder {
 			return zero, errors.New("transcript item source reports older candidates without a page")
 		}
 		response := build([]appwire.Turn{}, "")

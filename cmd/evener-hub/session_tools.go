@@ -559,7 +559,7 @@ func (o *sessionOperations) fetch(ctx context.Context, request appwire.SessionFe
 	default:
 		return appwire.SessionFetchResponse{}, appwire.TranscriptItemCursorStale()
 	}
-	canonical, ok := o.canonicalItemStore().get(validationCursor)
+	canonical, ok := o.canonicalItemStore().borrow(validationCursor)
 	if !ok {
 		return appwire.SessionFetchResponse{}, appwire.TranscriptItemCursorStale()
 	}

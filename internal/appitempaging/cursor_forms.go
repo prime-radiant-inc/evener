@@ -136,9 +136,7 @@ func TranslateFetchCursorRef(encoded, fromThreadRef, toThreadRef string, origin 
 
 func validFetchCursorWire(wire fetchCursorDecodeWire, want CursorIdentity) bool {
 	return validFetchCursorShape(wire) &&
-		wire.ThreadRef != nil && *wire.ThreadRef == want.ThreadRef &&
-		wire.Incarnation != nil && *wire.Incarnation == want.Incarnation &&
-		wire.ProjectionVersion != nil && *wire.ProjectionVersion == want.ProjectionVersion
+		cursorIdentityMatches(wire.ThreadRef, wire.Incarnation, wire.ProjectionVersion, want)
 }
 
 func validFetchCursorShape(wire fetchCursorDecodeWire) bool {
@@ -249,10 +247,14 @@ func TranslateWindowCursorRef(encoded, fromThreadRef, toThreadRef string) (strin
 
 func validWindowCursorWire(wire windowCursorDecodeWire, want CursorIdentity, wantDirection WindowCursorDirection) bool {
 	return validWindowCursorShape(wire) &&
-		wire.ThreadRef != nil && *wire.ThreadRef == want.ThreadRef &&
-		wire.Incarnation != nil && *wire.Incarnation == want.Incarnation &&
-		wire.ProjectionVersion != nil && *wire.ProjectionVersion == want.ProjectionVersion &&
+		cursorIdentityMatches(wire.ThreadRef, wire.Incarnation, wire.ProjectionVersion, want) &&
 		wire.Direction != nil && *wire.Direction == wantDirection
+}
+
+func cursorIdentityMatches(threadRef, incarnation *string, projectionVersion *uint16, want CursorIdentity) bool {
+	return threadRef != nil && *threadRef == want.ThreadRef &&
+		incarnation != nil && *incarnation == want.Incarnation &&
+		projectionVersion != nil && *projectionVersion == want.ProjectionVersion
 }
 
 func validWindowCursorShape(wire windowCursorDecodeWire) bool {
