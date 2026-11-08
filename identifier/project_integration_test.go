@@ -51,6 +51,28 @@ func TestResolveProjectLocalGitIntegration(t *testing.T) {
 	}
 }
 
+// GIT_CEILING_DIRECTORIES is git's own bound on repository discovery: a
+// directory below a ceiling must not adopt the enclosing checkout as its
+// project, matching the sandbox classifier's workspace.
+func TestResolveProjectLocalHonorsGitCeiling(t *testing.T) {
+	base := t.TempDir()
+	repo := filepath.Join(base, "repo")
+	runGit(t, base, "init", "-q", "repo")
+	fixture := filepath.Join(repo, "probes", "task")
+	if err := os.MkdirAll(fixture, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CEILING_DIRECTORIES", evalSym(t, filepath.Dir(fixture)))
+
+	got, err := ResolveProject(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := evalSym(t, fixture); got.CanonicalPath != want {
+		t.Fatalf("CanonicalPath = %q, want the fixture %q", got.CanonicalPath, want)
+	}
+}
+
 func TestResolveProjectLocalSubmoduleIsOwnRepository(t *testing.T) {
 	base := t.TempDir()
 	sub := filepath.Join(base, "sub")

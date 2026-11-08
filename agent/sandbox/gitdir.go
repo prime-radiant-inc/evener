@@ -131,7 +131,7 @@ var gitProtectedLeaves = []string{"config", "config.worktree", "hooks", "commond
 func ClassifyWorkspace(cwd string) (GitLayout, error) {
 	cwd = identifier.ResolveClean(cwd)
 
-	holder, isDir, ok := findGitEntry(cwd, gitCeilingDirs())
+	holder, isDir, ok := findGitEntry(cwd, identifier.GitCeilingDirs())
 	if !ok {
 		return GitLayout{Kind: NonGit, WorktreeRoot: cwd}, nil
 	}
@@ -213,7 +213,8 @@ func isSymlink(path string) bool {
 
 // findGitEntry walks up from cwd to the nearest directory containing a ".git"
 // entry, returning that directory, whether the entry is a directory (vs a
-// pointer file), and ok=false if none is found before the filesystem root.
+// pointer file), and ok=false if none is found before a git ceiling or the
+// filesystem root.
 func findGitEntry(cwd string, ceilings []string) (holder string, isDir, ok bool) {
 	dir := filepath.Clean(cwd)
 	for {
@@ -232,47 +233,11 @@ func findGitEntry(cwd string, ceilings []string) (holder string, isDir, ok bool)
 		// looking for a repository. Honoring the same bound keeps a probe
 		// fixture inside a checkout from adopting the enclosing repository as
 		// its write workspace.
-		if parent == dir || isGitCeiling(parent, ceilings) {
+		if parent == dir || identifier.IsGitCeilingDir(parent, ceilings) {
 			return "", false, false
 		}
 		dir = parent
 	}
-}
-
-// gitCeilingDirs returns the absolute entries of git's own
-// GIT_CEILING_DIRECTORIES: repository discovery stops before chdir-ing into
-// one. Relative entries are ignored, as git documents. It is the one process
-// environment value Resolve reads, because it is git's own definition of where
-// repository discovery ends.
-func gitCeilingDirs() []string {
-	raw := os.Getenv("GIT_CEILING_DIRECTORIES")
-	if raw == "" {
-		return nil
-	}
-	var out []string
-	for _, entry := range filepath.SplitList(raw) {
-		entry = strings.TrimSpace(entry)
-		if entry == "" || !filepath.IsAbs(entry) {
-			continue
-		}
-		out = append(out, filepath.Clean(entry))
-	}
-	return out
-}
-
-// isGitCeiling reports whether dir is one of git's ceiling directories, by
-// spelling or resolved location (the walk starts from a resolved cwd).
-func isGitCeiling(dir string, ceilings []string) bool {
-	if len(ceilings) == 0 {
-		return false
-	}
-	resolved := identifier.ResolveClean(dir)
-	for _, ceiling := range ceilings {
-		if dir == ceiling || resolved == identifier.ResolveClean(ceiling) {
-			return true
-		}
-	}
-	return false
 }
 
 // newLayout builds a GitLayout for a resolved (kind, worktreeRoot, gitDir,

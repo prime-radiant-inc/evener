@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/worktree"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // These are integration tests for the manage_worktree switch and exit arms
@@ -114,6 +115,75 @@ func (r *wtRepo) exitOp(t *testing.T) (map[string]any, error) {
 		t.Fatalf("exit result is %T, want map[string]any", out)
 	}
 	return m, nil
+}
+
+// A non-Git probe fixture inside a checkout sets GIT_CEILING_DIRECTORIES to its
+// parent, git's own bound on repository discovery. Managed-worktree project
+// discovery has to honor that same bound before it builds a control environment:
+// otherwise the enclosing checkout resolves as the fixture's main repository,
+// switch-by-path accepts it from git's registry, and the sandbox re-roots there
+// — widening writes outside the fixture (#3724 review).
+func TestWorktreeSwitchByPath_CeilingKeepsWriteScopeAtFixture(t *testing.T) {
+	repo := packageFixtureTempDir(t, "worktree-ceiling-*")
+	repo, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatalf("EvalSymlinks repo: %v", err)
+	}
+	copyWorktreeBaseRepo(t, repo)
+	fixture := filepath.Join(repo, "probes", "task")
+	if err := os.MkdirAll(fixture, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The fixture's parent is the ceiling, so git stops before entering the
+	// enclosing checkout while discovering a repository for the fixture.
+	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(fixture))
+
+	cfg := worktreeTestSessionConfig()
+	stateDir := packageFixtureTempDir(t, "worktree-ceiling-state-*")
+	cfg.StateDir = stateDir
+	s := newSession(t, withDir(fixture), withConfig(cfg))
+	env, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatal("session env is not a LocalExecutionEnvironment")
+	}
+	env.Sandbox = sbxResolve(t, sbxBwrapFacts(t.TempDir()), fixture, sandbox.ModeWorkspaceWrite)
+	if env.Sandbox.Git.WorktreeRoot != fixture {
+		t.Fatalf("fixture sandbox worktree = %q, want the fixture %q", env.Sandbox.Git.WorktreeRoot, fixture)
+	}
+
+	// The ceiling must stop project discovery at the fixture before any control
+	// environment is built: adopting the enclosing checkout here is the exact
+	// state that let switch-by-path re-root the sandbox.
+	st := s.worktreeStateSnapshot()
+	if st.err != nil {
+		t.Fatalf("worktree state: %v", st.err)
+	}
+	if st.mainRepoRoot != "" || st.project.CanonicalPath != fixture {
+		t.Fatalf("project discovery adopted %q (main root %q), want the fixture %q",
+			st.project.CanonicalPath, st.mainRepoRoot, fixture)
+	}
+
+	r := &wtRepo{s: s, mainRoot: repo, stateDir: stateDir}
+	result, switchErr := r.switchOp(t, map[string]any{"path": repo})
+	if switchErr == nil {
+		t.Fatalf("switch to the enclosing checkout succeeded: %+v", result)
+	}
+
+	// The observable effect is the write scope: a refused switch leaves the
+	// session rooted at the fixture with the fixture as its writable worktree,
+	// never the enclosing checkout.
+	cur, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatal("session env is no longer a LocalExecutionEnvironment")
+	}
+	if cur.RootDir != fixture ||
+		cur.Sandbox == nil ||
+		cur.Sandbox.Git.WorktreeRoot != fixture ||
+		rootGrantsAny(cur.Sandbox.FileTool.WriteRoots, repo) ||
+		rootGrantsAny(cur.Sandbox.Spawned.WriteRoots, filepath.Join(repo, ".git")) {
+		t.Fatalf("switching to the enclosing checkout widened write access: result=%+v err=%v envRoot=%q sandbox=%+v",
+			result, switchErr, cur.RootDir, cur.Sandbox)
+	}
 }
 
 // --- switch by name ---

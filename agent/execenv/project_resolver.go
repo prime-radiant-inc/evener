@@ -116,6 +116,7 @@ func envHasGitEntryAncestor(env ExecutionEnvironment, cwd string) bool {
 }
 
 func localStructuralMainRoot(cwd string) (root string, isGit bool, handled bool, err error) {
+	ceilings := identifier.GitCeilingDirs()
 	dir := filepath.Clean(cwd)
 	for {
 		gitPath := filepath.Join(dir, ".git")
@@ -155,7 +156,10 @@ func localStructuralMainRoot(cwd string) (root string, isGit bool, handled bool,
 			return "", true, false, nil
 		}
 		parent := filepath.Dir(dir)
-		if parent == dir {
+		// Honor git's own discovery ceiling, the same bound the sandbox
+		// classifier reads, so a probe fixture inside a checkout never adopts
+		// the enclosing repository as its project.
+		if parent == dir || identifier.IsGitCeilingDir(parent, ceilings) {
 			return "", false, true, nil
 		}
 		dir = parent

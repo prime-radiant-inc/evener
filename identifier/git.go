@@ -91,7 +91,42 @@ func ResolveClean(path string) string {
 	return filepath.Clean(path)
 }
 
+// GitCeilingDirs returns the absolute, symlink-resolved entries of git's own
+// GIT_CEILING_DIRECTORIES: repository discovery stops before chdir-ing into
+// one. Relative and empty entries are ignored, as git documents.
+func GitCeilingDirs() []string {
+	raw := os.Getenv("GIT_CEILING_DIRECTORIES")
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, entry := range filepath.SplitList(raw) {
+		entry = strings.TrimSpace(entry)
+		if entry == "" || !filepath.IsAbs(entry) {
+			continue
+		}
+		out = append(out, ResolveClean(entry))
+	}
+	return out
+}
+
+// IsGitCeilingDir reports whether dir is one of git's ceiling directories, by
+// spelling or resolved location (a walk may start from a resolved cwd).
+func IsGitCeilingDir(dir string, ceilings []string) bool {
+	if len(ceilings) == 0 {
+		return false
+	}
+	resolved := ResolveClean(dir)
+	for _, ceiling := range ceilings {
+		if dir == ceiling || resolved == ceiling {
+			return true
+		}
+	}
+	return false
+}
+
 func mainCheckoutLocal(cwd string) (string, bool, error) {
+	ceilings := GitCeilingDirs()
 	dir := filepath.Clean(cwd)
 	for {
 		gitPath := filepath.Join(dir, ".git")
@@ -119,7 +154,11 @@ func mainCheckoutLocal(cwd string) (string, bool, error) {
 			return gitBinaryMainRootLocal(cwd)
 		}
 		parent := filepath.Dir(dir)
-		if parent == dir {
+		// Git does not chdir up into a GIT_CEILING_DIRECTORIES entry while
+		// looking for a repository. Honoring the same bound keeps a fixture
+		// inside a checkout from adopting the enclosing repository as its
+		// project.
+		if parent == dir || IsGitCeilingDir(parent, ceilings) {
 			return "", false, nil
 		}
 		dir = parent
