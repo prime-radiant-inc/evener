@@ -28,6 +28,19 @@ import (
 	"primeradiant.com/evener/rendezvous"
 )
 
+type windowReadFlipProber struct {
+	result     hubcore.ProbeResult
+	windowRead atomic.Bool
+	probes     atomic.Int64
+}
+
+func (p *windowReadFlipProber) Probe(rendezvous.Entry) hubcore.ProbeResult {
+	p.probes.Add(1)
+	result := p.result
+	result.Capabilities.WindowRead = p.windowRead.Load()
+	return result
+}
+
 func TestHubRPCThreadReadRoutesToDaemon(t *testing.T) {
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
@@ -310,6 +323,109 @@ func TestSessionOperationsLabelsIncompleteOlderDaemonLatestWindow(t *testing.T) 
 	window := response.Turns.Window
 	if window == nil || window.ServedTurns != 1 || window.WithheldTurns != 1 || window.TrimmedEnd != "oldest" || window.ContinuationCursor == "" {
 		t.Fatalf("partial compatibility window = %+v", window)
+	}
+}
+
+func TestSessionOperationsRetriesStalePositiveWindowProbeAsHubCompatibility(t *testing.T) {
+	position := appwire.ThreadItemPosition{Entry: 1}
+	var requests atomic.Int64
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "old-daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		requests.Add(1)
+		if params.TurnWindow != nil {
+			return appwire.ThreadReadResponse{}, appwire.InvalidParams("older daemon rejected window fields")
+		}
+		return appwire.ThreadReadResponse{
+			Thread: appwire.Thread{ID: "stale-positive", SessionID: "stale-positive", Evener: appwire.EvenerThread{Ref: params.Ref}, Turns: []appwire.Turn{{
+				ID: "turn_1", Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFull,
+				Items: []appwire.ThreadItem{{ID: "message_1", Type: "agentMessage", TurnID: "turn_1", TranscriptKey: "message_1", Position: &position, Version: 1, Text: "legacy"}},
+			}}},
+			Snapshot: &appwire.SnapshotIdentity{Incarnation: "stale-positive-snapshot", Length: 1},
+		}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID: os.Getpid(), Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"),
+		SourceID: "local", ThreadID: "stale-positive", SessionID: "stale-positive", WorkspaceRef: "local:stale-positive",
+	})
+	prober := &windowReadFlipProber{result: hubcore.ProbeResult{
+		SessionID: "stale-positive", Status: appwire.ThreadStatusIdle, OK: true, CapabilitiesKnown: true,
+	}}
+	prober.windowRead.Store(true)
+	roster := hubcore.NewRoster(runDir, prober).SetProcessAlive(func(int) bool { return true })
+	if err := roster.RefreshAndWait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	prober.windowRead.Store(false)
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), RunDir: runDir, Roster: roster, Past: hubcore.NewPastIndex("")}
+	sources := newHubSourceRegistry(cfg)
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	operations := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
+
+	response, err := operations.Invoke(t.Context(), appwire.ManagerView{Ref: "local:manager", Manager: true}, appwire.SessionOperationRequest{
+		Turns: &appwire.ThreadTurnsListParams{Ref: "local:stale-positive", ThreadWindowParams: appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Latest: 1}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("daemon read requests = %d, want one window attempt and one legacy retry", got)
+	}
+	if got := prober.probes.Load(); got != 2 {
+		t.Fatalf("capability probes = %d, want initial probe and one failure re-probe", got)
+	}
+	if response.Turns.Window == nil || response.Turns.Window.AppliedBy != transcriptWindowAppliedByHubCompat {
+		t.Fatalf("stale-positive response window = %+v", response.Turns.Window)
+	}
+}
+
+func TestSessionOperationsKeepsWindowFailureWhenFreshProbeStillAdvertisesSupport(t *testing.T) {
+	var requests atomic.Int64
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "window-daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		requests.Add(1)
+		return appwire.ThreadReadResponse{}, appwire.InvalidParams("unrelated window request failure")
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID: os.Getpid(), Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"),
+		SourceID: "local", ThreadID: "window-failure", SessionID: "window-failure", WorkspaceRef: "local:window-failure",
+	})
+	prober := &windowReadFlipProber{result: hubcore.ProbeResult{
+		SessionID: "window-failure", Status: appwire.ThreadStatusIdle, OK: true, CapabilitiesKnown: true,
+	}}
+	prober.windowRead.Store(true)
+	roster := hubcore.NewRoster(runDir, prober).SetProcessAlive(func(int) bool { return true })
+	if err := roster.RefreshAndWait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), RunDir: runDir, Roster: roster, Past: hubcore.NewPastIndex("")}
+	sources := newHubSourceRegistry(cfg)
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	operations := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
+
+	_, err := operations.Invoke(t.Context(), appwire.ManagerView{Ref: "local:manager", Manager: true}, appwire.SessionOperationRequest{
+		Turns: &appwire.ThreadTurnsListParams{Ref: "local:window-failure", ThreadWindowParams: appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Latest: 1}}},
+	})
+	wire, ok := errors.AsType[appwire.WireError](err)
+	if !ok {
+		t.Fatalf("window failure = %T %v, want original wire error", err, err)
+	}
+	data, _ := appwire.DecodedErrorData(wire.Data)
+	if data.EvenerErrorInfo != appwire.ErrorInvalidParams {
+		t.Fatalf("window failure info = %q, want %q", data.EvenerErrorInfo, appwire.ErrorInvalidParams)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("daemon read requests = %d, want no legacy retry", got)
+	}
+	if got := prober.probes.Load(); got != 2 {
+		t.Fatalf("capability probes = %d, want initial probe and one failure re-probe", got)
 	}
 }
 

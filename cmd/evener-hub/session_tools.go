@@ -775,6 +775,31 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		// instead of closing immediately.
 		err = appwire.RetryableSessionUnavailable("remote hub answered a live-only read with saved history")
 	}
+	if err != nil && params.TurnWindow != nil && !hubCompatibility && cfg.Roster != nil {
+		if _, local := source.(*appsource.LocalDaemonSource); local {
+			originalErr := err
+			if read != nil {
+				read.finish(false)
+				read = nil
+			}
+			if refreshErr := hubRosterRefresh(ctx, cfg.Roster); refreshErr != nil {
+				if ctx.Err() != nil {
+					return appwire.ThreadReadResponse{}, ctx.Err()
+				}
+				return appwire.ThreadReadResponse{}, originalErr
+			}
+			if sourceAdvertisesWindowRead(ctx, source, params.Ref, params.ThreadID) {
+				return appwire.ThreadReadResponse{}, originalErr
+			}
+			if params.TurnWindow.Latest <= 0 {
+				return appwire.ThreadReadResponse{}, appwire.WindowUnsupportedOnDaemon()
+			}
+			hubCompatibility = true
+			sourceParams.ThreadWindowParams = appwire.ThreadWindowParams{}
+			sourceParams.ItemLimit = appwire.TranscriptItemPageLimit
+			read, err = relays.readThreadWithSubscription(ctx, source, sourceParams, capture)
+		}
+	}
 	if err != nil {
 		// A live-only read has no saved answer to recover, and its caller
 		// classifies the retryable outage. Ownership recovery would run an
