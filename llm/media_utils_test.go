@@ -3,6 +3,7 @@ package llm
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"image"
 	pngenc "image/png"
 	"testing"
@@ -125,6 +126,34 @@ func TestNormalizeImageBlock(t *testing.T) {
 		if _, _, err := NormalizeImageBlock(data); err == nil {
 			t.Errorf("NormalizeImageBlock(%s) accepted non-raster bytes", name)
 		}
+	}
+}
+
+func grayPNG(t *testing.T, width, height int) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := pngenc.Encode(&buf, image.NewGray(image.Rect(0, 0, width, height))); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// TestNormalizeImageDecodedPixelBudget bounds the pixels image.Decode may
+// allocate while normalizing an image the wire does not accept. Encoded bytes
+// alone do not bound the decoded canvas: a small, highly compressed PNG can
+// name a huge image and exhaust process memory. 16 MP matches
+// llm/internal/imagerepair's existing JPEG budget.
+func TestNormalizeImageDecodedPixelBudget(t *testing.T) {
+	atBudget := grayPNG(t, 4000, 4000) // exactly 16,000,000 pixels
+	got, mt, err := NormalizeImage(atBudget, ImageBlockMediaType)
+	if err != nil || mt != "image/png" || !bytes.Equal(got, atBudget) {
+		t.Fatalf("NormalizeImage(16 MP png) = (%d bytes, %q, %v), want the png unchanged", len(got), mt, err)
+	}
+
+	overBudget := grayPNG(t, 4001, 4001)
+	_, _, err = NormalizeImageForWire(overBudget, "", ImageBlockMediaType, "oversized image refused")
+	if _, ok := errors.AsType[*ConfigurationError](err); !ok {
+		t.Fatalf("oversized image error = %T %v, want *ConfigurationError", err, err)
 	}
 }
 

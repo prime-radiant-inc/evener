@@ -128,13 +128,28 @@ func NormalizeImageBlock(data []byte) ([]byte, string, error) {
 	return NormalizeImage(data, ImageBlockMediaType)
 }
 
+// maxDecodedImagePixels bounds the pixels image.Decode may allocate while
+// normalizing an image the wire does not accept. Encoded bytes alone do not
+// bound the decoded canvas: a small, highly compressed PNG can name a huge
+// image and exhaust process memory. 16 MP matches
+// llm/internal/imagerepair's existing JPEG budget.
+const maxDecodedImagePixels = 16_000_000
+
 // NormalizeImage returns image bytes and a canonical media type accepted by
 // accept. When accept names the bytes' decoded format, the bytes are returned
 // unchanged with that media type; any other decodable raster is re-encoded as
-// PNG. Bytes that are not a decodable raster return an error. Protocols whose
+// PNG. A declared canvas over maxDecodedImagePixels, or bytes that are not a
+// decodable raster, return an error before the full decode. Protocols whose
 // accepted set differs from the Anthropic/OpenAI image block pass their own
 // accept function.
 func NormalizeImage(data []byte, accept func(format string) string) ([]byte, string, error) {
+	config, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return nil, "", err
+	}
+	if config.Width <= 0 || config.Height <= 0 || config.Width > maxDecodedImagePixels/config.Height {
+		return nil, "", fmt.Errorf("decoded image %dx%d exceeds the %d-pixel budget", config.Width, config.Height, maxDecodedImagePixels)
+	}
 	img, format, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
 		return nil, "", err
