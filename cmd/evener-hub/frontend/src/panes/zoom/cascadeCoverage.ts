@@ -6,7 +6,7 @@
 import type { OpenPaneRecord } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { sessionActivitySnapshot } from "../../stores/sessionActivity";
-import { deriveCascadePath, parseZoomParams, type SessionZoomParams } from "./intent";
+import { deriveCascadePath, type SessionZoomParams, zoomIntentOf } from "./intent";
 
 // The canonical column enumeration: every conversation the authoritative
 // cascade-ancestry derivation renders as one of this cascade's columns,
@@ -29,7 +29,6 @@ export function zoomParamsCoverConversation(params: SessionZoomParams, session: 
 }
 
 export function zoomPaneCoversConversation(pane: OpenPaneRecord, session: string): boolean {
-  if (pane.type !== "sessionZoom") return false;
-  const params = parseZoomParams(pane.params);
+  const params = zoomIntentOf(pane);
   return params !== null && zoomParamsCoverConversation(params, session);
 }

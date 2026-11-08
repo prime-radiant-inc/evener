@@ -295,7 +295,7 @@ function routePlacementIsApplied(
       return true;
     }
   }
-  if (allowFocusedCompanion && documentState?.origin?.type === "sessionZoom") {
+  if (allowFocusedCompanion && documentState?.origin) {
     const origin = documentState.origin;
     const params = zoomIntentOf(origin);
     // A cascade column's filename open binds its document to the hosting

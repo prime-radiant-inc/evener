@@ -98,14 +98,14 @@ export function parseZoomParams(value: unknown): SessionZoomParams | null {
 
 /** The fields a session-zoom helper reads. Structural, so a shell pane record
  * satisfies it without this module importing the workspace. */
-export interface ZoomPaneLike {
+interface ZoomPaneLike {
   readonly type: string;
   readonly params: unknown;
 }
 
 /** The parsed intent of a sessionZoom pane, or null for any other pane type or
- * params that do not validate. The one predicate over the pane shape, so
- * callers never spell the type test and the parse separately. */
+ * params that do not validate. A predicate over the pane shape, so callers need
+ * not spell the type test and the parse separately. */
 export function zoomIntentOf(pane: ZoomPaneLike): SessionZoomParams | null {
   return pane.type === "sessionZoom" ? parseZoomParams(pane.params) : null;
 }
