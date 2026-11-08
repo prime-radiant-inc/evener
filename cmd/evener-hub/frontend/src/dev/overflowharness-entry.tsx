@@ -2001,6 +2001,28 @@ function duoBox(element: Element | null | undefined) {
   return { width, height };
 }
 
+function measureDuoDraftState() {
+  const pane = document.getElementById("oh-pane");
+  const footer = pane?.querySelector('[data-testid="pane-footer"]');
+  const edge = pane?.querySelector('[data-testid="pane-edge-footer"]');
+  const footerBox = duoBox(footer);
+  const edgeBox = duoBox(edge);
+  return {
+    state: "draft",
+    totalFooterHeight: (footerBox?.height ?? 0) + (edgeBox?.height ?? 0),
+    editorMinLines: pane?.querySelector<HTMLElement>('[data-composer] [role="textbox"]')?.style.minHeight ?? null,
+    editing: pane?.querySelector("[data-composer]")?.hasAttribute("data-composer-editing") ?? false,
+    attachment: null,
+    counters: Array.from(pane?.querySelectorAll<HTMLElement>("[data-activity-tab]") ?? []).map((counter) => ({
+      ...duoBox(counter),
+      tab: counter.getAttribute("data-activity-tab"),
+      accessibleName: counter.getAttribute("aria-label"),
+    })),
+    controls: [],
+    horizontalOverflow: pane ? pane.scrollWidth - pane.clientWidth : 0,
+  };
+}
+
 async function measureDuoCompactStates(phase: "focus" | "rest") {
   const pane = document.getElementById("oh-pane");
   const editor = pane?.querySelector<HTMLElement>('[data-composer] [role="textbox"]');
@@ -2069,7 +2091,6 @@ async function measureDuoCompactStates(phase: "focus" | "rest") {
   await settle();
   editor.blur();
   await settle();
-  snapshot("draft");
   if (!pane.querySelector('[data-testid="attachment-tile"]'))
     throw new Error("real file upload did not stage an attachment");
   await settle();
@@ -2147,6 +2168,7 @@ declare global {
     inspectHeldSteerColumn: typeof inspectHeldSteerColumn;
     measureMenuVerbs: typeof measureMenuVerbs;
     measureDuoCompactStates: typeof measureDuoCompactStates;
+    measureDuoDraftState: typeof measureDuoDraftState;
     settled: Promise<true>;
     verifyItemPaging: typeof verifyItemPaging;
   }
@@ -2160,6 +2182,7 @@ window.inspectIntentColumn = inspectIntentColumn;
 window.inspectHeldSteerColumn = inspectHeldSteerColumn;
 window.measureMenuVerbs = measureMenuVerbs;
 window.measureDuoCompactStates = measureDuoCompactStates;
+window.measureDuoDraftState = measureDuoDraftState;
 window.settled = settled;
 window.verifyItemPaging = verifyItemPaging;
 

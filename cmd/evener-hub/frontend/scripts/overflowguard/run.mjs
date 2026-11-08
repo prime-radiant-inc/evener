@@ -572,6 +572,8 @@ async function measureDuoCompactStates(cdpEndpoint, url) {
     );
     await typeComposerDraft(send, "A saved Duo draft");
     await evaluate(send, "document.activeElement?.blur()");
+    phase = "draft";
+    const draft = JSON.parse(await evaluate(send, "JSON.stringify(window.measureDuoDraftState())"));
     phase = "file-input";
     const tree = await send("DOM.getDocument");
     const input = await send("DOM.querySelector", {
@@ -589,7 +591,7 @@ async function measureDuoCompactStates(cdpEndpoint, url) {
     const rest = JSON.parse(
       await evaluate(send, "(async () => JSON.stringify(await window.measureDuoCompactStates('rest')))()"),
     );
-    return { states: [...focused.states, ...rest.states], approvalResolved: rest.approvalResolved };
+    return { states: [...focused.states, draft, ...rest.states], approvalResolved: rest.approvalResolved };
   } catch (error) {
     const pageErrors = await evaluate(send, "JSON.stringify(window.__panelGuardErrors ?? [])").catch(() => "[]");
     throw new Error(`Duo ${phase}: ${error?.stack ?? error}\npage errors: ${pageErrors}`);
@@ -623,6 +625,9 @@ function assertDuoCompactStates(result) {
     failures.push(`empty/live footer=${empty.totalFooterHeight}px, exceeds the 258.94px budget (306.94px baseline minus 48px)`);
   }
   if (!focused?.editing || focused.editorMinLines !== "2lh") failures.push("focus did not engage the two-line editor");
+  if (focused && (focused.cardGap !== "4px" && focused.cardPaddingBlock !== "4px 4px")) {
+    failures.push(`focused card did not restore ordinary spacing: ${focused.cardGap}/${focused.cardPaddingBlock}`);
+  }
   if (draft?.editorMinLines !== "2lh" || draft.editing) failures.push("a blurred draft did not retain its two-line resting state");
   if (!attachment?.attachment || attachment.attachment.height < 80 || attachment.totalFooterHeight <= empty.totalFooterHeight)
     failures.push("the real staged attachment did not retain its tile and footer space");
