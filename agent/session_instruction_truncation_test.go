@@ -11,32 +11,63 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// A personal AGENTS.md over its budget loses its tail from the prompt. Before
+// An instruction doc over its budget loses its tail from the prompt. Before
 // #1048 the session set projectDocsTruncated and never told anyone, so the
 // user could not learn why the model stopped following the end of the file.
-func TestOversizedPersonalInstructionsEmitAWarningAfterSessionStart(t *testing.T) {
-	doc := filepath.Join(t.TempDir(), "AGENTS.md")
+func TestOversizedInstructionsEmitAWarningAfterSessionStart(t *testing.T) {
 	line := "standing instruction\n"
 	body := strings.Repeat(line, projectDocByteBudget/len(line)+1)
-	if err := os.WriteFile(doc, []byte(body), 0o644); err != nil {
+	cases := []struct {
+		name    string
+		workDir string
+		cfg     SessionConfig
+	}{
+		{
+			name: "personal",
+			cfg: SessionConfig{
+				AgentsDocPath: filepath.Join(t.TempDir(), "AGENTS.md"),
+				testOnly:      testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+			},
+		},
+		{
+			name: "project",
+			cfg: SessionConfig{
+				AgentsDocPath: filepath.Join(t.TempDir(), "absent-AGENTS.md"),
+				testOnly:      testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+			},
+		},
+	}
+	personalDoc := cases[0].cfg.AgentsDocPath
+	if err := os.WriteFile(personalDoc, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cases[1].workDir = t.TempDir()
+	if err := os.WriteFile(filepath.Join(cases[1].workDir, "AGENTS.md"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	client := llm.NewClient()
-	client.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"),
-		execenv.NewLocalExecutionEnvironment(t.TempDir()),
-		SessionConfig{
-			AgentsDocPath: doc,
-			testOnly:      testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := llm.NewClient()
+			client.Register(&fakeAdapter{name: "openai"})
+			workDir := tc.workDir
+			if workDir == "" {
+				workDir = t.TempDir()
+			}
+			sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"),
+				execenv.NewLocalExecutionEnvironment(workDir), tc.cfg)
+			if err != nil {
+				t.Fatalf("NewSession: %v", err)
+			}
+			assertInstructionTruncationWarning(t, sess)
 		})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
 	}
-	sess.Close()
+}
 
+func assertInstructionTruncationWarning(t *testing.T, sess *Session) {
+	t.Helper()
 	sawStart := false
-	for ev := range sess.Events() {
+	for _, ev := range transcriptWarningOrderingDrainAll(t, sess) {
 		if ev.Kind == events.EventSessionStart {
 			sawStart = true
 			continue

@@ -1821,9 +1821,9 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		// instructions from the prompt. Buffer the diagnostic here and let
 		// emitSessionStartEnvelope release it after SESSION_START (#1048).
 		s.pendingInstructionWarnings = append(s.pendingInstructionWarnings, events.WarningData{
-			Source:  "instructions",
+			Source:  "evener",
 			Code:    "instruction_docs_truncated",
-			Message: "instruction docs exceeded the 32KB budget and were truncated; the prompt carries only the beginning of the oversized file",
+			Message: fmt.Sprintf("instruction docs exceeded the %dKB budget and were truncated; the prompt carries only the beginning of the oversized file", projectDocByteBudget/1024),
 		})
 	}
 

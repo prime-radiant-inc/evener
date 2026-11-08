@@ -921,11 +921,8 @@ type Session struct {
 	pendingPluginEvents []events.PluginLoadedData
 	pendingHookWarnings []events.WarningData
 	pendingMCPWarnings  []events.WarningData
-	// pendingInstructionWarnings holds the construction-time diagnostic that the
-	// personal or project instruction docs overflowed their 32KB budget, until
-	// emitSessionStartEnvelope releases it after SESSION_START. It is a config
-	// diagnostic, like the hook and MCP buffers above, so it must not fire the
-	// Notification hook.
+	// pendingInstructionWarnings holds the construction-time diagnostic that
+	// instruction docs overflowed their budget, until SESSION_START releases it.
 	pendingInstructionWarnings []events.WarningData
 	// pendingTranscriptWarnings holds construction-time warnings that are
 	// genuine and model-facing (transcript creation failing open in NewSession,
