@@ -659,32 +659,30 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 									postCommitAdvice = "The terminal update and auto-advance were committed, but the current-task reminder was not delivered; inspect the committed task state before choosing the next update."
 								}
 							}
-						} else {
-							// No eligible task. If nothing remains open or in_progress,
+						} else if summary.NoActionableTasks() && summary.Total > 0 {
+							// No eligible task and nothing remains open or in_progress:
 							// signal the agent that the list is exhausted.
-							if summary.NoActionableTasks() && summary.Total > 0 {
-								var blockingDelegateIDs []string
-								if deps.blockingDelegateIDs != nil {
-									blockingDelegateIDs = deps.blockingDelegateIDs()
-								}
-								if err := deps.sendTaskCompletionSteering(taskReminderTerminalWhileDelegatesRun(deps.resultToolName(), blockingDelegateIDs, summary.AllDone()), blockingDelegateIDs); err != nil {
-									postCommitErr = fmt.Errorf("post-commit task-completion steering failed: %w", err)
-									postCommitAdvice = "The terminal update was committed, but the completion reminder was not delivered; inspect the committed task state before choosing the next update."
-								} else if len(blockingDelegateIDs) == 0 {
-									if summary.AllDone() {
-										msg.WriteString("All tasks complete. ")
-									} else {
-										msg.WriteString("No actionable tasks remain. ")
-									}
+							var blockingDelegateIDs []string
+							if deps.blockingDelegateIDs != nil {
+								blockingDelegateIDs = deps.blockingDelegateIDs()
+							}
+							if err := deps.sendTaskCompletionSteering(taskReminderTerminalWhileDelegatesRun(deps.resultToolName(), blockingDelegateIDs, summary.AllDone()), blockingDelegateIDs); err != nil {
+								postCommitErr = fmt.Errorf("post-commit task-completion steering failed: %w", err)
+								postCommitAdvice = "The terminal update was committed, but the completion reminder was not delivered; inspect the committed task state before choosing the next update."
+							} else if len(blockingDelegateIDs) == 0 {
+								if summary.AllDone() {
+									msg.WriteString("All tasks complete. ")
 								} else {
-									if summary.AllDone() {
-										msg.WriteString("All tasks complete; waiting for delegate(s) ")
-									} else {
-										msg.WriteString("No actionable tasks remain; waiting for delegate(s) ")
-									}
-									msg.WriteString(strings.Join(blockingDelegateIDs, ", "))
-									msg.WriteString(". ")
+									msg.WriteString("No actionable tasks remain. ")
 								}
+							} else {
+								if summary.AllDone() {
+									msg.WriteString("All tasks complete; waiting for delegate(s) ")
+								} else {
+									msg.WriteString("No actionable tasks remain; waiting for delegate(s) ")
+								}
+								msg.WriteString(strings.Join(blockingDelegateIDs, ", "))
+								msg.WriteString(". ")
 							}
 						}
 					}
