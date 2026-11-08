@@ -79,8 +79,8 @@ func assertInstructionTruncationWarning(t *testing.T, sess *Session) {
 		if !sawStart {
 			t.Fatal("the instruction truncation warning arrived before SESSION_START")
 		}
-		if warning.Message == "" {
-			t.Fatal("the instruction truncation warning has no message")
+		if warning.Source != "evener" {
+			t.Fatalf("instruction truncation warning source = %q, want evener", warning.Source)
 		}
 		return
 	}
