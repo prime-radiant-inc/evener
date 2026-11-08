@@ -37,6 +37,7 @@ import {
   currentWorkEvener,
   installCanvasStubs,
   installGatedDecodeStub,
+  installNarrowComposer,
   installStalledDecodeStub,
   mountComposer,
   mountComposerWithHandle,
@@ -87,20 +88,18 @@ class ControlledDiscardStorage extends MutationOutboxIndexedDB {
   }
 }
 
-test("the compact empty composer expands on focus and retains its two-line draft height", async () => {
-  vi.stubGlobal(
-    "ResizeObserver",
-    class implements ResizeObserver {
-      constructor(private readonly callback: ResizeObserverCallback) {}
-      observe(target: Element): void {
-        if (target.querySelector('[data-testid="composer-input-card"]')) {
-          this.callback([{ contentRect: { width: 382 } } as ResizeObserverEntry], this);
-        }
-      }
-      unobserve(): void {}
-      disconnect(): void {}
-    },
-  );
+function installDuoCoverViewport(): void {
+  vi.stubGlobal("matchMedia", (media: string) => ({
+    media,
+    matches: media === "(min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4)",
+    addEventListener() {},
+    removeEventListener() {},
+  }));
+}
+
+test("the Duo cover composer expands on focus and retains its two-line draft height", async () => {
+  installDuoCoverViewport();
+  installNarrowComposer(450);
   await mountComposerWithHandle("ref_a");
   const editor = textarea();
   expect(editor.style.minHeight).toBe("1lh");
@@ -110,6 +109,12 @@ test("the compact empty composer expands on focus and retains its two-line draft
   expect(editor.style.minHeight).toBe("2lh");
   act(() => editor.blur());
   await waitFor(() => expect(editor.style.minHeight).toBe("2lh"));
+});
+
+test("a narrow desktop pane keeps its two-line resting height", async () => {
+  installNarrowComposer(382);
+  await mountComposerWithHandle("ref_a");
+  expect(textarea().style.minHeight).toBe("2lh");
 });
 
 test("the wide empty composer keeps its two-line resting height", async () => {

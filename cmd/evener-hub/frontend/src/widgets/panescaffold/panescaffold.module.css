@@ -180,13 +180,13 @@
   }
 }
 
-@media (max-width: 500px) and (max-aspect-ratio: 3 / 4) {
-  .footer {
+@media (min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4) {
+  .pane:has(> .body[data-pane-scaffold^="session:"]) > .footer {
     padding: var(--space-1) var(--space-2);
     padding-bottom: max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px));
   }
 
-  .footerBeforeEdge {
+  .pane:has(> .body[data-pane-scaffold^="session:"]) > .footerBeforeEdge {
     padding-bottom: var(--space-1);
   }
 }

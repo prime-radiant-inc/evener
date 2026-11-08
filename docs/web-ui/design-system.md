@@ -406,8 +406,8 @@ The `--font-size-caption/ui/body/pane-title/page-title/display` ramp is
 `body` alongside that ramp so S/M/L/XL (0.9/1/1.1/1.25) scale reading text too. Phone body remains
 16px; editable phone controls use `max(16px, var(--font-size-body))`, even under S. The serif
 reading step is 16px at M in both viewports. Weights are 400/500/600; leading body/ui/title is
-1.6/1.4/1.25. Reading surfaces use `--line-height-prose`, 1.45 by default and scaled by the
-comfortable-density preference, independently of editor and general UI geometry. Display tracking remains −0.02em.
+1.6/1.4/1.25. Reading surfaces use `--line-height-prose`, declared on `body` beside the size ramp so the
+comfortable-density preference scales its default 1.45 leading, independently of editor and general UI geometry. Display tracking remains −0.02em.
 
 Markdown keeps the prose face but composes with its host's size (the root falls back to `1em`);
 reading surfaces pin `--prose-font-size: var(--font-size-prose)` on the host that owns their

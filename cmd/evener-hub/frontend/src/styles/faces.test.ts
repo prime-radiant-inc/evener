@@ -12,9 +12,11 @@ import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 
 const SRC = dirname(dirname(fileURLToPath(import.meta.url)));
+const cssCache = new Map<string, string>();
 
 function rule(path: string, selector: string): string {
-  const css = readFileSync(join(SRC, path), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = cssCache.get(path) ?? readFileSync(join(SRC, path), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  cssCache.set(path, css);
   const escaped = selector.replace(/[.[\]]/g, (c) => `\\${c}`);
   const match = new RegExp(`(?:^|\\n)${escaped}\\s*\\{([^}]*)\\}`).exec(css);
   if (!match) throw new Error(`${path}: no rule ${selector}`);
@@ -53,7 +55,9 @@ test("editorial prose has a distinct serif face and compact body-scaled size", (
 
 test("reading surfaces share compact prose leading without tightening editor and UI geometry", () => {
   const palette = rule("styles/tokens.css", '[data-theme="dark"]');
-  expect(palette).toMatch(/--line-height-prose:\s*calc\(1\.45 \* var\(--density-scale, 1\)\);/);
+  expect(rule("styles/tokens.css", "body")).toMatch(
+    /--line-height-prose:\s*calc\(1\.45 \* var\(--density-scale, 1\)\);/,
+  );
   expect(palette).toMatch(/--line-height-body:\s*1\.6;/);
   for (const [path, selector] of [
     ["widgets/markdown/markdown.module.css", ".root"],
