@@ -10,9 +10,11 @@
 // looking: once on open, then every RAIL_ACTIVITY_POLL_MS. A read older than
 // two intervals is treated as no read at all - the Board's staleness rule - so
 // a hub that has stopped answering cannot make a row read quiet or stuck from
-// the age of its last answer alone. A method-not-found answer means the hub
-// predates the read; polling stops for good and the card keeps the row's own
-// facts. The same method-not-found handling and staleness arithmetic live in
+// the age of its last answer alone, and a read is withheld while the
+// connection is not ready (the Board gates on connected the same way). A
+// method-not-found answer means the hub predates the read; polling stops for
+// good and the card keeps the row's own facts. The same method-not-found
+// handling and staleness arithmetic live in
 // mobile-native's ActivityPoll, kept separate because this read is one
 // session's and lives exactly as long as one card.
 import {
@@ -23,7 +25,7 @@ import {
   type SessionActivity,
 } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, useConnectionStore } from "../../stores/connection";
 import { STATUS_LABEL } from "../../widgets";
 import type { RailSession } from "./railNodes";
 
@@ -45,12 +47,17 @@ export function isFreshActivityRead(msSinceRead: number): boolean {
 /** One session's latest pulse while its card is open, or null while the read
  * is absent, stale, or unsupported by this hub. */
 export function useSessionActivityRead(ref: string, active: boolean): RailActivityRead | null {
+  const connected = useConnectionStore((state) => state.state === "ready");
   const [read, setRead] = useState<{ activity: SessionActivity; at: number } | null>(null);
 
   useEffect(() => {
-    if (!active) return undefined;
+    if (!active) {
+      // A read taken before the session stopped working must not come back
+      // with it: the next working stretch asks the hub afresh.
+      setRead(null);
+      return undefined;
+    }
     let requestId = 0;
-    let pending = false;
     let unsupported = false;
     let timer: ReturnType<typeof setInterval> | undefined;
 
@@ -61,18 +68,17 @@ export function useSessionActivityRead(ref: string, active: boolean): RailActivi
     };
 
     const poll = () => {
-      // One read in flight per card: a hub slower than the interval must not
-      // accumulate requests whose answers are all discarded.
-      if (unsupported || pending || document.visibilityState !== "visible") return;
+      // Newest answer wins (requestId below), as in the native ActivityPoll:
+      // a hung read must never wedge the card, so a slow request is
+      // superseded rather than waited on.
+      if (unsupported || document.visibilityState !== "visible") return;
       const { client, state } = connectionStore.getState();
       if (state !== "ready" || !client) return;
       const id = ++requestId;
-      pending = true;
       client
         .request("evener/activity/read", { refs: [ref] })
         .then((response) => {
           if (id !== requestId) return;
-          pending = false;
           let sessions: SessionActivity[];
           try {
             sessions = decodeActivityRead(response);
@@ -88,7 +94,6 @@ export function useSessionActivityRead(ref: string, active: boolean): RailActivi
         })
         .catch((error: unknown) => {
           if (id !== requestId) return;
-          pending = false;
           if (!isMethodNotFound(error)) return;
           unsupported = true;
           stopTimer();
@@ -96,7 +101,7 @@ export function useSessionActivityRead(ref: string, active: boolean): RailActivi
     };
 
     const start = () => {
-      if (timer !== undefined || unsupported) return;
+      if (timer !== undefined || unsupported || document.visibilityState !== "visible") return;
       poll();
       timer = setInterval(poll, RAIL_ACTIVITY_POLL_MS);
     };
@@ -116,7 +121,7 @@ export function useSessionActivityRead(ref: string, active: boolean): RailActivi
     };
   }, [ref, active]);
 
-  if (!active || read === null || read.activity.ref !== ref) return null;
+  if (!active || !connected || read === null || read.activity.ref !== ref) return null;
   const msSinceRead = Math.max(0, Date.now() - read.at);
   if (!isFreshActivityRead(msSinceRead)) return null;
   return { activity: read.activity, msSinceRead };
