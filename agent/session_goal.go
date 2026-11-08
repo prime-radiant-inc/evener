@@ -8,6 +8,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/goal"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -163,13 +164,17 @@ func goalControlsRoundCap(cfg int, kind EntryKind) bool {
 	return kind == EntryContinuation && (cfg < 0 || cfg >= goal.GoalTurnMaxRounds)
 }
 
-// callsMadeProgress reports whether any tool call in a round is a real mutating
-// action for the goal no-progress signal: a call that is !ReadOnly AND is neither
-// the result/communicate tool nor task_list. Read-only tools, the result tool,
-// and plan updates all register ReadOnly==false or are otherwise excluded, so the
+// toolResultsMadeProgress reports whether any executed tool result in a round is
+// a real mutating action for the goal no-progress signal: a call that is
+// !ReadOnly AND is neither the result/communicate tool nor task_list, and whose
+// execution actually succeeded. Read-only tools, the result tool, and plan
+// updates all register ReadOnly==false or are otherwise excluded, so the
 // ReadOnly flag alone is insufficient (spec §2). An unknown tool name (Get==nil)
-// is treated as a non-read-only mutation, matching the executor's default.
-func (s *Session) callsMadeProgress(calls []llm.ToolCallData) bool {
+// never counts, and neither does a failed call — including a prevalidation-only
+// rejection or an invalid-argument failure — because it did no work. Crediting
+// only executed successes keeps the breaker a signal of progress rather than of
+// attempted mutation (CORE-04).
+func (s *Session) toolResultsMadeProgress(calls []llm.ToolCallData, results []tool.ExecResult) bool {
 	resultName := s.resultToolName()
 	for i := range calls {
 		name := calls[i].Name
@@ -177,9 +182,13 @@ func (s *Session) callsMadeProgress(calls []llm.ToolCallData) bool {
 			continue
 		}
 		t := s.reg.Get(name)
-		if t == nil || !t.ReadOnly {
-			return true
+		if t == nil || t.ReadOnly {
+			continue
 		}
+		if results[i].IsError {
+			continue
+		}
+		return true
 	}
 	return false
 }
