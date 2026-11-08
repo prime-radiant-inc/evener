@@ -1618,6 +1618,17 @@ function SpawnForm({
     if (Object.keys(keptValues).length !== Object.keys(values).length) {
       setAdvancedValues(keptValues);
     }
+    // A choice kept in the values across an unoffering host (the filters above
+    // preserve it) must ride submissions again once a host that offers the
+    // field answers: the panel re-collects overrides only on edit, so without
+    // this the toggle would show Off while the submission silently drops it.
+    if (offered.has("memoryEnabled")) {
+      const keptChoice = draft.fields.getState().advancedValues.memoryEnabled?.value;
+      const currentOverrides = draft.fields.getState().advancedOverrides;
+      if ((keptChoice === "true" || keptChoice === "false") && currentOverrides.memoryEnabled === undefined) {
+        setAdvancedOverrides({ ...currentOverrides, memoryEnabled: keptChoice === "true" });
+      }
+    }
     // An error is state about a FIELD, not about the host: the error of a kept
     // field survives (it explains a validation the user still has to fix), while
     // a dropped field's error goes with the field. Clearing the whole map here
@@ -2366,6 +2377,11 @@ function SpawnForm({
     // The model list is the same question asked of the same host, and it is the
     // field the harness/schema answer cannot vouch for, so it gates here too.
     if (hostCatalogPending || modelHostPending) return;
+    // A Memory Off the chosen host hasn't confirmed it can honor must never
+    // ride a submission - the older host would silently drop the field and
+    // start the session with memory on. Same reasoning as the disabled Start
+    // button; this catches the ⌘/Ctrl+Enter chord.
+    if (memoryOffHeld) return;
     if (attachments.hasPending) {
       toasts.push("error", "Image attachment is still processing.");
       return;

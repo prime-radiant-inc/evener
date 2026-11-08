@@ -43,6 +43,21 @@ const SCHEMA_OFFERING_MEMORY = {
   ],
 };
 
+/** The same schema plus a second boolean, for edits made away from home. */
+const SCHEMA_MEMORY_AND_LOG = {
+  options: [
+    ...SCHEMA_OFFERING_MEMORY.options,
+    {
+      field: "api_log",
+      wireField: "apiLog",
+      label: "API log",
+      group: "Agent",
+      kind: "boolean" as const,
+      perLaunch: true,
+    },
+  ],
+};
+
 /** Every evener/host/attach the pane issued, for the picker's attach assertions. */
 function attachCalls(fake: FakeClient): { host: string }[] {
   return fake.calls
@@ -398,6 +413,92 @@ test("a Memory Off holds Start when the selected host's schema answer fails", as
   expect(draft.fields.getState().advancedOverrides.memoryEnabled).toBe(false);
   await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true));
   expect(fake.calls.some((call) => call.method === "thread/start")).toBe(false);
+});
+
+// The ⌘/Ctrl+Enter chord reaches the submit handler directly, past the
+// disabled Start button - the same reason every other blocked state has its
+// own guard inside handleSpawn. A held Memory Off must never ride a submission
+// an older host would silently honor by dropping the field.
+test("the Mod+Enter chord cannot submit past a held Memory Off", async () => {
+  const user = setupUser();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => {
+    f.on("evener/launch/schema", () => SCHEMA_OFFERING_MEMORY);
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/memory-chord");
+  renderSpawn(fake);
+  await settled();
+
+  const draft = completionDraft("/tmp/memory-chord");
+  await act(async () => {
+    setDraftField(draft, "advancedOverrides", { memoryEnabled: false });
+  });
+  await fillPrompt(user, "chord while held");
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true));
+
+  fireEvent.keyDown(promptField(), { key: "Enter", metaKey: true });
+  await settled();
+  expect(fake.calls.some((call) => call.method === "thread/start")).toBe(false);
+});
+
+// The values half of the preservation keeps a Memory Off alive while the
+// overrides half is re-collected against the unoffering host's schema on any
+// later edit. Once an offering host answers again, that choice must ride the
+// submission - the panel only re-collects on edit, so the wire value has to be
+// restored from the values or the toggle would show Off while the submission
+// silently drops it.
+test("a Memory Off kept across an unoffering host rides the submission again once an offering host answers", async () => {
+  const user = setupUser();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => {
+    f.on("evener/launch/schema", () => SCHEMA_MEMORY_AND_LOG);
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method === "evener/launch/schema") {
+        return { options: SCHEMA_MEMORY_AND_LOG.options.filter((option) => option.wireField !== "memoryEnabled") };
+      }
+      return routedDiscoveryDefault(forwarded.method);
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/memory-restore");
+  renderSpawn(fake);
+  await settled();
+
+  // Choose Memory Off on local, whose schema offers the field, through the panel.
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.selectOptions(screen.getByLabelText("Memory"), "false");
+  await fillPrompt(user, "typed before the switch");
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+
+  // On buildbox the field is unoffered; an edit to another option re-collects
+  // the overrides against buildbox's schema.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+  if (screen.queryByLabelText("API log") === null) {
+    await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  }
+  await user.selectOptions(screen.getByLabelText("API log"), "true");
+
+  // Back on local, whose schema offers the field again: the choice rides the
+  // submission again, not silently dropped by the edit made while away.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "local" } });
+  await settled();
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.launchOverrides).toMatchObject({ memoryEnabled: false });
 });
 
 // --- host picker: the working directory is resolved over the selected host ---
