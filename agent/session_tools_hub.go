@@ -897,10 +897,9 @@ func (s *Session) invokeHubRead(ctx context.Context, name string, args map[strin
 		request.Models = &appwire.ModelListParams{Harness: p.Host, CWD: p.CWD, Refresh: p.Refresh}
 	case "read_transcript":
 		var p struct {
-			Ref         string `json:"ref"`
+			appwire.SessionFetchRequest
 			JobID       string `json:"jobId"`
 			Cursor      string `json:"cursor"`
-			FetchCursor string `json:"fetchCursor"`
 			ItemLimit   int    `json:"itemLimit"`
 			MaxBytes    int64  `json:"maxBytes"`
 			BeforeBytes *int64 `json:"beforeBytes"`
