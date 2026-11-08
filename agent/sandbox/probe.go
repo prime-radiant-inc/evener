@@ -477,7 +477,8 @@ func readNpmrcCacheRoots(system probeSystem, path string) []string {
 // must never create a host directory on repository say-so.
 func readProjectNpmrcCacheRoots(path string, lookup func(string) string) []string {
 	var roots []string
-	for _, root := range readProjectNpmrc(path, lookup) {
+	values, _ := readProjectNpmrc(path, lookup)
+	for _, root := range values {
 		if fi, err := os.Stat(root); err == nil && fi.IsDir() {
 			roots = append(roots, root)
 		}
@@ -485,32 +486,38 @@ func readProjectNpmrcCacheRoots(path string, lookup func(string) string) []strin
 	return roots
 }
 
-// readProjectNpmrcCacheValue returns the cache npm would use from the project
-// file, whether or not that directory exists. The per-spawn judge needs it so a
-// cache the overlay cannot serve is redirected rather than left read-only.
-func readProjectNpmrcCacheValue(path string, lookup func(string) string) string {
-	values := readProjectNpmrc(path, lookup)
-	if len(values) == 0 {
-		return ""
+// readProjectNpmrcCacheValue returns the last cache value from the project
+// file, whether or not that directory exists.
+func readProjectNpmrcCacheValue(path string, lookup func(string) string) (string, bool) {
+	values, ok := readProjectNpmrc(path, lookup)
+	if !ok {
+		return "", false
 	}
-	return values[len(values)-1]
+	if len(values) == 0 {
+		return "", true
+	}
+	return values[len(values)-1], true
 }
 
-// readProjectNpmrc parses the cache values of the project .npmrc at path.
-func readProjectNpmrc(path string, lookup func(string) string) []string {
+// readProjectNpmrc parses the cache values of the project .npmrc at path. An
+// absent file is (nil, true): npm falls through to its user/global config. A
+// file that exists but cannot be read safely — a final-component symlink, a
+// device, an unreadable or oversized file — is (nil, false): npm may still
+// read a cache from it, so the caller must not treat it as absent.
+func readProjectNpmrc(path string, lookup func(string) string) ([]string, bool) {
 	if path == "" || !filepath.IsAbs(path) {
-		return nil
+		return nil, true
 	}
 	f, err := os.OpenFile(path, os.O_RDONLY|openNonblock|openNoFollow, 0)
 	if err != nil {
-		return nil
+		return nil, os.IsNotExist(err)
 	}
 	defer func() { _ = f.Close() }()
 	data, err := readGoEnvFile(f, path)
 	if err != nil {
-		return nil
+		return nil, false
 	}
-	return parseNpmrcCacheRoots(data, lookup)
+	return parseNpmrcCacheRoots(data, lookup), true
 }
 
 // npmrcHostLookup expands a project .npmrc value from host facts, for
@@ -530,21 +537,22 @@ func npmrcHostLookup(host HostFacts) func(string) string {
 // readNpmrcCacheRootsEnv reads a user or global .npmrc for a spawn, expanding
 // ${NAME} from the spawn's own environment. Unlike a project file it is host
 // configuration, so symlinks are followed and the bounded non-blocking reader
-// still refuses a FIFO, device, or oversized file.
-func readNpmrcCacheRootsEnv(path string, lookup func(string) string) []string {
+// still refuses a FIFO, device, or oversized file. ok is false for that
+// refusal: npm may read a cache from the file, so it is unknown, not absent.
+func readNpmrcCacheRootsEnv(path string, lookup func(string) string) ([]string, bool) {
 	if path == "" || !filepath.IsAbs(path) {
-		return nil
+		return nil, true
 	}
 	f, err := openGoEnvFile(path)
 	if err != nil {
-		return nil
+		return nil, os.IsNotExist(err)
 	}
 	defer func() { _ = f.Close() }()
 	data, err := readGoEnvFile(f, path)
 	if err != nil {
-		return nil
+		return nil, false
 	}
-	return parseNpmrcCacheRoots(data, lookup)
+	return parseNpmrcCacheRoots(data, lookup), true
 }
 
 // npmrcEnvLookup expands npm's ${NAME} references from the probe's environment.
@@ -572,6 +580,16 @@ func parseNpmrcCacheRoots(data []byte, lookup func(string) string) []string {
 		value = expandNpmrcVars(stripNpmrcComment(value), lookup)
 		if len(value) >= 2 && (value[0] == '"' || value[0] == '\'') && value[len(value)-1] == value[0] {
 			value = value[1 : len(value)-1]
+		}
+		// npm expands a leading ~ from HOME; a value it would resolve to an
+		// absolute cache must be judged there, not dropped as relative.
+		if home := lookup(envvars.Home.Name); home != "" {
+			switch {
+			case value == "~":
+				value = home
+			case strings.HasPrefix(value, "~/"):
+				value = filepath.Join(home, strings.TrimPrefix(value, "~/"))
+			}
 		}
 		if filepath.IsAbs(value) {
 			roots = append(roots, value)

@@ -286,11 +286,17 @@ func TestPrepareModelRequestHistoryAllocationBudget(t *testing.T) {
 // Serial: it measures process-global TotalAlloc, and allocations from
 // concurrently running tests would land inside every window it measures.
 
-// minimumChurnTicks is the churned phase's liveness floor on multi-P hosts.
-// A live churner delivers orders of magnitude more than this even on a
-// fully loaded machine (hundreds of ticks per churned phase were observed
-// on a host at load-average 90); only a dead one delivers fewer.
+// minimumChurnTicks is a churned measurement window's liveness floor on
+// multi-P hosts. A live churner normally delivers far more, but a short window
+// on a 2-core runner can fall below it under scheduler and GC jitter, so the
+// test retries the window; a dead churner delivers none in any retry.
 const minimumChurnTicks = 10
+
+// churnMeasurementAttempts bounds the retries of the churned measurement. Each
+// attempt's own window must carry the liveness floor; ticks are not
+// accumulated across attempts, so a near-quiet window cannot be averaged into
+// a pass.
+const churnMeasurementAttempts = 5
 
 func TestPrepareModelRequestHistoryBudgetIgnoresConcurrentBackground(t *testing.T) {
 	s := newRequestHistoryPreparationSession(t, requestHistoryBudgetTurns)
@@ -314,9 +320,20 @@ func TestPrepareModelRequestHistoryBudgetIgnoresConcurrentBackground(t *testing.
 		}
 	}()
 	<-churnStarted
-	ticksBeforeChurn := churnTicks.Load()
-	churned := measureRequestHistoryBytesPerPreparation(t, s)
-	ticksAfterChurn := churnTicks.Load()
+	var churned int64
+	churnTicksInWindow := int64(0)
+	attempts := churnMeasurementAttempts
+	if runtime.GOMAXPROCS(0) <= 1 {
+		attempts = 1 // the single processor starves the churner by design
+	}
+	for attempt := 0; attempt < attempts; attempt++ {
+		windowStart := churnTicks.Load()
+		churned = measureRequestHistoryBytesPerPreparation(t, s)
+		churnTicksInWindow = churnTicks.Load() - windowStart
+		if churnTicksInWindow >= minimumChurnTicks {
+			break
+		}
+	}
 	// A preparation's attributable allocation settles downward as the
 	// session warms, so the churned phase is judged against quiet
 	// measurements that bracket it in warmth, not only the colder one
@@ -324,7 +341,7 @@ func TestPrepareModelRequestHistoryBudgetIgnoresConcurrentBackground(t *testing.
 	cancelChurn()
 	<-churnDone
 	quietAgain := measureRequestHistoryBytesPerPreparation(t, s)
-	t.Logf("attributable bytes per preparation %d quiet, %d under concurrent churn (%d ticks), %d quiet again, budget %d", quiet, churned, ticksAfterChurn-ticksBeforeChurn, quietAgain, maxRequestHistoryBytesPerPreparation)
+	t.Logf("attributable bytes per preparation %d quiet, %d under concurrent churn (%d ticks), %d quiet again, budget %d", quiet, churned, churnTicksInWindow, quietAgain, maxRequestHistoryBytesPerPreparation)
 	if churned >= maxRequestHistoryBytesPerPreparation {
 		t.Fatalf("attributable bytes per preparation %d under concurrent churn, budget %d", churned, maxRequestHistoryBytesPerPreparation)
 	}
@@ -342,8 +359,8 @@ func TestPrepareModelRequestHistoryBudgetIgnoresConcurrentBackground(t *testing.
 	// exempt: their one processor belongs to the preparation and control
 	// windows, the churner is legitimately silent there, and the hazard
 	// this test pins cannot occur at all.
-	if runtime.GOMAXPROCS(0) > 1 && ticksAfterChurn-ticksBeforeChurn < minimumChurnTicks {
-		t.Fatalf("churner delivered %d ticks during the churned phase, want at least %d: the churn measurement was taken without background", ticksAfterChurn-ticksBeforeChurn, minimumChurnTicks)
+	if runtime.GOMAXPROCS(0) > 1 && churnTicksInWindow < minimumChurnTicks {
+		t.Fatalf("churner delivered %d ticks during the churned phase, want at least %d: the churn measurement was taken without background", churnTicksInWindow, minimumChurnTicks)
 	}
 }
 

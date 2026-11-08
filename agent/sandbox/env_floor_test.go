@@ -191,6 +191,112 @@ func TestEnvFloorRedirectsAnUnservedNpmrcCache(t *testing.T) {
 	})
 }
 
+// npm follows a project .npmrc symlink, but the bounded project reader refuses
+// to follow it. A refusal must not read as an absent file: the floor cannot
+// know the cache npm will use, so it has to redirect npm's cache into the
+// session scratch instead of judging a user/global cache npm will not read
+// (#4542 review).
+func TestEnvFloorRedirectsASymlinkedProjectNpmrcCache(t *testing.T) {
+	scratch := "/tmp/evener-session-xyz"
+	home := servedHome(t)
+	worktree := overlayFixtureDir(t)
+	external := filepath.Join(overlayFixtureDir(t), "external-npm")
+	configDir := filepath.Join(worktree, "config")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "npmrc"), []byte("cache="+external+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("config", "npmrc"), filepath.Join(worktree, ".npmrc")); err != nil {
+		t.Fatal(err)
+	}
+	policy := ResolvedPolicy{
+		Mode:          ModeWorkspaceWrite,
+		CacheStrategy: CacheOverlay,
+		CacheRoots:    []string{filepath.Join(home, ".npm")},
+		resolveHost:   HostFacts{Home: home},
+		Git:           GitLayout{WorktreeRoot: worktree},
+		SessionDir:    worktree,
+	}
+	assertNpmCacheRedirected(t, policy, []string{"HOME=" + home}, scratch)
+}
+
+// A user .npmrc the bounded reader refuses (oversized) is not absent either:
+// npm may read a cache from it, so the floor must redirect rather than judge
+// the served default.
+func TestEnvFloorRedirectsARefusedUserNpmrcCache(t *testing.T) {
+	scratch := "/tmp/evener-session-xyz"
+	home := servedHome(t)
+	external := filepath.Join(overlayFixtureDir(t), "external-npm")
+	body := "cache=" + external + "\n" + strings.Repeat("# pad\n", goEnvFileLimit/6+1)
+	if err := os.WriteFile(filepath.Join(home, ".npmrc"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	worktree := overlayFixtureDir(t)
+	policy := ResolvedPolicy{
+		Mode:          ModeWorkspaceWrite,
+		CacheStrategy: CacheOverlay,
+		CacheRoots:    []string{filepath.Join(home, ".npm")},
+		resolveHost:   HostFacts{Home: home},
+		Git:           GitLayout{WorktreeRoot: worktree},
+		SessionDir:    worktree,
+	}
+	assertNpmCacheRedirected(t, policy, []string{"HOME=" + home}, scratch)
+}
+
+// npm expands a leading ~ in a cache value from HOME. A ~-rooted project cache
+// must be judged at that absolute location, not dropped as relative and
+// replaced by the served default.
+func TestEnvFloorRedirectsATildeProjectNpmrcCache(t *testing.T) {
+	scratch := "/tmp/evener-session-xyz"
+	home := servedHome(t)
+	worktree := overlayFixtureDir(t)
+	projectDir := filepath.Join(worktree, "pkg")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "package.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".npmrc"), []byte("cache=~/tilde-npm\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	policy := ResolvedPolicy{
+		Mode:          ModeWorkspaceWrite,
+		CacheStrategy: CacheOverlay,
+		CacheRoots:    []string{filepath.Join(home, ".npm")},
+		resolveHost:   HostFacts{Home: home},
+		Git:           GitLayout{WorktreeRoot: worktree},
+		SessionDir:    projectDir,
+	}
+	assertNpmCacheRedirected(t, policy, []string{"HOME=" + home}, scratch)
+}
+
+// A global .npmrc the bounded reader refuses is unknown, not absent: npm may
+// read a cache from it, so the floor must redirect rather than judge the
+// served default.
+func TestEnvFloorRedirectsARefusedGlobalNpmrcCache(t *testing.T) {
+	scratch := "/tmp/evener-session-xyz"
+	home := servedHome(t)
+	external := filepath.Join(overlayFixtureDir(t), "external-npm")
+	global := filepath.Join(overlayFixtureDir(t), "global-npmrc")
+	body := "cache=" + external + "\n" + strings.Repeat("# pad\n", goEnvFileLimit/6+1)
+	if err := os.WriteFile(global, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	worktree := overlayFixtureDir(t)
+	policy := ResolvedPolicy{
+		Mode:          ModeWorkspaceWrite,
+		CacheStrategy: CacheOverlay,
+		CacheRoots:    []string{filepath.Join(home, ".npm")},
+		resolveHost:   HostFacts{Home: home},
+		Git:           GitLayout{WorktreeRoot: worktree},
+		SessionDir:    worktree,
+	}
+	assertNpmCacheRedirected(t, policy, []string{"HOME=" + home, "npm_config_globalconfig=" + global}, scratch)
+}
+
 func assertNpmCacheRedirected(t *testing.T, policy ResolvedPolicy, env []string, scratch string) {
 	t.Helper()
 	out := ApplyEnvFloor(env, policy, scratch)

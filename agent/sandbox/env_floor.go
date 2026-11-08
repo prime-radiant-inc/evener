@@ -166,11 +166,13 @@ func redirectedCacheVars(env []string, policy ResolvedPolicy, workingDir string)
 		// serve their directory and no persistent write root covers it: read-only
 		// otherwise, whether the root was dropped or the host's filesystem refuses
 		// its overlay (#4220), or the directory lies outside every cache root (a
-		// child with no HOME resolving its own). A directory inside a write root
-		// keeps today's "leave it alone": those writes persist where the user
-		// granted.
+		// child with no HOME resolving its own). An unreadable project or
+		// user/global .npmrc leaves npm's effective cache unknown, so it is
+		// redirected even though a write root might have covered the unknowable
+		// value. A known directory inside a write root keeps today's "leave it
+		// alone": those writes persist where the user granted.
 		for _, name := range []string{npmConfigCacheEnv, envvars.CargoHome.Name} {
-			if dir := dirs[name]; filepath.IsAbs(dir) && !servedByOverlay(roots, dir) && !overlapsAnyRoot(dir, writeRoots) {
+			if dir := dirs[name]; unknown[name] || (filepath.IsAbs(dir) && !servedByOverlay(roots, dir) && !overlapsAnyRoot(dir, writeRoots)) {
 				out[name] = true
 			}
 		}
@@ -254,9 +256,10 @@ func canBeDirectory(dir string) bool {
 // the checksum database lives. The file counts only when it is the one the probe
 // read and the floor can read it as the spawn will (see below); otherwise every
 // setting the spawn's environment leaves to it is reported unknown (the
-// environment overrides the file). For npm and cargo: the spawn's own
-// $npm_config_cache / $CARGO_HOME, else ~/.npm / ~/.cargo under its own HOME
-// (neither has a config file the floor consults).
+// environment overrides the file). For npm: the spawn's own
+// $npm_config_cache, else the project/user/global .npmrc, else ~/.npm under its
+// own HOME; a config the bounded reader refuses is reported unknown. For cargo:
+// $CARGO_HOME, else ~/.cargo under its own HOME.
 func overlayCacheDirs(env []string, policy ResolvedPolicy, workingDir string) (map[string]string, map[string]bool) {
 	host := policy.resolveHost
 	vars := envVars(env)
@@ -326,7 +329,11 @@ func overlayCacheDirs(env []string, policy ResolvedPolicy, workingDir string) (m
 	if out[envvars.GoCache.Name] == "" && cacheHome != "" {
 		out[envvars.GoCache.Name] = filepath.Join(cacheHome, "go-build")
 	}
-	out[npmConfigCacheEnv] = npmConfigCacheFor(env, policy, workingDir)
+	cache, known := npmConfigCacheFor(env, policy, workingDir)
+	out[npmConfigCacheEnv] = cache
+	if !known {
+		unknown[npmConfigCacheEnv] = true
+	}
 	out[envvars.CargoHome.Name] = vars[envvars.CargoHome.Name]
 	// With no HOME in the spawn's own environment (a clean EnvPolicyNone), npm
 	// and cargo fall back to the login user's home in the user database — not
@@ -344,20 +351,24 @@ func overlayCacheDirs(env []string, policy ResolvedPolicy, workingDir string) (m
 // its own npm_config_cache, else the project .npmrc of the nearest package to
 // workingDir, else the user/global .npmrc its own environment names, with
 // ${NAME} expanded from that environment. An empty result falls back to
-// $HOME/.npm in the caller. This is the value the per-spawn overlay judgement
-// must see: a cache npm reaches only through .npmrc would otherwise stay
-// unserved and read-only.
-func npmConfigCacheFor(env []string, policy ResolvedPolicy, workingDir string) string {
+// $HOME/.npm in the caller. known is false when a config file exists but
+// cannot be read safely, so the effective cache is unknown and must be
+// redirected rather than judged from a config npm may not read.
+func npmConfigCacheFor(env []string, policy ResolvedPolicy, workingDir string) (string, bool) {
 	if value := envValueFold(env, npmConfigCacheEnv); value != "" {
-		return value
+		return value, true
 	}
 	lookup := npmrcEnvLookup(env)
 	if workingDir == "" {
 		workingDir = policy.SessionDir
 	}
 	if projectDir := npmProjectDir(workingDir, policy.Git.WorktreeRoot); projectDir != "" {
-		if value := readProjectNpmrcCacheValue(filepath.Join(projectDir, ".npmrc"), lookup); value != "" {
-			return value
+		value, ok := readProjectNpmrcCacheValue(filepath.Join(projectDir, ".npmrc"), lookup)
+		if !ok {
+			return "", false
+		}
+		if value != "" {
+			return value, true
 		}
 	}
 	// npm resolves "~" from the spawn's HOME, falling back to the login user's
@@ -380,13 +391,21 @@ func npmConfigCacheFor(env []string, policy ResolvedPolicy, workingDir string) s
 			global = filepath.Join(prefix, "etc", "npmrc")
 		}
 	}
-	if roots := readNpmrcCacheRootsEnv(user, lookup); len(roots) > 0 {
-		return roots[len(roots)-1]
+	roots, ok := readNpmrcCacheRootsEnv(user, lookup)
+	if !ok {
+		return "", false
 	}
-	if roots := readNpmrcCacheRootsEnv(global, lookup); len(roots) > 0 {
-		return roots[len(roots)-1]
+	if len(roots) > 0 {
+		return roots[len(roots)-1], true
 	}
-	return ""
+	roots, ok = readNpmrcCacheRootsEnv(global, lookup)
+	if !ok {
+		return "", false
+	}
+	if len(roots) > 0 {
+		return roots[len(roots)-1], true
+	}
+	return "", true
 }
 
 // envVars maps an environment slice to its values by name.
