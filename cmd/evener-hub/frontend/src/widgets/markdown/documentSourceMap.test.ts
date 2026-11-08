@@ -12,6 +12,9 @@ import {
   provenanceProofUnitsForTests,
   renderDocument,
   resetProvenanceProofUnitsForTests,
+  resetSpanCopyUnitsForTests,
+  sliceSharesSpanStorageForTests,
+  spanCopyUnitsForTests,
 } from "./documentSourceMap";
 
 afterEach(() => window.getSelection()?.removeAllRanges());
@@ -228,12 +231,22 @@ test("rejects outside, empty and disposed selections", () => {
   expect(map.rangesFor({ start: 0, end: 4 })).toEqual([]);
 });
 
+// A direct structural guard for the quadratic render this file tracks: the
+// tokenizer probes every block against the remaining text, so a slice of that
+// tail must view the shared span storage instead of copying it. This fails in
+// milliseconds when a copy returns, with no wall clock involved.
+test("keeps span slices as views over one shared storage", () => {
+  expect(sliceSharesSpanStorageForTests("x".repeat(200_000))).toBe(true);
+});
+
 // A heavily formatted ~200KB document: rendering and mapping must stay
 // linear-time. The tokenizer probes every block against the remaining text,
 // so slicing that tail's span storage per probe was quadratic - this
 // document's render measured 20.5s before slices became offsets into shared
-// storage. The timing ratchet's per-test ceiling (testing-budget.json) guards
-// the bound; the assertions here pin the mapping's exactness at scale.
+// storage, and the structural test above pins that view. The 30s ceiling here
+// is only a hang tripwire for the at-scale render (measured 4.0s idle and
+// 10-21s on a 16-core host at load 95); the assertions pin the mapping's
+// exactness at scale and that only consumed spans materialize.
 test("maps a large heavily formatted document with exact coordinates", () => {
   const blocks: string[] = [];
   for (let i = 0; i < 2000; i++) {
@@ -242,10 +255,15 @@ test("maps a large heavily formatted document with exact coordinates", () => {
     );
   }
   const source = `# Large document\n\n${blocks.join("\n\n")}\n\n## Tail\n`;
+  resetSpanCopyUnitsForTests();
   const { map, segments } = renderDocument(parseDocument(source), {
     displayedSnapshotId: "snap-large",
     mappingId: "map-large",
   });
+  // Only consumed ranges may materialize: this render copied 131,578 units of
+  // a 208,476-character source. A return to materializing each probe's tail
+  // would blow far past this bound without measuring time.
+  expect(spanCopyUnitsForTests()).toBeLessThan(source.length * 4);
   expect(segments.length).toBeGreaterThan(0);
   expect(map.textRuns.length).toBeGreaterThan(4000);
   const bold = map.textRuns.find((run) => run.renderedText === "bold 1000");
@@ -260,7 +278,7 @@ test("maps a large heavily formatted document with exact coordinates", () => {
   const tailLast = tail.sourceSpans.at(-1);
   if (!tailFirst || !tailLast) throw new Error("missing tail heading spans");
   expect(source.slice(tailFirst.start, tailLast.end)).toBe("Tail");
-});
+}, 30_000);
 
 // A list item's first line near the 512 KiB document limit runs expandTabs
 // piece-per-character, and the transformations assembled those pieces by

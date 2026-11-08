@@ -35,6 +35,25 @@ export function resetProvenanceProofUnitsForTests(): void {
   fullFrameUnits = 0;
   tokenUnits = 0;
 }
+// Test-only: a slice must be a view over the same dense span storage, not a
+// copy of the tail. The pinned tokenizer probes every block against the
+// remaining text, so a copy here restores the quadratic render this view
+// replaced (#4677). Production never calls it.
+export function sliceSharesSpanStorageForTests(source: string): boolean {
+  const original = originalTrace(source);
+  const sliced = slice(original, 1, source.length);
+  return sliced.spans.data === original.spans.data && sliced.spans.start === 1 && sliced.spans.end === source.length;
+}
+// Test-only: span units materialized by spansOf during a render. A render
+// over many blocks must stay linear; a per-block tail materialization would
+// grow quadratically. Production never reads it.
+let spanCopyUnits = 0;
+export function spanCopyUnitsForTests(): number {
+  return spanCopyUnits;
+}
+export function resetSpanCopyUnitsForTests(): void {
+  spanCopyUnits = 0;
+}
 // Every full-frame content check and every token-raw content check runs
 // through these two helpers, and only a passing check records its units.
 function verifiedFrameText(input: string, src: string, message: string): void {
@@ -88,7 +107,9 @@ const NO_SPANS: SourceRange[] = [];
 // materializes - only consumed ranges ever copy.
 function spansOf(value: Trace): SourceRange[] {
   const { data, start, end } = value.spans;
-  return start === 0 && end === data.length ? data : data.slice(start, end);
+  if (start === 0 && end === data.length) return data;
+  spanCopyUnits += end - start;
+  return data.slice(start, end);
 }
 function originalTrace(source: string): Trace {
   return {

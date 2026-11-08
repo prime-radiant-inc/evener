@@ -35,6 +35,7 @@ import {
   type BrowserDocumentAnnotationRepository,
   createDocumentAnnotationRepository,
 } from "../../stores/documentAnnotationIndexedDB";
+import { sessionActivitySnapshot } from "../../stores/sessionActivity";
 import {
   activityContext,
   activityDelegate,
@@ -202,6 +203,20 @@ function fixture(ancestryKnown = true, leafRef = "child") {
     context: context(ref),
     scope: "session",
     delegates: [],
+    page: { complete: true, issues: [] },
+  }));
+  // The chrome observes these collections too; answering them keeps a loaded
+  // run from turning "no handler scripted" into a paced retry.
+  fake.on("evener/thread/jobs/list", ({ ref, scope }) => ({
+    context: context(ref),
+    scope: scope ?? "session",
+    jobs: [],
+    page: { complete: true, issues: [] },
+  }));
+  fake.on("evener/thread/watches/list", ({ ref, scope }) => ({
+    context: context(ref),
+    scope: scope ?? "session",
+    watches: [],
     page: { complete: true, issues: [] },
   }));
   connectionStore.getState().connect(fake);
@@ -1445,7 +1460,13 @@ const CONNECTED_ORIGINAL_VALUE = {
   mentions: [{ kind: "skill" as const, name: "plan", offset: 9 }],
 };
 const CONNECTED_EXPECTED_TEXT = `${CONNECTED_ORIGINAL_VALUE.text}\n\n${CONNECTED_REFERENCE}`;
+const CASCADE_MOUNT_WAIT_MS = 5_000;
 
+// A full annotation journey over real IndexedDB. It measured 2.7-5.7s on a
+// loaded 16-core workstation: the 5s default aborted it inside act(), and the
+// abandoned scope failed the test through the act-scope guard. Under load it
+// also emitted SessionActivityStore act warnings (recorded in #4678). The
+// explicit ceiling is a hang tripwire, not a performance assertion.
 test("an actual file-card opening serializes the destination a note would reconcile against", async () => {
   // Isolated IndexedDB backing for the real annotation pipeline: the source
   // composer, draft repository and annotation adapter share one factory.
@@ -1461,8 +1482,25 @@ test("an actual file-card opening serializes the destination a note would reconc
   let repo: BrowserDocumentAnnotationRepository | undefined;
   let bodyError: unknown;
   let bodyFailed = false;
+  // The chrome's activity store settles its reads asynchronously; a loaded run
+  // must join them before the IndexedDB work, or a publication can land in a
+  // bare await outside act (#4678).
+  const activitySettled = () =>
+    ["root", "child", "focused"].every((ref) =>
+      (["session", "subtree"] as const).every((scope) => {
+        const snapshot = sessionActivitySnapshot(fake, ref, scope);
+        if (!snapshot) return true;
+        return [snapshot.summaryState, snapshot.delegates, snapshot.jobs, snapshot.watches].every(
+          (state) => !state.loading && !state.pending,
+        );
+      }),
+    );
   try {
-    await screen.findByText("root content old-root");
+    // The cascade's first render measured past Testing Library's 1s default
+    // on a loaded 16-core host; wait for the same observable, not a tighter
+    // clock than the test's own ceiling.
+    await screen.findByText("root content old-root", undefined, { timeout: CASCADE_MOUNT_WAIT_MS });
+    await waitFor(() => expect(activitySettled()).toBe(true), { timeout: CASCADE_MOUNT_WAIT_MS });
     originalSource = conversationPaneLifetime(currentPane()).composer;
     if (!originalSource) throw new Error("cascade source lifetime lacks its composer");
     const source = originalSource;
@@ -1528,9 +1566,13 @@ test("an actual file-card opening serializes the destination a note would reconc
     const focusedSnapshot = focusedSource.getSnapshot();
 
     const drafts = getBrowserDraftRepository();
-    const childBacking = await drafts.load(browserDraftKey("child"));
-    const focusedBacking = await drafts.load(browserDraftKey("focused"));
-    const beforeBacking = await drafts.load(browserDraftKey("root"));
+    const loadDraft = (session: string) => act(async () => drafts.load(browserDraftKey(session)));
+    // These reads yield the event loop while the chrome's activity store is
+    // still settling reads of its own. Holding each read inside act keeps the
+    // store's publications within this test's act scope (#4678).
+    const childBacking = await loadDraft("child");
+    const focusedBacking = await loadDraft("focused");
+    const beforeBacking = await loadDraft("root");
     if (!beforeBacking) throw new Error("original backing missing before handoff");
     const originalRevision = beforeBacking.token.sessionRevision;
 
@@ -1547,9 +1589,11 @@ test("an actual file-card opening serializes the destination a note would reconc
 
     // Save a real operation for the ACTUAL serialized destination; before any
     // handoff it is exactly one genuinely pending row with the committed receipt.
-    const operation = await acceptedOperation(repo, documentKey, "op-connected", "Keep this scope.", destination);
+    const operation = await act(async () =>
+      acceptedOperation(annotationRepo, documentKey, "op-connected", "Keep this scope.", destination),
+    );
     const receipt = await act(async () => annotationRepo.saveAnnotation(operation));
-    const saved = await repo.listAnnotations(documentKey);
+    const saved = await act(async () => annotationRepo.listAnnotations(documentKey));
     expect(saved).toHaveLength(1);
     expect(saved[0]?.receipt).toEqual(receipt);
     expect(saved[0]?.handoff).toEqual({ state: "pending", reason: "owner-unavailable" });
@@ -1559,7 +1603,8 @@ test("an actual file-card opening serializes the destination a note would reconc
     act(() => workspaceStore.setState({ focusedPaneId: focusedPane.id }));
     mounted.unmount();
     mounted = mount(fake);
-    await screen.findByText("root content old-root");
+    await screen.findByText("root content old-root", undefined, { timeout: CASCADE_MOUNT_WAIT_MS });
+    await waitFor(() => expect(activitySettled()).toBe(true), { timeout: CASCADE_MOUNT_WAIT_MS });
     act(() => fireEvent.click(screen.getByRole("button", { name: "Return to previous view" })));
     expect(currentPane()).toMatchObject({ id: "cascade", type: "session", params: { ref: "root" } });
     expect(conversationPaneLifetime(currentPane()).composer).toBe(source);
@@ -1581,7 +1626,7 @@ test("an actual file-card opening serializes the destination a note would reconc
     expect(firstLive.text).toBe(CONNECTED_EXPECTED_TEXT);
     expect(firstLive.skillNames).toEqual(CONNECTED_ORIGINAL_VALUE.skillNames);
     expect(firstLive.mentions).toEqual(CONNECTED_ORIGINAL_VALUE.mentions);
-    const firstBacking = await drafts.load(browserDraftKey("root"));
+    const firstBacking = await loadDraft("root");
     expect(firstBacking?.text).toBe(CONNECTED_EXPECTED_TEXT);
     expect(firstBacking?.token.sessionRevision).toBe(originalRevision + 1);
     expect(firstBacking?.skillNames).toEqual(CONNECTED_ORIGINAL_VALUE.skillNames);
@@ -1590,18 +1635,18 @@ test("an actual file-card opening serializes the destination a note would reconc
     // Every other source is unchanged, live and freshly loaded.
     expect(childSource.getSnapshot()).toEqual(childSnapshot);
     expect(focusedSource.getSnapshot()).toEqual(focusedSnapshot);
-    expect(await drafts.load(browserDraftKey("child"))).toEqual(childBacking);
-    expect(await drafts.load(browserDraftKey("focused"))).toEqual(focusedBacking);
+    expect(await loadDraft("child")).toEqual(childBacking);
+    expect(await loadDraft("focused")).toEqual(focusedBacking);
 
     // Replay is `already-applied`; every fresh live/durable read is unchanged.
     const replayed = await act(async () => annotationRepo.handoff(documentKey, "op-connected"));
     expect(replayed).toEqual({ state: "already-applied", draftRevision: appliedRevision });
     expect(source.getSnapshot()).toEqual(firstLive);
-    expect(await drafts.load(browserDraftKey("root"))).toEqual(firstBacking);
+    expect(await loadDraft("root")).toEqual(firstBacking);
     expect(childSource.getSnapshot()).toEqual(childSnapshot);
     expect(focusedSource.getSnapshot()).toEqual(focusedSnapshot);
-    expect(await drafts.load(browserDraftKey("child"))).toEqual(childBacking);
-    expect(await drafts.load(browserDraftKey("focused"))).toEqual(focusedBacking);
+    expect(await loadDraft("child")).toEqual(childBacking);
+    expect(await loadDraft("focused")).toEqual(focusedBacking);
     expect(fake.calls.filter((call) => /send|resume|steer|interrupt/.test(call.method))).toHaveLength(0);
   } catch (error) {
     // Capture, do not rethrow yet: cleanup below must still run.
@@ -1647,4 +1692,4 @@ test("an actual file-card opening serializes the destination a note would reconc
   }
   if (bodyFailed) throw bodyError;
   if (failures.length > 0) throw new AggregateError(failures, "connected Return cleanup failed");
-});
+}, 20_000);
