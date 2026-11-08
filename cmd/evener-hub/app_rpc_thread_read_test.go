@@ -288,9 +288,12 @@ func TestSessionOperationsRejectsUnsupportedOlderDaemonWindows(t *testing.T) {
 
 func TestSessionOperationsLabelsIncompleteOlderDaemonLatestWindow(t *testing.T) {
 	position := appwire.ThreadItemPosition{Entry: 2}
+	olderPosition := appwire.ThreadItemPosition{Entry: 1}
+	var reads, pages atomic.Int64
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "old-daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		if params.TurnWindow != nil {
+		reads.Add(1)
+		if params.TurnWindow != nil || len(params.ItemTypes) != 0 || params.PreviewBytes != 0 || params.MessageBytes != 0 || params.WindowBudgetBytes != 0 {
 			return appwire.ThreadReadResponse{}, appwire.InvalidParams("older daemon rejected window fields")
 		}
 		return appwire.ThreadReadResponse{
@@ -299,6 +302,19 @@ func TestSessionOperationsLabelsIncompleteOlderDaemonLatestWindow(t *testing.T) 
 				Items: []appwire.ThreadItem{{ID: "message_2", Type: "agentMessage", TurnID: "turn_2", TranscriptKey: "message_2", Position: &position, Version: 1, Text: "newest"}},
 			}}},
 			OlderCursor: "legacy-older-page", Snapshot: &appwire.SnapshotIdentity{Incarnation: "legacy-partial-snapshot", Length: 2},
+		}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadTurnsList, func(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+		pages.Add(1)
+		if params.Cursor != "legacy-older-page" || params.TurnWindow != nil || len(params.ItemTypes) != 0 || params.PreviewBytes != 0 || params.MessageBytes != 0 || params.WindowBudgetBytes != 0 {
+			return appwire.ThreadTurnsListResponse{}, appwire.InvalidParams("older daemon rejected continuation shape")
+		}
+		return appwire.ThreadTurnsListResponse{
+			Data: []appwire.Turn{{
+				ID: "turn_1", Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFragment,
+				Items: []appwire.ThreadItem{{ID: "message_1", Type: "agentMessage", TurnID: "turn_1", TranscriptKey: "message_1", Position: &olderPosition, Version: 1, Text: "older"}},
+			}},
+			Snapshot: &appwire.SnapshotIdentity{Incarnation: "legacy-partial-snapshot", Length: 2},
 		}, nil
 	})
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
@@ -344,6 +360,19 @@ func TestSessionOperationsLabelsIncompleteOlderDaemonLatestWindow(t *testing.T) 
 		!slices.Equal(shaped["itemTypes"].([]any), []any{"messages"}) || shaped["previewBytes"] != float64(321) ||
 		shaped["messageBytes"] != float64(654) || shaped["windowBudgetBytes"] != float64(16*1024) || shaped["itemLimit"] != float64(7) {
 		t.Fatalf("window continuation lost request shape: %s", encoded)
+	}
+	continuation := request
+	continuation.Cursor = response.FollowUps[0].Arguments.Hub.Cursor
+	continued, err := operations.Invoke(t.Context(), appwire.ManagerView{Ref: "local:manager", Manager: true}, appwire.SessionOperationRequest{Turns: &continuation})
+	if err != nil {
+		t.Fatalf("compatibility continuation: %v", err)
+	}
+	if reads.Load() != 2 || pages.Load() != 1 {
+		t.Fatalf("compatibility continuation calls = reads %d pages %d, want 2 and 1", reads.Load(), pages.Load())
+	}
+	if continued.Turns == nil || continued.Turns.Window == nil || continued.Turns.Window.AppliedBy != transcriptWindowAppliedByHubCompat ||
+		len(continued.Turns.Data) != 1 || continued.Turns.Data[0].ID != "turn_1" {
+		t.Fatalf("compatibility continuation = %+v, want older hub-compat page", continued.Turns)
 	}
 }
 
