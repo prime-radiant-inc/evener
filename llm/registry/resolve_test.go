@@ -1389,6 +1389,33 @@ func TestResolve_LiveInputModalitiesReachCaps(t *testing.T) {
 	}
 }
 
+// A live listing's tools verdict reaches the resolved row, including the
+// override of a catalog fact. This guards the live-layer plumbing the gateway
+// reader depends on; it passes before the capabilities.tools parse because
+// liveFacts already carried Tools.
+func TestResolve_LiveToolsReachCaps(t *testing.T) {
+	r := fixtureLoad(t, nil, "")
+	if res := mustResolve(t, r, "openrouter/anthropic/claude-opus-4.6"); res.Caps.Tools == nil || !*res.Caps.Tools {
+		t.Fatalf("catalog row must start tools-capable: %v", res.Caps.Tools)
+	}
+	r.ApplyLive("openrouter", []Model{{
+		ID:   "anthropic/claude-opus-4.6",
+		Caps: Caps{Tools: new(false)},
+	}})
+	res := mustResolve(t, r, "openrouter/anthropic/claude-opus-4.6")
+	if res.Caps.Tools == nil || *res.Caps.Tools || res.Provenance["Tools"] != "live" {
+		t.Fatalf("live tools:false must override the catalog fact: %v (%q)", res.Caps.Tools, res.Provenance["Tools"])
+	}
+	r.ApplyLive("openrouter", []Model{{
+		ID:   "probe/with-tools",
+		Caps: Caps{Tools: new(true)},
+	}})
+	res = mustResolve(t, r, "openrouter/probe/with-tools")
+	if res.Caps.Tools == nil || !*res.Caps.Tools || res.Provenance["Tools"] != "live" {
+		t.Fatalf("live tools:true must reach an uncatalogued row: %v (%q)", res.Caps.Tools, res.Provenance["Tools"])
+	}
+}
+
 // A gateway's per-model dialect and token spelling reach the resolved row
 // through the live layer, so an uncatalogued gateway model is spelled the way
 // its gateway accepts instead of falling back to the protocol default.
