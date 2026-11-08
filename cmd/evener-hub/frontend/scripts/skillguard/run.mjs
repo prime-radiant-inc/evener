@@ -2035,7 +2035,16 @@ async function runScenarios(driver) {
   const bState = await driver.composerState(driver.sessionB);
   check(bState.text === "", `session B composer not fresh: ${JSON.stringify(bState)}`);
   await driver.openSession(driver.sessionA);
-  state = await driver.composerState(driver.sessionA);
+  // The reopened pane samples bare the instant openSession returns, while the
+  // staged draft restores on its own boundary: production publishes the
+  // reloaded transcript's entries and the composer rehydrates from the durable
+  // record after the editor is already visible. Wait for the structured
+  // restoration (text and the skill chip together) and keep the assertions
+  // below, so a draft that never restores still fails the step.
+  state = await driver.waitPage(
+    `(() => { const state = ${driver.composerStateExpr(driver.sessionA)}; return state && state.text === ${JSON.stringify(inlineText(PROSE.draft))} && state.chips.some((c) => c.includes(${JSON.stringify(SKILL_NAME)})) ? state : null; })()`,
+    { label: "the switched-back composer restores its durable draft" },
+  );
   check(state.text === inlineText(PROSE.draft), `draft text did not survive the switch: ${JSON.stringify(state)}`);
   check(state.chips.some((c) => c.includes(SKILL_NAME)), `draft chips did not survive the switch: ${JSON.stringify(state)}`);
   driver.milestone("draft-remounted", { ...state, storage: await evaluate(driver.send, driver.draftStorageExpr()) });
