@@ -1,6 +1,8 @@
 package server
 
 import (
+	"encoding/json"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -47,5 +49,34 @@ func TestLiveThreadReadHonorsTurnWindows(t *testing.T) {
 				t.Fatalf("turn IDs = %v, want %v", got, want)
 			}
 		})
+	}
+
+	_, err := st.srv.appThreadReadSnapshotChecked(appwire.ThreadReadParams{
+		ThreadID:     st.threadID,
+		IncludeTurns: true,
+		ThreadWindowParams: appwire.ThreadWindowParams{
+			TurnWindow: &appwire.ThreadTurnWindow{Since: "missing", Limit: 2},
+		},
+	})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
+		t.Fatalf("missing turn error = %v, want typed invalid params", err)
+	}
+	var data struct {
+		EvenerErrorInfo appwire.ErrorInfo `json:"evenerErrorInfo"`
+		TurnID          string            `json:"turnId"`
+		OldestTurnID    string            `json:"oldestTurnId"`
+		NewestTurnID    string            `json:"newestTurnId"`
+		TurnCount       int               `json:"turnCount"`
+	}
+	raw, marshalErr := json.Marshal(wireErr.Data)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	if unmarshalErr := json.Unmarshal(raw, &data); unmarshalErr != nil {
+		t.Fatal(unmarshalErr)
+	}
+	if data.EvenerErrorInfo != appwire.ErrorInfo("transcriptTurnNotFound") || data.TurnID != "missing" || data.OldestTurnID != "turn_m1" || data.NewestTurnID != "turn_m3" || data.TurnCount != 3 {
+		t.Fatalf("missing turn data = %+v", data)
 	}
 }

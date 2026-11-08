@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appitempaging"
@@ -82,6 +83,9 @@ func (h *threadHistory) turnWindow(c historyCapture, threadRef string, selector 
 		return err
 	})
 	if err != nil {
+		if missing, ok := errors.AsType[*transcriptindex.TurnNotFoundError](err); ok {
+			return nil, appwire.SnapshotIdentity{}, "", nil, appwire.TranscriptTurnNotFound(missing.TurnID, missing.Frontier.OldestTurnID, missing.Frontier.NewestTurnID, missing.Frontier.TurnCount)
+		}
 		return nil, appwire.SnapshotIdentity{}, "", nil, err
 	}
 	turns, _, snapshot, err = h.page(transcriptindex.Window{

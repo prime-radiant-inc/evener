@@ -242,6 +242,19 @@ func TestDaemonlessThreadReadHonorsTurnWindows(t *testing.T) {
 			}
 		})
 	}
+
+	_, err := dispatchDaemonlessThreadRead(t, cfg, appwire.ThreadReadParams{
+		Ref: "local:" + entry.Meta.ID, IncludeTurns: true,
+		ThreadWindowParams: appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Turn: "missing"}},
+	})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
+		t.Fatalf("missing saved turn error = %v, want typed invalid params", err)
+	}
+	data, ok := wireErr.Data.(appwire.TranscriptTurnNotFoundErrorData)
+	if !ok || data.TurnID != "missing" || data.OldestTurnID != "turn_m1" || data.NewestTurnID != "turn_m3" || data.TurnCount != 3 {
+		t.Fatalf("missing saved turn data = %#v", wireErr.Data)
+	}
 }
 
 // TestDaemonlessClientHoldingPageWhenToolResultsLands is the spec's daemonless

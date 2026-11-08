@@ -504,6 +504,9 @@ func pastEntryTurnWindowItems(ctx context.Context, entry hubcore.PastEntry, sele
 	err := withPastTranscriptIndex(ctx, entry, func(index *transcriptindex.Index) error {
 		resolved, err := index.ResolveTurnWindow(selector)
 		if err != nil {
+			if missing, ok := errors.AsType[*transcriptindex.TurnNotFoundError](err); ok {
+				return appwire.TranscriptTurnNotFound(missing.TurnID, missing.Frontier.OldestTurnID, missing.Frontier.NewestTurnID, missing.Frontier.TurnCount)
+			}
 			return err
 		}
 		latest, err := index.Latest(1)
