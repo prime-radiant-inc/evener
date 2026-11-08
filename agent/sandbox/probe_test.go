@@ -320,19 +320,24 @@ func (s npmrcProbeSystem) readFile(path string) ([]byte, error) {
 	return nil, errors.New("no such file")
 }
 
+func npmrcProbe(env map[string]string, files map[string][]byte) npmrcProbeSystem {
+	base := stubProbeSystem{env: env}
+	return npmrcProbeSystem{stubProbeSystem: base, files: files}
+}
+
 func TestProbeReadsNpmCacheFromConfigFiles(t *testing.T) {
 	t.Parallel()
 	const user, global = "/home/tester/npmrc-user", "/home/tester/npmrc-global"
-	facts := probeHost(npmrcProbeSystem{
-		stubProbeSystem: stubProbeSystem{env: map[string]string{
+	facts := probeHost(npmrcProbe(
+		map[string]string{
 			"NPM_CONFIG_USERCONFIG":   user,
 			"npm_config_globalconfig": global,
-		}},
-		files: map[string][]byte{
+		},
+		map[string][]byte{
 			user:   []byte("# user config\ncache = /from/user/npm\n"),
 			global: []byte("[npm]\n; global config\ncache=\"/from/global/npm\"\n"),
 		},
-	})
+	))
 	if want := []string{"/from/user/npm", "/from/global/npm"}; !slices.Equal(facts.NpmrcCaches, want) {
 		t.Errorf("probeHost NpmrcCaches = %v, want %v", facts.NpmrcCaches, want)
 	}
@@ -342,22 +347,22 @@ func TestProbeReadsDefaultUserNpmrcAndPrefixGlobalNpmrc(t *testing.T) {
 	t.Parallel()
 	// stubProbeSystem's user home is /Users/tester; the global file follows a
 	// configured npm prefix.
-	facts := probeHost(npmrcProbeSystem{
-		stubProbeSystem: stubProbeSystem{env: map[string]string{"npm_config_prefix": "/opt/node"}},
-		files: map[string][]byte{
+	facts := probeHost(npmrcProbe(
+		map[string]string{"npm_config_prefix": "/opt/node"},
+		map[string][]byte{
 			"/Users/tester/.npmrc": []byte("cache=/from/default/user\n"),
 			"/opt/node/etc/npmrc":  []byte("cache=/from/prefix/global\n"),
 		},
-	})
+	))
 	if want := []string{"/from/default/user", "/from/prefix/global"}; !slices.Equal(facts.NpmrcCaches, want) {
 		t.Errorf("probeHost NpmrcCaches = %v, want %v", facts.NpmrcCaches, want)
 	}
 	// A relative cache resolves against npm's working directory, so it names no
 	// stable root and is not served.
-	rel := probeHost(npmrcProbeSystem{
-		stubProbeSystem: stubProbeSystem{env: map[string]string{"npm_config_userconfig": "/u/npmrc"}},
-		files:           map[string][]byte{"/u/npmrc": []byte("cache=relative/npm\n")},
-	})
+	rel := probeHost(npmrcProbe(
+		map[string]string{"npm_config_userconfig": "/u/npmrc"},
+		map[string][]byte{"/u/npmrc": []byte("cache=relative/npm\n")},
+	))
 	if len(rel.NpmrcCaches) != 0 {
 		t.Errorf("a relative npmrc cache must add no root, got %v", rel.NpmrcCaches)
 	}
@@ -365,13 +370,13 @@ func TestProbeReadsDefaultUserNpmrcAndPrefixGlobalNpmrc(t *testing.T) {
 
 func TestProbeExpandsNpmrcVariables(t *testing.T) {
 	t.Parallel()
-	facts := probeHost(npmrcProbeSystem{
-		stubProbeSystem: stubProbeSystem{env: map[string]string{
+	facts := probeHost(npmrcProbe(
+		map[string]string{
 			"npm_config_userconfig": "/home/u/.npmrc",
 			"HOME":                  "/home/u",
-		}},
-		files: map[string][]byte{"/home/u/.npmrc": []byte("cache=${HOME}/.npm-cache\n")},
-	})
+		},
+		map[string][]byte{"/home/u/.npmrc": []byte("cache=${HOME}/.npm-cache\n")},
+	))
 	if want := []string{"/home/u/.npm-cache"}; !slices.Equal(facts.NpmrcCaches, want) {
 		t.Errorf("probeHost NpmrcCaches = %v, want the expanded %v", facts.NpmrcCaches, want)
 	}

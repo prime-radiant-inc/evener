@@ -555,13 +555,13 @@ func expandNpmrcVars(value string, lookup func(string) string) string {
 		}
 		out.WriteString(value[:start])
 		rest := value[start+2:]
-		end := strings.IndexByte(rest, '}')
-		if end < 0 {
+		name, after, ok := strings.Cut(rest, "}")
+		if !ok {
 			out.WriteString(value[start:])
 			return out.String()
 		}
-		out.WriteString(lookup(rest[:end]))
-		value = rest[end+1:]
+		out.WriteString(lookup(name))
+		value = after
 	}
 }
 
