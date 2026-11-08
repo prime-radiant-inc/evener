@@ -307,6 +307,10 @@ func executeDelegateShellRepair(plan delegateShellRepairPlan, now time.Time) (er
 		if record == nil || record.Type != jobstore.JobShell || record.TerminalGen != identity.terminalGeneration || record.NotifyState != jobstore.NotifyPending {
 			continue
 		}
+		// The job's terminal event is already durable, so its terminal watches
+		// must be cleared even when this repair only observes a pending
+		// notification: the clear can be the tail of a batch torn by a crash.
+		clearedJobs[identity.jobID] = struct{}{}
 		if plan.suppressOwnerNotify {
 			events = append(events, jobstore.Event{
 				Kind:        jobstore.EventJobNotificationConsumed,
@@ -314,7 +318,6 @@ func executeDelegateShellRepair(plan delegateShellRepairPlan, now time.Time) (er
 				JobID:       identity.jobID,
 				TerminalGen: identity.terminalGeneration,
 			})
-			clearedJobs[identity.jobID] = struct{}{}
 		}
 	}
 	clearedIDs := make([]string, 0, len(clearedJobs))

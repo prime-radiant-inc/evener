@@ -315,7 +315,11 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 			continue
 		}
 		covered := c.stopCoversLocked(id)
-		if len(shell.runningJobIDs) == 0 && (!covered || len(shell.pendingNotification) == 0) {
+		// A pending notification can be the durable prefix of a repair batch
+		// whose terminal watch-clear did not land. The plan is still needed
+		// outside a stop to clear that terminal watch; it never consumes the
+		// notification unless the stop covers it.
+		if len(shell.runningJobIDs) == 0 && len(shell.pendingNotification) == 0 {
 			continue
 		}
 		plans.shellRepairs = append(plans.shellRepairs, delegateShellRepairPlan{
