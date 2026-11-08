@@ -144,14 +144,8 @@ func (s *Session) PendingAskSnapshot() (*appwire.PendingQuestion, *appwire.Pendi
 	if first.TurnID != "" && first.CallID != "" {
 		question.TurnID, question.CallID = first.TurnID, first.CallID
 	}
-	if first.Complete != nil {
-		complete := *first.Complete
-		question.Complete = &complete
-	}
-	if first.Truncated != nil {
-		truncated := *first.Truncated
-		question.Truncated = &truncated
-	}
+	question.Complete = appwire.ClonePointer(first.Complete)
+	question.Truncated = appwire.ClonePointer(first.Truncated)
 	return &question, state
 }
 

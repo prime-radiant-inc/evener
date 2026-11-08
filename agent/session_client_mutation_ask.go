@@ -60,7 +60,11 @@ func (s *Session) clientMutationAskResolution(id string) *schema.AskResolution {
 	if id == "" || s.clientMutations == nil {
 		return nil
 	}
-	return s.clientMutations.snapshot().Journal[id].Preconditions.askResolution()
+	store := s.clientMutations
+	store.stateMu.RLock()
+	preconditions := cloneClientMutationPreconditions(store.state.Journal[id].Preconditions)
+	store.stateMu.RUnlock()
+	return preconditions.askResolution()
 }
 
 func askResolutionTurnIDs(resolution *schema.AskResolution, exclude string) []string {

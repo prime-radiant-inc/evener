@@ -8,15 +8,14 @@ import (
 
 // projectPendingAsk leaves the owner whole and bounds only its wire-row copy.
 func projectPendingAsk(state *appwire.PendingAskState) *appwire.PendingAskState {
-	projected := appwire.ClonePendingAsk(state)
-	if projected != nil {
-		projected.CompositeTotal = len(projected.Calls)
-		projected.CallsTruncated = len(projected.Calls) > appwire.MaxPendingAskComposites
-		if projected.CallsTruncated {
-			projected.Calls = projected.Calls[:appwire.MaxPendingAskComposites]
-		}
+	if state == nil {
+		return nil
 	}
-	return projected
+	projected := *state
+	projected.CompositeTotal = len(state.Calls)
+	projected.CallsTruncated = len(state.Calls) > appwire.MaxPendingAskComposites
+	projected.Calls = projected.Calls[:min(len(projected.Calls), appwire.MaxPendingAskComposites)]
+	return appwire.ClonePendingAsk(&projected)
 }
 
 // appPendingAskPage samples the live owner without a projection or read-cut lock.

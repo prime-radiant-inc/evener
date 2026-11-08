@@ -2169,10 +2169,7 @@ func cloneClientMutationPreconditions(src clientMutationPreconditions) clientMut
 		revision := *src.ExpectedQueueRevision
 		dst.ExpectedQueueRevision = &revision
 	}
-	if src.ExpectedAskRevision != nil {
-		revision := *src.ExpectedAskRevision
-		dst.ExpectedAskRevision = &revision
-	}
+	dst.ExpectedAskRevision = appwire.ClonePointer(src.ExpectedAskRevision)
 	dst.AskCaptures = cloneAskCaptures(src.AskCaptures)
 	return dst
 }

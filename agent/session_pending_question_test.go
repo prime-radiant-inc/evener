@@ -27,7 +27,7 @@ func TestPendingQuestion_NamesTheFirstQuestionOfThePendingAsk(t *testing.T) {
 			t.Fatalf("ask_user %s errored: %s", call.ID, res.Output)
 		}
 	}
-	want := &appwire.PendingQuestion{Question: "Which datastore for the ingest path?", Options: []string{"Postgres", "SQLite"}, Count: 3}
+	want := &appwire.PendingQuestion{Question: "Which datastore for the ingest path?", Options: []string{"Postgres", "SQLite"}, Count: 3, Complete: new(false), Truncated: new(false)}
 	if got := sess.PendingQuestion(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("PendingQuestion = %+v, want %+v", got, want)
 	}
@@ -60,7 +60,23 @@ func TestPendingQuestion_SurvivesRestore(t *testing.T) {
 	// (askUserArgsValid) in a session with a state dir.
 	sess := newDurableAdmissionAskSession(t, SessionConfig{})
 	seedDurableAdmissionAsk(t, sess)
-	want := &appwire.PendingQuestion{Question: "Which datastore for the ingest path?", Options: []string{"Postgres", "SQLite"}, Count: 1}
+	want := &appwire.PendingQuestion{Question: "Which datastore for the ingest path?", Options: []string{"Postgres", "SQLite"}, Count: 1, Complete: new(false), Truncated: new(false)}
+	for _, entry := range readPersistedTranscriptEntries(t, sess.stateDir, sess.ID()) {
+		if entry.Turn.Kind != schema.TurnAssistant {
+			continue
+		}
+		for _, call := range assistantToolCalls(entry.Turn.Message) {
+			if call.Name == "ask_user" && call.ID == "ask1" {
+				if want.TurnID != "" {
+					t.Fatal("ask has multiple recorded executions")
+				}
+				want.TurnID, want.CallID = entry.Turn.TurnID, call.ID
+			}
+		}
+	}
+	if want.TurnID == "" || want.CallID == "" {
+		t.Fatal("ask has no recorded execution identity")
+	}
 	if got := sess.PendingQuestion(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("live PendingQuestion = %+v, want %+v", got, want)
 	}
@@ -68,8 +84,14 @@ func TestPendingQuestion_SurvivesRestore(t *testing.T) {
 	sess.Close()
 
 	restored := restoreAskSession(t, meta, dir)
-	if got := restored.PendingQuestion(); !reflect.DeepEqual(got, want) {
-		t.Fatalf("restored PendingQuestion = %+v, want %+v", got, want)
+	got := restored.PendingQuestion()
+	if got != nil && (got.Complete != nil || got.Truncated != nil) {
+		t.Errorf("restored truth fields must be absent: complete=%v truncated=%v", got.Complete, got.Truncated)
+	}
+	restoredWant := *want
+	restoredWant.Complete, restoredWant.Truncated = nil, nil
+	if !reflect.DeepEqual(got, &restoredWant) {
+		t.Fatalf("restored PendingQuestion = %+v, want %+v", got, &restoredWant)
 	}
 }
 
