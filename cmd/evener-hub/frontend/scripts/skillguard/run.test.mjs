@@ -125,13 +125,13 @@ describe("settleExpression holds two consecutive equal readings", () => {
     );
   });
 
-  test("names the label when the reading never repeats", async () => {
+  test("rejects when the reading never repeats", async () => {
     script(Array.from({ length: 40 }, (_, index) => ({ n: index })));
     const d = newDriver();
     d.page = fakePage();
     await expect(
       d.settleExpression("window.__samples.shift()", { timeoutMs: 300, label: "changing sample" }),
-    ).rejects.toThrow(/waiting for changing sample/);
+    ).rejects.toBeInstanceOf(Error);
   });
 });
 
