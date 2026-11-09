@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -118,21 +119,10 @@ func (g *webGate) launchOrder() []int {
 	for i := range order {
 		order[i] = i
 	}
-	if g.launchFirst == "" {
-		return order
+	if first := slices.Index(g.checks, g.launchFirst); first > 0 {
+		copy(order[1:first+1], order[:first])
+		order[0] = first
 	}
-	first := -1
-	for i, check := range g.checks {
-		if check == g.launchFirst {
-			first = i
-			break
-		}
-	}
-	if first < 0 {
-		return order
-	}
-	copy(order[1:first+1], order[:first])
-	order[0] = first
 	return order
 }
 

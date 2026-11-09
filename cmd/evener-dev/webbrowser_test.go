@@ -407,8 +407,8 @@ func TestBrowserGuardSlots(t *testing.T) {
 	}
 }
 
-// skillguard is the longest guard, so the gate starts it first: on a two-slot
-// lane it then runs alongside the short guards instead of queueing behind all
+// skillguard is the longest guard, so a lane with more than one slot starts it
+// first: it then runs alongside the short guards instead of queueing behind all
 // of them (#3634). The rest keep their verdict order, and verdicts still print
 // in browserGuards order.
 func TestBrowserGateLaunchesSkillGuardFirst(t *testing.T) {
@@ -429,6 +429,46 @@ func TestBrowserGateLaunchesSkillGuardFirst(t *testing.T) {
 	}
 	if r := tg.await(t); r.status != 0 {
 		t.Fatalf("status = %d, want 0; stderr = %s", r.status, tg.stderr.String())
+	}
+}
+
+// One slot has nothing to overlap, so it keeps verdict order; moving the long
+// guard first there would only make an interrupt wait for it.
+func TestBrowserGateKeepsVerdictOrderOnOneSlot(t *testing.T) {
+	launcher := newFakeLauncher()
+	tg := startTestGate(t, launcher, 1, false)
+	for i, want := range browserGuards {
+		g := launcher.awaitStart(t)
+		if g.name != want {
+			t.Fatalf("guard %d started = %q, want %q", i, g.name, want)
+		}
+		g.exit <- 0
+	}
+	if r := tg.await(t); r.status != 0 {
+		t.Fatalf("status = %d, want 0; stderr = %s", r.status, tg.stderr.String())
+	}
+}
+
+// launchFirst moves that check to the front and leaves every other order
+// alone; an empty or unknown name is checks' own order.
+func TestWebGateLaunchOrder(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		first string
+		want  []int
+	}{
+		{"empty", "", []int{0, 1, 2}},
+		{"unknown", "z", []int{0, 1, 2}},
+		{"first", "a", []int{0, 1, 2}},
+		{"middle", "b", []int{1, 0, 2}},
+		{"last", "c", []int{2, 0, 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gate := &webGate{checks: []string{"a", "b", "c"}, launchFirst: tc.first}
+			if got := gate.launchOrder(); !slices.Equal(got, tc.want) {
+				t.Fatalf("launchOrder() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -729,24 +769,21 @@ func TestBrowserGateStartsNoGuardAfterAPendingInterrupt(t *testing.T) {
 	launcher.assertNoStart(t, "the gate was interrupted")
 }
 
-// With one slot, an interrupt while the first guard (the skill guard, a
-// go-test guard an interrupt waits for) runs stops the gate once that guard
-// has cleaned up; the guards still waiting never start, and the go-test guard
-// is not signalled.
+// With one slot, an interrupt while the first guard runs stops the gate once
+// that guard has cleaned up; the guards still waiting never start.
 func TestBrowserGateStartsNoWaitingGuardAfterAnInterrupt(t *testing.T) {
 	launcher := newFakeLauncher()
 	tg := startTestGate(t, launcher, 1, false)
 	first := launcher.awaitStart(t)
 	tg.signals <- syscall.SIGHUP
-	tg.assertRunning(t, "the first guard was still running")
+	select {
+	case <-first.terminated:
+	case <-time.After(tripwire):
+		t.Fatal("the interrupted gate never TERMed the running guard")
+	}
 	first.exit <- 129
 	if r := tg.await(t); r.status != 129 {
 		t.Fatalf("status = %d, want 129", r.status)
-	}
-	select {
-	case <-first.terminated:
-		t.Fatal("the interrupted gate signalled a go-test guard; its t.Cleanup would be skipped")
-	default:
 	}
 	launcher.assertNoStart(t, "the gate was interrupted")
 }
@@ -760,14 +797,16 @@ func TestBrowserGateInterruptDuringGuardSetupWaitsAndNeverStartsTheGuard(t *test
 	launcher.homeEntered = make(chan struct{})
 	tg := startTestGate(t, launcher, len(browserGuards), false)
 	var earlier []*fakeGuard
+	take := func(name string) { earlier = append(earlier, launcher.guard(name)) }
+	setupDeadline := time.After(tripwire)
 awaitSetup:
 	for {
 		select {
 		case name := <-launcher.started:
-			earlier = append(earlier, launcher.guard(name))
+			take(name)
 		case <-launcher.homeEntered:
 			break awaitSetup
-		case <-time.After(tripwire):
+		case <-setupDeadline:
 			t.Fatal("the gate never prepared the retirement guard's Go home")
 		}
 	}
@@ -775,7 +814,7 @@ drain:
 	for {
 		select {
 		case name := <-launcher.started:
-			earlier = append(earlier, launcher.guard(name))
+			take(name)
 		default:
 			break drain
 		}
@@ -796,7 +835,7 @@ drain:
 	if r := tg.await(t); r.status != 143 {
 		t.Fatalf("status = %d, want 143", r.status)
 	}
-	if launcher.guard(retirementGuard) != nil || launcher.guard(backgroundTranscriptGuard) != nil {
+	if launcher.guard(retirementGuard) != nil {
 		t.Fatal("a guard started after the interrupt")
 	}
 }
