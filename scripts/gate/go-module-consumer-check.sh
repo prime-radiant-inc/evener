@@ -54,6 +54,9 @@ set -uo pipefail
 
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH='' cd -- "$script_dir/../.." && pwd)"
+# The scratch directory is minted and reclaimed by the repository's one
+# helper, never by a recursive delete that takes a caller's variable.
+. "$repo_root/scripts/lib/scratch-lib.sh"
 
 die() {
 	printf 'go-module-consumer-check: %s\n' "$*" >&2
@@ -79,8 +82,8 @@ else
 	target_dirs=("${workspace_dirs[@]}")
 fi
 
-tmp="$(mktemp -d "${TMPDIR:-/tmp}/evener-consumer-check.XXXXXX")" || die "mktemp failed"
-trap 'rm -rf "$tmp"' EXIT
+scratch_dir tmp evener-consumer-check
+trap scratch_rm EXIT
 
 # Resolve every target directory, and every workspace module that its consumer
 # must replace, once. Directories are keyed by their absolute path.
