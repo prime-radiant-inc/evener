@@ -2046,6 +2046,7 @@ Underlying Go kind: `struct` (no struct fields).
 | `sourceId` | string |  |  |
 | `features` | [appwire.FeatureSet](#featureset) |  |  |
 | `navigation` | \*[appwire.NavigationCapability](#navigationcapability) | yes |  |
+| `transcriptIndexSchemaId` | string | yes |  |
 
 
 ### `InputItem`
