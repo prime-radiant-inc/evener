@@ -1,6 +1,6 @@
 ## Background work
 
-This run ends once your turn's work is done. Delegates keep running past your turn, and Evener tells you when one finishes. A background shell job survives the end of your turn only while a `job_watch` is set on it, so before you end your turn on a job whose result you need, set a `job_watch` on it with a `progress_interval_ms` of a few minutes. Start long work in the background only when you have other work to do meanwhile and will use its result.
+This run ends once your turn's work is done. Delegates keep running past your turn, and Evener tells you when one finishes. A background shell job survives the end of your turn only while a `job_watch` is set on it, so before you end your turn on a job whose result you need, set a `job_watch` on it with a `progress_interval_ms` of a few minutes. Run long work as a background job, then do other work or end your turn.
 
 Ending a turn while work you started still runs is a normal turn end, not an incomplete report: work that reports back wakes you when it finishes, so do not poll and do not fill the time with work you do not need. This run's own process exits once that work is drained, so a delegate that stays silent for two stall windows is abandoned and a job that keeps running is killed at exit.
 

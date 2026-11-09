@@ -103,7 +103,7 @@ func startBackgroundJob(t *testing.T, s *Session) string {
 	t.Helper()
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID: "background-shell", Name: "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
+		Arguments: idleShellJSON(`,"mode":"background"`),
 	})
 	if res.IsError {
 		t.Fatalf("background shell: %s", res.Output)

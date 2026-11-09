@@ -532,7 +532,7 @@ func TestToolCallWireFixtures(t *testing.T) {
 		{
 			id: "call_shell_timeout", tool: "shell",
 			note:             "A command still running when its foreground wait timed out (this call's wait is 2s): it keeps running as a job, and the footer says so in several parts (its job id and the wait's seconds fixed, its state left off). It sleeps far longer than the recording takes, so the job calls after it always find it running until call_job_stop stops it.",
-			args:             map[string]any{"command": "printf 'started\\n'; sleep 600"},
+			args:             map[string]any{"command": "printf 'started\\n'; " + idleShellCommand},
 			foregroundWaitMS: 2000,
 			normalize:        withFixedJob,
 		},
@@ -913,7 +913,7 @@ func TestToolWireCallArgumentsFromEarlierResults(t *testing.T) {
 func TestToolWireShellCallsFinishPastTheTimeoutCallsWait(t *testing.T) {
 	t.Parallel()
 	_, s := toolWireWorkspace(t)
-	args, err := json.Marshal(map[string]any{"command": "sleep 3; echo settled"})
+	args, err := json.Marshal(map[string]any{"command": "ls >/dev/null; sleep 3; echo settled"})
 	if err != nil {
 		t.Fatal(err)
 	}

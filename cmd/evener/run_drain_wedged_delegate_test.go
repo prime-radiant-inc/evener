@@ -162,7 +162,7 @@ func TestRunExitsWhenADelegateIsWedgedInAnUncancellableToolCall(t *testing.T) {
 			// under one mutex, so blocking here would deadlock the delegate's own
 			// turn), so poll with a cheap real tool round instead.
 			if !wedge.isWedged() {
-				return scriptedToolCalls(scriptedForegroundShellCall("poll_wedge", "sleep 0.05"))
+				return scriptedToolCalls(scriptedForegroundShellCall("poll_wedge", "ls >/dev/null"))
 			}
 			id := wedgeDelegateIDPattern.FindString(text)
 			if id == "" {
