@@ -1,8 +1,14 @@
 # Commit-to-session provenance: experimental design
 
-**Status:** proposed design informed by a standalone prototype and live GitHub
-experiments. The production insertion mechanism remains open. This is not a
-shipped product contract or permission to replace Git on users' machines.
+**Status:** superseded for production direction by
+[the trailer design](2026-11-09-commit-provenance-trailer-design.md). This
+document remains the record of the custom-header experiment and its live GitHub
+results. It is not a shipped product contract or permission to replace Git on
+users' machines.
+
+**Original status:** proposed design informed by a standalone prototype and live GitHub
+experiments. The production insertion mechanism was open at that time. This is
+not a shipped product contract or permission to replace Git on users' machines.
 
 ## Intent
 
