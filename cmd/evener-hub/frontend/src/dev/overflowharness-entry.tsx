@@ -20,6 +20,7 @@ import { ActivitySidebar } from "../shell/activitybar/ActivitySidebar";
 import { activityContext, activitySummary } from "../stores/sessionActivityTestUtils";
 import { isElementVisible } from "./guardVisibility";
 import "../panes/session";
+import { writeComposerDraft } from "../panes/session/composer/draft";
 import { refreshPendingTurnsProjection } from "../panes/session/composer/queue/pendingTurnsStore";
 import Session from "../panes/session/Session";
 import Settings from "../panes/settings/Settings";
@@ -2095,12 +2096,20 @@ async function measureDuoCompactStates(phase: "focus" | "rest") {
     await twoPaintedFrames();
     await document.fonts.ready;
   };
+  // The typed Duo draft lives in this profile's storage and would rehydrate on
+  // every later harness page in the same guard run, so later resting-row
+  // measurements would read an expanded, draft-carrying composer. Every exit
+  // clears it through the composer's own blank-write cleanup.
+  const finish = (approvalResolved: boolean) => {
+    writeComposerDraft(REF, { text: "", skillNames: [] });
+    return { states: results, approvalResolved };
+  };
   if (phase === "focus") {
     snapshot("empty");
     editor.focus();
     await settle();
     snapshot("focused");
-    return { states: results, approvalResolved: false };
+    return finish(false);
   }
   if (editor.textContent === "") throw new Error("trusted browser input did not enter a draft");
   await settle();
@@ -2165,10 +2174,10 @@ async function measureDuoCompactStates(phase: "focus" | "rest") {
   await settle();
   snapshot("approval");
   const allow = pane.querySelector<HTMLButtonElement>("[data-sandbox-escalation-allow]");
-  if (!allow) return { states: results, approvalResolved: false };
+  if (!allow) return finish(false);
   allow.click();
   await settle();
-  return { states: results, approvalResolved: !pane.querySelector('[role="group"][aria-label="Sandbox approval"]') };
+  return finish(!pane.querySelector('[role="group"][aria-label="Sandbox approval"]'));
 }
 
 declare global {

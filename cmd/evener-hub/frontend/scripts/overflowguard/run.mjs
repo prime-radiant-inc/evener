@@ -179,7 +179,9 @@ async function measureAt(cdpEndpoint, url, width) {
       } catch (error) {
         // Request the new named measurements before allowing an unchanged
         // harness fixture failure to obscure the intended RED boundary.
-        const legacyMeasurement = JSON.parse(await evaluate(send, "window.measure().then((result) => JSON.stringify(result))"));
+        const legacyMeasurement = JSON.parse(
+          await evaluate(send, "window.measure().then((result) => JSON.stringify(result))"),
+        );
         if (!Array.isArray(legacyMeasurement.editors)) {
           return {
             ...legacyMeasurement,
