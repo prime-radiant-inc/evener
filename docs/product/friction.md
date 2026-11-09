@@ -679,14 +679,15 @@ resume; newer instructions take precedence over the objective that was waiting.
 
 ### R06 Read-only goal progress
 
-**Current behavior.** Goal progress accounting treats eligible mutating or unknown
-tool-call attempts as progress, excluding result/communicate and task_list,
-rather than measuring successful contribution. Useful read-only investigation
-can accumulate no-progress turns while an attempted mutation resets them.
-Thresholds differ before and after mutating activity.
+**Current behavior.** Goal progress accounting credits only executed,
+successful, progress-eligible tool results. Read-only tools,
+result/communicate, task_list, unknown tool names, and failed calls (including
+structured shell, delegate-send and invalid-argument failures) do not reset
+the no-progress streak. Useful read-only investigation can therefore still
+accumulate no-progress turns even when it advances the work.
 
-**Evidence.** [callsMadeProgress](../../agent/session_goal.go#L173), its
-[lifecycle call site](../../agent/session_lifecycle.go#L2403), and
+**Evidence.** [toolResultsMadeProgress](../../agent/session_goal.go#L178), its
+[lifecycle call site](../../agent/session_lifecycle.go#L2034), and
 [goal progress state](../../agent/internal/goal/goal.go#L18) encode the rule.
 Root daemon sessions with continuation and notification wiring already exempt
 waiting for dependents that can guarantee a wake. Child and one-shot sessions

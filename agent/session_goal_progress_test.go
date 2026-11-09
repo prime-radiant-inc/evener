@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/goal"
+	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/llm"
 )
@@ -369,5 +370,74 @@ func TestGoalNoProgressBreakerIgnoresShellWaitFailures(t *testing.T) {
 	}
 	if snap, _ := store.Snapshot(); snap.Status != goal.StatusBlocked {
 		t.Fatalf("goal after failed shell waits = %+v, want blocked by the no-progress breaker", snap)
+	}
+}
+
+// A delegate_send to a cold delegate whose restore fails comes back as a
+// structured failed/construction_failed result. That failed call is not a
+// successful mutation and must not reset the goal no-progress streak.
+func TestGoalNoProgressBreakerIgnoresDelegateSendConstructionFailures(t *testing.T) {
+	t.Parallel()
+	var calls int
+	responder := func(llm.Request) llm.Response {
+		calls++
+		if calls%2 == 1 {
+			return llm.Response{
+				Model: "gpt-5.2",
+				Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+					Kind:     llm.ContentToolCall,
+					ToolCall: &llm.ToolCallData{ID: fmt.Sprintf("call-%d", calls), Name: "delegate_send", Arguments: []byte(`{"to":"dlg_stub","message":"continue"}`)},
+				}}},
+				Finish: llm.FinishReason{Reason: "tool_use"},
+			}
+		}
+		return agenttest.CommunicateResponse(true, "done")
+	}
+	sess, _, _ := newBudgetSession(t, SessionConfig{MaxToolRoundsPerInput: 5}, responder)
+	if err := sess.reg.Register(tool.RegisteredTool{
+		Definition: llm.ToolDefinition{
+			Name:        "delegate_send",
+			Description: "stub cold-restore failure",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"to":      map[string]any{"type": "string"},
+					"message": map[string]any{"type": "string"},
+				},
+				"required": []any{"to", "message"},
+			},
+		},
+		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+			return marshalDelegateSendResult(sendMessageResult{
+				Target:     "dlg_stub",
+				DelegateID: "dlg_stub",
+				Type:       delegateResourceType,
+				Status:     jobstore.StatusFailed,
+				Reason:     "construction_failed",
+			}, 0)
+		},
+	}); err != nil {
+		t.Fatalf("register delegate_send stub: %v", err)
+	}
+	store := sess.getOrCreateGoalStore()
+	store.Set("ship it", sess.sclock().Now())
+
+	for turn := 0; ; turn++ {
+		_, progressed, err := sess.processOneInput(context.Background(), "continue", nil, EntryContinuation, nil)
+		if err != nil {
+			t.Fatalf("continuation turn %d: %v", turn, err)
+		}
+		if progressed {
+			t.Fatalf("continuation turn %d credited a failed delegate restore as progress", turn)
+		}
+		if _, continued := sess.armGoalContinuation(progressed, true); !continued {
+			break
+		}
+		if turn > goal.NeverProgressedLimit {
+			t.Fatal("goal did not reach the no-progress breaker")
+		}
+	}
+	if snap, _ := store.Snapshot(); snap.Status != goal.StatusBlocked {
+		t.Fatalf("goal after failed delegate restores = %+v, want blocked by the no-progress breaker", snap)
 	}
 }
