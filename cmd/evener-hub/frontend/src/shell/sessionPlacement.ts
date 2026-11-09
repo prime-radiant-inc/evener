@@ -115,15 +115,21 @@ export function openNestedSessionWithOwner(ref: string, ownerRef: string): void 
       // The owner or its cascade already owns main. Keep every neighboring
       // pane; only a duplicate plain owner beside a cascade retires.
       if (cascadeMain && ownerPane !== undefined) workspace.closePane(ownerPane.id);
-    } else {
-      // An unrelated primary still clears. Keep the child and an existing
-      // owner pane, then promote the owner.
-      for (const pane of [...workspace.panes]) {
-        if (pane.id !== child.id && pane.id !== ownerPane?.id) workspace.closePane(pane.id);
-      }
-      const ownerId = ownerPane?.id ?? workspace.openPane("session", { ref: ownerRef }, { slot: "secondary" });
-      workspace.promotePane(ownerId);
+      workspace.focusPane(child.id);
+      const retained = workspaceStore.getState().panes.find((pane) => pane.id === child.id);
+      if (retained) recordConversationOpenParent(retained, ownerRef);
+      // Focus and the recorded parent edge are not store-visible when nothing
+      // moved, so publish the unchanged records for route reconciliation.
+      workspaceStore.setState({ panes: [...workspaceStore.getState().panes] });
+      return;
     }
+    // An unrelated primary still clears. Keep the child and an existing owner
+    // pane, then promote the owner.
+    for (const pane of [...workspace.panes]) {
+      if (pane.id !== child.id && pane.id !== ownerPane?.id) workspace.closePane(pane.id);
+    }
+    const ownerId = ownerPane?.id ?? workspace.openPane("session", { ref: ownerRef }, { slot: "secondary" });
+    workspace.promotePane(ownerId);
     workspace.focusPane(child.id);
     const opened = workspaceStore.getState().panes.find((pane) => pane.id === child.id);
     if (opened) recordConversationOpenParent(opened, ownerRef);

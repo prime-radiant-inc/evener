@@ -172,6 +172,19 @@ describe("openNestedSessionWithOwner", () => {
     expect(aPane && conversationOpenParentRef(aPane)).toBe("local:owner");
   });
 
+  test("publishes an update when only the child's parent edge changes", () => {
+    openTopLevelSession("local:owner");
+    const childId = workspaceStore.getState().openPane("session", { ref: "local:child" }, { slot: "secondary" });
+    expect(workspaceStore.getState().focusedPaneId).toBe(childId);
+    const before = workspaceStore.getState().panes;
+
+    openNestedSessionWithOwner("local:child", "local:owner");
+
+    expect(workspaceStore.getState().panes).not.toBe(before);
+    const child = workspaceStore.getState().panes.find((pane) => pane.id === childId);
+    expect(child && conversationOpenParentRef(child)).toBe("local:owner");
+  });
+
   test("keeps a matching cascade and child when a duplicate owner sits secondary", () => {
     const cascade = promoteMainToCascade("local:owner");
     const workspace = workspaceStore.getState();

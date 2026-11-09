@@ -333,6 +333,7 @@ function routePlacementIsApplied(
     (pane) => pane.type === "session" && pane.slot === "secondary" && sessionRefOf(pane) === ref,
   );
   const child = childPanes[0];
+  const childParent = child === undefined ? undefined : conversationOpenParentRef(child);
   return (
     ownerPanes.length === 1 &&
     ownerPanes[0]?.id === main.id &&
@@ -340,7 +341,8 @@ function routePlacementIsApplied(
     focusIsApplied(child.id) &&
     // A placement that already has the right shape is not settled until the
     // child records its owner, or a host swap loses the Back target.
-    conversationOpenParentRef(child) === ancestorRef
+    childParent !== undefined &&
+    conversationContextIncludes(childParent, ancestorRef)
   );
 }
 
