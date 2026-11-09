@@ -3,6 +3,7 @@ package hub
 import (
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"primeradiant.com/evener/appwire"
@@ -23,11 +24,16 @@ func TestNavigationRowsCarryTheFailure(t *testing.T) {
 			Cause: &appwire.DiagnosticCause{Kind: hubapi.NavigationFailureCrashed},
 		}},
 		{ID: "session-wide", Title: "wide", Kind: "session", State: "errored", Failure: &appwire.ThreadFailure{Title: "Provider\nerror " + strings.Repeat("x", 200)}},
+		{ID: "session-quota", Title: "quota", Kind: "session", State: "errored", Failure: &appwire.ThreadFailure{
+			Title: "Usage limit reached", Cause: &appwire.DiagnosticCause{Kind: "provider", Provider: "oai-jrv", Status: 429},
+			ResumesAt: time.Date(2026, 11, 7, 14, 30, 0, 0, time.UTC).UnixMilli(),
+		}},
 		{ID: "session-idle", Title: "idle", Kind: "session", State: "idle"},
 	})
 	for id, want := range map[string]string{
 		"session-failed":  `{"title":"Provider error","cause_kind":"provider","provider":"codex-jesse-fsck.com","status":401}`,
 		"session-crashed": `{"cause_kind":"crashed"}`,
+		"session-quota":   `{"title":"Usage limit reached","cause_kind":"provider","provider":"oai-jrv","status":429,"resumes_at":"2026-11-07T14:30:00Z"}`,
 	} {
 		if got := string(navigationSummaryJSONFields(t, rows[id])["failure"]); got != want {
 			t.Errorf("%s failure on the wire = %s, want %s", id, got, want)
@@ -87,12 +93,15 @@ func TestNavigationSchemaBoundsTheFailure(t *testing.T) {
 	}
 }
 
-// A cloned summary owns its failure.
+// A cloned summary owns its failure, the resume time included.
 func TestCloneNavigationSummaryOwnsTheFailure(t *testing.T) {
-	original := hubapi.NavigationSessionSummary{Failure: &hubapi.NavigationFailure{Title: "Provider error", CauseKind: "provider", Status: 401}}
+	resumesAt := time.Date(2026, 11, 7, 14, 30, 0, 0, time.UTC)
+	originalResumesAt := resumesAt
+	original := hubapi.NavigationSessionSummary{Failure: &hubapi.NavigationFailure{Title: "Provider error", CauseKind: "provider", Status: 401, ResumesAt: &originalResumesAt}}
 	clone := cloneNavigationSummary(original)
 	original.Failure.Status = 500
-	if clone.Failure == nil || clone.Failure.Status != 401 {
+	*original.Failure.ResumesAt = resumesAt.Add(time.Hour)
+	if clone.Failure == nil || clone.Failure.Status != 401 || !clone.Failure.ResumesAt.Equal(resumesAt) {
 		t.Fatalf("clone failure = %+v, want its own copy", clone.Failure)
 	}
 }
