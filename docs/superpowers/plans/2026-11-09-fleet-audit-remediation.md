@@ -122,9 +122,11 @@ creation idempotency.
   budget. A watch is rate limited to at most one delivery per minute; fires
   inside the window coalesce into the next delivery. The watch lives until its
   target ends or it is cleared. Owns W2.2.
-- [ ] **D5 Local `implementing-features` copy.** `~/.config/evener/skills/implementing-features`
-  is a divergent copy that shadows the primeradiant-ops skill in Evener.
-  Recommended: delete it once W5.2 lands. Owns W5.2.
+- [x] **D5 Local `implementing-features` copy.** Decided 2026-11-09: delete
+  `~/.config/evener/skills/implementing-features` once W5.2 lands, so Evener
+  loads the primeradiant-ops version. Verify afterwards that a new Evener
+  session's skill inventory resolves `implementing-features` to the plugin
+  path. Owns W5.2.
 - [ ] **D6 API logging.** Turn on `api_log` for one lunaroute session to settle
   the cache-freeze question, or drop it. Owns W6.2.
 
