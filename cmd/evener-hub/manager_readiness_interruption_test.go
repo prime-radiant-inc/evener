@@ -75,6 +75,13 @@ func (g *readinessContinuationGate) proxy(t *testing.T, daemon *httptest.Server,
 			return
 		}
 		defer front.CloseNow()
+		// The proxy must carry the same frames the production transports do.
+		// coder/websocket's default read limit is 32KB, but a thread-read
+		// response embeds the rendered system prompt and grows with it, so the
+		// default closes the connection mid-read once a session's prompt and
+		// turns pass it. Match appwire's transport limit (128MB) on both legs.
+		const proxyReadLimit = 128 << 20
+		front.SetReadLimit(proxyReadLimit)
 		headers := http.Header{}
 		headers.Set("Authorization", r.Header.Get("Authorization"))
 		// The backend is an in-process listener that is already serving when
@@ -113,6 +120,7 @@ func (g *readinessContinuationGate) proxy(t *testing.T, daemon *httptest.Server,
 			t.Logf("backend dial recovered after transient handshake failures: %s", strings.Join(dialAttempts, "; "))
 		}
 		defer back.CloseNow()
+		back.SetReadLimit(proxyReadLimit)
 		var pending sync.Map // AppWire request ID -> real continuation query, only for this socket.
 		var invoke sync.Map  // Negative reverse request ID -> specific continuation operation.
 		var forwarding sync.WaitGroup
