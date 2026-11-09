@@ -80,7 +80,7 @@ import styles from "./composer.module.css";
 import { consumeComposerFocus, requestComposerFocus, useComposerFocusRequest } from "./composerFocus";
 import { STEER_RECOVERY_FENCED_REASON, steerTooltipLabel, submitTooltipLabel } from "./controlTooltips";
 import { readDraftRevision } from "./draft";
-import { useNarrowComposer } from "./narrowComposer";
+import { useDuoCoverLayout, useNarrowComposer } from "./narrowComposer";
 import { QueueStrip } from "./queue";
 import { useBlockedMutationEntries } from "./queue/pendingTurnsStore";
 import { consumeQuoteInsert, useQuoteInsertRequest } from "./quoteInsert";
@@ -251,6 +251,7 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   // Steer moves into the menu below the phone-width boundary.
   // narrowComposer.ts measures the pane, not the viewport.
   const [narrow, attachNarrowRef] = useNarrowComposer();
+  const duoCoverLayout = useDuoCoverLayout();
   const composerRootRef = useRef<HTMLDivElement | null>(null);
   const attachComposerRoot = useCallback(
     (element: HTMLDivElement | null) => {
@@ -696,6 +697,9 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   // Only the editor shrinks at rest. Controls stay available without typing.
   // Drafts, attachments and recovery keep enough writing space after blur.
   const followUpEngaged = fence.fencedLocal || fence.sendDriven || followUpFocused || hasContent;
+  let minLines = 2;
+  if (ended) minLines = followUpEngaged ? 3 : 1;
+  else if (duoCoverLayout && !followUpEngaged) minLines = 1;
 
   function handleTextChange(value: SkillEditorValue, caret: number): void {
     editSkillNames(value.skillNames);
@@ -1030,7 +1034,7 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
                     onPaste={handlePaste}
                     aria-controls={slashActiveId ? slashListboxId : undefined}
                     aria-activedescendant={slashActiveId ?? undefined}
-                    minLines={ended ? (followUpEngaged ? 3 : 1) : undefined}
+                    minLines={minLines}
                     onBlur={handleEditorBlur}
                     placeholder={ended ? "Send a follow-up…" : "Message the agent…"}
                     aria-label="Message"

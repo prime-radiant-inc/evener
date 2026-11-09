@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { expect, test } from "vitest";
-import { readModuleCss } from "../../styles/cssBlock";
+import { blockBody, readModuleCss } from "../../styles/cssBlock";
 import { Textarea } from "../textarea";
 import { PromptCard } from "./index";
 import promptCardStyles from "./promptcard.module.css";
@@ -148,4 +148,14 @@ test("focusing the field puts the card in :focus-within", () => {
 test("the card draws exactly one hairline border, so a seamless field inside is not a box in a box", () => {
   const rule = /\.card\s*\{([^}]*)\}/.exec(moduleCss())?.[1] ?? "";
   expect(rule).toMatch(/border:\s*1px solid var\(--edge\)/);
+});
+
+test("the card owns compact spacing for an empty, unfocused Duo composer", () => {
+  const css = moduleCss();
+  const mediaStart = css.indexOf("@media (min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4)");
+  expect(mediaStart).toBeGreaterThanOrEqual(0);
+  const compact = blockBody(css, css.indexOf("{", mediaStart));
+  expect(compact).toMatch(
+    /:global\(\[data-composer\]\):not\(\[data-composer-editing\]\) \.card:has\(\[role="textbox"\]\[data-empty="true"\]\)\s*\{[^}]*gap:\s*0;[^}]*padding-block:\s*0;/,
+  );
 });

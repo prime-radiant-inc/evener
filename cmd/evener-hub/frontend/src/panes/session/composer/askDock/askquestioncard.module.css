@@ -29,7 +29,7 @@
 .questionText {
   font-family: var(--font-prose);
   font-size: var(--font-size-prose);
-  line-height: var(--line-height-body);
+  line-height: var(--line-height-prose);
   color: var(--ink-hi);
 }
 

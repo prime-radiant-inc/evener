@@ -37,6 +37,7 @@ import {
   currentWorkEvener,
   installCanvasStubs,
   installGatedDecodeStub,
+  installNarrowComposer,
   installStalledDecodeStub,
   mountComposer,
   mountComposerWithHandle,
@@ -86,6 +87,40 @@ class ControlledDiscardStorage extends MutationOutboxIndexedDB {
     return super.discardRecovery(clientMutationId, shouldDiscard);
   }
 }
+
+function installDuoCoverViewport(): void {
+  vi.stubGlobal("matchMedia", (media: string) => ({
+    media,
+    matches: media === "(min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4)",
+    addEventListener() {},
+    removeEventListener() {},
+  }));
+}
+
+test("the Duo cover composer expands on focus and retains its two-line draft height", async () => {
+  installDuoCoverViewport();
+  installNarrowComposer(450);
+  await mountComposerWithHandle("ref_a");
+  const editor = textarea();
+  expect(editor.style.minHeight).toBe("1lh");
+  act(() => editor.focus());
+  await waitFor(() => expect(editor.style.minHeight).toBe("2lh"));
+  await replaceEditorText(editor, "a saved draft");
+  expect(editor.style.minHeight).toBe("2lh");
+  act(() => editor.blur());
+  await waitFor(() => expect(editor.style.minHeight).toBe("2lh"));
+});
+
+test("a narrow desktop pane keeps its two-line resting height", async () => {
+  installNarrowComposer(382);
+  await mountComposerWithHandle("ref_a");
+  expect(textarea().style.minHeight).toBe("2lh");
+});
+
+test("the wide empty composer keeps its two-line resting height", async () => {
+  await mountComposerWithHandle("ref_a");
+  expect(textarea().style.minHeight).toBe("2lh");
+});
 
 test("onEditingChange follows IME composition, not editor focus or draft content", async () => {
   const fake = connectReadyFakeClient();
