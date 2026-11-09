@@ -117,7 +117,7 @@
   position: absolute;
   top: var(--space-3);
   left: var(--space-3);
-  z-index: 1;
+  z-index: var(--z-raised);
 }
 
 /* The Contents block inside the detail sheet: an eyebrow, then one grid row
