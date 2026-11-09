@@ -295,6 +295,9 @@ export type OlderFrontier = "unknown" | "none" | (string & {});
 export interface ThreadModel {
   ref: string;
   parentRef?: string;
+  // The wire's EvenerThread.kind. Fork children must not charge their
+  // inherited prefix to their own token total (threadUsage.ts's sessionTokens).
+  kind?: string;
   threadId: string;
   // The serving session image bytes belong to (the wire Thread.sessionId at
   // hydrate, falling back to the thread id exactly as the hub's

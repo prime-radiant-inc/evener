@@ -500,6 +500,7 @@ export function threadFields(resp: ThreadReadResponse, ref: string, now: number)
     ref,
     threadId: thread.id,
     ...(thread.evener.parentRef === undefined ? {} : { parentRef: thread.evener.parentRef }),
+    ...(thread.evener.kind === undefined ? {} : { kind: thread.evener.kind }),
     imageSessionId,
     ...(thread.evener.instanceId === undefined ? {} : { instanceId: thread.evener.instanceId }),
     name: thread.name ?? "",

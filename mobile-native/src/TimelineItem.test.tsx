@@ -882,7 +882,7 @@ describe("a settled thought", () => {
 		const line = closed.root.findAll((node) => node.props.accessibilityRole === "button")[0];
 		act(() => line.props.onPress());
 		expect(renderedText(closed)).toContain("the interrupted reasoning");
-		closed.unmount();
+		act(() => closed.unmount());
 		// The switch opens it by default; the neutral label stays the summary.
 		const open = render(
 			<TimelineItem item={row} hubId="hub" sessionRef="thought-interrupted-open" thinkingOpenByDefault />,
