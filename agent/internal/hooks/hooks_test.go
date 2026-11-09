@@ -465,6 +465,15 @@ func TestRunSubagentStartFor_Exit2IsUserOnly(t *testing.T) {
 	if !strings.HasPrefix(got.UserMessages[0], "SubagentStart hook failed (exit 2)") {
 		t.Fatalf("a failed SubagentStart hook must warn with the event, hook, and exit code; got %q", got.UserMessages[0])
 	}
+
+	// SubagentStart has no decision control in Claude, so decision:"block" must
+	// not stop the child either: the exit-2 warning above is the only effect.
+	blocked := newRunner(nil, "")
+	blocked.Add(plugin.HookSubagentStart, plugin.RegisteredHook{Type: "command", Timeout: 5,
+		Command: `echo '{"decision":"block","reason":"no spawn"}'`})
+	if res := blocked.RunSubagentStartFor(context.Background(), Input{HookEventName: "SubagentStart"}, "subagent"); res.Stopped {
+		t.Fatalf("SubagentStart decision:block must be dropped, got Stopped with %q", res.StopReason)
+	}
 }
 
 // TestRunSubagentStartFor_HonorsContinueFalse covers Claude's universal continue

@@ -482,13 +482,14 @@ func (r *Runner) runHook(ctx context.Context, hook plugin.RegisteredHook, event 
 	if hr.ExitCode != 0 && strings.TrimSpace(hr.Stderr) != "" {
 		output = hr.Stderr
 	}
-	// A SessionStart hook's output is the session's FIRST steering input, so a
-	// FAILED one must not deliver its raw shell stderr to the model — the model
-	// cannot act on a permission denial or a broken script, and a wall of stderr as
-	// opening context is worse than no context. Summarize it into one operator-
-	// facing warning line instead. Every other event keeps the Claude-compatible
-	// contract that a non-zero hook's stderr reaches the model (07 §Exit-code
-	// semantics), which is how a tool-event hook corrects the model.
+	// A SessionStart/SubagentStart hook's output is the session's (or child's)
+	// FIRST steering input, so a FAILED one must not deliver its raw shell stderr
+	// to the model — the model cannot act on a permission denial or a broken
+	// script, and a wall of stderr as opening context is worse than no context.
+	// Summarize it into one operator-facing warning line instead. Every other
+	// event keeps the Claude-compatible contract that a non-zero hook's stderr
+	// reaches the model (07 §Exit-code semantics), which is how a tool-event hook
+	// corrects the model.
 	if summarizesHookFailure(event) && hr.ExitCode != 0 {
 		return hookFailureWarning(event, hook, output, hr.ExitCode)
 	}
@@ -729,14 +730,10 @@ func (r *Runner) RunSessionStartFor(ctx context.Context, input Input, kind plugi
 // RunSubagentStartFor dispatches SubagentStart hooks for a specific child agent
 // type. The agent type is both the matcher target and the input's agent_type:
 // a plugin agent is named by its catalog key ("plugin:agent"), and an unnamed
-// delegate reports "subagent". An empty agent type falls back to "subagent",
-// because a child always knows what it is and a matcher must never silently
-// miss for want of a name.
+// delegate reports "subagent". The never-empty fallback belongs to
+// subagentHookAgentType, so the dispatch site passes an already-normalized value.
 func (r *Runner) RunSubagentStartFor(ctx context.Context, input Input, agentType string) RunResult {
 	target := strings.TrimSpace(agentType)
-	if target == "" {
-		target = "subagent"
-	}
 	outputs := r.runAll(ctx, plugin.HookSubagentStart, target, input)
 	return collectSystemMessages(plugin.HookSubagentStart, outputs)
 }

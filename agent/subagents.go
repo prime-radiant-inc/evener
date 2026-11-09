@@ -1736,16 +1736,22 @@ func (s *Session) launchSubagentRun(runCtx context.Context, sub *subagent, runCa
 	go func() {
 		defer s.sendersWG.Done()
 		defer runCancel()
-		s.runSubagentStartHook(runCtx, sub, sub.agentTypeName())
+		if stopReason, stop := s.runSubagentStartHook(runCtx, sub, sub.agentTypeName()); stop {
+			// continue:false stops Claude's processing after the hook runs, so the
+			// child never starts: settle the run the way a finished one settles,
+			// closing done and the generation exactly once.
+			s.settleStoppedSubagentRun(runCtx, sub, stopReason)
+			return
+		}
 		sub.run(runCtx, input, inputProvenance)
 	}()
 }
 
 // agentTypeName reports the child's hook-visible agent type: the plugin-scoped
-// catalog key for a plugin agent ("toolsmith:toolsmith"), and "subagent" for an
-// unnamed delegate or a resumed child whose spawn config predates the field.
-// sub.agentType is a different, older field that is empty for unnamed delegates,
-// so it is not the answer here.
+// catalog key for a plugin agent ("toolsmith:toolsmith"). The spawn config holds
+// subagentHookAgentType's answer, which owns the never-empty fallback; this only
+// reads it. sub.agentType is a different, older field that is empty for unnamed
+// delegates, so it is not the answer here.
 func (a *subagent) agentTypeName() string {
 	if a == nil || a.sess == nil {
 		return ""
@@ -1753,33 +1759,44 @@ func (a *subagent) agentTypeName() string {
 	a.sess.mu.Lock()
 	name := a.sess.cfg.spawn.agentType
 	a.sess.mu.Unlock()
-	if strings.TrimSpace(name) == "" {
-		return "subagent"
-	}
 	return name
 }
 
 // runSubagentStartHook fires the parent's SubagentStart hooks for one child run
 // launch. additionalContext reaches the child as steering; a copy the child
-// already holds is not delivered twice, which is what makes an idle-attention
-// drive (a launch on a child that already ran) a no-op when nothing was
-// compacted away. A failed hook must not fail the spawn: its summarized warning
-// goes to the operator and the run continues.
+// already holds, or one an earlier hook in this same launch already delivered,
+// is not delivered twice. That is what makes an idle-attention drive (a launch
+// on a child that already ran) a no-op when nothing was compacted away. A failed
+// hook must not fail the spawn: its summarized warning goes to the operator and
+// the run continues.
+//
+// SubagentStart has no decision control in Claude — its table lists it with
+// SessionStart under "Context only ... no blocking or decision control" — so a
+// decision:"block" from this event is correctly dropped. Only additionalContext
+// and the universal fields (continue/stopReason, systemMessage, exit code) apply.
+//
+// A true stop means continue:false was honored: the caller must not launch the
+// child. stopReason is the hook's reason, already delivered to the user here.
 //
 // The hook runs on the PARENT's runner — the parent owns the plugin set — but
 // reads the CHILD's identity, which is the value a matcher targets.
-func (s *Session) runSubagentStartHook(ctx context.Context, sub *subagent, agentType string) {
+func (s *Session) runSubagentStartHook(ctx context.Context, sub *subagent, agentType string) (stopReason string, stop bool) {
 	if s.hookRunner == nil || sub == nil || sub.sess == nil {
-		return
+		return "", false
 	}
+	// subagentHookAgentType owns the never-empty normalization, so the matcher
+	// target and the agent_type input are byte-identical.
+	agentType = subagentHookAgentType(agentType, "")
 	in := s.hookInput(plugin.HookSubagentStart)
 	in.AgentID = sub.sess.ID()
 	in.AgentType = agentType
 	res := s.hookRunner.RunSubagentStartFor(s.apiLogContext(ctx), in, agentType)
+	delivered := make(map[string]bool, len(res.ModelContext))
 	for _, m := range res.ModelContext {
-		if sub.sess.hookContextAlreadyPresent(m) {
+		if delivered[m] || sub.sess.hookContextAlreadyPresent(m) {
 			continue
 		}
+		delivered[m] = true
 		if err := sub.sess.deliverHookContext(m); err != nil {
 			s.emitDiagnosticWarning(events.WarningData{Message: err.Error()})
 		}
@@ -1787,18 +1804,36 @@ func (s *Session) runSubagentStartHook(ctx context.Context, sub *subagent, agent
 	for _, m := range res.UserMessages {
 		s.deliverHookUserMessage(m)
 	}
-	// continue:false is honored as a stop of the SPAWNING action, which has
-	// already committed at this point: the delegate id is durable, the child
-	// session exists, and the caller holds it. The reason reaches the operator
-	// and the run proceeds, because abandoning sub.run here would strand the
-	// child's done channel and its generation.
-	if res.Stopped {
-		reason := strings.TrimSpace(res.StopReason)
-		if reason == "" {
-			reason = "SubagentStart hook stopped this run"
-		}
-		s.deliverHookUserMessage(reason)
+	if !res.Stopped {
+		return "", false
 	}
+	reason := strings.TrimSpace(res.StopReason)
+	if reason == "" {
+		reason = "SubagentStart hook stopped this run"
+	}
+	s.deliverHookUserMessage(reason)
+	return reason, true
+}
+
+// settleStoppedSubagentRun settles a child run that a SubagentStart hook's
+// continue:false kept from launching. It hands the SAME finalize tail subagent.run
+// uses (finalizeRun) the hook's reason as the run's result, so the two paths
+// cannot drift: the attention re-arm, the announcements, the single done close,
+// and the idle release all happen exactly as a completed run's do. The stop is an
+// ordinary finish, not a failure — classifyRunEnd reads the nil error and the
+// run's unset cancel flag as SubagentCompleted — so the parent's delegate result
+// reads the hook's reason and the caller returns normally.
+func (s *Session) settleStoppedSubagentRun(ctx context.Context, sub *subagent, stopReason string) {
+	if sub == nil || sub.sess == nil {
+		return
+	}
+	lease, stableRun := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
+	sub.finalizeRun(subagentFinalize{
+		result:    stopReason,
+		finish:    sub.stableDelegateFinish(stopReason, nil),
+		lease:     lease,
+		stableRun: stableRun,
+	})
 }
 
 // hookContextAlreadyPresent reports whether the child's current history holds a
@@ -2080,11 +2115,47 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		}
 		break
 	}
+	a.finalizeRun(subagentFinalize{
+		result:                   res,
+		err:                      err,
+		finish:                   finish,
+		lease:                    lease,
+		stableRun:                stableRun,
+		noActionClaim:            noActionClaim,
+		restoreParentDriveNotify: restoreParentDriveNotify,
+		inputProvenance:          inputProvenance,
+	})
+}
+
+// subagentFinalize is everything a finished child run hands to finalizeRun:
+// what the run produced, how it ended, and the ownership it ended under. A run
+// that never called the model (a SubagentStart hook's continue:false) passes the
+// same fields with the hook's reason as its result.
+type subagentFinalize struct {
+	result                   string
+	err                      error
+	finish                   delegateFinish
+	lease                    delegateLease
+	stableRun                bool
+	noActionClaim            *delegateSettlementClaim
+	restoreParentDriveNotify func()
+	inputProvenance          *provenance.Causal
+}
+
+// finalizeRun is a child run's one finalize tail: process-local terminal state,
+// the generation's finish, its announcements, the remaining-attention re-arm,
+// done, and the idle release. subagent.run and the SubagentStart stop path both
+// call it, so neither can drift from the other. a.mu is never held across
+// FinishGeneration or the announcements.
+func (a *subagent) finalizeRun(f subagentFinalize) {
+	res, err, finish := f.result, f.err, f.finish
+	lease, stableRun := f.lease, f.stableRun
+	noActionClaim, restoreParentDriveNotify := f.noActionClaim, f.restoreParentDriveNotify
 	a.sess.mu.Lock()
 	turns := a.sess.turns
 	a.sess.mu.Unlock()
 
-	runProvenance := a.followUpProvenance(inputProvenance)
+	runProvenance := a.followUpProvenance(f.inputProvenance)
 	runStructured := a.sess.CommunicateStructured()
 	finalizeTime := finish.endedAt
 	if finalizeTime.IsZero() {
