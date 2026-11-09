@@ -3,6 +3,7 @@ package appitempaging
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"unicode/utf8"
@@ -170,24 +171,28 @@ const (
 	WindowCursorDirectionForward  WindowCursorDirection = "forward"
 )
 
-// WindowCursor fences one continuation boundary to the item version observed
-// when the window was packed.
+// WindowCursor reconstructs one stable resume range and validates it with
+// either a settled item anchor or a digest of an all-empty range.
 type WindowCursor struct {
-	Position     appwire.ThreadItemPosition
-	ItemVersion  uint64
-	ResumeWindow *appwire.ThreadTurnWindow
+	AnchorTurnID     string
+	Position         appwire.ThreadItemPosition
+	ItemVersion      uint64
+	EmptyRangeDigest string
+	ResumeWindow     *appwire.ThreadTurnWindow
 }
 
 type windowCursorWire struct {
-	Version           uint8                      `json:"version"`
-	Kind              string                     `json:"kind"`
-	ThreadRef         string                     `json:"thread_ref"`
-	Incarnation       string                     `json:"incarnation"`
-	ProjectionVersion uint16                     `json:"projection_version"`
-	Direction         WindowCursorDirection      `json:"direction"`
-	Position          appwire.ThreadItemPosition `json:"position"`
-	ItemVersion       uint64                     `json:"item_version"`
-	ResumeWindow      *appwire.ThreadTurnWindow  `json:"resume_window"`
+	Version           uint8                       `json:"version"`
+	Kind              string                      `json:"kind"`
+	ThreadRef         string                      `json:"thread_ref"`
+	Incarnation       string                      `json:"incarnation"`
+	ProjectionVersion uint16                      `json:"projection_version"`
+	Direction         WindowCursorDirection       `json:"direction"`
+	AnchorTurnID      *string                     `json:"anchor_turn_id,omitempty"`
+	Position          *appwire.ThreadItemPosition `json:"position,omitempty"`
+	ItemVersion       *uint64                     `json:"item_version,omitempty"`
+	EmptyRangeDigest  *string                     `json:"empty_range_digest,omitempty"`
+	ResumeWindow      *appwire.ThreadTurnWindow   `json:"resume_window"`
 }
 
 type windowCursorDecodeWire struct {
@@ -197,28 +202,36 @@ type windowCursorDecodeWire struct {
 	Incarnation       *string                   `json:"incarnation"`
 	ProjectionVersion *uint16                   `json:"projection_version"`
 	Direction         *WindowCursorDirection    `json:"direction"`
+	AnchorTurnID      *string                   `json:"anchor_turn_id"`
 	Position          *cursorPositionDecodeWire `json:"position"`
 	ItemVersion       *uint64                   `json:"item_version"`
+	EmptyRangeDigest  *string                   `json:"empty_range_digest"`
 	ResumeWindow      *appwire.ThreadTurnWindow `json:"resume_window"`
 }
 
 // EncodeWindowCursor creates a continuation with an explicit exclusive-bound
 // direction. It is a separate form from the legacy before-only paging cursor.
 func EncodeWindowCursor(identity CursorIdentity, direction WindowCursorDirection, cursor WindowCursor) (string, error) {
-	if !validIdentity(identity) || !validWindowCursorDirection(direction) || !validWindowCursorResume(direction, cursor.ResumeWindow) {
+	if !validIdentity(identity) || !validWindowCursorDirection(direction) || !validWindowCursorResume(direction, cursor.ResumeWindow) || !validWindowCursorProof(cursor) {
 		return "", appwire.TranscriptItemCursorStale()
 	}
-	return encodeCursorForm(windowCursorWire{
+	wire := windowCursorWire{
 		Version:           cursorFormVersion,
 		Kind:              windowCursorKind,
 		ThreadRef:         identity.ThreadRef,
 		Incarnation:       identity.Incarnation,
 		ProjectionVersion: identity.ProjectionVersion,
 		Direction:         direction,
-		Position:          cursor.Position,
-		ItemVersion:       cursor.ItemVersion,
 		ResumeWindow:      cursor.ResumeWindow,
-	})
+	}
+	if cursor.AnchorTurnID != "" {
+		wire.AnchorTurnID = &cursor.AnchorTurnID
+		wire.Position = &cursor.Position
+		wire.ItemVersion = &cursor.ItemVersion
+	} else {
+		wire.EmptyRangeDigest = &cursor.EmptyRangeDigest
+	}
+	return encodeCursorForm(wire)
 }
 
 // DecodeWindowCursor validates the complete identity fence and requires the
@@ -265,10 +278,15 @@ func TranslateWindowCursorRef(encoded, fromThreadRef, toThreadRef string) (strin
 }
 
 func windowCursorFromWire(wire windowCursorDecodeWire) WindowCursor {
-	return WindowCursor{
-		Position: wire.Position.position(), ItemVersion: *wire.ItemVersion,
-		ResumeWindow: wire.ResumeWindow,
+	cursor := WindowCursor{ResumeWindow: wire.ResumeWindow}
+	if wire.AnchorTurnID != nil {
+		cursor.AnchorTurnID = *wire.AnchorTurnID
+		cursor.Position = wire.Position.position()
+		cursor.ItemVersion = *wire.ItemVersion
+	} else {
+		cursor.EmptyRangeDigest = *wire.EmptyRangeDigest
 	}
+	return cursor
 }
 
 func validWindowCursorWire(wire windowCursorDecodeWire, want CursorIdentity, wantDirection WindowCursorDirection) bool {
@@ -291,9 +309,40 @@ func validWindowCursorShape(wire windowCursorDecodeWire) bool {
 		wire.Kind != nil && *wire.Kind == windowCursorKind &&
 		validIdentity(CursorIdentity{ThreadRef: *wire.ThreadRef, Incarnation: *wire.Incarnation, ProjectionVersion: *wire.ProjectionVersion}) &&
 		wire.Direction != nil && validWindowCursorDirection(*wire.Direction) &&
-		validCursorPosition(wire.Position) &&
-		wire.ItemVersion != nil &&
+		validWindowCursorProofWire(wire) &&
 		validWindowCursorResume(*wire.Direction, wire.ResumeWindow)
+}
+
+func validWindowCursorProof(cursor WindowCursor) bool {
+	hasAnchor := cursor.AnchorTurnID != ""
+	hasDigest := cursor.EmptyRangeDigest != ""
+	if hasAnchor == hasDigest {
+		return false
+	}
+	if hasAnchor {
+		return cursor.ItemVersion != 0
+	}
+	return cursor.Position == (appwire.ThreadItemPosition{}) && cursor.ItemVersion == 0 && validEmptyRangeDigest(cursor.EmptyRangeDigest)
+}
+
+func validWindowCursorProofWire(wire windowCursorDecodeWire) bool {
+	hasAnchor := wire.AnchorTurnID != nil
+	hasDigest := wire.EmptyRangeDigest != nil
+	if hasAnchor == hasDigest {
+		return false
+	}
+	if hasAnchor {
+		return *wire.AnchorTurnID != "" && validCursorPosition(wire.Position) && wire.ItemVersion != nil && *wire.ItemVersion != 0
+	}
+	return wire.Position == nil && wire.ItemVersion == nil && validEmptyRangeDigest(*wire.EmptyRangeDigest)
+}
+
+func validEmptyRangeDigest(digest string) bool {
+	if len(digest) != 64 {
+		return false
+	}
+	decoded, err := hex.DecodeString(digest)
+	return err == nil && len(decoded) == 32 && hex.EncodeToString(decoded) == digest
 }
 
 func validWindowCursorResume(direction WindowCursorDirection, window *appwire.ThreadTurnWindow) bool {
