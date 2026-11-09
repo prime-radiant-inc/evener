@@ -4,6 +4,7 @@ package execenv
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -18,6 +19,50 @@ import (
 type probeRun struct {
 	out []byte
 	err error
+}
+
+const loginShellPathFixtureTripwire = 30 * time.Second
+
+var (
+	errProbeFinishedBeforeFixture = errors.New("probe finished before the fixture established its orphan pipe")
+	errFixtureStartupTimedOut     = errors.New("fixture startup timed out")
+)
+
+// waitForProbeFixture waits for the orphan-pipe fixture and the probe at the
+// same time. A shell that fails to start (a fork failure under load, for
+// example) leaves h.AwaitStarted blocking forever; cleanup cannot release the
+// FIFO until the test returns, so the package would hang to its global timeout.
+// Observing probe completion and a bounded tripwire terminates the wait.
+func waitForProbeFixture(h *orphanpipetest.Holder, done <-chan probeRun, tripwire time.Duration) error {
+	started := make(chan struct{})
+	go func() {
+		h.AwaitStarted()
+		close(started)
+	}()
+	trip := time.NewTimer(tripwire)
+	defer trip.Stop()
+	select {
+	case <-started:
+		return nil
+	case got := <-done:
+		// The probe may have finished just after the fixture established itself;
+		// a ready started signal wins over declaring a startup failure.
+		select {
+		case <-started:
+			return nil
+		default:
+		}
+		return fmt.Errorf("%w (output %q)", errProbeFinishedBeforeFixture, got.out)
+	case <-trip.C:
+		return errFixtureStartupTimedOut
+	}
+}
+
+func awaitFixtureStarted(t *testing.T, h *orphanpipetest.Holder, done <-chan probeRun) {
+	t.Helper()
+	if err := waitForProbeFixture(h, done, loginShellPathFixtureTripwire); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // The login-shell probe's only bound is loginShellPATHTimeout, and it runs the
@@ -44,7 +89,7 @@ func TestLoginShellPATHProbeDeadlineDoesNotWaitForAnOrphanedPipeHolder(t *testin
 		capture, err := loginShellPATHOutput(30*time.Second, shell, "-lc", "echo $PATH")
 		done <- probeRun{capture.view, err}
 	}()
-	h.AwaitStarted()
+	awaitFixtureStarted(t, h, done)
 	fire := <-armed
 	fire()
 	if got := orphanpipetest.Await(t, h, done); got.err == nil {
@@ -73,7 +118,7 @@ func TestLoginShellPATHProbePreservesAnswerWhenDeadlineFiresDuringDrain(t *testi
 		capture, err := loginShellPATHOutput(30*time.Second, shell, "-lc", "echo $PATH")
 		done <- probeRun{capture.view, err}
 	}()
-	h.AwaitStarted()
+	awaitFixtureStarted(t, h, done)
 	waitForProcessExit(t, readShellPID(t, pidFile))
 	fire := <-armed
 	fire()
@@ -83,6 +128,23 @@ func TestLoginShellPATHProbePreservesAnswerWhenDeadlineFiresDuringDrain(t *testi
 	}
 	if string(got.out) != "/from/login/shell\n" {
 		t.Fatalf("the probe's answer = %q, want the PATH the shell printed", got.out)
+	}
+}
+
+// TestLoginShellPATHProbeFixtureStartupFailureEndsTheWait pins the failure side
+// of fixture readiness: a shell that exits before spawning the pipe holder
+// leaves h.AwaitStarted blocking, and only observing probe completion ends it.
+func TestLoginShellPATHProbeFixtureStartupFailureEndsTheWait(t *testing.T) {
+	h := orphanpipetest.New(t)
+	shell := h.WriteScript(t, "fake-shell", "exit 0\n")
+	capture, err := loginShellPATHOutput(5*time.Second, shell, "-lc", "echo $PATH")
+	if err != nil {
+		t.Fatalf("probe on a shell that exits without spawning: %v", err)
+	}
+	done := make(chan probeRun, 1)
+	done <- probeRun{capture.view, nil}
+	if err := waitForProbeFixture(h, done, 100*time.Millisecond); !errors.Is(err, errProbeFinishedBeforeFixture) {
+		t.Fatalf("waitForProbeFixture on a probe that already finished = %v, want %v", err, errProbeFinishedBeforeFixture)
 	}
 }
 

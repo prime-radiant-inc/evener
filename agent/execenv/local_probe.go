@@ -190,11 +190,6 @@ func LoginShellPATHProbe() (path, failure string) {
 	return answer, ""
 }
 
-func resolveLoginShellPATH() string {
-	answer, _ := resolveLoginShellPATHProbe()
-	return answer
-}
-
 func resolveLoginShellPATHProbe() (string, error) {
 	shell := strings.TrimSpace(os.Getenv(envvars.Shell.Name))
 	if shell == "" {
