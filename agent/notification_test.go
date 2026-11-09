@@ -400,6 +400,29 @@ func TestNotificationPendingAfterToolRunsBeforeAnotherNormalRound(t *testing.T) 
 	requireNotificationState(t, sess.jobManager, jobID, jobstore.NotifyDelivered)
 }
 
+// notificationToolCall builds a scripted model tool call with no arguments.
+func notificationToolCall(id, name string) llm.ToolCallData {
+	return llm.ToolCallData{ID: id, Name: name, Arguments: []byte(`{}`), Type: "function"}
+}
+
+// registerNotificationTestTools gives sess a tool that changes nothing and, when
+// lateJobID is set, one that finishes that managed job during the round that
+// calls it.
+func registerNotificationTestTools(t *testing.T, sess *Session, lateJobID string) {
+	t.Helper()
+	noArgs := map[string]any{"type": "object", "properties": map[string]any{}}
+	sess.RegisterTool("idle_test_tool", "test-only: a round that changes nothing", noArgs,
+		func(context.Context, any) (any, error) { return "ok", nil })
+	if lateJobID == "" {
+		return
+	}
+	sess.RegisterTool("enqueue_test_notification", "test-only: finish a managed job during this round", noArgs,
+		func(context.Context, any) (any, error) {
+			enqueueCompletedJobNotification(t, sess, lateJobID)
+			return "queued", nil
+		})
+}
+
 // notificationDeliveredCount counts the jobs.jsonl delivered events for jobID.
 func notificationDeliveredCount(t *testing.T, jm *jobManager, jobID string) int {
 	t.Helper()
@@ -423,29 +446,20 @@ func notificationDeliveredCount(t *testing.T, jm *jobManager, jobID string) int 
 func TestNotificationTurnDeliversLaterCompletionBeforeTurnEnds(t *testing.T) {
 	t.Parallel()
 	const jobA, jobB = "job_opens_turn", "job_finishes_during_turn"
-	call := func(id, name string) llm.ToolCallData {
-		return llm.ToolCallData{ID: id, Name: name, Arguments: []byte(`{}`), Type: "function"}
-	}
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response { return agenttest.ToolCallResponse(call("c1", "idle_test_tool")) },
 			func(llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(call("c2", "enqueue_test_notification"))
+				return agenttest.ToolCallResponse(notificationToolCall("c1", "idle_test_tool"))
+			},
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(notificationToolCall("c2", "enqueue_test_notification"))
 			},
 			func(llm.Request) llm.Response { return agenttest.FinalResponse("handled both") },
 		},
 	}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{}))
-	sess.RegisterTool("idle_test_tool", "test-only: a round that changes nothing",
-		map[string]any{"type": "object", "properties": map[string]any{}},
-		func(context.Context, any) (any, error) { return "ok", nil })
-	sess.RegisterTool("enqueue_test_notification", "test-only: finish a managed job during this round",
-		map[string]any{"type": "object", "properties": map[string]any{}},
-		func(context.Context, any) (any, error) {
-			enqueueCompletedJobNotification(t, sess, jobB)
-			return "queued", nil
-		})
+	registerNotificationTestTools(t, sess, jobB)
 	enqueueCompletedJobNotification(t, sess, jobA)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
@@ -489,15 +503,13 @@ func TestNotificationTurnWithoutLaterArrivalsRunsItsOwnBatchOnly(t *testing.T) {
 		name: "openai",
 		steps: []func(llm.Request) llm.Response{
 			func(llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "c1", Name: "idle_test_tool", Arguments: []byte(`{}`), Type: "function"})
+				return agenttest.ToolCallResponse(notificationToolCall("c1", "idle_test_tool"))
 			},
 			func(llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 		},
 	}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{}))
-	sess.RegisterTool("idle_test_tool", "test-only: a round that changes nothing",
-		map[string]any{"type": "object", "properties": map[string]any{}},
-		func(context.Context, any) (any, error) { return "ok", nil })
+	registerNotificationTestTools(t, sess, "")
 	enqueueCompletedJobNotification(t, sess, jobA)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
@@ -1333,29 +1345,20 @@ func readGoalCounters(t *testing.T, sess *Session) goalCounters {
 func TestNotificationArrivingOnLastAllowedRoundStaysPending(t *testing.T) {
 	t.Parallel()
 	const jobA, jobB = "job_opens_capped_turn", "job_arrives_on_last_round"
-	call := func(id, name string) llm.ToolCallData {
-		return llm.ToolCallData{ID: id, Name: name, Arguments: []byte(`{}`), Type: "function"}
-	}
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response { return agenttest.ToolCallResponse(call("c1", "idle_test_tool")) },
 			func(llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(call("c2", "enqueue_test_notification"))
+				return agenttest.ToolCallResponse(notificationToolCall("c1", "idle_test_tool"))
+			},
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(notificationToolCall("c2", "enqueue_test_notification"))
 			},
 			func(llm.Request) llm.Response { return agenttest.FinalResponse("handled the late one") },
 		},
 	}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{MaxToolRoundsPerInput: 2}))
-	sess.RegisterTool("idle_test_tool", "test-only: a round that changes nothing",
-		map[string]any{"type": "object", "properties": map[string]any{}},
-		func(context.Context, any) (any, error) { return "ok", nil })
-	sess.RegisterTool("enqueue_test_notification", "test-only: finish a managed job during this round",
-		map[string]any{"type": "object", "properties": map[string]any{}},
-		func(context.Context, any) (any, error) {
-			enqueueCompletedJobNotification(t, sess, jobB)
-			return "queued", nil
-		})
+	registerNotificationTestTools(t, sess, jobB)
 	enqueueCompletedJobNotification(t, sess, jobA)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
