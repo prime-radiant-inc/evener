@@ -287,8 +287,12 @@ func unifiedDiffWindow(full string, headBudget, tailBudget int, startsMidStream,
 		if startsMidLine {
 			contentIndex = 1
 		}
+		// Recognition stays at the scan budget while the display windows may
+		// shrink to fit a character budget. A shrunken head that no longer
+		// reaches the first hunk must not turn a recognized retained diff back
+		// into ordinary output.
 		if contentIndex >= len(lines) || !isDiffContentStart(diffLineText(full, lines[contentIndex])) ||
-			firstHunk < 0 || lines[firstHunk].start > headBudget {
+			firstHunk < 0 || lines[firstHunk].start > shellDigestHalfBytes {
 			return diffWindow{}, false
 		}
 	} else if !strings.HasPrefix(diffLineText(full, lines[0]), "diff --git ") || firstHunkAfterFile < 0 {

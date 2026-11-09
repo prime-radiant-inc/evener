@@ -856,6 +856,24 @@ func TestShellToolDiffDigestFitsAConstrainedCharLimit(t *testing.T) {
 	}
 }
 
+// A retained-prefix diff whose first surviving hunk starts past a shrunken
+// display budget must stay recognized as a diff. Otherwise the digest builder
+// falls back to the previous oversized window and the registry cuts inside the
+// retained hunk.
+func TestShellInlineDigestRetainedPrefixKeepsDiffDetectionWhenWindowsShrink(t *testing.T) {
+	t.Parallel()
+	full := "diff --git a/" + strings.Repeat("p", 140) + " b/" + strings.Repeat("p", 140) + "\n--- a/x\n+++ b/x\n" +
+		"@@ -1,2 +1,2 @@\n-a\n+b\n" + strings.Repeat("+tail line ......................\n", 20)
+	// The first hunk starts past 256 bytes but inside the scan budget.
+	if _, ok := unifiedDiffWindow(full, 256, 512, true, false, 0); !ok {
+		t.Fatal("retained-prefix diff was rejected when the display head budget shrank")
+	}
+	digest := shellInlineDigestFrom(full, int64(len(full)+100), 100, false, 0, 800)
+	if got := len([]rune(digest)); got > 800 {
+		t.Fatalf("retained-prefix digest has %d characters, want at most 800", got)
+	}
+}
+
 // A constrained registry line limit must shorten the diff digest's head at a
 // file or hunk boundary, not let the registry cut inside a retained hunk
 // outside the marker's advertised omitted range.
