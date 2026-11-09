@@ -25,7 +25,7 @@ import (
 // server, including thread/clear. Each hook resolves the live session per call,
 // so a thread/clear replacement is never pinned. It returns the envelope
 // source it installed, whose PendingEscalations the startup write reports.
-func bindServerCallbacks(ctx context.Context, srv serveServer, deps serveDeps, live *liveSession, bridge *serveBridge, retirement *agent.RetirementController, retiring *serveRetirement, rvRegistration *rvreg.Registration, sessionCfg agent.SessionConfig, client *llm.Client, profile *provider.Profile, wd, sd string, logOut io.Writer, workspaceRef string, servedBootGeneration *atomic.Uint64, cancel context.CancelFunc) liveThreadEnvelopeSource {
+func bindServerCallbacks(ctx context.Context, srv serveServer, deps serveDeps, live *liveSession, bridge *serveBridge, retiring *serveRetirement, rvRegistration *rvreg.Registration, sessionCfg agent.SessionConfig, client *llm.Client, profile *provider.Profile, wd, sd string, logOut io.Writer, workspaceRef string, servedBootGeneration *atomic.Uint64, cancel context.CancelFunc) liveThreadEnvelopeSource {
 	srv.SetSandboxEscalationResolveFunc(func(id string, approve bool) error {
 		return live.session().ResolveSandboxEscalation(id, approve)
 	})
@@ -150,32 +150,30 @@ func bindServerCallbacks(ctx context.Context, srv serveServer, deps serveDeps, l
 	if sessionTools, ok := srv.(interface{ SetSessionTools(func() *agent.Session) }); ok {
 		sessionTools.SetSessionTools(live.session)
 	}
+	localizeRef := func(sess *agent.Session, ref string) string {
+		if ref != workspaceRef {
+			return ref
+		}
+		return appwire.LocalRef(sess.ID()).String()
+	}
 	srv.SetThreadActivityReadFunc(func(ctx context.Context, params appwire.SessionActivityReadParams) (appwire.SessionActivitySummary, error) {
 		sess := live.session()
-		if params.Ref == workspaceRef {
-			params.Ref = appwire.Ref{SourceID: "local", ThreadID: sess.ID()}.String()
-		}
+		params.Ref = localizeRef(sess, params.Ref)
 		return sess.ActivitySummary(ctx, params)
 	})
 	srv.SetThreadDelegatesListFunc(func(ctx context.Context, params appwire.SessionActivityListParams) (appwire.SessionDelegatesResponse, error) {
 		sess := live.session()
-		if params.Ref == workspaceRef {
-			params.Ref = appwire.Ref{SourceID: "local", ThreadID: sess.ID()}.String()
-		}
+		params.Ref = localizeRef(sess, params.Ref)
 		return sess.ListActivityDelegates(ctx, params)
 	})
 	srv.SetThreadJobsListFunc(func(ctx context.Context, params appwire.SessionActivityListParams) (appwire.SessionJobsResponse, error) {
 		sess := live.session()
-		if params.Ref == workspaceRef {
-			params.Ref = appwire.Ref{SourceID: "local", ThreadID: sess.ID()}.String()
-		}
+		params.Ref = localizeRef(sess, params.Ref)
 		return sess.ListActivityJobs(ctx, params)
 	})
 	srv.SetThreadWatchesListFunc(func(ctx context.Context, params appwire.SessionActivityListParams) (appwire.SessionWatchesResponse, error) {
 		sess := live.session()
-		if params.Ref == workspaceRef {
-			params.Ref = appwire.Ref{SourceID: "local", ThreadID: sess.ID()}.String()
-		}
+		params.Ref = localizeRef(sess, params.Ref)
 		return sess.ListActivityWatches(ctx, params)
 	})
 
@@ -186,13 +184,13 @@ func bindServerCallbacks(ctx context.Context, srv serveServer, deps serveDeps, l
 			if err != nil {
 				return nil, appwire.InvalidParams(err.Error())
 			}
-			if ref.SourceID != "local" || params.Ref != workspaceRef {
+			if ref.SourceID != appwire.LocalSourceID || params.Ref != workspaceRef {
 				return nil, appwire.SessionUnavailable("thread not found: " + ref.ThreadID)
 			}
 			// The public ref names the stable workspace. JobActivityTree reads the
 			// live session's activity store, so translate that stable ref to the
 			// current instance after a thread/clear replacement.
-			params.Ref = appwire.Ref{SourceID: "local", ThreadID: sess.ID()}.String()
+			params.Ref = appwire.LocalRef(sess.ID()).String()
 		}
 		return sess.JobActivityTree(ctx, params)
 	})
@@ -209,7 +207,7 @@ func bindServerCallbacks(ctx context.Context, srv serveServer, deps serveDeps, l
 		// can neither claim the tree being replaced nor start its interval
 		// against the half-built replacement. Rejection here means the daemon
 		// is already preparing/retiring and the clear must not begin.
-		releaseAdmission, err := retirement.BeginMutation(oldSess.ID(), "admission")
+		releaseAdmission, err := retiring.retirement.BeginMutation(oldSess.ID(), "admission")
 		if err != nil {
 			return err
 		}
@@ -291,7 +289,7 @@ func bindServerCallbacks(ctx context.Context, srv serveServer, deps serveDeps, l
 		// Re-root the retirement controller at the replacement. The lease held
 		// since the top of this func keeps the controller resident, so this
 		// cannot fail; the idle interval restarts against the new root.
-		if err := retirement.AttachRoot(newSess); err != nil {
+		if err := retiring.retirement.AttachRoot(newSess); err != nil {
 			serveLogf(logOut, newSess.ID(), "retirement root re-attach failed: %v", err)
 		}
 		retiring.observe("root_published", newSess.ID())

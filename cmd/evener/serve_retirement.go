@@ -250,7 +250,7 @@ func (r *serveRetirement) requestIdleTimeoutSet(_ context.Context, params appwir
 // drive it. A construction or attach failure closes the session and the
 // listener, as the launch did before this block became a func, and returns the
 // same wrapped error.
-func setupRetirement(ctx context.Context, deps serveDeps, live *liveSession, srv serveServer, sess *agent.Session, listener net.Listener, rvRegistration *rvreg.Registration, daemonIdleTimeout time.Duration, cancel context.CancelFunc) (*agent.RetirementController, *serveRetirement, error) {
+func setupRetirement(ctx context.Context, deps serveDeps, live *liveSession, srv serveServer, sess *agent.Session, listener net.Listener, rvRegistration *rvreg.Registration, daemonIdleTimeout time.Duration, cancel context.CancelFunc) (*serveRetirement, error) {
 	// The retirement controller owns the daemon's idle deadline. Exactly one
 	// consumer drives a claim to process exit; the timer (controller Run) is
 	// the only automatic claimant, and evener/daemon/retire is the manual one.
@@ -262,11 +262,8 @@ func setupRetirement(ctx context.Context, deps serveDeps, live *liveSession, srv
 	if err != nil {
 		sess.Close()
 		listener.Close() //nolint:errcheck // returning the construction failure; the close error is not actionable
-		return nil, nil, fmt.Errorf("retirement controller: %w", err)
+		return nil, fmt.Errorf("retirement controller: %w", err)
 	}
-	// commitRetirement is the controller's Commit step. serveDeps may inject a
-	// failure so a test can drive the pre-commit rollback below; nil means the
-	// controller's own Commit.
 	commitRetirement := deps.retirementCommit
 	if commitRetirement == nil {
 		commitRetirement = func(c *agent.RetirementController, claim *agent.RetirementClaim) error {
@@ -277,7 +274,7 @@ func setupRetirement(ctx context.Context, deps serveDeps, live *liveSession, srv
 	if err := retirement.AttachRoot(sess); err != nil {
 		sess.Close()
 		listener.Close() //nolint:errcheck // as above
-		return nil, nil, fmt.Errorf("retirement root: %w", err)
+		return nil, fmt.Errorf("retirement root: %w", err)
 	}
 	retiring.observe("root_published", sess.ID())
 	srv.SetDaemonLifecycle(func() appwire.DaemonLifecycle {
@@ -300,5 +297,5 @@ func setupRetirement(ctx context.Context, deps serveDeps, live *liveSession, srv
 		}
 		return retirement.BeginMutation(live.session().ID(), "admission")
 	})
-	return retirement, retiring, nil
+	return retiring, nil
 }

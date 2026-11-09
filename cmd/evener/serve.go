@@ -841,7 +841,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 
 	live := newLiveSession(sess, env)
 
-	retirement, retiring, err := setupRetirement(ctx, deps, live, srv, sess, listener, rvRegistration, *daemonIdleTimeout, cancel)
+	retiring, err := setupRetirement(ctx, deps, live, srv, sess, listener, rvRegistration, *daemonIdleTimeout, cancel)
 	if err != nil {
 		return err
 	}
@@ -863,7 +863,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	bridge := newServeBridge(srv, deps, eventObserver, closeEventObserver)
 	defer bridge.awaitDrains()
 
-	envelopeSource := bindServerCallbacks(ctx, srv, deps, live, bridge, retirement, retiring, rvRegistration, sessionCfg, client, profile, wd, sd, logOut, workspaceRef, &servedBootGeneration, cancel)
+	envelopeSource := bindServerCallbacks(ctx, srv, deps, live, bridge, retiring, rvRegistration, sessionCfg, client, profile, wd, sd, logOut, workspaceRef, &servedBootGeneration, cancel)
 
 	// Seed the envelope from the live session before its bridge starts. Every
 	// envelope value changes at once when the session behind them changes, and
@@ -1076,7 +1076,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		retirementLoopDone = make(chan struct{})
 		go func() {
 			defer close(retirementLoopDone)
-			_ = retirement.Run(ctx, retiring.consumeClaim, func(attempt agent.RetirementAttempt) {
+			_ = retiring.retirement.Run(ctx, retiring.consumeClaim, func(attempt agent.RetirementAttempt) {
 				serveLogf(logOut, live.session().ID(), "%s", retirementAttemptSummary(attempt))
 			})
 		}()
