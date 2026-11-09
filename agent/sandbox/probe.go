@@ -606,9 +606,9 @@ func npmrcEnvLookup(environ []string) func(string) string {
 // INI-like: blank lines, `#`/`;` comments and `[section]` headers carry no
 // setting, and a quoted value is unquoted. Only an absolute value names a
 // stable directory; a relative one resolves against npm's own working
-// directory, which is not the overlay's. ok is false when a ~ value cannot be
-// resolved to an absolute home: npm may still write the cache it names, so the
-// effective cache is unknown.
+// directory, which is not the overlay's. ok is false when the last value is
+// relative or a ~ value cannot be resolved to an absolute home: npm may still
+// write the cache it names, so the effective cache is unknown.
 func parseNpmrcCacheRoots(data []byte, lookup func(string) string, home string) ([]string, bool) {
 	var roots []string
 	known := true
@@ -637,8 +637,9 @@ func parseNpmrcCacheRoots(data []byte, lookup func(string) string, home string) 
 			known = false
 			continue
 		}
-		value, known = expanded, true
-		if filepath.IsAbs(value) {
+		value = expanded
+		known = filepath.IsAbs(value)
+		if known {
 			roots = append(roots, value)
 		}
 	}

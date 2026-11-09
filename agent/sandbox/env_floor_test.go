@@ -439,6 +439,33 @@ func TestEnvFloorJudgesTheLastNpmrcCacheValue(t *testing.T) {
 	}
 }
 
+// A final relative cache value is npm's effective setting even when an earlier
+// line names a served absolute cache. It resolves against npm's own working
+// directory, not the overlay's, so the effective cache is unknown and must be
+// redirected rather than judged served.
+func TestEnvFloorRedirectsALastRelativeNpmrcCache(t *testing.T) {
+	scratch := "/tmp/evener-session-xyz"
+	home := servedHome(t)
+	served := filepath.Join(home, ".npm")
+	config := filepath.Join(overlayFixtureDir(t), "relative-last-npmrc")
+	if err := os.WriteFile(config, []byte("cache="+served+"\ncache=relative/npm\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	worktree := overlayFixtureDir(t)
+	policy := ResolvedPolicy{
+		Mode:          ModeWorkspaceWrite,
+		CacheStrategy: CacheOverlay,
+		CacheRoots:    []string{served},
+		resolveHost:   HostFacts{},
+		Git:           GitLayout{WorktreeRoot: worktree},
+		SessionDir:    worktree,
+	}
+	out := ApplyEnvFloor([]string{"npm_config_userconfig=" + config}, policy, scratch)
+	if got, _ := envValue(out, npmConfigCacheEnv); got != filepath.Join(scratch, "npm") {
+		t.Fatalf("npm_config_cache = %q, want the session scratch", got)
+	}
+}
+
 // A global .npmrc the bounded reader refuses is unknown, not absent: npm may
 // read a cache from it, so the floor must redirect rather than judge the
 // served default.
