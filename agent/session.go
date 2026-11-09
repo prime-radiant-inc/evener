@@ -870,6 +870,13 @@ type Session struct {
 	pendingJobNotifs   []jobNotification
 	// jobStatusPolls backs the refusal of repeated job_status calls that carry no news.
 	jobStatusPolls jobStatusPolls
+	// jobNotifsAwaitingRequest holds the notifications whose reminder is
+	// durable in the transcript but which no dispatched model request has
+	// carried yet. They are settled as delivered when one is dispatched; until
+	// then they stay owed, so a turn that ends first leaves them to the next
+	// wake, which carries them without writing their reminder again. Guarded by
+	// pendingJobNotifsMu.
+	jobNotifsAwaitingRequest []deliverableJobNotification
 	// jobNotifsDelivered counts the job notifications acceptNotificationInput
 	// has delivered to the model over the session's lifetime. The one-shot
 	// drain reads it across an undisposed-job announcement turn: growth means a
@@ -1388,14 +1395,21 @@ func (s *Session) drainJobNotifications() []jobNotification {
 	return drained
 }
 
-// peekNotifications reports how many notifications are pending WITHOUT draining
-// them. The drain-loop tail uses it to decide whether to run a notification turn
-// next; the actual drain stays in acceptNotificationInput so the queue is consumed
-// exactly once, inside the turn that surfaces it.
+// peekNotifications reports how many notifications are still owed to the model
+// WITHOUT draining them: those queued, and those whose reminder no dispatched
+// request has carried yet. The drain-loop tail uses it to decide whether to run
+// a notification turn next; the actual drain stays in acceptNotificationInput so
+// the queue is consumed exactly once, inside the turn that surfaces it.
 func (s *Session) peekNotifications() int {
 	s.pendingJobNotifsMu.Lock()
 	defer s.pendingJobNotifsMu.Unlock()
-	return len(s.pendingJobNotifs)
+	return s.owedJobNotificationsLocked()
+}
+
+// owedJobNotificationsLocked counts the notifications a notification wake still
+// has to bring to the model. The caller holds pendingJobNotifsMu.
+func (s *Session) owedJobNotificationsLocked() int {
+	return len(s.pendingJobNotifs) + len(s.jobNotifsAwaitingRequest)
 }
 
 // countJobNotificationsDelivered records n job notifications delivered to the
@@ -1429,7 +1443,7 @@ func (s *Session) SetNotifyFunc(f func()) {
 		return
 	}
 	s.pendingJobNotifsMu.Lock()
-	pending := len(s.pendingJobNotifs) > 0
+	pending := s.owedJobNotificationsLocked() > 0
 	s.pendingJobNotifsMu.Unlock()
 	// The USER's steering and queued input both count as pending work here for
 	// the same reason the rest does. Either one accepted durably and then lost
@@ -1522,7 +1536,7 @@ func (s *Session) scheduleJobNotificationRetryLocked() {
 			s.pendingJobNotifsMu.Unlock()
 			return
 		}
-		pending := len(s.pendingJobNotifs) > 0
+		pending := s.owedJobNotificationsLocked() > 0
 		s.jobNotifyRetry.settle(pending, delay, jobNotificationRetryMaxDelay)
 		s.pendingJobNotifsMu.Unlock()
 		if pending {
@@ -1533,7 +1547,7 @@ func (s *Session) scheduleJobNotificationRetryLocked() {
 
 func (s *Session) resetJobNotificationRetry() {
 	s.pendingJobNotifsMu.Lock()
-	if len(s.pendingJobNotifs) > 0 {
+	if s.owedJobNotificationsLocked() > 0 {
 		s.pendingJobNotifsMu.Unlock()
 		return
 	}

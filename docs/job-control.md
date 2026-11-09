@@ -53,6 +53,14 @@ and the turn does not hold it until the turn ends. An ordinary turn instead
 yields at the boundary so the drain runs a notification turn. Each completion is
 delivered and recorded once.
 
+A completion counts as delivered when a model request carrying its runtime entry
+is dispatched to the provider, not when the entry is written. A turn that ends
+first (stopped, out of rounds, or refused by local context admission) leaves it
+owed: the session wakes again, and the next turn's request carries the entry
+already in the transcript without writing it a second time. A restart loses that
+in-memory distinction, so after one the recorded entry settles the completion as
+described above.
+
 ```mermaid
 flowchart LR
   Start[Launch managed work] --> ID[Retain typed identity]

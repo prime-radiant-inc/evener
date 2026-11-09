@@ -1059,6 +1059,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			s.emit(events.CommunicatePreviewResetData{CallID: callID})
 		}
 	}()
+	defer s.wakeForJobNotificationsAwaitingRequest()
 	var rootAttentionIDs []string
 	rootAttentionAccepted := false
 	// Consume the deliveries this turn's settled rounds presented, armed
@@ -1462,11 +1463,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 		// Notifications that arrived since the opener's drain or the previous
 		// request join this request, including a pause_turn continuation, which
-		// does not advance the round. Placed after every check that can end the
-		// turn before a request, so an exit on that path leaves them pending for
-		// the next wake.
-		if kind == EntryNotification && s.peekNotifications() > 0 {
-			s.injectLaterJobNotifications(ctx)
+		// does not advance the round. They count as delivered only once a request
+		// is dispatched (below), so any exit before that leaves them owed.
+		if kind == EntryNotification {
+			s.injectLaterJobNotifications()
 		}
 
 		profile, sys, _, req, fullHistory, reqEffort, prepareErr := s.prepareModelRequestWithError(ctx, round, &timings)
@@ -1484,7 +1484,15 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		tPhaseStart := s.sclock().Now()
 
 		s.noteParentJobActivity(jobPhaseAwaitingModel)
+		stoppedBeforeDispatch := ctx.Err() != nil
 		modelResp, req, attempt, usedProfile, err := s.callModelWithFallback(ctx, profile, req, fullHistory, reqEffort, round)
+		// The request was built from the transcript holding every notification
+		// reminder still awaiting one. Unless the turn was stopped first or
+		// local context admission refused it, it went to the provider, so they
+		// are delivered.
+		if !stoppedBeforeDispatch && !isLocalContextBudgetError(err) {
+			s.settleJobNotificationsCarriedByRequest(ctx)
+		}
 		for _, callID := range modelResp.CommunicatePreviewCallIDs {
 			communicatePreviewCalls[callID] = struct{}{}
 		}

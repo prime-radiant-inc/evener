@@ -235,8 +235,10 @@ completion. Runtime frame headers establish job identity and event type;
 output excerpts and watch frames cannot settle completion delivery. This
 authority boundary applies to every client; S10 preserves the original
 conversation content. A completion arriving during a notification turn joins
-that turn's next model request rather than waiting for the turn to end. See
-[job control](../job-control.md).
+that turn's next model request rather than waiting for the turn to end. A
+completion settles as delivered when a request carrying it is dispatched; a turn
+that ends before then leaves it owed to the next wake without writing it twice.
+See [job control](../job-control.md).
 
 S12 refuses wait-shaped actions at the tool boundary: a repeat `job_status` on
 an unchanged running target and a sleep-only `shell` command return a
