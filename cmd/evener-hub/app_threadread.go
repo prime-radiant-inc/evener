@@ -691,8 +691,17 @@ func mergePastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params a
 	if live.Evener.Ref == "" {
 		live.Evener.Ref = past.Evener.Ref
 	}
+	if live.Evener.ParentRef == "" {
+		live.Evener.ParentRef = past.Evener.ParentRef
+	}
+	if live.Evener.Kind == "" {
+		live.Evener.Kind = past.Evener.Kind
+	}
 	if live.Evener.Profile == "" {
 		live.Evener.Profile = past.Evener.Profile
+	}
+	if live.Evener.ForkLabel == "" {
+		live.Evener.ForkLabel = past.Evener.ForkLabel
 	}
 	if live.Evener.Tasks == nil {
 		live.Evener.Tasks = past.Evener.Tasks

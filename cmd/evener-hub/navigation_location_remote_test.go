@@ -253,6 +253,25 @@ func TestNavigationLocationRemoteIndexedForkOriginal(t *testing.T) {
 	}
 }
 
+// The active continuation is usually a live row, so the persisted lineage must
+// reach the live wire row too, not only a past-only projection.
+func TestNavigationLocationRemoteLiveForkOriginal(t *testing.T) {
+	original, continuation := hubtest.SessionID(t), hubtest.SessionID(t)
+	live := liveActivityEntry(1, continuation, appwire.ThreadStatusActive, nil)
+	live.SourceID = "local"
+	live.Entry.Endpoint = "ws://127.0.0.1:1/rpc"
+	live.Entry.Protocol = appwire.ProtocolVersion
+	f := newRemoteLocationFixture(t, live)
+	f.save(t, schema.SessionMeta{ID: original, ProfileID: "local", ForkLabel: "original"})
+	f.save(t, schema.SessionMeta{ID: continuation, ProfileID: "local", ParentSessionID: original})
+	f.refresh(t)
+
+	location := remoteLocationData(t, remoteLocationRead(t, f.controller, "remote:"+original, nil))
+	if location.Ref != "remote:"+original || location.TopLevel || location.TopLevelRef != "remote:"+continuation || location.Session.Kind != "fork" {
+		t.Fatalf("live fork original location = %+v, session = %+v", location, location.Session)
+	}
+}
+
 func TestNavigationLocationRemoteSourceIsolationAndAbsence(t *testing.T) {
 	f := newRemoteLocationFixture(t)
 	// The same IDs exist here under a different local root. Remote resolution
