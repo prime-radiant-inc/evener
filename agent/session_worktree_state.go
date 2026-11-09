@@ -783,7 +783,7 @@ func (s *Session) rewriteLaneLock(files execenv.FileMutator, lanePath, expected,
 		return err
 	}
 	if strings.TrimSpace(string(current)) != expected {
-		return fmt.Errorf("lane lock is no longer the expected marker")
+		return errors.New("lane lock is no longer the expected marker")
 	}
 	if err := requireRegistryWrite(files, filepath.Dir(lockFile)); err != nil {
 		return err
