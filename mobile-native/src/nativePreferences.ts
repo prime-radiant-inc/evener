@@ -15,7 +15,7 @@ import {
 	transcriptDisplaySupport,
 	type TranscriptDraftStorage,
 } from "@evener/appwire-client";
-import { checkedKeybindingChange } from "./keybindingRules";
+import { checkedKeybindingChange, KeybindingInputError } from "./keybindingRules";
 
 type NativeFeatures = Pick<FeatureSet, "keybindingsSettings" | "transcriptDisplaySettings">;
 
@@ -222,9 +222,18 @@ export class NativePreferences {
 	/** Applies a saved pre-ruling proposal the user explicitly recovered.
 	 * This is still the one immediate PATCH path: the saved rule set becomes
 	 * the whole payload, and only this call - never the record's presence -
-	 * sends it. The host discards the legacy record after the hub confirms. */
+	 * sends it. The host discards the legacy record after the hub confirms.
+	 * The confirmed revision is captured when recovery is requested; if a
+	 * queued write changes it (including a conflict adopting another client's
+	 * current state), the replacement is refused so the user reviews the saved
+	 * snapshot against what the hub now holds. */
 	applySavedKeybindings(rules: readonly KeybindingsRule[]): Promise<KeybindingsOverrides> {
-		return this.keybindings.getState().patchOverrides(() => rules);
+		const requestedRevision = this.keybindings.getState().revision;
+		return this.keybindings.getState().patchOverrides(() => {
+			if (this.keybindings.getState().revision !== requestedRevision)
+				throw new KeybindingInputError("The hub's shortcuts changed. Review the saved changes and apply them again.");
+			return rules;
+		});
 	}
 
 	async saveTranscript(

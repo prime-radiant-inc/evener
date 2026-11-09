@@ -308,7 +308,7 @@ describe("NativePreferences", () => {
 	it("composes a queued edit from the acknowledged rules instead of a stale snapshot", async () => {
 		const client = fakeClient();
 		client.handlers.set("evener/settings/keybindings/get", () => keybindings);
-		const first = deferred<unknown>();
+		const first = Promise.withResolvers<unknown>();
 		let calls = 0;
 		client.handlers.set("evener/settings/keybindings/patch", () =>
 			++calls === 1
@@ -343,6 +343,48 @@ describe("NativePreferences", () => {
 				],
 			},
 		});
+	});
+
+	it("refuses a queued saved-draft recovery when another write moved the confirmed revision", async () => {
+		const client = fakeClient();
+		client.handlers.set("evener/settings/keybindings/get", () => keybindings);
+		const first = Promise.withResolvers<unknown>();
+		let calls = 0;
+		client.handlers.set("evener/settings/keybindings/patch", () => {
+			calls += 1;
+			return calls === 1
+				? first.promise
+				: {
+						version: 1,
+						revision: 6,
+						rules: [{ action: "palette.open", chord: "Meta+Shift+P" }],
+					};
+		});
+		const model = new NativePreferences(client, features);
+		await model.refresh();
+
+		const edit = model.editKeybinding("composer.focus", "Meta+P");
+		await Promise.resolve();
+		expect(calls).toBe(1);
+
+		// The user starts the saved-draft recovery while that edit is out.
+		const recovery = model.applySavedKeybindings([{ action: "palette.open", chord: "Meta+Shift+P" }]);
+		// The edit loses the revision race; the store adopts the other client's
+		// current state at revision 5.
+		const current = { version: 1, revision: 5, rules: [{ action: "rail.toggle", chord: "Meta+R" }] };
+		first.reject(
+			new WireError("revision conflict", -32013, {
+				evenerErrorInfo: "conflict",
+				current,
+			}),
+		);
+		await expect(edit).rejects.toThrow();
+		await expect(recovery).rejects.toThrow();
+
+		// The recovery must not send its whole saved snapshot at the revision
+		// the conflict just adopted; the saved record stays for review.
+		expect(calls).toBe(1);
+		expect(model.getSnapshot().keybindings.confirmed).toMatchObject({ revision: 5, rules: current.rules });
 	});
 });
 
