@@ -250,7 +250,7 @@ each removal leaves the failing mode caught elsewhere, named per item. **Delta:*
 −800 to −1,200 lines.
 
 **F18. Redundant gate spellings.**
-`make test-install` re-runs `TestInstallHomeGeneratedHome`, which
+`make test-install` re-runs `TestInstallTarget/GeneratedHome`, which
 `ROOT_FULL=1 make test` already runs inside `merge-approval-gate`; `make
 test-short` is an alias for `make test`; `make mutation-floor` and `make
 fuzz-mutation-score` are the same script with one flag; `make lint-biome` runs

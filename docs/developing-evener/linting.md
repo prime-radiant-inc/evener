@@ -117,8 +117,10 @@ config does not prove that the delegated camelCase fields were checked.
 CI sets `LINT_PARALLEL=2` for `make lint-golangci`, limiting simultaneous
 package loads in both the Linux and Darwin module sweeps. Each linter retains
 its two-worker configuration and five-minute deadline. All workspace modules,
-tests, rules, the appwire pass and tagged compile floors remain enabled. The
-module runner's local default remains four concurrent modules.
+tests, rules, the appwire pass and tagged compile floors remain enabled; the
+floors (`make lint-evenerfuzz lint-eval`) run in their own `lint-tagged` job,
+on a runner beside the `lint-golangci` sweep, and the required `static` check
+needs both. The module runner's local default remains four concurrent modules.
 
 ## Why `lint-generated` runs `make generate`
 

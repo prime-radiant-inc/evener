@@ -1025,6 +1025,12 @@ failing the lane, and still fails on a broken measurement. Each member's
 pull-request run already enforced the budget on that change, and a wall-time
 breach in the group would remove every member from the queue.
 
+The frontend's row is one number for the whole suite, so it cannot say which
+test file grew. The `web-unit` lane keeps the vitest JSON report it was rolled
+up from as the `web-vitest-report-<run>-<attempt>` artifact, pass or fail, for
+seven days: each entry in its `testResults` carries the file's `startTime` and
+`endTime`, which rank the slow files.
+
 ## The Browser Guards
 
 jsdom evaluates no cascade and reports zero for every box, so an entire class of

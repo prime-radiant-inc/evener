@@ -49,6 +49,19 @@ jobs:
           EVENER_WEB_VITEST_JSON: /tmp/gate-web-vitest.json
         run: make test-web
 
+      # The vitest JSON report carries each test file's duration, which the
+      # timing budget rolls up into one "web" row. Kept on every run, pass or
+      # fail, so slow files can be ranked across runs. A gate that stopped
+      # before vitest ran leaves no report, which is not a second failure.
+      - name: Keep the vitest timing report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-vitest-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/gate-web-vitest.json
+          retention-days: 7
+          if-no-files-found: ignore
+
       # The cache save must precede the timing gate: the gate fails on wall
       # time while the cache this run warmed is good, and the save only acts
       # on main pushes, so gating it behind the gate would leave a failing
@@ -253,9 +266,54 @@ jobs:
           LINT_PARALLEL: "2"
         run: make lint-golangci
 
-      # The tagged compile floors use the same golangci-lint binary, so they
-      # share this lane's install instead of paying a second checkout,
-      # toolchain setup, and `go install` on a parallel runner.
+      - uses: actions/cache/save@v6
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.golangci-restore.outputs.cache-hit != 'true'
+        with:
+          path: ${{ steps.golangci-cache.outputs.dir }}
+          key: ${{ steps.golangci-cache.outputs.prefix }}${{ github.sha }}
+
+      - uses: ./.github/actions/go-cache-save
+
+  # The tagged compile floors take minutes of their own, compiling and linting
+  # every module under the evenerfuzz and eval tags, so they run on a runner
+  # beside the golangci sweep rather than after it. Their compile output and
+  # golangci analysis differ from the untagged sweep's, so both caches are
+  # this lane's own kind. `static` requires this lane too.
+  lint-tagged:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.work
+          cache: false
+
+      - uses: ./.github/actions/go-cache-restore
+        with:
+          kind: lint-tagged
+
+      # Resolved as in lint-golangci, under a prefix of this lane's own.
+      - name: Resolve golangci-lint cache
+        id: golangci-cache
+        env:
+          CONFIG_HASH: ${{ hashFiles('.tool-versions', '.golangci.yml', '.golangci-appwire.yml') }}
+        run: |
+          echo "dir=$(scripts/lib/golangci-lint-cache.sh)" >> "$GITHUB_OUTPUT"
+          echo "prefix=golangci-lint-tagged-${ImageOS}-$(go env GOVERSION)-${CONFIG_HASH}-" >> "$GITHUB_OUTPUT"
+
+      - id: golangci-restore
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ steps.golangci-cache.outputs.dir }}
+          key: ${{ steps.golangci-cache.outputs.prefix }}${{ github.sha }}
+          restore-keys: ${{ steps.golangci-cache.outputs.prefix }}
+
+      - name: Install golangci-lint
+        run: |
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          make tools-golangci
+
       - name: Lint tagged compile floors (evenerfuzz and eval)
         run: make lint-evenerfuzz lint-eval
 
@@ -322,7 +380,7 @@ jobs:
 
   static:
     if: always()
-    needs: [static-build, lint-golangci, lint-repository, fuzz-checks, api-package, native]
+    needs: [static-build, lint-golangci, lint-tagged, lint-repository, fuzz-checks, api-package, native]
     runs-on: ubuntu-24.04
     steps:
       - name: Require every static lane
