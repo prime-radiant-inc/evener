@@ -338,9 +338,6 @@ func validWindowCursorProofWire(wire windowCursorDecodeWire) bool {
 }
 
 func validEmptyRangeDigest(digest string) bool {
-	if len(digest) != 64 {
-		return false
-	}
 	decoded, err := hex.DecodeString(digest)
 	return err == nil && len(decoded) == 32 && hex.EncodeToString(decoded) == digest
 }

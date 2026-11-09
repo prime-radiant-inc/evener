@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"slices"
 	"time"
 
 	"primeradiant.com/evener/agent"
@@ -221,8 +220,7 @@ func continueLiveTranscriptWindowOwned(
 			return canonicalizeTranscriptItemCandidates(source, read.Thread, candidates)
 		}
 	}
-	fitParams := params
-	options.StructuredFollowUpParams = &fitParams
+	configureTranscriptWindowResponseFit(&options, params)
 	packed, err := packThreadTurnsWindowItemCandidates(candidates, func(response appwire.ThreadTurnsListResponse) (appwire.ThreadTurnsListResponse, error) {
 		return response, nil
 	}, options)
@@ -269,13 +267,6 @@ func (l *compatibilityTranscriptWindowLoader) load(ctx context.Context, selector
 			selectedRead := l.read
 			selectedRead.Thread.Turns = selected
 			selectedRead.OlderCursor = ""
-			selectedIDs := make(map[string]bool, len(selected))
-			for _, turn := range selected {
-				selectedIDs[turn.ID] = true
-			}
-			selectedRead.Overlay = slices.DeleteFunc(slices.Clone(selectedRead.Overlay), func(item appwire.OverlayItem) bool {
-				return !selectedIDs[item.TurnID]
-			})
 			result, err := compatibilityItemCandidateResultForRead(ctx, l.source, l.readParams, selectedRead)
 			if err != nil {
 				return transcriptWindowLoadedRange{}, err

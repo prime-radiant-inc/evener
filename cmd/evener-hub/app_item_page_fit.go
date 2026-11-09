@@ -131,23 +131,31 @@ func transcriptTurnsListParamsFromRead(params appwire.ThreadReadParams) appwire.
 	}
 }
 
-// transcriptWindowStructuredPageFits reports whether a packed page, sent as a
-// thread/turns response with its recovery follow-ups, stays inside the Manager
-// response cap. The fixed envelope margin covers the actor and response shell; a
-// follow-up repeats the request shape for every cursor-bearing turn and can grow
-// past that margin on a page whose content alone fits.
-func transcriptWindowStructuredPageFits(
+// configureTranscriptWindowResponseFit makes a windowed page budget the
+// thread/turns envelope its consumer receives. Every production window packer
+// that can serve a turns page uses it.
+func configureTranscriptWindowResponseFit(options *transcriptWindowPackOptions, params appwire.ThreadTurnsListParams) {
+	fitParams := params
+	options.StructuredFollowUpParams = &fitParams
+}
+
+// transcriptWindowStructuredPageSize measures a packed page as the thread/turns
+// response a consumer receives, recovery follow-ups included. The fixed envelope
+// margin covers the actor and response shell; a follow-up repeats the request
+// shape for every cursor-bearing turn and can outgrow that margin on a page
+// whose content alone fits.
+func transcriptWindowStructuredPageSize(
 	page appwire.ThreadTurnsListResponse,
 	params appwire.ThreadTurnsListParams,
-) (bool, error) {
+) (int, error) {
 	encoded, err := json.Marshal(appwire.SessionOperationResponse{
 		Turns:     &page,
 		FollowUps: transcriptReadFollowUps(params, page),
 	})
 	if err != nil {
-		return false, fmt.Errorf("marshal transcript window page: %w", err)
+		return 0, fmt.Errorf("marshal transcript window page: %w", err)
 	}
-	return len(encoded) <= transcriptWindowMaximumContentBudget, nil
+	return len(encoded), nil
 }
 
 // spendTranscriptWindowCursor selects the remaining candidates from the same
@@ -290,18 +298,16 @@ func transcriptWindowCandidateTurns(
 ) []transcriptWindowCandidateTurn {
 	candidatesByTurn := make(map[string][]appitempaging.TranscriptItemCandidate)
 	fallbackShells := make([]appwire.Turn, 0)
-	seenFallback := make(map[string]bool)
 	for _, candidate := range candidates {
-		candidatesByTurn[candidate.TurnID] = append(candidatesByTurn[candidate.TurnID], candidate)
-		if !seenFallback[candidate.TurnID] {
+		if len(candidatesByTurn[candidate.TurnID]) == 0 {
 			fallbackShells = append(fallbackShells, candidate.Turn)
-			seenFallback[candidate.TurnID] = true
 		}
+		candidatesByTurn[candidate.TurnID] = append(candidatesByTurn[candidate.TurnID], candidate)
 	}
 
 	shells := make([]appwire.Turn, 0, len(result.TurnShells)+len(fallbackShells))
 	seenShell := make(map[string]bool, len(result.TurnShells)+len(fallbackShells))
-	for _, turn := range append(append([]appwire.Turn(nil), result.TurnShells...), fallbackShells...) {
+	for _, turn := range slices.Concat(result.TurnShells, fallbackShells) {
 		if turn.ID == "" || seenShell[turn.ID] {
 			continue
 		}
@@ -360,17 +366,16 @@ func setTranscriptWindowContinuationProof(
 	resumeStart int,
 	resumeEnd int,
 ) error {
-	remaining := transcriptItemCandidateResult{}
-	for _, turn := range turns[resumeStart:resumeEnd] {
-		remaining.TurnIDs = append(remaining.TurnIDs, turn.turn.ID)
-		remaining.TurnShells = append(remaining.TurnShells, turn.turn)
-		remaining.Candidates.Candidates = append(remaining.Candidates.Candidates, turn.candidates...)
-	}
 	// A resumed range with no positioned item has no version to fence, so its
 	// proof is a digest of the shells it will replay. Anchoring a served-side
 	// item instead would leave those shells unvalidated: a changed shell, or a
 	// newly positioned item inside one, would replay as if nothing moved.
-	if len(remaining.Candidates.Candidates) == 0 {
+	if !transcriptWindowHasPositionedCandidates(turns, resumeStart, resumeEnd) {
+		remaining := transcriptItemCandidateResult{}
+		for _, turn := range turns[resumeStart:resumeEnd] {
+			remaining.TurnIDs = append(remaining.TurnIDs, turn.turn.ID)
+			remaining.TurnShells = append(remaining.TurnShells, turn.turn)
+		}
 		digest, err := emptyTranscriptWindowDigest(remaining)
 		if err != nil {
 			return err
@@ -390,6 +395,15 @@ func setTranscriptWindowContinuationProof(
 	continuation.Position = boundary.Position
 	continuation.Version = boundary.Item.Version
 	return nil
+}
+
+func transcriptWindowHasPositionedCandidates(turns []transcriptWindowCandidateTurn, start int, end int) bool {
+	for index := start; index < end; index++ {
+		if len(turns[index].candidates) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 type transcriptWindowSelectedItem struct {
@@ -449,14 +463,7 @@ func itemCandidateResultFromTurns(turns []appwire.Turn, olderCursor string) (tra
 }
 
 func cloneTranscriptTurnShells(turns []appwire.Turn) []appwire.Turn {
-	if turns == nil {
-		return nil
-	}
-	cloned := make([]appwire.Turn, len(turns))
-	for index := range turns {
-		cloned[index] = appwire.CloneTurn(turns[index])
-	}
-	return cloned
+	return appwire.CloneTurns(turns)
 }
 
 func turnIDsFromTurns(turns []appwire.Turn) []string {
@@ -1043,14 +1050,25 @@ func packItemCandidates[T any](
 				return zero, fmt.Errorf("marshal transcript window turns: %w", marshalErr)
 			}
 			contentFits := len(encoded) <= effectiveBudget
-			structuredFits := true
 			if contentFits && windowOptions.StructuredFollowUpParams != nil {
-				structuredFits, marshalErr = transcriptWindowStructuredPageFits(page(response), *windowOptions.StructuredFollowUpParams)
+				structuredBytes, marshalErr := transcriptWindowStructuredPageSize(page(response), *windowOptions.StructuredFollowUpParams)
 				if marshalErr != nil {
 					return zero, marshalErr
 				}
+				if structuredBytes > transcriptWindowMaximumContentBudget {
+					// Reserve the measured overflow in the content budget and
+					// keep trimming against the cheaper content-only measure.
+					// A dropped turn also drops its follow-up, so the reduced
+					// budget stays an upper bound on the structured page and
+					// no iteration returns an over-cap response.
+					contentFits = false
+					effectiveBudget = len(encoded) - (structuredBytes - transcriptWindowMaximumContentBudget)
+					if effectiveBudget < 0 {
+						effectiveBudget = 0
+					}
+				}
 			}
-			if (contentFits && structuredFits) || end-start == 1 {
+			if contentFits || end-start == 1 {
 				return response, nil
 			}
 			if direction == transcriptWindowContinuationForward {

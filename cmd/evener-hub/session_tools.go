@@ -1290,8 +1290,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 								transcriptWindowAppliedByServingDaemon, fetchOrigin,
 							)
 						}
-						fitParams := transcriptTurnsListParamsFromRead(params)
-						options.StructuredFollowUpParams = &fitParams
+						configureTranscriptWindowResponseFit(&options, transcriptTurnsListParamsFromRead(params))
 						return packThreadReadWindowItemCandidates(candidates, enrich, options)
 					}
 					return packThreadReadItemCandidates(candidates, enrich, itemLimit)
