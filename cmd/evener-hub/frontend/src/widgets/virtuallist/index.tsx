@@ -331,7 +331,7 @@ export function VirtualList({
     // onChange already ran with the pre-commit geometry. A snapshot taken
     // mid-compensation names a position the reader never held, so replace it
     // with the committed one.
-    recordReadingPoint(true);
+    if (hasCommittedGeometry(virtualizer, measuredHeightsRef.current)) recordReadingPoint(true);
     onChange?.(virtualizer, false);
   });
 
