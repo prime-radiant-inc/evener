@@ -43,4 +43,11 @@ describe("native dependency security resolutions", () => {
 			expect(existsSync(fileURLToPath(new URL(`../node_modules/${name}`, import.meta.url)))).toBe(false);
 		}
 	});
+
+	it("removes the old CLI validator from every installed dependency path", () => {
+		const lock = readJson<PackageLock>("../package-lock.json");
+		const validators = Object.keys(lock.packages).filter((path) => /(?:^|\/)node_modules\/zod$/.test(path));
+		expect(validators).toEqual([]);
+		expect(existsSync(fileURLToPath(new URL("../node_modules/zod", import.meta.url)))).toBe(false);
+	});
 });

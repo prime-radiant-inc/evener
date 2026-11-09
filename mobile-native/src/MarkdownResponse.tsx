@@ -145,6 +145,7 @@ export const MarkdownResponse = memo(function MarkdownResponse({
 				) : (
 					<EnrichedMarkdownText
 						key={index}
+						testID="native-markdown"
 						markdown={segment.fileRender?.markdown ?? segment.source}
 						markdownStyle={style}
 						flavor="github"

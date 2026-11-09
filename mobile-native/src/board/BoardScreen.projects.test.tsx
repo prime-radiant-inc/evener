@@ -2300,7 +2300,7 @@ function expectSwipeBand(
 	expected: { marginLeft: number; hitSlop: { left: number } | undefined; edgeInset: number },
 ) {
 	const swipeable = swipeableOf(tree, title);
-	const tracker = swipeable.props.simultaneousWithExternalGesture as { config: { hitSlop?: unknown } };
+	const tracker = swipeable.props.simultaneousWith as { config: { hitSlop?: unknown } };
 	expect(swipeable.props.hitSlop).toEqual(expected.hitSlop);
 	expect(tracker.config.hitSlop).toEqual(expected.hitSlop);
 	expect(rowWrapper(swipeable).props.style).toMatchObject({ marginLeft: expected.marginLeft });

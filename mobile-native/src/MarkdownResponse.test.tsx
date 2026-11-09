@@ -15,6 +15,7 @@ import { DisplayPreferences } from "./display/displayPreferences";
 import { MarkdownResponse } from "./MarkdownResponse";
 import { MermaidDiagram } from "./MermaidDiagram";
 import { alertRequests, keyboard, render, screenConnection, unmountMountedTrees } from "./renderNative.testkit";
+import { withTestID } from "./markerTestUtils";
 
 const mode = vi.hoisted(() => ({ scheme: "light" as "light" | "dark" }));
 vi.mock("react-native", async () => ({
@@ -45,6 +46,16 @@ function markdownStyle(markdown: string) {
 	const tree = render(<MarkdownResponse markdown={markdown} />);
 	return tree.root.findByType("EnrichedMarkdownText" as never).props.markdownStyle;
 }
+
+const QUALIFICATION_MARKDOWN =
+	"QUALIFICATION_prose_a7\n\n**QUALIFICATION_emphasis_b8**\n\n```text\nQUALIFICATION_code_c9\n```\n";
+
+it("marks the rendered response itself, not a wrapping view", () => {
+	const tree = render(<MarkdownResponse markdown={QUALIFICATION_MARKDOWN} />);
+	const [prose] = withTestID(tree, "native-markdown");
+	expect(prose && String(prose.type)).toBe("EnrichedMarkdownText");
+	expect(prose?.props.markdown).toBe(QUALIFICATION_MARKDOWN);
+});
 
 // MermaidDiagram is a React.memo component, so the test renderer reports its
 // inner render function as the node type - a string lookup cannot find it.
