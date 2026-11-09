@@ -284,51 +284,35 @@ func TestRemoveRenameMkdirConfined(t *testing.T) {
 	}
 }
 
-func TestAuditSinkRedaction(t *testing.T) {
-	// Mutates the package auditSink; not parallel.
-	var records []AuditRecord
-	orig := auditSink
-	auditSink = func(r AuditRecord) { records = append(records, r) }
-	t.Cleanup(func() { auditSink = orig })
-
+// TestDenialRedactionIsSingleRule: a file-tool denial's audit-safe path comes
+// from sandbox.DeniedError.Redacted alone — a masked secret collapses to
+// "<denied>" (never the basename, id_rsa would leak which secret was probed), and
+// any other denial keeps the informative basename.
+func TestDenialRedactionIsSingleRule(t *testing.T) {
 	s, home, worktree := newSB(t, sandbox.ModeReadOnly)
 
-	// A masked (secret) denial redacts the path to "<denied>" — never the basename.
-	if _, err := s.readFile("read_file", filepath.Join(home, ".ssh", "id_rsa")); err == nil {
-		t.Fatal("expected masked denial")
+	_, err := s.readFile("read_file", filepath.Join(home, ".ssh", "id_rsa"))
+	var masked *sandbox.DeniedError
+	if !asDenied(err, &masked) {
+		t.Fatalf("masked read must be a *sandbox.DeniedError, got %T: %v", err, err)
 	}
-	// An out-of-root write denial (read-only denies all writes) redacts to a
-	// basename — informative but not a full path.
-	if err := s.writeFile("write_file", filepath.Join(worktree, "note.txt"), []byte("x"), 0o644); err == nil {
-		t.Fatal("expected write denial in read-only mode")
+	if got := masked.Redacted(); got != "<denied>" {
+		t.Errorf("masked denial Redacted() = %q, want <denied>", got)
+	}
+	if strings.Contains(masked.Redacted(), "id_rsa") {
+		t.Errorf("masked denial leaked the secret basename: %q", masked.Redacted())
 	}
 
-	if len(records) < 2 {
-		t.Fatalf("expected at least two audit records, got %d: %+v", len(records), records)
+	err = s.writeFile("write_file", filepath.Join(worktree, "note.txt"), []byte("x"), 0o644)
+	var write *sandbox.DeniedError
+	if !asDenied(err, &write) {
+		t.Fatalf("write in read-only must be a *sandbox.DeniedError, got %T: %v", err, err)
 	}
-	var sawMasked, sawWrite bool
-	for _, r := range records {
-		if r.Reason == denyReasonMasked {
-			sawMasked = true
-			if r.Path != "<denied>" {
-				t.Errorf("masked denial must redact path to <denied>, got %q", r.Path)
-			}
-			if strings.Contains(r.Path, "id_rsa") {
-				t.Errorf("masked denial leaked the secret basename: %q", r.Path)
-			}
-		}
-		if r.Tool == "write_file" {
-			sawWrite = true
-			if r.Path != "note.txt" {
-				t.Errorf("write denial should redact to basename note.txt, got %q", r.Path)
-			}
-		}
-		if r.Mode != "read-only" {
-			t.Errorf("audit mode = %q, want read-only", r.Mode)
-		}
+	if got := write.Redacted(); got != "note.txt" {
+		t.Errorf("write denial Redacted() = %q, want basename note.txt", got)
 	}
-	if !sawMasked || !sawWrite {
-		t.Errorf("missing expected records: masked=%v write=%v (%+v)", sawMasked, sawWrite, records)
+	if write.Mode != sandbox.ModeReadOnly {
+		t.Errorf("write denial mode = %q, want read-only", write.Mode)
 	}
 }
 

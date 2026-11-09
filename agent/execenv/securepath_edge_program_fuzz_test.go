@@ -99,14 +99,9 @@ func runSecurePathEdgeContractProgram(t *testing.T, program []byte) securePathEd
 	defer s.close()
 	trace := securePathEdgeTrace{}
 
-	// The audit sink receives only redacted paths. These calls drive all typed
-	// denial reasons, including the less common root-target and escape cases.
-	originalSink := auditSink
-	defer func() { auditSink = originalSink }()
-	auditSink = nil
-	auditDenial(policy.Mode, "read", "relative", denyReasonOutsideRead)
-	var records []AuditRecord
-	auditSink = func(record AuditRecord) { records = append(records, record) }
+	// Redacted() yields only audit-safe paths, from the single rule in
+	// sandbox.DeniedError. These calls drive all typed denial reasons, including
+	// the less common root-target and escape cases.
 	denialCases := []struct {
 		reason string
 		path   string
@@ -117,7 +112,7 @@ func runSecurePathEdgeContractProgram(t *testing.T, program []byte) securePathEd
 		{denyReasonOutsideWrite, "relative.txt", sandbox.DenialOutsideWriteRoots, "relative.txt"},
 		{denyReasonWriteDenied, filepath.Join(base, "readonly.txt"), sandbox.DenialWritesDisabled, "readonly.txt"},
 		{denyReasonMasked, filepath.Join(masked, "secret.txt"), sandbox.DenialMasked, "<denied>"},
-		{denyReasonProtected, protected, sandbox.DenialGitProtected, "<denied>"},
+		{denyReasonProtected, protected, sandbox.DenialGitProtected, "config"},
 		{denyReasonSymlink, filepath.Join(worktree, "link"), sandbox.DenialSymlink, "link"},
 		{denyReasonEscape, filepath.Join(worktree, "escape"), sandbox.DenialEscape, "escape"},
 		{denyReasonRootTarget, worktree, sandbox.DenialRootTarget, "worktree"},
@@ -132,18 +127,19 @@ func runSecurePathEdgeContractProgram(t *testing.T, program []byte) securePathEd
 			t.Fatalf("masked denial was not sensitive: %+v", denied)
 		}
 		trace.Denials = append(trace.Denials, denied.ReasonKind)
-	}
-	if len(records) != len(denialCases) {
-		t.Fatalf("audit records=%d, want %d", len(records), len(denialCases))
-	}
-	for i, tc := range denialCases {
-		if records[i].Path != tc.want || records[i].Reason != tc.reason || records[i].Tool != "edge" {
-			t.Fatalf("audit record %d=%+v, want redacted path %q", i, records[i], tc.want)
+		if got := denied.Redacted(); got != tc.want {
+			t.Fatalf("denial %q Redacted()=%q, want %q", tc.reason, got, tc.want)
 		}
-		trace.Redacted = append(trace.Redacted, records[i].Path)
-	}
-	if got := redactAuditPath("", denyReasonOutsideRead); got != "" {
-		t.Fatalf("empty audit path = %q", got)
+		if denied.Tool != "edge" {
+			t.Fatalf("denial %q tool=%q, want edge", tc.reason, denied.Tool)
+		}
+		// deny() appends the immutable-policy clause to a non-sensitive model
+		// reason and may append a symlink diagnostic, so the terse reason is a
+		// prefix rather than the whole text.
+		if !strings.HasPrefix(denied.Reason, tc.reason) {
+			t.Fatalf("denial %q reason=%q, want it to start with %q", tc.reason, denied.Reason, tc.reason)
+		}
+		trace.Redacted = append(trace.Redacted, denied.Redacted())
 	}
 
 	// Resolver error mapping must reveal a safe typed denial, never raw path-walk

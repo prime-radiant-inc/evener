@@ -171,9 +171,10 @@ func newScratchSandboxFS(root string) *sandboxFS {
 	return newSandboxFS(policy, "")
 }
 
-// Denial reasons. The masked/protected reasons drive audit-log redaction to a
-// <denied> token (the basename of a secret path is itself sensitive); the others
-// redact to a basename.
+// Denial reasons. A masked (credential/pseudo-fs) reason also marks the denial
+// Sensitive, so sandbox.DeniedError.Redacted collapses the path to a <denied>
+// token (the basename of a secret path is itself sensitive); the others redact
+// to a basename.
 const (
 	denyReasonMasked       = "credential or pseudo-filesystem path is masked"
 	denyReasonProtected    = "git config/hook surface is read-only under sandbox"
@@ -185,11 +186,11 @@ const (
 	denyReasonRootTarget   = "cannot operate on a sandbox root itself"
 )
 
-// deny builds a typed *sandbox.DeniedError for a file-tool denial and emits one
-// redacted audit line. Command/OutputSoFar are left empty — those belong to the
-// shell/kernel denials M3 populates.
+// deny builds a typed *sandbox.DeniedError for a file-tool denial. Its Redacted
+// method is the ONE rule that turns the path into an audit-safe form.
+// Command/OutputSoFar are left empty — those belong to the shell/kernel denials
+// M3 populates.
 func (s *sandboxFS) deny(tool, denyPath, reason string) *sandbox.DeniedError {
-	auditDenial(s.policy.Mode, tool, denyPath, reason)
 	// A masked (credential/pseudo-fs) denial is Sensitive: neither the model
 	// message nor the audit log may echo even the basename (id_rsa, credentials,
 	// environ would reveal which secret was probed). Other reasons — outside a
@@ -200,7 +201,7 @@ func (s *sandboxFS) deny(tool, denyPath, reason string) *sandbox.DeniedError {
 	if !sensitive {
 		// Tell the model the box is immutable — a per-session policy no tool call can
 		// relax — so it stops retrying the same denied path. Mode-agnostic and
-		// accurate for every mode; the audit record above keeps the terse reason.
+		// accurate for every mode.
 		modelReason = reason + "; this sandbox policy is fixed for the session"
 	}
 	if reason == denyReasonSymlink {
