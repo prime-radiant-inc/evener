@@ -34,7 +34,7 @@ func (r *reminderRig) startShell(t *testing.T) string {
 	t.Helper()
 	res := r.sess.reg.ExecuteCall(context.Background(), r.sess.env, llm.ToolCallData{
 		ID: "start", Name: "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 600","mode":"background"}`),
+		Arguments: idleShellJSON(`,"mode":"background"`),
 	})
 	if res.IsError {
 		t.Fatalf("shell: %s", res.Output)
