@@ -30,6 +30,7 @@ func TestLifecycleFixtureMatchesRegistry(t *testing.T) {
 	if len(cases) == 0 {
 		t.Fatal("lifecycle fixture is empty")
 	}
+	seen := make(map[string]map[string]bool)
 	for _, tc := range cases {
 		machine, ok := LifecycleMachineFor(MachineKind(tc.Machine))
 		if !ok {
@@ -41,6 +42,13 @@ func TestLifecycleFixtureMatchesRegistry(t *testing.T) {
 			t.Errorf("fixture names unknown state %q of %q", tc.State, tc.Machine)
 			continue
 		}
+		if seen[tc.Machine] == nil {
+			seen[tc.Machine] = make(map[string]bool)
+		}
+		if seen[tc.Machine][tc.State] {
+			t.Errorf("fixture lists %s/%s twice", tc.Machine, tc.State)
+		}
+		seen[tc.Machine][tc.State] = true
 		if got := string(state.Class); got != tc.Class {
 			t.Errorf("%s/%s class = %q, want %q", tc.Machine, tc.State, got, tc.Class)
 		}
@@ -49,6 +57,13 @@ func TestLifecycleFixtureMatchesRegistry(t *testing.T) {
 		}
 		if state.Resting != tc.Resting {
 			t.Errorf("%s/%s resting = %v, want %v", tc.Machine, tc.State, state.Resting, tc.Resting)
+		}
+	}
+	for _, machine := range LifecycleMachines() {
+		for _, state := range machine.States {
+			if !seen[string(machine.Kind)][state.Name] {
+				t.Errorf("fixture omits declared state %s/%s", machine.Kind, state.Name)
+			}
 		}
 	}
 }

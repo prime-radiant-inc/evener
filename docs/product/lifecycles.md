@@ -150,9 +150,10 @@ States: `active`, `complete`, `blocked`. `complete` and `blocked` are terminal.
 States: `pending`, `running`, `complete`, `failed`, `interrupted`,
 `orphan-unverified`. `complete`, `failed`, and `interrupted` are terminal. The
 store rejects every transition out of a terminal record, and
-`orphan-unverified` resolves only to `interrupted`. The store also accepts a
-re-publish of `pending`/`running` and entry into `orphan-unverified` from
-`pending`/`running`, because those are durable historical facts.
+`orphan-unverified` resolves only to `interrupted`. A move the declared graph
+does not contain is refused. The store also accepts a re-publish of
+`pending`/`running` and entry into `orphan-unverified` from `pending`/`running`,
+because those are durable historical facts.
 
 ### Mutation projection
 
@@ -220,9 +221,8 @@ are current behavior, not proposals.
 4. Read the class in clients through `lifecycleStateClass` /
    `lifecycleStateIsFailed` (`appwire-client/typescript/lifecycle.ts`), not a
    local status list.
-5. Add or update the representative case in
-   `testdata/lifecycle/state_classes.json`; the Go and TypeScript tests both
-   read it, so a class, terminality or resting change must be made on both
-   sides deliberately.
+5. The fixture `testdata/lifecycle/state_classes.json` lists every declared
+   state; add the new state's row. The Go test fails when a declared state is
+   missing, and both languages read the same facts.
 6. Update this page when an owner, a durable authority, or a user-visible
    boundary moves.

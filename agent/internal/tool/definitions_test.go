@@ -465,11 +465,11 @@ func TestDefJobListAdvertisesCommandOutcomeStatuses(t *testing.T) {
 		t.Fatalf("job_list status enum = %v, want command_exited_nonzero and command_killed", enum)
 	}
 	want := map[string]bool{}
-	for _, name := range appwire.JobStatusFilterNames() {
+	for _, name := range appwire.JobListStatusFilterNames() {
 		want[name] = true
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("job_list status enum = %v, want the declared filter set %v", enum, appwire.JobStatusFilterNames())
+		t.Fatalf("job_list status enum = %v, want the declared filter set %v", enum, appwire.JobListStatusFilterNames())
 	}
 	if !strings.Contains(def.Description, "command_exited_nonzero") || !strings.Contains(def.Description, "command_killed") {
 		t.Fatalf("job_list description must name the command-outcome statuses: %q", def.Description)

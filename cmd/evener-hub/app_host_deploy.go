@@ -100,7 +100,7 @@ func (m *hubHostManager) Deploy(ctx context.Context, params appwire.HostDeployPa
 	if err != nil {
 		return appwire.HostDeployResponse{}, err
 	}
-	state, err := operationWireState(record.State)
+	state, err := validOperationState(record.State)
 	if err != nil {
 		return appwire.HostDeployResponse{}, appwire.InternalError(err.Error())
 	}
@@ -144,7 +144,7 @@ func (m *hubHostManager) Restart(ctx context.Context, params appwire.HostRestart
 	if err != nil {
 		return appwire.HostRestartResponse{}, err
 	}
-	state, err := operationWireState(record.State)
+	state, err := validOperationState(record.State)
 	if err != nil {
 		return appwire.HostRestartResponse{}, appwire.InternalError(err.Error())
 	}
@@ -162,14 +162,6 @@ func validateClientOperationID(id string) error {
 			"the client operation ID is %d bytes, over the %d-byte bound", len(id), hostops.MaxClientOperationIDBytes))
 	}
 	return nil
-}
-
-// operationWireState maps a record's durable state onto the wire's closed set.
-func operationWireState(state hostops.State) (appwire.OperationState, error) {
-	if !state.Valid() {
-		return "", fmt.Errorf("hub: record state %q is outside the wire's operation set", state)
-	}
-	return state, nil
 }
 
 // liveHost resolves name from the live registry.

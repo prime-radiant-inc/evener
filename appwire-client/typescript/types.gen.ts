@@ -5089,6 +5089,35 @@ export const NOTIFICATION_NAMES = [
 
 export type NotificationName = (typeof NOTIFICATION_NAMES)[number];
 
+export const LIFECYCLE_CLASSES = [
+  "active",
+  "waiting",
+  "idle",
+  "settled",
+  "failed",
+  "neutral",
+  "ended",
+] as const;
+
+export type LifecycleClass = (typeof LIFECYCLE_CLASSES)[number];
+
+export const MACHINE_KINDS = [
+  "session",
+  "turn",
+  "threadStatus",
+  "job",
+  "delegate",
+  "delegateRun",
+  "delegateOutcome",
+  "watch",
+  "task",
+  "goal",
+  "hostOperation",
+  "mutationProjection",
+] as const;
+
+export type MachineKind = (typeof MACHINE_KINDS)[number];
+
 export const SESSION_STATES = [
   "idle",
   "active",

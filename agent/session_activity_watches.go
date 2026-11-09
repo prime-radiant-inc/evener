@@ -150,7 +150,7 @@ func projectRetainedSessionWatch(owner, receiver string, record *jobstore.WatchR
 	}
 	state := appwire.SessionWatchStateUnknown
 	if !record.Active {
-		state = appwire.WatchState(false)
+		state = appwire.SessionWatchStateEnded
 	}
 	return appwire.SessionWatch{SourceRef: encodeRef("", owner), OwnerRef: encodeRef("", receiver), ReceiverRef: encodeRef("", receiver), State: state, Watch: info}
 }

@@ -35,13 +35,12 @@ export function isActivityFailure(outcome: string | undefined, status: string | 
   const normalized = status?.trim().toLowerCase();
   if (!normalized) return false;
   // "error" belongs to the transcript's failure vocabulary, not a lifecycle
-  // machine; the rest come from the declared job, delegate-run and delegate
-  // machines so this list cannot drift from the daemon's.
+  // machine; the rest come from the declared job and delegate-run machines so
+  // this list cannot drift from the daemon's.
   return (
     normalized === "error" ||
     lifecycleStateClass("job", normalized) === "failed" ||
-    lifecycleStateClass("delegateRun", normalized) === "failed" ||
-    lifecycleStateClass("delegate", normalized) === "failed"
+    lifecycleStateClass("delegateRun", normalized) === "failed"
   );
 }
 

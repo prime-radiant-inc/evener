@@ -521,15 +521,20 @@ func DefJobList() llm.ToolDefinition {
 	return DefJobListNamed(DefaultResultToolName)
 }
 
+var jobListStatusEnum = func() []any {
+	names := appwire.JobListStatusFilterNames()
+	out := make([]any, len(names))
+	for i, name := range names {
+		out[i] = name
+	}
+	return out
+}()
+
 // DefJobListNamed is DefJobList for a session whose result tool is named
 // resultTool.
 func DefJobListNamed(resultTool string) llm.ToolDefinition {
 	strictFalse := false
-	statusNames := appwire.JobStatusFilterNames()
-	statusEnum := make([]any, len(statusNames))
-	for i, name := range statusNames {
-		statusEnum[i] = name
-	}
+	statusEnum := append([]any(nil), jobListStatusEnum...)
 	typeEnum := []any{"shell", "delegate"}
 	return llm.ToolDefinition{
 		Name:        "job_list",

@@ -120,7 +120,9 @@ callers compile unchanged and existing persisted bytes keep their meaning.
   only from active.
 - Watch armed/ended uses `appwire.WatchState`.
 - Host-operation `Valid`, `Terminal` and `InFlight` are methods on the declared
-  `OperationState`; both wire/store mapping switches become direct returns.
+  `OperationState`; both wire/store mapping switches become direct returns, and
+  `Store.Transition` consults the declared edges in addition to its terminal and
+  orphan rules.
 
 ### Client catalog
 
@@ -135,8 +137,9 @@ one. `activityData.ts` calls `lifecycleStateClass` for its failure rule and
 `isFailedDelegateOutcome` calls `lifecycleStateIsFailed`.
 
 `activityData.ts` classifies activity failures through the generated facts.
-`testdata/lifecycle/state_classes.json` pins a representative case per machine;
-a Go test and a TypeScript test both read it.
+`testdata/lifecycle/state_classes.json` lists every declared state's class,
+terminality and resting facts; a Go test and a TypeScript test both read it,
+and the Go test fails when a declared state is missing.
 
 `appwire.MutationProjectionState` stays out of the generator because the
 client's receipt bookkeeping accepts a local `notProjected` value outside the
@@ -171,7 +174,7 @@ the bundled doctoring skill.
   terminal.
 - The delegate phase compatibility strings remain accepted by the job filter.
 - The job-list filter and its model-facing schema both come from
-  `appwire.JobStatusFilterNames`, so the compatibility set cannot be accepted
+  `appwire.JobListStatusFilterNames`, so the compatibility set cannot be accepted
   by one and omitted by the other.
 - No persisted record is rewritten, and no client cache key changes.
 

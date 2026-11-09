@@ -11,6 +11,7 @@ import {
   lifecycleStateIsResting,
   lifecycleStateIsTerminal,
 } from "./lifecycle";
+import { MACHINE_KINDS } from "./types.gen";
 
 interface LifecycleClassCase {
   machine: string;
@@ -26,20 +27,7 @@ const SHARED_CASES: LifecycleClassCase[] = JSON.parse(
 
 describe("generated lifecycle catalog", () => {
   test("carries the declared machines", () => {
-    for (const kind of [
-      "session",
-      "turn",
-      "threadStatus",
-      "job",
-      "delegate",
-      "delegateRun",
-      "delegateOutcome",
-      "watch",
-      "task",
-      "goal",
-      "hostOperation",
-      "mutationProjection",
-    ]) {
+    for (const kind of MACHINE_KINDS) {
       expect(lifecycleMachine(kind), kind).toBeDefined();
     }
   });

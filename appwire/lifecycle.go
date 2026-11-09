@@ -95,10 +95,19 @@ type LifecycleMachine struct {
 	Initial     string           `json:"initial,omitempty"`
 	States      []LifecycleState `json:"states"`
 	Transitions []LifecycleEdge  `json:"transitions"`
+
+	// stateSet and edgeSet are the lookup form of the declaration, built once
+	// at package initialization. Copies share them read-only.
+	stateSet map[string]LifecycleState
+	edgeSet  map[[2]string]bool
 }
 
 // State returns the declared state named name.
 func (m LifecycleMachine) State(name string) (LifecycleState, bool) {
+	if m.stateSet != nil {
+		state, ok := m.stateSet[name]
+		return state, ok
+	}
 	for _, state := range m.States {
 		if state.Name == name {
 			return state, true
@@ -130,10 +139,19 @@ func (m LifecycleMachine) Class(name string) LifecycleClass {
 	return LifecycleActive
 }
 
+// IsActive reports whether name is declared and has the active class.
+func (m LifecycleMachine) IsActive(name string) bool {
+	state, ok := m.State(name)
+	return ok && state.Class == LifecycleActive
+}
+
 // CanTransition reports whether the machine declares from -> to. A self edge
 // is legal only when it is declared, because some owners re-publish the same
 // state (a repeated stop request) while others must not.
 func (m LifecycleMachine) CanTransition(from, to string) bool {
+	if m.edgeSet != nil {
+		return m.edgeSet[[2]string{from, to}]
+	}
 	if !m.HasState(from) || !m.HasState(to) {
 		return false
 	}
@@ -518,46 +536,69 @@ var (
 	}
 )
 
+var lifecycleMachines []LifecycleMachine
+var lifecycleByKind map[MachineKind]LifecycleMachine
+
+func init() {
+	declared := []*LifecycleMachine{
+		&sessionMachine,
+		&turnMachine,
+		&threadStatusMachine,
+		&jobMachine,
+		&delegatePhaseMachine,
+		&delegateRunMachine,
+		&delegateOutcomeMachine,
+		&watchMachine,
+		&taskMachine,
+		&goalMachine,
+		&hostOperationMachine,
+		&mutationProjectionMachine,
+	}
+	for _, machine := range declared {
+		machine.index()
+	}
+	lifecycleMachines = []LifecycleMachine{
+		SessionLifecycle(),
+		TurnLifecycle(),
+		ThreadStatusLifecycle(),
+		JobLifecycle(),
+		DelegateLifecycle(),
+		DelegateRunLifecycle(),
+		DelegateOutcomeLifecycle(),
+		WatchLifecycle(),
+		TaskLifecycle(),
+		GoalLifecycle(),
+		HostOperationLifecycle(),
+		MutationProjectionLifecycle(),
+	}
+	lifecycleByKind = make(map[MachineKind]LifecycleMachine, len(lifecycleMachines))
+	for _, machine := range lifecycleMachines {
+		lifecycleByKind[machine.Kind] = machine
+	}
+}
+
+// index builds the lookup form of the declaration for one machine.
+func (m *LifecycleMachine) index() {
+	m.stateSet = make(map[string]LifecycleState, len(m.States))
+	for _, state := range m.States {
+		m.stateSet[state.Name] = state
+	}
+	m.edgeSet = make(map[[2]string]bool, len(m.Transitions))
+	for _, edge := range m.Transitions {
+		m.edgeSet[[2]string{edge.From, edge.To}] = true
+	}
+}
+
 // LifecycleMachines returns every declared machine in a stable order. The
 // doctor command and the generated client catalog both read this list, so a
-// new machine reaches every surface from one declaration.
-func LifecycleMachines() []LifecycleMachine {
-	declared := []LifecycleMachine{
-		sessionMachine,
-		turnMachine,
-		threadStatusMachine,
-		jobMachine,
-		delegatePhaseMachine,
-		delegateRunMachine,
-		delegateOutcomeMachine,
-		watchMachine,
-		taskMachine,
-		goalMachine,
-		hostOperationMachine,
-		mutationProjectionMachine,
-	}
-	// Each call owns its slices so a caller (or a JSON encoder) cannot mutate
-	// the declaration and change another caller's view.
-	out := make([]LifecycleMachine, len(declared))
-	for i, machine := range declared {
-		out[i] = LifecycleMachine{
-			Kind:        machine.Kind,
-			Initial:     machine.Initial,
-			States:      append([]LifecycleState(nil), machine.States...),
-			Transitions: append([]LifecycleEdge(nil), machine.Transitions...),
-		}
-	}
-	return out
-}
+// new machine reaches every surface from one declaration. Callers must not
+// mutate the returned machines; the registry is shared.
+func LifecycleMachines() []LifecycleMachine { return lifecycleMachines }
 
 // LifecycleMachineFor returns the declared machine for kind.
 func LifecycleMachineFor(kind MachineKind) (LifecycleMachine, bool) {
-	for _, machine := range LifecycleMachines() {
-		if machine.Kind == kind {
-			return machine, true
-		}
-	}
-	return LifecycleMachine{}, false
+	machine, ok := lifecycleByKind[kind]
+	return machine, ok
 }
 
 // SessionLifecycle returns the session machine.
@@ -611,6 +652,28 @@ func MutationProjectionLifecycle() LifecycleMachine { return mutationProjectionM
 // AllJobStatuses returns every declared job status in table order.
 func AllJobStatuses() []string { return jobMachine.stateNames() }
 
+// AllLifecycleClasses returns every declared class in stable order.
+func AllLifecycleClasses() []string {
+	return []string{
+		string(LifecycleActive),
+		string(LifecycleWaiting),
+		string(LifecycleIdle),
+		string(LifecycleSettled),
+		string(LifecycleFailed),
+		string(LifecycleNeutral),
+		string(LifecycleEnded),
+	}
+}
+
+// AllMachineKinds returns every declared machine kind in registry order.
+func AllMachineKinds() []string {
+	kinds := make([]string, len(lifecycleMachines))
+	for i, machine := range lifecycleMachines {
+		kinds[i] = string(machine.Kind)
+	}
+	return kinds
+}
+
 // AllSessionStates returns every declared session state in table order.
 func AllSessionStates() []string { return sessionMachine.stateNames() }
 
@@ -624,12 +687,23 @@ func AllDelegateRunStatuses() []string { return delegateRunMachine.stateNames() 
 // AllDelegateOutcomes returns every declared delegate outcome in table order.
 func AllDelegateOutcomes() []string { return delegateOutcomeMachine.stateNames() }
 
-// JobStatusFilterNames is the set a job-list status filter accepts: every
-// declared job status plus every declared delegate phase, because a delegate
-// activation job has historically reported its aggregate phase as its status.
+// JobListStatusFilterNames is the compatibility set the job-list status filter
+// accepts: every declared job status plus every declared delegate phase,
+// because a delegate activation job has historically reported its aggregate
+// phase as its status. It is a filter union, not the job machine's vocabulary.
 // It is deduplicated and declared in this order so the handler and the
 // model-facing schema cannot disagree.
-func JobStatusFilterNames() []string {
+func JobListStatusFilterNames() []string {
+	return append([]string(nil), jobStatusFilterNames...)
+}
+
+// JobListStatusFilterValid reports whether a job-list status filter accepts
+// name.
+func JobListStatusFilterValid(name string) bool { return jobStatusFilterSet[name] }
+
+var jobStatusFilterNames, jobStatusFilterSet = jobStatusFilterValues()
+
+func jobStatusFilterValues() ([]string, map[string]bool) {
 	names := append(AllJobStatuses(), AllDelegatePhases()...)
 	out := make([]string, 0, len(names))
 	seen := make(map[string]bool, len(names))
@@ -640,7 +714,7 @@ func JobStatusFilterNames() []string {
 		seen[name] = true
 		out = append(out, name)
 	}
-	return out
+	return out, seen
 }
 
 // AllGoalStatuses returns every declared goal status in table order.

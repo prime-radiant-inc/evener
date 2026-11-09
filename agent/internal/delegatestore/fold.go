@@ -383,7 +383,14 @@ func applyRunFinished(state State, event Event) error {
 	if err != nil {
 		return err
 	}
-	if !appwire.DelegateLifecycle().CanTransition(string(aggregate.Phase), string(PhaseIdle)) {
+	if aggregate.Phase != PhaseRunning && aggregate.Phase != PhaseSettling && aggregate.Phase != PhaseStopping {
+		return fmt.Errorf("delegate %q phase %q cannot finish", event.DelegateID, aggregate.Phase)
+	}
+	target := PhaseIdle
+	if !aggregate.Resumable {
+		target = PhaseClosed
+	}
+	if !appwire.DelegateLifecycle().CanTransition(string(aggregate.Phase), string(target)) {
 		return fmt.Errorf("delegate %q phase %q cannot finish", event.DelegateID, aggregate.Phase)
 	}
 	if !validOutcomeStatus(payload.Outcome.Status) {
@@ -500,7 +507,8 @@ func applySubtreeStopRequested(state State, event Event) error {
 		aggregate.PendingStopSeq = event.Seq
 		aggregate.PendingStopAt = event.TS
 		aggregate.NeedsAttention = false
-		if appwire.DelegateLifecycle().CanTransition(string(aggregate.Phase), string(PhaseStopping)) {
+		if appwire.DelegateLifecycle().CanTransition(string(aggregate.Phase), string(PhaseStopping)) ||
+			!appwire.DelegateLifecycle().HasState(string(aggregate.Phase)) {
 			aggregate.Phase = PhaseStopping
 		}
 	}

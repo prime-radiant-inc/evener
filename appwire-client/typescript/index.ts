@@ -460,7 +460,7 @@ export {
   resolvedValue,
   schemaPathKind,
 } from "./launchSchema";
-export type { LifecycleClass, LifecycleMachineFacts, LifecycleStateFacts } from "./lifecycle";
+export type { LifecycleMachineFacts, LifecycleStateFacts } from "./lifecycle";
 export {
   lifecycleMachine,
   lifecycleState,

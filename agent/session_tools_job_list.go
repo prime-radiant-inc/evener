@@ -3,7 +3,6 @@ package agent
 import (
 	"errors"
 	"fmt"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -557,7 +556,7 @@ func jobListFilterFromArgs(args map[string]any) (listFilter, error) {
 func jobStatusArrayArg(args map[string]any, key string) ([]jobstore.Status, error) {
 	return stringListArg(args, key, func(s string) (jobstore.Status, error) {
 		status := jobstore.Status(s)
-		if slices.Contains(appwire.JobStatusFilterNames(), s) {
+		if appwire.JobListStatusFilterValid(s) {
 			return status, nil
 		}
 		return "", fmt.Errorf("invalid job status %q", status)

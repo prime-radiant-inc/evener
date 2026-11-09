@@ -2,7 +2,6 @@ package doctor
 
 import (
 	"fmt"
-	"slices"
 	"strings"
 
 	"primeradiant.com/evener/appwire"
@@ -38,12 +37,13 @@ func RenderLifecycle(machines []appwire.LifecycleMachine) string {
 			}
 			fmt.Fprintf(&b, "  %-24s %-28s %s\n", state.Name, strings.Join(markers, ", "), state.Summary)
 		}
-		if len(machine.Transitions) > 0 {
-			edges := make([]string, 0, len(machine.Transitions))
-			for _, edge := range machine.Transitions {
-				edges = append(edges, edge.From+" -> "+edge.To)
+		var edges []string
+		for _, state := range machine.States {
+			for _, to := range machine.Next(state.Name) {
+				edges = append(edges, state.Name+" -> "+to)
 			}
-			slices.Sort(edges)
+		}
+		if len(edges) > 0 {
 			fmt.Fprintf(&b, "  transitions: %s\n", strings.Join(edges, ", "))
 		}
 	}

@@ -3,9 +3,9 @@
 // terminality and resting polarity reach the web and native clients from the
 // same declaration the session daemon obeys. Clients ask here instead of
 // carrying their own status lists.
-import { LIFECYCLE_MACHINES } from "./types.gen";
+import { type LIFECYCLE_CLASSES, LIFECYCLE_MACHINES } from "./types.gen";
 
-export type LifecycleClass = "active" | "waiting" | "idle" | "settled" | "failed" | "neutral" | "ended";
+export type LifecycleClass = (typeof LIFECYCLE_CLASSES)[number];
 
 export interface LifecycleStateFacts {
   class: LifecycleClass;

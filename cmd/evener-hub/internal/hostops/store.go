@@ -19,6 +19,7 @@ import (
 
 	"github.com/spf13/afero"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/execsupport/fsatomic"
 )
 
@@ -536,6 +537,9 @@ func (s *Store) Transition(id string, to State, change func(*Record)) (Record, e
 	if record.State == StateOrphanUnverified && to != StateInterrupted {
 		return Record{}, fmt.Errorf("%w: orphan-unverified record %q resolves only to %q",
 			ErrInvalidTransition, id, StateInterrupted)
+	}
+	if !appwire.HostOperationLifecycle().CanTransition(string(record.State), string(to)) {
+		return Record{}, fmt.Errorf("%w: %q -> %q", ErrInvalidTransition, record.State, to)
 	}
 	identity := identityOf(record)
 	if change != nil {

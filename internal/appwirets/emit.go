@@ -80,6 +80,8 @@ var keyedWireTypes = []string{
 }
 
 var stringEnums = []stringEnum{
+	{reflect.TypeFor[appwire.LifecycleClass](), "LIFECYCLE_CLASSES", "LifecycleClass", appwire.AllLifecycleClasses()},
+	{reflect.TypeFor[appwire.MachineKind](), "MACHINE_KINDS", "MachineKind", appwire.AllMachineKinds()},
 	{reflect.TypeFor[appwire.SessionState](), "SESSION_STATES", "SessionState", appwire.AllSessionStates()},
 	{reflect.TypeFor[appwire.JobStatus](), "JOB_STATUSES", "JobStatus", appwire.AllJobStatuses()},
 	{reflect.TypeFor[appwire.DelegatePhase](), "DELEGATE_PHASES", "DelegatePhase", appwire.AllDelegatePhases()},
