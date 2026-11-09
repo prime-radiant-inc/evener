@@ -133,6 +133,7 @@ func (o updateFileOp) apply(ctx context.Context, fm execenv.FileMutator) ([]stri
 				Want:      oldLines[hunkLine],
 				Line:      diagLine,
 				Got:       lineAt(origLines, diagLine-1),
+				GotEOF:    hunkLine > 0 && diagLine == 0,
 				lines:     origLines,
 				hunkLines: h,
 			}
@@ -258,9 +259,11 @@ type PatchMismatchError struct {
 	Want     string
 	Got      string
 	Line     int
+	// GotEOF is set when the matching prefix ran to the end of the file, so
+	// there is no file line at HunkLine (Got is empty, Line is 0).
+	GotEOF bool
 
 	kind      string
-	gotEOF    bool
 	lines     []string
 	hunkLines []string
 }
@@ -273,14 +276,18 @@ func (d *PatchMismatchError) Error() string {
 	}
 	fmt.Fprintf(&b, "\nfirst difference at old/context line %d of the hunk", d.HunkLine+1)
 	fmt.Fprintf(&b, "\nwanted: %q", d.Want)
-	if d.gotEOF {
+	if d.GotEOF {
 		fmt.Fprintf(&b, "\ngot:    end of file after %d lines", len(d.lines))
 	} else if d.Got != "" || d.Line > 0 {
 		fmt.Fprintf(&b, "\ngot:    %q", d.Got)
 	}
 
-	if d.Line > 0 {
-		fmt.Fprintf(&b, "\n\nFile context around line %d:\n%s", d.Line, formatLineSnippet(d.lines, d.Line, 2))
+	contextLine := d.Line
+	if d.GotEOF {
+		contextLine = len(d.lines)
+	}
+	if contextLine > 0 {
+		fmt.Fprintf(&b, "\n\nFile context around line %d:\n%s", contextLine, formatLineSnippet(d.lines, contextLine, 2))
 	}
 
 	if matches := candidateLineIndexes(d.lines, d.Want, d.Line, 3); len(matches) > 0 {

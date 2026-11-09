@@ -626,3 +626,19 @@ func TestApplyPatchBlankOnlyHunkAnchorsOnBlankLine(t *testing.T) {
 		t.Fatalf("file = %q, want %q", got, want)
 	}
 }
+
+func TestApplyPatchMismatchAtEndOfFileReportsEOF(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("alpha\nbeta\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	patch := "*** Begin Patch\n*** Update File: a.go\n@@\n alpha\n beta\n-gamma\n+delta\n*** End Patch\n"
+	_, err := ApplyPatch(testMutator(dir), patch)
+	var mm *PatchMismatchError
+	if !errors.As(err, &mm) {
+		t.Fatalf("err = %v, want *PatchMismatchError", err)
+	}
+	if mm.HunkLine != 2 || mm.Want != "gamma" || !mm.GotEOF {
+		t.Errorf("mismatch = {HunkLine:%d Want:%q GotEOF:%v}, want {2 gamma true}", mm.HunkLine, mm.Want, mm.GotEOF)
+	}
+}
