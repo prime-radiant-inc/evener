@@ -216,6 +216,11 @@ type jobManager struct {
 	// longRunningTimer is the armed reminder cadence for long-running shell
 	// jobs, nil while no shell job is running. Guarded by mu.
 	longRunningTimer clock.Timer
+	// reminderClock times that cadence. It is deliberately not clock: the
+	// job-lifecycle timers (foreground wait, finalize retry) must stay the only
+	// waiters on the job clock, or a test counting them with BlockUntil would
+	// see the 30-minute reminder instead.
+	reminderClock clock.Clock
 	// closeGrace bounds how long closeRuntimeState waits for each still-running
 	// job to finalize before abandoning it. Seeded from defaultCloseGrace at
 	// construction so tests can shrink the graceful-shutdown window.
@@ -667,6 +672,7 @@ func newJobManagerWithRestore(stateDir, sessionID string, enqueue func(jobNotifi
 		enqueue:               enqueue,
 		now:                   time.Now,
 		clock:                 clock.Real(),
+		reminderClock:         clock.Real(),
 		closeGrace:            defaultCloseGrace,
 		quietWindow:           delegateQuietWindow,
 		quietCheckInterval:    delegateQuietCheckInterval,

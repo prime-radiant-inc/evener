@@ -20,15 +20,19 @@ const longRunningJobCommandMaxChars = 120
 // longRunningJobsReason tags the reminder notification.
 const longRunningJobsReason = "long_running_jobs"
 
-// armLongRunningReminderLocked starts the owner's reminder cadence if it is not
-// already running. The cadence runs while the manager has shell jobs and ends
-// itself when none remain, so a session without shell jobs holds no timer. The
-// caller holds jm.mu.
-func (jm *jobManager) armLongRunningReminderLocked() {
+// armLongRunningReminder starts the owner's reminder cadence if it is not
+// already running. Callers arm it when a shell job becomes a background job
+// (an explicit background start or a promotion), so a job still inside its
+// foreground window, which cannot be long-running, holds no timer. The cadence
+// ends itself when no shell job remains running, so a session without shell
+// jobs holds no timer.
+func (jm *jobManager) armLongRunningReminder() {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
 	if jm.longRunningTimer != nil || jm.closing {
 		return
 	}
-	jm.longRunningTimer = jm.clock.AfterFunc(longRunningJobReminderInterval, jm.fireLongRunningReminder)
+	jm.longRunningTimer = jm.reminderClock.AfterFunc(longRunningJobReminderInterval, jm.fireLongRunningReminder)
 }
 
 // stopLongRunningReminderLocked ends the cadence. The caller holds jm.mu.
@@ -65,7 +69,7 @@ func (jm *jobManager) fireLongRunningReminder() {
 	if shells == 0 {
 		jm.longRunningTimer = nil
 	} else {
-		jm.longRunningTimer = jm.clock.AfterFunc(longRunningJobReminderInterval, jm.fireLongRunningReminder)
+		jm.longRunningTimer = jm.reminderClock.AfterFunc(longRunningJobReminderInterval, jm.fireLongRunningReminder)
 	}
 	jm.mu.Unlock()
 

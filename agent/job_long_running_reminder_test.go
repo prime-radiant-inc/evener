@@ -25,6 +25,7 @@ func newReminderRig(t *testing.T, opts ...sessionOpt) *reminderRig {
 	r := &reminderRig{clock: agenttest.NewFakeClock(), woken: make(chan struct{}, 16)}
 	r.sess = newSession(t, append([]sessionOpt{withClock(r.clock)}, opts...)...)
 	r.sess.jobManager.closeGrace = 5 * time.Second
+	r.sess.jobManager.reminderClock = r.clock
 	r.sess.SetNotifyFunc(func() { r.woken <- struct{}{} })
 	return r
 }
@@ -255,5 +256,23 @@ func TestNoLongRunningJobReminderAfterClose(t *testing.T) {
 	}
 	if got := len(r.woken); got != 0 {
 		t.Fatalf("wakes after close = %d, want 0", got)
+	}
+}
+
+func TestForegroundShellThatCompletesNeverArmsTheReminder(t *testing.T) {
+	t.Parallel()
+	r := newReminderRig(t)
+	before := r.clock.PendingCallbacks()
+
+	res := r.sess.reg.ExecuteCall(context.Background(), r.sess.env, llm.ToolCallData{
+		ID: "fg", Name: "shell",
+		Arguments: json.RawMessage(`{"command":"true"}`),
+	})
+	if res.IsError {
+		t.Fatalf("shell: %s", res.Output)
+	}
+
+	if got := r.clock.PendingCallbacks(); got != before {
+		t.Fatalf("armed clock callbacks after a completed foreground shell = %d, want %d", got, before)
 	}
 }
