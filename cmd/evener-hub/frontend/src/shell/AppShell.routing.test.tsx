@@ -1162,7 +1162,7 @@ test("a delayed nested location reply keeps the immediately opened child pane", 
   expect(state.focusedPaneId).toBe(child.id);
 });
 
-test("a nested rail link opens its pane before its location read answers", async () => {
+test("a nested rail link from an unrelated main keeps its child pane before the location read answers", async () => {
   const location = deferred<void>();
   const client = navClient();
   client.on("evener/navigation/read", (params: NavigationReadParams) => {
@@ -1191,6 +1191,7 @@ test("a nested rail link opens its pane before its location read answers", async
   });
 
   const user = userEvent.setup();
+  workspaceStore.getState().openPane("session", { ref: "local:unrelated" });
   render(<AppShell client={client} />);
   await screen.findByText("Session one");
   await user.click(screen.getByText("Session one"));
@@ -1199,7 +1200,8 @@ test("a nested rail link opens its pane before its location read answers", async
     .getState()
     .panes.find((pane) => pane.type === "session" && refParam(pane.params) === "local:s1");
   expect(child).toBeTruthy();
-  expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:s1" });
+  expect(child?.slot).toBe("secondary");
+  expect(workspaceStore.getState().focusedPaneId).toBe(child?.id);
 
   await act(async () => {
     location.resolve(undefined);
@@ -1209,6 +1211,7 @@ test("a nested rail link opens its pane before its location read answers", async
     expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:owner" });
   });
   const state = workspaceStore.getState();
+  expect(state.panes.find((pane) => pane.id === child?.id)).toBe(child);
   expect(state.panes.find((pane) => pane.id === child?.id)?.slot).toBe("secondary");
   expect(state.focusedPaneId).toBe(child?.id);
 });
