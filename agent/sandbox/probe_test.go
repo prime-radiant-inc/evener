@@ -287,8 +287,8 @@ func TestProbeReadsNpmAndCargoCacheEnv(t *testing.T) {
 // must judge that directory (#4220).
 func TestProbeReadsTheLoginHome(t *testing.T) {
 	t.Parallel()
-	facts := probeHost(stubProbeSystem{loginHome: "/home/login"})
-	if facts.LoginHome != "/home/login" {
+	facts := probeHost(stubProbeSystem{loginHome: "/fixture-home/login"})
+	if facts.LoginHome != "/fixture-home/login" {
 		t.Errorf("probeHost LoginHome=%q, want the user database's home", facts.LoginHome)
 	}
 }
@@ -327,7 +327,7 @@ func npmrcProbe(env map[string]string, files map[string][]byte) npmrcProbeSystem
 
 func TestProbeReadsNpmCacheFromConfigFiles(t *testing.T) {
 	t.Parallel()
-	const user, global = "/home/tester/npmrc-user", "/home/tester/npmrc-global"
+	const user, global = "/fixture-home/tester/npmrc-user", "/fixture-home/tester/npmrc-global"
 	facts := probeHost(npmrcProbe(
 		map[string]string{
 			"NPM_CONFIG_USERCONFIG":   user,
@@ -372,12 +372,12 @@ func TestProbeExpandsNpmrcVariables(t *testing.T) {
 	t.Parallel()
 	facts := probeHost(npmrcProbe(
 		map[string]string{
-			"npm_config_userconfig": "/home/u/.npmrc",
-			"HOME":                  "/home/u",
+			"npm_config_userconfig": "/fixture-home/u/.npmrc",
+			"HOME":                  "/fixture-home/u",
 		},
-		map[string][]byte{"/home/u/.npmrc": []byte("cache=${HOME}/.npm-cache\n")},
+		map[string][]byte{"/fixture-home/u/.npmrc": []byte("cache=${HOME}/.npm-cache\n")},
 	))
-	if want := []string{"/home/u/.npm-cache"}; !slices.Equal(facts.NpmrcCaches, want) {
+	if want := []string{"/fixture-home/u/.npm-cache"}; !slices.Equal(facts.NpmrcCaches, want) {
 		t.Errorf("probeHost NpmrcCaches = %v, want the expanded %v", facts.NpmrcCaches, want)
 	}
 }
@@ -387,8 +387,8 @@ func TestProbeExpandsNpmrcVariables(t *testing.T) {
 func TestProbeStripsNpmrcInlineComments(t *testing.T) {
 	t.Parallel()
 	facts := probeHost(npmrcProbe(
-		map[string]string{"npm_config_userconfig": "/home/u/.npmrc"},
-		map[string][]byte{"/home/u/.npmrc": []byte(
+		map[string]string{"npm_config_userconfig": "/fixture-home/u/.npmrc"},
+		map[string][]byte{"/fixture-home/u/.npmrc": []byte(
 			"cache=/from/user/npm # shared cache\n" +
 				"cache=\"/quoted/path # not a comment\"\n")},
 	))
