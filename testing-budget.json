@@ -106,6 +106,8 @@
   "primeradiant.com/evener/server": 13.44,
   "primeradiant.com/evener/test/e2e/fake429": 2.0,
   "primeradiant.com/evener/test/e2e/fakellm/cmd": 2.0,
+  "primeradiant.com/evener/test/e2e/providers": 2.0,
+  "primeradiant.com/evener/test/e2e/providers/cmd": 2.0,
   "primeradiant.com/evener/test/scenarios": 2.0,
   "primeradiant.com/evener/tools/tool-fluency/cmd/evener-fluency": 21.67,
   "primeradiant.com/evener/agent": 130.64,

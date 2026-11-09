@@ -17,6 +17,7 @@ import (
 
 	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/internal/devtool/shardrun"
+	"primeradiant.com/evener/internal/testfs"
 )
 
 // fixtureModule returns the absolute path of the real test module the
@@ -45,33 +46,16 @@ func isolateToolchainEnv(t *testing.T) {
 	t.Setenv("GOFLAGS", "")
 }
 
-// canonicalTempDir returns a fresh temp dir by its canonical path. The runners
-// report TMPDIR-derived paths canonically (scratch resolves its base), so a
-// path the test builds from this dir matches theirs even under a symlinked
-// temp root (macOS /var -> /private/var).
-func canonicalTempDir(t *testing.T) string {
-	t.Helper()
-	dir, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatalf("resolving temp dir: %v", err)
-	}
-	return dir
-}
-
 // e2eConfig is a runShards config over the fixture module with isolated
 // TMPDIR and survey cache, capture buffers attached.
 func e2eConfig(t *testing.T) (shardsConfig, *bytes.Buffer, *bytes.Buffer, string) {
 	t.Helper()
-	tmp := t.TempDir()
+	tmp := testfs.CanonicalTempDir(t)
 	t.Setenv("TMPDIR", tmp)
 	// The fixture module lives under testdata, outside the repo's go.work
 	// workspace; the child toolchain must resolve its own go.mod instead.
 	t.Setenv("GOWORK", "off")
 	isolateToolchainEnv(t)
-	resolved, err := filepath.EvalSymlinks(tmp)
-	if err != nil {
-		t.Fatalf("resolving TMPDIR fixture: %v", err)
-	}
 	var stdout, stderr bytes.Buffer
 	return shardsConfig{
 		label: "agent", envPrefix: "AGENT", pkgDir: fixtureModule(t),
@@ -80,7 +64,7 @@ func e2eConfig(t *testing.T) (shardsConfig, *bytes.Buffer, *bytes.Buffer, string
 		cacheDir: filepath.Join(t.TempDir(), "cache"),
 		stdout:   &stdout,
 		stderr:   &stderr,
-	}, &stdout, &stderr, resolved
+	}, &stdout, &stderr, tmp
 }
 
 func scratchLeftovers(t *testing.T, tmp string) []string {

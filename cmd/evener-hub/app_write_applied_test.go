@@ -20,6 +20,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/internal/testfs"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -761,7 +762,7 @@ func TestLaunch_SetLayerWhoseResolutionFailsIsStillApplied(t *testing.T) {
 // decision on disk, so it is applied however the call ends.
 func TestLaunch_TrustRepoWhoseResolutionFailsIsStillApplied(t *testing.T) {
 	stateRoot := t.TempDir()
-	cwd := canonicalTempDir(t)
+	cwd := testfs.CanonicalTempDir(t)
 	repoPath := filepath.Join(cwd, ".evener", "launch.toml")
 	if err := os.MkdirAll(filepath.Dir(repoPath), 0o755); err != nil {
 		t.Fatal(err)

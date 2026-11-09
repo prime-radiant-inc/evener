@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/internal/testfs"
 )
 
 func docRevisionOf(content []byte) string {
@@ -27,7 +29,7 @@ func docRevisionOf(content []byte) string {
 // t.TempDir sits under /var, a symlink to /private/var.
 func docTestRoot(t *testing.T) string {
 	t.Helper()
-	return canonicalTempDir(t)
+	return testfs.CanonicalTempDir(t)
 }
 
 func writeDocAt(t *testing.T, path string, content []byte, modified time.Time) {
