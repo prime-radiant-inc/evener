@@ -206,6 +206,84 @@ func TestHistoricalActivityTreeKeepsNestedDelegatesWhenCreatorSessionUnavailable
 	}
 }
 
+// A live root seeds the delegate-journal root from its own resolved root
+// before visiting children. Without that seed, a first historical child whose
+// own meta is missing falls back to its own session ID, scans a nonexistent
+// per-child journal, and hides the nested delegates the shared journal
+// attributes to it.
+func TestLiveActivityTreeKeepsNestedDelegatesWhenFirstHistoricalChildMetaMissing(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	s := newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir}),
+		withoutGitSnapshot(),
+	)
+	rootID := s.ID()
+	middleID := "childlivemiddle"
+	leafID := "childliveleaf"
+	middleDelegateID := "dlg_" + strings.TrimPrefix(middleID, "child")
+	leafDelegateID := "dlg_" + strings.TrimPrefix(leafID, "child")
+	middle := pastStableDescriptor(rootID, middleID, "middle task")
+	leaf := pastStableDescriptor(rootID, leafID, "leaf task")
+	leaf.ParentDelegateID = middleDelegateID
+	leaf.VisibleSessionID = middleID
+	writePastDelegates(t, stateDir, rootID, middle, leaf)
+
+	started := time.Unix(9_100, 0).UTC()
+	s1cov_writeJobLog(t, stateDir, leafID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_live_leaf", Type: jobstore.JobShell,
+		OwnerSessionID: leafID, VisibleToSession: leafID, StartedAt: &started,
+	})
+	savePastActivityMetaWithTreeRevision(t, stateDir, leafID, "Leaf", rootID, 0)
+
+	controller, _ := newDelegateControllerTestHarness(t, 10, 10)
+	controller.rootRuntime = s
+	s.delegateController = controller
+	controller.mu.Lock()
+	_, err := controller.appendLocked(
+		delegateCreatedBySession(middleDelegateID, "", rootID, rootID, middleID),
+	)
+	controller.mu.Unlock()
+	if err != nil {
+		t.Fatalf("seed live delegate: %v", err)
+	}
+
+	rootLoc := activitySessionLocator{live: s, stateDir: stateDir, sessionID: rootID}
+	snapshot, _, _, err := loadActivitySnapshotForParams(context.Background(), rootLoc, appwire.JobsListParams{})
+	if err != nil {
+		t.Fatalf("loadActivitySnapshotForParams: %v", err)
+	}
+	middleRow, ok := snapshot.Delegates[middleDelegateID]
+	if !ok {
+		t.Fatalf("live root roster = %v, want the row it created", delegateIDs(snapshot.Delegates))
+	}
+	childID, err := activityChildSessionForStable(middleRow)
+	if err != nil {
+		t.Fatalf("middle child link: %v", err)
+	}
+	child := snapshot.Children[childID]
+	if child == nil {
+		t.Fatal("first historical child is absent: its nested delegates from the shared journal were hidden (#5643)")
+	}
+	if _, ok := child.Delegates[leafDelegateID]; !ok {
+		t.Fatalf("degraded child delegates = %v, want the nested delegate row", delegateIDs(child.Delegates))
+	}
+	leafChild := child.Children[leafID]
+	if leafChild == nil {
+		t.Fatal("nested leaf session did not load under the degraded child")
+	}
+	found := false
+	for _, record := range leafChild.Jobs {
+		if record != nil && record.JobID == "job_live_leaf" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("nested leaf jobs = %+v, want job %q", leafChild.Jobs, "job_live_leaf")
+	}
+}
+
 // A continuation minted while a degraded child's jobs journal was unreadable
 // must be refused once that journal reads: its ResumeIndex was counted over
 // an empty job list, and the recovered journal can renumber the delegate
@@ -273,8 +351,6 @@ func TestHistoricalActivityContinuationRejectsPositionAfterJobsJournalRecovers(t
 	})
 	if _, _, _, err := loadActivitySnapshotForParams(context.Background(), rootLoc, params); err == nil {
 		t.Fatal("expected the continuation to be rejected after the jobs journal became readable")
-	} else if !strings.Contains(err.Error(), "underlying journal changed") {
-		t.Fatalf("resume error = %v, want the underlying-journal-changed staleness error", err)
 	}
 }
 

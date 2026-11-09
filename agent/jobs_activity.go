@@ -438,6 +438,13 @@ func activityCurrentRootID(clock *jobActivityClock, fallback string) string {
 // there is nothing left for a caller to do with the cache.
 func loadActivitySnapshotForParams(ctx context.Context, root activitySessionLocator, params appwire.JobsListParams) (*activitySessionSnapshot, int, int, error) {
 	cache := newHistoricalActivityCache(ctx, root.sessionID)
+	if root.live != nil {
+		// A live root's resolved root is knowable before any child loads,
+		// including a first historical child whose own meta is missing. Seed
+		// it so that child's creator-indexed rows still resolve to the shared
+		// delegate journal instead of a per-child one named by the fallback.
+		cache.rootID = activityCurrentRootID(root.live.jobActivityClock, root.live.ID())
+	}
 	if strings.TrimSpace(params.Continuation) == "" {
 		visited := map[string]bool{root.sessionID: true}
 		snapshot, err := buildActivityFullSnapshot(root, visited, false, cache, 0)
