@@ -353,7 +353,7 @@ func TestShellToolIntentLandsOnJobRecord(t *testing.T) {
 		ID:   "c-intent",
 		Name: "shell",
 		Arguments: json.RawMessage(
-			`{"command":"sleep 30","mode":"background","intent":"Running the suite to find the failure"}`),
+			`{"command":"exec sleep 30","mode":"background","intent":"Running the suite to find the failure"}`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
@@ -391,7 +391,7 @@ func TestShellToolBackgroundReturnsJobID(t *testing.T) {
 	res := s.reg.ExecuteCall(ctx, s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
+		Arguments: json.RawMessage(`{"command":"exec sleep 30","mode":"background"}`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
@@ -443,7 +443,7 @@ func TestShellToolBackgroundModelOutputRetainsJobIDUnderRegistryLimits(t *testin
 	res := s.reg.ExecuteCall(ctx, s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
+		Arguments: json.RawMessage(`{"command":"exec sleep 30","mode":"background"}`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
@@ -546,7 +546,7 @@ func TestShellBackgroundCompletionRetainsUnterminatedOutput(t *testing.T) {
 func TestParseShellToolArgsClampsSmallMaxRuntime(t *testing.T) {
 	t.Parallel()
 	args, err := parseShellToolArgs(context.Background(), map[string]any{
-		"command":        "sleep 30",
+		"command":        "exec sleep 30",
 		"max_runtime_ms": float64(1),
 	})
 	if err != nil {
@@ -594,7 +594,7 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 	}{
 		{
 			name: "default",
-			args: json.RawMessage(`{"command":"printf start; sleep 2; printf end"}`),
+			args: json.RawMessage(`{"command":"printf start; sleep 2; ls"}`),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -679,7 +679,7 @@ func TestSessionCloseMarksBackgroundShellCancelledBeforeEnvCleanup(t *testing.T)
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
+		Arguments: json.RawMessage(`{"command":"exec sleep 30","mode":"background"}`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
@@ -744,7 +744,7 @@ func TestParentCloseMarksSubagentBackgroundShellCancelledBeforeSharedEnvCleanup(
 	res := child.reg.ExecuteCall(context.Background(), child.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
+		Arguments: json.RawMessage(`{"command":"exec sleep 30","mode":"background"}`),
 	})
 	if res.IsError {
 		t.Fatalf("child shell returned error: %s", res.Output)
@@ -805,7 +805,7 @@ func TestParentCloseRejectsSubagentShellStartedDuringClose(t *testing.T) {
 							ToolCall: &llm.ToolCallData{
 								ID:        "late-shell",
 								Name:      "shell",
-								Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
+								Arguments: json.RawMessage(`{"command":"exec sleep 30","mode":"background"}`),
 								Type:      "function",
 							},
 						}},

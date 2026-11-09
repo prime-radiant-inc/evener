@@ -25,7 +25,7 @@ func endTurnWarningWithRunningJob(t *testing.T, s *Session) (warning, jobID stri
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
+		Arguments: json.RawMessage(`{"command":"exec sleep 30","mode":"background"}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)

@@ -1056,7 +1056,7 @@ func TestDrainDoesNotExcuseFiredReadinessWatch(t *testing.T) {
 	}}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{TurnEndsProcess: true}))
 	shell := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
-		ID: "shell", Name: "shell", Arguments: json.RawMessage(`{"command":"printf READY\\n; sleep 5","mode":"background"}`),
+		ID: "shell", Name: "shell", Arguments: json.RawMessage(`{"command":"printf READY\\n; exec sleep 5","mode":"background"}`),
 	})
 	if shell.IsError {
 		t.Fatalf("shell: %s", shell.Output)

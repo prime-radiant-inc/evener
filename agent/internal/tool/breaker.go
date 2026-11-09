@@ -318,7 +318,7 @@ const repetitionNudgePrefix = "You have now made this same call and received the
 // as a session loops; stating the real count lets a long loop read as
 // escalating rather than repeating the same "twice" wording forever.
 func repetitionNudgeText(count int) string {
-	return fmt.Sprintf(repetitionNudgePrefix+"%d times in a row. Repeating it will not change the answer — use the result you already have, or change your approach.", count)
+	return fmt.Sprintf(repetitionNudgePrefix+"%d times in a row. Repeating it will not change the answer — use the result you already have, or change your approach. If you are repeating it to wait for something, end your turn with your result tool and end_reason=\"waiting_on_work\": the completion wakes you, and to wake on a condition you set a job_watch with output_match.", count)
 }
 
 // IsBreakerNudge reports whether text is the breaker's intervention text —

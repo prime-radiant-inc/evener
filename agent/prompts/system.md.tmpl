@@ -91,7 +91,7 @@ A delegate shares your working directory unless you give it `isolation="worktree
 Shell jobs{{ if .HasTool "delegate" }} and delegates{{ end }} keep running after your turn ends, and Evener tells you when one of yours finishes.
 {{- else -}}
 This run ends once your turn's work is done.{{ if .HasTool "delegate" }} Delegates keep running past your turn, and Evener tells you when one finishes.{{ end }}{{ if .HasTool "job_watch" }} A background shell job survives the end of your turn only while a `job_watch` is set on it, so before you end your turn on a job whose result you need, set a `job_watch` on it with a `progress_interval_ms` of a few minutes.{{ end }}
-{{- end }} Start long work in the background only when you have other work to do meanwhile and will use its result.
+{{- end }} Run long work as a background job, then do other work or end your turn.
 
 Ending a turn while work you started still runs is a normal turn end, not an incomplete report: work that reports back wakes you when it finishes, so do not poll and do not fill the time with work you do not need.{{ if .TurnEndsProcess }} This run's own process exits once that work is drained, so a delegate that stays silent for two stall windows is abandoned and a job that keeps running is killed at exit.{{ end }}
 

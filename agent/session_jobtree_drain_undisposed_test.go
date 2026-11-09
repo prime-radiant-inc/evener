@@ -23,7 +23,7 @@ func startUndisposedBackgroundShell(t *testing.T, sess *Session) string {
 	res := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 300","mode":"background"}`),
+		Arguments: json.RawMessage(`{"command":"exec sleep 300","mode":"background"}`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)

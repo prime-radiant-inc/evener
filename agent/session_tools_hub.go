@@ -169,7 +169,7 @@ func (s *Session) composeHubRegistry() {
 		} else if name == "job_list" {
 			registered.Definition = tool.DefJobListNamed(s.resultToolName())
 		} else if name == "job_status" {
-			registered.Definition = tool.DefJobStatus()
+			registered.Definition = tool.DefJobStatusNamed(s.resultToolName())
 		} else {
 			continue
 		}

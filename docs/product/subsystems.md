@@ -236,6 +236,12 @@ output excerpts and watch frames cannot settle completion delivery. This
 authority boundary applies to every client; S10 preserves the original
 conversation content. See [job control](../job-control.md).
 
+S12 refuses wait-shaped actions at the tool boundary: a repeat `job_status` on
+an unchanged running target and a sleep-only `shell` command return
+`wait_refused`, and the refusal text, tool descriptions and system prompt all
+say to end the turn so the completion wakes the agent. The session keeps no
+wait primitive. See [job control](../job-control.md).
+
 S06 requires local `hub_state_root` storage with best-effort OS classification,
 not an exhaustive filesystem allowlist. Endpoint observation is non-owning,
 Linux owners retain flock plus an OFD marker, and hub/inspector upgrades must be

@@ -48,7 +48,7 @@ Check finished work against the task's own requirements and inputs. A check that
 
 ## Background work
 
-Shell jobs keep running after your turn ends, and Evener tells you when one of yours finishes. Start long work in the background only when you have other work to do meanwhile and will use its result.
+Shell jobs keep running after your turn ends, and Evener tells you when one of yours finishes. Run long work as a background job, then do other work or end your turn.
 
 Ending a turn while work you started still runs is a normal turn end, not an incomplete report: work that reports back wakes you when it finishes, so do not poll and do not fill the time with work you do not need.
 

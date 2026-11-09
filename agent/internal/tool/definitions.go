@@ -522,10 +522,24 @@ func DefJobWatchNamed(eventKinds []string, resultTool string) llm.ToolDefinition
 }
 
 func DefJobStatus() llm.ToolDefinition {
+	return DefJobStatusNamed(DefaultResultToolName)
+}
+
+// EndTurnToWait is the guidance for an agent that has nothing else to do until
+// background work finishes: end the turn and let the completion wake it. It is
+// the one wording shared by the job tool descriptions, the breaker's repetition
+// nudge and the refusals of wait-shaped calls.
+func EndTurnToWait(resultTool string) string {
+	return "When you have nothing else to do until it finishes, end your turn: call `" + resultTool + "` with `end_turn=true` and `end_reason=\"waiting_on_work\"`. Its completion wakes you. To wake on a condition instead, set `job_watch` with `output_match`."
+}
+
+// DefJobStatusNamed is DefJobStatus for a session whose result tool is named
+// resultTool.
+func DefJobStatusNamed(resultTool string) llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        "job_status",
-		Description: "Inspect one durable shell job or stable delegate by target. Use this for metadata-only orientation: type, lifecycle status, observable phase, running/quiet time, and transcript_ref. Delegate status never returns terminal packet contents or acknowledges delivery. Completion is notification-driven; do not poll this waiting for completed. Read raw evidence with read_transcript(transcript_ref).",
+		Description: "Inspect one durable shell job or stable delegate by target. Use this for metadata-only orientation: type, lifecycle status, observable phase, running/quiet time, and transcript_ref. Delegate status never returns terminal packet contents or acknowledges delivery. Completion is notification-driven, and a repeat call on a running target whose status and phase have not changed is refused. " + EndTurnToWait(resultTool) + " Read raw evidence with read_transcript(transcript_ref).",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -559,7 +573,7 @@ func DefJobListNamed(resultTool string) llm.ToolDefinition {
 	typeEnum := []any{"shell", "delegate"}
 	return llm.ToolDefinition{
 		Name:        "job_list",
-		Description: "List this session's durable shell jobs and stable delegates, newest first; filter by `status` or `type`. Rows include typed identity, status, phase, running_for_ms, quiet_for_ms, and transcript_ref, so this is usually enough to re-orient without a follow-up status call. Completion is notification-driven; if you have waited a long time with no notification, list work to re-orient instead of re-running it. " + ObserverReporting(resultTool) + " Use transcript evidence after an observer's report when you need audit or diagnosis context. The result also includes your active watches. Terminal outcome statuses: completed, failed, command_exited_nonzero, command_killed, exhausted, cancelled, stopped. A short shell can finish before a running-only filter sees it, and an ended delegate becomes idle; when recency matters, list unfiltered or inspect the typed resource by id.",
+		Description: "List this session's durable shell jobs and stable delegates, newest first; filter by `status` or `type`. Rows include typed identity, status, phase, running_for_ms, quiet_for_ms, and transcript_ref, so this is usually enough to re-orient without a follow-up status call. Completion is notification-driven. " + EndTurnToWait(resultTool) + " " + ObserverReporting(resultTool) + " Use transcript evidence after an observer's report when you need audit or diagnosis context. The result also includes your active watches. Terminal outcome statuses: completed, failed, command_exited_nonzero, command_killed, exhausted, cancelled, stopped. A short shell can finish before a running-only filter sees it, and an ended delegate becomes idle; when recency matters, list unfiltered or inspect the typed resource by id.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",

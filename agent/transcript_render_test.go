@@ -829,7 +829,7 @@ func TestRenderMarkdown_ParallelToolCalls(t *testing.T) {
 func TestRenderMarkdown_PendingToolCall(t *testing.T) {
 	t.Parallel()
 	entries := []transcript.Entry{
-		toolCallEntry(call("p1", "shell", `{"command":"sleep 100"}`)),
+		toolCallEntry(call("p1", "shell", `{"command":"exec sleep 100"}`)),
 	}
 	out := renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
 	if !strings.Contains(out, "[pending] `shell`") {

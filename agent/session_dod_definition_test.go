@@ -1839,7 +1839,7 @@ func TestSession_ShellTool_TimeoutAppendsMessageToToolResult(t *testing.T) {
 					Message: llm.Message{
 						Role: llm.RoleAssistant,
 						Content: []llm.ContentPart{
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "shell", Arguments: json.RawMessage(`{"command":"sleep 30"}`)}},
+							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "shell", Arguments: json.RawMessage(`{"command":"exec sleep 30"}`)}},
 						},
 					},
 				}

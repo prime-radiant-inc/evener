@@ -357,7 +357,7 @@ func TestLeafDelegateWatchesItsOwnJobsOnly(t *testing.T) {
 	shellRes := child.reg.ExecuteCall(context.Background(), child.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
+		Arguments: json.RawMessage(`{"command":"exec sleep 30","mode":"background"}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("leaf shell returned error: %s", shellRes.Output)

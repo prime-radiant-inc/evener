@@ -68,7 +68,7 @@ A delegate shares your working directory unless you give it `isolation="worktree
 
 ## Background work
 
-Shell jobs and delegates keep running after your turn ends, and Evener tells you when one of yours finishes. Start long work in the background only when you have other work to do meanwhile and will use its result.
+Shell jobs and delegates keep running after your turn ends, and Evener tells you when one of yours finishes. Run long work as a background job, then do other work or end your turn.
 
 Ending a turn while work you started still runs is a normal turn end, not an incomplete report: work that reports back wakes you when it finishes, so do not poll and do not fill the time with work you do not need.
 
@@ -192,7 +192,7 @@ Before you end a turn, check where your answer is. It reaches the person only as
 [
   {
     "name": "job_status",
-    "description": "Inspect one durable shell job or stable delegate by target. Use this for metadata-only orientation: type, lifecycle status, observable phase, running/quiet time, and transcript_ref. Delegate status never returns terminal packet contents or acknowledges delivery. Completion is notification-driven; do not poll this waiting for completed. Read raw evidence with read_transcript(transcript_ref).",
+    "description": "Inspect one durable shell job or stable delegate by target. Use this for metadata-only orientation: type, lifecycle status, observable phase, running/quiet time, and transcript_ref. Delegate status never returns terminal packet contents or acknowledges delivery. Completion is notification-driven, and a repeat call on a running target whose status and phase have not changed is refused. When you have nothing else to do until it finishes, end your turn: call `communicate` with `end_turn=true` and `end_reason=\"waiting_on_work\"`. Its completion wakes you. To wake on a condition instead, set `job_watch` with `output_match`. Read raw evidence with read_transcript(transcript_ref).",
     "parameters": {
       "additionalProperties": false,
       "properties": {
@@ -215,7 +215,7 @@ Before you end a turn, check where your answer is. It reaches the person only as
   },
   {
     "name": "job_list",
-    "description": "List this session's durable shell jobs and stable delegates, newest first; filter by `status` or `type`. Rows include typed identity, status, phase, running_for_ms, quiet_for_ms, and transcript_ref, so this is usually enough to re-orient without a follow-up status call. Completion is notification-driven; if you have waited a long time with no notification, list work to re-orient instead of re-running it. Observers send updates with `communicate(end_turn=false)`, and a readiness line or their findings with `communicate(end_turn=true)`. Use transcript evidence after an observer's report when you need audit or diagnosis context. The result also includes your active watches. Terminal outcome statuses: completed, failed, command_exited_nonzero, command_killed, exhausted, cancelled, stopped. A short shell can finish before a running-only filter sees it, and an ended delegate becomes idle; when recency matters, list unfiltered or inspect the typed resource by id.",
+    "description": "List this session's durable shell jobs and stable delegates, newest first; filter by `status` or `type`. Rows include typed identity, status, phase, running_for_ms, quiet_for_ms, and transcript_ref, so this is usually enough to re-orient without a follow-up status call. Completion is notification-driven. When you have nothing else to do until it finishes, end your turn: call `communicate` with `end_turn=true` and `end_reason=\"waiting_on_work\"`. Its completion wakes you. To wake on a condition instead, set `job_watch` with `output_match`. Observers send updates with `communicate(end_turn=false)`, and a readiness line or their findings with `communicate(end_turn=true)`. Use transcript evidence after an observer's report when you need audit or diagnosis context. The result also includes your active watches. Terminal outcome statuses: completed, failed, command_exited_nonzero, command_killed, exhausted, cancelled, stopped. A short shell can finish before a running-only filter sees it, and an ended delegate becomes idle; when recency matters, list unfiltered or inspect the typed resource by id.",
     "parameters": {
       "additionalProperties": false,
       "properties": {

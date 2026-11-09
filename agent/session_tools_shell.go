@@ -168,6 +168,9 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			if err != nil {
 				return "", err
 			}
+			if err := s.refuseSleepOnlyShell(shellArgs.Command); err != nil {
+				return "", err
+			}
 			// Resolve shellArgs.WorkingDir (the raw, possibly-relative model-supplied
 			// cwd, or "" if omitted) against env now, once, for both the streaming and
 			// buffered dispatch paths below. Recorded on the job (see
