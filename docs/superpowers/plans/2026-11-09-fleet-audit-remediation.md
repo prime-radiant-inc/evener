@@ -116,6 +116,10 @@ creation idempotency.
   the reset time. The human can change the model while it waits; that resumes
   immediately on the new model with the held notifications and goal. The state
   shows wherever sessions are listed. Implements R05 for the quota case.
+  When the 429 names no reset time, the existing pause stays (resume on a
+  model switch or a user message); automatic paced recovery for that case is
+  open, tracked under R05. One-shot `evener run` keeps fail-fast (ruling
+  2026-11-09, to confirm with Jesse): there is no human to switch models.
   No default fallback chain: which model runs the work stays the human's
   choice; the existing `model_fallbacks` setting remains available. Owns W1.4.
 - [x] **D4 Watch budget.** Decided 2026-11-09: remove the 50-delivery lifetime
@@ -239,7 +243,8 @@ description in `agent/internal/tool/definitions.go`; tests beside each;
 - [ ] Failing test `TestSleepOnlyShellCommandIsRefused`: a command that only
   sleeps (`sleep N`, a `sleep` loop with no other work) is refused before it
   runs; a command that sleeps as part of real work is not (D1 option a: loops
-  that do work between sleeps are bounded by W1.3's deadline instead).
+  that do work between sleeps are not refused; W1.3's long-running job
+  reminders surface them instead).
 - [ ] Rewrite the wait guidance where the agent reads it at the moment it acts,
   in "when you want X, do Y" form: the `job_status` and `job_list`
   descriptions, the repeated-poll refusal, the breaker's repetition nudge, and
@@ -299,8 +304,9 @@ if one of these is unexpected, stop it with `job_stop`.
   clears it on resume.
 - [ ] Update the affected client surfaces that list sessions (hub web, native)
   to show the state; follow `docs/developing-evener/design-system.md`.
-- [ ] Implement per D3. Pass, update R05 (remove from open list once
-  verified), commit, PR.
+- [ ] Implement per D3. Pass, record the quota case in the owning guide and
+  keep R05 open for the non-quota transient cases (e.g. exhausted 503
+  retries), commit, PR.
 
 ---
 
@@ -352,9 +358,11 @@ hint text.
   `TestApplyPatchMismatchReportsFirstDifferingLine` (structured mismatch
   carries the line index of the first differing line, not the block's first
   line). `agent/internal/tool/apply_patch.go`.
-- [ ] **W3.2 shell cwd.** `TestShellCwdWithShellOperatorsIsRejectedAsNotAPath`:
-  a `cwd` containing `|`, `&&`, `>` or `;` fails with a distinct error kind
-  before any stat. `agent/session_tools_shell.go`.
+- [ ] **W3.2 shell cwd.** `TestShellCwdWithShellOperatorsGetsPathHint`: a
+  `cwd` that fails ordinary path validation and contains `|`, `&&`, `>` or `;`
+  fails with a distinct error kind saying `cwd` is one directory path; an
+  existing directory whose name contains those characters is still accepted.
+  `agent/session_tools_shell.go`.
 - [ ] **W3.3 grep cap.** `TestGrepRaisedMaxResultsIsNotRecappedByRegistry`:
   `max_results=400` returns 400 matches (within the char bound).
   `agent/internal/tool/registry.go`.
@@ -371,7 +379,11 @@ hint text.
   (sessions older than `since` are not parsed: count reads via the fs seam) and
   context cancellation stops the walk. Default `since` for the tool.
   `agent/doctor/sessions.go`.
-- [ ] **W3.8 use_skill.** `TestUseSkillAlreadyActiveRecordsNoObligation`.
+- [ ] **W3.8 use_skill.** Make a redundant `use_skill` cheaper without removing
+  the delivery obligation that re-delivers a skill body after compaction
+  removes it (`TestSkillDelivery_RevalidateAfterFold` must keep passing).
+  Short-circuit only the redundant render; test that the obligation and
+  revalidation behavior are unchanged.
 - [ ] **W3.9 compact_context (lowest priority).** Below the pressure floor the
   call is a no-op with a structured "not needed" result.
 
