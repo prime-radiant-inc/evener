@@ -27,6 +27,12 @@ export function whenProjectionWorkIdleForTests(): Promise<number> {
   return projectionWorkTracker.whenIdle();
 }
 
+// Cumulative registrations, so the flush can see work that started and
+// finished entirely inside one macrotask hop.
+export function projectionWorkRegistrationsForTests(): number {
+  return projectionWorkTracker.registrations();
+}
+
 // Forgets whatever is still in flight: a test resetting its stores already
 // knows that work's result no longer matters.
 export function clearProjectionWorkForTests(): void {

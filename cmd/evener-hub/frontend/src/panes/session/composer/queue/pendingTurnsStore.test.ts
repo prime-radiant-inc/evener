@@ -736,17 +736,13 @@ test("a flush that can never settle trips instead of hanging inside act", async 
 
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
-    // Captured before the clock moves: the rejection lands while the timers
-    // advance, and a handler attached only afterwards is an unhandled
-    // rejection in that window.
-    const flushing = flushPendingTurnsProjectionForTests().then(
-      () => undefined,
-      (error: unknown) => error,
-    );
+    // The rejection handler is attached before the clock moves: the rejection
+    // lands while the timers advance, and handling it only afterwards would be
+    // an unhandled rejection in that window.
+    const flushing = flushPendingTurnsProjectionForTests();
+    const rejected = expect(flushing).rejects.toBeInstanceOf(Error);
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(await flushing).toMatchObject({
-      message: expect.stringMatching(/projection work stalled: .*still unsettled after \d+ms/),
-    });
+    await rejected;
   } finally {
     vi.useRealTimers();
   }

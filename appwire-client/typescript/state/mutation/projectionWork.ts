@@ -16,6 +16,11 @@ export interface MutationProjectionWorkTracker {
   // between steps, so a caller that must outlast a durable chain hops a
   // macrotask and calls whenIdle again.
   whenIdle(): Promise<number>;
+  // Cumulative operations registered so far, across clear() calls. A caller
+  // that hops a macrotask compares it before and after the hop to see work
+  // that started and finished inside the hop, which an idle check alone
+  // cannot observe.
+  registrations(): number;
   // Forgets every currently tracked promise with no wait at all - a fence
   // reset already knows their result no longer matters to this host.
   clear(): void;
@@ -74,6 +79,10 @@ export function createMutationProjectionWorkTracker(): MutationProjectionWorkTra
       const registrationsAtStart = registrations;
       await drained(current);
       return outstandingAtStart + (registrations - registrationsAtStart);
+    },
+
+    registrations() {
+      return registrations;
     },
 
     clear() {

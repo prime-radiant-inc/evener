@@ -1,6 +1,9 @@
 import { act } from "@testing-library/react";
 
-import { whenProjectionWorkIdleForTests } from "../../../../../stores/projectionWork";
+import {
+  projectionWorkRegistrationsForTests,
+  whenProjectionWorkIdleForTests,
+} from "../../../../../stores/projectionWork";
 
 // The stall bound and the macrotask hop are test-harness policy, so they live
 // here with the flush rather than in the package tracker (#1891). A durable
@@ -37,17 +40,25 @@ export async function settleProjectionWorkForTests(): Promise<number> {
     );
   });
   try {
+    let previousRegistrations = projectionWorkRegistrationsForTests();
     // Work outstanding when the settle began counts once, before any hop.
-    seen = await Promise.race([whenProjectionWorkIdleForTests(), tripwire]);
+    if ((await Promise.race([whenProjectionWorkIdleForTests(), tripwire])) > 0) seen = 1;
     for (;;) {
       // Wait out anything already outstanding, then always give one macrotask
-      // for a chain's next step to register. Only a quiet check after that hop
-      // ends the settle: accepting zero before the hop let a continuation
-      // queued by the operation that just finished escape the flush.
+      // for a chain's next step to register. A hop that saw no registration
+      // and left nothing outstanding ends the settle: accepting zero before
+      // the hop let a continuation queued by the operation that just finished
+      // escape the flush, and an idle check alone cannot see work that started
+      // and finished inside the hop.
       await Promise.race([yieldMacrotask(), tripwire]);
       const count = await Promise.race([whenProjectionWorkIdleForTests(), tripwire]);
-      seen += count;
-      if (count === 0) return seen;
+      const registrations = projectionWorkRegistrationsForTests();
+      // Count activity, not operations: the only consumer asks whether the
+      // settle saw any work at all. A hop in which work started and finished
+      // is activity even though the idle check reports zero.
+      if (registrations !== previousRegistrations || count > 0) seen += 1;
+      if (registrations === previousRegistrations && count === 0) return seen;
+      previousRegistrations = registrations;
     }
   } finally {
     clearTimeout(timer);

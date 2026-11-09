@@ -75,4 +75,13 @@ describe("createMutationProjectionWorkTracker", () => {
     tracker.clear();
     await expect(tracker.whenIdle()).resolves.toBe(0);
   });
+
+  test("registrations reports cumulative work across clears", async () => {
+    const tracker = createMutationProjectionWorkTracker();
+    void tracker.track(Promise.resolve());
+    void tracker.track(Promise.resolve());
+    expect(tracker.registrations()).toBe(2);
+    tracker.clear();
+    expect(tracker.registrations()).toBe(2);
+  });
 });

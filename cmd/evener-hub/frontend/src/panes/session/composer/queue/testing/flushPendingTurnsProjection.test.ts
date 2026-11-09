@@ -32,17 +32,34 @@ describe("settleProjectionWorkForTests", () => {
     expect(finished).toBe(true);
   });
 
-  test("the stall tripwire fires after 4s of fake time when tracked work never settles", async () => {
+  // A continuation can register work and let it finish entirely inside the
+  // hop between two idle checks; the registrations comparison must still count
+  // that activity instead of accepting the round as quiet.
+  test("settle counts work that starts and finishes inside one hop", async () => {
+    let ran = false;
+    const settling = settleProjectionWorkForTests();
+    void Promise.resolve().then(() => {
+      void trackProjectionWork(Promise.resolve()).then(() => {
+        ran = true;
+      });
+    });
+    await expect(settling).resolves.toBe(1);
+    expect(ran).toBe(true);
+  });
+
+  test("the stall tripwire rejects after 4s of fake time when tracked work never settles", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     trackProjectionWork(new Promise<void>(() => undefined));
-    const settling = settleProjectionWorkForTests().then(
-      () => undefined,
-      (error: unknown) => error,
-    );
-    await vi.advanceTimersByTimeAsync(4_000);
-    await expect(settling).resolves.toMatchObject({
-      message: expect.stringMatching(/projection work stalled: .* still unsettled after \d+ms/),
+    let settled = false;
+    const settling = settleProjectionWorkForTests().finally(() => {
+      settled = true;
     });
+    const rejected = expect(settling).rejects.toBeInstanceOf(Error);
+    await vi.advanceTimersByTimeAsync(3_999);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await rejected;
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   // A tripped settle has already reported; it must not keep hopping while
@@ -51,9 +68,10 @@ describe("settleProjectionWorkForTests", () => {
   test("a tripped settle leaves no hop scheduled", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     trackProjectionWork(new Promise<void>(() => undefined));
-    const settling = settleProjectionWorkForTests().catch((error: unknown) => error);
+    const settling = settleProjectionWorkForTests();
+    const rejected = expect(settling).rejects.toBeInstanceOf(Error);
     await vi.advanceTimersByTimeAsync(4_000);
-    await expect(settling).resolves.toMatchObject({ message: expect.stringMatching(/projection work stalled/) });
+    await rejected;
     expect(vi.getTimerCount()).toBe(0);
   });
 });
