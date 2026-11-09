@@ -197,6 +197,12 @@ type rootDelegateIndex struct {
 type historicalActivityCache struct {
 	ctx           context.Context
 	delegateIndex map[string]*rootDelegateIndex // rootSessionID -> index, lazy
+	// rootID is the delegate-journal root this traversal learned from the
+	// first session whose meta loaded, so a required child whose own meta is
+	// missing can still find the rows the shared journal attributes to it.
+	// Without it the meta fallback below would name the child's own session
+	// ID and scan a per-child journal that does not exist.
+	rootID string
 	// budget bounds the LOAD-phase traversal's breadth and depth — how many
 	// distinct sessions and delegates get VISITED at all — across this
 	// whole cache's lifetime. It reuses activityBudget/
@@ -390,6 +396,13 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool, cache
 	}
 	meta, metaErr := schema.LoadSessionMeta(stateDir, sessionID)
 	rootID := activityRootIDFromMeta(sessionID, meta)
+	if metaErr != nil {
+		if cache.rootID != "" {
+			rootID = cache.rootID
+		}
+	} else if cache.rootID == "" {
+		cache.rootID = rootID
+	}
 	jobsPath := filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl")
 	// This session's COMPLETE job history loads unconditionally here —
 	// historicalJobFoldCache makes that O(events appended since the

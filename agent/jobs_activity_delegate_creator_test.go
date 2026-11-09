@@ -16,6 +16,7 @@ import (
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 )
 
@@ -125,6 +126,15 @@ func TestHistoricalActivityTreeKeepsNestedDelegatesWhenCreatorSessionUnavailable
 			makeUnavailable: func(t *testing.T, stateDir, sessionID string) {
 				t.Helper()
 				if err := os.MkdirAll(filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "missing session meta",
+			makeUnavailable: func(t *testing.T, stateDir, sessionID string) {
+				t.Helper()
+				if err := os.Remove(schema.SessionMetaPath(stateDir, sessionID)); err != nil {
 					t.Fatal(err)
 				}
 			},
