@@ -274,6 +274,11 @@
 
 .contextStatus {
   color: var(--ink-mid);
+  /* A working row's status may be the session's latest tool intent (up to
+     the wire's 200 code points), so it wraps inside the card head instead of
+     pushing the eyebrow or overflowing the bubble. */
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .contextCard[data-state="needs-you"] .contextStatus {

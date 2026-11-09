@@ -23,13 +23,7 @@ func FuzzSessionQueueStreamTails(f *testing.F) {
 		if closed.trySteerWithProvenanceAndNotify("steer", nil, "") {
 			t.Fatal("closed session accepted steering")
 		}
-		if err := closed.FollowUp("ignored"); err != nil {
-			t.Fatal(err)
-		}
 		open := &Session{}
-		if err := open.FollowUp(" "); err != nil {
-			t.Fatal(err)
-		}
 
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()

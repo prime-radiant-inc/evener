@@ -13,7 +13,7 @@ Design documentation for the web hub (`cmd/evener-hub`).
   the [editorial-instrument rationale](design-system.md#design-model-an-editorial-instrument):
   conversation for understanding, evidence for verification and controls for intervention.
   It records behavioral consequences, tradeoffs and review questions, then tokens,
-  the editorial system (warm paper/ink, serif reading, flat structure), inline tool/delegate
+  the editorial system (cool neutral paper/ink, serif reading, flat structure), inline tool/delegate
   grammar and provenance, source coverage, type, space, motion, the cadence instrument,
   and the widget library under
   `cmd/evener-hub/frontend/src/widgets/`.
@@ -37,11 +37,12 @@ Design documentation for the web hub (`cmd/evener-hub`).
 - **[parity/](parity/)** — the behaviour-parity checklists the React rewrite was
   graded against, mined from the legacy hub before it was deleted. The code they
   cite is gone, so their `path:line` citations no longer resolve; they survive
-  because thirteen live source comments cite *them* for why a behaviour is the
+  because live source comments cite *them* for why a behaviour is the
   way it is, and every wave plan used them as its acceptance floor.
-- **[specs/](specs/)** — two dated feasibility designs (multi-pane workspace,
-  observer auto-open). Point-in-time; the multi-pane one is still named as
-  source of truth by its implementation plan.
+- **[specs/](specs/)** — dated, point-in-time designs and surveys (multi-pane
+  workspace, observer auto-open, transcript density, steering ghost,
+  keybinding system). The multi-pane one is still named as source of truth by
+  its implementation plan.
 
 ## New session and first-run provider setup
 
@@ -99,6 +100,11 @@ inspection failures do not prevent editing local overrides.
 Conversation display edits one device layout at a time, initially the current
 device class. Both shared layouts remain available through the layout selector.
 Use the shared default clears only the selected layout's browser-local override.
+Thinking traces render as unfoldable disclosures at every level — collapsed to
+their placeholder grammar when the Reasoning content switch is off, with the
+Chat preset staying conversation-only — and "Thinking open by default" controls
+whether they start open, broken-turn thoughts included, whose neutral label
+always remains the summary.
 Scope and the local-override action appear before the editor. Editing a shared
 default keeps both browser-local layout choices. **Use the shared default** clears
 only the selected layout's browser-local override, without writing shared defaults.
@@ -208,7 +214,22 @@ retained bodies may also avoid a read under the existing authority rules even
 without a cache certificate. Body restoration alone creates no coverage,
 freshness or server cursor. Missing required bodies or metadata that cannot be
 reconstructed from retained history, failed writes and opening deadline expiry
-fall back to source recovery. The accepted baseline supplies the display and
+fall back to source recovery. An established view, whose last accepted local
+open still holds with no invalidation since, restores on remount without that
+deadline: the local restore keeps waiting, and only a genuinely stalled
+storage read settles the opening early. A settled stall keeps the loaded
+range only while its required bodies stay resident; a view whose release
+reclaimed them hands the open to source recovery, so the display recovers
+even though storage never answered. The late result of a settled stall acts
+only while its opening still owns the route, a live pane and the newest
+opening: it republishes the range when usable and falls back to source
+recovery when it cannot restore the required range, merging into whatever
+the repository published in the meantime — local older pages and accepted
+updates — instead of replacing it with the opening's captured snapshot, and
+the local continuation derives from bodies still missing after the merge,
+so paging that already exhausted stays exhausted. The
+accepted baseline
+supplies the display and
 cursor for subsequent older paging and live updates. Reconnect and source changes
 still reconcile, retiring obsolete cursors. Clear, deletion, final release and
 superseded openings fence late publication, and the opening hold settles on
@@ -240,7 +261,7 @@ usable reading depth, and an entry whose tail is showing keeps that tail in
 place rather than filling the pane. A height-only change, such as later
 composer-height settlement after a pane widens, keeps the reading line where it
 was. The existing
-[transcript registration](../../cmd/evener-hub/frontend/src/panes/session/transcript/flow/useTranscriptScroll.ts)
+[transcript registration](../../cmd/evener-hub/frontend/src/panes/session/transcript/flow/useTranscriptViewRegistration.ts)
 owns that intent; VirtualList owns measurement and committed geometry.
 Mounted and remounted readers use the same reflow policy. Retained placement
 waits while the thread store's ref-scoped local opening restores bodies, then
@@ -276,14 +297,38 @@ committed height becomes end clearance inside the virtual list, so the last
 transcript row can scroll clear of both controls and stays readable. A dormant or
 empty transcript floats the same control above the composer in its own dock.
 
+Each stack slot mounts only while its control would actually render — the New
+Content pill exactly when its own gate would show it, Next only while its
+visibility predicate holds — and the stack, with the end clearance it reserves,
+disappears entirely while neither would. Nothing floats over the transcript's
+bottom edge, and no clearance band pads its end, until there is something to
+float.
+
 The control hides while an IME composition is in progress, while a question or
 approval is pending in the focused conversation, or while the command palette or
 another blocking modal owns interaction. It returns when that state ends. Editor
-focus and a saved draft never hide it.
+focus and a saved draft never hide it. Because that suppression unmounts the
+control rather than leaving it mounted-but-hidden, the mounting gate owns the
+cancellation the control performed on its own visible-to-hidden transition: a
+needs-you navigation armed before suppression began is dropped, so a delayed
+reply cannot navigate the reader's pane away mid-edit. Losing focus unmounts the
+control without that cancellation — the shared controller's reader guard drops a
+deferred navigation when the focused reader changes, so nothing armed survives a
+pane the reader has left.
 
 Keyboard Next, the palette's needs-you rows and the palette's next-needs-you
-command share the shell's one needs-you controller. The floating control changes
-none of their ordering, validity or navigation decisions.
+command share the shell's one needs-you controller. The palette renders each row
+from the controller's published choice: a row whose page is refreshing or failed
+is refused, says why, and stays in the palette until the page is current again.
+The floating control changes none of their ordering, validity or navigation
+decisions.
+
+A settled `needs_you` page owns completion: when it reports no remaining rows,
+the queue is finished and neither Next nor **Load more** asks for another page,
+whatever the navigation manifest's own count still says. The manifest total
+justifies demand only before any page has settled. A failed boundary page keeps
+its retry, and a populated page whose retry is in flight keeps the control
+available until that read lands.
 
 ## Session Overview
 
@@ -295,7 +340,7 @@ details through the shared Details renderer and adds no footer counter.
 `/status` opens About and keeps it open on repeated use. Its completion reads
 “Show session details in Overview” and remains searchable by details and info.
 Saved standalone Details panes remain available. `/tasks` retains its existing
-standalone pane toggle. Desktop footer counters still focus their owning pane
+standalone pane toggle. Footer counters still focus their owning pane
 before selecting their category. A checked desktop session-menu Overview action
 closes that session's sidebar; the rail action opens the requested session.
 

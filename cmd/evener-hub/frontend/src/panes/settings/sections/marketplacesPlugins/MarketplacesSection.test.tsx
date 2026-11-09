@@ -1,10 +1,10 @@
 import type { MarketplaceEntry } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { connectionStore } from "../../../../stores/connection";
+import { resetConnectionStoreForTests } from "../../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../../../stores/extensions";
+import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { MarketplacesSection } from "./MarketplacesSection";
 import { showsEmptyRow } from "./marketplacesTestUtils";
@@ -15,14 +15,8 @@ const MARKETPLACE_A: MarketplaceEntry = {
   lastUpdated: 1000,
 };
 
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
-
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetExtensionsStoreForTests();
   resetToastStoreForTests();
 });
@@ -33,7 +27,7 @@ afterEach(() => {
 });
 
 test("renders each marketplace as one tappable row carrying name, kind, and source; tapping selects it", async () => {
-  connectFakeClient();
+  connectReadyFakeClient();
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A] });
   const onSelect = vi.fn();
   render(<MarketplacesSection onSelect={onSelect} />);
@@ -51,7 +45,7 @@ test("renders each marketplace as one tappable row carrying name, kind, and sour
 });
 
 test("shows the empty state when there are no marketplaces", () => {
-  connectFakeClient();
+  connectReadyFakeClient();
   extensionsStore.setState({ marketplaces: [] });
   render(<MarketplacesSection onSelect={vi.fn()} />);
   expect(showsEmptyRow()).toBe(true);
@@ -59,7 +53,7 @@ test("shows the empty state when there are no marketplaces", () => {
 
 test("the Add form and the + Add marketplace button are mutually exclusive", async () => {
   const user = userEvent.setup();
-  connectFakeClient();
+  connectReadyFakeClient();
   extensionsStore.setState({ marketplaces: [] });
   render(<MarketplacesSection onSelect={vi.fn()} />);
   expect(screen.getByRole("button", { name: "+ Add marketplace" })).toBeTruthy();
@@ -70,7 +64,7 @@ test("the Add form and the + Add marketplace button are mutually exclusive", asy
 
 test("only the field matching the checked source radio is shown", async () => {
   const user = userEvent.setup();
-  connectFakeClient();
+  connectReadyFakeClient();
   extensionsStore.setState({ marketplaces: [] });
   render(<MarketplacesSection onSelect={vi.fn()} />);
   await user.click(screen.getByRole("button", { name: "+ Add marketplace" }));
@@ -90,7 +84,7 @@ test("only the field matching the checked source radio is shown", async () => {
 
 test("the local-path field browses real directories and sends the picked one", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   extensionsStore.setState({ marketplaces: [] });
   fake.on("evener/paths/complete", (params) => {
     // Directories only, and the prefix goes over the wire verbatim.
@@ -119,7 +113,7 @@ test("the local-path field browses real directories and sends the picked one", a
 
 test("submitting the github kind sends {kind:github,repo} and closes on success", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   extensionsStore.setState({ marketplaces: [] });
   fake.on("evener/marketplace/add", (params) => {
     expect(params).toEqual({ name: "", source: { kind: "github", repo: "acme/plugins" } });
@@ -136,7 +130,7 @@ test("submitting the github kind sends {kind:github,repo} and closes on success"
 
 test("a branch or tag is sent as the git source's ref", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   extensionsStore.setState({ marketplaces: [] });
   fake.on("evener/marketplace/add", (params) => {
     expect(params).toEqual({
@@ -158,7 +152,7 @@ test("a branch or tag is sent as the git source's ref", async () => {
 
 test("a branch or tag is sent for a git url source", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   extensionsStore.setState({ marketplaces: [] });
   fake.on("evener/marketplace/add", (params) => {
     expect(params).toEqual({
@@ -179,7 +173,7 @@ test("a branch or tag is sent for a git url source", async () => {
 
 test("a non-empty name is appended to the success toast and sent in the payload", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   extensionsStore.setState({ marketplaces: [] });
   fake.on("evener/marketplace/add", (params) => {
     expect(params).toEqual({ name: "my-name", source: { kind: "url", url: "https://example.com/x.git" } });
@@ -197,7 +191,7 @@ test("a non-empty name is appended to the success toast and sent in the payload"
 
 test("a failed add toasts failure and keeps the form open", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   extensionsStore.setState({ marketplaces: [] });
   fake.on("evener/marketplace/add", () => {
     throw new Error("boom");
@@ -214,7 +208,7 @@ test("a failed add toasts failure and keeps the form open", async () => {
 
 test("Cancel closes the form without calling addMarketplace", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   extensionsStore.setState({ marketplaces: [] });
   const addSpy = vi.fn();
   fake.on("evener/marketplace/add", addSpy);

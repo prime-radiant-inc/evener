@@ -507,6 +507,9 @@ async function directoryElement<T extends HTMLElement>(selector: string): Promis
 // Exercise the production picker with a long path and enough children to
 // scroll. Geometry must keep the confirmation visible even with a keyboard.
 async function exerciseDirectoryPicker() {
+  // Path reads go through the launch-config store, which speaks through the
+  // connected client, as it does once the shell has connected.
+  connectionStore.getState().connect(fake);
   const mobile = window.innerWidth <= 899;
   const trigger = await directoryElement<HTMLButtonElement>(
     mobile ? '[data-label="Working directory"] button' : "#spawn-cwd",

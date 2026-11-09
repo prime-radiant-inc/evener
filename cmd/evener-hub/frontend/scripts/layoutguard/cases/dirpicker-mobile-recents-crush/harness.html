@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dirpicker-mobile-recents-crush layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--surface-0);
+    color: var(--ink-hi);
+    font-family: var(--font-sans);
+    font-size: var(--font-size-body);
+    line-height: var(--line-height-body);
+  }
+  /* Local mirror of dialog.module.css's .footer: the picker's own .footer
+     class would otherwise collide with the wrapper's de-scoped name in the
+     harness (the module CSS loads de-scoped here, so class="footer" on the
+     wrapper would also apply the picker's flex: 1 to it and let the footer
+     row take half the panel). The inner .footer below keeps the picker's
+     own class name, exactly as the component renders it, and additionally
+     picks up dialog.module.css's de-scoped .footer (padding, border-top,
+     background, flex-wrap, justify-content): that makes the footer row
+     taller and the body shorter than production's, a stricter-not-looser
+     direction for the containment assertions below. */
+  .panelFooter {
+    padding: var(--space-3) var(--space-4);
+    background: var(--surface-inset);
+    border-top: 1px solid var(--edge);
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: var(--space-2);
+  }
+</style>
+</head>
+<body>
+<div class="scrim">
+  <div class="panel" id="panel" role="dialog" aria-modal="true" aria-labelledby="t">
+    <header class="header">
+      <h2 id="t" class="title">Choose directory</h2>
+    </header>
+    <div class="body" id="body">
+      <div class="browser" id="browser">
+        <aside class="recents" id="recents" aria-label="Recent directories">
+          <h3>Recent</h3>
+          <!-- 15 recents rows, seeded from the reported phone screenshot's
+               list, each mirroring the component's row: strong basename plus
+               a truncated .path parent span. -->
+          <button class="row" type="button"><strong>evener</strong><span class="path">/home/jesse/git/prime-radiant-inc</span></button>
+          <button class="row" type="button"><strong>sigma-fp</strong><span class="path">/home/jesse/git</span></button>
+          <button class="row" type="button"><strong>chao</strong><span class="path">/home/jesse/git/prime-radiant-inc</span></button>
+          <button class="row" type="button"><strong>cat-test</strong><span class="path">/home/jesse</span></button>
+          <button class="row" type="button"><strong>frop</strong><span class="path">/home/jesse/git/prime-radiant-inc</span></button>
+          <button class="row" type="button"><strong>jesse</strong><span class="path">/home</span></button>
+          <button class="row" type="button"><strong>tmp</strong><span class="path">/</span></button>
+          <button class="row" type="button"><strong>alltheagents.org</strong><span class="path">/home/jesse/git/prime-radiant-inc</span></button>
+          <button class="row" type="button"><strong>easy-writing</strong><span class="path">/home/jesse/git/prime-radiant-inc</span></button>
+          <button class="row" type="button"><strong>msgvault</strong><span class="path">/home/jesse/git</span></button>
+          <button class="row" type="button"><strong>obsidian</strong><span class="path">/fast</span></button>
+          <button class="row" type="button"><strong>cdp-probe</strong><span class="path">/home/jesse/git</span></button>
+          <button class="row" type="button"><strong>browser-cache</strong><span class="path">/home/jesse/git</span></button>
+          <button class="row" type="button"><strong>par-notes</strong><span class="path">/home/jesse/git</span></button>
+          <button class="row" type="button"><strong>quorum</strong><span class="path">/home/jesse/git/prime-radiant-inc</span></button>
+          <h3>Locations</h3>
+          <button type="button" class="button quiet md">Home</button>
+        </aside>
+        <div class="browse" id="browse">
+          <div class="navigation">
+            <button type="button" class="button secondary md" aria-label="Parent directory">↑</button>
+            <nav class="crumbs" aria-label="Directory breadcrumbs">
+              <button type="button" class="button quiet md">/</button>
+              <button type="button" class="button quiet md">home</button>
+              <button type="button" class="button quiet md">jesse</button>
+            </nav>
+          </div>
+          <form class="pathForm">
+            <input id="path-input" class="input" aria-label="Path" value="/home/jesse" spellcheck="false">
+            <button type="submit" class="button secondary md">Go</button>
+          </form>
+          <div class="listHeading">
+            <span>Folders</span>
+            <button type="button" id="new-folder" class="button quiet sm">New folder</button>
+          </div>
+          <section class="folders" aria-label="Folders" id="folders">
+            <button class="row" type="button"><span>.config</span><span aria-hidden="true">›</span></button>
+            <button class="row" type="button"><span>Documents</span><span aria-hidden="true">›</span></button>
+            <button class="row" type="button"><span>Downloads</span><span aria-hidden="true">›</span></button>
+            <button class="row" type="button"><span>git</span><span aria-hidden="true">›</span></button>
+            <button class="row" type="button"><span>.local</span><span aria-hidden="true">›</span></button>
+          </section>
+        </div>
+      </div>
+    </div>
+    <div class="panelFooter" id="panel-footer">
+      <div class="footer">
+        <div class="destination">
+          <span>Use this directory</span>
+          <strong>jesse</strong>
+          <span class="path">/home/jesse</span>
+        </div>
+        <div class="actions">
+          <button type="button" id="cancel" class="button quiet md">Cancel</button>
+          <button type="button" id="use-folder" class="button primary md">Use this folder</button>
+        </div>
+      </div>
+    </div>
+    <button type="button" class="closeButton" aria-label="Close">✕</button>
+  </div>
+</div>
+<script>
+function rectOf(el) {
+  const r = el.getBoundingClientRect();
+  return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, width: r.width, height: r.height };
+}
+
+function scrollable(el) {
+  return { ...rectOf(el), scrollHeight: el.scrollHeight, clientHeight: el.clientHeight, overflowY: getComputedStyle(el).overflowY };
+}
+
+window.measure = function () {
+  const panel = document.getElementById("panel");
+  const body = document.getElementById("body");
+  const browser = document.getElementById("browser");
+  const recents = document.getElementById("recents");
+  const browse = document.getElementById("browse");
+  const pathInput = document.getElementById("path-input");
+  const newFolder = document.getElementById("new-folder");
+  const useFolder = document.getElementById("use-folder");
+  const cancel = document.getElementById("cancel");
+
+  return {
+    viewport: { w: window.innerWidth, h: window.innerHeight },
+    panel: rectOf(panel),
+    body: scrollable(body),
+    browser: rectOf(browser),
+    recents: scrollable(recents),
+    browse: scrollable(browse),
+    pathInput: rectOf(pathInput),
+    newFolder: rectOf(newFolder),
+    useFolder: rectOf(useFolder),
+    cancel: rectOf(cancel),
+  };
+};
+</script>
+</body>
+</html>

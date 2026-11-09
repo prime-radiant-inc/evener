@@ -1,6 +1,6 @@
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { createCredentialInstancesStore } from "@evener/appwire-client/state/credentials";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { ProviderSignIn } from "./providerSignIn";
 
 export interface RecordedCall {

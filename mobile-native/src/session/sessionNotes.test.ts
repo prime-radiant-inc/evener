@@ -1,6 +1,6 @@
 import type { NotesHumanSetResponse, SessionURL, ThreadCapabilities } from "@evener/appwire-client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { memoryStorage } from "../syncStringStorageTestUtils";
 import {
 	DRAFT_WRITE_DEBOUNCE_MS,

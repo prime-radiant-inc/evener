@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
@@ -437,7 +438,7 @@ func TestJobNotificationTurnDeliversPendingDurableRecord(t *testing.T) {
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("ack") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ack") },
 		},
 	}
 	c.Register(adapter)
@@ -487,7 +488,7 @@ func TestJobNotificationTurnDeliversWatchNotification(t *testing.T) {
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("ack") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ack") },
 		},
 	}
 	c.Register(adapter)
@@ -524,7 +525,7 @@ func TestWatchNotificationHistoryDoesNotSuppressDurableTerminalNotification(t *t
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("ack") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ack") },
 		},
 	}
 	c.Register(adapter)
@@ -568,7 +569,7 @@ func TestJobNotificationTurnRequeuesWhenDeliveredMarkFails(t *testing.T) {
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("ack") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ack") },
 		},
 	}
 	c.Register(adapter)
@@ -642,7 +643,7 @@ func TestJobNotificationTurnRequeuesWhenJobManagerMissing(t *testing.T) {
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("should not run") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("should not run") },
 		},
 	}
 	c.Register(adapter)
@@ -676,7 +677,7 @@ func TestJobNotificationTurnRequeuesWhenStoreLoadFailsThenDelivers(t *testing.T)
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("ack") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ack") },
 		},
 	}
 	c.Register(adapter)
@@ -884,7 +885,7 @@ func newNotificationExcerptSession(t *testing.T) (*Session, *fakeAdapter) {
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("ack") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ack") },
 		},
 	}
 	c.Register(adapter)

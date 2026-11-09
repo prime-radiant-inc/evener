@@ -25,6 +25,7 @@ import type { AppwireClientLike, RequestPort } from "../../clientLike";
 import { friendlyErrorMessage } from "../../errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import type { HostRequestMethod, LaunchConfigLayer } from "../../types.gen";
+import { REFETCH_DEBOUNCE_MS } from "../refetchDebounce";
 import { createListRevision, readRevisioned, writeRevisioned } from "./listRevision";
 import { attachLifecycle, createStoreLifecycle, type HostLifecycle } from "./storeLifecycle";
 
@@ -56,8 +57,6 @@ export interface LaunchLayerStore extends FrameworkFreeStore<LaunchLayerState>, 
   dispose(): void;
 }
 
-export const LAUNCH_LAYER_REFETCH_DEBOUNCE_MS = 250;
-
 /** The scope every call is made at; see the module comment. */
 const GLOBAL_LAYER_PARAMS = { cwd: "/", layer: "global" } as const;
 
@@ -68,7 +67,7 @@ export function createLaunchLayerStore(client: LaunchLayerClient): LaunchLayerSt
 
   const lifecycle = createStoreLifecycle<LaunchLayerState>(client, {
     method: "evener/launch/updated",
-    debounceMs: LAUNCH_LAYER_REFETCH_DEBOUNCE_MS,
+    debounceMs: REFETCH_DEBOUNCE_MS,
     store: () => store,
     refetch: (state) => state.fetchLaunchLayer(),
     revision: listRevision,

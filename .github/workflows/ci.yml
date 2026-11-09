@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # The merge queue tests each queued PR on top of main and the PRs ahead of
+  # it, and main requires the same checks on that candidate.
+  merge_group:
+    types: [checks_requested]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
@@ -20,7 +24,7 @@ jobs:
   # after the other on one runner they took over six. `web`, the required
   # check, passes only when both lanes do.
   web-unit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -58,7 +62,7 @@ jobs:
       - uses: ./.github/actions/go-cache-save
 
   web-browser:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -100,6 +104,7 @@ jobs:
       # Named for the run so two failures on the same PR do not collide.
       # The cascade guard keeps its evidence the same way (its temp dir is
       # KeptTempDir, which on a runner is /tmp), so its path is collected too.
+      # So are the background Jobs and job output paging guards'.
       - name: Keep the browser guards' artifacts
         if: failure()
         uses: actions/upload-artifact@v7
@@ -108,6 +113,8 @@ jobs:
           path: |
             /tmp/skillguard-browser-*/artifacts/**
             /tmp/cascadeguard-browser-*/**
+            /tmp/backgroundjobsguard-*/**
+            /tmp/joboutputpagingguard-*/**
           retention-days: 7
           # The step also fires when make build-web is what failed, and then
           # there is nothing to collect: say so quietly instead of adding a
@@ -117,7 +124,7 @@ jobs:
   web:
     if: always()
     needs: [web-unit, web-browser]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Require both frontend lanes
         env:
@@ -127,7 +134,7 @@ jobs:
           test "$(jq -r '[.[].result] | all(. == "success")' <<<"$RESULTS")" = true
 
   native:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -148,7 +155,7 @@ jobs:
         run: make test-native
 
   api-package:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -165,7 +172,7 @@ jobs:
         run: make test-api-package
 
   static-build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -189,7 +196,7 @@ jobs:
       - uses: ./.github/actions/go-cache-save
 
   lint-golangci:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -229,6 +236,9 @@ jobs:
           make tools-golangci
 
       - name: Lint (golangci-lint across all go.work modules)
+        # Bound simultaneous cold package loads on the four-CPU hosted runner.
+        env:
+          LINT_PARALLEL: "2"
         run: make lint-golangci
 
       # The tagged compile floors use the same golangci-lint binary, so they
@@ -246,7 +256,7 @@ jobs:
       - uses: ./.github/actions/go-cache-save
 
   lint-repository:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -267,7 +277,7 @@ jobs:
       - name: Lint repository structure, generated output, formatting, and secrets
         env:
           EVENER_GITLEAKS_REQUIRED: "1"
-        run: make lint-generated lint-naming lint-gofmt lint-internal lint-package-imports secret-scan
+        run: make lint-generated lint-naming lint-gofmt lint-internal lint-package-imports lint-js-toolchain-pins lint-tracked-file-size secret-scan
 
       - uses: ./.github/actions/go-cache-save
 
@@ -277,7 +287,7 @@ jobs:
   # its own script directly and fails the lane on its own verdict, so both
   # gates keep their teeth.
   fuzz-checks:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -301,7 +311,7 @@ jobs:
   static:
     if: always()
     needs: [static-build, lint-golangci, lint-repository, fuzz-checks, api-package, native]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Require every static lane
         env:
@@ -320,7 +330,7 @@ jobs:
       fail-fast: false
       matrix:
         part: [hub, rest]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Record pull request candidate identity
         if: github.event_name == 'pull_request'
@@ -353,12 +363,24 @@ jobs:
           CLI_SHARD_PARALLEL: 2
         run: make test-race RACE_SCOPE=root RACE_ROOT_PART=${{ matrix.part }}
 
+      # Race skips the survey and timing capture, so raw hub output stays here.
+      - name: Keep failed hub race logs
+        if: failure() && matrix.part == 'hub'
+        uses: actions/upload-artifact@v7
+        with:
+          name: failed-go-race-root-${{ matrix.part }}-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 3
+          if-no-files-found: warn
+          path: |
+            /dev/shm/evener-module-tests.*/tmp/_/hub-test-shards.*/shard[0-9]*.log
+            /tmp/evener-module-tests.*/tmp/_/hub-test-shards.*/shard[0-9]*.log
+
       - uses: ./.github/actions/go-cache-save
 
   race-root:
     if: always()
     needs: [race-root-parts]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Require both root race lanes
         env:
@@ -374,7 +396,7 @@ jobs:
       max-parallel: 2
       matrix:
         scope: [agent, nonagent]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -385,12 +407,24 @@ jobs:
       - name: Test (race detector — ${{ matrix.scope }})
         run: make test-race RACE_SCOPE=${{ matrix.scope }}
 
+      # Agent race tests are unsharded, and the module log has full got/want.
+      - name: Keep failed agent race log
+        if: failure() && matrix.scope == 'agent'
+        uses: actions/upload-artifact@v7
+        with:
+          name: failed-go-race-modules-${{ matrix.scope }}-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 3
+          if-no-files-found: warn
+          path: |
+            /dev/shm/evener-module-tests.*/agent.log
+            /tmp/evener-module-tests.*/agent.log
+
       - uses: ./.github/actions/go-cache-save
 
   race-modules:
     if: always()
     needs: [race-module-shards]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Require every non-root race lane
         env:
@@ -408,13 +442,17 @@ jobs:
       fail-fast: false
       matrix:
         scope: [root, nonroot]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
       - uses: ./.github/actions/setup-toolchain
         with:
           go-cache-kind: tests-${{ matrix.scope }}
+
+      - name: Prepare enforcing sandbox for root tests
+        if: matrix.scope == 'root'
+        uses: ./.github/actions/enforcing-sandbox
 
       # The runner is this job's alone, but its checkout and cache restore are
       # still in the load average when the gate sizes its budgets; at 1.85
@@ -425,6 +463,25 @@ jobs:
           EVENER_GATE_TIMING_TSV: /tmp/gate-timing-${{ matrix.scope }}.tsv
         run: ROOT_FULL=1 WEB=0 make test TEST_SCOPE=${{ matrix.scope }}
 
+      # Survey failure replay is abbreviated. Keep the full surveys and raw
+      # timing-capture shard text, never the surrounding homes or test binaries.
+      - name: Keep failed hub and agent test logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: failed-go-tests-${{ matrix.scope }}-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 3
+          if-no-files-found: warn
+          path: |
+            /dev/shm/evener-module-tests.*/tmp/_/hub-test-shards.*/survey.log
+            /dev/shm/evener-module-tests.*/tmp/agent/agent-test-shards.*/survey.log
+            /dev/shm/evener-module-tests.*/json/shards/hub/hub-shard[0-9]*.v
+            /dev/shm/evener-module-tests.*/json/shards/agent/agent-shard[0-9]*.v
+            /tmp/evener-module-tests.*/tmp/_/hub-test-shards.*/survey.log
+            /tmp/evener-module-tests.*/tmp/agent/agent-test-shards.*/survey.log
+            /tmp/evener-module-tests.*/json/shards/hub/hub-shard[0-9]*.v
+            /tmp/evener-module-tests.*/json/shards/agent/agent-shard[0-9]*.v
+
       # The timing ratchet's rows come from the test run above (issue #144), so
       # the budget is enforced without a second full pass. Each lane checks its
       # own scope: the rows name only the packages this lane measured, and a
@@ -434,12 +491,31 @@ jobs:
 
       - uses: ./.github/actions/go-cache-save
 
+  # The hub's runner-bound integration tests: daemon retirement, host deploy,
+  # live-stack E2E, and the remote-hub source-budget cases. The default gate
+  # skips this exact set so the timing ratchet measures the stable suite; this
+  # lane runs it without a timing budget because its wall time tracks the runner.
+  hub-integration:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-toolchain
+        with:
+          go-cache-kind: tests-root
+
+      - name: Prepare enforcing sandbox
+        uses: ./.github/actions/enforcing-sandbox
+
+      - name: Hub integration tests
+        run: make test-hub-integration
+
   tests:
     if: always()
-    needs: [tests-parts]
-    runs-on: ubuntu-latest
+    needs: [tests-parts, hub-integration]
+    runs-on: ubuntu-24.04
     steps:
-      - name: Require both test lanes
+      - name: Require every test lane
         env:
           RESULTS: ${{ toJSON(needs) }}
         run: |
@@ -447,7 +523,7 @@ jobs:
           test "$(jq -r '[.[].result] | all(. == "success")' <<<"$RESULTS")" = true
 
   fuzz:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -459,3 +535,111 @@ jobs:
         run: make fuzz
 
       - uses: ./.github/actions/go-cache-save
+
+  # A merge-group run reports its results on the group's read-only queue
+  # branch, never on the member PRs. When the group fails a required check —
+  # lately on one of main's load-flaky tests — the queue removes every PR in
+  # the group, and a green bystander is dropped with no failed check to read:
+  # the only trace is a `removed_from_merge_queue` timeline event (issue
+  # #5470).
+  # This job posts the missing record. It runs only in a merge-group run that
+  # failed a required check, and comments on every member PR with the lanes
+  # that failed and a link to the group run, so a bystander is distinguishable
+  # from the PR that broke the group without archaeology. Only members of the
+  # failed group hear from it: groups stacked on a failing group keep their
+  # queue place and are rebuilt and re-run automatically.
+  merge-group-report:
+    if: always() && github.event_name == 'merge_group' && failure()
+    needs: [web, tests, static, race-root, race-modules, fuzz]
+    runs-on: ubuntu-24.04
+    permissions:
+      # Reads the group's commits and this run's failed jobs, and writes one
+      # comment on each member PR. No other job in this workflow gets these.
+      contents: read
+      actions: read
+      pull-requests: write
+    steps:
+      - name: Post the group failure on every dropped PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MG_BASE: ${{ github.event.merge_group.base_sha }}
+          MG_HEAD: ${{ github.event.merge_group.head_sha }}
+          MG_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          MG_HEAD_MESSAGE: ${{ github.event.merge_group.head_commit.message }}
+        run: |
+          set -eu
+
+          # The queue squashes every queued PR into one commit on top of the
+          # group's base, so compare(base...head) walks exactly the members,
+          # and every commit title ends "(#N)". The queue branch's own
+          # "pr-<N>" anchor names a member whatever the compare returns. gh
+          # api prints error bodies on stdout, so every source is filtered
+          # down to bare numbers before it is trusted. A failed compare is
+          # recorded rather than swallowed: the anchor and head-commit
+          # fallbacks can name only one member of a multi-PR group, so a
+          # partial report must not read as complete.
+          compare_status=0
+          members="$(gh api "repos/$GITHUB_REPOSITORY/compare/$MG_BASE...$MG_HEAD" \
+            --jq '[.commits[].commit.message | split("\n")[0] | scan("\\(#([0-9]+)\\)$") | .[0]] | unique | .[]')" || compare_status=$?
+          anchor="$(printf '%s' "$MG_HEAD_REF" \
+            | sed -nE 's#^refs/heads/gh-readonly-queue/.*/pr-([0-9]+)-.*$#\1#p')"
+          prs="$(printf '%s\n%s\n' "$members" "$anchor" | sed -nE '/^[0-9]+$/p' | sort -un)"
+          if [ -z "$prs" ]; then
+            # The queue branch is short-lived, and GitHub can collect its
+            # commits once the group is gone; the payload's head commit
+            # message still names one member.
+            prs="$(printf '%s\n' "$MG_HEAD_MESSAGE" | head -1 \
+              | sed -nE 's/^.*\(#([0-9]+)\)$/\1/p')"
+          fi
+          if [ -z "$prs" ]; then
+            echo "No member PR found for the failed group; nothing to comment on." >&2
+            exit 1
+          fi
+
+          # What failed, for readers deciding what broke the group. The five
+          # aggregates only restate their lanes, so they are left out; fuzz
+          # runs its own steps, so its failures are reported like any lane's.
+          failed="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
+            --jq '[.jobs[] | select(.conclusion == "failure" or .conclusion == "cancelled")
+                   | select(.name as $n | ["web","tests","static","race-root","race-modules"] | index($n) | not)
+                   | .name as $job | .steps[]?
+                   | select(.conclusion == "failure" or .conclusion == "cancelled")
+                   | ($job + " — " + .name)] | unique' || true)"
+          if ! printf '%s' "$failed" | jq -e 'type == "array" and length > 0' >/dev/null 2>&1; then
+            failed='["a required check"]'
+          fi
+
+          members_md="$(printf '#%s, ' $prs | sed 's/, $//')"
+          failed_md="$(printf '%s\n' "$failed" | jq -r '.[] | "- `" + . + "`"')"
+          body="$(mktemp)"
+          {
+            echo '**Dropped from the merge queue: the merge group that held this PR failed its shared checks** (#5470).'
+            echo
+            echo "Every PR in the group ($members_md) was removed from the queue. Merge-group checks run against the group's combined snapshot and report only on the group queue branch, never on member PRs, so the drop leaves no failed check to read here — and the failures below name tests, not PRs. Being green on its own does not clear this PR: green PRs can also fail in combination. Read the failures below and confirm they are transient or unrelated to this PR before re-enqueueing it."
+            echo
+            echo 'Failed in the group run:'
+            printf '%s\n' "$failed_md"
+            echo
+            echo "Group run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "Snapshot: ${MG_BASE:0:10} → ${MG_HEAD:0:10}"
+          } > "$body"
+
+          posted=0
+          failed_posts=0
+          for pr in $prs; do
+            if gh pr comment "$pr" --repo "$GITHUB_REPOSITORY" --body-file "$body"; then
+              posted=$((posted + 1))
+            else
+              failed_posts=$((failed_posts + 1))
+              echo "Could not comment on #$pr." >&2
+            fi
+          done
+          # A partially delivered report must not read as success: the job's
+          # own failure is the retryable record that a comment is missing.
+          # An incomplete membership discovery fails the job too, for the
+          # dropped members it could not name.
+          if [ "$failed_posts" -gt 0 ] || [ "$compare_status" -ne 0 ]; then
+            echo "Report delivery incomplete: $failed_posts comment(s) failed, compare_status=$compare_status." >&2
+            exit 1
+          fi
+          test "$posted" -gt 0

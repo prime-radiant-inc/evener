@@ -21,7 +21,7 @@ func newBudgetSession(
 	t.Helper()
 	if responder == nil {
 		responder = func(llm.Request) llm.Response {
-			return communicateResponse(true, "done")
+			return agenttest.CommunicateResponse(true, "done")
 		}
 	}
 	adapter := &agenttest.ScriptedAdapter{Provider: "openai", Responder: responder}
@@ -123,8 +123,11 @@ func requireBudgetExhaustion(
 		)
 	}
 	wantReason := "tool_round_budget_exhausted"
-	if wantBudget == exhaustedBudgetTurns {
+	switch wantBudget {
+	case exhaustedBudgetTurns:
 		wantReason = "turn_budget_exhausted"
+	case exhaustedBudgetServerContinuations:
+		wantReason = "server_continuation_budget_exhausted"
 	}
 	if got := exhausted.reason(); got != wantReason {
 		t.Fatalf("budget exhaustion reason = %q, want %q", got, wantReason)
@@ -147,7 +150,7 @@ func requireGoalBudgetStateUnchanged(t *testing.T, before, after goal.Snapshot) 
 }
 
 func nonterminalBudgetResponse(callID, text string) llm.Response {
-	resp := communicateResponse(false, text)
+	resp := agenttest.CommunicateResponse(false, text)
 	resp.Message.Content = append([]llm.ContentPart{{Kind: llm.ContentText, Text: text}}, resp.Message.Content...)
 	resp.Message.Content[len(resp.Message.Content)-1].ToolCall.ID = callID
 	return resp

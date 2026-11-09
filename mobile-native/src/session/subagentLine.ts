@@ -2,11 +2,10 @@
 // title, its state and how long it has been in it ("failed · 6m"), and the
 // latest activity beneath, which reads the same as in the Agents list.
 // Pure: the row re-renders with the transcript, so no clock of its own.
-import { delegateEndingText, delegateTiming, type EvenerDelegateInfo } from "@evener/appwire-client";
+import { compactDuration, delegateEndingText, delegateTiming, type EvenerDelegateInfo } from "@evener/appwire-client";
 import { endedInStop, runningSubagentCount, subagentState } from "../subagents/subagentModel";
 import { hubTime, subagentQuietLine, waitingOnSubagents } from "../board/attention";
 import type { TimelineRow } from "../timeline";
-import { compactDuration } from "./format";
 
 type Activity = Extract<TimelineRow, { kind: "activity" }>;
 

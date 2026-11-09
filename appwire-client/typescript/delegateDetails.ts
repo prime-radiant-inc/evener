@@ -57,7 +57,7 @@ const ATTENTION_PHASES = new Set(["awaiting_approval", "awaiting_input", "needs-
 /** A subagent row's dot state, the one rule every surface consumes so the
  * web sidebar, the web tree and the native list cannot drift. A terminal row
  * reads by its outcome (failed red, done no dot) over any stale phase it
- * carries; an open run owing attention is attention over anything else;
+ * carries; a row owing attention is attention over anything else;
  * an open run whose status reads as failure (its own or the child aggregate
  * it reports) is failure; otherwise the row is fresh while its quiet age
  * stays under the threshold and quiet once it passes it, with no quiet
@@ -188,6 +188,7 @@ const ENDING_WORDS = new Map([
   ["stopped_by_parent", "stopped by its coordinator"],
   ["tool_round_budget_exhausted", "ran out of tool rounds"],
   ["turn_budget_exhausted", "ran out of turns"],
+  ["server_continuation_budget_exhausted", "ran out of server continuations"],
   ["launch_failed", "couldn't start"],
   ["construction_failed", "couldn't be set up"],
   ["artifacts_dir_failed", "couldn't create its artifacts folder"],

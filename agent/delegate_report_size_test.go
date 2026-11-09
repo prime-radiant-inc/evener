@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/llm"
 )
 
@@ -56,10 +57,10 @@ func runLargeDelegateReportDelivery(t *testing.T, report string) (*Session, stri
 	adapter.script("Do the first part.",
 		func(llm.Request) llm.Response {
 			<-releaseFirstReport
-			return toolCallResponse(communicateCall("child_first", "first generation report"))
+			return agenttest.ToolCallResponse(communicateCall("child_first", "first generation report"))
 		},
 		func(llm.Request) llm.Response {
-			return toolCallResponse(communicateCall("child_second", report))
+			return agenttest.ToolCallResponse(communicateCall("child_second", report))
 		})
 
 	var sess *Session

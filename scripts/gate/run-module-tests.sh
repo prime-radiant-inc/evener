@@ -194,6 +194,9 @@ fi
 fuzz_test_skip="$GATE_FUZZ_TEST_SKIP"
 
 root_skip="$fuzz_test_skip"
+if [ "${EVENER_GATE_KEEP_HUB_INTEGRATION:-0}" != "1" ]; then
+	root_skip="$(gate_shard_skip "$root_skip" "$GATE_HUB_INTEGRATION_RUN")"
+fi
 
 # The caller's argv, preserved as an array and expanded quoted everywhere it
 # reaches a command: evener-dev decides which flags the enumeration also needs, a

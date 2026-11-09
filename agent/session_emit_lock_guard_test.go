@@ -34,7 +34,7 @@ import (
 // required — you find it by running the code, not by reviewing it. Both halves
 // were confirmed by experiment (kata cb1k): an emit hoisted into either
 // critical section parks the emitting goroutine at session_provenance.go's
-// s.mu.Lock or at job_watch.go's jm.mu.Lock respectively.
+// s.mu.Lock or at the watch code's jm.mu.Lock respectively.
 //
 // That guard is incidental to both functions, which is exactly why it needs a
 // test. Two plausible, well-intentioned refactors delete it in silence and

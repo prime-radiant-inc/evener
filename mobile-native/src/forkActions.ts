@@ -1,4 +1,4 @@
-import type { ConversationTurnForkActions } from "../../mobile/src/services/conversation";
+import type { ConversationTurnForkActions } from "./conversation/services/conversation";
 import type { DraftLibrary } from "./draftLibrary";
 import type { ForkCheckpoint, ForkCheckpointRepository, ForkChild, ForkTarget } from "./forkCheckpointRepository";
 import type { LocationRepository } from "./location";

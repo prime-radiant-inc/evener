@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -12,22 +14,32 @@ import (
 	"primeradiant.com/evener/agent/sandbox"
 )
 
-func testWrapper(t *testing.T) *sandbox.Wrapper {
+// resolveWrapper resolves a workspace-write policy at cwd and wraps it, so a
+// test can inspect both the policy the env floor judges and the command the
+// wrapper confines.
+func resolveWrapper(t *testing.T, facts sandbox.HostFacts, cwd, sessionTmp string, netOn bool) (sandbox.ResolvedPolicy, *sandbox.Wrapper) {
 	t.Helper()
-	home := t.TempDir()
-	cwd := sandbox.MaterializeWorkspace(t, sandbox.MainCheckout)
-	net := true
+	net := netOn
 	rp, err := sandbox.Resolve(
 		sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite, Network: &net},
-		sandbox.HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true},
+		facts,
 		cwd)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	w, err := sandbox.NewWrapper(rp, "/usr/bin/bwrap", t.TempDir())
+	w, err := sandbox.NewWrapper(rp, facts.BwrapPath, sessionTmp)
 	if err != nil {
 		t.Fatalf("NewWrapper: %v", err)
 	}
+	return rp, w
+}
+
+func testWrapper(t *testing.T) *sandbox.Wrapper {
+	t.Helper()
+	cwd := sandbox.MaterializeWorkspace(t, sandbox.MainCheckout)
+	_, w := resolveWrapper(t, sandbox.HostFacts{
+		OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true,
+	}, cwd, t.TempDir(), true)
 	return w
 }
 
@@ -111,20 +123,10 @@ func TestMCPStdioServerScrubsAmbientSecrets(t *testing.T) {
 
 func testWrapperNetOff(t *testing.T) *sandbox.Wrapper {
 	t.Helper()
-	home := t.TempDir()
 	cwd := sandbox.MaterializeWorkspace(t, sandbox.MainCheckout)
-	off := false
-	rp, err := sandbox.Resolve(
-		sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite, Network: &off},
-		sandbox.HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true},
-		cwd)
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	w, err := sandbox.NewWrapper(rp, "/usr/bin/bwrap", t.TempDir())
-	if err != nil {
-		t.Fatalf("NewWrapper: %v", err)
-	}
+	_, w := resolveWrapper(t, sandbox.HostFacts{
+		OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true,
+	}, cwd, t.TempDir(), false)
 	return w
 }
 
@@ -180,5 +182,76 @@ func TestMCPStdioServerUnsandboxedUnchanged(t *testing.T) {
 	ct := tr.(*mcpsdk.CommandTransport)
 	if ct.Command.Args[0] != "my-mcp-server" {
 		t.Errorf("an unsandboxed MCP server must be spawned directly, got %v", ct.Command.Args)
+	}
+}
+
+// A session started in a nested package launches its stdio MCP server at the
+// Git worktree root, so the env floor must judge npm's project config there. A
+// root .npmrc naming an unserved external cache has to fall back to the session
+// scratch, or an npx-based server writes into read-only storage and can fail to
+// start (#4542 review).
+func TestMCPStdioServerFloorUsesTheConfinedWorktreeDir(t *testing.T) {
+	worktree := sandbox.MaterializeWorkspace(t, sandbox.MainCheckout)
+	packageDir := filepath.Join(worktree, "packages", "foo")
+	packageCache := filepath.Join(t.TempDir(), "package-npm")
+	rootCache := filepath.Join(t.TempDir(), "root-npm")
+	for _, dir := range []string{packageDir, packageCache, rootCache} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile := func(path, content string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile(filepath.Join(packageDir, "package.json"), "{}\n")
+	writeFile(filepath.Join(packageDir, ".npmrc"), "cache="+packageCache+"\n")
+	writeFile(filepath.Join(worktree, ".npmrc"), "cache="+rootCache+"\n")
+
+	home := t.TempDir()
+	sessionTmp := t.TempDir()
+	rp, w := resolveWrapper(t, sandbox.HostFacts{
+		OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true,
+		OverlaySupported: true,
+	}, packageDir, sessionTmp, true)
+	if rp.CacheStrategy != sandbox.CacheOverlay {
+		t.Fatalf("test premise: cache strategy = %v, want overlay", rp.CacheStrategy)
+	}
+	if rp.SessionDir != packageDir || rp.Git.WorktreeRoot != worktree {
+		t.Fatalf("test premise: session dir = %q, worktree root = %q", rp.SessionDir, rp.Git.WorktreeRoot)
+	}
+	if !slices.Contains(rp.CacheRoots, packageCache) || slices.Contains(rp.CacheRoots, rootCache) {
+		t.Fatalf("test premise: cache roots = %v, want the package cache only", rp.CacheRoots)
+	}
+
+	dial := productionDialWithEnv(stdioCfg(), w, func() []string { return []string{"HOME=" + home} })
+	tr, err := dial(context.Background())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	ct, ok := tr.(*mcpsdk.CommandTransport)
+	if !ok || ct.Command == nil {
+		t.Fatalf("expected a *CommandTransport with a command, got %T", tr)
+	}
+	workdir := ""
+	for i := 0; i+1 < len(ct.Command.Args); i++ {
+		if ct.Command.Args[i] == "--chdir" {
+			workdir = ct.Command.Args[i+1]
+			break
+		}
+	}
+	if workdir != worktree {
+		t.Fatalf("MCP server workdir = %q, want the worktree root %q", workdir, worktree)
+	}
+	got := ""
+	for _, kv := range ct.Command.Env {
+		if name, val, found := strings.Cut(kv, "="); found && name == "npm_config_cache" {
+			got = val
+		}
+	}
+	if want := filepath.Join(sessionTmp, "npm"); got != want {
+		t.Fatalf("npm_config_cache = %q, want the session scratch %q", got, want)
 	}
 }

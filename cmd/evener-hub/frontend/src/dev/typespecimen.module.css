@@ -135,6 +135,10 @@
   line-height: var(--line-height-body);
 }
 
+.leadingProse {
+  line-height: var(--line-height-prose);
+}
+
 .leadingTitle {
   line-height: var(--line-height-title);
 }
@@ -217,7 +221,7 @@
   color: var(--ink-hi);
   font-family: var(--font-prose);
   font-size: var(--font-size-prose);
-  line-height: var(--line-height-body);
+  line-height: var(--line-height-prose);
 }
 
 .measureReading {

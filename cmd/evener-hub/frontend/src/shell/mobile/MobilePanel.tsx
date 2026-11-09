@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useRef } from "react";
 import { Sheet } from "../../widgets";
+import { NavigationChromeProvider } from "../navigationChrome";
 import { useWorkspaceStore } from "../workspace";
 import styles from "./MobilePanel.module.css";
 
@@ -31,7 +32,7 @@ export function MobilePanel({ rail, open, onClose }: MobilePanelProps) {
       panelClassName={styles.singleScrollPanel}
       bodyClassName={styles.flushBody}
     >
-      {rail}
+      <NavigationChromeProvider value={onClose}>{rail}</NavigationChromeProvider>
     </Sheet>
   );
 }

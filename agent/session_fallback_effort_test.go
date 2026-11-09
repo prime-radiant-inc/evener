@@ -165,14 +165,9 @@ func TestFallbackChain_ClampsQualifiedDatedFallbackToFamilyLevels(t *testing.T) 
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hi", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}

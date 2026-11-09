@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { friendlyErrorMessage, WireError } from "../../errors";
 import { FakeClient, failing } from "../../testing/fakeClient";
 import type { AuthStatusResponse } from "../../types.gen";
-import { AUTH_STATUSES_REFETCH_DEBOUNCE_MS, createAuthStatusesStore } from "./authStatuses";
+import { REFETCH_DEBOUNCE_MS } from "../refetchDebounce";
+import { createAuthStatusesStore } from "./authStatuses";
 
 const LIST = "evener/auth/list";
 
@@ -89,7 +90,7 @@ describe("following the hub", () => {
     await store.getState().fetchAuthStatuses();
     store.start();
     for (let i = 0; i < 3; i++) fake.emitNotification({ method: "evener/auth/updated", params: {} });
-    await vi.advanceTimersByTimeAsync(AUTH_STATUSES_REFETCH_DEBOUNCE_MS);
+    await vi.advanceTimersByTimeAsync(REFETCH_DEBOUNCE_MS);
     expect(fake.calls.filter((call) => call.method === LIST)).toHaveLength(2);
   });
 
@@ -148,7 +149,7 @@ describe("following the hub", () => {
     fake.on(LIST, () => ({ providers: [rejected] }));
 
     fake.emitNotification({ method: "evener/auth/updated", params: {} });
-    await vi.advanceTimersByTimeAsync(AUTH_STATUSES_REFETCH_DEBOUNCE_MS);
+    await vi.advanceTimersByTimeAsync(REFETCH_DEBOUNCE_MS);
     expect(store.getState().authStatuses?.get("lunaroute")?.error).toBe(rejected.error);
     expect(fake.calls.filter((call) => call.method === LIST)).toHaveLength(2);
   });

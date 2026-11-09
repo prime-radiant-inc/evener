@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, type FlatList, KeyboardAvoidingView, Platform, TextInput, View } from "react-native";
 import { friendlyErrorMessage, type LaunchOption, type PickerRow, schemaPathKind } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { HubPathField } from "./HubPathField";
 import { LaunchModelPicker } from "./LaunchModelPicker";
 import { assertLaunchFieldCurrent, launchFieldConflictMessage, parseLaunchScalar } from "./launchScalar";

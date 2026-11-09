@@ -25,6 +25,7 @@ import (
 // WebServer wires routes and middleware.
 type WebServer struct {
 	pairings   *devicePairings
+	voice      *voiceService
 	cfg        hubcore.WebConfig
 	appRPC     *appserver.Server
 	navigation *NavigationService
@@ -78,11 +79,7 @@ type WebServer struct {
 	// shutdown cancels it instead of leaving the child to outlive the hub.
 	// runMain overrides the Background default; a WebServer built elsewhere
 	// (tests) keeps it.
-	lifetime context.Context
-	// treeCache memoizes the shared tree projection used by the remaining
-	// mutation handlers. NavigationService owns AppWire navigation generations
-	// and captures its source directly rather than using this cache.
-	treeCache  *hubcore.TreeCache
+	lifetime   context.Context
 	manifestFS fs.FS
 
 	frontendHash              string
@@ -192,7 +189,6 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 		liveModels:                &modelsCache{},
 		launchModels:              &launchModelsCache{entries: map[string]*launchModelsEntry{}, refreshing: map[string]bool{}},
 		lifetime:                  context.Background(),
-		treeCache:                 &hubcore.TreeCache{},
 		manifestFS:                assetsRoot(),
 		frontendHash:              fHash,
 		deletionStoreErr:          deletionStoreErr,
@@ -215,9 +211,12 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 		web.cfg.LaunchModels = web.fetchLaunchModels
 	}
 	web.navigation = newNavigationService(navigationServiceConfig{Source: webNavigationSource{web: web}, SubagentParent: web.navigationSubagentParent, Logf: navigationStatsLogfFor(web.cfg)})
+	web.navigation.deleteSession = web.sessionDelete
 	server, hostAdmin, hostManage, notices, auth, pairings := newHubAppServerWithNavigationAndTrace(web.cfg, sources, web.navigation, web.resolveTopLevelSessionRef, appwireTrace)
 	web.appRPC = server
 	web.pairings = pairings
+	web.voice = &voiceService{web: web}
+	context.AfterFunc(server.Lifetime(), web.voice.close)
 	// A launch model list a picker was served stale has been refreshed with a
 	// different one. evener/auth/updated's no-data form is the broadcast the
 	// hub sends when a model listing changes what clients show, and every
@@ -247,7 +246,6 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 	// constructor: this is the one place that both built cfg.PluginManager
 	// and now has a broadcaster to give it.
 	wirePluginStoreBroadcast(web.cfg.PluginManager, server)
-	registerArchiveHandler(web.appRPC, web.cfg, web.sources, func() *NavigationService { return web.navigation })
 	registerProjectDeleteHandler(web.appRPC, web)
 	registerSessionDeleteHandler(web.appRPC, web.sessionDelete)
 	if deletionStoreErr == nil && recoveryStoreErr == nil {
@@ -346,7 +344,14 @@ func (s *WebServer) Handler() http.Handler {
 	// harvesting; identity middleware when unset, so the stack is unchanged.
 	record := newHTTPRequestRecorder(s.cfg.HubStateRoot)
 	guarded := record(auth(httpsec.CSPMiddleware(mux)))
+	voice := s.voice.handler()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Voice requests carry scoped credentials and private microphone data.
+		// They keep their own authentication boundary outside corpus recording.
+		if strings.HasPrefix(r.URL.Path, "/api/voice/") {
+			voice.ServeHTTP(w, r)
+			return
+		}
 		if r.URL.Path == "/api/device-pairing" {
 			s.pairings.serveHTTP(w, r)
 			return
@@ -411,7 +416,7 @@ func (s *WebServer) handleManifest(w http.ResponseWriter, r *http.Request) {
 }
 
 func localAppRef(threadID string) string {
-	return appwire.Ref{SourceID: "local", ThreadID: threadID}.String()
+	return appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: threadID}.String()
 }
 
 func appRefFromRouteID(id string) string {
@@ -426,12 +431,12 @@ func isLocalRouteID(id string) bool {
 	if err != nil {
 		return identifier.ValidateSessionID(id) == nil
 	}
-	return ref.SourceID == "local" && identifier.ValidateSessionID(ref.ThreadID) == nil
+	return ref.SourceID == appwire.LocalSourceID && identifier.ValidateSessionID(ref.ThreadID) == nil
 }
 
 func canonicalRouteID(id string) string {
 	ref, err := appwire.ParseRef(id)
-	if err != nil || ref.SourceID != "local" {
+	if err != nil || ref.SourceID != appwire.LocalSourceID {
 		return id
 	}
 	return ref.ThreadID

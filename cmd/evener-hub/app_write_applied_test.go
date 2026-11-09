@@ -20,6 +20,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/internal/testfs"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -156,9 +157,7 @@ func TestHubRPCInstanceCreateBroadcastsWhenTheRollbackCouldNotBeWritten(t *testi
 	f := newInstanceRollbackFixture(t)
 	client := dialHubRPC(t, f.hub)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	mustInitializeHubClient(t, client)
 	f.failReload.Store(true)
 
 	var resp appwire.InstanceListResponse
@@ -180,9 +179,7 @@ func TestHubRPCInstanceRemoveBroadcastsWhenTheRollbackCouldNotBeWritten(t *testi
 	f := newInstanceRollbackFixture(t)
 	client := dialHubRPC(t, f.hub)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	mustInitializeHubClient(t, client)
 	var created appwire.InstanceListResponse
 	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceCreate,
 		appwire.InstanceCreateParams{Base: "anthropic", Name: "doomed"}, &created); err != nil {
@@ -206,10 +203,7 @@ func TestHubRPCInstanceRemoveBroadcastsWhenTheRollbackCouldNotBeWritten(t *testi
 	}
 	// The removal stood, so the client is told so through the wire data rather
 	// than left to retry a failed remove against an instance that is gone.
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeInternalError {
-		t.Fatalf("error = %T %v, want wire code %d", err, err, appwire.CodeInternalError)
-	}
+	wire := requireWireError(t, err, appwire.CodeInternalError)
 	dataJSON, merr := json.Marshal(wire.Data)
 	if merr != nil {
 		t.Fatal(merr)
@@ -708,9 +702,7 @@ func TestHubRPCInstanceRemoveBroadcastsWhenAPartialRollbackLeavesACredentialDele
 
 	client := dialHubRPC(t, f.hub)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	mustInitializeHubClient(t, client)
 	f.failNext.Store(true)
 
 	var resp appwire.InstanceListResponse
@@ -770,7 +762,7 @@ func TestLaunch_SetLayerWhoseResolutionFailsIsStillApplied(t *testing.T) {
 // decision on disk, so it is applied however the call ends.
 func TestLaunch_TrustRepoWhoseResolutionFailsIsStillApplied(t *testing.T) {
 	stateRoot := t.TempDir()
-	cwd := canonicalTempDir(t)
+	cwd := testfs.CanonicalTempDir(t)
 	repoPath := filepath.Join(cwd, ".evener", "launch.toml")
 	if err := os.MkdirAll(filepath.Dir(repoPath), 0o755); err != nil {
 		t.Fatal(err)

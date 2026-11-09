@@ -359,6 +359,11 @@ var ErrCompleteOutputExceedsLimit = errors.New("complete output exceeds configur
 type StateResult struct {
 	Output string
 	State  any
+	// IsError marks the result as a failed execution even though Output is the
+	// model-facing text: a structured failure (for example a shell that could
+	// not start) is still a failure, and consumers such as the goal
+	// no-progress signal and the failure breaker must treat it as one.
+	IsError bool
 	// RequireCompleteOutput opts this result into complete-or-fail shaping:
 	// when the registry's output policy would truncate Output, the dispatch
 	// fails with ErrCompleteOutputExceedsLimit instead of returning partial
@@ -441,6 +446,9 @@ type RegisteredTool struct {
 	Schema     *jsonschema.Schema
 	Limit      schema.ToolOutputLimit
 	OmitIntent bool
+	// UnmarshalArgs optionally preserves tool-specific values before preparation
+	// and dispatch validate them. Nil retains encoding/json's float64 numbers.
+	UnmarshalArgs func([]byte, *map[string]any) error
 	// NormalizeArgs optionally canonicalizes arguments immediately before schema
 	// validation. It must preserve all non-normalized caller values. The failure
 	// breaker's fingerprint runs it too, on a copy whose numbers are int64,
@@ -452,6 +460,14 @@ type RegisteredTool struct {
 	PreValidate func(args map[string]any) error
 	// Agent-layer executor with environment context.
 	Exec func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error)
+}
+
+// UnmarshalArguments is the shared argument decoder for preparation and dispatch.
+func (t RegisteredTool) UnmarshalArguments(raw []byte, args *map[string]any) error {
+	if t.UnmarshalArgs != nil {
+		return t.UnmarshalArgs(raw, args)
+	}
+	return json.Unmarshal(raw, args)
 }
 
 // toolMiddleware is called after argument validation but before tool execution.
@@ -725,6 +741,9 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 	// release the next identical call. Only failures park — a repeated
 	// identical *success* may still be the call that finally sees the world
 	// change, and refusing it would strand a session repeating its result tool.
+	// A read-only call is never parked either: the file, job, session, or
+	// memory page it reads may have appeared since the last failure, so its
+	// repeat must re-check the world (it still gets the failure nudge).
 	// model_list is an exact JSON continuation protocol. Repeating a page is a
 	// valid retry, and appending breaker text would corrupt its bounded envelope.
 	judged := !breakerBypassed(ctx) && name != "model_list"
@@ -739,8 +758,10 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 	// still judged on its raw arguments.
 	key := newDispatchKey(name, call.Arguments, t.NormalizeArgs)
 	if judged {
-		if failStreak, _, snippets := r.breaker.check(key); failStreak >= breakerThreshold {
-			return truncateResult(name, callID, failureParkText(name, snippets), true, defaultToolLimit(name))
+		if !t.ReadOnly {
+			if failStreak, _, snippets := r.breaker.check(key); failStreak >= breakerThreshold {
+				return truncateResult(name, callID, failureParkText(name, snippets), true, defaultToolLimit(name))
+			}
 		}
 	} else {
 		// A human authorized this dispatch, which retires the refusals that
@@ -763,7 +784,7 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 
 	var args map[string]any
 	if len(call.Arguments) > 0 {
-		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+		if err := t.UnmarshalArguments(call.Arguments, &args); err != nil {
 			msg := fmt.Sprintf("invalid tool arguments JSON: %v", err)
 			return truncateResult(name, callID, msg, true, t.Limit)
 		}
@@ -882,7 +903,7 @@ func dispatchedResult(name, callID string, lim schema.ToolOutputLimit, v any, er
 	// StateResult carries an LLM-facing Output plus a JSON-serializable
 	// State snapshot that rides along on the TOOL_CALL_END event.
 	if st, ok := v.(StateResult); ok {
-		res := truncateResult(name, callID, st.Output, false, lim)
+		res := truncateResult(name, callID, st.Output, st.IsError, lim)
 		if st.RequireCompleteOutput && res.Truncated {
 			// The operation promised complete content: a configured limit
 			// produces an explicit complete-delivery failure, never a

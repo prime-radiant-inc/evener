@@ -53,7 +53,7 @@ func TestExplicitDeploymentSupersessionBoundary(t *testing.T) {
 				}
 				return nil
 			}
-			if _, _, err := m.DeployForOperation(t.Context(), host, facts, true, oldGuard, DeploymentJournal{OperationID: "prior-operation"}); err == nil {
+			if _, _, err := m.DeployForOperation(t.Context(), host, facts, true, oldGuard, &DeploymentJournal{OperationID: "prior-operation"}); err == nil {
 				t.Fatal("interrupted prior write succeeded")
 			}
 			if mode == "renewed-binding" {
@@ -84,9 +84,9 @@ func TestExplicitDeploymentSupersessionBoundary(t *testing.T) {
 				return nil
 			}}
 			if mode == "ordinary" {
-				_, _, err = m.DeployForOperation(t.Context(), host, facts, true, guard)
+				_, _, err = m.DeployForOperation(t.Context(), host, facts, true, guard, nil)
 			} else {
-				_, _, err = m.DeployForOperation(t.Context(), host, facts, true, guard, journal)
+				_, _, err = m.DeployForOperation(t.Context(), host, facts, true, guard, &journal)
 			}
 			if mode == "valid" || mode == "renewed-binding" {
 				pending := m.pendingRestart(host.Name)

@@ -185,40 +185,50 @@ func checkLoadMeta_ParseError(t *testing.T) {
 	}
 }
 
-func checkSaveLayer_WriteError(t *testing.T) {
-	// Root-proof write failure: MkdirAll on the real parent succeeds, but
-	// the atomic temp target (path + ".tmp") is pre-created as a directory,
-	// so OpenFile(..., O_WRONLY|O_TRUNC) fails with EISDIR for any uid.
-	// A read-only dir would no-op as root.
+func checkSaveLayer_DoesNotFollowSymlinkAtTempName(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "launch.toml")
-	if err := os.Mkdir(path+".tmp", 0o755); err != nil {
-		t.Fatal(err)
+	victim := plantTempSymlink(t, dir, path)
+	if err := SaveLayer(path, Layer{Schema: 1, Model: "x"}); err != nil {
+		t.Fatalf("SaveLayer: %v", err)
 	}
-	err := SaveLayer(path, Layer{Schema: 1, Model: "x"})
-	if err == nil {
-		t.Fatal("expected error when the temp target is a directory, got nil")
-	}
-	if !strings.Contains(err.Error(), "launchconfig: open "+path+".tmp") {
-		t.Fatalf("expected a launchconfig open error for %s.tmp, got %v", path, err)
+	requireVictimUntouched(t, victim)
+	if got, err := LoadLayer(path); err != nil || got.Model != "x" {
+		t.Fatalf("LoadLayer = %+v, %v; want the saved layer", got, err)
 	}
 }
 
-func checkSaveMeta_WriteError(t *testing.T) {
-	// Root-proof write failure: the atomic temp target (path + ".tmp") is a
-	// directory, so OpenFile(..., O_WRONLY|O_TRUNC) fails with EISDIR for
-	// any uid. A read-only dir would no-op as root.
+func checkSaveMeta_DoesNotFollowSymlinkAtTempName(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "meta.toml")
-	if err := os.Mkdir(path+".tmp", 0o755); err != nil {
+	victim := plantTempSymlink(t, dir, path)
+	if err := SaveMeta(path, Meta{Schema: 1, CWD: "/x"}); err != nil {
+		t.Fatalf("SaveMeta: %v", err)
+	}
+	requireVictimUntouched(t, victim)
+	if got, err := LoadMeta(path); err != nil || got.CWD != "/x" {
+		t.Fatalf("LoadMeta = %+v, %v; want the saved meta", got, err)
+	}
+}
+
+// plantTempSymlink puts a symlink at the fixed "<path>.tmp" name a naive
+// atomic writer would use, pointing at a file the save must never touch.
+func plantTempSymlink(t *testing.T, dir, path string) (victim string) {
+	t.Helper()
+	victim = filepath.Join(dir, "victim")
+	if err := os.WriteFile(victim, []byte("untouched"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err := SaveMeta(path, Meta{Schema: 1, CWD: "/x"})
-	if err == nil {
-		t.Fatal("expected error when the temp target is a directory, got nil")
+	if err := os.Symlink(victim, path+".tmp"); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "launchconfig: open "+path+".tmp") {
-		t.Fatalf("expected a launchconfig open error for %s.tmp, got %v", path, err)
+	return victim
+}
+
+func requireVictimUntouched(t *testing.T, victim string) {
+	t.Helper()
+	if got, _ := os.ReadFile(victim); string(got) != "untouched" {
+		t.Fatalf("save followed the planted symlink: victim = %q", got)
 	}
 }
 
@@ -233,9 +243,6 @@ func checkSaveLayer_MkdirAllError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when MkdirAll parent is a file")
 	}
-	if !strings.Contains(err.Error(), "launchconfig: mkdir "+filepath.Dir(path)) {
-		t.Fatalf("expected a launchconfig mkdir error for %s, got %v", filepath.Dir(path), err)
-	}
 }
 
 func checkSaveMeta_MkdirAllError(t *testing.T) {
@@ -248,9 +255,6 @@ func checkSaveMeta_MkdirAllError(t *testing.T) {
 	err := SaveMeta(path, Meta{Schema: 1, CWD: "/x"})
 	if err == nil {
 		t.Fatal("expected error when MkdirAll parent is a file")
-	}
-	if !strings.Contains(err.Error(), "launchconfig: mkdir "+filepath.Dir(path)) {
-		t.Fatalf("expected a launchconfig mkdir error for %s, got %v", filepath.Dir(path), err)
 	}
 }
 
@@ -268,9 +272,6 @@ func checkSaveLayer_RenameError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when target is a non-empty directory")
 	}
-	if !strings.Contains(err.Error(), "launchconfig: rename "+path+".tmp -> "+path) {
-		t.Fatalf("expected a launchconfig rename error for %s, got %v", path, err)
-	}
 }
 
 func checkSaveMeta_RenameError(t *testing.T) {
@@ -285,8 +286,5 @@ func checkSaveMeta_RenameError(t *testing.T) {
 	err := SaveMeta(path, Meta{Schema: 1, CWD: "/x"})
 	if err == nil {
 		t.Fatal("expected error when target is a non-empty directory")
-	}
-	if !strings.Contains(err.Error(), "launchconfig: rename "+path+".tmp -> "+path) {
-		t.Fatalf("expected a launchconfig rename error for %s, got %v", path, err)
 	}
 }

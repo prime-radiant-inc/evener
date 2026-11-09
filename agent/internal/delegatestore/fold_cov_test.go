@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// TestValidateTerminalPacket covers validateTerminalPacket (fold.go:491-508)
+// TestValidateTerminalPacket covers validateTerminalPacket
 // for all branches: invalid kind, invalid message, invalid structured result,
 // oversized structured result, invalid metadata, and valid packets.
 func TestValidateTerminalPacket(t *testing.T) {
@@ -73,7 +73,7 @@ func TestValidateTerminalPacket(t *testing.T) {
 	}
 }
 
-// TestValidateFinishPacket covers validateFinishPacket (fold.go:510-544)
+// TestValidateFinishPacket covers validateFinishPacket
 // for the error paths not covered by existing integration tests.
 func TestValidateFinishPacket(t *testing.T) {
 	t.Parallel()
@@ -122,8 +122,7 @@ func TestValidateFinishPacket(t *testing.T) {
 	}
 }
 
-// TestValidateFinishPacketObserverCallback covers the observer-callback path
-// (fold.go:535-539).
+// TestValidateFinishPacketObserverCallback covers the observer-callback path.
 func TestValidateFinishPacketObserverCallback(t *testing.T) {
 	t.Parallel()
 	aggregate := &Aggregate{
@@ -159,7 +158,7 @@ func TestValidateFinishPacketObserverCallback(t *testing.T) {
 	}
 }
 
-// TestAppendDelivery covers appendDelivery (fold.go:547-568) for the error
+// TestAppendDelivery covers appendDelivery for the error
 // paths: empty delivery ID, nil packet, wrong delivery ID format, duplicate.
 func TestAppendDelivery(t *testing.T) {
 	t.Parallel()

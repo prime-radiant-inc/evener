@@ -188,9 +188,6 @@ func fuzzTypeContracts(t *testing.T) {
 		_ = ReasoningEffortRank(effort)
 		_ = ClampReasoningEffort(effort, []string{"low", "high", "max", "unknown"})
 	}
-	if !reflect.DeepEqual(OrderedEffortLevels(map[string]string{"max": "", "low": ""}), []string{"low", "max"}) {
-		t.Fatal("effort ordering failed")
-	}
 	for _, sig := range append(OpenAICompatReasoningFields(), "foreign") {
 		_ = IsOpenAICompatReasoningField(sig)
 	}

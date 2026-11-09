@@ -10,7 +10,10 @@
 // first or last byte passes through untouched.
 package runetrim
 
-import "unicode/utf8"
+import (
+	"strings"
+	"unicode/utf8"
+)
 
 // TrimTrailingPartial drops an incomplete UTF-8 sequence left dangling at the
 // END of a byte slice cut at an arbitrary offset, so slicing valid UTF-8 output
@@ -55,4 +58,10 @@ func Cut(s string, maxBytes int) string {
 		cut--
 	}
 	return s[:cut]
+}
+
+// OneLine turns newlines into spaces and drops carriage returns so a summary
+// never breaks its one-line card.
+func OneLine(s string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(s, "\n", " "), "\r", "")
 }

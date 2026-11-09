@@ -15,12 +15,41 @@ export function effortLabel(level: string, levels: string[]): string {
   return level;
 }
 
+// The effort lattice ranks the daemon's six reasoning-effort tiers, least to
+// most (the mirror of llm's effortRank). "none" is an off, not a tier, and a
+// level outside the lattice carries no rank.
+const EFFORT_RANK: Record<string, number> = {
+  minimal: 1,
+  low: 2,
+  medium: 3,
+  high: 4,
+  xhigh: 5,
+  max: 6,
+};
+
+// Places level among levels at its rank. A picker must still display a level
+// the ladder omits (the session or draft already holds it), but where its
+// rank reads: appended after a max-topped ladder, a current xhigh would show
+// below max. A level the ladder already lists keeps its place; a level with
+// no rank keeps the position at the end.
+export function insertEffortLevel(levels: string[], level: string): string[] {
+  if (levels.includes(level)) return levels;
+  const rank = EFFORT_RANK[level];
+  if (rank === undefined) return [...levels, level];
+  const at = levels.findIndex((candidate) => {
+    const candidateRank = EFFORT_RANK[candidate];
+    return candidateRank !== undefined && candidateRank > rank;
+  });
+  if (at === -1) return [...levels, level];
+  return [...levels.slice(0, at), level, ...levels.slice(at)];
+}
+
 // The option values a live-session effort picker offers: a "(default)" head,
 // the model's ladder as the model orders it (a ladder-listed "none" rides in
-// place), and the current value appended when the session already runs at a
-// level the ladder omits — the select must be able to display it.
+// place), and the current value inserted at its rank when the session already
+// runs at a level the ladder omits — the select must be able to display it.
 export function effortOptionLevels(levels: string[], current: string): string[] {
-  return ["", ...levels, ...(current !== "" && !levels.includes(current) ? [current] : [])];
+  return ["", ...(current !== "" ? insertEffortLevel(levels, current) : levels)];
 }
 
 // The session picker uses this ladder when reasoning is supported but the

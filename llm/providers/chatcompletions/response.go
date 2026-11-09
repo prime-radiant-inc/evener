@@ -34,6 +34,17 @@ type chatMessage struct {
 	ToolCalls        []chatToolCall        `json:"tool_calls,omitempty"`
 }
 
+// chatExtraContent carries provider-specific continuation metadata that rides
+// beside an OpenAI-compatible tool call. Gemini uses this escape hatch for the
+// opaque thought signature required on the next function-call turn.
+type chatExtraContent struct {
+	Google *chatGoogleExtraContent `json:"google,omitempty"`
+}
+
+type chatGoogleExtraContent struct {
+	ThoughtSignature string `json:"thought_signature,omitempty"`
+}
+
 // reasoningDetailItem represents an element in the reasoning_details array
 // used by OpenRouter for models like MiniMax M2.7. MiniMax's actual format
 // is {type: "reasoning.text", text: "...", format: "...", index: N}.
@@ -122,9 +133,10 @@ func collectEncryptedDetails(items []reasoningDetailItem) []map[string]any {
 }
 
 type chatToolCall struct {
-	ID       string           `json:"id"`
-	Type     string           `json:"type"`
-	Function chatFunctionCall `json:"function"`
+	ID           string            `json:"id"`
+	Type         string            `json:"type"`
+	Function     chatFunctionCall  `json:"function"`
+	ExtraContent *chatExtraContent `json:"extra_content,omitempty"`
 }
 
 type chatFunctionCall struct {
@@ -189,10 +201,18 @@ func reasoningFromDelta(d chatDelta) (text, field string) {
 }
 
 type chatChunkToolCall struct {
-	Index    int              `json:"index"`
-	ID       string           `json:"id,omitempty"`
-	Type     string           `json:"type,omitempty"`
-	Function chatFunctionCall `json:"function"`
+	Index        int               `json:"index"`
+	ID           string            `json:"id,omitempty"`
+	Type         string            `json:"type,omitempty"`
+	Function     chatFunctionCall  `json:"function"`
+	ExtraContent *chatExtraContent `json:"extra_content,omitempty"`
+}
+
+func thoughtSignatureFromExtraContent(extra *chatExtraContent) string {
+	if extra == nil || extra.Google == nil {
+		return ""
+	}
+	return strings.TrimSpace(extra.Google.ThoughtSignature)
 }
 
 // extractReasoning returns the reasoning text from a chat message and the wire
@@ -267,10 +287,11 @@ func fromChatCompletionResponse(raw map[string]any, finishMap map[string]string)
 		parts = append(parts, llm.ContentPart{
 			Kind: llm.ContentToolCall,
 			ToolCall: &llm.ToolCallData{
-				ID:        tc.ID,
-				Name:      tc.Function.Name,
-				Arguments: json.RawMessage(args),
-				Type:      "function",
+				ID:               tc.ID,
+				Name:             tc.Function.Name,
+				Arguments:        json.RawMessage(args),
+				Type:             "function",
+				ThoughtSignature: thoughtSignatureFromExtraContent(tc.ExtraContent),
 			},
 		})
 	}

@@ -22,7 +22,7 @@ function caps(overrides: Partial<ThreadCapabilities> = {}): ThreadCapabilities {
 }
 
 // The capability set a real daemon publishes for an IDLE thread, read off
-// server/appwire_runtime.go's appCapabilities with every optional callback
+// server/appwire_thread_projection.go's appCapabilities with every optional callback
 // wired: Send is !active; Steer, Interrupt and Queue advertise harness support
 // (#1363, #1375) and do not move with `active`, so an idle live daemon
 // advertises all three; Clear and ForkFromTurn are hardcoded false.
@@ -50,31 +50,28 @@ function daemonIdleCapabilities(overrides: Partial<ThreadCapabilities> = {}): Th
   };
 }
 
-// One test per row of the legacy precedence table (parity-m5-composer.md,
-// §A "Send-vs-Queue capability precedence", lines 64-71, citing
-// cmd/evener-hub/assets/renderer.js:479-513 — cited verbatim in
-// sendQueueAvailability.ts's own header comment), collapsed from 5 tiers to
-// 4: the wave plan verified capabilities have no live push on the wire, so
-// the original tier 2 ("the source already advertised live send/queue
-// capabilities for the CURRENT state") can never apply — capabilities are
-// always a possibly-stale snapshot, never freshly re-advertised per status
-// change — and is correctly absent below, not merely untested.
+// One test per row of the Send-vs-Queue capability precedence table
+// (sendQueueAvailability.ts's own header comment states it). Capabilities
+// have no live push on the wire, so a tier keyed on the
+// source advertising live send/queue capabilities for the CURRENT state can
+// never apply. Capabilities are always a possibly-stale snapshot, never
+// freshly re-advertised per status change.
 describe("deriveSendQueueAvailability", () => {
-  test("tier 1: ended -> both false, even with fully-permissive capabilities (parity row 1)", () => {
+  test("tier 1: ended -> both false, even with fully-permissive capabilities", () => {
     expect(deriveSendQueueAvailability({ statusType: "ended", capabilities: caps() })).toEqual({
       canSend: false,
       canQueue: false,
     });
   });
 
-  test("tier 1: closed -> both false, even with fully-permissive capabilities (parity row 1)", () => {
+  test("tier 1: closed -> both false, even with fully-permissive capabilities", () => {
     expect(deriveSendQueueAvailability({ statusType: "closed", capabilities: caps() })).toEqual({
       canSend: false,
       canQueue: false,
     });
   });
 
-  test("tier 3 (parity row 3): active with capabilities.queue explicitly false -> both false", () => {
+  test("tier 3: active with capabilities.queue explicitly false -> both false", () => {
     expect(
       deriveSendQueueAvailability({
         statusType: "active",
@@ -83,7 +80,7 @@ describe("deriveSendQueueAvailability", () => {
     ).toEqual({ canSend: false, canQueue: false });
   });
 
-  test("tier 4 (parity row 4): active -> send=false, queue=true (queue-mode default), ignoring capabilities.send entirely", () => {
+  test("tier 4: active -> send=false, queue=true (queue-mode default), ignoring capabilities.send entirely", () => {
     expect(
       deriveSendQueueAvailability({
         statusType: "active",
@@ -92,7 +89,7 @@ describe("deriveSendQueueAvailability", () => {
     ).toEqual({ canSend: false, canQueue: true });
   });
 
-  test("tier 5 (parity row 5): idle -> send=true, queue=false (plain-send default), ignoring capabilities entirely", () => {
+  test("tier 5: idle -> send=true, queue=false (plain-send default), ignoring capabilities entirely", () => {
     expect(
       deriveSendQueueAvailability({
         statusType: "idle",
@@ -101,7 +98,7 @@ describe("deriveSendQueueAvailability", () => {
     ).toEqual({ canSend: true, canQueue: false });
   });
 
-  test("tier 5 (parity row 5): awaiting -> send=true, queue=false, same plain-send default as idle", () => {
+  test("tier 5: awaiting -> send=true, queue=false, same plain-send default as idle", () => {
     expect(deriveSendQueueAvailability({ statusType: "awaiting", capabilities: caps() })).toEqual({
       canSend: true,
       canQueue: false,
@@ -118,8 +115,8 @@ describe("deriveSendQueueAvailability", () => {
   // Race window: thread/status/changed (flips statusType to "active") and
   // turn/started (populates ThreadModel.activeTurnId) are two SEPARATE
   // notifications - there is a real gap between them where a model has
-  // status "active" but no activeTurnId yet. The verbatim legacy precedence
-  // (renderer.js:479-513) keys ONLY on the state string in this branch, so
+  // status "active" but no activeTurnId yet. The precedence
+  // keys ONLY on the state string in this branch, so
   // it queues in that window; this helper must match exactly; it does not
   // take activeTurnId as an input at all (see sendQueueAvailability.ts's own
   // header comment for why folding in activeTurnId would reintroduce this
@@ -150,7 +147,7 @@ describe("deriveSendQueueAvailability", () => {
   // active branch does rather than firing a request that cannot land.
   //
   // The queue lands with no turn id: appwire v3 dropped expectedTurnId from
-  // turn/queue outright (appwire/types.go's ProtocolVersion note), so neither
+  // turn/queue outright (appwire/types_protocol.go's ProtocolVersion note), so neither
   // handleAppTurnQueue nor the agent's own clientMutationQueue has a turn
   // precondition left to fail - pinned live by
   // cmd/evener-hub/e2e_control_without_turn_ids_test.go's

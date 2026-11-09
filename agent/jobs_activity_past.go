@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/internal/foldcache"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/apptranscript"
 )
@@ -172,13 +173,13 @@ func extendHistoricalDelegateFold(ctx context.Context, path string, fromOffset i
 }
 
 // rootDelegateIndex is one root's delegates.jsonl folded via the shared
-// cache, then indexed by OwnerSessionID so every visited session in the
+// cache, then indexed by creator session so every visited session in the
 // tree looks up its own rows without re-folding the shared journal itself
 // (historicalDelegateFoldCache already avoids the underlying re-READ; this
 // index avoids repeating the small O(delegates) grouping pass per session
 // within one traversal).
 type rootDelegateIndex struct {
-	byOwner     map[string][]string // ownerSessionID -> sorted delegate IDs
+	byCreator   map[string][]string // creator session ID -> sorted delegate IDs
 	state       delegatestore.State
 	journal     activityJournalState
 	diagnostics []string
@@ -251,7 +252,7 @@ type activityJournalState struct {
 }
 
 func scanRootDelegateState(ctx context.Context, stateDir, rootSessionID string) (delegatestore.State, activityJournalState, []string, error) {
-	path := filepath.Join(jobsDir(stateDir, rootSessionID), "delegates.jsonl")
+	path := schema.SessionDelegateJournalPath(stateDir, rootSessionID)
 	result, err := historicalDelegateFoldCache.Get(ctx, path, extendHistoricalDelegateFold)
 	if err != nil {
 		if errors.Is(err, delegatestore.ErrLineTooLong) {
@@ -289,7 +290,7 @@ func scanRootDelegateState(ctx context.Context, stateDir, rootSessionID string) 
 // delegates.jsonl on the first request for that root THIS TRAVERSAL and
 // reusing the result for every later visited session sharing the same
 // root, so a traversal visiting many sessions under one root avoids
-// repeating the cheap byOwner grouping pass for each of them. The
+// repeating the cheap byCreator grouping pass for each of them. The
 // underlying read itself is separately deduplicated across traversals by
 // historicalDelegateFoldCache.
 func (c *historicalActivityCache) rootDelegates(stateDir, rootSessionID string) (*rootDelegateIndex, error) {
@@ -300,18 +301,18 @@ func (c *historicalActivityCache) rootDelegates(stateDir, rootSessionID string) 
 	if err != nil {
 		return nil, err
 	}
-	byOwner := make(map[string][]string)
+	byCreator := make(map[string][]string)
 	for id, aggregate := range state {
 		if aggregate == nil {
 			continue
 		}
-		owner := aggregate.Descriptor.OwnerSessionID
-		byOwner[owner] = append(byOwner[owner], id)
+		creator := delegateCreatorSessionID(aggregate.Descriptor.VisibleSessionID, aggregate.Descriptor.OwnerSessionID)
+		byCreator[creator] = append(byCreator[creator], id)
 	}
-	for owner := range byOwner {
-		sort.Strings(byOwner[owner])
+	for creator := range byCreator {
+		sort.Strings(byCreator[creator])
 	}
-	idx := &rootDelegateIndex{byOwner: byOwner, state: state, journal: journal, diagnostics: diagnostics}
+	idx := &rootDelegateIndex{byCreator: byCreator, state: state, journal: journal, diagnostics: diagnostics}
 	c.delegateIndex[rootSessionID] = idx
 	return idx, nil
 }
@@ -321,8 +322,8 @@ func (c *historicalActivityCache) rootDelegates(stateDir, rootSessionID string) 
 // omits the field and the UI hides the token cluster rather than rendering
 // ↑0 ↓0.
 func historicalActivityUsage(stateDir, sessionID string, meta schema.SessionMeta) *appwire.EvenerUsage {
-	path := filepath.Join(stateDir, sessionsSubdir, sessionID+".transcript.jsonl")
-	total, err := activityUsageCache.UsageTotalFromFile(path, transcriptJSONLMaxLineBytes, meta.DivergenceTurn)
+	path := schema.SessionTranscriptPath(stateDir, sessionID)
+	total, err := activityUsageCache.UsageTotalFromFile(path, transcript.DefaultMaxLineBytes, meta.DivergenceTurn)
 	if err != nil {
 		return nil
 	}
@@ -416,18 +417,18 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool, cache
 		return activityLoadedBase{}, err
 	}
 	return activityLoadedBase{snapshot: activitySessionSnapshot{
-		SessionID:       sessionID,
-		Ref:             encodeRef("", sessionID),
-		Label:           activityLabelFromMeta(sessionID, meta, metaErr),
-		RootID:          rootID,
-		Revision:        activityRevisionFromMeta(meta),
-		Jobs:            jobs,
-		LiveJobs:        map[string]*jobstore.JobRecord{},
-		StableDelegates: stable,
-		Usage:           historicalActivityUsage(stateDir, sessionID, meta),
-		Diagnostics:     diagnostics,
-		JobsEpoch:       jobsEpoch,
-		DelegatesEpoch:  delegates.epoch,
+		SessionID:      sessionID,
+		Ref:            encodeRef("", sessionID),
+		Label:          activityLabelFromMeta(sessionID, meta, metaErr),
+		RootID:         rootID,
+		Revision:       activityRevisionFromMeta(meta),
+		Jobs:           jobs,
+		LiveJobs:       map[string]*jobstore.JobRecord{},
+		Delegates:      stable,
+		Usage:          historicalActivityUsage(stateDir, sessionID, meta),
+		Diagnostics:    diagnostics,
+		JobsEpoch:      jobsEpoch,
+		DelegatesEpoch: delegates.epoch,
 
 		JobsJournalAbsent:          jobsAbsent,
 		DelegatesJournalAbsent:     delegates.absent,
@@ -435,17 +436,17 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool, cache
 	}}, nil
 }
 
-// loadHistoricalStableActivity returns ownerSessionID's stable delegate
+// loadHistoricalStableActivity returns creatorSessionID's stable delegate
 // rows from rootSessionID's shared delegate journal, via cache so the
 // journal itself is folded at most once per root across the whole
 // traversal (see historicalActivityCache), plus the fold-cache's current
 // epoch for that journal (see activityContinuation.DelegatesEpoch).
-func loadHistoricalStableActivity(cache *historicalActivityCache, stateDir, rootSessionID, ownerSessionID string) (map[string]delegateSnapshot, activityJournalState, []string, error) {
+func loadHistoricalStableActivity(cache *historicalActivityCache, stateDir, rootSessionID, creatorSessionID string) (map[string]delegateSnapshot, activityJournalState, []string, error) {
 	idx, err := cache.rootDelegates(stateDir, rootSessionID)
 	if err != nil {
 		return nil, activityJournalState{}, nil, err
 	}
-	ids := idx.byOwner[ownerSessionID]
+	ids := idx.byCreator[creatorSessionID]
 	rows := make(map[string]delegateSnapshot, len(ids))
 	for _, id := range ids {
 		rows[id] = captureDelegateSnapshot(idx.state[id])
@@ -459,7 +460,7 @@ func loadHistoricalStableActivity(cache *historicalActivityCache, stateDir, root
 // walk indexes via historicalActivityCache.rootDelegates, so it shares the
 // same fold cache, even though it doesn't share the traversal-local
 // rootDelegateIndex (this is one read,
-// not a multi-session traversal that benefits from memoizing the byOwner
+// not a multi-session traversal that benefits from memoizing the byCreator
 // grouping too). Its own continuation contract has no epoch to check: the
 // hub's ThreadRead RPC this serves has no pagination/continuation concept
 // at all, so the epoch scanRootDelegateState returns is simply discarded

@@ -24,7 +24,7 @@ The card previously POSTed `/s/<id>/queue` and `/s/<id>/drain-as-steer`.
 Neither route exists: they died with the vanilla frontend (`660376f78`), and
 there is no REST equivalent for queue or drain at all. The methods live on
 the AppWire socket as `turn/queue` and `turn/drainAsSteer`
-(`appwire/types.go:26-27`).
+(`appwire/types_protocol.go#MethodTurnQueue`).
 
 **Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" and "The
 REST surface, and what is no longer on it". The queue strip carries no

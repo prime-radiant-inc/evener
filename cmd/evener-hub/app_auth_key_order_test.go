@@ -11,7 +11,7 @@ package hub
 //
 // The fix resolves the key once through the resolveEndpointFingerprintKey seam
 // before taking either lock and threads the result - with the error an unusable
-// key produced - into verifyEndpointFingerprintWithKey / verifyFlowEndpointWithKey
+// key produced - into verifyEndpointFingerprint / verifyFlowEndpoint
 // inside the locked section. The probe below swaps that seam for one that records
 // the call count and, on the spot, whether the controller's locks were held:
 // TryLock fails whenever any goroutine holds the lock, the probe's own goroutine

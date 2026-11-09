@@ -112,6 +112,9 @@ func TestRemoteHubMutationWireMethodsAndRefs(t *testing.T) {
 		{"CompactThread", appwire.MethodThreadCompactStart, true, false, "", func(ctx context.Context, s *RemoteHubSource) error {
 			return s.CompactThread(ctx, appwire.ThreadCompactStartParams{Ref: testControllerRef})
 		}},
+		{"ForceStopThread", appwire.MethodEvenerThreadForceStop, true, false, "", func(ctx context.Context, s *RemoteHubSource) error {
+			return s.ForceStopThread(ctx, appwire.ThreadForceStopParams{Ref: testControllerRef})
+		}},
 		{"ShutdownThread", appwire.MethodThreadShutdown, true, false, "", func(ctx context.Context, s *RemoteHubSource) error {
 			return s.ShutdownThread(ctx, appwire.ThreadShutdownParams{Ref: testControllerRef})
 		}},

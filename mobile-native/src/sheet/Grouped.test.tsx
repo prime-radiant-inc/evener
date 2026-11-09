@@ -1,4 +1,4 @@
-import { AccessibilityInfo, Platform, Pressable, type TextInput, View } from "react-native";
+import { AccessibilityInfo, Platform, Pressable, type TextInputInstance, View } from "react-native";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { textContrast } from "../design/contrast.testkit";
 import { fonts, palettes } from "../design/tokens";
@@ -32,7 +32,6 @@ vi.mock("react-native", async () => ({
 	useWindowDimensions: () => ({ width: 390, height: 844, scale: 3, fontScale: viewport.fontScale }),
 	useColorScheme: () => viewport.scheme,
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 const light = palettes.light;
 const symbols = (tree: ReturnType<typeof render>) =>
@@ -655,7 +654,7 @@ describe("a text field row", () => {
 
 	it("hands its return key to the form, and its input to a ref, so one field can lead to the next", () => {
 		const onSubmit = vi.fn();
-		const ref = createRef<TextInput>();
+		const ref = createRef<TextInputInstance>();
 		const tree = render(
 			<TextFieldRow
 				label="Instance name"

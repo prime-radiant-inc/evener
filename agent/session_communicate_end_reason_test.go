@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -73,17 +74,22 @@ func TestCommunicateEndReasonIsOfferedOnlyWhereSomeoneCanAnswer(t *testing.T) {
 func TestCommunicateDeliversItsEndReason(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name    string
-		offered bool
-		args    map[string]any
-		want    string
-		wantErr bool
+		name     string
+		offered  bool
+		wakeable bool
+		args     map[string]any
+		want     string
+		wantErr  bool
 	}{
 		{name: "root states needs_response", offered: true, args: map[string]any{"end_turn": true, "end_reason": "needs_response"}, want: "needs_response"},
-		{name: "root states waiting_on_work", offered: true, args: map[string]any{"end_turn": true, "end_reason": "waiting_on_work"}, want: "waiting_on_work"},
+		{name: "root states waiting_on_work", offered: true, args: map[string]any{"end_turn": true, "end_reason": "waiting_on_work"}, wantErr: true},
+		{name: "root states waiting_on_work with a live timer", offered: true, wakeable: true, args: map[string]any{"end_turn": true, "end_reason": "waiting_on_work"}, want: "waiting_on_work"},
+		{name: "root states done with nothing live", offered: true, args: map[string]any{"end_turn": true, "end_reason": "done"}, want: "done"},
+		{name: "root states needs_response with nothing live", offered: true, args: map[string]any{"end_turn": true, "end_reason": "needs_response"}, want: "needs_response"},
 		{name: "root states done", offered: true, args: map[string]any{"end_turn": true, "end_reason": "done"}, want: "done"},
 		{name: "root states none", offered: true, args: map[string]any{"end_turn": true}, want: "done"},
 		{name: "root keeps the turn going", offered: true, args: map[string]any{"end_turn": false, "end_reason": "needs_response"}, want: ""},
+		{name: "root keeps the turn going with waiting_on_work", offered: true, args: map[string]any{"end_turn": false, "end_reason": "waiting_on_work"}, want: ""},
 		{name: "root states an unknown reason", offered: true, args: map[string]any{"end_turn": true, "end_reason": "later"}, wantErr: true},
 		{name: "delegate ends its turn", offered: false, args: map[string]any{"end_turn": true}, want: ""},
 		{name: "delegate states a reason", offered: false, args: map[string]any{"end_turn": true, "end_reason": "needs_response"}, wantErr: true},
@@ -91,8 +97,9 @@ func TestCommunicateDeliversItsEndReason(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			var delivered []events.CommunicateData
+			captured := 0
 			deps := &toolDeps{
-				emit: func(events.EventKind, events.EventData) {},
+				emit: func(events.EventData) {},
 				deliverCommunicate: func(data events.CommunicateData) error {
 					delivered = append(delivered, data)
 					return nil
@@ -101,8 +108,9 @@ func TestCommunicateDeliversItsEndReason(t *testing.T) {
 				drainSteering:          func() []steeringMessage { return nil },
 				prependSteering:        func([]steeringMessage) {},
 				resultToolName:         func() string { return "communicate" },
-				setCommunicateTerminal: func(context.Context, string, string, string, any, string) bool { return true },
+				setCommunicateTerminal: func(context.Context, string, string, string, any, string) bool { captured++; return true },
 				offersEndReason:        tc.offered,
+				wakeableWork:           func() bool { return tc.wakeable },
 			}
 			reg := tool.NewRegistry()
 			_ = registerCommunicateTool(reg, deps)
@@ -110,8 +118,8 @@ func TestCommunicateDeliversItsEndReason(t *testing.T) {
 			maps.Copy(args, tc.args)
 			res := reg.ExecuteCall(context.Background(), nil, communicateCallArgs("comm-1", args))
 			if tc.wantErr {
-				if !res.IsError || len(delivered) != 0 {
-					t.Fatalf("result = %+v, delivered = %+v; want a refusal that delivers nothing", res, delivered)
+				if !res.IsError || len(delivered) != 0 || captured != 0 {
+					t.Fatalf("result error = %v, delivered = %+v, terminal captures = %d; want a refusal without delivery or capture", res.IsError, delivered, captured)
 				}
 				return
 			}
@@ -128,7 +136,7 @@ func TestCommunicateDeliversItsEndReason(t *testing.T) {
 // The transcript keeps the end reason with the message it ended the turn on.
 func TestCommunicateRecordsItsEndReason(t *testing.T) {
 	s, adapter := newExecutionSession(t)
-	adapter.script(respond(toolCallResponse(communicateCallArgs("comm-1", map[string]any{"message": "pick one", "end_reason": "needs_response"}))))
+	adapter.script(respond(agenttest.ToolCallResponse(communicateCallArgs("comm-1", map[string]any{"message": "pick one", "end_reason": "needs_response"}))))
 	if _, err := s.ProcessInput(context.Background(), "talk", nil); err != nil {
 		t.Fatal(err)
 	}

@@ -263,8 +263,7 @@ func TestHubSpawnSlashCatalog_EmptyCWDScansConfiguredSkillsDirs(t *testing.T) {
 
 	// An empty cwd returns the user-level inventory, but configured extra
 	// skill directories are cwd-independent: a session loads them whatever
-	// the cwd, so the catalog must include them too. (DiscoverSkills with a
-	// nil env returns nil without scanning extraDirs.)
+	// the cwd, so the catalog must include them too.
 	resp, err := hubSpawnSlashCatalog(context.Background(), hubcore.WebConfig{}, appwire.SpawnSlashCatalogParams{
 		CWD:             "",
 		LaunchOverrides: &appwire.LaunchConfigLayer{SkillsDirs: []string{extraSkills}},

@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { render, screen } from "@testing-library/react";
 import DOMPurify from "dompurify";
 import { afterEach, expect, test, vi } from "vitest";
+import { readModuleCss } from "../../styles/cssBlock";
 import codeblockStyles from "../codeblock/codeblock.module.css";
 import { requireClass } from "../internal/requireClass";
 import { Markdown } from "./index";
@@ -73,6 +74,21 @@ test("renders a bullet list", () => {
   const { container } = render(<Markdown source={"- one\n- two"} />);
   const items = Array.from(container.querySelectorAll("li")).map((li) => li.textContent);
   expect(items).toEqual(["one", "two"]);
+});
+
+test.each([false, true])("preserves ordered-list starting numbers, live=%s", (live) => {
+  const { container } = render(<Markdown source={"7. first\n\n   second"} live={live} />);
+  const list = container.querySelector("ol");
+  expect(list?.start).toBe(7);
+  expect(list?.querySelectorAll(":scope > li")).toHaveLength(1);
+  expect(list?.querySelectorAll("li > p")).toHaveLength(2);
+});
+
+test("ordered-list attributes in raw HTML stay escaped", () => {
+  const source = '<ol start="7" onclick="alert(1)"><li>raw</li></ol>';
+  const { container } = render(<Markdown source={source} />);
+  expect(container.querySelector("ol, li, [onclick]")).toBeNull();
+  expect(container.textContent).toBe(source);
 });
 
 test("renders a blockquote", () => {
@@ -166,17 +182,15 @@ test("declares a :focus-visible rule for links, using only tokens", () => {
 });
 
 test("takes its body ink from --markdown-ink, defaulting to --ink-hi", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
   // Comments are stripped before matching: a doc comment in this file quotes
   // the very declaration being asserted, and a sibling contract test once
   // passed against a deleted implementation for exactly that reason.
-  const css = readFileSync(join(here, "markdown.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "markdown.module.css");
   expect(css).toContain("color: var(--markdown-ink, var(--ink-hi))");
 });
 
 test("compact bubbles override the Markdown body ink with the quiet token", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "markdown.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "markdown.module.css");
   const rule = css.match(/\.markdownBubbleCompact\s*\{[^}]*\}/)?.[0] ?? "";
   expect(rule).toContain("--markdown-ink: var(--ink-mid)");
 });
@@ -192,14 +206,12 @@ test("compact bubbles override the Markdown body ink with the quiet token", () =
 // The root composes with its host: a host's own font-size applies unless the
 // surface pins --prose-font-size (reading surfaces pin it to the prose step).
 test("takes its font-size from --prose-font-size, composing with its host at 1em when unset", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "markdown.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "markdown.module.css");
   expect(css).toContain("font-size: var(--prose-font-size, 1em)");
 });
 
 test("inline code is a quiet underline, not a filled chip: no background, no radius, sized relative to the surrounding prose", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "markdown.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "markdown.module.css");
   const rule = css.match(/\.inlineCode\s*\{[^}]*\}/)?.[0] ?? "";
   expect(rule).not.toBe("");
   expect(rule).not.toMatch(/background/);
@@ -362,8 +374,7 @@ test("live matches settled on a long CRLF source across tail-growth rerenders (w
 // honored via attribute selectors (so GFM column alignment works without
 // allowing the style attribute through DOMPurify).
 test("the stylesheet styles GFM tables: flat headers, edge borders, align selectors", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "markdown.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "markdown.module.css");
   expect(css).toContain(".root :where(table)");
   expect(css).toContain("border-collapse: collapse");
   expect(css).toMatch(/thead th[^{]*\{[^}]*background: transparent/);

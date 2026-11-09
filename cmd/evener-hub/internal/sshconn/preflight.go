@@ -147,13 +147,15 @@ func parseEffectiveUID(out []byte) string {
 // resolveRoots resolves the host's evener config and state roots from the
 // probed environment using the same chain the host binary itself uses
 // (cmdutil.StateRootFromLookup, envvars/userdirs.ConfigRoot). Empty variables
-// are treated as unset, matching evener's own env lookups.
+// are treated as unset, matching evener's own env lookups. A root the host
+// cannot resolve (no HOME and no XDG base) is reported as "" rather than a
+// guessed path, the way userdirs.ConfigRoot reports an unavailable root.
 func resolveRoots(goos string, env map[string]string) (configRoot, stateRoot string) {
 	lookup := func(key string) (string, bool) {
 		value, ok := env[key]
 		return value, ok && value != ""
 	}
-	stateRoot = cmdutil.StateRootFromLookup(goos, lookup)
+	stateRoot, _ = cmdutil.StateRootFromLookup(goos, lookup)
 	home := env["HOME"]
 	configRoot = userdirs.ConfigRoot(env["XDG_CONFIG_HOME"], func() (string, error) {
 		if home != "" {
@@ -272,7 +274,7 @@ func (m *Manager) collectPreflight(ctx context.Context, host hostreg.Host) (pref
 	lc, err := m.probeLaunchCheck(ctx, probeHost)
 	// An unfinished effect owns its selected installation. Its absence must not
 	// redirect recovery into a second installation discovered at the default.
-	if errors.Is(err, errExecutableMissing) && !m.pendingRestart(host.Name).active() {
+	if errors.Is(err, ErrExecutableMissing) && !m.pendingRestart(host.Name).active() {
 		target, probeErr := m.installerDefaultForPreflight(ctx, host)
 		if probeErr != nil {
 			return preflightResult{facts: pf}, probeErr
@@ -288,7 +290,7 @@ func (m *Manager) collectPreflight(ctx context.Context, host hostreg.Host) (pref
 		// Only the retained installation can use nonexecutability as recorded
 		// repair evidence. An ordinary present-but-unusable binary is not missing.
 		if unusable, probeErr := m.recordedTargetUnusable(ctx, probeHost); probeErr == nil && unusable {
-			err = fmt.Errorf("%w: retained target is nonexecutable", errExecutableMissing)
+			err = fmt.Errorf("%w: retained target is nonexecutable", ErrExecutableMissing)
 		}
 	}
 	if errors.Is(err, ErrProtocolIncompatible) {
@@ -309,7 +311,7 @@ func (m *Manager) collectPreflight(ctx context.Context, host hostreg.Host) (pref
 		}
 	}
 	if err != nil {
-		pf.ExecutableMissing = errors.Is(err, errExecutableMissing)
+		pf.ExecutableMissing = errors.Is(err, ErrExecutableMissing)
 		if pf.ExecutableMissing {
 			err = fmt.Errorf("%w: %s", err, m.deployHelp())
 		}
@@ -361,7 +363,7 @@ func (m *Manager) readLaunchCheck(ctx context.Context, host hostreg.Host, startu
 		}
 		missing, present := m.probeExecutablePresence(ctx, host)
 		if missing {
-			return launchCheck{}, fmt.Errorf("%w: host %q launch-check: %s", errExecutableMissing, host.Name, tail(out))
+			return launchCheck{}, fmt.Errorf("%w: host %q launch-check: %s", ErrExecutableMissing, host.Name, tail(out))
 		}
 		failure := sshRunFailure(host.Name, "launch-check", err, tail(out))
 		if present && ctx.Err() == nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) &&
@@ -405,23 +407,14 @@ func isProtocolMismatchOutput(out []byte) bool {
 		strings.Contains(text, "does not match Hub protocol")
 }
 
-// errExecutableMissing marks the verified absence of the evener executable at the
+// ErrExecutableMissing marks the verified absence of the evener executable at the
 // host's resolved run target: the dedicated executable probe proved it (its own
 // exit 1), rather than the failed launch-check's status or its not-found text
 // being parsed. It is a fact about the executable's absence, not a transport or
 // permission refusal, so a controller with a deploy configured records the launch
 // contract as unknown and lets the installer fallback install a binary at a known
 // location, instead of refusing the host outright.
-var errExecutableMissing = errors.New("sshconn: evener executable not found on the host")
-
-// ErrExecutableMissing is the exported alias for the terminal
-// missing-executable refusal (errExecutableMissing, above): the host has no
-// evener at the resolved path and, when no deploy path exists either, there is
-// nothing the controller can install. It is terminal like ErrVersionMismatch
-// (isTerminal), and it is exported so a caller — the hub's attach handler — can
-// match it with errors.Is and surface it as a typed deploy/launch failure
-// (appwire.HubLaunchError) rather than a generic internal error.
-var ErrExecutableMissing = errExecutableMissing
+var ErrExecutableMissing = errors.New("sshconn: evener executable not found on the host")
 
 // probeExecutablePresence reports independently verified absence or presence at
 // the command launch-check just tried. Neither is true for a failed probe.

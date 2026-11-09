@@ -132,3 +132,29 @@ func TestNewRegistryClientWiresTheProcessSeams(t *testing.T) {
 		t.Fatalf("seams: %q %q", tokenauth.DefaultCodex.StateDir, tokenauth.ClientVersion)
 	}
 }
+
+// With no state home the registry still loads for read-only use, from the
+// embedded catalog and with no state root; a caller that names its own root
+// gets it.
+func TestLoadRegistryWithoutStateHomeLoadsRootless(t *testing.T) {
+	isolateRoots(t)
+	t.Setenv("XDG_STATE_HOME", "")
+	t.Setenv("HOME", "")
+
+	r, _, err := LoadRegistry(registry.WithOffline(true), registry.WithoutCache())
+	if err != nil {
+		t.Fatalf("LoadRegistry: %v", err)
+	}
+	if r.StateRoot() != "" {
+		t.Fatalf("StateRoot = %q, want empty", r.StateRoot())
+	}
+
+	chosen := t.TempDir()
+	r, _, err = LoadRegistry(registry.WithOffline(true), registry.WithoutCache(), registry.WithStateRoot(chosen))
+	if err != nil {
+		t.Fatalf("LoadRegistry with WithStateRoot: %v", err)
+	}
+	if r.StateRoot() != chosen {
+		t.Fatalf("StateRoot = %q, want %q", r.StateRoot(), chosen)
+	}
+}

@@ -60,6 +60,17 @@ export function collectAdvancedOverrides(options: LaunchOption[], values: Advanc
       }
     }
   }
+  // An explicit Memory choice is consent, not preference: the collectors run
+  // against whatever schema answered when they fired - the host-switch re-judge
+  // holds the previous host's options until the new host's schema lands, and
+  // the panel's async path validations land after a switch - so a schema that
+  // lacks the field must not silently re-enable what the person turned off.
+  // The choice lives in the values, and only the clear removes it there.
+  const memory = values.memoryEnabled;
+  const memoryChoice = memory?.invalid ? undefined : memory?.value;
+  if (layer.memoryEnabled === undefined && (memoryChoice === "true" || memoryChoice === "false")) {
+    layer.memoryEnabled = memoryChoice === "true";
+  }
   return layer as LaunchConfigLayer;
 }
 

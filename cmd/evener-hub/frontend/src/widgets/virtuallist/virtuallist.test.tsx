@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Virtualizer } from "@tanstack/react-virtual";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { createRef, useState } from "react";
+import { createRef, type ReactNode, useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   holdReaderFrames,
@@ -472,6 +472,20 @@ describe("anchorToEnd", () => {
     anchorToEnd: boolean,
     clampScrollWrites = false,
     reader?: { onLayout(layout: ReaderLayout): void; count?: number; estimate?: number },
+    options?: {
+      readingPoint?: () =>
+        | {
+            row: number;
+            id: string;
+            offset: number;
+            offsetInRow: number;
+            height: number;
+            width: number;
+            viewport: number;
+          }
+        | undefined;
+      renderRow?: (index: number) => ReactNode;
+    },
   ) {
     const ref = createRef<VirtualListHandle>();
     let virtualizer: Virtualizer<HTMLDivElement, HTMLDivElement> | undefined;
@@ -491,7 +505,8 @@ describe("anchorToEnd", () => {
           virtualizer = instance;
         }}
         {...(reader ? { onLayout: reader.onLayout } : {})}
-        renderRow={(index) => <div>row {index}</div>}
+        {...(options?.readingPoint ? { readingPoint: options.readingPoint } : {})}
+        renderRow={options?.renderRow ?? ((index) => <div>row {index}</div>)}
       />,
     );
     const root = rootOf(container);
@@ -668,6 +683,80 @@ describe("anchorToEnd", () => {
     );
     return { geometry, ...external };
   }
+
+  function placeEntry(element: HTMLElement, top: number, height: number) {
+    const bounds = {
+      top,
+      bottom: top + height,
+      height,
+      width: 300,
+      left: 0,
+      right: 300,
+      x: 0,
+      y: top,
+      toJSON: () => ({}),
+    } as DOMRect;
+    Object.defineProperty(element, "getBoundingClientRect", { configurable: true, value: () => bounds });
+    return element;
+  }
+
+  async function renderReaderEntry() {
+    const external = installMeasuredGeometry([6000, 1000, 6000, 6000, 6000]);
+    const frames = holdReaderFrames();
+    const entry = { top: -100, height: 400, width: 0, viewport: 0 };
+    const { root, current } = await renderMeasuredList(true, true, undefined, {
+      readingPoint: () => ({
+        row: 1,
+        id: "entry-1",
+        offset: entry.top,
+        offsetInRow: entry.top,
+        height: entry.height,
+        width: entry.width,
+        viewport: entry.viewport,
+      }),
+      renderRow: (index) => (
+        <div>
+          <span data-view-anchor-id={`entry-${index}`}>row {index}</span>
+        </div>
+      ),
+    });
+    await act(async () => external.notify());
+    await act(async () => current().scrollToIndex(1, { align: "start" }));
+    entry.width = root.clientWidth;
+    entry.viewport = root.clientHeight;
+    const anchor = root.querySelector<HTMLElement>('[data-view-anchor-id="entry-1"]');
+    if (!anchor) throw new Error("the reading entry did not render");
+    placeEntry(anchor, entry.top, entry.height);
+    await act(async () => {
+      root.scrollTop = 6100;
+      frames.release();
+    });
+    await act(async () => external.notify());
+    return {
+      external,
+      frames,
+      entry,
+      anchor,
+      root,
+      restore: () => {
+        cleanup();
+        external.restore();
+        frames.restore();
+      },
+    };
+  }
+
+  test("growth after the reading entry inside its row holds the reader", async () => {
+    const scene = await renderReaderEntry();
+    try {
+      expect(scene.root.scrollTop).toBe(6100);
+      scene.external.geometry.rowHeights[1] = 1400;
+      await act(async () => scene.external.notify());
+      expect(scene.root.scrollTop).toBe(6100);
+    } finally {
+      scene.restore();
+    }
+  });
 
   test("reader layout observes committed sizer and rejects later unmeasured DOM", async () => {
     const external = installMeasuredGeometry([500, 500, 500, 500, 500]);

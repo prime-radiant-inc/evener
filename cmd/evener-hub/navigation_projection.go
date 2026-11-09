@@ -370,29 +370,20 @@ func navigationMergeProjectBucketsContext(ctx context.Context, buckets navigatio
 	if err != nil {
 		return navigationProjectBucket{}, err
 	}
-	// Merging a Key's groups can raise the merged row's LastActivity above a
-	// later row's instant, while the merge keeps each Key's first-appearance
-	// position. The test-runs bucket is the live shape: it concatenates the
-	// active and archived test-run projects, each LastActivity-ordered on its
-	// own, so an archived test run newer than an active one lifts the merged row
-	// past rows it should precede. Re-sort each bucket by LastActivity desc -
-	// hubcore's own project order - so a merged row's position agrees with its
-	// recency. SliceStable keeps the tree's order as the tiebreak, the way
-	// hubcore's stable project sort does.
-	navigationSortProjectsByLastActivity(active)
-	navigationSortProjectsByLastActivity(archived)
-	navigationSortProjectsByLastActivity(testRuns)
+	// The test-runs bucket concatenates the active and archived test-run
+	// projects, each ordered on its own, so a merge can leave the bucket out of
+	// order. Re-sort each bucket by name - hubcore's own project order - so a
+	// merged row's position agrees with the sidebar's list.
+	navigationSortProjectsByName(active)
+	navigationSortProjectsByName(archived)
+	navigationSortProjectsByName(testRuns)
 	return navigationProjectBucket{active: active, archived: archived, testRuns: testRuns}, nil
 }
 
-// navigationSortProjectsByLastActivity orders projects newest-first by
-// LastActivity, matching hubcore's project order (BuildTree's byLastActivityDesc).
-// SliceStable keeps the input order for equal instants, the way hubcore's
-// stable sort does.
-func navigationSortProjectsByLastActivity(projects []hubcore.TreeProject) {
-	sort.SliceStable(projects, func(i, j int) bool {
-		return projects[i].LastActivity.After(projects[j].LastActivity)
-	})
+// navigationSortProjectsByName orders projects by name, matching hubcore's
+// project order. The comparator is total over distinct projects.
+func navigationSortProjectsByName(projects []hubcore.TreeProject) {
+	sort.SliceStable(projects, func(i, j int) bool { return hubcore.ProjectNameLess(projects[i], projects[j]) })
 }
 
 // navigationMergeProjectGroupsContext merges the projects that share a Key
@@ -455,8 +446,8 @@ func navigationMergeProjectGroupsContext(ctx context.Context, projects []hubcore
 // the struct:
 //
 //   - Current / Recent / Archived are the union of every group's rows, ordered
-//     the way hubcore orders its own tiers (most recent first: UpdatedAt desc,
-//     CreatedAt desc, then the title and id tie-break sessionMetaLess uses).
+//     the way hubcore orders its own tiers (newest created first: CreatedAt
+//     desc, then title, then ID - ProjectSessionOrderLess).
 //     The per-tier overflow counts (MoreCurrent / MoreRecent / MoreArchived)
 //     are recomputed against maxSidebarSessionsPerTier rather than summed:
 //     More* is how many rows of the union lie beyond the cap a tree-built
@@ -492,7 +483,7 @@ func navigationMergeProjectGroupsContext(ctx context.Context, projects []hubcore
 // The scalar folds and the tier unions are computed in one pass over the
 // groups, in the tree's own order; folding the same groups pair by pair
 // produces the same value, because every field combines associatively and the
-// stable tier sort keeps tied rows in the order the groups were read in.
+// tier comparator is a total order.
 func navigationMergeProjectContext(ctx context.Context, first hubcore.TreeProject, next []hubcore.TreeProject) (hubcore.TreeProject, error) {
 	lastActivity, age := first.LastActivity, first.Age
 	rollupState := first.RollupState
@@ -557,13 +548,13 @@ func navigationMergeProjectContext(ctx context.Context, first hubcore.TreeProjec
 // It reads TierRows rather than the public slice because a tree-built project
 // keeps its overflow in the private uncapped tier, and the merged project must
 // carry that overflow too. The union must then be re-ordered: each group is
-// internally most-recent-first, but appending one group after the other is not
-// globally ordered, so the merge sorts by the field and tie-break the tree and
-// capTier rely on (hubcore.TreeNodeLess). Sorting the concatenated union
-// once - rather than re-sorting the accumulated rows after each group folds
-// in - keeps the tier linear in its rows, and matches what folding pair by
-// pair produces, because the sort is stable and the groups concatenate in the
-// tree's own order. The rows are returned whole - the caller keeps every one
+// internally newest-created-first, but appending one group after the other is
+// not globally ordered, so the merge sorts by the field and tie-break the tree
+// and capTier rely on (hubcore.ProjectTreeNodeLess). Sorting the concatenated
+// union once - rather than re-sorting the accumulated rows after each group
+// folds in - keeps the tier linear in its rows, and matches what folding pair
+// by pair produces, because the sort is stable and the groups concatenate in
+// the tree's own order. The rows are returned whole - the caller keeps every one
 // in the public tier, which is what TierRows falls back to - so the caller
 // derives the tier's overflow with navigationTierOverflow.
 func navigationMergeProjectTierContext(ctx context.Context, first hubcore.TreeProject, next []hubcore.TreeProject, tier string) ([]hubcore.TreeNode, error) {
@@ -591,7 +582,7 @@ func navigationMergeProjectTierContext(ctx context.Context, first hubcore.TreePr
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	sort.SliceStable(rows, func(i, j int) bool { return hubcore.TreeNodeLess(rows[i], rows[j]) })
+	sort.SliceStable(rows, func(i, j int) bool { return hubcore.ProjectTreeNodeLess(rows[i], rows[j]) })
 	return rows, nil
 }
 
@@ -776,25 +767,25 @@ func validateNavigationIdentity(kind, value string, allowEmpty bool) error {
 	}
 	return nil
 }
-func navigationRef(id string) (hubapi.Ref, error) {
+func navigationRef(id string) (appwire.Ref, error) {
 	if err := validateNavigationIdentity("session ID", id, false); err != nil {
-		return hubapi.Ref{}, err
+		return appwire.Ref{}, err
 	}
 	refText := id
 	if !strings.Contains(id, ":") {
-		refText = hubapi.LocalRef(id).String()
+		refText = appwire.LocalRef(id).String()
 	}
-	ref, err := hubapi.ParseRef(refText)
+	ref, err := appwire.ParseRef(refText)
 	if err != nil {
-		return hubapi.Ref{}, fmt.Errorf("malformed navigation session identity %q: %w", id, err)
+		return appwire.Ref{}, fmt.Errorf("malformed navigation session identity %q: %w", id, err)
 	}
 	if len(ref.String()) > maxNavigationIdentityBytes {
-		return hubapi.Ref{}, fmt.Errorf("navigation ref exceeds %d bytes", maxNavigationIdentityBytes)
+		return appwire.Ref{}, fmt.Errorf("navigation ref exceeds %d bytes", maxNavigationIdentityBytes)
 	}
 	return ref, nil
 }
 
-func navigationNodeRef(node hubcore.TreeNode) (hubapi.Ref, error) {
+func navigationNodeRef(node hubcore.TreeNode) (appwire.Ref, error) {
 	if node.Ref != "" {
 		return navigationRef(node.Ref)
 	}
@@ -1216,8 +1207,8 @@ func navigationAliasLocation(id, kind string, root hubapi.NavigationSessionLocat
 	}
 	summary := hubapi.NavigationSessionSummary{
 		Ref:       ref.String(),
-		HostID:    ref.HostID,
-		SessionID: ref.SessionID,
+		HostID:    ref.SourceID,
+		SessionID: ref.ThreadID,
 		State:     "ended",
 		Kind:      kind,
 		Children:  hubapi.NavigationArray[hubapi.NavigationSessionSummary]{},
@@ -1231,6 +1222,7 @@ func navigationAliasLocation(id, kind string, root hubapi.NavigationSessionLocat
 		Revision:     root.Revision,
 		Ref:          ref.String(),
 		TopLevelRef:  root.TopLevelRef,
+		TopLevel:     kind == "session",
 		Catalog:      root.Catalog,
 		ProjectKey:   root.ProjectKey,
 		Tier:         root.Tier,
@@ -1640,8 +1632,8 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 	live := p.projection.isLive(node.ID, ref.String()) && hubcore.NormalizeState(node.State) != "ended"
 	return hubapi.NavigationSessionSummary{
 		Ref:       ref.String(),
-		HostID:    ref.HostID,
-		SessionID: ref.SessionID,
+		HostID:    ref.SourceID,
+		SessionID: ref.ThreadID,
 		Title:     truncateNavigationRunes(node.Title, maxNavigationTitleRunes),
 		// project is an IDENTITY on the wire, not a rendered label: the web codec
 		// validates it with identity(value.project, true) and the hub schema mirrors
@@ -1665,9 +1657,10 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		LastMessage:       appwire.Excerpt(node.LastMessage, appwire.MaxMessageExcerptRunes),
 		ModelName:         navigationModelName(node.Model),
 		Dormant:           node.Dormant,
-		Offline:           p.projection.sourceOffline(ref.HostID),
+		Offline:           p.projection.sourceOffline(ref.SourceID),
 		Archived:          node.Archived,
 		UpdatedAt:         optionalTime(node.UpdatedAt),
+		CreatedAt:         optionalTime(node.CreatedAt),
 		Subagents:         navigationSubagentTally(node.Subagents),
 		TurnEndedAt:       optionalTime(node.TurnEndedAt),
 		Unseen:            p.projection.unseen(ref, node.TurnEndedAt),
@@ -1835,8 +1828,8 @@ func (p navigationProjection) sessionFavorite(id, ref string) bool {
 // row's own (source, session id) pair is assigned to, or "" when no durable
 // section holds it. Callers pass the row's canonical ref, which already
 // carries the source, so no lookup can fall back to a bare ID.
-func (p navigationProjection) pinSectionIDFor(ref hubapi.Ref) string {
-	assignment, ok := p.inputs.PinAssignments[hubcore.SessionPinKey(ref.HostID, ref.SessionID)]
+func (p navigationProjection) pinSectionIDFor(ref appwire.Ref) string {
+	assignment, ok := p.inputs.PinAssignments[hubcore.SessionPinKey(ref.SourceID, ref.ThreadID)]
 	if !ok || !p.pinSectionIDs[assignment.SectionID] {
 		return ""
 	}
@@ -1847,28 +1840,29 @@ func (p navigationProjection) pinSectionIDFor(ref hubapi.Ref) string {
 // marker for it (S4). The marker is keyed by the row's own ref, the one a
 // client marks it by, so a live session's Live, project and pin rows, which
 // share that ref, agree.
-func (p navigationProjection) unseen(ref hubapi.Ref, turnEndedAt time.Time) bool {
-	return p.inputs.SessionSeen.Unseen(hubcore.SessionPinKey(ref.HostID, ref.SessionID), turnEndedAt)
+func (p navigationProjection) unseen(ref appwire.Ref, turnEndedAt time.Time) bool {
+	return p.inputs.SessionSeen.Unseen(hubcore.SessionPinKey(ref.SourceID, ref.ThreadID), turnEndedAt)
 }
 
 // seenThrough is a live row's seen-through mark (hubcore
 // SessionSeenSnapshot.SeenThrough), nil for a row that isn't live or with no
 // seen store.
-func (p navigationProjection) seenThrough(ref hubapi.Ref, live bool) *time.Time {
+func (p navigationProjection) seenThrough(ref appwire.Ref, live bool) *time.Time {
 	if !live {
 		return nil
 	}
-	return optionalTime(p.inputs.SessionSeen.SeenThrough(hubcore.SessionPinKey(ref.HostID, ref.SessionID)))
+	return optionalTime(p.inputs.SessionSeen.SeenThrough(hubcore.SessionPinKey(ref.SourceID, ref.ThreadID)))
 }
 
 func cloneNavigationSummary(summary hubapi.NavigationSessionSummary) hubapi.NavigationSessionSummary {
 	clone := summary
-	clone.UpdatedAt = clonePointer(summary.UpdatedAt)
-	clone.TurnEndedAt = clonePointer(summary.TurnEndedAt)
-	clone.SeenThrough = clonePointer(summary.SeenThrough)
-	clone.Tasks = clonePointer(summary.Tasks)
-	clone.Subagents = clonePointer(summary.Subagents)
-	clone.Failure = clonePointer(summary.Failure)
+	clone.UpdatedAt = appwire.ClonePointer(summary.UpdatedAt)
+	clone.CreatedAt = appwire.ClonePointer(summary.CreatedAt)
+	clone.TurnEndedAt = appwire.ClonePointer(summary.TurnEndedAt)
+	clone.SeenThrough = appwire.ClonePointer(summary.SeenThrough)
+	clone.Tasks = appwire.ClonePointer(summary.Tasks)
+	clone.Subagents = appwire.ClonePointer(summary.Subagents)
+	clone.Failure = appwire.ClonePointer(summary.Failure)
 	if summary.Question != nil {
 		question := *summary.Question
 		question.Options = append([]string(nil), summary.Question.Options...)
@@ -1879,17 +1873,6 @@ func cloneNavigationSummary(summary hubapi.NavigationSessionSummary) hubapi.Navi
 		clone.Children[index] = cloneNavigationSummary(child)
 	}
 	return clone
-}
-
-// clonePointer returns a pointer to a shallow copy of *value; nil stays nil.
-// It is for the summaries' pointers to values (a time, the task progress, the
-// subagent tally, the failure), so the copy shares nothing that can change.
-func clonePointer[T any](value *T) *T {
-	if value == nil {
-		return nil
-	}
-	clone := *value
-	return &clone
 }
 
 func navigationPage[T any](rows []T, offset uint32, limit, maximum int) ([]T, int) {

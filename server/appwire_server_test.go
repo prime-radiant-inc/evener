@@ -120,33 +120,12 @@ func TestServerAppWireSetProcessingPublishesActiveTurnID(t *testing.T) {
 	}
 }
 
-// A reservation already made by turn/start must be kept, not replaced. If
-// SetProcessing minted unconditionally it would burn a second id for one turn
-// and hand the client an id the turn never uses.
-func TestServerAppWireProcessingKeepsAnAlreadyReservedTurnID(t *testing.T) {
-	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
-
-	reserved, err := srv.reserveAppTurnIDForStart()
-	if err != nil {
-		t.Fatalf("reserveAppTurnIDForStart: %v", err)
-	}
-	srv.SetProcessing(true)
-
-	srv.mu.RLock()
-	got := srv.appActiveTurnID
-	srv.mu.RUnlock()
-	if got != reserved {
-		t.Fatalf("appActiveTurnID = %q after SetProcessing, want the reserved %q", got, reserved)
-	}
-}
-
-// TestServerAppWireThreadReadExposesReservedActiveTurnIDAlongsideSeededTurns
+// TestServerAppWireThreadReadExposesStartedActiveTurnIDAlongsideSeededTurns
 // pins that thread.evener.activeTurnId and the snapshot's turns answer different
-// questions. turn/start RESERVES a turn id before any turn/started exists, so
+// questions. turn/start returns a turn id before any turn/started exists, so
 // the id it reports is deliberately absent from turns -- which is why nothing
 // downstream may treat it as "the turn to append items to".
-func TestServerAppWireThreadReadExposesReservedActiveTurnIDAlongsideSeededTurns(t *testing.T) {
+func TestServerAppWireThreadReadExposesStartedActiveTurnIDAlongsideSeededTurns(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
 	tw, err := transcript.NewWriter(path, transcript.Header{
 		SessionID: "th_1",
@@ -201,7 +180,7 @@ func TestServerAppWireThreadReadExposesReservedActiveTurnIDAlongsideSeededTurns(
 	if !ok {
 		t.Fatalf("read response=%T", read.Response.Result)
 	}
-	// The seeded user+assistant pair is one logical turn; the reserved live
+	// The seeded user+assistant pair is one logical turn; the started live
 	// id is deliberately absent from turns.
 	if len(out.Thread.Turns) != 1 {
 		t.Fatalf("thread turns=%d, want the one seeded logical turn", len(out.Thread.Turns))
@@ -211,7 +190,7 @@ func TestServerAppWireThreadReadExposesReservedActiveTurnIDAlongsideSeededTurns(
 			t.Fatalf("seeded transcript turn unexpectedly in progress: %+v", turn)
 		}
 		if turn.ID == startResp.Turn.ID {
-			t.Fatalf("reserved turn %q appears in turns; nothing started it yet", turn.ID)
+			t.Fatalf("started turn %q appears in turns; nothing started it yet", turn.ID)
 		}
 	}
 	if out.Thread.Evener.ActiveTurnID != startResp.Turn.ID {
@@ -629,7 +608,7 @@ func TestAppStatusPreservesAttentionStates(t *testing.T) {
 		appwire.ThreadStatusSystemError: appwire.ThreadStatusSystemError,
 	}
 	for state, want := range tests {
-		if got := appStatus(state, false, false); got != want {
+		if got := appStatus(state, false); got != want {
 			t.Fatalf("appStatus(%q)=%q, want %q", state, got, want)
 		}
 	}
@@ -1402,7 +1381,7 @@ func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {
 	exitCode := 7
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetStatus(StatusInfo{
+	seedStatus(srv, StatusInfo{
 		SessionID:  "sess_1",
 		State:      "idle",
 		Model:      "gpt-5",
@@ -1475,7 +1454,7 @@ func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {
 func TestServerAppWireThreadReadCarriesTurnCountWithoutTurns(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "idle", Turns: 37})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "idle", Turns: 37})
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -1582,7 +1561,7 @@ func TestServerAppWireThreadReadIncludesCostTotal(t *testing.T) {
 			return &registry.Cost{Input: 5, Output: 25}
 		})
 		srv.SetAppIdentity("local", "th_1")
-		srv.SetStatus(StatusInfo{SessionID: "th_1", Model: model, Profile: profile})
+		seedStatus(srv, StatusInfo{SessionID: "th_1", Model: model, Profile: profile})
 		setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
 			e.workMillis = 4200
 			e.usage = &appwire.EvenerUsage{InputTokens: 100_000, OutputTokens: 20_000, TotalTokens: 120_000}
@@ -1618,7 +1597,7 @@ func TestServerAppWireThreadReadIncludesCostTotal(t *testing.T) {
 func TestServerAppWireThreadReadOmitsCostWithoutLookup(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetStatus(StatusInfo{SessionID: "th_1", Model: "claude-opus-4-5", Profile: "anthropic"})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", Model: "claude-opus-4-5", Profile: "anthropic"})
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
 		e.usage = &appwire.EvenerUsage{InputTokens: 100_000, OutputTokens: 20_000, TotalTokens: 120_000}
 	})
@@ -2052,31 +2031,16 @@ func TestServerAppWireQueueCapabilityAdvertisesHarnessSupport(t *testing.T) {
 	// steer and interrupt are. The harness supports queuing; nothing is in
 	// flight.
 	srv.SetProcessing(false)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "idle"})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "idle"})
 	if caps := srv.appCapabilities("idle", false); !caps.Queue {
 		t.Fatalf("Queue should be true when idle: it advertises harness support, not a turn in flight")
 	}
 
 	// Processing: still true.
 	srv.SetProcessing(true)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "active"})
 	if caps := srv.appCapabilities("active", true); !caps.Queue {
 		t.Fatalf("Queue should be true mid-turn")
-	}
-
-	// Reserved active turn: turn/start has returned an active turn ID, but
-	// the input loop has not necessarily flipped processing yet. Queue no
-	// longer reads the reservation, and Send still does.
-	srv.SetProcessing(false)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "idle"})
-	srv.appActiveTurnID = "turn_reserved"
-	srv.appReservedTurnID = "turn_reserved"
-	caps := srv.appCapabilities("idle", false)
-	if !caps.Queue {
-		t.Fatalf("Queue should be true while an active turn is reserved")
-	}
-	if caps.Send {
-		t.Fatalf("Send should be false while an active turn is reserved")
 	}
 
 	// Closed: withheld outright, like steer and interrupt.
@@ -2100,7 +2064,7 @@ func TestServerAppWireTurnQueueAcceptsMidTurnMessage(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(true)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "active"})
 	var got []string
 	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{
 		Queue: func(params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
@@ -2123,42 +2087,11 @@ func TestServerAppWireTurnQueueAcceptsMidTurnMessage(t *testing.T) {
 	}
 }
 
-func TestServerAppWireTurnQueueAcceptsReservedActiveTurn(t *testing.T) {
+func TestServerAppWireTurnStartRejectsRunningTurn(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetProcessing(false)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "idle"})
-	srv.appActiveTurnID = "turn_reserved"
-	srv.appReservedTurnID = "turn_reserved"
-	var got []string
-	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{
-		Queue: func(params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
-			text, _ := inputFromItems("", params.Input)
-			got = append(got, text)
-			return appwire.TurnQueueResponse{}, nil
-		},
-	})
-
-	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "th_1", Ref: "local:th_1",
-		Input: []appwire.InputItem{{Type: "text", Text: "queued"}},
-	}))
-	if resp.Kind() != appwire.MessageResponse {
-		t.Fatalf("resp=%v error=%+v", resp.Kind(), resp.Error)
-	}
-	if len(got) != 1 || got[0] != "queued" {
-		t.Fatalf("got=%v", got)
-	}
-}
-
-func TestServerAppWireTurnStartRejectsReservedActiveTurn(t *testing.T) {
-	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
-	srv.SetProcessing(false)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "idle"})
-	srv.appActiveTurnID = "turn_reserved"
-	srv.appReservedTurnID = "turn_reserved"
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "idle"})
+	srv.SetProcessingTurn("turn_running")
 	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{})
 
 	conn := srv.AppServer().NewConnection("test")
@@ -2170,12 +2103,12 @@ func TestServerAppWireTurnStartRejectsReservedActiveTurn(t *testing.T) {
 	if resp.Kind() != appwire.MessageError {
 		t.Fatalf("expected error response, got %v", resp.Kind())
 	}
-	if srv.appReservedTurnID != "turn_reserved" || srv.appActiveTurnID != "turn_reserved" {
-		t.Fatalf("reservation mutated after rejected start: active=%q reserved=%q", srv.appActiveTurnID, srv.appReservedTurnID)
+	if srv.appActiveTurnID != "turn_running" {
+		t.Fatalf("running turn mutated after rejected start: active=%q", srv.appActiveTurnID)
 	}
 }
 
-func TestReserveAppTurnIDForStartIsAtomic(t *testing.T) {
+func TestStartTestTurnIsAtomic(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	start := make(chan struct{})
@@ -2185,7 +2118,7 @@ func TestReserveAppTurnIDForStartIsAtomic(t *testing.T) {
 	for range 2 {
 		wg.Go(func() {
 			<-start
-			id, err := srv.reserveAppTurnIDForStart()
+			id, err := srv.startTestTurn()
 			errs <- err
 			ids <- id
 		})
@@ -2212,7 +2145,7 @@ func TestServerAppWireTurnQueueRejectsStaleProjectedActiveTurn(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(false)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "idle"})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "idle"})
 	srv.appActiveTurnID = "turn_stale"
 	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{
 		Queue: func(appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
@@ -2236,7 +2169,7 @@ func TestServerAppWireTurnQueueRejectsWhenIdle(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(false)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "idle"})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "idle"})
 	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{
 		Queue: func(appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
 			return appwire.TurnQueueResponse{}, nil
@@ -2262,7 +2195,7 @@ func TestServerAppWireTurnDrainAsSteerRequiresQueuedMessages(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(true)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "active"})
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.queue.Depth = 0 })
 	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{
 		Drain: func(appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
@@ -2283,12 +2216,10 @@ func TestServerAppWireTurnDrainAsSteerRequiresQueuedMessages(t *testing.T) {
 	}
 }
 
-func TestServerAppWireTurnDrainAsSteerRejectsReservedTurn(t *testing.T) {
+func TestServerAppWireTurnDrainAsSteerRejectsIdleThread(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "idle"})
-	srv.appActiveTurnID = "turn_reserved"
-	srv.appReservedTurnID = "turn_reserved"
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "idle"})
 	called := 0
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.queue.Depth = 1 })
 	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{
@@ -2320,7 +2251,7 @@ func TestServerAppWireTurnDrainAsSteerDispatchesWhenQueued(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(true)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "active"})
 	called := 0
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.queue.Depth = 2 })
 	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{
@@ -2347,7 +2278,7 @@ func TestServerAppWireTurnDrainAsSteerDispatchesInputAtomically(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(true)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "active"})
 	var gotText string
 	var gotImages []ImageAttachment
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.queue.Depth = 0 })

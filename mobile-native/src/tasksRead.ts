@@ -1,5 +1,5 @@
 import type { TasksListRead } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 
 /** The tasks-panel read for a sheet whose client can be replaced under it (a
  * reconnect hands the sheet a new one): every read goes through whichever

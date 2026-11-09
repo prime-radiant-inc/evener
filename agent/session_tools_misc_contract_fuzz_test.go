@@ -279,7 +279,7 @@ func stmRunRoundContracts(t *testing.T, program []byte) {
 	// Updated hook input must merge valid JSON without losing prior fields, and
 	// must reject malformed source arguments without mutating them.
 	updated := llm.ToolCallData{Arguments: json.RawMessage(`{"before":"kept"}`)}
-	if err := applyUpdatedToolInput(&updated, map[string]any{"after": value}); err != nil {
+	if err := applyUpdatedToolInput(&updated, tool.RegisteredTool{}, map[string]any{"after": value}); err != nil {
 		t.Fatalf("apply valid updated input: %v", err)
 	}
 	var merged map[string]any
@@ -288,7 +288,7 @@ func stmRunRoundContracts(t *testing.T, program []byte) {
 	}
 	broken := llm.ToolCallData{Arguments: json.RawMessage(`{`)}
 	original := string(broken.Arguments)
-	if err := applyUpdatedToolInput(&broken, map[string]any{"after": value}); err == nil || string(broken.Arguments) != original {
+	if err := applyUpdatedToolInput(&broken, tool.RegisteredTool{}, map[string]any{"after": value}); err == nil || string(broken.Arguments) != original {
 		t.Fatalf("invalid updated input err=%v args=%q want original=%q", err, broken.Arguments, original)
 	}
 

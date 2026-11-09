@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
@@ -26,7 +28,7 @@ func buildParentSession(t *testing.T) (stateDir, parentID string) {
 	stateDir = t.TempDir()
 	parentID = "01PARENT00000000000000001"
 
-	tpath := filepath.Join(stateDir, sessionsSubdir, parentID+".transcript.jsonl")
+	tpath := schema.SessionTranscriptPath(stateDir, parentID)
 	tw, err := transcript.NewWriter(tpath, transcript.Header{
 		SessionID:  parentID,
 		CreatedAt:  time.Now().UTC(),
@@ -72,7 +74,7 @@ func buildParentSession(t *testing.T) (stateDir, parentID string) {
 
 func appendParentTranscript(t *testing.T, stateDir, parentID, suffix string) {
 	t.Helper()
-	path := filepath.Join(stateDir, sessionsSubdir, parentID+".transcript.jsonl")
+	path := schema.SessionTranscriptPath(stateDir, parentID)
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
 		t.Fatalf("open parent transcript: %v", err)
@@ -88,7 +90,7 @@ func appendParentTranscript(t *testing.T, stateDir, parentID, suffix string) {
 
 func sessionArtifactNames(t *testing.T, stateDir string) string {
 	t.Helper()
-	entries, err := os.ReadDir(filepath.Join(stateDir, sessionsSubdir))
+	entries, err := os.ReadDir(schema.SessionsDir(stateDir))
 	if err != nil {
 		t.Fatalf("read session artifacts: %v", err)
 	}
@@ -150,7 +152,7 @@ func TestForkSession_CopiesPrefixAndAppliesEdit(t *testing.T) {
 	}
 
 	// Child transcript must contain the edited message in its last entry line.
-	childTranscriptPath := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
+	childTranscriptPath := schema.SessionTranscriptPath(stateDir, childID)
 	data, err := os.ReadFile(childTranscriptPath)
 	if err != nil {
 		t.Fatalf("ReadFile(child transcript): %v", err)
@@ -160,7 +162,7 @@ func TestForkSession_CopiesPrefixAndAppliesEdit(t *testing.T) {
 	}
 
 	// Read child transcript via readTranscript and verify structure.
-	_, entries, _, err := readTranscript(childTranscriptPath, "")
+	_, entries, _, err := readTranscript(context.Background(), childTranscriptPath, "")
 	if err != nil {
 		t.Fatalf("readTranscript(child): %v", err)
 	}
@@ -392,7 +394,7 @@ func TestForkSession_RejectsUnsupportedHeader(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			stateDir, parentID := buildParentSession(t)
-			parentPath := filepath.Join(stateDir, sessionsSubdir, parentID+".transcript.jsonl")
+			parentPath := schema.SessionTranscriptPath(stateDir, parentID)
 			raw, err := os.ReadFile(parentPath)
 			if err != nil {
 				t.Fatalf("read parent transcript: %v", err)
@@ -430,7 +432,7 @@ func TestForkSession_RejectsUnknownTranscriptFields(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			stateDir, parentID := buildParentSession(t)
-			parentPath := filepath.Join(stateDir, sessionsSubdir, parentID+".transcript.jsonl")
+			parentPath := schema.SessionTranscriptPath(stateDir, parentID)
 			raw, err := os.ReadFile(parentPath)
 			if err != nil {
 				t.Fatal(err)
@@ -448,7 +450,7 @@ func TestForkSession_RejectsUnknownTranscriptFields(t *testing.T) {
 func TestForkSession_UsesFirstNonEmptyRecordAsHeader(t *testing.T) {
 	t.Parallel()
 	stateDir, parentID := buildParentSession(t)
-	parentPath := filepath.Join(stateDir, sessionsSubdir, parentID+".transcript.jsonl")
+	parentPath := schema.SessionTranscriptPath(stateDir, parentID)
 	raw, err := os.ReadFile(parentPath)
 	if err != nil {
 		t.Fatalf("read parent transcript: %v", err)
@@ -488,7 +490,8 @@ func TestForkSession_RejectsMalformedCompleteEntry(t *testing.T) {
 	stateDir, parentID := buildParentSession(t)
 	appendParentTranscript(t, stateDir, parentID, "{\"kind\":\"entry\",\"turn\":\"not-an-object\"}\n")
 
-	if _, err := ForkSession(stateDir, parentID, 3, "edited", ""); err == nil || !strings.Contains(err.Error(), "parsing parent transcript entry") {
+	var lineErr *transcript.LineError
+	if _, err := ForkSession(stateDir, parentID, 3, "edited", ""); !errors.As(err, &lineErr) {
 		t.Fatalf("ForkSession error = %v, want malformed-entry failure", err)
 	}
 }
@@ -589,7 +592,7 @@ func TestForkSession_RestorePreservesAcceptedInputBudget(t *testing.T) {
 	adapter := &agenttest.ScriptedAdapter{
 		Provider: "openai",
 		Responder: func(llm.Request) llm.Response {
-			return communicateResponse(true, "done")
+			return agenttest.CommunicateResponse(true, "done")
 		},
 	}
 	client := llm.NewClient()
@@ -731,5 +734,55 @@ func TestForkSession_RejectsReservedDeviceNameParentID(t *testing.T) {
 	_, err := ForkSession(stateDir, "CON", 1, "hello", "")
 	if !errors.Is(err, schema.ErrInvalidSessionID) {
 		t.Fatalf("ForkSession with reserved device name parentID error = %v, want schema.ErrInvalidSessionID", err)
+	}
+}
+
+// A transcript record larger than the old 10 MiB fork limit is still within the
+// transcript line cap, so fork and aside must replay it.
+func TestForkAndAsideReplayLargeTranscriptLine(t *testing.T) {
+	t.Parallel()
+	fs := afero.NewMemMapFs()
+	stateDir := "/state"
+	parentID := "01PARENT00000000000000001"
+
+	tw, err := transcript.NewWriterWithFS(fs, schema.SessionTranscriptPath(stateDir, parentID), transcript.Header{
+		SessionID: parentID,
+		CreatedAt: time.Now().UTC(),
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+	})
+	if err != nil {
+		t.Fatalf("transcript.NewWriterWithFS: %v", err)
+	}
+	huge := strings.Repeat("x", 11<<20)
+	for _, turn := range []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User(huge)),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("reply")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("second task")),
+	} {
+		if err := tw.Append(turn); err != nil {
+			t.Fatalf("Append turn: %v", err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("Close transcript: %v", err)
+	}
+	if err := schema.SaveSessionMetaWithFS(fs, stateDir, schema.SessionMeta{
+		ID:        parentID,
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		Config:    schema.ConfigSnapshot{MaxToolRoundsPerInput: 50},
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+		TurnCount: 2,
+	}); err != nil {
+		t.Fatalf("SaveSessionMetaWithFS: %v", err)
+	}
+
+	if _, err := forkSessionFS(fs, stateDir, parentID, 3, "edited", ""); err != nil {
+		t.Fatalf("forkSessionFS: %v", err)
+	}
+	if _, err := asideSessionFSWithConfig(fs, stateDir, parentID, nil); err != nil {
+		t.Fatalf("asideSessionFSWithConfig: %v", err)
 	}
 }

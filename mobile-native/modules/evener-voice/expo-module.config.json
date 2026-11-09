@@ -1,0 +1,8 @@
+{
+	"platforms": ["apple"],
+	"apple": {
+		"podspecPath": "EvenerVoice.podspec",
+		"modules": ["EvenerVoiceModule"],
+		"appDelegateSubscribers": ["EvenerVoiceAppDelegateSubscriber"]
+	}
+}

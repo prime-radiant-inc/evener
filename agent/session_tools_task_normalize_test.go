@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -246,35 +247,41 @@ func TestNormalizeTaskListArgs_DropsEmptiedUpdateKey(t *testing.T) {
 }
 
 // read_transcript's NormalizeArgs folds exactly the neutral fields it removes
-// for job refs; other present values keep their own fingerprint.
+// for job refs; other present values keep their own fingerprint. The breaker
+// hashes this normalizer's output, so comparing normalized maps pins the
+// folding without depending on parking (read-only tools are never parked).
 func TestReadTranscriptFingerprintFoldsOnlyNeutralJobDefaults(t *testing.T) {
 	t.Parallel()
-	newReg := func(t *testing.T) *tool.Registry {
+	readTranscript := readTranscriptTool(&toolDeps{})
+	normalize := func(t *testing.T, raw string) map[string]any {
 		t.Helper()
-		reg := tool.NewRegistry()
-		readTranscript := readTranscriptTool(&toolDeps{})
-		readTranscript.Exec = alwaysFails
-		if err := reg.Register(readTranscript); err != nil {
-			t.Fatalf("register: %v", err)
+		var args map[string]any
+		if err := json.Unmarshal([]byte(raw), &args); err != nil {
+			t.Fatalf("decode %s: %v", raw, err)
 		}
-		return reg
+		normalized, err := readTranscript.NormalizeArgs(args)
+		if err != nil {
+			t.Fatalf("normalize %s: %v", raw, err)
+		}
+		return normalized
 	}
-	const job = `{"transcript_ref":"job:j1"}`
+	job := normalize(t, `{"transcript_ref":"job:j1"}`)
 	for _, folded := range []string{
 		`{"transcript_ref":"job:j1","range":""}`,
 		`{"transcript_ref":"job:j1","format":null}`,
 		`{"transcript_ref":"job:j1","context_lines":0}`,
 	} {
-		if !thirdCallParked(t, newReg(t), "read_transcript", folded, job, "boom") {
-			t.Errorf("%s should fingerprint as %s", folded, job)
+		if got := normalize(t, folded); !reflect.DeepEqual(got, job) {
+			t.Errorf("%s should normalize to %s, got %v", folded, job, got)
 		}
 	}
 	for _, distinct := range [][2]string{
-		{`{"transcript_ref":"job:j1","offset_bytes":0}`, job},
+		{`{"transcript_ref":"job:j1","offset_bytes":0}`, `{"transcript_ref":"job:j1"}`},
 		{`{"transcript_ref":"current","range":""}`, `{"transcript_ref":"current"}`},
 	} {
-		if thirdCallParked(t, newReg(t), "read_transcript", distinct[0], distinct[1], "boom") {
-			t.Errorf("%s must keep its own fingerprint", distinct[0])
+		want := normalize(t, distinct[1])
+		if got := normalize(t, distinct[0]); reflect.DeepEqual(got, want) {
+			t.Errorf("%s must keep its own fingerprint, normalized to %v", distinct[0], got)
 		}
 	}
 }

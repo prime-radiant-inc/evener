@@ -64,11 +64,9 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/internal/e2ecap"
-	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
 const (
@@ -172,12 +170,7 @@ func runHostPipelineEndpointCase(t *testing.T, endpointCase hostPipelineEndpoint
 	staged := stageDeployArtifact(t, repoRoot, goos, goarch)
 	t.Logf("controller build: %s (version %q); host target %s/%s", hubBin, version, goos, goarch)
 
-	provider, err := fakellm.New()
-	if err != nil {
-		t.Fatalf("start fake provider: %v", err)
-	}
-	t.Cleanup(provider.Close)
-
+	provider := newFakeLLMProvider(t)
 	runID := hostDeployRunID()
 	hostName := "e2e-pipeline-" + runID
 	dirName := hostPipelineDirPrefix + "-" + runID
@@ -219,22 +212,23 @@ func runHostPipelineEndpointCase(t *testing.T, endpointCase hostPipelineEndpoint
 	}
 	installPath := home + "/.local/bin/evener"
 	installHash := host.sha256IfFile(installPath)
+	hubMayHaveStarted := false
+	shutdownProved := true
 	t.Cleanup(func() {
 		// Container removal owns all processes, including wildcard/ephemeral
 		// listeners and the retired-port holder. Never kill by a port number.
-		if !disposableContainer && stopHostListener(t, host, addr, configPath) {
-			if err := host.tryRun("rm -rf " + shellquote.RemoteWord(hostDir)); err != nil {
-				t.Errorf("remove the test-owned directory %s on host %s: %v", hostDir, host.target, err)
-			}
+		if !disposableContainer && hubMayHaveStarted {
+			shutdownProved = stopHostListener(t, host, addr, configPath, runTarget)
 		}
 		if installHash == "" {
 			if got := host.sha256IfFile(installPath); got != "" {
 				t.Errorf("the pipeline created %s on host %s (sha256 %s); it must write only to the test-owned %s", installPath, host.target, got, runTarget)
 			}
-			return
-		}
-		if got := host.sha256IfFile(installPath); got != installHash {
+		} else if got := host.sha256IfFile(installPath); got != installHash {
 			t.Errorf("the host's own install %s changed during the pipeline case (sha256 %s -> %s); it must write only to the test-owned %s", installPath, installHash, got, runTarget)
+		}
+		if !disposableContainer {
+			removeHostFixtureAfterProof(t, host, hostDir, shutdownProved)
 		}
 	})
 
@@ -292,6 +286,7 @@ func runHostPipelineEndpointCase(t *testing.T, endpointCase hostPipelineEndpoint
 	// Step 1: the attach that provisions the bare host (the deploy path) and
 	// leaves it attached. This is the sibling check's provisioning path; every
 	// later step runs against the attached channel.
+	hubMayHaveStarted = true
 	attached := awaitHostAttachedWithin(ctx, t, client, hostName, hostDeployAttachTimeout)
 	t.Logf("attached %s: os=%s arch=%s hubVersion=%s evenerPath=%s", hostName, attached.OS, attached.Arch, attached.HubVersion, attached.EvenerPath)
 	if attached.OS != goos || attached.Arch != goarch {
@@ -903,12 +898,12 @@ func hostPipelineBindFreeAddr(host *hostSSH) (string, bool, error) {
 
 // hostPipelineProbedFreeAddr is the fallback for a host without nc/lsof: it
 // draws candidate ports and returns the first the product's own listener probe
-// proves free. Only NoListenerMarker is read as absence — a named pid and the
+// proves free. Only hostNoListenerMarker is read as absence — a named pid and the
 // held-but-unnameable marker are conflicts, and a probe that cannot run fails
 // closed rather than being read as a free port.
 func hostPipelineProbedFreeAddr(host *hostSSH) (string, error) {
 	port, err := hostPipelinePickFreePort(hostPipelineCandidatePort, func(port int) ([]byte, error) {
-		return host.runStdout(sshconn.ListenerProbeRemote(strconv.Itoa(port)))
+		return host.runStdout(hostListenerProbeScript(strconv.Itoa(port)))
 	})
 	if err != nil {
 		return "", err
@@ -941,7 +936,7 @@ func hostPipelinePickFreePort(draw func() (int, error), probe func(port int) ([]
 		if err != nil {
 			return 0, fmt.Errorf("probe candidate port %d (attempt %d): %w: %s", port, attempt+1, err, out)
 		}
-		if strings.TrimSpace(string(out)) == sshconn.NoListenerMarker {
+		if strings.TrimSpace(string(out)) == hostNoListenerMarker {
 			return port, nil
 		}
 		last = strings.TrimSpace(string(out))
@@ -1412,7 +1407,7 @@ func TestHostPipelinePickFreePortSkipsConflicts(t *testing.T) {
 				if port == 20101 {
 					return []byte("4242\n"), nil
 				}
-				return []byte(sshconn.NoListenerMarker + "\n"), nil
+				return []byte(hostNoListenerMarker + "\n"), nil
 			},
 		)
 		if err != nil {
@@ -1425,7 +1420,7 @@ func TestHostPipelinePickFreePortSkipsConflicts(t *testing.T) {
 	t.Run("a held-but-unnameable answer is a conflict", func(t *testing.T) {
 		got, err := hostPipelinePickFreePort(
 			func() (int, error) { return 20103, nil },
-			func(int) ([]byte, error) { return []byte(sshconn.ListenerPresentMarker + "\n"), nil },
+			func(int) ([]byte, error) { return []byte(hostListenerPresentMarker + "\n"), nil },
 		)
 		if err == nil || got != 0 {
 			t.Fatalf("pick = (%d, %v), want an exhaustion error: the unnameable marker is not absence", got, err)
@@ -1443,7 +1438,7 @@ func TestHostPipelinePickFreePortSkipsConflicts(t *testing.T) {
 	t.Run("a failed draw is returned", func(t *testing.T) {
 		_, err := hostPipelinePickFreePort(
 			func() (int, error) { return 0, errors.New("no entropy") },
-			func(int) ([]byte, error) { return []byte(sshconn.NoListenerMarker), nil },
+			func(int) ([]byte, error) { return []byte(hostNoListenerMarker), nil },
 		)
 		if err == nil {
 			t.Fatal("pick returned no error for a failed draw")

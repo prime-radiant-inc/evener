@@ -410,43 +410,6 @@ func TestRestoreIdleFailureOnASharedEnvKeepsTheParentTempContainer(t *testing.T)
 	}
 }
 
-// The create path builds a spawning delegate its own environment and then
-// constructs the session on it, running the same git snapshot the restore does.
-// A NewSession that fails after the snapshot leaves nothing to own the scratch
-// that snapshot minted, so the spawn's own rollback has to drop it.
-func TestSpawnedSubagentSessionFailureDisposesTheChildScratch(t *testing.T) {
-	workspace := t.TempDir()
-	// The snapshot only runs commands in a repo, and running commands is what
-	// mints the scratch.
-	sbxGit(t, workspace, "init", "-q")
-	client := llm.NewClient()
-	client.Register(&fakeAdapter{name: "openai"})
-	root := newSession(t, withClient(client), withDir(workspace), withoutGitSnapshot())
-
-	scratchBase := t.TempDir()
-	t.Setenv(envvars.TmpDir.Name, scratchBase)
-	// The child takes production's snapshot path, and the fault then fails its
-	// construction after it.
-	boom := errors.New("spawned delegate construction failed")
-	root.cfg.testOnly.skipGitSnapshot = false
-	root.cfg.testOnly.sessionInitFault = func(point string) error {
-		if point == "builtin_agents" {
-			return boom
-		}
-		return nil
-	}
-
-	// A working dir is what makes the child's environment its own rather than
-	// the parent's, which is the case whose scratch nobody else releases.
-	if _, err := root.spawnAgent(context.Background(), "child task", "", workspace, 1, "", "", nil, nil); !errors.Is(err, boom) {
-		t.Fatalf("spawnAgent error = %v, want %v", err, boom)
-	}
-
-	if leaked := sandboxScratchDirs(t, scratchBase); len(leaked) != 0 {
-		t.Errorf("failed subagent spawn left scratch %v, which nothing will ever release", leaked)
-	}
-}
-
 // disposeUnadoptedSubagentSession is the create-path twin of
 // discardRestoredCandidate, and the two have to make the same two decisions:
 // drop BOTH scratch dirs of an environment built for the child (Close only
@@ -631,4 +594,36 @@ func TestDisposeUnadoptedSubagentSessionLeavesTheParentsProcessesAlone(t *testin
 	// same failure with a clearer report.
 	parentEnv.Cleanup()
 	<-exited
+}
+
+// A hub-creation call never launches the ordinary delegate the sandbox guard
+// protects, so on the composed Manager delegate — the only schema that
+// declares hub — the guard must leave those calls to the hub-branch refusal,
+// which names every rejected argument, placeholders included. A plain
+// delegate schema declares no hub and has no hub-branch refusal: a hub
+// object a caller sends there is repair's unknown to drop, and the
+// confinement request traveling beside it is exactly what the guard must
+// refuse. A null hub still marks an ordinary call and keeps the guard.
+func TestSandboxControlsGuardSkipsHubCalls(t *testing.T) {
+	t.Parallel()
+	plain := map[string]any{"properties": map[string]any{"prompt": map[string]any{"type": "string"}}}
+	composed := map[string]any{"properties": map[string]any{
+		"prompt": map[string]any{"type": "string"},
+		"hub":    map[string]any{"type": "object"},
+	}}
+	hubCall := map[string]any{
+		"prompt":  "worker task",
+		"hub":     map[string]any{"cwd": "/tmp", "model": "m", "watch": map[string]any{"completion": true}},
+		"sandbox": "read-only",
+	}
+	if err := rejectUnavailableDelegateSandboxControls("delegate", composed, hubCall); err != nil {
+		t.Fatalf("hub call was refused by the sandbox controls guard: %v", err)
+	}
+	if err := rejectUnavailableDelegateSandboxControls("delegate", plain, hubCall); err == nil {
+		t.Fatal("hub object on a schema that does not declare hub lost the sandbox controls guard")
+	}
+	nullHub := map[string]any{"prompt": "worker task", "hub": nil, "sandbox": "read-only"}
+	if err := rejectUnavailableDelegateSandboxControls("delegate", composed, nullHub); err == nil {
+		t.Fatal("ordinary call with a null hub lost the sandbox controls guard")
+	}
 }

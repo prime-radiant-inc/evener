@@ -8,25 +8,20 @@
 // - not re-deriving QueueStrip's or
 // AskDock's own already-covered internal behavior.
 
-import {
-  type MethodTypes,
-  type Thread,
-  type ThreadCapabilities,
-  type ThreadReadResponse,
-  WireError,
-} from "@evener/appwire-client";
+import { type MethodTypes, type Thread, type ThreadReadResponse, WireError } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { appliedReceipt } from "../../../mutationReceiptTestUtils";
 import { ClientProvider } from "../../../shell/clientContext";
 import { conversationPaneLifetime } from "../../../shell/paneLifetime";
 import { resetMobileViewportForTests } from "../../../shell/useIsMobile";
 import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
-import { connectionStore } from "../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { holdIndexedDBEvent, holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
 import {
@@ -35,6 +30,8 @@ import {
   subscribeMutationPersistence,
   threadsStore,
 } from "../../../stores/threads";
+import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
+import { ALL_CAPABILITIES as FULL_CAPABILITIES } from "../../../threadTestUtils";
 import { Toast } from "../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
 import { toastKinds } from "../../../widgets/toast/toastTestUtils";
@@ -45,6 +42,7 @@ import { installControlledImageEncoding } from "../testing/imageEncoding";
 import { askDockStore, resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { ackAskUserCall } from "./askDock/askDockTestUtils";
 import { Composer as ComposerView } from "./Composer";
+import { stampRecoveryOwner } from "./composerTestUtils";
 import { readComposerDraft, readDraft, writeComposerDraft } from "./draft";
 import { usePendingTurnEntries } from "./queue";
 import { resetPendingTurnsStoreForTests, subscribeComposerSubmissionCommitted } from "./queue/pendingTurnsStore";
@@ -113,22 +111,6 @@ beforeAll(() => {
   installLocalStorage(new MemoryStorage());
 });
 
-const FULL_CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
-
 function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
   return {
     id: `thr_${ref}`,
@@ -163,18 +145,12 @@ function readResponse(ref: string, overrides: Partial<Thread> = {}): ThreadReadR
   };
 }
 
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
-
 async function mountComposer(
   ref: string,
   overrides: Partial<Thread> = {},
   source = createTestComposerSource(ref),
 ): Promise<FakeClient> {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse(ref, overrides));
   await threadsStore.getState().ensureThread(ref);
   render(
@@ -191,7 +167,7 @@ beforeEach(() => {
   resetToastStoreForTests();
   globalThis.indexedDB = new IDBFactory();
   localStorage.clear();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
   resetAskDockStoreForTests();
@@ -407,12 +383,7 @@ test("held acceptance preserves a same-text command edit through source Return",
     delivered.resolve();
     return {
       turn: { id: "accepted", status: "inProgress", itemsView: "full", items: [] },
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thr_root",
-        projectionState: "reflected",
-      },
+      receipt: appliedReceipt(params.clientMutationId, "thr_root"),
     };
   });
   const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
@@ -463,7 +434,7 @@ test("held acceptance preserves a same-text command edit through source Return",
       },
     ]);
   } finally {
-    hold.release();
+    act(() => hold.release());
   }
 });
 
@@ -491,7 +462,9 @@ test.each([
         })
       : null;
     if (original) {
-      await storage.transferToRecovery(original.clientMutationId, "rejected");
+      const seeded = await storage.transferToRecovery(original.clientMutationId, "rejected");
+      if (!seeded) throw new Error("missing recovery fixture");
+      await stampRecoveryOwner(storage, seeded);
       // Automatic restoration must adopt an already-advanced durable revision,
       // not assume zero: Send below persists through that lease.
       const bumped = await storage.updateRecoveryInput(
@@ -502,7 +475,7 @@ test.each([
         undefined,
         undefined,
         undefined,
-        0,
+        1,
       );
       if (!bumped) throw new Error("missing advanced revision fixture");
     }
@@ -518,12 +491,7 @@ test.each([
       delivered.resolve();
       return {
         turn: { id: "accepted", status: "inProgress", itemsView: "full", items: [] },
-        receipt: {
-          clientMutationId: params.clientMutationId,
-          disposition: "applied",
-          threadId: "thr_root",
-          projectionState: "reflected",
-        },
+        receipt: appliedReceipt(params.clientMutationId, "thr_root"),
       };
     });
     await flushPendingTurnsProjectionForTests();
@@ -596,8 +564,12 @@ test.each([
     attachments: [],
     optimisticDisplay: { method: "turn/start", input },
   });
-  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const seeded = await storage.transferToRecovery(original.clientMutationId, "rejected");
+  if (!seeded) throw new Error("missing recovery fixture");
   const pane: OpenPaneRecord = { id: "session-1", type: "session", params: { ref: "root" }, slot: "main" };
+  // The pane record carries no composer seat, so its id is this pane's
+  // composition owner; the row must be owned by the pane that restores it.
+  await stampRecoveryOwner(storage, seeded, pane.id);
   workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
   const lifetime = conversationPaneLifetime(pane);
   const source = lifetime.composer;
@@ -610,16 +582,11 @@ test.each([
     delivered.resolve();
     return {
       turn: { id: "accepted", status: "inProgress", itemsView: "full", items: [] },
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thr_root",
-        projectionState: "reflected",
-      },
+      receipt: appliedReceipt(params.clientMutationId, "thr_root"),
     };
   });
   const hold = holdNextWriteTransaction(
-    pending === "recovery edit" ? ["recovery"] : ["outbox", "optimistic", "recovery", "sequences"],
+    pending === "recovery edit" ? ["recovery", "outbox"] : ["outbox", "optimistic", "recovery", "sequences"],
   );
   try {
     let completion: Promise<boolean> | undefined;
@@ -695,7 +662,7 @@ test.each([
     }
     expect(getToasts()).toEqual([]);
   } finally {
-    hold.release();
+    act(() => hold.release());
   }
 });
 
@@ -852,7 +819,9 @@ test.each(["success", "failure"] as const)(
       attachments: [],
       optimisticDisplay: { method: "turn/start", input },
     });
-    await storage.transferToRecovery(original.clientMutationId, "rejected");
+    const seeded = await storage.transferToRecovery(original.clientMutationId, "rejected");
+    if (!seeded) throw new Error("missing recovery fixture");
+    await stampRecoveryOwner(storage, seeded);
     const source = createTestComposerSource("root");
     const fake = await mountComposer("root", skillFocusThread("root"), source);
     await settleActivityDiscovery("root");
@@ -910,12 +879,7 @@ test.each(["pointer", "keyboard"] as const)(
     });
     fake.on("turn/start", (params) => ({
       turn: { id: "turn_focus", status: "inProgress", itemsView: "full", items: [] },
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thr_ref_a",
-        projectionState: "reflected",
-      },
+      receipt: appliedReceipt(params.clientMutationId, "thr_ref_a"),
     }));
     const user = userEvent.setup();
     const message = screen.getByRole("textbox", { name: "Message" }) as HTMLDivElement;
@@ -966,22 +930,12 @@ function acceptFocusSubmission(fake: FakeClient, method: "turn/start" | "turn/qu
   if (method === "turn/start") {
     fake.on(method, (params) => ({
       turn: { id: "turn_focus", status: "inProgress", itemsView: "full", items: [] },
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thr_ref_a",
-        projectionState: "reflected",
-      },
+      receipt: appliedReceipt(params.clientMutationId, "thr_ref_a"),
     }));
     return;
   }
   fake.on(method, (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: "thr_ref_a",
-      projectionState: "reflected",
-    },
+    receipt: appliedReceipt(params.clientMutationId, "thr_ref_a"),
   }));
 }
 
@@ -1178,12 +1132,7 @@ test("an unconfirmed storage commit stays visible and repeated Steer clicks cann
   fake.on("turn/steer", (params) => {
     deliveryObserved?.();
     return {
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thr_ref_a",
-        projectionState: "reflected",
-      },
+      receipt: appliedReceipt(params.clientMutationId, "thr_ref_a"),
     };
   });
   await flushPendingTurnsProjectionForTests();
@@ -1224,12 +1173,7 @@ test("a stalled capture read dispatches the steer directly and never fails close
   fake.on("turn/steer", (params) => {
     deliveryObserved?.();
     return {
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thr_ref_a",
-        projectionState: "reflected",
-      },
+      receipt: appliedReceipt(params.clientMutationId, "thr_ref_a"),
     };
   });
   await flushPendingTurnsProjectionForTests();
@@ -1311,12 +1255,7 @@ test("a second message queues behind a committed start even when recovery projec
       requests += 1;
       if (requests === 2) acceptSecond?.(method);
       return {
-        receipt: {
-          clientMutationId: params.clientMutationId,
-          disposition: "applied",
-          threadId: "thr_ref_a",
-          projectionState: "pending",
-        },
+        receipt: appliedReceipt(params.clientMutationId, "thr_ref_a", { projectionState: "pending" }),
       };
     });
   }
@@ -1334,7 +1273,14 @@ test("a second message queues behind a committed start even when recovery projec
     expect(await act(async () => secondRequest)).toBe("turn/queue");
   } finally {
     spy.mockRestore();
-    for (const hold of held) hold.release();
+    // The released reads complete the projection's stalled work, and its
+    // completion publishes to the mounted components - own those updates in
+    // this test's act window. The flush itself runs AFTER the outer act: a
+    // flush inside one cannot settle the work its own rounds' effects start
+    // (testFlushScopeHygiene pins that rule).
+    await act(async () => {
+      for (const hold of held) hold.release();
+    });
     await flushPendingTurnsProjectionForTests();
   }
 });
@@ -1371,12 +1317,7 @@ test.each([
     const method = fromStrip ? "turn/drainAsSteer" : "turn/steer";
     const actionButton = fromStrip ? drainButton : composerSteerButton;
     fake.on(method, (params) => ({
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thr_ref_a",
-        projectionState: "reflected",
-      },
+      receipt: appliedReceipt(params.clientMutationId, "thr_ref_a"),
     }));
     await flushPendingTurnsProjectionForTests();
     const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
@@ -1457,7 +1398,9 @@ test("the composer resends recovered text while recovery projection callbacks ar
     attachments: [],
     optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "recover me" }] },
   });
-  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const seeded = await storage.transferToRecovery(original.clientMutationId, "rejected");
+  if (!seeded) throw new Error("missing recovery fixture");
+  await stampRecoveryOwner(storage, seeded);
   const fake = await mountComposer("ref_a");
   // The steer is awaited where it arrives: the recovery reads held below keep
   // the projection work open, so a flush could not settle until they are
@@ -1482,14 +1425,25 @@ test("the composer resends recovered text while recovery projection callbacks ar
     await user.keyboard(" edited");
     await user.click(composerSteerButton());
     await waitFor(() => expect(textarea()?.textContent).toBe(""));
-    expect(await storage.getRecovery(original.clientMutationId)).toBeUndefined();
-    await act(async () => steerSent.promise);
+    // The resend's reconciliation read publishes to the mounted components
+    // once it lands; keep its publish inside this test's act window.
+    await act(async () => {
+      expect(await storage.getRecovery(original.clientMutationId)).toBeUndefined();
+      await steerSent.promise;
+    });
     expect(fake.calls.filter((call) => call.method === "turn/steer")).toHaveLength(1);
     const call = fake.calls.find((call) => call.method === "turn/steer");
     expect(call?.params).toEqual(expect.objectContaining({ input: [{ type: "text", text: "recover me edited" }] }));
   } finally {
     spy.mockRestore();
-    for (const hold of held) hold.release();
+    // The released reads complete the projection's stalled work, and its
+    // completion publishes to the mounted components - own those updates in
+    // this test's act window. The flush itself runs AFTER the outer act: a
+    // flush inside one cannot settle the work its own rounds' effects start
+    // (testFlushScopeHygiene pins that rule).
+    await act(async () => {
+      for (const hold of held) hold.release();
+    });
     await flushPendingTurnsProjectionForTests();
   }
 });
@@ -1510,7 +1464,9 @@ test("rejected inline skill input restores its atoms and resends edited prose wi
     attachments: [],
     optimisticDisplay: { method: "turn/start", input },
   });
-  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const seeded = await storage.transferToRecovery(original.clientMutationId, "rejected");
+  if (!seeded) throw new Error("missing recovery fixture");
+  await stampRecoveryOwner(storage, seeded);
   const fake = await mountComposer("ref_a", {
     evener: {
       ref: "ref_a",
@@ -1576,12 +1532,7 @@ test("the strip's drain-as-steer reads the composer's live text at click time, n
     },
   });
   fake.on("turn/drainAsSteer", (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: "thread_a",
-      projectionState: "reflected",
-    },
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
   }));
 
   await user.type(textarea() as HTMLDivElement, "st");
@@ -1603,12 +1554,7 @@ test("a successful strip-triggered drain clears the composer's own text and draf
     },
   });
   fake.on("turn/drainAsSteer", (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: "thread_a",
-      projectionState: "reflected",
-    },
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
   }));
 
   await user.type(textarea() as HTMLDivElement, "dm");
@@ -1643,12 +1589,7 @@ test("text changed while a strip-triggered drain is in flight survives the drain
       new Promise((resolve) => {
         resolveDrain = () =>
           resolve({
-            receipt: {
-              clientMutationId: params.clientMutationId,
-              disposition: "applied",
-              threadId: "thread_a",
-              projectionState: "reflected",
-            },
+            receipt: appliedReceipt(params.clientMutationId, "thread_a"),
           });
       }),
   );
@@ -1698,21 +1639,11 @@ test("queue edit restores inline selections that a nonempty composer drain sends
     },
   });
   fake.on("turn/cancelQueued", (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: "thread_a",
-      projectionState: "reflected",
-    },
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
     removedText: text,
   }));
   fake.on("turn/drainAsSteer", (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: "thread_a",
-      projectionState: "reflected",
-    },
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
   }));
   const user = userEvent.setup();
   const edit = screen.getAllByRole("button", { name: /edit message/i })[0];
@@ -1759,12 +1690,7 @@ test("editing a selection-only queued entry keeps its selection as a visible chi
     },
   });
   fake.on("turn/cancelQueued", (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: "thread_a",
-      projectionState: "reflected",
-    },
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
     removedText: "",
   }));
   const user = userEvent.setup();
@@ -1803,12 +1729,7 @@ test("queue edit restores inline selections when the composer already holds a dr
     },
   });
   fake.on("turn/cancelQueued", (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: "thread_a",
-      projectionState: "reflected",
-    },
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
     removedText: text,
   }));
   const user = userEvent.setup();
@@ -1853,12 +1774,7 @@ test("clicking Edit on a queued entry whose daemon skillNames slot is null resto
     },
   });
   fake.on("turn/cancelQueued", (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: "thread_a",
-      projectionState: "reflected",
-    },
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
     removedText: "plain queued text",
   }));
 
@@ -1880,12 +1796,7 @@ test("clicking Edit appends the restored text after a blank line when the compos
     },
   });
   fake.on("turn/cancelQueued", (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: "thread_a",
-      projectionState: "reflected",
-    },
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
     removedText: "queued copy",
   }));
 
@@ -1906,12 +1817,7 @@ test("clicking a queued row's cancel button fires turn/cancelQueued with that ro
     },
   });
   fake.on("turn/cancelQueued", (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: "thread_a",
-      projectionState: "reflected",
-    },
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
     removedText: "queued hello",
     removedImages: 0,
   }));
@@ -1933,7 +1839,7 @@ test("the composer's Stop button cancels the row a mid-swap resume moved to the 
   const user = userEvent.setup();
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   const ref = "local:btn-stop-from";
   const toRef = "local:btn-stop-to";
   const fromShape = () =>
@@ -2060,7 +1966,7 @@ test("the composer's Stop button cancels the row a mid-swap resume moved to the 
 
 test("mobile composer omits the working path and repository without a git lookup", async () => {
   installMobileViewport();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("local:ref_loc", { cwd: "/home/jesse/repo" }));
   fake.on("evener/git/head", () => ({ head: "composer-line", originUrl: "git@github.com:owner/repo.git" }));
   await threadsStore.getState().ensureThread("local:ref_loc");
@@ -2081,7 +1987,7 @@ test("mobile composer omits the working path and repository without a git lookup
 
 test("mobile finished session with no composer card omits repository metadata", async () => {
   installMobileViewport();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("thread/read", () =>
     readResponse("local:ref_ended", {
       cwd: "/home/jesse/repo",
@@ -2118,7 +2024,7 @@ test("mobile finished session with no composer card omits repository metadata", 
 // path would render as that session's branch.
 test("mobile source-backed session omits repository metadata without a local git lookup", async () => {
   installMobileViewport();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("remote:ref_remote", { cwd: "/srv/remote/repo", source: "remote" }));
   await threadsStore.getState().ensureThread("remote:ref_remote");
   render(
@@ -2157,12 +2063,7 @@ test("while a strip-triggered drain is in flight, the composer's own classic ste
     },
   });
   fake.on("turn/drainAsSteer", (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: "thread_a",
-      projectionState: "reflected",
-    },
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
   }));
 
   await user.click(drainButton());
@@ -2187,12 +2088,7 @@ test("while the composer's own classic drain is in flight, the strip's Steer-now
     },
   });
   fake.on("turn/drainAsSteer", (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: "thread_a",
-      projectionState: "reflected",
-    },
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
   }));
 
   await user.type(textarea() as HTMLDivElement, "dm");
@@ -2261,7 +2157,7 @@ test("a queue submit also exposes its durable pending entry in the composed UI w
 
 test("relay recovery refreshes stale queue capability without reconnecting or remounting the composer", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   let readCount = 0;
   fake.on("thread/read", (params) => {
     readCount += 1;
@@ -2279,12 +2175,7 @@ test("relay recovery refreshes stale queue capability without reconnecting or re
     };
   });
   fake.on("turn/queue", (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: "thread_a",
-      projectionState: "reflected",
-    },
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
   }));
   await threadsStore.getState().ensureThread("ref_a");
   render(
@@ -2354,12 +2245,7 @@ test.each([
       params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" }, askPending: false },
     });
     return {
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thread_a",
-        projectionState: "reflected",
-      },
+      receipt: appliedReceipt(params.clientMutationId, "thread_a"),
       turn: { id: "turn_2", status: "inProgress", itemsView: "" },
     };
   });
@@ -2375,7 +2261,8 @@ test.each([
   // a stronger, more meaningful signal than probing the `inert` IDL
   // property directly, and it also proves the textarea can't be tabbed to.
   await waitFor(() => expect(textarea()).toBeNull());
-  expect(screen.queryByRole("button", { name: /session actions/i })).toBeNull();
+  expect(screen.getAllByRole("button", { name: /session actions/i })).toHaveLength(1);
+  expect(screen.getAllByRole("button", { name: /session actions/i, hidden: true })).toHaveLength(1);
   expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
   // Nothing ask-shaped renders here: the answering surface is the
@@ -2421,12 +2308,7 @@ test.each([
 test("resolving the pending ask announces the composer's restoration via this component's own aria-live region", async () => {
   const fake = await mountComposer("ref_a", idleNoTurnOverrides());
   fake.on("turn/start", (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: "thread_a",
-      projectionState: "reflected",
-    },
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
     turn: { id: "turn_2", status: "inProgress", itemsView: "" },
   }));
 
@@ -2489,12 +2371,7 @@ test("queuing a message end to end: queue -> strip renders -> edit restores text
     },
   });
   fake.on("turn/queue", (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: "thread_a",
-      projectionState: "reflected",
-    },
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
   }));
 
   await user.type(textarea() as HTMLDivElement, "fq");
@@ -2532,12 +2409,7 @@ test("queuing a message end to end: queue -> strip renders -> edit restores text
   expect(screen.getByText("fq")).toBeTruthy();
 
   fake.on("turn/cancelQueued", (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: "thread_a",
-      projectionState: "reflected",
-    },
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
     removedText: "fq",
   }));
   await user.click(screen.getByRole("button", { name: /edit message/i }));

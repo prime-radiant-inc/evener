@@ -289,7 +289,7 @@ func TestResumeWorktreeReentry_ManagedForeign_RestoresRootAndNotices(t *testing.
 // TestResumeWorktreeReentry_RefusesUnconfinedSandboxReroot is roborev round 7's
 // High: re-entry publishes the clone WithWorkingDirectory returned, and that
 // method's failure mode is an environment with BOTH Sandbox and Wrapper nil plus
-// a sticky refusal (execenv/local.go:964-1002). Publishing it runs the restored
+// a sticky refusal. Publishing it runs the restored
 // session with unconfined file and command tools, so re-entry has to consult the
 // refusal exactly as the five other call sites do (enterWorktree among them).
 func TestResumeWorktreeReentry_RefusesUnconfinedSandboxReroot(t *testing.T) {
@@ -912,6 +912,41 @@ func TestInitInside_UnresolvableMainRootNoOp(t *testing.T) {
 
 	if got := sess.Meta().WorktreePath; got != "" {
 		t.Errorf("Meta().WorktreePath = %q, want empty (unresolvable main root must no-op)", got)
+	}
+	// A project that resolves fine but is not a git checkout is the ordinary
+	// non-repo case: it must stay silent rather than warn on every session
+	// launched outside a repository (#4511).
+	if msgs := pendingTranscriptWarningMessages(sess); len(msgs) != 0 {
+		t.Errorf("non-repo launch warned: %v", msgs)
+	}
+}
+
+// TestInitInside_ProjectResolutionFailureWarns reproduces #4511: when the
+// session's project cannot be resolved at all (here: the launch directory is
+// gone, standing in for a filesystem error such as EMFILE), the occupancy lock
+// is neither applied nor reported unless the failure produces a warning.
+func TestInitInside_ProjectResolutionFailureWarns(t *testing.T) {
+	t.Parallel()
+	r := newScriptedLaneRepo(t)
+	gone := scriptedCanonicalDir(t, t.TempDir())
+	missing := filepath.Join(gone, "gone")
+
+	sess := r.sessionAt(t, r.mainRoot).s
+	sess.mu.Lock()
+	local := sess.env.(*execenv.LocalExecutionEnvironment)
+	sess.env = local.WithWorkingDirectory(missing)
+	sess.mu.Unlock()
+	// The launch directory does not exist, so EvalSymlinks/Stat fail and the
+	// project resolver cannot decide repo-ness at all.
+
+	sess.applyInitInsideWorktreeLock()
+
+	msgs := pendingTranscriptWarningMessages(sess)
+	if len(msgs) != 1 {
+		t.Errorf("buffered warnings = %d, want exactly 1 (%v)", len(msgs), msgs)
+	}
+	if got := sess.Meta().WorktreePath; got != "" {
+		t.Errorf("Meta().WorktreePath = %q, want empty (resolution failure must not track occupancy)", got)
 	}
 }
 

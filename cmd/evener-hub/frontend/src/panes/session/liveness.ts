@@ -3,7 +3,6 @@
 // transcript descendants can share the same logic without importing the
 // pane back into this leaf module.
 import { createContext, useContext, useEffect, useState } from "react";
-import type { CadenceState } from "../../widgets";
 
 // Same interval as the legacy renderer's own liveness tick
 // (cmd/evener-hub/assets/renderer.js LIVENESS_TICK_MS=3000) - fine-grained
@@ -17,31 +16,6 @@ export const SessionNowContext = createContext(Date.now());
 
 export function useSessionNow(): number {
   return useContext(SessionNowContext);
-}
-
-// cadenceStateForStatus maps the WIRE ThreadStatus.type vocabulary
-// (appwire/types.go's constants: idle/active/awaiting/warning/closed/
-// notLoaded/systemError - ThreadModel.status.type carries this straight
-// through, see reducer.ts) onto Cadence's four-family state space.
-// Separate from shell/sessionStatus.ts's cadenceStateFor, which
-// consumes hubcore.NormalizeState's navigation summary (closed->ended,
-// systemError->errored). A live ThreadModel carries raw wire values, so this
-// mapper mirrors that normalization.
-export function cadenceStateForStatus(type: string): CadenceState {
-  switch (type) {
-    case "systemError":
-      return "failed";
-    case "awaiting":
-    case "warning":
-    case "restartRequired":
-      return "needs-you";
-    case "active":
-      return "working";
-    case "closed":
-      return "ended";
-    default: // "idle", "notLoaded", "", and any future/unknown value
-      return "idle";
-  }
 }
 
 // useNowTick is the one thing that owns a live decay clock for Cadence: it

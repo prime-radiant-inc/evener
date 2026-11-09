@@ -390,18 +390,24 @@ describe("MutationOutboxIndexedDB", () => {
     });
     const appliedFirst = await store.enqueueIntent(intent("applied first"));
 
-    expect(await store.settleApplied(appliedFirst.clientMutationId)).toBe(true);
+    expect(await store.settleApplied(appliedFirst.clientMutationId)).toMatchObject({
+      clientMutationId: appliedFirst.clientMutationId,
+    });
     expect(await store.markUnknown(appliedFirst.clientMutationId, "blockedUnknown")).toBe(false);
     expect(await store.getOutbox(appliedFirst.clientMutationId)).toBeUndefined();
 
     const unknownFirst = await store.enqueueIntent(intent("unknown first"));
     expect(await store.markUnknown(unknownFirst.clientMutationId, "blockedUnknown")).toBe(true);
-    expect(await store.settleApplied(unknownFirst.clientMutationId)).toBe(true);
+    expect(await store.settleApplied(unknownFirst.clientMutationId)).toMatchObject({
+      clientMutationId: unknownFirst.clientMutationId,
+    });
     expect(await store.getOutbox(unknownFirst.clientMutationId)).toBeUndefined();
 
     const recoveredFirst = await store.enqueueIntent(intent("late receipt"));
     expect(await store.transferToRecovery(recoveredFirst.clientMutationId, "rejected")).toBeDefined();
-    expect(await store.settleApplied(recoveredFirst.clientMutationId)).toBe(true);
+    expect(await store.settleApplied(recoveredFirst.clientMutationId)).toMatchObject({
+      clientMutationId: recoveredFirst.clientMutationId,
+    });
     expect(await store.getRecovery(recoveredFirst.clientMutationId)).toBeUndefined();
   });
 
@@ -453,7 +459,9 @@ describe("MutationOutboxIndexedDB", () => {
     store.close();
     const reloaded = new MutationOutboxIndexedDB({ indexedDB, databaseName });
     expect(await reloaded.listTargetRefs()).toEqual([TARGET]);
-    expect(await reloaded.settleApplied(persisted.clientMutationId)).toBe(true);
+    expect(await reloaded.settleApplied(persisted.clientMutationId)).toMatchObject({
+      clientMutationId: persisted.clientMutationId,
+    });
     expect(await reloaded.getOptimistic(persisted.clientMutationId)).toBeUndefined();
     expect(await reloaded.settleReceipt(persisted.clientMutationId, "pending")).toBe(false);
 
@@ -464,7 +472,9 @@ describe("MutationOutboxIndexedDB", () => {
         input: [{ type: "text", text: "identity arrived first" }],
       },
     });
-    expect(await reloaded.settleApplied(reflectedFirst.clientMutationId)).toBe(true);
+    expect(await reloaded.settleApplied(reflectedFirst.clientMutationId)).toMatchObject({
+      clientMutationId: reflectedFirst.clientMutationId,
+    });
     expect(await reloaded.settleReceipt(reflectedFirst.clientMutationId, "pending")).toBe(false);
     expect(await reloaded.getOptimistic(reflectedFirst.clientMutationId)).toBeUndefined();
   });
@@ -521,7 +531,9 @@ describe("MutationOutboxIndexedDB", () => {
 
     // The kept copy is not permanent: reconciliation settles it exactly like
     // an accepted turn's copy.
-    expect(await store.settleApplied(persisted.clientMutationId)).toBe(true);
+    expect(await store.settleApplied(persisted.clientMutationId)).toMatchObject({
+      clientMutationId: persisted.clientMutationId,
+    });
     expect(await store.getOptimistic(persisted.clientMutationId)).toBeUndefined();
   });
 

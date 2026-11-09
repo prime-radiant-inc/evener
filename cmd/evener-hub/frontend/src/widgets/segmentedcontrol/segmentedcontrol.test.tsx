@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, test, vi } from "vitest";
+import { readModuleCss } from "../../styles/cssBlock";
 import { SegmentedControl } from "./index";
 
 const OPTIONS = [
@@ -64,8 +65,7 @@ function NavigationHarness({ onChange }: { onChange?: (value: string) => void })
 }
 
 function cssSource() {
-  const here = dirname(fileURLToPath(import.meta.url));
-  return readFileSync(join(here, "segmentedcontrol.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  return readModuleCss(import.meta.url, "segmentedcontrol.module.css");
 }
 
 function tokenSource() {

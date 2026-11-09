@@ -23,9 +23,8 @@ import {
 } from "@evener/appwire-client/testing/systemEventWireFixtures";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
-import { createConversationService } from "../../mobile/src/services/conversation";
-import { createActivityStore } from "../../mobile/src/state/activity";
-import { createConversationStore } from "../../mobile/src/state/conversation";
+import { createConversationService } from "./conversation/services/conversation";
+import { createConversationStore } from "./conversation/state/conversation";
 import { palettes } from "./design/tokens";
 import { MAX_ITEM_BYTES, projectConversation } from "./projectedRows";
 import { withTestID } from "./markerTestUtils";
@@ -40,7 +39,6 @@ import { projectNativeTranscript } from "./transcriptPresentation";
 vi.mock("react-native", async () => ({
 	...(await import("./renderNative.testkit")).nativeModuleMock(),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 vi.mock("react-native-enriched-markdown", () => ({ EnrichedMarkdownText: "EnrichedMarkdownText" }));
 vi.mock("react-native-gesture-handler", async () =>
@@ -190,7 +188,7 @@ describe("recorded summary failure", () => {
 		if (row?.kind !== "notice") throw new Error("summary warning notice was lost");
 		expect(isCriticalNotice(row)).toBe(true);
 		const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="summary-fixture" />);
-		for (const identifier of ["openai/summary-model-8af1", "429", "rate_limit"])
+		for (const identifier of ["openai/gpt-5.2", "rejected_output", "empty_reply"])
 			expect(renderedText(tree)).toContain(identifier);
 		expect(inked(tree, palettes.light.attention)).toBe(true);
 		expect(tree.root.findAll((node) => node.props.accessibilityRole === "button")).toHaveLength(0);
@@ -422,9 +420,8 @@ describe("shared-notes snapshots", () => {
 		client.on("thread/unsubscribe", () => ({}));
 		const service = createConversationService(client, { now: () => T0, resolveDisplayConfig: () => config });
 		const store = createConversationStore({ displayConfig: config });
-		const activity = createActivityStore();
 		try {
-			await store.getState().openProjected(service, activity.getState(), "ref-1");
+			await store.getState().openProjected(service, "ref-1");
 			expect(store.getState().status).toBe("open");
 			const conversation = store.getState().conversation;
 			if (!conversation) throw new Error("no stored conversation");

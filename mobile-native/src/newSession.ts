@@ -12,7 +12,7 @@ import {
 } from "@evener/appwire-client";
 import type { LaunchConfigLayer, ModelDescriptor, Thread } from "@evener/appwire-client";
 import { LOCAL_HOST } from "@evener/appwire-client";
-import type { NewSessionService } from "../../mobile/src/services/newSession";
+import type { NewSessionService } from "./conversation/services/newSession";
 import { type CreationDraft, type CreationDraftRepository, creationDraftMetadata } from "./creationDraftRepository";
 import { type DraftImageData, imageInput } from "./draftImages";
 import { type LaunchSetup, modelFromId, moveToHost, setupOf, withOwnedOverrides } from "./newSession/launchSetup";
@@ -54,6 +54,9 @@ interface Form {
 	reasoning: string;
 	launchOverrides: LaunchConfigLayer;
 	setLaunchOverrides(value: LaunchConfigLayer): void;
+	/** Start the session with the Manager role. A per-draft choice, default off. */
+	manager: boolean;
+	setManager(value: boolean): void;
 	projects: string[];
 	models: ModelDescriptor[];
 	/** The host's recently used models, from model/list's `recent`. */
@@ -260,8 +263,12 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 		model: null,
 		reasoning: "",
 		launchOverrides: {},
+		manager: false,
 		setLaunchOverrides(value) {
 			if (!get().submitting) set({ launchOverrides: JSON.parse(JSON.stringify(value)) });
+		},
+		setManager(value) {
+			if (!get().submitting) set({ manager: value });
 		},
 		projects: [],
 		models: [],
@@ -420,7 +427,7 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 		async submit() {
 			const current = service;
 			const generation = connection;
-			const { source, cwd, prompt, model, reasoning, submitting, launchOverrides } = get();
+			const { source, cwd, prompt, model, reasoning, submitting, launchOverrides, manager } = get();
 			if (
 				!current ||
 				get().retired ||
@@ -490,6 +497,7 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 					...(scalars.model ? { model: scalars.model } : {}),
 					...(scalars.modelProvider ? { modelProvider: scalars.modelProvider } : {}),
 					...(scalars.reasoningEffort ? { reasoningEffort: scalars.reasoningEffort } : {}),
+					...(manager ? { manager: true } : {}),
 					...(Object.keys(launchOverrides).length ? { launchOverrides } : {}),
 				});
 				if (generation !== connection) return { status: "obsolete" };
@@ -642,6 +650,7 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 			model: null,
 			reasoning: "",
 			launchOverrides: {},
+			manager: false,
 			unconfirmedCreation: false,
 			storageError: null,
 			error: null,
@@ -677,6 +686,7 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 			harness: "",
 			model: state.model,
 			reasoning: state.reasoning,
+			manager: state.manager,
 			launchOverrides: state.launchOverrides,
 			images: state.images,
 			unconfirmed: false,
@@ -720,6 +730,7 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 					if (savedModel) pendingModelId = savedModel;
 					store.setState({
 						...fields,
+						manager: draft.manager ?? false,
 						...(savedModel ? { model: null } : {}),
 						...(savedEffort ? { reasoning: savedEffort } : {}),
 						launchOverrides: withoutModelChoice(launchOverrides),

@@ -28,9 +28,8 @@ vi.mock("react-native", async () => {
 		PanResponder: { create: () => ({ panHandlers: {} }) },
 	};
 });
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-safe-area-context", () => ({
-	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
+	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 21, right: 21 }),
 	useSafeAreaFrame: () => ({ x: 0, y: 0, width: 393, height: 852 }),
 }));
 // The package's index pulls in its image assets, which vitest can't load.
@@ -101,7 +100,7 @@ beforeEach(() => {
 
 it("sits just below the nav bar, and shows nothing without a banner", () => {
 	const { container } = mount();
-	expect(container.props.style).toMatchObject({ position: "absolute", left: 0, right: 0, top: 95 });
+	expect(container.props.style).toMatchObject({ position: "absolute", left: 21, right: 21, top: 95 });
 	expect(container.children).toHaveLength(0);
 });
 

@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"syscall"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -332,30 +331,6 @@ func TestValidateClientMutationSnapshot_Valid(t *testing.T) {
 	s.Journal["mutation-4"] = appliedRec
 	if err := validateClientMutationSnapshot(s, "session-1"); err != nil {
 		t.Fatalf("expected valid snapshot, got %v", err)
-	}
-}
-
-// TestClientMutationSyncUnsupported covers the sync-unsupported classifier.
-func TestClientMutationSyncUnsupported(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		err  error
-		want bool
-	}{
-		{syscall.ENOSYS, true},
-		{syscall.ENOTSUP, true},
-		{syscall.EINVAL, true},
-		{errors.New("other"), false},
-		{nil, false},
-	}
-	for _, tc := range tests {
-		if got := clientMutationSyncUnsupported(tc.err); got != tc.want {
-			t.Errorf("clientMutationSyncUnsupported(%v) = %v, want %v", tc.err, got, tc.want)
-		}
-	}
-	// Wrapped errors are also detected.
-	if !clientMutationSyncUnsupported(errors.Join(syscall.ENOSYS)) {
-		t.Error("expected wrapped ENOSYS to be unsupported")
 	}
 }
 

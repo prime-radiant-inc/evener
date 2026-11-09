@@ -1,3 +1,4 @@
+import { canWriteSharedNotes } from "@evener/appwire-client";
 // The demo hub's sessions for Appendix A's Session frames, read the way the
 // phone reads them: each thread hydrated by the package (hydrateThread) and
 // projected at a detail level (projectConversation), then asked the same
@@ -14,7 +15,7 @@ import { EVIDENCE_PREVIEW_LINES, stepEvidence } from "../session/evidence.js";
 import { ghosts, shownGhosts } from "../session/ghosts.js";
 import { modelChipLabel, notesSummary } from "../session/sessionFacts.js";
 import { documentReferences } from "../reader/documentReferences.js";
-import { canWriteHumanNote, notesBarPreview } from "../session/sessionNotes.js";
+import { notesBarPreview } from "../session/sessionNotes.js";
 import { contextChips, sessionStateLine } from "../session/sessionState.js";
 import { subagentLine } from "../session/subagentLine.js";
 import { isStep, sessionRows } from "../session/transcriptRows.js";
@@ -417,8 +418,8 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 		expect(model.capabilities.sharedNotes).toBe(true);
 		// Readable, and read-only: the Notes sheet offers no editing here, as it
 		// does on frame 7's working session.
-		expect(canWriteHumanNote(model)).toBe(false);
-		expect(canWriteHumanNote(open("s-pr2138").model)).toBe(true);
+		expect(canWriteSharedNotes(model)).toBe(false);
+		expect(canWriteSharedNotes(open("s-pr2138").model)).toBe(true);
 		expect(notesBarPreview(model)).toEqual({
 			glyph: "person",
 			text: "Your note: Measure on magic-kingdom, not a laptop.",

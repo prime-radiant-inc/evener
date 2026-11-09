@@ -4,9 +4,10 @@ import (
 	"errors"
 	"io/fs"
 	"slices"
+	"strings"
 	"testing"
 
-	"primeradiant.com/evener/frontmatter"
+	"gopkg.in/yaml.v3"
 )
 
 func FuzzAssets(f *testing.F) {
@@ -48,14 +49,22 @@ func bundledMeta(t *testing.T, filesystem fs.FS, name string) map[string]any {
 	if err != nil {
 		t.Fatalf("read bundled asset %s: %v", name, err)
 	}
-	doc, err := frontmatter.Parse(string(raw))
-	if err != nil {
+	block, ok := strings.CutPrefix(string(raw), "---\n")
+	if !ok {
+		t.Fatalf("bundled asset %s has no frontmatter", name)
+	}
+	block, _, ok = strings.Cut(block, "\n---\n")
+	if !ok {
+		t.Fatalf("bundled asset %s frontmatter is not closed", name)
+	}
+	meta := map[string]any{}
+	if err := yaml.Unmarshal([]byte(block), &meta); err != nil {
 		t.Fatalf("parse bundled asset %s frontmatter: %v", name, err)
 	}
-	if len(doc.Meta) == 0 {
+	if len(meta) == 0 {
 		t.Fatalf("bundled asset %s carries no frontmatter metadata", name)
 	}
-	return doc.Meta
+	return meta
 }
 
 // bundledMetaString returns a required string frontmatter field.
@@ -96,7 +105,7 @@ func bundledMetaStringList(t *testing.T, meta map[string]any, key string) []stri
 	return out
 }
 
-// TestBundledCoordinatorUsesStableDelegateAndShellIdentities pins the
+// TestBundledCoordinatorUsesDelegateAndShellIdentities pins the
 // coordinator agent's declared capability surface, not the wording of its role
 // prompt. The runtime consumes the frontmatter tools: list as an allowlist
 // (baseSubagentToolPolicy hands it to Registry.RestrictKeepingResultTool), so
@@ -107,7 +116,7 @@ func bundledMetaStringList(t *testing.T, meta map[string]any, key string) []stri
 //
 // Not parallel: Plugins() reads the package-wide subFS seam that
 // TestMustSubPanics swaps out.
-func TestBundledCoordinatorUsesStableDelegateAndShellIdentities(t *testing.T) {
+func TestBundledCoordinatorUsesDelegateAndShellIdentities(t *testing.T) {
 	meta := bundledMeta(t, Plugins(), "coordinator-workflow/agents/coordinator.md")
 	if name := bundledMetaString(t, meta, "name"); name != "coordinator" {
 		t.Fatalf("coordinator agent name = %q, want %q", name, "coordinator")

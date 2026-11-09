@@ -5,7 +5,6 @@ import { SearchField } from "./SearchField";
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 const symbols = (tree: ReturnType<typeof render>) =>
 	tree.root.findAll((node) => node.type === ("SymbolView" as never)).map((node) => node.props.name);

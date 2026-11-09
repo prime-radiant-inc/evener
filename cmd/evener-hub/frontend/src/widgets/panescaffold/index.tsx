@@ -36,6 +36,7 @@ const CLASS = {
   body: requireClass(styles.body, "panescaffold.module.css", "body"),
   bodyNoScroll: requireClass(styles.bodyNoScroll, "panescaffold.module.css", "bodyNoScroll"),
   footer: requireClass(styles.footer, "panescaffold.module.css", "footer"),
+  footerBeforeEdge: requireClass(styles.footerBeforeEdge, "panescaffold.module.css", "footerBeforeEdge"),
   edgeFooter: requireClass(styles.edgeFooter, "panescaffold.module.css", "edgeFooter"),
 };
 
@@ -156,7 +157,10 @@ export function PaneScaffold({
         {children}
       </div>
       {footer !== undefined && (
-        <div className={CLASS.footer} data-testid="pane-footer">
+        <div
+          className={edgeFooter === undefined ? CLASS.footer : `${CLASS.footer} ${CLASS.footerBeforeEdge}`}
+          data-testid="pane-footer"
+        >
           {footer}
         </div>
       )}

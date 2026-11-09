@@ -313,16 +313,10 @@ func wppRuntimePaths(t *testing.T, token string) {
 	t.Setenv("XDG_STATE_HOME", "")
 	t.Setenv("XDG_CACHE_HOME", "")
 	t.Setenv("HOME", root)
-	if got, want := xdgStateHome(), filepath.Join(root, ".local", "state"); got != want {
-		t.Fatalf("default state home = %q, want %q", got, want)
-	}
 	if got, want := xdgCacheHome(), filepath.Join(root, ".cache"); got != want {
 		t.Fatalf("default cache home = %q, want %q", got, want)
 	}
 	t.Setenv("HOME", "")
-	if got, want := xdgStateHome(), filepath.Join(os.TempDir(), ".local", "state"); got != want {
-		t.Fatalf("fallback state home = %q, want %q", got, want)
-	}
 	if got, want := xdgCacheHome(), filepath.Join(os.TempDir(), ".cache"); got != want {
 		t.Fatalf("fallback cache home = %q, want %q", got, want)
 	}
@@ -377,11 +371,17 @@ func wppPromptDataAndRender(t *testing.T, token string) {
 
 	sess.cfg.testOnly.minimalSystemPrompt = false
 	sess.refreshSystemPromptCache(env)
-	prompt, warning := sess.renderSystemPrompt(env)
-	if warning != "" {
-		t.Fatalf("unexpected render warning: %q", warning)
+	prompt, warning, failed := sess.renderSystemPrompt(env)
+	// The fixture deliberately configures a missing append file: the render
+	// itself must still succeed, and the omission must be disclosed rather than
+	// silently dropped.
+	if failed {
+		t.Fatalf("render failed: %s", warning)
 	}
-	again, _ := sess.renderSystemPrompt(env)
+	if warning == "" {
+		t.Fatal("a configured but unreadable append file was not disclosed")
+	}
+	again, _, _ := sess.renderSystemPrompt(env)
 	if prompt != again || prompt != sess.cachedSystemPrompt {
 		t.Fatal("system prompt cache/render was not deterministic")
 	}

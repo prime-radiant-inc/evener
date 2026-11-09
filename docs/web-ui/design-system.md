@@ -65,6 +65,7 @@ losing the conversation that made the evidence relevant.
 - **Let filename Open own its placement.** On a settled session route, opening
   or reopening a filename selects its document beside the exact living source
   promoted to main, including a secondary session or read-only transcript.
+  Filename links remain source-bound through popout content updates and redocking.
   The canonical document binding retains that source for Back. Reconnect and
   settled location refresh do not replay the old route over this selection.
   Route reconciliation waits until the opening stack finishes when document
@@ -109,15 +110,34 @@ losing the conversation that made the evidence relevant.
   but separates reading from scanning. Shared size and width preferences remain available.
   Phones reflow speaker rows, controls and evidence rather than shrinking a desktop page;
   wide evidence scrolls within its surface instead of widening the page or shrinking targets.
-- **Keep session status inside its pane.** Every visible desktop session pane ends with its own
+- **Keep session status inside its pane.** Every visible desktop session pane ends
+  with its own
   flush status footer, never one strip spanning sibling panes. The footer leads with that
   session's working directory and repository/branch, then its Agents, Jobs, Watches and Tasks
   counts. A count click focuses the owning pane before opening the matching Overview category.
   The shared sidebar retains its scope breadcrumb and an accessible, visually hidden
   “Overview kind” label. About is the fifth category and has no footer counter.
-  Phones omit the activity footer and the working-directory/repository row. The
-  composer ends at the pane's bottom edge with only required safe-area clearance, which
-  yields when the on-screen keyboard covers that area.
+  Phones keep one bottom surface: the pane renders no separate footer strip below the
+  composer, so the composer's own control row carries the session's activity: Attach,
+  the model and reasoning chrome line, the activity chips, and Send or Stop. The
+  composer dock owns the home-indicator band; the inset yields when the on-screen
+  keyboard covers that area. The working-directory strip stays desktop-only: a phone
+  reads the session's working directory and branch through the session menu's Overview
+  (About) and never stacks a second strip below the composer. A phone chip shows its
+  glyph, its name when the width can carry it, and a single active count (settled for
+  Tasks); the full active/total fraction stays in its accessible name, tooltip and the
+  Overview. While the card rests, an empty unfocused editor with no send in flight,
+  the row sheds Attach and the chips and keeps the session menu and Send, so session
+  actions stay reachable without focusing first; focus, a draft or a send brings the
+  full row back, and a running turn keeps its Stop through the actions that never
+  shed. The exited follow-up keeps its full row at rest: it is the one place on a
+  phone the model picker is directly reachable without engaging the editor. At the
+  466px Duo cover width, the same control row uses tighter framing, and the existing
+  composer shrinks only its empty, unfocused field to one line; focus, drafts,
+  attachments, and question/approval docks keep their ordinary writing and response
+  space. The four activity counters stay in the app with their existing Overview
+  links. The OS-owned Duo system rail is not a public customization surface, so no
+  counters move there.
 - **Keep session inspection together.** Both session action menus offer Overview, retaining
   the intended session's category choice. `/status` selects About without toggling a
   standalone Details pane. About reuses the shared Details renderer and its accounting.
@@ -264,19 +284,23 @@ not establish reading comfort or usability. The accessibility gaps in §8 remain
 
 ## 1. Direction (the design law)
 
-**Reading before chrome.** Warm neutral paper/ink, not sepia decoration. Dark remains the
+**Reading before chrome.** Cool neutral paper/ink, not sepia decoration, with the rail one
+visible step from the page. Dark remains the
 default; `system`, `light`, and `dark` preferences keep their existing behavior. A page is
 flat, a field is visibly editable, and a floating layer retains a boundary and depth.
 Use whitespace, aligned columns and fine rules instead of nested boxes and tinted bands.
 
 **Three faces with distinct jobs.** Source Serif 4 for reading prose and editorial page
-headings; Inter for controls, labels, tables and compact operations; JetBrains Mono for code,
-commands, paths and machine identifiers. Comparable operational figures use tabular Inter,
+headings; Schibsted Grotesk for controls, labels, tables and compact operations; JetBrains Mono for code,
+commands, paths and machine identifiers. Comparable operational figures use tabular sans,
 not monospace. Keep authored text and machine evidence visibly distinct.
 
 **Geometry is not decoration.** Preserve the shared reading/wide measure, alignment,
 font-size preferences, timestamp rail, safe-area/keyboard rules and 899px mobile boundary.
 Do not shrink targets or hide overflow as a substitute for containing wide evidence.
+The page frame follows the column it names: a session or spawn header shares its content
+measure, while the settings header stays on the nav axis. The header takes this from the
+pane's existing scaffold marker, not a second layout prop.
 
 **Color is meaning.** Attention = a human/action is needed; alive = active work;
 danger = failure/destruction; accent = links, focus and selection. No decorative status
@@ -339,58 +363,61 @@ theme; the light-theme block (`[data-theme="light"]`) redeclares every color tok
 same name, and `token-contract.test.ts` (§4) fails CI if a token exists in one theme's block
 but not the other's.
 
-**Color** — the warm neutral roles below are implemented in both theme blocks. All existing
+**Color** — the cool neutral roles below are implemented in both theme blocks. All existing
 token names are retained. The table is a reference; `tokens.css` is authoritative.
 
 | Role | Dark | Light |
 |---|---|---|
-| Page `--surface-0` | `#191918` | `#FAF9F6` |
-| Wells/rail `--surface-canvas` | `#1D1D1B` | `#F1F0EB` |
-| Evidence/structural fill `--surface-1` | `#232320` | `#FCFBF8` |
-| Floating layer `--surface-2` | `#232320` | `#FCFBF8` |
-| Evidence inset `--surface-inset` | `#20201E` | `#F4F3EE` |
-| Hover / selected `--hover-1/2` | `#2B2B28` / `#33332F` | `#F0EFE9` / `#E5E4DD` |
-| Editable field `--field` | `#292926` | `#F4F3EF` |
-| Fine / strong edge | `#34342F` / `#51514A` | `#DDDCD4` / `#B7B6AC` |
-| High / medium / low ink | `#F2F1EB` / `#B0AFA6` / `#99998F` | `#252521` / `#5F5F57` / `#6D6D64` |
+| Page `--surface-0` | `#111214` | `#F6F7F9` |
+| Wells/rail `--surface-canvas` | `#16181C` | `#EEF0F3` |
+| Evidence/structural fill `--surface-1` | `#1D2025` | `#FFFFFF` |
+| Floating layer `--surface-2` | `#1D2025` | `#FFFFFF` |
+| Evidence inset `--surface-inset` | `#191C21` | `#F2F4F7` |
+| Hover / selected `--hover-1/2` | `#252931` / `#2E333C` | `#E7EAEF` / `#DCE0E7` |
+| Editable field `--field` | `#23272E` | `#F1F3F6` |
+| Fine / strong edge | `#333842` / `#4C535F` | `#D5D9E0` / `#A7AEBA` |
+| High / medium / low ink | `#F1F3F6` / `#B2B7C0` / `#9AA1AC` | `#1A1D23` / `#555B66` / `#626873` |
 
-Card, InspectorCard and PaneScaffold share the page ground rather than manufacturing raised
+Card and PaneScaffold share the page ground rather than manufacturing raised
 surfaces. Evidence and overlays still have their own grounds. Fine borders are structure,
-not text. Low ink clears 4.5:1 on page and evidence surfaces: dark 6.12/5.48, light 4.96/5.05.
+not text. Low ink clears 4.5:1 on page and evidence surfaces: dark 7.20/6.56, light 5.23/5.09.
 Readable secondary metadata uses medium ink; low ink stays placeholders, disabled and timestamps.
 
 The four semantic hues keep their names, roles, 15% OKLab `-bg` washes and 40% `-edge`
 companions. Text uses `-ink`, never the bare hue. Light alive/danger/accent text colors are
-`#12763B` / `#C51D23` / `#0064C2`, darkened to preserve AA on their own warm tinted grounds.
+`#12763B` / `#C51D23` / `#0064C2`, darkened to preserve AA on their own tinted grounds.
 The tests compute every semantic pairing, including each hue's own wash, at ≥4.5:1.
 Tooltips retain their inverted mini-palette. ANSI roles and values are unchanged.
 
-Diff notation remains independent of semantic status. Dark add/delete stays `#19251A` /
-`#170B17`; light is `#E9F4EE` / `#F5EAF0`. Background contrast against the page stays within
+Diff notation remains independent of semantic status. Dark add/delete stays `#16261B` /
+`#261722`; light is `#DCEFE4` / `#F3DFE8`. Background contrast against the page stays within
 1.05–1.2, content ≥4.5, marker ≥3, with additions lighter in grayscale and explicit +/− signs.
-The PWA manifest and HTML theme-color are synchronized to the dark page `#191918`.
+The PWA manifest and HTML theme-color are synchronized to the dark page `#111214`; once a
+theme is applied, `applyTheme` rewrites the meta to the active page ground so light-theme
+browser chrome does not stay dark.
 
 **Type** — three shared families, no CDN font requests:
 
-- `--font-sans`: `"Inter Variable"` plus system sans fallbacks. Controls, labels, operational tables.
+- `--font-sans`: `"Schibsted Grotesk Variable"` plus system sans fallbacks. Controls, labels, operational tables.
 - `--font-prose`: `"Source Serif 4 Variable", Georgia, "Times New Roman", serif`. Reading and page headings.
 - `--font-mono`: `"JetBrains Mono Variable"` plus system monospace fallbacks. Machine evidence.
 
-Inter and JetBrains Mono remain wired to their package Latin variable WOFF2 files. Source Serif 4
+Schibsted Grotesk, JetBrains Mono and Source Serif 4 are wired to their package Latin variable WOFF2 files. Source Serif 4
 uses the package's actual exported normal CSS and `wght-italic.css` for real italics; all assets
 are served locally by Vite/the built frontend, with package Unicode-range subsetting.
 
-The existing `--font-size-caption/ui/body/pane-title/page-title/display` ramp remains
-12/13/15/18/22/28px. **`--font-size-prose: calc(18px * var(--font-scale))` is new**, declared on
+The `--font-size-caption/ui/body/pane-title/page-title/display` ramp is
+12/13/15/20/26/34px. **`--font-size-prose: calc(16px * var(--font-scale))`**, declared on
 `body` alongside that ramp so S/M/L/XL (0.9/1/1.1/1.25) scale reading text too. Phone body remains
 16px; editable phone controls use `max(16px, var(--font-size-body))`, even under S. The serif
-reading step is 18px at M in both viewports. Weights are 400/500/600; leading body/ui/title is
-1.6/1.4/1.25; display tracking remains −0.02em.
+reading step is 16px at M in both viewports. Weights are 400/500/600; leading body/ui/title is
+1.6/1.4/1.25. Reading surfaces use `--line-height-prose`, declared on `body` beside the size ramp so the
+comfortable-density preference scales its default 1.45 leading, independently of editor and general UI geometry. Display tracking remains −0.02em.
 
 Markdown keeps the prose face but composes with its host's size (the root falls back to `1em`);
 reading surfaces pin `--prose-font-size: var(--font-size-prose)` on the host that owns their
 prose, and `--markdown-ink` stays the ink hook. Inline code stays JetBrains Mono at 0.86em with a quiet underline; fenced code
-explicitly keeps the mono face. Markdown tables use Inter at body size, tabular figures,
+explicitly keeps the mono face. Markdown tables use the sans face at body size, tabular figures,
 wrapping labels and fine horizontal rules. PaneScaffold and EmptyState headings use the serif;
 buttons, fields, dialog labels and other compact operational headings do not inherit it globally.
 `faces.test.ts` pins the new contract and the unchanged operational sans rules; `/dev/type`
@@ -401,8 +428,8 @@ other tracking values that were in use, and it is now THE uppercase tracking in 
 recipe it backs is one rule with no variants: `--font-size-caption`, `--font-weight-medium` (or
 semibold where a header band wants more), `--ink-mid` or darker, `text-transform: uppercase`,
 `letter-spacing: var(--tracking-eyebrow)`, at most two words. It is reserved for short labels inside a
-page (RecommendationCard's kicker and existing rail/settings section labels); InspectorCard
-and Table/DiffTable headers now remain sentence-case. An eyebrow is NEVER a pane title: a PaneScaffold title
+page (existing rail/settings section labels); DiffTable
+headers remain sentence-case. An eyebrow is NEVER a pane title: a PaneScaffold title
 is the page's own heading, set sentence-case at `--font-size-pane-title`, semibold, `--ink-hi`
 (§6). Literal `font-size` values outside `tokens.css`, `letter-spacing` outside the
 `--tracking-*` tokens, and any uppercase rule that is not a complete eyebrow are all enforced by
@@ -420,7 +447,7 @@ Design System's own spacing progression, adopted because it's the only well-know
 exactly fits the plan's stated endpoints (4, 64) and step count (9) while staying on the 4px
 grid; unchanged by the re-theme). Radii are restrained: `--radius-chip` 3px,
 `--radius-control` 4px, `--radius-pane` 4px and `--radius-pill` 999px for switch tracks.
-Structural Card/InspectorCard/PaneScaffold and tables are square; floating layers and fields
+Structural Card/PaneScaffold and tables are square; floating layers and fields
 retain their token radii. Existing widget dimensions and touch targets are unchanged.
 
 **Vertical rhythm** is four named steps over that same grid, so the transcript has a vocabulary
@@ -466,9 +493,9 @@ the duration of a dock drag.
 
 **Elevation** — `--shadow-card: none` in both themes. Keep the token for existing consumers,
 not as a reason to reintroduce raised structure. Card uses padding and page ground;
-InspectorCard uses a sentence-case label and fine property rules; PaneScaffold uses a page
-heading and separating rule without a rounded outside border or tinted header. Table/DiffTable
-use horizontal rules rather than framed grids. Do not remove a field's affordance along with
+PaneScaffold uses a page
+heading and separating rule without a rounded outside border or tinted header. DiffTable
+uses horizontal rules rather than framed grids. Do not remove a field's affordance along with
 card decoration: Input, Select, Textarea and shared picker triggers keep a strong 1px border,
 `--field` fill and `--shadow-inset-field`, with unchanged focus and phone sizing.
 
@@ -515,13 +542,9 @@ during implementation (noted inline); this table is the one to trust.
 | **Meter** | `{label: string; value: number; max: number; tone?: "neutral"\|"attention"\|"alive"\|"danger"}` | `role="meter"`; `label` is required (not optional as an early sketch had it) since role=meter needs an accessible name and a Meter can't ship without one. Fill width via a `--fill` style custom property, not an inline style rule. |
 | **Skeleton** | `{lines?: number}` (default 3) | Static bars, no shimmer (honest-liveness rule) — announces "Loading" once for AT; bars themselves are decorative. |
 | **EmptyState** | `{title: string; hint?: string; action?: ReactNode; size?: "default"\|"display"\|"compact"; reason?: "deleted"\|"unavailable"\|"no-turns"\|"not-built"\|"needs-configuration"\|"no-instances"\|"empty"\|"unsupported"\|"ended"\|"awaiting-reply"\|"version-mismatch"}` | `reason` says why the surface is empty and renders as `data-reason`, so callers and tests tell one empty state from another without reading its copy; it has no loading value. `size="display"` sets the title at `--font-size-display` for the one pane whose empty state IS the page (Welcome); `size="compact"` is the empty message inside a list or section (a settings collection with nothing in it, the activity sidebar's notes, the command palette's "No matches"): left-aligned, the collection row's padding, title in sans `--font-size-ui` `--ink-mid`, hint at caption in `--ink-low`; everything else keeps the centered `--font-size-pane-title` block. `action` is optional (an early plan sketch showed it required; a pane with nothing actionable — e.g. a read-only empty log — is an ordinary case, and every sibling slot-style prop this wave is optional, so this was kept optional as the more consistent, more correct shape). Several actions are a fragment in `action` (the dock and rail chunk-failure fallbacks' Retry + Reload page): the slot is a wrapping flex row with a `--space-2` gap, centered under the default block and start-aligned under `compact`, so callers never space buttons with text nodes. Not a loading state: "Loading…" is `Skeleton`/`Loader`. |
-| **Table** | `{columns: TableColumn<Row>[]; rows: Row[]; rowKey(row); sortKey?; sortDir?: "ascending"\|"descending"; onSortChange?; filters?: {key,label,active}[]; onFilterToggle?; empty?}` | Controlled sort + filter; semantic `<table>`, `aria-sort` on sortable headers, filter chips compose Chip, horizontal overflow scrolls inside the widget. Ported from Beautiful UI's Records/Filter Table. |
 | **DiffTable** | `{columns: {key,label}[]; rows: {key; cells: Record<string,{value; proposed?}>}[]}` | Tabular proposed edits: struck-through old value beside the new one on the neutral `--diff-add-bg` wash — same hue-gate exemption as DiffBlock. Ported from Beautiful UI's Diff Table. |
 | **Loader** | `{label?; rail?; startedAt?; now?}` | Indeterminate-wait indicator (pixel grid + mm:ss elapsed); prop-driven like Cadence, no internal timers. Its animation is the sanctioned exception for user-initiated waits — never agent liveness — and lives entirely inside the reduced-motion gate. `rail` seats the grid in the transcript's icon-rail slot (the content-free "Thinking…" row's status glyph). Ported from Beautiful UI's Loading State. |
-| **InsightCard** | `{insights: {title; body; series?: number[]}[]; page; onPageChange}` | Paged insights with an inline SVG sparkline (aria-hidden + visually-hidden min/max alternative); pagination composes IconButton. Ported from Beautiful UI's Insight Cards. |
-| **RecommendationCard** | `{title; body; confidence?; onAccept?; onReject?; alternatives?}` | Agent-suggested action: micro-label eyebrow, confidence meter (`--accent` on `--field`; not the hue-gated Meter), Accept/Dismiss compose Button. Ported from Beautiful UI's Recommendation Card. |
 | **ContextCard** | `{source; snippet; meta?; href?}` | Retrieved-knowledge chunk: inset card, ToolIcon source glyph, 3-line snippet clamp; renders as a link when `href` given. Ported from Beautiful UI's Context Cards. |
-| **InspectorCard** | `{title; properties: {key; label; value; options?; onChange?}[]}` | Property inspector: sentence-case section label, hairline rows, editable rows compose Select, read-only values in mono. Ported from Beautiful UI's Fine-tune inspector. |
 | **Card** | `{children: ReactNode; variant?: "flat"\|"outlined"; tone?: "neutral"\|"attention"} & Omit<HTMLAttributes<HTMLDivElement>, "children"\|"className"\|"style">` | `variant="flat"` (default) is the passive page-ground section: `--space-4` padding, no outside border (its ring is `--shadow-card`). `variant="outlined"` is a bordered box for a block inside a denser flow (an `ask_user` question in the transcript, the spawn form's plugin and advanced-options panels, the provider-connection review summary): 1px `--edge`, `--radius-pane`, `--surface-1`, `--space-3` padding. `tone="attention"` is the "a human is needed right now" envelope (the pending AskDock batch, a parked sandbox approval): the outlined geometry in `color-mix(--attention 24%, --surface-1)` over a `color-mix(--attention 55%, --edge)` edge, mixed past the `--attention-bg/-edge` token defaults because those barely tint dark's `--surface-1`; it ignores `variant`. Card is on the token-contract `SEMANTIC_USE_ALLOWLIST` for that tone. Spreads native attributes (`role`, `aria-*`, `data-*`, `id`, `tabIndex`, key handlers) onto its `<div>` before `className`, so a caller can make the card a labelled group with a shared keybinding; `className`/`style` are not accepted. Layout of the children (a flex column and its gap) is the caller's, on an inner element. Passive: no focus ring of its own. |
 | **PromptCard** | `{field: ReactNode; leading?: ReactNode; actions?: ReactNode; controlsTestId?; "data-testid"?; hidden?: boolean}` | The app's one prompt surface — the session composer and the spawn form both render it: a bordered card holding `field` (a `seamless` autoGrow Textarea) over a control row (`leading` slot, spacer, `actions` cluster). The card owns the border, padding and the `:focus-within` ring, so the field inside must draw neither; no state, no opinion about verbs. `hidden` also makes the card `inert`. |
 | **Input** | `{value: string; onChange; placeholder?; disabled?; required?; autoComplete?; type?: "text"\|"password"\|"email"\|"search"\|"number"\|"tel"\|"url"; id?; name?; "aria-label"?; "aria-describedby"?}` | Controlled only; labeling is the consumer's job via `<label htmlFor>`. `aria-label` names a field with no visible label (the settings filter, an env-add row) in place of a hand-made visually-hidden `<label>`. |
@@ -607,8 +630,9 @@ The inline card is a WINDOW onto the plan, not a changelog (2026-09 rework, Jess
 it settles folded at every verbosity level (descriptor `foldByDefault` — the level's
 expand-details default does not open it, only the reader's click does, which then persists
 through the shared disclosure store), so a run of task updates reads as quiet one-liners. The
-folded summary line names only the most recent update, mark + label (`→ Build the harness`);
-opening the row swaps that line for a recap sentence of the call's whole change
+folded summary line names only the most recent update, mark + label (`→ Build the harness`), or
+the noted task when the call's only news is a status-less note (`✎ #2`); opening the row swaps
+that line for a recap sentence of the call's whole change
 (`Completed "Decide the folded line"; started "Build the harness"` — verbs Completed, Started,
 Added, Dropped, sentence case) and the body shows at most three slots joined by a hairline
 spine: most-recently-settled (done or cancelled; timestamps order it, list position breaks
@@ -616,8 +640,12 @@ ties), in-progress, next. A note renders only when THIS call added it, set in th
 the note is the agent's own sentence. The footer keeps the aggregate sentence + meter and
 carries the whole-list affordance: an "Open task list" control that opens (and focuses) the
 session's Tasks pane and never closes it — an open operation, not the `/tasks` palette
-command's toggle — hidden where no session owns the card. An update
-that changes no task status renders nothing at all. The tasks pane keeps its grouped
+command's toggle — hidden where no session owns the card. An update that changes no task
+status renders nothing at all, except that a fresh note on a task whose batch carries no status
+word earns its own row (label + note, no state glyph) after the window or the mutation rows. A
+note on a task whose batch carries a status word still rides that status row, or stays
+suppressed when the status itself earns no row (a reopen or a suppressed reassertion). The
+tasks pane keeps its grouped
 full-list structure — settled/in-progress/open groups, timestamps, meta, prompt disclosure,
 the full notes timeline — but renders its rows on the same TaskCheck family, its live row's
 latest note bare in the prose face (the "latest" label chip is gone), and its notes timeline
@@ -829,8 +857,8 @@ size for it: `--font-size-caption`, `--font-weight-medium` (or semibold where a 
 wants more), `--ink-mid` or darker, `text-transform: uppercase`,
 `letter-spacing: var(--tracking-eyebrow)` (0.06em, which replaced a spread of
 0.02/0.04/0.05/0.08em), and **at most two words**. An eyebrow titles a container INSIDE a page:
-RecommendationCard's kicker and existing rail/settings section labels. InspectorCard and
-Table/DiffTable column labels are sentence-case, not eyebrows. Three-word labels were the tell that the rule was being
+existing rail/settings section labels. DiffTable
+column labels are sentence-case, not eyebrows. Three-word labels were the tell that the rule was being
 broken, so "Agents & models" became **"Agent setup"**.
 
 Never an eyebrow: buttons, sentences, and above all **titles**. A pane title is the page's own
@@ -1095,7 +1123,9 @@ whole height. Measured before this, agent prose got 260px of a 375px screen,
 
 The sessions drawer renders the Rail flush inside the Sheet body (Sheet's
 `bodyClassName`, §3): no inner surface box, no inner radius, because the sheet
-already frames it.
+already frames it. Selecting a session closes the drawer, including the
+session already being read: the tap chose a reader, and the list must not stay
+over it.
 
 
 ## Source Serif 4 license notice

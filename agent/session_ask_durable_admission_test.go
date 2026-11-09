@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
@@ -22,7 +23,9 @@ func newDurableAdmissionAskSessionWithAdapter(t *testing.T, cfg SessionConfig) (
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(askUserCall("ask1", askUserArgsValid())) },
+			func(req llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(askUserCall("ask1", askUserArgsValid()))
+			},
 		},
 	}
 	c.Register(adapter)
@@ -153,11 +156,7 @@ func TestAskUser_DurableAdmissionClosedTranscriptMatchesRestore(t *testing.T) {
 	meta := sess.Meta()
 	dir := sess.stateDir
 	sess.Close()
-	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
-	if err != nil {
-		t.Fatalf("RestoreSessionFromMeta: %v", err)
-	}
-	defer restored.Close()
+	restored := restoreAskSession(t, meta, dir)
 	if got := restored.askPendingCount(); got != 1 {
 		t.Fatalf("restored ask pending count after closed transcript = %d, want 1", got)
 	}
@@ -255,11 +254,7 @@ func TestAskUser_RecoveredStartAdmissionClearsPendingAskLikeRestore(t *testing.T
 	meta := sess.Meta()
 	dir := sess.stateDir
 	sess.Close()
-	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
-	if err != nil {
-		t.Fatalf("RestoreSessionFromMeta: %v", err)
-	}
-	defer restored.Close()
+	restored := restoreAskSession(t, meta, dir)
 	if got := restored.askPendingCount(); got != 0 {
 		t.Fatalf("restored askPendingCount after recovered user record = %d, want 0", got)
 	}
@@ -300,11 +295,7 @@ func TestAskUser_PartialRecoveredStartAfterUserMatchesRestore(t *testing.T) {
 	meta := sess.Meta()
 	dir := sess.stateDir
 	sess.Close()
-	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
-	if err != nil {
-		t.Fatalf("RestoreSessionFromMeta: %v", err)
-	}
-	defer restored.Close()
+	restored := restoreAskSession(t, meta, dir)
 	if got := restored.askPendingCount(); got != 0 {
 		t.Fatalf("restored askPendingCount after partial recovery = %d, want 0", got)
 	}

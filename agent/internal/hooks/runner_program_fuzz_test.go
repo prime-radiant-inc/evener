@@ -3,7 +3,6 @@
 package hooks
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -108,11 +107,11 @@ func runHookRuntimeResidualProgram(t *testing.T, mode byte, token string) {
 		cancel()
 		_, err = executeCommandHook(canceled, plugin.RegisteredHook{
 			Type: "command", Command: "/scripted/not-executed", Args: []string{"arg"}, Timeout: 1,
-		}, Input{})
+		}, Input{}, newSystemCommandHookRuntime())
 		if err == nil {
 			t.Fatal("canceled default command runtime unexpectedly succeeded")
 		}
-		if _, err := executeCommandHookWithRuntime(context.Background(), plugin.RegisteredHook{
+		if _, err := executeCommandHook(context.Background(), plugin.RegisteredHook{
 			Type: "command", Command: "/scripted/not-executed", Args: []string{"arg"}, Timeout: 1,
 		}, Input{}, nil); err == nil {
 			t.Fatal("nil command runtime unexpectedly succeeded")
@@ -164,7 +163,6 @@ type hookRunnerProgramTrace struct {
 	Notification       RunResult
 	NoClient           RunResult
 	PublicClient       RunResult
-	Summary            []string
 	SupportedSummary   []string
 	Diagnostics        []string
 	Calls              []hookRunnerProgramCall
@@ -321,11 +319,6 @@ func (r *hookRunnerProgramCommandRuntime) Run(_ context.Context, invocation comm
 		!reflect.DeepEqual(cmd.Env, invocation.Env) {
 		return fmt.Errorf("scripted command setup = path:%q args:%#v env:%#v", cmd.Path, cmd.Args, cmd.Env)
 	}
-	stdout, stdoutOK := cmd.Stdout.(*bytes.Buffer)
-	stderr, stderrOK := cmd.Stderr.(*bytes.Buffer)
-	if !stdoutOK || !stderrOK {
-		return fmt.Errorf("scripted command streams = stdout:%T stderr:%T", cmd.Stdout, cmd.Stderr)
-	}
 	r.mu.Lock()
 	r.plans = append(r.plans, hookRunnerProgramCommandPlan{
 		Program: cmd.Path,
@@ -338,10 +331,10 @@ func (r *hookRunnerProgramCommandRuntime) Run(_ context.Context, invocation comm
 
 	switch cmd.Path {
 	case "/fixture/bin/fixture-pre":
-		_, _ = stderr.WriteString("command pre denied")
+		_, _ = io.WriteString(cmd.Stderr, "command pre denied")
 		return hookRunnerProgramExitError{code: 2}
 	case "/fixture/bin/fixture-post":
-		_, _ = stdout.WriteString(`{"systemMessage":"command post","terminalSequence":"command-post-terminal","hookSpecificOutput":{"additionalContext":"command post context"}}`)
+		_, _ = io.WriteString(cmd.Stdout, `{"systemMessage":"command post","terminalSequence":"command-post-terminal","hookSpecificOutput":{"additionalContext":"command post context"}}`)
 		return nil
 	case "/fixture/bin/fixture-canceled":
 		return errors.New("recorded cancellation executor fault")
@@ -446,11 +439,9 @@ func runHookRunnerProgram(t *testing.T, mode byte, token string) hookRunnerProgr
 	runner.SetSandboxWrapper(nil)
 	addHookRunnerProgramHooks(runner, token, mode)
 
-	summary := summarizeHookRunnerProgramCounts(runner.Summary())
 	supported := summarizeHookRunnerProgramCounts(runner.SupportedSummary())
-	if !containsHookRunnerProgramCount(summary, string(plugin.HookPreToolUse)+"=6") ||
-		!containsHookRunnerProgramCount(supported, string(plugin.HookPreToolUse)+"=4") {
-		t.Fatalf("hook summaries = all:%v supported:%v", summary, supported)
+	if !containsHookRunnerProgramCount(supported, string(plugin.HookPreToolUse)+"=4") {
+		t.Fatalf("supported hook summary = %v", supported)
 	}
 	diagnostics := runner.Validate()
 	if len(diagnostics) != 1 || diagnostics[0].PluginName != "program-plugin" || diagnostics[0].Matcher != "[" ||
@@ -523,7 +514,7 @@ func runHookRunnerProgram(t *testing.T, mode byte, token string) hookRunnerProgr
 	if !reflect.DeepEqual(userPrompt.ModelContext, []string{"user context"}) || len(userPrompt.UserMessages) != 0 {
 		t.Fatalf("RunUserPromptSubmit = %#v", userPrompt)
 	}
-	startup := runner.RunSessionStart(ctx, input)
+	startup := runner.RunSessionStartFor(ctx, input, plugin.SessionStartKindStartup)
 	blankStartup := runner.RunSessionStartFor(ctx, input, "")
 	resume := runner.RunSessionStartFor(ctx, input, plugin.SessionStartKindResume)
 	clear := runner.RunSessionStartFor(ctx, input, plugin.SessionStartKindClear)
@@ -624,7 +615,6 @@ func runHookRunnerProgram(t *testing.T, mode byte, token string) hookRunnerProgr
 		Notification:       notification,
 		NoClient:           noClient,
 		PublicClient:       publicResult,
-		Summary:            summary,
 		SupportedSummary:   supported,
 		Diagnostics:        []string{diagnostics[0].PluginName + "|" + diagnostics[0].Event + "|" + diagnostics[0].Matcher},
 		Calls:              calls,
@@ -793,7 +783,7 @@ func hookRunnerProgramEnvMap(t *testing.T, env []string) map[string]string {
 func assertHookRunnerProgramCommandPreparationErrors(t *testing.T, runtime commandHookRuntime) {
 	t.Helper()
 	for _, shell := range []string{"powershell", "zsh"} {
-		_, err := executeCommandHookWithRuntime(context.Background(), plugin.RegisteredHook{
+		_, err := executeCommandHook(context.Background(), plugin.RegisteredHook{
 			Type:    "command",
 			Command: "never-run",
 			Shell:   shell,

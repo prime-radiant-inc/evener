@@ -561,8 +561,8 @@ function InspectBody({ raw }: { raw: JsonObject }) {
   if (state === "ended") {
     const endReason = strField(raw, "end_reason");
     // The ended raw carries the same trigger/detail fields as any other
-    // inspect (condition, note, deliveries — inspectResultFromWatchHistory,
-    // agent/job_watch.go:2363; the structured note rides beside the Condition
+    // inspect (condition, note, deliveries — inspectResultFromWatchHistory;
+    // the structured note rides beside the Condition
     // string verbatim — jobWatchInspectToolResult, agent/session_tools_jobs.go).
     // The end sentence names the outcome first, then the same trigger clauses
     // the watching body renders, so an ended watch still says what it was

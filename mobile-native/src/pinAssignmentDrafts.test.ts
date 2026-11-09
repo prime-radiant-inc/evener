@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { type PinAssignmentDraftBackend, pinAssignmentDrafts } from "./pinAssignmentDrafts";
+import type { NavigationActionBackend } from "./navigationActionRepository";
+import { pinAssignmentDrafts } from "./pinAssignmentDrafts";
 
 function backend() {
 	const values = new Map<string, unknown>();
 	let sequence = 0;
-	const api: PinAssignmentDraftBackend & {
+	const api: NavigationActionBackend & {
 		values: Map<string, unknown>;
 		fail: boolean;
 	} = {
@@ -27,6 +28,13 @@ function backend() {
 const existing = { kind: "existing" as const, sectionId: "focus" };
 const fresh = { kind: "new" as const, name: "  New section  " };
 describe("pin assignment drafts", () => {
+	it("removes a draft whose keys arrive in a different order", () => {
+		const b = backend();
+		const drafts = pinAssignmentDrafts("hub-a", "session", b);
+		const saved = drafts.save(existing);
+		expect(drafts.removeIf({ selection: saved.selection, id: saved.id })).toBe(true);
+		expect(drafts.load()).toBeNull();
+	});
 	it("recreates a draft and scopes identical refs by hub", () => {
 		const b = backend();
 		const a = pinAssignmentDrafts("hub-a", "session", b);

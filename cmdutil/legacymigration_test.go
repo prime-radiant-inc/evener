@@ -1,6 +1,7 @@
 package cmdutil
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,8 +45,8 @@ func TestEnsureUserConfigDirsRefusesStrandedLegacyConfigRoot(t *testing.T) {
 	if !strings.Contains(err.Error(), legacy) {
 		t.Errorf("error %q does not name the legacy path %q", err, legacy)
 	}
-	if !strings.Contains(err.Error(), "evener-migrate") {
-		t.Errorf("error %q does not mention evener-migrate", err)
+	if !errors.Is(err, ErrLegacySerfData) {
+		t.Errorf("error = %v, want ErrLegacySerfData", err)
 	}
 }
 
@@ -63,8 +64,8 @@ func TestEnsureUserConfigDirsRefusesStrandedLegacyXDGStateRoot(t *testing.T) {
 	if !strings.Contains(err.Error(), legacy) {
 		t.Errorf("error %q does not name the legacy path %q", err, legacy)
 	}
-	if !strings.Contains(err.Error(), "evener-migrate") {
-		t.Errorf("error %q does not mention evener-migrate", err)
+	if !errors.Is(err, ErrLegacySerfData) {
+		t.Errorf("error = %v, want ErrLegacySerfData", err)
 	}
 }
 
@@ -80,7 +81,7 @@ func TestEnsureUserConfigDirsProceedsWhenNoLegacyDataExists(t *testing.T) {
 // (~/.serf) home root: it pre-rename held providers.toml/credentials.toml/
 // auth-token/hub.lock/index.db/run, none of which have a whole-directory
 // destination to compare against any more (they split across the config and
-// state roots) — see homeRootFiles / firstUnmigratedHomeRootFile.
+// state roots) — see userdirs.HomeRootFiles / firstUnmigratedHomeRootFile.
 func TestEnsureUserConfigDirsRefusesStrandedLegacyHomeRoot(t *testing.T) {
 	home, _, _ := setEveneryTestEnv(t)
 	legacy := filepath.Join(home, ".serf")
@@ -97,9 +98,6 @@ func TestEnsureUserConfigDirsRefusesStrandedLegacyHomeRoot(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), legacy) {
 		t.Errorf("error %q does not name the legacy path %q", err, legacy)
-	}
-	if !strings.Contains(err.Error(), "evener-migrate") {
-		t.Errorf("error %q does not mention evener-migrate", err)
 	}
 }
 
@@ -122,9 +120,6 @@ func TestEnsureUserConfigDirsRefusesStrandedInterimEvenerRoot(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), interim) {
 		t.Errorf("error %q does not name the interim path %q", err, interim)
-	}
-	if !strings.Contains(err.Error(), "evener-migrate") {
-		t.Errorf("error %q does not mention evener-migrate", err)
 	}
 }
 

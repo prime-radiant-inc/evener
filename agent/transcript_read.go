@@ -1,8 +1,7 @@
 package agent
 
 import (
-	"bufio"
-	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -12,8 +11,6 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 )
-
-const transcriptJSONLMaxLineBytes = 128 << 20
 
 var openTranscriptFile = func(path, root string) (io.ReadCloser, error) {
 	// When root is provided, OpenRegularBeneathRoot walks every intermediate
@@ -33,8 +30,8 @@ var openTranscriptFile = func(path, root string) (io.ReadCloser, error) {
 // readTranscript reads a semantic transcript-v2 JSONL file. Only an incomplete
 // final line is skipped; corrupt complete lines and unsupported record kinds
 // reject the whole file.
-func readTranscript(path, root string) (transcript.Header, []transcript.Entry, int, error) {
-	data, err := readSemanticTranscript(path, root, transcriptJSONLMaxLineBytes, true, false, nil)
+func readTranscript(ctx context.Context, path, root string) (transcript.Header, []transcript.Entry, int, error) {
+	data, err := readSemanticTranscript(ctx, path, root, transcript.DefaultMaxLineBytes, true, false, nil)
 	return data.Header, data.Entries, data.Skipped, err
 }
 
@@ -52,12 +49,12 @@ var (
 )
 
 // readTranscriptFull reads the full semantic transcript-v2 file.
-func readTranscriptFull(path, root string) (transcriptData, error) {
-	return readSemanticTranscript(path, root, transcriptJSONLMaxLineBytes, true, false, nil)
+func readTranscriptFull(ctx context.Context, path, root string) (transcriptData, error) {
+	return readSemanticTranscript(ctx, path, root, transcript.DefaultMaxLineBytes, true, false, nil)
 }
 
-func readTranscriptFullWithEntryLines(path, root string) (transcriptData, error) {
-	return readSemanticTranscript(path, root, transcriptJSONLMaxLineBytes, true, true, nil)
+func readTranscriptFullWithEntryLines(ctx context.Context, path, root string) (transcriptData, error) {
+	return readSemanticTranscript(ctx, path, root, transcript.DefaultMaxLineBytes, true, true, nil)
 }
 
 func readStrictChildTranscript(path, root, expectedSessionID string, maxLineBytes int) (transcriptData, error) {
@@ -70,7 +67,7 @@ func validateStrictChildTranscript(path, root, expectedSessionID string, maxLine
 }
 
 func readStrictChildTranscriptWithOptions(path, root, expectedSessionID string, retainLines bool, maxLineBytes int) (transcriptData, error) {
-	data, err := readSemanticTranscript(path, root, maxLineBytes, retainLines, false, errStrictChildTranscriptCorrupt)
+	data, err := readSemanticTranscript(context.Background(), path, root, maxLineBytes, retainLines, false, errStrictChildTranscriptCorrupt)
 	if err != nil {
 		return transcriptData{}, err
 	}
@@ -80,75 +77,43 @@ func readStrictChildTranscriptWithOptions(path, root, expectedSessionID string, 
 	return data, nil
 }
 
-func readSemanticTranscript(path string, root string, maxLineBytes int, retainEntries, retainEntryLines bool, corruptSentinel error) (transcriptData, error) {
+func readSemanticTranscript(ctx context.Context, path string, root string, maxLineBytes int, retainEntries, retainEntryLines bool, corruptSentinel error) (transcriptData, error) {
 	f, err := openTranscriptFile(path, root)
 	if err != nil {
 		return transcriptData{}, fmt.Errorf("open transcript: %w", err)
 	}
 	defer func() { _ = f.Close() }()
 
-	reader := bufio.NewReaderSize(f, 64*1024)
 	var data transcriptData
-	headerRead := false
-	for {
-		line, complete, bytesRead, readErr := transcript.ReadLine(reader, maxLineBytes)
-		if readErr != nil {
-			return transcriptData{}, wrapTranscriptCorrupt(corruptSentinel, "reading transcript", readErr)
-		}
-		if !complete {
-			if bytesRead > 0 {
-				data.Skipped++
-			}
-			break
-		}
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 {
-			continue
-		}
-		if !headerRead {
-			header, err := transcript.DecodeHeader(line)
-			if err != nil {
-				if errors.Is(err, transcript.ErrUnsupportedFormat) {
-					return transcriptData{}, err
-				}
-				return transcriptData{}, wrapTranscriptCorrupt(corruptSentinel, "parsing transcript header", err)
-			}
-			data.Header = header
-			headerRead = true
-			continue
-		}
-		entry, err := transcript.DecodeEntry(line)
-		if err != nil {
-			if errors.Is(err, transcript.ErrUnsupportedFormat) {
-				return transcriptData{}, err
-			}
-			operation := "parsing transcript entry"
-			if errors.Is(err, transcript.ErrInvalidRecordBoundary) {
-				operation = "parsing transcript line"
-			}
-			return transcriptData{}, wrapTranscriptCorrupt(corruptSentinel, operation, err)
-		}
+	result, err := transcript.Scan(ctx, f, maxLineBytes, func(line []byte, entry transcript.Entry) error {
 		if retainEntries {
 			data.Entries = append(data.Entries, entry)
 		}
 		if retainEntryLines {
-			data.EntryLines = append(data.EntryLines, bytes.Clone(line))
+			data.EntryLines = append(data.EntryLines, line)
 		}
+		return nil
+	})
+	if err != nil {
+		// A file in another format is not corrupt: callers tell the two apart.
+		// A file with no header at all is corrupt.
+		if errors.Is(err, transcript.ErrUnsupportedFormat) && !errors.Is(err, transcript.ErrMissingHeader) {
+			return transcriptData{}, err
+		}
+		return transcriptData{}, wrapTranscriptCorrupt(corruptSentinel, err)
 	}
-	if !headerRead {
-		if corruptSentinel != nil {
-			return transcriptData{}, fmt.Errorf("%w: transcript file is empty", corruptSentinel)
-		}
-		return transcriptData{}, errors.New("transcript file is empty: no header")
+	data.Header = result.Header
+	if result.TornTail {
+		data.Skipped++
 	}
 	return data, nil
 }
 
-func wrapTranscriptCorrupt(sentinel error, operation string, err error) error {
+func wrapTranscriptCorrupt(sentinel error, err error) error {
 	if sentinel != nil {
-		return fmt.Errorf("%w: %s: %w", sentinel, operation, err)
+		return fmt.Errorf("%w: %w", sentinel, err)
 	}
-	return fmt.Errorf("%s: %w", operation, err)
+	return err
 }
 
 // retainedFrom is the index of the first entry ResumeHistory keeps: the last
@@ -169,8 +134,18 @@ func retainedFrom(entries []transcript.Entry) int {
 // turn's insertion index in the returned turns (ascending, post-repair
 // coordinates), so a caller mapping a transcript position onto the resumed
 // history can shift it per insertion at or before that position, exactly as
-// history_repair.go shifts the in-flight boundary.
+// history_repair.go shifts the in-flight boundary. Callers that also run the
+// coordinate mappers over the same entries share one fold with them through
+// resumeHistoryIndexedWithSuperseded.
 func resumeHistoryIndexed(entries []transcript.Entry) ([]schema.Turn, []int) {
+	return resumeHistoryIndexedWithSuperseded(entries, supersededDelegateAttentionIDs(entries))
+}
+
+// resumeHistoryIndexedWithSuperseded is resumeHistoryIndexed for a caller
+// that already folded the entries' superseded attention identities and hands
+// the same fold to the coordinate mappers: a restore reads those facts once,
+// whatever number of reopen markers and boundaries it maps over them.
+func resumeHistoryIndexedWithSuperseded(entries []transcript.Entry, superseded map[string]bool) ([]schema.Turn, []int) {
 	// The whole transcript when it never compacted, else the last compaction
 	// turn and everything after it. Transcript-only entries never enter
 	// history: they exist for the history projection alone.
@@ -181,9 +156,60 @@ func resumeHistoryIndexed(entries []transcript.Entry) ([]schema.Turn, []int) {
 			turns = append(turns, e.Turn)
 		}
 	}
+	turns = dropSupersededDelegateAttentionTurns(superseded, turns)
 
 	repaired, _, insertedAt := repairOrphanedToolResultsIndexed(turns)
 	return repaired, insertedAt
+}
+
+// supersededDelegateAttentionIDs names the consumed attention rows whose own
+// reopen row exists in the fold: each never reached a request — every reopen
+// fires only after a start that failed before presenting — and the reopened
+// row carries the same content, so both the history build and the coordinate
+// mappers must leave them out. A fold that cannot verify names none: the
+// ledger's own reader reports the corruption.
+func supersededDelegateAttentionIDs(entries []transcript.Entry) map[string]bool {
+	if !slices.ContainsFunc(entries, func(e transcript.Entry) bool {
+		return e.Turn.AttentionID != ""
+	}) {
+		return nil
+	}
+	fold, err := foldDelegateAttention(entries)
+	if err != nil {
+		return nil
+	}
+	superseded := make(map[string]bool, len(fold.resumeGenerations))
+	for id, generation := range fold.resumeGenerations {
+		if generation != 0 && fold.resolutions[id] == delegateAttentionConsumed {
+			if _, reopened := fold.content[delegateAttentionReopenID(id, generation)]; reopened {
+				superseded[id] = true
+			}
+		}
+	}
+	return superseded
+}
+
+// dropSupersededDelegateAttentionTurns removes the consumed attention rows a
+// reopen superseded — the identities supersededDelegateAttentionIDs folded
+// from the transcript — from a history being resumed off it. The resident
+// history drops the source's turn at the reopen — the reopened row carries
+// the same content to the next presentation — and a history rebuilt from the
+// durable transcript must hold that same view, or every later request shows
+// the same report twice. The fold, not the history, is the delivery ledger:
+// both rows stay in the transcript, and the source's turn is skipped exactly
+// while its reopen row exists in the fold.
+func dropSupersededDelegateAttentionTurns(superseded map[string]bool, turns []schema.Turn) []schema.Turn {
+	if len(superseded) == 0 {
+		return turns
+	}
+	kept := make([]schema.Turn, 0, len(turns))
+	for _, turn := range turns {
+		if superseded[turn.AttentionID] {
+			continue
+		}
+		kept = append(kept, turn)
+	}
+	return kept
 }
 
 // ResumeHistory extracts the history needed for session resume from transcript entries.
@@ -419,8 +445,15 @@ func applySkillCompactionReceipt(snapshot *schema.SkillLifecycleSnapshot, receip
 // coordinates of the history resumeHistoryIndexed restores from entries,
 // whose insertions it reports: the retained window, the transcript-only
 // entries resume skips, and the repair insertions all move it.
-func resumedDivergence(entries []transcript.Entry, divergence int, insertions []int) int {
-	return mapDivergenceThroughResumedHistory(historyIndex(entries, divergence), historyIndex(entries, retainedFrom(entries)), insertions)
+//
+// The entries' superseded attention identities arrive precomputed — the same
+// one fold resumeHistoryIndexedWithSuperseded consumes — so mapping a
+// boundary never pays a fold of its own.
+func resumedDivergence(entries []transcript.Entry, divergence int, insertions []int, superseded map[string]bool) int {
+	return mapDivergenceThroughResumedHistory(
+		historyIndex(entries, divergence, superseded),
+		historyIndex(entries, retainedFrom(entries), superseded),
+		insertions)
 }
 
 // latestAttemptStarts maps each TurnID that recovery reopened to the index in
@@ -428,7 +461,11 @@ func resumedDivergence(entries []transcript.Entry, divergence int, insertions []
 // the first turn its latest attempt recorded: everything the turn recorded
 // before that belongs to an attempt the rerun replaced. A reopen marker is
 // transcript-only, so history alone cannot tell the attempts apart.
-func latestAttemptStarts(entries []transcript.Entry, insertions []int) map[string]int {
+//
+// The entries' superseded attention identities arrive precomputed — the same
+// one fold resumeHistoryIndexedWithSuperseded consumes — so walking every
+// reopen marker costs no fold per marker.
+func latestAttemptStarts(entries []transcript.Entry, insertions []int, superseded map[string]bool) map[string]int {
 	var starts map[string]int
 	for i, e := range entries {
 		if e.Turn.Kind != schema.TurnReopen || e.Turn.TurnID == "" {
@@ -439,18 +476,24 @@ func latestAttemptStarts(entries []transcript.Entry, insertions []int) map[strin
 		}
 		// A reopen before the compaction anchor maps below zero: the whole
 		// retained window then belongs to the latest attempt.
-		starts[e.Turn.TurnID] = max(0, resumedDivergence(entries, i, insertions))
+		starts[e.Turn.TurnID] = max(0, resumedDivergence(entries, i, insertions, superseded))
 	}
 	return starts
 }
 
 // historyIndex is the number of entries before index i that resume keeps in
-// history: i less the transcript-only entries before it.
-func historyIndex(entries []transcript.Entry, i int) int {
+// history: i less the transcript-only entries before it and the superseded
+// attention rows the history drop removes — the mappers and the build must
+// share one skip rule, or a superseded row shifts every later position. The
+// superseded identities arrive precomputed from the full entries slice — the
+// skip rule reads the same fold the build's drop reads, not a fresh fold per
+// position mapped.
+func historyIndex(entries []transcript.Entry, i int, superseded map[string]bool) int {
 	i = min(i, len(entries))
+	prefix := entries[:max(i, 0)]
 	kept := i
-	for _, e := range entries[:max(i, 0)] {
-		if e.Turn.Kind.TranscriptOnly() {
+	for _, e := range prefix {
+		if e.Turn.Kind.TranscriptOnly() || (e.Turn.AttentionID != "" && superseded[e.Turn.AttentionID]) {
 			kept--
 		}
 	}

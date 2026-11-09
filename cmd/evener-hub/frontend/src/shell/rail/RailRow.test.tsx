@@ -9,12 +9,14 @@ import {
   type ResourceKey,
   type ResourceState,
 } from "@evener/appwire-client/state/navigation";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { manifest } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { installMobileViewport } from "../../panes/session/testing/mobileViewport";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { selectRailModel } from "../../stores/navigation/selectors";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { resetThreadsStoreForTests } from "../../stores/threads";
@@ -25,7 +27,6 @@ import { hoverForTooltip } from "../../widgets/tooltip/tooltipTestUtils";
 import { Tree, type TreeRowInfo } from "../../widgets/tree";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { registerPaneForTests } from "../paneRegistry";
-import { cadenceStateFor } from "../sessionStatus";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import {
   watchGloss as domainWatchGloss,
@@ -47,7 +48,7 @@ import type {
 import { RailTickProvider } from "./railNow";
 import { RailRenderObserver } from "./railRenderObserver";
 
-const RAIL_CSS = readModuleCss(import.meta.url, "RailRow.module.css").replace(/\/\*[\s\S]*?\*\//g, " ");
+const RAIL_CSS = readModuleCss(import.meta.url, "RailRow.module.css");
 
 function nestedRuleBlock(css: string, selector: string): string {
   const selectorStart = css.indexOf(selector);
@@ -189,6 +190,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetConnectionStoreForTests();
   vi.useRealTimers();
   vi.unstubAllGlobals();
   resetNavigationStoreForTests();
@@ -407,22 +409,6 @@ test.each([
     else expect(acts.onUnpinRequest).toHaveBeenCalledWith(parent);
   },
 );
-
-describe("cadenceStateFor", () => {
-  test.each([
-    ["errored", "failed"],
-    ["awaiting", "needs-you"],
-    ["active", "working"],
-    ["warning", "needs-you"],
-    ["idle", "idle"],
-    ["ended", "ended"],
-    ["notLoaded", "idle"],
-    ["", "idle"],
-    ["some-unknown-future-state", "idle"],
-  ] as const)("maps wire state %s to Cadence state %s", (wireState, expected) => {
-    expect(cadenceStateFor(wireState)).toBe(expected);
-  });
-});
 
 // A row only spends its signal gutter on running, needs-you, or broken.
 describe("signal gutter", () => {
@@ -645,6 +631,34 @@ describe("compact session status", () => {
     expect(within(panel).getByText("3 watches · 1 armed")).toBeTruthy();
     expect(within(panel).getByText("archived")).toBeTruthy();
     expect(within(panel).getByText("2m")).toBeTruthy();
+  });
+
+  // #3637: a working row's compact status names what the session last set out
+  // to do, from the same evener/activity/read the native Board reads, instead
+  // of the bare state word. The card is the only place this status appears,
+  // and it mounts only while open, so the read runs only while someone is
+  // looking.
+  test("a working session's context status names its latest tool intent", async () => {
+    const client = new FakeClient();
+    client.on("evener/activity/read", () => ({
+      sessions: [
+        {
+          ref: "local:a",
+          minutes: [0, 0, 0, 0, 0, 0, 0],
+          runningSubagents: 0,
+          quietForMs: 0,
+          latestIntent: "Reading the board's row tests.",
+        },
+      ],
+    }));
+    connectionStore.setState({ state: "ready", client });
+    renderRow({ state: "active" });
+
+    const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
+    await waitFor(() =>
+      expect(within(panel).getByTestId("rail-context-status").getAttribute("data-status-kind")).toBe("intent"),
+    );
+    expect(within(panel).getByTestId("rail-context-status").textContent).toBe("Reading the board's row tests.");
   });
 
   // The bug this pins: on a touch-only device the row's own tap must open the

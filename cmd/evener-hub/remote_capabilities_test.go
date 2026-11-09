@@ -29,30 +29,31 @@ func allRemoteThreadFeatures() appwire.FeatureSet {
 // its own daemon.
 func allRemoteDaemonCapabilities() appwire.ThreadCapabilities {
 	return appwire.ThreadCapabilities{
-		Send:              true,
-		Steer:             true,
-		Interrupt:         true,
-		Compact:           true,
-		Clear:             true,
-		ForkFromTurn:      true,
-		Shutdown:          true,
-		ChangeModel:       true,
-		ChangeVisionModel: true,
-		Queue:             true,
-		Goal:              true,
-		SharedNotes:       true,
-		Rename:            true,
-		SkillInput:        true,
-		CommandInput:      true,
-		StopSubagent:      true,
-		PageBefore:        true,
+		VoicePresentationContextV1: true,
+		Send:                       true,
+		Steer:                      true,
+		Interrupt:                  true,
+		Compact:                    true,
+		Clear:                      true,
+		ForkFromTurn:               true,
+		Shutdown:                   true,
+		ChangeModel:                true,
+		ChangeVisionModel:          true,
+		Queue:                      true,
+		Goal:                       true,
+		SharedNotes:                true,
+		Rename:                     true,
+		SkillInput:                 true,
+		CommandInput:               true,
+		StopSubagent:               true,
+		PageBefore:                 true,
 	}
 }
 
 // remoteCapabilityFixture builds the production source registry around one
-// configured host whose remote hub advertises clientFeatures in its initialize
-// handshake and handshakeFeatures through the controller's host-handshake seam.
-func remoteCapabilityFixture(t *testing.T, status string, clientFeatures, handshakeFeatures appwire.FeatureSet) *appsource.Registry {
+// configured host whose remote hub advertises features in its initialize
+// handshake.
+func remoteCapabilityFixture(t *testing.T, status string, clientFeatures appwire.FeatureSet) *appsource.Registry {
 	t.Helper()
 	client, _ := newScriptedRemoteHub(t, func(method string, _ json.RawMessage) any {
 		switch method {
@@ -81,13 +82,6 @@ func remoteCapabilityFixture(t *testing.T, status string, clientFeatures, handsh
 		RemoteHostClientIfAttached: func(string) (*appwire.Client, bool) {
 			return client, true
 		},
-		RemoteHostHandshake: func(string, *appwire.Client) (appwire.InitializeResponse, bool) {
-			return appwire.InitializeResponse{
-				ProtocolVersion: appwire.ProtocolVersion,
-				SourceID:        "local",
-				Features:        handshakeFeatures,
-			}, true
-		},
 	}
 	return newHubSourceRegistry(cfg)
 }
@@ -113,7 +107,7 @@ func listRemoteThreadCapabilities(t *testing.T, registry *appsource.Registry) ap
 // sessions with no Send, Steer or Queue controls.
 func TestRemoteHostEffectiveThreadCapabilitiesFollowThePeerHandshake(t *testing.T) {
 	features := allRemoteThreadFeatures()
-	registry := remoteCapabilityFixture(t, appwire.ThreadStatusIdle, features, features)
+	registry := remoteCapabilityFixture(t, appwire.ThreadStatusIdle, features)
 
 	want := appwire.ThreadCapabilities{
 		Send:              true,
@@ -138,34 +132,11 @@ func TestRemoteHostEffectiveThreadCapabilitiesFollowThePeerHandshake(t *testing.
 	}
 }
 
-// The probe is the authority when it has run: its handshake facts feed the
-// mask even when the client's own initialize response advertised less. This is
-// the production consumer WIRE-04 requires.
-func TestRemoteHostCapabilitiesPreferTheProbedHandshake(t *testing.T) {
-	registry := remoteCapabilityFixture(t, appwire.ThreadStatusIdle, appwire.FeatureSet{}, allRemoteThreadFeatures())
-	source, ok := registry.Source("h1")
-	if !ok {
-		t.Fatal("production registry has no source for h1")
-	}
-	capabilitySource, ok := source.(appsource.CapabilitySource)
-	if !ok {
-		t.Fatal("remote source does not implement CapabilitySource")
-	}
-	if _, err := capabilitySource.HostCapabilities(t.Context()); err != nil {
-		t.Fatalf("probe host capabilities: %v", err)
-	}
-
-	got := listRemoteThreadCapabilities(t, registry)
-	if !got.Send || !got.Steer || !got.Clear || !got.ForkFromTurn || !got.Shutdown {
-		t.Fatalf("probed features did not reach the mask: %+v", got)
-	}
-}
-
 // A hub-level feature the peer disclaims stays masked even when its daemon
 // claims the action, while the actions with no hub-level feature bit follow the
 // daemon's own claim.
 func TestRemoteHostCapabilitiesMaskDisclaimedHubFeatures(t *testing.T) {
-	registry := remoteCapabilityFixture(t, appwire.ThreadStatusIdle, appwire.FeatureSet{}, appwire.FeatureSet{})
+	registry := remoteCapabilityFixture(t, appwire.ThreadStatusIdle, appwire.FeatureSet{})
 
 	got := listRemoteThreadCapabilities(t, registry)
 	if got.Send || got.Steer || got.Clear || got.ForkFromTurn || got.Shutdown {
@@ -194,7 +165,7 @@ func TestRemoteHostCapabilitiesMaskDisclaimedHubFeatures(t *testing.T) {
 // Send, and the first Send resumes the session on its own host.
 func TestRemoteHostShutDownSessionAdvertisesSend(t *testing.T) {
 	features := allRemoteThreadFeatures()
-	registry := remoteCapabilityFixture(t, appwire.ThreadStatusNotLoaded, features, features)
+	registry := remoteCapabilityFixture(t, appwire.ThreadStatusNotLoaded, features)
 
 	got := listRemoteThreadCapabilities(t, registry)
 	if !got.Send {
@@ -202,10 +173,67 @@ func TestRemoteHostShutDownSessionAdvertisesSend(t *testing.T) {
 	}
 }
 
-// An explicit Connect is the production consumer of the host capability probe:
-// it warms the snapshot the thread mask reads, so the read path never pays for
-// the probe's unrelated surfaces.
-func TestHostAttachWarmsTheCapabilityProbe(t *testing.T) {
+// Remote turn methods reach the peer's public hub input, not its journal-backed
+// voice transport. Even an explicit peer claim cannot make that path preserve
+// trusted presentation evidence, so ordinary Send and Steer remain available
+// while the voice capability stays masked.
+func TestRemoteHostVoicePresentationStaysMaskedAtPublicHubBoundary(t *testing.T) {
+	features := allRemoteThreadFeatures()
+	features.VoicePresentationContextV1 = true
+	registry := remoteCapabilityFixture(t, appwire.ThreadStatusIdle, features)
+	if got := listRemoteThreadCapabilities(t, registry); got.VoicePresentationContextV1 || !got.Send || !got.Steer {
+		t.Fatalf("remote capabilities = %+v, want ordinary Send and Steer without voice presentation", got)
+	}
+
+	peer := newHubAppServer(hubcore.WebConfig{}, appsource.NewRegistry())
+	defer peer.Shutdown(t.Context())
+	transport, err := peer.NewInProcessTransport(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := appwire.NewClient(transport)
+	client.Start(t.Context())
+	defer client.Close()
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	if !client.Features().VoicePresentationContextV1 {
+		t.Fatal("peer does not advertise its own voice presentation support")
+	}
+	source := appsource.NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+	input := []appwire.InputItem{{Type: "text", Text: "REFERENCE-149", VoicePresentation: &appwire.VoicePresentationContext{
+		Version: 1, DeliveryID: "delivery", BindingID: "binding", Epoch: "epoch", InstanceID: "instance",
+		CanonicalSourceItemID: "source", OriginatingRequestID: "request", FrontierID: "frontier",
+		RunGeneration: 1, PresentationGeneration: 1, GeneratedTranscript: "SPEECH-151", SampleRateHz: 24000,
+		Items: []appwire.VoicePresentationItem{{ResponseID: "response", ItemID: "item", GeneratedSamples: 480, QueuedSamples: 480, PlayedSamples: 240}},
+	}}}
+	for _, method := range []string{appwire.MethodTurnStart, appwire.MethodTurnSteer} {
+		t.Run(method, func(t *testing.T) {
+			if err := appwire.ValidateVoicePresentationInput(input, method, "human", "instance"); err != nil {
+				t.Fatalf("invalid presentation fixture: %v", err)
+			}
+			// The controller's private identity cannot cross the peer transport.
+			ctx := context.WithValue(t.Context(), voicePresentationContextKey{}, true)
+			var err error
+			if method == appwire.MethodTurnStart {
+				_, err = source.StartTurn(ctx, appwire.TurnStartParams{Ref: "host:thread", ExpectedInstanceID: "instance", ClientMutationID: "mutation", Input: input})
+			} else {
+				_, err = source.SteerTurn(ctx, appwire.TurnSteerParams{Ref: "host:thread", ExpectedInstanceID: "instance", ClientMutationID: "mutation", Input: input})
+			}
+			wire, ok := wireErrorFromError(err)
+			if !ok || wire.Code != appwire.CodeInvalidParams {
+				t.Fatalf("forwarded presentation reached session routing: %v", err)
+			}
+		})
+	}
+}
+
+// An explicit Connect reads nothing from the remote hub beyond the attach
+// itself: the thread mask comes from the client's initialize response, so no
+// hub-scope surface is read to warm it.
+func TestHostAttachReadsNoHubScopeSurfaces(t *testing.T) {
 	features := allRemoteThreadFeatures()
 	client, calls := newScriptedRemoteHub(t, func(method string, _ json.RawMessage) any {
 		switch method {
@@ -229,13 +257,6 @@ func TestHostAttachWarmsTheCapabilityProbe(t *testing.T) {
 	source := appsource.NewRemoteHubSource("h1", nil, func(context.Context, string) (*appwire.Client, error) {
 		return client, nil
 	})
-	source.SetHostHandshake(func(string, *appwire.Client) (appwire.InitializeResponse, bool) {
-		return appwire.InitializeResponse{
-			ProtocolVersion: appwire.ProtocolVersion,
-			SourceID:        "local",
-			Features:        features,
-		}, true
-	})
 	sources := appsource.NewRegistry()
 	sources.Add(source)
 	hosts, err := hostreg.New([]hostreg.Host{{Name: "h1", SSH: "h1.example"}})
@@ -252,23 +273,21 @@ func TestHostAttachWarmsTheCapabilityProbe(t *testing.T) {
 		t.Fatalf("attach: %v", err)
 	}
 
-	seen := map[string]bool{}
-	for _, call := range calls() {
-		seen[call.method] = true
+	hubScope := map[string]bool{
+		appwire.MethodEvenerLaunchGetLayer: true,
+		appwire.MethodEvenerLaunchResolve:  true,
+		appwire.MethodModelList:            true,
+		appwire.MethodEvenerPluginList:     true,
+		appwire.MethodEvenerAuthList:       true,
+		appwire.MethodEvenerInstanceList:   true,
 	}
-	for _, method := range []string{
-		appwire.MethodEvenerLaunchGetLayer,
-		appwire.MethodModelList,
-		appwire.MethodEvenerPluginList,
-		appwire.MethodEvenerAuthList,
-		appwire.MethodEvenerInstanceList,
-	} {
-		if !seen[method] {
-			t.Errorf("attach did not warm the capability probe: %s was not requested", method)
+	for _, call := range calls() {
+		if hubScope[call.method] {
+			t.Errorf("attach read a hub-scope surface: %s", call.method)
 		}
 	}
 	got := listRemoteThreadCapabilities(t, sources)
 	if !got.Send || !got.Steer || !got.Queue {
-		t.Fatalf("thread mask did not read the warmed probe: %+v", got)
+		t.Fatalf("thread mask did not follow the client's features: %+v", got)
 	}
 }

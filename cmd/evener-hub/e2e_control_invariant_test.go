@@ -11,8 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/internal/e2ecap"
-
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
@@ -158,19 +156,7 @@ func requireStopLandsDuringPreTurnWork(ctx context.Context, t *testing.T, provid
 // turn, the first included, and a fix that only covers the drain-loop window
 // would leave this one standing.
 func TestE2E_ControlInvariantDuringPreTurnWorkOnTheFirstTurn(t *testing.T) {
-	e2ecap.RequireLoopbackBind(t)
-	e2ecap.RequireProcessInspect(t)
-	if testing.Short() {
-		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
-	}
-
-	provider, err := fakellm.New()
-	if err != nil {
-		t.Fatalf("start fake provider: %v", err)
-	}
-	t.Cleanup(provider.Close)
-
-	stack := startHubStack(t, provider)
+	stack, provider := startE2EHubStack(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -268,19 +254,7 @@ func TestE2E_ControlInvariantDuringPreTurnWorkOnTheFirstTurn(t *testing.T) {
 // must be true. A user who can see that the agent is working must be able to
 // see the button that stops it.
 func TestE2E_StopIsOfferedWheneverTheWireSaysActive(t *testing.T) {
-	e2ecap.RequireLoopbackBind(t)
-	e2ecap.RequireProcessInspect(t)
-	if testing.Short() {
-		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
-	}
-
-	provider, err := fakellm.New()
-	if err != nil {
-		t.Fatalf("start fake provider: %v", err)
-	}
-	t.Cleanup(provider.Close)
-
-	stack := startHubStack(t, provider)
+	stack, provider := startE2EHubStack(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -361,19 +335,7 @@ func TestE2E_StopIsOfferedWheneverTheWireSaysActive(t *testing.T) {
 // client a turn is running may tell it in the same breath that Stop is
 // unavailable.
 func TestE2E_PushedActiveStatusAlwaysCarriesStop(t *testing.T) {
-	e2ecap.RequireLoopbackBind(t)
-	e2ecap.RequireProcessInspect(t)
-	if testing.Short() {
-		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
-	}
-
-	provider, err := fakellm.New()
-	if err != nil {
-		t.Fatalf("start fake provider: %v", err)
-	}
-	t.Cleanup(provider.Close)
-
-	stack := startHubStack(t, provider)
+	stack, provider := startE2EHubStack(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -530,19 +492,7 @@ func TestE2E_PushedActiveStatusAlwaysCarriesStop(t *testing.T) {
 // id comes from the projector, so active + turn 1's id + depth 0 can only mean
 // turn 2 has been claimed and not yet announced.
 func TestE2E_ControlInvariantDuringPreTurnWorkAtATurnBoundary(t *testing.T) {
-	e2ecap.RequireLoopbackBind(t)
-	e2ecap.RequireProcessInspect(t)
-	if testing.Short() {
-		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
-	}
-
-	provider, err := fakellm.New()
-	if err != nil {
-		t.Fatalf("start fake provider: %v", err)
-	}
-	t.Cleanup(provider.Close)
-
-	stack := startHubStack(t, provider)
+	stack, provider := startE2EHubStack(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()

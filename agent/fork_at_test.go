@@ -1,9 +1,9 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -68,8 +68,8 @@ func TestForkSessionAtUserTurn_CopiesPrefixWithoutAppendingInput(t *testing.T) {
 
 	// Child transcript must contain ONLY the prefix entries [U1, A1] — no
 	// trailing USER_INPUT turn that would auto-run on resume.
-	childTranscriptPath := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
-	_, entries, _, err := readTranscript(childTranscriptPath, "")
+	childTranscriptPath := schema.SessionTranscriptPath(stateDir, childID)
+	_, entries, _, err := readTranscript(context.Background(), childTranscriptPath, "")
 	if err != nil {
 		t.Fatalf("readTranscript(child): %v", err)
 	}
@@ -105,8 +105,8 @@ func TestForkSessionAtUserTurn_FirstTurnProducesEmptyChild(t *testing.T) {
 	if originalInput != "first task" {
 		t.Errorf("originalInput: got %q, want %q", originalInput, "first task")
 	}
-	childTranscriptPath := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
-	_, entries, _, err := readTranscript(childTranscriptPath, "")
+	childTranscriptPath := schema.SessionTranscriptPath(stateDir, childID)
+	_, entries, _, err := readTranscript(context.Background(), childTranscriptPath, "")
 	if err != nil {
 		t.Fatalf("readTranscript(child): %v", err)
 	}
@@ -123,7 +123,7 @@ func TestForkSessionAtUserTurn_OmitsMachineryNoteFromOriginalInput(t *testing.T)
 	t.Parallel()
 	stateDir := t.TempDir()
 	parentID := "01PARENT00000000000000001"
-	tpath := filepath.Join(stateDir, sessionsSubdir, parentID+".transcript.jsonl")
+	tpath := schema.SessionTranscriptPath(stateDir, parentID)
 	tw, err := transcript.NewWriter(tpath, transcript.Header{
 		SessionID:  parentID,
 		CreatedAt:  time.Now().UTC(),
@@ -185,7 +185,7 @@ func TestForkSessionAtUserTurn_KeepsVerbatimMachineryPaste(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	parentID := "01PARENT00000000000000001"
-	tpath := filepath.Join(stateDir, sessionsSubdir, parentID+".transcript.jsonl")
+	tpath := schema.SessionTranscriptPath(stateDir, parentID)
 	tw, err := transcript.NewWriter(tpath, transcript.Header{
 		SessionID:  parentID,
 		CreatedAt:  time.Now().UTC(),

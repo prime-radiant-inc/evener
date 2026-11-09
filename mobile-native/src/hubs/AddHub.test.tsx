@@ -53,7 +53,6 @@ vi.mock("react-native", async () => ({
 		},
 	},
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 const TOKEN = "s3cret-pairing-token";
 const LINK = `https://magic-kingdom:9180/auth/${TOKEN}`;
@@ -281,6 +280,28 @@ it("reviews an address and token typed by hand", async () => {
 		token: TOKEN,
 	});
 	expect(onConnected).toHaveBeenCalledTimes(1);
+});
+
+it("carries stable identifiers on the working address, token and continue controls", async () => {
+	mocks.saveHub.mockResolvedValue(true);
+	const { tree } = mount("address");
+	const [address] = withTestID(tree, "hub-address");
+	const [token] = withTestID(tree, "hub-token");
+	const [continueRow] = withTestID(tree, "hub-continue");
+	expect(address && String(address.type)).toBe("TextInput");
+	expect(address.props.keyboardType).toBe("url");
+	expect(token && String(token.type)).toBe("TextInput");
+	expect(token.props.secureTextEntry).toBe(true);
+	expect(continueRow).toBeDefined();
+	expect(button(tree, "Continue").props.disabled).toBe(true);
+	act(() => {
+		address.props.onChangeText("https://magic-kingdom:9180");
+		token.props.onChangeText(TOKEN);
+	});
+	expect(address.props.value).toBe("https://magic-kingdom:9180");
+	expect(button(tree, "Continue").props.disabled).toBe(false);
+	await press(tree, "Continue");
+	expect(pairingWith(tree)).toBe("https://magic-kingdom:9180");
 });
 
 it("finishes when the hub is saved though a newer choice of hub kept it from being selected", async () => {

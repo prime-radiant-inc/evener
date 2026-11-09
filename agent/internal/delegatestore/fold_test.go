@@ -237,6 +237,27 @@ func TestApplyTypedExhaustionValidatesAndClonesResumability(t *testing.T) {
 	}
 }
 
+func TestApplyTypedServerContinuationExhaustionIsResumable(t *testing.T) {
+	resumable := true
+	state := applyEvents(t,
+		createdEvent("dlg_alpha", ""),
+		startedEvent("dlg_alpha", 1, TriggerOwnerInput),
+		preparedEvent("dlg_alpha", 1, TerminalPacket{Kind: PacketTerminalError, Message: json.RawMessage(`"pause budget exhausted"`)}),
+	)
+	event := finishedEvent("dlg_alpha", 1, OutcomeExhausted, DispositionTerminalError, "dlg_alpha/delivery/1", nil)
+	event.RunFinished.Outcome.Reason = "server_continuation_budget_exhausted"
+	event.RunFinished.Outcome.ExhaustionBudget = ExhaustionBudgetServerContinuations
+	event.RunFinished.Outcome.ExhaustionLimit = 8
+	event.RunFinished.Outcome.Resumable = &resumable
+	if err := Apply(state, event); err != nil {
+		t.Fatalf("Apply typed server-continuation exhaustion: %v", err)
+	}
+	got := state["dlg_alpha"].LatestOutcome
+	if got == nil || got.Status != OutcomeExhausted || got.ExhaustionBudget != ExhaustionBudgetServerContinuations || got.ExhaustionLimit != 8 || got.Resumable == nil || !*got.Resumable {
+		t.Fatalf("typed exhaustion = %#v, want cloned server-continuation metadata", got)
+	}
+}
+
 func TestApplyRejectsIncoherentTypedExhaustion(t *testing.T) {
 	trueValue := true
 	falseValue := false
@@ -250,6 +271,8 @@ func TestApplyRejectsIncoherentTypedExhaustion(t *testing.T) {
 		{name: "missing resumability", outcome: Outcome{Status: OutcomeExhausted, Reason: "turn_budget_exhausted", ExhaustionBudget: ExhaustionBudgetTurns, ExhaustionLimit: 4}, want: "resumability"},
 		{name: "turn marked resumable", outcome: Outcome{Status: OutcomeExhausted, Reason: "turn_budget_exhausted", ExhaustionBudget: ExhaustionBudgetTurns, ExhaustionLimit: 4, Resumable: &trueValue}, want: "turn exhaustion is resumable"},
 		{name: "tool round marked terminal", outcome: Outcome{Status: OutcomeExhausted, Reason: "tool_round_budget_exhausted", ExhaustionBudget: ExhaustionBudgetToolRounds, ExhaustionLimit: 4, Resumable: &falseValue}, want: "tool-round exhaustion is not resumable"},
+		{name: "server continuation marked terminal", outcome: Outcome{Status: OutcomeExhausted, Reason: "server_continuation_budget_exhausted", ExhaustionBudget: ExhaustionBudgetServerContinuations, ExhaustionLimit: 4, Resumable: &falseValue}, want: "server-continuation exhaustion is not resumable"},
+		{name: "server continuation reason mismatch", outcome: Outcome{Status: OutcomeExhausted, Reason: "wrong", ExhaustionBudget: ExhaustionBudgetServerContinuations, ExhaustionLimit: 4, Resumable: &trueValue}, want: "server-continuation exhaustion reason"},
 		{name: "reason mismatch", outcome: Outcome{Status: OutcomeExhausted, Reason: "wrong", ExhaustionBudget: ExhaustionBudgetTurns, ExhaustionLimit: 4, Resumable: &falseValue}, want: "reason"},
 	}
 	for _, test := range tests {
@@ -291,7 +314,7 @@ func TestApplyStoppedDeliverySuppressesCoveredOwnerWithoutDelivery(t *testing.T)
 	}
 }
 
-func TestFoldUsesOneAggregatePerStableDelegate(t *testing.T) {
+func TestFoldUsesOneAggregatePerDelegate(t *testing.T) {
 	events := sequence(
 		createdEvent("dlg_alpha", ""),
 		startedEvent("dlg_alpha", 1, TriggerOwnerInput),
@@ -445,6 +468,73 @@ func TestApplyResumabilityClosureIsMonotonic(t *testing.T) {
 	}
 	if got := stateJSON(t, state); got != want {
 		t.Fatalf("state mutated after second closure:\n got %s\nwant %s", got, want)
+	}
+}
+
+// TestFoldClosedPhaseIsNeverResumable pins the invariant retirement's owner
+// scan relies on when it drops its own closed-phase guard: every transition
+// into PhaseClosed requires Resumable false, so Resumable alone proves a
+// delegate is not closed.
+func TestFoldClosedPhaseIsNeverResumable(t *testing.T) {
+	t.Parallel()
+	closedResumability := func(id string) Event {
+		return Event{
+			Kind:               EventDelegateResumabilityClosed,
+			DelegateID:         id,
+			ResumabilityClosed: &ResumabilityClosed{Reason: "test-closure"},
+		}
+	}
+	nonResumableCreated := func(id string) Event {
+		event := createdEvent(id, "")
+		event.Created.Descriptor.Resumable = false
+		return event
+	}
+	assertInvariant := func(name string, state State) {
+		t.Helper()
+		for id, aggregate := range state {
+			if aggregate != nil && aggregate.Phase == PhaseClosed && aggregate.Resumable {
+				t.Fatalf("%s: delegate %q is closed and resumable", name, id)
+			}
+		}
+	}
+
+	assertInvariant("created not resumable", applyEvents(t, nonResumableCreated("dlg_alpha")))
+	assertInvariant("closed while idle", applyEvents(t,
+		createdEvent("dlg_alpha", ""),
+		closedResumability("dlg_alpha"),
+	))
+	assertInvariant("closed while running then finished", applyEvents(t,
+		createdEvent("dlg_alpha", ""),
+		startedEvent("dlg_alpha", 1, TriggerInitial),
+		closedResumability("dlg_alpha"),
+		preparedEvent("dlg_alpha", 1, reportedPacket("done")),
+		finishedEvent("dlg_alpha", 1, OutcomeCompleted, DispositionReported, "dlg_alpha/delivery/1", nil),
+	))
+
+	stopped := applyEvents(t,
+		createdEvent("dlg_alpha", ""),
+		closedResumability("dlg_alpha"),
+		stopRequestedEvent("dlg_alpha"),
+	)
+	assertInvariant("subtree stop requested after closure", stopped)
+	if err := Apply(stopped, Event{
+		Kind:                 EventDelegateSubtreeStopCompleted,
+		DelegateID:           "dlg_alpha",
+		SubtreeStopCompleted: &SubtreeStopCompleted{RequestSeq: stopped["dlg_alpha"].PendingStopSeq},
+	}); err != nil {
+		t.Fatalf("Apply subtree stop completion: %v", err)
+	}
+	assertInvariant("subtree stop completed after closure", stopped)
+
+	resumable := applyEvents(t,
+		createdEvent("dlg_alpha", ""),
+		startedEvent("dlg_alpha", 1, TriggerInitial),
+		preparedEvent("dlg_alpha", 1, reportedPacket("done")),
+		finishedEvent("dlg_alpha", 1, OutcomeCompleted, DispositionReported, "dlg_alpha/delivery/1", nil),
+	)
+	assertInvariant("resumable finished", resumable)
+	if aggregate := resumable["dlg_alpha"]; !aggregate.Resumable || aggregate.Phase != PhaseIdle {
+		t.Fatalf("resumable finish = resumable:%t phase:%s, want resumable idle", aggregate.Resumable, aggregate.Phase)
 	}
 }
 

@@ -55,7 +55,7 @@ func requireCovMutationRejection(t *testing.T, err error, want, mutationID strin
 }
 
 // TestCovPromoteQueuedAsSteerRefNotFound covers the error path where the
-// ref doesn't resolve to any thread (local_daemon.go:352-353).
+// ref doesn't resolve to any thread.
 func TestCovPromoteQueuedAsSteerRefNotFound(t *testing.T) {
 	s := covMutationSource()
 	const mutationID = "mutation-promote-missing"
@@ -87,7 +87,7 @@ func TestCovPromoteQueuedAsSteerSourceMismatch(t *testing.T) {
 }
 
 // TestCovCancelQueuedRefNotFound covers the error path where the ref doesn't
-// resolve to any thread (local_daemon.go:364-365).
+// resolve to any thread.
 func TestCovCancelQueuedRefNotFound(t *testing.T) {
 	s := covMutationSource()
 	const mutationID = "mutation-cancel-missing"

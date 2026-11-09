@@ -103,12 +103,6 @@ func worktreeFaultDispatchAndPathProgram(t *testing.T, program []byte) {
 	if err := os.MkdirAll(child, 0o755); err != nil {
 		t.Fatalf("mkdir child: %v", err)
 	}
-	if !pathEqualOrUnder(child, h.root) || !pathEqualOrUnder(h.root, h.root) {
-		t.Fatalf("pathEqualOrUnder must accept child and equal paths")
-	}
-	if pathEqualOrUnder(h.root, child) {
-		t.Fatalf("pathEqualOrUnder accepted parent %q under child %q", h.root, child)
-	}
 	if _, ok := relPathUnderManagedDir(filepath.Dir(h.managedPath("lane")), filepath.Dir(h.managedPath("lane"))); ok {
 		t.Fatal("managed directory itself must not count as a managed worktree")
 	}
@@ -645,7 +639,7 @@ func worktreeFaultOperationErrorsProgram(t *testing.T, program []byte) {
 		if _, err := s.worktreeList(context.Background()); err == nil {
 			t.Fatal("list outside a repository succeeded")
 		}
-		if _, err := s.worktreePrune(context.Background()); err == nil {
+		if _, err := s.worktreePrune(context.Background(), 0); err == nil {
 			t.Fatal("prune outside a repository succeeded")
 		}
 	})
@@ -735,12 +729,12 @@ func worktreeFaultOperationErrorsProgram(t *testing.T, program []byte) {
 		}
 
 		faults.listErr = errors.New("scripted list failure")
-		if _, _, err := worktreePruneSweep3(faults.run, filepath.Dir(h.managedPath("placeholder"))); err == nil {
+		if _, _, err := pruneGitRegistry(faults.run, filepath.Dir(h.managedPath("placeholder"))); err == nil {
 			t.Fatal("sweep three accepted a failed registry list")
 		}
 		faults.listErr = nil
 		faults.pruneErr = errors.New("scripted prune failure")
-		if _, _, err := worktreePruneSweep3(faults.run, filepath.Dir(h.managedPath("placeholder"))); err == nil {
+		if _, _, err := pruneGitRegistry(faults.run, filepath.Dir(h.managedPath("placeholder"))); err == nil {
 			t.Fatal("sweep three accepted a failed git worktree prune")
 		}
 
@@ -1257,7 +1251,7 @@ func worktreeFaultBoundaryHelperProgram(t *testing.T, program []byte) {
 		if _, err := h.s.worktreeList(context.Background()); err == nil {
 			t.Fatal("list accepted a non-local environment")
 		}
-		if _, err := h.s.worktreePrune(context.Background()); err == nil {
+		if _, err := h.s.worktreePrune(context.Background(), 0); err == nil {
 			t.Fatal("prune accepted a non-local environment")
 		}
 		h.s.rollbackFreshDelegateWorktree("delegate", "delegate", filepath.Join(h.root, "delegate"), identifier.Project{})
@@ -1581,7 +1575,7 @@ func worktreeFaultLocalHelperTailProgram(t *testing.T, program []byte) {
 			if _, err := h.s.worktreeList(context.Background()); err == nil {
 				t.Fatal("list accepted an unrootable control sandbox")
 			}
-			if _, err := h.s.worktreePrune(context.Background()); err == nil {
+			if _, err := h.s.worktreePrune(context.Background(), 0); err == nil {
 				t.Fatal("prune accepted an unrootable control sandbox")
 			}
 			if err := h.s.enterWorktree(filepath.Join(h.root, "sandbox-target"), true); err == nil {

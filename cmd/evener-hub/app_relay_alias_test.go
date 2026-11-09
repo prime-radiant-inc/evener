@@ -178,11 +178,7 @@ func TestHubRelayRealWireReadUnsubscribeAliases(t *testing.T) {
 	appServer := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}, sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 	if _, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: "local:root-thread"}); err != nil {
 		t.Fatalf("ref-only subscribe read: %v", err)
 	}
@@ -284,7 +280,7 @@ func TestHubRelayConcurrentAliasesShareCanonicalHandle(t *testing.T) {
 		acquireEntered: acquireEntered,
 		acquireGate:    releaseAcquire,
 	}
-	relays := newHubRelayFunctions(
+	relays := newHubRelay(
 		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
 		hubcore.WebConfig{},
 		appsource.NewRegistry(),
@@ -478,7 +474,7 @@ func (l *aliasRelayLease) Read(_ context.Context, params appwire.ThreadReadParam
 		thread = configured
 	}
 	return appsource.RelayReadResult{
-		Response: appwire.ThreadReadResponse{Thread: thread},
+		Response: appwire.ThreadReadResponse{Thread: thread, TargetSessionToolsSupported: new(true)},
 		Handoff:  &recordingRelayHandoff{committed: make(chan struct{}), aborted: make(chan struct{})},
 	}, nil
 }

@@ -221,7 +221,7 @@ func normalizeDeletionTargets(targets []DeletionTarget) ([]DeletionTarget, error
 			return nil, fmt.Errorf("invalid deletion thread ID: %w", err)
 		}
 		parsed, err := appwire.ParseRef(ref)
-		if err != nil || parsed.SourceID != "local" || parsed.ThreadID != threadID {
+		if err != nil || parsed.SourceID != appwire.LocalSourceID || parsed.ThreadID != threadID {
 			return nil, fmt.Errorf("invalid local deletion ref %q", ref)
 		}
 		if target.StateProjectID != "" {
@@ -249,7 +249,7 @@ func normalizeDeletionLookup(ref, threadID string) (string, string) {
 		threadID = ref
 	}
 	if ref == "" && threadID != "" {
-		ref = appwire.Ref{SourceID: "local", ThreadID: threadID}.String()
+		ref = appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: threadID}.String()
 	}
 	return ref, threadID
 }

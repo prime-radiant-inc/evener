@@ -159,7 +159,7 @@ func cancelDelegateWithRunEvidence(t *testing.T, c *delegateTreeController, dele
 	}
 }
 
-// completedDelegateStopResult builds the jobStopResult stopStableDelegate
+// completedDelegateStopResult builds the jobStopResult stopDelegate
 // hands to the evidence projection once a delegate stop has completed.
 func completedDelegateStopResult(delegateID string, actor delegateActor) jobStopResult {
 	reason := "stopped_by_parent"
@@ -528,12 +528,12 @@ func TestDelegateResourceStop_RootCloseJoinsStopAndTeardownPostorder(t *testing.
 }
 
 func TestDelegateResourceStop_RootCloseAbortsUnpersistedInlineDeliveryCommit(t *testing.T) {
-	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+	fixture := newColdDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.Config.MaxToolRoundsPerInput = 1
 	})
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return communicateResponse(false, "continue") },
-	}
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(false, "continue") },
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "exhaust", 60_000)
 	if outcome.result.Err != nil || outcome.result.Status != jobstore.StatusExhausted || outcome.commit == nil {
@@ -638,7 +638,7 @@ func TestDelegateResourceStop_ForegroundShellTimeoutReportsCommittedShellOnce(t 
 func TestDelegateResourceStop_FinishedShellWaitOutlivesRunningMapRemoval(t *testing.T) {
 	c, jm, _, _ := newStableShellReceiptHarness(t)
 	const jobID = "job_finalizing"
-	receipt, err := jm.beginStableDelegateShellReceipt(jobID)
+	receipt, err := jm.beginDelegateShellReceipt(jobID)
 	if err != nil {
 		t.Fatalf("begin stable shell receipt: %v", err)
 	}

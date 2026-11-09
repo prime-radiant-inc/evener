@@ -23,3 +23,13 @@ func TestParseRefRejectsUnsafeValues(t *testing.T) {
 		}
 	}
 }
+
+// A thread id never contains ':', so extra colons are rejected rather than
+// folded into the thread part.
+func TestParseRefRejectsColonInThreadID(t *testing.T) {
+	for _, raw := range []string{"local:a:b", "host:a:b:c"} {
+		if _, err := ParseRef(raw); err == nil {
+			t.Fatalf("ParseRef(%q) succeeded", raw)
+		}
+	}
+}

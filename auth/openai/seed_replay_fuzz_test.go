@@ -46,7 +46,7 @@ func FuzzAuthOpenAISeedReplay(f *testing.F) {
 		{name: "TestConfigDefaults", run: TestConfigDefaults},
 		{name: "TestCtxSleepZeroDuration", run: TestCtxSleepZeroDuration},
 		{name: "TestDefaultStateDirIsUserScoped", run: TestDefaultStateDirIsUserScoped},
-		{name: "TestDefaultStateDirWithStateHomeFallsBackToTempDir", run: TestDefaultStateDirWithStateHomeFallsBackToTempDir},
+		{name: "TestDefaultStateDirWithStateHomeReportsNoStateHome", run: TestDefaultStateDirWithStateHomeReportsNoStateHome},
 		{name: "TestDefaultStateDirWithStateHomeFallsBackToUserHome", run: TestDefaultStateDirWithStateHomeFallsBackToUserHome},
 		{name: "TestDefaultStateDirWithStateHomeUsesChildEnvStateHome", run: TestDefaultStateDirWithStateHomeUsesChildEnvStateHome},
 		{name: "TestDeleteAuthMissingFileReportsNotDeleted", run: TestDeleteAuthMissingFileReportsNotDeleted},

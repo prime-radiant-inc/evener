@@ -10,6 +10,7 @@ import (
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/mcp"
 	"primeradiant.com/evener/agent/mcpconfig"
 	"primeradiant.com/evener/llm"
@@ -110,13 +111,13 @@ func TestMCPIntegration_ToolCallThroughSession(t *testing.T) {
 							if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
 								text, ok := p.ToolResult.Content.(string)
 								if ok && strings.Contains(text, "Hello, World!") {
-									return finalResponse("The server said: Hello, World!")
+									return agenttest.FinalResponse("The server said: Hello, World!")
 								}
 							}
 						}
 					}
 				}
-				return finalResponse("Tool result not found")
+				return agenttest.FinalResponse("Tool result not found")
 			},
 		},
 	}

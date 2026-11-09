@@ -8,6 +8,21 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
+test('new session activates the rail control when the workspace also offers launch',async()=>{
+ const browser=await chromium.launch({headless:true});
+ try {
+  const page=await browser.newPage();
+  await page.setContent('<div data-testid="rail"><button>+ New session</button></div><main data-testid="workspace-host"><button>New session</button></main>');
+  await page.evaluate(()=>{
+   window.activations=[];
+   document.addEventListener('click',event=>window.activations.push({rail:Boolean(event.target.closest('[data-testid="rail"]')),trusted:event.isTrusted}));
+  });
+  assert.equal(await page.getByRole('button',{name:/^(?:\+ )?New session$/}).count(),2);
+  await web.newSessionButton(page).click();
+  assert.deepEqual(await page.evaluate(()=>window.activations),[{rail:true,trusted:true}]);
+ } finally {await browser.close();}
+});
+
 test('real browser launch failure retains private diagnostics without leaking driver inputs',async t=>{
  const root=await mkdtemp(join(tmpdir(),'tour-launch-failure-'));
  t.after(()=>rm(root,{recursive:true,force:true}));
@@ -119,6 +134,12 @@ test('capture readiness requires every started session in the rail without a nev
  }
 });
 
+test('path shape relates a value to the requested path without storing it',()=>{
+ assert.deepEqual(web.pathShape('/home/x/tmp/owned',['/tmp/owned']),{length:17,startsWithRequested:false,endsWithRequested:true,containsRequested:true});
+ assert.deepEqual(web.pathShape('/tmp/owned',['/tmp/owned']),{length:10,startsWithRequested:true,endsWithRequested:true,containsRequested:true});
+ assert.deepEqual(web.pathShape(undefined,['/tmp/owned']),{length:null,startsWithRequested:false,endsWithRequested:false,containsRequested:false});
+});
+
 test('picker probe observes edited and confirmation state without storing input text',async()=>{
  const browser=await chromium.launch({headless:true});
  try {
@@ -133,6 +154,7 @@ test('picker probe observes edited and confirmation state without storing input 
   });
   const events=await page.evaluate(()=>window.__evenerDirectoryProbe.events);
   assert.ok(events.some(e=>e.inputMatches));
+  assert.ok(events.some(e=>e.inputShape.endsWithRequested&&e.inputShape.length==='/tmp/private-path-canary'.length));
   assert.ok(events.some(e=>e.stage==='before-Enter'));
   assert.ok(events.some(e=>e.stage==='after-Enter'));
   assert.ok(events.some(e=>e.confirmEnabled&&!e.pending));

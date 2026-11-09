@@ -104,7 +104,6 @@ vi.mock("react-native-safe-area-context", () => ({
 	SafeAreaProvider: (props: { children?: ReactNode }) => props.children ?? null,
 	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-gesture-handler", async () =>
 	(await import("./renderNative.testkit")).gestureDetectorModuleMock(),
 );
@@ -127,10 +126,6 @@ vi.mock("@react-navigation/native", async () => {
 vi.mock("expo-clipboard", () => ({
 	setStringAsync: vi.fn(async () => {}),
 	getStringAsync: vi.fn(async () => ""),
-}));
-vi.mock("expo-crypto", () => ({
-	randomUUID: () => "recovery-entry-uuid",
-	getRandomValues: (array: Uint8Array) => array,
 }));
 vi.mock("expo-sqlite", async () => {
 	const { openSqliteSyncDouble } = await import("./sqliteSync.testkit");

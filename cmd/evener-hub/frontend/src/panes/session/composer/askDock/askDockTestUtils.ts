@@ -16,7 +16,7 @@ export function askArgs(questions: Array<Record<string, unknown>>): string {
 export const ONE_QUESTION = [{ header: "Deploy?", question: "Ship now?", options: [{ label: "Yes", detail: "" }] }];
 
 // The hub stamps askPending onto the thread/status/changed frame that goes
-// with the turn ending on an ask_user call (server/appwire_runtime.go's
+// with the turn ending on an ask_user call (server/appwire_status_stamps.go's
 // stampAskPendingOnStatusChange) - the wire is the only source for the flag
 // (deriveAskQuestions.ts), so a fixture that never sends this frame can
 // never show a pending batch/dock.

@@ -15,7 +15,7 @@ import { APPWIRE_PROTOCOL_VERSION } from "@evener/appwire-client";
 // and the boxes (if any) whose bottoms escape the viewport - which is the
 // answer the fix has to be aimed at.
 
-import type { NavigationReadBase, NavigationReadParams, NavigationReadResponse } from "@evener/appwire-client";
+import type { NavigationReadBase, NavigationReadParams, NavigationReadResponse, Task } from "@evener/appwire-client";
 import { buildWatchRows, hydrateThread } from "@evener/appwire-client";
 import {
   navigationOwnedContainerKey,
@@ -47,6 +47,7 @@ import {
   activityThread,
   activityWatch,
 } from "../stores/sessionActivityTestUtils";
+import buttonStyles from "../widgets/button/button.module.css";
 import "../styles/tokens.css";
 import "../styles/global.css";
 import { PaneScaffold } from "../widgets/panescaffold";
@@ -456,13 +457,16 @@ async function boot(): Promise<void> {
   // too): the guard's page-height contract must hold with the tab body's own
   // scroll container owning a list this tall, not the document. The padding
   // fixture keeps its one-row list - it measures a single row's box.
-  const tallTasksFixture = Array.from({ length: 40 }, (_, i) => ({
-    id: i + 1,
-    type: "verify",
-    description: `Overview task ${i + 1}: keep the page frame from scrolling when the task list is taller than the viewport`,
-    prompt: "",
-    status: i % 4 === 3 ? "done" : "open",
-  }));
+  const tallTasksFixture = Array.from(
+    { length: 40 },
+    (_, i): Task => ({
+      id: i + 1,
+      type: "verify",
+      description: `Overview task ${i + 1}: keep the page frame from scrolling when the task list is taller than the viewport`,
+      prompt: "",
+      status: i % 4 === 3 ? "done" : "open",
+    }),
+  );
   fake.on("evener/tasks/list", ({ ref }) => ({
     data:
       ref === ROW_PADDING_REF
@@ -609,6 +613,7 @@ function measureShell() {
   const shell = root.firstElementChild;
   // Select the rail directly, independently of header control placement.
   const rail = document.querySelector(`.${railStyles.rail}`);
+  const newSession = rail === null ? null : rail.querySelector<HTMLButtonElement>(`.${railStyles.newSession} button`);
   const railBody =
     rail === null ? null : ([...rail.children].find((el) => getComputedStyle(el).overflowY !== "visible") ?? null);
   // The rail's full ancestor chain up to <body>, with the computed properties
@@ -697,6 +702,14 @@ function measureShell() {
             overflowY: getComputedStyle(railBody).overflowY,
           },
     treeRows: document.querySelectorAll('[role="treeitem"]').length,
+    railNewSession: {
+      present: newSession !== null,
+      primary: newSession?.classList.contains(buttonStyles.primary ?? "") ?? false,
+      secondary: newSession?.classList.contains(buttonStyles.secondary ?? "") ?? false,
+    },
+    primaryButtons: [...document.querySelectorAll<HTMLButtonElement>("button")].filter(
+      (button) => button.getClientRects().length > 0 && button.classList.contains(buttonStyles.primary ?? ""),
+    ).length,
     leaks: leakingElements(window.innerHeight),
     chain,
     experiments,

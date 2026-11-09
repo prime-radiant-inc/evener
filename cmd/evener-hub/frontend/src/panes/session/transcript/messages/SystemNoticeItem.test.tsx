@@ -1,35 +1,14 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
 import { makeTranscriptDisplayConfig, projectThread, WarningCodeMCPReconnected } from "@evener/appwire-client";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
-import { installLocalStorage, MemoryStorage } from "../../../../storageTestUtils";
-import { prefsStore, resetPrefsStoreForTests } from "../../../../stores/prefs";
+import { afterEach, expect, test } from "vitest";
+import { readModuleCss } from "../../../../styles/cssBlock";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { TurnBlock } from "../TurnBlock";
 import { SYSTEM_PROMPT_ITEM_ID } from "../transcriptVisibility";
 import { itemRendererFor } from "../types";
 import { SystemNoticeItem } from "./SystemNoticeItem";
-
-beforeAll(() => {
-  installLocalStorage(new MemoryStorage());
-});
-
-beforeEach(() => {
-  localStorage.clear();
-  resetPrefsStoreForTests();
-});
-
-// The prompt-loaded setting gates whether a system-prompt item reaches a
-// renderer at all (transcriptVisibility.ts). These tests are about how such an
-// item RENDERS once shown, so they opt it in; visibility itself is covered by
-// transcriptVisibility.test.ts and TurnBlock.test.tsx.
-function showSystemPrompt() {
-  prefsStore.getState().setTranscriptStatus("promptLoaded", true);
-}
 
 afterEach(() => {
   cleanup();
@@ -118,7 +97,6 @@ test("three consecutive systemMessage items group into one collapsed disclosure"
 });
 
 test("the same scaffold item id has independent disclosure state in different sessions", () => {
-  showSystemPrompt();
   const shared = item("same_item", { eventKind: "system_prompt", text: "You are a helpful assistant." });
   // At activity level the scaffold auto-expands; use tools level to test
   // independent collapsed state. Use separate disclosureScopes per session
@@ -216,7 +194,6 @@ test("a systemMessage item with blank text falls back to a sentence-case categor
 // non-scaffold notice stays a quiet line.
 
 test("a system_prompt eventKind item renders as a collapsed scaffold disclosure, even when its text is short", () => {
-  showSystemPrompt();
   // At activity level the scaffold auto-expands; use tools level to test the
   // collapsed default.
   renderTurnTools(turnWith([item("a", { text: "short", eventKind: "system_prompt" })]));
@@ -227,7 +204,6 @@ test("a system_prompt eventKind item renders as a collapsed scaffold disclosure,
 });
 
 test("a system prompt mounts its Markdown body below the summary only once opened", () => {
-  showSystemPrompt();
   const text = `## Identity\n\n${"You are a careful assistant. ".repeat(1000)}`;
   // At activity level the scaffold auto-expands; use tools level to test the
   // collapsed default and structure.
@@ -253,8 +229,7 @@ test("a system prompt mounts its Markdown body below the summary only once opene
 });
 
 test("the system prompt body is a full-width block row under the summary", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "systemnoticeitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "systemnoticeitem.module.css");
   const rule = (selector: string): string => {
     const match = css.match(new RegExp(`\\.${selector}\\s*\\{([^}]*)\\}`));
     return match?.[1] ?? "";
@@ -480,7 +455,6 @@ test("a failure adjacent to a group that does collapse is left outside it, and u
 // prompt projected by an older daemon that predates the typed eventKind, so a
 // heterogeneous-version relay still collapses it correctly.
 test("the item_system_prompt id still classifies as scaffold when the wire carries no eventKind (old-daemon fallback)", () => {
-  showSystemPrompt();
   render(<TurnBlock turn={turnWith([item(SYSTEM_PROMPT_ITEM_ID, { text: "You are Evener." })])} />);
   // The fallback disclosure, not a plain quiet line: this is the behavior an
   // older daemon's untyped item depends on, not a count of its characters.
@@ -499,10 +473,6 @@ test("the item_system_prompt id still classifies as scaffold when the wire carri
 // the tiered-density follow-up) - with the full per-phase breakdown on the
 // line's hover title, built from item.raw's structured numbers, not by
 // re-parsing that prose.
-
-function showRoundTimings() {
-  prefsStore.getState().setTranscriptStatus("roundTimings", true);
-}
 
 function roundTimingsItem(id: string, fields: Record<string, number> = {}): ItemModel {
   return item(id, {
@@ -528,7 +498,6 @@ function roundTimingsItem(id: string, fields: Record<string, number> = {}): Item
 }
 
 test("a round_timings item with structured raw renders ONE quiet line naming the dominant phase - no disclosure, not the raw dump", () => {
-  showRoundTimings();
   render(<TurnBlock turn={turnWith([roundTimingsItem("rt")])} />);
   const line = screen.getByTestId("system-notice-line");
   expect(line.dataset.round).toBe("0");
@@ -538,7 +507,6 @@ test("a round_timings item with structured raw renders ONE quiet line naming the
 });
 
 test("the full phase breakdown rides the line's hover title, sub-1ms phases folded into an omitted count", () => {
-  showRoundTimings();
   render(<TurnBlock turn={turnWith([roundTimingsItem("rt")])} />);
   const line = screen.getByTestId("system-notice-line");
   // llm, tools, persistence and overhead reach 1ms: one breakdown row each,
@@ -550,14 +518,12 @@ test("the full phase breakdown rides the line's hover title, sub-1ms phases fold
 });
 
 test("a round_timings item renders nothing expandable - no details element, no disclosure state to persist", () => {
-  showRoundTimings();
   const { container } = render(<TurnBlock turn={turnWith([roundTimingsItem("rt")])} />);
   expect(container.querySelector("details")).toBeNull();
   expect(container.querySelector("summary")).toBeNull();
 });
 
 test("a round_timings item with no raw (older daemon) falls back to the plain prose line", () => {
-  showRoundTimings();
   const oldItem = item("rt", { eventKind: "round_timings", text: "Round 0 total=1.5s llm=1.2s" });
   render(<TurnBlock turn={turnWith([oldItem])} />);
   expect(screen.getByTestId("system-notice-line").textContent).toBe("Round 0 total=1.5s llm=1.2s");
@@ -565,7 +531,6 @@ test("a round_timings item with no raw (older daemon) falls back to the plain pr
 });
 
 test("a round_timings item whose raw fails to narrow (malformed) falls back to the plain prose line", () => {
-  showRoundTimings();
   const badItem = item("rt", {
     eventKind: "round_timings",
     text: "Round 0 total=1.5s",

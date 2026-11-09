@@ -3,7 +3,6 @@ package hub
 import (
 	"context"
 	"encoding/json"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -51,18 +50,9 @@ func TestHubRPCThreadListServesRemoteHostWhoseAttachOutlastsLocalBudget(t *testi
 		return remote, nil
 	})
 
-	srv := httptest.NewUnstartedServer(nil)
-	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
-	web.sources.Add(source)
-	srv.Config.Handler = web.Handler()
-	srv.Start()
-	defer srv.Close()
+	srv := newWebSourceTestServer(t, source)
 
-	rpc := dialHubRPC(t, srv)
-	defer rpc.Close()
-	if _, err := rpc.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	rpc := dialHubRPCInitialized(t, srv)
 
 	resp, err := rpc.ThreadList(context.Background(), appwire.ThreadListParams{})
 	if err != nil {

@@ -1,4 +1,5 @@
 import type { InputItem } from "../../types.gen";
+import { COMPOSER_METHODS, PENDING_TURN_METHODS } from "./composerMethods";
 import type { MutationStopBarrier } from "./outbox";
 import type { MutationAttachmentRef, MutationIntent, MutationOutboxRecord, MutationRecoveryRecord } from "./records";
 
@@ -21,6 +22,32 @@ export interface QueuedMessageStorage<A extends MutationAttachmentRef = Mutation
 
 // Called only on a durable read inside the host's write transaction. The
 // policy is checked separately against that same row, never the rendered copy.
+// The capture a Retry's mint carries: the press-time snapshot
+// getOutboxWithStopEpoch read - the row as the click saw it, plus both stop
+// epochs it crosses. The record half is optional exactly as the snapshot
+// returns it: a row another tab settled between the capture and the mint is
+// a refusal the mint's own re-read decides.
+export interface MutationRetryCapture<A extends MutationAttachmentRef = MutationAttachmentRef> {
+  record: MutationOutboxRecord<A> | undefined;
+  stopEpoch: number;
+  displayedStopEpoch: number;
+}
+
+// The web recovery fence's storage surface. The base contract above stays the
+// whole shared surface - hosts without displayed-ref rows implement it alone
+// and are never forced to grow a web-only fence. The web runtime's retargeted
+// resends cross a still-displayed ref whose Stop epoch the click must capture
+// alongside the destination's, and its parked rows re-queue only through the
+// explicit-Retry mint, so the web store declares this extension and the
+// conformance suite's web describe pins it.
+export interface WebQueuedMessageStorage<A extends MutationAttachmentRef = MutationAttachmentRef>
+  extends QueuedMessageStorage<A> {
+  getOutboxWithStopEpoch(
+    id: string,
+  ): Promise<{ record: MutationOutboxRecord<A> | undefined; stopEpoch: number; displayedStopEpoch: number }>;
+  mintRetryFromRow(id: string, capture: MutationRetryCapture<A>): Promise<MutationOutboxRecord<A> | undefined>;
+}
+
 export function matchesQueuedMessageSnapshot(record: MutationOutboxRecord, expected: MutationOutboxRecord): boolean {
   return (
     record.clientMutationId === expected.clientMutationId &&
@@ -33,24 +60,21 @@ export function matchesQueuedMessageSnapshot(record: MutationOutboxRecord, expec
   );
 }
 
-const REMOVABLE_MESSAGE_METHODS = new Set([
-  "turn/start",
-  "turn/steer",
-  "turn/queue",
-  "turn/drainAsSteer",
-  "turn/promoteQueuedAsSteer",
-]);
-
-function hasContradictoryAttemptEvidence(record: MutationOutboxRecord): boolean {
-  return record.attempted === true || (record.unresolvedAttempts !== undefined && record.unresolvedAttempts > 0);
-}
-
-function isSafelyWaiting(record: MutationOutboxRecord): boolean {
-  if (hasContradictoryAttemptEvidence(record)) return false;
-  if (record.state === "canceled") return true;
+// A local message stays the user's until it leaves the outbox. The one row a
+// click must not take is the one another pass is sending right now - a
+// submitting row with attempt evidence - because the edit would race a send.
+// Canceled rows are parked by a Stop, and an uncertain row is exactly the one
+// that closes its queue: both are the user's to remove, or nothing behind an
+// uncertain head can ever move.
+function isLocalQueuedMessage(record: MutationOutboxRecord): boolean {
+  if (record.state === "blockedUnknown" || record.state === "canceled") return true;
   if (record.state !== "submitting") return false;
-  return record.attempted === false || record.unresolvedAttempts === 0;
+  return record.attempted === false;
 }
+
+// Editing an uncertain row is the user choosing to send it again: the edit
+// brings the text back to the composer, and the send that follows is a new
+// message. That is the user's call, not a duplicate the client should hide.
 
 function recordInput(record: MutationOutboxRecord): InputItem[] {
   return Array.isArray(record.payload.input) ? (record.payload.input as InputItem[]) : [];
@@ -67,11 +91,16 @@ function hasComposerInput(record: MutationOutboxRecord): boolean {
 }
 
 export function canEditQueuedMessage(record: MutationOutboxRecord): boolean {
-  if (!isSafelyWaiting(record)) return false;
-  if (record.method === "turn/start" || record.method === "turn/queue" || record.method === "turn/steer") return true;
-  return record.method === "turn/drainAsSteer" && hasComposerInput(record);
+  if (!isLocalQueuedMessage(record)) return false;
+  if (
+    record.method === COMPOSER_METHODS.send ||
+    record.method === COMPOSER_METHODS.queue ||
+    record.method === COMPOSER_METHODS.steer
+  )
+    return true;
+  return record.method === COMPOSER_METHODS.drain && hasComposerInput(record);
 }
 
 export function canRemoveQueuedMessage(record: MutationOutboxRecord): boolean {
-  return isSafelyWaiting(record) && REMOVABLE_MESSAGE_METHODS.has(record.method);
+  return isLocalQueuedMessage(record) && PENDING_TURN_METHODS.includes(record.method);
 }

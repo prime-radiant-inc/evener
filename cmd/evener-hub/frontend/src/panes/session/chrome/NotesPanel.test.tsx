@@ -3,16 +3,15 @@
 // (testModel with capability overrides); the body renders directly here
 // (no Sheet trigger to click through - the desktop pane mounts the body).
 
-import type { ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
+import type { ThreadModel } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { useStore } from "zustand";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
-import { connectionStore } from "../../../stores/connection";
+import { resetConnectionStoreForTests } from "../../../stores/connection";
 import { editHumanNote, resetHumanNoteDrafts, syncHumanNote } from "../../../stores/humanNoteDrafts";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { resetPendingUrlRemovals } from "../../../stores/pendingUrlRemovals";
@@ -22,27 +21,13 @@ import {
   setMutationStorageForTests,
   threadsStore,
 } from "../../../stores/threads";
+import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
+import { ALL_CAPABILITIES as FULL_CAPABILITIES } from "../../../threadTestUtils";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { toastKinds } from "../../../widgets/toast/toastTestUtils";
 import { flushPendingTurnsProjectionForTests } from "../composer/queue/testing/flushPendingTurnsProjection";
 import { NotesPanelBody } from "./NotesPanel";
-
-const FULL_CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
 
 function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
   const { jobsTreeRevision = null, ...rest } = overrides;
@@ -78,12 +63,6 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     ...rest,
     jobsTreeRevision,
   };
-}
-
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
 }
 
 function noteResponse(params: { clientMutationId: string; note?: string }, note = params.note ?? "") {
@@ -136,7 +115,7 @@ function clockClient() {
   vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime });
   setMutationStorageForTests(new MutationOutboxIndexedDB({ indexedDB }));
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
-  return { fake: connectFakeClient(), user: userEvent.setup({ advanceTimers: vi.advanceTimersByTime }) };
+  return { fake: connectReadyFakeClient(), user: userEvent.setup({ advanceTimers: vi.advanceTimersByTime }) };
 }
 
 async function advance(ms: number) {
@@ -353,7 +332,7 @@ test("a definite refusal stays visible and keeps its draft across close and reop
 });
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
   // Draft records persist across renders by design, and most tests here
@@ -382,7 +361,7 @@ test("dirty blur sends nothing at 9999ms and one raw note at 10000ms", async () 
   setMutationStorageForTests(new MutationOutboxIndexedDB({ indexedDB }));
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
   const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   const model = testModel();
   threadsStore.setState({ threads: new Map([[model.ref, model]]) });
   const seen: unknown[] = [];
@@ -417,7 +396,7 @@ test("a pending blur save is flushed when the page goes away", async () => {
   setMutationStorageForTests(new MutationOutboxIndexedDB({ indexedDB }));
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
   const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   const model = testModel();
   threadsStore.setState({ threads: new Map([[model.ref, model]]) });
   const seen: unknown[] = [];
@@ -455,7 +434,7 @@ test("a flushed blur save does not resubmit when its original deadline passes", 
   setMutationStorageForTests(new MutationOutboxIndexedDB({ indexedDB }));
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
   const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   const model = testModel();
   threadsStore.setState({ threads: new Map([[model.ref, model]]) });
   const setHumanNote = vi.spyOn(threadsStore.getState(), "setHumanNote");
@@ -728,7 +707,7 @@ test("blurring with an unchanged draft saves nothing", async () => {
 
 test("a push while the editor is focused never clobbers typing", async () => {
   const user = userEvent.setup();
-  connectFakeClient();
+  connectReadyFakeClient();
   const model = testModel({ humanNote: "old note" });
   threadsStore.setState({ threads: new Map([[model.ref, model]]) });
   void threadsStore.getState().ensureThread(model.ref);
@@ -741,7 +720,7 @@ test("a push while the editor is focused never clobbers typing", async () => {
 });
 
 test("a push while unfocused reseeds the draft", async () => {
-  connectFakeClient();
+  connectReadyFakeClient();
   const model = testModel({ humanNote: "old note" });
   threadsStore.setState({ threads: new Map([[model.ref, model]]) });
   void threadsStore.getState().ensureThread(model.ref);

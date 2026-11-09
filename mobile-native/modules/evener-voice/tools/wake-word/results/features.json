@@ -1,0 +1,10 @@
+{
+  "clips": 15336,
+  "corpus_sha256": "79f3e44f902cfe19dd0fcf9c4d00fee7f304f478ef6b46aa2f7a631fe808bf09",
+  "hop_samples": 1280,
+  "models": {
+    "embedding_model.onnx": "79b5db230f6fd7a4a5bb1b28e58778d5c1cf5cee0fa4e3cb5ac481872463b45d",
+    "melspectrogram.onnx": "fd9edc912b9c020a36d55e1f0d0355976dcec1d4606e6f9a037035456f72df75"
+  },
+  "seconds": 1521.5768402197864
+}

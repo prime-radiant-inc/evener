@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { NavigationSessionSummary } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { nativeNavigationActions } from "../navigationActionRepository";
 import { NavigationActions } from "../navigationActions";
 import type { BoardState } from "./attention";

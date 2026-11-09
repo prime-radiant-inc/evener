@@ -10,7 +10,6 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 	useWindowDimensions: () => ({ width: 402, height: 874, scale: 3, ...viewport }),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 beforeEach(() => {
 	viewport.fontScale = 1;

@@ -23,7 +23,7 @@ func TestW2Watch_jobManagerForToken(t *testing.T) {
 	}
 
 	// With a subagent manager holding one child session.
-	sm := newSubagentManager(nil, 0)
+	sm := newSubagentManager(0)
 	parent := &Session{id: "S1", jobManager: jm, subagents: sm}
 	child := newSession(t)
 	sm.track(&subagent{id: "C1", sess: child})

@@ -3,6 +3,7 @@ package agent
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"primeradiant.com/evener/agent/internal/runetrim"
+
+	"primeradiant.com/evener/agent/internal/mdfence"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/internal/tool/repair"
 	"primeradiant.com/evener/agent/internal/turnwindow"
@@ -109,12 +113,30 @@ func renderMarkdown(header transcript.Header, entries []transcript.Entry, startS
 	return b.String()
 }
 
+// renderMarkdownFits probes byte size without retaining output or evidence.
+func renderMarkdownFits(header transcript.Header, entries []transcript.Entry, startSeq int, opt renderOpts, byteLimit int) bool {
+	opt.evidence = nil
+	var b strings.Builder
+	writeDocumentHeader(&b, header, opt)
+	return writeEntriesBodyLimited(&b, entries, startSeq, opt, byteLimit)
+}
+
 // writeEntriesBody renders the conversation body for entries[0:] (each at
 // startSeq+i) without the document header: the per-entry markdown plus any
 // trailing "Tool results without a shown call" section. Pairing is built over
 // exactly this slice. Splitting this out of renderMarkdown lets the pinned-turn
 // append (renderOutOfRangePin) reuse the same rendering without a second header.
 func writeEntriesBody(b *strings.Builder, entries []transcript.Entry, startSeq int, opt renderOpts) {
+	writeEntriesBodyLimited(b, entries, startSeq, opt, 0)
+}
+
+// writeEntriesBodyLimited shares the full renderer's formatting and pairing.
+// A zero byte limit leaves output unlimited. Once appended output exceeds a
+// positive limit, later entries cannot make it fit, so the probe can stop.
+func writeEntriesBodyLimited(b *strings.Builder, entries []transcript.Entry, startSeq int, opt renderOpts, byteLimit int) bool {
+	if byteLimit > 0 && b.Len() > byteLimit {
+		return false
+	}
 	resultTool := effectiveResultToolName(opt)
 	idx := buildResultIndex(entries, startSeq)
 
@@ -134,9 +156,13 @@ func writeEntriesBody(b *strings.Builder, entries []transcript.Entry, startSeq i
 		if opt.evidence != nil && e.Turn.Kind == schema.TurnUserInput {
 			opt.evidence.spans = append(opt.evidence.spans, transcriptEvidenceSpan{seq, first, b.Len(), complete})
 		}
+		if byteLimit > 0 && b.Len() > byteLimit {
+			return false
+		}
 	}
 
 	writeUnpairedResults(b, &idx, opt)
+	return byteLimit == 0 || b.Len() <= byteLimit
 }
 
 // defaultRangeTurns is the smart-default window: the last N turns when no range
@@ -316,7 +342,7 @@ func parseRangeErr(spec string, entryCount int) (startSeq, endSeq int, err error
 // the output builder is grown up front to the exact byte size, and cap
 // enforcement is a single linear prefix walk — never a re-decode or re-copy of
 // the accumulator per line.
-func rawLinesForRange(path, root string, startSeq, endSeq int) (content string, lines int, skipped int, truncated bool, err error) {
+func rawLinesForRange(ctx context.Context, path, root string, startSeq, endSeq int) (content string, lines int, skipped int, truncated bool, err error) {
 	f, err := openTranscriptFile(path, root)
 	if err != nil {
 		return "", 0, 0, false, fmt.Errorf("open transcript: %w", err)
@@ -332,7 +358,7 @@ func rawLinesForRange(path, root string, startSeq, endSeq int) (content string, 
 	// form, so retaining the subslice is safe.
 	var header []byte
 	for header == nil {
-		headerBytes, complete, _, readErr := transcript.ReadLine(reader, transcriptJSONLMaxLineBytes)
+		headerBytes, complete, _, readErr := transcript.ReadLine(reader, transcript.DefaultMaxLineBytes)
 		if readErr != nil {
 			return "", 0, 0, false, fmt.Errorf("reading transcript header: %w", readErr)
 		}
@@ -378,7 +404,10 @@ func rawLinesForRange(path, root string, startSeq, endSeq int) (content string, 
 	entryPos := -1
 
 	for {
-		line, complete, bytesRead, readErr := transcript.ReadLine(reader, transcriptJSONLMaxLineBytes)
+		if err := ctx.Err(); err != nil {
+			return "", 0, skipped, false, err
+		}
+		line, complete, bytesRead, readErr := transcript.ReadLine(reader, transcript.DefaultMaxLineBytes)
 		if readErr != nil {
 			return "", 0, skipped, false, fmt.Errorf("reading transcript: %w", readErr)
 		}
@@ -856,8 +885,7 @@ func budgetedEnd(header transcript.Header, entries []transcript.Entry, start, en
 	}
 	last := end
 	for last > start {
-		body := renderMarkdown(header, entries[start:last+1], start, opt)
-		if len(body) <= convBudgetChars {
+		if renderMarkdownFits(header, entries[start:last+1], start, opt, convBudgetChars) {
 			break
 		}
 		if last <= pinFloor {
@@ -1195,7 +1223,7 @@ func writeToolCardLine(b *strings.Builder, status, name string, tc *llm.ToolCall
 	// so oversized valid JSON has RawArguments="" and would otherwise show
 	// intent on reload.
 	if tc.RawArguments == "" && tool.ValidateRawArguments(tc.Arguments) == nil {
-		if intent := toolIntent(tc.Arguments); intent != "" {
+		if intent := schema.ToolIntent(tc.Arguments); intent != "" {
 			fmt.Fprintf(b, " — intent: %s", intent)
 		}
 	}
@@ -1287,7 +1315,7 @@ func writeResultToolMessage(b *strings.Builder, tc *llm.ToolCallData, healed boo
 		// No "message" key or unparseable: render the raw arguments.
 		// Bound the raw fallback so one pathological line cannot dominate the
 		// card, mirroring the summary path's resultLineMaxRunes limit.
-		b.WriteString(oneLine(truncRunes(string(args), resultLineMaxRunes)))
+		b.WriteString(runetrim.OneLine(truncRunes(string(args), resultLineMaxRunes)))
 		b.WriteString("\n")
 	}
 }
@@ -1489,20 +1517,20 @@ var jobResultKnownKeys = map[string]bool{
 	// ("Route delegate creation through stable resources"), 731a6bf05
 	// ("Preserve stable delegate identity in bounded create results"), and
 	// 0c182da4f ("fix: preserve stable delegate tool projections") — see
-	// stableDelegateCreateResult (agent/session_tools.go) and
+	// delegateCreateResult (agent/session_tools.go) and
 	// delegateSendResult (agent/session_tools_jobs.go). Neither struct carries a
 	// job_id family member; a "delegate"/"delegate_send" result identifies
 	// itself via delegate_id alone (jobResult.effectiveJobID's fallback).
 	// TestJobResultKnownKeysCoversLiveDelegateShapes (transcript_render_job_test.go)
 	// walks both structs' real marshaled output and fails, naming the key, the
 	// next time either struct grows a field this allowlist doesn't know — issue #194.
-	"child_session_id":    true, // stableDelegateCreateResult
-	"name":                true, // stableDelegateCreateResult (display label)
-	"model":               true, // stableDelegateCreateResult
-	"sandbox":             true, // stableDelegateCreateResult
-	"worktree":            true, // stableDelegateCreateResult, delegateSendResult
-	"warnings":            true, // stableDelegateCreateResult, delegateSendResult
-	"error":               true, // stableDelegateCreateResult (StartError)
+	"child_session_id":    true, // delegateCreateResult
+	"name":                true, // delegateCreateResult (display label)
+	"model":               true, // delegateCreateResult
+	"sandbox":             true, // delegateCreateResult
+	"worktree":            true, // delegateCreateResult, delegateSendResult
+	"warnings":            true, // delegateCreateResult, delegateSendResult
+	"error":               true, // delegateCreateResult (StartError)
 	"task":                true, // delegateSendResult
 	"description":         true, // delegateSendResult
 	"agent_type":          true, // delegateSendResult
@@ -1514,8 +1542,8 @@ var jobResultKnownKeys = map[string]bool{
 	"run_ended_at":        true, // delegateSendResult
 	"latest_activity_at":  true, // delegateSendResult
 	"cumulative_usage":    true, // delegateSendResult
-	"tools":               true, // stableDelegateCreateResult, delegateSendResult
-	"artifacts_dir":       true, // stableDelegateCreateResult
+	"tools":               true, // delegateCreateResult, delegateSendResult
+	"artifacts_dir":       true, // delegateCreateResult
 	"earlier_results":     true, // delegateSendResult, each rendered as a reply is
 }
 
@@ -1647,38 +1675,10 @@ func writeResultBody(b *strings.Builder, content any, full bool) {
 // fence at least one backtick longer than the longest backtick run in the body.
 func writeFencedBody(b *strings.Builder, body string, full bool) {
 	body = truncateBody(body, full)
-	fence := bodyFence(body)
+	fence := mdfence.Pick(body)
 	fmt.Fprintf(b, "  %s\n", fence)
 	b.WriteString(body)
 	fmt.Fprintf(b, "  %s\n", fence)
-}
-
-// minFenceBackticks is the minimum fenced-code-block fence length (CommonMark).
-const minFenceBackticks = 3
-
-// bodyFence returns a backtick fence guaranteed not to be closed by any backtick
-// run inside body: one backtick longer than the longest run found, never fewer
-// than minFenceBackticks.
-func bodyFence(body string) string {
-	n := max(longestBacktickRun(body)+1, minFenceBackticks)
-	return strings.Repeat("`", n)
-}
-
-// longestBacktickRun returns the length of the longest run of consecutive
-// backtick characters in s (0 if there are none).
-func longestBacktickRun(s string) int {
-	longest, run := 0, 0
-	for _, r := range s {
-		if r == '`' {
-			run++
-			if run > longest {
-				longest = run
-			}
-			continue
-		}
-		run = 0
-	}
-	return longest
 }
 
 // truncateBody returns the indented body text for a result code block. Empty
@@ -1741,29 +1741,6 @@ func indentLines(lines []string) string {
 	return b.String()
 }
 
-// toolIntent returns the value of an explicit "intent" argument, or "" if
-// none is present. Intent is never inferred from commands or paths. Falls
-// back to "purpose" — the field's name before the 2026-08-29 rename
-// (7512a736e) — so a transcript recorded before that rename still shows its
-// intent line when read back (issue #709). Spec §Tool Call Condensation.
-func toolIntent(args json.RawMessage) string {
-	m := parseArgs(args)
-	if m == nil {
-		return ""
-	}
-	if v, ok := m["intent"]; ok {
-		if s := scalarString(v); s != "" {
-			return s
-		}
-	}
-	if v, ok := m["purpose"]; ok {
-		if s := scalarString(v); s != "" {
-			return s
-		}
-	}
-	return ""
-}
-
 // parseArgs decodes tool-call arguments into a map, or nil on any error.
 func parseArgs(args json.RawMessage) map[string]any {
 	if len(args) == 0 {
@@ -1811,7 +1788,7 @@ func toolInputSummary(name string, args json.RawMessage) string {
 	// Non-object JSON (rejected-call raw bytes, or valid non-object args)
 	// falls through to a bounded raw rendering instead of an empty summary.
 	if m == nil && len(args) > 0 {
-		return oneLine(truncRunes(string(args), 120))
+		return runetrim.OneLine(truncRunes(string(args), 120))
 	}
 	get := func(key string) string {
 		if m == nil {
@@ -1969,10 +1946,4 @@ func truncRunes(s string, limit int) string {
 		return s
 	}
 	return string(r[:limit]) + "…"
-}
-
-// oneLine collapses newlines to spaces and strips carriage returns so a
-// summary never breaks its one-line card. Mirrors doctor.oneLine.
-func oneLine(s string) string {
-	return strings.ReplaceAll(strings.ReplaceAll(s, "\n", " "), "\r", "")
 }

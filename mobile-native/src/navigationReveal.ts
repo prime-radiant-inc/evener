@@ -4,7 +4,7 @@ import {
 	materializeSnapshot,
 	type ResourceKey,
 } from "@evener/appwire-client/state/navigation";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import type { PageSource } from "./navigationPages";
 
 export interface SessionLocation {

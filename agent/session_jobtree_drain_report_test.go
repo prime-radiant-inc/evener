@@ -42,8 +42,8 @@ func TestDrainTurnKeepsTheLatestAcceptedReport(t *testing.T) {
 	if reply, reported := s.communicatedReply(); !reported || reply != "REPLY_B" || s.CommunicateOutput() != "OUTPUT_B" {
 		t.Fatalf("reply=%q reported=%v output=%q, want report B restored", reply, reported, s.CommunicateOutput())
 	}
-	assertDelegateReportMessage(t, stableDelegateFinish(s, "REPLY_B", nil), "REPORT_B", output)
-	assertDelegateReportMessage(t, (&subagent{sess: s}).stableDelegateFinish("REPLY_B", nil), "REPORT_B", output)
+	assertDelegateReportMessage(t, buildDelegateFinish(s, "REPLY_B", nil), "REPORT_B", output)
+	assertDelegateReportMessage(t, (&subagent{sess: s}).buildDelegateFinish("REPLY_B", nil), "REPORT_B", output)
 }
 
 // Only the failure of a turn that reported nothing is swallowed: an unrelated
@@ -70,5 +70,31 @@ func TestDrainTurnWithoutAReportKeepsOtherErrors(t *testing.T) {
 				t.Fatalf("output = %q, want report A kept", s.CommunicateOutput())
 			}
 		})
+	}
+}
+
+// A drain input that sent its parent an end_turn=false update and then ended
+// without a report keeps that fact across the report restore, so a later
+// missing-report reminder acknowledges the update instead of claiming the
+// delegate never called the result tool (#3734).
+func TestDrainTurnKeepsTheNonTerminalUpdateFlag(t *testing.T) {
+	t.Parallel()
+	s := newSession(t, withoutGitSnapshot())
+	inputRunning(s, "REPORT_A")
+	process := s.keepingReport(func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
+		inputRunning(s, "")
+		s.mu.Lock()
+		s.comm.updated = true
+		s.mu.Unlock()
+		return "", errBareTextWithoutResultTool
+	})
+	if _, err := process(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("the housekeeping failure of a turn without a report propagated: %v", err)
+	}
+	if !s.CommunicateUpdate() {
+		t.Fatal("the report restore wiped the input's non-terminal update flag")
+	}
+	if reply, reported := s.communicatedReply(); !reported || reply != "REPORT_A" {
+		t.Fatalf("reply=%q reported=%v, want report A restored", reply, reported)
 	}
 }

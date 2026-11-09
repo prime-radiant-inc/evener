@@ -120,7 +120,7 @@ const valueRecordKeys = <T>(table: ValueRecordKeyTable<T>, nested?: ValueRecordK
 // knownKeys is exactKeys for a value record: every required key is present,
 // and a key the record's keys do not name is allowed. A newer hub adds
 // optional keys to value records without a ProtocolVersion bump
-// (appwire/types.go), and an app built before a key existed must keep reading
+// (appwire/types_protocol.go), and an app built before a key existed must keep reading
 // every page that carries it. The validators still check every key they name;
 // decodeNavigationResponse then drops the rest (dropUnknownKeys).
 const knownKeys = (value: unknown, keys: ValueRecordKeys): value is Record<string, unknown> =>
@@ -229,6 +229,7 @@ const SESSION_KEYS = valueRecordKeys<NavigationSessionSummary>(
     offline: "optional",
     archived: "optional",
     updated_at: "optional",
+    created_at: "optional",
     turn_ended_at: "optional",
     unseen: "optional",
     seen_through: "optional",
@@ -390,6 +391,7 @@ function sessionFieldsValue(value: unknown): value is Record<string, unknown> & 
     optional(value.offline, bool) &&
     optional(value.archived, bool) &&
     optional(value.updated_at, rfc3339Timestamp) &&
+    optional(value.created_at, rfc3339Timestamp) &&
     optional(value.turn_ended_at, rfc3339Timestamp) &&
     optional(value.unseen, bool) &&
     optional(value.seen_through, rfc3339Timestamp) &&

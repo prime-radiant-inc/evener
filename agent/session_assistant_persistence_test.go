@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -123,7 +122,7 @@ func TestDelegateAttention_ClosedWriterNoOpDoesNotPublishResidentTurn(t *testing
 func newDelegateAttentionTestSession(t *testing.T) *Session {
 	t.Helper()
 	stateDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(stateDir, sessionsSubdir), 0o755); err != nil {
+	if err := os.MkdirAll(schema.SessionsDir(stateDir), 0o755); err != nil {
 		t.Fatalf("mkdir sessions: %v", err)
 	}
 	const sessionID = "attention-session"
@@ -172,7 +171,7 @@ func TestSession_AssistantTranscriptFailureStopsBeforeToolDispatch(t *testing.T)
 	t.Cleanup(func() { _ = writer.Close() })
 
 	adapter := &fakeAdapter{name: "openai"}
-	adapter.steps = []func(llm.Request) llm.Response{
+	adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			fs.fail = true
 			return agenttest.ToolCallResponse(llm.ToolCallData{
@@ -182,7 +181,7 @@ func TestSession_AssistantTranscriptFailureStopsBeforeToolDispatch(t *testing.T)
 				Type:      "function",
 			})
 		},
-	}
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 

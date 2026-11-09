@@ -31,8 +31,10 @@ func defCompact() llm.ToolDefinition {
 					"type": "string",
 					"description": "Message to your post-compaction self, handed back verbatim right after " +
 						"the compaction, then cleared. Put the exact strings a summary would mangle here: " +
-						"IDs, paths, numbers, decisions, next steps. Empty string clears a pending note " +
-						"(and, with no compaction_instructions, skips the compaction).",
+						"IDs, paths, numbers, decisions, next steps. Empty string clears a pending note. " +
+						"It requests no new compaction only when compaction_instructions is also empty " +
+						"and reload_skills is absent or null; any present reload_skills value, even [], " +
+						"requests one. A compaction requested by an earlier call still runs.",
 				},
 				"compaction_instructions": map[string]any{
 					"type": "string",

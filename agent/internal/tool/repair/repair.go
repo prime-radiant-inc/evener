@@ -231,7 +231,7 @@ func dropEmptyOptionals(schema, obj map[string]any, path []pathStep, keep []stri
 			continue
 		}
 		field := stepPathDisplay(at)
-		if slices.Contains(required, key) || !emptyMeansAbsent(p, raw) || slices.Contains(keep, field) {
+		if slices.Contains(required, key) || !EmptyMeansAbsent(p, raw) || slices.Contains(keep, field) {
 			continue
 		}
 		delete(obj, key)
@@ -240,11 +240,13 @@ func dropEmptyOptionals(schema, obj map[string]any, path []pathStep, keep []stri
 	return changes
 }
 
-// emptyMeansAbsent reports whether raw, which is null or "", is a value the
+// EmptyMeansAbsent reports whether raw, which is null or "", is a value the
 // property's schema refuses and so can only mean the model left it out. null
 // counts whenever the schema refuses it; "" only on an enum that doesn't list
-// it.
-func emptyMeansAbsent(schema map[string]any, raw any) bool {
+// it. The agent-layer hub-branch guard consults it too, so its refusal skips
+// exactly the placeholders dropEmptyOptionals drops and names only arguments
+// the caller actually configured.
+func EmptyMeansAbsent(schema map[string]any, raw any) bool {
 	if raw == nil {
 		return !schemaAcceptsNull(schema)
 	}

@@ -7,7 +7,6 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
-	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/internal/appserver"
 )
 
@@ -45,7 +44,7 @@ func sessionSeenSet(ctx context.Context, cfg hubcore.WebConfig, navigation *Navi
 	}
 	marks := make([]hubcore.SessionSeenMark, 0, len(params.Sessions))
 	for _, mark := range params.Sessions {
-		ref, err := hubapi.ParseRef(mark.Ref)
+		ref, err := appwire.ParseRef(mark.Ref)
 		if err != nil {
 			return appwire.SessionSeenSetResponse{}, appwire.InvalidParams("sessions[].ref must be a session ref: " + err.Error())
 		}
@@ -55,11 +54,11 @@ func sessionSeenSet(ctx context.Context, cfg hubcore.WebConfig, navigation *Navi
 		if mark.SeenThrough > now.Add(maxSeenThroughLead).UnixMilli() {
 			return appwire.SessionSeenSetResponse{}, appwire.InvalidParams("sessions[].seenThrough is a hub or daemon timestamp and cannot be a day past the hub's clock")
 		}
-		source := hubcore.NormalizeDecisionSource(ref.HostID)
+		source := hubcore.NormalizeDecisionSource(ref.SourceID)
 		if err := validateDecisionSource(cfg, source); err != nil {
 			return appwire.SessionSeenSetResponse{}, err
 		}
-		marks = append(marks, hubcore.SessionSeenMark{Source: source, SessionID: ref.SessionID, SeenThrough: hubcore.UnixMilliTime(mark.SeenThrough), Unread: mark.Unread})
+		marks = append(marks, hubcore.SessionSeenMark{Source: source, SessionID: ref.ThreadID, SeenThrough: hubcore.UnixMilliTime(mark.SeenThrough), Unread: mark.Unread})
 	}
 	changed, err := cfg.SessionSeen.MarkBatch(marks)
 	if err != nil {

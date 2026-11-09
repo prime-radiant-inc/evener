@@ -63,7 +63,7 @@ package hostops
 //     host's stored bounds entry (§8 "Refusals", §11 `cursor-invalidated`).
 //   - The live `quarantineEpoch`: the custody-first quarantine (S8) persists
 //     and advances the counter outside the store file. The comparison itself
-//     is implemented here; CursorEpoch returns zero until that slice lands.
+//     is implemented here; the epoch pair is zero until that slice lands.
 // §11 pins a closed stale-entry value set with no cursor-specific value; every
 // cursor stale-entry arm names `generation`, the value the token paths use for
 // any move of the pinned (generation, incarnationId) identity. The handler
@@ -451,21 +451,11 @@ type CursorEpoch struct {
 	QuarantineEpoch uint64
 }
 
-// CursorEpoch returns the live epoch pair: the compaction position, persisted
-// in the store file and advanced by every compacting write (§4), and the
-// quarantine epoch, persisted outside the quarantined file and advanced by
-// exactly one per corrupt-store quarantine (§4).
-func (s *Store) CursorEpoch() CursorEpoch {
-	if s == nil {
-		return CursorEpoch{}
-	}
-	s.cell.mu.Lock()
-	defer s.cell.mu.Unlock()
-	return s.cursorEpochLocked()
-}
-
-// cursorEpochLocked is CursorEpoch's locked body, which ReadOperations' caller
-// already holds the store mutex for.
+// cursorEpochLocked returns the live epoch pair: the compaction position,
+// persisted in the store file and advanced by every compacting write (§4), and
+// the quarantine epoch, persisted outside the quarantined file and advanced by
+// exactly one per corrupt-store quarantine (§4). The caller holds the store
+// mutex.
 func (s *Store) cursorEpochLocked() CursorEpoch {
 	return CursorEpoch{CompactSeq: s.cell.state.CompactSeq, QuarantineEpoch: s.cell.quarantineEpoch}
 }

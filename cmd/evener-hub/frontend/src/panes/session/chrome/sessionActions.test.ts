@@ -2,6 +2,7 @@
 
 import type { ThreadModel } from "@evener/appwire-client";
 import { expect, test } from "vitest";
+import { ALL_CAPABILITIES } from "../../../threadTestUtils";
 import { lastUserMessageText } from "./sessionActions";
 
 // lastUserMessageText backs the chrome-level "Fork" action: unlike the
@@ -33,21 +34,7 @@ function model(turns: ThreadModel["turns"]): ThreadModel {
     jobsUpdatedAt: null,
     jobsTreeRevision: null,
     lastFrameAt: 0,
-    capabilities: {
-      send: true,
-      steer: true,
-      interrupt: true,
-      compact: true,
-      clear: true,
-      forkFromTurn: true,
-      shutdown: true,
-      changeModel: true,
-      changeVisionModel: true,
-      queue: true,
-      goal: true,
-      sharedNotes: true,
-      rename: true,
-    },
+    capabilities: ALL_CAPABILITIES,
     goal: null,
     humanNote: "",
     agentNote: "",

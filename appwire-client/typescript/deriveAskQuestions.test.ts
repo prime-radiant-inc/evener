@@ -192,7 +192,7 @@ test("a steering item with source user AFTER an ask_user ack resolves it", () =>
 });
 
 // A human-note update also carries source "user" (the note text a human
-// wrote, steered in as SteeringKindHumanNote - agent/session_notes_rpc.go's
+// wrote, steered in as SteeringKindHumanNote - agent/session_notes_selfecho.go's
 // steeringOrigin machinery), but writing a note is not answering the
 // question: it must not resolve a pending ask, or the dock disappears while
 // the ask itself stays open on the server (the TS twin of the server's own
@@ -287,6 +287,32 @@ test("the boundary spans multiple turns - order follows the turns array, not per
 test("an ask_user item with unparseable argumentsJSON contributes no questions", () => {
   const m = model([turn("t1", [askItem("i1", "t1", "call_1", { argumentsJSON: "{not json" })])]);
   expect(liveAskQuestions(m)).toEqual([]);
+});
+
+// The single-question shorthand form (see askShared.ts for the form): the
+// dock must derive its question exactly like a batch-form call's, or the
+// session sits awaiting an answer no surface can show.
+test("a live shorthand-form ask_user call contributes its question to the dock set", () => {
+  const shorthand = JSON.stringify({
+    question: "What should one load cost?",
+    options: [
+      { label: "Materialize", detail: "rebuild off-request" },
+      { label: "Compute on read", detail: "fewer queries" },
+    ],
+  });
+  const m = model([turn("t1", [askItem("i1", "t1", "call_1", { argumentsJSON: shorthand })])]);
+  expect(liveAskQuestions(m)).toEqual([
+    expect.objectContaining({
+      key: "call_1:0",
+      callId: "call_1",
+      header: "Question 1",
+      question: "What should one load cost?",
+      options: [
+        { label: "Materialize", detail: "rebuild off-request", recommended: false },
+        { label: "Compute on read", detail: "fewer queries", recommended: false },
+      ],
+    }),
+  ]);
 });
 
 test("an ask_user item with no callId falls back to its item id for the key", () => {

@@ -18,7 +18,7 @@ import type { MutationOutboxRecord, MutationRecoveryRecord } from "../../../../s
 import type { InputAttachment } from "../../../../stores/threads";
 import {
   captureRecoveryStopBarrier,
-  retryBlockedBySnapshot,
+  retryBlockedForTarget,
   threadsStore,
   useEditableQueuedMutationEntries,
   useThreadsStore,
@@ -26,9 +26,17 @@ import {
 import { Button, IconButton, Tooltip, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import {
+  pushRecoveryRefusal,
+  pushSelectionRefusal,
+  type RecoveryRefusal,
+  selectionRefusal,
+  submitDraftToStore,
+} from "../submitProtocol";
+import {
   discardRecoveryPendingTurn,
   editQueuedPendingTurn,
   type PendingTurnEntry,
+  refreshPendingTurnsProjection,
   removeQueuedPendingTurn,
   resendRecoveryPendingTurn,
   retryBlockedPendingTurn,
@@ -60,6 +68,10 @@ const CLASS = {
 // util).
 export interface QueueStripProps {
   ref: string;
+  // The composer pane's durable seat. The strip's drain submits as this
+  // pane, so its sends - and any row a refusal bounces from them - carry the
+  // seat the composer's own sends carry.
+  compositionOwnerId?: string;
   // Returns the composer's CURRENT text/attachments/hasPending at the moment
   // the drain affordance is used - drainAsSteer atomically appends this to
   // the queue before draining the whole thing into the active turn as one
@@ -192,6 +204,7 @@ function editDisabledReason(opts: {
 
 export function QueueStrip({
   ref: sessionRef,
+  compositionOwnerId,
   getComposerText,
   onRestoreToComposer,
   activeRecoveryId,
@@ -204,9 +217,6 @@ export function QueueStrip({
   onDrainBusyChange,
 }: QueueStripProps): ReactNode {
   const model = useThreadsStore((s) => s.threads.get(sessionRef));
-  const mutationAuthority = useThreadsStore((s) => s.mutationAuthorityRefs.has(sessionRef));
-  const recoveryObligated = useThreadsStore((s) => s.restartBlockingObligations.has(sessionRef));
-  const reconciliationStorageBlocked = useThreadsStore((s) => s.mutationReconciliationStorageBlocked.has(sessionRef));
   const refusedId = useThreadsStore((s) => s.transientRefusalPaces.get(sessionRef)?.clientMutationId);
   const editableEntries = useEditableQueuedMutationEntries(sessionRef);
   const editableIds = new Set(editableEntries.map((record) => record.clientMutationId));
@@ -230,9 +240,28 @@ export function QueueStrip({
     ...blockedEntries.map((record) => ({ kind: "blocked" as const, record })),
     ...canceledEntries.map((record) => ({ kind: "canceled" as const, record })),
     ...editableEntries
-      .filter((record) => record.state !== "canceled")
+      // Canceled and uncertain rows have their own slot above (the label says
+      // which); the action set on every slot is the same one now.
+      .filter((record) => record.state === "submitting")
       .map((record) => ({ kind: "waiting" as const, record })),
   ].sort((left, right) => left.record.intentSequence - right.record.intentSequence);
+  // Retry eligibility is ROW-scoped: each durable row's Retry reads its own
+  // target's flags (retryBlockedForTarget), and a retargeted row's target is
+  // not this pane's ref. Subscribe to every row target's flags as one
+  // primitive key, so the strip re-renders exactly when one of them flips.
+  const retryTargets = [...new Set(durableEntries.map((entry) => entry.record.targetRef))];
+  useThreadsStore((s) =>
+    retryTargets
+      .map((target) =>
+        [
+          s.threads.get(target)?.status.type ?? "",
+          s.mutationAuthorityRefs.has(target),
+          s.restartBlockingObligations.has(target),
+          s.mutationReconciliationStorageBlocked.has(target),
+        ].join("\u0000"),
+      )
+      .join("\u0001"),
+  );
   const toasts = useToasts();
   // Keyed by daemon-minted entryId (stable across a re-render even as
   // indices shift), not row index - mirrors the legacy renderer's own
@@ -281,13 +310,23 @@ export function QueueStrip({
     localActions.current.add(id);
     setRowBusy(id, true);
     try {
+      // The row's OWN destination identity governs its controls: a
+      // retargeted row surfaced under the displayed ref carries the resumed
+      // session as its targetRef, and the identity checks inside edit and
+      // remove reject a pane ref that differs from the row's destination.
+      // The destination ref's refresh runs inside the wrapper; the DISPLAYED
+      // pane - the one the user is pressing in - refreshes its own
+      // projection here, or the surfaced row lingers in the strip after the
+      // operation that consumed it.
+      const ref = record.targetRef;
       if (action === "edit") {
-        const recovery = await editQueuedPendingTurn(id, sessionRef);
+        const recovery = await editQueuedPendingTurn(id, ref);
         if (recovery) await onEditRecovery?.(recovery);
-        else toasts.push("info", "This message changed in another tab. Refresh and try again.");
-      } else if (!(await removeQueuedPendingTurn(id, sessionRef))) {
-        toasts.push("info", "This message changed in another tab. Refresh and try again.");
+        else pushRecoveryRefusal("changed");
+      } else if (!(await removeQueuedPendingTurn(id, ref))) {
+        pushRecoveryRefusal("changed");
       }
+      if (ref !== sessionRef) await refreshPendingTurnsProjection(sessionRef);
     } catch (error) {
       toasts.push("error", sessionActionError(action === "edit" ? "Edit failed" : "Remove failed", error));
     } finally {
@@ -421,21 +460,13 @@ export function QueueStrip({
       releaseRecoveryOperation?.();
       return;
     }
-    // The UI-side half of the skillInput gate, mirroring Composer's own
-    // submitAction: a target that does not advertise the capability keeps
-    // the draft and hears why instead of enqueueing a drain the store (and
-    // the hub) would refuse.
-    if ((skillNames?.length ?? 0) > 0 && model?.capabilities.skillInput !== true) {
-      toasts.push("error", "Skill selections aren't supported on this session yet; your draft is kept");
+    const selectionGate = selectionRefusal({ skillNames, commandNames }, model?.capabilities);
+    if (selectionGate) {
+      pushSelectionRefusal(selectionGate);
       releaseRecoveryOperation?.();
       return;
     }
-    if ((commandNames?.length ?? 0) > 0 && model?.capabilities.commandInput !== true) {
-      toasts.push("error", "Command selections are not supported on this session; your draft is kept");
-      releaseRecoveryOperation?.();
-      return;
-    }
-    let recoveryRefusal: "changed" | "consumed" | undefined;
+    let recoveryRefusal: RecoveryRefusal | undefined;
     const recoveryResendRefusal = new Error("Recovery resend was refused");
     // Capture the Stop fence before any await: a Stop during the autosave
     // wait must still land between this submission and its mutation.
@@ -443,13 +474,6 @@ export function QueueStrip({
     onDrainBusyChange(true);
     try {
       let expectedRecoveryRevision = activeRecoveryRevision;
-      if (activeRecoveryId && getRecoveryRevision) {
-        expectedRecoveryRevision = await getRecoveryRevision();
-        if (expectedRecoveryRevision === undefined) {
-          toasts.push("info", "This message changed in another tab. Refresh and try again.");
-          return;
-        }
-      }
       await submitWithPendingTracking(
         {
           ref: sessionRef,
@@ -464,6 +488,15 @@ export function QueueStrip({
           },
         },
         async () => {
+          // The revision read belongs to this submission, so the per-ref guard
+          // is held while it runs (#4605).
+          if (activeRecoveryId && getRecoveryRevision) {
+            expectedRecoveryRevision = await getRecoveryRevision();
+            if (expectedRecoveryRevision === undefined) {
+              recoveryRefusal = "changed";
+              throw recoveryResendRefusal;
+            }
+          }
           if (activeRecoveryId) {
             const outcome = await resendRecoveryPendingTurn(
               activeRecoveryId,
@@ -478,6 +511,7 @@ export function QueueStrip({
               activeRecoveryId && expectedRecoveryRevision !== undefined
                 ? { [activeRecoveryId]: expectedRecoveryRevision }
                 : undefined,
+              compositionOwnerId,
             );
             if (outcome.status !== "sent") {
               recoveryRefusal = outcome.status === "refused" ? "changed" : "consumed";
@@ -485,9 +519,12 @@ export function QueueStrip({
             }
             return;
           }
-          return threadsStore
-            .getState()
-            .drainAsSteer(sessionRef, text, attachments, skillNames, commandNames, mentions);
+          return submitDraftToStore(
+            "drain",
+            sessionRef,
+            { text, attachments, skillNames, commandNames, mentions },
+            compositionOwnerId,
+          );
         },
       );
       onDrainSuccess();
@@ -495,9 +532,7 @@ export function QueueStrip({
       // Already reported via onFailure above; swallow so the rejection
       // doesn't reach React as an unhandled promise rejection from this
       // fire-and-forget click handler.
-      if (recoveryRefusal === "changed")
-        toasts.push("info", "This message changed in another tab. Refresh and try again.");
-      else if (recoveryRefusal === "consumed") toasts.push("info", "This message was already sent in another tab.");
+      if (recoveryRefusal) pushRecoveryRefusal(recoveryRefusal);
     } finally {
       onDrainBusyChange(false);
       releaseRecoveryOperation?.();
@@ -549,7 +584,7 @@ export function QueueStrip({
         undefined,
         record.compositionRevision ?? 0,
       );
-      if (!discarded) toasts.push("info", "This message changed in another tab. Refresh and try again.");
+      if (!discarded) pushRecoveryRefusal("changed");
     } catch (error) {
       toasts.push("error", `Couldn't dismiss this row: ${errorText(error)}`);
     } finally {
@@ -762,23 +797,16 @@ export function QueueStrip({
                       disabled={
                         rowBusy ||
                         // Retry is offered only when retryBlockedMutation can
-                        // actually act. Its snapshot-level refusals - every
-                        // notLoaded or restartRequired snapshot, any ref without
-                        // mutation authority, and a restart-blocking obligation
-                        // (a Stop, or a snapshot the daemon reports as
-                        // restartRequired/resumeRequired) - are shared with it as
-                        // retryBlockedBySnapshot (stores/threads.ts), so a
-                        // recovery-fenced local session keeps Retry disabled until
-                        // the explicit Resume action restores it; without the
-                        // obligation term an idle fenced row would offer a Retry
-                        // that always fails.
-                        retryBlockedBySnapshot(model?.status.type, mutationAuthority, recoveryObligated) ||
-                        // A storage-blocked ref refuses the press too - but its
-                        // press would first hang on the wedged storage read
-                        // before failing, so mirror the refusal here and let the
-                        // button return when discovery's reconcile retry clears
-                        // the state.
-                        reconciliationStorageBlocked
+                        // actually act, and it acts on the ROW's own target -
+                        // which for a retargeted row is not this pane's ref.
+                        // retryBlockedForTarget (stores/threads.ts) reads the
+                        // target's snapshot flags and its storage-blocked
+                        // fence, the same inputs the press consults, so a
+                        // fenced DISPLAYED session cannot disable a row whose
+                        // healthy target could proceed - and a fenced TARGET
+                        // keeps Retry disabled here exactly as its press
+                        // would refuse.
+                        retryBlockedForTarget(record.targetRef)
                       }
                       onClick={() => void handleRetry(record)}
                     >

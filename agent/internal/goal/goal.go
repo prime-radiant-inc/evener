@@ -4,15 +4,19 @@ package goal
 import (
 	"sync"
 	"time"
+
+	"primeradiant.com/evener/appwire"
 )
 
-// Status represents the lifecycle state of a goal.
-type Status string
+// Status represents the lifecycle state of a goal. It is the declared goal
+// machine in appwire, so the goal engine, the wire's GoalState and the client
+// union name the same states.
+type Status = appwire.GoalStatus
 
 const (
-	StatusActive   Status = "active"
-	StatusComplete Status = "complete"
-	StatusBlocked  Status = "blocked"
+	StatusActive   = appwire.GoalStatusActive
+	StatusComplete = appwire.GoalStatusComplete
+	StatusBlocked  = appwire.GoalStatusBlocked
 )
 
 // Caps. See spec §1. There is no iteration cap — the no-progress breaker is the
@@ -95,6 +99,9 @@ func (s *Store) Snapshot() (Snapshot, bool) {
 func (s *Store) SetTerminal(status Status, reason string, now time.Time) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if !status.Valid() || !status.IsTerminal() {
+		return false
+	}
 	if s.goal == nil || s.goal.Status != StatusActive {
 		return false
 	}

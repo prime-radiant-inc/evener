@@ -15,7 +15,7 @@ import (
 
 	"github.com/spf13/afero"
 
-	"primeradiant.com/evener/cmd/evener-hub/internal/fsdurability"
+	"primeradiant.com/evener/execsupport/fsatomic"
 )
 
 // This file owns §4's custody-first quarantine of a corrupt operation-store file
@@ -865,7 +865,7 @@ func writeQuarantineFile(fs afero.Fs, path string, data []byte, faults storeFaul
 	if err := fs.Chmod(tempPath, 0o600); err != nil {
 		return fmt.Errorf("hostops: set quarantine file mode: %w", err)
 	}
-	if err := temp.Sync(); err != nil && !fsdurability.SyncUnsupported(err) {
+	if err := temp.Sync(); err != nil && !fsatomic.SyncUnsupported(err) {
 		return fmt.Errorf("hostops: sync temp quarantine file: %w", err)
 	}
 	if err := temp.Close(); err != nil {

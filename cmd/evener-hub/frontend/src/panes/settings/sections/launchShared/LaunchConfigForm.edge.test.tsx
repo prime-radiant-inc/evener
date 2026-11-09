@@ -14,12 +14,12 @@ import type {
   LaunchOption,
   PathValidateResponse,
 } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { connectionStore } from "../../../../stores/connection";
+import { resetConnectionStoreForTests } from "../../../../stores/connection";
 import { resetExtensionsStoreForTests } from "../../../../stores/extensions";
+import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { LaunchConfigForm } from "./LaunchConfigForm";
 
@@ -29,17 +29,11 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
-
 beforeEach(() => {
   vi.useRealTimers();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetExtensionsStoreForTests();
-  connectFakeClient();
+  connectReadyFakeClient();
 });
 
 const OK_VALIDATE = async (path: string): Promise<PathValidateResponse> => ({ path, valid: true });

@@ -46,10 +46,10 @@ orientation `job_status` call (ideally zero) and then goes idle.
 ## Expected
 
 - The first parent turn calls `delegate`, which returns a `delegate_id` and no
-  job identity at all (`agent/session_tools.go#stableDelegateCreateResult`). It
+  job identity at all (`agent/session_tools_delegate.go#delegateCreateResult`). It
   cannot have set `max_wait_ms`: creation rejects the key outright with
   `invalid_request: delegate creation does not accept max_wait_ms`
-  (`agent/session_tools.go#stableDelegateCreateTool`). What matters is what
+  (`agent/session_tools_delegate.go#delegateCreateTool`). What matters is what
   happens **after** the delegate is running.
 - **The parent goes idle without a poll loop.** Between the `delegate` result and
   the completion notification it makes **at most one** `job_status`/`job_list`

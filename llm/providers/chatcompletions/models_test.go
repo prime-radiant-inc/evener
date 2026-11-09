@@ -167,6 +167,19 @@ func TestListModelsGatewayReasoningFollowsTheCapability(t *testing.T) {
 	}
 }
 
+// TestListModelsGatewayToolsFollowsTheCapability pins the per-model tool
+// verdict's precedence over the provider-wide parameter list. A row that lists
+// tools in supported_parameters but states capabilities.tools false must
+// resolve tool-less: the gateway's own verdict is the narrower fact.
+func TestListModelsGatewayToolsFollowsTheCapability(t *testing.T) {
+	if c := listRow(t, `{"id":"tools-gateway","supported_parameters":["tools"],"capabilities":{"tools":false}}`); c.Tools == nil || *c.Tools {
+		t.Fatalf("Tools = %v, want an explicit false from capabilities.tools", c.Tools)
+	}
+	if c := listRow(t, `{"id":"tools-gateway","capabilities":{"tools":true}}`); c.Tools == nil || !*c.Tools {
+		t.Fatalf("Tools = %v, want true from capabilities.tools", c.Tools)
+	}
+}
+
 // TestListModelsGatewayWithoutPiKeepsOtherFacts pins that a gateway which
 // publishes no Pi compat block still contributes its capabilities and limits;
 // the absence of a ladder must stay nil, not become an empty one.
@@ -387,5 +400,15 @@ func TestListModelsReadsGatewayVisionCapability(t *testing.T) {
 	}
 	if c := listRow(t, `{"id":"both-model","architecture":{"input_modalities":["text"]},"capabilities":{"vision":true}}`); c.AcceptsModality("image") || len(c.InputModalities) != 1 {
 		t.Fatalf("architecture.input_modalities must win over capabilities.vision: %+v", c.InputModalities)
+	}
+}
+
+// TestListModelsDecodeFailure pins the listing's decode arm: a 200 body that
+// is not the models JSON shape fails the listing rather than yielding empty
+// rows silently.
+func TestListModelsDecodeFailure(t *testing.T) {
+	srv, _ := server(t, 200, `not json at all`)
+	if _, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), liveRes(srv, nil)); err == nil {
+		t.Fatal("an undecodable models listing must fail")
 	}
 }

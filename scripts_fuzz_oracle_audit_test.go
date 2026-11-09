@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/gittest"
 )
 
 // TestFuzzOracleAuditClassifiesMutations is the integration contract for
@@ -34,9 +36,9 @@ func TestFuzzOracleAuditClassifiesMutations(t *testing.T) {
 	requireFuzzScriptTools(t)
 
 	repo := t.TempDir()
-	runGit(t, repo, "init", "-q")
-	runGit(t, repo, "config", "user.email", "fuzzoracleaudit-test@example.com")
-	runGit(t, repo, "config", "user.name", "fuzzoracleaudit-test")
+	gittest.Run(t, repo, "init", "-q")
+	gittest.Run(t, repo, "config", "user.email", "fuzzoracleaudit-test@example.com")
+	gittest.Run(t, repo, "config", "user.name", "fuzzoracleaudit-test")
 
 	writeAuditScriptFixture(t, filepath.Join(repo, "go.mod"), "module example.com/audittest\n\ngo 1.25.0\n")
 
@@ -63,8 +65,8 @@ func FuzzDouble(f *testing.F) {
 	}
 
 	writeDouble("\treturn n + n")
-	runGit(t, repo, "add", "-A")
-	runGit(t, repo, "commit", "-q", "-m", "base: correct Double + oracle")
+	gittest.Run(t, repo, "add", "-A")
+	gittest.Run(t, repo, "commit", "-q", "-m", "base: correct Double + oracle")
 
 	mutDir := filepath.Join(repo, "fuzz", "mutations")
 
@@ -72,7 +74,7 @@ func FuzzDouble(f *testing.F) {
 	// oracle must redden -> the audit reports "caught".
 	writeDouble("\treturn n + 1")
 	writeAuditScriptFixture(t, filepath.Join(mutDir, "caught.patch"), gitOutput(t, repo, "diff")+"\n")
-	runGit(t, repo, "checkout", "-q", "--", "double.go")
+	gittest.Run(t, repo, "checkout", "-q", "--", "double.go")
 
 	// blind.patch: Double is wrong ONLY for n==7, which the seed {3} never
 	// reaches, so the target stays green -> the audit reports "BLIND" (the
@@ -80,14 +82,14 @@ func FuzzDouble(f *testing.F) {
 	// rule is what prevents this in real use).
 	writeDouble("\tif n == 7 {\n\t\treturn 999\n\t}\n\treturn n + n")
 	writeAuditScriptFixture(t, filepath.Join(mutDir, "blind.patch"), gitOutput(t, repo, "diff")+"\n")
-	runGit(t, repo, "checkout", "-q", "--", "double.go")
+	gittest.Run(t, repo, "checkout", "-q", "--", "double.go")
 
 	// broken.patch: applies cleanly but does not COMPILE (calls an undefined
 	// symbol). It must score ERR, never "caught" -- a non-zero `go test` from
 	// a build failure is not the oracle reddening.
 	writeDouble("\treturn undefinedSymbol(n)")
 	writeAuditScriptFixture(t, filepath.Join(mutDir, "broken.patch"), gitOutput(t, repo, "diff")+"\n")
-	runGit(t, repo, "checkout", "-q", "--", "double.go")
+	gittest.Run(t, repo, "checkout", "-q", "--", "double.go")
 
 	// rot.patch: references context that does not exist in double.go -> git
 	// apply fails -> "ROT". Deliberately synthetic (not derived from a real

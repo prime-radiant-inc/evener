@@ -324,10 +324,7 @@ func TestTurnStartResumeOnlyFenceLaunchesDaemonAndDeliversTurn(t *testing.T) {
 	workingDir := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
 	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	ref := "local:" + sessionID
 
 	locks := hubcore.NewResumeLocks()
@@ -369,12 +366,7 @@ func TestTurnStartResumeOnlyFenceLaunchesDaemonAndDeliversTurn(t *testing.T) {
 	roster := hubcore.NewRoster(runDir, nil)
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past, ResumeLocks: locks})
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: ref, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}}); err != nil {
 		t.Fatalf("turn/start under the resume-only fence: %v", err)
 	}

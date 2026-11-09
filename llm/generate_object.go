@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"sync"
+
+	"github.com/santhosh-tekuri/jsonschema/v5"
 )
 
 // GenerateObjectOptions configures object generation. It embeds GenerateOptions
@@ -16,6 +18,34 @@ import (
 type GenerateObjectOptions struct {
 	GenerateOptions
 	Schema map[string]any
+}
+
+// generateOptions returns the embedded options with a json_schema response
+// format derived from Schema. Provider-specific structured output configuration
+// is handled at the adapter layer.
+func (o GenerateObjectOptions) generateOptions() GenerateOptions {
+	ro := o.GenerateOptions
+	ro.ResponseFormat = &ResponseFormat{
+		Type:       "json_schema",
+		JSONSchema: o.Schema,
+		Strict:     true,
+	}
+	return ro
+}
+
+// parseObject decodes text as JSON and validates it against schema. A
+// validation failure reports validationText in the NoObjectGeneratedError.
+func parseObject(schema *jsonschema.Schema, text, validationText string) (any, error) {
+	var out any
+	dec := json.NewDecoder(bytes.NewReader([]byte(text)))
+	dec.UseNumber()
+	if err := dec.Decode(&out); err != nil {
+		return nil, NewNoObjectGeneratedError(fmt.Sprintf("failed to parse JSON output: %v", err), text, err)
+	}
+	if err := schema.Validate(out); err != nil {
+		return nil, NewNoObjectGeneratedError(fmt.Sprintf("JSON output failed schema validation: %v", err), validationText, err)
+	}
+	return out, nil
 }
 
 var (
@@ -33,13 +63,7 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateR
 	if opts.Schema == nil {
 		return nil, &ConfigurationError{Message: "schema is required"}
 	}
-	// Provider-specific structured output configuration is handled at the adapter layer.
-	ro := opts.GenerateOptions
-	ro.ResponseFormat = &ResponseFormat{
-		Type:       "json_schema",
-		JSONSchema: opts.Schema,
-		Strict:     true,
-	}
+	ro := opts.generateOptions()
 	res, err := Generate(ctx, ro)
 	if err != nil {
 		return nil, err
@@ -47,19 +71,13 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateR
 
 	text := stripMarkdownCodeFence(res.Text)
 
-	var out any
-	dec := json.NewDecoder(bytes.NewReader([]byte(text)))
-	dec.UseNumber()
-	if err := dec.Decode(&out); err != nil {
-		return nil, NewNoObjectGeneratedError(fmt.Sprintf("failed to parse JSON output: %v", err), text, err)
-	}
-
 	schema, err := compileSchema(opts.Schema)
 	if err != nil {
 		return nil, err
 	}
-	if err := schema.Validate(out); err != nil {
-		return nil, NewNoObjectGeneratedError(fmt.Sprintf("JSON output failed schema validation: %v", err), res.Text, err)
+	out, err := parseObject(schema, text, res.Text)
+	if err != nil {
+		return nil, err
 	}
 	res.Output = out
 	return res, nil
@@ -123,12 +141,7 @@ func StreamGenerateObject(ctx context.Context, opts GenerateObjectOptions) (*Str
 		return nil, err
 	}
 
-	ro := opts.GenerateOptions
-	ro.ResponseFormat = &ResponseFormat{
-		Type:       "json_schema",
-		JSONSchema: opts.Schema,
-		Strict:     true,
-	}
+	ro := opts.generateOptions()
 
 	streamGenerateObjectStartMu.RLock()
 	inner, err := streamGenerateObjectStart(ctx, ro)
@@ -174,25 +187,13 @@ func StreamGenerateObject(ctx context.Context, opts GenerateObjectOptions) (*Str
 			text = stripMarkdownCodeFence(resp.Text())
 		}
 
-		var out any
-		dec := json.NewDecoder(bytes.NewReader([]byte(text)))
-		dec.UseNumber()
-		if err := dec.Decode(&out); err != nil {
-			res.mu.Lock()
-			res.objErr = NewNoObjectGeneratedError(fmt.Sprintf("failed to parse JSON output: %v", err), text, err)
-			res.mu.Unlock()
-			return
-		}
-
-		if err := compiledSchema.Validate(out); err != nil {
-			res.mu.Lock()
-			res.objErr = NewNoObjectGeneratedError(fmt.Sprintf("JSON output failed schema validation: %v", err), text, err)
-			res.mu.Unlock()
-			return
-		}
-
+		out, err := parseObject(compiledSchema, text, text)
 		res.mu.Lock()
-		res.output = out
+		if err != nil {
+			res.objErr = err
+		} else {
+			res.output = out
+		}
 		res.mu.Unlock()
 	}()
 

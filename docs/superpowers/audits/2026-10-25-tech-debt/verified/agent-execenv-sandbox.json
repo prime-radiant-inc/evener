@@ -1,0 +1,170 @@
+[
+ {
+  "id": "agent-execenv-sandbox-1",
+  "title": "god file",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Counts verified: local.go 3647 lines, 123 funcs, 84 LocalExecutionEnvironment methods, 31-32 struct fields (local.go:70-). scratchMu comment (local.go:188) says it guards 'both' scratch fields. Size is real but a mechanical split is cosmetic; the real cost is the scratch lock set. Severity high overstated (no bug evidence)."
+ },
+ {
+  "id": "agent-execenv-sandbox-2",
+  "title": "file op dispatch",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Dispatch repeated in ReadFileAndBytesCtx (1591), WriteFile (1742), EditFileWithCtx (1804), ReadFileRawCtx/WriteFileRaw/RemovePath/RenamePath (mutator.go:261-346). WriteFile vs WriteFileRaw differ only in tool name, perm, message (confirmed). But arms are NOT uniform: reads skip requireLiveSandboxRootForRelative, edit adds checkWritable before read, ReadFileRawCtx uses resolveWrite for a read, RenamePath has two endpoints with cross-scratch refusal. A single fileTarget needs an op-kind param; -250 LOC is optimistic (~-120).",
+  "revised_fix_plan": "Land table test of denial parity first. Then (a) WriteFile -> thin wrapper over a shared write helper (WriteFileRaw with tool name param), (b) extract fileTarget(tool, path, mode read|write) for the 5 single-path ops; leave RenamePath's two-endpoint logic explicit. Do not change read-path requireLive behavior in the refactor."
+ },
+ {
+  "id": "agent-execenv-sandbox-3",
+  "title": "grep/glob walk dup",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Opened local.go:2755-2870 and securepath_browse_fdops_unix.go:188-380: ~90-line closure is near-identical (cancel check, same 8-line globBudgetError comment, dot/ignore/pseudo skips, budget.listing(true) comment copy, grepFileSelected, errGrepFileTooLarge, feed/finishWalk). Differences: underMasked checks, singleFile handling (off arm inlines large-file window search; sandbox arm uses grepNamedFile) - real drift. Security boundary so medium not high."
+ },
+ {
+  "id": "agent-execenv-sandbox-4",
+  "title": "list_dir walkers",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "listDirectory (local.go:2089) closure walk with inline DirEntry build (IsSymlink/Size/ModTime/IsRegular/IsExec at 2111-2125), listDirWalk (listdir.go:237), walkDirFd and walkDirFdBudgeted (securepath_fdops_unix.go:771,786). session_tools_shell.go:229 switch has legacy default for test doubles. Note ListDirectory stays unbounded for other callers; unlimited budget must preserve that."
+ },
+ {
+  "id": "agent-execenv-sandbox-5",
+  "title": "ripgrep arm",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "rg_capture.go is 393 lines; GrepSkipping (local.go:2398) gates rg via grepTakesNativeArm; grepRgOversizeCount (2549); ripgrepOutputLines (2639). buildRipgrepArgs (2331) is only called from fuzz_fc2_grepargs_test.go. Deleting rg is a product/perf decision for Jesse; deleting buildRipgrepArgs requires removing that fuzz target."
+ },
+ {
+  "id": "agent-execenv-sandbox-6",
+  "title": "optional interfaces",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "12 optional interfaces confirmed (execenv.go). ReadFileAndBytes has only test callers; EditFileWith only EditFile (local.go:1786) and confirmed_files_test. BUT 'only Local plus env_deny implements them' is wrong: agenttest.FakeEnv, DenyEnv and 18+ test ExecCommand implementers exist, and many test doubles deliberately implement StreamCommand/DetachCommand alone (job_shell_test.go, subagent_owned_job_drain_test.go, cmd/evener/run_drain_test.go) to exercise capability-absent branches. Collapsing means rewriting those fakes; production has one impl so the branches are production-dead but test-live. High overstated.",
+  "revised_fix_plan": "Step 1 (no approval needed beyond normal): delete wrapper-only variants ReadFileAndBytes (non-Ctx) and EditFileWith, retarget tests. Step 2: ask Jesse whether to fold Ctx/budgeted forms into ExecutionEnvironment; count test doubles first; do per family."
+ },
+ {
+  "id": "agent-execenv-sandbox-7",
+  "title": "path containment dup",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Verified distinct copies: sandbox/resolve.go:293 pathUnder (Rel), execenv/securepath.go:497 (comment 'mirrors sandbox.pathUnder'), project_resolver.go:302 pathContains, securepath_browse.go:631 pseudoRootCovers (HasPrefix), gitpath.go:150, sandbox/session_scratch.go:213 pathWithin (empty-root guard), session_tools_worktree.go:1685 pathWithin, plugins/marketplaces.go:1449 pathUnder(dir,path) returns rel (different arg order/return), fspaths/paths.go:124 withinRoot (requires cleaned abs). underAnyRoot (gitdir.go:589) vs isUnderAnyRoot (bwrap.go:405) identical except r!='' guard. execsupport is a separate go module (go.mod), so adding a pathutil package there is feasible. Edge semantics differ, so migrate in-slice copies only first."
+ },
+ {
+  "id": "agent-execenv-sandbox-8",
+  "title": "resolve symlink helpers",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "resolveClean (gitpath.go:275), resolveCleanPath (sandbox/gitdir.go:132), resolveClean (identifier/git.go:85) are byte-identical 5-6 line funcs: confirmed. resolveSymlinksBestEffort (local.go:3521), canonicalizeLongestPrefix (seatbelt.go:70, injected eval) and resolveExistingPrefix (resolve.go:1014, Data-volume strip) are similar but have platform/seam differences; merging those is riskier than claimed. Small win overall.",
+  "revised_fix_plan": "Export identifier.ResolveClean (or shared helper) and delete the three copies; leave the prefix-resolvers alone unless a bug shows."
+ },
+ {
+  "id": "agent-execenv-sandbox-9",
+  "title": "git pointer parsing dup",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "isSubmoduleGitDirShape byte-identical in project_resolver.go:218 and identifier/git.go:180. pointerTarget identical (project_resolver.go:207 vs identifier/git.go:127). validateSubmodulePointer duplicated; validateLinkedPointer vs validateLinkedWorktreePointer differ only in statement order (diff shows 'common :=' moved). execenv already imports identifier; sandbox/gitdir.go already imports identifier too, so no cycle risk. Sandbox classification is intentionally fail-closed, so only share the pure parsers/validators, not the policy. Severity high overstated: no observed divergence bug.",
+  "revised_fix_plan": "Export the identifier validators/pointerTarget/isSubmoduleGitDirShape and delete execenv copies first; leave sandbox.ClassifyWorkspace policy local, reusing the same exported parsers."
+ },
+ {
+  "id": "agent-execenv-sandbox-10",
+  "title": "test-only wrappers",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Confirmed no non-test callers: mainRootFromGitdirPointer, parseGitdirPointer, mainRootCandidateFromCommonDir (gitpath.go:247-267, only gitpath*_test.go), filteredEnv (local.go:3594) and filteredEnvWithPolicy (3542), buildRipgrepArgs, grepNative (test only), splitPathComponents (gitpath.go:313). Overreach: allocatedSessionScratchPath has 3 production callers (local.go:379,396,3467); SessionScratchDir is public with callers in agent/ and tools/tool-fluency; ShellEscapeArgs has a production caller (rungit.go:62) plus tests.",
+  "revised_fix_plan": "Delete only the test-only wrappers and filteredEnv/filteredEnvWithPolicy (retarget tests to identifier.* and filteredEnvWithSource); leave allocatedSessionScratchPath, SessionScratchDir, ShellEscapeArgs unless doing finding 1."
+ },
+ {
+  "id": "agent-execenv-sandbox-11",
+  "title": "package-level test seams",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "37 package-level 'var x = ...' in execenv non-test files (grep). splitEditLines=strings.Split (local.go:1382) is reassigned in runtime_edges_fuzz_test.go:112 to return nil, as is splitPathComponents (line 116) to reach unreachable branches: confirmed. Per-seam counts not all individually verified. Value is coverage-driven test cleanup; low."
+ },
+ {
+  "id": "agent-execenv-sandbox-12",
+  "title": "stale comments",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "denial.go:28 'It carries no live behavior in M1 \u2014 no code path produces one yet' while securepath.go:242 and session_tools_web.go:29 construct sandbox.DeniedError. local.go:855-870 EnableSandbox says 'flag stays feature-gated, so production does not reach it yet' and two lines later '(the flag is live on Linux/bwrap...)' - self-contradicting. local.go Wrapper comment 'M3 attaches it only in tests'. Marker grep (M\\d, #NNN, legacy, kata, byte-identical) hits 259 lines across execenv incl. tests, so the original 110 is an undercount of the broad pattern but the point stands."
+ },
+ {
+  "id": "agent-execenv-sandbox-13",
+  "title": "process launchers",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "execPreparedCommandStdout (2950-2985), StreamCommand (3064), DetachCommand (3182-3235) each do resolveCommandWorkingDir, injectLocalVenvPath(commandEnvironment(...), {dir, RootDir}); lookPathInEnv block in exec (2971) and detach (3229) only (not StreamCommand). Nil-ctx guards: 2 in StreamCommand (3069, 3139) and 1 in DetachCommand (3186), not 3 as claimed. Process lifecycle is risky; medium stands."
+ },
+ {
+  "id": "agent-execenv-sandbox-14",
+  "title": "gitignore cost estimator",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "gitignore.go:351-360 doc says 'best-effort, not a proof' and follow-up issue #1971; classifyIgnoreLine (368) through countedRepetitionFactor/validRepetitionBound (~316-620, ~300 lines); globStarUnits=5 (337). Needs Jesse decision (memory-exhaustion defense)."
+ },
+ {
+  "id": "agent-execenv-sandbox-15",
+  "title": "dead audit sink",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "audit.go (52 lines): auditSink assigned only in securepath_test.go:291 and securepath_edge_program_fuzz_test.go:106-109; sole production use is auditDenial call at securepath.go:217. Repo-wide grep finds no other AuditRecord/auditSink reference. Comment 'Production wiring (M5)' is stale. Deleting tests that assert records is fine since feature never runs; note it removes a denial-redaction behavior that might be wanted later (ask Jesse)."
+ },
+ {
+  "id": "agent-execenv-sandbox-16",
+  "title": "env filtering loops",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "filteredEnvWithSource (local.go:3546) has inline merge loops for All/None/CoreOnly plus Default via filteredEnvFrom; filteredEnv and filteredEnvWithPolicy have no production callers (only tests). Real but small."
+ },
+ {
+  "id": "agent-execenv-sandbox-17",
+  "title": "legacy marker in Cleanup",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Cleanup (local.go:1294-1320) falls back to procgroup.Terminate/Kill(pid) when value is not a commandRuntime. Production Stores at 2981 and 3096 store cmd (commandRuntime). Foreign values only stored by tests: local_test.go:1543 struct{}{}, runtime_edges_fuzz_test.go:90 'not-a-pid', process_runtime_program_fuzz_test.go:567. Fix is sound; typed accessor replacing sync.Map any."
+ },
+ {
+  "id": "agent-execenv-sandbox-18",
+  "title": "test harness in prod package",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "contract.go (500 lines) is in package sandbox exporting TestingT/ContractCases/MaterializeWorkspace; consumers are all test files (sandbox/contract_test.go, execenv/sandbox_escape_test.go, sandbox_wrap_test.go, agent/sandbox_net_test.go, agent/internal/mcp/sandbox_test.go). But binary-size claim is overstated: Go's linker drops unreferenced functions. And the proposed move is unsafe as written: contract_test.go and contract_backend_test.go are in package sandbox (internal) and use unexported helpers (pathUnder, resolveCleanPath at contract.go:279,448); sandboxtest does not import sandbox today, so moving would create import cycles for the in-package tests unless they become external tests.",
+  "revised_fix_plan": "Low value; only do if internal tests are converted to package sandbox_test and unexported helpers needed by the harness are exposed. Otherwise leave and drop finding."
+ },
+ {
+  "id": "agent-execenv-sandbox-19",
+  "title": "scratch container types",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "SessionTmp (session_tmp.go: Retain 218, HasLease 228, Remove 243) and SessionScratch (session_scratch.go: Retain 78, HasLease 90, Cleanup 228) have parallel lease methods: confirmed. goEnvFileFor (env_floor.go:508) and goEnvFile (probe.go:544) both locate the go env file but through different seams (vars map vs probeSystem.userConfigDir), so merging requires care. Not deeply verified lease semantics."
+ },
+ {
+  "id": "agent-execenv-sandbox-20",
+  "title": "resolve.go split",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "resolve.go is 1356 lines; helpers from resolveExistingPrefix (1014) on are separable. Pure move, cosmetic; low severity."
+ },
+ {
+  "id": "agent-execenv-sandbox-21",
+  "title": "signal name table",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "process_signal_unix.go:22 builds a 29-entry map per call. golang.org/x/sys/unix.SignalName exists (verified in module cache syscall_unix.go:64) and execenv already imports x/sys/unix, BUT go.mod pins x/sys v0.42.0 (not v0.48.0 as claimed). unix.SignalName returns '' for unknown signals, so keep the SIG%d fallback; names are per-OS tables so verify SIGIO etc. on darwin."
+ },
+ {
+  "id": "agent-execenv-sandbox-22",
+  "title": "afero SetFs seam",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "SetFs (local.go:566) has no non-test callers; 77 test calls (claimed 75). Large test churn for small gain; needs Jesse approval."
+ },
+ {
+  "id": "agent-execenv-sandbox-23",
+  "title": "launch probes",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Probe machinery is local.go:1329-1545 (~240 lines) as claimed, but the fix plan is wrong: login-shell stdout carries rc-file noise BEFORE the answer, and the answer is the LAST line (lastNonEmptyLine doc, 1452-1459). io.LimitReader keeps the head and would lose the answer on a noisy shell; the tail window in probeTrustedAnswer (1529) is load-bearing for the #4557 OOM bound. Platform() switch is unrelated trivia.",
+  "revised_fix_plan": "If simplifying, keep only a tail ring buffer (cappedOutputBuffer already retains one) and drop the head+marker view; do not use LimitReader."
+ }
+]

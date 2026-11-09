@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -325,5 +326,35 @@ func TestMarshalConfig_StampsSchemaTwo(t *testing.T) {
 	}
 	if _, err := ParseConfig(data); err != nil {
 		t.Fatalf("stamped config must round-trip: %v", err)
+	}
+}
+
+// A directory that can be searched and written but not read lets the rename
+// land and then fails the directory sync. The new file is what readers see, so
+// the write is a success for callers that reload from it.
+func TestWriteConfigFileDirectorySyncFailureAfterTheRenameIsNotAFailedWrite(t *testing.T) {
+	if os.Geteuid() == 0 || runtime.GOOS == "windows" {
+		t.Skip("needs a directory the process cannot open for reading")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "providers.toml")
+	if err := os.WriteFile(path, []byte("schema = 2\ndefault = \"old\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o300); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	if err := WriteConfigFile(path, symlinkWriterLayer()); err != nil {
+		t.Fatalf("WriteConfigFile: %v", err)
+	}
+
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	back, exists, err := ReadConfigFile(path)
+	if err != nil || !exists || back.Default != "local" {
+		t.Fatalf("read back: %v %v %+v", err, exists, back)
 	}
 }

@@ -10,6 +10,7 @@ import {
 import { createPortal } from "react-dom";
 import { FocusScope } from "../focusscope";
 import { requireClass } from "../internal/requireClass";
+import { usePortalDocument } from "../internal/usePortalDocument";
 import { computePopoverPosition, type PopoverPosition, TRIGGER_GAP } from "./computePosition";
 import styles from "./popover.module.css";
 
@@ -81,19 +82,9 @@ export function Popover({
   // The document the trigger lives in. A Dockview popout is a separate window:
   // portaling into the opener's body would put the panel in the wrong one, and
   // listeners on the opener's window never see the popout's scroll, resize, or
-  // outside click.
-  // The trigger's document, read on every render: Dockview moves an existing
-  // panel's DOM into a popout window, so an already-mounted trigger can belong
-  // to a different document by the time its panel opens. A popover that mounts
-  // already open has no element yet on that first render; the mount re-render
-  // below supplies it, before paint.
-  const panelDocument = triggerRef.current?.ownerDocument ?? null;
-  const [, setMounted] = useState(0);
-  // One re-render, only when this popover mounted before its trigger element
-  // existed (a panel opened from the start).
-  useLayoutEffect(() => {
-    if (panelDocument === null) setMounted((renders) => renders + 1);
-  }, [panelDocument]);
+  // outside click. The shared portal seam supplies it once the trigger exists
+  // and follows a move while open.
+  const panelDocument = usePortalDocument(triggerRef, open);
   const panelWindow = panelDocument?.defaultView ?? null;
 
   // Measure the trigger and the panel's own natural size and set the actual

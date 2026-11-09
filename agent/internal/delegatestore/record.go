@@ -7,18 +7,21 @@ import (
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/appwire"
 )
 
 type State map[string]*Aggregate
 
-type Phase string
+// Phase is the delegate's durable aggregate phase, declared by the delegate
+// machine in appwire. The fold's legal edges come from that declaration.
+type Phase = appwire.DelegatePhase
 
 const (
-	PhaseIdle     Phase = "idle"
-	PhaseRunning  Phase = "running"
-	PhaseSettling Phase = "settling"
-	PhaseStopping Phase = "stopping"
-	PhaseClosed   Phase = "closed"
+	PhaseIdle     = appwire.DelegatePhaseIdle
+	PhaseRunning  = appwire.DelegatePhaseRunning
+	PhaseSettling = appwire.DelegatePhaseSettling
+	PhaseStopping = appwire.DelegatePhaseStopping
+	PhaseClosed   = appwire.DelegatePhaseClosed
 )
 
 type RunTrigger string
@@ -37,14 +40,16 @@ const (
 	DispositionCompletedNoAction RunDisposition = "completed_no_action"
 )
 
-type OutcomeStatus string
+// OutcomeStatus is one delegate run's terminal outcome, declared by the
+// delegate outcome machine in appwire.
+type OutcomeStatus = appwire.DelegateOutcome
 
 const (
-	OutcomeCompleted OutcomeStatus = "completed"
-	OutcomeFailed    OutcomeStatus = "failed"
-	OutcomeExhausted OutcomeStatus = "exhausted"
-	OutcomeCancelled OutcomeStatus = "cancelled"
-	OutcomeStopped   OutcomeStatus = "stopped"
+	OutcomeCompleted = appwire.DelegateOutcomeCompleted
+	OutcomeFailed    = appwire.DelegateOutcomeFailed
+	OutcomeExhausted = appwire.DelegateOutcomeExhausted
+	OutcomeCancelled = appwire.DelegateOutcomeCancelled
+	OutcomeStopped   = appwire.DelegateOutcomeStopped
 )
 
 // ReasonStoppedByParent is the outcome reason of a generation a parent's stop
@@ -54,8 +59,9 @@ const ReasonStoppedByParent = "stopped_by_parent"
 type ExhaustionBudget string
 
 const (
-	ExhaustionBudgetTurns      ExhaustionBudget = "max_turns"
-	ExhaustionBudgetToolRounds ExhaustionBudget = "max_tool_rounds_per_input"
+	ExhaustionBudgetTurns               ExhaustionBudget = "max_turns"
+	ExhaustionBudgetToolRounds          ExhaustionBudget = "max_tool_rounds_per_input"
+	ExhaustionBudgetServerContinuations ExhaustionBudget = "max_server_continuations"
 )
 
 type PacketKind string

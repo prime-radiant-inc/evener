@@ -99,15 +99,11 @@ func TestSaveRename_MarksBothOnSuccess(t *testing.T) {
 // has already run, with only Plugins set (a plugin install never touches
 // known_marketplaces.json once the marketplace itself is already fetched).
 func TestLockStore_ReportsAccumulatedChangeOnceAfterRelease(t *testing.T) {
-	if !gitAvailable() {
-		t.Skip("git not available")
-	}
+	skipWithoutGit(t)
 	mktRepo, name := makeInstallableMarketplace(t)
 	m := NewManager(t.TempDir())
 	m.Stderr = io.Discard
-	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
-		t.Fatalf("AddMarketplace: %v", err)
-	}
+	mustAddMarketplace(context.Background(), t, m, "", Source{Kind: SourceURL, URL: mktRepo})
 
 	reports := recordStoreChanges(m)
 	if _, err := m.Install(context.Background(), "widget", name); err != nil {
@@ -147,9 +143,7 @@ func TestLockStore_NoCallbackWhenNothingWritten(t *testing.T) {
 // known_marketplaces.json, and nothing List or ListMarketplaces could ever
 // have read changed either: the callback must not fire.
 func TestAddMarketplace_SwapSucceedsThenSaveFailsReportsNoChange(t *testing.T) {
-	if !gitAvailable() {
-		t.Skip("git not available")
-	}
+	skipWithoutGit(t)
 	mktRepo, _ := makeInstallableMarketplace(t)
 	m := NewManager(t.TempDir())
 	m.Stderr = io.Discard
@@ -288,9 +282,7 @@ func seedUnfetchedPointer(t *testing.T, m *Manager, name, mktRepo string) {
 // that write must reach every client through the post-commit hook, exactly
 // once, as a Marketplaces change.
 func TestBrowse_LazyFetchPersistsAndReportsMarketplacesChanged(t *testing.T) {
-	if !gitAvailable() {
-		t.Skip("git not available")
-	}
+	skipWithoutGit(t)
 	mktRepo, name := makeInstallableMarketplace(t)
 	m := NewManager(t.TempDir())
 	m.Stderr = io.Discard
@@ -321,9 +313,7 @@ func TestBrowse_LazyFetchPersistsAndReportsMarketplacesChanged(t *testing.T) {
 // applied write must still be reported, or other clients keep showing the
 // marketplace as unfetched.
 func TestBrowse_LazyFetchPersistsThenLaterStepFailsStillReports(t *testing.T) {
-	if !gitAvailable() {
-		t.Skip("git not available")
-	}
+	skipWithoutGit(t)
 	dir := filepath.Join(t.TempDir(), "mkt-broken")
 	if err := os.MkdirAll(filepath.Join(dir, ".claude-plugin"), 0o755); err != nil {
 		t.Fatal(err)

@@ -21,6 +21,24 @@ import (
 // RunFileEnv names the file holding this shard's -test.run regex.
 const RunFileEnv = "EVENER_SHARD_RUN_FILE"
 
+// PrebuiltBinDirEnv names a directory of binaries a shard runner built once.
+// It exports the directory to every process it starts, and the receiving
+// TestMain uses those binaries instead of building its own copy.
+const PrebuiltBinDirEnv = "EVENER_HUB_LIVE_STACK_BIN"
+
+// PrebuiltBinWarmEnv marks a process that must not warm the binaries: they are
+// already built, or the caller only lists tests. TestMain sets it only when it
+// has binaries to hand down, so a child re-executed with a different selection
+// can judge its own needs; a caller that only lists tests sets it directly.
+const PrebuiltBinWarmEnv = "EVENER_HUB_LIVE_STACK_WARM"
+
+// PrebuiltBinTarget and PrebuiltBinName are the package a shard runner builds
+// once and the file it writes: the evener binary the hub package's tests share.
+const (
+	PrebuiltBinTarget = "./cmd/evener"
+	PrebuiltBinName   = "evener"
+)
+
 // ConfigureRunFile sets -test.run from the file RunFileEnv names, and does
 // nothing when the variable is unset. Call it from TestMain after flag.Parse,
 // so the command line's (absent) -test.run cannot clobber it when m.Run parses

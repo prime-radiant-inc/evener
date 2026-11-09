@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
@@ -18,10 +18,10 @@ import (
 
 // executionAdapter answers model requests from a script of (response, error)
 // steps; with the script exhausted it answers a terminal communicate. A step
-// may block until its request's context ends.
+// may block until its request's context ends, so the step is taken under the
+// engine's mutex and run outside it.
 type executionAdapter struct {
-	mu    sync.Mutex
-	steps []func(ctx context.Context) (llm.Response, error)
+	steps agenttest.Script[func(ctx context.Context) (llm.Response, error)]
 }
 
 func (a *executionAdapter) Name() string { return "openai" }
@@ -31,14 +31,9 @@ func (a *executionAdapter) Stream(context.Context, llm.Request) (llm.Stream, err
 }
 
 func (a *executionAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
-	a.mu.Lock()
-	var step func(context.Context) (llm.Response, error)
-	if len(a.steps) > 0 {
-		step, a.steps = a.steps[0], a.steps[1:]
-	}
-	a.mu.Unlock()
-	resp, err := communicateResponse(true, "done"), error(nil)
-	if step != nil {
+	step, ok := a.steps.Shift()
+	resp, err := agenttest.CommunicateResponse(true, "done"), error(nil)
+	if ok {
 		resp, err = step(ctx)
 	}
 	resp.Provider, resp.Model = "openai", req.Model
@@ -46,9 +41,7 @@ func (a *executionAdapter) Complete(ctx context.Context, req llm.Request) (llm.R
 }
 
 func (a *executionAdapter) script(steps ...func(ctx context.Context) (llm.Response, error)) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.steps = append(a.steps, steps...)
+	a.steps.Append(steps...)
 }
 
 func newExecutionSession(t *testing.T) (*Session, *executionAdapter) {

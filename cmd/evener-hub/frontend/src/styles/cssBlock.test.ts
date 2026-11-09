@@ -44,3 +44,9 @@ test("readModuleCss reads a stylesheet next to the calling test file, off disk",
   const css = readModuleCss(import.meta.url, "tokens.css");
   expect(css).toContain("--tooltip-bg");
 });
+
+test("readModuleCss strips comments so a declaration quoted in a comment cannot satisfy an assertion", () => {
+  const css = readModuleCss(import.meta.url, "tokens.css");
+  expect(css).not.toContain("/*");
+  expect(css).toContain("--tooltip-bg");
+});

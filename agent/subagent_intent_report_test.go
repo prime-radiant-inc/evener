@@ -231,9 +231,9 @@ func TestChildReportsStatedIntentToTheController(t *testing.T) {
 	release := make(chan struct{})
 	f := newIntentReportFixture(t,
 		func(llm.Request) llm.Response {
-			return toolCallResponse(readFileCall("r1", "Reading the board's row tests."))
+			return agenttest.ToolCallResponse(readFileCall("r1", "Reading the board's row tests."))
 		},
-		blockStep(entered, release, func() llm.Response { return finalResponse("done") }),
+		blockStep(entered, release, func() llm.Response { return agenttest.FinalResponse("done") }),
 	)
 	delegateID, child := f.spawn(t)
 
@@ -295,12 +295,12 @@ func TestChildNoIntentCallLeavesThePreviousLineStanding(t *testing.T) {
 	secondRelease := make(chan struct{})
 	f := newIntentReportFixture(t,
 		func(llm.Request) llm.Response {
-			return toolCallResponse(readFileCall("r1", "Reading the board's row tests."))
+			return agenttest.ToolCallResponse(readFileCall("r1", "Reading the board's row tests."))
 		},
 		blockStep(firstEntered, firstRelease, func() llm.Response {
-			return toolCallResponse(readFileCall("r2", ""))
+			return agenttest.ToolCallResponse(readFileCall("r2", ""))
 		}),
-		blockStep(secondEntered, secondRelease, func() llm.Response { return finalResponse("done") }),
+		blockStep(secondEntered, secondRelease, func() llm.Response { return agenttest.FinalResponse("done") }),
 	)
 	delegateID, child := f.spawn(t)
 
@@ -327,12 +327,12 @@ func TestChildBlankIntentCallLeavesThePreviousLineStanding(t *testing.T) {
 	secondRelease := make(chan struct{})
 	f := newIntentReportFixture(t,
 		func(llm.Request) llm.Response {
-			return toolCallResponse(readFileCall("r1", "Reading the board's row tests."))
+			return agenttest.ToolCallResponse(readFileCall("r1", "Reading the board's row tests."))
 		},
 		blockStep(firstEntered, firstRelease, func() llm.Response {
-			return toolCallResponse(readFileCall("r2", "  "))
+			return agenttest.ToolCallResponse(readFileCall("r2", "  "))
 		}),
-		blockStep(secondEntered, secondRelease, func() llm.Response { return finalResponse("done") }),
+		blockStep(secondEntered, secondRelease, func() llm.Response { return agenttest.FinalResponse("done") }),
 	)
 	delegateID, child := f.spawn(t)
 
@@ -358,12 +358,12 @@ func TestNewestStartedCallWinsWithinOneBatch(t *testing.T) {
 	release := make(chan struct{})
 	f := newIntentReportFixture(t,
 		func(llm.Request) llm.Response {
-			return toolCallResponse(
+			return agenttest.ToolCallResponse(
 				applyPatchCall("p1", "Adding the alpha notes.", "alpha.txt"),
 				applyPatchCall("p2", "Fixing the beta parser.", "beta.txt"),
 			)
 		},
-		blockStep(entered, release, func() llm.Response { return finalResponse("done") }),
+		blockStep(entered, release, func() llm.Response { return agenttest.FinalResponse("done") }),
 	)
 	delegateID, child := f.spawn(t)
 
@@ -399,20 +399,20 @@ func TestGrandchildIntentNeverLandsOnItsParentRow(t *testing.T) {
 			// report as stale and the test would pass vacuously.
 			childEnteredOnce.Do(func() { close(childEntered) })
 			<-childRelease
-			return finalResponse("child done")
+			return agenttest.FinalResponse("child done")
 		case intentRequestLastUserText(req) == grandchildPrompt && intentRequestHasToolCall(req, "read_file"):
 			// The grandchild's second round: hold it so mid-run assertions see
 			// the tree live, then let it report.
 			enteredOnce.Do(func() { close(entered) })
 			<-release
-			return finalResponse("grandchild done")
+			return agenttest.FinalResponse("grandchild done")
 		case intentRequestLastUserText(req) == grandchildPrompt:
-			return toolCallResponse(readFileCall("g1", "Inspecting the grandchild's own notes."))
+			return agenttest.ToolCallResponse(readFileCall("g1", "Inspecting the grandchild's own notes."))
 		default:
 			// The child's first round: spawn the grandchild without stating
 			// an intent of its own.
 			raw, _ := json.Marshal(map[string]any{"prompt": grandchildPrompt})
-			return toolCallResponse(llm.ToolCallData{ID: "spawn", Name: "delegate", Type: "function", Arguments: raw})
+			return agenttest.ToolCallResponse(llm.ToolCallData{ID: "spawn", Name: "delegate", Type: "function", Arguments: raw})
 		}
 	})
 	childDelegateID, child := f.spawn(t)
@@ -479,9 +479,9 @@ func TestSessionExecutionStartClearsTheReportedIntent(t *testing.T) {
 	want := appwire.Excerpt(long, appwire.MaxIntentRunes)
 	f := newIntentReportFixture(t,
 		func(llm.Request) llm.Response {
-			return toolCallResponse(readFileCall("r1", long))
+			return agenttest.ToolCallResponse(readFileCall("r1", long))
 		},
-		func(llm.Request) llm.Response { return finalResponse("done") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 	)
 	sess := f.parent
 	var reported []string

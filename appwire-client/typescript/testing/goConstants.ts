@@ -27,3 +27,17 @@ export function goConstantValue(source: string, name: string, where: string): st
   if (value === undefined) throw new Error(`${where} has no ${name} constant`);
   return value;
 }
+
+/**
+ * The integer value of `name` in `source`: a literal (`-32600`) or a product of
+ * literals (`8 * 1024 * 1024`), with an optional trailing `//` comment. Same
+ * declaration-position rule as goConstantValue.
+ */
+export function goIntConstantValue(source: string, name: string, where: string): number {
+  const match = source.match(
+    new RegExp(`(?:^|\\n)\\s*(?:const\\s+)?${name}(?:\\s+\\w+)?\\s*=\\s*(-?\\d+(?:\\s*\\*\\s*\\d+)*)`),
+  );
+  const expression = match?.[1];
+  if (expression === undefined) throw new Error(`${where} has no ${name} integer constant`);
+  return expression.split("*").reduce((product, factor) => product * Number(factor), 1);
+}

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"reflect"
 	"slices"
 	"sync"
@@ -18,6 +17,7 @@ import (
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -239,6 +239,18 @@ func retirementIdleDelegate(t *testing.T, root *Session) delegateResult {
 	return result
 }
 
+// retirementRunnerCompletionTripwire bounds retirementSettleDelegate's wait for
+// a created delegate runner's first generation to finish: sub.done, closed at
+// the end of the stable-run finalize tail (subagents.go). That is the same close
+// point idleReleaseFirstGenerationTripwire documents, so the bound is shared
+// rather than duplicated. The retirement fixture does not set ForceRealIO, so
+// that comment's fsync detail does not apply here, but the span (model turn,
+// settlement, announcement, attention re-arm) and the bound do. No fixture
+// channel closes `done` and no production deadline precedes it: the launch adds
+// only cancellation over the caller's context and the fixture passes
+// context.Background().
+const retirementRunnerCompletionTripwire = idleReleaseFirstGenerationTripwire
+
 func retirementSettleDelegate(t *testing.T, root *Session, result delegateResult) {
 	t.Helper()
 	sub := root.subagents.get(result.ChildSessionID)
@@ -252,7 +264,7 @@ func retirementSettleDelegate(t *testing.T, root *Session, result delegateResult
 	// bound only prevents a broken fixture from hanging the package indefinitely.
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second): // TRIPWIRE: fixture rendezvous normally takes milliseconds; this only bounds a deadlock.
+	case <-time.After(retirementRunnerCompletionTripwire):
 		t.Fatal("delegate runner did not finish")
 	}
 	if _, err := root.ProcessInput(context.Background(), "settle-root-sentinel", nil); err != nil {
@@ -466,7 +478,7 @@ func TestRetirementColdDelegateEvidence(t *testing.T) {
 				tree.mu.Unlock()
 				defer func() { tree.mu.Lock(); tree.durable[d.DelegateID].Descriptor = before; tree.mu.Unlock() }()
 			case "transcript":
-				path := filepath.Join(root.stateDir, sessionsSubdir, d.ChildSessionID+".transcript.jsonl")
+				path := schema.SessionTranscriptPath(root.stateDir, d.ChildSessionID)
 				if err := os.Rename(path, path+".held"); err != nil {
 					t.Fatal(err)
 				}
@@ -476,7 +488,7 @@ func TestRetirementColdDelegateEvidence(t *testing.T) {
 					}
 				}()
 			case "corrupt transcript":
-				path := filepath.Join(root.stateDir, sessionsSubdir, d.ChildSessionID+".transcript.jsonl")
+				path := schema.SessionTranscriptPath(root.stateDir, d.ChildSessionID)
 				original, err := os.ReadFile(path)
 				if err != nil {
 					t.Fatal(err)
@@ -573,9 +585,9 @@ func TestRetirementDelegateReclaimOwnsExactRuntime(t *testing.T) {
 // before the target, and the read itself — and the claim can instead return
 // before it ever reads. That early return is a state this barrier must name, not
 // time out: TryClaim refuses early while a lease is held or the controller is
-// not resident (retirement.go:529,534), setRetirementFence refuses on a leftover
+// not resident, setRetirementFence refuses on a leftover
 // fence, and retirementEvidence returns early when a cold member's evidence read
-// errors (delegate_tree_retirement.go:97). At rest the read is reached in well
+// errors. At rest the read is reached in well
 // under a millisecond, so this is a hang guard, never a speed assertion, and 30s
 // matches this package's standing whole-operation tripwire for in-process work
 // (stallHandshakeTimeout, retirementCreateBarrierTripwire, stalledRefreshTripwire,
@@ -746,7 +758,7 @@ func TestRetirementDelegatePopulatedSourceRefusal(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			finish := retirementPauseColdClaim(t, c, filepath.Join(root.stateDir, sessionsSubdir, d.ChildSessionID+".meta.json"))
+			finish := retirementPauseColdClaim(t, c, schema.SessionMetaPath(root.stateDir, d.ChildSessionID))
 			defer finish()
 			if family == "outcome" {
 				plan := plans.deliveries[0]
@@ -982,7 +994,7 @@ func TestRetirementDelegateDescendantSendAdmittedFirst(t *testing.T) {
 		t.Fatal(result.Err)
 	}
 	retirementAwait(t, adapter.entered)
-	transcriptPath := filepath.Join(root.stateDir, sessionsSubdir, d.ChildSessionID+".transcript.jsonl")
+	transcriptPath := schema.SessionTranscriptPath(root.stateDir, d.ChildSessionID)
 	originalInput, err := os.ReadFile(transcriptPath)
 	if err != nil || bytes.Count(originalInput, []byte("descendant-send-sentinel")) != 1 {
 		t.Fatalf("original send input was not persisted exactly once: %v", err)
@@ -1024,6 +1036,19 @@ func TestRetirementDelegateDescendantSendAdmittedFirst(t *testing.T) {
 	}
 	c.Abort(claim, "")
 }
+
+// retirementColdReconstructionTripwire bounds the two concurrent cold-restore
+// goroutines' completion in TestRetirementDelegateColdReconstructionAdmittedFirst.
+// The fixture's rendezvous is `entered`: it closes while the original manager's
+// claim is still parked inside its first model listing. After `resume`, the
+// restore still constructs the child Session, installs it and adopts it, none
+// of which is gated by a fixture channel or bounded by a production deadline;
+// the old 10s was sized as if the wait were the rendezvous it follows. A
+// correct restore finishes in well under a second at rest, so 30s is a hang
+// guard and matches this package's standing whole-operation tripwire for
+// in-process work (stallHandshakeTimeout, retirementCreateBarrierTripwire,
+// retirementColdClaimTripwire, stalledRefreshTripwire).
+const retirementColdReconstructionTripwire = 30 * time.Second
 
 func TestRetirementDelegateColdReconstructionAdmittedFirst(t *testing.T) {
 	t.Parallel()
@@ -1082,7 +1107,7 @@ func TestRetirementDelegateColdReconstructionAdmittedFirst(t *testing.T) {
 			} else if exact != got.sub.sess {
 				t.Fatal("concurrent restore duplicated runtime")
 			}
-		case <-time.After(10 * time.Second): // TRIPWIRE: fixture rendezvous normally takes milliseconds; this only bounds a deadlock.
+		case <-time.After(retirementColdReconstructionTripwire):
 			t.Fatal("cold reconstruction did not finish")
 		}
 	}
@@ -1279,6 +1304,20 @@ func closedRetirementDelegateWithAttention(t *testing.T, attentionID string, res
 	return tree, c, d
 }
 
+// retirementDelegateWithPendingTranscriptAttention appends one attention item
+// to a live idle delegate's transcript without opening it, so the transcript
+// owes the item while the controller holds no wake for it.
+func retirementDelegateWithPendingTranscriptAttention(t *testing.T, attentionID string) (*Session, *delegateTreeController, *RetirementController, delegateResult) {
+	t.Helper()
+	root, tree, c := newRetirementDelegateController(t)
+	d := retirementIdleDelegate(t, root)
+	sub := root.subagents.get(d.ChildSessionID)
+	if _, err := sub.sess.appendDelegateNotificationDurably(attentionID, attentionID+"-content"); err != nil {
+		t.Fatal(err)
+	}
+	return root, tree, c, d
+}
+
 // A closed delegate can never act on a noted wake, so a wake whose item the
 // transcript already resolved (and whose clear failed before the closure)
 // must not hold the tree's retirement.
@@ -1314,6 +1353,158 @@ func TestRetirementDelegateUnresolvedAttentionOfClosedDelegateBlocks(t *testing.
 	}
 }
 
+// A resumable delegate's wake whose transcript item already resolved is not an
+// obligation: the transcript holds the resolution, so the full read decides
+// from the fold and retirement may proceed. Only a closed delegate's resolved
+// wake was covered before #4280; a resumable one blocked the full read through
+// the in-memory wake alone.
+func TestRetirementDelegateResolvedWakeOfResumableDelegateDoesNotBlock(t *testing.T) {
+	t.Parallel()
+	root, tree, c := newRetirementDelegateController(t)
+	defer root.Close()
+	d := retirementIdleDelegate(t, root)
+	sub := root.subagents.get(d.ChildSessionID)
+	const attentionID = "attention-resolved-wake-resumable"
+	if _, err := sub.sess.appendDelegateNotificationDurably(attentionID, "resolved attention content"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sub.sess.resolveAttentionDurably([]string{attentionID}, delegateAttentionConsumed); err != nil {
+		t.Fatal(err)
+	}
+	if !tree.noteDelegateAttention(d.DelegateID, attentionID) {
+		t.Fatal("fixture did not retain the resolved wake")
+	}
+	tree.mu.Lock()
+	_, wakeKept := attentionWakeIDsOf(tree, d.DelegateID)[attentionID]
+	aggregate := tree.durable[d.DelegateID]
+	open := aggregate != nil && aggregate.Resumable
+	tree.mu.Unlock()
+	if !wakeKept || !open {
+		t.Fatalf("fixture = wakeKept:%t open:%t, want a resumable delegate's retained wake", wakeKept, open)
+	}
+	claim, state, err := c.TryClaim(true)
+	if claim == nil || err != nil {
+		t.Fatalf("a resolved wake blocked retirement: %+v %v", state, err)
+	}
+	if err := c.Abort(claim, ""); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The fold is the full read's witness for pending attention even when no
+// in-memory wake exists, which is why the full read drops the wake check.
+func TestRetirementDelegatePendingTranscriptAttentionWithoutWakeBlocks(t *testing.T) {
+	t.Parallel()
+	root, tree, c, d := retirementDelegateWithPendingTranscriptAttention(t, "attention-pending-no-wake")
+	defer root.Close()
+	tree.mu.Lock()
+	wakes := len(attentionWakeIDsOf(tree, d.DelegateID))
+	aggregate := tree.durable[d.DelegateID]
+	flag := aggregate != nil && aggregate.NeedsAttention
+	tree.mu.Unlock()
+	if wakes != 0 || flag {
+		t.Fatalf("fixture = wakes:%d needsAttention:%t, want a pending item with no in-memory wake", wakes, flag)
+	}
+	claim, state, err := c.TryClaim(true)
+	if claim != nil {
+		_ = c.Abort(claim, "")
+	}
+	if claim != nil || err != nil {
+		t.Fatalf("pending transcript attention without a wake escaped: %+v %v", state, err)
+	}
+	if !slices.ContainsFunc(state.Blockers, func(b RetirementBlocker) bool {
+		return b.Category == "delegate" && b.DelegateID == d.DelegateID
+	}) {
+		t.Fatalf("pending transcript attention lost its owner: %+v", state)
+	}
+}
+
+// A closed delegate with pending transcript attention but no in-memory wake is
+// the case that forbids skipping its fold: after a cold restore the projection
+// rebuilds no wake for a closed delegate, and the transcript is the only
+// witness.
+func TestRetirementDelegatePendingTranscriptAttentionOfClosedDelegateWithoutWakeBlocks(t *testing.T) {
+	t.Parallel()
+	root, tree, c, d := retirementDelegateWithPendingTranscriptAttention(t, "attention-pending-closed-no-wake")
+	defer root.Close()
+	closeDelegateControllerResumability(t, tree, d.DelegateID, "closure-sentinel")
+	tree.mu.Lock()
+	wakes := len(attentionWakeIDsOf(tree, d.DelegateID))
+	aggregate := tree.durable[d.DelegateID]
+	closed := aggregate != nil && aggregate.Phase == delegatestore.PhaseClosed && !aggregate.Resumable
+	tree.mu.Unlock()
+	if wakes != 0 || !closed {
+		t.Fatalf("fixture = wakes:%d closed:%t, want a closed delegate with no wake", wakes, closed)
+	}
+	claim, state, err := c.TryClaim(true)
+	if claim != nil {
+		_ = c.Abort(claim, "")
+	}
+	if claim != nil || err != nil {
+		t.Fatalf("pending attention of a closed delegate without a wake escaped: %+v %v", state, err)
+	}
+	if !slices.ContainsFunc(state.Blockers, func(b RetirementBlocker) bool {
+		return b.Category == "delegate" && b.DelegateID == d.DelegateID
+	}) {
+		t.Fatalf("pending attention of a closed delegate lost its owner: %+v", state)
+	}
+}
+
+// The non-blocking read has no transcript folds, so it keeps the wake check as
+// its in-memory proxy: a resumable delegate's wake reports, a closed
+// delegate's retained wake stays quiet (Resumable alone proves not closed).
+func TestRetirementNonBlockingEvidenceWakeScope(t *testing.T) {
+	t.Parallel()
+	const delegateID = "dlg_target"
+	t.Run("closed delegate wake is quiet", func(t *testing.T) {
+		t.Parallel()
+		const attentionID = "attention-closed-wake-quiet"
+		c, _ := newDelegateControllerTestHarness(t, 1, 1)
+		seedDelegateControllerIdle(t, c, delegateID, "")
+		closeDelegateControllerResumability(t, c, delegateID, "closure-sentinel")
+		if !c.noteDelegateAttention(delegateID, attentionID) {
+			t.Fatal("fixture did not retain the closed delegate's wake")
+		}
+		for _, blocker := range c.retirementNonBlockingEvidenceRead(true) {
+			if blocker.Category == "delegate" && blocker.DelegateID == delegateID {
+				t.Fatalf("closed delegate's retained wake reported as a blocker: %+v", blocker)
+			}
+		}
+	})
+	t.Run("resumable delegate wake reports", func(t *testing.T) {
+		t.Parallel()
+		const attentionID = "attention-open-wake-reported"
+		c, _ := newDelegateControllerTestHarness(t, 1, 1)
+		seedDelegateControllerIdle(t, c, delegateID, "")
+		if !c.noteDelegateAttention(delegateID, attentionID) {
+			t.Fatal("fixture did not note the wake")
+		}
+		found := false
+		for _, blocker := range c.retirementNonBlockingEvidenceRead(true) {
+			if blocker.Category == "delegate" && blocker.DelegateID == delegateID {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatal("a resumable delegate's noted wake disappeared from the non-blocking read")
+		}
+	})
+}
+
+// retirementFileBarrierTripwire bounds the two waits in retirementPauseFileRead.
+// Neither is the fixture's rendezvous: reaching the FIFO open spans the
+// operation's own path to its read — locks, evidence assembly and the open
+// itself — while the writer goroutine only pairs with that read, and joining
+// the resumed operation after the original bytes are restored spans the rest of
+// the operation. No fixture channel bounds either wait past its own observation,
+// and no production deadline bounds either. A correct operation crosses both in
+// milliseconds at rest, so 30s is a hang guard and matches this package's
+// standing whole-operation tripwire for in-process work (stallHandshakeTimeout,
+// retirementCreateBarrierTripwire, retirementColdClaimTripwire,
+// stalledRefreshTripwire). The inline 10s that each replaces was sized as if
+// the wait were the rendezvous it follows, not the operation around it.
+const retirementFileBarrierTripwire = 30 * time.Second
+
 // Pause an actual read of fixture-owned persisted bytes. The original inode is
 // restored before releasing the reader, so subsequent durable writes/readback
 // use the real original writer and file, not a synthetic persistence result.
@@ -1348,7 +1539,7 @@ func retirementPauseFileRead(t *testing.T, path string, run func() error) func()
 		writer = got.file
 	case err := <-done:
 		t.Fatalf("operation failed before read barrier: %v", err)
-	case <-time.After(10 * time.Second): // TRIPWIRE: actual FIFO-open rendezvous, not elapsed-time synchronization.
+	case <-time.After(retirementFileBarrierTripwire):
 		t.Fatal("operation did not reach read barrier")
 	}
 	var once sync.Once
@@ -1371,7 +1562,7 @@ func retirementPauseFileRead(t *testing.T, path string, run func() error) func()
 				if err != nil {
 					t.Error(err)
 				}
-			case <-time.After(10 * time.Second): // TRIPWIRE: joins the exact resumed source operation; no sleep-based assertion.
+			case <-time.After(retirementFileBarrierTripwire):
 				t.Error("resumed source did not finish")
 			}
 		})
@@ -1482,7 +1673,7 @@ func TestRetirementDelegateAttentionSourceRefusal(t *testing.T) {
 	if !pending {
 		t.Fatal("original attention source was not populated")
 	}
-	finish := retirementPauseColdClaim(t, c, filepath.Join(root.stateDir, sessionsSubdir, cold.ChildSessionID+".meta.json"))
+	finish := retirementPauseColdClaim(t, c, schema.SessionMetaPath(root.stateDir, cold.ChildSessionID))
 	defer finish()
 	added, blocker, _, emit, err := tree.tryOpenDelegateAttention(d.DelegateID, attentionID)
 	if !errors.Is(err, ErrRetirementUnavailable) || added || blocker != nil || emit {
@@ -1504,7 +1695,7 @@ func TestRetirementDelegateAttentionSourceRefusal(t *testing.T) {
 		t.Fatalf("refusal changed original attention transcript: %v", err)
 	}
 	finish()
-	if !root.driveStableDelegateAttention(sub) {
+	if !root.driveDelegateAttention(sub) {
 		t.Fatal("real attention owner did not accept original source")
 	}
 	retirementSettleDelegate(t, root, d)
@@ -1561,7 +1752,7 @@ func TestRetirementDelegateAttentionPendingBlocks(t *testing.T) {
 	}) {
 		t.Fatalf("pending attention lost its original owner: %+v", state)
 	}
-	if !root.driveStableDelegateAttention(sub) {
+	if !root.driveDelegateAttention(sub) {
 		t.Fatal("real attention owner did not accept original source")
 	}
 	retirementSettleDelegate(t, root, d)
@@ -1669,7 +1860,7 @@ func TestRetirementRetainedRootSteeringBlocksUntilConsumed(t *testing.T) {
 	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
-	if err := root.SteerKind("retained-root-sentinel", events.SteeringKindAgentMessage); err != nil {
+	if err := root.SteerKind("retained-root-sentinel", events.SteeringKindNoteHandoff); err != nil {
 		t.Fatal(err)
 	}
 	original, err := os.ReadFile(queuesFilePath(root.stateDir, root.ID()))

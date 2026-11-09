@@ -36,6 +36,7 @@ function toSetup(value: unknown): LaunchSetup | null {
 		["contextStrategy", "string"],
 		["maxSubagentDepth", "number"],
 		["maxRounds", "number"],
+		["memoryEnabled", "boolean"],
 	] as const)
 		if (overrides[field] !== undefined && typeof overrides[field] !== kind) return null;
 	return {

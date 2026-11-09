@@ -2,7 +2,6 @@ package contextmgr
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -83,19 +82,6 @@ func compactionKinds(history []schema.Turn) []schema.TurnKind {
 	return kinds
 }
 
-// runCheckpointPred runs the checkpoint-pred strategy with every layer up to
-// the predictive checkpoint forced, summarizing at summarizeThreshold.
-func runCheckpointPred(t *testing.T, cm *Manager, history *[]schema.Turn, summarizeThreshold float64) {
-	t.Helper()
-	cm.ObservationMaskThreshold = 0.0001
-	cm.ThinkingClearThreshold = 0.0001
-	cm.CheckpointThreshold = 0.0001
-	cm.SummarizeThreshold = summarizeThreshold
-	if err := NewCheckpointPredStrategy(cm).ManageContext(context.Background(), history, 0, noopEmit); err != nil {
-		t.Fatalf("ManageContext: %v", err)
-	}
-}
-
 // A summary that drops everything still leaves the human partner's own
 // messages in front of the model, on every path where the summary replaces
 // the checkpoint, and through a second compaction (#4173).
@@ -115,9 +101,6 @@ func TestCompaction_SummaryKeepsPartnerMessagesVerbatim(t *testing.T) {
 		{"steered", func(cm *Manager, history *[]schema.Turn) {
 			cm.ForceCompact(context.Background(), history, "Keep only the docs plan.", noopEmit)
 		}},
-		{"checkpoint-pred summarize", func(cm *Manager, history *[]schema.Turn) {
-			runCheckpointPred(t, cm, history, 0.0001)
-		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cm := partnerTestManager(emptySummaryReply)
@@ -132,18 +115,6 @@ func TestCompaction_SummaryKeepsPartnerMessagesVerbatim(t *testing.T) {
 			tc.compact(cm, &history)
 			requirePartnerHoldInContext(t, history, schema.TurnSummary)
 		})
-	}
-}
-
-// checkpoint-pred's own predictive checkpoint, written by a model, still
-// carries the human partner's messages verbatim.
-func TestCheckpointPred_PredictiveCheckpointKeepsPartnerMessagesVerbatim(t *testing.T) {
-	cm := partnerTestManager("Predicted checkpoint.")
-	history := partnerHoldHistory()
-	runCheckpointPred(t, cm, &history, 2) // never summarize: the predictive checkpoint stands
-	requirePartnerHoldInContext(t, history, schema.TurnCheckpoint)
-	if !strings.Contains(history[0].Message.Text(), "SESSION_ID_SENTINEL") {
-		t.Fatalf("the predictive checkpoint does not point at the session's transcript:\n%s", history[0].Message.Text())
 	}
 }
 
@@ -196,39 +167,6 @@ func TestCompaction_SummaryKeepsParentSteeringVerbatim(t *testing.T) {
 	}
 	if strings.Contains(history[0].Message.Text(), "DAEMON_NUDGE_SENTINEL") {
 		t.Fatalf("daemon steering was carried:\n%s", history[0].Message.Text())
-	}
-}
-
-// The model's own text in a compaction turn comes before the partner's
-// messages it carries, so a summarizer that reads a previous compaction from
-// its head sees the model's text however many messages ride beside it.
-func TestCheckpointPred_SummarizerSeesThePredictionBesideManyPartnerMessages(t *testing.T) {
-	var summarizerPrompt string
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response {
-			return llm.Response{Message: llm.Assistant("PREDICTED_CONTEXT_SENTINEL")}
-		},
-		func(req llm.Request) llm.Response {
-			summarizerPrompt = req.Messages[0].Text()
-			return llm.Response{Message: llm.Assistant(emptySummaryReply)}
-		},
-	}}
-	client := llm.NewClient()
-	client.Register(adapter)
-	cm := NewManager(testProfile("openai", "test", 100_000), client, cheapmodel.New(client))
-	cm.PreserveRecentTurns = 2
-	var history []schema.Turn
-	for i := range 12 {
-		history = append(history,
-			schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("message %d %s", i, strings.Repeat("detail ", 600)))),
-			schema.NewTurn(schema.TurnAssistant, llm.Assistant("ok")))
-	}
-	history = append(history,
-		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
-		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")))
-	runCheckpointPred(t, cm, &history, 0.0001)
-	if !strings.Contains(summarizerPrompt, "PREDICTED_CONTEXT_SENTINEL") {
-		t.Fatalf("the summarizer did not see the prediction (prompt is %d chars)", len(summarizerPrompt))
 	}
 }
 
@@ -296,51 +234,6 @@ func TestForceCompact_ModelQuotedMarkupIsNotThePartnersMessage(t *testing.T) {
 			t.Fatalf("markup the model quoted was carried as the partner's message:\n%s", history[0].Message.Text())
 		}
 	}
-}
-
-// When checkpoint-pred's prediction fails, its deterministic fallback sheds
-// under its own budget like any checkpoint, and the summary after it still
-// reads the partner's messages from the history that checkpoint folded.
-func TestCheckpointPred_FallbackSummaryReadsTheHistoryTheCheckpointFolded(t *testing.T) {
-	calls := 0
-	adapter := &stubSummarizeAdapter{name: "openai", respFn: func(llm.Request) (llm.Response, error) {
-		calls++
-		switch calls {
-		case 1: // the first compaction's summary: large
-			return llm.Response{Message: llm.Assistant("## Progress\n" + strings.Repeat("earlier work ", 2000))}, nil
-		case 2: // the prediction fails
-			return llm.Response{}, errors.New("prediction unavailable")
-		default:
-			return llm.Response{Message: llm.Assistant(emptySummaryReply)}, nil
-		}
-	}}
-	client := llm.NewClient()
-	client.Register(adapter)
-	cm := NewManager(testProfile("openai", "test", 1_000_000), client, cheapmodel.New(client))
-	cm.PreserveRecentTurns = 2
-	history := []schema.Turn{
-		schema.NewTurn(schema.TurnUserInput, llm.User("start")),
-		schema.NewTurn(schema.TurnAssistant, llm.Assistant("working")),
-		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
-		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
-	}
-	cm.ForceCompact(context.Background(), &history, "", noopEmit)
-	history = append(history,
-		schema.NewTurn(schema.TurnUserInput, llm.User(partnerHold)),
-		schema.NewTurn(schema.TurnAssistant, llm.Assistant("holding")))
-	for i := range 8 {
-		history = append(history,
-			schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("step %d %s", i, strings.Repeat("detail ", 700)))),
-			schema.NewTurn(schema.TurnAssistant, llm.Assistant("ok")))
-	}
-	history = append(history,
-		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent3")),
-		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent4")))
-	runCheckpointPred(t, cm, &history, 0.0001)
-	if calls != 3 {
-		t.Fatalf("model calls = %d, want summary, failed prediction, summary", calls)
-	}
-	requirePartnerHoldInContext(t, history, schema.TurnSummary)
 }
 
 // A summary written before summaries carried the partner's messages is the
@@ -786,23 +679,6 @@ func TestForceCompact_CeilingBelowTheTrimFloorStillFitsAndCounts(t *testing.T) {
 	}
 	if !isMiddleTrimOf(entries[0].Text, log) {
 		t.Fatalf("want the message trimmed with its note counting what was removed from it:\n%.300s", entries[0].Text)
-	}
-}
-
-// checkpoint-pred's prediction never sees the partner's messages whole, so
-// its predictive checkpoint keeps every one rather than leaving any to it.
-func TestCheckpointPred_PredictionKeepsEveryPartnerMessage(t *testing.T) {
-	answer := func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("Predicted checkpoint.")} }
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{answer}}
-	client := llm.NewClient()
-	client.Register(adapter)
-	cm := NewManager(testProfile("openai", "test", minSummarizingWindow), client, cheapmodel.New(client))
-	cm.PreserveRecentTurns = 2
-	cm.Meta = *persistentMeta
-	history := partnerFloodHistory(40, 1500, 3)
-	runCheckpointPred(t, cm, &history, 2)
-	if got := len(extractCheckpointConversation(history[0].Message.Text())); got != 40 {
-		t.Fatalf("the predictive checkpoint kept %d of 40 partner messages", got)
 	}
 }
 

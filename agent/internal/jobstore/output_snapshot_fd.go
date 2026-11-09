@@ -65,17 +65,16 @@ func ReadOutputPageSnapshotFromFile(path string, f *os.File, beforeBytes *int64,
 	return snapshot, err
 }
 
+type outputRangeSelector func(totalBytes, retainedStart int64) (start, end int64, err error)
+
 func readOutputPageSnapshotFromFileOnce(fs afero.Fs, path string, f *os.File, beforeBytes *int64, maxBytes int) (OutputWindowSnapshot, error) {
 	return readOutputRangeSnapshotFromFileOnce(fs, path, f, func(totalBytes, retainedStart int64) (int64, int64, error) {
 		return outputPageBounds(beforeBytes, maxBytes, totalBytes, retainedStart)
 	})
 }
 
-// KEEP IN SYNC with the path-backed attempt protocol in output_snapshot.go.
-// These implementations intentionally remain separate: frozen path-reader
-// seams require afero path access, while descriptor reads must fence path/file
-// generations and give observation errors precedence over partial changes.
-// Descriptor reads validate the metadata once per read, relying on that
+// Descriptor reads fence path/file generations and give observation errors
+// precedence over partial changes. They validate the metadata once per read, relying on that
 // generation fence (see checkOutputSizeUnchanged).
 func readOutputSnapshotFromFileOnce(fs afero.Fs, path string, f *os.File, maxBytes int, fromHead bool) (OutputSnapshot, error) {
 	before, err := observeOutputSnapshotFromFile(fs, path, f)

@@ -64,7 +64,6 @@ if [ ${#targets[@]} -eq 0 ]; then
 		"agent:./plugin"
 		"agent:./task"
 		"agent:./internal/contextmgr"
-		".:./frontmatter"
 	)
 fi
 

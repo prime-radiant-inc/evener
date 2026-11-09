@@ -13,6 +13,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
@@ -481,7 +482,7 @@ func TestClientMutation_StartAcceptanceOwnsRunnableInputBeforeWake(t *testing.T)
 func TestClientMutation_ProcessStartUsesDurablePayloadAndIdentity(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t,
-		withSteps(func(llm.Request) llm.Response { return finalResponse("done") }),
+		withSteps(func(llm.Request) llm.Response { return agenttest.FinalResponse("done") }),
 		withConfig(SessionConfig{
 			MaxSubagentDepth: 1,
 			testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
@@ -699,8 +700,8 @@ func TestClientMutation_QueueHeadReclaimAfterReturnStaysPending(t *testing.T) {
 		ClientMutationID: "queue-head-reclaim",
 		Input:            []appwire.InputItem{{Type: "text", Text: "run me"}},
 	}
-	if _, err := sess.clientMutationQueue(params); err != nil {
-		t.Fatalf("clientMutationQueue: %v", err)
+	if _, err := sess.AcceptClientMutationQueue(params); err != nil {
+		t.Fatalf("AcceptClientMutationQueue: %v", err)
 	}
 	claimed := sess.popQueueHead()
 	if claimed.ClientMutationID != params.ClientMutationID {
@@ -726,6 +727,39 @@ func TestClientMutation_QueueHeadReclaimAfterReturnStaysPending(t *testing.T) {
 	}
 	if got := snapshot.PendingExecutions[params.ClientMutationID].ProjectionState; got != appwire.MutationProjectionPending {
 		t.Fatalf("queue head reclaim pending projection = %q, want pending", got)
+	}
+}
+
+// TestClientMutation_PushQueueHeadKeepsClaimedAuthor pins the other half of
+// requeue attribution: a Manager-queued claim returned to the queue head must
+// keep its author, because promotion (AcceptClientMutationPromoteQueuedAsSteer)
+// reads the queue entry's actor. A requeue that rebuilt the entry without the
+// author would let the Manager's message be promoted and delivered as human
+// input.
+func TestClientMutation_PushQueueHeadKeepsClaimedAuthor(t *testing.T) {
+	t.Parallel()
+	sess := newTestSession(t)
+	manager := schema.SessionActor{Kind: "manager", ManagerRef: "local:manager"}
+	params := appwire.TurnQueueParams{
+		ClientMutationID: "requeue-author",
+		Input:            []appwire.InputItem{{Type: "text", Text: "manager queued input"}},
+	}
+	if _, err := sess.AcceptClientMutationQueueAs(params, manager); err != nil {
+		t.Fatalf("AcceptClientMutationQueueAs: %v", err)
+	}
+	claimed := sess.popQueueHead()
+	if claimed.ClientMutationID != params.ClientMutationID {
+		t.Fatalf("popQueueHead claimed = %#v, want %q", claimed, params.ClientMutationID)
+	}
+	if err := sess.pushQueueHead(claimed); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := sess.clientMutations.snapshot()
+	if len(snapshot.InputQueue) != 1 || snapshot.InputQueue[0].ClientMutationID != params.ClientMutationID {
+		t.Fatalf("requeued queue = %#v, want the returned claim at the head", snapshot.InputQueue)
+	}
+	if got := snapshot.InputQueue[0].Actor; got != manager {
+		t.Fatalf("requeued entry actor = %#v, want the manager author %#v", got, manager)
 	}
 }
 
@@ -962,7 +996,7 @@ func TestClientMutation_StartTranscriptIOFailureProcessPathRemainsRunnable(t *te
 	client.Register(&fakeAdapter{
 		name: "openai",
 		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response { return finalResponse("must not run") },
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("must not run") },
 		},
 	})
 	sess, err := NewSession(
@@ -1016,7 +1050,7 @@ func TestClientMutation_StartLifecycleTerminalizesAfterRunnerCompletion(t *testi
 	client.Register(&fakeAdapter{
 		name: "openai",
 		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response { return finalResponse("done") },
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 		},
 	})
 	sess, err := NewSession(
@@ -1203,7 +1237,7 @@ func TestRestoreSession_RestoredTranscriptIncludesClientMutationFailureRecovery(
 			}
 			entries := captured.entries
 			path := transcriptPath(restored.stateDir, restored.id)
-			onDisk, err := readTranscriptFull(path, "")
+			onDisk, err := readTranscriptFull(context.Background(), path, "")
 			if err != nil {
 				t.Fatalf("readTranscriptFull: %v", err)
 			}
@@ -1311,7 +1345,7 @@ func TestClientMutation_InterruptWaitReleasesSerializerAndRunnerTerminalizesFenc
 		ClientMutationID: "queue-during-interrupt-fence",
 		Input:            []appwire.InputItem{{Type: "text", Text: "must not pass fence"}},
 	}
-	if _, err := sess.clientMutationQueue(queuedDuringFence); err == nil {
+	if _, err := sess.AcceptClientMutationQueue(queuedDuringFence); err == nil {
 		t.Fatal("queue mutation passed an active interrupt fence")
 	}
 	if err := sess.completeClientMutationInterruptedTurn(params.ClientMutationID); err != nil {

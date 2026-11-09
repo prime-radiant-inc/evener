@@ -3,8 +3,8 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { HOST_DEPENDENT_DISCOVERY_METHODS } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
-import { HOST_DEPENDENT_DISCOVERY_METHODS } from "./hostRouting";
 
 // The CROSS-LANGUAGE half of this contract. The shipped set above and the Go
 // proxy's allow-list (appwire/host_request.go's hostRequestMethods)

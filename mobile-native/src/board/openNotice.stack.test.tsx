@@ -26,7 +26,6 @@ import { openNotice, openProviders } from "./BoardNotices";
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 // The real detail reads its guard from the native package, which vitest cannot
 // render; its usePreventRemove is core's.
 vi.mock("@react-navigation/native", async () => ({

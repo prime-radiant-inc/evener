@@ -105,6 +105,67 @@ func TestValidateDelegateAttentionResolutions_ResumeGenerationConflict(t *testin
 	}
 }
 
+func TestValidateDelegateAttentionResolutions_ReopenSupersedesSourceClaim(t *testing.T) {
+	fold := newDelegateAttentionFold()
+	fold.content["attn_1"] = llm.User("hello")
+	fold.order = append(fold.order, "attn_1")
+	fold.resolutions["attn_2"] = delegateAttentionConsumed
+	fold.resumeGenerations["attn_2"] = 5
+
+	// The row re-delivered under attn_2's reopen identity may claim the same
+	// generation: the source's claim belongs to a start that never committed,
+	// so the retry of that generation presents the re-delivered row.
+	reopened := delegateAttentionReopenID("attn_2", 5)
+	fold.content[reopened] = llm.User("hello")
+	fold.order = append(fold.order, reopened)
+	if err := validateDelegateAttentionResolutions(fold, []string{reopened}, delegateAttentionConsumed, 5); err != nil {
+		t.Fatalf("reopened row claiming its source's generation: %v", err)
+	}
+	// A claim superseded by its own reopen row binds nothing: the re-delivered
+	// row reaches its presentation through the ordinary pending path, so any
+	// other pending row may take the generation over.
+	if err := validateDelegateAttentionResolutions(fold, []string{"attn_1"}, delegateAttentionConsumed, 5); err != nil {
+		t.Fatalf("second row claiming a superseded claim's generation: %v", err)
+	}
+	// A live claim still refuses every other claimant: no reopen row exists
+	// to supersede it, so the generation is not free.
+	fold.resolutions["attn_3"] = delegateAttentionConsumed
+	fold.resumeGenerations["attn_3"] = 5
+	if err := validateDelegateAttentionResolutions(fold, []string{"attn_1"}, delegateAttentionConsumed, 5); err == nil {
+		t.Fatal("resume generation already claimed by a live attention should error")
+	}
+}
+
+func TestValidateDelegateAttentionResolutions_ChainedReopenSupersedesAncestorClaims(t *testing.T) {
+	fold := newDelegateAttentionFold()
+	fold.content["attn_1"] = llm.User("hello")
+	fold.order = append(fold.order, "attn_1")
+	reopened := delegateAttentionReopenID("attn_2", 5)
+	grandchild := delegateAttentionReopenID(reopened, 5)
+	// Every reopen appends its row before the next start can consume it, so
+	// each ancestor's superseding row is in the fold the chain leaves.
+	fold.content[reopened] = llm.User("hello")
+	fold.order = append(fold.order, reopened)
+	fold.content[grandchild] = llm.User("hello")
+	fold.order = append(fold.order, grandchild)
+	// Both ancestors' consume markers claim generation 5: the first start
+	// failed unjournaled, and so did the retry that consumed its reopen.
+	fold.resolutions["attn_2"] = delegateAttentionConsumed
+	fold.resumeGenerations["attn_2"] = 5
+	fold.resolutions[reopened] = delegateAttentionConsumed
+	fold.resumeGenerations[reopened] = 5
+
+	// The twice-re-delivered row may claim the generation every ancestor pins.
+	if err := validateDelegateAttentionResolutions(fold, []string{grandchild}, delegateAttentionConsumed, 5); err != nil {
+		t.Fatalf("chained reopen claiming its ancestors' generation: %v", err)
+	}
+	// Every ancestor claim is superseded by its own reopen row, so the
+	// generation is free for any pending row, not only the chain's next link.
+	if err := validateDelegateAttentionResolutions(fold, []string{"attn_1"}, delegateAttentionConsumed, 5); err != nil {
+		t.Fatalf("an id outside the chain claiming a fully superseded generation: %v", err)
+	}
+}
+
 func TestFoldDelegateDeliveryCommits(t *testing.T) {
 	t.Parallel()
 	// Empty commits -> no-op.
@@ -245,6 +306,165 @@ func TestFoldDelegateAttention_ResumeGenerationConflict(t *testing.T) {
 		{Turn: attn1}, {Turn: res1}, {Turn: attn2}, {Turn: res2},
 	}); err == nil {
 		t.Fatal("two attentions with same resume generation should error")
+	}
+}
+
+// The write side agrees with the validator about which claims still bind:
+// replaying a transcript whose superseded claim is followed by another row's
+// takeover of the same generation folds cleanly when — and only when — the
+// reopen row that supersedes the claim precedes the takeover marker.
+func TestFoldDelegateAttention_SupersededClaimReleasesGeneration(t *testing.T) {
+	t.Parallel()
+	row := func(id, text string) transcript.Entry {
+		turn := schema.NewTurn(schema.TurnSteering, llm.User(text))
+		turn.AttentionID = id
+		return transcript.Entry{Turn: turn}
+	}
+	marker := func(id string, generation uint64) transcript.Entry {
+		turn := schema.NewTurn(schema.TurnAttentionResolution, llm.System("x"))
+		turn.AttentionResolution = &schema.AttentionResolutionInfo{AttentionID: id, Disposition: "consumed", ResumeGeneration: generation}
+		return transcript.Entry{Turn: turn}
+	}
+	// The busy start's reopen row precedes the second row's takeover marker,
+	// the order every live drive appends in.
+	reopened := delegateAttentionReopenID("attn_x", 5)
+	waived := []transcript.Entry{
+		row("attn_x", "the report"),
+		marker("attn_x", 5),
+		row(reopened, "the report"),
+		row("attn_z", "the second row"),
+		marker("attn_z", 5),
+	}
+	if _, err := foldDelegateAttention(waived); err != nil {
+		t.Fatalf("folding a superseded claim's takeover: %v", err)
+	}
+	// Without the reopen row the claim is live and the takeover refuses.
+	live := []transcript.Entry{
+		row("attn_x", "the report"),
+		marker("attn_x", 5),
+		row("attn_z", "the second row"),
+		marker("attn_z", 5),
+	}
+	if _, err := foldDelegateAttention(live); err == nil {
+		t.Fatal("a live claim's generation should refuse a second claimant")
+	}
+}
+
+// History resumed from the transcript must match the resident view the
+// reopen's drop keeps: a consumed attention row superseded by its own reopen
+// never reached a request — every reopen fires only after a start that
+// failed before presenting — and the reopened row carries the same content
+// to the next presentation, so a history that replays the source alongside
+// the copy shows the same report twice in every later request. The source's
+// turn is skipped exactly while its reopen row exists in the fold; the
+// transcript keeps both rows, because the fold, not the history, is the
+// delivery ledger.
+func TestResumeHistorySkipsSupersededDelegateAttentionTurns(t *testing.T) {
+	t.Parallel()
+	row := func(id, text string) transcript.Entry {
+		turn := schema.NewTurn(schema.TurnSteering, llm.User(text))
+		turn.AttentionID = id
+		return transcript.Entry{Turn: turn}
+	}
+	marker := func(id string, generation uint64) transcript.Entry {
+		turn := schema.NewTurn(schema.TurnAttentionResolution, llm.System("x"))
+		turn.AttentionResolution = &schema.AttentionResolutionInfo{AttentionID: id, Disposition: "consumed", ResumeGeneration: generation}
+		return transcript.Entry{Turn: turn}
+	}
+	attentionIDs := func(turns []schema.Turn) map[string]int {
+		counts := map[string]int{}
+		for _, turn := range turns {
+			if turn.AttentionID != "" {
+				counts[turn.AttentionID]++
+			}
+		}
+		return counts
+	}
+
+	// The transcript a busy-settled presentation leaves: the report consumed
+	// for a start that never presented, and the reopen's fresh row carrying
+	// the same content.
+	reopened := delegateAttentionReopenID("attn_report", 2)
+	history, _ := resumeHistoryIndexed([]transcript.Entry{
+		row("attn_report", "the report content"),
+		marker("attn_report", 2),
+		row(reopened, "the report content"),
+	})
+	counts := attentionIDs(history)
+	if counts["attn_report"] != 0 || counts[reopened] != 1 {
+		t.Fatalf("resumed history attention ids = %v, want the superseded source gone and its reopened copy alone", counts)
+	}
+
+	// A consumed row no reopen has superseded keeps its turn: the resident
+	// view keeps it too, and its generation still owes the presentation.
+	history, _ = resumeHistoryIndexed([]transcript.Entry{
+		row("attn_owed", "still owed"),
+		marker("attn_owed", 2),
+	})
+	if counts = attentionIDs(history); counts["attn_owed"] != 1 {
+		t.Fatalf("resumed history attention ids = %v, want the unsuperseded consumed row kept", counts)
+	}
+
+	// A chained reopen supersedes every ancestor: each consumed link's own
+	// reopen row exists, so only the deepest re-delivery stays.
+	grandchild := delegateAttentionReopenID(reopened, 2)
+	history, _ = resumeHistoryIndexed([]transcript.Entry{
+		row("attn_report", "the report content"),
+		marker("attn_report", 2),
+		row(reopened, "the report content"),
+		marker(reopened, 2),
+		row(grandchild, "the report content"),
+	})
+	counts = attentionIDs(history)
+	if counts["attn_report"] != 0 || counts[reopened] != 0 || counts[grandchild] != 1 {
+		t.Fatalf("resumed history attention ids = %v, want only the chained reopen's deepest row", counts)
+	}
+}
+
+// The coordinate mappers must count the same turns the history build keeps:
+// a superseded attention row that the drop removes shifts every later
+// position left, so a reopen marker or a fork boundary after it maps one
+// turn too far right unless the index applies the drop's skip rule too.
+func TestHistoryIndexCountsSupersededAttentionRowsAsSkipped(t *testing.T) {
+	t.Parallel()
+	row := func(id, text string) transcript.Entry {
+		turn := schema.NewTurn(schema.TurnSteering, llm.User(text))
+		turn.AttentionID = id
+		return transcript.Entry{Turn: turn}
+	}
+	marker := func(id string, generation uint64) transcript.Entry {
+		turn := schema.NewTurn(schema.TurnAttentionResolution, llm.System("x"))
+		turn.AttentionResolution = &schema.AttentionResolutionInfo{AttentionID: id, Disposition: "consumed", ResumeGeneration: generation}
+		return transcript.Entry{Turn: turn}
+	}
+	reopenMarker := func(turnID string) transcript.Entry {
+		turn := schema.NewTurn(schema.TurnReopen, llm.System("x"))
+		turn.TurnID = turnID
+		return transcript.Entry{Turn: turn}
+	}
+	// The superseded row sits before the reopen marker, so the marker's
+	// attempt start and any later fork boundary both shift past it.
+	reopened := delegateAttentionReopenID("attn_report", 2)
+	entries := []transcript.Entry{
+		{Turn: schema.NewTurn(schema.TurnUserInput, llm.User("first"))},
+		row("attn_report", "the report content"),
+		marker("attn_report", 2),
+		row(reopened, "the report content"),
+		reopenMarker("t_attempt"),
+		{Turn: schema.NewTurn(schema.TurnUserInput, llm.User("after"))},
+	}
+	// The kept history before the marker: the user turn, the consumed
+	// marker's resolution turn and the reopened copy — the superseded source
+	// is gone, so the marker's attempt starts one position left of where an
+	// uncorrected count lands it.
+	starts := latestAttemptStarts(entries, nil, supersededDelegateAttentionIDs(entries))
+	if starts["t_attempt"] != 3 {
+		t.Fatalf("latest attempt start = %d, want 3 with the superseded source skipped", starts["t_attempt"])
+	}
+	// A fork boundary at the turn after the marker maps through the same
+	// skip rule.
+	if got := resumedDivergence(entries, 5, nil, supersededDelegateAttentionIDs(entries)); got != 3 {
+		t.Fatalf("resumed divergence = %d, want 3 with the superseded source skipped", got)
 	}
 }
 

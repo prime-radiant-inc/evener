@@ -204,14 +204,14 @@ func (s *Session) escalateOnSandboxDenial(ctx context.Context, callName string, 
 		s.mu.Lock()
 		delete(s.pendingEscalations, id)
 		s.mu.Unlock()
-		s.emit(events.EventSandboxEscalationResolved, events.SandboxEscalationResolvedData{EscalationID: id})
+		s.emit(events.SandboxEscalationResolvedData{EscalationID: id})
 	}()
 
 	// Emit the card BEFORE blocking so RecordAppEvent → Broadcast pushes it to the
 	// human, then the goroutine waits. The payload carries the FULL denied path for
 	// informed consent (only non-sensitive, grant-curable denials reach here; a
 	// sensitive path would degrade to "<denied>") — never file contents.
-	s.emit(events.EventSandboxEscalationRequested, data)
+	s.emit(data)
 
 	select {
 	case d, decided := <-ch:
@@ -234,6 +234,14 @@ func (s *Session) escalateOnSandboxDenial(ctx context.Context, callName string, 
 // it, never the model. Resolving an unknown or already-resolved id is a clean error
 // (no panic, no block), so a double-click or a stale card cannot double-approve.
 func (s *Session) ResolveSandboxEscalation(id string, approve bool) error {
+	return s.ResolveSandboxEscalationAs(id, approve, schema.SessionActor{Kind: "human"})
+}
+
+// ResolveSandboxEscalationAs delivers a sandbox decision attributed to actor.
+func (s *Session) ResolveSandboxEscalationAs(id string, approve bool, actor schema.SessionActor) error {
+	if err := validateSessionActor(actor); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	w, ok := s.pendingEscalations[id]
 	if ok {
@@ -247,7 +255,7 @@ func (s *Session) ResolveSandboxEscalation(id string, approve bool) error {
 	// accepts it, rather than by the waiting call: a turn stopped at the same
 	// moment can win that call's select and never read the answer. Recording
 	// before the send also puts it before the re-run's result.
-	s.recordNotice(schema.NoticeInfo{Kind: schema.NoticeApprovalDecision, ApprovalDecision: &schema.ApprovalDecisionNotice{
+	s.recordNotice(schema.NoticeInfo{Kind: schema.NoticeApprovalDecision, Actor: actor, ApprovalDecision: &schema.ApprovalDecisionNotice{
 		EscalationID: id,
 		Approved:     approve,
 		Tool:         w.data.Tool,

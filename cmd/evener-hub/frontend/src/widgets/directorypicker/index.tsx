@@ -3,7 +3,9 @@ import { type FormEvent, useEffect, useId, useLayoutEffect, useRef, useState } f
 import { createPortal } from "react-dom";
 import { Button } from "../button";
 import { OverlayPanel } from "../dialog/OverlayPanel";
+import { ownerDocumentOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
+import { usePortalDocument } from "../internal/usePortalDocument";
 import styles from "./directorypicker.module.css";
 
 export interface DirectoryPickerProps {
@@ -63,6 +65,7 @@ export function DirectoryPicker({
   const [typed, setTyped] = useState(initialPath);
   const [pathEdited, setPathEdited] = useState(false);
   const [entries, setEntries] = useState<string[] | null>(null);
+  const [initialCanonical, setInitialCanonical] = useState<{ id: number; path: string } | null>(null);
   const [validatedInput, setValidatedInput] = useState<string | null>(null);
   const [recents, setRecents] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -78,11 +81,17 @@ export function DirectoryPicker({
   const wasCreating = useRef(false);
   const pathId = useId();
   const nameId = useId();
+  // The picker's panel is its only DOM output, so it has no element of its own
+  // to read a realm from before the portal exists. A hidden host marker names
+  // the document the picker was mounted into (a Dockview popout has its own);
+  // the shared portal seam re-renders before paint once it attaches.
+  const hostRef = useRef<HTMLSpanElement>(null);
+  const panelDocument = usePortalDocument(hostRef);
 
   async function browse(path: string, preserveFocusedInput = false) {
     // Rows disappear during navigation. Keep focus on a persistent control
     // without opening the phone keyboard when browsing by touch.
-    if (document.activeElement !== pathInput.current) goButton.current?.focus();
+    if (ownerDocumentOf(pathInput.current).activeElement !== pathInput.current) goButton.current?.focus();
     const id = ++request.current;
     setPathEdited(false);
     setValidatedInput(null);
@@ -102,7 +111,8 @@ export function DirectoryPicker({
       setCurrent(canonical);
       // Initial validation must not collapse a selection made before the first
       // input event. Explicit navigation still canonicalizes its submitted path.
-      if (!preserveFocusedInput || document.activeElement !== pathInput.current) setTyped(canonical);
+      if (preserveFocusedInput) setInitialCanonical({ id, path: canonical });
+      else setTyped(canonical);
       setValidatedInput(path);
       const children = await complete(childrenPrefix(canonical), false);
       if (mounted.current && request.current === id) setEntries(children);
@@ -144,6 +154,18 @@ export function DirectoryPicker({
     }
   }, [creating, busy]);
 
+  // Focus is read in the commit that would replace the text. Reading it when
+  // the validation result arrives misses a field focused and selected before
+  // that result renders, and the replacement then lands under the selection.
+  useLayoutEffect(() => {
+    if (
+      initialCanonical !== null &&
+      request.current === initialCanonical.id &&
+      ownerDocumentOf(pathInput.current).activeElement !== pathInput.current
+    )
+      setTyped(initialCanonical.path);
+  }, [initialCanonical]);
+
   const ready = validatedInput !== null && !pathEdited && (typed === current || typed === validatedInput) && !busy;
   // Paths belong to the Linux/macOS hub, regardless of the browser OS.
   // Match the shared path helpers and supported hub builds in .goreleaser.yml.
@@ -181,7 +203,9 @@ export function DirectoryPicker({
     }
   }
 
-  return createPortal(
+  // Built only when the portal renders: the first render exists to attach the
+  // host marker, and constructing this tree there would throw it away.
+  const renderPanel = () => (
     <OverlayPanel
       open
       onClose={onClose}
@@ -392,7 +416,15 @@ export function DirectoryPicker({
           </section>
         </div>
       </div>
-    </OverlayPanel>,
-    document.body,
+    </OverlayPanel>
+  );
+
+  return (
+    <>
+      {/* The hidden marker is where the picker was mounted; its document is
+          the one the panel belongs to. */}
+      <span ref={hostRef} hidden />
+      {panelDocument !== null && createPortal(renderPanel(), panelDocument.body)}
+    </>
   );
 }

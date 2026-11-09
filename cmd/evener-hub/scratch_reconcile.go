@@ -9,35 +9,40 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
+var scanScratchTreeRootIDs = agentsandbox.SessionScratchTreeRootIDs
+
 // reconcileArchivedScratch removes the scratch tree of every session the rail
 // files as archived, by any rule (an explicit decision, age, or an archived
 // project; pastArchived), unless the session's daemon is still running. It runs
 // after every archive and daemon exit and at startup, so it also catches
 // sessions that aged into the archive and daemons that exited while the hub
 // was down. It visits only the trees that exist, not every recorded session.
-func reconcileArchivedScratch(cfg hubcore.WebConfig, now time.Time) {
-	if cfg.Past == nil || cfg.Archive == nil {
+func reconcileArchivedScratch(ctx context.Context, past *hubcore.PastIndex, archive *hubcore.ArchiveStore, roster *hubcore.Roster, now time.Time) {
+	if ctx.Err() != nil || past == nil || archive == nil {
 		return
 	}
-	decisions, err := cfg.Archive.Decisions()
-	if err != nil {
+	decisions, err := archive.Decisions()
+	if err != nil || ctx.Err() != nil {
 		return
 	}
-	daemonTempDirs := recordedScratchTempDirs(cfg.Past)
-	for _, id := range agentsandbox.SessionScratchTreeRootIDs(daemonTempDirs...) {
-		entry, known := cfg.Past.FindIndexed(id)
+	daemonTempDirs := recordedScratchTempDirs(past)
+	for _, id := range scanScratchTreeRootIDs(ctx, daemonTempDirs...) {
+		entry, known := past.FindIndexed(id)
 		if !known {
 			continue
 		}
 		// A daemon that died stays listed, marked Crashed; only a running one
 		// keeps its session's scratch.
-		if cfg.Roster != nil {
-			if live, listed := cfg.Roster.Find(id); listed && !live.Crashed {
+		if roster != nil {
+			if live, listed := roster.Find(id); listed && !live.Crashed {
 				continue
 			}
 		}
 		// Best-effort: a tree it cannot take now is retried on the next pass.
-		if pastArchived(entry, decisions, now) {
+		if ctx.Err() != nil {
+			return
+		}
+		if pastArchived(entry, decisions, now) && ctx.Err() == nil {
 			_ = agentsandbox.RemoveSessionScratchTree(id, daemonTempDirs...)
 		}
 	}
@@ -59,12 +64,14 @@ func recordedScratchTempDirs(past *hubcore.PastIndex) []string {
 // scratchReconciler runs reconcileArchivedScratch on its own goroutine, one
 // pass at a time. Kicks that land during a pass collapse into one more pass.
 type scratchReconciler struct {
-	cfg  hubcore.WebConfig
-	kick chan struct{}
+	past    *hubcore.PastIndex
+	archive *hubcore.ArchiveStore
+	roster  *hubcore.Roster
+	kick    chan struct{}
 }
 
-func newScratchReconciler(cfg hubcore.WebConfig) *scratchReconciler {
-	return &scratchReconciler{cfg: cfg, kick: make(chan struct{}, 1)}
+func newScratchReconciler(past *hubcore.PastIndex, archive *hubcore.ArchiveStore, roster *hubcore.Roster) *scratchReconciler {
+	return &scratchReconciler{past: past, archive: archive, roster: roster, kick: make(chan struct{}, 1)}
 }
 
 // Kick asks for a reconcile pass without waiting for it.
@@ -82,7 +89,7 @@ func (r *scratchReconciler) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-r.kick:
-			reconcileArchivedScratch(r.cfg, time.Now())
+			reconcileArchivedScratch(ctx, r.past, r.archive, r.roster, time.Now())
 		}
 	}
 }

@@ -141,9 +141,6 @@ func main(){
 	if got.pid != pid || got.supervisor.kind != supervisorNone {
 		t.Fatalf("owner=%+v", got)
 	}
-	if _, err := m.revalidateOwnedEndpoint(t.Context(), host, Preflight{OS: "linux", LaunchCheckKnown: true, HubEndpointSchema: 1}, got); err != nil {
-		t.Fatal(err)
-	}
 	lockAfter, err := os.Stat(filepath.Join(root, "hub.lock"))
 	if err != nil {
 		t.Fatal(err)

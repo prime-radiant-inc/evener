@@ -282,12 +282,7 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 
 	// The controller's own provider. A remote session never reaches it, which is
 	// why a green run here says nothing about this side's model configuration.
-	provider, err := fakellm.New()
-	if err != nil {
-		t.Fatalf("start fake provider: %v", err)
-	}
-	t.Cleanup(provider.Close)
-
+	provider := newFakeLLMProvider(t)
 	stack := startHubStack(t, provider)
 
 	// This budget covers getting the host ready and nothing that happens after the

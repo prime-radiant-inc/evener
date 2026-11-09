@@ -13,8 +13,8 @@ package contextmgr
 // Run: EVENER_LIVE_TESTS=1 go test -tags eval ./agent/internal/contextmgr/ -run TestCompactionMultiNeedle -v -timeout 60m
 //
 // Arms, scored by COUNT-based retention (facts present / total facts):
-//   A baseline:       summarizeWithLLMSteered(hist, 2, "")         -> summary only
-//   C-summary steer:  summarizeWithLLMSteered(hist, 2, instruction) -> steered summary only
+//   A baseline:       summarizeFold(hist, 2, "")         -> summary only
+//   C-summary steer:  summarizeFold(hist, 2, instruction) -> steered summary only
 //   B note:           [NOTE all facts] + baseline summary           -> retention 1.0 by construction
 //   C note+steer:     [NOTE all facts] + steered summary            -> retention 1.0 by construction
 // The load-bearing numbers are A (how lossy is auto-compaction with many facts?) and
@@ -280,13 +280,13 @@ func TestCompactionMultiNeedle(t *testing.T) {
 		hist := turnsFromText(t, buildHistory(c))
 		note := noteOf(c.facts)
 
-		aOut, err := summ.summarizeWithLLMSteered(ctx, hist, 2, "")
+		aOut, err := summ.summarizeFold(ctx, hist, 2, "", nil)
 		if err != nil {
 			t.Fatalf("case %q arm A: %v", c.name, err)
 		}
 		aSummary := summaryText(aOut)
 
-		cOut, err := summ.summarizeWithLLMSteered(ctx, hist, 2, c.instruction)
+		cOut, err := summ.summarizeFold(ctx, hist, 2, c.instruction, nil)
 		if err != nil {
 			t.Fatalf("case %q arm C-summary: %v", c.name, err)
 		}

@@ -76,6 +76,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdAudit(rest, stdout, stderr)
 	case "plugins":
 		return cmdPlugins(rest, stdout, stderr)
+	case "lifecycle":
+		return cmdLifecycle(rest, stdout, stderr)
 	case "-h", "--help", "help":
 		return usage(stdout)
 	default:
@@ -108,6 +110,7 @@ SUBCOMMANDS:
   sessions    enumerate every session (or one --bucket's), sorted by last activity, for batch forensic studies (no selector)
   audit       run a runbook's mechanical checks across a session set, emitting deduped, contract-valid Findings (no selector — see "evener doctor audit -h")
   plugins     plugin-store health check: registry/disk drift, marketplace health, component validity, auto-upgrade sanity (no selector — see "evener doctor plugins -h")
+  lifecycle   the declared state machines: states, classes, terminality and legal transitions (no selector)
 
 SELECTOR:
   "" | current  (rejected — name a session)   local:<id>   proj:<project-id>:<id>   <id> (searched across buckets)
@@ -194,7 +197,10 @@ func cmdLocate(args []string, stdout, stderr io.Writer) int {
 	if code != 0 {
 		return code
 	}
-	base := doctor.ResolveStateBase(*stateDir)
+	base, err := doctor.ResolveStateBase(*stateDir)
+	if err != nil {
+		return fail(stderr, "state", err)
+	}
 	paths, err := doctorLocate(base, sel)
 	if err != nil {
 		return fail(stderr, "locate", err)
@@ -222,7 +228,10 @@ func cmdTranscript(args []string, stdout, stderr io.Writer) int {
 	if code != 0 {
 		return code
 	}
-	base := doctor.ResolveStateBase(*stateDir)
+	base, err := doctor.ResolveStateBase(*stateDir)
+	if err != nil {
+		return fail(stderr, "state", err)
+	}
 
 	if *count != "" {
 		res, err := doctor.Count(base, sel, *count)
@@ -283,7 +292,10 @@ func cmdAPILog(args []string, stdout, stderr io.Writer) int {
 	if code != 0 {
 		return code
 	}
-	base := doctor.ResolveStateBase(*stateDir)
+	base, err := doctor.ResolveStateBase(*stateDir)
+	if err != nil {
+		return fail(stderr, "state", err)
+	}
 
 	if *validate {
 		res, err := doctor.ValidateAPILog(base, sel)
@@ -340,7 +352,10 @@ func cmdJobs(args []string, stdout, stderr io.Writer) int {
 	if code != 0 {
 		return code
 	}
-	base := doctor.ResolveStateBase(*stateDir)
+	base, err := doctor.ResolveStateBase(*stateDir)
+	if err != nil {
+		return fail(stderr, "state", err)
+	}
 	res, err := doctor.Jobs(base, sel, doctor.JobOpts{JobID: *jobID})
 	if err != nil {
 		return fail(stderr, "jobs", err)
@@ -360,7 +375,10 @@ func cmdMutations(args []string, stdout, stderr io.Writer) int {
 	if code != 0 {
 		return code
 	}
-	base := doctor.ResolveStateBase(*stateDir)
+	base, err := doctor.ResolveStateBase(*stateDir)
+	if err != nil {
+		return fail(stderr, "state", err)
+	}
 	res, err := doctor.Mutations(base, sel)
 	if err != nil {
 		return fail(stderr, "mutations", err)
@@ -379,7 +397,10 @@ func cmdWatches(args []string, stdout, stderr io.Writer) int {
 	if code != 0 {
 		return code
 	}
-	base := doctor.ResolveStateBase(*stateDir)
+	base, err := doctor.ResolveStateBase(*stateDir)
+	if err != nil {
+		return fail(stderr, "state", err)
+	}
 	res, err := doctor.Watches(base, sel, doctor.WatchOpts{WatchID: *watchID, SelfLoopsOnly: *selfLoops})
 	if err != nil {
 		return fail(stderr, "watches", err)
@@ -398,7 +419,10 @@ func cmdTree(args []string, stdout, stderr io.Writer) int {
 	if code != 0 {
 		return code
 	}
-	base := doctor.ResolveStateBase(*stateDir)
+	base, err := doctor.ResolveStateBase(*stateDir)
+	if err != nil {
+		return fail(stderr, "state", err)
+	}
 	res, err := doctor.Tree(base, sel, doctor.TreeOpts{Depth: *depth, Observers: *observers})
 	if err != nil {
 		return fail(stderr, "tree", err)
@@ -427,7 +451,10 @@ func cmdTurnIDs(args []string, stdout, stderr io.Writer) int {
 		}
 		return 2
 	}
-	base := doctor.ResolveStateBase(*stateDir)
+	base, err := doctor.ResolveStateBase(*stateDir)
+	if err != nil {
+		return fail(stderr, "state", err)
+	}
 	scan, err := doctor.ScanTurnIDs(base)
 	if err != nil {
 		return fail(stderr, "turnids", err)
@@ -467,7 +494,10 @@ func cmdSessions(args []string, stdout, stderr io.Writer) int {
 		}
 		sinceDur = d
 	}
-	base := doctor.ResolveStateBase(*stateDir)
+	base, err := doctor.ResolveStateBase(*stateDir)
+	if err != nil {
+		return fail(stderr, "state", err)
+	}
 	res, err := doctor.ListSessions(base, doctor.SessionsOpts{Since: sinceDur, Bucket: *bucketFlag})
 	if err != nil {
 		return fail(stderr, "sessions", err)
@@ -532,7 +562,10 @@ func cmdAudit(args []string, stdout, stderr io.Writer) int {
 		opts.Since = d
 	}
 
-	base := doctor.ResolveStateBase(*stateDir)
+	base, err := doctor.ResolveStateBase(*stateDir)
+	if err != nil {
+		return fail(stderr, "state", err)
+	}
 	res, err := doctor.RunAudit(base, runbook, opts)
 	if err != nil {
 		return fail(stderr, "audit", err)
@@ -562,4 +595,26 @@ func cmdPlugins(args []string, stdout, stderr io.Writer) int {
 		return emitJSON(stdout, findings)
 	}
 	return writeText(stdout, plugins.RenderDoctorFindings(findings))
+}
+
+// cmdLifecycle prints the compiled lifecycle registry. It takes no selector and
+// reads no state root: the machines are declarations, not session evidence.
+func cmdLifecycle(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("lifecycle", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "emit JSON instead of the human table")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() > 0 {
+		if code := writef(stderr, "evener doctor lifecycle: takes no selector (got %q)\n", fs.Arg(0)); code != 0 {
+			return code
+		}
+		return 2
+	}
+	machines := doctor.Lifecycle()
+	if *asJSON {
+		return emitJSON(stdout, machines)
+	}
+	return writeText(stdout, doctor.RenderLifecycle(machines))
 }

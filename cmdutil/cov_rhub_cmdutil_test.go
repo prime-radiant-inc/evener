@@ -116,18 +116,6 @@ func TestResolveSessionMeta(t *testing.T) {
 	}
 }
 
-func TestDefaultStateRoot(t *testing.T) {
-	t.Setenv(envvars.XDGStateHome.Name, "/explicit/state")
-	if got := DefaultStateRoot(); got != "/explicit/state/evener" {
-		t.Fatalf("DefaultStateRoot with XDG_STATE_HOME=%q", got)
-	}
-	t.Setenv(envvars.XDGStateHome.Name, "")
-	t.Setenv("HOME", "/home/tester")
-	if got := DefaultStateRoot(); got != "/home/tester/.local/state/evener" {
-		t.Fatalf("DefaultStateRoot home fallback=%q", got)
-	}
-}
-
 func TestDefaultConfigRootAndSubdirs(t *testing.T) {
 	t.Setenv(envvars.XDGConfigHome.Name, "/xdg")
 	if got := DefaultConfigRoot(); got != "/xdg/evener" {

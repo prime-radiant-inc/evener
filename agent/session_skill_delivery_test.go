@@ -42,9 +42,9 @@ func TestSkillDelivery_CompleteBody(t *testing.T) {
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
 		calls++
 		if calls == 1 {
-			return toolCallResponse(useSkillCall("skill-1", "opaque"))
+			return agenttest.ToolCallResponse(useSkillCall("skill-1", "opaque"))
 		}
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSession(t, withAdapter(adapter), withDir(root),
 		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
@@ -71,9 +71,9 @@ func TestSkillDelivery_ConfiguredOutputLimit(t *testing.T) {
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
 		calls++
 		if calls == 1 {
-			return toolCallResponse(useSkillCall("skill-1", "opaque"))
+			return agenttest.ToolCallResponse(useSkillCall("skill-1", "opaque"))
 		}
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSession(t, withAdapter(adapter), withDir(root),
 		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot(),
@@ -141,9 +141,9 @@ func TestSkillDelivery_MandatoryBudgetFailure(t *testing.T) {
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
 		calls++
 		if calls == 1 {
-			return toolCallResponse(useSkillCall("skill-1", "opaque"))
+			return agenttest.ToolCallResponse(useSkillCall("skill-1", "opaque"))
 		}
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	// The window admits the first request but not the complete activation.
 	profile := provider.WithContextWindow(newAnthropicProfile("claude-test"), 2000)
@@ -184,9 +184,9 @@ func TestSkillDelivery_FailedReinvocationPreservesInventory(t *testing.T) {
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
 		calls++
 		if calls%2 == 1 {
-			return toolCallResponse(useSkillCall("skill-"+strconv.Itoa((calls+1)/2), "opaque"))
+			return agenttest.ToolCallResponse(useSkillCall("skill-"+strconv.Itoa((calls+1)/2), "opaque"))
 		}
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSession(t, withAdapter(adapter), withDir(root),
 		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
@@ -242,9 +242,9 @@ func TestSkillDelivery_UserReinvocationRecordsAuthorization(t *testing.T) {
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
 		calls++
 		if calls == 1 {
-			return toolCallResponse(useSkillCall("skill-1", "opaque"))
+			return agenttest.ToolCallResponse(useSkillCall("skill-1", "opaque"))
 		}
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSession(t, withAdapter(adapter), withDir(root),
 		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
@@ -299,9 +299,9 @@ func TestSkillDelivery_PreDispatchCompaction(t *testing.T) {
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
 		calls++
 		if calls == 1 {
-			return toolCallResponse(useSkillCall("skill-1", "opaque"))
+			return agenttest.ToolCallResponse(useSkillCall("skill-1", "opaque"))
 		}
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSession(t, withAdapter(adapter), withDir(root),
 		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
@@ -352,9 +352,9 @@ func TestSkillDelivery_RevalidateAfterFold(t *testing.T) {
 		calls++
 		switch calls % 2 {
 		case 1:
-			return toolCallResponse(useSkillCall("skill-"+strconv.Itoa((calls+1)/2), "opaque"))
+			return agenttest.ToolCallResponse(useSkillCall("skill-"+strconv.Itoa((calls+1)/2), "opaque"))
 		default:
-			return toolCallResponse(communicateCall("done-1", "ok"))
+			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		}
 	}}
 	s := newSession(t, withAdapter(adapter), withDir(root),
@@ -451,9 +451,9 @@ func TestSkillDelivery_ChangedSourceBeforeDispatch(t *testing.T) {
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
 		calls++
 		if calls%2 == 1 {
-			return toolCallResponse(useSkillCall("skill-"+strconv.Itoa((calls+1)/2), "opaque"))
+			return agenttest.ToolCallResponse(useSkillCall("skill-"+strconv.Itoa((calls+1)/2), "opaque"))
 		}
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSession(t, withAdapter(adapter), withDir(root),
 		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
@@ -529,9 +529,9 @@ func TestSkillDelivery_ChangedSourceRecordsPreviousProvenance(t *testing.T) {
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
 		calls++
 		if calls%2 == 1 {
-			return toolCallResponse(useSkillCall("skill-"+strconv.Itoa((calls+1)/2), "opaque"))
+			return agenttest.ToolCallResponse(useSkillCall("skill-"+strconv.Itoa((calls+1)/2), "opaque"))
 		}
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSession(t, withAdapter(adapter), withDir(root),
 		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
@@ -610,9 +610,9 @@ func TestSkillDelivery_DeletedSourceBeforeDispatch(t *testing.T) {
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
 		calls++
 		if calls%2 == 1 {
-			return toolCallResponse(useSkillCall("skill-"+strconv.Itoa((calls+1)/2), "opaque"))
+			return agenttest.ToolCallResponse(useSkillCall("skill-"+strconv.Itoa((calls+1)/2), "opaque"))
 		}
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSession(t, withAdapter(adapter), withDir(root),
 		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
@@ -689,7 +689,7 @@ func TestSkillDelivery_FailedReloadNotifiesNextDispatch(t *testing.T) {
 	markGitRoot(t, root)
 	missing := filepath.Join(root, "skills", "opaque", "SKILL.md")
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSession(t, withAdapter(adapter), withDir(root),
 		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
@@ -774,9 +774,9 @@ func TestSkillDelivery_RestoreRechecksAvailability(t *testing.T) {
 			adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
 				calls++
 				if calls == 1 {
-					return toolCallResponse(useSkillCall("garden-1", "gardening-memory"))
+					return agenttest.ToolCallResponse(useSkillCall("garden-1", "gardening-memory"))
 				}
-				return finalResponse("resumed")
+				return agenttest.FinalResponse("resumed")
 			}}
 			s := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
 				MaxSubagentDepth:      1,
@@ -863,13 +863,13 @@ func TestSkillDelivery_RestoreRechecksAvailability(t *testing.T) {
 			calls++
 			switch calls {
 			case 1:
-				return toolCallResponse(useSkillCall("garden-1", "gardening-memory"))
+				return agenttest.ToolCallResponse(useSkillCall("garden-1", "gardening-memory"))
 			case 2:
-				return finalResponse("first activation delivered")
+				return agenttest.FinalResponse("first activation delivered")
 			case 3:
-				return toolCallResponse(useSkillCall("garden-2", "gardening-memory"))
+				return agenttest.ToolCallResponse(useSkillCall("garden-2", "gardening-memory"))
 			default:
-				return finalResponse("resumed")
+				return agenttest.FinalResponse("resumed")
 			}
 		}}
 		s := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
@@ -1014,7 +1014,7 @@ func TestSkillDelivery_DenialFinalizedBeforeLoopContinues(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("persist obligations: %v", err)
 	}
-	ctx := &cancelAtCheck{Context: context.Background(), remaining: 1}
+	ctx := &agenttest.CountdownContext{Context: context.Background(), Allow: 1}
 	if _, _, err := s.prepareSkillDelivery(ctx, nil, nil, llm.Request{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("prepare error = %v, want context.Canceled", err)
 	}
@@ -1106,9 +1106,9 @@ func TestSkillDelivery_TransportRetry(t *testing.T) {
 		Responder: func(llm.Request) llm.Response {
 			calls++
 			if calls == 1 {
-				return toolCallResponse(useSkillCall("skill-1", "opaque"))
+				return agenttest.ToolCallResponse(useSkillCall("skill-1", "opaque"))
 			}
-			return toolCallResponse(communicateCall("done-1", "ok"))
+			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		},
 		FaultResponder: func(llm.Request) error {
 			// FaultResponder runs before Responder for each dispatch; fail the
@@ -1167,9 +1167,9 @@ func TestSkillDelivery_SaveRestore(t *testing.T) {
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
 		calls++
 		if calls == 1 {
-			return toolCallResponse(useSkillCall("skill-1", "opaque"))
+			return agenttest.ToolCallResponse(useSkillCall("skill-1", "opaque"))
 		}
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSession(t, withAdapter(adapter), withDir(root),
 		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot(),
@@ -1224,29 +1224,20 @@ func TestSkillDelivery_FrozenPlusOrdinary(t *testing.T) {
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
 		calls++
 		if calls == 1 {
-			return toolCallResponse(useSkillCall("skill-1", "opaque"))
+			return agenttest.ToolCallResponse(useSkillCall("skill-1", "opaque"))
 		}
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
-	s := newSession(t, withAdapter(adapter), withDir(root),
+	s := newSession(t, withAdapter(adapter), withDir(root), withStateDir(t.TempDir()),
 		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
 	s.pluginAgents["preload-role"] = plugin.Agent{
 		Name: "preload-role", PluginName: "test", AllTools: true,
 		SystemPrompt: "preload role", Skills: []string{"opaque"},
 	}
-	result, err := s.spawnAgent(context.Background(), "child task", "", "", 0, "preload-role", "", nil, nil)
-	if err != nil {
-		t.Fatalf("spawnAgent: %v", err)
-	}
-	var spawned struct {
-		AgentID string `json:"agent_id"`
-	}
-	if err := json.Unmarshal([]byte(result.(string)), &spawned); err != nil {
-		t.Fatalf("unmarshal spawn result: %v", err)
-	}
-	sub := s.getSub(spawned.AgentID)
+	spawned := spawnRuntimeAgent(t, s, delegateArgs{Task: "child task", AgentType: "preload-role"})
+	sub := s.getSub(spawned)
 	if sub == nil {
-		t.Fatalf("subagent %q not tracked", spawned.AgentID)
+		t.Fatalf("subagent %q not tracked", spawned)
 	}
 	select {
 	case <-sub.done:
@@ -1288,10 +1279,10 @@ func TestSkillDelivery_ProjectionModelSwitch(t *testing.T) {
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+body)
 	source := filepath.Join(root, "skills", "opaque", "SKILL.md")
 	primary := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-		return toolCallResponse(useSkillCall("skill-1", "opaque"))
+		return agenttest.ToolCallResponse(useSkillCall("skill-1", "opaque"))
 	}}
 	switched := &agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response {
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	// A cross-provider SetModel resolves through the session resolver; without
 	// it the switch silently degrades to a same-instance WithModel and the
@@ -1308,12 +1299,15 @@ func TestSkillDelivery_ProjectionModelSwitch(t *testing.T) {
 		}))
 	// Switch the model between the tool result and the committing dispatch, so
 	// the request is projected for a different provider/protocol target.
+	// applyModelSwitch, not SetModel: this checkpoint runs mid-turn, so the
+	// folded SetModel would queue the switch for the boundary; this test
+	// pins the mid-turn projection machinery, which needs the immediate swap.
 	var switchedMidTurn atomic.Bool
 	updateSessionTestConfig(s, func(cfg *testConfig) {
 		cfg.execToolCheckpoint = func(name string) {
 			if name == "after_execute" && !switchedMidTurn.Swap(true) {
-				if err := s.SetModel("openai/gpt-5.2"); err != nil {
-					t.Errorf("SetModel: %v", err)
+				if err := s.applyModelSwitch("openai/gpt-5.2", "", nil, modelSwitchFence{}); err != nil {
+					t.Errorf("applyModelSwitch: %v", err)
 				}
 			}
 		}
@@ -1351,24 +1345,34 @@ func TestSkillDelivery_ProjectionModelSwitch(t *testing.T) {
 // recorded assistant turn is an anchor candidate for the next request's delta
 // planning. The plan reports the phase4d fixture fingerprints.
 type skillContinuationAdapter struct {
+	// The scripted steps live in the shared engine: the step is read under
+	// its mutex and run outside it, so a blocked step never holds the script
+	// and no fixture can assign the slice beside a drive.
+	script agenttest.Script[func(req llm.Request) (llm.Response, error)]
+
 	mu       sync.Mutex
 	requests []llm.Request
-	steps    []func(req llm.Request) (llm.Response, error)
-	i        int
 }
 
 func (a *skillContinuationAdapter) Name() string { return "openai" }
 
+// setSteps scripts the adapter's response sequence; a concurrent drive reads
+// the script through the engine's mutex, so scripting the next turn beside a
+// running one cannot race.
+func (a *skillContinuationAdapter) setSteps(steps []func(req llm.Request) (llm.Response, error)) {
+	a.script.Replace(steps)
+}
+
 func (a *skillContinuationAdapter) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
 	a.mu.Lock()
 	a.requests = append(a.requests, req)
-	i := a.i
-	a.i++
+	i := len(a.requests) - 1
 	a.mu.Unlock()
-	if i >= len(a.steps) {
+	step, ok := a.script.Next()
+	if !ok {
 		return agenttest.FinalResponse("done"), nil
 	}
-	resp, err := a.steps[i](req)
+	resp, err := step(req)
 	if err != nil {
 		return resp, err
 	}
@@ -1394,6 +1398,32 @@ func (a *skillContinuationAdapter) Stream(context.Context, llm.Request) (llm.Str
 
 func (a *skillContinuationAdapter) PlanResponsesContinuation(req llm.Request) (llm.ResponsesContinuationPlan, error) {
 	return phase4DIContinuationPlan(req), nil
+}
+
+// Scripting the next turn beside a running drive must not race: the step is
+// read under the engine's mutex and run outside it, and setSteps writes under
+// the same mutex.
+func TestSkillContinuationAdapterScriptingIsRaceFreeUnderConcurrentDrive(t *testing.T) {
+	adapter := &skillContinuationAdapter{}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for range 100 {
+			_, _ = adapter.Complete(context.Background(), llm.Request{})
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for range 100 {
+			adapter.setSteps([]func(req llm.Request) (llm.Response, error){
+				func(llm.Request) (llm.Response, error) {
+					return agenttest.FinalResponse("done"), nil
+				},
+			})
+		}
+	}()
+	wg.Wait()
 }
 
 func (a *skillContinuationAdapter) Requests() []llm.Request {
@@ -1445,20 +1475,20 @@ func TestSkillDelivery_ResponsesContinuationPlanning(t *testing.T) {
 	source := filepath.Join(root, "skills", "opaque", "SKILL.md")
 	adapter := &skillContinuationAdapter{}
 	s := newContinuationSession(t, adapter, root)
-	adapter.steps = []func(req llm.Request) (llm.Response, error){
+	adapter.setSteps([]func(req llm.Request) (llm.Response, error){
 		func(req llm.Request) (llm.Response, error) {
-			return toolCallResponse(useSkillCall("skill-1", "opaque")), nil
+			return agenttest.ToolCallResponse(useSkillCall("skill-1", "opaque")), nil
 		},
 		func(req llm.Request) (llm.Response, error) {
-			return toolCallResponse(communicateCall("done-1", "ok")), nil
+			return agenttest.ToolCallResponse(communicateCall("done-1", "ok")), nil
 		},
 		func(req llm.Request) (llm.Response, error) {
-			return toolCallResponse(useSkillCall("skill-2", "opaque")), nil
+			return agenttest.ToolCallResponse(useSkillCall("skill-2", "opaque")), nil
 		},
 		func(req llm.Request) (llm.Response, error) {
-			return toolCallResponse(communicateCall("done-2", "ok")), nil
+			return agenttest.ToolCallResponse(communicateCall("done-2", "ok")), nil
 		},
-	}
+	})
 	// Plant a prior anchor so every round (including the first) plans a
 	// continuation delta instead of opening with full history.
 	s.mu.Lock()
@@ -1544,18 +1574,18 @@ func TestSkillDelivery_FullHistoryRecovery(t *testing.T) {
 		},
 	}, nil)
 	adapter := &skillContinuationAdapter{}
-	adapter.steps = []func(req llm.Request) (llm.Response, error){
+	adapter.setSteps([]func(req llm.Request) (llm.Response, error){
 		// Round 0: the model calls use_skill.
 		func(req llm.Request) (llm.Response, error) {
-			return toolCallResponse(useSkillCall("skill-1", "opaque")), nil
+			return agenttest.ToolCallResponse(useSkillCall("skill-1", "opaque")), nil
 		},
 		// Round 1: the committing dispatch's anchor is rejected...
 		func(req llm.Request) (llm.Response, error) { return llm.Response{}, continuationErr },
 		// ...and the full-history retry answers.
 		func(req llm.Request) (llm.Response, error) {
-			return toolCallResponse(communicateCall("done-1", "ok")), nil
+			return agenttest.ToolCallResponse(communicateCall("done-1", "ok")), nil
 		},
-	}
+	})
 	s := newContinuationSession(t, adapter, root)
 	// Plant a prior anchor so round 0/1 plan continuation deltas.
 	s.mu.Lock()
@@ -1612,9 +1642,9 @@ func TestSkillDelivery_FallbackSmallerWindow(t *testing.T) {
 		Provider: "openai",
 		Responder: func(req llm.Request) llm.Response {
 			if req.Model == "primary" {
-				return toolCallResponse(useSkillCall("skill-1", "opaque"))
+				return agenttest.ToolCallResponse(useSkillCall("skill-1", "opaque"))
 			}
-			return toolCallResponse(communicateCall("done-1", "ok"))
+			return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 		},
 		FaultResponder: func(req llm.Request) error {
 			if req.Model == "primary" && primaryCalls.Add(1) > 1 {

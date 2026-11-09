@@ -34,9 +34,27 @@
   align-items: center;
   flex-wrap: nowrap;
   gap: var(--space-2);
+  /* An automatic basis serves the standalone pending-question mount: the
+   * composer's column is vertical there, and a width-oriented rung would
+   * supply a height basis instead, inflating the chrome and spending the
+   * transcript's space. The horizontal leading slot adds .inlineRung. */
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
+}
+
+/* The composer's leading slot mounts the chrome on one horizontal line that
+ * it shares with attach and the activity strip. The .body's container
+ * containment hides the status content's width from the flex algorithm, so
+ * an auto basis there reports only the menu trigger and the row starves the
+ * model picker beside whatever else shares the line. This basis is the
+ * chrome's measured compact rung - the menu trigger, the model picker at its
+ * real trigger width, and the effort control - so the leading's flex-wrap
+ * breaks the line (the activity strip takes its own line) exactly when one
+ * line cannot hold both the rung and the strip, and the chrome grows freely
+ * into leftover space when it can. */
+.inlineRung {
+  flex-basis: 200px;
 }
 
 .body {

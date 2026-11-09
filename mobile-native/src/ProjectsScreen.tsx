@@ -19,7 +19,7 @@ import type {
 	NavigationReadParams,
 	NavigationSessionSummary,
 } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { useConnection } from "./ConnectionProvider";
 import { organizationJournal } from "./nativeOrganization";
 import type { NavigationActionCheckpoint } from "./navigationActionRepository";

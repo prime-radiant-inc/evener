@@ -9,22 +9,44 @@ Controls follow that ownership, not the preview text or connection status.
   including while offline. Stop-canceled messages keep **Retry** as well.
 - Edit moves the exact durable identity into recovery before opening it in the
   composer. Remove deletes only that identity. Identical previews remain distinct.
-- Attempted, accepted, delivery-uncertain and legacy records with unknown attempt
-  history do not gain these local controls. Accepted daemon queue actions and
-  delivery-uncertain Retry keep their existing rules.
+- Accepted daemon queue actions and delivery-uncertain Retry keep their existing
+  rules. A local message stays editable and removable while it remains in the
+  outbox. The exceptions are a submitting row the client has already attempted
+  and is waiting on, whose edit would race that send; a legacy row with no
+  attempt metadata at all; and the non-composer verbs (interrupt, clear, note
+  saves), which keep their own controls.
+- A delivery-uncertain message is otherwise one local message like any other:
+  **Edit message** and **Remove from queue** reach it, and its row carries
+  "Delivery uncertain" as a subtitle. Editing it carries the row's inherited wire
+  identity into the recovery: an unchanged resend replays the existing mutation
+  under that identity - the daemon's journal deduplicates it, so work that
+  already delivered cannot apply twice - while changed content sends as a new
+  message under a fresh identity. The row still closes its ref's FIFO - the
+  daemon may already hold it, so nothing behind it may go - and when the hub
+  cannot answer, Remove is the exit that lets later messages move: it ends the
+  wire, retiring the row's remaining durable siblings in the same write, though
+  an attempt already in flight may still land and appear in the conversation.
 - Promotion and input-empty drain commands offer Remove only. Editing a
   content-bearing drain restores its composer input, not the daemon queue preview.
 - Unattempted rows appear once in QueueStrip, not also in optimistic send chips
   or steering ghosts. In-flight and remote ghosts remain. A move back to the
   local queue after an explicit refusal is not announced as delivery or failure.
 
+A **Retry** of a canceled or delivery-uncertain row mints a fresh row at the
+queue's tail and settles the predecessor terminal. The predecessor keeps its
+identity and attempt evidence as the wire's one retained evidence row, so a
+late receipt or refusal still reconciles through it, whichever generation the
+authoritative feed names; repeated requeues bound retention to that one
+evidence row beside the live successor, and the wire's settlement or removal
+retires it with the rest.
+
 ```mermaid
 flowchart LR
   Local[Local unsent identity] -->|Edit transaction| Recovery[Durable editing recovery]
   Local -->|Remove transaction| Removed[Removed identity]
-  Local -->|Transport attempt| Flight[In flight, no local Edit or Remove]
+  Local -->|Transport attempt| Flight[In flight, local controls once uncertain]
   Recovery -->|Merge into occupied draft| Owner[One durable recovery owner]
-  Owner -->|Send transaction| Fresh[Fresh mutation identity]
+  Owner -->|Send transaction| Fresh[Fresh identity, or the inherited identity replayed]
   Fresh -->|Newer Stop| Held[Canceled, explicit Retry required]
   Fresh -->|No newer Stop| Dispatch[Normal dispatch]
 ```
@@ -60,6 +82,42 @@ The press captures the durable row and Stop epoch together. Storage revalidates
 both in the write transaction. Another tab's Remove, Retry, dispatch admission
 or Stop can win, in which case the losing action refreshes without activating a
 stale edit. Matching thread/session identity is required even offline.
+
+When another pane consumes or advances the recovery a browser pane owns, the
+refused save preserves the complete local composition as a fresh recovery row
+before retiring the stale lease. The new row carries the local text, skill and
+command selections, payload input and attachment bytes, and the peer's row is
+left untouched. If the stale row still holds the identical composition, no
+duplicate row is created. The pane then owns the fresh row, so later edits
+update it, Send consumes it, and a reload restores the local composition
+including its images. Two bounds match the platform's existing behavior:
+rows recorded before a resume rewrote the conversation ref do not follow the
+resumed conversation, and keystrokes typed inside a crash window are
+best-effort.
+
+### Browser seat and selection ownership
+
+A conversation seat exists as pane identity: placement mints a fresh seat for
+every new pane, and a pane keeps its seat for its whole lifetime - through
+parking, retyping to a transcript and back, and resume round trips on the
+live pane. The seat is stored per tab under the pane id only, and a restored
+layout validates a saved pane's seat against the conversation it names before
+reusing it, so a restarted id cannot lend another conversation's seat; every
+other restored pane mints fresh. There is no maintained conversation
+mapping: a mobile route reconstruction after a reload mints a fresh seat as
+well, so restoring the previous pane's work there takes one tap. Seats do
+not scope user selections; they keep pane identity stable and scope automatic
+restoration: a recovery row records the composer seat that last wrote it as
+its composition owner, and an empty composer at mount restores only the
+newest rejected row its own seat owns - the pane's own bounced work, one tap
+back. Every row stays reachable through QueueStrip's explicit Edit, Remove, Retry
+and Send now regardless of owner. A pane's own send carries its seat, so the row
+a refusal bounces from it restores to that pane's next mount under the same
+seat. A resumed nested session carries the authoring pane's seat to its
+replacement pane, so the resumed composer can restore its own work again.
+Rows written before composition owners existed carry no seat and are never
+restored automatically; the explicit actions reach them. A fresh pane holds a
+fresh seat, so it never injects another (or a closed) pane's row at mount.
 
 Sending recovery consumes its durable source and creates one fresh outbox
 identity atomically. It never falls back to an ordinary enqueue when the source
@@ -114,6 +172,12 @@ settlement markers move together, and recovery resend receipts move with their
 sources. An already-open resumed draft adopts the transferred record
 immediately. The retired ref keeps no draft or recovery ownership. A resumed
 destination that already holds work is left untouched.
+
+Browser and native outboxes share one receipt-settlement rule from the AppWire
+package (`retainsAcceptedCopy`, `settlementRetiresRecovery`): a `pending` receipt
+keeps an accepted copy of an input-bearing turn and of a note save until
+authoritative state describes it, a receipt-only control keeps none, and a
+recovery row a composer has edited outlives settlement.
 
 An ordinary native submit stores its full `unconfirmed` composition with a local
 capture token. If enqueue commits but draft confirmation fails, that token also
@@ -198,15 +262,23 @@ duplicate; only a reproduced identity/projection case can establish that cause.
 - Shared policy and composition: `appwire-client/typescript/state/mutation` and
   the shared composer helpers. These do not authorize transport.
 - Browser transactions: `cmd/evener-hub/frontend/src/stores/mutationOutboxIndexedDB.ts`.
-- Browser identity checks and dispatch: `cmd/evener-hub/frontend/src/stores/threads.ts`.
+- Browser identity checks, dispatch and resume-retry pacing:
+  `cmd/evener-hub/frontend/src/stores/threads.ts`.
 - Projection and presentation membership: `composer/queue/pendingTurnsStore.ts`.
   Presentation filtering does not change submission routing.
 - Pane lifetime and durable recovery owner: `composer/sourceState.ts`.
 - Controls: `composer/queue/QueueStrip.tsx` and `composer/Composer.tsx`.
+- Decisions both controls share (selection capability gate, store dispatch by
+  route, changed or already-sent recovery refusals): `composer/submitProtocol.ts`.
 - End-to-end component checks: `composer/Composer.queuedMessages.test.tsx`, using
   the real composer, stores and IndexedDB adapter with external transport and
   browser-platform seams.
 - Native integration and cached local identity: `mobile-native/src/screens.tsx`.
+- Native conversation store: `conversation/state/conversation.ts`; its durable
+  pending-row binding is `conversation/state/pendingMutations.ts` and its deferred
+  reread after a mutation settles is `conversation/state/trailingReread.ts`.
+  The screen's composer draft, handoff retry and staged images are
+  `session/useComposerDraft.ts`.
 - Native mutation authority: `nativeMutationRuntime.ts` and
   `mutationOutboxStorage.ts`; draft ownership and bytes: `draftDocument.ts` and
   `draftRepository.ts`; separate-store coordination: `queuedMessageControls.ts`;

@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 )
@@ -610,7 +609,7 @@ func (s *Session) releaseIdleRuntimeAfterFinalize() bool {
 			// back up.
 			s.rescheduleIdleRuntimeReleaseRetry()
 		default:
-			s.emit(events.EventWarning, warningDataFromError("idle runtime release claim failed", err))
+			s.emit(warningDataFromError("idle runtime release claim failed", err))
 		}
 		return false
 	}
@@ -674,7 +673,7 @@ func (s *Session) releaseIdleRuntimeAfterFinalize() bool {
 		unhookReclaimedRuntimeRecord(entry)
 	}
 	if err := s.delegateController.CompleteRuntimeReclamation(claim, closed); err != nil {
-		s.emit(events.EventWarning, warningDataFromError("idle runtime release completion failed", err))
+		s.emit(warningDataFromError("idle runtime release completion failed", err))
 		return false
 	}
 	completed = true
@@ -753,11 +752,19 @@ func reclamationTeardownWaves(entries []delegateRuntimeReclamationEntry) [][]del
 // resources after the claim completed: the runtime's manager-held children
 // the durable subtree never tracked, then the runtime itself, non-terminally.
 func (s *Session) teardownReclaimedRuntimeEntry(entry delegateRuntimeReclamationEntry) {
-	if hook := s.cfg.testOnly.idleTeardownMemberStarted; hook != nil {
+	// The teardown hooks are runtime-mutable through updateSessionTestConfig,
+	// so their reads share the setter's session mutex.
+	s.mu.Lock()
+	hook := s.cfg.testOnly.idleTeardownMemberStarted
+	s.mu.Unlock()
+	if hook != nil {
 		hook(entry.runtime)
 	}
 	defer func() {
-		if hook := s.cfg.testOnly.idleTeardownMemberSettled; hook != nil {
+		s.mu.Lock()
+		hook := s.cfg.testOnly.idleTeardownMemberSettled
+		s.mu.Unlock()
+		if hook != nil {
 			hook(entry.runtime)
 		}
 	}()
@@ -824,7 +831,12 @@ func (s *Session) scheduleIdleRuntimeRelease(finalizedGeneration uint64) {
 		return
 	}
 	delay := delegateIdleReleaseDelayDefault
-	if override := s.cfg.testOnly.delegateIdleReleaseDelay; override != nil {
+	// The seam is runtime-mutable through updateSessionTestConfig, so its
+	// read shares the setter's session mutex.
+	s.mu.Lock()
+	override := s.cfg.testOnly.delegateIdleReleaseDelay
+	s.mu.Unlock()
+	if override != nil {
 		delay = *override
 	}
 	arm := s.delegateController.nextIdleReleaseArmID()
@@ -970,7 +982,12 @@ func (c *delegateTreeController) currentDelegateGeneration(delegateID string) ui
 // or a whole-tree retirement that has not decided. The fixtures that opt out
 // of the release entirely opt out of its retries too.
 func (s *Session) rescheduleIdleRuntimeReleaseRetry() {
-	if s.cfg.testOnly.disableDelegateIdleRelease {
+	// The seam is runtime-mutable through updateSessionTestConfig, so its
+	// read shares the setter's session mutex.
+	s.mu.Lock()
+	releaseDisabled := s.cfg.testOnly.disableDelegateIdleRelease
+	s.mu.Unlock()
+	if releaseDisabled {
 		return
 	}
 	s.scheduleIdleRuntimeRelease(s.delegateController.currentDelegateGeneration(s.owningDelegateID))

@@ -1,0 +1,163 @@
+{
+ "verdicts": [
+  {
+   "id": "x-error-handling-slop-1",
+   "title": "Giant functions",
+   "category": "complexity",
+   "original_severity": "high",
+   "verdict": "confirmed",
+   "severity": "high",
+   "note": "AST scan reproduced: 114 funcs >150 lines (claimed 116), 27 >300, 9 >500. newHubRelayFunctions app_relay.go:471-1829 (1829 lines is the end line number, function is ~1359 lines), returns 9-closure struct at 2290. runServeWithDeps 1597 lines, runMain 776, registerThreadHandlers 682. Real drag. Size figure for newHubRelayFunctions overstated (end line, not length)."
+  },
+  {
+   "id": "x-error-handling-slop-2",
+   "title": "26 files over 2000 lines",
+   "category": "complexity",
+   "original_severity": "medium",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "note": "26 non-test .go files >2000 lines confirmed; job_watch.go 6564, appwire/types.go 5898, sshconn/manager.go 3965, session_tools_jobs.go 2888 all confirmed by wc -l. appwire/types.go is likely generated-source-of-truth input so splitting must respect freshness gate (plan already says so)."
+  },
+  {
+   "id": "x-error-handling-slop-3",
+   "title": "Register errors dropped",
+   "category": "slop",
+   "original_severity": "medium",
+   "verdict": "partial",
+   "severity": "low",
+   "note": "18 non-test `_ = x.Register(` sites (claimed 15), listed files confirmed (e.g. session_tools_notes.go:24, shell.go:198). Register can fail only on invalid name, nil Exec or schema compile (registry.go:512-537), all deterministic for compile-time constant built-in definitions, so any session-construction test would reveal it. Real inconsistency with siblings that check (session_tools_jobs.go returns errors) but a bad tool would be a programmer error caught immediately, not a silent runtime hazard. Severity low.",
+   "revised_fix_plan": "Add MustRegister (panic) for built-in constant registrations, or have register* return error; no new tests beyond one sweep test registering all built-ins."
+  },
+  {
+   "id": "x-error-handling-slop-4",
+   "title": "Silenced unused params",
+   "category": "dead-code",
+   "original_severity": "low",
+   "verdict": "confirmed",
+   "severity": "low",
+   "note": "59 `_ = ident` lines; session_tools_notes.go:27-28 and session_tools_jobs.go:120-121 confirmed (`_ = ctx` followed by use of ctx at 121). Mechanical cleanup."
+  },
+  {
+   "id": "x-error-handling-slop-5",
+   "title": "104 package-level func vars as test seams",
+   "category": "architecture",
+   "original_severity": "high",
+   "verdict": "partial",
+   "severity": "medium",
+   "note": "105 `^var x func` in non-test code confirmed. thread_history.go:~20 documents the seams are unsynchronized and tests that set them must not run in parallel, so the race risk is documented and mitigated by convention, not an active bug. ObserveCloseStopJoin and ObserveCloseStopJoinBudget (session_worktree_close.go:300-312) confirmed, the latter says 'remains unchanged for compatibility'; both are exported and used by cmd/evener tests. Large maintenance drag but not actively causing bugs: medium.",
+   "revised_fix_plan": "Migrate piecemeal when touching a file; first merge the two Observe hooks (needs Jesse approval since exported + compat note); do not mandate a lint ban up front."
+  },
+  {
+   "id": "x-error-handling-slop-6",
+   "title": "internal/plugins os.* aliases",
+   "category": "duplication",
+   "original_severity": "medium",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "note": "Confirmed: install.go:13-22 declares installRemoveAll/MkdirAll/Rename = os.*; paths.go comment names per-area seams (installAcquireLock, marketplaceAcquireLock, gcAcquireLock) stubbed in tests and race-invisible. Count of vars is ~35-42 depending on definition. ~400 test edits is a large churn; do it incrementally."
+  },
+  {
+   "id": "x-error-handling-slop-7",
+   "title": "Single-impl interfaces for test doubles",
+   "category": "slop",
+   "original_severity": "medium",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "note": "Confirmed: jobToolRegisterFunc/jobToolRegistrar at session_tools_jobs.go:72-80 (prod path passes reg or deps.registerTool adapter); registerJobToolsWithRegistrar test caller only jobs_seed100_fuzz_test.go:214 plus a cov test for the adapter. sessionStreamAccumulator var swapped only in session_queue_stream_tail_fuzz_test.go:42. relayRetryClock interface+func adapter at app_relay.go:97-110 plus RelayHooks.RetryWait at 481. forkTranscriptWriter has other implementations only in test (session_aux_exact_fuzz_test.go:186,196). Note: deps.registerTool already exists in toolDeps as a production-reachable seam, so collapsing needs care."
+  },
+  {
+   "id": "x-error-handling-slop-8",
+   "title": "Fork/aside deps literal x3",
+   "category": "duplication",
+   "original_severity": "low",
+   "verdict": "confirmed",
+   "severity": "low",
+   "note": "Identical forkSessionDeps literal at fork.go:101, fork.go:129, aside.go:54 confirmed (10*1024*1024)."
+  },
+  {
+   "id": "x-error-handling-slop-9",
+   "title": "15 nolint:unused fuzz-only functions",
+   "category": "dead-code",
+   "original_severity": "medium",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "note": "15 `//nolint:unused` lines in non-test code confirmed. watchSendArg (session_tools_jobs.go:2575) referenced only by session_tools_jobs_seed100_range_d_test.go:55 and cov tests; isEmptyWatchSend likewise. listOrWarn (plugins/enabled.go:15) says 'remains for compatibility'. Note the watchSendArgs TYPE is live in production (watchArgs.Send), only the parsers are dead. Must run go vet with evenerfuzz tags before deleting; deletion also removes fuzz coverage so needs Jesse sign-off on the fuzz owners."
+  },
+  {
+   "id": "x-error-handling-slop-10",
+   "title": "ForTest shims",
+   "category": "slop",
+   "original_severity": "low",
+   "verdict": "confirmed",
+   "severity": "low",
+   "note": "20 ForTest/ForTesting funcs (claimed 21). reconcileDelegateThreadItemForTest (app_threadread.go:1635) used only by tests (app_threadread_test.go:512,697,723,746 and a cov test); AddSessionURLForTest/HumanNoteForTest (session_notes_rpc.go:402+) expose package-internal state to cross-package tests, so those are not simple deletes."
+  },
+  {
+   "id": "x-error-handling-slop-11",
+   "title": "Pass-through wrappers",
+   "category": "slop",
+   "original_severity": "medium",
+   "verdict": "partial",
+   "severity": "low",
+   "note": "Examples confirmed: app_compact.go:11-17 (shouldResumeAfterTurnStartError -> shouldResumeAfterSessionUnavailable -> isSessionUnavailableError); hexHash (runtime_dir.go:71) has no production callers, only runtime_dir_test.go; hasString (subagents.go:359) is a one-line slices.Contains used by ~13 sites; doctor/locate.go:197 refFor and agent/transcript_lookup.go:381 refFor both just forward to bucketref.RefFor (so not duplicated logic, just two thin wrappers). The '146 pure forwarders' figure was not reproduced and includes legitimate platform stubs. Value is small per item; severity low.",
+   "revised_fix_plan": "Inline the named examples only (compiler-guided); skip the generic sweep."
+  },
+  {
+   "id": "x-error-handling-slop-12",
+   "title": "Hand-rolled atomic write helpers",
+   "category": "duplication",
+   "original_severity": "high",
+   "verdict": "partial",
+   "severity": "medium",
+   "note": "Real duplication: llm/registry/refresh.go:48 writeAtomic (CreateTemp, no fsync, no dir sync), internal/plugins/atomic.go:32 atomicWriteFile (O_EXCL temp, fsync, dir fsync, test-seam vars), transcriptindex/index.go:1294 writeFileAtomically (fixed .tmp name, no fsync). But transcriptindex documents the omission as intentional ('the index is derived, and whatever a crash loses rebuilds or replays'), so 'inconsistent durability' is not uniformly a defect. Claimed '33 files' is actually 45 files calling os.Rename (many unrelated to temp+rename); 16 use CreateTemp; 93 `_ = os.Remove`. hub-internal fsdurability is not importable from agent/llm so a new shared package is reasonable. Not actively causing bugs: medium.",
+   "revised_fix_plan": "Create shared internal package with Write(path,data,perm,opts); migrate callers whose durability need is user state first (plugins, llm/registry cache probably fine without fsync); leave derived-data writers on opt-out."
+  },
+  {
+   "id": "x-error-handling-slop-13",
+   "title": "Hash-writer discards",
+   "category": "duplication",
+   "original_severity": "low",
+   "verdict": "confirmed",
+   "severity": "low",
+   "note": "roster.go rosterFingerprint has 102 `_, _ = h.Write` (confirmed by grep -c), with manual {0} separators; writeHashString exists at past_root_fingerprint.go:116 (same package hubcore) taking hash.Hash64, compatible with fnv.New64a. 152 total in non-test code. Fingerprint is in-process change detection (tests compare equality), so hash stability risk is low."
+  },
+  {
+   "id": "x-error-handling-slop-14",
+   "title": "History-narrating comments",
+   "category": "compat-legacy",
+   "original_severity": "low",
+   "verdict": "confirmed",
+   "severity": "low",
+   "note": "Confirmed samples: session_notes.go:130 ('which is why the walk was worth removing', 'used to do unconditionally'); server/appwire_runtime.go:2460 ('It used to pull sixteen live session callbacks'). 9 'rev-9.1/finding X' cites in non-test code; ~464 hits of used to/previously/was removed/no longer (most legit). legacy files memory_migrate.go 671, delegate_legacy_state.go 78, cmdutil/legacymigration.go 131 lines exist. Retirement of migrations needs Jesse approval."
+  },
+  {
+   "id": "x-error-handling-slop-15",
+   "title": "140 nil-receiver checks",
+   "category": "slop",
+   "original_severity": "low",
+   "verdict": "partial",
+   "severity": "low",
+   "note": "140 `if s == nil` in agent non-test code confirmed, e.g. session_attention.go:567 and jobs_nested.go:14 (also guards s.jobManager nil, which is legit). Evidence admits callers not traced; no proof any are impossible. Per-site audit risk (a missed nil panics) vs low payoff.",
+   "revised_fix_plan": "Do only opportunistically in files being changed anyway; do not run a dedicated sweep."
+  },
+  {
+   "id": "x-error-handling-slop-16",
+   "title": "Silent discards on state-bearing paths",
+   "category": "slop",
+   "original_severity": "medium",
+   "verdict": "partial",
+   "severity": "low",
+   "note": "Mixed. Genuine: session_execution.go:446 (transcript notice), delegate_runtime.go:1637 (executeDelegateMutationPlans after Steer success), session.go:2073 (recordTerminalSeen). Not state-bearing or already justified: auth/openai/service.go:234 `_ = s.openBrowser(...)` is best-effort UX; internal/plugins/resolve.go:135 has a comment explaining the marker write is an orphan-GC hint with a stated recovery; session_memory.go:201 is an opportunistic migration. Recovery paths were not verified by the auditor and I did not verify them either.",
+   "revised_fix_plan": "Triage the three genuine sites individually; add logf at warn or document recovery; drop the generic bestEffort helper."
+  },
+  {
+   "id": "x-error-handling-slop-17",
+   "title": "Fprint errcheck noise",
+   "category": "slop",
+   "original_severity": "low",
+   "verdict": "confirmed",
+   "severity": "low",
+   "note": "567 `_, _ = fmt.Fprint*` in non-test code (claimed 566); hub main.go 56, plugincmd.go 49 (claimed 61/53, count differs by pattern). Cosmetic; errcheck config exclusion is the minimal fix."
+  }
+ ]
+}

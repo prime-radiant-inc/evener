@@ -279,14 +279,21 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 
 	t.Setenv("EVENER_STATE_DIR", fixture.base)
 	t.Setenv("XDG_STATE_HOME", filepath.Join(fixture.base, "xdg"))
-	trace.ResolvedStateBases = append(trace.ResolvedStateBases, ResolveStateBase("flag-state"), ResolveStateBase(""))
+	resolveBase := func(flag string) string {
+		base, err := ResolveStateBase(flag)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return base
+	}
+	trace.ResolvedStateBases = append(trace.ResolvedStateBases, resolveBase("flag-state"), resolveBase(""))
 	t.Setenv("EVENER_STATE_DIR", "")
-	trace.ResolvedStateBases = append(trace.ResolvedStateBases, ResolveStateBase(""))
+	trace.ResolvedStateBases = append(trace.ResolvedStateBases, resolveBase(""))
 	if trace.ResolvedStateBases[0] != "flag-state" || trace.ResolvedStateBases[1] != fixture.base || trace.ResolvedStateBases[2] != filepath.Join(fixture.base, "xdg") {
 		t.Fatalf("ResolveStateBase precedence = %#v", trace.ResolvedStateBases)
 	}
 	t.Setenv("XDG_STATE_HOME", "")
-	_ = ResolveStateBase("")
+	_, _ = ResolveStateBase("")
 	originalGlob := globProjectBuckets
 	globProjectBuckets = func(string) ([]string, error) { return nil, errors.New("scripted glob failure") }
 	t.Cleanup(func() { globProjectBuckets = originalGlob })
@@ -296,7 +303,7 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 	globProjectBuckets = originalGlob
 	originalHome := doctorUserHomeDir
 	doctorUserHomeDir = func() (string, error) { return "", errors.New("scripted home failure") }
-	_ = ResolveStateBase("")
+	_, _ = ResolveStateBase("")
 	doctorUserHomeDir = originalHome
 	missing := filepath.Join(fixture.base, "missing.transcript.jsonl")
 	if _, err := loadTranscript(missing); err == nil {

@@ -44,6 +44,21 @@ describe("collectAdvancedOverrides (floor §1.11, spawn.js:1077-1120)", () => {
     expect(layer).toEqual({ apiLog: true, nonInteractive: false });
   });
 
+  test("an explicit memory choice rides the layer even when the schema lacks the field", () => {
+    const options = [option({ wireField: "apiLog", kind: "boolean" })];
+    // The collectors run against whatever schema answered when they fired - a
+    // host-switch re-judge holds the previous host's options until the new
+    // host's schema lands - so a schema without the field must not silently
+    // re-enable what the person turned off: the choice is read from the
+    // values, where only the clear removes it.
+    expect(collectAdvancedOverrides(options, { apiLog: { value: "true" }, memoryEnabled: { value: "false" } })).toEqual(
+      { apiLog: true, memoryEnabled: false },
+    );
+    expect(
+      collectAdvancedOverrides(options, { apiLog: { value: "true" }, memoryEnabled: { value: "(default)" } }),
+    ).toEqual({ apiLog: true });
+  });
+
   test("skips an unchecked radio and an empty text/select, keeps chosen scalars", () => {
     const options = [
       option({ wireField: "systemPromptMode", kind: "radio" }),

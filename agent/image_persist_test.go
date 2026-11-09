@@ -174,7 +174,7 @@ func hasImagePart(msg llm.Message) bool {
 }
 
 func replyStep(message string) func(req llm.Request) llm.Response {
-	return func(req llm.Request) llm.Response { return finalResponse(message) }
+	return func(req llm.Request) llm.Response { return agenttest.FinalResponse(message) }
 }
 
 // collectWarnings drains the session's event stream in the background,
@@ -447,8 +447,7 @@ func TestEnqueueWithImages_DrainPersistsAttachment(t *testing.T) {
 	}
 	// TRIPWIRE: scripted in-process adapter, no real I/O; 30s only fires on
 	// a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "first input", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}

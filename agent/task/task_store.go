@@ -730,10 +730,7 @@ func (s *TaskStore) updateLocked(updates []TaskUpdate) (map[int]bool, error) {
 		if u.Status == "" {
 			continue
 		}
-		switch u.Status {
-		case TaskOpen, TaskInProgress, TaskDone, TaskCancelled:
-			// valid
-		default:
+		if !u.Status.Valid() {
 			return nil, fmt.Errorf("invalid status %q for task %d: must be open, in_progress, done, or cancelled", u.Status, u.ID)
 		}
 	}

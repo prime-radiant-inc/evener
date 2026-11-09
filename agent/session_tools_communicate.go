@@ -44,7 +44,10 @@ func callIDFromContext(ctx context.Context) string {
 //     would be stripped after registration.
 //
 // The default name is exempt: adopting the profile's communicate definition,
-// which is always named tool.DefaultResultToolName, is the point.
+// which is always named tool.DefaultResultToolName, is the point. A non-default
+// name removes that canonical registration after the configured result tool
+// registers: the profile registry seeded it with profilePlaceholderExecutor, so
+// leaving it would advertise a second, unwired result tool (issue #4906).
 func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 	resultToolName := deps.resultToolName()
 	if resultToolName != tool.DefaultResultToolName {
@@ -78,7 +81,7 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 	if deps.offersEndReason {
 		resultToolDef = tool.WithCommunicateEndReason(resultToolDef)
 	}
-	_ = reg.Register(tool.RegisteredTool{
+	if err := reg.Register(tool.RegisteredTool{
 		Definition: resultToolDef,
 		OmitIntent: true,
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
@@ -125,6 +128,10 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 			}
 			if err := deps.abort(ctx); err != nil {
 				return nil, err
+			}
+			if endTurn && endReason == tool.CommunicateEndReasonWaitingOnWork &&
+				deps.wakeableWork != nil && !deps.wakeableWork() {
+				return nil, errors.New("end_reason waiting_on_work requires work that will wake this session; none is pending: end with done if the work is finished, needs_response if your partner must act, or start the work or arm a watch before ending the turn")
 			}
 
 			if err := deps.deliverCommunicate(events.CommunicateData{
@@ -209,21 +216,34 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 				}
 			}
 			b, _ := json.Marshal(resp)
-			if accepted && endReason != "" {
-				// The accepted end reason rides the result's tool state, which
-				// restore reads (endedOnNeedsResponse): the result text can be
-				// truncated or carry a repeated-call nudge.
-				return tool.StateResult{Output: string(b), State: communicateEndState{EndReason: endReason}}, nil
-			}
-			return string(b), nil
+			// Durable acceptance evidence belongs in typed state, not display
+			// output: the registry may truncate the latter before transcript
+			// persistence. The result remains linked to this call by ToolCallID.
+			return tool.StateResult{Output: string(b), State: communicateEndState{
+				Accepted: &accepted, EndTurn: &endTurn, EndReason: endReason,
+			}}, nil
 		},
-	})
+	}); err != nil {
+		if resultToolName != tool.DefaultResultToolName {
+			return fmt.Errorf("cannot use result tool name %q: %w; choose a different --result-tool-name", resultToolName, err)
+		}
+		return err
+	}
+	if resultToolName != tool.DefaultResultToolName {
+		// The profile registry seeded the canonical communicate definition with
+		// profilePlaceholderExecutor. This session's result tool now lives under
+		// resultToolName; leaving the canonical registration behind would
+		// advertise a second, unwired result tool (issue #4906).
+		reg.Remove(tool.DefaultResultToolName)
+	}
 	return nil
 }
 
-// communicateEndState is the tool state of the turn-ending communicate call
-// the input accepted.
+// communicateEndState records communicate's terminal verdict and optional end
+// reason independently of the display output.
 type communicateEndState struct {
+	Accepted *bool `json:"communicate_accepted,omitempty"`
+	EndTurn  *bool `json:"communicate_end_turn,omitempty"`
 	// The key is communicate's own, so no other tool's state can match it.
 	EndReason string `json:"communicate_end_reason"`
 }
@@ -276,7 +296,7 @@ func (s *Session) postDelegateUpdate(ctx context.Context, message string) *deleg
 		// The update is durable in the journal. A delivery that failed stays
 		// pending there, and executeDelegateMutationPlans has queued the
 		// journal's pending heads and the rest of its queue for retry.
-		s.emit(events.EventWarning, warningDataFromError("deliver delegate update", err))
+		s.emit(warningDataFromError("deliver delegate update", err))
 	}
 	// A missing aggregate reads as not pending: it cannot occur while the run
 	// that just posted is open.

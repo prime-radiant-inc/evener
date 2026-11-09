@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/gittest"
 )
 
 // urlPluginFixture is widget@acme installed from a local plugin repo through a
@@ -24,9 +27,7 @@ type urlPluginFixture struct {
 // repo and its head commit.
 func installURLPlugin(t *testing.T, sourceExtra func(repo, head string) string) urlPluginFixture {
 	t.Helper()
-	if !gitAvailable() {
-		t.Skip("git not available")
-	}
+	skipWithoutGit(t)
 	f := urlPluginFixture{
 		pluginRepo: filepath.Join(t.TempDir(), "pluginrepo"),
 		mktRepo:    filepath.Join(t.TempDir(), "mkt"),
@@ -48,6 +49,45 @@ func installURLPlugin(t *testing.T, sourceExtra func(repo, head string) string) 
 
 func unpinned(string, string) string { return "" }
 
+// pinMarketplace pins the named recorded marketplace to sha, so a check skips
+// its refresh (sourcePinned): the refresh runs real git, and a test that
+// measures a check must keep that out of its way.
+func pinMarketplace(t *testing.T, m *Manager, name, sha string) {
+	t.Helper()
+	mk, err := m.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, ok := mk[name]
+	if !ok {
+		t.Fatalf("marketplace %q not recorded", name)
+	}
+	ref.Source.Sha = sha
+	mk[name] = ref
+	if err := m.writeMarketplaces(mk); err != nil {
+		t.Fatalf("saving marketplaces: %v", err)
+	}
+}
+
+// pinMarketplaceToItsHead pins the recorded marketplace to the commit its
+// clone is on now.
+func pinMarketplaceToItsHead(t *testing.T, m *Manager, name string) {
+	t.Helper()
+	mk, err := m.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, ok := mk[name]
+	if !ok {
+		t.Fatalf("marketplace %q not recorded", name)
+	}
+	head, err := gitHeadSHA(context.Background(), ref.InstallLocation)
+	if err != nil {
+		t.Fatalf("reading marketplace %q head: %v", name, err)
+	}
+	pinMarketplace(t, m, name, head)
+}
+
 // writeURLCatalog writes acme's marketplace.json into mktRepo, listing plugin
 // by a url source at pluginRepo with sourceExtra appended to that source.
 func writeURLCatalog(t *testing.T, mktRepo, plugin, pluginRepo, sourceExtra string) {
@@ -64,8 +104,8 @@ func writeURLCatalog(t *testing.T, mktRepo, plugin, pluginRepo, sourceExtra stri
 // advanceRepo adds an empty commit to repo and returns the new head.
 func advanceRepo(t *testing.T, repo string) string {
 	t.Helper()
-	gitIn(t, repo, "commit", "--allow-empty", "-qm", "advance")
-	return gitIn(t, repo, "rev-parse", "HEAD")
+	gittest.Run(t, repo, "commit", "--allow-empty", "-qm", "advance")
+	return gittest.Run(t, repo, "rev-parse", "HEAD")
 }
 
 func (f urlPluginFixture) warnings() string { return f.m.Stderr.(*bytes.Buffer).String() }
@@ -179,7 +219,7 @@ func TestCheckUpdates_FlagsAPinTheCatalogMoved(t *testing.T) {
 	f := installURLPlugin(t, func(_, head string) string { return `,"sha":"` + head + `"` })
 	next := advanceRepo(t, f.pluginRepo)
 	writeURLCatalog(t, f.mktRepo, "widget", f.pluginRepo, `,"sha":"`+next+`"`)
-	gitIn(t, f.mktRepo, "commit", "-aqm", "pin next")
+	gittest.Run(t, f.mktRepo, "commit", "-aqm", "pin next")
 	if err := f.m.RefreshMarketplace(context.Background(), "acme"); err != nil {
 		t.Fatalf("RefreshMarketplace: %v", err)
 	}
@@ -190,14 +230,14 @@ func TestCheckUpdates_FlagsAPinTheCatalogMoved(t *testing.T) {
 
 func TestCheckUpdates_FollowsTheCatalogRef(t *testing.T) {
 	f := installURLPlugin(t, func(repo, _ string) string {
-		gitIn(t, repo, "branch", "stable")
+		gittest.Run(t, repo, "branch", "stable")
 		return `,"ref":"stable"`
 	})
 	advanceRepo(t, f.pluginRepo)
 	if checkThenList(t, f.m) {
 		t.Fatal("plugin flagged for a commit on a branch its catalog ref doesn't follow")
 	}
-	gitIn(t, f.pluginRepo, "branch", "-f", "stable", "main")
+	gittest.Run(t, f.pluginRepo, "branch", "-f", "stable", "main")
 	if !checkThenList(t, f.m) {
 		t.Fatal("plugin whose ref moved not listed as having an update")
 	}
@@ -228,9 +268,7 @@ func TestCheckUpdates_UnreachableRemoteWarnsAndFlagsNothing(t *testing.T) {
 func TestCheckUpdates_RelativeSourcePluginUpgradesFromItsRefreshedMarketplace(t *testing.T) {
 	mktRepo, name := makeInstallableMarketplace(t)
 	m := NewManager(t.TempDir())
-	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
-		t.Fatalf("AddMarketplace: %v", err)
-	}
+	mustAddMarketplace(context.Background(), t, m, "", Source{Kind: SourceURL, URL: mktRepo})
 	if _, err := m.Install(context.Background(), "widget", name); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -249,8 +287,8 @@ func TestCheckUpdates_RelativeSourcePluginUpgradesFromItsRefreshedMarketplace(t 
 	if err := os.WriteFile(filepath.Join(mktRepo, "plugins", "widget", "extra.txt"), []byte("v2"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	gitIn(t, mktRepo, "add", ".")
-	gitIn(t, mktRepo, "commit", "-qm", "change widget")
+	gittest.Run(t, mktRepo, "add", ".")
+	gittest.Run(t, mktRepo, "commit", "-qm", "change widget")
 	// The check refreshes the marketplace first, so a change pushed since
 	// the last refresh is seen without one.
 	if !checkThenList(t, m) {
@@ -274,9 +312,7 @@ func TestCheckUpdates_RelativeSourcePluginUpgradesFromItsRefreshedMarketplace(t 
 func TestCheckUpdates_RelativePluginWhoseFolderIsUnchangedIsNotFlagged(t *testing.T) {
 	mktRepo, name := makeInstallableMarketplace(t)
 	m := NewManager(t.TempDir())
-	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
-		t.Fatalf("AddMarketplace: %v", err)
-	}
+	mustAddMarketplace(context.Background(), t, m, "", Source{Kind: SourceURL, URL: mktRepo})
 	if _, err := m.Install(context.Background(), "widget", name); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -284,13 +320,13 @@ func TestCheckUpdates_RelativePluginWhoseFolderIsUnchangedIsNotFlagged(t *testin
 	if err := os.WriteFile(extra, []byte("v2"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	gitIn(t, mktRepo, "add", ".")
-	gitIn(t, mktRepo, "commit", "-qm", "change widget")
+	gittest.Run(t, mktRepo, "add", ".")
+	gittest.Run(t, mktRepo, "commit", "-qm", "change widget")
 	if err := os.Remove(extra); err != nil {
 		t.Fatal(err)
 	}
-	gitIn(t, mktRepo, "add", "-A")
-	gitIn(t, mktRepo, "commit", "-qm", "change it back")
+	gittest.Run(t, mktRepo, "add", "-A")
+	gittest.Run(t, mktRepo, "commit", "-qm", "change it back")
 	if err := m.RefreshMarketplace(context.Background(), name); err != nil {
 		t.Fatalf("RefreshMarketplace: %v", err)
 	}
@@ -305,9 +341,7 @@ func TestCheckUpdates_RelativePluginWhoseFolderIsUnchangedIsNotFlagged(t *testin
 func TestCheckUpdates_RelativePluginInstalledWithNoCommitIsFlaggedOnce(t *testing.T) {
 	mktRepo, name := makeInstallableMarketplace(t)
 	m := NewManager(t.TempDir())
-	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
-		t.Fatalf("AddMarketplace: %v", err)
-	}
+	mustAddMarketplace(context.Background(), t, m, "", Source{Kind: SourceURL, URL: mktRepo})
 	if _, err := m.Install(context.Background(), "widget", name); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -334,8 +368,8 @@ func TestCheckUpdates_RelativePluginInstalledWithNoCommitIsFlaggedOnce(t *testin
 func TestGitRemoteHead_ResolvesTheCommitACheckoutOfRefLandsOn(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
 	first := makeGitRepo(t, repo, "f.txt", "1")
-	gitIn(t, repo, "tag", "-a", "v1", "-m", "release")
-	gitIn(t, repo, "branch", "feature")
+	gittest.Run(t, repo, "tag", "-a", "v1", "-m", "release")
+	gittest.Run(t, repo, "branch", "feature")
 	head := advanceRepo(t, repo)
 
 	for _, tc := range []struct{ ref, want string }{
@@ -515,34 +549,121 @@ func TestCheckUpdates_WarnsAboutAPluginKeyWithNoMarketplace(t *testing.T) {
 	}
 }
 
+// hungRemoteTripwire bounds how long a test waits for a check to cut off the
+// hung remote. TRIPWIRE: the remote's own cancellation is the signal; this
+// only turns a check that never answers into a failure instead of a hung test
+// binary, far above the check's deadline so a loaded runner does not trip it.
+const hungRemoteTripwire = 90 * time.Second
+
 // A remote that never answers is cut off by the check's overall deadline, not
 // only by its own updateCheckTimeout, so the check answers before a client
 // waiting on it gives up. The hung remote is warned about like any other
 // remote that cannot be read.
+//
+// The cause the remote's context ended with, not the check's wall time, is
+// what shows which deadline cut it off: process creation alone has taken
+// seconds on a loaded runner (git_signal_unix_test.go), so a bound on the
+// check's elapsed time measures the machine. The marketplace is pinned so the
+// refresh that opens the check runs no real git before the remote is asked.
+// The remote also reports whether it was live when asked, so a deadline that
+// expired before the check reached it fails instead of passing vacuously.
 func TestCheckUpdates_OverallDeadlineCutsOffAHungRemote(t *testing.T) {
-	f := installURLPlugin(t, unpinned)
-	realGit, realDeadline := gitRun, updateCheckDeadline
-	t.Cleanup(func() { gitRun, updateCheckDeadline = realGit, realDeadline })
-	updateCheckDeadline = 50 * time.Millisecond
-	gitRun = func(ctx context.Context, dir string, args ...string) (string, error) {
-		if len(args) > 0 && args[0] == "ls-remote" {
-			<-ctx.Done()
-			return "", ctx.Err()
-		}
-		return realGit(ctx, dir, args...)
-	}
-	start := time.Now()
-	if checkThenList(t, f.m) {
-		t.Fatal("plugin whose remote hung listed as having an update")
-	}
-	// The warning names the deadline whichever timeout ended the hang, so
-	// only the time taken shows the overall deadline, not the 20s
-	// per-remote one, cut it off.
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Fatalf("check took %v; the overall deadline did not cut off the hung remote", elapsed)
-	}
-	if w := f.warnings(); !strings.Contains(w, "checking widget@acme for updates: "+errUpdateCheckDeadline.Error()) {
-		t.Fatalf("no warning names the hung plugin: %q", w)
+	for _, tc := range []struct {
+		name        string
+		selectDelay time.Duration
+	}{
+		{"immediate select", 0},
+		// A delayed test goroutine is the roborev race: with a buffered call
+		// channel the check's completion could be ready at the same time and
+		// the select could pick it. The fake's unbuffered send makes the call
+		// the only ready case.
+		{"delayed select", 700 * time.Millisecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := installURLPlugin(t, unpinned)
+			pinMarketplaceToItsHead(t, f.m, "acme")
+			realGit, realDeadline := gitRun, updateCheckDeadline
+			t.Cleanup(func() { gitRun, updateCheckDeadline = realGit, realDeadline })
+			// 500ms leaves a loaded runner room to reach the fake, while staying
+			// far under the 20s per-remote timeout.
+			updateCheckDeadline = 500 * time.Millisecond
+			type hungCall struct {
+				cause error
+				live  bool
+			}
+			calls := make(chan hungCall)
+			unexpectedGit := make(chan string, 1)
+			testDone := make(chan struct{})
+			gitRun = func(ctx context.Context, dir string, args ...string) (string, error) {
+				if len(args) > 0 && args[0] == "ls-remote" {
+					live := ctx.Err() == nil
+					<-ctx.Done()
+					select {
+					case calls <- hungCall{cause: context.Cause(ctx), live: live}:
+					case <-testDone:
+					}
+					return "", ctx.Err()
+				}
+				select {
+				case unexpectedGit <- fmt.Sprintf("git %v", args):
+				default:
+				}
+				return "", errors.New("real git must not run")
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			checked := make(chan error, 1)
+			finished := make(chan struct{})
+			go func() {
+				defer close(finished)
+				checked <- f.m.CheckUpdates(ctx)
+			}()
+			// The restore cleanup above is registered first, so it runs after this
+			// one and never swaps the seams out from under a running check.
+			t.Cleanup(func() {
+				close(testDone)
+				cancel()
+				select {
+				case <-finished:
+				case <-time.After(hungRemoteTripwire):
+					t.Error("CheckUpdates did not return after the test canceled it")
+				}
+			})
+			time.Sleep(tc.selectDelay)
+			var call hungCall
+			select {
+			case call = <-calls:
+			case err := <-checked:
+				t.Fatalf("CheckUpdates answered before the hung remote was cut off: %v", err)
+			case <-time.After(hungRemoteTripwire):
+				t.Fatal("the check never cut off the hung remote")
+			}
+			if !call.live {
+				t.Fatal("the check asked the hung remote only after its deadline had passed; the overall deadline did not cut off a live hang")
+			}
+			if !errors.Is(call.cause, errUpdateCheckDeadline) {
+				t.Fatalf("the hung remote was ended by %v, want the check's overall deadline", call.cause)
+			}
+			select {
+			case err := <-checked:
+				if err != nil {
+					t.Fatalf("CheckUpdates: %v", err)
+				}
+			case <-time.After(hungRemoteTripwire):
+				t.Fatal("CheckUpdates did not return after the hung remote was cut off")
+			}
+			select {
+			case args := <-unexpectedGit:
+				t.Fatalf("%s ran before the hung remote; the fixture must keep real git out of this check", args)
+			default:
+			}
+			if listedUpdateAvailable(t, f.m) {
+				t.Fatal("plugin whose remote hung listed as having an update")
+			}
+			if w := f.warnings(); !strings.Contains(w, "checking widget@acme for updates: "+errUpdateCheckDeadline.Error()) {
+				t.Fatalf("no warning names the hung plugin: %q", w)
+			}
+		})
 	}
 }
 
@@ -603,18 +724,9 @@ func TestCheckUpdates_AClonePinnedDuringTheFetchIsNotFastForwarded(t *testing.T)
 	realFetch := marketplaceGitFetch
 	t.Cleanup(func() { marketplaceGitFetch = realFetch })
 	marketplaceGitFetch = func(ctx context.Context, dir string) error {
-		head := gitIn(t, dir, "rev-parse", "HEAD")
-		gitIn(t, dir, "checkout", "--quiet", "--detach")
-		mk, err := f.m.loadMarketplaces()
-		if err != nil {
-			t.Fatal(err)
-		}
-		ref := mk["acme"]
-		ref.Source.Sha = head
-		mk["acme"] = ref
-		if err := f.m.writeMarketplaces(mk); err != nil {
-			t.Fatal(err)
-		}
+		head := gittest.Run(t, dir, "rev-parse", "HEAD")
+		gittest.Run(t, dir, "checkout", "--quiet", "--detach")
+		pinMarketplace(t, f.m, "acme", head)
 		return realFetch(ctx, dir)
 	}
 	advanceRepo(t, f.mktRepo)
@@ -646,15 +758,13 @@ func TestCheckUpdates_HungRefreshesLeaveTheRemoteChecksTheirTime(t *testing.T) {
 // a detached HEAD, which a fast-forward cannot move), and once its refresh
 // budget is spent it starts no more refreshes.
 func TestCheckUpdates_RefreshSkipsPinnedMarketplacesAndStopsAtItsBudget(t *testing.T) {
-	if !gitAvailable() {
-		t.Skip("git not available")
-	}
+	skipWithoutGit(t)
 	m := NewManager(t.TempDir())
 	m.Stderr = &bytes.Buffer{}
 	shaRepo := makeMarketplaceRepoWithPlugin(t, "pinned", "gadget")
-	head := gitIn(t, shaRepo, "rev-parse", "HEAD")
+	head := gittest.Run(t, shaRepo, "rev-parse", "HEAD")
 	tagRepo := makeMarketplaceRepoWithPlugin(t, "tagged", "gizmo")
-	gitIn(t, tagRepo, "tag", "v1")
+	gittest.Run(t, tagRepo, "tag", "v1")
 	for _, src := range []Source{
 		{Kind: SourceURL, URL: shaRepo, Sha: head},
 		{Kind: SourceURL, URL: tagRepo, Ref: "v1"},
@@ -703,9 +813,7 @@ func hangingFetches(t *testing.T) *[]string {
 // A check whose budget ran out starts its next refresh at the marketplace it
 // left unrefreshed, so the same marketplaces are not starved every time.
 func TestCheckUpdates_RefreshResumesWhereTheLastCheckRanOut(t *testing.T) {
-	if !gitAvailable() {
-		t.Skip("git not available")
-	}
+	skipWithoutGit(t)
 	m := NewManager(t.TempDir())
 	m.Stderr = &bytes.Buffer{}
 	for _, name := range []string{"first", "second"} {
@@ -749,9 +857,7 @@ func TestCheckUpdates_RefreshFetchesWithTheStoreLockFree(t *testing.T) {
 // A marketplace refresh cut off by the budget partway through goes first next
 // time, so one that is always the one in flight is not starved.
 func TestCheckUpdates_RefreshResumesAtOneTheBudgetCutOff(t *testing.T) {
-	if !gitAvailable() {
-		t.Skip("git not available")
-	}
+	skipWithoutGit(t)
 	m := NewManager(t.TempDir())
 	m.Stderr = &bytes.Buffer{}
 	for _, name := range []string{"first", "second"} {
@@ -951,9 +1057,7 @@ func TestCheckUpdates_ReSourcingToADirectoryWaitsForTheCheckFetch(t *testing.T) 
 // An unpinned git-subdir marketplace's sparse clone stays on its branch, so a
 // check refreshes it and sees a change pushed to a relative-source plugin.
 func TestCheckUpdates_AGitSubdirMarketplaceIsRefreshed(t *testing.T) {
-	if !gitAvailable() {
-		t.Skip("git not available")
-	}
+	skipWithoutGit(t)
 	repo := filepath.Join(t.TempDir(), "monorepo")
 	if err := os.MkdirAll(filepath.Join(repo, "mkt", ".claude-plugin"), 0o755); err != nil {
 		t.Fatal(err)
@@ -966,17 +1070,15 @@ func TestCheckUpdates_AGitSubdirMarketplaceIsRefreshed(t *testing.T) {
 	makeGitRepo(t, repo, "README.md", "root")
 	m := NewManager(t.TempDir())
 	m.Stderr = &bytes.Buffer{}
-	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceGitSubdir, URL: repo, Path: "mkt"}); err != nil {
-		t.Fatalf("AddMarketplace: %v", err)
-	}
+	mustAddMarketplace(context.Background(), t, m, "", Source{Kind: SourceGitSubdir, URL: repo, Path: "mkt"})
 	if _, err := m.Install(context.Background(), "widget", "acme"); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(repo, "mkt", "plugins", "widget", "extra.txt"), []byte("v2"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	gitIn(t, repo, "add", ".")
-	gitIn(t, repo, "commit", "-qm", "change widget")
+	gittest.Run(t, repo, "add", ".")
+	gittest.Run(t, repo, "commit", "-qm", "change widget")
 	if !checkThenList(t, m) {
 		t.Fatalf("a change in a git-subdir marketplace was not seen; warnings: %q", m.Stderr.(*bytes.Buffer).String())
 	}
@@ -987,14 +1089,12 @@ func TestCheckUpdates_AGitSubdirMarketplaceIsRefreshed(t *testing.T) {
 // never gives a clone one. A tag shadowing another branch stays a pin, and a
 // tag named like the default branch stays the branch, either way.
 func TestSourcePinned_NeedsNoOriginHEAD(t *testing.T) {
-	if !gitAvailable() {
-		t.Skip("git not available")
-	}
+	skipWithoutGit(t)
 	repo := makeMarketplaceRepoWithPlugin(t, "shadowed", "widget")
-	gitIn(t, repo, "tag", "rel")
-	gitIn(t, repo, "branch", "rel")
-	def := gitIn(t, repo, "rev-parse", "--abbrev-ref", "HEAD")
-	gitIn(t, repo, "tag", def)
+	gittest.Run(t, repo, "tag", "rel")
+	gittest.Run(t, repo, "branch", "rel")
+	def := gittest.Run(t, repo, "rev-parse", "--abbrev-ref", "HEAD")
+	gittest.Run(t, repo, "tag", def)
 	m := NewManager(t.TempDir())
 	shadowed, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "rel"})
 	if err != nil {
@@ -1015,7 +1115,7 @@ func TestSourcePinned_NeedsNoOriginHEAD(t *testing.T) {
 	}
 	check("with origin/HEAD")
 	for _, ref := range []MarketplaceRef{shadowed, onDefault} {
-		gitIn(t, ref.InstallLocation, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
+		gittest.Run(t, ref.InstallLocation, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
 	}
 	check("without origin/HEAD")
 }

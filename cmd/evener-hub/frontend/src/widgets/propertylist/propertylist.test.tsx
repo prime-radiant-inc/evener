@@ -5,7 +5,7 @@ import { PropertyList } from "./index";
 
 // jsdom applies no stylesheet, so the declarations are the checkable truth;
 // comments are stripped so a doc comment quoting one cannot satisfy a match.
-const CSS = readModuleCss(import.meta.url, "propertylist.module.css").replace(/\/\*[\s\S]*?\*\//g, "");
+const CSS = readModuleCss(import.meta.url, "propertylist.module.css");
 
 function classesOf(element: Element): string[] {
   return element.className.split(" ").filter(Boolean);

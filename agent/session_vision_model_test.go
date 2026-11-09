@@ -67,10 +67,7 @@ func TestDescribeImage_RoutesToConfiguredProvider(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	t.Cleanup(func() { sess.Close() })
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	if got := sess.describeImage(context.Background(), visionImageResult()); got != "routed-vision" {
 		t.Fatalf("routed description = %q", got)
@@ -199,10 +196,7 @@ func TestSetVisionModelPreservesQualifiedOffRef(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	t.Cleanup(func() { sess.Close() })
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	if err := sess.SetVisionModel("off/model"); err != nil {
 		t.Fatalf("SetVisionModel(off/model): %v", err)

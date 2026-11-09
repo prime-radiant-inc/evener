@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/gittest"
 )
 
 // TRIPWIRE: every real process this file spawns does milliseconds of work — a
@@ -202,8 +203,8 @@ func TestPolicyReplaceRebuildsSandboxFS(t *testing.T) {
 		base := t.TempDir()
 		home := t.TempDir()
 		main := filepath.Join(base, "repo")
-		runGit(t, base, "init", "-q", "repo")
-		runGit(t, main, "commit", "-q", "--allow-empty", "-m", "init")
+		gittest.Run(t, base, "init", "-q", "repo")
+		gittest.Run(t, main, "commit", "-q", "--allow-empty", "-m", "init")
 		main = evalSym(t, main)
 
 		env := NewLocalExecutionEnvironment(main)

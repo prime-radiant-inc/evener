@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/llm"
@@ -121,7 +122,7 @@ func TestPluginSelectionExcludedContributionsDoNotInitialize(t *testing.T) {
 	}
 
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("done") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 	}}
 	client := llm.NewClient()
 	client.Register(adapter)

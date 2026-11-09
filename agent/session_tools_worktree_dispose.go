@@ -50,7 +50,7 @@ func (s *Session) worktreeDispose(ctx context.Context, id string, force, forceDi
 		return WorktreeDisposeResult{}, errors.New("manage_worktree dispose: session is closing")
 	}
 	defer s.endDispose()
-	return s.disposeStableDelegateLane(ctx, id, force, forceDirty)
+	return s.disposeDelegateLane(ctx, id, force, forceDirty)
 }
 
 // isDelegateID reports whether id has the delegate id shape (dlg_…). Only a
@@ -68,11 +68,11 @@ func disposeOwnerError(id string, err error) error {
 	return fmt.Errorf("invalid_request: manage_worktree dispose: %w", err)
 }
 
-// disposeStableDelegateLane performs explicit isolation disposal from the
+// disposeDelegateLane performs explicit isolation disposal from the
 // stable delegate descriptor and controller state. jobs.jsonl remains solely
 // the shell/watch authority and is never consulted for delegate ownership or
 // lifecycle.
-func (s *Session) disposeStableDelegateLane(ctx context.Context, id string, force, forceDirty bool) (WorktreeDisposeResult, error) {
+func (s *Session) disposeDelegateLane(ctx context.Context, id string, force, forceDirty bool) (WorktreeDisposeResult, error) {
 	if s.delegateController == nil {
 		return WorktreeDisposeResult{}, errors.New("manage_worktree dispose: stable delegate controller is unavailable")
 	}
@@ -224,7 +224,7 @@ func (s *Session) disposeStableDelegateLane(ctx context.Context, id string, forc
 // disposeStableExecute receives the lane's git branch (Sidecar.BranchOrName())
 // separately from the delegate id because a parent-named lane's branch differs
 // from every id-keyed surface.
-func (s *Session) disposeStableExecute(ctx context.Context, run worktree.GitRunner, state stableDelegateWorktreeSnapshot, lanePath, metaDir, branch string, sub *subagent, lanePresent bool, st worktree.LockState, forceDirty, alreadyClosed bool) (WorktreeDisposeResult, error) {
+func (s *Session) disposeStableExecute(ctx context.Context, run worktree.GitRunner, state delegateWorktreeSnapshot, lanePath, metaDir, branch string, sub *subagent, lanePresent bool, st worktree.LockState, forceDirty, alreadyClosed bool) (WorktreeDisposeResult, error) {
 	id := state.delegateID
 	if sub != nil && sub.sess != nil {
 		teardownChildSession(ctx, sub.sess)
@@ -236,7 +236,7 @@ func (s *Session) disposeStableExecute(ctx context.Context, run worktree.GitRunn
 		// future caller's omission) must not have its sidecar deleted with the
 		// real branch stranded behind it, whichever arm would run. Touch
 		// nothing; the lane stays exactly as it is, left for prune.
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate lane %s reached disposal without a resolved branch; left untouched", id)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("delegate lane %s reached disposal without a resolved branch; left untouched", id)})
 		return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s resumability is closed but its branch was never resolved; residue retained at %s; left for prune", id, lanePath)
 	}
 	if !lanePresent {
@@ -270,7 +270,7 @@ func (s *Session) disposeStableExecute(ctx context.Context, run worktree.GitRunn
 func (s *Session) disposeStableHalfRemoved(run worktree.GitRunner, lane isolationLane, metaDir string) WorktreeDisposeResult {
 	branchDeleted := false
 	if _, err := run("branch", "-D", lane.branch); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("stable delegate lane branch delete failed for %s: %v", lane.delegateID, err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("stable delegate lane branch delete failed for %s: %v", lane.delegateID, err)})
 	} else {
 		branchDeleted = true
 	}

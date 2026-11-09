@@ -39,7 +39,7 @@ func HostRoutingOrigin(ctx context.Context) string {
 // protects paths that attach: a request arriving over a peer hub's bridge could
 // still forward a call over an ALREADY-ATTACHED RemoteHubSource — the
 // evener/host/request admin proxy, an explicit remote-SourceID thread read or
-// mutation, a capability probe — and reach a second host, bypassing the depth-1
+// mutation — and reach a second host, bypassing the depth-1
 // topology cap. Every one of those dispatches resolves its client through
 // resolveClient, so enforcing the guard there refuses them all regardless of
 // attach state, while a request reading this hub's own cached state (snapshot

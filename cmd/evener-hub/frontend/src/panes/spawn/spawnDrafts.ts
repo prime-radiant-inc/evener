@@ -42,8 +42,7 @@ interface DraftFields {
    * property of the draft, not of the mounted form: SpawnForm is a singleton
    * reused across drafts (no key) and is unmounted/remounted with the pane, so
    * a form-local marker leaked one draft's provenance onto an identical model
-   * string in another draft and vanished on remount (Component 06b review,
-   * round eight). */
+   * string in another draft and vanished on remount. */
   defaultModelFallback: string | null;
   staleModelNotice: string | null;
   reasoningEffort: string;
@@ -51,6 +50,10 @@ interface DraftFields {
   /** Launch source id for this draft (Component 06b's host picker). "local"
    * is the default and is omitted from the wire by startThread. */
   source: string;
+  /** Start this session as a Manager of the sessions its hub can reach. A
+   * start-time property (the daemon persists it; nothing turns it off), so it
+   * belongs to the launch draft and is omitted from the wire when false. */
+  manager: boolean;
   advancedOverrides: LaunchConfigLayer;
   advancedValues: AdvancedValues;
   pluginSelection: PluginSelectionState;
@@ -63,7 +66,7 @@ interface DraftFields {
   busy: boolean;
   busyStartedAt: number | null;
   /** The pending "Create directory and start?" confirmation, and the host that
-   * PREFLIGHTED the path it names (component 07b review, round seven). The two
+   * PREFLIGHTED the path it names. The two
    * travel together because the confirmation is an action against one host:
    * the dialog can outlive the selection that opened it (the manifest's
    * `online` flag is live), and a confirm that fires against a different host
@@ -94,6 +97,7 @@ function createDraft(cwd: string) {
       reasoningEffort: defaults.reasoningEffort ?? "",
       accessMode: defaults.accessMode ?? "",
       source: "local",
+      manager: false,
       advancedOverrides: {},
       advancedValues: {},
       pluginSelection: { mode: "default" },

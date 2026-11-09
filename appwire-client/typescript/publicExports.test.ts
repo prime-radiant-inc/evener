@@ -56,20 +56,6 @@ import {
 } from "./index";
 import * as transcriptDisplayConfigModule from "./transcriptDisplayConfig";
 
-// #1431 also retired two transcriptDisplayConfig type aliases from the root.
-// A type export is erased at runtime, so the value `in` checks below cannot see
-// one, and the root's type surface needs its own compile-time lock. Only these
-// two are asserted: TranscriptDisplayConfig is deliberately excluded because
-// the generated wire type of that name owns the root spelling, so it is no
-// longer this module's alias. The union keeps both references live for biome's
-// noUnusedVariables; each directive is reported unused if an alias returns.
-// @ts-expect-error -- deleted zero-consumer alias (#1431)
-type RootRetiredTranscriptHookExitDetail = import("./index").TranscriptHookExitDetail;
-// @ts-expect-error -- deleted zero-consumer alias (#1431)
-type RootRetiredTranscriptLevel = import("./index").TranscriptLevel;
-type RootRetiredTranscriptAliases = RootRetiredTranscriptHookExitDetail | RootRetiredTranscriptLevel;
-void (undefined as RootRetiredTranscriptAliases | undefined);
-
 type EntityLinkPublicTypes =
   | ConditionSpec
   | DelegateEntityView
@@ -262,5 +248,60 @@ describe("protocol package root public exports", () => {
     expect(threadModelFromCache(record, 1).ref).toBe("local:t");
     expect(threadModelFromCache(record, 1).capabilities.send).toBe(false);
     expect(cachedSessionRecord(threadModelFromCache(record, 1), 2)?.history.incarnation).toBe("i");
+  });
+
+  // The reducer's package-root surface is pinned by name and kind so a split
+  // of reducer.ts cannot drop or retype an export unnoticed.
+  it("exports the reducer surface from the package root", () => {
+    const functions = [
+      "applyHistoryReadFailure",
+      "applyNotification",
+      "applyOverlayEndForTranscriptHandoff",
+      "applyReadModel",
+      "applyReadResponse",
+      "cachedSessionRecord",
+      "collectAuthoritativeMutationIds",
+      "comparePositions",
+      "copyItemTextPresence",
+      "currentTranscriptState",
+      "decodeCurrentTranscriptState",
+      "decodeTranscriptItem",
+      "encodeTranscriptItem",
+      "foldWarningParams",
+      "hydrateThread",
+      "imageSessionRouteForSession",
+      "invalidateHistory",
+      "isToolCallItemId",
+      "isToolResultItemId",
+      "issueLatestWindowRead",
+      "itemIdentityMatches",
+      "itemTextPresence",
+      "joinWarningParts",
+      "joinedReasoningParagraphs",
+      "markItemIdentityOnly",
+      "markItemTextOmitted",
+      "mergeOlderItemPage",
+      "mergeOlderItemPageWithFolds",
+      "mergeTailTurns",
+      "mergeTranscriptItemVersioned",
+      "mergeTranscriptReaderWindow",
+      "mergeTranscriptTurnVersioned",
+      "mergeTurnHistory",
+      "mergeTurnHistoryWithFolds",
+      "notificationRoutingKey",
+      "notificationTargetsThread",
+      "notificationTouchesTranscript",
+      "prependOlderTurns",
+      "pruneBackgroundHistoryBodies",
+      "readDisposition",
+      "readWindowBounds",
+      "resolvePendingEscalation",
+      "threadModelFromCache",
+      "threadModelFromCurrentState",
+    ];
+    for (const name of functions) {
+      expect(typeof (packageRoot as Record<string, unknown>)[name], name).toBe("function");
+    }
+    expect(Array.isArray(packageRoot.ITEM_OMISSION_TOLERANT_FIELDS)).toBe(true);
   });
 });

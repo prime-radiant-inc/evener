@@ -91,7 +91,7 @@ func (s *Session) skillCompactionCancelNotice(op schema.SkillCompactionOperation
 	if op.Selection.State != "absent" {
 		lostSelection = fmt.Sprintf("; its reload selection (%s) was discarded", op.Selection.State)
 	}
-	s.emit(events.EventWarning, events.WarningData{
+	s.emit(events.WarningData{
 		Message: fmt.Sprintf("compaction intent retired (generation %d, origin %s, reason %s)%s — retiring the intent does not undo any compaction that already ran",
 			op.Generation, op.Origin, reason, lostSelection),
 	})
@@ -137,7 +137,7 @@ func (s *Session) cancelSkillCompaction(ctx context.Context, generation uint64, 
 	}
 	s.skillCompactionCancelNotice(*cancelled, reason)
 	if err := s.saveMeta(); err != nil {
-		s.emit(events.EventWarning, warningDataFromError("persisting compaction cancellation failed", err))
+		s.emit(warningDataFromError("persisting compaction cancellation failed", err))
 		return err
 	}
 	return nil
@@ -199,7 +199,7 @@ func (s *Session) requestSkillCompaction(ctx context.Context, note, instructions
 			if cancelled != nil {
 				return 0, &skillCompactionSaveError{Generation: cancelled.Generation, Reason: skillCompactionCancelSaveFailed, Err: err}
 			}
-			s.emit(events.EventWarning, warningDataFromError("persisting compaction note clear failed", err))
+			s.emit(warningDataFromError("persisting compaction note clear failed", err))
 			return 0, fmt.Errorf("persisting compaction note clear failed: %w", err)
 		}
 		return 0, nil
@@ -408,7 +408,7 @@ func (s *Session) retireSkillCompactionCancellations() {
 		return
 	}
 	if err := s.saveMeta(); err != nil {
-		s.emit(events.EventWarning, warningDataFromError("retiring compaction cancellation receipts failed", err))
+		s.emit(warningDataFromError("retiring compaction cancellation receipts failed", err))
 	}
 }
 
@@ -463,7 +463,7 @@ func (s *Session) commitSkillCompactionPublication(commit *foldCommit) {
 	}
 	s.mu.Unlock()
 	if err := s.saveMeta(); err != nil {
-		s.emit(events.EventWarning, warningDataFromError("persisting the published compaction handoff failed", err))
+		s.emit(warningDataFromError("persisting the published compaction handoff failed", err))
 	}
 }
 

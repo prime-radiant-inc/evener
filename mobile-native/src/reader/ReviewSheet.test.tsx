@@ -29,7 +29,6 @@ const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
 	memory: null as unknown,
 	runtime: null as unknown,
-	uuid: 0,
 }));
 const sheetNavigation = vi.hoisted(() => ({
 	goBack: vi.fn(),
@@ -45,7 +44,6 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 	TextInput: "TextInput",
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("@react-navigation/native", () => ({
 	useNavigation: () => sheetNavigation,
 	usePreventRemove: (prevent: boolean, onPrevent: (event: { data: { action: unknown } }) => void) => {
@@ -54,13 +52,6 @@ vi.mock("@react-navigation/native", () => ({
 	},
 }));
 vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
-vi.mock("expo-crypto", () => ({
-	randomUUID: () => {
-		harness.uuid += 1;
-		return `review-uuid-${harness.uuid}`;
-	},
-	getRandomValues: (array: Uint8Array) => array,
-}));
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => harness.connection }));
 vi.mock("./nativeDocumentMemory", () => ({ documentMemory: () => harness.memory }));
 // The app's one runtime is a module singleton; each test gets its own.

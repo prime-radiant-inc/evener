@@ -1,10 +1,15 @@
 import type { SessionURL, ThreadModel } from "@evener/appwire-client";
-import { canReadSharedNotes, isSessionResting, sessionActionError, WireError } from "@evener/appwire-client";
+import {
+  canReadSharedNotes,
+  canWriteSharedNotes,
+  isSessionResting,
+  sessionActionError,
+  WireError,
+} from "@evener/appwire-client";
 import { fileURLToPath } from "@evener/appwire-client/docContent";
 import { useEffect, useRef } from "react";
 import {
   blurHumanNote,
-  canWriteHumanNote,
   editHumanNote,
   focusHumanNote,
   syncHumanNote,
@@ -98,7 +103,7 @@ function HumanStatus({
 
 // isMissingURLEntryError recognizes the daemon's unknown-url-entry rejection: an
 // invalidParams WireError carrying the "no URL entry with id" contract text
-// (agent/session_notes_rpc.go and server/appwire_runtime.go both build it, and
+// (agent/session_notes_mutations.go and server/appwire_turn_handlers.go both build it, and
 // the agent test TestRemoveSessionURLUnknownIDRejects pins it). The code alone is
 // too broad, since every bad-parameter rejection shares it, so the message is
 // what separates a stale row from a real error.
@@ -124,7 +129,7 @@ export function NotesPanelBody({ sessionRef, model, sourcePaneId, editorRef }: N
   const removingURLs = usePendingUrlRemovals(sessionRef);
   // Editability here tracks the store's own write gate: rendering controls that
   // setHumanNote/RemoveSessionURL would refuse leaves dead affordances.
-  const live = canWriteHumanNote(model);
+  const live = canWriteSharedNotes(model);
   const idleWake = live && isSessionResting(model.status.type);
   useEffect(() => {
     syncHumanNote(sessionRef, model.humanNote);

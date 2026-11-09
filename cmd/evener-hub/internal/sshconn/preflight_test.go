@@ -154,8 +154,8 @@ func TestResolveRootsEmptyHome(t *testing.T) {
 	if configRoot != "" {
 		t.Errorf("configRoot = %q, want empty (no HOME, no XDG_CONFIG_HOME)", configRoot)
 	}
-	if want := filepath.Join(".", ".local", "state", "evener"); stateRoot != want {
-		t.Errorf("stateRoot = %q, want %q", stateRoot, want)
+	if stateRoot != "" {
+		t.Errorf("stateRoot = %q, want empty (no HOME, no XDG_STATE_HOME)", stateRoot)
 	}
 }
 

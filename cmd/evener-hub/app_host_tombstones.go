@@ -15,8 +15,7 @@ package hub
 // bounded newest-first projection of the source's last-known-good rows. It is
 // purged by a re-add or by the retention period (spec §15), and capacity
 // eviction drops the oldest tombstones before either global cap can be
-// exceeded — never a remnant-gated one (S12 wires the real remnant records;
-// today the gate is a documented empty seam).
+// exceeded — never one whose name holds an open teardown remnant.
 
 import (
 	"encoding/json"
@@ -59,15 +58,15 @@ const (
 // explicit indicator that the projection dropped rows at the bound (spec §15:
 // "plus an explicit `rowsTruncated: bool` on the tombstone").
 type HostTombstone struct {
-	Name          string     `toml:"name"`
-	Entry         HostConfig `toml:"entry"`
-	Origin        string     `toml:"origin"`
-	Generation    uint64     `toml:"generation"`
-	IncarnationID string     `toml:"incarnation_id"`
-	PresenceEpoch uint64     `toml:"presence_epoch"`
-	RemovedAt     string     `toml:"removed_at"`
-	Rows          []string   `toml:"rows,omitempty"`
-	RowsTruncated bool       `toml:"rows_truncated"`
+	Name          string     `toml:"name" json:"name"`
+	Entry         HostConfig `toml:"entry" json:"entry"`
+	Origin        string     `toml:"origin" json:"origin"`
+	Generation    uint64     `toml:"generation" json:"generation"`
+	IncarnationID string     `toml:"incarnation_id" json:"incarnation_id"`
+	PresenceEpoch uint64     `toml:"presence_epoch" json:"presence_epoch"`
+	RemovedAt     string     `toml:"removed_at" json:"removed_at"`
+	Rows          []string   `toml:"rows,omitempty" json:"rows,omitempty"`
+	RowsTruncated bool       `toml:"rows_truncated" json:"rows_truncated"`
 }
 
 // PrunedReceiptMarker is one [pruned_receipts."<scoped-key>"] record (spec §6):
@@ -78,7 +77,7 @@ type HostTombstone struct {
 // replay naming a marked key with no retained receipt refuses as the typed
 // `stale-entry` (pruned-generation) instead of fresh-applying.
 type PrunedReceiptMarker struct {
-	PrunedAt string `toml:"pruned_at"`
+	PrunedAt string `toml:"pruned_at" json:"pruned_at"`
 }
 
 // hostRecordPolicy is the resolved knob set one write's record derivation
@@ -163,7 +162,8 @@ type hostTOMLRecords struct {
 	// pass's discarded generations). The writer's preservation rule re-emits a
 	// generation record for a name the write does not own, so without this set
 	// the file's older record would ride back over the raise — and for a
-	// tombstoned name the twin pair would then disagree and refuse the write.
+	// tombstoned name the mark would then sit below its tombstone and refuse the
+	// write.
 	raisedHighWater map[string]struct{}
 }
 
@@ -179,7 +179,7 @@ type hostTombstoneStage struct {
 // hostTombstoneCapacityError is the internal shape of spec §15's typed
 // `tombstone-capacity` conflict refusal: the global bound the persist would
 // exceed and the remnant-gated names that blocked every eviction candidate.
-// persistHostsMarked maps it onto appwire's envelope at the single write choke
+// persistHosts maps it onto appwire's envelope at the single write choke
 // point, so every mutation path surfaces the typed refusal.
 type hostTombstoneCapacityError struct {
 	bound         string
@@ -306,7 +306,7 @@ func newHostTombstone(entry hostreg.Host, presenceEpoch uint64, rows []appwire.T
 		Generation:    entry.Generation,
 		IncarnationID: entry.IncarnationID,
 		PresenceEpoch: presenceEpoch,
-		RemovedAt:     removedAt.UTC().Format(time.RFC3339),
+		RemovedAt:     hostInstant(removedAt),
 		Rows:          projected,
 		RowsTruncated: truncated,
 	}
@@ -377,8 +377,8 @@ func validateHostTombstones(tombstones map[string]HostTombstone, generations map
 			// loudly, the reserved-namespace posture.
 			return fmt.Errorf("tombstones[%q] carries no generations[%q] %w; refusing the unresolvable record", name, name, errTombstoneTwinMissing)
 		}
-		if mark.Generation != tombstone.Generation || mark.IncarnationID != tombstone.IncarnationID || mark.PresenceEpoch != tombstone.PresenceEpoch {
-			return fmt.Errorf("tombstones[%q] carries the triple (%d, %q, %d) while generations carries (%d, %q, %d); the two must agree",
+		if mark.Generation < tombstone.Generation || mark.IncarnationID != tombstone.IncarnationID || mark.PresenceEpoch < tombstone.PresenceEpoch {
+			return fmt.Errorf("tombstones[%q] carries the triple (%d, %q, %d) while generations carries (%d, %q, %d); the mark must be the same incarnation at or above it",
 				name, tombstone.Generation, tombstone.IncarnationID, tombstone.PresenceEpoch,
 				mark.Generation, mark.IncarnationID, mark.PresenceEpoch)
 		}

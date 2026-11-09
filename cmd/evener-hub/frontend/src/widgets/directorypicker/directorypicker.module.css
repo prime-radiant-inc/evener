@@ -228,9 +228,12 @@
     width: auto;
     border-right: 0;
     border-top: 1px solid var(--edge);
-    /* Shrink below content and scroll (overflow-y:auto above) instead of
-     * forcing the full list height and collapsing the browse pane above. */
-    flex: 0 1 auto;
+    /* A content-sized basis would let a full recents list absorb the whole
+     * row deficit and crush the browse pane above (basis 0 has no share to
+     * shrink from), so the aside's basis is a bounded 40% share of the
+     * row: the browse pane keeps the majority however long the list is,
+     * and both columns scroll inside the bounded body (overflow-y:auto above). */
+    flex: 0 1 40%;
     min-height: 0;
   }
   .browse {

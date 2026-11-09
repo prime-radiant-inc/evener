@@ -11,6 +11,7 @@ import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../../stores/transcriptDisplay";
+import { readModuleCss } from "../../../styles/cssBlock";
 import { TranscriptDetailControl } from "./TranscriptDetailControl";
 
 const hubDesktop: HubTranscriptDisplayDefault = {
@@ -108,8 +109,7 @@ test("keeps the desktop Dialog body as the container for compact descendants", (
   const dialog = screen.getByRole("dialog", { name: "Verbosity" });
   expect(dialog.querySelector('[class*="detailPanel"]')).toBeTruthy();
 
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "transcriptDisplay.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "transcriptDisplay.module.css");
   expect(css).toMatch(
     /\.detailPanel\s*\{[^}]*container-type:\s*inline-size[^}]*container-name:\s*transcript-detail-panel/,
   );
@@ -138,7 +138,14 @@ test("sets and clears only the browser-local value for the selected layout", asy
 
 test("keeps Custom and Advanced extras truthful in the editor summary", () => {
   const custom = makeTranscriptDisplayConfig(
-    { kind: "custom", toolIntent: true, toolCalls: false, reasoning: true, expandByDefault: false },
+    {
+      kind: "custom",
+      toolIntent: true,
+      toolCalls: false,
+      reasoning: true,
+      expandByDefault: false,
+      thinkingOpenByDefault: false,
+    },
     { roundTimings: true, systemEvents: true },
   );
   seedStore({ local: { desktop: custom } });
@@ -277,7 +284,7 @@ test("sets and resets only Mobile local state when Desktop local state already e
   expect(transcriptDisplayStore.getState().hub).toEqual({ desktop: hubDesktop, mobile: hubMobile });
 });
 
-test("composes the controlled overlay only from shared Buttons and Dialog/Sheet public APIs", () => {
+test("composes the controlled overlay only from shared controls and Dialog/Sheet public APIs", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const source = readFileSync(join(here, "TranscriptDetailControl.tsx"), "utf8");
 
@@ -289,8 +296,7 @@ test("composes the controlled overlay only from shared Buttons and Dialog/Sheet 
 });
 
 test("CSS keeps the shared overlay body layout-only with no private motion or chrome", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "transcriptDisplay.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "transcriptDisplay.module.css");
 
   expect(css).toMatch(/\.detailPanel\s*\{/);
   const directPanelRules = [...css.matchAll(/(^|\n)(?!\s*@)([^{}]+)\{([^{}]*)\}/gm)].filter((match) =>

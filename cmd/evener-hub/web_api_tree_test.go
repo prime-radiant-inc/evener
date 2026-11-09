@@ -63,17 +63,6 @@ func TestProjectFavoriteBareDecisionResolvesRemoteProject(t *testing.T) {
 	}
 }
 
-func testProjectID(t *testing.T, path string) string {
-	t.Helper()
-	project, err := identifier.ResolveProject(path)
-	if err != nil {
-		// Fuzz/coverage callers use synthetic paths only to exercise request
-		// decoding; ordinary endpoint tests use real temp directories.
-		return "test-project-0000000000"
-	}
-	return project.ID
-}
-
 func TestArchiveDecisionsFlowIntoTree(t *testing.T) {
 	// Verify that an ArchiveStore decision actually changes where a project lands
 	// in the tree — i.e. the real integration path flows through BuildTreeAt.
@@ -467,4 +456,9 @@ func TestAppThreadTreeEntryCarriesOnlyItsOwnWatches(t *testing.T) {
 			t.Fatalf("session B carries session A's watch: %+v", entryB.Watches)
 		}
 	}
+}
+
+func (s *WebServer) navigationTreeInputs(ctx context.Context) ([]schema.SessionMeta, []hubcore.LiveEntry, map[string]identifier.Project) {
+	snapshot := s.navigationSnapshot(ctx)
+	return snapshot.metas, snapshot.live, snapshot.projects
 }

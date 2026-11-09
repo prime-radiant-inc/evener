@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/server"
 )
@@ -202,7 +203,7 @@ func TestRunServeStopParksTheQueuedMessageUntilTheUserActs(t *testing.T) {
 
 	// The collision: a second message queued while turn one is mid-model-call.
 	// Accepting it is what arms the daemon's queued-input wake.
-	if err := daemon.client.TurnQueue(daemon.ctx, appwire.TurnQueueParams{
+	if err := appwiretest.TurnQueue(daemon.ctx, daemon.client, appwire.TurnQueueParams{
 		ClientMutationID:   "queued-behind-stop",
 		ExpectedInstanceID: strings.TrimPrefix(daemon.ref, "local:"),
 		Ref:                daemon.ref,
@@ -211,7 +212,7 @@ func TestRunServeStopParksTheQueuedMessageUntilTheUserActs(t *testing.T) {
 		t.Fatalf("TurnQueue: %v", err)
 	}
 
-	if err := daemon.client.TurnInterrupt(daemon.ctx, appwire.TurnInterruptParams{
+	if err := appwiretest.TurnInterrupt(daemon.ctx, daemon.client, appwire.TurnInterruptParams{
 		ClientMutationID:   "stop-mid-turn",
 		ExpectedInstanceID: strings.TrimPrefix(daemon.ref, "local:"),
 		Ref:                daemon.ref,
@@ -234,7 +235,7 @@ func TestRunServeStopParksTheQueuedMessageUntilTheUserActs(t *testing.T) {
 
 	// The park ends when the user acts. Queueing another message is one of the
 	// ordinary ways to say "carry on": the parked head runs first, FIFO.
-	if err := daemon.client.TurnQueue(daemon.ctx, appwire.TurnQueueParams{
+	if err := appwiretest.TurnQueue(daemon.ctx, daemon.client, appwire.TurnQueueParams{
 		ClientMutationID:   "queued-after-stop",
 		ExpectedInstanceID: strings.TrimPrefix(daemon.ref, "local:"),
 		Ref:                daemon.ref,

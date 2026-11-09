@@ -12,37 +12,27 @@
 // on narrow ones (narrowComposer.ts owns that gate).
 //
 // T2 (this file): the skill editor, send-vs-steer-vs-queue-vs-drain routing via
-// protocol/sendQueueAvailability's deriveSendQueueAvailability +
+// the shared sendQueueGate (over protocol/sendQueueAvailability's table) +
 // submitRouting.ts's own steer/drain fork, Enter-to-send preference,
 // per-ref drafts, attachments (paste/drag/picker), interrupt affordance.
 // T3/T4 render their own subtrees inside the two marked slots below without
 // ever touching the surrounding structure - see each slot's own comment.
 
 import {
-  type BuiltinMatch,
-  type ComposerMention,
   decideSteerRoute,
-  decideSubmitRoute,
-  deriveSendQueueAvailability,
-  filterSlashMenuItems,
-  matchBuiltinInvocation,
   mergeDraftText,
   mergeSlashCommands,
   NO_ACTIVE_TURN,
   parseSlashToken,
   SHUT_DOWN_STATUSES,
-  type SlashMenuItem,
-  type SlashToken,
-  sessionActionError,
   slashCommandInvocation,
-  spliceSlashCommand,
-  type ThreadModel,
 } from "@evener/appwire-client";
-import { ownPendingSend } from "@evener/appwire-client/state/mutation";
 import {
   type FormEvent,
   memo,
+  type FocusEvent as ReactFocusEvent,
   type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -52,9 +42,8 @@ import {
   useSyncExternalStore,
 } from "react";
 import { activitySidebarStore } from "../../../shell/activitybar/activitySidebarStore";
-import type { PaletteRunContext, ScopedCommand } from "../../../shell/palette/commands";
-import { sessionBuiltinCommands } from "../../../shell/palette/commands";
 import type { SessionMenuTurnVerbs } from "../../../shell/sessionMenu/SessionMenu";
+import { ActivityChips } from "../../../shell/statusbar/ActivityChips";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { useMountAutofocus } from "../../../shell/useMountAutofocus";
 import {
@@ -65,17 +54,9 @@ import {
   pressRefusal,
   recoveryFence,
 } from "../../../stores/liveControls";
-import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
-import {
-  captureRecoveryStopBarrier,
-  hasBlockedUnknown,
-  hasQueuedNonSend,
-  type InputAttachment,
-  type ResumeOnlySignals,
-  threadsStore,
-  useThreadsStore,
-} from "../../../stores/threads";
+import type { ResumeOnlySignals } from "../../../stores/recoveryFence";
+import { hasQueuedNonSend, useThreadsStore } from "../../../stores/threads";
 import {
   Button,
   ConfirmDialog,
@@ -95,42 +76,23 @@ import { useAskDockPending } from "./askDockPending";
 import { AttachIcon } from "./attachments/AttachIcon";
 import { imageFilesFromClipboard } from "./attachments/clipboard";
 import { type TextEditor, useAttachments } from "./attachments/useAttachments";
-import { runBuiltinCommand } from "./builtinCommand";
 import { CurrentWork } from "./CurrentWork";
 import styles from "./composer.module.css";
 import { consumeComposerFocus, requestComposerFocus, useComposerFocusRequest } from "./composerFocus";
 import { STEER_RECOVERY_FENCED_REASON, steerTooltipLabel, submitTooltipLabel } from "./controlTooltips";
-import { clearDraft, clearPersistedDraft, readDraftRevision } from "./draft";
-import { useNarrowComposer } from "./narrowComposer";
-import { pendingTurnEntries, QueueStrip, submitWithPendingTracking, usePendingTurnEntries } from "./queue";
-import {
-  resendRecoveryPendingTurn,
-  useBlockedMutationEntries,
-  useComposerSubmitting,
-  useRecoveryEntries,
-} from "./queue/pendingTurnsStore";
+import { readDraftRevision } from "./draft";
+import { useDuoCoverLayout, useNarrowComposer } from "./narrowComposer";
+import { QueueStrip } from "./queue";
+import { useBlockedMutationEntries } from "./queue/pendingTurnsStore";
 import { consumeQuoteInsert, useQuoteInsertRequest } from "./quoteInsert";
-import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
 import { SkillEditor, type SkillEditorHandle } from "./SkillEditor";
-import { SlashCompletionMenu, optionId as slashOptionId } from "./SlashCompletionMenu";
-import {
-  maskSkillAtoms,
-  materializeSelectionReferences,
-  parseSkillDocument,
-  patchSelectionText,
-  type SkillEditorValue,
-  serializeSkillDocument,
-  skillAtomMentions,
-} from "./skillDocument";
-import {
-  beginRecoverySubmission,
-  type ComposerSourceState,
-  recoverySubmissionInFlight,
-  restoredSkillNames,
-  sameSkillSelections,
-} from "./sourceState";
+import { SlashCompletionMenu } from "./SlashCompletionMenu";
+import { maskSkillAtoms, type SkillEditorValue } from "./skillDocument";
+import type { ComposerSourceState } from "./sourceState";
 import { recordStoplessComposer } from "./stoplessComposer";
+import { useBuiltinSubmission } from "./useBuiltinSubmission";
 import { useInlineStopReady } from "./useInlineStopReady";
+import { useSlashCompletion } from "./useSlashCompletion";
 
 export interface ComposerProps {
   ref: string;
@@ -141,6 +103,10 @@ export interface ComposerProps {
   focused: boolean;
   // The seat may suppress mount autofocus for a navigation or restore intent.
   mountAutofocus?: boolean;
+  // The seat's own chrome already renders this conversation's activity counts
+  // (a cascade column below its conversation footer), so the phone row must
+  // not mount a second set of chips beside the status chrome.
+  ownsActivityCounts?: boolean;
   source: ComposerSourceState;
   // An in-progress IME composition, reported for the floating attention
   // control's visibility. Focus alone never counts: a session open autofocuses
@@ -167,30 +133,20 @@ const MemoizedSessionChrome = memo(function MemoizedSessionChrome(props: Session
   return <SessionChrome {...props} />;
 });
 
-// "drain" is set/cleared only by QueueStrip's own onDrainBusyChange (its
-// "Steer queue now" button) - never by this component's own submitAction, which
-// uses "steer" for its classic drain-as-steer route too (see submitAction's
-// own setBusyAction call). Both surfaces still share this ONE piece of
-// state: whichever one goes busy first disables the other's controls too,
-// closing the race where both could otherwise fire drainAsSteer at once
-// (w5-integration-wiring-report.md's "two Steer buttons" concern).
-type BusyAction = "submit" | "steer" | "interrupt" | "drain" | null;
-
-// The local recovery fence lives in stores/liveControls.ts (one predicate for
-// every surface that owes it - this module's availability/card/Steer gates and
-// QueueStrip's press gates): QueueStrip cannot import from this module
-// (Composer imports QueueStrip), and a per-file copy of a fence this
-// load-bearing would drift. A LOCAL session carrying a restart-blocking
-// obligation (a Stop, or a snapshot the daemon reports as
-// restartRequired/resumeRequired) cannot be acted on at all until the explicit
-// Resume action clears the fence.
-
 // The missing model's turnVerbs offering: one frozen object, because a fresh
 // {} on every recompute would defeat MemoizedSessionChrome's
 // shallow-equality bailout for a value that carries no information.
 const NO_TURN_VERBS: SessionMenuTurnVerbs = Object.freeze({});
 
-export function Composer({ ref, paneId, focused, mountAutofocus = true, source, onEditingChange }: ComposerProps) {
+export function Composer({
+  ref,
+  paneId,
+  focused,
+  mountAutofocus = true,
+  ownsActivityCounts = false,
+  source,
+  onEditingChange,
+}: ComposerProps) {
   const model = useThreadsStore((s) => s.threads.get(ref));
   const recoveryRequired = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
   // Delivery-uncertain rows do NOT fence Send here: they clear the resume-only
@@ -207,8 +163,6 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   // it, so the badge clears when a resume makes the snapshot authoritative.
   const mutationAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(ref));
   const mutationWriteStalled = useThreadsStore((s) => s.mutationWriteStalled);
-  const submitting = useComposerSubmitting(ref);
-  const pendingSendEntries = usePendingTurnEntries(ref, "send");
   const toasts = useToasts();
   const isMobile = useIsMobile();
   const editorRef = useRef<SkillEditorHandle>(null);
@@ -239,6 +193,17 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   );
   const fileInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
+  const formAnchorRef = useRef<HTMLDivElement>(null);
+  // A composer press (Send, Attach, a menu trigger) can blur the editor to
+  // body on touch without moving focus to the pressed control. Hold the
+  // editing state through that task so the footer does not move under the tap.
+  const composerPointerRef = useRef(false);
+  // Torn down by the next press or unmount, so a press whose click never
+  // arrives cannot accumulate document listeners.
+  const composerPressReleaseRef = useRef<(() => void) | null>(null);
+  // Identifies the press that owns the hold, so a stale release's deferred
+  // clear cannot clear a later press's hold.
+  const composerPressSeqRef = useRef(0);
   const submitButtonRef = useRef<HTMLButtonElement>(null);
   const tasksPanelRef = useRef<TasksPanelHandle>(null);
   // Set by scheduleCursorRestore below; consumed (and cleared) by the
@@ -251,21 +216,24 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     cursorToRestoreRef.current = cursor;
     setCursorRestoreSeq((seq) => seq + 1);
   }, []);
-  const {
-    text,
-    skillNames,
-    commandNames,
-    mentions,
-    restoreEpoch,
-    activeRecoveryId,
-    recoveryActivating,
-    recoveryOperationBusy,
-    freshRecoveryRef,
-  } = useSyncExternalStore(source.subscribe, source.getSnapshot, source.getSnapshot);
+  const { text, skillNames, commandNames, mentions, restoreEpoch, activeRecoveryId } = useSyncExternalStore(
+    source.subscribe,
+    source.getSnapshot,
+    source.getSnapshot,
+  );
+  const restoredRecoveryRef = useRef(activeRecoveryId);
+  useLayoutEffect(() => {
+    if (restoredRecoveryRef.current === activeRecoveryId) return;
+    const activating = restoredRecoveryRef.current === null;
+    restoredRecoveryRef.current = activeRecoveryId;
+    // Automatic restoration starts without an owner. Replacing an existing
+    // owner after peer consumption preserves the editor, including selection.
+    // Explicit recovery Edit restores its caret in the QueueStrip callback.
+    if (activating && activeRecoveryId !== null) scheduleCursorRestore(source.getSnapshot().text.length);
+  }, [activeRecoveryId, scheduleCursorRestore, source]);
   const selectionMeta = useMemo(() => ({ commandNames, mentions }), [commandNames, mentions]);
   const {
     lastDrainSnapshotRef,
-    draftEditRevisionRef,
     ownedDraftRevisionRef,
     textRef,
     skillNamesRef,
@@ -276,32 +244,136 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     recoveryOwnsLocalDraftRef,
   } = source.continuity;
   const {
-    updateText,
     editText,
     updateSkillNames,
     editSkillNames,
     updateSelectionMeta,
     setActiveRecoveryId,
-    markRestore,
     persistDraft,
     writeDraft,
-    queueRecoveryPersistence,
-    clearIfUnchanged,
-    clearSubmittedAttachments,
   } = source;
-  const [busyAction, setBusyAction] = useState<BusyAction>(null);
-  const actionPending =
-    busyAction !== null || submitting || mutationWriteStalled || recoveryActivating || recoveryOperationBusy;
+  const { actions, sessionBuiltins, submitBuiltin } = useBuiltinSubmission(source, paneId);
+  const { availability, busy: actionPending, showStop, submit: submitAction, stop: handleInterruptClick } = actions;
   const mountedRef = useRef(false);
   const [pendingGoalReplacement, setPendingGoalReplacement] = useState<string | null>(null);
   // Track live focus too, so stopping does not collapse a focused editor.
   // React focus events follow the composer's controls and portaled menus.
   const [followUpFocused, setFollowUpFocused] = useState(false);
+  // Editor engagement is narrower than the card's focus above: it turns on
+  // only when the textbox itself is focused, and turns off only once focus
+  // rests outside the card (reconcileEditorEngagement decides from where
+  // focus actually sits, deferring through an in-flight press), so a press
+  // on a resting row's own controls - the session menu, Send - never counts
+  // as editor engagement. The phone collapse below keys on it, so pressing
+  // a resting control cannot expand the row out from under that press.
+  const [editorEngaged, setEditorEngaged] = useState(false);
   const followUpFocusSequenceRef = useRef(0);
 
   // Steer moves into the menu below the phone-width boundary.
   // narrowComposer.ts measures the pane, not the viewport.
-  const [narrow, composerRootRef] = useNarrowComposer();
+  const [narrow, attachNarrowRef] = useNarrowComposer();
+  const duoCoverLayout = useDuoCoverLayout();
+  const composerRootRef = useRef<HTMLDivElement | null>(null);
+  const attachComposerRoot = useCallback(
+    (element: HTMLDivElement | null) => {
+      composerRootRef.current = element;
+      attachNarrowRef(element);
+    },
+    [attachNarrowRef],
+  );
+
+  // The editor's own focus is the phone keyboard's signal. It is a DOM
+  // attribute rather than React state so focus does not re-render the
+  // composer; focus on a composer button alone must not set it.
+  const endComposerEditingSoon = (): void => {
+    // The next focus target is only known after the focusout/focusin pair, so
+    // decide in a microtask. Focus staying anywhere in the composer, or in one
+    // of its portaled menus, keeps editing on; anything else ends it.
+    queueMicrotask(() => {
+      const anchor = formAnchorRef.current;
+      const root = composerRootRef.current;
+      if (!anchor || !root) return;
+      if (composerPointerRef.current) return;
+      const active = anchor.ownerDocument.activeElement;
+      if (active && (root.contains(active) || active.closest('[role="menu"], [role="listbox"], [role="dialog"]')))
+        return;
+      anchor.removeAttribute("data-composer-editing");
+    });
+  };
+  // Where focus actually sits decides the resting row: inside the composer
+  // or one of its portaled menus keeps the expanded row, body or anywhere
+  // else rests it. A blur's frame can fire before a press's focus transfer
+  // lands, so the blur path defers to the press's release, which reconciles
+  // here once the transfer has settled.
+  const reconcileEditorEngagement = (): void => {
+    const root = composerRootRef.current;
+    if (!root) return;
+    const active = root.ownerDocument.activeElement;
+    if (active && (root.contains(active) || active.closest('[role="menu"], [role="listbox"], [role="dialog"]'))) return;
+    setEditorEngaged(false);
+  };
+  const holdComposerPress = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    // Only the primary press can hold editing: a right or middle press fires
+    // pointerdown but no click, so a hold armed here could never be released.
+    if (event.button !== 0) return;
+    // Drop the previous press's listeners without its deferred clear: the new
+    // press owns the hold from this moment.
+    composerPressReleaseRef.current?.();
+    const press = ++composerPressSeqRef.current;
+    composerPointerRef.current = true;
+    const doc = composerRootRef.current?.ownerDocument;
+    if (!doc) return;
+    const release = () => {
+      composerPressReleaseRef.current = null;
+      doc.removeEventListener("click", release, true);
+      doc.removeEventListener("pointercancel", release, true);
+      // A press's focus transfer can run after the click; clear on a later
+      // task so the blur that follows still sees the hold, then reconcile
+      // the resting row now that the transfer has settled.
+      setTimeout(() => {
+        if (composerPressSeqRef.current !== press) return;
+        composerPointerRef.current = false;
+        reconcileEditorEngagement();
+      }, 0);
+    };
+    composerPressReleaseRef.current = release;
+    doc.addEventListener("click", release, true);
+    doc.addEventListener("pointercancel", release, true);
+  };
+  useEffect(
+    () => () => {
+      composerPressReleaseRef.current?.();
+    },
+    [],
+  );
+  useEffect(() => {
+    const doc = composerRootRef.current?.ownerDocument;
+    if (!doc) return undefined;
+    // A press outside the composer (its portaled menus included) ends editing
+    // when focus has already left the editor: touch may leave focus on body,
+    // so no blur follows. A press while the editor still holds focus is a
+    // transcript pan, not an editing exit; the blur path handles a real loss.
+    const onPointerDown = (event: PointerEvent) => {
+      const anchor = formAnchorRef.current;
+      const root = composerRootRef.current;
+      if (!anchor || !root || !anchor.hasAttribute("data-composer-editing")) return;
+      const target = event.target as Element | null;
+      if (
+        target &&
+        typeof target.closest === "function" &&
+        (root.contains(target) || target.closest('[role="menu"], [role="listbox"], [role="dialog"]'))
+      )
+        return;
+      const active = doc.activeElement;
+      // Only the editor itself holds editing through an outside press. Focus on
+      // a composer button (a menu trigger FocusScope restored, Attach after the
+      // file picker) is leaving the composer too, keyboard down or not.
+      if (active && root.contains(active) && active.closest('[role="textbox"]')) return;
+      anchor.removeAttribute("data-composer-editing");
+    };
+    doc.addEventListener("pointerdown", onPointerDown, true);
+    return () => doc.removeEventListener("pointerdown", onPointerDown, true);
+  }, []);
 
   // The session menu's turn-verb items press the same handlers the row
   // buttons press. Those handlers are recreated every render (they close
@@ -349,19 +421,6 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     return items;
   }, [narrow, model, actionPending]);
 
-  // Inline slash-command completion (slashCompletion.ts's own header
-  // comment - ported from Beautiful UI's prompt-bar). slashToken is the
-  // trailing-token match recomputed on every keystroke (handleTextChange
-  // below); null means no menu, regardless of what the draft's text
-  // actually contains - Escape closes the menu by setting this to null
-  // directly, and typing further reopens it because the very next keystroke
-  // recomputes the match fresh. slashHighlighted is the ArrowUp/Down cursor
-  // over whatever the CURRENT filtered list is; reset to 0 whenever the
-  // token itself changes (new match, or the query narrowed/widened) rather
-  // than persisted across it - an index into a list that just changed shape
-  // is not a meaningful position to keep.
-  const [slashToken, setSlashToken] = useState<SlashToken | null>(null);
-  const [slashHighlighted, setSlashHighlighted] = useState(0);
   // The composer's own single command line (2026-08-14: "the composer is
   // where you act on this session"): the session-scoped BUILT-IN registry
   // (shell/palette/commands.ts's sessionBuiltinCommands, unavailableReason-
@@ -370,28 +429,7 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   // row's provenance is a built-in, plugin, project or user command. The model
   // is keyed by ref, so loading a different target never borrows old/global rows.
   const visibleSlashCatalog = model?.diagnostics?.commands ?? [];
-  const sessionBuiltins = sessionBuiltinCommands({ sessionRef: ref, onPage: "session", sessionPaneId: paneId ?? null });
   const slashMenuCatalog = mergeSlashCommands(sessionBuiltins, visibleSlashCatalog, model?.skills ?? []);
-  // The menu is only ever open when a token matched AND the merged catalog
-  // has at least one fuzzy label hit for it - a matched-but-empty token (e.g.
-  // "/zzz" against a real catalog) shows no menu at all, same as no token
-  // matching.
-  const slashItems = slashToken ? filterSlashMenuItems(slashMenuCatalog, slashToken.query) : [];
-  const slashOpen = slashToken !== null && slashItems.length > 0;
-  // Scoped by `ref`: dockview can have several session panes - and so
-  // several mounted Composers - open at once, and a bare literal id would
-  // collide across them.
-  const slashListboxId = `composer-slash-listbox-${ref}`;
-  const slashActiveIndex = slashOpen ? Math.min(slashHighlighted, slashItems.length - 1) : -1;
-  const slashActiveId = slashActiveIndex >= 0 ? slashOptionId(slashListboxId, slashActiveIndex) : null;
-
-  // A freshly (re)matched token always starts highlighted at its first
-  // option - an index carried over from the PREVIOUS token's list is not a
-  // meaningful position once the list itself has changed shape.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: slashToken's start/query are deliberate trigger-only deps - the effect body only calls setSlashHighlighted(0), but must still re-run whenever the token identity actually changes (a new match, or the same match with a different query), same idiom as the cursor-restore layout effect below
-  useEffect(() => {
-    setSlashHighlighted(0);
-  }, [slashToken?.start, slashToken?.query]);
 
   // Attachment marker edits update controlled text, selected references and
   // the persisted draft together. Prefer a pending cursor restoration over
@@ -418,6 +456,25 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     }),
     [ref, textRef, ownedDraftRevisionRef, writeDraft, scheduleCursorRestore],
   );
+  // Scoped by `ref`: dockview can have several session panes - and so several
+  // mounted Composers - open at once, and a bare literal id would collide.
+  const slashListboxId = `composer-slash-listbox-${ref}`;
+  const {
+    setToken: setSlashToken,
+    items: slashItems,
+    open: slashOpen,
+    activeIndex: slashActiveIndex,
+    activeId: slashActiveId,
+    commit: commitSlashCompletion,
+    handleKeyDown: handleSlashKeyDown,
+    reset: resetSlashCompletion,
+  } = useSlashCompletion({
+    catalog: slashMenuCatalog,
+    listboxId: slashListboxId,
+    editorRef,
+    textRef,
+    textEditor,
+  });
   useLayoutEffect(() => {
     mountedRef.current = true;
     const unbind = source.bindEditor(textEditor);
@@ -429,7 +486,6 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   const attachments = useAttachments(source.editor, source.attachments);
   const attachmentItemsRef = useRef(attachments.items);
   attachmentItemsRef.current = attachments.items;
-  const recoveryEntries = useRecoveryEntries(ref);
 
   const replaceComposerWithGoalDraft = (objective: string): void => {
     // Invalidate queued recovery work before clearing ownership. Any operation
@@ -442,8 +498,7 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     attachments.reset();
     updateSkillNames([]);
     updateSelectionMeta({ text: "", skillNames: [] });
-    setSlashToken(null);
-    setSlashHighlighted(0);
+    resetSlashCompletion();
     lastDrainSnapshotRef.current = null;
     const command = `/goal ${objective}`;
     textEditor.write(command, command.length);
@@ -481,106 +536,6 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
       activitySidebarStore.getState().openFor(ref, "tasks", undefined, paneId);
     }
   };
-
-  useEffect(() => {
-    source.refreshRecovery();
-  }, [source]);
-
-  // A store-driven resume failure (the Send-resumes face) surfaces as a toast
-  // naming the reason: a store cannot push one, so it publishes the failure and
-  // this composer - the press surface, mounted whenever a session pane is -
-  // reports it. The toast therefore needs a mounted composer; with none, the
-  // failure is only in the store. The pressed text is already a durable outbox
-  // row and Send stays offered, so a later press re-drives the resume.
-  const resumeFailure = useThreadsStore((s) => s.resumeFailures.get(ref));
-  const toastedResumeFailureSeqRef = useRef<number | null>(null);
-  useEffect(() => {
-    const seq = resumeFailure?.seq ?? 0;
-    // Seed from the store on the first run: a failure already published when
-    // this composer mounted has been reported, and a remount (dockview unmounts
-    // inactive panes routinely) must not re-toast it. Only a failure published
-    // after mount is new to this instance.
-    if (toastedResumeFailureSeqRef.current === null) {
-      toastedResumeFailureSeqRef.current = seq;
-      return;
-    }
-    if (seq <= toastedResumeFailureSeqRef.current) return;
-    toastedResumeFailureSeqRef.current = seq;
-    if (resumeFailure) toasts.push("error", `Resume failed: ${resumeFailure.message}`);
-  }, [resumeFailure, toasts]);
-
-  useEffect(() => {
-    if (activeRecoveryId === null || attachments.hasPending || recoverySubmissionInFlight(activeRecoveryId)) return;
-    void queueRecoveryPersistence(
-      activeRecoveryId,
-      text,
-      attachments.toInputAttachments(),
-      skillNames,
-      selectionMeta.commandNames,
-      selectionMeta.mentions,
-    );
-  }, [
-    activeRecoveryId,
-    attachments.hasPending,
-    attachments.toInputAttachments,
-    queueRecoveryPersistence,
-    text,
-    skillNames,
-    selectionMeta,
-  ]);
-
-  useEffect(() => {
-    if (
-      freshRecoveryRef !== ref ||
-      activeRecoveryId !== null ||
-      textRef.current.trim() !== "" ||
-      attachmentItemsRef.current.length > 0 ||
-      skillNamesRef.current.length > 0 ||
-      selectionMetaRef.current.commandNames.length > 0
-    ) {
-      return;
-    }
-    // An interrupt is not a draft. It carries no input, so activating one
-    // loads an empty composer and then resends the user's next keystrokes as a
-    // turn/start -- a Stop becoming a message. QueueStrip renders it as a
-    // failure with its reason instead.
-    const record = recoveryEntries.find(
-      (entry) => entry.recoveryKind === "rejected" && entry.method !== "turn/interrupt" && !entry.preserveComposer,
-    );
-    if (!record) return;
-    const recovered = recoveryComposerDraft(record);
-    const visible = materializeSelectionReferences({ ...recovered, skillNames: restoredSkillNames(recovered) });
-    Object.assign(recovered, visible);
-    recoveryOwnsLocalDraftRef.current = false;
-    setActiveRecoveryId(record);
-    // Restoration replaces this mount's local owner without editing the
-    // shared recovery draft that an earlier mount may still be submitting.
-    draftEditRevisionRef.current += 1;
-    markRestore();
-    updateText(recovered.text);
-    updateSkillNames(restoredSkillNames(recovered));
-    updateSelectionMeta(recovered);
-    attachments.replaceWithSettled(recovered.attachments);
-    clearPersistedDraft(ref);
-    scheduleCursorRestore(recovered.text.length);
-  }, [
-    activeRecoveryId,
-    attachments.replaceWithSettled,
-    draftEditRevisionRef,
-    freshRecoveryRef,
-    markRestore,
-    recoveryEntries,
-    recoveryOwnsLocalDraftRef,
-    ref,
-    scheduleCursorRestore,
-    setActiveRecoveryId,
-    skillNamesRef,
-    selectionMetaRef,
-    textRef,
-    updateText,
-    updateSkillNames,
-    updateSelectionMeta,
-  ]);
 
   // askPending gates hiding/inerting the input row below (AskDock's own
   // seam - see AskDock.tsx's header comment: "that is the composer's own
@@ -712,7 +667,6 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   // case - Session.tsx never mounts this component before its own model is
   // hydrated), so every handler below reads these already-narrowed values
   // instead of `model.<field>` directly.
-  const renderedModel: ThreadModel = model;
   const activeTurnId = model.activeTurnId;
   const ended = SHUT_DOWN_STATUSES.has(model.status.type);
   // The recovery fence as ONE reading (stores/liveControls.ts's recoveryFence),
@@ -741,85 +695,9 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   // at the press (pressRefusal), not from this render.
   const controls = controlsFor(model);
   const canSendWhenEnded = controls.send;
-  // The target's skillInput capability, same narrowing rule: submission is
-  // refused client-side (before any durable write) when a selection is staged
-  // and the target never advertised that it consumes skill items.
-  const skillInputSupported = model.capabilities.skillInput === true;
-  // Tier 6: see ownPendingSend in @evener/appwire-client/state/mutation.
-  const hasPendingSend = ownPendingSend(pendingSendEntries);
-  // The Send/Queue availability of a model and this client's pending send: read
-  // at render for the button and its tooltip, and again at submit from the
-  // stores' live model and live pending entries, so a status frame or a
-  // pending send that landed (or cleared) between the two routes the submit
-  // rather than the render.
-  //
-  // The restart-blocking obligation arrives as a parameter: the render passes
-  // the subscribed value (so the availability updates with the store instead of
-  // reading it behind the subscription's back), the submit passes a live store
-  // read like the rest of its re-derivation. It is the raw obligation, not the
-  // render's fence.fencedLocal: the fence here covers every status, active
-  // included, not only the stopped one.
-  function availabilityFor(
-    target: ThreadModel,
-    pendingSend: boolean,
-    restartObligated: boolean,
-    signals: ResumeOnlySignals,
-  ): { canSend: boolean; canQueue: boolean } {
-    // A recovery-fenced local session has no send/queue in WHATEVER status the
-    // snapshot carries - active included - EXCEPT a merely-resumable one. The
-    // fence's own window is exactly one where an ACTIVE snapshot can carry
-    // it: a live read during a Stop relays the daemon's still-active status
-    // while the hub overlays resumeRequired beside it
-    // (applyThreadResumeRequirement), and the store arms the obligation on
-    // that very hydration. The hub's recovery admission still refuses
-    // turn/queue for the whole window (sessionActionRecoveryError keys on the
-    // resume locks, never the projected status), so the availability table's
-    // queue-mode answer for the still-running turn could only mint durable
-    // intent that parks. turn/start is the exception the hub now admits: a
-    // merely-resumable session (shut-down snapshot, no Stop in flight) folds
-    // the resume into the send, so Send is offered while Queue is not.
-    const targetFence = recoveryFence(target, restartObligated, signals);
-    // The Send-resumes face offers Send and only Send, and a parked send in
-    // front of it does NOT suppress it: the store's driver resumes behind
-    // whichever rows are parked and the dispatcher drains them FIFO, so there
-    // is nothing for a second press to jump (reviewer A finding F1). Queue is
-    // not offered in the fence window.
-    if (targetFence.sendResumes) return { canSend: true, canQueue: false };
-    if (targetFence.stillFenced) return { canSend: false, canQueue: false };
-    // A pending send is already on its way; offering a second one here would
-    // route it to turn/start during the resume window instead of waiting. This
-    // mirrors the ended-session substitution's `!tableAvailability.canSend`
-    // guard below, which never offers Send while the table already has one.
-    if (targetFence.resumeOnly) return { canSend: !pendingSend, canQueue: false };
-    const tableAvailability = deriveSendQueueAvailability({
-      statusType: target.status.type,
-      capabilities: target.capabilities,
-      hasPendingSend: pendingSend,
-    });
-    // A finished session can still be sent to when the source says so: the hub
-    // advertises Send for an exited evener thread and auto-resumes it on the first
-    // message (turn/start alone carries that resume loop - app_rpc.go). The
-    // CAPABILITY is the authority for THAT question, not the availability table,
-    // which reports both-false for a finished session with nothing pending,
-    // because no turn is in flight to send to or queue behind.
-    //
-    // It only substitutes when the table has nothing to offer, which is what
-    // keeps it clear of tier 6. Overriding unconditionally turned every finished
-    // status' SECOND message back into the turn/start that bounces - the table
-    // answers queue-mode there, for the whole time the resume takes to produce a
-    // status frame, which for a session that has to spawn a daemon is seconds.
-    return SHUT_DOWN_STATUSES.has(target.status.type) &&
-      controlsFor(target).send &&
-      !tableAvailability.canSend &&
-      !tableAvailability.canQueue
-      ? { canSend: true, canQueue: false }
-      : tableAvailability;
-  }
-  const availability = availabilityFor(model, hasPendingSend, recoveryRequired, resumeOnlySignals);
-  const showStop = controls.stop;
   const showSteer = controls.steer;
   // The Steer control's own reading of the recovery fence (see
-  // availabilityFor's fence above): the hub refuses turn/steer for the
+  // the send/queue gate's fence above): the hub refuses turn/steer for the
   // obligation's whole window, so the control must not offer a press that
   // could only park durable intent. Read from the subscribed obligation here
   // for the render; the press re-reads it live.
@@ -851,9 +729,34 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   // wire shape is notLoaded + send:false, which the capability alone would not
   // render a card for.
   const showFollowUpCard = ended && (canSendWhenEnded || fence.fencedLocal || fence.sendDriven);
-  // Only the editor shrinks at rest. Controls stay available without typing.
-  // Drafts, attachments and recovery keep enough writing space after blur.
+  // Only the editor shrinks at rest; on the desktop the full row stays
+  // available without typing. Drafts, attachments and recovery keep enough
+  // writing space after blur.
   const followUpEngaged = fence.fencedLocal || fence.sendDriven || followUpFocused || hasContent;
+  let minLines = 2;
+  if (ended) minLines = followUpEngaged ? 3 : 1;
+  else if (duoCoverLayout && !followUpEngaged) minLines = 1;
+
+  // The phone layout's one bottom surface is this card's own control row,
+  // and a resting card sheds what an empty editor does not need: no attach,
+  // no status chips, no activity chips. The session menu and Send stay -
+  // both remain useful with nothing drafted, and the menu is a phone's one
+  // surface for session actions. Editor engagement (a draft, the editor's
+  // own focus, a send in flight, a stalled storage write) brings the full
+  // row back; the actions slot never sheds, so Stop stays reachable while a
+  // turn runs, and the resting leading never swaps while one of its own
+  // controls is pressed. The exited follow-up keeps its full row at rest:
+  // that surface is the one place on a phone the model picker is directly
+  // reachable without engaging the editor. The desktop layout always keeps
+  // the full row.
+  const controlsCollapsed =
+    isMobile &&
+    !ended &&
+    !fence.fencedLocal &&
+    !fence.sendDriven &&
+    !editorEngaged &&
+    !hasContent &&
+    !mutationWriteStalled;
 
   function handleTextChange(value: SkillEditorValue, caret: number): void {
     editSkillNames(value.skillNames);
@@ -861,70 +764,9 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     editText(value.text);
     if (recoveryOwnerLeaseRef.current === null) persistDraft(value.text);
     // Every keystroke re-evaluates the trailing-token match fresh - a token
-    // Escape just closed (slashToken's own doc comment above) reopens on the
+    // Escape just closed (useSlashCompletion's token) reopens on the
     // very next text change rather than staying closed indefinitely.
     setSlashToken(parseSlashToken(maskSkillAtoms(value), caret));
-  }
-
-  // commitSlashCompletion is Tab/Enter's (handleKeyDown below) and a mouse
-  // click's (SlashCompletionMenu's own onSelect) shared "the user chose
-  // this command" path: splices the item's own invocation (slashCompletion.ts's
-  // mergeSlashCommands - "/plugin:name" for a plugin command via
-  // shell/palette/commands.ts's slashCommandInvocation, bare "/id" for a
-  // built-in) in at the token's own start (never the caret, when the caret
-  // was left mid-token by an earlier Escape-then-retype - spliceSlashCommand's
-  // own doc comment), through the SAME textEditor.write() seam every other
-  // programmatic edit in this file uses (draft persistence, cursor restore),
-  // then closes the menu and returns focus to the field - mirrors
-  // restoreTextToComposer's own "write, then focus" shape. This only ever
-  // INSERTS the invocation text - whether it goes on to execute as a
-  // built-in RPC or simply sends as a message is handleFormSubmit's own
-  // interception, below.
-  function commitSlashCompletion(item: SlashMenuItem): void {
-    if (!slashToken) return;
-    // The editor replaces this range with one atomic mention and records the
-    // text and activation metadata together in its undo history.
-    if (item.kind !== "builtin" && item.canonicalName !== undefined) {
-      // The editor refuses the insertion while an IME composition is live, so
-      // only dismiss the menu for a skill that actually landed: closing it over
-      // a token left as prose would tell the user something was staged that is
-      // not in the request at all.
-      const editor = editorRef.current;
-      if (
-        !(item.kind === "skill"
-          ? editor?.insertSkill(slashToken.start, slashToken.end, item.canonicalName)
-          : editor?.insertCommand(slashToken.start, slashToken.end, item.canonicalName))
-      )
-        return;
-      setSlashToken(null);
-      editorRef.current?.focus();
-      return;
-    }
-    const spliced = spliceSlashCommand(textRef.current, slashToken, item.invocation);
-    textEditor.write(spliced.text, spliced.caret);
-    setSlashToken(null);
-    editorRef.current?.focus();
-  }
-
-  // QueueStrip captures this mount's payload and edit revision through
-  // getComposerText before it starts the drain's durable write.
-  function handleDrainSuccess(): void {
-    const snapshot = lastDrainSnapshotRef.current;
-    if (!snapshot || !source.alive) return;
-    clearIfUnchanged(
-      snapshot.text,
-      snapshot.revision,
-      snapshot.draftRevision,
-      snapshot.skillNames,
-      snapshot.commandNames,
-    );
-    clearSubmittedAttachments(snapshot.attachments);
-  }
-
-  async function getRecoveryRevisionForDrain(): Promise<number | undefined> {
-    await source.flushRecoveryWrites();
-    if (!source.alive || source.getSnapshot().activeRecoveryId !== activeRecoveryId) return undefined;
-    return recoveryOwnerLeaseRef.current?.compositionRevision;
   }
 
   // A chip's details: the skill's own description, or - when the live catalog
@@ -939,414 +781,6 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     return info.description ?? name;
   }
 
-  // restoreTextToComposer implements the shared "put text back into the
-  // composer without clobbering what's already typed there" merge (parity-
-  // m5-composer.md line 101, byte-ported from renderer.js:6823-6837's own
-  // restoreTextToComposer): existing text is right-trimmed then kept, the
-  // incoming text is appended after a blank line, textEditor.write() keeps
-  // the draft in sync (mirrors the legacy synthetic `input` event) and
-  // parks the cursor at the very end, and the textarea is refocused - same
-  // as legacy's own ta.focus() call.
-  //
-  // QueueStrip uses this behavior when a queued entry is moved back into
-  // the composer for editing.
-  //
-  // `attachments` is accepted for signature symmetry but never restored: a
-  // queued entry's edit keeps image attachments out of the composer per
-  // parity (contracts-composer-queue-pending.md:122, parity-m5-
-  // composer.md:102) - dropped image attachments surface via QueueStrip's
-  // own durable queue state. `skillNames` restores the entry's selections
-  // as chips (union with the current draft's chips, deduped by name): a
-  // queued skill selection must survive the edit round-trip, not silently
-  // drop.
-  function restoreTextToComposer(
-    restoredText: string,
-    _attachments?: InputAttachment[],
-    restoredNames?: readonly string[],
-    restoredCommands?: readonly string[],
-    restoredMentions?: readonly ComposerMention[],
-  ): void {
-    const current = patchSelectionText(
-      { text: textRef.current, skillNames: skillNamesRef.current, ...selectionMetaRef.current },
-      textRef.current.trim() === "" ? "" : textRef.current.replace(/\s+$/, ""),
-    );
-    // An entry can carry a selection with no prose of its own. Its chip has to
-    // be visible in the sentence either way, so spell the reference out rather
-    // than let the restore drop what the user chose.
-    const restored = materializeSelectionReferences({
-      text: restoredText,
-      skillNames: [...(restoredNames ?? [])],
-      commandNames: [...(restoredCommands ?? [])],
-      ...(restoredMentions ? { mentions: [...restoredMentions] } : {}),
-    });
-    const merged = mergeRecoveryComposerDraft(
-      current.text,
-      [],
-      { ...restored, attachments: [], mentions: skillAtomMentions(parseSkillDocument(restored)) },
-      current.skillNames,
-      current.commandNames,
-      skillAtomMentions(parseSkillDocument(current)),
-    );
-    const value = serializeSkillDocument(parseSkillDocument(merged));
-    const text = value.text;
-    editSkillNames(value.skillNames);
-    updateSelectionMeta(value);
-    // A queued entry's selections are named, not spelled out, so the value that
-    // carries them is authoritative here exactly as a recovery activation's is:
-    // without this the merge is a partial append, the references land as plain
-    // text, and the request would carry activations the user cannot see.
-    markRestore();
-    updateText(text);
-    textEditor.write(text, text.length);
-    editorRef.current?.focus();
-  }
-
-  async function activateRecovery(record: MutationRecoveryRecord): Promise<void> {
-    if (!source.alive) return;
-    if (attachments.hasPending) {
-      toasts.push("error", "Image attachment is still processing");
-      return;
-    }
-    try {
-      if (!(await source.activateRecovery(record))) {
-        if (source.alive) toasts.push("info", "This message changed in another tab. Refresh and try again.");
-        return;
-      }
-      if (!source.alive) return;
-      scheduleCursorRestore(source.getSnapshot().text.length);
-      editorRef.current?.focus();
-    } catch (error) {
-      if (source.alive) toasts.push("error", sessionActionError("Edit failed", error));
-    }
-  }
-
-  // getComposerText is QueueStrip's own seam for reading this composer's
-  // CURRENT text/attachments/hasPending at the moment its drain affordance
-  // is used - textRef.current (not the `text` state closure) for the
-  // identical liveness reason textEditor.read() above reads it, and
-  // toInputAttachments() for the same wire shape submitAction's own payload
-  // already uses. `hasPending` mirrors this component's own attachments.
-  // hasPending so QueueStrip's "Steer queue now" button can block with the SAME
-  // "still processing" toast this component's classic submit paths already
-  // use, instead of silently sending a drain payload with a not-yet-encoded
-  // image missing (toInputAttachments() itself only ever filters incomplete
-  // items without signaling it - see that function's own doc comment) - see
-  // w5-integration-wiring-report.md Concern #3. Also stashes a snapshot into
-  // lastDrainSnapshotRef (text, edit revision, and the currently-staged attachments) so
-  // handleDrainSuccess can later tell whether the composer changed between
-  // THIS read and the drain actually resolving - QueueStrip only ever calls
-  // this once per handleDrain invocation, immediately before starting the
-  // request, so the snapshot always reflects exactly what that drain sent.
-  function getComposerText() {
-    lastDrainSnapshotRef.current = {
-      text: textRef.current,
-      attachments: attachments.items,
-      skillNames: [...skillNamesRef.current],
-      commandNames: [...selectionMetaRef.current.commandNames],
-      mentions: selectionMetaRef.current.mentions,
-      revision: draftEditRevisionRef.current,
-      draftRevision: readDraftRevision(ref),
-    };
-    return {
-      text: textRef.current,
-      attachments: attachments.toInputAttachments(),
-      hasPending: attachments.hasPending,
-      skillNames: [...skillNamesRef.current],
-      commandNames: [...selectionMetaRef.current.commandNames],
-      mentions: selectionMetaRef.current.mentions,
-    };
-  }
-
-  // submitAction wraps every method in submitWithPendingTracking (the wave's
-  // own beyond-parity decision - w5-task-3-report.md: "T2's own send/steer
-  // submissions should wrap their threadsStore.send/.steer calls in
-  // submitWithPendingTracking the same way QueueStrip's own drain handler
-  // wraps drainAsSteer... that's what makes optimistic pending genuinely
-  // uniform across all four methods"), exactly mirroring QueueStrip.tsx's
-  // own handleDrain shape.
-  //
-  // Toast/bookkeeping split, reconciled against pendingTurnsStore's own
-  // documented contract (its submitWithPendingTracking doc comment: onFailure
-  // is for toasting, "rethrowing so the caller's OWN catch can still run its
-  // own non-toast bookkeeping"): the toast lives ENTIRELY inside onFailure
-  // (same as QueueStrip's own handleDrain), and the outer catch below only
-  // ever re-runs the isQueuedDrainPartial state-clearing (never a second
-  // toast) - so a failure surfaces exactly once regardless of which branch
-  // it takes. Before this reconciliation, both sides pushed a toast for the
-  // SAME failure; this is the fix, not a pre-existing split.
-  async function submitAction(
-    kind: "send" | "queue" | "steer" | "drain",
-    options: { text?: string; clearDraftText?: string } = {},
-  ): Promise<void> {
-    const releaseRecoveryOperation = source.tryAcquireRecoveryOperation();
-    if (!releaseRecoveryOperation) return;
-    if (source.getSnapshot().recoveryActivating) {
-      releaseRecoveryOperation();
-      return;
-    }
-    const submittedText = options.text ?? textRef.current;
-    const clearDraftText = options.clearDraftText ?? submittedText;
-    const submittedAttachments = attachments.items;
-    const submittedSkillNames = [...skillNamesRef.current];
-    const submittedCommandNames = [...selectionMetaRef.current.commandNames];
-    const submittedMentions = selectionMetaRef.current.mentions;
-    const submittedRevision = draftEditRevisionRef.current;
-    const submittedDraftRevision = readDraftRevision(ref);
-    const payload = attachments.toInputAttachments();
-    const submittedLease = recoveryOwnerLeaseRef.current;
-    const submittedRecoveryId = submittedLease?.clientMutationId ?? null;
-    let releaseRecoveryInFlight: (() => void) | null = null;
-    const releaseInFlightRecovery = () => {
-      releaseRecoveryInFlight?.();
-      releaseRecoveryInFlight = null;
-    };
-    const recoveryBarrier = submittedRecoveryId === null ? undefined : captureRecoveryStopBarrier(ref);
-    let recoveryResendRefused = false;
-    let recoveryAlreadySent = false;
-    const recoveryWriteRefusal = new Error("Recovery persistence was refused");
-    const recoveryAlreadySentRefusal = new Error("Recovery source was already consumed");
-    // The UI-side half of the skillInput gate (threads.ts's composerMutationIntent
-    // is the store-side half, and Task 12 gates the hub's forwarding too): a
-    // target that never advertised the capability keeps the draft and hears
-    // why, instead of minting durable intent the wire would refuse.
-    if (submittedSkillNames.length > 0 && !skillInputSupported) {
-      toasts.push("error", "Skill selections aren't supported on this session yet; your draft is kept");
-      releaseRecoveryOperation();
-      return;
-    }
-    if (submittedCommandNames.length > 0 && model?.capabilities.commandInput !== true) {
-      toasts.push("error", "Command selections are not supported on this session; your draft is kept");
-      releaseRecoveryOperation();
-      return;
-    }
-    setBusyAction(kind === "send" || kind === "queue" ? "submit" : "steer");
-    if (submittedRecoveryId !== null) releaseRecoveryInFlight = beginRecoverySubmission(submittedRecoveryId);
-    let submissionFailed = false;
-    try {
-      await submitWithPendingTracking(
-        {
-          ref,
-          text: submittedText,
-          attachments: payload,
-          skillNames: submittedSkillNames,
-          commandNames: submittedCommandNames,
-          recoveryId: submittedRecoveryId ?? undefined,
-          onFailure: (err) => {
-            if (err === recoveryWriteRefusal || err === recoveryAlreadySentRefusal) return;
-            const label = kind === "send" ? "Send" : kind === "queue" ? "Queue" : kind === "steer" ? "Steer" : "Drain";
-            toasts.push("error", sessionActionError(`${label} failed`, err));
-          },
-        },
-        async () => {
-          if (submittedRecoveryId !== null) {
-            await source.runRecoveryOperation(async () => {
-              const persisted = await queueRecoveryPersistence(
-                submittedRecoveryId,
-                submittedText,
-                payload,
-                submittedSkillNames,
-                submittedCommandNames,
-                submittedMentions,
-                clearDraftText,
-              );
-              if (!persisted) {
-                throw recoveryWriteRefusal;
-              }
-              const committedRevision = recoveryOwnerLeaseRef.current?.compositionRevision;
-              if (committedRevision === undefined) {
-                throw recoveryWriteRefusal;
-              }
-              const outcome = await resendRecoveryPendingTurn(
-                submittedRecoveryId,
-                ref,
-                kind,
-                submittedText,
-                payload,
-                submittedSkillNames,
-                submittedCommandNames,
-                submittedMentions,
-                recoveryBarrier,
-                { [submittedRecoveryId]: committedRevision },
-                source.compositionOwnerId,
-              );
-              if (outcome.status !== "sent") {
-                recoveryResendRefused = outcome.status === "refused";
-                recoveryAlreadySent = outcome.status === "consumed";
-                throw recoveryResendRefused ? recoveryWriteRefusal : recoveryAlreadySentRefusal;
-              }
-              // The resend transaction consumed the recovery row, so a remount
-              // can no longer restore it. Keep the guard until here rather than
-              // until the network settles.
-              releaseInFlightRecovery();
-            });
-            return;
-          }
-          if (kind === "send")
-            return threadsStore
-              .getState()
-              .send(ref, submittedText, payload, submittedSkillNames, submittedCommandNames, submittedMentions);
-          if (kind === "queue")
-            return threadsStore
-              .getState()
-              .queue(ref, submittedText, payload, submittedSkillNames, submittedCommandNames, submittedMentions);
-          if (kind === "steer")
-            return threadsStore
-              .getState()
-              .steer(ref, submittedText, payload, submittedSkillNames, submittedCommandNames, submittedMentions);
-          return threadsStore
-            .getState()
-            .drainAsSteer(ref, submittedText, payload, submittedSkillNames, submittedCommandNames, submittedMentions);
-        },
-      );
-      if (!source.alive) return;
-      const submittedEditorMatches =
-        textRef.current === clearDraftText &&
-        sameSkillSelections(skillNamesRef.current, submittedSkillNames) &&
-        sameSkillSelections(selectionMetaRef.current.commandNames, submittedCommandNames);
-      const cleared = clearIfUnchanged(
-        clearDraftText,
-        submittedRevision,
-        submittedDraftRevision,
-        submittedSkillNames,
-        submittedCommandNames,
-      );
-      // A typed message-producing built-in submits its body while the editor
-      // still holds the invocation. Settlement preserves that literal command,
-      // which changes the edit revision, so the revision-guarded clear above
-      // can decline. Clear the persisted invocation by content instead when the
-      // editor still holds exactly what was submitted.
-      if (
-        options.clearDraftText !== undefined &&
-        options.text !== undefined &&
-        options.text !== options.clearDraftText &&
-        submittedEditorMatches
-      ) {
-        if (!cleared) {
-          updateText("");
-          updateSkillNames([]);
-          updateSelectionMeta({ text: "", skillNames: [] });
-        }
-        if (ownedDraftRevisionRef.current === readDraftRevision(ref)) {
-          clearDraft(ref);
-          ownedDraftRevisionRef.current = readDraftRevision(ref);
-        }
-      }
-      clearSubmittedAttachments(submittedAttachments);
-    } catch (error) {
-      submissionFailed = true;
-      // The local durable write failed. The submitted composer payload stays
-      // untouched and no network request was eligible to start.
-      if (source.alive && recoveryResendRefused)
-        toasts.push("info", "This message changed in another tab. Refresh and try again.");
-      else if (source.alive && recoveryAlreadySent)
-        toasts.push("info", "This message was already sent in another tab.");
-      else if (error !== recoveryWriteRefusal && error !== recoveryAlreadySentRefusal) return;
-    } finally {
-      if (mountedRef.current) setBusyAction(null);
-      releaseInFlightRecovery();
-      if (submissionFailed && source.alive && draftEditRevisionRef.current !== submittedRevision) {
-        // The recovery autosave effect is suppressed while the guard is held.
-        // Persist edits typed during the failed send through the recovery
-        // chain so reloading does not merge them with the older record as two
-        // separate copies.
-        const activeRecoveryId = source.getSnapshot().activeRecoveryId;
-        if (activeRecoveryId === null) {
-          source.persistDraft(textRef.current);
-        } else {
-          void source.queueRecoveryPersistence(
-            activeRecoveryId,
-            textRef.current,
-            attachments.toInputAttachments(),
-            skillNamesRef.current,
-            selectionMetaRef.current.commandNames,
-            selectionMetaRef.current.mentions,
-          );
-        }
-      }
-      releaseRecoveryOperation();
-    }
-  }
-
-  // handleBuiltinSubmit is the Slack-model half of Enter/submit
-  // interception (2026-08-14 decision: "a literal message starting with a
-  // known /command executes instead of sending, matching Slack/Discord
-  // muscle memory"): runs the matched built-in's RPC instead of routing
-  // through send/queue, via builtinCommand.ts's runBuiltinCommand - which
-  // ALSO carries the toast/friendlyErrorMessage feedback and the
-  // no-double-toast guard, so this handler's only job is the composer-local
-  // half: busy-gating, and clearing vs. preserving the draft.
-  //
-  // submittedText is snapshotted the same way submitAction's own
-  // clearIfUnchanged is, so a clear on success never clobbers an edit made
-  // while the RPC was still in flight.
-  async function handleBuiltinSubmit(match: BuiltinMatch<ScopedCommand>): Promise<void> {
-    // The recovery fence, re-read live at the press (the same render-vs-press
-    // rule as handleSteerClick): a fenced command's run mints a durable
-    // mutation the hub's recovery admission refuses for the obligation's
-    // whole window, so running it here could only mint intent that parks
-    // until the explicit Resume action clears the fence - the same harm the
-    // Send/Steer/queue-strip fences exist to prevent, reached by typing
-    // instead of clicking. Which commands carry the fence is declared on the
-    // command itself (commands.ts's recoveryFenced); the refusal names the
-    // Resume path and preserves the draft, ahead of the busy churn so a
-    // refusal never reports busy state.
-    if (match.command.recoveryFenced && pressLocalRecoveryFenced(ref)) {
-      toasts.push("error", `/${match.command.id} isn't available until this session is resumed`);
-      return;
-    }
-    // A message-producing built-in typed over an active recovery is the same
-    // submit the user could have made with Send/Queue/Steer: route its parsed
-    // body through the one recovery transaction instead of enqueueing a second
-    // mutation beside the recovery. The literal command text is what gets
-    // cleared from the editor when the resend succeeds.
-    if (
-      (match.command.id === "queue" || match.command.id === "steer") &&
-      activeRecoveryId !== null &&
-      match.argsText.trim()
-    ) {
-      if (match.command.unavailableReason) {
-        toasts.push("error", `/${match.command.id} is ${match.command.unavailableReason}`);
-        return;
-      }
-      const unavailable = match.command.available?.(liveThreadModel(ref) ?? renderedModel);
-      if (unavailable !== undefined) {
-        toasts.push("error", unavailable);
-        return;
-      }
-      const literal = textRef.current;
-      await submitAction(match.command.id, { text: match.argsText, clearDraftText: literal });
-      return;
-    }
-    const submittedText = textRef.current;
-    const submittedSkillNames = [...skillNamesRef.current];
-    const submittedCommandNames = [...selectionMetaRef.current.commandNames];
-    const submittedRevision = draftEditRevisionRef.current;
-    const submittedDraftRevision = readDraftRevision(ref);
-    setBusyAction("submit");
-    const ctx: PaletteRunContext = {
-      sessionRef: ref,
-      sessionPaneId: paneId ?? null,
-      onPage: "session",
-      toasts,
-      // Neither method is reachable here: both belong to app-global palette
-      // commands (/search, /help), never to a session-scoped built-in - see
-      // commandSurface's own doc comment on why the two never overlap.
-      ui: { clearToSearch: () => {}, showHelp: () => {} },
-    };
-    const outcome = await runBuiltinCommand(match, ctx);
-    setBusyAction(null);
-    if (outcome.ok)
-      clearIfUnchanged(
-        submittedText,
-        submittedRevision,
-        submittedDraftRevision,
-        submittedSkillNames,
-        submittedCommandNames,
-      );
-    // On failure: the draft is left exactly as typed (clearIfUnchanged is
-    // simply never called) - runBuiltinCommand has already toasted why.
-  }
-
   function handleFormSubmit(event: FormEvent): void {
     event.preventDefault();
     if (actionPending) return;
@@ -1355,56 +789,7 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
       toasts.push("error", "Image attachment is still processing");
       return;
     }
-    // The Slack-model interception: a draft with no attachments or skill
-    // selections that parses as a known BUILT-IN session command
-    // (sessionBuiltins, above) runs that command instead of sending the text
-    // as a message. A message carrying an attachment is never read as a
-    // command, regardless of its text; neither is one carrying a staged skill
-    // selection - that draft falls through to the ordinary routing below so
-    // the selection survives as part of the request. Everything that does NOT
-    // match - an unknown "/foo", or a plugin catalog command
-    // (matchBuiltinInvocation only ever matches sessionBuiltins, never the
-    // catalog - see that function's own doc comment) - falls straight through
-    // to the ordinary routing below, unchanged: that's the escape hatch.
-    if (!hasAttachments && skillNames.length === 0 && selectionMeta.commandNames.length === 0) {
-      const match = matchBuiltinInvocation(text, sessionBuiltins);
-      if (match) {
-        void handleBuiltinSubmit(match);
-        return;
-      }
-    }
-    // The same derivation the button and its tooltip rendered from
-    // (availabilityFor, substitution included), over the store's live model:
-    // the two disagree only when a status frame landed after the render, and
-    // then the frame is what the submit has to follow.
-    const route = decideSubmitRoute({
-      hasContent,
-      availability: availabilityFor(
-        liveThreadModel(ref) ?? renderedModel,
-        ownPendingSend(pendingTurnEntries(ref, "send")),
-        threadsStore.getState().restartBlockingObligations.has(ref),
-        {
-          // Read live, like stopInFlight and queuedNonSend beside it: the
-          // render-time blockedMutations snapshot cannot have caught a row
-          // published between the render and the press, while the store-wide
-          // predicate resumeOnlyModel (which enqueue and dispatch use) reads
-          // hasBlockedUnknown fresh. Routing both sides through the same live
-          // read keeps the press from folding a resume ahead of an uncertain row.
-          uncertainMessages: hasBlockedUnknown(ref),
-          stopInFlight: threadsStore.getState().stoppingRefs.has(ref),
-          queuedNonSend: hasQueuedNonSend(ref),
-          // Read live like the signals beside it: the render passes this too, so
-          // a snapshot that became authoritative between the render and the
-          // press routes to the Send-resumes face rather than reading as an
-          // owner-retained snapshot and refusing.
-          mutationStateAuthoritative: threadsStore.getState().mutationAuthorityRefs.has(ref),
-        },
-      ),
-    });
-    if (route === "none") {
-      toasts.push("error", "Send is not available for this session");
-      return;
-    }
+    if (submitBuiltin()) return;
     // Hand off before Send becomes disabled. Never refocus on completion:
     // the user may have moved to another control or session while submitting.
     const initiator = submitButtonRef.current;
@@ -1416,7 +801,7 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     ) {
       editorRef.current?.focus();
     }
-    void submitAction(route);
+    void actions.submitFromLiveState();
   }
 
   function handleSteerClick(): void {
@@ -1458,25 +843,6 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     void submitAction(route);
   }
 
-  async function handleInterruptClick(): Promise<void> {
-    if (actionPending) return;
-    // Same press-time rule as Steer: the turn this button was rendered for can
-    // have ended by the time the press lands.
-    const reason = pressRefusal(ref, "stop");
-    if (reason !== undefined) {
-      toasts.push("error", reason === NO_ACTIVE_TURN ? `Interrupt failed: ${reason}` : reason);
-      return;
-    }
-    setBusyAction("interrupt");
-    try {
-      await threadsStore.getState().interrupt(ref);
-    } catch (err) {
-      toasts.push("error", sessionActionError("Interrupt failed", err));
-    } finally {
-      setBusyAction(null);
-    }
-  }
-
   // Legacy suppresses every one of these keybindings entirely inside a
   // framed side-pane iframe (isInPane()) - verified moot, not assumed: this
   // rewrite's multi-pane layout is dockview panels in the SAME document
@@ -1485,40 +851,8 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   // legacy gate defended against doesn't exist here, so there is no
   // isInPane()-equivalent check to port.
   function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
-    // Inline slash-completion's own keyboard mechanics, ported from
-    // Beautiful UI's prompt-bar (slashCompletion.ts's own header comment):
-    // ArrowUp/Down move the highlighted option (wrapping at both ends) OVER
-    // the caret rather than moving the caret itself, Tab OR Enter commits
-    // the highlighted option, Escape dismisses without touching the draft.
-    // Every branch here returns before falling through to the rest of this
-    // function - in particular, the committing Enter never reaches the
-    // Enter-to-send routing below it, which is the whole point of checking
-    // this FIRST: with the menu open, this function's own routing must not
-    // fire at all for that keystroke.
-    if (slashOpen) {
-      if (event.key === "ArrowDown") {
-        event.preventDefault();
-        setSlashHighlighted((i) => (i + 1) % slashItems.length);
-        return;
-      }
-      if (event.key === "ArrowUp") {
-        event.preventDefault();
-        setSlashHighlighted((i) => (i - 1 + slashItems.length) % slashItems.length);
-        return;
-      }
-      if (event.key === "Tab" || (event.key === "Enter" && !event.nativeEvent.isComposing)) {
-        event.preventDefault();
-        event.stopPropagation();
-        const chosen = slashItems[slashActiveIndex] ?? slashItems[0];
-        if (chosen) commitSlashCompletion(chosen);
-        return;
-      }
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setSlashToken(null);
-        return;
-      }
-    }
+    // The slash menu's keys come first: with it open, a committing Enter must not reach the Enter-to-send routing below.
+    if (handleSlashKeyDown(event)) return;
     // SHOULD-FIX (product decision): "/" as the first character of an EMPTY
     // composer used to preventDefault and open the MODAL command palette
     // instead of typing (floor §2.1, legacy renderer.js:6914) - which made
@@ -1568,9 +902,13 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     event.target.value = ""; // re-picking the identical file must re-fire change
   }
 
-  function handleFollowUpFocus(): void {
+  function handleFollowUpFocus(event: ReactFocusEvent<HTMLDivElement>): void {
     followUpFocusSequenceRef.current += 1;
     setFollowUpFocused(true);
+    if ((event.target as Element).closest('[role="textbox"]')) {
+      setEditorEngaged(true);
+      formAnchorRef.current?.setAttribute("data-composer-editing", "");
+    }
   }
 
   function handleFollowUpBlur(): void {
@@ -1579,8 +917,16 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     // Wait until the next frame so a control or portal keeps the empty editor
     // expanded without shrinking it during a focus transfer.
     requestAnimationFrame(() => {
-      if (mountedRef.current && followUpFocusSequenceRef.current === sequence) setFollowUpFocused(false);
+      if (!mountedRef.current || followUpFocusSequenceRef.current !== sequence) return;
+      setFollowUpFocused(false);
+      // A press inside the composer can blur the editor to body before the
+      // press's own focus transfer lands; clearing engagement here would
+      // collapse the row out from under the pressed control. Hold off during
+      // the press; its release reconciles once the transfer has settled.
+      if (composerPointerRef.current) return;
+      reconcileEditorEngagement();
     });
+    endComposerEditingSoon();
   }
 
   // Slash options prevent mousedown's default focus transfer, so only leaving
@@ -1611,12 +957,66 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     reportEditing();
   }
 
+  // The leading slot's chrome carries its compact rung (one horizontal line
+  // shared with attach and the activity strip); the pending-question mount
+  // below keeps an automatic basis, because the composer's column is vertical
+  // there and a width-oriented rung would inflate the chrome's height.
+  const leadingChrome = (
+    <MemoizedSessionChrome
+      ref={ref}
+      paneId={paneId}
+      placement="composer"
+      discoverActivity
+      turnVerbs={turnVerbs}
+      compactRung
+    />
+  );
+  const askChrome = (
+    <MemoizedSessionChrome ref={ref} paneId={paneId} placement="composer" discoverActivity turnVerbs={turnVerbs} />
+  );
+
+  // data-testid on every control in this row: two different buttons here
+  // start with "Steer" (this one and QueueStrip's "Steer queue now"), so
+  // tests address controls by a stable hook instead of navigating by
+  // accessible name - the naming style follows StatusRow's own
+  // status-row-* testids.
+  //
+  // While the phone card rests (controlsCollapsed), the leading slot
+  // shrinks to the menu-only chrome: the session menu stays reachable, and
+  // that placement's hidden panel keeps initial activity discovery
+  // following the pane on screen (issue #1335) with no status chips.
+  const leadingControls = (
+    <div className={CLASS.leading}>
+      {controlsCollapsed ? (
+        <MemoizedSessionChrome ref={ref} paneId={paneId} placement="menu" discoverActivity turnVerbs={turnVerbs} />
+      ) : (
+        <>
+          <Tooltip label="Attach an image">
+            <IconButton
+              label="Attach image"
+              icon={<AttachIcon />}
+              variant="quiet"
+              size="xs"
+              type="button"
+              data-testid="composer-attach"
+              onClick={() => fileInputRef.current?.click()}
+            />
+          </Tooltip>
+          {!askPending && leadingChrome}
+          {/* The phone pane has no footer strip (Session.tsx's edgeFooter), so
+              this row is where the activity counts live on a phone. */}
+          {isMobile && !ownsActivityCounts && <ActivityChips sessionRef={ref} paneId={paneId} wrap />}
+        </>
+      )}
+    </div>
+  );
   return (
     <div
       className={CLASS.composer}
-      ref={composerRootRef}
+      ref={attachComposerRoot}
       onFocusCapture={handleFollowUpFocus}
       onBlurCapture={handleFollowUpBlur}
+      onPointerDown={holdComposerPress}
     >
       {mutationWriteStalled && (
         <div className={CLASS.storageStatus} role="status" aria-label="Message storage">
@@ -1651,20 +1051,21 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
           comment above. busy/onDrainBusyChange share this component's own
           busyAction gate both ways (BusyAction's own "drain" doc comment). */}
       <QueueStrip
-        ref={ref}
-        getComposerText={getComposerText}
-        onRestoreToComposer={restoreTextToComposer}
-        activeRecoveryId={activeRecoveryId ?? undefined}
-        activeRecoveryRevision={recoveryOwnerLeaseRef.current?.compositionRevision}
-        getRecoveryRevision={getRecoveryRevisionForDrain}
-        onEditRecovery={activateRecovery}
-        tryAcquireRecoveryOperation={source.tryAcquireRecoveryOperation}
-        onDrainSuccess={handleDrainSuccess}
-        busy={actionPending}
-        onDrainBusyChange={(draining) => {
-          if (mountedRef.current) setBusyAction(draining ? "drain" : null);
+        {...actions.queueProps}
+        onRestoreToComposer={(...args) => {
+          actions.queueProps.onRestoreToComposer(...args);
+          editorRef.current?.focus();
+        }}
+        onEditRecovery={async (record) => {
+          const epoch = source.getSnapshot().restoreEpoch;
+          await actions.queueProps.onEditRecovery?.(record);
+          if (source.alive && source.getSnapshot().restoreEpoch !== epoch) {
+            scheduleCursorRestore(source.getSnapshot().text.length);
+            editorRef.current?.focus();
+          }
         }}
       />
+      {askPending && askChrome}
       {/* Staged attachments. One rendering for every state, so nothing here
           swaps element types under a user mid-gesture - AttachmentTile.tsx's
           own header comment has the mechanism and the bug it closed. */}
@@ -1708,7 +1109,7 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
         // owning pane id, so the overlay can anchor to the FOCUSED pane's
         // composer when several are mounted - including an ordinary pane and a
         // cascade column showing the same conversation.
-        <div className={CLASS.formAnchor} data-composer={ref} data-composer-pane={paneId}>
+        <div ref={formAnchorRef} className={CLASS.formAnchor} data-composer={ref} data-composer-pane={paneId}>
           {/* Anchored above the control row inside the card below, opening
               upward - see slashcompletionmenu.module.css's header comment
               for the anchored-float recipe. Mounted only
@@ -1749,40 +1150,13 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
                     onPaste={handlePaste}
                     aria-controls={slashActiveId ? slashListboxId : undefined}
                     aria-activedescendant={slashActiveId ?? undefined}
-                    minLines={ended ? (followUpEngaged ? 3 : 1) : undefined}
+                    minLines={minLines}
                     onBlur={handleEditorBlur}
                     placeholder={ended ? "Send a follow-up…" : "Message the agent…"}
                     aria-label="Message"
                   />
                 }
-                leading={
-                  /* data-testid on every control in this row: two different
-                     buttons here start with "Steer" (this one and
-                     QueueStrip's "Steer queue now"), so tests address
-                     controls by a stable hook instead of navigating by
-                     accessible name - the naming style follows StatusRow's
-                     own status-row-* testids. */
-                  <div className={CLASS.leading}>
-                    <Tooltip label="Attach an image">
-                      <IconButton
-                        label="Attach image"
-                        icon={<AttachIcon />}
-                        variant="quiet"
-                        size="xs"
-                        type="button"
-                        data-testid="composer-attach"
-                        onClick={() => fileInputRef.current?.click()}
-                      />
-                    </Tooltip>
-                    <MemoizedSessionChrome
-                      ref={ref}
-                      paneId={paneId}
-                      placement="composer"
-                      discoverActivity
-                      turnVerbs={turnVerbs}
-                    />
-                  </div>
-                }
+                leading={leadingControls}
                 actions={
                   <>
                     {/* Distinct keys replace the actual button, so a press
@@ -1821,7 +1195,7 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
                           // this card renders at all - otherwise a session the hub
                           // will happily resume shows a permanently dead Send.
                           // The capability alone does not lift the recovery fence:
-                          // availabilityFor refuses every fenced status, so a
+                          // the send/queue gate refuses every fenced status, so a
                           // fenced session whose snapshot still
                           // advertises send:true (the hub stamps it on closed
                           // frames too) renders a disabled Send, not a refusal

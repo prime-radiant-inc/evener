@@ -11,9 +11,8 @@
 // state is the row's own: a durable submission of this client's is unresolved,
 // or the shared store cannot certify its pending projection. Sign in is
 // independent and is never disabled by Retry's pending rule.
-import type { ThreadModel } from "@evener/appwire-client";
-import { isLatestRetryTurn, latestTurnId } from "@evener/appwire-client";
-import { ownPendingTurnInput, type PendingTurnEntry } from "@evener/appwire-client/state/mutation";
+import { latestTurnId, retryEligibility, type RetryTurnThread } from "@evener/appwire-client";
+import type { PendingTurnEntry } from "@evener/appwire-client/state/mutation";
 import { failureRowIdentity, type MobileConversation } from "../projectedRows";
 
 export type ErrorAction = { kind: "signIn" } | { kind: "retry"; failedTurnId: string; disabled: boolean };
@@ -30,10 +29,6 @@ export interface ErrorActionState {
 	pendingMutationsReady: boolean;
 }
 
-/** The canonical owner's identity and live state, never a viewport's rows or a
- * last-visible-history heuristic. `isLatestRetryTurn` owns the identity test. */
-type RetryTurnThread = Pick<ThreadModel, "turns" | "runningTurnId" | "history" | "status">;
-
 // Credentials that expired or are invalid, in either word order.
 const SIGN_IN_FAILURE =
 	/sign[- ]?in|log[- ]?in|\b401\b|unauthori[sz]ed|credentials? (?:expired|invalid)|(?:expired|invalid) credentials?/i;
@@ -48,19 +43,41 @@ export function errorAction(
 	// warning or another item's error.
 	const failedTurnId = row.turnId;
 	if (failedTurnId === undefined || row.id !== failureRowIdentity(failedTurnId)) return null;
-	if (!canSend) return null;
 	// Canonical authority unavailable: the last displayed failure stays on the
 	// row, but no press may act until the shared store publishes the model.
+	// Send must still be able to act, the same live-service precondition the
+	// shared decision applies when the model is present.
 	if (state.canonical === null) {
+		if (!canSend) return null;
 		if (failedTurnId !== state.displayedLatestTurnId) return null;
 		return { kind: "retry", failedTurnId, disabled: true };
 	}
-	// Only the canonical latest turn's own failure: a historical failure, a
-	// newer running turn, an incoherent active state, or invalidated/failed
-	// history hides the action.
-	if (!isLatestRetryTurn(state.canonical, failedTurnId)) return null;
-	const disabled = !state.pendingMutationsReady || ownPendingTurnInput(state.pendingMutations);
-	return { kind: "retry", failedTurnId, disabled };
+	// The row check above establishes that this is the clicked turn's own
+	// failure. The shared decision owns the latest-turn, pending, readiness and
+	// live-service rules and their precedence.
+	const decision = retryEligibility({
+		clickedTurnId: failedTurnId,
+		thread: state.canonical,
+		clickedTurnFailed: true,
+		pendingMutations: state.pendingMutations,
+		pendingMutationsReady: state.pendingMutationsReady,
+		serviceReady: canSend,
+	});
+	switch (decision.reason) {
+		// No action: a historical failure, a newer running turn, an incoherent
+		// active state, invalidated/failed history, or no live service.
+		case "not-latest-turn":
+		case "clicked-turn-not-failed":
+		case "no-live-service":
+			return null;
+		// The action stays visible; an unresolved own submission or an unread
+		// projection disables it.
+		case "pending-input-owned":
+		case "pending-not-ready":
+			return { kind: "retry", failedTurnId, disabled: true };
+		case "allowed":
+			return { kind: "retry", failedTurnId, disabled: false };
+	}
 }
 
 /** The action the clicked turn's own failure row currently offers, resolved

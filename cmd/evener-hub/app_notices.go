@@ -131,7 +131,7 @@ func (n *hubNotices) hostNotices() []appwire.HubNotice {
 	var sessions map[string]int
 	var notices []appwire.HubNotice
 	for _, source := range n.sources.All() {
-		if source.ID() == "local" || sourceIsOnline(source) {
+		if source.ID() == appwire.LocalSourceID || sourceIsOnline(source) {
 			continue
 		}
 		if sessions == nil {

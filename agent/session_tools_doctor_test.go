@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
@@ -283,7 +285,7 @@ func TestDoctorEvener_RejectsStraySelectorOnSelectorlessCommands(t *testing.T) {
 	writeDoctorFixtureSession(t, bucket)
 
 	rt := doctorToolForTest(t, stateHome)
-	for _, command := range []string{"turnids", "sessions", "audit", "plugins"} {
+	for _, command := range []string{"turnids", "sessions", "audit", "plugins", "lifecycle"} {
 		args := map[string]any{"command": command, "selector": "034DOESNOTMATTER0000000"}
 		if command == "audit" {
 			args["runbook"] = "error-loop"
@@ -343,6 +345,7 @@ func TestDoctorEvener_HandlerDoesNotMutateState(t *testing.T) {
 		{"command": "turnids"},
 		{"command": "sessions"},
 		{"command": "audit", "runbook": "error-loop", "sessions": sid},
+		{"command": "lifecycle"},
 	}
 	for _, args := range commands {
 		if _, err := rt.Exec(context.Background(), nil, args); err != nil {
@@ -446,7 +449,7 @@ func TestDoctorEvener_EveryCommandDispatches(t *testing.T) {
 		// fixtures won't trip every code path — this only needs each command
 		// to reach its handler, not to return data.
 		switch command {
-		case "turnids", "sessions", "audit", "plugins":
+		case "turnids", "sessions", "audit", "plugins", "lifecycle":
 		default:
 			args["selector"] = sid
 		}
@@ -630,5 +633,21 @@ func TestDoctorTranscriptTurnNumbersAgreeWithReadTranscript(t *testing.T) {
 		if !strings.Contains(content, fmt.Sprintf("## Turn %d ", *row.Turn)) || !strings.Contains(content, row.Text) {
 			t.Errorf("read_transcript range %s does not show doctor's turn %d (%q):\n%s", window, *row.Turn, row.Text, content)
 		}
+	}
+}
+
+// With no state home and no home directory the state-scoped doctor commands
+// report that, while the plugin check (which reads the config root) still runs.
+func TestDoctorEvener_NoStateHomeOnlyBlocksStateScopedCommands(t *testing.T) {
+	t.Setenv("EVENER_STATE_DIR", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	if _, err := execDoctorEvener(nil, map[string]any{"command": "sessions"}); !errors.Is(err, userdirs.ErrNoStateHome) {
+		t.Fatalf("sessions error = %v, want ErrNoStateHome", err)
+	}
+	if _, err := execDoctorEvener(nil, map[string]any{"command": "plugins"}); errors.Is(err, userdirs.ErrNoStateHome) {
+		t.Fatalf("plugins must not need a state home: %v", err)
 	}
 }

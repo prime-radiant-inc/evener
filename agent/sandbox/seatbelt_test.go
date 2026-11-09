@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/identifier"
 )
 
 var updateSeatbeltGolden = flag.Bool("update-seatbelt-golden", false, "regenerate agent/sandbox/testdata/seatbelt/*.sbpl")
@@ -217,7 +219,7 @@ func TestSeatbeltReadOnlyNoPersistentWrite(t *testing.T) {
 	}
 	// No writable root covers the worktree.
 	for _, p := range params {
-		if strings.HasPrefix(p.Key, "WRITABLE_ROOT_") && (p.Path == cwd || pathUnder(cwd, p.Path)) {
+		if strings.HasPrefix(p.Key, "WRITABLE_ROOT_") && (p.Path == cwd || identifier.PathUnder(cwd, p.Path)) {
 			t.Errorf("read-only must not grant a worktree-covering write root, got %q=%q", p.Key, p.Path)
 		}
 	}
@@ -331,7 +333,7 @@ func TestSeatbeltLinkedWorktreeReadNotWrite(t *testing.T) {
 	// would make it writable — report EVERY such match, not only the common-dir one.
 	mainConfig := filepath.Join(common, "config")
 	for _, p := range params {
-		if strings.HasPrefix(p.Key, "WRITABLE_ROOT_") && (p.Path == mainConfig || p.Path == common || pathUnder(mainConfig, p.Path)) {
+		if strings.HasPrefix(p.Key, "WRITABLE_ROOT_") && (p.Path == mainConfig || p.Path == common || identifier.PathUnder(mainConfig, p.Path)) {
 			t.Errorf("linked-worktree write root %q=%q would make the main repo config writable (common=%q)", p.Key, p.Path, common)
 		}
 	}

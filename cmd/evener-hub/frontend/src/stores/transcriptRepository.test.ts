@@ -6,10 +6,12 @@ import {
   type ThreadItem,
   type ThreadModel,
   type ThreadReadResponse,
+  type ThreadTurnsListResponse,
 } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { IDBDatabase, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, it, vi } from "vitest";
+import { ALL_CAPABILITIES } from "../threadTestUtils";
 import { entryWriteAdmissionFor } from "./entryWriteAdmission";
 import { requestResult, transactionCompletion } from "./idbConnection";
 import {
@@ -35,22 +37,6 @@ const identity: TranscriptResolvedIdentity = {
 const ref = "ref-a";
 const threadId = "thread-a";
 const historyKey = entryHistoryKey(identity);
-const CAPABILITIES = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
-
 function read(label: string, length = 1, transcriptKey = `item-${label}`): ThreadReadResponse {
   return {
     thread: {
@@ -84,7 +70,7 @@ function read(label: string, length = 1, transcriptKey = `item-${label}`): Threa
           ],
         },
       ],
-      evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+      evener: { ref, capabilities: ALL_CAPABILITIES, queue: { revision: 0 } },
     },
     bootGeneration: "1",
     epoch: 0,
@@ -116,6 +102,144 @@ function readMany(count: number): ThreadReadResponse {
     },
   ];
   response.snapshot = { incarnation: identity.incarnation, length: count };
+  return response;
+}
+
+// The daemon's real thread/read answer: the latest 40-item window plus an
+// opaque server cursor for the older history it omits, never a thread's
+// whole body set. `epoch` forces the disposition this caller needs — an
+// epoch bump replaces held history, while a same-identity length-grown read
+// merges.
+function windowedRead(total: number, epoch: number): ThreadReadResponse {
+  const window = 40;
+  const first = total - window + 1;
+  const response = read(`row-${first}`, total);
+  response.epoch = epoch;
+  response.thread.turns = [
+    {
+      id: "turn_1",
+      itemsView: "full",
+      status: "completed",
+      version: total,
+      items: Array.from(
+        { length: window },
+        (_, index): ThreadItem => ({
+          type: "agentMessage",
+          id: `item-${first + index}`,
+          transcriptKey: `item-${first + index}`,
+          turnId: "turn_1",
+          position: { entry: first + index, item: 0 },
+          version: first + index,
+          text: `row-${first + index}`,
+        }),
+      ),
+    },
+  ];
+  response.snapshot = { incarnation: identity.incarnation, length: total };
+  response.olderCursor = `opaque-server-before-item-${first - 1}`;
+  return response;
+}
+
+// The same windowed shape with an explicit SNAPSHOT LENGTH: that number is a
+// byte boundary (internal/transcriptindex/index.go), not an item count — a
+// 60-item transcript can carry a 30-byte snapshot when its bodies are small,
+// and a windowed replace's debt must be measured in item identities either
+// way, never by comparing the two.
+function windowedReadWithLength(total: number, epoch: number, bytes: number): ThreadReadResponse {
+  const response = windowedRead(total, epoch);
+  response.snapshot = { incarnation: identity.incarnation, length: bytes };
+  return response;
+}
+
+// An older full read that answered exactly rows `first`..`last`: the shape a
+// client cached in an earlier session before the thread grew far past it,
+// leaving the durable record with an island of rows whose extent ends at
+// `last` while nothing between `last` and the current window is certified.
+function rangedRead(first: number, last: number): ThreadReadResponse {
+  const response = read(`row-${first}`, last);
+  response.thread.turns = [
+    {
+      id: "turn_1",
+      itemsView: "full",
+      status: "completed",
+      version: last,
+      items: Array.from(
+        { length: last - first + 1 },
+        (_, index): ThreadItem => ({
+          type: "agentMessage",
+          id: `item-${first + index}`,
+          transcriptKey: `item-${first + index}`,
+          turnId: "turn_1",
+          position: { entry: first + index, item: 0 },
+          version: first + index,
+          text: `row-${first + index}`,
+        }),
+      ),
+    },
+  ];
+  response.snapshot = { incarnation: identity.incarnation, length: last };
+  return response;
+}
+
+// A read whose items sit at SPARSE part positions — the projection's real
+// shape (internal/apptranscript/new_format_projection_test.go): part indices
+// skip merged text runs and hidden communicate calls, an entry can project
+// no items at all (a parts list of length zero), and a numeric item gap is
+// never evidence of a coverage hole.
+function sparseRead(entries: ReadonlyArray<readonly number[]>): ThreadReadResponse {
+  const last = entries.length;
+  const response = read(`row-e${last}`, last);
+  response.thread.turns = [
+    {
+      id: "turn_1",
+      itemsView: "full",
+      status: "completed",
+      version: last,
+      items: entries.flatMap((parts, entryIndex): ThreadItem[] => {
+        const entry = entryIndex + 1;
+        return parts.map((part): ThreadItem => {
+          const transcriptKey = `item-e${entry}p${part}`;
+          return {
+            type: "agentMessage",
+            id: transcriptKey,
+            transcriptKey,
+            turnId: "turn_1",
+            position: { entry, item: part },
+            version: entry * 100 + part,
+            text: `row-e${entry}p${part}`,
+          };
+        });
+      }),
+    },
+  ];
+  response.snapshot = { incarnation: identity.incarnation, length: last };
+  return response;
+}
+
+// The same sparse record answered as the daemon's windowed shape: the
+// newest `window` items by position plus an opaque server cursor, with the
+// epoch bump that forces a replace.
+function sparseWindowedRead(
+  entries: ReadonlyArray<readonly number[]>,
+  window: number,
+  epoch: number,
+): ThreadReadResponse {
+  const response = sparseRead(entries);
+  response.epoch = epoch;
+  const turns = response.thread.turns ?? [];
+  const all = turns[0]?.items ?? [];
+  const newest = [...all]
+    .sort(
+      (left, right) =>
+        (left.position?.entry ?? 0) - (right.position?.entry ?? 0) ||
+        (left.position?.item ?? 0) - (right.position?.item ?? 0),
+    )
+    .slice(-window);
+  if (turns[0]) response.thread.turns = [{ ...turns[0], items: newest }];
+  const firstPosition = newest[0]?.position;
+  response.olderCursor = firstPosition
+    ? `opaque-server-before-e${firstPosition.entry}p${firstPosition.item}`
+    : undefined;
   return response;
 }
 
@@ -164,6 +288,161 @@ function repository(cache: ReturnType<typeof createEntryCacheFixture>["cache"], 
     now: () => Date.now(),
   });
 }
+
+it.each(
+  (["end", "final"] as const).flatMap((source) =>
+    (["accepted", "stale-generation", "wrong-identity", "suppressed", "disposed", "cancelled"] as const)
+      .filter((outcome) => source === "final" || outcome !== "cancelled")
+      .map((outcome) => ({ source, outcome })),
+  ),
+)("history-read recovery callback requires acceptance: $source / $outcome", async ({ source, outcome }) => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const response = deferred<ThreadReadResponse>();
+  const entered = deferred<void>();
+  const accepted = vi.fn();
+  let suppressed = false;
+  let reply = response.promise;
+  let retry: (() => void) | undefined;
+  const owner = new TranscriptRepository(fixture.cache, {
+    ref,
+    threadId,
+    historyKey,
+    identity,
+    clearEpoch: 0,
+    lifetime: 1,
+    suppressed: () => suppressed,
+    onHistoryReadAccepted: accepted,
+    retryScheduler: (_attempt, run) => {
+      retry = run;
+      return () => {
+        retry = undefined;
+      };
+    },
+    readHistory: () => {
+      entered.resolve();
+      return reply;
+    },
+  });
+  const baseline = { ...read("baseline"), requestGeneration: 1 };
+  expect(owner.acceptRead(baseline, { lifetime: 1, readId: "initial", boundary: "initial" })).toBe(true);
+  await owner.settled();
+  const reader = owner.attachReader();
+  await reader.openLocal(20);
+  // Public hydration, cache opening and ordinary publication have their own
+  // owners. None is a newly accepted response from this repository's port.
+  owner.accept(historyUpdate("local-publication", 2), { lifetime: 1 });
+  expect(accepted).not.toHaveBeenCalled();
+  let retirement: ReturnType<TranscriptRepository["retire"]> | undefined;
+  if (source === "final") retirement = owner.retire();
+  else {
+    owner.accept(
+      {
+        method: "overlay/upserted",
+        params: {
+          ref,
+          threadId,
+          item: {
+            key: "ending",
+            kind: "stream",
+            streamId: "ending",
+            roundId: "ending",
+            turnId: "turn_1",
+            item: { id: "ending", type: "agentMessage", text: "ending" },
+          },
+        },
+      },
+      { lifetime: 1 },
+    );
+    owner.accept({ method: "overlay/end", params: { ref, threadId, roundId: "ending" } }, { lifetime: 1 });
+  }
+  await entered.promise;
+  const recovery = { ...read("recovery", 2), requestGeneration: 2 };
+  recovery.thread.evener.resumeRequired = true;
+  recovery.thread.evener.capabilities = { ...ALL_CAPABILITIES, send: false };
+  if (outcome === "stale-generation") {
+    expect(
+      owner.acceptRead(
+        { ...read("newer", 3), requestGeneration: 3 },
+        {
+          lifetime: 1,
+          readId: "newer",
+          boundary: "newer",
+          preserveEnded: true,
+        },
+      ),
+    ).toBe(true);
+    const current = owner.getSnapshot();
+    if (source === "end") expect(current?.overlay?.ending).toMatchObject({ roundId: "ending" });
+    expect(
+      owner.acceptRead(recovery, {
+        lifetime: 1,
+        readId: "rejected",
+        boundary: "rejected",
+        preserveEnded: true,
+      }),
+    ).toBe(false);
+    expect(owner.getSnapshot()).toBe(current);
+  }
+  if (outcome === "wrong-identity") recovery.thread.id = "other-thread";
+  if (outcome === "suppressed") suppressed = true;
+  if (outcome === "disposed") owner.dispose();
+  if (outcome === "cancelled") owner.cancelRetirement();
+  response.resolve(recovery);
+  if (retirement) await retirement;
+  // The negative end-read cases deliberately leave recovery outstanding.
+  await owner.settled().catch((error) => {
+    if (outcome === "accepted") throw error;
+  });
+  if (outcome === "accepted") {
+    expect(accepted).toHaveBeenCalledTimes(1);
+    expect(accepted).toHaveBeenCalledWith(recovery, expect.objectContaining({ resumeRequired: true }));
+  } else expect(accepted).not.toHaveBeenCalled();
+  if (source === "end" && outcome === "stale-generation") {
+    expect(owner.getSnapshot()?.history?.appliedGeneration).toBe(3);
+    expect(owner.getSnapshot()?.overlay?.ending).toMatchObject({ roundId: "ending" });
+    expect(retry).toBeTypeOf("function");
+    // A fresh retry can still dispose the same round. This requires its end
+    // claim to have survived rejection, rather than just retaining stale text.
+    reply = Promise.resolve({ ...read("retry", 4), requestGeneration: 4 });
+    retry?.();
+    await owner.settled();
+    expect(accepted).toHaveBeenCalledTimes(1);
+    expect(owner.getSnapshot()?.overlay?.ending).toBeUndefined();
+  }
+  reader.dispose();
+  owner.dispose();
+});
+
+it("cached recovery metadata and local publication never invoke fresh-read recovery", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const cached = read("cached");
+  cached.thread.evener.resumeRequired = true;
+  const writer = repository(fixture.cache);
+  writer.acceptRead(cached, { lifetime: 1, readId: "cached", boundary: "cached" });
+  await writer.settled();
+  writer.dispose();
+  const accepted = vi.fn();
+  const owner = new TranscriptRepository(fixture.cache, {
+    ref,
+    threadId,
+    historyKey,
+    identity,
+    clearEpoch: 0,
+    lifetime: 2,
+    seedModel: hydrateThread(cached, ref, Date.now()),
+    onHistoryReadAccepted: accepted,
+  });
+  const reader = owner.attachReader();
+  await reader.openLocal(20);
+  owner.accept(historyUpdate("notification", 2), { lifetime: 2 });
+  await owner.settled();
+  expect(owner.getSnapshot()?.resumeRequired).toBe(true);
+  expect(accepted).not.toHaveBeenCalled();
+  reader.dispose();
+  owner.dispose();
+});
 
 it("refuses a delayed replacement older than another repository's committed suffix", async () => {
   const fixture = createEntryCacheFixture();
@@ -1790,6 +2069,357 @@ it.each(["server cursor present", "no server cursor"] as const)(
   },
 );
 
+it("a merge-shaped read between a windowed replace and its restore does not forget the recorded range", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(readMany(80), { lifetime: 1, readId: "read-full", boundary: "boundary-full" });
+  await owner.settled();
+  // The route notes the range is owed when a raced open's convergence is
+  // outstanding; this harness plays that note directly, at the product's
+  // firing point: after the baseline the missing open raced against.
+  owner.noteOwedRecordedRange();
+  // The daemon's windowed answer REPLACES the hydrated history (epoch bump)
+  // with the latest 40-item wire window plus a server cursor: the recorded
+  // range below it is owed. A merge-shaped read then arrives before opening
+  // recovery finishes — same identity, length grown, generation current, the
+  // shape an overlay/end read or a watcher's refresh produces. Its
+  // disposition says nothing about the range the replace dropped, so the debt
+  // must survive it: the local open restores the recorded range below the
+  // wire window instead of presenting only the window.
+  owner.acceptRead(windowedRead(81, 1), { lifetime: 1, readId: "read-window", boundary: "boundary-window" });
+  await owner.settled();
+  owner.acceptRead(windowedRead(82, 1), { lifetime: 1, readId: "read-merge", boundary: "boundary-merge" });
+  await owner.settled();
+  const reader = owner.attachReader();
+
+  const opened = await reader.openLocal(200);
+  const texts = opened.model?.turns.flatMap((turn) => turn.items).map((item) => item.text);
+  expect(texts).toEqual(Array.from({ length: 82 }, (_, index) => `row-${index + 1}`));
+  reader.dispose();
+  owner.dispose();
+});
+
+it("a repository whose first read is windowed still owes the recorded range below its window", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  // Seed the durable record through one repository, then open it through a
+  // FRESH repository with no previous history — the shape a cached-opening
+  // timeout leaves behind when it retires its repository mid-recovery. The
+  // next read replaces nothing (there is no held history), so the read's own
+  // disposition cannot name the recorded range; the record itself must.
+  const seeder = repository(fixture.cache);
+  seeder.acceptRead(readMany(80), { lifetime: 1, readId: "read-seed", boundary: "boundary-seed" });
+  await seeder.settled();
+  seeder.dispose();
+
+  const owner = repository(fixture.cache, 2);
+  owner.noteOwedRecordedRange();
+  owner.acceptRead(windowedRead(81, 1), { lifetime: 2, readId: "read-window", boundary: "boundary-window" });
+  await owner.settled();
+  const reader = owner.attachReader();
+
+  const opened = await reader.openLocal(200);
+  const texts = opened.model?.turns.flatMap((turn) => turn.items).map((item) => item.text);
+  expect(texts).toEqual(Array.from({ length: 81 }, (_, index) => `row-${index + 1}`));
+  reader.dispose();
+  owner.dispose();
+});
+
+it("a certify-only open's loaded-range fill does not consume the recorded demand", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(readMany(200), { lifetime: 1, readId: "read-full", boundary: "boundary-full" });
+  await owner.settled();
+  // The route notes the miss against the established display: the recorded
+  // range below the windowed answer is owed.
+  owner.noteOwedRecordedRange();
+  // The daemon's windowed answer replaces the hydrated history with the
+  // latest 40-item wire window (rows 162..201), and one older page (rows
+  // 122..161) loads below it: the opening cut has a loaded interval under the
+  // window while the record still holds rows 1..121 the model does not
+  // present.
+  owner.acceptRead(windowedRead(201, 1), { lifetime: 1, readId: "read-window", boundary: "boundary-window" });
+  await owner.settled();
+  const page: ThreadTurnsListResponse = {
+    data: [
+      {
+        id: "turn_1",
+        itemsView: "full",
+        status: "completed",
+        version: 161,
+        items: Array.from(
+          { length: 40 },
+          (_, index): ThreadItem => ({
+            type: "agentMessage",
+            id: `item-${122 + index}`,
+            transcriptKey: `item-${122 + index}`,
+            turnId: "turn_1",
+            position: { entry: 122 + index, item: 0 },
+            version: 122 + index,
+            text: `row-${122 + index}`,
+          }),
+        ),
+      },
+    ],
+    bootGeneration: "1",
+    epoch: 1,
+    snapshot: { incarnation: identity.incarnation, length: 201 },
+  };
+  expect(
+    owner.acceptPage(page, {
+      lifetime: 1,
+      readId: "read-page-1",
+      boundary: "boundary-page-1",
+      authority: owner.getBaselineIdentity(),
+      requestCursor: "opaque-server-before-item-161",
+    }),
+  ).toBe(true);
+  await owner.settled();
+  const reader = owner.attachReader();
+
+  // The certify-only open certifies the publication's cut without promoting
+  // owed ranges: it serves the loaded interval's own rows and must leave the
+  // armed demand alone — the 40 rows it re-presents from the loaded interval
+  // satisfy none of the 120 rows the record still owes.
+  const certified = await reader.openLocal(200, { certifyOnly: true });
+  expect(certified.model?.turns.flatMap((turn) => turn.items).map((item) => item.text)).toEqual(
+    Array.from({ length: 80 }, (_, index) => `row-${122 + index}`),
+  );
+  // The promotion open proves the demand survived: it owes the recorded range
+  // below the loaded interval and presents the record's newest 200 rows, not
+  // the loaded interval alone.
+  const promoted = await reader.openLocal(200);
+  expect(promoted.model?.turns.flatMap((turn) => turn.items).map((item) => item.text)).toEqual(
+    Array.from({ length: 200 }, (_, index) => `row-${index + 2}`),
+  );
+  reader.dispose();
+  owner.dispose();
+});
+
+it("a windowed replace's recorded debt is measured in item identities, never in snapshot bytes", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(readMany(60), { lifetime: 1, readId: "read-full", boundary: "boundary-full" });
+  await owner.settled();
+  // The route notes the miss against the established display, the product's
+  // firing point: the debt the windowed replace creates below its wire
+  // window is measured against the record the full read seeded.
+  owner.noteOwedRecordedRange();
+  // A windowed replace over a record whose snapshot BYTES stay below its
+  // item count: the flag is set by a plain replace either way, but the old
+  // gate compared the byte length against the presented item count, decided
+  // nothing was dropped, and left the recorded range below the wire window
+  // unrestored. The debt is the record's own identities.
+  owner.acceptRead(windowedReadWithLength(61, 1, 30), {
+    lifetime: 1,
+    readId: "read-window",
+    boundary: "boundary-window",
+  });
+  await owner.settled();
+  const reader = owner.attachReader();
+
+  const opened = await reader.openLocal(200);
+  const texts = opened.model?.turns.flatMap((turn) => turn.items).map((item) => item.text);
+  expect(texts).toEqual(Array.from({ length: 61 }, (_, index) => `row-${index + 1}`));
+  reader.dispose();
+  owner.dispose();
+});
+
+it("an owed fill fenced mid-read does not consume the recorded demand", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(readMany(82), { lifetime: 1, readId: "read-full", boundary: "boundary-full" });
+  await owner.settled();
+  owner.noteOwedRecordedRange();
+  owner.acceptRead(windowedRead(83, 1), { lifetime: 1, readId: "read-window", boundary: "boundary-window" });
+  await owner.settled();
+  const reader = owner.attachReader();
+  // Hold the fill's durable pull and prove the open has reached it; the
+  // settlement races retire an open's ownership while its reads still run,
+  // and a disposed reader is that retirement. The fill assembles against a
+  // fence that then discards it: the demand the fill was satisfying must
+  // survive the discarded presentation, or the next open presents the bare
+  // wire window with every disarm point reading the debt as already paid.
+  const realGetLatest = fixture.cache.getLatest.bind(fixture.cache);
+  const fillEntered = deferred<void>();
+  let releaseFill!: () => void;
+  let fillArgs: unknown[] = [];
+  const heldFill = new Promise<unknown>((resolve) => {
+    releaseFill = () => resolve(realGetLatest(...(fillArgs as Parameters<typeof realGetLatest>)));
+  });
+  (fixture.cache as unknown as { getLatest: unknown }).getLatest = (...args: unknown[]) => {
+    fillArgs = args;
+    fillEntered.resolve();
+    return heldFill;
+  };
+  const fencedOpen = reader.openLocal(200);
+  await fillEntered.promise;
+  reader.dispose();
+  releaseFill();
+  await fencedOpen;
+  (fixture.cache as unknown as { getLatest: unknown }).getLatest = realGetLatest;
+  const reopenedReader = owner.attachReader();
+  const reopened = await reopenedReader.openLocal(200);
+  const texts = reopened.model?.turns.flatMap((turn) => turn.items).map((item) => item.text);
+  expect(texts).toEqual(Array.from({ length: 83 }, (_, index) => `row-${index + 1}`));
+  reopenedReader.dispose();
+  owner.dispose();
+});
+
+it("a promotion never stitches durable rows across an uncertified gap below the window", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  // The client cached rows 11..50 in an earlier session; the thread grew far
+  // past it while it was away, and a same-incarnation windowed read answers
+  // the newest 40-item window (301..340). The record holds both islands,
+  // and nothing certifies the history between them.
+  owner.acceptRead(rangedRead(11, 50), { lifetime: 1, readId: "read-old", boundary: "boundary-old" });
+  await owner.settled();
+  owner.noteOwedRecordedRange();
+  owner.acceptRead(windowedRead(340, 1), { lifetime: 1, readId: "read-window", boundary: "boundary-window" });
+  await owner.settled();
+  const reader = owner.attachReader();
+  const opened = await reader.openLocal(200);
+  // The owed fill must not present rows 11..50 directly below the window:
+  // nothing certifies the 51..300 gap, and stitching across it would show
+  // row-50 directly followed by row-301 with no sign of the missing
+  // history — later scroll-back pages would land mid-transcript. The
+  // disconnected rows belong to the server-paging machinery that owns
+  // cursors.
+  const texts = opened.model?.turns.flatMap((turn) => turn.items).map((item) => item.text);
+  expect(texts).toEqual(Array.from({ length: 40 }, (_, index) => `row-${index + 301}`));
+  // The disconnected rows are not owed to the display either: the demand
+  // resolves against the certified chain and reconciles to nothing.
+  expect(owner.owedRecorded()).toBeUndefined();
+  reader.dispose();
+  owner.dispose();
+});
+
+it("a legitimately sparse record restores fully below the window", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  // The projection's real shape: part indices skip merged text runs and
+  // hidden communicate calls ([0,2,3,5] is a COMPLETE entry), and an entry
+  // can project no items at all. A numeric item gap or a skipped entry
+  // number is never evidence of a coverage hole, so the promotion must
+  // restore the whole recorded range below the windowed answer.
+  const entries = [[0, 2, 3, 5], [], [0, 1]] as const;
+  const expected = ["row-e1p0", "row-e1p2", "row-e1p3", "row-e1p5", "row-e3p0", "row-e3p1"];
+  owner.acceptRead(sparseRead(entries), { lifetime: 1, readId: "read-full", boundary: "boundary-full" });
+  await owner.settled();
+  owner.noteOwedRecordedRange();
+  owner.acceptRead(sparseWindowedRead(entries, 2, 1), {
+    lifetime: 1,
+    readId: "read-window",
+    boundary: "boundary-window",
+  });
+  await owner.settled();
+  const reader = owner.attachReader();
+  const opened = await reader.openLocal(200);
+  const texts = opened.model?.turns.flatMap((turn) => turn.items).map((item) => item.text);
+  expect(texts).toEqual(expected);
+  reader.dispose();
+  owner.dispose();
+});
+
+it("a fill fenced mid-read does not record keys its discarded presentation never displayed", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(readMany(400), { lifetime: 1, readId: "read-full", boundary: "boundary-full" });
+  await owner.settled();
+  owner.noteOwedRecordedRange();
+  owner.acceptRead(windowedRead(400, 1), { lifetime: 1, readId: "read-window", boundary: "boundary-window" });
+  await owner.settled();
+  expect(owner.unreconciledRecorded().size).toBe(0);
+  const reader = owner.attachReader();
+  // The certified older query is capped at the window's complement, so the
+  // fill's restore arm can reach rows the query never covered — the rows a
+  // completed presentation would track as unreconciled. Fence the fill
+  // mid-read by disposing the reader, exactly the retirement the
+  // settlement races impose: the assembled presentation is discarded, so no
+  // key it would have tracked may be recorded.
+  const realGetLatest = fixture.cache.getLatest.bind(fixture.cache);
+  const fillEntered = deferred<void>();
+  let releaseFill!: () => void;
+  let fillArgs: unknown[] = [];
+  const heldFill = new Promise<unknown>((resolve) => {
+    releaseFill = () => resolve(realGetLatest(...(fillArgs as Parameters<typeof realGetLatest>)));
+  });
+  (fixture.cache as unknown as { getLatest: unknown }).getLatest = (...args: unknown[]) => {
+    fillArgs = args;
+    fillEntered.resolve();
+    return heldFill;
+  };
+  const fencedOpen = reader.openLocal(200);
+  await fillEntered.promise;
+  reader.dispose();
+  releaseFill();
+  await fencedOpen;
+  (fixture.cache as unknown as { getLatest: unknown }).getLatest = realGetLatest;
+  expect(owner.unreconciledRecorded().size).toBe(0);
+  owner.dispose();
+});
+
+it("a baseline change during the durable fill keeps the recorded demand armed", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  // The client's record holds rows 101..160 — the range below the wire
+  // window that a missed open owes the display. The windowed replace
+  // answers 101..140 while the demand is armed.
+  owner.acceptRead(rangedRead(101, 160), { lifetime: 1, readId: "read-old", boundary: "boundary-old" });
+  await owner.settled();
+  owner.noteOwedRecordedRange();
+  owner.acceptRead(windowedRead(140, 1), { lifetime: 1, readId: "read-window", boundary: "boundary-window" });
+  await owner.settled();
+  const reader = owner.attachReader();
+  // Hold the open's durable pull and prove the open has reached it, then
+  // let a NEWER windowed read (121..160, a fresh epoch) replace the
+  // baseline while the fill still awaits storage. The old fill resumes
+  // and resolves its debt against its own now-obsolete floor 101 — nothing
+  // in the record sits below it — and the presentation fences discard its
+  // assembly. Resolving identities per the current fill's floor may not
+  // mutate the armed demand before those fences pass: the discarded fill
+  // measured a floor the newer window has already moved past, and a demand
+  // it cleared would let the newer window certify complete with rows
+  // 101..120 never restored.
+  const realGetLatest = fixture.cache.getLatest.bind(fixture.cache);
+  const fillEntered = deferred<void>();
+  let releaseFill!: () => void;
+  let fillArgs: unknown[] = [];
+  const heldFill = new Promise<unknown>((resolve) => {
+    releaseFill = () => resolve(realGetLatest(...(fillArgs as Parameters<typeof realGetLatest>)));
+  });
+  (fixture.cache as unknown as { getLatest: unknown }).getLatest = (...args: unknown[]) => {
+    fillArgs = args;
+    fillEntered.resolve();
+    return heldFill;
+  };
+  const fencedOpen = reader.openLocal(200);
+  await fillEntered.promise;
+  owner.acceptRead(windowedRead(160, 2), { lifetime: 1, readId: "read-newer", boundary: "boundary-newer" });
+  releaseFill();
+  await fencedOpen;
+  (fixture.cache as unknown as { getLatest: unknown }).getLatest = realGetLatest;
+  // The fenced fill's resolution measured nothing; the demand it was
+  // satisfying must still stand for the newer baseline.
+  expect(owner.owedRecorded()).toBeDefined();
+  const reopenedReader = owner.attachReader();
+  const reopened = await reopenedReader.openLocal(200);
+  const texts = reopened.model?.turns.flatMap((turn) => turn.items).map((item) => item.text);
+  expect(texts).toEqual(Array.from({ length: 60 }, (_, index) => `row-${index + 101}`));
+  reopenedReader.dispose();
+  reader.dispose();
+  owner.dispose();
+});
+
 it("attaches a reader to an already-mounted model by reference without reconstructing history", () => {
   const fixture = createEntryCacheFixture();
   fixtures.push(fixture);
@@ -3167,4 +3797,53 @@ it("issues no IDB transaction, request, or recorded-history load for overlay-onl
     for (const load of historyLoads) load.mockRestore();
   }
   owner.dispose();
+});
+
+it("keeps a resolved escalation out of every later read, including one issued before the resolve", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const repo = repository(fixture.cache);
+  const reader = repo.attachReader();
+  const withEscalation = (response: ThreadReadResponse): ThreadReadResponse => ({
+    ...response,
+    thread: {
+      ...response.thread,
+      evener: {
+        ...response.thread.evener,
+        pendingEscalations: [
+          {
+            ref,
+            threadId,
+            escalationId: "esc_1",
+            mode: "workspace-write",
+            tool: "shell",
+            kind: "shell",
+            deniedPath: "/etc/hosts",
+          },
+        ],
+      },
+    },
+  });
+  try {
+    repo.acceptRead(withEscalation(read("baseline", 1)), { lifetime: 1, readId: "baseline", boundary: "baseline" });
+    expect(repo.getSnapshot()?.pendingEscalations).toHaveLength(1);
+    expect(
+      repo.accept(
+        {
+          method: "evener/sandbox/escalation/resolved",
+          params: { threadId, ref, escalationId: "esc_1" },
+        } as AnyNotification,
+        { lifetime: 1 },
+      ),
+    ).toBe(true);
+    expect(repo.getSnapshot()?.pendingEscalations).toEqual([]);
+
+    repo.acceptRead(withEscalation(read("later", 2)), { lifetime: 1, readId: "later", boundary: "later" });
+
+    expect(repo.getSnapshot()?.history?.length).toBe(2);
+    expect(repo.getSnapshot()?.pendingEscalations).toEqual([]);
+  } finally {
+    reader.dispose();
+    repo.dispose();
+  }
 });

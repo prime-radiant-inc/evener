@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"io/fs"
 	"math"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -43,8 +44,10 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
+	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/rendezvous"
 )
@@ -103,6 +106,17 @@ func TestBackgroundTranscriptsEntrySliceBrowser(t *testing.T) {
 		t.Fatalf("the production frontend is not built: run `make build-web` first: %v", err)
 	}
 	fixture := skillGuardSetup(t)
+	// Project deletion validates the bucket against its real working directory.
+	// The shared helper fixture's synthetic project ID is sufficient for reads,
+	// but this journey must use the production identity before the daemon starts.
+	project, err := identifier.ResolveProject(fixture.workDir[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.stateDir[0] = filepath.Join(fixture.stateRoot, "projects", project.ID)
+	if err := os.MkdirAll(fixture.stateDir[0], 0o700); err != nil {
+		t.Fatal(err)
+	}
 	for i, role := range []string{"sustained", "target"} {
 		for _, command := range []map[string]string{{"command": "background-mode"}, {"command": "background-role", "phase": role}} {
 			if err := appendFileLine(fixture.control[i], command); err != nil {
@@ -120,10 +134,7 @@ func TestBackgroundTranscriptsEntrySliceBrowser(t *testing.T) {
 	if err := roster.RefreshAndWait(ctx); err != nil {
 		t.Fatalf("roster refresh: %v", err)
 	}
-	past := hubcore.NewPastIndex(filepath.Join(fixture.stateRoot, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatalf("past index rebuild: %v", err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(fixture.stateRoot, "projects", "*"))
 	tokenBytes := make([]byte, 16)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		t.Fatalf("mint auth token: %v", err)
@@ -144,7 +155,35 @@ func TestBackgroundTranscriptsEntrySliceBrowser(t *testing.T) {
 	web := newWebServer(hubcore.WebConfig{AuthToken: hex.EncodeToString(tokenBytes), HubStateRoot: hubStateRoot, RunDir: fixture.runDir, Past: past, Roster: roster, PluginDirs: []string{filepath.Join(fixture.root, "controller-plugin")}, StateDir: fixture.stateRoot, PastIndexPath: filepath.Join(hubStateRoot, "index.db")}, appwireTrace)
 	past.SetOnChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
 	roster.SetOnChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
-	hub := httptest.NewServer(web.Handler())
+	// The driver deletes the sustained project after its history journey. Join
+	// its real daemon shutdown before that action, without destroying the target
+	// session's independent producer transcript. No AppWire response is replaced.
+	sustainedProject, ok := past.Find(entries[0].SessionID)
+	if !ok {
+		t.Fatal("sustained session is missing from the real past index")
+	}
+	skillGuardHelperMu.Lock()
+	sustained := skillGuardHelpers[0]
+	skillGuardHelperMu.Unlock()
+	handler := http.NewServeMux()
+	handler.HandleFunc("POST /background-guard/stop-sustained", func(w http.ResponseWriter, r *http.Request) {
+		if err := sustained.stop(0); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := roster.RefreshAndWait(r.Context()); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(appwire.ProjectDeleteParams{
+			Key: projectKeyForStateDir(sustainedProject.StateDir), WorkingDir: fixture.workDir[0],
+		}); err != nil {
+			t.Errorf("write stopped project identity: %v", err)
+		}
+	})
+	handler.Handle("/", web.Handler())
+	hub := httptest.NewServer(handler)
 	defer hub.Close()
 	milestones := filepath.Join(fixture.artifact, "milestones.jsonl")
 	if err := os.WriteFile(milestones, nil, 0o600); err != nil {
@@ -544,7 +583,7 @@ func assertBackgroundEntrySlice(t *testing.T, fixture *skillGuardFixture, milest
 		"entry-baseline", "entry-opened", "entry-completed",
 		"history-paging", "reopen-without-read", "further-paging",
 		"ws-broken", "gap-turn-completed", "reconnected-latest-window", "paged-back-sentinel",
-		"narrow-viewport", "two-tab-delete-fence", "two-tab-delete-refusal", "two-tab-clear-fence",
+		"narrow-viewport", "two-tab-delete-fence", "two-tab-delete-source", "two-tab-delete-refusal", "two-tab-clear-fence",
 		"responsive-reading", "new-pane-latest",
 		"done",
 	} {
@@ -930,6 +969,12 @@ func assertBackgroundTwoTabLive(t *testing.T, milestones []skillGuardMilestone, 
 // lease without rebinding its epoch.
 func assertBackgroundEntryTwoTabFencing(t *testing.T, milestones []skillGuardMilestone) {
 	t.Helper()
+	var source struct {
+		SourceReadOutcome string `json:"sourceReadOutcome"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field sourceReadOutcome.
+	}
+	if skillGuardMilestoneDetail(t, milestones, "two-tab-delete-source", &source) && source.SourceReadOutcome != "rejected" {
+		t.Errorf("two-tab-delete-source: source read outcome = %q, want rejected", source.SourceReadOutcome)
+	}
 	var delFence struct {
 		ADeletedRefs       bool `json:"aDeletedRefs"`       //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field aDeletedRefs.
 		BSuppressed        bool `json:"bSuppressed"`        //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field bSuppressed.
@@ -2018,8 +2063,7 @@ func TestBackgroundTranscriptTargetTraceEvidenceReusedIDsAcrossConnections(t *te
 
 // TestBackgroundTranscriptDurableTranscriptPath pins that the durable-transcript
 // reader follows the fixture's real layout: the daemons persist to
-// stateRoot/projects/<project>/sessions/<id>.transcript.jsonl
-// (skill_composer_browser_test.go:534-543). A reader that omits the "projects"
+// stateRoot/projects/<project>/sessions/<id>.transcript.jsonl. A reader that omits the "projects"
 // segment silently finds nothing and fails every content assertion regardless of
 // browser success.
 func TestBackgroundTranscriptDurableTranscriptPath(t *testing.T) {
@@ -2296,8 +2340,7 @@ func backgroundMilestonePresent(milestones []skillGuardMilestone, name string) b
 
 // backgroundTranscriptsFor reads exactly the named target session's durable
 // transcript under the fixture's real layout:
-// stateRoot/projects/<project>/sessions/<sessionID>.transcript.jsonl
-// (skill_composer_browser_test.go:534-543). A missing or unreadable expected
+// stateRoot/projects/<project>/sessions/<sessionID>.transcript.jsonl. A missing or unreadable expected
 // file is an error, never empty content, and no other session's transcript is
 // combined in.
 func backgroundTranscriptsFor(t *testing.T, stateRoot, sessionID string) (string, error) {

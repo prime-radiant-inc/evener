@@ -6,7 +6,6 @@ import (
 	"context"
 	"testing"
 
-	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
@@ -61,18 +60,17 @@ func fuzzSubagentRegressionPrograms(t *testing.T) {
 		name string
 		run  func(*testing.T)
 	}{
-		{"cancel-running", TestCancelAgent_RunningChildBecomesCancelledAndResumable},
-		{"cancel-not-running", TestCancelAgent_NotRunning},
+		{"cancel-running", TestDelegate_StopRunningChildThenResume},
 		{"cancel-race", TestCancelAgent_GenuineFailureRacingCancelStaysFailed},
 		{"snapshot-shape", TestResultSnapshot_CurrentShape},
 		{"snapshot-status", TestResultSnapshot_CarriesAgentIDAndStatus},
 		{"followup-provenance", TestSubagentFollowUpProvenanceUnionsLaunchActiveAndCompleted},
 		{"timestamps", TestSubagentTimestamps_ResetOnResume},
-		{"zero-allowance", TestPrepareSubagentRunRejectsZeroAllowance},
-		{"recursion", TestPrepareSubagentRunAllowsRecursionWithAllowance},
-		{"sandbox-failure", TestPrepareSubagentRun_PerDelegateSandboxCleansScratchOnSpawnFailure},
-		{"sandbox-parent", TestPrepareSubagentRun_PerDelegateSandboxOverridesSandboxedParent},
-		{"sandbox-no-isolation", TestPrepareSubagentRun_PerDelegateSandboxWithoutIsolationDoesNotMutateParent},
+		{"zero-allowance", TestSelectSubagentModel_AllowanceGuardPrecedesEnumeration},
+		{"recursion", TestSelectSubagentModelAllowsRecursionWithAllowance},
+		{"sandbox-failure", TestDelegate_PerDelegateSandboxCleansScratchOnSpawnFailure},
+		{"sandbox-parent", TestDelegate_PerDelegateSandboxOverridesSandboxedParent},
+		{"sandbox-no-isolation", TestDelegate_PerDelegateSandboxWithoutIsolationDoesNotMutateParent},
 		{"spawn-default", TestSpawnAgent_DefaultSubagentGetsComposedPrompt},
 		{"spawn-system-prompt", TestSpawnAgent_SystemPromptFileDoesNotOverrideSubagentPrompt},
 		{"spawn-tools", TestSpawnAgent_BuiltinSubagentKeepsDelegateSendTool},
@@ -144,15 +142,15 @@ func fuzzInitW3RegressionPrograms(t *testing.T) {
 		{"new-prompt", TestW3Init_NewSession_SystemPromptFileReadError},
 		{"new-strategy-tool", TestW3Init_NewSession_StrategyToolRegisterError},
 		{"restore-env", TestW3Init_Restore_EnvInitializeError},
-		{"restore-legacy-scan-first", TestW3Init_Restore_LegacyScanErrorPrecedesJobManager},
+		{"restore-legacy-scan-first", TestW3Init_Restore_CorruptJobJournalFailsRestore},
 		{"restore-init", TestW3Init_Restore_InitSessionStateError},
 		{"restore-strategy", TestW3Init_Restore_SelectStrategyError},
 		{"pending-nil-receiver", TestW3Init_PendingSessionStart_NilReceiver},
 		{"pending-no-hook", TestW3Init_PendingSessionStart_NoPendingHook},
 		{"pending-cancel", TestW3Init_PendingSessionStart_CtxCancelledInLoop},
 		{"pending-broadcast", TestW3Init_PendingSessionStart_AfterFuncBroadcast},
-		{"child-error", TestW3Init_PrepareSubagentRun_ChildSessionError},
-		{"skill-skip", TestW3Init_PrepareSubagentRun_SkillResolveSkipped},
+		{"child-error", TestW3Init_DelegateCreate_ChildSessionError},
+		{"skill-skip", TestW3Init_DelegateCreate_SkillResolveSkipped},
 		{"clone-maps", TestS5Cov_CloneMaps},
 		{"env-policy-name", TestS5Cov_LocalEnvPolicyName},
 		{"env-policy-parse", TestS5Cov_LocalEnvPolicyFromName},
@@ -173,13 +171,6 @@ func fuzzInitWorktreePureEdges(t *testing.T) {
 
 	if got := cloneMap(map[string]any{"unencodable": func() {}}); got["unencodable"] == nil {
 		t.Fatal("cloneMap marshal fallback lost value")
-	}
-	if err := (*Session)(nil).trackAndLaunchPreparedSubagent(nil); err == nil {
-		t.Fatal("nil prepared run succeeded")
-	}
-	missingSub := &Session{subagents: newSubagentManager(func(events.EventKind, events.EventData) {}, 0)}
-	if _, err := missingSub.sendInput(context.Background(), "missing", "input"); err == nil {
-		t.Fatal("unknown subagent send succeeded")
 	}
 
 	var nilSession *Session

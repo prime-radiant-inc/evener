@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/cheapmodel"
+	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/agent/internal/sessionlog"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
@@ -16,7 +17,12 @@ import (
 // forkSummarize makes a side LLM call using a cheap model to produce a
 // sessionlog.SessionLogEntry summarizing the most recent action in turns. The
 // prompt explicitly preserves failure signals so errors are not lost during
-// summarization.
+// summarization. A reply that does not parse as a JSON entry — an empty reply
+// never does — is one bad sample, and is resampled within the sample budget
+// the conversation summary uses (summarizerRouteAttempts keeps both surfaces
+// in step) before the failure surfaces; the exhausted error never embeds the
+// raw reply, because it reaches the user as a warning and warnings never
+// carry conversation-adjacent text.
 func forkSummarize(ctx context.Context, cheap *cheapmodel.Caller, profile *provider.Profile, turns []schema.Turn, turnNumber int) (sessionlog.SessionLogEntry, error) {
 	prompt := buildSummarizePrompt(turns)
 
@@ -24,22 +30,31 @@ func forkSummarize(ctx context.Context, cheap *cheapmodel.Caller, profile *provi
 		Messages: []llm.Message{llm.User(prompt)},
 	}
 
-	resp, err := cheap.Complete(ctx, profile, req)
-	if err != nil {
-		return sessionlog.SessionLogEntry{}, fmt.Errorf("fork summarize: %w", err)
+	for sample := 1; ; sample++ {
+		resp, err := cheap.Complete(ctx, profile, req)
+		if err != nil {
+			return sessionlog.SessionLogEntry{}, fmt.Errorf("fork summarize: %w", err)
+		}
+		if resp.Finish.Reason == llm.FinishReasonLength {
+			// A truncated reply hit the model's output cap, which a fresh
+			// sample hits again: like the conversation summary's cut-off
+			// replies, it gets no resample.
+			return sessionlog.SessionLogEntry{}, fmt.Errorf("fork summarize: %w", errSummaryForkReply)
+		}
+
+		text := strings.TrimSpace(resp.Text())
+		// Strip markdown code fences if the model wraps JSON in them.
+		text = stripCodeFence(text)
+
+		var entry sessionlog.SessionLogEntry
+		if err := json.Unmarshal([]byte(text), &entry); err == nil {
+			entry.Turn = turnNumber
+			return entry, nil
+		}
+		if sample >= summarizerRouteAttempts || ctx.Err() != nil {
+			return sessionlog.SessionLogEntry{}, fmt.Errorf("fork summarize: %w", errSummaryForkReply)
+		}
 	}
-
-	text := strings.TrimSpace(resp.Text())
-	// Strip markdown code fences if the model wraps JSON in them.
-	text = stripCodeFence(text)
-
-	var entry sessionlog.SessionLogEntry
-	if err := json.Unmarshal([]byte(text), &entry); err != nil {
-		return sessionlog.SessionLogEntry{}, fmt.Errorf("fork summarize: failed to parse JSON: %w (raw: %s)", err, text)
-	}
-
-	entry.Turn = turnNumber
-	return entry, nil
 }
 
 // buildSummarizePrompt renders the recent turns and the summarization
@@ -103,7 +118,7 @@ Respond with ONLY the JSON object, no markdown formatting.
 // truncate shortens s to limit characters, appending "..." if truncated.
 func truncate(s string, limit int) string {
 	if len(s) > limit {
-		return s[:limit] + "..."
+		return runetrim.Cut(s, limit) + "..."
 	}
 	return s
 }

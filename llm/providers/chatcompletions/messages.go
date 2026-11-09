@@ -2,6 +2,7 @@ package chatcompletions
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"primeradiant.com/evener/llm"
@@ -66,10 +67,14 @@ func toChatMessages(messages []llm.Message, caps registry.Caps, useReasoningDeta
 				"content": textFromParts(content),
 			})
 		case llm.RoleUser:
-			if hasImageContent(content) {
+			if hasImageOrDocumentContent(content) {
+				parts, err := buildMultimodalParts(content, caps)
+				if err != nil {
+					return nil, err
+				}
 				out = append(out, map[string]any{
 					"role":    "user",
-					"content": buildMultimodalParts(content, caps),
+					"content": parts,
 				})
 			} else {
 				out = append(out, map[string]any{
@@ -276,11 +281,22 @@ func thinkingFromParts(parts []llm.ContentPart) string {
 	return b.String()
 }
 
-// hasImageContent returns true if any content part is an image.
-func hasImageContent(parts []llm.ContentPart) bool {
+// hasImageOrDocumentContent reports whether the multimodal content form is
+// needed: the plain-text builder silently drops every non-text part, so an
+// image, or a document carrying inline bytes, must ride the array form. A
+// URL-only document stays plain — chat has no URL file mechanism — and
+// audio never reaches this gate: no production code sends one.
+func hasImageOrDocumentContent(parts []llm.ContentPart) bool {
 	for _, p := range parts {
-		if p.Kind == llm.ContentImage {
+		switch p.Kind {
+		case llm.ContentImage:
 			return true
+		case llm.ContentDocument:
+			// Inline bytes only, tested without encoding the payload —
+			// the builder pays that once when it emits the file part.
+			if p.Document != nil && len(p.Document.Data) > 0 {
+				return true
+			}
 		}
 	}
 	return false
@@ -288,7 +304,7 @@ func hasImageContent(parts []llm.ContentPart) bool {
 
 // buildMultimodalParts converts content parts to Chat Completions content array format
 // with {"type": "text", ...} and {"type": "image_url", ...} objects.
-func buildMultimodalParts(parts []llm.ContentPart, caps registry.Caps) []map[string]any {
+func buildMultimodalParts(parts []llm.ContentPart, caps registry.Caps) ([]map[string]any, error) {
 	var out []map[string]any
 	capDetail := registry.StringValue(caps.ImageDetail)
 	for _, p := range parts {
@@ -301,11 +317,11 @@ func buildMultimodalParts(parts []llm.ContentPart, caps registry.Caps) []map[str
 			}
 			imgURL := p.Image.URL
 			if imgURL == "" && len(p.Image.Data) > 0 {
-				mt := p.Image.MediaType
-				if mt == "" {
-					mt = "image/png"
+				data, normalizedType, err := chatImageBytes(p.Image.Data, p.Image.MediaType)
+				if err != nil {
+					return nil, err
 				}
-				imgURL = llm.DataURI(mt, p.Image.Data)
+				imgURL = llm.DataURI(normalizedType, data)
 			}
 			if imgURL == "" {
 				continue
@@ -315,9 +331,34 @@ func buildMultimodalParts(parts []llm.ContentPart, caps registry.Caps) []map[str
 				urlObj["detail"] = detail
 			}
 			out = append(out, map[string]any{"type": "image_url", "image_url": urlObj})
+		case llm.ContentDocument:
+			// A document rides the chat wire as a file part whose file_data
+			// carries the bytes as a data URI, matching the Responses
+			// protocol's input_file and Anthropic's document block. A
+			// URL-only document stays with the plain-text form: chat file
+			// parts take base64 data only and have no URL mechanism.
+			fileData := llm.DocumentFileData(p.Document)
+			if fileData == "" {
+				continue
+			}
+			out = append(out, map[string]any{"type": "file", "file": map[string]any{"file_data": fileData}})
 		}
 	}
-	return out
+	return out, nil
+}
+
+// chatImageBytes returns bytes and a media type the Chat Completions image
+// block accepts. A claimed type already in the set keeps its bytes; any other
+// decodable raster is re-encoded as PNG (a BMP or TIFF attachment would
+// otherwise be rejected and fail the whole turn, #4584); bytes that are not a
+// decodable raster are refused loudly.
+func chatImageBytes(data []byte, claimedMediaType string) ([]byte, string, error) {
+	return llm.NormalizeImageForWire(
+		data,
+		claimedMediaType,
+		llm.ImageBlockMediaType,
+		fmt.Sprintf("chat completions image %q is not a decodable raster", claimedMediaType),
+	)
 }
 
 // requestWithoutToolResultImages returns a request whose tool-result image
@@ -366,14 +407,20 @@ func toolCallsFromParts(parts []llm.ContentPart) []map[string]any {
 	var calls []map[string]any
 	for _, p := range parts {
 		if p.Kind == llm.ContentToolCall && p.ToolCall != nil {
-			calls = append(calls, map[string]any{
+			call := map[string]any{
 				"id":   p.ToolCall.ID,
 				"type": "function",
 				"function": map[string]any{
 					"name":      p.ToolCall.Name,
 					"arguments": openaichat.ToolArgumentsString(p.ToolCall.Arguments),
 				},
-			})
+			}
+			if sig := strings.TrimSpace(p.ToolCall.ThoughtSignature); sig != "" {
+				call["extra_content"] = map[string]any{
+					"google": map[string]any{"thought_signature": sig},
+				}
+			}
+			calls = append(calls, call)
 		}
 	}
 	return calls

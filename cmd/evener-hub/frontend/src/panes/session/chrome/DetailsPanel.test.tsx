@@ -1,27 +1,12 @@
-import type { ThreadCapabilities, ThreadModel, TurnModel } from "@evener/appwire-client";
+import type { ThreadModel, TurnModel } from "@evener/appwire-client";
 import { tokenUnitLabel } from "@evener/appwire-client";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
+import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import rawMeterStyles from "../../../widgets/meter/meter.module.css";
 import { DetailsPanel } from "./DetailsPanel";
-
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
 
 function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
   const { jobsTreeRevision = null, ...rest } = overrides;
@@ -83,6 +68,18 @@ function rowTerm(value: HTMLElement): string | null | undefined {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+});
+
+test.each([true, false, undefined])("Manager projection %s is read-only in session details", async (manager) => {
+  await openPanel(testModel({ manager }));
+  expect(screen.queryByRole("switch")).toBeNull();
+  const indication = screen.queryByTestId("session-details-manager");
+  if (manager) {
+    expect(indication?.closest("dd")).toBeTruthy();
+    expect(indication?.closest("button")).toBeNull();
+  } else {
+    expect(indication).toBeNull();
+  }
 });
 
 test("the trigger opens the details sheet", async () => {

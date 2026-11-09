@@ -12,6 +12,57 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+func TestDescendantWorkingDirectoryStartChangeReplayAndOwnerFence(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	t.Cleanup(srv.Close)
+	srv.SetAppIdentity("local", "root")
+	srv.RecordAppEvent(threadEvent("root", events.EnvironmentChangedData{WorkingDir: "/root"}))
+	read := func(id, want string) {
+		t.Helper()
+		response, err := srv.handleAppThreadRead(t.Context(), appwire.ThreadReadParams{Ref: "local:" + id})
+		if err != nil || response.Thread.ID != id || response.Thread.CWD != want {
+			t.Fatalf("read %s = %+v, %v, want cwd %q", id, response.Thread, err, want)
+		}
+	}
+	for _, id := range []string{"child", "sibling"} {
+		srv.RecordDescendantAppEvent("root", threadEvent(id, events.SessionStartData{WorkingDir: "/" + id}))
+		read(id, "/"+id)
+	}
+	srv.RecordDescendantAppEvent("root", threadEvent("child", events.EnvironmentChangedData{WorkingDir: "/child/worktree"}))
+	read("child", "/child/worktree")
+	read("sibling", "/sibling")
+	read("root", "/root")
+	resyncs := 0
+	for _, n := range srv.AppNotificationsAfter(0, "child") {
+		if n.Notification.Method == appwire.NotifyThreadStarted {
+			p := notificationParams[appwire.ThreadStartedParams](t, n)
+			if p.Thread.CWD != "/child" {
+				t.Fatalf("replayed start mutated: %+v", p)
+			}
+		}
+		if n.Notification.Method == appwire.NotifyEvenerThreadResync {
+			p := notificationParams[appwire.ThreadResyncParams](t, n)
+			if p.ThreadID != "child" || p.Ref != "local:child" {
+				t.Fatalf("resync targets wrong reader: %+v", p)
+			}
+			resyncs++
+		}
+	}
+	if resyncs != 1 {
+		t.Fatalf("child cwd resync count = %d", resyncs)
+	}
+	srv.SetAppIdentity("local", "replacement")
+	srv.RecordDescendantAppEvent("replacement", threadEvent("child", events.SessionStartData{WorkingDir: "/restored/child", Restored: true}))
+	replay := srv.AppNotificationsAfter(0, "child")
+	cut := replay[len(replay)-1].Seq
+	srv.RecordDescendantAppEvent("root", threadEvent("child", events.EnvironmentChangedData{WorkingDir: "/stale"}))
+	srv.RecordDescendantAppEvent("root", threadEvent("child", events.SessionStartData{WorkingDir: "/stale-start"}))
+	read("child", "/restored/child")
+	if replay := srv.AppNotificationsAfter(cut, "child"); len(replay) != 0 {
+		t.Fatalf("old owner published after replacement: %+v", replay)
+	}
+}
+
 type environmentReplayAdapter struct{ mutationProjectionAdapter }
 
 func (a *environmentReplayAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {

@@ -125,56 +125,6 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"ThreadTurnItemsList", MethodThreadTurnItemsList, `{"ref":"local:th","turnId":"tn_1"}`, ThreadTurnItemsListResponse{NextCursor: "n2"}, func(ctx context.Context, c *Client) error {
-			out, err := c.ThreadTurnItemsList(ctx, ThreadTurnItemsListParams{Ref: "local:th", TurnID: "tn_1"})
-			if err != nil {
-				return err
-			}
-			if out.NextCursor != "n2" {
-				return errors.New("ThreadTurnItemsList decode mismatch")
-			}
-			return nil
-		}},
-		{"ThreadTranscriptList", MethodEvenerThreadTranscriptsList, `{"ref":"local:th"}`, ThreadTranscriptListResponse{Data: []ThreadTranscriptTarget{{Ref: "local:th"}}}, func(ctx context.Context, c *Client) error {
-			out, err := c.ThreadTranscriptList(ctx, ThreadTranscriptListParams{Ref: "local:th"})
-			if err != nil {
-				return err
-			}
-			if len(out.Data) != 1 {
-				return errors.New("ThreadTranscriptList decode mismatch")
-			}
-			return nil
-		}},
-		{"ThreadStart", MethodThreadStart, `{"harness":"evener","cwd":"/tmp"}`, ThreadStartResponse{Thread: Thread{ID: "th_3"}}, func(ctx context.Context, c *Client) error {
-			out, err := c.ThreadStart(ctx, ThreadStartParams{CWD: "/tmp", Harness: "evener"})
-			if err != nil {
-				return err
-			}
-			if out.Thread.ID != "th_3" {
-				return errors.New("ThreadStart decode mismatch")
-			}
-			return nil
-		}},
-		{"ThreadResume", MethodThreadResume, `{"sessionId":"sess_1"}`, ThreadResumeResponse{Thread: Thread{ID: "th_4"}}, func(ctx context.Context, c *Client) error {
-			out, err := c.ThreadResume(ctx, ThreadResumeParams{Session: "sess_1"})
-			if err != nil {
-				return err
-			}
-			if out.Thread.ID != "th_4" {
-				return errors.New("ThreadResume decode mismatch")
-			}
-			return nil
-		}},
-		{"ThreadFork", MethodThreadFork, `{"ref":"local:th","sourceItemKey":"tn_1"}`, ThreadForkResponse{Thread: Thread{ID: "th_5"}}, func(ctx context.Context, c *Client) error {
-			out, err := c.ThreadFork(ctx, ThreadForkParams{Ref: "local:th", SourceItemKey: "tn_1"})
-			if err != nil {
-				return err
-			}
-			if out.Thread.ID != "th_5" {
-				return errors.New("ThreadFork decode mismatch")
-			}
-			return nil
-		}},
 		{"ThreadClear", MethodThreadClear, `{"ref":"local:th","clientMutationId":"cm_clear","expectedInstanceId":"instance_1"}`, ThreadClearResponse{Ref: "local:th"}, func(ctx context.Context, c *Client) error {
 			out, err := c.ThreadClear(ctx, ThreadClearParams{Ref: "local:th", ClientMutationID: "cm_clear", ExpectedInstanceID: "instance_1"})
 			if err != nil {
@@ -197,47 +147,6 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 		{"ThreadShutdown", MethodThreadShutdown, `{"ref":"local:th"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
 			return c.ThreadShutdown(ctx, ThreadShutdownParams{Ref: "local:th"})
 		}},
-		{"ArchiveSet", MethodEvenerArchiveSet, `{"kind":"project","id":"project-key","workingDir":"/tmp/project","archived":true}`, ArchiveResponse{
-			OK: true,
-			Navigation: NavigationMutation{
-				GenerationID: "generation-a",
-				Targets:      []NavigationInvalidationTarget{{Kind: NavigationTargetProject, ProjectKey: "project-key", Revision: 3}},
-			},
-		}, func(ctx context.Context, c *Client) error {
-			out, err := c.ArchiveSet(ctx, ArchiveParams{
-				Kind:       ArchiveTargetProject,
-				ID:         "project-key",
-				WorkingDir: "/tmp/project",
-				Archived:   true,
-			})
-			if err != nil {
-				return err
-			}
-			if !out.OK || out.Navigation.GenerationID != "generation-a" || len(out.Navigation.Targets) != 1 {
-				return errors.New("ArchiveSet decode mismatch")
-			}
-			return nil
-		}},
-		{"SessionDelete", MethodEvenerSessionDelete, `{"ref":"local:th"}`, SessionDeleteResponse{
-			Deleted: []string{"th"},
-			Skipped: []DeletionSkip{},
-			Navigation: NavigationMutation{
-				GenerationID: "generation-a",
-				Targets:      []NavigationInvalidationTarget{{Kind: NavigationTargetProject, ProjectKey: "project-key", Revision: 4}},
-			},
-		}, func(ctx context.Context, c *Client) error {
-			out, err := c.SessionDelete(ctx, SessionDeleteParams{Ref: "local:th"})
-			if err != nil {
-				return err
-			}
-			if len(out.Deleted) != 1 || out.Deleted[0] != "th" || len(out.Skipped) != 0 || out.Navigation.GenerationID != "generation-a" {
-				return errors.New("SessionDelete decode mismatch")
-			}
-			return nil
-		}},
-		{"TurnInterrupt", MethodTurnInterrupt, `{"ref":"local:th","clientMutationId":"cm_interrupt","expectedInstanceId":"instance_1"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
-			return c.TurnInterrupt(ctx, TurnInterruptParams{Ref: "local:th", ClientMutationID: "cm_interrupt", ExpectedInstanceID: "instance_1"})
-		}},
 		{"TasksList", MethodEvenerTasksList, `{"ref":"local:th"}`, TaskListResponse{Data: []Task{{
 			ID: 5, Type: TaskTypeImplement, Description: "Wire up the status row",
 			Prompt: "Follow the existing disclosure idiom.", Status: TaskInProgress,
@@ -254,26 +163,6 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 				row.Description != "Wire up the status row" ||
 				row.Prompt != "Follow the existing disclosure idiom." || row.Status != TaskInProgress {
 				return fmt.Errorf("TasksList row = %#v", row)
-			}
-			return nil
-		}},
-		{"PathsComplete", MethodEvenerPathsComplete, `{"prefix":"/","limit":10}`, PathsCompleteResponse{Data: []string{"/a", "/b"}}, func(ctx context.Context, c *Client) error {
-			out, err := c.PathsComplete(ctx, PathsCompleteParams{Prefix: "/", Limit: 10})
-			if err != nil {
-				return err
-			}
-			if len(out.Data) != 2 {
-				return errors.New("PathsComplete decode mismatch")
-			}
-			return nil
-		}},
-		{"DirsCreate", MethodEvenerDirsCreate, `{"path":"/tmp/new"}`, DirsCreateResponse{Path: "/tmp/new", Created: true}, func(ctx context.Context, c *Client) error {
-			out, err := c.DirsCreate(ctx, DirsCreateParams{Path: "/tmp/new"})
-			if err != nil {
-				return err
-			}
-			if out.Path != "/tmp/new" || !out.Created {
-				return errors.New("DirsCreate decode mismatch")
 			}
 			return nil
 		}},
@@ -369,66 +258,6 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"ProjectsRecent", MethodEvenerProjectsRecent, `{"limit":15}`, ProjectsRecentResponse{Data: []string{"/a", "/b"}}, func(ctx context.Context, c *Client) error {
-			out, err := c.ProjectsRecent(ctx, ProjectsRecentParams{Limit: 15})
-			if err != nil {
-				return err
-			}
-			if len(out.Data) != 2 {
-				return errors.New("ProjectsRecent decode mismatch")
-			}
-			return nil
-		}},
-		{"HarnessList", MethodEvenerHarnessesList, `{}`, HarnessListResponse{Data: []HarnessDescriptor{{ID: "evener"}}}, func(ctx context.Context, c *Client) error {
-			out, err := c.HarnessList(ctx, HarnessListParams{})
-			if err != nil {
-				return err
-			}
-			if len(out.Data) != 1 || out.Data[0].ID != "evener" {
-				return errors.New("HarnessList decode mismatch")
-			}
-			return nil
-		}},
-		{"AuthStatus", MethodEvenerAuthStatus, `{"provider":"openai"}`, AuthStatusResponse{Provider: "openai", SignedIn: true}, func(ctx context.Context, c *Client) error {
-			out, err := c.AuthStatus(ctx, AuthStatusParams{Provider: "openai"})
-			if err != nil {
-				return err
-			}
-			if out.Provider != "openai" || !out.SignedIn {
-				return errors.New("AuthStatus decode mismatch")
-			}
-			return nil
-		}},
-		{"AuthLoginStart", MethodEvenerAuthLoginStart, `{"provider":"openai"}`, AuthLoginStartResponse{FlowID: "f1", URL: "https://x"}, func(ctx context.Context, c *Client) error {
-			out, err := c.AuthLoginStart(ctx, AuthLoginStartParams{Provider: "openai"})
-			if err != nil {
-				return err
-			}
-			if out.FlowID != "f1" {
-				return errors.New("AuthLoginStart decode mismatch")
-			}
-			return nil
-		}},
-		{"AuthLoginComplete", MethodEvenerAuthLoginComplete, `{"provider":"openai","flowId":"f1","redirectUrl":"https://x/callback"}`, AuthLoginCompleteResponse{Status: AuthStatusResponse{SignedIn: true}}, func(ctx context.Context, c *Client) error {
-			out, err := c.AuthLoginComplete(ctx, AuthLoginCompleteParams{Provider: "openai", FlowID: "f1", RedirectURL: "https://x/callback"})
-			if err != nil {
-				return err
-			}
-			if !out.Status.SignedIn {
-				return errors.New("AuthLoginComplete decode mismatch")
-			}
-			return nil
-		}},
-		{"AuthLogout", MethodEvenerAuthLogout, `{"provider":"openai"}`, AuthLogoutResponse{Removed: true}, func(ctx context.Context, c *Client) error {
-			out, err := c.AuthLogout(ctx, AuthLogoutParams{Provider: "openai"})
-			if err != nil {
-				return err
-			}
-			if !out.Removed {
-				return errors.New("AuthLogout decode mismatch")
-			}
-			return nil
-		}},
 		{"ModelList", MethodModelList, `{"harness":"evener"}`, ModelListResponse{Data: []ModelDescriptor{{Provider: "openai", Model: "gpt"}}}, func(ctx context.Context, c *Client) error {
 			out, err := c.ModelList(ctx, ModelListParams{Harness: "evener"})
 			if err != nil {
@@ -446,78 +275,10 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			_, err := c.TurnStart(ctx, TurnStartParams{Ref: "local:th", ClientMutationID: "cm_start", ExpectedInstanceID: "instance_1", Input: []InputItem{{Type: "text", Text: "hello"}}})
 			return err
 		}},
-		{"TurnSteer", MethodTurnSteer, `{"ref":"local:th","clientMutationId":"cm_steer","expectedInstanceId":"instance_1","input":[{"type":"text","text":"steer"}]}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
-			return c.TurnSteer(ctx, TurnSteerParams{Ref: "local:th", ClientMutationID: "cm_steer", ExpectedInstanceID: "instance_1", Input: []InputItem{{Type: "text", Text: "steer"}}})
-		}},
-		{"TurnQueue", MethodTurnQueue, `{"ref":"local:th","clientMutationId":"cm_queue","expectedInstanceId":"instance_1","input":[{"type":"text","text":"queued"}]}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
-			return c.TurnQueue(ctx, TurnQueueParams{Ref: "local:th", ClientMutationID: "cm_queue", ExpectedInstanceID: "instance_1", Input: []InputItem{{Type: "text", Text: "queued"}}})
-		}},
-		{"TurnDrain", MethodTurnDrainAsSteer, `{"ref":"local:th","clientMutationId":"cm_drain","expectedInstanceId":"instance_1","expectedQueueRevision":7}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
-			return c.TurnDrainAsSteer(ctx, TurnDrainAsSteerParams{Ref: "local:th", ClientMutationID: "cm_drain", ExpectedInstanceID: "instance_1", ExpectedQueueRevision: 7})
-		}},
-		{"TurnPromoteQueuedAsSteer", MethodTurnPromoteQueuedAsSteer, `{"ref":"local:th","index":2,"clientMutationId":"cm_promote","expectedInstanceId":"instance_1","expectedEntryId":"qe_1"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
-			return c.TurnPromoteQueuedAsSteer(ctx, TurnPromoteQueuedAsSteerParams{
-				Ref: "local:th", Index: 2, ClientMutationID: "cm_promote", ExpectedInstanceID: "instance_1", ExpectedEntryID: "qe_1",
-			})
-		}},
 		{"TurnCancelQueued", MethodTurnCancelQueued, `{"ref":"local:th","index":1,"clientMutationId":"cm_cancel","expectedInstanceId":"instance_1","expectedEntryId":"qe_2"}`, TurnCancelQueuedResponse{}, func(ctx context.Context, c *Client) error {
 			_, err := c.TurnCancelQueued(ctx, TurnCancelQueuedParams{
 				Ref: "local:th", Index: 1, ClientMutationID: "cm_cancel", ExpectedInstanceID: "instance_1", ExpectedEntryID: "qe_2",
 			})
-			return err
-		}},
-		{"CommandList", MethodEvenerCommandList, `{}`, map[string]any{}, func(ctx context.Context, c *Client) error { _, err := c.CommandList(ctx); return err }},
-		{"MarketplaceList", MethodEvenerMarketplaceList, `{}`, map[string]any{}, func(ctx context.Context, c *Client) error { _, err := c.MarketplaceList(ctx); return err }},
-		{"MarketplaceAdd", MethodEvenerMarketplaceAdd, `{"name":"acme","source":{"kind":"url","repo":"acme/plugins"}}`, map[string]any{}, func(ctx context.Context, c *Client) error {
-			_, err := c.MarketplaceAdd(ctx, MarketplaceAddParams{Name: "acme", Source: MarketplaceSourceInput{Kind: "url", Repo: "acme/plugins"}})
-			return err
-		}},
-		{"MarketplaceEdit", MethodEvenerMarketplaceEdit, `{"name":"acme","newName":"acme2","source":{"kind":"url","repo":"acme/plugins"}}`, map[string]any{}, func(ctx context.Context, c *Client) error {
-			_, err := c.MarketplaceEdit(ctx, MarketplaceEditParams{
-				Name: "acme", NewName: "acme2", Source: &MarketplaceSourceInput{Kind: "url", Repo: "acme/plugins"},
-			})
-			return err
-		}},
-		{"MarketplaceRemove", MethodEvenerMarketplaceRemove, `{"name":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
-			_, err := c.MarketplaceRemove(ctx, MarketplaceNameParams{Name: "acme"})
-			return err
-		}},
-		{"MarketplaceRefresh", MethodEvenerMarketplaceRefresh, `{"name":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
-			_, err := c.MarketplaceRefresh(ctx, MarketplaceNameParams{Name: "acme"})
-			return err
-		}},
-		{"MarketplaceBrowse", MethodEvenerMarketplaceBrowse, `{"name":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
-			_, err := c.MarketplaceBrowse(ctx, MarketplaceBrowseParams{Name: "acme"})
-			return err
-		}},
-		{"PluginList", MethodEvenerPluginList, `{}`, map[string]any{}, func(ctx context.Context, c *Client) error { _, err := c.PluginList(ctx); return err }},
-		{"PluginPreview", MethodEvenerPluginPreview, `{"cwd":"/tmp","launchOverrides":{"enabledPlugins":[]}}`, map[string]any{}, func(ctx context.Context, c *Client) error {
-			empty := []string{}
-			_, err := c.PluginPreview(ctx, PluginPreviewParams{CWD: "/tmp", LaunchOverrides: &LaunchConfigLayer{EnabledPlugins: &empty}})
-			return err
-		}},
-		{"PluginInstall", MethodEvenerPluginInstall, `{"plugin":"fmt","marketplace":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
-			_, err := c.PluginInstall(ctx, PluginRefParams{Plugin: "fmt", Marketplace: "acme"})
-			return err
-		}},
-		{"PluginUpgrade", MethodEvenerPluginUpgrade, `{"plugin":"fmt","marketplace":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
-			_, err := c.PluginUpgrade(ctx, PluginRefParams{Plugin: "fmt", Marketplace: "acme"})
-			return err
-		}},
-		{"PluginRemove", MethodEvenerPluginRemove, `{"plugin":"fmt","marketplace":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
-			_, err := c.PluginRemove(ctx, PluginRefParams{Plugin: "fmt", Marketplace: "acme"})
-			return err
-		}},
-		{"PluginEnable", MethodEvenerPluginEnable, `{"plugin":"fmt","marketplace":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
-			_, err := c.PluginEnable(ctx, PluginRefParams{Plugin: "fmt", Marketplace: "acme"})
-			return err
-		}},
-		{"PluginDisable", MethodEvenerPluginDisable, `{"plugin":"fmt","marketplace":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
-			_, err := c.PluginDisable(ctx, PluginRefParams{Plugin: "fmt", Marketplace: "acme"})
-			return err
-		}},
-		{"PluginAutoUpgrade", MethodEvenerPluginSetAutoUpgrade, `{"plugin":"fmt","marketplace":"acme","autoUpgrade":true}`, map[string]any{}, func(ctx context.Context, c *Client) error {
-			_, err := c.PluginSetAutoUpgrade(ctx, PluginSetAutoUpgradeParams{Plugin: "fmt", Marketplace: "acme", AutoUpgrade: true})
 			return err
 		}},
 	}
@@ -734,37 +495,33 @@ func TestInputParamAccessors(t *testing.T) {
 	}
 }
 
-func TestInputTextPrefersFirstNonBlank(t *testing.T) {
-	if got := inputText([]InputItem{{Text: "   "}, {Text: "real"}}); got != "real" {
-		t.Fatalf("inputText=%q, want real", got)
+// The env recorder writes under the Evener state root and records nothing when
+// no state root can be resolved (no XDG_STATE_HOME and no HOME).
+func TestEnvFrameRecorderStateRoot(t *testing.T) {
+	t.Setenv(envvars.EVENERRecordAppwire.Name, "1")
+	state := t.TempDir()
+	t.Setenv(envvars.XDGStateHome.Name, state)
+	if err := os.MkdirAll(filepath.Join(state, "evener"), 0o700); err != nil {
+		t.Fatal(err)
 	}
-	if got := inputText(nil); got != "" {
-		t.Fatalf("inputText(nil)=%q, want empty", got)
+	rec := newEnvFrameRecorder()
+	if rec == nil {
+		t.Fatal("recorder not created under XDG_STATE_HOME")
 	}
-}
-
-func TestPendingTargetRefFallsBackToThreadID(t *testing.T) {
-	if got := pendingTargetRef("ref1", "th"); got != "ref1" {
-		t.Fatalf("pendingTargetRef with ref=%q", got)
-	}
-	if got := pendingTargetRef("   ", "th"); got != "th" {
-		t.Fatalf("pendingTargetRef fallback=%q", got)
-	}
-}
-
-// recorderStateRoot resolves XDG_STATE_HOME first, else the home-relative
-// default; the recorder is a low-level codec helper with no dependency on the
-// cmd layer, so this precedence must hold on its own.
-func TestRecorderStateRoot(t *testing.T) {
-	t.Setenv(envvars.XDGStateHome.Name, "/custom/state")
-	if got := recorderStateRoot(); got != "/custom/state/evener" {
-		t.Fatalf("recorderStateRoot with XDG_STATE_HOME=%q", got)
+	_ = rec.Close()
+	if _, err := os.Stat(filepath.Join(state, "evener", "appwire-frames.jsonl")); err != nil {
+		t.Fatalf("recording file under the state root: %v", err)
 	}
 
 	t.Setenv(envvars.XDGStateHome.Name, "")
-	t.Setenv("HOME", "/home/tester")
-	if got := recorderStateRoot(); got != "/home/tester/.local/state/evener" {
-		t.Fatalf("recorderStateRoot home fallback=%q", got)
+	t.Setenv("HOME", "")
+	t.Chdir(t.TempDir())
+	if rec := newEnvFrameRecorder(); rec != nil {
+		_ = rec.Close()
+		t.Fatal("recorder created with no state root")
+	}
+	if _, err := os.Stat(".local"); !os.IsNotExist(err) {
+		t.Fatalf("a relative .local directory was created: %v", err)
 	}
 }
 

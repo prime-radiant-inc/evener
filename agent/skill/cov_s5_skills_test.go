@@ -3,10 +3,7 @@ package skill
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
-
-	"primeradiant.com/evener/agent/execenv"
 )
 
 // writeSkill lays out a skill directory <root>/<dir>/SKILL.md with the given
@@ -76,104 +73,6 @@ func TestScanSkillsDir_MissingDirIsNoop(t *testing.T) {
 	}
 }
 
-func TestLoadSkillBody(t *testing.T) {
-	root := t.TempDir()
-	writeSkill(t, root, "tdd", validSkill)
-	skills := map[string]SkillMeta{}
-	ScanSkillsDir(root, skills)
-	meta, ok := skills["tdd"]
-	if !ok {
-		t.Fatal("discovery did not produce tdd metadata")
-	}
-	body, err := LoadSkillBody(meta)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(body, "Write the test first") {
-		t.Errorf("body = %q", body)
-	}
-	// Missing file → error.
-	if _, err := LoadSkillBody(SkillMeta{SkillFile: filepath.Join(root, "gone.md")}); err == nil {
-		t.Error("missing skill file should error")
-	}
-}
-
-func TestResolveSkillContent_ExactAndUnnamespaced(t *testing.T) {
-	root := t.TempDir()
-	writeSkill(t, root, "tdd", validSkill)
-	discovered := map[string]SkillMeta{}
-	ScanSkillsDir(root, discovered)
-	meta, ok := discovered["tdd"]
-	if !ok {
-		t.Fatal("discovery did not produce tdd metadata")
-	}
-	skills := map[string]SkillMeta{"myplugin:tdd": meta}
-
-	// Unnamespaced "tdd" resolves the namespaced key.
-	body, err := ResolveSkillContent(skills, "tdd")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(body, "Write the test first") {
-		t.Errorf("unnamespaced resolve returned %q", body)
-	}
-	// Exact key resolves too.
-	if body, err = ResolveSkillContent(skills, "myplugin:tdd"); err != nil || body == "" {
-		t.Errorf("exact resolve failed: %v %q", err, body)
-	}
-	// Unknown → ("", nil).
-	if body, err = ResolveSkillContent(skills, "unknown"); err != nil || body != "" {
-		t.Errorf("unknown skill should be empty/nil, got %q %v", body, err)
-	}
-}
-
-// DiscoverSkills walks the env's working directory tree plus extra dirs, with
-// extra dirs shadowing project skills of the same name.
-func TestDiscoverSkills_WalkAndShadow(t *testing.T) {
-	proj := t.TempDir()
-	writeSkill(t, filepath.Join(proj, "skills"), "tdd", validSkill)
-
-	extra := t.TempDir()
-	writeSkill(t, extra, "tdd", strings.Replace(validSkill, "Write the test first", "SHADOWED body", 1))
-
-	env := execenv.NewLocalExecutionEnvironment(proj)
-	skills := DiscoverSkills(env, extra)
-
-	meta, ok := skills["tdd"]
-	if !ok {
-		t.Fatal("tdd not discovered")
-	}
-	body, err := LoadSkillBody(meta)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(body, "SHADOWED body") {
-		t.Errorf("extra dir should shadow the project skill, got %q", body)
-	}
-}
-
-func TestDiscoverSkills_NilEnv(t *testing.T) {
-	if got := DiscoverSkills(nil); got != nil {
-		t.Errorf("nil env should return nil, got %v", got)
-	}
-}
-
-// ExtractEmbeddedSkills materializes the bundled skills to disk; the result is a
-// directory of skill subdirs usable as a DiscoverSkills extraDir.
-func TestExtractEmbeddedSkills(t *testing.T) {
-	dir, err := ExtractEmbeddedSkills()
-	if err != nil {
-		t.Fatalf("ExtractEmbeddedSkills: %v", err)
-	}
-	defer os.RemoveAll(dir)
-
-	out := map[string]SkillMeta{}
-	ScanSkillsDir(dir, out)
-	if len(out) == 0 {
-		t.Errorf("expected at least one embedded skill under %s", dir)
-	}
-}
-
 // EmbeddedSkillsDir extracts the immutable bundled skills exactly once per
 // process and hands every caller the same shared, read-only directory. The
 // embedded content is identical for every session, so re-extracting it per
@@ -196,44 +95,5 @@ func TestEmbeddedSkillsDir_CachesAcrossCalls(t *testing.T) {
 	ScanSkillsDir(first, out)
 	if len(out) == 0 {
 		t.Errorf("expected at least one embedded skill under cached dir %s", first)
-	}
-}
-
-func TestEmbeddedSkills_CachesFilesystemBackedMetadata(t *testing.T) {
-	pointEmbeddedSkillsAtBase(t, t.TempDir())
-	first, err := EmbeddedSkills()
-	if err != nil {
-		t.Fatalf("EmbeddedSkills: %v", err)
-	}
-	if len(first) == 0 {
-		t.Fatal("expected at least one embedded skill")
-	}
-
-	var name string
-	var meta SkillMeta
-	for name, meta = range first {
-		break
-	}
-	if meta.Dir == "" || meta.SkillFile == "" {
-		t.Fatalf("embedded skill %q missing filesystem locations: %+v", name, meta)
-	}
-	if _, err := os.Stat(meta.SkillFile); err != nil {
-		t.Fatalf("embedded skill %q file path is not readable: %v", name, err)
-	}
-	body, err := LoadSkillBody(meta)
-	if err != nil {
-		t.Fatalf("LoadSkillBody(%s): %v", name, err)
-	}
-	if strings.TrimSpace(body) == "" {
-		t.Fatalf("embedded skill %q has empty body", name)
-	}
-
-	delete(first, name)
-	second, err := EmbeddedSkills()
-	if err != nil {
-		t.Fatalf("EmbeddedSkills second call: %v", err)
-	}
-	if _, ok := second[name]; !ok {
-		t.Fatalf("mutating returned map removed %q from cached embedded skills", name)
 	}
 }

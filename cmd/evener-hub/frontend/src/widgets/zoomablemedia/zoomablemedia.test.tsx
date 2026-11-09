@@ -1,10 +1,8 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef } from "react";
 import { expect, test, vi } from "vitest";
+import { readModuleCss } from "../../styles/cssBlock";
 import { ZoomableMedia } from "./index";
 
 test("the media is one button that opens the larger view", async () => {
@@ -104,10 +102,7 @@ test("only fill=true marks the trigger to fill its container's height", () => {
 });
 
 test("the base trigger keeps automatic height; only the fill form sets 100%", () => {
-  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "zoomablemedia.module.css"), "utf8").replace(
-    /\/\*[\s\S]*?\*\//g,
-    "",
-  );
+  const css = readModuleCss(import.meta.url, "zoomablemedia.module.css");
   const base = /\.zoomableMedia\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
   expect(base).not.toMatch(/(^|[;\s])height\s*:/);
   const fill = /\.zoomableMedia\[data-fill\]\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";

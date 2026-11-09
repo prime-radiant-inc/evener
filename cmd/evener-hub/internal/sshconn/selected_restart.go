@@ -16,9 +16,7 @@ func (m *Manager) setSelectedRestart(host hostreg.Host, owner selectedOwner, com
 	owner = owner.clone()
 	previous := m.pendingRestart(host.Name)
 	pending := pendingRestartState{binding: previous.binding, replaced: previous.replaced, command: command, selected: &owner, expectedVersion: version, expectedGitSHA: pin}
-	m.mu.Lock()
-	m.pendingRestarts[host.Name] = pending
-	m.mu.Unlock()
+	m.storePendingRestart(host.Name, pending)
 	return pending
 }
 
@@ -186,7 +184,7 @@ func (m *Manager) recoverSelectedRestart(ctx context.Context, host hostreg.Host,
 }
 
 func checkSelectedRestartRegistration(host, prior hostreg.Host) error {
-	if !host.Equal(prior) || host.Generation != prior.Generation || host.IncarnationID != prior.IncarnationID || host.PresenceEpoch != prior.PresenceEpoch {
+	if !hostreg.SameRegistrationAndPresence(host, prior) {
 		return fmt.Errorf("%w: pending host registration changed", errOwnerEvidence)
 	}
 	return nil

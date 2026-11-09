@@ -1230,6 +1230,12 @@ func TestHostRestartRenewsStoppedReplacementCommand(t *testing.T) {
 }
 
 func TestHostRestartDisconnectedWithoutDeploymentDoesNotInstall(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		restartDisconnectedWithoutDeployment(t)
+	})
+}
+
+func restartDisconnectedWithoutDeployment(t *testing.T) {
 	runner := &restartRecoveryRunner{diskVersion: restartBuildA, runningVersion: restartBuildA, startedAt: restartStartA}
 	m, manager, store, host, _ := publicRecoveryHub(t, runner, restartBuildB)
 	ch, err := manager.Ensure(t.Context(), host.Name)
@@ -1247,6 +1253,9 @@ func TestHostRestartDisconnectedWithoutDeploymentDoesNotInstall(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.cfg.opsWG.Wait()
+	// The dropped channel's supervisor takes the gate once the operation
+	// releases it; the next Restart must not race that hold.
+	synctest.Wait()
 	assertRestartRecoveryRecord(t, store, restart.ID, hostops.StateFailed)
 	assertPublicRecoveryEffects(t, runner, 0, 0, 0, restartBuildA, restartStartA)
 	runner.mu.Lock()
@@ -1268,6 +1277,12 @@ func TestHostRestartDisconnectedWithoutDeploymentDoesNotInstall(t *testing.T) {
 }
 
 func TestHostDeployRestartAfterFreshProvisioningDoesNotRepush(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		restartAfterFreshProvisioning(t)
+	})
+}
+
+func restartAfterFreshProvisioning(t *testing.T) {
 	sha, dirty, channel := buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel
 	t.Cleanup(func() { buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel = sha, dirty, channel })
 	buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel = "", "", ""
@@ -1291,6 +1306,9 @@ func TestHostDeployRestartAfterFreshProvisioningDoesNotRepush(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.cfg.opsWG.Wait()
+	// The channel's supervisor takes the gate once the deploy releases it; the
+	// next Restart must not race that hold.
+	synctest.Wait()
 	assertRestartRecoveryRecord(t, store, deploy.ID, hostops.StateComplete)
 	assertPublicRecoveryEffects(t, runner, 2, 2, 1, "dev", restartStartB)
 	restart, err := m.Restart(t.Context(), appwire.HostRestartParams{Name: host.Name, Generation: host.Generation, IncarnationID: host.IncarnationID, OperationID: "standalone-after-provisioning"})
@@ -1511,9 +1529,9 @@ func (r *restartRecoveryRunner) Run(ctx context.Context, argv []string, stdin io
 			return []byte("4242\n"), nil
 		}
 		if r.portState == "occupied-port" || r.noSupervisor && r.runningVersion != "" {
-			return []byte(sshconn.ListenerPresentMarker), nil
+			return []byte(hostListenerPresentMarker), nil
 		}
-		return []byte(sshconn.NoListenerMarker), nil
+		return []byte(hostNoListenerMarker), nil
 	case r.bareProcess && strings.Contains(command, "/proc/4242/cmdline"):
 		return []byte("/opt/evener/bin/evener\x00hub\x00-addr\x00127.0.0.1:9180\x00-config\x00/srv/recovered.toml\x00"), nil
 	case r.bareProcess && strings.Contains(command, "lsof -nP -p 4242"):

@@ -5,6 +5,7 @@ package agent
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -72,7 +73,7 @@ const trenderLegacySession = "034UFS34rc5EKcH0qp1gaT"
 // would silently weaken the subsequence oracle instead of failing loudly.
 func trender_scanLines(content []byte) (lines []string, ok bool) {
 	scanner := bufio.NewScanner(bytes.NewReader(content))
-	scanner.Buffer(make([]byte, 0, 64*1024), transcriptJSONLMaxLineBytes)
+	scanner.Buffer(make([]byte, 0, 64*1024), transcript.DefaultMaxLineBytes)
 	for scanner.Scan() {
 		lines = append(lines, scanner.Text())
 	}
@@ -316,10 +317,10 @@ func TestTrenderEntryLinesAreProjection(t *testing.T) {
 
 // TestTrenderScanLines_ScanError verifies that trender_scanLines reports
 // ok=false (rather than silently returning a truncated line list) when a
-// single line exceeds transcriptJSONLMaxLineBytes.
+// single line exceeds transcript.DefaultMaxLineBytes.
 func TestTrenderScanLines_ScanError(t *testing.T) {
 	t.Parallel()
-	tooLong := bytes.Repeat([]byte("x"), transcriptJSONLMaxLineBytes+10)
+	tooLong := bytes.Repeat([]byte("x"), transcript.DefaultMaxLineBytes+10)
 	content := append([]byte("short line\n"), tooLong...)
 	lines, ok := trender_scanLines(content)
 	if ok {
@@ -372,7 +373,7 @@ not json
 			t.Fatalf("write temp transcript: %v", err)
 		}
 
-		result, lines, skipped, truncated, err := rawLinesForRange(path, "", startSeq, endSeq)
+		result, lines, skipped, truncated, err := rawLinesForRange(context.Background(), path, "", startSeq, endSeq)
 		if err != nil {
 			return // open/empty/scan error: no-panic floor proven for this input
 		}
@@ -714,7 +715,7 @@ func trenderAssertPagedExpansion(t *testing.T, header transcript.Header, entries
 	want := trenderExpectedPairedExpansionJSONL(t, path, entries, *opt.fullResultFor)
 
 	const pageBytes = 64
-	firstAny, err := readMarkdownPage(path, "", "local:paged", opt.meta, rangeSpec, opt.fullResultFor, 0, pageBytes)
+	firstAny, err := readMarkdownPage(context.Background(), path, "", "local:paged", opt.meta, rangeSpec, opt.fullResultFor, 0, pageBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -742,7 +743,7 @@ func trenderAssertPagedExpansion(t *testing.T, header transcript.Header, entries
 		t.Fatalf("first continuation = %#v, want offset %d", first.Continuation, len(firstBytes))
 	}
 
-	secondAny, err := readMarkdownPage(path, "", "local:paged", opt.meta, rangeSpec, opt.fullResultFor, first.Continuation.OffsetBytes, pageBytes)
+	secondAny, err := readMarkdownPage(context.Background(), path, "", "local:paged", opt.meta, rangeSpec, opt.fullResultFor, first.Continuation.OffsetBytes, pageBytes)
 	if err != nil {
 		t.Fatal(err)
 	}

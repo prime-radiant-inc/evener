@@ -16,13 +16,6 @@ import (
 
 var (
 	sourceStat        = os.Stat
-	sourceWalk        = filepath.Walk
-	sourceRel         = filepath.Rel
-	sourceOpen        = os.Open
-	sourceMkdirAll    = os.MkdirAll
-	sourceOpenFile    = os.OpenFile
-	sourceCopy        = io.Copy
-	sourceClose       = func(f *os.File) error { return f.Close() }
 	sourceRemoveAll   = os.RemoveAll
 	sourceGitClone    = gitClone
 	sourceGitHeadSHA  = gitHeadSHA
@@ -264,13 +257,37 @@ func looksLikeGitAdministration(dir string) bool {
 	return false
 }
 
+// readPrefix reads at most limit bytes from path. The open is non-blocking and
+// lands on the descriptor's own mode, so a FIFO named HEAD or config in a
+// candidate source declines the probe instead of parking source selection on
+// the open (#4847).
 func readPrefix(path string, limit int64) ([]byte, error) {
-	file, err := os.Open(path)
+	file, err := openRegularNoBlock(path)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = file.Close() }()
 	return io.ReadAll(io.LimitReader(file, limit))
+}
+
+// maxMetadataFileBytes bounds each small plugin metadata file read: a
+// marketplace catalog, a plugin.json, a package.json. These are small JSON
+// documents, and the bound keeps a hostile or corrupted source from being
+// pulled into memory whole.
+const maxMetadataFileBytes = 8 << 20
+
+// readMetadataFile reads one metadata file whole through readPrefix, so a FIFO
+// substituted for it fails instead of parking the caller, and refuses anything
+// larger than maxMetadataFileBytes (#4847).
+func readMetadataFile(path string) ([]byte, error) {
+	data, err := readPrefix(path, maxMetadataFileBytes+1)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxMetadataFileBytes {
+		return nil, fmt.Errorf("%s is larger than %d bytes", filepath.Base(path), maxMetadataFileBytes)
+	}
+	return data, nil
 }
 
 func isHexObjectID(text string) bool {
@@ -300,7 +317,9 @@ func isHexPair(name string) bool {
 // copyTree recursively copies src to dst (files, dirs, and symlink targets as
 // regular files), creating directories as needed and overwriting existing files.
 // Every entry named .git is skipped, and a symlink reaching Git metadata is
-// refused: those bytes must never enter a published plugin tree (#4768).
+// refused: those bytes must never enter a published plugin tree (#4768). A
+// named pipe or other non-regular entry fails the copy rather than blocking on
+// its open (#4847).
 func copyTree(src, dst string) error {
 	info, err := sourceStat(src)
 	if err != nil {
@@ -309,7 +328,7 @@ func copyTree(src, dst string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("source %q is not a directory", src)
 	}
-	return sourceWalk(src, func(path string, fi os.FileInfo, err error) error {
+	return filepath.Walk(src, func(path string, fi os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -324,31 +343,18 @@ func copyTree(src, dst string) error {
 				return err
 			}
 		}
-		rel, err := sourceRel(src, path)
+		rel, err := filepath.Rel(src, path)
 		if err != nil {
 			return err
 		}
 		target := filepath.Join(dst, rel)
 		if fi.IsDir() {
-			return sourceMkdirAll(target, 0o755)
+			return os.MkdirAll(target, 0o755)
 		}
-		in, err := sourceOpen(path)
-		if err != nil {
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
 		}
-		defer func() { _ = sourceClose(in) }()
-		if err := sourceMkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return err
-		}
-		out, err := sourceOpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, fi.Mode().Perm())
-		if err != nil {
-			return err
-		}
-		_, err = sourceCopy(out, in)
-		if closeErr := sourceClose(out); err == nil {
-			err = closeErr
-		}
-		return err
+		return copyRegularFile(path, target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, fi.Mode().Perm())
 	})
 }
 

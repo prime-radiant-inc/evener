@@ -1,10 +1,9 @@
 // railNodes.ts is the pure tree-shaping layer between navigation resources
 // data and the widgets/tree Tree widget: it decides row identity, the
 // project/host grouping, and (given the caller's own expand-state map) each
-// branch's `expanded` flag. No React, no fetching - Rail.tsx owns the state
-// these functions are pure functions OF (the expand-override map, the
-// lazily-loaded archived project detail map, the manifest's launch sources)
-// and wires the results into <Tree>.
+// branch's `expanded` flag. No React, no fetching - the navigation store owns
+// the expand map, and Rail.tsx owns the lazily-loaded archived project detail
+// map and the manifest's launch sources. Rail wires the results into <Tree>.
 //
 // Primary navigation session rows are flat and carry compact own-session
 // counters. Archived lists separately retain fork-original conversations as
@@ -368,19 +367,13 @@ export function pinSectionDisclosureID(sectionID: string): string {
   return `pinsection:${sectionID}`;
 }
 
-// The data projection uses the same needs-you family as
-// shell/sessionStatus.ts's cadenceStateFor.
-function stateNeedsYou(state: string): boolean {
-  return state === "awaiting" || state === "warning" || state === "restartRequired";
-}
-
 // The state a row PRESENTS, which is not always the wire state. A row waiting
 // on an approval presents as needs-you from any state but a failure: the
 // escalation blocks its turn mid-tool, so the wire state stays "active"
 // (approvalWaiting). Every per-node attention judgment
 // (the row's dot and gloss in RailRow, the badge count, the working count and
-// the sort below, the palette's needs-you dots) reads this one helper, so
-// they can never disagree about the same row.
+// the palette's needs-you dots) reads this one helper, so they can never
+// disagree about the same row.
 export function displayState(node: Pick<NavigationSessionSummary, "state" | "approval_pending">): string {
   if (approvalWaiting(node.state, node.approval_pending === true)) return "awaiting";
   return node.state;
@@ -396,11 +389,6 @@ export function activeWorkSummary(node: RailSession): ActiveWorkSummary {
     runningJobs += activeWorkSummary(child).runningJobs;
   }
   return { runningJobs };
-}
-
-// The session's own attention state determines its position in the compact rail.
-function sessionWantsYou(n: RailSession): boolean {
-  return stateNeedsYou(displayState(n));
 }
 
 // Namespaced so a project branch's own id can never collide with a
@@ -448,9 +436,8 @@ export function projectDisplayLabels(projects: readonly RailProject[]): Map<stri
  * TreeProject[] on the wire, both ship their sessions inline (no lazy
  * load - only archived-project stubs omit sessions; see
  * cmd/evener-hub/web_api_tree.go's apiTreeProject doc comment), so both use
- * this same builder. Sessions sort needs-you-first (vbh8, §2.2) - a stable
- * partition (Array.prototype.sort is stable in the target engines), so
- * sessions that don't need you keep their incoming relative order.
+ * this same builder. Sessions are newest-created first, a running session
+ * does not move its row.
  *
  * With sources the rows name their launch host, so a remote-owned
  * project's "+" cannot fall back to this hub
@@ -557,14 +544,11 @@ function projectIsLoading(p: RailProject): boolean {
   return p.sessions.length === 0 && p.loaded !== true && (p.session_count ?? 0) > 0;
 }
 
-/** A project's active-tier session rows in the needs-you-first order every
- * tier uses. `hostId` narrows to one host's rows for the grouped variants;
- * the filter copies before sorting, so the sort never touches the
- * project's own list. */
+/** A project's active-tier session rows, newest-created first. `hostId`
+ * narrows to one host's rows for the grouped variants. */
 function activeSessionNodes(p: RailProject, hostId?: string): SessionRailNode[] {
   return p.sessions
     .filter((n) => !isArchivedTier(n) && (hostId === undefined || n.host_id === hostId))
-    .sort((a, b) => Number(sessionWantsYou(b)) - Number(sessionWantsYou(a)))
     .map((n) => toSessionNode(n));
 }
 

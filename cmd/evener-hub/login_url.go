@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
-	"strings"
 
 	"golang.org/x/term"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
@@ -33,11 +31,7 @@ func runLoginURL(args []string, stdout, stderr io.Writer, deps mainDeps) error {
 	if fs.NArg() != 0 {
 		return errors.New("login-url accepts only --config PATH")
 	}
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "config" {
-			opts.configExplicit = true
-		}
-	})
+	opts.configExplicit = setFlagNames(fs)["config"]
 	report, err := resolveHubEndpoint(context.Background(), opts, deps)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] login-url: %v\n", err)
@@ -47,12 +41,12 @@ func runLoginURL(args []string, stdout, stderr io.Writer, deps mainDeps) error {
 		_, _ = fmt.Fprintln(stderr, "[hub] no verified running instance for login-url")
 		return ErrLoginURLUnavailable
 	}
-	data, err := os.ReadFile(filepath.Join(report.Running.HubStateRoot, hubedge.TokenFileName))
-	if err != nil || strings.TrimSpace(string(data)) == "" {
+	token, err := readAuthToken(report.Running.HubStateRoot)
+	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "[hub] cannot read running hub token")
 		return ErrLoginURLToken
 	}
-	link, err := browserLoginURL(*report.Running, hubHostname, strings.TrimSpace(string(data)))
+	link, err := browserLoginURL(*report.Running, hubHostname, token)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "[hub] running hub has no valid advertised origin")
 		return fmt.Errorf("%w: invalid running origin", ErrLoginURLUnavailable)

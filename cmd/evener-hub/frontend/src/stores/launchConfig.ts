@@ -8,10 +8,14 @@
 // alive across the session, since the schema is server-global.
 
 import type { LaunchConfigStoreState } from "@evener/appwire-client";
-import { createLaunchConfigStore, type LaunchConfigClient, type LaunchConfigStore } from "@evener/appwire-client";
+import {
+  createLaunchConfigStore,
+  isLocalHost,
+  type LaunchConfigClient,
+  type LaunchConfigStore,
+} from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { connectedClientPort, onConnectionNotification, onConnectionReplacedOrRecovered } from "./connection";
-import { isLocalHost } from "./hostRouting";
 import { remoteHostStoreClient } from "./hostStoreClient";
 import {
   currentHostRegistration,
@@ -71,6 +75,17 @@ const goneLaunchConfigStore = createLaunchConfigStore(goneClient);
 export function launchConfigStoreForHost(host: string | null | undefined): LaunchConfigStore {
   if (isLocalHost(host)) return launchConfigStore;
   return hostEntry(host as string).store;
+}
+
+/** withLaunchConfig runs `use` against launchConfigStoreForHost's state for a
+ * caller whose host came from somewhere other than the registry (the navigation
+ * manifest's host picker). Only Settings re-reads the registry, so a host a
+ * cached snapshot predates is waited on for a re-read issued now (not one
+ * already in flight, which may predate the host too) instead of being refused. A listed (or local) host runs `use` synchronously. */
+export function withLaunchConfig<T>(host: string, use: (config: LaunchConfigStoreState) => Promise<T>): Promise<T> {
+  const run = () => use(launchConfigStoreForHost(host).getState());
+  if (isLocalHost(host) || !registrySaysHostGone(hostsStore.getState().load, host)) return run();
+  return hostsStore.getState().reReadForced().then(run);
 }
 
 /**

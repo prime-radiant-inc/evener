@@ -12,31 +12,25 @@ import { createMutationProjectionWorkTracker } from "@evener/appwire-client/stat
 // Tracking costs two counter updates and one `finally` reaction per storage
 // transaction. Nothing outside a test reads the count or waits on it, so
 // production behavior is unchanged apart from each storage call settling a
-// few microtasks later. The stall tripwire and the macrotask yield the
-// tracker settles through are the package's; this binds them to the
-// browser's own timers and a MessageChannel hop.
-const projectionWorkTracker = createMutationProjectionWorkTracker({
-  setTimeout: (callback, milliseconds) => setTimeout(callback, milliseconds),
-  clearTimeout: (timerId) => clearTimeout(timerId),
-  yieldMacrotask: () =>
-    new Promise<void>((resolve) => {
-      const hop = new MessageChannel();
-      hop.port1.onmessage = () => {
-        hop.port1.close();
-        resolve();
-      };
-      hop.port2.postMessage(undefined);
-    }),
-});
+// few microtasks later. The package tracker owns only track/whenIdle/clear;
+// the stall tripwire and macrotask hop are this host's test policy
+// (flushPendingTurnsProjection.ts, #1891).
+const projectionWorkTracker = createMutationProjectionWorkTracker();
 
 export function trackProjectionWork<T>(work: Promise<T>): Promise<T> {
   return projectionWorkTracker.track(work);
 }
 
-// Settles the tracker once (MutationProjectionWorkTracker.settle says what that
-// waits for and reports). flushPendingTurnsProjectionForTests repeats it.
-export function settleProjectionWorkForTests(): Promise<number> {
-  return projectionWorkTracker.settle();
+// Waits for the tracked work once. The flush helper owns the tripwire and the
+// repeated hop; this is only the package's wait.
+export function whenProjectionWorkIdleForTests(): Promise<number> {
+  return projectionWorkTracker.whenIdle();
+}
+
+// Cumulative registrations, so the flush can see work that started and
+// finished entirely inside one macrotask hop.
+export function projectionWorkRegistrationsForTests(): number {
+  return projectionWorkTracker.registrations();
 }
 
 // Forgets whatever is still in flight: a test resetting its stores already

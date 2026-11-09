@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/searchresult"
+	"primeradiant.com/evener/identifier"
 )
 
 // This file holds the platform-independent browse logic (the writability
@@ -572,16 +573,184 @@ func (a *grepAccum) feedLargeFile(ctx context.Context, r io.ReadSeeker) (stop bo
 // naming it directly.
 func (a *grepAccum) finishWalk(excludedByIgnore, oversized int) string {
 	out, notes := a.finishNotes()
-	if oversized > 0 {
-		notes = append(notes, grepOversizeNote(oversized))
-	}
-	if out == "" && excludedByIgnore > 0 {
-		notes = append(notes, fmt.Sprintf("0 matches; %d dotfile/gitignored path(s) were excluded from the search", excludedByIgnore))
-	}
+	notes = grepOmissionNotes(notes, out, oversized, excludedByIgnore)
 	if len(notes) > 0 {
 		return searchresult.WithNotes(out, notes...)
 	}
 	return out
+}
+
+// grepOmissionNotes appends the notes both grep arms owe for files they left
+// out: over-cap files first, then — only when nothing matched — the ignore
+// rules' exclusions. out is the result text the notes describe.
+func grepOmissionNotes(notes []string, out string, oversized, excludedByIgnore int) []string {
+	if oversized > 0 {
+		notes = append(notes, grepOversizeNote(oversized))
+	}
+	if out == "" && excludedByIgnore > 0 {
+		notes = append(notes, grepExclusionNote(excludedByIgnore))
+	}
+	return notes
+}
+
+// grepExclusionNote explains an empty result that the default dotfile and
+// gitignore rules could have made empty. Both grep arms compose it, so a
+// fully-filtered search reads the same with and without ripgrep (#4222).
+func grepExclusionNote(excludedByIgnore int) string {
+	return fmt.Sprintf("0 matches; %d dotfile/gitignored path(s) were excluded from the search", excludedByIgnore)
+}
+
+// grepTreeWalk is the directory walk both native grep arms run: the
+// unsandboxed grepNativeSkipping and the sandboxed sandboxFS.grepNative differ
+// only in the filesystem they walk, whether a masked subtree exists, and how a
+// file named as the target is handled, so each fills in those and calls run.
+type grepTreeWalk struct {
+	ctx         context.Context
+	acc         *grepAccum
+	globFilters []string
+	skip        func(rel string) bool
+	// root is the on-disk directory the walk is rooted at: pseudo-filesystem
+	// directories beneath it are skipped unless root is itself one.
+	root string
+	// ignoreFS is read for .gitignore discovery; budget is shared with the
+	// walk's own listings.
+	ignoreFS fs.FS
+	budget   *GlobBudget
+	// walk visits every entry beneath root; read returns one file's capped bytes
+	// by its path in the walked filesystem.
+	walk func(fn fs.WalkDirFunc) error
+	read func(rel string) ([]byte, error)
+	// masked reports an absolute path the sandbox policy hides; nil off the
+	// sandbox, where nothing is masked.
+	masked func(abs string) bool
+	// namedFile means the walk's single entry is the file the caller named, which
+	// grep reports as ".". largeNamedFile then searches it in bounded windows when
+	// it is past the read cap, instead of leaving it out as an oversize file.
+	namedFile      bool
+	largeNamedFile func(rel string) error
+	// countOnly stops at the ignore decision: the caller wants only how many
+	// paths the default exclusions skipped, so no file is selected or read.
+	countOnly bool
+}
+
+func (w grepTreeWalk) isMasked(abs string) bool { return w.masked != nil && w.masked(abs) }
+
+func (w grepTreeWalk) run() (string, error) {
+	excludedByIgnore, oversized, err := w.runCounts()
+	if err != nil {
+		return "", err
+	}
+	return w.acc.finishWalk(excludedByIgnore, oversized), nil
+}
+
+// runCounts walks the tree and returns how many paths the default dotfile and
+// gitignore rules skipped, and how many files the read cap left out. run uses
+// both; the rg arm's empty-result disclosure uses the first.
+func (w grepTreeWalk) runCounts() (excludedByIgnore, oversized int, err error) {
+	// Never list or read into a masked subtree while collecting .gitignore rules.
+	ignores, err := loadIgnoreSet(w.ctx, w.ignoreFS, func(rel string) bool {
+		abs := filepath.Join(w.root, rel)
+		return w.isMasked(abs) || walkSkipsPseudoDir(w.root, abs)
+	}, w.budget, wholeBaseIgnoreScope())
+	if err != nil {
+		return 0, 0, err
+	}
+	err = w.walk(func(p string, d fs.DirEntry, walkErr error) error {
+		if cancelErr := w.ctx.Err(); cancelErr != nil {
+			return cancelErr
+		}
+		if walkErr != nil {
+			// loadIgnoreSet's walk above already visits every directory this
+			// one would — its skip set (dot-prefixed, masked and pseudo
+			// directories) is a strict subset of this walk's (which also skips
+			// gitignored ones) — so it always reaches an oversized directory
+			// first on any static tree and this guard cannot be reached that
+			// way. It is reachable only when a directory grows past the entry
+			// bound in the gap between the two passes, which the
+			// *WalkCarriesTheEntriesRefusalWhenADirectoryGrowsAfterIgnoreDiscovery
+			// tests force by stubbing the walk itself to grow the tree after
+			// ignore discovery has already listed it.
+			if _, refused := errors.AsType[*globBudgetError](walkErr); refused {
+				return walkErr
+			}
+			return nil //nolint:nilerr // best-effort grep: skip unreadable / symlink-refused entries and keep walking
+		}
+		// p is the path in the walked filesystem; rel is the name grep matches
+		// rules against and reports, which for a named file is ".".
+		rel := p
+		if w.namedFile {
+			rel = "."
+		}
+		abs := filepath.Join(w.root, p)
+		if w.isMasked(abs) {
+			if d.IsDir() {
+				return fs.SkipDir // never descend into a masked subtree
+			}
+			return nil
+		}
+		if d.IsDir() {
+			if p != "." {
+				if strings.HasPrefix(d.Name(), ".") {
+					return fs.SkipDir
+				}
+				if ignores.matches(rel, true) {
+					excludedByIgnore++
+					return fs.SkipDir
+				}
+				if walkSkipsPseudoDir(w.root, abs) {
+					return fs.SkipDir
+				}
+			}
+			// fs.WalkDir never follows a directory symlink, so this walk cannot
+			// cycle back into itself the way the glob pattern walk's ancestor
+			// check has to guard against — the same reason ignore discovery's own
+			// budget charge is always cycleSafe. Charged only here, once the
+			// masked/dot/gitignore skips above have already passed, so a
+			// directory the walk is about to skip anyway costs nothing.
+			if berr := w.budget.listing(true); berr != nil {
+				return berr
+			}
+			return nil
+		}
+		// Skip hidden and gitignored files
+		if strings.HasPrefix(d.Name(), ".") {
+			return nil
+		}
+		if ignores.matches(rel, false) {
+			excludedByIgnore++
+			return nil
+		}
+		if w.countOnly {
+			return nil
+		}
+		if selected, selErr := grepFileSelected(d.Name(), rel, w.globFilters, w.skip); !selected {
+			return selErr
+		}
+		data, rerr := w.read(p)
+		if rerr != nil {
+			if cancelErr := w.ctx.Err(); cancelErr != nil {
+				return cancelErr
+			}
+			if errors.Is(rerr, errGrepFileTooLarge) {
+				if w.largeNamedFile != nil {
+					return w.largeNamedFile(p)
+				}
+				oversized++
+			}
+			return nil //nolint:nilerr // best-effort grep: skip unreadable files and keep walking
+		}
+		if w.acc.feed(filepath.FromSlash(rel), data) {
+			return fs.SkipAll
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	if err := w.ctx.Err(); err != nil {
+		return 0, 0, err
+	}
+	return excludedByIgnore, oversized, nil
 }
 
 // grepTruncationNote is the note on a grep result the cap cut short, so a
@@ -628,7 +797,7 @@ var pseudoFsRoots = []string{"/proc", "/sys", "/dev"}
 // resolved root passes the ORIGINAL root here, so a stubbed root list (the
 // tests' own names) never has the /dev carve applied.
 func pseudoRootCovers(carveName, root, path string) bool {
-	if path != root && !strings.HasPrefix(path, root+string(filepath.Separator)) {
+	if !identifier.PathUnder(path, root) {
 		return false
 	}
 	if carveName == "/dev" && isDevShm(path) {
@@ -754,7 +923,7 @@ var grepMaxFileBytes = 16 << 20
 // every file: an emitted line can be as long as the read cap, so a hundred
 // matching lines of that shape retain gigabytes before the join doubles
 // them. 8 MiB matches the tool output channel's own capture cap
-// (cappedOutputBuffer), so the search never retains more than the channel
+// (cappedoutput.Buffer), so the search never retains more than the channel
 // delivers anyway, and an ordinary search's output sits far below it. A
 // variable so a test can exercise the cut with fixture-sized lines.
 var grepRetainedBytes = 8 << 20

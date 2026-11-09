@@ -82,9 +82,7 @@ func TestLaunchRefreshBroadcastsAuthUpdated(t *testing.T) {
 	t.Cleanup(hub.Close)
 	client := dialHubRPC(t, hub)
 	t.Cleanup(func() { client.Close() })
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	mustInitializeHubClient(t, client)
 	var resp appwire.ModelListResponse
 	if err := client.Request(context.Background(), appwire.MethodModelList, appwire.ModelListParams{}, &resp); err != nil {
 		t.Fatalf("model/list: %v", err)
@@ -114,9 +112,7 @@ func TestOrdinaryAuthAndInstanceBroadcastsCarryNoCatalogReason(t *testing.T) {
 	t.Cleanup(hub.Close)
 	client := dialHubRPC(t, hub)
 	t.Cleanup(func() { client.Close() })
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	mustInitializeHubClient(t, client)
 	notifyInstanceUpdated(web.appRPC, "tab-1")
 	if got := waitForAuthUpdated(t, client); got.Reason != "" || got.OriginClientId != "tab-1" {
 		t.Fatalf("instance broadcast = %+v, want the ordinary change form with no catalog reason", got)

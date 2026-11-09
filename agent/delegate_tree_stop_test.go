@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/schema"
 )
 
 type delegateStopWaitBarrierContext struct {
@@ -1199,7 +1200,7 @@ func TestDelegateControllerRootCloseReconcilesClosedRootDescendantWork(t *testin
 	if err != nil || !admitted {
 		t.Fatalf("BeginDelivery = admitted:%t err:%v", admitted, err)
 	}
-	attentionPath := filepath.Join(c.stateDir, sessionsSubdir, "child-dlg_attention.transcript.jsonl")
+	attentionPath := filepath.Join(c.stateDir, schema.SessionsSubdir, "child-dlg_attention.transcript.jsonl")
 	writeDelegateAttentionTranscript(t, attentionPath, "child-dlg_attention", "attention-close-closed-root")
 	if _, err := c.CloseResumability(rootDelegateActor("root-session"), "dlg_root", "root retired"); err != nil {
 		t.Fatalf("CloseResumability: %v", err)

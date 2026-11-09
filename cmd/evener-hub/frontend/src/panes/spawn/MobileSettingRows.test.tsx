@@ -1,10 +1,8 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { PluginPreviewResponse } from "@evener/appwire-client";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
+import { readModuleCss } from "../../styles/cssBlock";
 import { MobileSettingRows, type MobileSettingRowsProps } from "./MobileSettingRows";
 import { GLOBAL_LAST_WORKING_DIR_KEY, setGlobalLastWorkingDir } from "./spawnDefaults";
 
@@ -268,8 +266,7 @@ test("plugin preview error allows only safe removal from the last preview and ex
 });
 
 test("mobile setting rows keep the approved 48px body-text baseline", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "MobileSettingRows.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "MobileSettingRows.module.css");
   const rowRule = css.match(/\.rowButton,\s*\.readOnly\s*\{([\s\S]*?)\n\}/)?.[1];
 
   expect(rowRule).toContain("min-height: 48px");

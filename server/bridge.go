@@ -185,10 +185,9 @@ func (s *Server) applySessionEventStatus(ev events.SessionEvent) {
 // settledStatusSupersededLocked reports whether a resting status that settled
 // outside any turn (EventStatusSettled) can't be published now: an input is
 // being taken (it may be held for the end of processing, settledStatusLocked),
-// a turn is reserved and its own end restates the state, or the session
-// already closed, and closed wins. The caller holds s.mu.
+// or the session already closed, and closed wins. The caller holds s.mu.
 func (s *Server) settledStatusSupersededLocked() bool {
-	return s.processing || s.appReservedTurnID != "" || s.status.State == string(agent.SessionClosed)
+	return s.processing || s.status.State == string(agent.SessionClosed)
 }
 
 func sessionEventClosesSession(ev events.SessionEvent) bool {
@@ -229,6 +228,20 @@ func sessionEventStatusEffect(ev events.SessionEvent) func(*Server) {
 		}
 	case events.EventAssistantTextEnd:
 		return func(s *Server) { s.status.Turns++ }
+	case events.EventModelChanged:
+		// A committed switch rewrites the cached session info, whatever path
+		// committed it: an at-rest thread/model/set's synchronous refresh covers
+		// the RPC's own reply, but a switch queued mid-turn applies at the turn
+		// boundary with no RPC in flight, and thread/read would keep reporting
+		// the previous model until the next turn re-derived it. The event's own
+		// payload is authoritative for both the model and the instance id.
+		d, ok := ev.Data.(events.ModelChangedData)
+		if !ok {
+			return nil
+		}
+		return func(s *Server) {
+			s.updateSessionInfoLocked(ev.SessionID, d.NewModel, d.NewProvider)
+		}
 	case events.EventStatusSettled:
 		// Only a resting state settles outside a turn; anything else would
 		// store a state the projector maps differently.

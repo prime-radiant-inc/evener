@@ -1,9 +1,8 @@
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { expect, it } from "vitest";
 import type { ModelListResponse, Thread, ThreadClearResponse } from "@evener/appwire-client";
-import { type ConversationClientLike, createConversationService } from "../../mobile/src/services/conversation";
-import { createActivityStore } from "../../mobile/src/state/activity";
-import { createConversationStore } from "../../mobile/src/state/conversation";
+import { type ConversationClientLike, createConversationService } from "./conversation/services/conversation";
+import { createConversationStore } from "./conversation/state/conversation";
 import { CommandNotSentError, submitComposerCommand } from "./composerCommand";
 import { DraftDocument } from "./draftDocument";
 import { DraftRepository } from "./draftRepository";
@@ -239,9 +238,8 @@ it("preserves newer live work state across an older hydration and isolates sessi
 	};
 	const store = createConversationStore();
 	thread.evener.tasks = { total: 2, done: 0 };
-	const activity = createActivityStore().getState();
 	try {
-		await store.getState().openProjected(service, activity, "local:test");
+		await store.getState().openProjected(service, "local:test");
 		expect(store.getState().conversation?.goal?.objective).toBe("initial");
 		expect(store.getState().conversation?.tasks).toEqual({ total: 2, done: 0 });
 		let finishRead!: () => void;
@@ -254,7 +252,7 @@ it("preserves newer live work state across an older hydration and isolates sessi
 				finishRead = () => resolve({ thread: structuredClone(thread) });
 				entered();
 			});
-		const refresh = store.getState().rehydrate(service, activity);
+		const refresh = store.getState().rehydrate(service);
 		await enteredRead;
 		const updated = { objective: "remote", status: "achieved", iterations: 4 };
 		store.getState().applyNotification({
@@ -501,9 +499,8 @@ it.each(["advertised", "turn"])(
 		if (source === "advertised") thread.evener.activeTurnId = "first";
 		else thread.turns = [{ id: "first", status: "inProgress", itemsView: "full", items: [] }];
 		const store = createConversationStore();
-		const activity = createActivityStore().getState();
 		try {
-			await store.getState().openProjected(service, activity, "local:test");
+			await store.getState().openProjected(service, "local:test");
 			expect(store.getState().conversation?.activeTurnId).toBe("first");
 			let finish!: () => void;
 			let entered!: () => void;
@@ -515,7 +512,7 @@ it.each(["advertised", "turn"])(
 					finish = () => resolve({ thread: structuredClone(thread) });
 					entered();
 				});
-			const refresh = store.getState().rehydrate(service, activity);
+			const refresh = store.getState().rehydrate(service);
 			await reading;
 			// turn/started's read-model replacement: thread/status/changed carries
 			// the new turn's id as activeTurnId, which the package reducer folds
@@ -763,9 +760,8 @@ it.each(["/steer sentinel", "/queue sentinel", "/drain-as-steer", "/interrupt"])
 it("does not resurrect a turn that completes during a read before its start was observed", async () => {
 	const { thread, io, service } = boundary();
 	const store = createConversationStore();
-	const activity = createActivityStore().getState();
 	try {
-		await store.getState().openProjected(service, activity, "local:test");
+		await store.getState().openProjected(service, "local:test");
 		io.read = async () => {
 			store.getState().applyNotification({
 				method: "history/updated",
@@ -782,7 +778,7 @@ it("does not resurrect a turn that completes during a read before its start was 
 			settled.evener.activeTurnId = undefined;
 			return { thread: settled };
 		};
-		await store.getState().rehydrate(service, activity);
+		await store.getState().rehydrate(service);
 		expect(store.getState().conversation?.activeTurnId).toBeUndefined();
 	} finally {
 		store.getState().close();
@@ -1001,7 +997,6 @@ it("installs a clear replacement without allowing an older read to restore its t
 		},
 	];
 	const store = createConversationStore();
-	const sink = createActivityStore().getState();
 	let releaseClear!: () => void;
 	let releaseRead!: () => void;
 	let clearEntered!: () => void;
@@ -1013,7 +1008,7 @@ it("installs a clear replacement without allowing an older read to restore its t
 		readEntered = resolve;
 	});
 	try {
-		await store.getState().openProjected(service, sink, "local:test");
+		await store.getState().openProjected(service, "local:test");
 		expect(store.getState().conversation?.items.length).toBeGreaterThan(0);
 		const replacement = structuredClone(thread);
 		replacement.id = "replacement-thread";
@@ -1050,11 +1045,11 @@ it("installs a clear replacement without allowing an older read to restore its t
 				releaseRead = () => resolve({ thread: structuredClone(thread) });
 				readEntered();
 			});
-		const oldRead = store.getState().rehydrate(service, sink);
+		const oldRead = store.getState().rehydrate(service);
 		await reading;
 		releaseClear();
 		const response = await clear;
-		await store.getState().openProjected(service, sink, "local:test", service.adoptClear(response));
+		await store.getState().openProjected(service, "local:test", service.adoptClear(response));
 		releaseRead();
 		await oldRead;
 		expect(store.getState().conversation).toMatchObject({

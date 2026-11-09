@@ -11,6 +11,7 @@ import { Copy, ErrorMessage, styles, useColors } from "./ui";
 import { usePinNavigation } from "./usePinNavigation";
 import { HUB_NO_LONGER_SELECTED } from "./retainedScreen";
 import { Button } from "./sheet/Grouped";
+import { CATEGORY_NAME_MAX_CODE_POINTS } from "./navigationActionRepository";
 
 const draftError = "Your last saved pin proposal is kept. This edit could not be saved on this device. Try again.";
 
@@ -84,7 +85,7 @@ export function PinAssignmentScreen({ route, navigation }: NativeStackScreenProp
 			});
 		} else if (selection?.kind === "new") {
 			const name = selection.name.trim();
-			if (Array.from(name).length < 1 || Array.from(name).length > 80) return;
+			if (Array.from(name).length < 1 || Array.from(name).length > CATEGORY_NAME_MAX_CODE_POINTS) return;
 			await actions.assignPin({ sessionRef: ref, sectionName: name });
 		} else return;
 		const result = actions.getSnapshot();

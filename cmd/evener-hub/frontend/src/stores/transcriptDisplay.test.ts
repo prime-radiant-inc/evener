@@ -1,15 +1,16 @@
 import type { TranscriptDisplayPatchResponse } from "@evener/appwire-client";
 import {
+  contentVectorForConfig,
   encodeLocalConfig,
   friendlyErrorMessage,
   makeTranscriptDisplayConfig,
-  presetContent,
   shippedDesktopConfig,
   shippedMobileConfig,
   type TranscriptDisplayConfigV1,
   toWireConfig,
   WireError,
 } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
@@ -61,17 +62,6 @@ const legacyKeys = [
 
 function preset(level: "chat" | "intent" | "tools" | "activity" | "full"): TranscriptDisplayConfigV1 {
   return makeTranscriptDisplayConfig({ kind: "preset", level });
-}
-
-function deferred<T>(): {
-  promise: Promise<T>;
-  resolve(value: T): void;
-} {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((next) => {
-    resolve = next;
-  });
-  return { promise, resolve };
 }
 
 function viewSnapshot(id: string): CapturedTranscriptView {
@@ -668,7 +658,10 @@ test("local values survive store reinitialization", () => {
 });
 
 test("preserves an explicit Tools-equivalent Custom through local and hub persistence", async () => {
-  const custom = makeTranscriptDisplayConfig({ kind: "custom", ...presetContent("tools") });
+  const custom = makeTranscriptDisplayConfig({
+    kind: "custom",
+    ...contentVectorForConfig(makeTranscriptDisplayConfig({ kind: "preset", level: "tools" })),
+  });
   transcriptDisplayStore.getState().setLocal("desktop", custom);
   expect(transcriptDisplayStore.getState().local.desktop?.content.kind).toBe("custom");
   expect(transcriptDisplayStore.getState().effective("desktop").content.kind).toBe("custom");
@@ -698,7 +691,7 @@ test("preserves an explicit Tools-equivalent Custom through local and hub persis
   expect(transcriptDisplayStore.getState().hub.desktop?.config.content.kind).toBe("custom");
 });
 
-test("migration runs before local load, keeps old keys, and dual-writes literal booleans", () => {
+test("migration runs before local load and consumes the old keys; later edits never write them", () => {
   storage.setItem("evener.prefs.transcriptRoundTimings", "0");
   storage.setItem("evener.prefs.transcriptTokenCounts", "1");
   storage.setItem("evener.prefs.showCost", "1");
@@ -708,8 +701,7 @@ test("migration runs before local load, keeps old keys, and dual-writes literal 
   expect(transcriptDisplayStore.getState().local.mobile).toEqual(transcriptDisplayStore.getState().local.desktop);
   expect(storage.getItem(desktopKey)).not.toBeNull();
   expect(storage.getItem(mobileKey)).not.toBeNull();
-  expect(storage.getItem("evener.prefs.transcriptRoundTimings")).toBe("0");
-  expect(storage.getItem("evener.prefs.transcriptTokenCounts")).toBe("1");
+  expect(legacyKeys.map((key) => storage.getItem(key))).toEqual(legacyKeys.map(() => null));
 
   const desktopEdited = makeTranscriptDisplayConfig(
     { kind: "preset", level: "full" },
@@ -720,12 +712,11 @@ test("migration runs before local load, keeps old keys, and dual-writes literal 
     { tokenCounts: true, estimatedCost: true, hookExits: "all" },
   );
   transcriptDisplayStore.getState().setLocal("desktop", desktopEdited);
-  expect(legacyKeys.map((key) => storage.getItem(key))).toEqual(["1", "0", "0", "0", "1", "0"]);
   transcriptDisplayStore.getState().setLocal("mobile", mobileEdited);
-  expect(legacyKeys.map((key) => storage.getItem(key))).toEqual(["0", "1", "1", "0", "0", "1"]);
+  expect(legacyKeys.map((key) => storage.getItem(key))).toEqual(legacyKeys.map(() => null));
 });
 
-test("clearLocal removes the persisted key, broadcasts null, follows the hub, and dual-writes its flags", () => {
+test("clearLocal removes the persisted key, broadcasts null, and follows the hub", () => {
   vi.stubGlobal("BroadcastChannel", FakeBroadcastChannel);
   resetTranscriptDisplayStoreForTests();
   initTranscriptDisplay();
@@ -743,7 +734,19 @@ test("clearLocal removes the persisted key, broadcasts null, follows the hub, an
   expect(transcriptDisplayStore.getState().local.desktop).toBeUndefined();
   expect(transcriptDisplayStore.getState().effective("desktop")).toEqual(hub);
   expect(active.posted.at(-1)).toMatchObject({ config: null, fingerprint: null, layout: "desktop" });
-  expect(legacyKeys.map((key) => storage.getItem(key))).toEqual(["1", "0", "0", "0", "1", "0"]);
+  expect(legacyKeys.map((key) => storage.getItem(key))).toEqual(legacyKeys.map(() => null));
+});
+
+test("clearing the only override keeps it cleared across a reload despite old keys", () => {
+  storage.setItem("evener.prefs.showCost", "1");
+  storage.setItem(desktopKey, encodeLocalConfig(preset("full")));
+  resetTranscriptDisplayStoreForTests();
+  initTranscriptDisplay();
+  transcriptDisplayStore.getState().clearLocal("desktop");
+  resetTranscriptDisplayStoreForTests();
+  initTranscriptDisplay();
+  expect(transcriptDisplayStore.getState().local.desktop).toBeUndefined();
+  expect(transcriptDisplayStore.getState().local.mobile).toBeUndefined();
 });
 
 test("keeps an in-memory local change and warns when browser storage is blocked", () => {

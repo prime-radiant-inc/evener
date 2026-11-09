@@ -146,12 +146,16 @@ type SessionMeta struct {
 	// WithCheapModel ref ("provider/model" when cross-provider, else bare model).
 	// Empty when none is configured. Persisted so the cheap routing survives
 	// resume — launch args alone do not carry it across restart.
-	CheapModel  string          `json:"cheap_model,omitempty"`
-	VisionModel string          `json:"vision_model,omitempty"`
-	Config      ConfigSnapshot  `json:"config"`     // the session's configuration
-	EnvInfo     EnvironmentInfo `json:"env_info"`   // captured environment description
-	CreatedAt   time.Time       `json:"created_at"` // when the session was first created
-	UpdatedAt   time.Time       `json:"updated_at"` // last time the meta was written
+	CheapModel  string `json:"cheap_model,omitempty"`
+	VisionModel string `json:"vision_model,omitempty"`
+	// Manager records that this session was started as a Manager. It is a
+	// launch property the daemon owns, persisted here so a resume keeps it: the
+	// hub never re-asserts it, and nothing disables it.
+	Manager   bool            `json:"manager,omitempty"`
+	Config    ConfigSnapshot  `json:"config"`     // the session's configuration
+	EnvInfo   EnvironmentInfo `json:"env_info"`   // captured environment description
+	CreatedAt time.Time       `json:"created_at"` // when the session was first created
+	UpdatedAt time.Time       `json:"updated_at"` // last time the meta was written
 	// Revision is a monotonic per-session counter bumped on every save, so two
 	// revisions that share a timestamp (a fork tag or an ObservedBy append
 	// re-saves without advancing UpdatedAt) can still be ordered. Zero on metas
@@ -266,15 +270,30 @@ type SessionMeta struct {
 	// ID so durable activity-tree responses can preserve the same root-scoped
 	// revision envelope after exit.
 	JobTreeRootSessionID string `json:"job_tree_root_session_id,omitempty"`
-	// ScratchTempDir is the temp dir of the process running the session, where
-	// its scratch tree lives. The hub removes an archived session's tree from
-	// its own temp dir and from this one, which differs when the daemon was
-	// started with another TMPDIR. Empty on metas written before it existed.
+	// ScratchTempDir is the scratch base the session's scratch tree was
+	// allocated in, which a hub serving the session's documents and the archive
+	// removal path search before their own defaults; before any scratch exists
+	// it is the temp dir of the process running the session. The hub removes
+	// an archived session's tree from its own temp dir and from this one, which
+	// differs when the daemon was started with another TMPDIR. Empty on metas
+	// written before it existed.
 	ScratchTempDir string `json:"scratch_temp_dir,omitempty"`
 	// ScratchTreeRootID names the root session whose scratch tree this
 	// session's scratch lives in, when that is not the session itself: a
-	// delegate's root, kept when the delegate is resumed on its own.
+	// delegate's root, kept when the delegate is resumed on its own. Once a
+	// scratch exists it is derived from the directory the session's
+	// environment actually writes into, so a child spawned by a resumed
+	// delegate records the original root's tree, not the resumed delegate's
+	// delegate-tree root.
 	ScratchTreeRootID string `json:"scratch_tree_root_id,omitempty"`
+	// ScratchDirSessionID names the session whose directory in the scratch
+	// tree this session's scratch actually occupies, when that is not the
+	// session itself: a delegate that shares its parent's environment, or one
+	// that re-roots its parent's sandbox wrapper, writes into the parent's
+	// scratch, while a delegate that provisions its own sandbox owns its own
+	// directory. Empty on metas written before it existed and for every
+	// session that owns its scratch.
+	ScratchDirSessionID string `json:"scratch_dir_session_id,omitempty"`
 	// JobTreeRevision is the latest authoritative root-scoped job/activity tree
 	// revision observed by this session's shared lifecycle clock. Persisted so
 	// exited activity-tree responses can report the same authoritative revision
@@ -290,6 +309,36 @@ func (m SessionMeta) HomeDir() string {
 		return m.WorktreeRestoreRoot
 	}
 	return m.EnvInfo.WorkingDir
+}
+
+// RestoredScratchTreeRoot is the root session whose scratch tree this
+// session's scratch lives in: the tree its meta names for a delegate — kept
+// when the delegate is resumed on its own (`serve --resume <delegate>`) — or
+// the session itself. A caller that must reconstruct a session's scratch
+// directory from its meta (the daemon reopening its scratch, the hub serving
+// one) reads this, so both name the same tree.
+func (m SessionMeta) RestoredScratchTreeRoot() string {
+	for _, root := range []string{m.ScratchTreeRootID, m.JobTreeRootSessionID} {
+		if root = strings.TrimSpace(root); m.IsSubagent && ValidateSessionID(root) == nil {
+			return root
+		}
+	}
+	return m.ID
+}
+
+// RestoredScratchDirSession is the session whose directory in the scratch tree
+// this session's scratch occupies: the owner its meta records for a delegate
+// that shares its parent's environment, or the session itself. A caller that
+// must reconstruct a session's scratch directory from its meta (the hub
+// serving one) reads this beside RestoredScratchTreeRoot, so both name the
+// same directory the session's daemon writes into. The field has no lineage
+// gate: a session records an owner exactly when its environment names one,
+// and an unparsable owner is ignored, like an unparsable tree root.
+func (m SessionMeta) RestoredScratchDirSession() string {
+	if owner := strings.TrimSpace(m.ScratchDirSessionID); ValidateSessionID(owner) == nil {
+		return owner
+	}
+	return m.ID
 }
 
 // CumulativeUsage is a deliberately lossy snapshot of an llm.Usage kept in
@@ -340,8 +389,6 @@ func SessionDisplayName(meta SessionMeta) string {
 	return strings.TrimSpace(meta.ID)
 }
 
-const sessionsSubdir = "sessions"
-
 // SessionDir returns a session's own state directory,
 // <stateDir>/sessions/<sessionID>. The session ID is validated before it is
 // joined to any path, so a malformed id never reaches the filesystem.
@@ -352,7 +399,7 @@ func SessionDir(stateDir, sessionID string) (string, error) {
 	if err := ValidateSessionID(sessionID); err != nil {
 		return "", err
 	}
-	return filepath.Join(stateDir, sessionsSubdir, sessionID), nil
+	return SessionWorkDir(stateDir, sessionID), nil
 }
 
 // SessionArtifactsDir returns the directory a session's retained artifacts
@@ -371,7 +418,7 @@ func SessionArtifactsDir(stateDir, sessionID string) (string, error) {
 // a removed session so a writer that acquires the meta lock afterwards refuses
 // to recreate it. It is deliberately not a *.meta.json suffix, so the directory
 // scanners ignore it.
-const SessionMetaTombstoneSuffix = ".meta.json.deleted"
+const SessionMetaTombstoneSuffix = SessionMetaSuffix + ".deleted"
 
 // ErrSessionDeleted reports a write attempted against a session that has been
 // deleted (tombstoned). The write is dropped, not retried: the session no longer
@@ -403,7 +450,7 @@ func TombstoneSessionMeta(dir, id string) error {
 	lock.Lock()
 	defer lock.Unlock()
 	err := withExistingSessionsDirLock(sessionMetaFS, dir, id, func() error {
-		tombstone := filepath.Join(dir, sessionsSubdir, id+SessionMetaTombstoneSuffix)
+		tombstone := filepath.Join(dir, SessionsSubdir, id+SessionMetaTombstoneSuffix)
 		if err := afero.WriteFile(sessionMetaFS, tombstone, nil, 0o600); err != nil {
 			if os.IsNotExist(err) {
 				return errSessionsDirAbsent
@@ -433,7 +480,7 @@ func UntombstoneSessionMeta(dir, id string) error {
 	lock.Lock()
 	defer lock.Unlock()
 	err := withExistingSessionsDirLock(sessionMetaFS, dir, id, func() error {
-		tombstone := filepath.Join(dir, sessionsSubdir, id+SessionMetaTombstoneSuffix)
+		tombstone := filepath.Join(dir, SessionsSubdir, id+SessionMetaTombstoneSuffix)
 		if err := sessionMetaFS.Remove(tombstone); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove session tombstone: %w", err)
 		}
@@ -459,7 +506,7 @@ func UntombstoneSessionMeta(dir, id string) error {
 // divergence — a readable regular file named "sessions", which opens fine
 // but lists as ENOTDIR — yields "no session here" on both paths anyway.
 func SessionsDirListable(fs afero.Fs, dir string) bool {
-	f, err := fs.Open(filepath.Join(dir, sessionsSubdir))
+	f, err := fs.Open(SessionsDir(dir))
 	if err == nil {
 		_ = f.Close()
 		return true
@@ -574,7 +621,7 @@ func saveSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta) error {
 // so a caller that reads the current meta before mutating it cannot race a
 // writer in another process.
 func withSessionMetaCrossProcessLock(fs afero.Fs, dir, id string, fn func() error) error {
-	sessDir := filepath.Join(dir, sessionsSubdir)
+	sessDir := SessionsDir(dir)
 	if err := fs.MkdirAll(sessDir, 0o755); err != nil {
 		return fmt.Errorf("create sessions dir: %w", err)
 	}
@@ -614,7 +661,7 @@ func writeSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta) error {
 	// A deleted session's tombstone is written under this same lock; refuse to
 	// recreate the metadata so an in-flight out-of-process autosave cannot
 	// resurrect a session the hub just deleted.
-	if exists, err := afero.Exists(fs, filepath.Join(dir, sessionsSubdir, meta.ID+SessionMetaTombstoneSuffix)); err != nil {
+	if exists, err := afero.Exists(fs, filepath.Join(dir, SessionsSubdir, meta.ID+SessionMetaTombstoneSuffix)); err != nil {
 		return err
 	} else if exists {
 		return ErrSessionDeleted
@@ -637,7 +684,7 @@ func writeSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta) error {
 		return fmt.Errorf("marshal session meta: %w", err)
 	}
 
-	target := filepath.Join(dir, sessionsSubdir, meta.ID+".meta.json")
+	target := SessionMetaPath(dir, meta.ID)
 	tmp := target + ".tmp"
 
 	if err := afero.WriteFile(fs, tmp, data, 0o644); err != nil {
@@ -682,7 +729,7 @@ func loadSessionMetaFS(fs afero.Fs, dir, id string) (SessionMeta, error) {
 	if err := ValidateSessionID(id); err != nil {
 		return SessionMeta{}, err
 	}
-	path := filepath.Join(dir, sessionsSubdir, id+".meta.json")
+	path := SessionMetaPath(dir, id)
 	// Finding 3: validate intermediate path components (e.g. sessions/) for
 	// symlinks. A symlinked sessions/ directory pointing outside the state
 	// root would surface metadata from an untrusted location. The leaf
@@ -844,7 +891,7 @@ func wrapperSourceIsOS(w afero.Fs) bool {
 // listSessionMetasFSWithErrors is the filesystem seam beneath ListSessionMetas
 // and ListSessionMetasWithErrors.
 func listSessionMetasFSWithErrors(fs afero.Fs, dir string) ([]SessionMeta, []SessionMetaLoadError, error) {
-	sessDir := filepath.Join(dir, sessionsSubdir)
+	sessDir := SessionsDir(dir)
 	entries, err := afero.ReadDir(fs, sessDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -856,10 +903,10 @@ func listSessionMetasFSWithErrors(fs afero.Fs, dir string) ([]SessionMeta, []Ses
 	var metas []SessionMeta
 	var failures []SessionMetaLoadError
 	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".meta.json") {
+		if !strings.HasSuffix(e.Name(), SessionMetaSuffix) {
 			continue
 		}
-		id := strings.TrimSuffix(e.Name(), ".meta.json")
+		id := strings.TrimSuffix(e.Name(), SessionMetaSuffix)
 		// A filename that is not a valid session identity is not a session this
 		// sweep can name or address, so both listings skip it.
 		if identifier.ValidateSessionID(id) != nil {

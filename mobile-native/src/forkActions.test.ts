@@ -1,7 +1,7 @@
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { expect, it } from "vitest";
 import type { Thread } from "@evener/appwire-client";
-import { type ConversationClientLike, createConversationService } from "../../mobile/src/services/conversation";
+import { type ConversationClientLike, createConversationService } from "./conversation/services/conversation";
 import { DraftLibrary } from "./draftLibrary";
 import { DraftRepository } from "./draftRepository";
 import { ForkActions } from "./forkActions";

@@ -80,12 +80,8 @@ func TestExplainSchemaError_BranchEnumReadsBranchSchema(t *testing.T) {
 				t.Fatalf("offendingKeywordLocation = %q, want the branch-level sandbox enum", loc)
 			}
 			msg := ExplainSchemaError("delegate", params, args, field, loc)
-			if strings.Contains(msg, `"off", "read-only"`) {
-				t.Fatalf("branch-level enum rendered the top-level sandbox enum that lists the rejected value: %q", msg)
-			}
-			if !strings.Contains(msg, `is not one of the allowed values: "read-only", "workspace-write", "restricted"`) {
-				t.Fatalf("message must render the branch's narrowed sandbox enum: %q", msg)
-			}
+			notMsg(t, msg, `"off", "read-only"`, "branch-level enum rendered the top-level sandbox enum that lists the rejected value")
+			wantMsg(t, msg, `is not one of the allowed values: "read-only", "workspace-write", "restricted"`, "message must render the branch's narrowed sandbox enum")
 		})
 	}
 }
@@ -115,10 +111,6 @@ func TestExplainSchemaError_BranchRequiredOmitsUncheckedExample(t *testing.T) {
 		t.Fatalf("offendingKeywordLocation = %q, want the branch's required list", loc)
 	}
 	msg := ExplainSchemaError("probe_tool", params, args, field, loc)
-	if !strings.Contains(msg, "missing required properties: opts.b") {
-		t.Fatalf("message must name the branch's missing property: %q", msg)
-	}
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("message showed a top-level example that omits the property it just named missing: %q", msg)
-	}
+	wantMsg(t, msg, "missing required properties: opts.b", "message must name the branch's missing property")
+	notMsg(t, msg, "Example:", "message showed a top-level example that omits the property it just named missing")
 }

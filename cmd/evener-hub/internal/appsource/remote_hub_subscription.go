@@ -285,7 +285,7 @@ func (s *RemoteHubSource) SubscribeThread(ctx context.Context, params appwire.Th
 			// mapping it as one keeps the auto-resume gate working; reporting
 			// context.Canceled would read as the caller giving up.
 			if !callerCanceled && errors.Is(result.err, context.Canceled) {
-				return nil, appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": subscription ended before it attached")
+				return nil, remoteHubUnavailable(s.id, "subscription ended before it attached")
 			}
 			return nil, s.mapCallError(result.err)
 		}
@@ -306,7 +306,7 @@ func (s *RemoteHubSource) SubscribeThread(ctx context.Context, params appwire.Th
 				// it — surface the same refusal admission produces.
 				return nil, refusal
 			}
-			return nil, appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": subscription was replaced before it attached")
+			return nil, remoteHubUnavailable(s.id, "subscription was replaced before it attached")
 		}
 		go s.pumpSubscription(subCtx, sub)
 		if previous != nil && previous != sub {
@@ -325,7 +325,7 @@ func (s *RemoteHubSource) SubscribeThread(ctx context.Context, params appwire.Th
 		cancel()
 		go s.retireCanceledSubscribe(sub, previous, outcome)
 		if !callerCanceled {
-			return nil, appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": subscription ended before it attached")
+			return nil, remoteHubUnavailable(s.id, "subscription ended before it attached")
 		}
 		return nil, s.mapCallError(subCtx.Err())
 	}
@@ -1257,23 +1257,25 @@ func (s *RemoteHubSource) translateNotification(n appwire.Notification, client *
 		if err != nil {
 			return n, "", false
 		}
-		fields["thread"] = s.rewriteRawThreadImageURLs(translated)
+		fields["thread"] = s.translateRawThreadAuthorship(s.rewriteRawThreadImageURLs(translated))
 	}
 	// turn/started and turn/completed carry a Turn; item/started and
 	// item/completed carry a ThreadItem. Both are image carriers, so the shared
 	// visitor runs on them here exactly as it runs on a thread.
 	if raw, ok := fields["turn"]; ok {
-		fields["turn"] = s.rewriteRawTurnImageURLs(raw)
+		fields["turn"] = s.translateRawTurnAuthorship(s.rewriteRawTurnImageURLs(s.translateRawTurnActors(raw)))
 	}
 	if raw, ok := fields["item"]; ok {
-		fields["item"] = s.rewriteRawItemImageURLs(raw)
+		fields["item"] = s.rewriteRawItemImageURLs(s.translateRawItemActor(raw))
 	}
 	// history/updated (HistoryUpdatedParams) carries its turns and items in
 	// the plural "turns"/"items" arrays instead: turns carry no items of
 	// their own there (the reducer merges items in by key), so only the
 	// items array needs the item visitor.
 	if raw, ok := fields["items"]; ok {
-		fields["items"] = s.rewriteRawArray(raw, s.rewriteRawItemImageURLs)
+		fields["items"] = s.rewriteRawArray(raw, func(item json.RawMessage) json.RawMessage {
+			return s.rewriteRawItemImageURLs(s.translateRawItemActor(item))
+		})
 	}
 	if n.Method == appwire.NotifyThreadStatusChanged {
 		if rawCapabilities, ok := fields[capabilitiesField]; ok {

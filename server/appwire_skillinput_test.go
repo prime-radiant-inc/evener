@@ -208,7 +208,7 @@ func TestSkillInputValidationMatchesAdvertisedCapability(t *testing.T) {
 func TestThreadReadAdvertisesRealSkillControls(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetStatus(StatusInfo{SessionID: "sess_1", State: "idle"})
+	seedStatus(srv, StatusInfo{SessionID: "sess_1", State: "idle"})
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
 		e.detailedStatus = DetailedStatus{Skills: []SkillInfo{
 			{Name: "clean", Description: "a plain user skill", UserInvocable: true, Available: true, AllowedTools: []string{"read_file", "grep"}},
@@ -268,7 +268,7 @@ func TestThreadReadAdvertisesRealSkillControls(t *testing.T) {
 func TestThreadReadCarriesSkillDiagnostics(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetStatus(StatusInfo{SessionID: "sess_1", State: "idle"})
+	seedStatus(srv, StatusInfo{SessionID: "sess_1", State: "idle"})
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
 		e.detailedStatus = DetailedStatus{
 			Skills: []SkillInfo{{Name: "clean", Description: "a plain user skill", UserInvocable: true, Available: true}},

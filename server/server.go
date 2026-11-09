@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 
 	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/internal/appprojector"
@@ -41,10 +42,15 @@ type InputMessage struct {
 // per-session client-mutation state machine.
 type RetrySafeTurnFunctions struct {
 	Start     func(appwire.TurnStartParams) (appwire.TurnStartResponse, error)
+	StartAs   func(appwire.TurnStartParams, schema.SessionActor) (appwire.TurnStartResponse, error)
 	Steer     func(appwire.TurnSteerParams) (appwire.TurnSteerResponse, error)
+	SteerAs   func(appwire.TurnSteerParams, schema.SessionActor) (appwire.TurnSteerResponse, error)
 	Queue     func(appwire.TurnQueueParams) (appwire.TurnQueueResponse, error)
+	QueueAs   func(appwire.TurnQueueParams, schema.SessionActor) (appwire.TurnQueueResponse, error)
 	Drain     func(appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error)
+	DrainAs   func(appwire.TurnDrainAsSteerParams, schema.SessionActor) (appwire.TurnDrainAsSteerResponse, error)
 	Promote   func(appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error)
+	PromoteAs func(appwire.TurnPromoteQueuedAsSteerParams, schema.SessionActor) (appwire.TurnPromoteQueuedAsSteerResponse, error)
 	Cancel    func(appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error)
 	Interrupt func(context.Context, appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error)
 }
@@ -102,58 +108,9 @@ type JobStatusInfo struct {
 	Task             string `json:"task,omitempty"`
 }
 
-type DelegateStatusInfo struct {
-	RunGeneration       uint64                       `json:"run_generation"`
-	DelegateID          string                       `json:"delegate_id"`
-	OwnerSessionID      string                       `json:"owner_session_id"`
-	RootSessionID       string                       `json:"root_session_id"`
-	ChildSessionID      string                       `json:"child_session_id"`
-	TranscriptRef       string                       `json:"transcript_ref"`
-	ParentDelegateID    string                       `json:"parent_delegate_id,omitempty"`
-	Type                string                       `json:"type"`
-	Lifecycle           string                       `json:"lifecycle"`
-	Phase               string                       `json:"phase"`
-	Status              string                       `json:"status"`
-	Outcome             string                       `json:"outcome,omitempty"`
-	Reason              string                       `json:"reason,omitempty"`
-	Error               string                       `json:"error,omitempty"`
-	Terminal            bool                         `json:"terminal,omitempty"`
-	Resumable           bool                         `json:"resumable"`
-	NeedsAttention      bool                         `json:"needs_attention"`
-	NotResumableReason  string                       `json:"not_resumable_reason,omitempty"`
-	ProjectionRevision  uint64                       `json:"projection_revision"`
-	Task                string                       `json:"task,omitempty"`
-	Description         string                       `json:"description,omitempty"`
-	AgentType           string                       `json:"agent_type,omitempty"`
-	RequestedModel      string                       `json:"requested_model,omitempty"`
-	ResolvedProfileID   string                       `json:"resolved_profile_id,omitempty"`
-	ResolvedModel       string                       `json:"resolved_model,omitempty"`
-	Model               string                       `json:"model,omitempty"`
-	ReasoningEffort     string                       `json:"reasoning_effort,omitempty"`
-	OriginTurnID        string                       `json:"origin_turn_id,omitempty"`
-	OriginToolCallID    string                       `json:"origin_tool_call_id,omitempty"`
-	OriginItemID        string                       `json:"origin_item_id,omitempty"`
-	RunStartedAt        string                       `json:"run_started_at,omitempty"`
-	RunEndedAt          string                       `json:"run_ended_at,omitempty"`
-	LatestActivityAt    string                       `json:"latest_activity_at,omitempty"`
-	RunningForMS        *int64                       `json:"running_for_ms,omitempty"`
-	QuietForMS          *int64                       `json:"quiet_for_ms,omitempty"`
-	DurationMS          *int64                       `json:"duration_ms,omitempty"`
-	PacketKind          string                       `json:"packet_kind,omitempty"`
-	Message             json.RawMessage              `json:"message,omitempty"`
-	StructuredResult    json.RawMessage              `json:"structured_result,omitempty"`
-	StructuredValid     *bool                        `json:"structured_result_valid,omitempty"`
-	StructuredReason    string                       `json:"structured_result_reason,omitempty"`
-	Warnings            []string                     `json:"warnings,omitempty"`
-	Diagnostics         []string                     `json:"diagnostics,omitempty"`
-	ExhaustionBudget    string                       `json:"exhaustion_budget,omitempty"`
-	ExhaustionLimit     int                          `json:"exhaustion_limit,omitempty"`
-	ExhaustionResumable *bool                        `json:"exhaustion_resumable,omitempty"`
-	DelegationAllowance int                          `json:"delegation_allowance,omitempty"`
-	ParentWatchGranted  bool                         `json:"parent_watch_granted,omitempty"`
-	Usage               *appwire.EvenerUsage         `json:"usage,omitempty"`
-	Worktree            *appwire.JobActivityWorktree `json:"worktree,omitempty"`
-}
+// DelegateStatusInfo is the agent's delegate read model, carried unchanged on
+// the daemon's detailed status.
+type DelegateStatusInfo = agent.DelegateStatusInfo
 
 type TurnSlotStatus struct {
 	InUse  int64 `json:"in_use"`
@@ -227,61 +184,12 @@ func (s DetailedStatus) MarshalJSON() ([]byte, error) {
 // StatusInfo is the daemon's materialized root-session state used to build
 // AppWire snapshots and notifications.
 type StatusInfo struct {
-	SessionID        string             `json:"session_id"`
-	State            string             `json:"state"`
-	Turns            int                `json:"turns"`
-	Model            string             `json:"model"`
-	Profile          string             `json:"profile"`
-	WorkingDir       string             `json:"working_dir,omitempty"`
-	ContextPressure  float64            `json:"context_pressure"`
-	ContextUsed      int                `json:"context_used,omitempty"`
-	ContextWindow    int                `json:"context_window,omitempty"`
-	ContextRemaining int                `json:"context_remaining,omitempty"`
-	Detailed         *DetailedStatus    `json:"detailed,omitempty"`
-	Capabilities     ActionCapabilities `json:"capabilities"`
-	// DescendantSessionIDs lists every non-closed in-process descendant currently
-	// projected by this daemon. It is separate from Detailed.Jobs because a
-	// nested descendant's delegate job is owned by its immediate parent and does
-	// not appear in the root session's job store.
-	DescendantSessionIDs []string `json:"descendant_session_ids,omitempty"`
-	// DescendantStates carries each listed descendant's own projected thread
-	// status ("active", "idle", "awaiting", ...). The IDs list alone is a
-	// liveness set — a settled-but-resumable delegate stays on it — so without
-	// the per-descendant state a consumer can only guess, and "listed" guessed
-	// wrong as "working" for every idle delegate. Absent on old daemons;
-	// consumers treat a missing entry as unknown, never as idle.
-	DescendantStates map[string]string `json:"descendant_states,omitempty"`
-	// Usage, WorkMillis, and ActiveTurnStartedAt are the daemon's live
-	// working-state/token metrics (WS2 A7), served from the materialized thread
-	// envelope. Usage is a pointer (unlike the other
-	// two scalars) because appwire.EvenerUsage is a value struct whose
-	// omitempty would never omit — nil is how a fresh/unwired daemon signals
-	// "no token data" rather than rendering ↑0 ↓0.
-	// ActiveTurnStartedAt is Unix epoch MILLISECONDS (like WorkMillis's scale
-	// and the web reducer's epoch-ms read), 0 when no turn is running.
-	Usage               *appwire.EvenerUsage `json:"usage,omitempty"`
-	WorkMillis          int64                `json:"work_millis,omitempty"`
-	ActiveTurnStartedAt int64                `json:"active_turn_started_at,omitempty"`
-	// FailedToolCalls is how many of the session's tool calls have failed, over
-	// the WHOLE session — counted by the transcript writer as it records them
-	// and seeded on resume from the file, so a running session's figure is
-	// complete rather than a floor (kata 12rq). A pointer because 0 and unknown
-	// are different claims: 0 means the session was measured and nothing failed,
-	// nil means nobody counted (no transcript, an old daemon, or a source-backed
-	// thread that omits the field).
-	// Consumers render nil as nothing, never as a fabricated zero.
-	FailedToolCalls *int `json:"failed_tool_calls,omitempty"`
-	// PendingAsk mirrors the session's HasPendingAsk() — true while an
-	// ask_user question is unanswered (Track A §2 ask-tiering). Additive,
-	// daemon-truth: old daemons and source-backed threads that omit the field
-	// never set it, so absence decodes as false everywhere downstream.
-	PendingAsk bool `json:"pending_ask,omitempty"`
-	// PendingEscalation mirrors the session's HasPendingEscalations() — true while a
-	// sandbox-exemption escalation (M7) is blocked awaiting a human. The hub's
-	// prober polls it so the owning session lights up cross-session (needs-you
-	// badge) even mid-turn (an escalation blocks WHILE the status is "active").
-	// Additive/daemon-truth, absent-decodes-false like PendingAsk.
-	PendingEscalation bool `json:"pending_escalation,omitempty"`
+	SessionID  string
+	State      string
+	Turns      int
+	Model      string
+	Profile    string
+	WorkingDir string
 }
 
 // ContextMetrics describes the estimated size of the active session context.
@@ -292,27 +200,16 @@ type ContextMetrics struct {
 	Assumed   bool
 }
 
-// ActionCapabilities reports which mutating session actions are currently
-// supported by this daemon.
-type ActionCapabilities struct {
-	Send              bool   `json:"send"`
-	Steer             bool   `json:"steer"`
-	Interrupt         bool   `json:"interrupt"`
-	Compact           bool   `json:"compact"`
-	Clear             bool   `json:"clear"`
-	Shutdown          bool   `json:"shutdown"`
-	ChangeModel       bool   `json:"change_model"`
-	ChangeVisionModel bool   `json:"change_vision_model"`
-	Queue             bool   `json:"queue"`
-	ReadOnlyReason    string `json:"read_only_reason,omitempty"`
-}
-
 // ServerConfig holds configuration for the HTTP server.
 type ServerConfig struct {
 	AppReplaySize int // default: 1000
 	HubToken      string
 	AllowedHost   string
 	StateDir      string
+	// Logf receives server-initiated diagnostics a peer cannot see from its
+	// side, such as connection eviction. Without it the serve daemon has no
+	// server-side log at all.
+	Logf func(format string, args ...any)
 }
 
 // appDescendantProjection is the in-memory AppWire view of one in-process
@@ -385,11 +282,11 @@ type Server struct {
 	appEnvelope threadEnvelope
 	// appEnvelopeSource is the seam the bridge samples session state through at
 	// the moments it changes. It is NEVER consulted by a read.
-	appEnvelopeSource ThreadEnvelopeSource
+	appEnvelopeSource           ThreadEnvelopeSource
+	appEnvelopeSourceGeneration uint64
 	// appActivity is the root tree's pulse meter (S5). The projection commits
 	// feed it and the thread list reads it, all under mu; see activityMeter.
-	appActivity       activityMeter
-	appReservedTurnID string
+	appActivity activityMeter
 	// appPushedFailedToolCalls is the failure count the root's last
 	// thread/status/changed carried, nil when none carried one: a running
 	// execution pushes the count when the envelope's moves past it.
@@ -412,8 +309,15 @@ type Server struct {
 	// for the thread list's root row (S3); nil disables it.
 	appSubagentTallyFunc func() (appwire.SubagentTally, bool)
 	retrySafeTurns       RetrySafeTurnFunctions
-	cancelFunc           context.CancelFunc
-	goalFunc             func(objective string) (bool, error)
+	resolveManagerActor  func(appwire.SessionActorProof) (schema.SessionActor, error)
+	// testOnlySessionToolsPublished observes a freshly selected runtime registry
+	// immediately before it is published to the session, with its lock held. The
+	// installation ordering is otherwise unobservable, and a publish before the
+	// first binding strands a Manager tool woken by SetHubClient.
+	testOnlySessionToolsPublished func(*runtimeHubClients)
+	sandboxEscalationResolveAs    func(string, bool, schema.SessionActor) error
+	cancelFunc                    context.CancelFunc
+	goalFunc                      func(objective string) (bool, error)
 	// notesHumanSetFunc is called by the appwire notes/human/set method. The
 	// callback returns the full atomic acceptance result, including its receipt.
 	notesHumanSetFunc func(outerID, note string) (appwire.NotesHumanSetResponse, error)
@@ -425,9 +329,7 @@ type Server struct {
 	urlsRemoveFunc           func(outerID, id string) (bool, error)
 	compactFunc              func(context.Context) error
 	clearFunc                func(context.Context, appwire.ThreadClearParams) error
-	clearJournalPath         string
-	clearRecords             map[string]threadClearRecord
-	clearJournalErr          error
+	clearJournal             threadClearJournalFile
 	modelFunc                func(string) error
 	visionModelFunc          func(string) error
 	nameFunc                 func(string) error
@@ -435,7 +337,7 @@ type Server struct {
 	listModelsFunc           func(context.Context) ([]appwire.ModelDescriptor, error)
 	appSessionActivity       sessionActivityHooks
 	tasksFn                  func() []appwire.Task
-	jobsFn                   func(appwire.JobsListParams) (any, error)
+	jobsFn                   func(context.Context, appwire.JobsListParams) (any, error)
 	jobOutputFn              func(jobID string, beforeBytes *int64, maxBytes int64) (data appwire.JobOutputPage, found bool, err error)
 	jobGetFn                 func(jobID string) (data appwire.JobActivityJob, found bool, err error)
 	shutdownFunc             func()
@@ -456,6 +358,7 @@ type Server struct {
 	// delegateStopFunc ends one delegate's current run at the user's request
 	// (S6). nil when no session is attached.
 	delegateStopFunc func(delegateID string) (appwire.DelegateStopOutcome, error)
+	jobStopFunc      func(context.Context, appwire.SessionStopRequest) (appwire.SessionStopResponse, error)
 	processing       bool
 	// appMutationGate serializes retry-safe turn mutations with thread/clear.
 	// A clear must not rotate the live instance while an old-generation turn
@@ -503,28 +406,23 @@ func NewServer(cfg ServerConfig) *Server {
 			ServerName: "evener-serve",
 			Version:    buildinfo.Version(),
 			SourceID:   "local",
-			SubscriptionAdmissionResolver: func(msg appwire.Message) (string, bool) {
-				params, ok := decodeSubscriptionAdmissionParams(msg)
-				if !ok {
-					return "", false
-				}
-				threadID, target := runtime.appReadTarget(params)
-				if threadID == "" {
-					return "", false
-				}
-				return target, true
+			Logf:       cfg.Logf,
+			SubscriptionAdmissionResolver: func(msg appwire.Message) appserver.SubscriptionAdmissionResolution {
+				return runtime.resolveSubscriptionAdmission(msg)
 			},
 			Features: appwire.FeatureSet{
-				ThreadList:        true,
-				ThreadTurnsList:   true,
-				TurnStart:         true,
-				TurnSteer:         true,
-				ThreadClear:       true,
-				ThreadShutdown:    true,
-				ForkFromTurn:      false,
-				Tasks:             true,
-				ModelList:         true,
-				DirectoryComplete: false,
+				VoicePresentationContextV1: true,
+				ConversationProvenance:     true,
+				ThreadList:                 true,
+				ThreadTurnsList:            true,
+				TurnStart:                  true,
+				TurnSteer:                  true,
+				ThreadClear:                true,
+				ThreadShutdown:             true,
+				ForkFromTurn:               false,
+				Tasks:                      true,
+				ModelList:                  true,
+				DirectoryComplete:          false,
 			},
 		}),
 		// AppReplaySize bounds notification RETENTION, which is transport
@@ -536,46 +434,63 @@ func NewServer(cfg ServerConfig) *Server {
 		appHistories:        newAppHistories(),
 		appDescendants:      make(map[string]*appDescendantProjection),
 		appTaskPublications: make(map[string]taskPublicationCursor),
-		clearJournalPath:    threadClearJournalPath(cfg.StateDir),
-		clearRecords:        make(map[string]threadClearRecord),
+		clearJournal:        openThreadClearJournal(cfg.StateDir),
 		inputCh:             make(chan InputMessage, 1),
 		hubToken:            strings.TrimSpace(cfg.HubToken),
 		sameOrigin:          httpguard.NewSameOriginPolicy(cfg.AllowedHost),
 	}
 	runtime = s
-	s.clearRecords, s.clearJournalErr = loadThreadClearJournal(s.clearJournalPath)
-	if s.clearRecords == nil {
-		s.clearRecords = make(map[string]threadClearRecord)
-	}
 	s.registerAppWireHandlers()
 	s.mux.HandleFunc("/rpc", s.appServer.ServeWebSocket)
 	return s
 }
 
+// resolveSubscriptionAdmission classifies a thread/read or thread/unsubscribe
+// request for ordered dispatch. Params that do not decode are Invalid, as on
+// the hub; a request that is not a subscribe at all is NotSubscribe.
+func (s *Server) resolveSubscriptionAdmission(msg appwire.Message) appserver.SubscriptionAdmissionResolution {
+	params, ok, malformed := decodeSubscriptionAdmissionParams(msg)
+	if malformed {
+		return appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionInvalid}
+	}
+	if !ok {
+		return appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionNotSubscribe}
+	}
+	threadID, target := s.appReadTarget(params)
+	if threadID == "" {
+		return appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionUnresolved}
+	}
+	return appserver.SubscriptionAdmissionResolution{Key: target, Intent: appserver.SubscriptionAdmissionResolved}
+}
+
 // decodeSubscriptionAdmissionParams decodes msg's thread/read or
 // thread/unsubscribe request params into a ThreadReadParams, the wire decode
-// step of SubscriptionAdmissionResolver above: ok is false for a message the
-// resolver does not apply to (not a request, or a method other than the two
-// it admits) or params it cannot decode. Pulled out as its own function so
-// the decode of client-supplied JSON, not the admission semantics that need a
-// live Server to resolve against, is what a fuzz target exercises
+// step of resolveSubscriptionAdmission: ok is false for a message the
+// resolver does not apply to (not a request, a method other than the two it
+// admits, or a read that does not subscribe), and malformed is true for
+// params it cannot decode. Pulled out as its own function so the decode of
+// client-supplied JSON, not the admission semantics that need a live Server
+// to resolve against, is what a fuzz target exercises
 // (FuzzDecodeSubscriptionAdmissionParams).
-func decodeSubscriptionAdmissionParams(msg appwire.Message) (params appwire.ThreadReadParams, ok bool) {
+func decodeSubscriptionAdmissionParams(msg appwire.Message) (params appwire.ThreadReadParams, ok, malformed bool) {
 	if msg.Request == nil || (msg.Request.Method != appwire.MethodThreadRead && msg.Request.Method != appwire.MethodThreadUnsubscribe) {
-		return appwire.ThreadReadParams{}, false
+		return appwire.ThreadReadParams{}, false, false
 	}
 	if msg.Request.Method == appwire.MethodThreadUnsubscribe {
 		var unsubscribe appwire.ThreadUnsubscribeParams
 		if json.Unmarshal(msg.Request.Params, &unsubscribe) != nil {
-			return appwire.ThreadReadParams{}, false
+			return appwire.ThreadReadParams{}, false, true
 		}
 		params.ThreadID, params.Ref = unsubscribe.ThreadID, unsubscribe.Ref
-		return params, true
+		return params, true, false
 	}
-	if json.Unmarshal(msg.Request.Params, &params) != nil || !params.Subscribe {
-		return appwire.ThreadReadParams{}, false
+	if json.Unmarshal(msg.Request.Params, &params) != nil {
+		return appwire.ThreadReadParams{}, false, true
 	}
-	return params, true
+	if !params.Subscribe {
+		return appwire.ThreadReadParams{}, false, false
+	}
+	return params, true, false
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -591,13 +506,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
 }
 
-// SetStatus replaces the full session status.
-func (s *Server) SetStatus(info StatusInfo) {
-	s.mu.Lock()
-	s.status = info
-	s.mu.Unlock()
-}
-
 // GetStatus returns the current session status.
 func (s *Server) GetStatus() StatusInfo {
 	s.mu.RLock()
@@ -609,6 +517,21 @@ func (s *Server) GetStatus() StatusInfo {
 // UpdateSessionInfo sets session identity fields.
 func (s *Server) UpdateSessionInfo(sessionID, model, profile string) {
 	s.mu.Lock()
+	s.updateSessionInfoLocked(sessionID, model, profile)
+	s.mu.Unlock()
+}
+
+// UpdateSessionInfoFrom sets session identity fields from a sample that runs
+// under the server lock. A caller whose read raced a newer model-changed
+// projection - the daemon's model-set hook reading the profile while a turn
+// boundary commits a queued switch - would otherwise install a stale snapshot
+// after the projection already installed the new model, regressing the cache
+// with no corrective event behind it. Sampling inside the write's critical
+// section installs whatever the session reports at write time, so the cache
+// can only move forward.
+func (s *Server) UpdateSessionInfoFrom(sessionID string, sample func() (model, profile string)) {
+	s.mu.Lock()
+	model, profile := sample()
 	s.updateSessionInfoLocked(sessionID, model, profile)
 	s.mu.Unlock()
 }
@@ -665,11 +588,24 @@ func (s *Server) SetSandboxEscalationResolveFunc(fn func(escalationID string, ap
 	s.mu.Unlock()
 }
 
+func (s *Server) SetSandboxEscalationResolveAsFunc(fn func(string, bool, schema.SessionActor) error) {
+	s.mu.Lock()
+	s.sandboxEscalationResolveAs = fn
+	s.mu.Unlock()
+}
+
 // SetDelegateStopFunc sets the callback evener/delegate/stop hands a delegate
 // id to (S6). Wiring it advertises the stopSubagent capability.
 func (s *Server) SetDelegateStopFunc(fn func(delegateID string) (appwire.DelegateStopOutcome, error)) {
 	s.mu.Lock()
 	s.delegateStopFunc = fn
+	s.mu.Unlock()
+}
+
+// SetJobStopFunc binds the existing human job_stop owner to the typed AppWire route.
+func (s *Server) SetJobStopFunc(fn func(context.Context, appwire.SessionStopRequest) (appwire.SessionStopResponse, error)) {
+	s.mu.Lock()
+	s.jobStopFunc = fn
 	s.mu.Unlock()
 }
 
@@ -800,7 +736,7 @@ func (s *Server) SetTasksFunc(fn func() []appwire.Task) {
 // an error if it cannot read one: an unreadable durable root must reach the
 // caller as a failure, never as the empty success a job-less session answers
 // with.
-func (s *Server) SetJobsFunc(fn func(appwire.JobsListParams) (any, error)) {
+func (s *Server) SetJobsFunc(fn func(context.Context, appwire.JobsListParams) (any, error)) {
 	s.mu.Lock()
 	s.jobsFn = fn
 	s.mu.Unlock()
@@ -857,7 +793,6 @@ func (s *Server) SetProcessingTurn(turnID string) {
 		// terminal status still queued from the input before it must not be
 		// published over this one (RecordAppEvent defers it).
 		s.appPendingStableTurnID = turnID
-		s.appReservedTurnID = ""
 		threadID, ref := s.appRootIdentityLocked()
 		s.mu.Unlock()
 		return s.recordAppNotifications(threadID, []pendingAppNotification{{

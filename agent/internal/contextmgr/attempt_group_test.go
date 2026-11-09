@@ -80,7 +80,7 @@ func TestElicitNoteOwnsOneLogicalAttemptGroupAcrossRouteFallback(t *testing.T) {
 	if err := logger.Close(); err != nil {
 		t.Fatalf("Close API logger: %v", err)
 	}
-	assertContextManagerLogicalGroup(t, readContextManagerAttemptRecords(t, path), apilog.AttemptSuccess)
+	assertContextManagerLogicalGroup(t, readContextManagerAttemptRecords(t, path), 2, apilog.AttemptSuccess)
 }
 
 func TestSummarizeWithLLMOwnsOneLogicalAttemptGroupWhenAllRoutesFail(t *testing.T) {
@@ -97,14 +97,14 @@ func TestSummarizeWithLLMOwnsOneLogicalAttemptGroupWhenAllRoutesFail(t *testing.
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 	}
 
-	_, gotErr := cm.summarizeWithLLM(context.Background(), history, 1)
+	_, gotErr := cm.summarizeFold(context.Background(), history, 1, "", nil)
 	if !errors.Is(gotErr, activeErr) {
-		t.Fatalf("summarizeWithLLM error = %v, want final provider error %v", gotErr, activeErr)
+		t.Fatalf("summarizeFold error = %v, want final provider error %v", gotErr, activeErr)
 	}
 	if err := logger.Close(); err != nil {
 		t.Fatalf("Close API logger: %v", err)
 	}
-	assertContextManagerLogicalGroup(t, readContextManagerAttemptRecords(t, path), apilog.AttemptProviderReject)
+	assertContextManagerLogicalGroup(t, readContextManagerAttemptRecords(t, path), 2, apilog.AttemptProviderReject)
 }
 
 func contextManagerAttemptClient(t *testing.T, adapters ...llm.ProviderAdapter) (*llm.Client, *llm.APILogger, string) {
@@ -144,30 +144,35 @@ func readContextManagerAttemptRecords(t *testing.T, path string) []apilog.APILog
 	}
 }
 
-func assertContextManagerLogicalGroup(t *testing.T, records []apilog.APILogRecord, wantOutcome apilog.AttemptOutcomeClass) {
+func assertContextManagerLogicalGroup(t *testing.T, records []apilog.APILogRecord, attempts int, wantOutcome apilog.AttemptOutcomeClass) {
 	t.Helper()
-	if len(records) != 3 {
-		t.Fatalf("record count = %d, want 3 (two attempts and one settlement): %#v", len(records), records)
+	if len(records) != attempts+1 {
+		t.Fatalf("record count = %d, want %d (%d attempts and one settlement)", len(records), attempts+1, attempts)
 	}
-	first, ok := records[0].(apilog.APIAttemptRecord)
+	groupID := ""
+	lastAttemptID := ""
+	for i, record := range records[:attempts] {
+		attempt, ok := record.(apilog.APIAttemptRecord)
+		if !ok {
+			t.Fatalf("record %d = %T, want APIAttemptRecord", i+1, record)
+		}
+		if attempt.AttemptGroupID == "" || (groupID != "" && attempt.AttemptGroupID != groupID) {
+			t.Fatalf("group IDs = (%q, %q), want one non-empty group", groupID, attempt.AttemptGroupID)
+		}
+		groupID = attempt.AttemptGroupID
+		if attempt.AttemptIndex != i+1 {
+			t.Fatalf("attempt indexes = %d at position %d, want sequential from 1", attempt.AttemptIndex, i+1)
+		}
+		lastAttemptID = attempt.AttemptID
+	}
+	settlement, ok := records[attempts].(apilog.APIAttemptGroupSettlement)
 	if !ok {
-		t.Fatalf("record 1 = %T, want APIAttemptRecord", records[0])
+		t.Fatalf("record %d = %T, want APIAttemptGroupSettlement", attempts+1, records[attempts])
 	}
-	second, ok := records[1].(apilog.APIAttemptRecord)
-	if !ok {
-		t.Fatalf("record 2 = %T, want APIAttemptRecord", records[1])
+	if settlement.AttemptGroupID != groupID {
+		t.Fatalf("group IDs = (%q, %q), want one non-empty group", groupID, settlement.AttemptGroupID)
 	}
-	settlement, ok := records[2].(apilog.APIAttemptGroupSettlement)
-	if !ok {
-		t.Fatalf("record 3 = %T, want APIAttemptGroupSettlement", records[2])
-	}
-	if first.AttemptGroupID == "" || second.AttemptGroupID != first.AttemptGroupID || settlement.AttemptGroupID != first.AttemptGroupID {
-		t.Fatalf("group IDs = (%q, %q, %q), want one non-empty group", first.AttemptGroupID, second.AttemptGroupID, settlement.AttemptGroupID)
-	}
-	if first.AttemptIndex != 1 || second.AttemptIndex != 2 {
-		t.Fatalf("attempt indexes = (%d, %d), want (1, 2)", first.AttemptIndex, second.AttemptIndex)
-	}
-	if settlement.FinalAttemptID != second.AttemptID || settlement.FinalAttemptCount != 2 || settlement.Outcome != wantOutcome {
-		t.Fatalf("settlement = %+v, want final attempt %q, count 2, outcome %q", settlement, second.AttemptID, wantOutcome)
+	if settlement.FinalAttemptID != lastAttemptID || settlement.FinalAttemptCount != attempts || settlement.Outcome != wantOutcome {
+		t.Fatalf("settlement = %+v, want final attempt %q, count %d, outcome %q", settlement, lastAttemptID, attempts, wantOutcome)
 	}
 }

@@ -1,6 +1,6 @@
 import { HistoryPaging } from "@evener/appwire-client";
-import type { ConversationService } from "../../../mobile/src/services/conversation";
-import { type ConversationState, olderPageKey } from "../../../mobile/src/state/conversation";
+import type { ConversationService } from "../conversation/services/conversation";
+import { type ConversationState, olderPageKey } from "../conversation/state/conversation";
 import { perHub } from "../board/perHub";
 import type { FindState } from "./findInSession";
 

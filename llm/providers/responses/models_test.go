@@ -119,28 +119,46 @@ func TestListModelsGatewayReasoningFollowsTheCapability(t *testing.T) {
 // this a Responses-recorded gateway that publishes vision under capabilities
 // resolves image-blind (#4508).
 func TestListModelsPlatformVisionCapability(t *testing.T) {
-	capsOf := func(facts string) registry.Caps {
-		t.Helper()
-		srv, _ := server(t, 200, `{"data":[{"id":"gateway-model",`+facts+`}]}`)
-		rows, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), liveRes(srv, nil))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(rows) != 1 || rows[0].ID != "gateway-model" {
-			t.Fatalf("rows = %+v", rows)
-		}
-		return rows[0].Caps
-	}
-	if c := capsOf(`"capabilities":{"vision":true}`); !c.AcceptsModality("image") {
+	if c := capsOf(t, `"capabilities":{"vision":true}`); !c.AcceptsModality("image") {
 		t.Fatalf("capabilities.vision must advertise image input: %+v", c.InputModalities)
 	}
-	if c := capsOf(`"capabilities":{"vision":false}`); c.AcceptsModality("image") {
+	if c := capsOf(t, `"capabilities":{"vision":false}`); c.AcceptsModality("image") {
 		t.Fatalf("vision:false must not advertise image input: %+v", c.InputModalities)
 	}
-	if c := capsOf(`"context_window":8192`); c.AcceptsModality("image") {
+	if c := capsOf(t, `"context_window":8192`); c.AcceptsModality("image") {
 		t.Fatalf("a row with no modality facts must not advertise image input: %+v", c.InputModalities)
 	}
-	if c := capsOf(`"architecture":{"input_modalities":["text"]},"capabilities":{"vision":true}`); c.AcceptsModality("image") || len(c.InputModalities) != 1 {
+	if c := capsOf(t, `"architecture":{"input_modalities":["text"]},"capabilities":{"vision":true}`); c.AcceptsModality("image") || len(c.InputModalities) != 1 {
 		t.Fatalf("architecture.input_modalities must win over capabilities.vision: %+v", c.InputModalities)
+	}
+}
+
+// capsOf serves one /models row body and returns that row's caps.
+func capsOf(t *testing.T, facts string) registry.Caps {
+	t.Helper()
+	srv, _ := server(t, 200, `{"data":[{"id":"gateway-model",`+facts+`}]}`)
+	rows, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), liveRes(srv, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].ID != "gateway-model" {
+		t.Fatalf("rows = %+v", rows)
+	}
+	return rows[0].Caps
+}
+
+// TestListModelsReadsGatewayToolsCapability pins that a gateway's per-model
+// capabilities.tools reaches the row. The Responses listing carries no
+// supported_parameters list to infer tools from, so without this read a
+// gateway's tools verdict never reaches the resolved row.
+func TestListModelsReadsGatewayToolsCapability(t *testing.T) {
+	if c := capsOf(t, `"capabilities":{"tools":true}`); c.Tools == nil || !*c.Tools {
+		t.Fatalf("capabilities.tools must advertise tool support: %+v", c.Tools)
+	}
+	if c := capsOf(t, `"capabilities":{"tools":false}`); c.Tools == nil || *c.Tools {
+		t.Fatalf("tools:false must advertise no tool support: %+v", c.Tools)
+	}
+	if c := capsOf(t, `"context_window":8192`); c.Tools != nil {
+		t.Fatalf("a row with no tool facts must leave Tools unset: %+v", c.Tools)
 	}
 }

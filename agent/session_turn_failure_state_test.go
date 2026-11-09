@@ -7,6 +7,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appprojector"
@@ -57,7 +58,7 @@ func failingThenRecoveringSession(t *testing.T, dir string) *Session {
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 403, "sign-in rejected", nil, nil)
 		},
-		func(llm.Request) (llm.Response, error) { return finalResponse("recovered"), nil },
+		func(llm.Request) (llm.Response, error) { return agenttest.FinalResponse("recovered"), nil },
 	}})
 	policy := llm.RetryPolicy{MaxRetries: 0}
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, LLMRetryPolicy: &policy})
@@ -75,7 +76,7 @@ func failedCarrierWithPendingQuestion(t *testing.T, dir string, cfg SessionConfi
 	ask := askUserCall("ask1", askUserArgsValid())
 	c := llm.NewClient()
 	c.Register(&fakeErrAdapter{name: "openai", steps: []func(llm.Request) (llm.Response, error){
-		func(llm.Request) (llm.Response, error) { return toolCallResponse(ask), nil },
+		func(llm.Request) (llm.Response, error) { return agenttest.ToolCallResponse(ask), nil },
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 403, "carrier provider failure", nil, nil)
 		},
@@ -105,9 +106,7 @@ func TestWireState_FailedTurnReadsFailedUntilTheNextTurn(t *testing.T) {
 	t.Parallel()
 	sess := failingThenRecoveringSession(t, t.TempDir())
 	defer sess.Close()
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "first", nil); err == nil {
 		t.Fatal("first turn succeeded, want the scripted provider failure")
 	}
@@ -172,9 +171,7 @@ func TestRestore_FailedTurnResumesFailed(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	sess := failingThenRecoveringSession(t, dir)
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "first", nil); err == nil {
 		t.Fatal("first turn succeeded, want the scripted provider failure")
 	}
@@ -198,9 +195,7 @@ func TestRestore_FailedTurnWithQueuedInputResumesActive(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	sess := failingThenRecoveringSession(t, dir)
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "first", nil); err == nil {
 		t.Fatal("first turn succeeded, want the scripted provider failure")
 	}
@@ -245,9 +240,7 @@ func TestSession_FailedTurnWithQueuedInputEndsActiveAndOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventsPtr, mu, doneCh := collectEvents(sess)
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "first", nil); err == nil {
 		t.Fatal("first turn succeeded, want the scripted provider failure")
 	}

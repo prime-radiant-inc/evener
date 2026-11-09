@@ -210,6 +210,13 @@ every sandboxed session's `TMPDIR`, so a socket a sibling's daemon puts there
 shell. That reaches only what that sibling's own sandbox already allows; an
 unsandboxed root's `TMPDIR` is not in the tree.
 
+Named scratch remains across session ends and resumes. The hub reconciles its
+root tree after archive or daemon exit and at startup, removing eligible released
+scratch only when no daemon or lease still protects it. Shutdown cancellation
+stops between bounded directory reads and before further removals; an incomplete
+listing does not authorize deletion, and a later pass can retry unfinished work.
+An individual filesystem call already in progress may still block until it returns.
+
 | Mode | File-tool reads | File-tool writes | Spawned-process reads | Spawned-process writes |
 |---|---|---|---|---|
 | `off` (default) | anywhere | anywhere | anywhere | anywhere |
@@ -264,6 +271,15 @@ unsandboxed root's `TMPDIR` is not in the tree.
   are granted. With them, `git --version` and a full `git commit` succeed under
   `restricted` against the configuration the developer really has.
 
+  `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` are followed, because they change
+  which files git reads. When `GIT_CONFIG_GLOBAL` names an existing absolute
+  file, git reads that file **instead of** both FILES, so the grant names it
+  instead; a set-but-empty value replaces the FILES with nothing, so nothing is
+  granted for it. `GIT_CONFIG_SYSTEM` is granted when it overrides the built-in
+  `/etc/gitconfig` (the built-in already lies under the `/etc` system read root),
+  unless `GIT_CONFIG_NOSYSTEM` turns the system config off. Both are subject to
+  the same admission and denylist rules as the FILES.
+
   The grant is deliberately narrow, and what it does **not** change matters as
   much as what it does:
 
@@ -291,6 +307,12 @@ unsandboxed root's `TMPDIR` is not in the tree.
   - The candidates pass through the **same shared-tree guard** as the toolchain
     directories, so a configured path at or above your home, the worktree, or a
     temp root is refused rather than granted.
+  - **Environment overrides are followed, not ignored.** An empty, relative or
+    nonexistent `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` contributes no grant:
+    git resolves a relative value against its working directory, which is not a
+    stable file to grant, and an empty or missing one names no config git reads.
+    A value with a `..` component is refused too: after a symlink it resolves to
+    a different object than the cleaned path the grant would carry.
   - It reaches the **spawned layer only**. The model's file tools stay confined to
     the worktree and cannot browse the config.
 
@@ -501,8 +523,11 @@ affect later builds. Go caches receive stricter handling: locations that share
 persistent write roots are redirected into session scratch, as detailed below.
 
 - `workspace-write` serves the language cache roots (`~/.cache` alongside a set
-  `$XDG_CACHE_HOME`, `~/.npm` and `~/.cargo` alongside a set `$npm_config_cache`
-  or `$CARGO_HOME`, the `pkg` directory of your first GOPATH entry and of Go's
+  `$XDG_CACHE_HOME`, `~/.npm` and `~/.cargo` alongside a set `$npm_config_cache`,
+  an absolute `.npmrc` `cache=` (user, project, or a configured global file;
+  a project value is served only where the directory already exists and never
+  makes Evener create one), or
+  `$CARGO_HOME`, the `pkg` directory of your first GOPATH entry and of Go's
   `$HOME/go` default, and a `GOMODCACHE` or `GOCACHE` you set elsewhere) as a
   **read-real, write-private overlay** where the
   host's bubblewrap supports it: builds read warm from the real cache, but writes

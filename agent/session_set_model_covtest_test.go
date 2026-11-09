@@ -11,7 +11,7 @@ import (
 
 // TestUnrepresentableHistoryKinds_UnknownProtocol covers the early return
 // when unrepresentableContentKinds returns nil for a protocol with no
-// restricted kinds (session_set_model.go:46-47).
+// restricted kinds.
 func TestUnrepresentableHistoryKinds_UnknownProtocol(t *testing.T) {
 	t.Parallel()
 	history := newSetModelHistoryWithContent(llm.ContentDocument)

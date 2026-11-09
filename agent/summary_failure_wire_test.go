@@ -30,13 +30,16 @@ func TestSummaryFailureWireFixtures(t *testing.T) {
 	var recovered atomic.Bool
 	client := llm.NewClient()
 	client.Register(&agenttest.ModelTrackingAdapter{Provider: "openai", Respond: func(req llm.Request) (llm.Response, error) {
-		if req.Model != "summary-model-8af1" {
-			return finalResponse("continued-41bc"), nil
+		// Both summarize routes reject until the recovery leg: the cheap
+		// route by its model name, the session route (the conversation's own
+		// model) by the summarize request's single-message shape.
+		if req.Model == "summary-model-8af1" || len(req.Messages) == 1 {
+			if !recovered.Load() {
+				return llm.Response{Message: llm.Assistant("")}, nil
+			}
+			return llm.Response{Message: llm.Assistant("## Progress\nrecovered-summary-731c")}, nil
 		}
-		if !recovered.Load() {
-			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 429, "private-error-812f", map[string]any{"prompt": "private-prompt-235d"}, nil)
-		}
-		return llm.Response{Message: llm.Assistant("## Progress\nrecovered-summary-731c")}, nil
+		return agenttest.FinalResponse("continued-41bc"), nil
 	}})
 	stateDir := t.TempDir()
 	sess := newSession(t, withClient(client), withProfile(WithCheapModel(NewOpenAIProfile("gpt-5.2"), "summary-model-8af1")), withDir(stateDir), withoutGitSnapshot(), withConfig(SessionConfig{
@@ -109,7 +112,7 @@ func TestSummaryFailureWireFixtures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, canary := range []string{"private-error-812f", "private-prompt-235d", "private-human-", "recovered-summary-731c"} {
+	for _, canary := range []string{"private-human-", "recovered-summary-731c"} {
 		if bytes.Contains(encoded, []byte(canary)) {
 			t.Fatal("private content entered the shared fixture")
 		}

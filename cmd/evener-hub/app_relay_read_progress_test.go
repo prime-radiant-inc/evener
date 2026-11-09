@@ -20,6 +20,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/rendezvous"
 	daemonserver "primeradiant.com/evener/server"
 )
@@ -86,10 +87,10 @@ func TestHubRelayPendingTargetBurstAtCapacity(t *testing.T) {
 			burstAccepted.Add(1)
 		}
 	}
-	previousPending := observeHubRelayPending.Swap(&pendingObservation)
-	previousBackpressure := observeHubRelayPendingBackpressure.Swap(&backpressureObservation)
-	previousPublication := observeHubRelayRoutePublication.Swap(&publicationObservation)
-	previousDelivery := observeHubRelayDeliveryRead.Swap(&deliveryObservation)
+	restorePending := installAtomicObserver(&observeHubRelayPending, pendingObservation)
+	restoreBackpressure := installAtomicObserver(&observeHubRelayPendingBackpressure, backpressureObservation)
+	restorePublication := installAtomicObserver(&observeHubRelayRoutePublication, publicationObservation)
+	restoreDelivery := installAtomicObserver(&observeHubRelayDeliveryRead, deliveryObservation)
 	// Register the restore before the fixture so LIFO runs it after the
 	// fixture's stopCanonicalRelay cleanup. Releasing the publication here also
 	// unblocks every failure path, and the read wait leaves no in-flight read
@@ -99,10 +100,10 @@ func TestHubRelayPendingTargetBurstAtCapacity(t *testing.T) {
 		if readStarted {
 			<-readFinished
 		}
-		observeHubRelayPending.Store(previousPending)
-		observeHubRelayPendingBackpressure.Store(previousBackpressure)
-		observeHubRelayRoutePublication.Store(previousPublication)
-		observeHubRelayDeliveryRead.Store(previousDelivery)
+		restorePending()
+		restoreBackpressure()
+		restorePublication()
+		restoreDelivery()
 	})
 
 	f := newHubRelayProgressFixture(t, hubcore.RelayLifecycleHooks{})
@@ -364,9 +365,9 @@ func TestHubRelayRoutePublicationUnblocksPendingDelivery(t *testing.T) {
 		t.Fatal(err)
 	}
 	replacement.ReplaceAppIdentity(identity.WithBootGeneration("1"), nil)
-	replacement.SetStatus(daemonserver.StatusInfo{SessionID: replacementID, State: "idle"})
+	seedDaemonStatus(replacement, daemonserver.StatusInfo{SessionID: replacementID, State: "idle"})
 	replacement.RecordDescendantAppEvent(replacementID, events.SessionEvent{Kind: events.EventSessionStart, SessionID: childID, Data: events.SessionStartData{}})
-	gateArmed, gateEntered, releaseGate := installRelayProgressGate(f.ctx, replacement)
+	gateArmed, gateEntered, releaseGate := installRelayProgressGate(f.ctx, replacement.AppServer())
 	replacementHTTP := httptest.NewServer(http.HandlerFunc(replacement.AppServer().ServeWebSocket))
 	t.Cleanup(replacementHTTP.Close)
 	t.Cleanup(func() { releaseOld(); releaseGate() })
@@ -394,7 +395,7 @@ func TestHubRelayRoutePublicationUnblocksPendingDelivery(t *testing.T) {
 	// notification parks once behind unresolved routing. Later same-target
 	// notifications join that pending queue without another wait callback.
 	waits := make(chan struct{}, 8)
-	observeHubRelayWait = func() { waits <- struct{}{} }
+	installObserveHubRelayWait(func() { waits <- struct{}{} })
 	type outcome struct {
 		response appwire.ThreadReadResponse
 		err      error
@@ -455,6 +456,12 @@ func testHubRelayInterruptedRead(t *testing.T, disconnect bool) {
 	if _, err := client.ThreadRead(f.ctx, appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
 		t.Fatal(err)
 	}
+	// The hub releases a read's command owner when the response enters the
+	// connection's send queue, which can follow the client receiving it. Wait
+	// for that release so the count below belongs to the interrupted read.
+	awaitActivityRelayCondition(f.ctx, t, func() bool {
+		return f.relays.relayCommandCount(rootRef) == 0
+	}, "initial read did not release its owner")
 	readCtx, cancelRead := context.WithCancel(f.ctx)
 	t.Cleanup(cancelRead)
 	f.gateArmed.Store(true)
@@ -524,11 +531,11 @@ func nextRelayProgressNote(ctx context.Context, t *testing.T, client *appwire.Cl
 	}
 }
 
-func installRelayProgressGate(ctx context.Context, daemon *daemonserver.Server) (*atomic.Bool, <-chan struct{}, func()) {
+func installRelayProgressGate(ctx context.Context, server *appserver.Server) (*atomic.Bool, <-chan struct{}, func()) {
 	armed := new(atomic.Bool)
 	entered, released := make(chan struct{}), make(chan struct{})
 	release := sync.OnceFunc(func() { close(released) })
-	daemon.AppServer().SetBeforeSubscriptionGate(func() {
+	server.SetBeforeSubscriptionGate(func() {
 		if armed.CompareAndSwap(true, false) {
 			close(entered)
 			select {
@@ -544,7 +551,7 @@ type hubRelayProgressFixture struct {
 	ctx           context.Context
 	daemon        *daemonserver.Server
 	source        *appsource.LocalDaemonSource
-	relays        hubRelayFunctions
+	relays        *hubRelay
 	open          func() *appwire.Client
 	idleDeleted   <-chan string
 	gateArmed     *atomic.Bool
@@ -556,18 +563,23 @@ type hubRelayProgressFixture struct {
 }
 
 func newHubRelayProgressFixture(t *testing.T, hooks hubcore.RelayLifecycleHooks) hubRelayProgressFixture {
+	return newHubRelayProgressFixtureWithSessionTools(t, hooks, true)
+}
+
+func newHubRelayProgressFixtureWithSessionTools(t *testing.T, hooks hubcore.RelayLifecycleHooks, supported bool) hubRelayProgressFixture {
 	t.Helper()
 	// Not parallel: observes the package's relay functions and pending wait.
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	t.Cleanup(cancel)
 
-	var relays hubRelayFunctions
+	var relays *hubRelay
 	var pendingWait atomic.Bool
-	previousFunctions, previousWait := observeHubRelayFunctions, observeHubRelayWait
-	observeHubRelayFunctions = func(f hubRelayFunctions) { relays = f }
-	observeHubRelayWait = func() { pendingWait.Store(true) }
+	previousFunctions := observeHubRelay
+	observeHubRelay = func(f *hubRelay) { relays = f }
+	restoreWait := installObserveHubRelayWait(func() { pendingWait.Store(true) })
 	t.Cleanup(func() {
-		observeHubRelayFunctions, observeHubRelayWait = previousFunctions, previousWait
+		observeHubRelay = previousFunctions
+		restoreWait()
 	})
 
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{})
@@ -577,12 +589,12 @@ func newHubRelayProgressFixture(t *testing.T, hooks hubcore.RelayLifecycleHooks)
 		t.Fatal(err)
 	}
 	daemon.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
-	daemon.SetStatus(daemonserver.StatusInfo{SessionID: rootID, State: "idle"})
+	seedDaemonStatus(daemon, daemonserver.StatusInfo{SessionID: rootID, State: "idle"})
 	daemon.RecordDescendantAppEvent(rootID, events.SessionEvent{
 		Kind: events.EventSessionStart, SessionID: childID, Data: events.SessionStartData{},
 	})
 
-	gateArmed, gateEntered, releaseGate := installRelayProgressGate(ctx, daemon)
+	gateArmed, gateEntered, releaseGate := installRelayProgressGate(ctx, daemon.AppServer())
 	t.Cleanup(releaseGate)
 	var connectionsMu sync.Mutex
 	var connections []net.Conn
@@ -617,6 +629,9 @@ func newHubRelayProgressFixture(t *testing.T, hooks hubcore.RelayLifecycleHooks)
 		defer inventoryMu.Unlock()
 		return slices.Clone(inventory)
 	}, daemonHTTP.Client())
+	if supported {
+		configureObservationTargetSessionTools(daemon, source)
+	}
 	remapChild := func(replacement rendezvous.Entry) {
 		inventoryMu.Lock()
 		defer inventoryMu.Unlock()
@@ -632,7 +647,9 @@ func newHubRelayProgressFixture(t *testing.T, hooks hubcore.RelayLifecycleHooks)
 	hooks.AfterIdleDelete = func(id string) { idleDeleted <- id }
 	hubServer := newHubAppServer(hubcore.WebConfig{
 		HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""),
-		RelayHooks: hooks,
+		// A real hub has a durable identity, which is what makes it advertise
+		// session tools to peers: remote completion watches are refused without it.
+		HubID: "hub-test", RelayHooks: hooks,
 	}, sources)
 	hubHTTP := httptest.NewServer(http.HandlerFunc(hubServer.ServeWebSocket))
 	t.Cleanup(hubHTTP.Close)

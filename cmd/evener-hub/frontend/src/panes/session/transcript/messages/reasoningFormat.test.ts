@@ -4,7 +4,6 @@ import { appendChunk, chunkViewBackingForTests } from "@evener/appwire-client/te
 import { buildFloodChunks } from "@evener/appwire-client/testing/tokenFlood";
 import { expect, test } from "vitest";
 import {
-  formatThoughtDuration,
   joinedReasoningParagraphs,
   lastMeaningfulThoughtLine,
   segmentReasoningTrace,
@@ -160,13 +159,6 @@ test("the exact timestamp boundary remains an honest zero", () => {
   expect(thoughtDurationMs("2026-01-01T00:00:01.000Z", "2026-01-01T00:00:01.000Z")).toBe(0);
 });
 
-test("formatThoughtDuration uses milliseconds and sensible second tiers", () => {
-  expect(formatThoughtDuration(0)).toBe("0ms");
-  expect(formatThoughtDuration(250)).toBe("250ms");
-  expect(formatThoughtDuration(1_500)).toBe("1.5s");
-  expect(formatThoughtDuration(10_000)).toBe("10s");
-});
-
 test("lastMeaningfulThoughtLine chooses the final nonblank line and trims it", () => {
   expect(lastMeaningfulThoughtLine(["first line\nsecond line\n  ", "\nthird line"], 80)).toBe("third line");
 });
@@ -197,11 +189,6 @@ test("lastMeaningfulThoughtLine extracts readable Markdown without damaging iden
 
 test("lastMeaningfulThoughtLine flattens Markdown inside image alt text", () => {
   expect(lastMeaningfulThoughtLine(["![**diagram**](https://x)"], 80)).toBe("diagram");
-});
-
-test("formatThoughtDuration chooses the seconds tier before rounding", () => {
-  expect(formatThoughtDuration(9_999)).toBe("10.0s");
-  expect(formatThoughtDuration(10_000)).toBe("10s");
 });
 
 // --- segmentReasoningTrace ---------------------------------------------------

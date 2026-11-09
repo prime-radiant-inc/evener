@@ -22,7 +22,6 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 	useWindowDimensions: () => ({ width: 390, height: 844, scale: 3, fontScale: viewport.fontScale }),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 // The connection status (spec 14) reads the provider.
 vi.mock("../ConnectionProvider", () => ({
 	useConnection: () => ({ state: "ready", fatal: false, downSince: null, lastLiveAt: null }),

@@ -1,11 +1,13 @@
 package agent
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -127,5 +129,31 @@ func TestCacheDir_Default(t *testing.T) {
 	want := filepath.Join(home, ".cache", "evener")
 	if got != want {
 		t.Fatalf("CacheDir default:\n  got  %q\n  want %q", got, want)
+	}
+}
+
+// With no state home and no home directory the project state directory is an
+// error rather than a temp-dir guess; an explicit override still needs neither,
+// and the directory resolves again once a home exists.
+func TestRuntimeDir_NoStateHomeIsAnError(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "")
+	t.Setenv("HOME", "")
+	workDir := t.TempDir()
+
+	if _, dir, err := RuntimeDir(workDir, ""); !errors.Is(err, userdirs.ErrNoStateHome) || dir != "" {
+		t.Fatalf("RuntimeDir = %q, %v, want ErrNoStateHome", dir, err)
+	}
+	if _, err := RuntimeDirForProjectWithStateHome(identifier.Project{ID: "p"}, ""); !errors.Is(err, userdirs.ErrNoStateHome) {
+		t.Fatalf("RuntimeDirForProjectWithStateHome error = %v, want ErrNoStateHome", err)
+	}
+	if _, dir, err := RuntimeDir(workDir, "/override"); err != nil || dir != "/override" {
+		t.Fatalf("RuntimeDir override = %q, %v", dir, err)
+	}
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	project, dir, err := RuntimeDir(workDir, "")
+	if want := filepath.Join(home, ".local", "state", "evener", "projects", project.ID); err != nil || dir != want {
+		t.Fatalf("RuntimeDir after the home returned = %q, %v, want %q", dir, err, want)
 	}
 }

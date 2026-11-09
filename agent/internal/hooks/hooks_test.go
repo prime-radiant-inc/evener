@@ -79,7 +79,7 @@ func TestExecuteCommandHook(t *testing.T) {
 		ToolName:      "Write",
 	}
 
-	result, err := executeCommandHook(context.Background(), hook, input)
+	result, err := executeCommandHook(context.Background(), hook, input, newSystemCommandHookRuntime())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestExecuteCommandHook_Timeout(t *testing.T) {
 		HookEventName: "PreToolUse",
 	}
 
-	_, err := executeCommandHook(context.Background(), hook, input)
+	_, err := executeCommandHook(context.Background(), hook, input, newSystemCommandHookRuntime())
 	if err == nil {
 		t.Fatal("expected error for timeout")
 	}
@@ -128,7 +128,7 @@ func TestExecuteCommandHook_ExitCode2(t *testing.T) {
 		HookEventName: "PreToolUse",
 	}
 
-	result, err := executeCommandHook(context.Background(), hook, input)
+	result, err := executeCommandHook(context.Background(), hook, input, newSystemCommandHookRuntime())
 	// Non-zero exit is not a Go error — it's captured in ExitCode
 	if err != nil {
 		t.Fatalf("unexpected Go error: %v", err)
@@ -150,7 +150,7 @@ func TestExecuteCommandHook_Environment(t *testing.T) {
 		HookEventName: "PreToolUse",
 	}
 
-	result, err := executeCommandHook(context.Background(), hook, input)
+	result, err := executeCommandHook(context.Background(), hook, input, newSystemCommandHookRuntime())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestExecuteCommandHook_OfficialEnv(t *testing.T) {
 		PluginDir: "/pd",
 		Command:   "echo EFFORT=$CLAUDE_EFFORT PLUGIN=$PLUGIN_ROOT CR=$CLAUDE_PLUGIN_ROOT",
 	}
-	res, err := executeCommandHook(context.Background(), hook, Input{CWD: "/proj", HookEventName: "X", Effort: "high"})
+	res, err := executeCommandHook(context.Background(), hook, Input{CWD: "/proj", HookEventName: "X", Effort: "high"}, newSystemCommandHookRuntime())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestExecuteCommandHook_OfficialEnv_NoEffort(t *testing.T) {
 		PluginDir: "/pd",
 		Command:   "echo EFFORT=$CLAUDE_EFFORT",
 	}
-	res, err := executeCommandHook(context.Background(), hook, Input{CWD: "/proj", HookEventName: "X"})
+	res, err := executeCommandHook(context.Background(), hook, Input{CWD: "/proj", HookEventName: "X"}, newSystemCommandHookRuntime())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -393,7 +393,7 @@ func TestHookRunner_ParallelExecution(t *testing.T) {
 	}
 
 	start := time.Now()
-	result := runner.RunSessionStart(context.Background(), input)
+	result := runner.RunSessionStartFor(context.Background(), input, plugin.SessionStartKindStartup)
 	elapsed := time.Since(start)
 
 	// Both hooks must have run and produced output. SessionStart is a context event,
@@ -548,7 +548,7 @@ func TestHookRunner_ToolNameMapping(t *testing.T) {
 // --- Task 11: Hook Output Parsing ---
 
 func TestParseHookOutput_PlainText(t *testing.T) {
-	result := parseHookOutput("some plain text output", 0)
+	result := parseHookOutput("some plain text output", 0, nil)
 	if result.SystemMessage != "some plain text output" {
 		t.Errorf("SystemMessage = %q, want %q", result.SystemMessage, "some plain text output")
 	}
@@ -568,7 +568,7 @@ func TestParseHookOutput_PlainText(t *testing.T) {
 
 func TestParseHookOutput_StructuredJSON(t *testing.T) {
 	output := `{"continue": false, "suppressOutput": true, "systemMessage": "pausing"}`
-	result := parseHookOutput(output, 0)
+	result := parseHookOutput(output, 0, nil)
 	if result.Continue {
 		t.Error("expected Continue=false")
 	}
@@ -582,7 +582,7 @@ func TestParseHookOutput_StructuredJSON(t *testing.T) {
 
 func TestParseHookOutput_PreToolUseDeny(t *testing.T) {
 	output := `{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"dangerous operation"}}`
-	result := parseHookOutput(output, 0)
+	result := parseHookOutput(output, 0, nil)
 	if result.PermissionDecision != "deny" {
 		t.Errorf("PermissionDecision = %q, want deny", result.PermissionDecision)
 	}
@@ -592,7 +592,7 @@ func TestParseHookOutput_PreToolUseDeny(t *testing.T) {
 }
 
 func TestParseHookOutput_PermissionDecisionAllow(t *testing.T) {
-	o := parseHookOutput(`{"hookSpecificOutput":{"permissionDecision":"allow","permissionDecisionReason":"looks fine"}}`, 0)
+	o := parseHookOutput(`{"hookSpecificOutput":{"permissionDecision":"allow","permissionDecisionReason":"looks fine"}}`, 0, nil)
 	if o.PermissionDecision != "allow" {
 		t.Fatalf("PermissionDecision = %q, want allow", o.PermissionDecision)
 	}
@@ -602,7 +602,7 @@ func TestParseHookOutput_PermissionDecisionAllow(t *testing.T) {
 }
 
 func TestParseHookOutput_PermissionDecisionReason(t *testing.T) {
-	o := parseHookOutput(`{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"dangerous"}}`, 0)
+	o := parseHookOutput(`{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"dangerous"}}`, 0, nil)
 	if o.PermissionDecision != "deny" {
 		t.Fatalf("PermissionDecision = %q, want deny", o.PermissionDecision)
 	}
@@ -615,29 +615,29 @@ func TestParseHookOutput_PermissionDecisionReason(t *testing.T) {
 }
 
 func TestParseHookOutput_DeprecatedTopLevelDecision(t *testing.T) {
-	approve := parseHookOutput(`{"decision":"approve","reason":"ok"}`, 0)
+	approve := parseHookOutput(`{"decision":"approve","reason":"ok"}`, 0, nil)
 	if approve.PermissionDecision != "allow" {
 		t.Fatalf("approve -> PermissionDecision = %q, want allow", approve.PermissionDecision)
 	}
 	if approve.PermissionReason != "ok" {
 		t.Fatalf("top-level reason -> PermissionReason = %q, want ok", approve.PermissionReason)
 	}
-	both := parseHookOutput(`{"decision":"approve","hookSpecificOutput":{"permissionDecision":"deny"}}`, 0)
+	both := parseHookOutput(`{"decision":"approve","hookSpecificOutput":{"permissionDecision":"deny"}}`, 0, nil)
 	if both.PermissionDecision != "deny" {
 		t.Fatalf("preferred should win: PermissionDecision = %q, want deny", both.PermissionDecision)
 	}
 }
 
 func TestParseHookOutput_SystemMessageIsJSONField(t *testing.T) {
-	plain := parseHookOutput("hello", 0)
+	plain := parseHookOutput("hello", 0, nil)
 	if plain.SystemMessageIsJSONField {
 		t.Fatal("plain stdout must have SystemMessageIsJSONField=false")
 	}
-	jsonField := parseHookOutput(`{"systemMessage":"hi"}`, 0)
+	jsonField := parseHookOutput(`{"systemMessage":"hi"}`, 0, nil)
 	if !jsonField.SystemMessageIsJSONField {
 		t.Fatal("JSON systemMessage field must have SystemMessageIsJSONField=true")
 	}
-	errOut := parseHookOutput("boom", 2)
+	errOut := parseHookOutput("boom", 2, nil)
 	if errOut.SystemMessageIsJSONField {
 		t.Fatal("exit!=0 stderr must have SystemMessageIsJSONField=false")
 	}
@@ -645,7 +645,7 @@ func TestParseHookOutput_SystemMessageIsJSONField(t *testing.T) {
 
 func TestParseHookOutput_StopBlock(t *testing.T) {
 	output := `{"decision": "block", "reason": "not ready to stop"}`
-	result := parseHookOutput(output, 0)
+	result := parseHookOutput(output, 0, nil)
 	if !result.Blocked {
 		t.Error("expected Blocked=true")
 	}
@@ -655,7 +655,7 @@ func TestParseHookOutput_StopBlock(t *testing.T) {
 }
 
 func TestParseHookOutput_ExitCode2(t *testing.T) {
-	result := parseHookOutput("error details here", 2)
+	result := parseHookOutput("error details here", 2, nil)
 	if !result.IsError {
 		t.Error("expected IsError=true for exit code 2")
 	}
@@ -666,7 +666,7 @@ func TestParseHookOutput_ExitCode2(t *testing.T) {
 
 func TestParseHookOutput_UpdatedInput(t *testing.T) {
 	output := `{"hookSpecificOutput":{"updatedInput":{"file_path":"/safe/path","content":"sanitized"}}}`
-	result := parseHookOutput(output, 0)
+	result := parseHookOutput(output, 0, nil)
 	if result.UpdatedInput == nil {
 		t.Fatal("expected UpdatedInput to be non-nil")
 	}
@@ -679,7 +679,7 @@ func TestParseHookOutput_UpdatedInput(t *testing.T) {
 }
 
 func TestParseHookOutput_EmptyOutput(t *testing.T) {
-	result := parseHookOutput("", 0)
+	result := parseHookOutput("", 0, nil)
 	if result.SystemMessage != "" {
 		t.Errorf("SystemMessage = %q, want empty", result.SystemMessage)
 	}
@@ -741,7 +741,7 @@ func TestHookRunner_EmitsHookEvents(t *testing.T) {
 		CWD:           "/tmp",
 		HookEventName: "SessionStart",
 	}
-	runner.RunSessionStart(context.Background(), input)
+	runner.RunSessionStartFor(context.Background(), input, plugin.SessionStartKindStartup)
 
 	// Should have emitted HookStart and HookEnd
 	var starts, ends int
@@ -808,20 +808,20 @@ func TestHookRunner_NoCallbackNoEvents(t *testing.T) {
 		CWD:           "/tmp",
 		HookEventName: "SessionStart",
 	}
-	result := runner.RunSessionStart(context.Background(), input)
+	result := runner.RunSessionStartFor(context.Background(), input, plugin.SessionStartKindStartup)
 	if len(result.ModelContext) != 1 || result.ModelContext[0] != "hello" {
 		t.Errorf("RunSessionStart without callback: ModelContext = %v, want [hello]", result.ModelContext)
 	}
 }
 
-func TestHookRunner_Summary(t *testing.T) {
+func TestHookRunner_SupportedSummary_CountsRunnableHooksPerEvent(t *testing.T) {
 	runner := newRunner(nil, "")
 	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{Matcher: "*", Type: "command", Command: "echo a"})
 	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{Matcher: "Write", Type: "command", Command: "echo b"})
 	runner.Add(plugin.HookPostToolUse, plugin.RegisteredHook{Matcher: "*", Type: "prompt", Prompt: "check"})
 	runner.Add(plugin.HookSessionStart, plugin.RegisteredHook{Matcher: "*", Type: "command", Command: "echo start"})
 
-	summary := runner.Summary()
+	summary := runner.SupportedSummary()
 
 	if summary[plugin.HookPreToolUse] != 2 {
 		t.Errorf("PreToolUse count = %d, want 2", summary[plugin.HookPreToolUse])
@@ -838,9 +838,9 @@ func TestHookRunner_Summary(t *testing.T) {
 	}
 }
 
-func TestHookRunner_Summary_Empty(t *testing.T) {
+func TestHookRunner_SupportedSummary_Empty(t *testing.T) {
 	runner := newRunner(nil, "")
-	summary := runner.Summary()
+	summary := runner.SupportedSummary()
 	if len(summary) != 0 {
 		t.Errorf("expected empty summary, got %v", summary)
 	}
@@ -849,7 +849,7 @@ func TestHookRunner_Summary_Empty(t *testing.T) {
 // TestHookRunner_SupportedSummary verifies that SupportedSummary counts only hooks
 // that can actually run: a hook with an unsupported handler type (http) or an
 // invalid-regex matcher is excluded, and an event with zero runnable hooks is
-// omitted entirely (whereas Summary counts every registered hook).
+// omitted entirely.
 func TestHookRunner_SupportedSummary(t *testing.T) {
 	runner := newRunner(nil, "")
 	// PreToolUse: one runnable command + one dead http handler → runnable count 1.
@@ -870,10 +870,6 @@ func TestHookRunner_SupportedSummary(t *testing.T) {
 	}
 	if sup[plugin.HookSessionStart] != 1 {
 		t.Errorf("SessionStart runnable count = %d, want 1", sup[plugin.HookSessionStart])
-	}
-	// Summary, by contrast, still counts every registered hook.
-	if got := runner.Summary()[plugin.HookPreToolUse]; got != 2 {
-		t.Errorf("Summary PreToolUse = %d, want 2 (registered, including the dead http handler)", got)
 	}
 }
 
@@ -1010,7 +1006,7 @@ func TestRouting_JSONSystemMessageOnContextEventToUser(t *testing.T) {
 		Matcher: "*", Type: "command", Timeout: 5,
 		Command: `echo '{"systemMessage":"user-msg"}'`,
 	})
-	r := runner.RunSessionStart(context.Background(), Input{CWD: "/tmp", HookEventName: "SessionStart"})
+	r := runner.RunSessionStartFor(context.Background(), Input{CWD: "/tmp", HookEventName: "SessionStart"}, plugin.SessionStartKindStartup)
 	// On a context event, plain stdout reaches the model, but the JSON systemMessage
 	// field is still user-visible only.
 	if len(r.UserMessages) != 1 || r.UserMessages[0] != "user-msg" {
@@ -1192,10 +1188,10 @@ func TestMatchHooks_InvalidMatcherEmitsWarning(t *testing.T) {
 // exit code 2 → IsError=true with stdout as SystemMessage, and hookSpecificOutput.additionalContext
 // is routed into AdditionalContext (separate from SystemMessage).
 func TestParseHookOutput_CurrentContracts_Characterization(t *testing.T) {
-	if o := parseHookOutput("boom", 2); !o.IsError || o.SystemMessage != "boom" {
+	if o := parseHookOutput("boom", 2, nil); !o.IsError || o.SystemMessage != "boom" {
 		t.Fatalf("exit2 contract drifted: %+v", o)
 	}
-	o := parseHookOutput(`{"hookSpecificOutput":{"additionalContext":"ctx"}}`, 0)
+	o := parseHookOutput(`{"hookSpecificOutput":{"additionalContext":"ctx"}}`, 0, nil)
 	if o.SystemMessage != "" {
 		t.Fatalf("additionalContext must NOT fold into SystemMessage; SystemMessage=%q", o.SystemMessage)
 	}
@@ -1208,7 +1204,7 @@ func TestParseHookOutput_CurrentContracts_Characterization(t *testing.T) {
 
 func TestExecuteCommandHook_ExecFormArgs(t *testing.T) {
 	hook := plugin.RegisteredHook{Type: "command", Command: "printf", Args: []string{"%s", "a b c"}, Timeout: 5, PluginDir: "/tmp"}
-	res, err := executeCommandHook(context.Background(), hook, Input{CWD: "/tmp", HookEventName: "PreToolUse"})
+	res, err := executeCommandHook(context.Background(), hook, Input{CWD: "/tmp", HookEventName: "PreToolUse"}, newSystemCommandHookRuntime())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1220,7 +1216,7 @@ func TestExecuteCommandHook_ExecFormArgs(t *testing.T) {
 func TestExecuteCommandHook_ExecForm_NoShellExpansion(t *testing.T) {
 	// In exec form, $HOME must NOT be expanded by a shell.
 	hook := plugin.RegisteredHook{Type: "command", Command: "printf", Args: []string{"%s", "$HOME"}, Timeout: 5, PluginDir: "/tmp"}
-	res, _ := executeCommandHook(context.Background(), hook, Input{CWD: "/tmp", HookEventName: "X"})
+	res, _ := executeCommandHook(context.Background(), hook, Input{CWD: "/tmp", HookEventName: "X"}, newSystemCommandHookRuntime())
 	if res.Stdout != "$HOME" {
 		t.Fatalf("exec-form expanded shell var: %q", res.Stdout)
 	}
@@ -1228,7 +1224,7 @@ func TestExecuteCommandHook_ExecForm_NoShellExpansion(t *testing.T) {
 
 func TestExecuteCommandHook_UnknownShellRejected(t *testing.T) {
 	hook := plugin.RegisteredHook{Type: "command", Command: "echo x", Shell: "fish", Timeout: 5, PluginDir: "/tmp"}
-	_, err := executeCommandHook(context.Background(), hook, Input{CWD: "/tmp", HookEventName: "X"})
+	_, err := executeCommandHook(context.Background(), hook, Input{CWD: "/tmp", HookEventName: "X"}, newSystemCommandHookRuntime())
 	if err == nil {
 		t.Fatal("unknown shell should error")
 	}
@@ -1253,14 +1249,14 @@ func TestHookInput_OfficialFields(t *testing.T) {
 // TestParseHookOutput_AdditionalContextSeparate verifies that additionalContext from
 // hookSpecificOutput is routed into AdditionalContext (not folded into SystemMessage).
 func TestParseHookOutput_AdditionalContextSeparate(t *testing.T) {
-	o := parseHookOutput(`{"systemMessage":"user-visible","hookSpecificOutput":{"additionalContext":"model-ctx"}}`, 0)
+	o := parseHookOutput(`{"systemMessage":"user-visible","hookSpecificOutput":{"additionalContext":"model-ctx"}}`, 0, nil)
 	if o.SystemMessage != "user-visible" {
 		t.Fatalf("systemMessage=%q", o.SystemMessage)
 	}
 	if o.AdditionalContext != "model-ctx" {
 		t.Fatalf("additionalContext=%q", o.AdditionalContext)
 	}
-	o2 := parseHookOutput(`{"terminalSequence":""}`, 0)
+	o2 := parseHookOutput(`{"terminalSequence":""}`, 0, nil)
 	if o2.TerminalSequence != "" {
 		t.Fatalf("terminalSequence=%q", o2.TerminalSequence)
 	}
@@ -1318,7 +1314,7 @@ func TestRouting_ContextEventPlainStdoutToModel(t *testing.T) {
 	runner.Add(plugin.HookSessionStart, plugin.RegisteredHook{
 		Matcher: "*", Type: "command", Timeout: 5, Command: `echo bootstrap`,
 	})
-	r := runner.RunSessionStart(context.Background(), Input{CWD: "/tmp", HookEventName: "SessionStart"})
+	r := runner.RunSessionStartFor(context.Background(), Input{CWD: "/tmp", HookEventName: "SessionStart"}, plugin.SessionStartKindStartup)
 	if len(r.ModelContext) != 1 || r.ModelContext[0] != "bootstrap" {
 		t.Fatalf("SessionStart plain stdout must reach the model: ModelContext = %v", r.ModelContext)
 	}
@@ -1367,7 +1363,7 @@ func TestSessionStartFailureIsOneSummarizedWarning(t *testing.T) {
 		Matcher: "*", Type: "command", Timeout: 5, PluginName: "superpowers",
 		Command: `printf 'line one\nline two\n' >&2; exit 126`,
 	})
-	r := runner.RunSessionStart(context.Background(), Input{CWD: "/tmp", HookEventName: "SessionStart"})
+	r := runner.RunSessionStartFor(context.Background(), Input{CWD: "/tmp", HookEventName: "SessionStart"}, plugin.SessionStartKindStartup)
 
 	if len(r.ModelContext) != 0 {
 		t.Fatalf("a failed SessionStart hook must not steer the model at all; ModelContext = %q", r.ModelContext)
@@ -1395,7 +1391,7 @@ func TestSessionStartFailureNamesAnUnattributedHook(t *testing.T) {
 		Matcher: "*", Type: "command", Timeout: 5,
 		Command: `exit 3`,
 	})
-	r := runner.RunSessionStart(context.Background(), Input{CWD: "/tmp", HookEventName: "SessionStart"})
+	r := runner.RunSessionStartFor(context.Background(), Input{CWD: "/tmp", HookEventName: "SessionStart"}, plugin.SessionStartKindStartup)
 	if len(r.UserMessages) != 1 || r.UserMessages[0] != "SessionStart hook failed (exit 3)" {
 		t.Fatalf("UserMessages = %q, want one %q", r.UserMessages, "SessionStart hook failed (exit 3)")
 	}

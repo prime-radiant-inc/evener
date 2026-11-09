@@ -35,6 +35,18 @@ func newRetirementAckClock() *retirementAckClock {
 	}
 }
 
+// newAckRetirementController builds the timer-test controller over a fresh
+// acknowledgment clock, the shared setup of the timer tests in this file.
+func newAckRetirementController(t *testing.T) (*RetirementController, *retirementAckClock) {
+	t.Helper()
+	clk := newRetirementAckClock()
+	ctrl, err := NewRetirementController(time.Hour, clk)
+	if err != nil {
+		t.Fatalf("NewRetirementController: %v", err)
+	}
+	return ctrl, clk
+}
+
 func (c *retirementAckClock) NewTimer(d time.Duration) clock.Timer {
 	tm := &retirementAckTimer{clk: c, c: make(chan time.Time, 1)}
 	c.mu.Lock()
@@ -205,11 +217,7 @@ func commitClaim(ctrl *RetirementController) func(context.Context, *RetirementCl
 // the attached root.
 func TestRetirementTimerFirstSettledStateArmsFullInterval(t *testing.T) {
 	t.Parallel()
-	clk := newRetirementAckClock()
-	ctrl, err := NewRetirementController(time.Hour, clk)
-	if err != nil {
-		t.Fatalf("NewRetirementController: %v", err)
-	}
+	ctrl, clk := newAckRetirementController(t)
 	h := startRetirementRun(t, ctrl, commitClaim(ctrl))
 	root := newQueuePersistTestSession(t, t.TempDir())
 	if err := h.ctrl.AttachRoot(root); err != nil {
@@ -241,11 +249,7 @@ func TestRetirementTimerFirstSettledStateArmsFullInterval(t *testing.T) {
 // full interval from the release instant.
 func TestRetirementTimerBlockedDurationNeverAccruesEligibility(t *testing.T) {
 	t.Parallel()
-	clk := newRetirementAckClock()
-	ctrl, err := NewRetirementController(time.Hour, clk)
-	if err != nil {
-		t.Fatalf("NewRetirementController: %v", err)
-	}
+	ctrl, clk := newAckRetirementController(t)
 	h := startRetirementRun(t, ctrl, commitClaim(ctrl))
 	root := newQueuePersistTestSession(t, t.TempDir())
 	if err := h.ctrl.AttachRoot(root); err != nil {
@@ -283,11 +287,7 @@ func TestRetirementTimerBlockedDurationNeverAccruesEligibility(t *testing.T) {
 // eligibility the timer would never fire.
 func TestRetirementTimerStatusTrafficLeavesDeadlineUnchanged(t *testing.T) {
 	t.Parallel()
-	clk := newRetirementAckClock()
-	ctrl, err := NewRetirementController(time.Hour, clk)
-	if err != nil {
-		t.Fatalf("NewRetirementController: %v", err)
-	}
+	ctrl, clk := newAckRetirementController(t)
 	h := startRetirementRun(t, ctrl, commitClaim(ctrl))
 	root := newQueuePersistTestSession(t, t.TempDir())
 	if err := h.ctrl.AttachRoot(root); err != nil {
@@ -402,11 +402,7 @@ func TestRetirementTimerAttachRootRestartsInterval(t *testing.T) {
 // interval from the release instant, not the stale deadline.
 func TestRetirementTimerStaleTickRecomputes(t *testing.T) {
 	t.Parallel()
-	clk := newRetirementAckClock()
-	ctrl, err := NewRetirementController(time.Hour, clk)
-	if err != nil {
-		t.Fatalf("NewRetirementController: %v", err)
-	}
+	ctrl, clk := newAckRetirementController(t)
 	h := startRetirementRun(t, ctrl, commitClaim(ctrl))
 	root := newQueuePersistTestSession(t, t.TempDir())
 	if err := h.ctrl.AttachRoot(root); err != nil {
@@ -441,11 +437,7 @@ func TestRetirementTimerStaleTickRecomputes(t *testing.T) {
 // produces a second, successful claim.
 func TestRetirementTimerPreparationFailureRearmsFreshInterval(t *testing.T) {
 	t.Parallel()
-	clk := newRetirementAckClock()
-	ctrl, err := NewRetirementController(time.Hour, clk)
-	if err != nil {
-		t.Fatalf("NewRetirementController: %v", err)
-	}
+	ctrl, clk := newAckRetirementController(t)
 	calls := 0
 	consume := func(runCtx context.Context, claim *RetirementClaim) error {
 		calls++
@@ -496,11 +488,7 @@ func TestRetirementTimerPreparationFailureRearmsFreshInterval(t *testing.T) {
 // virtual-time advance can retire anything.
 func TestRetirementTimerRunStopsWithContext(t *testing.T) {
 	t.Parallel()
-	clk := newRetirementAckClock()
-	ctrl, err := NewRetirementController(time.Hour, clk)
-	if err != nil {
-		t.Fatalf("NewRetirementController: %v", err)
-	}
+	ctrl, clk := newAckRetirementController(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
@@ -537,11 +525,7 @@ func TestRetirementTimerRunStopsWithContext(t *testing.T) {
 // would otherwise stay un-armed until an unrelated event forced evaluation.
 func TestRetirementTimerRefusalRearmsIdleInterval(t *testing.T) {
 	t.Parallel()
-	clk := newRetirementAckClock()
-	ctrl, err := NewRetirementController(time.Hour, clk)
-	if err != nil {
-		t.Fatalf("NewRetirementController: %v", err)
-	}
+	ctrl, clk := newAckRetirementController(t)
 	h := startRetirementRun(t, ctrl, commitClaim(ctrl))
 	root := newQueuePersistTestSession(t, t.TempDir())
 	defer root.Close()
@@ -585,11 +569,7 @@ func TestRetirementTimerRefusalRearmsIdleInterval(t *testing.T) {
 // deadline claims.
 func TestRetirementRetargetShortensArmedInterval(t *testing.T) {
 	t.Parallel()
-	clk := newRetirementAckClock()
-	ctrl, err := NewRetirementController(time.Hour, clk)
-	if err != nil {
-		t.Fatalf("NewRetirementController: %v", err)
-	}
+	ctrl, clk := newAckRetirementController(t)
 	h := startRetirementRun(t, ctrl, commitClaim(ctrl))
 	root := newQueuePersistTestSession(t, t.TempDir())
 	if err := h.ctrl.AttachRoot(root); err != nil {
@@ -619,11 +599,7 @@ func TestRetirementRetargetShortensArmedInterval(t *testing.T) {
 // clamps to now and the very next tick claims.
 func TestRetirementRetargetBelowElapsedIdleFiresAtOnce(t *testing.T) {
 	t.Parallel()
-	clk := newRetirementAckClock()
-	ctrl, err := NewRetirementController(time.Hour, clk)
-	if err != nil {
-		t.Fatalf("NewRetirementController: %v", err)
-	}
+	ctrl, clk := newAckRetirementController(t)
 	h := startRetirementRun(t, ctrl, commitClaim(ctrl))
 	root := newQueuePersistTestSession(t, t.TempDir())
 	if err := h.ctrl.AttachRoot(root); err != nil {
@@ -687,11 +663,7 @@ func TestRetirementRetargetLengthenSurvivesStaleTick(t *testing.T) {
 // snapshot reports the zero timeout.
 func TestRetirementRetargetZeroDisarms(t *testing.T) {
 	t.Parallel()
-	clk := newRetirementAckClock()
-	ctrl, err := NewRetirementController(time.Hour, clk)
-	if err != nil {
-		t.Fatalf("NewRetirementController: %v", err)
-	}
+	ctrl, clk := newAckRetirementController(t)
 	h := startRetirementRun(t, ctrl, commitClaim(ctrl))
 	root := newQueuePersistTestSession(t, t.TempDir())
 	if err := h.ctrl.AttachRoot(root); err != nil {
@@ -717,11 +689,7 @@ func TestRetirementRetargetZeroDisarms(t *testing.T) {
 // the old timeout, and the original deadline still claims.
 func TestRetirementRetargetRejectsNegative(t *testing.T) {
 	t.Parallel()
-	clk := newRetirementAckClock()
-	ctrl, err := NewRetirementController(time.Hour, clk)
-	if err != nil {
-		t.Fatalf("NewRetirementController: %v", err)
-	}
+	ctrl, clk := newAckRetirementController(t)
 	h := startRetirementRun(t, ctrl, commitClaim(ctrl))
 	root := newQueuePersistTestSession(t, t.TempDir())
 	if err := h.ctrl.AttachRoot(root); err != nil {
@@ -747,11 +715,7 @@ func TestRetirementRetargetRejectsNegative(t *testing.T) {
 // retiring controller refuses, and the refusal clears once the claim settles.
 func TestRetirementRetargetRefusesWhilePreparing(t *testing.T) {
 	t.Parallel()
-	clk := newRetirementAckClock()
-	ctrl, err := NewRetirementController(time.Hour, clk)
-	if err != nil {
-		t.Fatalf("NewRetirementController: %v", err)
-	}
+	ctrl, _ := newAckRetirementController(t)
 	root := newQueuePersistTestSession(t, t.TempDir())
 	if err := ctrl.AttachRoot(root); err != nil {
 		t.Fatalf("AttachRoot: %v", err)
@@ -789,11 +753,7 @@ func TestRetirementRetargetRefusesWhilePreparing(t *testing.T) {
 // currently belongs to.
 func TestRetirementStampedRetargetUndo(t *testing.T) {
 	t.Parallel()
-	clk := newRetirementAckClock()
-	ctrl, err := NewRetirementController(time.Hour, clk)
-	if err != nil {
-		t.Fatalf("NewRetirementController: %v", err)
-	}
+	ctrl, _ := newAckRetirementController(t)
 
 	prev, token, err := ctrl.RetargetStamped(time.Minute)
 	if err != nil {
@@ -849,11 +809,7 @@ func TestRetirementStampedRetargetUndo(t *testing.T) {
 // once the controller is resident again.
 func TestRetirementUndoRetargetRefusesWhilePreparing(t *testing.T) {
 	t.Parallel()
-	clk := newRetirementAckClock()
-	ctrl, err := NewRetirementController(time.Hour, clk)
-	if err != nil {
-		t.Fatalf("NewRetirementController: %v", err)
-	}
+	ctrl, _ := newAckRetirementController(t)
 	root := newQueuePersistTestSession(t, t.TempDir())
 	if err := ctrl.AttachRoot(root); err != nil {
 		t.Fatalf("AttachRoot: %v", err)
@@ -890,11 +846,7 @@ func TestRetirementUndoRetargetRefusesWhilePreparing(t *testing.T) {
 // token can never undo past the reset.
 func TestRetirementAttachRootResetsDeadlineToConfigured(t *testing.T) {
 	t.Parallel()
-	clk := newRetirementAckClock()
-	ctrl, err := NewRetirementController(time.Hour, clk)
-	if err != nil {
-		t.Fatalf("NewRetirementController: %v", err)
-	}
+	ctrl, _ := newAckRetirementController(t)
 	root := newQueuePersistTestSession(t, t.TempDir())
 	if err := ctrl.AttachRoot(root); err != nil {
 		t.Fatalf("AttachRoot: %v", err)
@@ -951,11 +903,7 @@ func TestRetirementAttachRootResetsDisabledDeadline(t *testing.T) {
 // validation.
 func TestRetirementUndoRetargetRejectsUnguardedWrites(t *testing.T) {
 	t.Parallel()
-	clk := newRetirementAckClock()
-	ctrl, err := NewRetirementController(time.Hour, clk)
-	if err != nil {
-		t.Fatalf("NewRetirementController: %v", err)
-	}
+	ctrl, _ := newAckRetirementController(t)
 	if ctrl.UndoRetarget(0, 5*time.Minute) {
 		t.Fatal("UndoRetarget with token 0 = true, want false")
 	}

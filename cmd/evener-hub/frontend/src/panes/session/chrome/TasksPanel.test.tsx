@@ -1,12 +1,14 @@
-import type { Task, TaskListResponse, ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
+import type { Task, TaskListResponse, ThreadModel } from "@evener/appwire-client";
 import { absoluteTime, WireError } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test } from "vitest";
-import { connectionStore } from "../../../stores/connection";
+import { resetConnectionStoreForTests } from "../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { readModuleCss, topRuleBlock } from "../../../styles/cssBlock";
+import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
+import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
 import { Toast } from "../../../widgets";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { emptyStateReasons } from "../../../widgets/emptystate/emptyStateTestUtils";
@@ -15,22 +17,6 @@ import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store
 import visuallyHiddenStyles from "../../../widgets/visuallyhidden/visuallyhidden.module.css";
 import { STATUS_TOUCH } from "../transcript/tools/taskCheck";
 import { TasksPanel, TasksPanelBody } from "./TasksPanel";
-
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
 
 function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
   const { jobsTreeRevision = null, ...rest } = overrides;
@@ -66,12 +52,6 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     ...rest,
     jobsTreeRevision,
   };
-}
-
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
 }
 
 // Wire-true fixture: the real daemon Task shape (agent/task/task_store.go:
@@ -130,7 +110,7 @@ const DATED_TASKS: [Task, Task, Task, Task] = [
 ];
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   // The toast queue is module state and outlives cleanup(): without this, a
   // toast an earlier test pushed is still on screen when a later test asserts
@@ -187,7 +167,7 @@ test("the trigger shows what is left once the aggregate has arrived", () => {
 });
 
 test("outcome aggregates condense to what is left in the trigger and the body head", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: [] }));
   const model = testModel({ tasks: { total: 7, done: 1, cancelled: 5, remaining: 1 } });
 
@@ -205,7 +185,7 @@ test("outcome aggregates condense to what is left in the trigger and the body he
 });
 
 test("outcome aggregates infer an omitted remaining for labels", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: [] }));
   const cancelledOnly = testModel({ tasks: { total: 7, done: 1, cancelled: 5 } });
   const { unmount } = render(<TasksPanelBody sessionRef="ref_cancelled" model={cancelledOnly} />);
@@ -245,7 +225,7 @@ test("pins each task status's TaskCheck touch - open renders the pending box, ca
 
 test("opening the panel fetches via listTasks(ref) and shows a loading state until it resolves", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   const box: { resolve: ((r: TaskListResponse) => void) | null } = { resolve: null };
   fake.on("evener/tasks/list", () => new Promise((resolve) => (box.resolve = resolve)));
 
@@ -264,7 +244,7 @@ test("opening the panel fetches via listTasks(ref) and shows a loading state unt
 
 test("rows group by status: the collapsed settled group first, then in progress, then open; wire order holds within a group", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: TASKS_DATA }));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
@@ -287,7 +267,7 @@ test("rows group by status: the collapsed settled group first, then in progress,
 });
 
 test("empty groups render nothing, so Open leads when there are no in-progress tasks", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: [TASKS_DATA[2]] }));
 
   render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
@@ -300,7 +280,7 @@ test("empty groups render nothing, so Open leads when there are no in-progress t
 });
 
 test("an all-settled list shows only the collapsed settled disclosure line", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: [DATED_TASKS[0], DATED_TASKS[2]] }));
 
   render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
@@ -314,7 +294,7 @@ test("an all-settled list shows only the collapsed settled disclosure line", asy
 
 test("a live row shows its latest note inline; a settled row does not", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: DATED_TASKS }));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
@@ -335,7 +315,7 @@ test("a live row shows its latest note inline; a settled row does not", async ()
 
 test("a cancelled row renders struck-through inside the settled group", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: DATED_TASKS }));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
@@ -354,7 +334,7 @@ test("a cancelled row renders struck-through inside the settled group", async ()
 
 test("every row leads with the shared TaskCheck glyph matching its task's status", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: DATED_TASKS }));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
@@ -384,7 +364,7 @@ test("every row carries a visually hidden status word beside its aria-hidden gly
   // status rides along visually hidden instead (the same word the card's
   // rows carry), or a screen reader cannot tell done from cancelled.
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: DATED_TASKS }));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
@@ -402,9 +382,47 @@ test("every row carries a visually hidden status word beside its aria-hidden gly
   await expectWord("Prepare release notes", "pending");
 });
 
+test("a task with an unrecognized status stays in the list, with a neutral glyph and its raw status word", async () => {
+  // A newer daemon can mint a status this client has no glyph or word for.
+  // The aggregate counts it as remaining, so dropping it made the list
+  // shorter than its own footer (issue #2256). It renders as remaining work,
+  // in the neutral unfilled box, with the wire word as written.
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  const futureStatus = {
+    id: 4,
+    type: "implement",
+    description: "Wait on the review",
+    prompt: "",
+    status: "blocked",
+  } as unknown as Task;
+  fake.on("evener/tasks/list", () => ({ data: [...TASKS_DATA, futureStatus] }));
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+
+  const description = await screen.findByText("Wait on the review");
+  const row = description.closest("[data-testid='task-row']");
+  expect(row).not.toBeNull();
+  const group = row?.closest("[data-testid='task-group-live']");
+  // Remaining work: the unknown row joins the open group, whose count it
+  // raises, and the settled history group does not grow.
+  expect(group?.getAttribute("data-status")).toBe("open");
+  expect(group?.querySelectorAll("[data-testid='task-row']")).toHaveLength(2);
+  // The settled disclosure still starts collapsed and renders none of these
+  // rows, so the unknown task is in the live list, not the history.
+  expect(screen.getByTestId("task-settled-group").querySelectorAll("[data-testid='task-row']")).toHaveLength(0);
+  expect(row?.querySelector('[data-testid="task-check"]')?.getAttribute("data-touch")).toBe("pending");
+  expect(row?.querySelector('[data-testid="task-status-word"]')?.textContent).toBe("blocked");
+  // The visible caption is itself announced, so the row does not also repeat
+  // the word in the visually-hidden slot: one announcement, one derivation.
+  expect(row?.querySelectorAll(`.${VISUALLY_HIDDEN_CLASS}`)).toHaveLength(0);
+  expect(row?.textContent?.match(/blocked/g)).toHaveLength(1);
+});
+
 test("a live row shows a relative updated time", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: DATED_TASKS }));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
@@ -415,7 +433,7 @@ test("a live row shows a relative updated time", async () => {
 });
 
 test("the standalone task body does not opt into the sidebar's compact presentation", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: DATED_TASKS }));
   render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
   const row = (await screen.findByText("Extend transcript API")).closest("[data-testid='task-row']");
@@ -426,7 +444,7 @@ test("the standalone task body does not opt into the sidebar's compact presentat
 
 test("the settled group defaults to collapsed and remembers being opened per session", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: DATED_TASKS }));
 
   const first = render(<TasksPanelBody sessionRef="ref_remember" model={testModel({ ref: "ref_remember" })} />);
@@ -441,7 +459,7 @@ test("the settled group defaults to collapsed and remembers being opened per ses
 });
 
 test("the body header shows the count when the aggregate is known, with no progress bar", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: [TASKS_DATA[0]] }));
 
   render(
@@ -456,7 +474,7 @@ test("the body header shows the count when the aggregate is known, with no progr
 });
 
 test("the body header is absent while no aggregate has arrived", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: [TASKS_DATA[0]] }));
 
   render(
@@ -471,7 +489,7 @@ test("the body header is absent while no aggregate has arrived", async () => {
 
 // --- row disclosure: expand a task row to see its dense detail body ---------
 
-const RICH_TASK = {
+const RICH_TASK: Task = {
   id: 5,
   type: "implement",
   description: "Wire up expand/collapse",
@@ -484,7 +502,7 @@ const RICH_TASK = {
 
 test("a task row starts collapsed; clicking its summary expands its meta and updates", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: [RICH_TASK] }));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
@@ -505,7 +523,7 @@ test("a task row starts collapsed; clicking its summary expands its meta and upd
 
 test("notes render as a timeline with the latest note marked", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: [RICH_TASK] }));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
@@ -528,7 +546,7 @@ test("notes render as a timeline with the latest note marked", async () => {
 // taskspanel.module.css; this pins BODY text - headings and tables keep the
 // widget's fixed ramp (see widgets/markdown).
 test("the prompt disclosure renders its markdown body text at the caption step, not prose size", () => {
-  const uncommented = readModuleCss(import.meta.url, "taskspanel.module.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  const uncommented = readModuleCss(import.meta.url, "taskspanel.module.css");
   expect(uncommented).not.toContain("--prose-font-size");
   expect(topRuleBlock(uncommented, ".promptSummary")).toContain("font-size: var(--font-size-caption)");
   expect(topRuleBlock(uncommented, ".promptBody")).toContain("font-size: var(--font-size-caption)");
@@ -536,7 +554,7 @@ test("the prompt disclosure renders its markdown body text at the caption step, 
 
 test("the prompt disclosure shows a one-line markdown preview collapsed and the full markdown body open", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({
     data: [
       {
@@ -565,7 +583,7 @@ test("the prompt disclosure shows a one-line markdown preview collapsed and the 
 
 test("a task with a blank prompt renders no prompt disclosure", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: [{ ...RICH_TASK, prompt: "" }] }));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
@@ -577,7 +595,7 @@ test("a task with a blank prompt renders no prompt disclosure", async () => {
 
 test("clicking an expanded row's summary again collapses it", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: [RICH_TASK] }));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
@@ -593,7 +611,7 @@ test("clicking an expanded row's summary again collapses it", async () => {
 
 test("an expanded bare task shows only the type meta and 'No updates yet.'", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: TASKS_DATA }));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
@@ -614,7 +632,7 @@ test("an expanded bare task shows only the type meta and 'No updates yet.'", asy
 
 test("an expanded task shows the meta strip and timestamps line", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: DATED_TASKS }));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
@@ -634,7 +652,7 @@ test("an expanded task shows the meta strip and timestamps line", async () => {
 
 test("the timestamps line omits updated when it equals created", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({
     data: [
       {
@@ -661,7 +679,7 @@ test("the timestamps line omits updated when it equals created", async () => {
 
 test("the timestamps line omits completed for a non-done task even when completed_at is present", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({
     data: [
       {
@@ -688,7 +706,7 @@ test("the timestamps line omits completed for a non-done task even when complete
 
 test("each row's expand state is independent - opening one row leaves its siblings collapsed", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: TASKS_DATA }));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
@@ -701,7 +719,7 @@ test("each row's expand state is independent - opening one row leaves its siblin
 
 test("the expanded row is a real native disclosure (<details open>), not just conditionally-rendered markup", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: [RICH_TASK] }));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
@@ -718,7 +736,7 @@ test("the expanded row is a real native disclosure (<details open>), not just co
 
 test("a confirmed-empty fetch (real daemon, genuinely zero tasks) shows the definitive empty state", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: [] }));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
@@ -730,7 +748,7 @@ test("a confirmed-empty fetch (real daemon, genuinely zero tasks) shows the defi
 
 test("re-opening after closing re-fetches (the plan's fetch-on-open model, not a one-time fetch)", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: TASKS_DATA }));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
@@ -746,7 +764,7 @@ test("re-opening after closing re-fetches (the plan's fetch-on-open model, not a
 });
 
 test("re-fetches automatically when the live aggregate changes WHILE the panel stays open", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: TASKS_DATA }));
   const user = userEvent.setup();
 
@@ -764,7 +782,7 @@ test("re-fetches automatically when the live aggregate changes WHILE the panel s
 });
 
 test("does not fetch at all while the panel is closed, even if the aggregate changes", () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: TASKS_DATA }));
 
   const { rerender } = render(<TasksPanel sessionRef="ref_a" model={testModel({ tasks: { total: 3, done: 0 } })} />);
@@ -777,7 +795,7 @@ test("does not fetch at all while the panel is closed, even if the aggregate cha
 
 test("a source-backed actionUnavailable rejection shows the honest unsupported state, with no error toast (it's not a bug)", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => {
     throw new WireError("remote source does not expose evener tasks", -32014, { evenerErrorInfo: "actionUnavailable" });
   });
@@ -800,7 +818,7 @@ test("a source-backed actionUnavailable rejection shows the honest unsupported s
 
 test("a generic fetch failure surfaces an error toast AND an inline error state", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => {
     throw new Error("tasks boom");
   });
@@ -824,7 +842,7 @@ test("a generic fetch failure surfaces an error toast AND an inline error state"
 // OLDER request fails after the newer one succeeded would otherwise show a
 // failure banner over a list that is on screen and current.
 test("a stale overlapping failure does not toast after a newer fetch succeeded", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   const calls: Array<{ resolve: (value: TaskListResponse) => void; reject: (err: unknown) => void }> = [];
   fake.on(
     "evener/tasks/list",
@@ -868,7 +886,7 @@ test("a stale overlapping failure does not toast after a newer fetch succeeded",
 // beside an inline heading blaming the task list is worse than either alone.
 test("a failed auto-resume names the resume in BOTH the toast and the inline state", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => {
     throw new WireError("evener launch-check timed out", -32014, { evenerErrorInfo: "hubLaunch" });
   });
@@ -905,7 +923,7 @@ test("a failed auto-resume names the resume in BOTH the toast and the inline sta
 // headline plus a blank line in the panel.
 test("a rejection with no text of its own shows the headline alone, with no empty detail line", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => {
     throw new Error("");
   });
@@ -963,7 +981,7 @@ async function openThenPush(fake: FakeClient): Promise<ReturnType<typeof userEve
 }
 
 test("a re-fetch that fails keeps the rows already on screen", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   failAfterFirstFetch(fake, TASKS_DATA, new Error("local daemon unavailable: broken pipe"));
 
   await openThenPush(fake);
@@ -979,7 +997,7 @@ test("a re-fetch that fails keeps the rows already on screen", async () => {
 // the daemon stays unreachable. Keeping it silently would be worse than the
 // blank it replaces: the reader would take a frozen list for a live one.
 test("the retained list says it is out of date, so a failed refresh doesn't read as current", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   failAfterFirstFetch(fake, TASKS_DATA, new Error("local daemon unavailable: broken pipe"));
 
   await openThenPush(fake);
@@ -997,7 +1015,7 @@ test("the retained list says it is out of date, so a failed refresh doesn't read
 // empty - so a retained empty list has to be marked stale just as a retained
 // populated one does, or a failed refresh passes for a confirmed answer.
 test("a retained EMPTY list under a failed refresh is marked stale, not left as a confirmed answer", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   failAfterFirstFetch(fake, [], new Error("local daemon unavailable: broken pipe"));
 
   await openThenPush(fake);
@@ -1010,7 +1028,7 @@ test("a retained EMPTY list under a failed refresh is marked stale, not left as 
 // inline report are the SAME sentence, so a failed session resume takes over
 // both or neither.
 test("the stale notice and the toast report a re-fetch failure in the same words", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   failAfterFirstFetch(
     fake,
     TASKS_DATA,
@@ -1031,7 +1049,7 @@ test("the stale notice and the toast report a re-fetch failure in the same words
 // stopped touching its task list emits no further pushes, so a failed fetch
 // is stuck until the reader asks again. Try again is that ask.
 test("Try again re-fetches the list and clears the stale notice once it succeeds", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   let calls = 0;
   fake.on("evener/tasks/list", () => {
     calls += 1;
@@ -1065,7 +1083,7 @@ function threadNotFoundError(): WireError {
 
 test("thread-not-found on a session that never had a live aggregate still shows the honest 'No tasks yet' (unchanged)", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => {
     throw threadNotFoundError();
   });
@@ -1079,7 +1097,7 @@ test("thread-not-found on a session that never had a live aggregate still shows 
 
 test("closing then re-opening after the daemon exits keeps the rows already shown, with a terminal notice instead of blanking them", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   let calls = 0;
   fake.on("evener/tasks/list", () => {
     calls += 1;
@@ -1102,7 +1120,7 @@ test("closing then re-opening after the daemon exits keeps the rows already show
 });
 
 test("that terminal notice offers no Try again - the hub never tracked this session, so asking again fails identically forever", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   failAfterFirstFetch(fake, TASKS_DATA, threadNotFoundError());
 
   await openThenPush(fake);
@@ -1113,7 +1131,7 @@ test("that terminal notice offers no Try again - the hub never tracked this sess
 
 test("thread-not-found with a known aggregate but no rows ever fetched shows a terminal message, not 'No tasks yet'", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => {
     throw threadNotFoundError();
   });
@@ -1127,7 +1145,7 @@ test("thread-not-found with a known aggregate but no rows ever fetched shows a t
 
 test("no toast for a dead-daemon rejection - it's not a bug, it's an expected terminal state", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => {
     throw threadNotFoundError();
   });
@@ -1148,7 +1166,7 @@ test("no toast for a dead-daemon rejection - it's not a bug, it's an expected te
 // is stuck in exactly the same way, and needs the same way out.
 test("a first fetch that fails offers Try again, which fetches again", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   let calls = 0;
   fake.on("evener/tasks/list", () => {
     calls += 1;
@@ -1172,7 +1190,7 @@ test("a first fetch that fails offers Try again, which fetches again", async () 
 
 test("cancelled history never claims completion and preserves every current and remaining task", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({
     data: [
       { id: 1, type: "implement", description: "cancelled work", prompt: "", status: "cancelled" },

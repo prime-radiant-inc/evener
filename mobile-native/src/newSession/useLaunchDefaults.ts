@@ -6,16 +6,16 @@
 // them from the sheet's context.
 import type { AppwireClient, LaunchConfigLayer } from "@evener/appwire-client";
 import { useStore } from "zustand";
-import type { NewSessionService } from "../../../mobile/src/services/newSession";
+import type { NewSessionService } from "../conversation/services/newSession";
 import type { NewSessionStore } from "./newSessionContext";
 import { useHostRead, useHubRevision } from "./useHostRead";
 
 export type LaunchDefaults = Pick<
 	LaunchConfigLayer,
-	"sandbox" | "sandboxNet" | "contextStrategy" | "maxSubagentDepth" | "maxRounds"
+	"sandbox" | "sandboxNet" | "contextStrategy" | "maxSubagentDepth" | "maxRounds" | "memoryEnabled"
 >;
 
-const FIELDS = ["sandbox", "sandboxNet", "contextStrategy", "maxSubagentDepth", "maxRounds"] as const;
+const FIELDS = ["sandbox", "sandboxNet", "contextStrategy", "maxSubagentDepth", "maxRounds", "memoryEnabled"] as const;
 
 const LAUNCH_CHANGES = ["evener/launch/updated"] as const;
 

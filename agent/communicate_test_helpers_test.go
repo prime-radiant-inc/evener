@@ -4,36 +4,9 @@ import (
 	"encoding/json"
 	"strings"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/llm"
 )
-
-func communicateResponse(endTurn bool, message string) llm.Response {
-	args, _ := json.Marshal(map[string]any{
-		"message":  message,
-		"end_turn": endTurn,
-		"output": map[string]any{
-			"message":   "",
-			"data":      map[string]any{},
-			"artifacts": []string{},
-		},
-	})
-	return llm.Response{
-		Message: llm.Message{
-			Role: llm.RoleAssistant,
-			Content: []llm.ContentPart{
-				{
-					Kind: llm.ContentToolCall,
-					ToolCall: &llm.ToolCallData{
-						ID:        "communicate_test_call",
-						Name:      "communicate",
-						Arguments: args,
-						Type:      "function",
-					},
-				},
-			},
-		},
-	}
-}
 
 func communicateWithStructured(message string, output map[string]any) llm.Response {
 	args, _ := json.Marshal(map[string]any{
@@ -72,10 +45,6 @@ func requestContainsText(req llm.Request, want string) bool {
 	return false
 }
 
-func finalResponse(message string) llm.Response {
-	return communicateResponse(true, message)
-}
-
 func wrapCommunicateResponse(resp llm.Response) llm.Response {
 	text := strings.TrimSpace(resp.Text())
 	if text == "" || len(resp.ToolCalls()) > 0 {
@@ -89,7 +58,7 @@ func wrapCommunicateResponse(resp llm.Response) llm.Response {
 		ToolCall: &llm.ToolCallData{
 			ID:        "communicate_test_call",
 			Name:      "communicate",
-			Arguments: communicateResponse(true, text).ToolCalls()[0].Arguments,
+			Arguments: agenttest.CommunicateResponse(true, text).ToolCalls()[0].Arguments,
 			Type:      "function",
 		},
 	})

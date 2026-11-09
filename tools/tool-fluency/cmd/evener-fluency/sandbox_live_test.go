@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm"
 )
@@ -47,7 +48,7 @@ func TestConfigureLiveSandbox(t *testing.T) {
 	// Off (empty, the flag default) leaves the carrier zero, so a default live
 	// run is byte-identical to today.
 	cfg := agent.SessionConfig{}
-	if err := configureLiveSandbox(runConfig{}, &cfg); err != nil {
+	if err := cmdutil.ConfigureSandbox(&cfg, "", ""); err != nil {
 		t.Fatalf("off mode: %v", err)
 	}
 	if cfg.Sandbox != "" || cfg.SandboxNet != nil {
@@ -57,7 +58,7 @@ func TestConfigureLiveSandbox(t *testing.T) {
 	// A declared mode records the mode and the resolved network decision so
 	// provisioning can enforce exactly what was asked.
 	cfg = agent.SessionConfig{}
-	if err := configureLiveSandbox(runConfig{sandbox: "read-only", sandboxNet: "off"}, &cfg); err != nil {
+	if err := cmdutil.ConfigureSandbox(&cfg, "read-only", "off"); err != nil {
 		t.Fatalf("declared mode: %v", err)
 	}
 	if cfg.Sandbox != "read-only" {
@@ -69,16 +70,16 @@ func TestConfigureLiveSandbox(t *testing.T) {
 
 	// An unknown mode is a legible error, not a silent native run.
 	cfg = agent.SessionConfig{}
-	if err := configureLiveSandbox(runConfig{sandbox: "bogus"}, &cfg); err == nil {
+	if err := cmdutil.ConfigureSandbox(&cfg, "bogus", ""); err == nil {
 		t.Fatal("unknown sandbox mode must error, not run native")
 	}
 	// An unknown net value errors too.
-	if err := configureLiveSandbox(runConfig{sandbox: "read-only", sandboxNet: "yes"}, &cfg); err == nil {
+	if err := cmdutil.ConfigureSandbox(&cfg, "read-only", "yes"); err == nil {
 		t.Fatal("unknown sandbox-net value must error")
 	}
 	// --sandbox-net is validated even when the mode is off, matching the
 	// production CLI's configureSandbox.
-	if err := configureLiveSandbox(runConfig{sandbox: "off", sandboxNet: "yes"}, &agent.SessionConfig{}); err == nil {
+	if err := cmdutil.ConfigureSandbox(&agent.SessionConfig{}, "off", "yes"); err == nil {
 		t.Fatal("off mode must still validate --sandbox-net")
 	}
 }
@@ -91,7 +92,7 @@ func TestProvisionLiveSandboxEnforcesAndFailsClosed(t *testing.T) {
 
 	// Off: no host probe, env stays unsandboxed.
 	env := newSandboxTestEnv(t, work)
-	if err := provisionLiveSandbox(env, &agent.SessionConfig{}, work); err != nil {
+	if err := cmdutil.ProvisionSandbox(env, &agent.SessionConfig{}, work, runnerProbeSandboxHost); err != nil {
 		t.Fatalf("off provisioning: %v", err)
 	}
 	if env.Sandbox != nil || env.Wrapper != nil {
@@ -101,7 +102,7 @@ func TestProvisionLiveSandboxEnforcesAndFailsClosed(t *testing.T) {
 	// Declared + enforceable host: the env's file tools and shell are confined.
 	env = newSandboxTestEnv(t, work)
 	cfg := agent.SessionConfig{Sandbox: "read-only", SandboxNet: new(true)}
-	if err := provisionLiveSandboxWithHost(env, &cfg, work, enforceableSandboxHost(t)); err != nil {
+	if err := cmdutil.ProvisionSandboxWithHost(env, &cfg, work, enforceableSandboxHost(t)); err != nil {
 		t.Fatalf("enforceable provisioning: %v", err)
 	}
 	if env.Sandbox == nil || !env.Sandbox.Enforced() {
@@ -112,7 +113,7 @@ func TestProvisionLiveSandboxEnforcesAndFailsClosed(t *testing.T) {
 	// leave the env unsandboxed so nothing can run native by accident.
 	env = newSandboxTestEnv(t, work)
 	cfg = agent.SessionConfig{Sandbox: "read-only", SandboxNet: new(true)}
-	err := provisionLiveSandboxWithHost(env, &cfg, work, sandbox.HostFacts{OS: "linux"})
+	err := cmdutil.ProvisionSandboxWithHost(env, &cfg, work, sandbox.HostFacts{OS: "linux"})
 	if err == nil {
 		t.Fatal("a missing sandbox backend must fail closed")
 	}
@@ -130,7 +131,7 @@ func TestProvisionLiveSandboxEnforcesAndFailsClosed(t *testing.T) {
 	// pins for the production launch path).
 	env = newSandboxTestEnv(t, work)
 	cfg = agent.SessionConfig{Sandbox: "read-only", SandboxNet: new(true)}
-	err = provisionLiveSandboxWithHost(env, &cfg, work, sandbox.HostFacts{OS: "linux", Home: t.TempDir(), BwrapCapable: true})
+	err = cmdutil.ProvisionSandboxWithHost(env, &cfg, work, sandbox.HostFacts{OS: "linux", Home: t.TempDir(), BwrapCapable: true})
 	if err == nil {
 		t.Fatal("a host with no backend binary must fail closed")
 	}

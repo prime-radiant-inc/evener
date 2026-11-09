@@ -5,6 +5,7 @@ import { render, screen } from "@testing-library/react";
 import { beforeEach, expect, test } from "vitest";
 import { chromeStore, resetChromeStoreForTests } from "../../shell/chromeStore";
 import { requestPaneFocus, resetWorkspaceStoreForTests } from "../../shell/workspace";
+import { readModuleCss } from "../../styles/cssBlock";
 import { PaneScaffold } from "./index";
 
 beforeEach(() => {
@@ -250,10 +251,9 @@ test("the header and footer are fixed slots around the scrolling body", () => {
 // the padding resolves to plain --space-3 there. The phone's safe-area-only
 // padding is checked geometrically by overflowguard against the real Session.
 test("the footer fills to the screen's bottom edge while keeping its content clear of the home indicator", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
   // Comments stripped: the rule's own comment names the inset (testing.md's
   // "a stylesheet assertion that matches its own comment" trap).
-  const css = readFileSync(join(here, "panescaffold.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "panescaffold.module.css");
   const footerRule = css.match(/\.footer \{([^}]*)\}/)?.[1] ?? "";
   expect(footerRule).toContain(
     "padding-bottom: calc(var(--space-3) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)))",
@@ -262,6 +262,16 @@ test("the footer fills to the screen's bottom edge while keeping its content cle
   expect(css).toMatch(
     /@media \(max-width: 899px\) \{[\s\S]*?\.footer \{[^}]*padding: var\(--space-3\) var\(--space-4\);[^}]*padding-bottom: max\(0px, env\(safe-area-inset-bottom\) - var\(--keyboard-inset, 0px\)\)/,
   );
+  // A flush edge footer below this one (the session status bar) is the pane's
+  // bottom edge and owns the band, so the dock must not reserve it twice.
+  expect(css).toMatch(
+    /@media \(max-width: 899px\) \{[\s\S]*?\.footerBeforeEdge \{[^}]*padding-bottom: var\(--space-3\)/,
+  );
+  // While the composer is focused the status bar hides, so the dock takes
+  // the home-indicator band back (focus can outlive the keyboard).
+  expect(css).toMatch(
+    /:global\(body\):has\(\[data-composer-editing\]\) \.footerBeforeEdge \{[^}]*padding-bottom: max\(0px, env\(safe-area-inset-bottom\) - var\(--keyboard-inset, 0px\)\)/,
+  );
 });
 
 // Footer-less panes (welcome, settings, spawn, doc) had their end-of-scroll
@@ -269,8 +279,7 @@ test("the footer fills to the screen's bottom edge while keeping its content cle
 // composer owns its own dock), the body's scroll padding carries the inset
 // so the last content still clears the home indicator.
 test("the body keeps end-of-scroll content clear of the home indicator", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "panescaffold.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "panescaffold.module.css");
   const bodyRule = css.match(/\.body \{([^}]*)\}/)?.[1] ?? "";
   expect(bodyRule).toContain(
     "padding-bottom: calc(var(--space-5) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)))",
@@ -357,7 +366,7 @@ test("the header shares the page surface with a fine separating rule", () => {
 test("the title renders as a sentence-case pane-title heading, not an uppercase micro-label", () => {
   // typography-spacing-critique-2026-09-06 R4: the pane IS the page, so its
   // title is the page heading. The micro-label recipe stays for containers
-  // inside a page (InspectorCard, RecommendationCard, Table headers).
+  // inside a page (DiffTable headers, rail section labels).
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "panescaffold.module.css"), "utf8");
   const rule = css.match(/\.title \{([^}]*)\}/)?.[1] ?? "";

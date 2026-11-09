@@ -636,9 +636,6 @@ test("scanRepo reads tracked tests in the TypeScript trees against their product
     write("other/src/Other.test.tsx", copyTest("shows the other phrase", "Other tree phrase"));
     write("mobile-native/node_modules/dep/index.ts", `export const d = "Vendored phrase";\n`);
     write("mobile-native/src/Dep.test.ts", copyTest("shows the vendored phrase", "Vendored phrase"));
-    write("mobile/src/state/shared.ts", `export const s = "Shared mobile phrase";\n`);
-    write("mobile/src/state/shared.test.ts", copyTest("shows the shared phrase", "Shared mobile phrase"));
-    write("mobile-native/src/Shared.test.ts", copyTest("shows the shared phrase", "Shared mobile phrase"));
     write(
       "appwire-client/typescript/Untracked.test.ts",
       copyTest("shows the untracked phrase", "Shared mobile phrase"),
@@ -648,8 +645,6 @@ test("scanRepo reads tracked tests in the TypeScript trees against their product
 
     expect(scanRepo(root)).toEqual([
       { file: "cmd/evener-hub/frontend/src/Empty.test.tsx", test: "shows nothing", line: 1 },
-      { file: "mobile-native/src/Shared.test.ts", test: "shows the shared phrase", line: 1 },
-      { file: "mobile/src/state/shared.test.ts", test: "shows the shared phrase", line: 1 },
     ]);
   } finally {
     rmSync(root, { recursive: true, force: true });

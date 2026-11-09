@@ -22,10 +22,7 @@ import (
 func TestSystemSteeringDoesNotProvokeATurn(t *testing.T) {
 	t.Parallel()
 	s := newTestSessionForEnvctx(t)
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
+	serveSessionWithMutationStore(t, s)
 
 	s.SteerKind("<SYSTEM-REMINDER>startup context</SYSTEM-REMINDER>", events.SteeringKindCurrentTask)
 	if !s.hasPendingSteering() {
@@ -57,10 +54,7 @@ func TestSystemSteeringDoesNotProvokeATurn(t *testing.T) {
 func TestSystemSteeringDoesNotWakeThePendingUserInputPath(t *testing.T) {
 	t.Parallel()
 	s := newTestSessionForEnvctx(t)
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
+	serveSessionWithMutationStore(t, s)
 
 	s.SteerKind("<SYSTEM-REMINDER>startup context</SYSTEM-REMINDER>", events.SteeringKindCurrentTask)
 
@@ -76,10 +70,7 @@ func TestSystemSteeringDoesNotWakeThePendingUserInputPath(t *testing.T) {
 func TestUserSteeringStillProvokesATurn(t *testing.T) {
 	t.Parallel()
 	s := newTestSessionForEnvctx(t)
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
+	serveSessionWithMutationStore(t, s)
 	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
 		ClientMutationID: "cm-user-steer",
 		Input:            []appwire.InputItem{{Type: "text", Text: "take this into account"}},
@@ -113,10 +104,7 @@ func TestUserSteeringStillProvokesATurn(t *testing.T) {
 func TestNoTurnRunsBeforeTheUsersFirstPrompt(t *testing.T) {
 	t.Parallel()
 	s := newTestSessionForEnvctx(t)
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
+	serveSessionWithMutationStore(t, s)
 
 	// The daemon's own startup context, injected before any client is served.
 	s.SteerKind("<SYSTEM-REMINDER>startup context</SYSTEM-REMINDER>", events.SteeringKindCurrentTask)
@@ -152,10 +140,7 @@ func TestNoTurnRunsBeforeTheUsersFirstPrompt(t *testing.T) {
 func TestDaemonSteeringAloneNeverWakes(t *testing.T) {
 	t.Parallel()
 	s := newTestSessionForEnvctx(t)
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
+	serveSessionWithMutationStore(t, s)
 	s.SteerKind("<SYSTEM-REMINDER>daemon context</SYSTEM-REMINDER>", events.SteeringKindCurrentTask)
 
 	wakes := 0

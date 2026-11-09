@@ -8,7 +8,7 @@ import {
 } from "@evener/appwire-client/state/extensions";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { WireError } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { MarketplaceDetail } from "../MarketplaceBrowser";
 import { alertRequests, render, testIDSuffixes } from "../renderNative.testkit";
 import type { HubRoutes } from "./hubSheetContext";
@@ -22,8 +22,10 @@ vi.mock("react-native", async () => ({
 vi.mock("../ConnectionProvider", () => ({
 	useConnection: () => ({ state: "ready", error: null, activeProfile: null }),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
-vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
+vi.mock("react-native-safe-area-context", () => ({
+	SafeAreaView: "SafeAreaView",
+	useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
 
 function slotFor(hubId: string, ready = true): PluginsScreenSlot {
 	return hubSlot(hubId, ready).slot;

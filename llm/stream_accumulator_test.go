@@ -193,6 +193,27 @@ func TestStreamAccumulator_ToolCallEvents_AccumulatedInResponse(t *testing.T) {
 	}
 }
 
+func TestStreamAccumulator_ToolCallThoughtSignature(t *testing.T) {
+	acc := NewStreamAccumulator()
+	acc.Process(StreamEvent{Type: StreamEventToolCallStart, ToolCall: &ToolCallData{
+		ID: "call_gemini", Name: "read_file", Type: "function", ThoughtSignature: "sig-1",
+	}})
+	acc.Process(StreamEvent{Type: StreamEventToolCallEnd, ToolCall: &ToolCallData{
+		ID: "call_gemini", Arguments: json.RawMessage(`{"path":"x"}`), ThoughtSignature: "sig-1",
+	}})
+	f := FinishReason{Reason: "tool_calls"}
+	acc.Process(StreamEvent{Type: StreamEventFinish, FinishReason: &f})
+
+	resp := acc.Response()
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	calls := resp.ToolCalls()
+	if len(calls) != 1 || calls[0].ThoughtSignature != "sig-1" {
+		t.Fatalf("tool calls = %+v, want one call with the signature", calls)
+	}
+}
+
 func TestStreamAccumulator_ToolCallEndOverridesAccumulatedArgumentsAndName(t *testing.T) {
 	acc := NewStreamAccumulator()
 	acc.Process(StreamEvent{Type: StreamEventStreamStart})

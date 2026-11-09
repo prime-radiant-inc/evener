@@ -191,8 +191,6 @@ func TestUnknownWindowOptInStrategiesStayLive(t *testing.T) {
 		{"session-log", func(t *testing.T, cm *Manager) Strategy {
 			return &SessionLogStrategy{cm: cm, log: mustNewSessionLog(t, filepath.Join(t.TempDir(), "log.jsonl"))}
 		}},
-		{"obs-mask", func(_ *testing.T, cm *Manager) Strategy { return NewObsMaskStrategy(cm) }},
-		{"checkpoint-pred", func(_ *testing.T, cm *Manager) Strategy { return NewCheckpointPredStrategy(cm) }},
 		{"ooda", func(t *testing.T, cm *Manager) Strategy {
 			sls, err := NewSessionLogStrategy(cm, &fakeStrategyHost{stateDir: t.TempDir(), id: "sess", profile: cm.currentProfile()})
 			if err != nil {
@@ -257,7 +255,7 @@ func TestUnknownWindowStrategyTripwireForcesFold(t *testing.T) {
 	measured := UnknownWindowInputTripwire + 50_000
 	cm.RecordInputTokens(measured, len(history))
 
-	strategy := NewObsMaskStrategy(cm)
+	strategy := &SessionLogStrategy{cm: cm, log: mustNewSessionLog(t, filepath.Join(t.TempDir(), "log.jsonl"))}
 	spy := &emitSpy{}
 	if err := strategy.ManageContext(context.Background(), &history, 0, spy.fn); err != nil {
 		t.Fatalf("ManageContext: %v", err)
@@ -323,8 +321,6 @@ func TestStrategyTripwireDropsOnMidPassModelSwitch(t *testing.T) {
 		{"session-log", func(t *testing.T, cm *Manager) Strategy {
 			return &SessionLogStrategy{cm: cm, log: mustNewSessionLog(t, filepath.Join(t.TempDir(), "log.jsonl"))}
 		}},
-		{"obs-mask", func(_ *testing.T, cm *Manager) Strategy { return NewObsMaskStrategy(cm) }},
-		{"checkpoint-pred", func(_ *testing.T, cm *Manager) Strategy { return NewCheckpointPredStrategy(cm) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -441,8 +437,6 @@ func TestStrategyTripwireDropsWhenWindowArrivesMidPass(t *testing.T) {
 		{"session-log", func(t *testing.T, cm *Manager) Strategy {
 			return &SessionLogStrategy{cm: cm, log: mustNewSessionLog(t, filepath.Join(t.TempDir(), "log.jsonl"))}
 		}},
-		{"obs-mask", func(_ *testing.T, cm *Manager) Strategy { return NewObsMaskStrategy(cm) }},
-		{"checkpoint-pred", func(_ *testing.T, cm *Manager) Strategy { return NewCheckpointPredStrategy(cm) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

@@ -531,7 +531,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					tasks := store.View()
 					summary := taskpkg.Summarize(tasks)
 					taskUpdate := taskUpdatedData(summary, "", epoch, revision)
-					deps.emit(events.EventTaskUpdated, taskUpdate)
+					deps.emit(taskUpdate)
 					return tool.StateResult{
 						Output: fmt.Sprintf("Added %d task(s). Progress: %s.", len(added), summary.ProgressText()),
 						State:  tasks,
@@ -616,7 +616,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 
 				if !completedAny && manuallyStartedID == 0 {
 					summary := taskpkg.Summarize(mutation.After)
-					deps.emit(events.EventTaskUpdated, taskUpdatedData(summary, "", epoch, revision))
+					deps.emit(taskUpdatedData(summary, "", epoch, revision))
 					return tool.StateResult{
 						// Every successful mutation output carries Progress:
 						// the card's footer (aggregate, meter, and the
@@ -631,60 +631,65 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				msg.WriteString(formatMutationAck(len(adds), updates))
 				msg.WriteString(" ")
 				finalTasks := mutation.After
+				summary := taskpkg.Summarize(finalTasks)
 
 				if completedAny {
-					// Auto-advance unless the agent already picked what to do next.
-					if manuallyStartedID == 0 {
+					// Auto-advance unless the agent already picked what to do
+					// next, or another task is still the current one. Starting
+					// a second in_progress task would be refused by the store,
+					// and the completed update already succeeded, so leave the
+					// active task alone instead of attempting it.
+					if manuallyStartedID == 0 && summary.Current == nil {
 						eligible := store.NextEligible()
 						if len(eligible) > 0 {
 							next := eligible[0]
+							if hook := deps.taskGuard.beforeAutoAdvance; hook != nil {
+								hook()
+							}
 							auto, err := store.UpdateWithSnapshot([]taskpkg.TaskUpdate{{ID: next.ID, Status: taskpkg.TaskInProgress}})
 							if err != nil {
 								postCommitErr = fmt.Errorf("post-commit auto-advance failed: %w", err)
 								postCommitAdvice = "The terminal update was committed, but the next-task update failed; inspect the committed task state and resolve the reported cause before choosing the next task update."
 							} else {
 								finalTasks = auto.After
+								summary = taskpkg.Summarize(finalTasks)
 								started[next.ID] = true
 								if err := deps.steer(formatCurrentTaskSteering(next, true), events.SteeringKindCurrentTask); err != nil {
 									postCommitErr = fmt.Errorf("post-commit auto-advance steering failed: %w", err)
 									postCommitAdvice = "The terminal update and auto-advance were committed, but the current-task reminder was not delivered; inspect the committed task state before choosing the next update."
 								}
 							}
-						} else {
-							// No eligible task. If nothing remains open or in_progress,
+						} else if summary.NoActionableTasks() && summary.Total > 0 {
+							// No eligible task and nothing remains open or in_progress:
 							// signal the agent that the list is exhausted.
-							summary := taskpkg.Summarize(finalTasks)
-							if summary.NoActionableTasks() && summary.Total > 0 {
-								var blockingDelegateIDs []string
-								if deps.blockingDelegateIDs != nil {
-									blockingDelegateIDs = deps.blockingDelegateIDs()
-								}
-								if err := deps.sendTaskCompletionSteering(taskReminderTerminalWhileDelegatesRun(deps.resultToolName(), blockingDelegateIDs, summary.AllDone()), blockingDelegateIDs); err != nil {
-									postCommitErr = fmt.Errorf("post-commit task-completion steering failed: %w", err)
-									postCommitAdvice = "The terminal update was committed, but the completion reminder was not delivered; inspect the committed task state before choosing the next update."
-								} else if len(blockingDelegateIDs) == 0 {
-									if summary.AllDone() {
-										msg.WriteString("All tasks complete. ")
-									} else {
-										msg.WriteString("No actionable tasks remain. ")
-									}
+							var blockingDelegateIDs []string
+							if deps.blockingDelegateIDs != nil {
+								blockingDelegateIDs = deps.blockingDelegateIDs()
+							}
+							if err := deps.sendTaskCompletionSteering(taskReminderTerminalWhileDelegatesRun(deps.resultToolName(), blockingDelegateIDs, summary.AllDone()), blockingDelegateIDs); err != nil {
+								postCommitErr = fmt.Errorf("post-commit task-completion steering failed: %w", err)
+								postCommitAdvice = "The terminal update was committed, but the completion reminder was not delivered; inspect the committed task state before choosing the next update."
+							} else if len(blockingDelegateIDs) == 0 {
+								if summary.AllDone() {
+									msg.WriteString("All tasks complete. ")
 								} else {
-									if summary.AllDone() {
-										msg.WriteString("All tasks complete; waiting for delegate(s) ")
-									} else {
-										msg.WriteString("No actionable tasks remain; waiting for delegate(s) ")
-									}
-									msg.WriteString(strings.Join(blockingDelegateIDs, ", "))
-									msg.WriteString(". ")
+									msg.WriteString("No actionable tasks remain. ")
 								}
+							} else {
+								if summary.AllDone() {
+									msg.WriteString("All tasks complete; waiting for delegate(s) ")
+								} else {
+									msg.WriteString("No actionable tasks remain; waiting for delegate(s) ")
+								}
+								msg.WriteString(strings.Join(blockingDelegateIDs, ", "))
+								msg.WriteString(". ")
 							}
 						}
 					}
 				}
 
-				summary := taskpkg.Summarize(finalTasks)
 				taskUpdate := taskUpdatedData(summary, "", epoch, revision)
-				deps.emit(events.EventTaskUpdated, taskUpdate)
+				deps.emit(taskUpdate)
 				if postCommitErr != nil {
 					msg.WriteString(postCommitErr.Error())
 					msg.WriteString(" ")
@@ -728,4 +733,71 @@ func taskUpdatedData(summary taskpkg.ListSummary, taskStoreOwnerSessionID string
 		TaskPublicationEpoch:    publicationEpoch,
 		TaskPublicationRevision: publicationRevision,
 	}
+}
+
+func (s *Session) getOrCreateTaskStore() *taskpkg.TaskStore {
+	s.taskStoreOnce.Do(func() {
+		if s.cfg.spawn.sharedTaskStore != nil {
+			s.taskStore = s.cfg.spawn.sharedTaskStore
+			return
+		}
+		dir := s.stateDir
+		if dir == "" {
+			dir = s.currentEnv().WorkingDirectory()
+		}
+		s.taskStore = taskpkg.NewTaskStore(dir, s.id)
+		_ = s.taskStore.Load()
+	})
+	return s.taskStore
+}
+
+// taskStoreOwnerSessionID names the session whose durable task store backs this
+// session's task view. Shared descendants retain the original owner's identity.
+func (s *Session) taskStoreOwnerSessionID() string {
+	if owner := s.cfg.spawn.sharedTaskStoreOwnerSessionID; owner != "" {
+		return owner
+	}
+	return s.id
+}
+
+// maybeInjectTaskReminder checks whether a task-related steering message
+// should be injected before the next LLM call. Returns the message and its
+// events.SteeringKind*, or ("", "") when no reminder fires. The kind is
+// returned rather than left for the caller to infer so the label on the
+// resulting SteeringInjectedData event is ground truth, not a guess from the
+// text this function just built.
+func (s *Session) maybeInjectTaskReminder() (string, string) {
+	s.mu.Lock()
+	totalRounds := s.totalRounds
+	lastRound := s.taskToolLastRound
+	everUsed := s.taskToolEverUsed
+	s.mu.Unlock()
+
+	roundsSinceUse := totalRounds - lastRound
+
+	// Tasks exist, not used in 25+ rounds.
+	if everUsed && roundsSinceUse >= 25 {
+		store := s.getOrCreateTaskStore()
+		if len(store.View()) > 0 {
+			s.mu.Lock()
+			s.taskToolLastRound = totalRounds
+			s.mu.Unlock()
+			return taskReminderForInactivity(store, s.canInstructTool("task_list")), events.SteeringKindTaskInactive
+		}
+	}
+
+	return "", ""
+}
+
+// TasksWithError returns one coherent snapshot of the session's task list and
+// its availability error. A nil error with an empty slice is an authoritative
+// empty store; a non-nil error means the aggregate is unavailable.
+func (s *Session) TasksWithError() ([]taskpkg.Task, error) {
+	return s.getOrCreateTaskStore().ViewWithError()
+}
+
+// Tasks returns a snapshot of the session's task list.
+func (s *Session) Tasks() []taskpkg.Task {
+	tasks, _ := s.TasksWithError()
+	return tasks
 }

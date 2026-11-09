@@ -22,16 +22,16 @@ base = "google-vertex"
 
 // TestAuth_CredentialJsonSet_RequiresGCPADCImpliesConnectable probes the claimed
 // hole: that CredentialJsonSet skips the nameIsConnectable guard ApiKeySet
-// enforces (app_auth.go:491), so a credential-JSON write with an empty
+// enforces, so a credential-JSON write with an empty
 // fingerprint assertion stores a secret under a name nothing reads after the
 // instance was removed.
 //
 // The probe needs no guard fix to pass: CredentialJsonSet calls requiresGCPADC
-// both before (app_auth.go:796) and inside (app_auth.go:809) the credential
-// lock, and requiresGCPADC (app_auth.go:828) passes only when
-// instanceUsesGCPADC (app_auth.go:780) is true, which requires
-// instanceAuthScheme (app_auth.go:707) to find the name - exactly the lookup
-// nameIsConnectable (app_auth.go:730) answers for. Both cases below therefore
+// both before and inside the credential
+// lock, and requiresGCPADC passes only when
+// instanceUsesGCPADC is true, which requires
+// instanceAuthScheme to find the name - exactly the lookup
+// nameIsConnectable answers for. Both cases below therefore
 // expect a refusal and an empty store; a store hit would make the finding real.
 func TestAuth_CredentialJsonSet_RequiresGCPADCImpliesConnectable(t *testing.T) {
 	t.Run("a name nothing owns", func(t *testing.T) {

@@ -6,7 +6,7 @@ import { ErrorEndpointConflict, WireError } from "@evener/appwire-client";
 import { createCredentialInstancesStore } from "@evener/appwire-client/state/credentials";
 import { StaleListingRefusal } from "@evener/appwire-client/state/credentials";
 import { deferred } from "@evener/appwire-client/testing/deferred";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { renderHook, unmountMountedTrees } from "./renderNative.testkit";
 import { useProviderSurface } from "./providerSurface";
 

@@ -2814,6 +2814,38 @@ test("both expansion actions publish before they hand the map to the port", () =
   ]);
 });
 
+test("setRowExpanded records a rail row id without issuing a project read", async () => {
+  const port = memoryNavigationPersistence();
+  const store = createNavigationStore({ persistence: port });
+  const calls: NavigationReadParams[] = [];
+  await booted(store, (params) => {
+    calls.push(params);
+    return catalogOfOne("p", false)(params);
+  });
+  calls.length = 0;
+
+  store.getState().setRowExpanded(projectNodeExpansionKey("p"), true);
+  await flush();
+
+  expect(store.getState().expanded.get(projectNodeExpansionKey("p"))).toBe(true);
+  expect(port.writes).toEqual([{ "projectnode:p": true }]);
+  expect(calls).toEqual([]);
+});
+
+test("setRowExpanded publishes before it hands the map to the port", () => {
+  const published: Array<Array<[string, boolean]>> = [];
+  let store: NavigationStore | undefined;
+  const port = memoryNavigationPersistence([], () => {
+    published.push([...(store?.getState().expanded ?? [])]);
+  });
+  store = createNavigationStore({ persistence: port });
+
+  store.getState().setRowExpanded("section:live", false);
+
+  expect(port.writes).toEqual([{ "section:live": false }]);
+  expect(published).toEqual([[["section:live", false]]]);
+});
+
 test("a persisted project-node key overrides the catalog's default_expanded at boot", async () => {
   const projectKey = "persisted/project";
   const store = createNavigationStore({

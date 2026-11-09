@@ -3,20 +3,15 @@ version: "2"
 run:
   concurrency: 2
 
-# server/appwire_*.go carries the codex/appwire wire protocol, which forces
-# camelCase JSON tags, inside package `server`, which is snake_case everywhere
-# else (server.go alone holds 119 snake tags). evener-namingcheck expressed that
-# split per FILE. tagliatelle's overrides are per PACKAGE, so the main
-# .golangci.yml cannot: it can only switch the whole package, or exclude the
-# files and enforce nothing there — which is what it did, dropping the
-# camelCase requirement on 20 files including production appwire_runtime.go and
-# appwire_turns.go.
+# AppWire and device voice JSON use camelCase inside packages whose other
+# surfaces use snake_case. tagliatelle's overrides are per PACKAGE, so the
+# main .golangci.yml delegates only the named files/fields to this pass.
 #
-# This config is the other half. It flips package `server` to camelCase and
-# throws away every finding outside server/appwire_, so the only thing it can
-# report is a non-camelCase JSON tag in an appwire file. The main config keeps
-# excluding tagliatelle for those same files, so exactly one of the two runs
-# judges any given file and neither contradicts the other.
+# This config is the other half: it checks camelCase JSON only in
+# server/appwire_*.go and the explicitly listed voice files below. Voice
+# realtime provider frames and unrelated hub/agent JSON remain snake_case in
+# the main pass. The live presentation test mixes both surfaces, so its three
+# tool-result fields stay under the main pass rather than this camelCase one.
 #
 # `make lint-golangci` runs it after the main sweep.
 
@@ -29,9 +24,8 @@ linters:
       case:
         # Same key set as .golangci.yml: json and toml only, every other tag
         # key disabled so tagliatelle's own defaults (yaml/xml/bson: camel, …)
-        # stay out. The root json rule is what applies outside package server;
-        # nothing outside it survives the exclusion below, so it is here only
-        # to keep the two files reading the same.
+        # stay out. The overrides apply only to the files retained by the
+        # exclusion below, never to their whole mixed-case packages.
         rules:
           json: snake
           toml: snake
@@ -44,6 +38,15 @@ linters:
           envconfig: ""
         overrides:
           - pkg: server
+            rules:
+              json: camel
+          - pkg: agent
+            rules:
+              json: camel
+          - pkg: cmd/evener-hub
+            rules:
+              json: camel
+          - pkg: cmd/evener-hub/internal/hubcore
             rules:
               json: camel
   exclusions:
@@ -60,7 +63,14 @@ linters:
       # lint-golangci runs that sweep before this one and stops on failure.
       # Keep at least one camelCase tag in those files, or restore the guard
       # some other way.
-      - path-except: '^server/appwire_'
+      - path-except: '^(server/appwire_|cmd/evener-hub/(voice_bridge|voice_http(_test)?|e2e_voice_presentation_test|internal/hubcore/voice_journal(_presentation_test)?)\.go$|agent/session_voice_presentation(_test|_live_test)?\.go$)'
+        linters:
+          - tagliatelle
+      # These tool-result fields are not the camelCase presentation payload.
+      # Match Go field names, not tag spellings: the main pass must still
+      # reject a casing mistake in any of their JSON/TOML tags.
+      - path: '^agent/session_voice_presentation_live_test\.go$'
+        source: '^\s*(EndTurn|TargetID|CandidateIDs)\s'
         linters:
           - tagliatelle
 

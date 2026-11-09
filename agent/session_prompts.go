@@ -67,16 +67,23 @@ func prependSystemPromptToUserMessage(systemPrompt string, user llm.Message) llm
 // carries its own regression test, because moving the report back inside any one
 // of those critical sections leaves the whole package green otherwise.
 //
-// The empty string means the render succeeded.
-func (s *Session) refreshSystemPromptCache(env execenv.ExecutionEnvironment) string {
+// The empty warning means nothing was omitted or failed; failed reports whether
+// renderSystemPrompt returned its diagnostic text instead of a prompt.
+func (s *Session) refreshSystemPromptCache(env execenv.ExecutionEnvironment) (warning string, failed bool) {
 	if s.cfg.testOnly.minimalSystemPrompt {
 		s.cachedSystemPrompt = "test system prompt"
 		s.promptSourceLog = nil
-		return ""
+		return "", false
 	}
-	prompt, warning := s.renderSystemPrompt(env)
-	s.cachedSystemPrompt = prompt
-	return warning
+	prompt, warning, failed := s.renderSystemPrompt(env)
+	// A failed render returns diagnostic prose, not a prompt. Keep the last
+	// prompt that rendered so dependent work does not run on "Template rendering
+	// failed: ..." text; only a session with no earlier prompt installs that
+	// text, so the model is still told why it has none.
+	if !failed || s.cachedSystemPrompt == "" {
+		s.cachedSystemPrompt = prompt
+	}
+	return warning, failed
 }
 
 // reportPromptRenderFailure emits the diagnostic refreshSystemPromptCache
@@ -91,7 +98,7 @@ func (s *Session) reportPromptRenderFailure(warning string) {
 	if warning == "" {
 		return
 	}
-	s.emit(events.EventWarning, events.WarningData{Message: warning})
+	s.emit(events.WarningData{Message: warning})
 }
 
 // buildPromptData assembles a promptData from session state for template
@@ -118,6 +125,7 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 		IsSubagent:               s.isSubagentSession(),
 		Surface:                  s.profile.Surface(),
 		TurnEndsProcess:          s.cfg.TurnEndsProcess,
+		DetachSupported:          detachSupportedBy(env),
 		MemoryRead:               read,
 		MemorySearch:             read && s.canInstructTool("memory_search"),
 		MemorySaves:              saves,
@@ -178,6 +186,9 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 	// and background-jobs prompt surface only when those tools are callable.
 	data.DelegationAllowance = s.delegationAllowance
 	data.CanDelegate = s.canPromptDelegation()
+	data.ManagerEnabled = s.hubEnabled
+	data.ManagerDiscovery = s.hubEnabled && s.reg.Get("job_list") != nil
+	data.ManagerStatus = s.hubEnabled && s.reg.Get("job_status") != nil
 
 	// The section-facing tool-availability set, canonical names straight from
 	// the registry (see promptData.HasTool).
@@ -195,10 +206,13 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 	data.AvailableAgents = s.availableAgentEntries()
 
 	// CLI appends: each file is read once, and that read supplies both the
-	// prompt text and its PROMPT_LOADED source. An unreadable file is skipped.
+	// prompt text and its PROMPT_LOADED source. An unreadable file is skipped,
+	// and its path is recorded so renderSystemPrompt can disclose the omission
+	// instead of leaving the operator's instructions silently missing.
 	for _, p := range s.cfg.SystemPromptAppend {
 		b, err := os.ReadFile(p)
 		if err != nil {
+			data.unreadableAppends = append(data.unreadableAppends, p)
 			continue
 		}
 		data.CLIAppends = append(data.CLIAppends, string(b))
@@ -275,17 +289,18 @@ func sandboxPromptBoundary(rp *sandbox.ResolvedPolicy) string {
 }
 
 // renderSystemPrompt renders the system prompt from the embedded template. It
-// returns the prompt and, when the render failed, the diagnostic its caller
-// must report; see refreshSystemPromptCache for why that is returned rather
-// than emitted here, and for the env-locking contract.
-func (s *Session) renderSystemPrompt(env execenv.ExecutionEnvironment) (string, string) {
+// returns the prompt, the diagnostic its caller must report, and whether the
+// render failed (in which case the prompt is diagnostic text, not a prompt);
+// see refreshSystemPromptCache for why the diagnostic is returned rather than
+// emitted here, and for the env-locking contract.
+func (s *Session) renderSystemPrompt(env execenv.ExecutionEnvironment) (string, string, bool) {
 	data, inputSources := s.buildPromptData(env)
 	result, err := executeSystemPromptTemplate(data)
 	if err != nil {
 		// The template parsed at package initialization, so an execution error
 		// is a bug. Report it and hand the model a minimal prompt that says so.
 		return fmt.Sprintf("Template rendering failed: %v. Please report this bug.", err),
-			fmt.Sprintf("template render failed: %v", err)
+			fmt.Sprintf("template render failed: %v", err), true
 	}
 	sources := make([]promptSource, 0, len(inputSources)+2)
 	if data.BaseInstructionsOverride != "" {
@@ -294,5 +309,16 @@ func (s *Session) renderSystemPrompt(env execenv.ExecutionEnvironment) (string, 
 	sources = append(sources, promptSource{Label: systemPromptTemplateLabel, Size: len(result)})
 	sources = append(sources, inputSources...)
 	s.promptSourceLog = sources
-	return result, ""
+	return result, unreadableAppendWarning(data.unreadableAppends), false
+}
+
+// unreadableAppendWarning discloses SystemPromptAppend files that could not be
+// read and were therefore left out of the rendered prompt. The contract on
+// SystemPromptAppend says its contents are always applied, so a skip that is
+// not disclosed is a silent loss of operator-supplied instructions (CORE-08).
+func unreadableAppendWarning(paths []string) string {
+	if len(paths) == 0 {
+		return ""
+	}
+	return "system prompt append file(s) could not be read and were skipped: " + strings.Join(paths, ", ")
 }

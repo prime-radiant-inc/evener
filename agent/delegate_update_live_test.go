@@ -17,6 +17,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
@@ -209,7 +210,7 @@ func delegateRuns(ctx context.Context, t *testing.T, root *Session) []delegateRu
 // readEntries reads a transcript's entries.
 func readEntries(t *testing.T, path string) []transcript.Entry {
 	t.Helper()
-	data, err := readTranscriptFull(path, "")
+	data, err := readTranscriptFull(context.Background(), path, "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
@@ -551,7 +552,7 @@ func TestDelegateRunsReadsEveryDelegate(t *testing.T) {
 		func(llm.Request) llm.Response {
 			return delegateToolResponse("two", "SECOND-CHILD: report the repository name.")
 		},
-		func(llm.Request) llm.Response { return finalResponse("root done") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("root done") },
 	)
 	root := newMessagingRoot(t, adapter, nil)
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.

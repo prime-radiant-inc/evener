@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 	"unicode"
@@ -399,10 +398,6 @@ func (s *Session) clearPromptNamePendingAfterAttempt(err error) {
 // always positive.
 const ungatedFoldRevision = -1
 
-func (s *Session) launchCompactionNamer(ctx context.Context, turn schema.Turn) {
-	s.launchCompactionNamerGated(ctx, turn, ungatedFoldRevision)
-}
-
 // launchCompactionNamerGated is launchCompactionNamer threading the
 // launching fold's publication revision into the async naming goroutine for
 // the completion-side staleness comparison inside applySessionNameResult's
@@ -437,10 +432,6 @@ func (s *Session) launchCompactionNamerGated(ctx context.Context, turn schema.Tu
 		defer s.finishSessionNamer(release)
 		_ = s.nameSessionFromCompactionTurnGated(ctx, turn, publishedRevision)
 	}()
-}
-
-func (s *Session) nameSessionFromCompactionTurn(ctx context.Context, turn schema.Turn) error {
-	return s.nameSessionFromCompactionTurnGated(ctx, turn, ungatedFoldRevision)
 }
 
 func (s *Session) nameSessionFromCompactionTurnGated(ctx context.Context, turn schema.Turn, publishedRevision int) error {
@@ -510,7 +501,7 @@ func (s *Session) handleCompactionTurnEffects(t schema.Turn, writeErr error, sup
 		// state (see resetNotesProjectionAfterCompaction).
 		s.resetNotesProjectionAfterCompaction()
 		s.resetMemoryProjectionAfterCompaction()
-		s.emit(events.EventCompactionTurn, events.CompactionTurnData{Kind: string(t.Kind), Text: t.Message.Text()})
+		s.emit(events.CompactionTurnData{Kind: string(t.Kind), Text: t.Message.Text()})
 	}
 	if superseded {
 		return
@@ -529,7 +520,7 @@ func (s *Session) handleCompactionTurnEffects(t schema.Turn, writeErr error, sup
 
 func (s *Session) reportCompactionTranscriptAppend(err error) {
 	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript compaction write: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("transcript compaction write: %v", err)})
 	}
 }
 
@@ -627,7 +618,7 @@ func (s *Session) applySessionNameResult(result sessionNameResult, publishedRevi
 	s.naming.updated = s.sclock().Now().UTC()
 	s.naming.set = true
 	s.mu.Unlock()
-	s.emit(events.EventSessionNameChanged, events.SessionNameChangedData{Name: result.Name, Source: result.Source})
+	s.emit(events.SessionNameChangedData{Name: result.Name, Source: result.Source})
 
 	s.appendSessionNamerLog(sessionlog.SessionLogEntry{
 		Kind:    "advisory",
@@ -661,10 +652,10 @@ func (s *Session) appendSessionNamerLog(entry sessionlog.SessionLogEntry) {
 	}
 	entry.Kind = "advisory"
 	entry.Action = "session_namer"
-	logPath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".log.jsonl")
+	logPath := schema.SessionLogPath(s.stateDir, s.id)
 	log, err := sessionlog.NewSessionLog(logPath)
 	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("session namer log open failed: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("session namer log open failed: %v", err)})
 		return
 	}
 	s.reportSessionNamerLogAppend(log.Append(entry))
@@ -672,7 +663,7 @@ func (s *Session) appendSessionNamerLog(entry sessionlog.SessionLogEntry) {
 
 func (s *Session) reportSessionNamerLogAppend(err error) {
 	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("session namer log append failed: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("session namer log append failed: %v", err)})
 	}
 }
 

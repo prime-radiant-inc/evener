@@ -82,7 +82,7 @@ func jobNotificationFromRecord(rec *jobstore.JobRecord) jobNotification {
 // jobFinishedEventIdentity stamps a job.notification watch's default (thin)
 // jobNotification with the concrete completed job's identity, read straight
 // off the triggering EventJobFinished payload rather than a store record — a
-// self/parent-target watch fires under jm.mu (job_watch.go's onSessionEvent),
+// self/parent-target watch fires under jm.mu (onSessionEvent),
 // where a jobNotificationFromRecord-style store read would deadlock against
 // jm.liveJobRecords. jobs.go's emitJobFinished builds that payload from the
 // same job record jobNotificationFromRecord reads at terminal-flush time and

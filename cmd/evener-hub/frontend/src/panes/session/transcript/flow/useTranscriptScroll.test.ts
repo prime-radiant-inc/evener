@@ -14,14 +14,9 @@ import {
   resetTranscriptViewRegistryForTests,
   transitionTranscriptViews,
 } from "./transcriptViewRegistry";
-import {
-  captureTopAnchor,
-  captureTranscriptView,
-  restoreTopAnchor,
-  useTranscriptScroll,
-  useTranscriptViewRegistration,
-  type ViewAnchorPosition,
-} from "./useTranscriptScroll";
+import { useTranscriptScroll } from "./useTranscriptScroll";
+import { useTranscriptViewRegistration } from "./useTranscriptViewRegistration";
+import { captureElementView, captureTopAnchor, restoreTopAnchor, type ViewAnchorPosition } from "./viewAnchor";
 
 // --- fixtures ------------------------------------------------------------
 
@@ -1947,6 +1942,29 @@ describe("jumpToBottom landing reliability", () => {
       // A scroll event that is not a correction consumes that legitimate mark.
       el.dispatchEvent(new Event("scroll"));
       el.dispatchEvent(touchEvent("touchend", 460));
+    });
+
+    act(() => {
+      el.dispatchEvent(touchEvent("touchmove", 500));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
+  test("a touch that ends with only a pointer-up delivered does not mark a later start-less move", () => {
+    const { el, set } = mountAtBottom();
+
+    act(() => {
+      el.dispatchEvent(touchEvent("touchstart", 400));
+      el.dispatchEvent(touchEvent("touchmove", 460));
+      // A touch's start target can leave the tree mid-gesture (VirtualList
+      // unmounts rows under the finger), so its touchend never reaches this
+      // port while the pointer end still can. Without that clear the recorded
+      // Y survives and the next move that reaches this port is fabricated into
+      // a mark.
+      el.dispatchEvent(new Event("scroll"));
+      el.dispatchEvent(pointerEvent("pointerup", { pointerType: "touch", button: 0, buttons: 0, isPrimary: true }));
     });
 
     act(() => {
@@ -4293,7 +4311,7 @@ describe("registered transcript view preservation", () => {
     document.body.append(el);
     focusedDescendant.focus();
 
-    const captured = captureTranscriptView(
+    const captured = captureElementView(
       el,
       () => ({ scrollTop: 950, scrollHeight: 1000, clientHeight: 50 }),
       () => [{ id: "agent-4", sourceIndex: 4, index: 2, offset: 18, height: 96, isMessage: true }],

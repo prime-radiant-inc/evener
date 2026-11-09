@@ -24,7 +24,7 @@ func archivedRows(prefix string, n int, updated func(i int) time.Time, title fun
 	for i := range rows {
 		rows[i] = hubcore.TreeNode{ID: fmt.Sprintf("%s-%03d", prefix, i), Title: title(i), Kind: "session", State: "ended", UpdatedAt: updated(i), CreatedAt: updated(i)}
 	}
-	sort.SliceStable(rows, func(a, b int) bool { return hubcore.TreeNodeLess(rows[a], rows[b]) })
+	sort.SliceStable(rows, func(a, b int) bool { return hubcore.ProjectTreeNodeLess(rows[a], rows[b]) })
 	return rows
 }
 
@@ -128,8 +128,8 @@ func TestArchivedTiersAreInSessionOrder(t *testing.T) {
 		if len(rows) != 79 {
 			t.Fatalf("project %s has %d archived rows, want 79 (70 built + 9 merged)", project.Key, len(rows))
 		}
-		if !sort.SliceIsSorted(rows, func(a, b int) bool { return hubcore.TreeNodeLess(rows[a], rows[b]) }) {
-			t.Fatalf("project %s archived tier is not in session order", project.Key)
+		if !sort.SliceIsSorted(rows, func(a, b int) bool { return hubcore.ProjectTreeNodeLess(rows[a], rows[b]) }) {
+			t.Fatalf("project %s archived tier is not in project session order", project.Key)
 		}
 	}
 }

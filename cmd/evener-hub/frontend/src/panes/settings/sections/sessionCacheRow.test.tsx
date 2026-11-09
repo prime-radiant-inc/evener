@@ -2,7 +2,9 @@
 import "fake-indexeddb/auto";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { clearProjectionWorkForTests, settleProjectionWorkForTests } from "../../../stores/projectionWork";
+import { settleProjectionWorkForTests } from "../../../panes/session/composer/queue/testing/flushPendingTurnsProjection";
+import { setProductionEntryCacheForTests } from "../../../stores/entryTranscriptRoutes";
+import { clearProjectionWorkForTests } from "../../../stores/projectionWork";
 import { entryHistoryKey } from "../../../stores/sessionCacheSchema";
 import { SessionEntryCache } from "../../../stores/sessionEntryCache";
 import {
@@ -10,7 +12,7 @@ import {
   holdNextWriteTransaction,
   neverSettlingFactory,
 } from "../../../stores/testing/stalledIndexedDB";
-import { resetThreadsStoreForTests, setProductionEntryCacheForTests } from "../../../stores/threads";
+import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { resetSessionCacheRowStoreForTests, SessionCacheStatus, sessionCacheRowStore } from "./sessionCacheRow";
 
 function isDisabled(el: Element): boolean {

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/llm"
 )
 
@@ -23,7 +24,7 @@ func TestWebSearch_MakesGroundingCall(t *testing.T) {
 		steps: []func(req llm.Request) llm.Response{
 			// Step 0: main agent calls web_search tool.
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(llm.ToolCallData{
+				return agenttest.ToolCallResponse(llm.ToolCallData{
 					ID:        "ws1",
 					Name:      "web_search",
 					Arguments: json.RawMessage(`{"query": "Go 1.23 release date"}`),
@@ -38,7 +39,7 @@ func TestWebSearch_MakesGroundingCall(t *testing.T) {
 			},
 			// Step 2: main agent receives grounding result and responds.
 			func(req llm.Request) llm.Response {
-				return finalResponse("Go 1.23 was released in August 2024.")
+				return agenttest.FinalResponse("Go 1.23 was released in August 2024.")
 			},
 		},
 	}

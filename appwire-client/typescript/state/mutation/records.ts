@@ -34,11 +34,31 @@ export interface MutationAttachmentRef {
   mediaType: string;
 }
 
+// The wire id a composition travels under: the payload's clientMutationId
+// when it carries one (a minted row re-submitting under its predecessor's
+// id), the record's own storage key otherwise. This is the id the daemon
+// journals the composition under - receipts, refusals, and authoritative
+// feeds all name it - so every identity comparison that meets the wire uses
+// this, while storage operations stay keyed on the record's own id. The
+// difference between the two is exactly the inherited-uncertainty marker a
+// mint leaves: a row whose effective wire id differs from its own key is a
+// replacement of possibly-delivered work.
+export function effectiveWireId(record: { clientMutationId: string; payload: { clientMutationId?: unknown } }): string {
+  const payloadId = record.payload.clientMutationId;
+  return typeof payloadId === "string" && payloadId !== "" ? payloadId : record.clientMutationId;
+}
+
 // "canceled" is the durable record of a user's Stop: the row was never
 // attempted, so cancellation is a fact about the client, not a guess about
-// the daemon. Only an explicit user Retry releases it; no scan, reopen, or
-// reclassification path may move it.
-export type MutationOutboxState = "submitting" | "blockedUnknown" | "canceled";
+// the daemon. Only an explicit user Retry re-queues its work; no scan,
+// reopen, or reclassification path may move it. "superseded" is the terminal
+// settlement of a blockedUnknown row an explicit Retry or a proven-absent
+// reconcile re-queued as a FRESH row: never dispatched again
+// (nextDispatchable returns only submitting rows), never reopened - but its
+// id and attempt evidence stay, so a receipt or in-band refusal from the real
+// in-flight attempt still settles it exactly as before. The mint creates
+// sibling work; it never claims to replace the predecessor's outcome.
+export type MutationOutboxState = "submitting" | "blockedUnknown" | "canceled" | "superseded";
 export type MutationRecoveryKind = "rejected" | "orphaned" | "editing";
 
 // One submission as the client made it. The attachment type is a parameter so
@@ -70,6 +90,11 @@ export interface MutationIntent<A extends MutationAttachmentRef = MutationAttach
   // records all carry them in the one record they already persist.
   composerText?: string;
   composerMentions?: readonly ComposerMention[];
+  // The composer pane's durable seat that authored this composition. It
+  // rides the outbox record into the recovery row a refusal creates, so the
+  // authoring pane's mount restore can find its own bounced work - and no
+  // other pane's. Absent on non-composer and native enqueues.
+  compositionOwnerId?: string;
   // Native local-draft ownership only. Never copied into the RPC payload;
   // absent on older rows and on hosts that do not use native draft capture.
   draftCaptureToken?: string;
@@ -95,7 +120,7 @@ export interface MutationOutboxRecord<A extends MutationAttachmentRef = Mutation
   extends MutationRecord<A> {
   state: MutationOutboxState;
   attempted?: boolean;
-  // #4342: how many attempts this row has in flight or unresolved - a mark
+  // How many attempts this row has in flight or unresolved - a mark
   // increments, an in-band refusal decrements its own. `attempted` is the
   // boolean the reconcile park and Stop's cancel guard read; this count is
   // what keeps that boolean honest when one row carries more than one
@@ -104,12 +129,28 @@ export interface MutationOutboxRecord<A extends MutationAttachmentRef = Mutation
   // records written before the field existed carry none: a missing count
   // then reads as the attempted boolean's own evidence - one unresolved
   // attempt when true, zero when false - and a record with neither field
-  // (a pre-#936 row, persisted untouched through every later schema
+  // (a row from before this field, persisted untouched through every later schema
   // version) keeps one unresolved attempt as its baseline, because its
   // delivery state from that era is unknown and only an explicit
   // `attempted: false` proves no earlier attempt.
   unresolvedAttempts?: number;
-  // #4342: the ref's stop epoch at enqueue time - the barrier's own read,
+  // The ref the composer that sent this row was DISPLAYING when it enqueued
+  // the row: a recovery resend can target a destination a peer retargeted
+  // the row to, while the sending pane still displays the superseded ref -
+  // and a Stop on that displayed session must still cancel the row, or the
+  // send dispatches after a Stop the user pressed on the session they were
+  // looking at. Absent on ordinary enqueues and on rows written before the
+  // field existed; Stop's cancel scan matches a missing value as never.
+  displayedRef?: string;
+  // The displayed ref's own stop epoch at enqueue time - the twin of
+  // stopEpochAtEnqueue for the ref `displayedRef` names. Every seam that can
+  // make an attempted or parked row dispatchable again (a refusal's rollback,
+  // a reconcile's reopen) checks BOTH epochs before it reopens, so a Stop on
+  // the still-displayed session holds the row canceled exactly like one on
+  // the destination. Absent on ordinary rows; a missing capture reads as
+  // zero, the conservative direction.
+  displayedStopEpochAtEnqueue?: number;
+  // The ref's stop epoch at enqueue time - the barrier's own read,
   // stored. A refusal proves the attempt never landed, and a Stop whose
   // cancel scan skipped this attempted row bumped the epoch after this
   // capture - the refusal's rollback then holds the row canceled (released
@@ -120,6 +161,16 @@ export interface MutationOutboxRecord<A extends MutationAttachmentRef = Mutation
   // interleavings. Optional because rows written before the field existed
   // carry none; a missing capture reads as zero, the conservative direction.
   stopEpochAtEnqueue?: number;
+  // True only on a row a crossed Stop FENCED - the pre-transport gate's park
+  // and the reconcile's crossed-hold - naming the Stop as the reason the row
+  // is not delivering. The fence stops the row's DELIVERY, not the queue: a
+  // row so stamped must not block what follows it in FIFO order, because the
+  // thing most likely queued behind it is the Stop's own interrupt, which the
+  // daemon must receive for the session to stop. A row parked for any other
+  // reason (an attempt whose outcome nobody can vouch for) carries no stamp
+  // and keeps the queue closed behind it - the conservative direction.
+  // Absent on rows written before the field existed and on rows native owns.
+  stopFenced?: boolean;
 }
 
 export interface MutationOptimisticRecord<A extends MutationAttachmentRef = MutationAttachmentRef>
@@ -184,15 +235,38 @@ export function acceptedRecord<A extends MutationAttachmentRef = MutationAttachm
   };
 }
 
-// The "receipt carries input display" half of the rule both adapters use to
-// decide whether a "pending" receipt keeps (or creates) the optimistic copy:
-// the source record's display holds an input array the pending row renders.
-// The receipt's own state (whether it is "pending" at all) is the caller's to
-// check; a host may keep a copy for a reason beyond a display (the web keeps
-// a notes/human/set copy so a retry lookup sees the accepted save as pending).
+// The "receipt carries input display" half of the rule `retainsAcceptedCopy`
+// builds on: the source record's display holds an input array the pending row
+// renders.
 export function carriesOptimisticInput(record: { optimisticDisplay: unknown }): boolean {
   const display = record.optimisticDisplay;
   return display !== null && typeof display === "object" && "input" in display && Array.isArray(display.input);
+}
+
+// Whether a receipt settles a record into an accepted optimistic copy instead
+// of retiring it. A "pending" receipt means accepted but not yet described by
+// authoritative state. The daemon reports pending for exactly the mutations
+// whose acceptance a read cannot yet prove (every input-bearing turn verb and
+// notes/human/set), and the host owes each of them a kept copy until a later
+// read's authoritative ids settle it. For the turn verbs the kept copy is the
+// optimistic display itself; a note carries no display, but its kept copy is
+// what tells humanNoteDrafts' post-retry lookup an accepted save is pending
+// rather than settled elsewhere. A receipt-only control (a Stop) settles
+// terminal at acceptance and keeps no copy. Both adapters call this, so the
+// retention rule cannot drift between them.
+export function retainsAcceptedCopy(
+  source: { optimisticDisplay: unknown; method: string },
+  projectionState: string,
+): boolean {
+  return projectionState === "pending" && (carriesOptimisticInput(source) || source.method === "notes/human/set");
+}
+
+// Whether settling a record also retires its recovery row. A recovery row a
+// composer has edited (compositionRevision above zero) holds the user's
+// unsent text and outlives the settlement; hosts with no composer never write
+// a revision, so every row of theirs settles.
+export function settlementRetiresRecovery(recovery: { compositionRevision?: number }): boolean {
+  return (recovery.compositionRevision ?? 0) === 0;
 }
 
 // --- client provenance -------------------------------------------------------

@@ -9,11 +9,12 @@ import {
   collectAdvancedOverrides,
   effortLabel,
   errorText,
-  filterSlashMenuItems,
   findBuiltinArgument,
   friendlyLaunchErrorMessage,
   harnessSupportsPluginSelection,
   harnessUsesEvenerModels,
+  hostRequest,
+  isLocalHost,
   matchBuiltinInvocation,
   mergeSlashCommands,
   type PathValidation,
@@ -23,12 +24,9 @@ import {
   pluginSelectionIssues,
   reconcilePluginSelection,
   resolveScalars,
-  type SlashMenuItem,
-  type SlashToken,
   schemaPathKind,
   selectedPluginNames,
   slashCommandInvocation,
-  spliceSlashCommand,
   withPluginSelection,
 } from "@evener/appwire-client";
 import { type JSX, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -36,11 +34,13 @@ import { useStore } from "zustand";
 import { useClient } from "../../shell/clientContext";
 import { resolveHeadBranch } from "../../shell/gitLocation";
 import { splitModelId } from "../../shell/palette/commands";
+import { CHORD_HINTS } from "../../shell/palette/helpRows";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL } from "../../shell/routing";
 import { useMountAutofocus } from "../../shell/useMountAutofocus";
+import { useHasSessionPane } from "../../shell/workspace";
 import { useExtensionsStore } from "../../stores/extensions";
-import { hostRequest, isLocalHost } from "../../stores/hostRouting";
+import { withLaunchConfig } from "../../stores/launchConfig";
 import { selectDisplaySources, selectSources } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
 import {
@@ -64,6 +64,8 @@ import {
   PromptCard,
   Select,
   SendIcon,
+  ShortcutList,
+  Switch,
   Tooltip,
   useToasts,
   VisuallyHidden,
@@ -77,8 +79,9 @@ import { AttachIcon } from "../session/composer/attachments/AttachIcon";
 import { imageFilesFromClipboard } from "../session/composer/attachments/clipboard";
 import { type TextEditor, useAttachments } from "../session/composer/attachments/useAttachments";
 import { SkillEditor, type SkillEditorHandle, type SkillEditorValue } from "../session/composer/SkillEditor";
-import { SlashCompletionMenu, optionId as slashOptionId } from "../session/composer/SlashCompletionMenu";
+import { SlashCompletionMenu } from "../session/composer/SlashCompletionMenu";
 import { maskSkillAtoms, patchSelectionText } from "../session/composer/skillDocument";
+import { useSlashCompletion } from "../session/composer/useSlashCompletion";
 import {
   ConnectProviderDialogBoundary,
   useConnectProviderDialogChunk,
@@ -94,7 +97,7 @@ import {
 import { MobileSettingRows } from "./MobileSettingRows";
 import { PluginSelectionPanel } from "./PluginSelectionPanel";
 import pluginSelectionStyles from "./pluginSelection.module.css";
-import { createDir, preflightDir } from "./preflight";
+import { preflightDir } from "./preflight";
 import styles from "./spawn.module.css";
 import {
   getGlobalLastWorkingDir,
@@ -114,8 +117,14 @@ import {
   useDraftField,
 } from "./spawnDrafts";
 import {
+  catalogEffortLevels,
+  FALLBACK_EFFORT_LEVELS,
+  resolveSpawnBuiltinLaunch,
+  type SpawnLaunchScalars,
+  spawnBuiltinBlockMessage,
+} from "./spawnLaunch";
+import {
   PRE_SESSION_BUILTIN_IDS,
-  resolveSpawnEffortItems,
   resolveSpawnModelItems,
   runSpawnBuiltinAfterStart,
   spawnBuiltinCommands,
@@ -156,17 +165,6 @@ interface ProviderCompletionAttempt {
   generation: number;
 }
 
-// Fallback effort ladder for a model whose own ladder the hub does not
-// enumerate - the same fallback the session status row uses (StatusRow.tsx's
-// DEFAULT_EFFORT_LEVELS), so both surfaces agree on the unknown case. The
-// select's real ladder comes from the selected model's catalog entry
-// (reasoningEffortLevels/supportsReasoning, served by model/list);
-// "(default)" + an explicit "none" ride every ladder.
-const FALLBACK_EFFORT_LEVELS = ["minimal", "low", "medium", "high"];
-// Shared empty-ladder constant so the derived value keeps a stable identity
-// across renders (the stale-effort effect below keys off it).
-const NO_EFFORT_LEVELS: string[] = [];
-
 // How long the working-directory field must be quiet before the pane reloads
 // the model catalog behind the Effort ladder. Long enough to collapse a typed
 // path into one load, short enough that the ladder is right by the time anyone
@@ -190,23 +188,10 @@ const CATALOG_SETTLE_MS = 250;
 // long timeout is the whole fix.
 export const CONNECT_ATTACH_TIMEOUT_MS = 35 * 60_000;
 
-// The effort levels a catalog entry authorizes: the model's own named ladder
-// when it has one, an EMPTY list when the catalog says the model cannot
-// reason at all, and null when the hub can't say (enrichment failed, or the
-// entry names neither levels nor a reasoning capability). The caller
-// substitutes FALLBACK_EFFORT_LEVELS for null, so a missing catalog never
-// empties or disables the field.
-function catalogEffortLevels(entry: ModelCatalogEntry | undefined): string[] | null {
-  if (entry === undefined) return null;
-  if (entry.reasoningEffortLevels !== undefined && entry.reasoningEffortLevels.length > 0) {
-    return entry.reasoningEffortLevels;
-  }
-  if (entry.supportsReasoning === false) return NO_EFFORT_LEVELS;
-  return null;
-}
-
 const CLASS = {
   form: requireClass(styles.form, "spawn.module.css", "form"),
+  startReason: requireClass(styles.startReason, "spawn.module.css", "startReason"),
+  chordHints: requireClass(styles.chordHints, "spawn.module.css", "chordHints"),
   cfgDir: requireClass(styles.cfgDir, "spawn.module.css", "cfgDir"),
   branch: requireClass(styles.branch, "spawn.module.css", "branch"),
   directoryButton: requireClass(styles.directoryButton, "spawn.module.css", "directoryButton"),
@@ -291,11 +276,12 @@ function SpawnForm({
   const toasts = useToasts();
   const advancedOwnerRef = useRef<HTMLDivElement>(null);
   const [source, setSource] = useDraftField(draft, "source");
+  const [manager, setManager] = useDraftField(draft, "manager");
   // The manifest carries every configured launch source (Component 06a). It is
   // empty until it loads, and in the common single-host case holds only
   // "local" - either way no picker renders, so the existing form is unchanged.
   //
-  // Two views of it, deliberately (round nine). `sources` is the SETTLED list
+  // Two views of it, deliberately. `sources` is the SETTLED list
   // and owns every decision: the launchable host below, the submitted source,
   // and the write-back; `displaySources` (below) is last-known data for DISPLAY
   // only, so a revalidation cannot make the picker vanish.
@@ -312,7 +298,7 @@ function SpawnForm({
   // selecting "Local" fires no change event while the select already reads
   // local - so the draft, not the remembered host, must carry the choice.
   //
-  // An EMPTY manifest is not that evidence (component 07b review, round five).
+  // An EMPTY manifest is not that evidence.
   // `sources` is empty both while the manifest is in flight (and if its fetch
   // failed) and when the manifest genuinely lists nothing remote, so its
   // emptiness cannot decide the target: reading it as a fallback silently
@@ -462,8 +448,8 @@ function SpawnForm({
   const [harness, setHarness] = useDraftField(draft, "harness");
   const [model, setModel] = useDraftField(draft, "model"); // qualified "provider/model", or "" for the harness default
   const [reasoningEffort, setReasoningEffort] = useDraftField(draft, "reasoningEffort");
-  // The display-only view of the same manifest, used by the picker alone
-  // (round nine): last-known data, so a revalidation (loading/stale) cannot
+  // The display-only view of the same manifest, used by the picker alone:
+  // last-known data, so a revalidation (loading/stale) cannot
   // make the picker vanish or the visible host flip to Local while the fresh
   // manifest is in flight.
   const displaySources = useNavigationStore(selectDisplaySources);
@@ -472,7 +458,7 @@ function SpawnForm({
   // draft names (only `sources` above may decide the launch target). While the
   // manifest is unsettled a submit carries `source` itself, so the visible
   // choice follows the draft rather than reading the withheld list as "the host
-  // is gone" (round nine). Once settled this is exactly hostChoice, preserving
+  // is gone". Once settled this is exactly hostChoice, preserving
   // the round-eight preselection and offline fallback unchanged.
   const displaySource = displaySources.find((candidate) => candidate.id === source);
   const displayHostChoice = sources.length > 0 ? hostChoice : (displaySource?.id ?? hostChoice);
@@ -570,8 +556,8 @@ function SpawnForm({
   // submit gate: a non-empty model is host-derived exactly as the harness is -
   // it was chosen from, or persisted against, the catalog of whichever host was
   // selected at the time - so until the SELECTED host's list lands, a submit
-  // could carry a model this host never offered (component 07b review, round
-  // five: `hostCatalogPending` covered only the harness/schema requests). A
+  // could carry a model this host never offered (`hostCatalogPending` covers
+  // only the harness/schema requests). A
   // LOCAL mount starts settled: nothing about it is host-derived, so the form
   // stays startable exactly as it was before host routing existed. Settlement,
   // not success, is the bar - see the effect below.
@@ -595,11 +581,11 @@ function SpawnForm({
   // (see its derivation). Left open, "Create & start" would then create THIS
   // path and launch THIS draft on whichever host is selected now - a launch the
   // newly selected host never offered, which is the remote-draft-silently-
-  // converted-to-a-local-launch class round five closed for the normal Start
-  // path. A host switch dismisses the pending create rather than re-homing it:
+  // converted-to-a-local-launch class the normal Start path already refuses.
+  // A host switch dismisses the pending create rather than re-homing it:
   // the user confirmed a path on one machine, so the same click must not act on
   // another. handleCreateConfirm re-checks the binding as well, because a
-  // confirm can race this effect (component 07b review, round seven).
+  // confirm can race this effect.
   const createDialogHostRef = useRef(submittedSource);
   useEffect(() => {
     if (createDialogHostRef.current === submittedSource) return;
@@ -772,32 +758,6 @@ function SpawnForm({
     ? withPluginSelection(advancedOverrides, pluginSelection)
     : withPluginSelection(advancedOverrides, { mode: "default" });
 
-  // Inline slash-command completion (slashCompletion.ts's own header
-  // comment - ported from Beautiful UI's prompt-bar). slashToken is the
-  // trailing-token match recomputed on every keystroke (below); null means
-  // no menu, regardless of what the prompt's text actually contains -
-  // Escape closes the menu by setting this to null directly, and typing
-  // further reopens it because the very next keystroke recomputes the
-  // match fresh. slashHighlighted is the ArrowUp/Down cursor over whatever
-  // the CURRENT filtered list is; reset to 0 whenever the token itself
-  // changes (new match, or the query narrowed/widened) rather than
-  // persisted across it - an index into a list that just changed shape is
-  // not a meaningful position to keep.
-  const [slashToken, setSlashToken] = useState<SlashToken | null>(() => parseSlashToken(prompt, prompt.length));
-  const [slashHighlighted, setSlashHighlighted] = useState(0);
-  // URL writes bypass the keystroke path, including a prefill for the current
-  // project. A restored draft should offer the same completion as typed text.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: prefillRevision triggers URL-only writes independently of keystrokes
-  useEffect(() => {
-    const text = draft.fields.getState().prompt;
-    setSlashToken(parseSlashToken(text, text.length));
-    cursorRef.current = null;
-  }, [draft, prefillRevision]);
-  // Completion can clear this draft through an older, unmounted form. Retire
-  // the token from the current prompt, not from that form's stale continuation.
-  useEffect(() => {
-    if (prompt === "") setSlashToken(null);
-  }, [prompt]);
   // The backend already resolved the selection for this cwd plus overrides
   // (evener/spawn/slashCatalog), so no plugin filtering applies here the
   // way Composer's visibleCatalogCommands filters its global catalog by
@@ -831,35 +791,10 @@ function SpawnForm({
     slashCatalogResponse.commands.filter((command) => !builtinInvocations.has(slashCommandInvocation(command))),
     (slashCatalogResponse.skills ?? []).filter((skill) => !builtinInvocations.has(`/${skill.name}`)),
   );
-  // The menu is only ever open when a token matched AND the merged catalog
-  // has at least one fuzzy label hit for it - a matched-but-empty token
-  // (e.g. "/zzz" against a real catalog) shows no menu at all, same as no
-  // token matching. The pluginSelectionSupported gate is load-bearing: the
-  // hook reports ready-empty for non-evener harnesses, but
-  // spawnBuiltinCommands() merges unconditionally, so without it typing
-  // "/goal" on an external harness would still open a one-row builtin menu
-  // for a session that loads no plugins.
-  const slashItems = slashToken ? filterSlashMenuItems(slashMenuCatalog, slashToken.query) : [];
-  const slashOpen = pluginSelectionSupported && slashToken !== null && slashItems.length > 0;
   // Singleton pane - no ref scoping needed, unlike Composer's per-ref id.
   const slashListboxId = "spawn-slash-listbox";
-  const slashActiveIndex = slashOpen ? Math.min(slashHighlighted, slashItems.length - 1) : -1;
-  const slashActiveId = slashActiveIndex >= 0 ? slashOptionId(slashListboxId, slashActiveIndex) : null;
 
   const textareaRef = useRef<SkillEditorHandle>(null);
-
-  // A freshly (re)matched token always starts highlighted at its first
-  // option - an index carried over from the PREVIOUS token's list is not a
-  // meaningful position once the list itself has changed shape. The presence
-  // flip covers Escape-dismiss→retype of the identical token (same start and
-  // query, so those deps alone would keep a stale index): reopening always
-  // restarts at the first option. Deliberately stricter than the composer's
-  // twin effect, which keeps the index across an identical-token reopen.
-  const slashTokenPresent = slashToken !== null;
-  // biome-ignore lint/correctness/useExhaustiveDependencies: slashToken's start/query/presence are deliberate trigger-only deps - the effect body only calls setSlashHighlighted(0), but must still re-run whenever the token identity actually changes (a new match, the same match with a different query, or a dismiss→reopen flip), same idiom as the cursor-restore layout effect below
-  useEffect(() => {
-    setSlashHighlighted(0);
-  }, [slashToken?.start, slashToken?.query, slashTokenPresent]);
 
   // Attachments reuse the composer's staged-image pipeline via a TextEditor
   // bridge over the prompt textarea (see Composer.tsx's own bridge for the
@@ -879,6 +814,20 @@ function SpawnForm({
   // label, which is the honest UI reflection of `busyRef` once React catches
   // up - this ref is only the guard of record.
   const busyRef = draft.busyRef;
+  // The two edges of a launch attempt. busyRef is the synchronous re-entrancy
+  // guard, busy and busyStartedAt are the draft state the Start button renders;
+  // every exit from an attempt (success, refusal, thrown error) hands Start
+  // back through finishBusy.
+  function startBusy(): void {
+    busyRef.current = true;
+    setBusy(true);
+    setBusyStartedAt(Date.now());
+  }
+  function finishBusy(): void {
+    busyRef.current = false;
+    setBusy(false);
+    setBusyStartedAt(null);
+  }
   // Mirrors `model` for the default-provider-credential effect below: that
   // effect must read whether Model is CURRENTLY untouched without itself
   // re-running (and re-issuing evener/launch/resolve + model/list) every time
@@ -892,9 +841,9 @@ function SpawnForm({
   // forwarded to a remote target - the selected host resolves its own default
   // - and is retired when the target becomes remote. Cleared on every
   // user-driven model change, so a value the person chose is never treated as
-  // fallback-derived (Component 06b review, round seven).
+  // fallback-derived.
   //
-  // The marker lives in the DRAFT, not a form-local ref (round eight): this
+  // The marker lives in the DRAFT, not a form-local ref: this
   // component is a singleton reused across drafts and unmounted/remounted with
   // the pane, so a ref-local marker leaked draft A's provenance onto an
   // identical model string draft B legitimately owns (clearing B's user-chosen
@@ -996,39 +945,46 @@ function SpawnForm({
       if (isCurrentDraft()) cursorRef.current = cursor;
     },
   };
+  // The menu is only ever open when a token matched AND the merged catalog
+  // has at least one fuzzy label hit for it - a matched-but-empty token
+  // (e.g. "/zzz" against a real catalog) shows no menu at all, same as no
+  // token matching. The pluginSelectionSupported gate is load-bearing: the
+  // hook reports ready-empty for non-evener harnesses, but
+  // spawnBuiltinCommands() merges unconditionally, so without it typing
+  // "/goal" on an external harness would still open a one-row builtin menu
+  // for a session that loads no plugins.
+  const {
+    setToken: setSlashToken,
+    items: slashItems,
+    open: slashOpen,
+    activeIndex: slashActiveIndex,
+    activeId: slashActiveId,
+    commit: commitSlashCompletion,
+    handleKeyDown: handleSlashKeyDown,
+  } = useSlashCompletion({
+    catalog: slashMenuCatalog,
+    enabled: pluginSelectionSupported,
+    listboxId: slashListboxId,
+    initialToken: () => parseSlashToken(prompt, prompt.length),
+    editorRef: textareaRef,
+    textRef,
+    textEditor,
+    plainKeysOnly: true,
+  });
+  // URL writes bypass the keystroke path, including a prefill for the current
+  // project. A restored draft should offer the same completion as typed text.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: prefillRevision triggers URL-only writes independently of keystrokes
+  useEffect(() => {
+    const text = draft.fields.getState().prompt;
+    setSlashToken(parseSlashToken(text, text.length));
+    cursorRef.current = null;
+  }, [draft, prefillRevision]);
+  // Completion can clear this draft through an older, unmounted form. Retire
+  // the token from the current prompt, not from that form's stale continuation.
+  useEffect(() => {
+    if (prompt === "") setSlashToken(null);
+  }, [prompt, setSlashToken]);
   const attachments = useAttachments(textEditor, draft.attachments);
-
-  // commitSlashCompletion is Tab/plain-Enter's (handlePromptKeyDown below)
-  // and a mouse click's (SlashCompletionMenu's own onSelect) shared "the
-  // user chose this command" path: splices the item's own invocation
-  // (slashCompletion.ts's mergeSlashCommands - "/plugin:name" for a plugin
-  // command via shell/palette/commands.ts's slashCommandInvocation, bare
-  // "/id" for a built-in) in at the token's own start (never the caret,
-  // when the caret was left mid-token by an earlier Escape-then-retype -
-  // spliceSlashCommand's own doc comment), through the SAME
-  // textEditor.write() seam every other programmatic edit in this file
-  // uses, then closes the menu and returns focus to the field - mirrors
-  // Composer.tsx's own commit shape. This only ever INSERTS the invocation
-  // text - whether it goes on to execute as a built-in is Task 6's own
-  // submit interception, below.
-  function commitSlashCompletion(item: SlashMenuItem): void {
-    if (!slashToken) return;
-    if (item.kind !== "builtin" && item.canonicalName !== undefined) {
-      const editor = textareaRef.current;
-      if (
-        !(item.kind === "skill"
-          ? editor?.insertSkill(slashToken.start, slashToken.end, item.canonicalName)
-          : editor?.insertCommand(slashToken.start, slashToken.end, item.canonicalName))
-      )
-        return;
-      setSlashToken(null);
-      return;
-    }
-    const spliced = spliceSlashCommand(textRef.current, slashToken, item.invocation);
-    textEditor.write(spliced.text, spliced.caret);
-    setSlashToken(null);
-    textareaRef.current?.focus();
-  }
 
   // Every catalog and readiness signal this form reads - provider instances,
   // the resolved default model, the harness list, plugin previews, the slash
@@ -1038,8 +994,7 @@ function SpawnForm({
   // source id) and that hub spawns on ITS host, resolving the model, credentials
   // and plugins from its own configuration. So a controller-local "missing" is
   // not evidence a remote launch cannot succeed, and must not BLOCK it - the
-  // remote hub's own thread/start error is the authority. (Source-aware
-  // discovery needs the evener/host/request proxy, which is not in this branch.)
+  // remote hub's own thread/start error is the authority.
   const remoteLaunch = submittedSource !== "" && submittedSource !== "local";
   // The selected target's own label for the notices and disclosures that name
   // it; falls back to the raw source id only while no manifest has ever named
@@ -1092,7 +1047,7 @@ function SpawnForm({
       : resolvedDefaultModel !== ""
         ? "resolved-default"
         : "default";
-  // The model half of the host gate (component 07b review, round five): a
+  // The model half of the host gate: a
   // non-empty model belongs to the host whose catalog offered it, so it cannot
   // be submitted until the SELECTED host's model list has settled - see
   // modelHostSettled above for why settlement (not success) is the bar.
@@ -1306,10 +1261,10 @@ function SpawnForm({
     },
     [providerSetup.retry, loadModelList, setDefaultModelFallback, setModel, setStaleNotice],
   );
-  // Both path RPCs answer with a Go slice, and an EMPTY one marshals as JSON
-  // null rather than [] - a hub with no remembered projects, or a directory with
-  // no children. types.gen.ts declares `data: string[]`, so the compiler is no
-  // help here; these coalesce so a consumer counting entries never sees null.
+  // An EMPTY Go slice marshals as JSON null rather than [] - a hub with no
+  // remembered projects. types.gen.ts declares `data: string[]`, so the compiler
+  // is no help here; this coalesces so a consumer counting entries never sees
+  // null. (The launch-config store does the same for paths/complete.)
   const listRecents = useCallback(
     () => hostRequest(client, submittedSource, "evener/projects/recent", {}).then((r) => r.data ?? []),
     [client, submittedSource],
@@ -1319,8 +1274,8 @@ function SpawnForm({
   // from its own kind, so this just forwards it.
   const complete = useCallback(
     (prefix: string, includeFiles: boolean) =>
-      hostRequest(client, submittedSource, "evener/paths/complete", { prefix, includeFiles }).then((r) => r.data ?? []),
-    [client, submittedSource],
+      withLaunchConfig(submittedSource, (config) => config.completePaths(prefix, includeFiles)),
+    [submittedSource],
   );
   // Path unfolding is host-scoped (component 07b). evener/path/validate answers
   // for the filesystem of the hub it reaches, so a remote target's paths are
@@ -1340,13 +1295,12 @@ function SpawnForm({
       // `path` is the server-canonicalized spelling, which a pathList add stores
       // in place of the raw input (matching the settings-side pathList field).
       const ask = (host: string) =>
-        hostRequest(client, host, "evener/path/validate", { path, kind }).then((r) => ({
+        withLaunchConfig(host, (config) => config.validatePath(path, kind)).then((r) => ({
           valid: r.valid,
           error: r.error,
           path: r.path,
         }));
-      // A superseded host's answer must not land (component 07b review, round
-      // five): the advanced panel accepts a validation result on FIELD identity
+      // A superseded host's answer must not land: the advanced panel accepts a validation result on FIELD identity
       // alone, and a pathList add goes on its "ok" verdict, so a response issued
       // for host A could still mark - or re-add - an override after the reader
       // switched to host B, which then rides thread/start to a machine that
@@ -1361,7 +1315,7 @@ function SpawnForm({
         });
       return askSelectedHost(submittedSource);
     },
-    [client, submittedSource],
+    [submittedSource],
   );
   // Creating a folder is a WRITE, and evener/dirs/create MkdirAll's it on the
   // filesystem of the hub it reaches. A remote target's path belongs to the
@@ -1369,8 +1323,8 @@ function SpawnForm({
   // through evener/host/request (component 07b): the folder is created on the
   // machine the launch will use, never here.
   const createDirectory = useCallback(
-    (path: string) => createDir(client, path, submittedSource),
-    [client, submittedSource],
+    (path: string) => withLaunchConfig(submittedSource, (config) => config.createDirectory(path)),
+    [submittedSource],
   );
   // A path-kind value's verdict belongs to the TARGET it was judged for, but
   // the record the advanced panel keeps carries no target with it: `invalid`
@@ -1381,7 +1335,7 @@ function SpawnForm({
   // typed while local stays marked "no such file or directory" after a remote
   // source is selected, so collectAdvancedOverrides keeps dropping it from
   // launchOverrides even though the disclosure below says the selected host
-  // resolves these paths (round ten). Re-validate the stored values whenever
+  // resolves these paths. Re-validate the stored values whenever
   // the launch target changes - the first run counts, so a remount under a
   // remote target clears a flag a local era left behind - so the flag, the
   // message and the collected overrides always describe the CURRENT target.
@@ -1441,19 +1395,21 @@ function SpawnForm({
   // It is the CONTROLLER's own last accepted directory, so a remote host's
   // picker must not start there: the picker validates its opening path before
   // showing anything, and a controller path usually does not exist on the other
-  // machine, so remote browsing began by refusing a stranger's directory
-  // (component 07b review, round five). A remote picker opens from the committed
+  // machine, so remote browsing began by refusing a stranger's directory.
+  // A remote picker opens from the committed
   // cwd, or the selected host's home when there is none.
   const pickerFallbackDir = isLocalHost(submittedSource) ? getGlobalLastWorkingDir() : "";
   const resolveConfig = useCallback(
     (overrides: LaunchConfigLayer) =>
-      hostRequest(client, submittedSource, "evener/launch/resolve", {
-        cwd,
-        launchOverrides: pluginSelectionSupported
-          ? withPluginSelection(overrides, pluginSelection)
-          : withPluginSelection(overrides, { mode: "default" }),
-      }),
-    [client, submittedSource, cwd, pluginSelection, pluginSelectionSupported],
+      withLaunchConfig(submittedSource, (config) =>
+        config.resolve(
+          cwd,
+          pluginSelectionSupported
+            ? withPluginSelection(overrides, pluginSelection)
+            : withPluginSelection(overrides, { mode: "default" }),
+        ),
+      ),
+    [submittedSource, cwd, pluginSelection, pluginSelectionSupported],
   );
 
   const pluginPreview = usePluginPreview({
@@ -1518,7 +1474,7 @@ function SpawnForm({
   // nothing" and wipe a perfectly valid draft. Tracked PER CATALOG because the
   // two loads answer and fail independently: a host that answers one and
   // refuses the other still owns the half it answered, and only that half may
-  // be reconciled against it (component 07b review, round six).
+  // be reconciled against it.
   const [harnessesHostSettled, setHarnessesHostSettled] = useState<string | null>(null);
   const [schemaHostSettled, setSchemaHostSettled] = useState<string | null>(null);
   // True while the CURRENT host's answers are outstanding. A switch is pending
@@ -1587,13 +1543,12 @@ function SpawnForm({
     // only thing that may reconcile that half of the draft: an empty list read
     // as "this host offers nothing" wiped the draft's harness and every
     // Advanced-options override on one transient hub error, with nothing left
-    // for a later successful load to restore (component 07b review, round five;
-    // the rejection handlers deliberately leave the catalogs as they were, as
-    // they did before that round). A rejection is a settlement but not an
+    // for a later successful load to restore (the rejection handlers
+    // deliberately leave the catalogs as they were). A rejection is a settlement but not an
     // answer: it must release Start (a host that refuses a catalog can never
     // hold the submit hostage) and must NOT be reconciled against. The stamps
     // are per catalog so one host's refusal does not suppress reconciliation of
-    // the catalog it DID answer (round six). `active` is false once this host is
+    // the catalog it DID answer. `active` is false once this host is
     // superseded, so a previous host's late answer never certifies the current
     // one.
     const harnessesLoad = hostRequest(client, submittedSource, "evener/harnesses/list", {}).then((r) => {
@@ -1620,8 +1575,7 @@ function SpawnForm({
   }, [client, submittedSource, setPluginSelection, setKnownSelectionIssues, catalogRetryRevision]);
 
   // The draft's launch config is chosen from the SELECTED host's catalogs, and
-  // the draft store carries it across a host switch (component 07b review, round
-  // three). Left alone, a harness or Advanced-options override that exists only
+  // the draft store carries it across a host switch. Left alone, a harness or Advanced-options override that exists only
   // on the host that produced it still rides thread/start - and the mismatch is
   // invisible in the form, because an empty harness catalog falls back to the
   // "evener" label and an empty schema renders no Advanced fields at all. So
@@ -1630,7 +1584,7 @@ function SpawnForm({
   // default. Each half is gated by its OWN answer stamp, so a host that
   // answered one catalog and refused the other reconciles the half it answered
   // - and only that half, because the refusal remains no evidence about the
-  // other catalog (component 07b review, rounds five and six). The values are
+  // other catalog. The values are
   // read from the store rather than from the rendered state so this effect does
   // not re-run on its own writes.
   useEffect(() => {
@@ -1649,21 +1603,37 @@ function SpawnForm({
     // them.
     if (schemaHostSettled !== submittedSource) return;
     const offered = new Set(schemaOptions.map((option) => option.wireField));
+    // An explicit Memory choice is consent, not preference: silently dropping
+    // it on a host that never heard of the field would re-enable what the
+    // person turned off, so it survives the switch and Start is held over it
+    // instead (the memory hold by the submit button).
+    const keeps = (field: string) => offered.has(field) || field === "memoryEnabled";
     const overrides = draft.fields.getState().advancedOverrides;
-    const keptOverrides = Object.fromEntries(Object.entries(overrides).filter(([field]) => offered.has(field)));
+    const keptOverrides = Object.fromEntries(Object.entries(overrides).filter(([field]) => keeps(field)));
     if (Object.keys(keptOverrides).length !== Object.keys(overrides).length) {
       setAdvancedOverrides(keptOverrides);
     }
     const values = draft.fields.getState().advancedValues;
-    const keptValues = Object.fromEntries(Object.entries(values).filter(([field]) => offered.has(field)));
+    const keptValues = Object.fromEntries(Object.entries(values).filter(([field]) => keeps(field)));
     if (Object.keys(keptValues).length !== Object.keys(values).length) {
       setAdvancedValues(keptValues);
+    }
+    // A choice kept in the values across an unoffering host (the filters above
+    // preserve it) must ride submissions again once a host that offers the
+    // field answers: the panel re-collects overrides only on edit, so without
+    // this the toggle would show Off while the submission silently drops it.
+    if (offered.has("memoryEnabled")) {
+      const keptChoice = draft.fields.getState().advancedValues.memoryEnabled?.value;
+      const currentOverrides = draft.fields.getState().advancedOverrides;
+      if ((keptChoice === "true" || keptChoice === "false") && currentOverrides.memoryEnabled === undefined) {
+        setAdvancedOverrides({ ...currentOverrides, memoryEnabled: keptChoice === "true" });
+      }
     }
     // An error is state about a FIELD, not about the host: the error of a kept
     // field survives (it explains a validation the user still has to fix), while
     // a dropped field's error goes with the field. Clearing the whole map here
     // discarded the kept fields' errors - the fields stayed invalid with nothing
-    // left saying why (component 07b review, round four).
+    // left saying why.
     const errors = draft.fields.getState().advancedErrors;
     const keptErrors = Object.fromEntries(Object.entries(errors).filter(([field]) => offered.has(field)));
     if (Object.keys(keptErrors).length !== Object.keys(errors).length) {
@@ -1975,10 +1945,10 @@ function SpawnForm({
 
   // Retire a model this fallback installed once the target becomes remote: the
   // value describes the CONTROLLER's catalog, and forwarding it would prevent
-  // the selected host from resolving its own default (round seven). Only a
+  // the selected host from resolving its own default. Only a
   // value still equal to the one the fallback installed is cleared, so a
   // person's own choice - or a sticky draft default - is never touched. The
-  // mark is this draft's own (round eight), so another draft's identical model
+  // mark is this draft's own, so another draft's identical model
   // string is untouched, and it survives a pane remount.
   useEffect(() => {
     if (!remoteLaunch) return;
@@ -2082,7 +2052,7 @@ function SpawnForm({
     if (!harnessSupportsPluginSelection(next, harnesses)) handlePluginSelectionChange({ mode: "default" });
     // Switching to a non-evener harness always blanks the model; switching to a
     // evener-model harness only blanks a value that isn't already provider/model
-    // shaped (floor §1.10, spawn.js:395-402).
+    // shaped (floor §1.10).
     if (!harnessUsesEvenerModels(next, harnesses)) setModel("");
     else if (model !== "" && !model.includes("/")) setModel("");
   }
@@ -2183,39 +2153,8 @@ function SpawnForm({
     // Mod/Ctrl+Enter always falls through to the submit branch below even
     // with the menu open. Shift+Enter, Alt+Enter, and composing Enter keep
     // their existing behavior (newline/composition).
-    if (slashOpen) {
-      if (event.key === "ArrowDown") {
-        event.preventDefault();
-        setSlashHighlighted((i) => (i + 1) % slashItems.length);
-        return;
-      }
-      if (event.key === "ArrowUp") {
-        event.preventDefault();
-        setSlashHighlighted((i) => (i - 1 + slashItems.length) % slashItems.length);
-        return;
-      }
-      if (
-        (event.key === "Tab" && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) ||
-        (event.key === "Enter" &&
-          !event.metaKey &&
-          !event.ctrlKey &&
-          !event.shiftKey &&
-          !event.altKey &&
-          !event.nativeEvent.isComposing)
-      ) {
-        event.preventDefault();
-        event.stopPropagation();
-        const chosen = slashItems[slashActiveIndex] ?? slashItems[0];
-        if (chosen) commitSlashCompletion(chosen);
-        return;
-      }
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setSlashToken(null);
-        return;
-      }
-    }
-    // ⌘/Ctrl+Enter submits (floor §1.12, spawn.js:1204-1211).
+    if (handleSlashKeyDown(event)) return;
+    // ⌘/Ctrl+Enter submits (floor §1.12).
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
       void handleSpawn();
@@ -2265,9 +2204,7 @@ function SpawnForm({
 
   async function doSpawn(submittedPromptRevision: number, ownsLaunchView: () => boolean): Promise<void> {
     if (pluginSelectionBlocked) {
-      busyRef.current = false;
-      setBusy(false);
-      setBusyStartedAt(null);
+      finishBusy();
       return;
     }
     // Submit interception for the pre-session builtins (spawnSlashMenu's
@@ -2284,162 +2221,38 @@ function SpawnForm({
     //
     // /goal applies post-start via runSpawnBuiltinAfterStart (goal/set has no
     // processing gate - it queues behind the running turn). /model and
-    // /reasoning-effort ride thread/start as launch scalars instead: the
-    // daemon refuses thread/model/set while the first input's turn is active
-    // (Conflict "session is processing"), and the effort source reads the new
-    // thread from threadsStore, which is empty until the session pane
-    // hydrates - so neither follow-up mutation can work. Their values are
-    // pre-start validated here (there is no cheaper moment to refuse), then
-    // folded into the start call under the chips, which keeps floor §1.11
+    // /reasoning-effort ride thread/start as launch scalars instead: a
+    // post-start thread/model/set now queues behind the first turn rather
+    // than refusing, but the effort source reads the new thread from
+    // threadsStore, which is empty until the session pane hydrates - so
+    // neither follow-up mutation can work. Their values are pre-start
+    // validated here (there is no cheaper moment to refuse), then folded
+    // into the start call under the chips, which keeps floor §1.11
     // precedence (explicit slash value wins over ambient form state).
     const builtinMatch =
       pluginSelectionSupported && attachments.items.length === 0 && skillNames.length === 0 && commandNames.length === 0
         ? matchBuiltinInvocation(prompt, spawnBuiltinCommands())
         : null;
     // Launch-scalar overrides carried by a matched /model or /reasoning-effort
-    // invocation: resolved during pre-start validation below and folded into
-    // the thread/start scalars under the chips.
-    let slashScalars: { modelProvider?: string; model?: string; reasoningEffort?: string } | null = null;
-    // Bare /goal fail-closes pre-start like bare /reasoning-effort: there is
-    // no goal to clear before the session exists, so starting one just to
-    // no-op its clearing is waste, and sending the literal "/goal" as the
-    // first turn is noise.
-    if (builtinMatch && builtinMatch.command.id === "goal" && builtinMatch.argsText.trim() === "") {
-      toasts.push("error", "/goal needs a value");
-      busyRef.current = false;
-      setBusy(false);
-      setBusyStartedAt(null);
-      return;
-    }
-    if (builtinMatch && (builtinMatch.command.id === "model" || builtinMatch.command.id === "reasoning-effort")) {
-      // Pre-start validation for enum-arg builtins: there is no cheaper
-      // moment to refuse than before the session exists. Unknown value ->
-      // toast the blocked message and abort WITHOUT thread/start - AND reset
-      // the busy guard handleSpawn set above, or Start strands disabled.
-      // Empty /model means "(default)": fail-open, no override at all.
-      const value = builtinMatch.argsText.trim();
-      if (builtinMatch.command.id === "model" && value === "") {
-        // Fall through to the ordinary start below with no model override.
-      } else if (remoteLaunch) {
-        // Remote target: the selected host's own hub validates the forwarded
-        // value. This controller's catalog describes ITS providers and models
-        // - not the host's - so matching against it here would refuse a model
-        // or effort level that only the selected host supports, contradicting
-        // the host-authority model the launch already follows for cwd,
-        // providers and plugins. (Source-aware discovery needs the
-        // evener/host/request proxy, absent from this branch.) The value is
-        // forwarded verbatim: a model as "provider/model" (the split every
-        // other /model path uses), an effort level as typed. Bare /model is the
-        // "(default)" branch above and forwards no override; bare
-        // /reasoning-effort still fails closed, since an empty enum value is
-        // not a controller-catalog judgment.
-        if (value === "") {
-          toasts.push("error", "/reasoning-effort needs a value");
-          busyRef.current = false;
-          setBusy(false);
-          setBusyStartedAt(null);
-          return;
-        }
-        if (builtinMatch.command.id === "model") {
-          const { provider, model: modelId } = splitModelId(value);
-          // Unlike every other splitModelId caller, this input is RAW user text,
-          // not a provider/model catalog id that always contains a slash: "foo"
-          // splits to provider "foo" with an empty model, and the selected host
-          // ignores a provider with no model (its own model field stays empty),
-          // so the requested model would be silently dropped rather than
-          // refused. The host's own parser requires provider/model too, so
-          // refuse here with the same unknown-value message the local path
-          // uses - a clear pre-launch rejection instead of a silent no-op
-          // (round seven).
-          if (provider === "" || modelId === "") {
-            toasts.push("error", `/${builtinMatch.command.id}: unknown value "${value}"`);
-            busyRef.current = false;
-            setBusy(false);
-            setBusyStartedAt(null);
-            return;
-          }
-          slashScalars = { modelProvider: provider, model: modelId };
-        } else {
-          slashScalars = { reasoningEffort: value };
-        }
-      } else {
-        // Effort validation reads the scope-stamped catalog, not the merged
-        // display ladder: same staleness hole as /model (a value valid only
-        // in the previous scope must not validate). Only PROVEN staleness
-        // fail-closes (a stamp for another scope/loader): an unknown ladder
-        // with no stamp — never loaded, failed refresh, or an entry without
-        // ladder metadata — falls back to the fallback ladder, the pre-load
-        // status quo. Conflating "don't know" with "known empty" would
-        // refuse valid values whenever the catalog lists the model without
-        // ladder details.
-        const scopedEffortEntry =
-          effortModel === ""
-            ? undefined
-            : scopedModelCatalog?.models.find((entry) => `${entry.provider}/${entry.model}` === effortModel);
-        const scopedKnownEffortLevels = catalogEffortLevels(scopedEffortEntry);
-        // Proven staleness fail-closes to no levels — and the chip value must
-        // not re-authorize itself through `current`: effortOptionLevels
-        // appends a missing current, so resolving against the chip would
-        // validate a value the new scope never offered. Passing "" keeps the
-        // stale chip out of the candidate set (bare effort fails closed on
-        // the empty query regardless).
-        const scopedEffortLevels = modelCatalogScopeMismatch ? [] : (scopedKnownEffortLevels ?? FALLBACK_EFFORT_LEVELS);
-        const scopedEffortCurrent = modelCatalogScopeMismatch ? "" : reasoningEffort;
-        // A model value cannot be validated against a catalog that never
-        // committed for the current scope: during the ~250ms CATALOG_SETTLE_MS
-        // window after mount - or after a failed refresh - resolveSpawnModelItems
-        // resolves zero items for EVERY value, known or not, so fail-closing
-        // here toasts a spurious "unknown value" for a model the scope does
-        // offer. Treat it as "don't know" and forward the typed value as the
-        // launch scalar, letting the start call's own check decide. Only PROVEN
-        // staleness (a stamp for another scope/loader) and a scope-matched
-        // catalog that omits the value still fail closed.
-        const modelCatalogUnknown =
-          builtinMatch.command.id === "model" && scopedModelCatalog === null && !modelCatalogScopeMismatch;
-        const items =
-          builtinMatch.command.id === "model"
-            ? resolveSpawnModelItems(scopedModelCatalog)
-            : resolveSpawnEffortItems(scopedEffortLevels, scopedEffortCurrent);
-        // Bare /reasoning-effort fails CLOSED pre-start: the "" head of
-        // resolveSpawnEffortItems (the "(default)" entry) must not count as
-        // known here, so an empty effort value toasts
-        // "/reasoning-effort needs a value" and aborts without thread/start
-        // (palette parity - in-session bare /reasoning-effort errors with no
-        // side effects). Bare /model stays fail-open via the branch above.
-        const matched =
-          builtinMatch.command.id === "reasoning-effort" && value === ""
-            ? undefined
-            : findBuiltinArgument(items, builtinMatch.argsText);
-        if (!matched && !modelCatalogUnknown) {
-          const message = value
-            ? `/${builtinMatch.command.id}: unknown value "${value}"`
-            : `/${builtinMatch.command.id} needs a value`;
-          toasts.push("error", message);
-          busyRef.current = false;
-          setBusy(false);
-          setBusyStartedAt(null);
-          return;
-        }
-        if (builtinMatch.command.id === "model") {
-          // A forwarded-but-unvalidated value (modelCatalogUnknown) is RAW user
-          // text, not a provider/model catalog id: "foo" splits to provider
-          // "foo" with an empty model, and the launch would carry no model at
-          // all. Refuse the same way the remote path above does rather than
-          // silently drop the request - this is a shape check, not a catalog
-          // judgment, so it holds even while the catalog is unknown.
-          const { provider, model: modelId } = splitModelId(matched ? matched.id : value);
-          if (provider === "" || modelId === "") {
-            toasts.push("error", `/${builtinMatch.command.id}: unknown value "${value}"`);
-            busyRef.current = false;
-            setBusy(false);
-            setBusyStartedAt(null);
-            return;
-          }
-          slashScalars = { modelProvider: provider, model: modelId };
-        } else if (builtinMatch.command.id === "reasoning-effort" && matched) {
-          slashScalars = { reasoningEffort: matched.id };
-        }
+    // invocation: resolved by pre-start validation and folded into the
+    // thread/start scalars under the chips. A refusal toasts and aborts
+    // WITHOUT thread/start - and hands Start back, or it strands disabled.
+    let slashScalars: SpawnLaunchScalars | null = null;
+    if (builtinMatch) {
+      const launch = resolveSpawnBuiltinLaunch({
+        match: builtinMatch,
+        remoteLaunch,
+        scopedModelCatalog,
+        modelCatalogScopeMismatch,
+        effortModel,
+        reasoningEffort,
+      });
+      if (launch.kind === "block") {
+        toasts.push("error", spawnBuiltinBlockMessage(launch));
+        finishBusy();
+        return;
       }
+      if (launch.kind === "scalars") slashScalars = launch.scalars;
     }
     // A /model invocation at submit is an explicit model choice - bare
     // included, where it means "(default)". Record it at the entry point so a
@@ -2487,6 +2300,8 @@ function SpawnForm({
       // from the wire), so the single-host request stays identical to before
       // the host picker existed.
       source: submittedSource,
+      // Start-time role: an ordinary launch omits it entirely.
+      manager,
     });
     if (builtinMatch && builtinMatch.command.id === "goal") {
       // Post-start application runs AFTER navigation below: awaiting goal/set
@@ -2508,7 +2323,7 @@ function SpawnForm({
       harnessUsesEvenerModels: usesEvenerModels,
       // A remote launch's cwd/model describe the selected host, not this
       // controller, so they must not overwrite the global scalar defaults a
-      // later local spawn reads (round seven).
+      // later local spawn reads.
       remoteLaunch,
     });
     // Reset transient form state on success, before navigating away (floor
@@ -2530,11 +2345,20 @@ function SpawnForm({
     // function but only their OWN catch blocks ever reset it back to false,
     // so a success fell through with the button stuck disabled/"Starting…"
     // forever on a pane that can outlive the navigation below.
-    busyRef.current = false;
-    setBusy(false);
-    setBusyStartedAt(null);
+    finishBusy();
     const url = paneToURL("session", { ref });
     if (url && ownsLaunchView()) navigate(url);
+  }
+
+  // friendlyLaunchErrorMessage, not errorText: doSpawn's thread/start call can
+  // reject with AppwireClient's own "cannot call ... while state is closed"
+  // text if the client tears down mid-submit, which is internal wiring detail,
+  // never something to toast at a person - and when the hub answered but no
+  // agent daemon could be reached for cwd (the first-run worst moment, T3), the
+  // launch-check's own raw text is replaced with actionable copy instead.
+  function reportStartFailure(err: unknown): void {
+    toasts.push("error", `Start failed: ${friendlyLaunchErrorMessage(err)}`);
+    finishBusy();
   }
 
   async function handleSpawn(): Promise<void> {
@@ -2553,6 +2377,11 @@ function SpawnForm({
     // The model list is the same question asked of the same host, and it is the
     // field the harness/schema answer cannot vouch for, so it gates here too.
     if (hostCatalogPending || modelHostPending) return;
+    // A Memory Off the chosen host hasn't confirmed it can honor must never
+    // ride a submission - the older host would silently drop the field and
+    // start the session with memory on. Same reasoning as the disabled Start
+    // button; this catches the ⌘/Ctrl+Enter chord.
+    if (memoryOffHeld) return;
     if (attachments.hasPending) {
       toasts.push("error", "Image attachment is still processing.");
       return;
@@ -2562,9 +2391,7 @@ function SpawnForm({
     // item, and hubThreadStart starts a turn only for a non-empty input
     // (cmd/evener-hub/app_threadlifecycle.go), so the session is created and
     // simply waits for its first prompt in the session composer.
-    busyRef.current = true;
-    setBusy(true);
-    setBusyStartedAt(Date.now());
+    startBusy();
     const submittedPromptRevision = draft.fields.getState().promptRevision;
     const ownsLaunchView = captureLaunchView();
     try {
@@ -2576,9 +2403,7 @@ function SpawnForm({
       const outcome = await preflightDir(client, cwd, submittedSource);
       if (outcome.kind === "abort") {
         toasts.push("error", outcome.message);
-        busyRef.current = false;
-        setBusy(false);
-        setBusyStartedAt(null);
+        finishBusy();
         return;
       }
       if (outcome.kind === "offer-create") {
@@ -2589,24 +2414,12 @@ function SpawnForm({
         // in flight the two differ, and the request followed submittedSource.
         setCreateDialogPath(outcome.path);
         setCreateDialogHost(submittedSource);
-        busyRef.current = false;
-        setBusy(false);
-        setBusyStartedAt(null);
+        finishBusy();
         return;
       }
       await doSpawn(submittedPromptRevision, ownsLaunchView);
     } catch (err) {
-      // friendlyLaunchErrorMessage, not errorText: doSpawn's thread/start call
-      // can reject with AppwireClient's own "cannot call ... while state is
-      // closed" text if the client tears down mid-submit, which is internal
-      // wiring detail, never something to toast at a person - and when the
-      // hub answered but no agent daemon could be reached for cwd (the
-      // first-run worst moment, T3), the launch-check's own raw text is
-      // replaced with actionable copy instead.
-      toasts.push("error", `Start failed: ${friendlyLaunchErrorMessage(err)}`);
-      busyRef.current = false;
-      setBusy(false);
-      setBusyStartedAt(null);
+      reportStartFailure(err);
     }
   }
 
@@ -2634,31 +2447,19 @@ function SpawnForm({
     // selected host's harness/schema and model answers are still in flight, so
     // its launch config has not been reconciled against them and a submit could
     // carry a value that host does not offer. No toast: both requests always
-    // SETTLE - a refusal releases the gate too (round five) - so a click here is
+    // SETTLE - a refusal releases the gate too - so a click here is
     // held briefly, never dead-ended, and the same reasoning as handleSpawn's
     // applies (the state is already explained, and a repeating chord must not
     // stack toasts).
     if (hostCatalogPending || modelHostPending) return;
-    busyRef.current = true;
-    setBusy(true);
-    setBusyStartedAt(Date.now());
+    startBusy();
     const submittedPromptRevision = draft.fields.getState().promptRevision;
     const ownsLaunchView = captureLaunchView();
     try {
-      await createDir(client, path, submittedSource);
+      await withLaunchConfig(submittedSource, (config) => config.createDirectory(path));
       await doSpawn(submittedPromptRevision, ownsLaunchView);
     } catch (err) {
-      // friendlyLaunchErrorMessage, not errorText: doSpawn's thread/start call
-      // can reject with AppwireClient's own "cannot call ... while state is
-      // closed" text if the client tears down mid-submit, which is internal
-      // wiring detail, never something to toast at a person - and when the
-      // hub answered but no agent daemon could be reached for cwd (the
-      // first-run worst moment, T3), the launch-check's own raw text is
-      // replaced with actionable copy instead.
-      toasts.push("error", `Start failed: ${friendlyLaunchErrorMessage(err)}`);
-      busyRef.current = false;
-      setBusy(false);
-      setBusyStartedAt(null);
+      reportStartFailure(err);
     } finally {
       closeCreateDialog();
     }
@@ -2668,8 +2469,7 @@ function SpawnForm({
   // is the CONTROLLER's own browse history: it seeds this hub's pickers, local
   // ones included. A remote target's cwd belongs to the SELECTED HOST, so
   // recording it would open the next local picker at a path that usually does
-  // not exist here (Component 06b review, round eight - the picker-seed half of
-  // round seven's controller-scoped-cwd rule).
+  // not exist here.
   const commitLastWorkingDir = useCallback(
     (path: string) => {
       if (!remoteLaunch) setGlobalLastWorkingDir(path);
@@ -2681,8 +2481,47 @@ function SpawnForm({
     harnesses.length > 0
       ? harnesses.map((h) => ({ value: h.id, label: h.label }))
       : [{ value: "evener", label: "evener" }];
+  const hasSession = useHasSessionPane();
+  const memoryChoiceOff = advancedOverrides.memoryEnabled === false || advancedValues.memoryEnabled?.value === "false";
+  const memoryOfferConfirmed =
+    schemaHostSettled === submittedSource && schemaOptions.some((option) => option.wireField === "memoryEnabled");
+  // A Memory Off is consent the chosen host must be able to honor: an older
+  // host silently drops the unknown field and starts the session with memory
+  // on, so Start waits for the host's schema to confirm the field rather than
+  // trusting silence - a pending or failed answer holds, and an answer that
+  // does not name the field holds until the choice is cleared. The values half
+  // keeps the choice live after a later edit re-collects overrides against the
+  // unoffering host's schema.
+  const memoryOffHeld = memoryChoiceOff && !memoryOfferConfirmed;
+  const memoryOffUnoffered = memoryOffHeld && schemaHostSettled === submittedSource;
+  const startBlocked =
+    busy ||
+    (modelRequired && slashModelBootstrap === null) ||
+    providerRequired ||
+    pluginSelectionBlocked ||
+    hostCatalogPending ||
+    modelHostPending ||
+    memoryOffHeld;
+  const startBlockedReason =
+    !startBlocked || busy
+      ? undefined
+      : providerRequired
+        ? "Connect a provider to start."
+        : modelRequired && slashModelBootstrap === null
+          ? "Choose a model to start."
+          : explicitSelectionLoading
+            ? "Waiting for the host to answer; Start is available when it does."
+            : pluginSelectionBlocked
+              ? "Resolve the plugin selection to start."
+              : memoryOffHeld
+                ? memoryOffUnoffered
+                  ? "The chosen host can't turn memory off for this session. Clear the Memory choice to start."
+                  : "Waiting for the host to answer; Start is available when it does."
+                : hostCatalogPending || modelHostPending
+                  ? "Waiting for the host to answer; Start is available when it does."
+                  : undefined;
   return (
-    <PaneScaffold title="New session" mobileTitle="New session">
+    <PaneScaffold title="New session" mobileTitle="New session" scaffoldMarker="spawn">
       <div className={CLASS.form}>
         {staleNotice !== null && (
           <InlineNotice
@@ -2697,6 +2536,36 @@ function SpawnForm({
             }
           >
             Discarded last-used model {staleNotice} — no longer offered by this hub.
+          </InlineNotice>
+        )}
+        {memoryOffUnoffered && (
+          <InlineNotice
+            action={
+              <Button
+                variant="quiet"
+                size="sm"
+                type="button"
+                data-testid="spawn-memory-clear"
+                onClick={() => {
+                  setAdvancedValues((prev) => {
+                    if (prev.memoryEnabled === undefined) return prev;
+                    const next = { ...prev };
+                    delete next.memoryEnabled;
+                    return next;
+                  });
+                  setAdvancedOverrides((prev) => {
+                    if (prev.memoryEnabled === undefined) return prev;
+                    const next = { ...prev };
+                    delete next.memoryEnabled;
+                    return next;
+                  });
+                }}
+              >
+                Clear the Memory choice
+              </Button>
+            }
+          >
+            The chosen host can't turn memory off for this session.
           </InlineNotice>
         )}
 
@@ -2815,7 +2684,11 @@ function SpawnForm({
             data-testid="spawn-provider-prerequisite"
             action={
               <>
-                {providerSetupIsLocal && <Button onClick={openProviderSetup}>Connect provider</Button>}
+                {providerSetupIsLocal && (
+                  <Button variant="secondary" onClick={openProviderSetup}>
+                    Connect provider
+                  </Button>
+                )}
                 <Button variant="quiet" onClick={() => void providerSetup.retry()}>
                   Retry provider check
                 </Button>
@@ -3012,7 +2885,7 @@ function SpawnForm({
                 </div>
               }
               actions={
-                <Tooltip label={`Start the agent · ${chordLabel(["Mod", "Enter"])}`}>
+                <Tooltip label={startBlockedReason ?? `Start the agent · ${chordLabel(["Mod", "Enter"])}`}>
                   <Button
                     variant="primary"
                     size="xs"
@@ -3020,14 +2893,7 @@ function SpawnForm({
                     aria-label="Start"
                     icon={busy ? undefined : <SendIcon />}
                     onClick={() => void handleSpawn()}
-                    disabled={
-                      busy ||
-                      (modelRequired && slashModelBootstrap === null) ||
-                      providerRequired ||
-                      pluginSelectionBlocked ||
-                      hostCatalogPending ||
-                      modelHostPending
-                    }
+                    disabled={startBlocked}
                   >
                     {busy ? (
                       <StartingLoader startedAt={busyStartedAt ?? Date.now()} />
@@ -3040,6 +2906,11 @@ function SpawnForm({
             />
           </Dropzone>
         </div>
+        {startBlockedReason !== undefined && (
+          <p className={CLASS.startReason} data-testid="spawn-start-reason">
+            {startBlockedReason}
+          </p>
+        )}
         <InlineNotice
           data-testid="spawn-effective-access"
           data-state={resolveStatus}
@@ -3239,8 +3110,19 @@ function SpawnForm({
                 options={accessOptions}
               />
             </FormRow>
+            <Switch
+              label="Start as Manager"
+              description="The session can manage any session its hub can reach. This is a start-time property: it lasts until the session ends."
+              checked={manager}
+              onChange={setManager}
+            />
           </AdvancedOptions>
         </div>
+        {!hasSession && (
+          <div className={CLASS.chordHints} data-testid="spawn-chord-hints">
+            <ShortcutList items={CHORD_HINTS} />
+          </div>
+        )}
       </div>
 
       <ConfirmDialog

@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/auth/openai"
@@ -381,7 +382,9 @@ func TestMemoryEvalVerifierStopsRunner(t *testing.T) {
 	for _, mode := range []string{"initial-module", "initial-compile", "final-compile"} {
 		t.Run(mode, func(t *testing.T) {
 			home := memoryEvalIsolateProcess(t)
-			b := &memoryEvalAdmission{}
+			// The compiler diagnostic names this identifier, so any copy of it in
+			// the retained or published evidence proves redaction did not run.
+			b := &memoryEvalAdmission{evidenceRoot: t.TempDir(), sensitive: []string{"missingSymbol"}}
 			adapter := &memoryEvalAdapter{}
 			c, p := memoryEvalFixtureClient(t, b, adapter)
 			stages, calls := 0, 0
@@ -399,7 +402,7 @@ func TestMemoryEvalVerifierStopsRunner(t *testing.T) {
 					if mode == "final-compile" && calls == 1 {
 						return memoryEvalCall("write_file", map[string]any{"file_path": "main.go", "content": broken}), nil
 					}
-					return finalResponse("opaque-verifier-stop-707"), nil
+					return agenttest.FinalResponse("opaque-verifier-stop-707"), nil
 				}
 			})
 			if stages != 1 || runErr == nil || !errors.Is(b.terminalFailure(), runErr) || len(episodes) != 0 {
@@ -418,6 +421,43 @@ func TestMemoryEvalVerifierStopsRunner(t *testing.T) {
 			_, dispatchErr := c.Complete(context.Background(), llm.Request{Provider: "codex-jesse-at-pr", Model: "gpt-6.1-sol", Messages: []llm.Message{llm.User("opaque-refused-dispatch-708")}})
 			if !errors.Is(dispatchErr, runErr) || b.logical != before {
 				t.Fatalf("verifier terminal error lost before another dispatch: returned=%v cause=%v logical=%d want=%d", dispatchErr, runErr, b.logical, before)
+			}
+			// The failing stage's identity, reason and Go diagnostic must survive
+			// the stop, rather than dying with the stage value that was dropped.
+			stop, ok := errors.AsType[*memoryEvalVerifierStopError](runErr)
+			if !ok {
+				t.Fatalf("verifier stop did not carry its stage: %v", runErr)
+			}
+			phase := "final"
+			if strings.HasPrefix(mode, "initial-") {
+				phase = "initial"
+			}
+			if stop.Phase != phase || stop.Pair != "recall" || stop.Disabled || stop.Stage != "A" || stop.Cause == nil {
+				t.Fatalf("stop lost its identity: phase=%q pair=%q disabled=%t stage=%q cause=%v", stop.Phase, stop.Pair, stop.Disabled, stop.Stage, stop.Cause)
+			}
+			retained := stop.Evidence
+			if retained.Name != "A" || retained.Failure == "" || retained.Verifier == "" {
+				t.Fatalf("retained evidence lost identity, reason or output: name=%q failure=%q verifier=%q", retained.Name, retained.Failure, retained.Verifier)
+			}
+			if retained.Counters == "" || retained.Elapsed <= 0 {
+				t.Fatalf("retained evidence lost its chronology: counters=%q elapsed=%s", retained.Counters, retained.Elapsed)
+			}
+			raw, err := os.ReadFile(filepath.Join(b.evidenceRoot, "recall-disabled-false-A.failed.json"))
+			if err != nil {
+				t.Fatalf("failing stage evidence not published: %v", err)
+			}
+			var published struct{ Name, Failure, Verifier string }
+			if err := json.Unmarshal(raw, &published); err != nil {
+				t.Fatalf("published evidence does not decode: %v", err)
+			}
+			if published.Name != "A" || published.Failure == "" || published.Verifier == "" {
+				t.Fatalf("published evidence lost identity, reason or output: name=%q failure=%q verifier=%q", published.Name, published.Failure, published.Verifier)
+			}
+			if mode != "initial-module" {
+				// Both copies of the compiler diagnostic are redacted.
+				if strings.Contains(retained.Verifier, "missingSymbol") || strings.Contains(string(raw), "missingSymbol") || !strings.Contains(string(raw), "[redacted]") {
+					t.Fatal("retained or published evidence exposed the verifier diagnostic unredacted")
+				}
 			}
 		})
 	}
@@ -573,7 +613,7 @@ func TestMemoryEvalAdmission(t *testing.T) {
 	})
 	t.Run("complete-multiple-calls-one-round", func(t *testing.T) {
 		b := &memoryEvalAdmission{stageCap: 2, deadline: now.Add(time.Minute)}
-		response := toolCallResponse(llm.ToolCallData{ID: "1", Name: "read_file", Arguments: []byte("{}")}, llm.ToolCallData{ID: "2", Name: "read_file", Arguments: []byte("{}")})
+		response := agenttest.ToolCallResponse(llm.ToolCallData{ID: "1", Name: "read_file", Arguments: []byte("{}")}, llm.ToolCallData{ID: "2", Name: "read_file", Arguments: []byte("{}")})
 		call := b.middleware(nil).WrapComplete(func(context.Context, llm.Request) (llm.Response, error) { return response, nil })
 		if _, err := call(context.Background(), llm.Request{}); err != nil {
 			t.Fatal(err)
@@ -593,7 +633,7 @@ func TestMemoryEvalAdmission(t *testing.T) {
 	for _, finishOnly := range []bool{false, true} {
 		t.Run(fmt.Sprintf("stream-finish-only=%t", finishOnly), func(t *testing.T) {
 			b := &memoryEvalAdmission{stageCap: 2, deadline: now.Add(time.Minute)}
-			resp := toolCallResponse(llm.ToolCallData{ID: "1", Name: "read_file", Arguments: []byte("{}")}, llm.ToolCallData{ID: "2", Name: "read_file", Arguments: []byte("{}")})
+			resp := agenttest.ToolCallResponse(llm.ToolCallData{ID: "1", Name: "read_file", Arguments: []byte("{}")}, llm.ToolCallData{ID: "2", Name: "read_file", Arguments: []byte("{}")})
 			var closes atomic.Int32
 			call := b.middleware(nil).WrapStream(func(context.Context, llm.Request) (llm.Stream, error) {
 				s := llm.NewChanStream(func() { closes.Add(1) })
@@ -661,7 +701,7 @@ func TestMemoryEvalAdmission(t *testing.T) {
 
 func memoryEvalCall(name string, args map[string]any) llm.Response {
 	raw, _ := json.Marshal(args)
-	return toolCallResponse(llm.ToolCallData{ID: name, Name: name, Arguments: raw})
+	return agenttest.ToolCallResponse(llm.ToolCallData{ID: name, Name: name, Arguments: raw})
 }
 func TestMemoryEvalIsolation(t *testing.T) {
 	// Serial: HOME/XDG decoys and environment isolation are process-global.
@@ -692,7 +732,7 @@ func TestMemoryEvalIsolation(t *testing.T) {
 			b.beginStage(30, time.Now().Add(time.Minute))
 			var ioCount atomic.Int32
 			adapter := &memoryEvalAdapter{complete: func(context.Context, llm.Request) (llm.Response, error) {
-				return finalResponse("opaque-prior-617"), nil
+				return agenttest.FinalResponse("opaque-prior-617"), nil
 			}}
 			c, p := memoryEvalFixtureClient(t, b, adapter)
 			cfg := memoryEvalConfig(context.Background(), root, disabled, 30)
@@ -746,10 +786,10 @@ func TestMemoryEvalIsolation(t *testing.T) {
 					if !disabled {
 						return memoryEvalCall("memory_read", map[string]any{"scope": "personal", "file_path": "native.md"}), nil
 					}
-					return finalResponse("ordinary complete"), nil
+					return agenttest.FinalResponse("ordinary complete"), nil
 				default:
 					memoryRequireResult(t, req, "memory_read", "opaque-native-616")
-					return finalResponse("enabled complete"), nil
+					return agenttest.FinalResponse("enabled complete"), nil
 				}
 			}
 			second, err := NewSession(c, p, memoryEvalLocal(t, home, workspace, t.TempDir()), cfg)
@@ -781,7 +821,13 @@ func TestMemoryEvalIsolation(t *testing.T) {
 					if strings.Contains(d.Output, "fixture auth decoy 611") || strings.Contains(d.Output, "fixture verifier decoy 612") {
 						t.Fatal("shell leaked decoy")
 					}
-					if !strings.Contains(d.Output, "exit 1") && !strings.Contains(d.Output, "exit_code") && d.Error == "" {
+					// Any nonzero status counts: the missing-file code differs
+					// between GNU coreutils (1) and uutils coreutils (2).
+					var state struct {
+						ExitCode int `json:"exit_code"`
+					}
+					_ = json.Unmarshal(d.ToolState, &state)
+					if d.Error == "" && state.ExitCode == 0 {
 						t.Errorf("shell refusal not recorded: %+v", d)
 					}
 					denied++
@@ -985,7 +1031,7 @@ func main() {}
 		if !disabled && pair == "correction" && stage.name == "B" {
 			steps = append(steps, memoryEvalCall("memory_edit", map[string]any{"scope": "project", "file_path": "check.md", "old_string": "sh scripts/check.sh", "new_string": "sh scripts/check.sh --current", "replace_all": true}))
 		}
-		steps = append(steps, finalResponse("opaque-episode-completion-631"))
+		steps = append(steps, agenttest.FinalResponse("opaque-episode-completion-631"))
 		n := 0
 		adapter.complete = func(ctx context.Context, req llm.Request) (llm.Response, error) {
 			if n >= len(steps) {

@@ -60,6 +60,7 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/test/e2e/providers"
 )
 
 const modelID = "turncpu-model"
@@ -381,11 +382,17 @@ func run(o options) error {
 	httpServer := &http.Server{Handler: prov, ReadHeaderTimeout: 10 * time.Second}
 	go httpServer.Serve(listener) //nolint:errcheck // closed on return
 	defer httpServer.Close()      //nolint:errcheck // harness teardown
-	providers := fmt.Sprintf("default = \"fake\"\n\n[providers.fake]\nbase = \"openai-compatible\"\nbase_url = %q\napi_key = \"turncpu-not-a-secret\"\nsession_affinity_headers = true\n", "http://"+listener.Addr().String()+"/v1")
-	if o.window > 0 {
-		providers += fmt.Sprintf("context_window = %d\n", o.window)
+	providersTOML, err := providers.Render(providers.Config{
+		Name:                   "fake",
+		BaseURL:                "http://" + listener.Addr().String() + "/v1",
+		APIKey:                 "turncpu-not-a-secret",
+		SessionAffinityHeaders: true,
+		ContextWindow:          o.window,
+	})
+	if err != nil {
+		return err
 	}
-	if err := os.WriteFile(filepath.Join(configDir, "evener", "providers.toml"), []byte(providers), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(configDir, "evener", "providers.toml"), providersTOML, 0o600); err != nil {
 		return err
 	}
 

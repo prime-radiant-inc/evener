@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import type { NavigationReadParams } from "@evener/appwire-client";
 import { manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { navigationReadback } from "./navigationReadback";
 
 // The hub serves an omitted limit as the maximum for the resource's family
@@ -35,4 +35,43 @@ test.each([
 	} as ConversationClientLike;
 	await navigationReadback(client, { generation_id, targets: [target] }, () => true);
 	expect(calls).toContainEqual({ ...expectedParams, representationVersion: 3 });
+});
+
+test.each([
+	["section", { kind: "section", section: "live" } as const, { sessions: [], remaining: 0 }],
+	["pin_section", { kind: "pin_section", sectionId: "pins" } as const, { sessions: [], remaining: 0 }],
+	["catalog", { kind: "catalog", catalog: "projects" } as const, { projects: [], remaining: 0 }],
+] as const)("a %s readback rejects a page below the target's revision", async (resource, target, data) => {
+	const generation_id = "g1";
+	const calls: NavigationReadParams[] = [];
+	const client = {
+		request: async (_method: string, params: NavigationReadParams) => {
+			calls.push(params);
+			if (params.resource === "manifest") return wireSnapshot(params, manifest(), '"m"', 1, generation_id);
+			return wireSnapshot(params, data, '"r"', 1, generation_id);
+		},
+	} as ConversationClientLike;
+	await expect(
+		navigationReadback(client, { generation_id, targets: [{ ...target, revision: 5 }] }, () => true),
+	).rejects.toThrow();
+	// The read was issued and refused the stale page: no floor reader remains
+	// after it for the same target.
+	expect(calls.map((call) => call.resource)).toEqual(["manifest", resource]);
+});
+
+test("an out-of-vocabulary section target fails the read instead of returning stale data", async () => {
+	const generation_id = "g1";
+	const client = {
+		request: async (_method: string, params: NavigationReadParams) => {
+			if (params.resource === "manifest") return wireSnapshot(params, manifest(), '"m"', 1, generation_id);
+			return wireSnapshot(params, { sessions: [], remaining: 0 }, '"r"', 1, generation_id);
+		},
+	} as ConversationClientLike;
+	await expect(
+		navigationReadback(
+			client,
+			{ generation_id, targets: [{ kind: "section", section: "recent", revision: 5 }] },
+			() => true,
+		),
+	).rejects.toThrow();
 });

@@ -15,8 +15,7 @@ import (
 	"primeradiant.com/evener/agent/provenance"
 )
 
-// TestCovFinalizeWithRunNoNotification covers finalizeWithRunNoNotification
-// (jobs.go lines 1622-1624): the no-notification finalize path used by
+// TestCovFinalizeWithRunNoNotification covers finalizeWithRunNoNotification: the no-notification finalize path used by
 // complete-or-handle kept shells.
 func TestCovFinalizeWithRunNoNotification(t *testing.T) {
 	t.Parallel()
@@ -93,7 +92,7 @@ func TestCovFinalizeWithRunNoNotification_NilRun(t *testing.T) {
 	}
 }
 
-// TestCovStopChildren covers stopChildren (jobs_nested.go lines 406-432).
+// TestCovStopChildren covers stopChildren.
 func TestCovStopChildren(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -160,7 +159,7 @@ func TestCovStopChildren_NoJobManager(t *testing.T) {
 	}
 }
 
-// TestCovCreateJobOutputForID covers createJobOutputForID (jobs.go lines 641-662).
+// TestCovCreateJobOutputForID covers createJobOutputForID.
 func TestCovCreateJobOutputForID(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -201,7 +200,7 @@ func TestCovCreateJobOutputForID_BadID(t *testing.T) {
 }
 
 // TestCovValidateStructuredResultWithAddResource covers
-// validateStructuredResultWithAddResource (jobs.go lines 1842-1863):
+// validateStructuredResultWithAddResource:
 // the panic recovery, marshal error, addResource error, compile error, and
 // successful validation paths.
 func TestCovValidateStructuredResultWithAddResource(t *testing.T) {
@@ -268,7 +267,7 @@ func TestCovValidateStructuredResultWithAddResource_Panic(t *testing.T) {
 }
 
 // TestCovRearmTerminalNotificationDecision covers
-// rearmTerminalNotificationDecision (jobs.go lines 2082-2092).
+// rearmTerminalNotificationDecision.
 func TestCovRearmTerminalNotificationDecision(t *testing.T) {
 	t.Parallel()
 	sessionID := "sess_1"
@@ -336,8 +335,7 @@ func TestCovRearmTerminalNotificationDecision(t *testing.T) {
 	}
 }
 
-// TestCovArmPendingTerminalNotifications covers armPendingTerminalNotifications
-// (jobs.go lines 2094-2155).
+// TestCovArmPendingTerminalNotifications covers armPendingTerminalNotifications.
 func TestCovArmPendingTerminalNotifications(t *testing.T) {
 	t.Parallel()
 	t.Run("not armed persists pending before enqueue", func(t *testing.T) {
@@ -461,7 +459,7 @@ func TestCovReadClosedJobOutput(t *testing.T) {
 	}
 }
 
-// TestCovForwardDisabled covers forwardDisabled (jobs.go lines 2070-2074).
+// TestCovForwardDisabled covers forwardDisabled.
 func TestCovForwardDisabled(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -484,8 +482,7 @@ func TestCovForwardDisabled(t *testing.T) {
 	}
 }
 
-// TestCovTreeReservationRelease covers treeReservation.release
-// (jobs.go lines 322-329): nil receiver and double-release.
+// TestCovTreeReservationRelease covers treeReservation.release: nil receiver and double-release.
 func TestCovTreeReservationRelease(t *testing.T) {
 	t.Parallel()
 	// nil receiver — no panic.
@@ -517,8 +514,7 @@ func TestCovTreeReservationRelease(t *testing.T) {
 	}
 }
 
-// TestCovRunningJobCloseDone covers the closeDone variants
-// (jobs.go lines 344-364).
+// TestCovRunningJobCloseDone covers the closeDone variants.
 func TestCovRunningJobCloseDone(t *testing.T) {
 	t.Parallel()
 	run := &runningJob{done: make(chan struct{})}
@@ -568,7 +564,7 @@ func TestCovRunningJobCloseDoneOnce(t *testing.T) {
 	}
 }
 
-// TestCovEnqueueNotifications covers enqueueNotifications (jobs.go lines 1872-1885).
+// TestCovEnqueueNotifications covers enqueueNotifications.
 func TestCovEnqueueNotifications(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -616,8 +612,7 @@ func TestCovEnqueueNotifications(t *testing.T) {
 	}
 }
 
-// TestCovAppendStartForwardFailure covers appendStartForwardFailure
-// (jobs.go lines 1783-1802).
+// TestCovAppendStartForwardFailure covers appendStartForwardFailure.
 func TestCovAppendStartForwardFailure(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -666,8 +661,7 @@ func TestCovAppendStartForwardFailure(t *testing.T) {
 	}
 }
 
-// TestCovBoundedStructuredResult covers boundedStructuredResult
-// (jobs.go lines 1804-1834): nil value, capture-failed, schema-requested,
+// TestCovBoundedStructuredResult covers boundedStructuredResult: nil value, capture-failed, schema-requested,
 // too-large, and valid paths.
 func TestCovBoundedStructuredResult(t *testing.T) {
 	t.Parallel()
@@ -713,7 +707,7 @@ func TestCovBoundedStructuredResult(t *testing.T) {
 	}
 }
 
-// TestCovJobStopReceiptWait covers jobStopReceipt.wait (jobs.go lines 1465-1477):
+// TestCovJobStopReceiptWait covers jobStopReceipt.wait:
 // nil run and non-durable completion.
 func TestCovJobStopReceiptWait_NilRun(t *testing.T) {
 	t.Parallel()

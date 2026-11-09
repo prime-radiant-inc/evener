@@ -24,7 +24,6 @@ vi.mock("../ConnectionProvider", () => ({ useConnection: () => ({ state: "ready"
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 const ADVANCED = {
 	roundTimings: false,
@@ -41,7 +40,14 @@ const PRESET: TranscriptDisplayConfigV1 = {
 };
 const CUSTOM: TranscriptDisplayConfigV1 = {
 	version: 1,
-	content: { kind: "custom", toolIntent: true, toolCalls: false, reasoning: false, expandByDefault: false },
+	content: {
+		kind: "custom",
+		toolIntent: true,
+		toolCalls: false,
+		reasoning: false,
+		expandByDefault: false,
+		thinkingOpenByDefault: false,
+	},
 	advanced: ADVANCED,
 };
 
@@ -181,6 +187,36 @@ it("holds every row while a save is in flight", () => {
 	for (const row of rows) expect(row.props.disabled).toBe(true);
 });
 
+it("shows and composes from the retained local thinking preference", async () => {
+	const divergent: TranscriptDisplayConfigV1 = {
+		version: 1,
+		content: {
+			kind: "custom",
+			toolIntent: true,
+			toolCalls: false,
+			reasoning: false,
+			expandByDefault: false,
+			thinkingOpenByDefault: true,
+		},
+		advanced: ADVANCED,
+	};
+	// An older hub downgraded the saved preference; the phone retained it
+	// locally, and this editor must show and compose from that retained
+	// configuration - otherwise the switch reads reset and the next edit
+	// silently drops it.
+	const { tree, fake } = mount(transcript({ confirmed: { revision: 3, config: CUSTOM }, local: divergent }));
+	const switchByLabel = (label: string) =>
+		tree.root.findAll((node) => node.props?.label === label && typeof node.props?.onChange === "function")[0];
+	expect(switchByLabel("Thinking open by default")?.props.value).toBe(true);
+
+	act(() => switchByLabel("Tool calls")?.props.onChange(true));
+	expect(fake.editTranscript).toHaveBeenCalledWith(
+		expect.objectContaining({
+			content: expect.objectContaining({ thinkingOpenByDefault: true, toolCalls: true }),
+		}),
+	);
+});
+
 it("shows Custom's switches and hook events, and saves each change at once", async () => {
 	const { tree, fake } = mount(transcript({ confirmed: { revision: 3, config: CUSTOM } }));
 	const text = renderedText(tree);
@@ -190,6 +226,7 @@ it("shows Custom's switches and hook events, and saves each change at once", asy
 		"Tool calls",
 		"Reasoning",
 		"Open details by default",
+		"Thinking open by default",
 		"Timing",
 		"Token counts",
 		"Estimated cost",

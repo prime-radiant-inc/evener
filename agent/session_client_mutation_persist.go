@@ -10,11 +10,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"syscall"
 
 	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/execsupport/fsatomic"
 )
 
 const (
@@ -166,7 +166,7 @@ func saveClientMutationSnapshotFS(
 	if _, err := temp.Write(data); err != nil {
 		return false, fmt.Errorf("write temp client mutation snapshot: %w", err)
 	}
-	if err := temp.Sync(); err != nil && !clientMutationSyncUnsupported(err) {
+	if err := temp.Sync(); err != nil && !fsatomic.SyncUnsupported(err) {
 		return false, fmt.Errorf("sync temp client mutation snapshot: %w", err)
 	}
 	if err := temp.Close(); err != nil {
@@ -202,6 +202,7 @@ func newEmptyClientMutationSnapshot(sessionID string) clientMutationSnapshot {
 }
 
 type clientMutationPendingExecutionJSON struct {
+	Actor            appwire.SessionActor            `json:"actor,omitzero"`
 	ClientMutationID string                          `json:"client_mutation_id"`
 	Method           string                          `json:"method"`
 	Input            []appwire.InputItem             `json:"input,omitempty"`
@@ -270,6 +271,7 @@ func (pending clientMutationPendingExecutions) MarshalJSON() ([]byte, error) {
 	encoded := make(map[string]clientMutationPendingExecutionJSON, len(pending))
 	for id, mutation := range pending {
 		encoded[id] = clientMutationPendingExecutionJSON{
+			Actor:            mutation.Actor,
 			ClientMutationID: mutation.ClientMutationID,
 			Method:           mutation.Method,
 			Input:            mutation.Input,
@@ -307,6 +309,7 @@ func (pending *clientMutationPendingExecutions) UnmarshalJSON(data []byte) error
 			return fmt.Errorf("decode pending execution %q: %w", id, err)
 		}
 		decoded[id] = appwire.PendingMutation{
+			Actor:            stored.Actor,
 			ClientMutationID: stored.ClientMutationID,
 			Method:           stored.Method,
 			Input:            stored.Input,
@@ -418,12 +421,6 @@ func rejectTrailingClientMutationJSON(decoder *json.Decoder) error {
 		return errors.New("decode client mutation snapshot: trailing JSON value")
 	}
 	return fmt.Errorf("decode client mutation snapshot trailing data: %w", err)
-}
-
-func clientMutationSyncUnsupported(err error) bool {
-	return errors.Is(err, syscall.ENOSYS) ||
-		errors.Is(err, syscall.ENOTSUP) ||
-		errors.Is(err, syscall.EINVAL)
 }
 
 // checkRetirementReady rereads this store's committed snapshot from its primary

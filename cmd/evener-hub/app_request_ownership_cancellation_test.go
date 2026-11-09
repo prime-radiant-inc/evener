@@ -51,7 +51,7 @@ func TestHubRPCCanceledActionDoesNotWaitForExplicitResume(t *testing.T) {
 					return nil
 				}, nil))
 				server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", SourceID: "local"})
-				registerThreadHandlers(server, cfg, sources, hubRelayFunctions{}, nil)
+				registerThreadHandlers(server, cfg, sources, nil, nil)
 				params, err := json.Marshal(map[string]string{"ref": "local:" + id, "text": "fixture goal"})
 				if err != nil {
 					t.Fatal(err)
@@ -152,7 +152,7 @@ func TestHubRPCForkCanceledAliasWaitReleasesAcquiredPrefix(t *testing.T) {
 			}},
 		}
 		server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", SourceID: "local"})
-		registerThreadHandlers(server, cfg, newHubSourceRegistry(cfg), hubRelayFunctions{}, nil)
+		registerThreadHandlers(server, cfg, newHubSourceRegistry(cfg), nil, nil)
 		params, err := json.Marshal(appwire.ThreadForkParams{Ref: "local:" + alias, SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input"})
 		if err != nil {
 			t.Fatal(err)

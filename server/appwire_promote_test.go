@@ -30,7 +30,7 @@ func newPromoteTestServer(t *testing.T, processing bool) (*Server, *int) {
 	if processing {
 		state = "active"
 	}
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: state})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: state})
 	called := 0
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
 		Promote: func(appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
@@ -52,7 +52,7 @@ func TestServerAppWireTurnPromoteQueuedAsSteerDispatchesIndex(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(true)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "active"})
 	gotIndex := -1
 	var gotExpectedID string
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
@@ -107,7 +107,7 @@ func TestServerAppWireTurnPromoteQueuedAsSteerUnavailableWithoutFunc(t *testing.
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(true)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "active"})
 	conn := srv.AppServer().NewConnection("test")
 	resp := promoteRPC(conn, 2, appwire.TurnPromoteQueuedAsSteerParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "th_1", ExpectedEntryID: "test-entry", Ref: "local:th_1", Index: 0})
 	if resp.Kind() != appwire.MessageError {
@@ -126,7 +126,7 @@ func TestServerAppWireTurnPromoteQueuedAsSteerPropagatesSessionError(t *testing.
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(true)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "active"})
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
 		Promote: func(appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
 			return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.Conflict("promote: queue index 3 out of range (depth 1)")
@@ -169,7 +169,7 @@ func TestServerAppWireTurnPromoteQueuedAsSteerThroughSession(t *testing.T) {
 	}
 
 	for _, msg := range []string{"alpha", "bravo"} {
-		if err := sess.Enqueue(context.Background(), msg); err != nil {
+		if err := enqueueText(sess, msg); err != nil {
 			t.Fatalf("Enqueue %s: %v", msg, err)
 		}
 	}
@@ -194,7 +194,7 @@ func TestServerAppWireTurnPromoteQueuedAsSteerThroughSession(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", sess.ID())
 	srv.SetProcessing(true)
-	srv.SetStatus(StatusInfo{SessionID: sess.ID(), State: "active"})
+	seedStatus(srv, StatusInfo{SessionID: sess.ID(), State: "active"})
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
 		Promote: sess.AcceptClientMutationPromoteQueuedAsSteer,
 	})
@@ -236,18 +236,11 @@ func TestServerAppWireTurnPromoteQueuedAsSteerThroughSession(t *testing.T) {
 
 	// The promote is a compare-and-commit against the DURABLE queue as it is
 	// when the request lands, so the ids it names must come from that same
-	// queue. sess.QueueIDs() is not it: that reads the mirror s.inputQueue,
-	// which reflectDurableInputQueue rewrites after the store commit, under a
-	// different lock, and skips entirely when the revision has not advanced. So
-	// the mirror can still read [alpha bravo] while the durable queue the
-	// promote will compare against is already [bravo] -- which is precisely how
-	// this test used to report "expected error, got 3" with every other
-	// assertion looking intact (kata n1zs). ClientMutationProjection reads the
-	// snapshot promote reads.
+	// queue. ClientMutationProjection reads the snapshot promote reads.
 	durable, _ := sess.ClientMutationProjection()
 	if len(durable.IDs) != 2 || durable.IDs[0] != ids[0] || durable.IDs[1] != ids[1] {
-		t.Fatalf("the durable queue moved between the read and the promote: durable=%#v published=%#v mirror=%#v; the promote below would compare against a queue this case never described",
-			durable.IDs, ids, sess.QueueIDs())
+		t.Fatalf("the durable queue moved between the read and the promote: durable=%#v published=%#v; the promote below would compare against a queue this case never described",
+			durable.IDs, ids)
 	}
 
 	// Review F1: a promote naming the WRONG entry id (a stale snapshot) is a
@@ -255,16 +248,16 @@ func TestServerAppWireTurnPromoteQueuedAsSteerThroughSession(t *testing.T) {
 	mismatch := promoteRPC(conn, 3, appwire.TurnPromoteQueuedAsSteerParams{ClientMutationID: "promote-mismatch", ExpectedInstanceID: sess.ID(), Ref: "local:" + sess.ID(), Index: 0, ExpectedEntryID: durable.IDs[1]})
 	if mismatch.Kind() != appwire.MessageError {
 		after, _ := sess.ClientMutationProjection()
-		t.Fatalf("mismatch promote: expected error, got %v. The promote named index 0 with %q, which is entry 1 of %#v -- for that to be accepted the durable queue had to move under it, and it now reads %#v (mirror %#v)",
-			mismatch.Kind(), durable.IDs[1], ids, after.IDs, sess.QueueIDs())
+		t.Fatalf("mismatch promote: expected error, got %v. The promote named index 0 with %q, which is entry 1 of %#v -- for that to be accepted the durable queue had to move under it, and it now reads %#v",
+			mismatch.Kind(), durable.IDs[1], ids, after.IDs)
 	}
 	if mismatch.Error.Error.Code != appwire.CodeConflict {
 		t.Fatalf("mismatch error=%+v, want Conflict", mismatch.Error.Error)
 	}
-	if preview := sess.QueuePreview(); len(preview) != 2 {
+	if preview := queuePreview(sess); len(preview) != 2 {
 		t.Fatalf("QueuePreview after mismatch: got %#v, want both entries intact", preview)
 	}
-	if steering := sess.SteeringQueueSnapshot(); len(steering) != 0 {
+	if steering := steeringInputs(sess); len(steering) != 0 {
 		t.Fatalf("steering queue after mismatch: got %+v, want empty", steering)
 	}
 
@@ -272,11 +265,11 @@ func TestServerAppWireTurnPromoteQueuedAsSteerThroughSession(t *testing.T) {
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v error=%+v", resp.Kind(), resp.Error)
 	}
-	if preview := sess.QueuePreview(); len(preview) != 1 || preview[0] != "bravo" {
+	if preview := queuePreview(sess); len(preview) != 1 || preview[0] != "bravo" {
 		t.Fatalf("QueuePreview after promote: got %#v, want [bravo]", preview)
 	}
-	steering := sess.SteeringQueueSnapshot()
-	if len(steering) != 1 || steering[0].Text != "alpha" {
+	steering := steeringInputs(sess)
+	if len(steering) != 1 || len(steering[0]) != 1 || steering[0][0].Text != "alpha" {
 		t.Fatalf("steering queue after promote: got %+v, want [alpha]", steering)
 	}
 	cancel()
@@ -291,12 +284,8 @@ func TestServerAppWireTurnPromoteQueuedAsSteerThroughSession(t *testing.T) {
 // entries. A poll, not a sleep: the condition is what the caller needs, and a
 // fixed delay is either too short under load or wasted when it is not.
 //
-// It reads ClientMutationProjection, not sess.QueueIDs(). QueueIDs reads the
-// mirror s.inputQueue (agent/session_queue.go), which reflectDurableInputQueue
-// rewrites after the store commit and under a different lock -- so a barrier
-// built on it can pass while the durable queue every mutation compares against
-// is in a different state, which is the whole failure mode the caller is
-// guarding against.
+// It reads ClientMutationProjection: the durable queue is what every mutation
+// compares against.
 func waitForQueueDepth(t *testing.T, sess *agent.Session, want int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -307,7 +296,7 @@ func waitForQueueDepth(t *testing.T, sess *agent.Session, want int) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("durable queue depth = %d, want %d (mirror reads %#v)", got, want, sess.QueueIDs())
+			t.Fatalf("durable queue depth = %d, want %d", got, want)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}

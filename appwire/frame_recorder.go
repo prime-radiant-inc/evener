@@ -7,11 +7,11 @@ import (
 	"sync"
 
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/envvars/userdirs"
 )
 
 var (
 	marshalRecordedFrame = json.Marshal
-	frameRecorderHomeDir = os.UserHomeDir
 )
 
 // FrameRecorder appends every AppWire WebSocket frame that crosses a transport
@@ -80,23 +80,13 @@ func newEnvFrameRecorder() *FrameRecorder {
 	if !envvars.RecorderEnabled(envvars.EVENERRecordAppwire) {
 		return nil
 	}
-	rec, err := NewFrameRecorder(filepath.Join(recorderStateRoot(), "appwire-frames.jsonl"))
+	root, err := userdirs.DefaultStateRoot()
+	if err != nil {
+		return nil // recording is best-effort; with no state root there is nowhere to write
+	}
+	rec, err := NewFrameRecorder(filepath.Join(root, "appwire-frames.jsonl"))
 	if err != nil {
 		return nil // recording is best-effort; never block startup on it
 	}
 	return rec
-}
-
-// recorderStateRoot mirrors cmdutil.DefaultStateRoot ($XDG_STATE_HOME/evener,
-// else ~/.local/state/evener, else ./.local/state/evener). It is duplicated
-// here only to keep appwire — a low-level wire-codec package — free of a
-// dependency on the cmd helper layer.
-func recorderStateRoot() string {
-	if base := envvars.XDGStateHome.Getenv(); base != "" {
-		return filepath.Join(base, "evener")
-	}
-	if home, err := frameRecorderHomeDir(); err == nil {
-		return filepath.Join(home, ".local", "state", "evener")
-	}
-	return filepath.Join(".local", "state", "evener")
 }

@@ -83,7 +83,7 @@ func TestPreCommitHookRoutesStagedFilesToTheirOwnTreesBiome(t *testing.T) {
 	installStubBiome(t, repo, "mobile-native", log)
 	installStubBiome(t, repo, "cmd/evener-hub/frontend", log)
 	stageFile(t, repo, "mobile-native/src/a b.ts", "a\n")
-	stageFile(t, repo, "mobile/src/m.tsx", "m\n")
+	stageFile(t, repo, "mobile-native/src/conversation/m.tsx", "m\n")
 	stageFile(t, repo, "cmd/evener-hub/frontend/src/w.ts", "w\n")
 	stageFile(t, repo, "appwire-client/typescript/c.ts", "c\n")
 	stageFile(t, repo, "docs/outside.ts", "outside\n")
@@ -92,12 +92,12 @@ func TestPreCommitHookRoutesStagedFilesToTheirOwnTreesBiome(t *testing.T) {
 	runIn(t, repo, "git", "commit", "-q", "-m", "x")
 
 	for path, want := range map[string]string{
-		"mobile-native/src/a b.ts":         "a\n// formatted\n",
-		"mobile/src/m.tsx":                 "m\n// formatted\n",
-		"cmd/evener-hub/frontend/src/w.ts": "w\n// formatted\n",
-		"appwire-client/typescript/c.ts":   "c\n// formatted\n",
-		"docs/outside.ts":                  "outside\n",
-		"mobile-native/src/notes.md":       "notes\n",
+		"mobile-native/src/a b.ts":             "a\n// formatted\n",
+		"mobile-native/src/conversation/m.tsx": "m\n// formatted\n",
+		"cmd/evener-hub/frontend/src/w.ts":     "w\n// formatted\n",
+		"appwire-client/typescript/c.ts":       "c\n// formatted\n",
+		"docs/outside.ts":                      "outside\n",
+		"mobile-native/src/notes.md":           "notes\n",
 	} {
 		if got := committedContent(t, repo, path); got != want {
 			t.Errorf("committed %s = %q, want %q", path, got, want)
@@ -118,7 +118,7 @@ func TestPreCommitHookRoutesStagedFilesToTheirOwnTreesBiome(t *testing.T) {
 	if !strings.Contains(web, "/cmd/evener-hub/frontend check --write --linter-enabled=false ") {
 		t.Errorf("frontend Biome not run from its own directory with check --write: %s", web)
 	}
-	for _, want := range []string{"mobile-native/src/a b.ts", "mobile/src/m.tsx"} {
+	for _, want := range []string{"mobile-native/src/a b.ts", "mobile-native/src/conversation/m.tsx"} {
 		if !strings.Contains(native, want) {
 			t.Errorf("mobile-native Biome was not handed %s: %s", want, native)
 		}

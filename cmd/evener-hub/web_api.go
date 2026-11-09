@@ -58,45 +58,16 @@ func statusForWireError(wire appwire.WireError, fallback int) int {
 }
 
 func evenerErrorInfoFromData(data any) string {
-	switch v := data.(type) {
-	case appwire.ErrorData:
-		return string(v.EvenerErrorInfo)
-	case map[string]any:
-		if info, ok := v["evenerErrorInfo"].(string); ok {
-			return info
-		}
-	}
-	return ""
+	decoded, _ := appwire.DecodedErrorData(data)
+	return string(decoded.EvenerErrorInfo)
 }
 
-// clientMutationIDFromData reads the clientMutationId out of a WireError's Data.
-// The wire client decodes Data as the typed appwire.ErrorData on some paths and
-// as map[string]any on others, so both shapes are read — the convention
-// evenerErrorInfoFromData follows. ErrorData is also embedded in
-// HostFieldErrorData and LifecycleErrorData, which a plain type switch cannot
-// see through, so any other shape is re-marshaled into the typed form rather
-// than asserted — the convention app_retirement_resume.go's
-// isLifecycleRetiringError follows. Callers decide what an empty id means.
+// clientMutationIDFromData reads the clientMutationId out of a WireError's
+// Data, in whichever shape the wire client decoded it. Callers decide what an
+// empty id means.
 func clientMutationIDFromData(data any) string {
-	switch v := data.(type) {
-	case appwire.ErrorData:
-		return v.ClientMutationID
-	case map[string]any:
-		id, _ := v["clientMutationId"].(string)
-		return id
-	}
-	if data == nil {
-		return ""
-	}
-	raw, err := json.Marshal(data)
-	if err != nil {
-		return ""
-	}
-	var typed appwire.ErrorData
-	if json.Unmarshal(raw, &typed) != nil {
-		return ""
-	}
-	return typed.ClientMutationID
+	decoded, _ := appwire.DecodedErrorData(data)
+	return decoded.ClientMutationID
 }
 
 func (s *WebServer) handleAPIHealth(w http.ResponseWriter, r *http.Request) {
