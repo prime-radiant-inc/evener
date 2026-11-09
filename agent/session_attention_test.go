@@ -3991,7 +3991,7 @@ func TestRootDelegateAttention_FailedConsumptionRemainsPendingAndRearms(t *testi
 	default:
 		t.Fatal("initial root attention wake absent")
 	}
-	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err == nil || !strings.Contains(err.Error(), "injected root attention resolution sync failure") {
+	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); !errors.Is(err, errInjectedRootAttentionResolutionSyncFailure) {
 		t.Fatalf("first root attention turn error = %v, want injected resolution failure", err)
 	}
 	fold, err := readDelegateAttentionFold(transcriptPath(stateDir, root.ID()), root.ID())
@@ -4577,6 +4577,8 @@ type rootAttentionResolutionFailFS struct {
 	failed   int
 }
 
+var errInjectedRootAttentionResolutionSyncFailure = errors.New("injected root attention resolution sync failure")
+
 func (fs *rootAttentionResolutionFailFS) Create(name string) (afero.File, error) {
 	file, err := fs.Fs.Create(name)
 	if err != nil {
@@ -4618,7 +4620,7 @@ func (file *rootAttentionResolutionFailFile) Sync() error {
 	}
 	file.fs.mu.Unlock()
 	if fail {
-		return errors.New("injected root attention resolution sync failure")
+		return errInjectedRootAttentionResolutionSyncFailure
 	}
 	return file.File.Sync()
 }

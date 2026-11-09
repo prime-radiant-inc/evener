@@ -989,14 +989,24 @@ func untrackStopLocked[K comparable, V any](c *delegateTreeController, pick func
 // captured is still work in flight. A retryable admission is deferred delivery:
 // its acknowledgement append failed, so it is re-planned rather than completed,
 // and it must not hold a recovery-required generation's finish (or the stop's
-// own completion) open. An admission no longer present has settled.
+// own completion) open — UNLESS its sender is outside the stopped subtree.
+// Completing the stop discards the pending delivery only for its own members;
+// an outside sender keeps the receipt, and the retry timer is the only thing
+// left that can acknowledge the report. An admission no longer present has
+// settled.
 func (c *delegateTreeController) stopHasInFlightDeliveriesLocked(stop *delegateStopState) bool {
 	if stop == nil {
 		return false
 	}
 	for token := range stop.deliveries {
 		receipt := c.deliveries[token.processID]
-		if receipt != nil && receipt.token == token && !receipt.retryable {
+		if receipt == nil || receipt.token != token {
+			continue
+		}
+		if !receipt.retryable {
+			return true
+		}
+		if _, covered := stop.members[receipt.delegateID]; !covered {
 			return true
 		}
 	}

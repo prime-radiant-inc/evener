@@ -603,10 +603,11 @@ func TestUntrackStopLockedEachStopMap(t *testing.T) {
 	})
 }
 
-// A retryable delivery admission is deferred delivery, not work in flight: its
-// acknowledgement append failed, so it is re-planned. A covering stop must not
-// wait for it. An admission that is still present and not retryable does gate
-// the stop, and one already settled does not.
+// A retryable delivery admission is deferred delivery: its acknowledgement
+// append failed, so it is re-planned. The completing stop discards it only
+// when its sender is inside stop.members; an outside sender keeps the receipt,
+// so it still gates the stop. An admission that is still present and not
+// retryable does gate the stop, and one already settled does not.
 func TestStopHasInFlightDeliveriesLocked(t *testing.T) {
 	t.Parallel()
 	token := delegateDeliveryToken{processID: 7, deliveryID: "dlg_1/delivery/1"}
@@ -620,8 +621,14 @@ func TestStopHasInFlightDeliveriesLocked(t *testing.T) {
 		t.Fatal("an in-flight admission did not gate the stop")
 	}
 	c.deliveries[token.processID].retryable = true
+	c.deliveries[token.processID].delegateID = "dlg_outside"
+	if !c.stopHasInFlightDeliveriesLocked(stop) {
+		t.Fatal("a retryable admission from outside the stopped subtree did not gate the stop")
+	}
+	stop.members = map[string]struct{}{"dlg_inside": {}}
+	c.deliveries[token.processID].delegateID = "dlg_inside"
 	if c.stopHasInFlightDeliveriesLocked(stop) {
-		t.Fatal("a retryable admission gated the stop")
+		t.Fatal("a retryable admission the completing stop discards gated the stop")
 	}
 }
 
