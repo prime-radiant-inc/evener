@@ -221,6 +221,8 @@ func continueLiveTranscriptWindowOwned(
 			return canonicalizeTranscriptItemCandidates(source, read.Thread, candidates)
 		}
 	}
+	fitParams := params
+	options.StructuredFollowUpParams = &fitParams
 	packed, err := packThreadTurnsWindowItemCandidates(candidates, func(response appwire.ThreadTurnsListResponse) (appwire.ThreadTurnsListResponse, error) {
 		return response, nil
 	}, options)
@@ -278,6 +280,11 @@ func (l *compatibilityTranscriptWindowLoader) load(ctx context.Context, selector
 			if err != nil {
 				return transcriptWindowLoadedRange{}, err
 			}
+			// The legacy page conversion reports only positioned candidates, so a
+			// selected but empty turn disappears without its shell and recovery
+			// metadata. Stamp the resolved selection back onto the result before
+			// the packer decides what it served.
+			result = normalizeTranscriptWindowLoadedResult(result, selectedRead.Thread)
 			result.Identity = l.identity
 			result.History = l.history
 			result.Exhausted = true

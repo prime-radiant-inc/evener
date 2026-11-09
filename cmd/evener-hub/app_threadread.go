@@ -273,6 +273,8 @@ func pastThreadTurnsListOwned(
 		if configureWindow != nil {
 			configureWindow(&options)
 		}
+		fitParams := params
+		options.StructuredFollowUpParams = &fitParams
 		packed, err := packThreadTurnsWindowItemCandidates(candidates, func(response appwire.ThreadTurnsListResponse) (appwire.ThreadTurnsListResponse, error) {
 			stampPastTurnCosts(pastEntryCost(cfg, entry), response.Data)
 			return response, nil
@@ -377,6 +379,8 @@ func pastEntryItemReadResponseOwned(
 			if configureWindow != nil {
 				configureWindow(&options)
 			}
+			fitParams := transcriptTurnsListParamsFromRead(params)
+			options.StructuredFollowUpParams = &fitParams
 			return packThreadReadWindowItemCandidates(candidates, func(response appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error) {
 				thread.Turns = response.Thread.Turns
 				stampPastTurnCosts(pastEntryCost(cfg, entry), thread.Turns)

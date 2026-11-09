@@ -52,13 +52,19 @@ type transcriptWindowContinuation struct {
 // the content packer. Both read response wrappers pass this same shape into the
 // one generic packItemCandidates implementation.
 type transcriptWindowPackOptions struct {
-	Params                 appwire.ThreadWindowParams
-	ItemLimit              int
-	AppliedBy              string
-	CanonicalizeCandidates func([]appitempaging.TranscriptItemCandidate) ([]appitempaging.TranscriptItemCandidate, error)
-	MintFetchCursor        func(appitempaging.TranscriptItemCandidate) (string, error)
-	RetainFetchItem        func(string, appwire.ThreadItem) error
-	MintContinuationCursor func(transcriptWindowContinuation) (string, error)
+	Params    appwire.ThreadWindowParams
+	ItemLimit int
+	AppliedBy string
+	// StructuredFollowUpParams, when set, makes the packer reserve room for the
+	// thread/turns response envelope: a windowed page can be served as a turns
+	// page, whose per-turn and page-level cursors each add a recovery follow-up.
+	// The content budget alone cannot see those follow-ups, so a page whose
+	// content fits can still overflow the Manager response cap.
+	StructuredFollowUpParams *appwire.ThreadTurnsListParams
+	CanonicalizeCandidates   func([]appitempaging.TranscriptItemCandidate) ([]appitempaging.TranscriptItemCandidate, error)
+	MintFetchCursor          func(appitempaging.TranscriptItemCandidate) (string, error)
+	RetainFetchItem          func(string, appwire.ThreadItem) error
+	MintContinuationCursor   func(transcriptWindowContinuation) (string, error)
 }
 
 const (
@@ -107,6 +113,41 @@ func transcriptWindowOptionsFor(
 func transcriptWindowCursorIdentity(identity appitempaging.CursorIdentity, params appwire.ThreadWindowParams, itemLimit int) appitempaging.CursorIdentity {
 	identity.Incarnation = params.ViewIncarnation(identity.Incarnation, itemLimit)
 	return identity
+}
+
+// transcriptTurnsListParamsFromRead projects a thread/read request into the
+// thread/turns request a page consumer holds. A windowed read page is also a
+// turns page, because turns serves its first page from read, so measuring that
+// consumer's envelope keeps the read packer from serving a page the turns
+// operation cannot return.
+func transcriptTurnsListParamsFromRead(params appwire.ThreadReadParams) appwire.ThreadTurnsListParams {
+	return appwire.ThreadTurnsListParams{
+		ThreadContentParams: params.ThreadContentParams,
+		ThreadID:            params.ThreadID,
+		Ref:                 params.Ref,
+		ItemsView:           params.ItemsView,
+		ItemLimit:           params.ItemLimit,
+		ThreadWindowParams:  params.ThreadWindowParams,
+	}
+}
+
+// transcriptWindowStructuredPageFits reports whether a packed page, sent as a
+// thread/turns response with its recovery follow-ups, stays inside the Manager
+// response cap. The fixed envelope margin covers the actor and response shell; a
+// follow-up repeats the request shape for every cursor-bearing turn and can grow
+// past that margin on a page whose content alone fits.
+func transcriptWindowStructuredPageFits(
+	page appwire.ThreadTurnsListResponse,
+	params appwire.ThreadTurnsListParams,
+) (bool, error) {
+	encoded, err := json.Marshal(appwire.SessionOperationResponse{
+		Turns:     &page,
+		FollowUps: transcriptReadFollowUps(params, page),
+	})
+	if err != nil {
+		return false, fmt.Errorf("marshal transcript window page: %w", err)
+	}
+	return len(encoded) <= transcriptWindowMaximumContentBudget, nil
 }
 
 // spendTranscriptWindowCursor selects the remaining candidates from the same
@@ -319,28 +360,35 @@ func setTranscriptWindowContinuationProof(
 	resumeStart int,
 	resumeEnd int,
 ) error {
-	boundary, err := transcriptWindowBoundaryCandidate(turns, boundaryStart, boundaryEnd)
-	if err != nil {
-		boundary, err = transcriptWindowBoundaryCandidate(turns, resumeStart, resumeEnd)
-	}
-	if err == nil {
-		continuation.AnchorTurnID = boundary.TurnID
-		continuation.Position = boundary.Position
-		continuation.Version = boundary.Item.Version
-		return nil
-	}
-
 	remaining := transcriptItemCandidateResult{}
 	for _, turn := range turns[resumeStart:resumeEnd] {
 		remaining.TurnIDs = append(remaining.TurnIDs, turn.turn.ID)
 		remaining.TurnShells = append(remaining.TurnShells, turn.turn)
 		remaining.Candidates.Candidates = append(remaining.Candidates.Candidates, turn.candidates...)
 	}
-	digest, err := emptyTranscriptWindowDigest(remaining)
+	// A resumed range with no positioned item has no version to fence, so its
+	// proof is a digest of the shells it will replay. Anchoring a served-side
+	// item instead would leave those shells unvalidated: a changed shell, or a
+	// newly positioned item inside one, would replay as if nothing moved.
+	if len(remaining.Candidates.Candidates) == 0 {
+		digest, err := emptyTranscriptWindowDigest(remaining)
+		if err != nil {
+			return err
+		}
+		continuation.EmptyRangeDigest = digest
+		return nil
+	}
+
+	boundary, err := transcriptWindowBoundaryCandidate(turns, boundaryStart, boundaryEnd)
+	if err != nil {
+		boundary, err = transcriptWindowBoundaryCandidate(turns, resumeStart, resumeEnd)
+	}
 	if err != nil {
 		return err
 	}
-	continuation.EmptyRangeDigest = digest
+	continuation.AnchorTurnID = boundary.TurnID
+	continuation.Position = boundary.Position
+	continuation.Version = boundary.Item.Version
 	return nil
 }
 
@@ -590,7 +638,13 @@ func packThreadReadItemCandidatesWithOptions(
 			Thread:      appwire.Thread{Turns: turns},
 			OlderCursor: olderCursor,
 		}
-	}, func(response appwire.ThreadReadResponse) []appwire.Turn { return response.Thread.Turns }, func(response appwire.ThreadReadResponse, window *appwire.ThreadWindowResult) appwire.ThreadReadResponse {
+	}, func(response appwire.ThreadReadResponse) []appwire.Turn { return response.Thread.Turns }, func(response appwire.ThreadReadResponse) appwire.ThreadTurnsListResponse {
+		return appwire.ThreadTurnsListResponse{
+			Data: response.Thread.Turns, NextCursor: response.OlderCursor, Window: response.Window,
+			BootGeneration: response.BootGeneration, Epoch: response.Epoch, Snapshot: response.Snapshot,
+			Authoritative: response.Authoritative,
+		}
+	}, func(response appwire.ThreadReadResponse, window *appwire.ThreadWindowResult) appwire.ThreadReadResponse {
 		response.Window = window
 		return response
 	}, options)
@@ -633,7 +687,9 @@ func packThreadTurnsItemCandidatesWithOptions(
 			Data:       turns,
 			NextCursor: olderCursor,
 		}
-	}, func(response appwire.ThreadTurnsListResponse) []appwire.Turn { return response.Data }, func(response appwire.ThreadTurnsListResponse, window *appwire.ThreadWindowResult) appwire.ThreadTurnsListResponse {
+	}, func(response appwire.ThreadTurnsListResponse) []appwire.Turn { return response.Data }, func(response appwire.ThreadTurnsListResponse) appwire.ThreadTurnsListResponse {
+		return response
+	}, func(response appwire.ThreadTurnsListResponse, window *appwire.ThreadWindowResult) appwire.ThreadTurnsListResponse {
 		response.Window = window
 		return response
 	}, options)
@@ -659,6 +715,10 @@ func packItemCandidates[T any](
 	// must not drive the decision, or every window of a delegate-heavy session
 	// strips to a single item.
 	contentTurns func(T) []appwire.Turn,
+	// page projects the response into the thread/turns page a consumer of the
+	// same bytes receives, so the packer can measure that consumer's complete
+	// envelope (its recovery follow-ups included) before serving a page.
+	page func(T) appwire.ThreadTurnsListResponse,
 	setWindow func(T, *appwire.ThreadWindowResult) T,
 	options packItemCandidatesOptions,
 ) (T, error) {
@@ -982,7 +1042,15 @@ func packItemCandidates[T any](
 			if marshalErr != nil {
 				return zero, fmt.Errorf("marshal transcript window turns: %w", marshalErr)
 			}
-			if len(encoded) <= effectiveBudget || end-start == 1 {
+			contentFits := len(encoded) <= effectiveBudget
+			structuredFits := true
+			if contentFits && windowOptions.StructuredFollowUpParams != nil {
+				structuredFits, marshalErr = transcriptWindowStructuredPageFits(page(response), *windowOptions.StructuredFollowUpParams)
+				if marshalErr != nil {
+					return zero, marshalErr
+				}
+			}
+			if (contentFits && structuredFits) || end-start == 1 {
 				return response, nil
 			}
 			if direction == transcriptWindowContinuationForward {

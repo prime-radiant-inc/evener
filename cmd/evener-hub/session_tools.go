@@ -1274,20 +1274,25 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 				}
 				pack := func(candidates transcriptItemCandidateResult, enrich func(appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error)) (appwire.ThreadReadResponse, error) {
 					if params.TurnWindow != nil {
+						var options transcriptWindowPackOptions
 						if hubCompatibility {
-							return packThreadReadWindowItemCandidates(candidates, enrich, o.canonicalWindowOptions(
+							options = o.canonicalWindowOptions(
 								source, resp.Thread, candidates, params.ThreadWindowParams, itemLimit,
 								transcriptWindowAppliedByHubCompat, appitempaging.FetchCursorOriginHubCompat,
-							))
+							)
+						} else {
+							fetchOrigin := appitempaging.FetchCursorOriginServingDaemon
+							if _, remote := source.(*appsource.RemoteHubSource); remote {
+								fetchOrigin = appitempaging.FetchCursorOriginRemoteSource
+							}
+							options = o.canonicalWindowOptions(
+								source, resp.Thread, candidates, params.ThreadWindowParams, itemLimit,
+								transcriptWindowAppliedByServingDaemon, fetchOrigin,
+							)
 						}
-						fetchOrigin := appitempaging.FetchCursorOriginServingDaemon
-						if _, remote := source.(*appsource.RemoteHubSource); remote {
-							fetchOrigin = appitempaging.FetchCursorOriginRemoteSource
-						}
-						return packThreadReadWindowItemCandidates(candidates, enrich, o.canonicalWindowOptions(
-							source, resp.Thread, candidates, params.ThreadWindowParams, itemLimit,
-							transcriptWindowAppliedByServingDaemon, fetchOrigin,
-						))
+						fitParams := transcriptTurnsListParamsFromRead(params)
+						options.StructuredFollowUpParams = &fitParams
+						return packThreadReadWindowItemCandidates(candidates, enrich, options)
 					}
 					return packThreadReadItemCandidates(candidates, enrich, itemLimit)
 				}

@@ -255,6 +255,64 @@ func TestSessionOperationsExactWindowPreservesEmptyCheckpointTurn(t *testing.T) 
 	}
 }
 
+func TestSessionOperationsCompatibilityWindowPreservesPagedEmptyTurn(t *testing.T) {
+	position := appwire.ThreadItemPosition{Entry: 2}
+	newest := appwire.Turn{
+		ID: "turn-c", Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFull,
+		Items: []appwire.ThreadItem{{
+			ID: "message-c", Type: "agentMessage", TurnID: "turn-c", TranscriptKey: "message-c",
+			Text: "newest", Position: &position, Version: 1,
+		}},
+	}
+	empty := appwire.Turn{ID: "turn-b", Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFragment, Version: 1}
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleThreadHistory(daemon.Router(), func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		if params.TurnWindow != nil {
+			t.Fatalf("older daemon received turn window: %+v", params.TurnWindow)
+		}
+		return appwire.ThreadReadResponse{
+			Thread: appwire.Thread{
+				ID: "compat-empty", SessionID: "compat-empty", Evener: appwire.EvenerThread{Ref: params.Ref},
+				Turns: []appwire.Turn{newest},
+			},
+			OlderCursor: "older", Snapshot: &appwire.SnapshotIdentity{Incarnation: "compat-empty-incarnation", Length: 2},
+		}, nil
+	}, func(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+		if params.Cursor != "older" || params.TurnWindow != nil {
+			t.Fatalf("older daemon page params = %+v", params)
+		}
+		return appwire.ThreadTurnsListResponse{Data: []appwire.Turn{empty}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		return []appsource.LocalDaemonEntry{{
+			Entry: rendezvous.Entry{
+				Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"), SourceID: "local",
+				ThreadID: "compat-empty", SessionID: "compat-empty", WorkspaceRef: "local:compat-empty",
+			},
+			CapabilitiesKnown: true,
+		}}
+	}, http.DefaultClient)
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	operations := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
+
+	response, err := operations.Invoke(t.Context(), appwire.ManagerView{Ref: "local:manager", Manager: true}, appwire.SessionOperationRequest{
+		Turns: &appwire.ThreadTurnsListParams{
+			Ref: "local:compat-empty", TurnWindow: &appwire.ThreadTurnWindow{Latest: 2}, ItemTypes: []string{"messages"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Turns == nil || !slices.Equal(turnIDsFromTurns(response.Turns.Data), []string{"turn-b", "turn-c"}) {
+		t.Fatalf("compatibility window = %+v, want empty turn-b then positioned turn-c", response.Turns)
+	}
+}
+
 func TestManagerTurnsPublishesPerTurnElisionFollowUp(t *testing.T) {
 	items := make([]appwire.ThreadItem, 12)
 	for i := range items {
@@ -323,6 +381,75 @@ func TestManagerTurnsPublishesPerTurnElisionFollowUp(t *testing.T) {
 	if !reflect.DeepEqual(response.FollowUps, wantFollowUps) {
 		t.Fatalf("per-turn recovery = %+v, want %+v", response.FollowUps, wantFollowUps)
 	}
+}
+
+func TestManagerTurnsFitsStructuredFollowUpsWithinResponseCap(t *testing.T) {
+	const turnCount = 250
+	turns := make([]appwire.Turn, turnCount)
+	wantTurnIDs := make([]string, turnCount)
+	for turnIndex := range turns {
+		turnID := fmt.Sprintf("turn-%03d", turnIndex)
+		wantTurnIDs[turnIndex] = turnID
+		items := make([]appwire.ThreadItem, 2)
+		for itemIndex := range items {
+			position := appwire.ThreadItemPosition{Entry: uint64(turnIndex*len(items) + itemIndex + 1)}
+			items[itemIndex] = appwire.ThreadItem{
+				ID: fmt.Sprintf("message-%03d-%d", turnIndex, itemIndex), Type: "agentMessage", TurnID: turnID,
+				TranscriptKey: fmt.Sprintf("message-%03d-%d", turnIndex, itemIndex), Text: "visible",
+				Position: &position, Version: 1,
+			}
+		}
+		turns[turnIndex] = appwire.Turn{
+			ID: turnID, Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFull, Items: items,
+		}
+	}
+	operations, _ := newMovingWindowOperations(t, turns)
+	caller := appwire.ManagerView{Ref: "local:manager", Manager: true}
+	params := appwire.ThreadTurnsListParams{
+		Ref: "local:moving", ItemLimit: 1,
+		TurnWindow: &appwire.ThreadTurnWindow{Latest: turnCount}, ItemTypes: []string{"messages"},
+	}
+
+	var gotTurnIDs []string
+	for pageCount := 0; pageCount <= turnCount; pageCount++ {
+		response, err := operations.Invoke(t.Context(), caller, appwire.SessionOperationRequest{Turns: &params})
+		if err != nil {
+			t.Fatalf("read page %d: %v", pageCount, err)
+		}
+		encoded, err := json.Marshal(response)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(encoded) > managerReadMaxJSONBytes {
+			t.Fatalf("page %d encoded to %d bytes, cap %d", pageCount, len(encoded), managerReadMaxJSONBytes)
+		}
+		if response.Turns == nil || len(response.Turns.Data) == 0 {
+			t.Fatalf("page %d returned no turns", pageCount)
+		}
+		followUps := make(map[string]bool, len(response.FollowUps))
+		for _, followUp := range response.FollowUps {
+			followUps[followUp.Arguments.Hub.Cursor] = true
+		}
+		pageTurnIDs := make([]string, len(response.Turns.Data))
+		for index, turn := range response.Turns.Data {
+			pageTurnIDs[index] = turn.ID
+			if turn.Elision == nil || turn.Elision.ContinuationCursor == "" || !followUps[turn.Elision.ContinuationCursor] {
+				t.Fatalf("page %d turn %q recovery = %+v, follow-ups %+v", pageCount, turn.ID, turn.Elision, response.FollowUps)
+			}
+		}
+		gotTurnIDs = append(pageTurnIDs, gotTurnIDs...)
+		params.Cursor = ""
+		if response.Turns.Window != nil {
+			params.Cursor = response.Turns.Window.ContinuationCursor
+		}
+		if params.Cursor == "" {
+			if !slices.Equal(gotTurnIDs, wantTurnIDs) {
+				t.Fatalf("continued turns = %v, want every selected turn once in order", gotTurnIDs)
+			}
+			return
+		}
+	}
+	t.Fatal("structured-follow-up continuation did not terminate")
 }
 
 func TestSessionOperationsFetchesServingDaemonItem(t *testing.T) {
@@ -759,6 +886,76 @@ func TestSessionOperationsContinuesAllEmptyBudgetWindow(t *testing.T) {
 			}
 			if len(page.Data) != 0 {
 				t.Fatalf("mutated all-empty continuation returned %d turns", len(page.Data))
+			}
+		})
+	}
+}
+
+func TestSessionOperationsDigestsEmptyResumedRangeBeforePositionedSuffix(t *testing.T) {
+	const emptyCount = 200
+	original := make([]appwire.Turn, 0, emptyCount+1)
+	for index := range emptyCount {
+		original = append(original, appwire.Turn{
+			ID: fmt.Sprintf("turn-empty-%03d", index), Status: strings.Repeat("settled-", 16),
+			ItemsView: appwire.TurnItemsViewFragment, Version: uint64(index + 1),
+		})
+	}
+	position := appwire.ThreadItemPosition{Entry: 1_000}
+	positioned := testResolverTurn("turn-positioned", "item-positioned", 1)
+	positioned.Items[0].Position = &position
+	positioned.Items[0].Text = strings.Repeat("visible-", 1_000)
+	original = append(original, positioned)
+	operations, source := newMovingWindowOperations(t, cloneTranscriptTurnShells(original))
+	params := appwire.ThreadTurnsListParams{
+		Ref: "local:moving", TurnWindow: &appwire.ThreadTurnWindow{Latest: len(original)}, WindowBudgetBytes: 1,
+	}
+
+	initial, err := operations.turns(t.Context(), params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initial.Window == nil || initial.Window.ContinuationCursor == "" {
+		t.Fatalf("mixed empty-prefix window = %+v, want continuation", initial)
+	}
+	cursor, _, _, err := appitempaging.DecodeWindowCursorForRef(initial.Window.ContinuationCursor, params.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cursor.EmptyRangeDigest == "" || cursor.AnchorTurnID != "" {
+		t.Fatalf("mixed empty-prefix proof = %+v, want digest only", cursor)
+	}
+	continuedParams := params
+	continuedParams.Cursor = initial.Window.ContinuationCursor
+	continued, err := operations.turns(t.Context(), continuedParams)
+	if err != nil || len(continued.Data) == 0 {
+		t.Fatalf("unchanged mixed continuation = %+v, error %v", continued, err)
+	}
+
+	resumeTurns := testResolveTurnWindow(original, *cursor.ResumeWindow)
+	if len(resumeTurns) == 0 {
+		t.Fatal("mixed continuation resume range is empty")
+	}
+	resumeStart := slices.IndexFunc(original, func(turn appwire.Turn) bool { return turn.ID == resumeTurns[0].ID })
+	mutations := map[string]func([]appwire.Turn){
+		"change shell": func(turns []appwire.Turn) {
+			turns[resumeStart].Status += "changed"
+		},
+		"add positioned item": func(turns []appwire.Turn) {
+			insertedPosition := appwire.ThreadItemPosition{Entry: 1}
+			turns[resumeStart].ItemsView = appwire.TurnItemsViewFull
+			turns[resumeStart].Items = []appwire.ThreadItem{{
+				ID: "inserted", Type: "agentMessage", TurnID: turns[resumeStart].ID, TranscriptKey: "inserted",
+				Text: "inserted", Position: &insertedPosition, Version: 1,
+			}}
+		},
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			source.turns = cloneTranscriptTurnShells(original)
+			mutate(source.turns)
+			page, err := operations.turns(t.Context(), continuedParams)
+			if !errors.Is(err, appwire.TranscriptItemCursorStale()) || len(page.Data) != 0 {
+				t.Fatalf("mutated mixed continuation = %+v, error %v; want stale with no content", page, err)
 			}
 		})
 	}
