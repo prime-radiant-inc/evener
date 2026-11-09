@@ -389,14 +389,14 @@ func npmConfigCacheFor(env []string, policy ResolvedPolicy, workingDir, home str
 			global = filepath.Join(prefix, "etc", "npmrc")
 		}
 	}
-	roots, ok := readNpmrcCacheRootsEnv(user, lookup, home)
+	roots, ok := readNpmrcCacheRootsEnv(user, lookup, home, policy)
 	if !ok {
 		return "", false
 	}
 	if len(roots) > 0 {
 		return roots[len(roots)-1], true
 	}
-	roots, ok = readNpmrcCacheRootsEnv(global, lookup, home)
+	roots, ok = readNpmrcCacheRootsEnv(global, lookup, home, policy)
 	if !ok {
 		return "", false
 	}
@@ -516,6 +516,18 @@ func goEnvFileMasked(policy ResolvedPolicy, path string) bool {
 		return masked
 	})
 	return masked
+}
+
+// npmConfigFileHidden reports whether the spawn cannot see the npm config at
+// path: under a mask at any step of resolving it, or, outside Seatbelt,
+// spelled in or linked through bwrap's private /tmp or /dev. A config the
+// spawn cannot read must be unknown, not absent: npm falls through to the
+// defaults the floor may not serve, so its cache must be redirected.
+func npmConfigFileHidden(policy ResolvedPolicy, path string) bool {
+	if policy.Backend != BackendSeatbelt && (inPrivateMount(path) || linksThroughPrivateMount(path)) {
+		return true
+	}
+	return goEnvFileMasked(policy, path)
 }
 
 // underAMask reports whether p lies at or under a masked path, by its spelling

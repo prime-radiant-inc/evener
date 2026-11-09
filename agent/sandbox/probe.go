@@ -546,12 +546,16 @@ func npmrcHostLookup(host HostFacts) func(string) string {
 // non-blocking reader still refuses a FIFO, device, or oversized file. ok is
 // false when the effective cache cannot be resolved safely: a refusal, a
 // nonempty relative filename (npm resolves it against its own working
-// directory), or an unresolvable ~. npm may still read a cache from the file,
-// so it is unknown, not absent.
-func readNpmrcCacheRootsEnv(path string, lookup func(string) string, home string) ([]string, bool) {
+// directory), an unresolvable ~, or a file the spawn cannot see (a mask, or
+// bwrap's private /tmp and /dev). npm may still read a cache from the file, so
+// it is unknown, not absent.
+func readNpmrcCacheRootsEnv(path string, lookup func(string) string, home string, policy ResolvedPolicy) ([]string, bool) {
 	resolved, readable, absent := npmConfigFilePath(path, lookup, home)
 	if !readable {
 		return nil, absent
+	}
+	if npmConfigFileHidden(policy, resolved) {
+		return nil, false
 	}
 	f, err := openGoEnvFile(resolved)
 	if err != nil {

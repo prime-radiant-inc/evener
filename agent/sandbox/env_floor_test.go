@@ -298,6 +298,40 @@ func TestEnvFloorRedirectsARelativeUserNpmrcCache(t *testing.T) {
 	assertNpmCacheRedirectedInDir(t, policy, env, worktree, scratch)
 }
 
+// A user .npmrc hidden behind bwrap's private /tmp is not a served cache: npm
+// never reads the host file, so it falls back to its default ~/.npm, which this
+// overlay does not serve. The floor must treat the hidden config as unknown and
+// redirect to the session scratch.
+func TestEnvFloorRedirectsAHiddenUserNpmrcCache(t *testing.T) {
+	scratch := "/tmp/evener-session-xyz"
+	home := servedHome(t)
+	served := filepath.Join(overlayFixtureDir(t), "served-npm")
+	if err := os.MkdirAll(served, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configDir, err := os.MkdirTemp("/tmp", "evener-hidden-npmrc-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(configDir) })
+	config := filepath.Join(configDir, "ci.npmrc")
+	if err := os.WriteFile(config, []byte("cache="+served+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	worktree := overlayFixtureDir(t)
+	policy := ResolvedPolicy{
+		Backend:       BackendBwrap,
+		Mode:          ModeWorkspaceWrite,
+		CacheStrategy: CacheOverlay,
+		CacheRoots:    []string{served},
+		resolveHost:   HostFacts{Home: home},
+		Git:           GitLayout{WorktreeRoot: worktree},
+		SessionDir:    worktree,
+	}
+	env := []string{"HOME=" + home, "npm_config_userconfig=" + config}
+	assertNpmCacheRedirectedInDir(t, policy, env, worktree, scratch)
+}
+
 // npm expands ${NAME} and a leading ~ in a configured user/global config
 // filename before reading it. The floor must follow the same path: a literal
 // ~/.npmrc naming a served cache is not unknown, and an absolute filename whose
