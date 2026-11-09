@@ -419,3 +419,90 @@ func TestResumeRosterDoubleCheckReturnsProjectIdentity(t *testing.T) {
 	}
 	assertThreadProject(t, response.Thread, want)
 }
+
+// clearProjectSource answers the capability read and thread/clear with the
+// replacement thread a daemon returns.
+type clearProjectSource struct {
+	*scriptedAppSource
+	cleared appwire.Thread
+}
+
+func (s *clearProjectSource) ClearThread(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
+	return appwire.ThreadClearResponse{Thread: s.cleared}, nil
+}
+
+// TestThreadClearReturnsProjectIdentity covers the thread/clear response,
+// which applied hub capabilities to the response thread but never the hub
+// project projection, so a client treating the response as its updated row
+// lost the project key (#5842). A remote thread keeps the identity its own
+// hub computed.
+func TestThreadClearReturnsProjectIdentity(t *testing.T) {
+	t.Run("local thread gains the hub project identity", func(t *testing.T) {
+		workingDir := t.TempDir()
+		want := wantProject(t, workingDir)
+		live := liveProjectThread("th_clear_project", workingDir)
+		live.Evener.Capabilities.Clear = true
+		cleared := live
+		sources := appsource.NewRegistry()
+		sources.Add(&clearProjectSource{
+			scriptedAppSource: &scriptedAppSource{id: appwire.LocalSourceID, thread: live},
+			cleared:           cleared,
+		})
+
+		response, err := clearThreadControl(context.Background(), hubcore.WebConfig{}, sources, appwire.ThreadClearParams{
+			Ref: "local:th_clear_project", ClientMutationID: "clear-project", ExpectedInstanceID: "th_clear_project",
+		})
+		if err != nil {
+			t.Fatalf("clearThreadControl: %v", err)
+		}
+		assertThreadProject(t, response.Thread, want)
+	})
+
+	t.Run("remote thread keeps its own identity", func(t *testing.T) {
+		live := liveProjectThread("th_remote_clear", t.TempDir())
+		live.Source = "host"
+		live.Evener.Ref = "host:th_remote_clear"
+		live.Evener.Capabilities.Clear = true
+		live.ProjectID = "remote-project-id"
+		live.ProjectPath = "/remote/repo"
+		cleared := live
+		sources := appsource.NewRegistry()
+		sources.Add(&clearProjectSource{
+			scriptedAppSource: &scriptedAppSource{id: "host", thread: live},
+			cleared:           cleared,
+		})
+
+		response, err := clearThreadControl(context.Background(), hubcore.WebConfig{}, sources, appwire.ThreadClearParams{
+			Ref: "host:th_remote_clear", ClientMutationID: "clear-remote-project", ExpectedInstanceID: "th_remote_clear",
+		})
+		if err != nil {
+			t.Fatalf("clearThreadControl: %v", err)
+		}
+		if response.Thread.ProjectID != "remote-project-id" || response.Thread.ProjectPath != "/remote/repo" {
+			t.Fatalf("remote project identity = (%q, %q), want the remote hub's own identity",
+				response.Thread.ProjectID, response.Thread.ProjectPath)
+		}
+	})
+}
+
+// TestHubRPCThreadClearReturnsProjectIdentity proves the same projection over
+// the real appwire socket path, not just the handler.
+func TestHubRPCThreadClearReturnsProjectIdentity(t *testing.T) {
+	workingDir := t.TempDir()
+	want := wantProject(t, workingDir)
+	live := liveProjectThread("th_rpc_clear_project", workingDir)
+	live.Evener.Capabilities.Clear = true
+	cleared := live
+	srv := newWebSourceTestServer(t, &clearProjectSource{
+		scriptedAppSource: &scriptedAppSource{id: appwire.LocalSourceID, thread: live},
+		cleared:           cleared,
+	})
+	client := dialHubRPCInitialized(t, srv)
+	response, err := client.ThreadClear(context.Background(), appwire.ThreadClearParams{
+		Ref: "local:th_rpc_clear_project", ClientMutationID: "clear-rpc-project", ExpectedInstanceID: "th_rpc_clear_project",
+	})
+	if err != nil {
+		t.Fatalf("ThreadClear: %v", err)
+	}
+	assertThreadProject(t, response.Thread, want)
+}
