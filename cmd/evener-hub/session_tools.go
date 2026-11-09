@@ -911,13 +911,6 @@ func compatibilityItemCandidateResultForRead(
 	return sourceItemCandidateResultForRead(ctx, source, params, response)
 }
 
-func compatibilityLatestTurns(turns []appwire.Turn, latest int) []appwire.Turn {
-	if latest >= len(turns) {
-		return turns
-	}
-	return turns[len(turns)-latest:]
-}
-
 func (o *sessionOperations) Read(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 	// An ordinary thread/read retains its default downstream subscription when
 	// the source hands off a live relay. Internal Manager snapshot reads call
@@ -1161,12 +1154,25 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		}
 	}
 	resp := read.response
+	var compatibilityCandidates *transcriptItemCandidateResult
 	if remoteSavedWindowAttempt && resp.Window == nil {
 		read.finish(false)
 		return appwire.ThreadReadResponse{}, appwire.WindowUnsupportedOnDaemon()
 	}
 	if hubCompatibility {
-		resp.Thread.Turns = compatibilityLatestTurns(resp.Thread.Turns, params.TurnWindow.Latest)
+		loader, loadErr := newCompatibilityTranscriptWindowLoader(ctx, source, params, resp)
+		if loadErr != nil {
+			read.finish(false)
+			return appwire.ThreadReadResponse{}, loadErr
+		}
+		loaded, loadErr := loader.load(ctx, params.TurnWindow)
+		if loadErr != nil {
+			read.finish(false)
+			return appwire.ThreadReadResponse{}, loadErr
+		}
+		resp.Thread = loaded.Thread
+		resp.OlderCursor = ""
+		compatibilityCandidates = &loaded.Result
 	}
 	liveItemCandidatesEmpty := false
 	if params.IncludeTurns {
@@ -1233,7 +1239,9 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 			} else {
 				var candidates transcriptItemCandidateResult
 				var candidateErr error
-				if hubCompatibility {
+				if compatibilityCandidates != nil {
+					candidates = *compatibilityCandidates
+				} else if hubCompatibility {
 					candidates, candidateErr = compatibilityItemCandidateResultForRead(ctx, source, params, resp)
 				} else {
 					candidates, candidateErr = sourceItemCandidateResultForRead(ctx, source, params, resp)

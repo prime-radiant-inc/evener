@@ -160,15 +160,9 @@ func continueLiveTranscriptWindowOwned(
 	var candidates transcriptItemCandidateResult
 	var read appwire.ThreadReadResponse
 	if hubCompatibility {
-		windowCursor, _, cursorDirection, decodeErr := appitempaging.DecodeWindowCursorForRef(params.Cursor, params.Ref)
-		if decodeErr != nil {
-			return appwire.ThreadTurnsListResponse{}, decodeErr
-		}
-		windowParams := params.ThreadWindowParams
-		windowParams.TurnWindow = windowCursor.ResumeWindow
 		readParams := appwire.ThreadReadParams{
 			Ref: params.Ref, ThreadID: params.ThreadID, IncludeTurns: true, ItemLimit: itemLimit,
-			ThreadWindowParams: windowParams,
+			ThreadWindowParams: params.ThreadWindowParams,
 		}
 		sourceParams := readParams
 		sourceParams.ThreadWindowParams = appwire.ThreadWindowParams{}
@@ -177,14 +171,16 @@ func continueLiveTranscriptWindowOwned(
 		if err != nil {
 			return appwire.ThreadTurnsListResponse{}, err
 		}
-		candidates, err = compatibilityItemCandidateResultForRead(ctx, source, readParams, read)
-		if err != nil {
-			return appwire.ThreadTurnsListResponse{}, err
+		loader, loadErr := newCompatibilityTranscriptWindowLoader(ctx, source, readParams, read)
+		if loadErr != nil {
+			return appwire.ThreadTurnsListResponse{}, loadErr
 		}
-		candidates, err = continueHubCompatibilityTranscriptWindow(ctx, source, params, readParams, itemLimit, read, candidates, windowCursor, cursorDirection)
-		if err != nil {
-			return appwire.ThreadTurnsListResponse{}, err
+		loaded, _, resolveErr := resolveTranscriptWindowContinuation(ctx, params, itemLimit, loader.load)
+		if resolveErr != nil {
+			return appwire.ThreadTurnsListResponse{}, resolveErr
 		}
+		candidates = loaded.Result
+		read.Thread = loaded.Thread
 	} else {
 		loaded, _, resolveErr := resolveTranscriptWindowContinuation(ctx, params, itemLimit, func(ctx context.Context, selector *appwire.ThreadTurnWindow) (transcriptWindowLoadedRange, error) {
 			windowParams := params.ThreadWindowParams
@@ -234,84 +230,110 @@ func continueLiveTranscriptWindowOwned(
 	return candidates.History.StampPage(packed), nil
 }
 
-// continueHubCompatibilityTranscriptWindow resolves a window cursor through
-// the older daemon's bounded legacy pages. The Spec 2 fields remain hub local
-// on every hop.
-func continueHubCompatibilityTranscriptWindow(
-	ctx context.Context,
-	source appsource.Source,
-	params appwire.ThreadTurnsListParams,
-	readParams appwire.ThreadReadParams,
-	itemLimit int,
-	read appwire.ThreadReadResponse,
-	result transcriptItemCandidateResult,
-	windowCursor appitempaging.WindowCursor,
-	direction appitempaging.WindowCursorDirection,
-) (transcriptItemCandidateResult, error) {
-	identity := transcriptWindowCursorIdentity(result.Identity, params.ThreadWindowParams, itemLimit)
-	boundaryCursor, err := appitempaging.DecodeWindowCursor(params.Cursor, identity, direction)
-	if err != nil {
-		return transcriptItemCandidateResult{}, err
-	}
-
-	turns := append([]appwire.Turn(nil), read.Thread.Turns...)
-	cursor := read.OlderCursor
-	seen := make(map[string]bool)
-	for range hubCompatFetchPageLimit {
-		selected, resolved := compatibilityResolveTurnWindow(turns, windowCursor.ResumeWindow, cursor == "")
-		if resolved {
-			selectedRead := read
-			selectedRead.Thread.Turns = selected
-			selectedRead.OlderCursor = ""
-			continued, err := itemCandidateResultFromReadResponse(selectedRead)
-			if err != nil {
-				return transcriptItemCandidateResult{}, err
-			}
-			continued, err = appendReadOverlayCandidates(continued, selectedRead)
-			if err != nil {
-				return transcriptItemCandidateResult{}, err
-			}
-			continued.Identity = result.Identity
-			continued.History = result.History
-			continued.Exhausted = cursor == ""
-			if direction == appitempaging.WindowCursorDirectionBackward {
-				boundaryTurns, found := compatibilityResolveTurnWindow(turns, &appwire.ThreadTurnWindow{
-					Turn: windowCursor.ResumeWindow.Before.TurnID,
-				}, true)
-				if !found {
-					return transcriptItemCandidateResult{}, appwire.TranscriptItemCursorStale()
-				}
-				candidates, err := appitempaging.CandidatesFromTurns(boundaryTurns)
-				if err != nil {
-					return transcriptItemCandidateResult{}, err
-				}
-				if err := appitempaging.ValidateWindowCursorBoundary(candidates, boundaryCursor); err != nil {
-					return transcriptItemCandidateResult{}, err
-				}
-				return continued, nil
-			}
-			return spendTranscriptWindowCursor(continued, params.ThreadWindowParams, itemLimit, params.Cursor)
-		}
-		if cursor == "" || seen[cursor] {
-			return transcriptItemCandidateResult{}, appwire.TranscriptItemCursorStale()
-		}
-		seen[cursor] = true
-		page, err := source.ListTurns(ctx, appwire.ThreadTurnsListParams{
-			Ref: params.Ref, ThreadID: params.ThreadID, Cursor: cursor,
-			ItemsView: params.ItemsView, ItemLimit: appwire.TranscriptItemPageLimit,
-		})
-		if err != nil {
-			return transcriptItemCandidateResult{}, err
-		}
-		turns = append(append([]appwire.Turn(nil), page.Data...), turns...)
-		cursor = page.NextCursor
-	}
-	return transcriptItemCandidateResult{}, appwire.TranscriptItemCursorStale()
+type compatibilityTranscriptWindowLoader struct {
+	source     appsource.Source
+	readParams appwire.ThreadReadParams
+	read       appwire.ThreadReadResponse
+	identity   appitempaging.CursorIdentity
+	history    appsource.HistoryIdentity
+	turns      []appwire.Turn
+	cursor     string
+	seen       map[string]bool
+	pageCalls  int
 }
 
-func compatibilityResolveTurnWindow(turns []appwire.Turn, window *appwire.ThreadTurnWindow, exhausted bool) ([]appwire.Turn, bool) {
+func newCompatibilityTranscriptWindowLoader(
+	ctx context.Context,
+	source appsource.Source,
+	readParams appwire.ThreadReadParams,
+	read appwire.ThreadReadResponse,
+) (*compatibilityTranscriptWindowLoader, error) {
+	result, err := compatibilityItemCandidateResultForRead(ctx, source, readParams, read)
+	if err != nil {
+		return nil, err
+	}
+	return &compatibilityTranscriptWindowLoader{
+		source: source, readParams: readParams, read: read,
+		identity: result.Identity, history: result.History,
+		turns: append([]appwire.Turn(nil), read.Thread.Turns...), cursor: read.OlderCursor,
+		seen: make(map[string]bool),
+	}, nil
+}
+
+func (l *compatibilityTranscriptWindowLoader) load(ctx context.Context, selector *appwire.ThreadTurnWindow) (transcriptWindowLoadedRange, error) {
+	for {
+		selected, resolved := resolveCompatibilityTurnWindow(l.turns, selector, l.cursor == "")
+		if resolved {
+			selectedRead := l.read
+			selectedRead.Thread.Turns = selected
+			selectedRead.OlderCursor = ""
+			selectedIDs := make(map[string]bool, len(selected))
+			for _, turn := range selected {
+				selectedIDs[turn.ID] = true
+			}
+			selectedRead.Overlay = slices.DeleteFunc(slices.Clone(selectedRead.Overlay), func(item appwire.OverlayItem) bool {
+				return !selectedIDs[item.TurnID]
+			})
+			result, err := compatibilityItemCandidateResultForRead(ctx, l.source, l.readParams, selectedRead)
+			if err != nil {
+				return transcriptWindowLoadedRange{}, err
+			}
+			result.Identity = l.identity
+			result.History = l.history
+			result.Exhausted = true
+			return transcriptWindowLoadedRange{Result: result, Thread: selectedRead.Thread}, nil
+		}
+		if l.cursor == "" || l.seen[l.cursor] || l.pageCalls >= hubCompatFetchPageLimit {
+			return transcriptWindowLoadedRange{}, appwire.TranscriptItemCursorStale()
+		}
+		l.seen[l.cursor] = true
+		page, err := l.source.ListTurns(ctx, appwire.ThreadTurnsListParams{
+			Ref: l.readParams.Ref, ThreadID: l.readParams.ThreadID, Cursor: l.cursor,
+			ItemsView: l.readParams.ItemsView, ItemLimit: appwire.TranscriptItemPageLimit,
+		})
+		l.pageCalls++
+		if err != nil {
+			return transcriptWindowLoadedRange{}, err
+		}
+		l.turns = append(append([]appwire.Turn(nil), page.Data...), l.turns...)
+		l.cursor = page.NextCursor
+	}
+}
+
+func resolveCompatibilityTurnWindow(turns []appwire.Turn, window *appwire.ThreadTurnWindow, exhausted bool) ([]appwire.Turn, bool) {
 	if window == nil {
 		return nil, false
+	}
+	type turnRun struct {
+		id         string
+		start, end int
+	}
+	runs := make([]turnRun, 0, len(turns))
+	for i := range turns {
+		if turns[i].ID != "" && len(runs) > 0 && runs[len(runs)-1].id == turns[i].ID {
+			runs[len(runs)-1].end = i + 1
+			continue
+		}
+		runs = append(runs, turnRun{id: turns[i].ID, start: i, end: i + 1})
+	}
+	selectRuns := func(start, end int) ([]appwire.Turn, bool) {
+		if start < 0 || start > end || end > len(runs) {
+			return nil, false
+		}
+		if start == end {
+			return []appwire.Turn{}, true
+		}
+		first := runs[start].start
+		if first == 0 && turns[first].HasEarlierItems && !exhausted {
+			return nil, false
+		}
+		return turns[first:runs[end-1].end], true
+	}
+	if window.Latest > 0 {
+		if len(runs) < window.Latest && !exhausted {
+			return nil, false
+		}
+		return selectRuns(max(0, len(runs)-window.Latest), len(runs))
 	}
 	boundaryID := window.Turn
 	if boundaryID == "" {
@@ -320,21 +342,27 @@ func compatibilityResolveTurnWindow(turns []appwire.Turn, window *appwire.Thread
 	if boundaryID == "" && window.Before != nil {
 		boundaryID = window.Before.TurnID
 	}
-	index := slices.IndexFunc(turns, func(turn appwire.Turn) bool { return turn.ID == boundaryID })
-	if index < 0 {
+	boundary := -1
+	for i := range runs {
+		if runs[i].id == boundaryID {
+			boundary = i
+			break
+		}
+	}
+	if boundary < 0 {
 		return nil, false
 	}
 	if window.Turn != "" {
-		return turns[index : index+1], true
+		return selectRuns(boundary, boundary+1)
 	}
 	if window.Since != "" {
-		return turns[index+1 : min(len(turns), index+1+window.Limit)], true
+		return selectRuns(boundary+1, min(len(runs), boundary+1+window.Limit))
 	}
-	start := max(0, index-window.Before.Limit)
-	if index-start < window.Before.Limit && !exhausted {
+	start := max(0, boundary-window.Before.Limit)
+	if boundary-start < window.Before.Limit && !exhausted {
 		return nil, false
 	}
-	return turns[start:index], true
+	return selectRuns(start, boundary)
 }
 
 func (o *sessionOperations) activity(ctx context.Context, p appwire.SessionActivityRequest) (appwire.SessionActivityResponse, error) {

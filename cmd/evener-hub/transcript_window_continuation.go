@@ -25,7 +25,7 @@ func resolveTranscriptWindowContinuation(
 	if err != nil {
 		return zero, "", err
 	}
-	if direction != transcriptWindowContinuationDirectionFor(params.TurnWindow) {
+	if !transcriptWindowContinuationDirectionMatches(params.TurnWindow, cursor.ResumeWindow, direction) {
 		return zero, "", appwire.TranscriptItemCursorStale()
 	}
 
@@ -93,6 +93,27 @@ func transcriptWindowContinuationDirectionFor(window *appwire.ThreadTurnWindow) 
 		return appitempaging.WindowCursorDirectionForward
 	}
 	return ""
+}
+
+func transcriptWindowContinuationDirectionMatches(
+	original *appwire.ThreadTurnWindow,
+	resume *appwire.ThreadTurnWindow,
+	direction appitempaging.WindowCursorDirection,
+) bool {
+	switch direction {
+	case appitempaging.WindowCursorDirectionBackward:
+		return transcriptWindowContinuationDirectionFor(original) == direction && resume != nil && resume.Before != nil
+	case appitempaging.WindowCursorDirectionForward:
+		if resume == nil {
+			return false
+		}
+		if resume.Turn != "" {
+			return true
+		}
+		return resume.Since != "" && transcriptWindowContinuationDirectionFor(original) == direction
+	default:
+		return false
+	}
 }
 
 func normalizeTranscriptWindowLoadedResult(result transcriptItemCandidateResult, thread appwire.Thread) transcriptItemCandidateResult {

@@ -44,6 +44,44 @@ type movingLegacyManagerSource struct {
 	*movingWindowManagerSource
 }
 
+type compatibilityWindowManagerSource struct {
+	*managerReadSource
+	t         *testing.T
+	read      appwire.ThreadReadResponse
+	pages     map[string]appwire.ThreadTurnsListResponse
+	readCalls []appwire.ThreadReadParams
+	pageCalls []appwire.ThreadTurnsListParams
+}
+
+func (*compatibilityWindowManagerSource) CachedThreadCapabilities(string, string) (appwire.ThreadCapabilities, bool) {
+	return appwire.ThreadCapabilities{}, true
+}
+
+func (s *compatibilityWindowManagerSource) ReadThread(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	s.readCalls = append(s.readCalls, params)
+	if params.TurnWindow != nil || len(params.ItemTypes) != 0 || params.PreviewBytes != 0 || params.MessageBytes != 0 || params.WindowBudgetBytes != 0 {
+		s.t.Fatalf("legacy ReadThread received window fields: %+v", params)
+	}
+	response := s.read
+	response.Thread = appwire.CloneThread(response.Thread)
+	response.Snapshot = appwire.ClonePointer(response.Snapshot)
+	return response, nil
+}
+
+func (s *compatibilityWindowManagerSource) ListTurns(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+	s.pageCalls = append(s.pageCalls, params)
+	if params.TurnWindow != nil || len(params.ItemTypes) != 0 || params.PreviewBytes != 0 || params.MessageBytes != 0 || params.WindowBudgetBytes != 0 {
+		s.t.Fatalf("legacy ListTurns received window fields: %+v", params)
+	}
+	page, ok := s.pages[params.Cursor]
+	if !ok {
+		return appwire.ThreadTurnsListResponse{}, appwire.TranscriptItemCursorStale()
+	}
+	page.Data = appwire.CloneThread(appwire.Thread{Turns: page.Data}).Turns
+	page.Snapshot = appwire.ClonePointer(page.Snapshot)
+	return page, nil
+}
+
 func (*movingLegacyManagerSource) CachedThreadCapabilities(string, string) (appwire.ThreadCapabilities, bool) {
 	return appwire.ThreadCapabilities{}, true
 }
@@ -99,6 +137,20 @@ func newMovingWindowOperations(t *testing.T, turns []appwire.Turn) (*sessionOper
 		id: "local", thread: appwire.Thread{ID: "moving", SessionID: "moving", Evener: appwire.EvenerThread{Ref: "local:moving"}},
 	}}
 	source := &movingWindowManagerSource{managerReadSource: base, turns: turns}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), HubID: "hub-test", Past: hubcore.NewPastIndex("")}
+	server := appserver.NewServer(appserver.ServerConfig{})
+	return &sessionOperations{cfg: cfg, sources: sources, server: server, relays: newHubRelay(server, cfg, sources)}, source
+}
+
+func newCompatibilityWindowOperations(t *testing.T, read appwire.ThreadReadResponse, pages map[string]appwire.ThreadTurnsListResponse) (*sessionOperations, *compatibilityWindowManagerSource) {
+	t.Helper()
+	ref := read.Thread.Evener.Ref
+	base := &managerReadSource{scriptedAppSource: &scriptedAppSource{
+		id: "local", thread: appwire.Thread{ID: read.Thread.ID, SessionID: read.Thread.SessionID, Evener: appwire.EvenerThread{Ref: ref}},
+	}}
+	source := &compatibilityWindowManagerSource{managerReadSource: base, t: t, read: read, pages: pages}
 	sources := appsource.NewRegistry()
 	sources.Add(source)
 	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), HubID: "hub-test", Past: hubcore.NewPastIndex("")}
@@ -721,7 +773,11 @@ func TestContinueHubCompatibilityWindowPreservesResolvedLatestRangeAfterAppend(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	read.Thread.Turns = compatibilityLatestTurns(read.Thread.Turns, params.TurnWindow.Latest)
+	selected, resolved := resolveCompatibilityTurnWindow(read.Thread.Turns, params.TurnWindow, true)
+	if !resolved {
+		t.Fatal("initial compatibility range was not resolved")
+	}
+	read.Thread.Turns = selected
 	candidates, err := compatibilityItemCandidateResultForRead(t.Context(), source, readParams, read)
 	if err != nil {
 		t.Fatal(err)
@@ -820,6 +876,251 @@ func TestSessionOperationsUsesVisibleHubCompatibilityForOlderDaemon(t *testing.T
 	}
 }
 
+func TestSessionOperationsCompatibilityCountsLogicalTurnsAcrossFragments(t *testing.T) {
+	item := func(turnID, itemID string, entry uint64, itemIndex uint32) appwire.ThreadItem {
+		position := appwire.ThreadItemPosition{Entry: entry, Item: itemIndex}
+		return appwire.ThreadItem{
+			ID: itemID, Type: "agentMessage", TurnID: turnID, TranscriptKey: itemID,
+			Text: itemID, Position: &position, Version: 1,
+		}
+	}
+	const ref = "local:legacy-fragments"
+	olderCursor, err := appitempaging.EncodeCursor(appitempaging.CursorIdentity{
+		ThreadRef: ref, Incarnation: "fixture", ProjectionVersion: 1,
+	}, appwire.ThreadItemPosition{Entry: 2, Item: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := appwire.ThreadReadResponse{
+		Thread: appwire.Thread{
+			ID: "legacy-fragments", SessionID: "legacy-fragments", Evener: appwire.EvenerThread{Ref: ref},
+			Turns: []appwire.Turn{
+				{ID: "turn-b", ItemsView: appwire.TurnItemsViewFragment, HasEarlierItems: true, Items: []appwire.ThreadItem{item("turn-b", "b-newer", 2, 2)}},
+				{ID: "turn-c", ItemsView: appwire.TurnItemsViewFull, Items: []appwire.ThreadItem{item("turn-c", "c", 3, 0)}},
+			},
+		},
+		OlderCursor: olderCursor,
+		Snapshot:    &appwire.SnapshotIdentity{Incarnation: "legacy-fragments-view", Length: 4},
+	}
+	pages := map[string]appwire.ThreadTurnsListResponse{
+		olderCursor: {
+			Data: []appwire.Turn{
+				{ID: "turn-a", ItemsView: appwire.TurnItemsViewFull, Items: []appwire.ThreadItem{item("turn-a", "a", 1, 0)}},
+				{ID: "turn-b", ItemsView: appwire.TurnItemsViewFragment, Items: []appwire.ThreadItem{item("turn-b", "b-older", 2, 1)}},
+			},
+			Snapshot: read.Snapshot,
+		},
+	}
+	operations, source := newCompatibilityWindowOperations(t, read, pages)
+	response, err := operations.Invoke(t.Context(), appwire.ManagerView{Ref: "local:manager", Manager: true}, appwire.SessionOperationRequest{
+		Turns: &appwire.ThreadTurnsListParams{
+			Ref: ref, TurnWindow: &appwire.ThreadTurnWindow{Latest: 2}, ItemTypes: []string{"messages"}, ItemLimit: 10,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(source.readCalls) != 1 || len(source.pageCalls) != 1 {
+		t.Fatalf("legacy calls = reads %d pages %d, want 1 and 1", len(source.readCalls), len(source.pageCalls))
+	}
+	if response.Turns == nil || response.Turns.Window == nil {
+		t.Fatalf("compatibility response = %+v, want window", response.Turns)
+	}
+	if got := turnIDsFromTurns(response.Turns.Data); !reflect.DeepEqual(got, []string{"turn-b", "turn-c"}) {
+		t.Fatalf("logical turns = %v, want [turn-b turn-c]", got)
+	}
+	var itemIDs []string
+	for _, turn := range response.Turns.Data {
+		for _, got := range turn.Items {
+			itemIDs = append(itemIDs, got.ID)
+		}
+	}
+	if !reflect.DeepEqual(itemIDs, []string{"b-older", "b-newer", "c"}) {
+		t.Fatalf("selected item IDs = %v, want all turn-b fragments and turn-c", itemIDs)
+	}
+
+	params := appwire.ThreadTurnsListParams{
+		Ref: ref, TurnWindow: &appwire.ThreadTurnWindow{Latest: 2}, ItemTypes: []string{"messages"}, ItemLimit: 1,
+	}
+	caller := appwire.ManagerView{Ref: "local:manager", Manager: true}
+	var bItems []string
+	seenC := false
+	for pageNumber := 0; pageNumber < 10; pageNumber++ {
+		page, invokeErr := operations.Invoke(t.Context(), caller, appwire.SessionOperationRequest{Turns: &params})
+		if invokeErr != nil {
+			t.Fatal(invokeErr)
+		}
+		next := ""
+		for _, turn := range page.Turns.Data {
+			for _, got := range turn.Items {
+				switch got.TurnID {
+				case "turn-a":
+					t.Fatalf("item-limit continuation exposed unrelated older item %+v", got)
+				case "turn-b":
+					bItems = append(bItems, got.ID)
+				case "turn-c":
+					seenC = true
+				}
+			}
+			if turn.ID == "turn-b" && turn.Elision != nil && turn.Elision.ContinuationCursor != "" {
+				next = turn.Elision.ContinuationCursor
+			}
+		}
+		if next == "" && page.Turns.Window != nil {
+			next = page.Turns.Window.ContinuationCursor
+		}
+		if next == "" {
+			break
+		}
+		params.Cursor = next
+	}
+	if !reflect.DeepEqual(bItems, []string{"b-older", "b-newer"}) || !seenC {
+		t.Fatalf("item-limit logical range = B %v, C %v; want every B fragment and C", bItems, seenC)
+	}
+}
+
+func TestSessionOperationsCompatibilityExhaustsSelectedWindowBeforeNativeHistory(t *testing.T) {
+	item := func(turnID, itemID string, entry uint64, itemIndex uint32) appwire.ThreadItem {
+		position := appwire.ThreadItemPosition{Entry: entry, Item: itemIndex}
+		return appwire.ThreadItem{ID: itemID, Type: "agentMessage", TurnID: turnID, TranscriptKey: itemID, Position: &position, Version: 1}
+	}
+	const ref = "local:legacy-selection"
+	olderCursor, err := appitempaging.EncodeCursor(appitempaging.CursorIdentity{
+		ThreadRef: ref, Incarnation: "fixture", ProjectionVersion: 1,
+	}, appwire.ThreadItemPosition{Entry: 2, Item: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := appwire.ThreadReadResponse{
+		Thread: appwire.Thread{
+			ID: "legacy-selection", SessionID: "legacy-selection", Evener: appwire.EvenerThread{Ref: ref},
+			Turns: []appwire.Turn{
+				{ID: "turn-b", ItemsView: appwire.TurnItemsViewFull, Items: []appwire.ThreadItem{item("turn-b", "b-1", 2, 1), item("turn-b", "b-2", 2, 2)}},
+				{ID: "turn-c", ItemsView: appwire.TurnItemsViewFull, Items: []appwire.ThreadItem{item("turn-c", "c", 3, 0)}},
+			},
+		},
+		OlderCursor: olderCursor,
+		Snapshot:    &appwire.SnapshotIdentity{Incarnation: "legacy-selection-view", Length: 4},
+	}
+	operations, source := newCompatibilityWindowOperations(t, read, map[string]appwire.ThreadTurnsListResponse{
+		olderCursor: {Data: []appwire.Turn{{ID: "turn-a", ItemsView: appwire.TurnItemsViewFull, Items: []appwire.ThreadItem{item("turn-a", "a", 1, 0)}}}},
+	})
+	params := appwire.ThreadTurnsListParams{
+		Ref: ref, TurnWindow: &appwire.ThreadTurnWindow{Latest: 2}, ItemTypes: []string{"messages"}, ItemLimit: 1,
+	}
+	loader, err := newCompatibilityTranscriptWindowLoader(t.Context(), source, appwire.ThreadReadParams{
+		Ref: ref, IncludeTurns: true, ItemLimit: 1, ThreadWindowParams: params.ThreadWindowParams,
+	}, read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := loader.load(t.Context(), params.TurnWindow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.Result.Exhausted {
+		t.Fatal("selected latest range inherited unrelated older-history exhaustion")
+	}
+	caller := appwire.ManagerView{Ref: "local:manager", Manager: true}
+	var got []string
+	var final *appwire.ThreadTurnsListResponse
+	for pageNumber := 0; pageNumber < 10; pageNumber++ {
+		response, invokeErr := operations.Invoke(t.Context(), caller, appwire.SessionOperationRequest{Turns: &params})
+		if invokeErr != nil {
+			t.Fatal(invokeErr)
+		}
+		if response.Turns == nil {
+			t.Fatal("compatibility response has no turns")
+		}
+		for _, turn := range response.Turns.Data {
+			got = append(got, testItemIDs(turn.Items)...)
+		}
+		next := ""
+		for _, turn := range response.Turns.Data {
+			if turn.Elision != nil && turn.Elision.ContinuationCursor != "" {
+				next = turn.Elision.ContinuationCursor
+				break
+			}
+		}
+		if next == "" && response.Turns.Window != nil {
+			next = response.Turns.Window.ContinuationCursor
+		}
+		if next == "" {
+			final = response.Turns
+			break
+		}
+		params.Cursor = next
+	}
+	if final == nil {
+		t.Fatal("compatibility continuation did not exhaust")
+	}
+	if len(source.pageCalls) != 0 {
+		t.Fatalf("selected latest window paged unrelated older history %d times", len(source.pageCalls))
+	}
+	if !reflect.DeepEqual(got, []string{"b-1", "c", "b-2"}) {
+		t.Fatalf("selected item IDs = %v, want only complete latest range", got)
+	}
+	if final.Window == nil || final.Window.WithheldTurns != 0 || final.Window.ContinuationCursor != "" {
+		t.Fatalf("final selected window = %+v, want exhausted", final.Window)
+	}
+}
+
+func TestSessionOperationsCompatibilityBoundsLegacyPageTraversal(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		pageCount int
+		cycle     bool
+		wantCalls int
+	}{
+		{name: "cycle", cycle: true, wantCalls: 1},
+		{name: "ninth page required", pageCount: hubCompatFetchPageLimit, wantCalls: hubCompatFetchPageLimit},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			const ref = "local:legacy-bounded"
+			position := appwire.ThreadItemPosition{Entry: 9}
+			firstCursor, err := appitempaging.EncodeCursor(appitempaging.CursorIdentity{
+				ThreadRef: ref, Incarnation: "fixture", ProjectionVersion: 1,
+			}, position)
+			if err != nil {
+				t.Fatal(err)
+			}
+			read := appwire.ThreadReadResponse{
+				Thread: appwire.Thread{ID: "legacy-bounded", SessionID: "legacy-bounded", Evener: appwire.EvenerThread{Ref: ref}, Turns: []appwire.Turn{{
+					ID: "turn-c", ItemsView: appwire.TurnItemsViewFull, Items: []appwire.ThreadItem{{
+						ID: "c", Type: "agentMessage", TurnID: "turn-c", TranscriptKey: "c", Position: &position, Version: 1,
+					}},
+				}}},
+				OlderCursor: firstCursor,
+				Snapshot:    &appwire.SnapshotIdentity{Incarnation: "legacy-bounded-view", Length: 9},
+			}
+			pages := make(map[string]appwire.ThreadTurnsListResponse)
+			if test.cycle {
+				pages[firstCursor] = appwire.ThreadTurnsListResponse{NextCursor: firstCursor}
+			} else {
+				cursor := firstCursor
+				for i := 0; i < test.pageCount; i++ {
+					next := fmt.Sprintf("legacy-page-%d", i+2)
+					pages[cursor] = appwire.ThreadTurnsListResponse{NextCursor: next}
+					cursor = next
+				}
+			}
+			operations, source := newCompatibilityWindowOperations(t, read, pages)
+			response, invokeErr := operations.Invoke(t.Context(), appwire.ManagerView{Ref: "local:manager", Manager: true}, appwire.SessionOperationRequest{
+				Turns: &appwire.ThreadTurnsListParams{Ref: ref, TurnWindow: &appwire.ThreadTurnWindow{Latest: 2}, ItemTypes: []string{"messages"}},
+			})
+			if !errors.Is(invokeErr, appwire.TranscriptItemCursorStale()) {
+				t.Fatalf("bounded compatibility error = %v, want stale", invokeErr)
+			}
+			if response.Turns != nil || response.Fetch != nil {
+				t.Fatalf("bounded compatibility returned content = %+v", response)
+			}
+			if len(source.pageCalls) != test.wantCalls {
+				t.Fatalf("legacy page calls = %d, want %d", len(source.pageCalls), test.wantCalls)
+			}
+		})
+	}
+}
+
 func TestSessionOperationsRejectsUnsupportedOlderDaemonWindows(t *testing.T) {
 	legacyReads := 0
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "old-daemon", SourceID: "local"})
@@ -870,7 +1171,7 @@ func TestSessionOperationsRejectsUnsupportedOlderDaemonWindows(t *testing.T) {
 	}
 }
 
-func TestSessionOperationsLabelsIncompleteOlderDaemonLatestWindow(t *testing.T) {
+func TestSessionOperationsCompletesOlderDaemonLatestWindow(t *testing.T) {
 	position := appwire.ThreadItemPosition{Entry: 2}
 	olderPosition := appwire.ThreadItemPosition{Entry: 1}
 	var reads, pages atomic.Int64
@@ -925,38 +1226,17 @@ func TestSessionOperationsLabelsIncompleteOlderDaemonLatestWindow(t *testing.T) 
 		t.Fatal(err)
 	}
 	window := response.Turns.Window
-	if window == nil || window.ServedTurns != 1 || window.WithheldTurns != 1 || window.TrimmedEnd != "oldest" || window.ContinuationCursor == "" {
-		t.Fatalf("partial compatibility window = %+v", window)
+	if window == nil || window.ServedTurns != 2 || window.WithheldTurns != 0 || window.TrimmedEnd != "" || window.ContinuationCursor != "" {
+		t.Fatalf("complete compatibility window = %+v", window)
 	}
-	if len(response.FollowUps) != 1 {
-		t.Fatalf("partial compatibility follow-ups = %+v, want one shaped continuation", response.FollowUps)
+	if len(response.Turns.Data) != 2 || response.Turns.Data[0].ID != "turn_1" || response.Turns.Data[1].ID != "turn_2" {
+		t.Fatalf("complete compatibility turns = %+v, want turn_1 and turn_2", response.Turns.Data)
 	}
-	encoded, err := json.Marshal(response.FollowUps[0].Arguments.Hub)
-	if err != nil {
-		t.Fatal(err)
+	if len(response.FollowUps) != 0 {
+		t.Fatalf("complete compatibility follow-ups = %+v, want none", response.FollowUps)
 	}
-	var shaped map[string]any
-	if err := json.Unmarshal(encoded, &shaped); err != nil {
-		t.Fatal(err)
-	}
-	turnWindow, _ := shaped["turnWindow"].(map[string]any)
-	if shaped["cursor"] != window.ContinuationCursor || turnWindow["latest"] != float64(2) ||
-		!slices.Equal(shaped["itemTypes"].([]any), []any{"messages"}) || shaped["previewBytes"] != float64(321) ||
-		shaped["messageBytes"] != float64(654) || shaped["windowBudgetBytes"] != float64(16*1024) || shaped["itemLimit"] != float64(7) {
-		t.Fatalf("window continuation lost request shape: %s", encoded)
-	}
-	continuation := request
-	continuation.Cursor = response.FollowUps[0].Arguments.Hub.Cursor
-	continued, err := operations.Invoke(t.Context(), appwire.ManagerView{Ref: "local:manager", Manager: true}, appwire.SessionOperationRequest{Turns: &continuation})
-	if err != nil {
-		t.Fatalf("compatibility continuation: %v", err)
-	}
-	if reads.Load() != 2 || pages.Load() != 1 {
-		t.Fatalf("compatibility continuation calls = reads %d pages %d, want 2 and 1", reads.Load(), pages.Load())
-	}
-	if continued.Turns == nil || continued.Turns.Window == nil || continued.Turns.Window.AppliedBy != transcriptWindowAppliedByHubCompat ||
-		len(continued.Turns.Data) != 1 || continued.Turns.Data[0].ID != "turn_1" {
-		t.Fatalf("compatibility continuation = %+v, want older hub-compat page", continued.Turns)
+	if reads.Load() != 1 || pages.Load() != 1 {
+		t.Fatalf("compatibility initial calls = reads %d pages %d, want 1 and 1", reads.Load(), pages.Load())
 	}
 }
 
@@ -1056,38 +1336,16 @@ func TestSessionOperationsContinuesOlderRemoteHubWindowWithoutForwardingWindowFi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if initial.Turns == nil || initial.Turns.Window == nil || initial.Turns.Window.ContinuationCursor == "" {
-		t.Fatalf("initial older-remote window = %+v, want compatibility continuation", initial.Turns)
+	if initial.Turns == nil || initial.Turns.Window == nil || initial.Turns.Window.ContinuationCursor != "" ||
+		initial.Turns.Window.WithheldTurns != 0 || len(initial.Turns.Data) != 2 ||
+		initial.Turns.Data[0].ID != "turn-1" || initial.Turns.Data[1].ID != "turn-2" {
+		t.Fatalf("initial older-remote window = %+v, want complete turn-1 and turn-2", initial.Turns)
 	}
 	requireRetainedCanonicalItems(t, operations, params.Ref, flattenTestItems(initial.Turns.Data))
-	params.Cursor = initial.Turns.Window.ContinuationCursor
-	continued, err := operations.Invoke(t.Context(), caller, appwire.SessionOperationRequest{Turns: &params})
-	if err != nil {
-		t.Fatalf("older-remote compatibility continuation: %v", err)
+	if reads.Load() != 1 || pages.Load() != 1 {
+		t.Fatalf("older-remote initial calls = reads %d pages %d, want 1 and 1", reads.Load(), pages.Load())
 	}
-	if reads.Load() != 2 || pages.Load() != 1 {
-		t.Fatalf("older-remote compatibility calls = reads %d pages %d, want 2 and 1", reads.Load(), pages.Load())
-	}
-	if continued.Turns == nil || continued.Turns.Window == nil || continued.Turns.Window.AppliedBy != transcriptWindowAppliedByHubCompat ||
-		len(continued.Turns.Data) != 1 || continued.Turns.Data[0].ID != "turn-1" {
-		t.Fatalf("older-remote compatibility continuation = %+v, want older hub-compat page", continued.Turns)
-	}
-	requireRetainedCanonicalItems(t, operations, params.Ref, flattenTestItems(continued.Turns.Data))
-	if continued.Turns.Window.ContinuationCursor == "" {
-		t.Fatalf("middle compatibility page = %+v, want older continuation", continued.Turns.Window)
-	}
-	params.Cursor = continued.Turns.Window.ContinuationCursor
-	oldest, err := operations.Invoke(t.Context(), caller, appwire.SessionOperationRequest{Turns: &params})
-	if err != nil {
-		t.Fatalf("second older-remote compatibility continuation: %v", err)
-	}
-	if reads.Load() != 3 || pages.Load() != 3 {
-		t.Fatalf("second compatibility continuation calls = reads %d pages %d, want 3 and 3", reads.Load(), pages.Load())
-	}
-	if oldest.Turns == nil || len(oldest.Turns.Data) != 1 || oldest.Turns.Data[0].ID != "turn-0" {
-		t.Fatalf("second compatibility continuation = %+v, want oldest page", oldest.Turns)
-	}
-	fetchCursor := initial.Turns.Data[0].Items[0].FetchCursor
+	fetchCursor := initial.Turns.Data[1].Items[0].FetchCursor
 	if fetchCursor == "" {
 		t.Fatal("older-remote compatibility item has no fetch cursor")
 	}
@@ -1108,8 +1366,8 @@ func TestSessionOperationsContinuesOlderRemoteHubWindowWithoutForwardingWindowFi
 	if !slices.Equal(got, want) || fetched.Fetch.FetchCursor != "" {
 		t.Fatalf("older-remote compatibility fetch = %d bytes, continuation %q; want %d canonical bytes", len(got), fetched.Fetch.FetchCursor, len(want))
 	}
-	if reads.Load() != 4 || pages.Load() != 3 {
-		t.Fatalf("compatibility fetch calls = reads %d pages %d, want 4 and 3", reads.Load(), pages.Load())
+	if reads.Load() != 2 || pages.Load() != 1 {
+		t.Fatalf("compatibility fetch calls = reads %d pages %d, want 2 and 1", reads.Load(), pages.Load())
 	}
 }
 
@@ -1982,7 +2240,7 @@ func packCurrentRemoteHubPage(turns []appwire.Turn, params appwire.ThreadWindowP
 		Ref: "local:remote", ThreadWindowParams: params, ItemLimit: requestedLimit, Cursor: cursor,
 	}
 	loaded, _, err := resolveTranscriptWindowContinuation(context.Background(), request, itemLimit, func(_ context.Context, selector *appwire.ThreadTurnWindow) (transcriptWindowLoadedRange, error) {
-		selected, resolved := compatibilityResolveTurnWindow(turns, selector, true)
+		selected, resolved := resolveCompatibilityTurnWindow(turns, selector, true)
 		if !resolved {
 			return transcriptWindowLoadedRange{}, appwire.TranscriptItemCursorStale()
 		}

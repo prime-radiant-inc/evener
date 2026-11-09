@@ -291,6 +291,58 @@ func TestResolveTranscriptWindowContinuationValidatesAllEmptyDigest(t *testing.T
 	}
 }
 
+func TestResolveCompatibilityTurnWindow(t *testing.T) {
+	turns := []appwire.Turn{
+		{ID: "turn-a"},
+		{ID: "turn-b", Items: []appwire.ThreadItem{{ID: "b-older"}}},
+		{ID: "turn-b", Items: []appwire.ThreadItem{{ID: "b-newer"}}},
+		{ID: "turn-c"},
+	}
+	tests := []struct {
+		name      string
+		window    *appwire.ThreadTurnWindow
+		wantIDs   []string
+		wantItems []string
+	}{
+		{name: "latest counts logical turns", window: &appwire.ThreadTurnWindow{Latest: 2}, wantIDs: []string{"turn-b", "turn-b", "turn-c"}, wantItems: []string{"b-older", "b-newer"}},
+		{name: "exact retains every fragment", window: &appwire.ThreadTurnWindow{Turn: "turn-b"}, wantIDs: []string{"turn-b", "turn-b"}, wantItems: []string{"b-older", "b-newer"}},
+		{name: "before limit counts logical turns", window: &appwire.ThreadTurnWindow{Before: &appwire.ThreadTurnBoundary{TurnID: "turn-c", Limit: 1}}, wantIDs: []string{"turn-b", "turn-b"}, wantItems: []string{"b-older", "b-newer"}},
+		{name: "since limit counts logical turns", window: &appwire.ThreadTurnWindow{Since: "turn-a", Limit: 1}, wantIDs: []string{"turn-b", "turn-b"}, wantItems: []string{"b-older", "b-newer"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, resolved := resolveCompatibilityTurnWindow(turns, test.window, true)
+			if !resolved {
+				t.Fatal("window was not resolved")
+			}
+			gotIDs := make([]string, len(got))
+			for i := range got {
+				gotIDs[i] = got[i].ID
+			}
+			if !reflect.DeepEqual(gotIDs, test.wantIDs) {
+				t.Fatalf("turn IDs = %v, want %v", gotIDs, test.wantIDs)
+			}
+			var gotItems []string
+			for _, turn := range got {
+				for _, item := range turn.Items {
+					gotItems = append(gotItems, item.ID)
+				}
+			}
+			if !reflect.DeepEqual(gotItems, test.wantItems) {
+				t.Fatalf("item IDs = %v, want %v", gotItems, test.wantItems)
+			}
+		})
+	}
+
+	incomplete := []appwire.Turn{
+		{ID: "turn-b", HasEarlierItems: true},
+		{ID: "turn-c"},
+	}
+	if got, resolved := resolveCompatibilityTurnWindow(incomplete, &appwire.ThreadTurnWindow{Latest: 2}, false); resolved || got != nil {
+		t.Fatalf("incomplete oldest fragment = (%+v, %v), want unresolved", got, resolved)
+	}
+}
+
 func testResolverLoadedRange(t *testing.T, identity appitempaging.CursorIdentity, turns []appwire.Turn) transcriptWindowLoadedRange {
 	t.Helper()
 	result, err := itemCandidateResultFromTurns(turns, "")
