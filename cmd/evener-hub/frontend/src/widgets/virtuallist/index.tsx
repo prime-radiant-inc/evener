@@ -302,10 +302,7 @@ export function VirtualList({
 
   const cancelPendingScroll = () => {
     clampedScrollRef.current = null;
-    // Abandoning an outstanding placement says nothing about which way the
-    // reader moved. A measurement commit cancels it mid native smooth scroll,
-    // and clearing the movement record there lets that same batch's
-    // corrections displace the reading point.
+    backwardMovementRef.current = false;
     const port = scrollRef.current;
     if (!port) return;
     virtualizer.scrollToOffset(port.scrollTop, { align: "start", behavior: "auto" });
