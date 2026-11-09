@@ -417,11 +417,10 @@ func TestManagerCleanupClosedBarrierReportsHelperExitWithoutSignal(t *testing.T)
 	if waitErr == nil {
 		t.Fatal("closed barrier succeeded although the helper exited without signaling it")
 	}
-	var exitErr *exec.ExitError
 	if !errors.Is(waitErr, io.EOF) {
 		t.Fatalf("closed barrier failure = %v, want the milestone pipe's EOF", waitErr)
 	}
-	if !errors.As(waitErr, &exitErr) {
+	if _, ok := errors.AsType[*exec.ExitError](waitErr); !ok {
 		t.Fatalf("closed barrier failure = %v, want the helper's exit error", waitErr)
 	}
 	if !strings.Contains(waitErr.Error(), outputMarker) {
