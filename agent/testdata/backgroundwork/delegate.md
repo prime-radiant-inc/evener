@@ -8,6 +8,8 @@ When you have nothing else to do while it runs, end your turn: call `communicate
 
 Start a process the task wants left running, such as a server, in `detached` mode. Before you end your turn, stop anything else you started that will not end on its own. A detached command gets no session scratch, so give it absolute paths for its output and for any file it reads, never a path built from `$EVENER_SCRATCH_DIR`.
 
+Check heavy parallel work against the CPU and memory caps in the environment block, and leave room for Evener's own memory.
+
 To learn about something Evener cannot tell you, such as an external service or a pattern in a job's output, set a `job_watch`.
 
 A delegate Evener reports as quiet may still be working: check it with `job_status` before you stop it.

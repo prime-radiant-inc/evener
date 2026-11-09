@@ -6,7 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/internal/bundled"
 )
 
@@ -39,6 +41,23 @@ func backgroundWorkSharedGolden(t *testing.T) []byte {
 	return []byte(golden.String())
 }
 
+// detachCapableEnv reports detach support unconditionally, so the Background
+// work section's detached-mode paragraph renders the same on every host.
+// detached_shell_prose_test.go owns that paragraph's two real shapes; here one
+// pinned shape per golden is enough.
+type detachCapableEnv struct{ execenv.ExecutionEnvironment }
+
+func (detachCapableEnv) DetachSupported() bool { return true }
+
+// pinBackgroundWorkEnvironment fixes the two Background work inputs that come
+// from the host rather than the template: detach support and resource caps.
+// Without both, this macOS host and CI's Linux runners render different
+// sections from the same code.
+func pinBackgroundWorkEnvironment(s *Session) execenv.ExecutionEnvironment {
+	s.envInfo.Resources = &schema.ResourceCaps{CPUs: 2, MemoryMB: 4096}
+	return detachCapableEnv{s.env}
+}
+
 // backgroundWorkSection cuts the Background work section — and the pre-end
 // check, which lives at the template's tail — out of a rendered system prompt.
 func backgroundWorkSection(t *testing.T, prompt string) string {
@@ -63,16 +82,25 @@ func TestBackgroundWorkProseGoldens(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name  string
-		build func(*testing.T) *Session
+		build func(*testing.T) (*Session, execenv.ExecutionEnvironment)
 	}{
-		{"root", buildRootInteractiveAnthropicSession},
-		{"delegate", func(t *testing.T) *Session { return buildPromptDelegate(t, 1, "") }},
-		{"oneshot", buildRootHeadlessCoordinatorSession},
+		{"root", func(t *testing.T) (*Session, execenv.ExecutionEnvironment) {
+			s := buildRootInteractiveAnthropicSession(t)
+			return s, pinBackgroundWorkEnvironment(s)
+		}},
+		{"delegate", func(t *testing.T) (*Session, execenv.ExecutionEnvironment) {
+			s := buildPromptDelegate(t, 1, "")
+			return s, pinBackgroundWorkEnvironment(s)
+		}},
+		{"oneshot", func(t *testing.T) (*Session, execenv.ExecutionEnvironment) {
+			s := buildRootHeadlessCoordinatorSession(t)
+			return s, pinBackgroundWorkEnvironment(s)
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			s := tc.build(t)
-			prompt, warning, _ := s.renderSystemPrompt(s.env)
+			s, env := tc.build(t)
+			prompt, warning, _ := s.renderSystemPrompt(env)
 			if warning != "" {
 				t.Fatalf("render failed: %s", warning)
 			}
