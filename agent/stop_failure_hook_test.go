@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +26,12 @@ import (
 // a ProviderUnhealthyError wrapping that 429. Settlement therefore keeps the
 // draft, and the mapping has to read the rate limit through the wrapper rather
 // than call it unknown.
+//
+// The runner here has no SetEventCallback, while production wires one that
+// records a TurnHookCompleted per hook. Production's history therefore ends
+// TURN_FAILURE followed by one HOOK_COMPLETED per StopFailure hook; this test's
+// ends at the TURN_FAILURE. Assertions that need the turn tail therefore walk
+// the last non-hook turns rather than hardcode production's indices.
 func TestStopFailure_FiresOnceAndNotStop(t *testing.T) {
 	t.Parallel()
 	const draft = "the plan so far: step one, step two"
@@ -104,7 +111,8 @@ func TestStopFailure_FiresOnceAndNotStop(t *testing.T) {
 	}
 
 	// The recorded failure text the conversation shows is last_assistant_message.
-	failure := hist[len(hist)-1]
+	tail := nonHookTurns(hist)
+	failure := tail[len(tail)-1]
 	if failure.Kind != schema.TurnFailure || failure.Error == nil {
 		t.Fatalf("last turn = %s, want a TURN_FAILURE carrying its diagnostic", failure.Kind)
 	}
@@ -118,15 +126,34 @@ func TestStopFailure_FiresOnceAndNotStop(t *testing.T) {
 	}
 
 	// The salvaged draft survives into the transcript.
-	salvaged := hist[len(hist)-3]
+	salvaged := tail[len(tail)-3]
 	if salvaged.Message.Text() != draft {
 		t.Errorf("salvaged turn text = %q, want the draft %q", salvaged.Message.Text(), draft)
 	}
 }
 
+// nonHookTurns drops the TurnHookCompleted records a configured runner's
+// SetEventCallback appends, so a test can assert on the turn tail a session
+// without that callback builds.
+func nonHookTurns(turns []schema.Turn) []schema.Turn {
+	out := make([]schema.Turn, 0, len(turns))
+	for _, turn := range turns {
+		if turn.Kind == schema.TurnHookCompleted {
+			continue
+		}
+		out = append(out, turn)
+	}
+	return out
+}
+
 func captureLines(t *testing.T, path string) []string {
 	t.Helper()
 	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		// The hook never ran. An empty slice lets the caller report
+		// "ran 0 times", which is the regression the assertion is about.
+		return nil
+	}
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}
@@ -137,4 +164,27 @@ func captureLines(t *testing.T, path string) []string {
 		}
 	}
 	return lines
+}
+
+// TestHookErrorDetails pins the StopFailure error_details format, so Task 9 can
+// state it as a contract: status and provider code, comma-separated, each part
+// present only when the error carries it.
+func TestHookErrorDetails(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"status only", llm.ErrorFromHTTPStatus("p", 429, "slow", nil, nil), "status=429"},
+		{"status and code", llm.ErrorFromHTTPStatus("p", 401, "bad key", map[string]any{
+			"error": map[string]any{"code": "invalid_api_key"},
+		}, nil), "status=401, code=invalid_api_key"},
+		{"neither", errors.New("weird"), ""},
+		{"non-HTTP provider error", llm.NewUnsupportedEndpointError("p", "no events", nil), ""},
+	}
+	for _, c := range cases {
+		if got := hookErrorDetails(c.err); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
 }

@@ -907,22 +907,6 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 	errData.Cause = providerCauseFromError(err, req.Model)
 	s.emitTurnFailure(errData)
 
-	// StopFailure, the event an operator uses to log a failed turn and send an
-	// alert. It fires here rather than instead of Stop: a failed turn never
-	// reaches deliverIfCommunicated, so Stop already does not fire. Hooks run
-	// outside s.mu, and every output they produce is discarded — the turn is
-	// already over, so nothing can steer or stop it.
-	if s.hookRunner != nil {
-		hi := s.hookInput(plugin.HookStopFailure)
-		hi.Error = hooks.ClaudeErrorName(err)
-		hi.ErrorDetails = hookErrorDetails(err)
-		// last_assistant_message is the failure text the conversation records,
-		// not err.Error(): the recorded string can be enriched and trimmed, and
-		// a hook must see what the reader sees.
-		hi.LastAssistantMessage = errData.Error
-		_ = s.hookRunner.RunStopFailureFor(s.apiLogContext(ctx), hi, hi.Error)
-	}
-
 	// The lifecycle emits the context-disagreement recovery warning before its
 	// bounded compaction. Retain this compatibility warning for any terminal
 	// context path that reaches this handler without that lifecycle emission.
@@ -931,6 +915,24 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 	}
 	s.terminateGoalOnError(ctx, err)
 	s.finishProcessingAtFailureBoundary(ctx)
+
+	// StopFailure, the event an operator uses to log a failed turn and send an
+	// alert. It fires after the failure boundary, still in the terminal branch,
+	// so a hook's own duration cannot inflate the failed turn's recorded duration
+	// or delay the idle transition. It fires instead of Stop: a failed turn never
+	// reaches deliverIfCommunicated, so Stop already does not fire. Hooks run
+	// outside s.mu, and every output they produce is discarded — the turn is
+	// already over, so nothing can steer or stop it.
+	if s.hookRunner != nil {
+		hi := s.hookInput(plugin.HookStopFailure)
+		hi.Error = hooks.ClaudeErrorName(err)
+		hi.ErrorDetails = hookErrorDetails(err)
+		// last_assistant_message is the failure text the conversation records,
+		// trimmed exactly as TurnFailureInfo.Message trims it, not err.Error():
+		// a hook must see what the reader sees.
+		hi.LastAssistantMessage = strings.TrimSpace(errData.Error)
+		_ = s.hookRunner.RunStopFailureFor(s.apiLogContext(ctx), hi, hi.Error)
+	}
 	return false, fmt.Errorf("provider error: %w", err)
 }
 

@@ -28,8 +28,22 @@ func TestClaudeErrorName(t *testing.T) {
 		{"quota", llm.ErrorFromHTTPStatus("p", 400, "quota exceeded", nil, nil), llm.KindQuotaExceeded, "billing_error"},
 		{"billing", llm.ErrorFromHTTPStatus("p", 422, "billing problem", nil, nil), llm.KindQuotaExceeded, "billing_error"},
 		{"not found", llm.ErrorFromHTTPStatus("p", 404, "no model", nil, nil), llm.KindNotFound, "model_not_found"},
+		// KindNotFound alone does not prove a missing model. An endpoint that
+		// does not speak the protocol, and a continuation anchor the provider
+		// forgot, both land here while the model exists.
+		{"unsupported endpoint", llm.NewUnsupportedEndpointError("p", "responses stream closed with no events", nil), llm.KindNotFound, "unknown"},
+		{"stale continuation anchor", llm.ErrorFromHTTPStatus("p", 404, "previous response not found", map[string]any{
+			"error": map[string]any{"code": "previous_response_not_found"},
+		}, nil), llm.KindNotFound, "unknown"},
 		{"invalid", llm.ErrorFromHTTPStatus("p", 400, "bad", nil, nil), llm.KindInvalidRequest, "invalid_request"},
 		{"server", llm.ErrorFromHTTPStatus("p", 500, "boom", nil, nil), llm.KindServer, "server_error"},
+		// A missing or unrefreshable credential rides a ConfigurationError, which
+		// is KindUnknown with no status. It is still provably an auth failure:
+		// ProviderFailureSummary reports it as one, and it is the common auth
+		// failure here (only a provider 401 arrives as KindAuthentication).
+		{"sign in required", &llm.ConfigurationError{Message: "sign in to codex", Cause: llm.ErrSignInRequired}, llm.KindUnknown, "authentication_failed"},
+		{"no credential", &llm.ConfigurationError{Message: "no credential found", Cause: llm.ErrNoCredential}, llm.KindUnknown, "authentication_failed"},
+		{"other configuration error", &llm.ConfigurationError{Message: "auth = header needs auth_header"}, llm.KindUnknown, "unknown"},
 		{"access denied without a code", llm.ErrorFromHTTPStatus("p", 403, "forbidden", nil, nil), llm.KindAccessDenied, "unknown"},
 		{"access denied oauth org", llm.ErrorFromHTTPStatus("p", 403, "org not allowed", map[string]any{
 			"error": map[string]any{"type": "oauth_org_not_allowed"},
