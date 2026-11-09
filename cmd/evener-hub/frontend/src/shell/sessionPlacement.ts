@@ -106,19 +106,21 @@ export function openNestedSessionWithOwner(ref: string, ownerRef: string): void 
   if (child !== undefined) {
     // Ownership is now confirmed nested, so keep the child - and its per-mount
     // composer work, including staged images - and move the owner in beside it
-    // instead of replacing the workspace and remounting the child. A retained
-    // owner or cascade in main keeps its own record too.
+    // instead of replacing the workspace and remounting the child.
     const main = workspace.mainPane();
     const ownerPane = presentedPanes(workspace.panes).find((pane) => isSessionPaneFor(pane, ownerRef));
     const ownerIsMain = ownerPane !== undefined && ownerPane.id === main?.id;
-    const cascadeMain = ownerPane === undefined && cascadeMainCoversRef(ownerRef);
-    const keepMain = ownerIsMain || cascadeMain;
-    for (const pane of [...workspace.panes]) {
-      if (pane.id !== child.id && pane.id !== ownerPane?.id && pane.id !== main?.id) workspace.closePane(pane.id);
-    }
-    if (main !== null && main.id !== child.id && main.id !== ownerPane?.id && !cascadeMain)
-      workspace.closePane(main.id);
-    if (!keepMain) {
+    const cascadeMain = cascadeMainCoversRef(ownerRef);
+    if (ownerIsMain || cascadeMain) {
+      // The owner or its cascade already owns main. Keep every neighboring
+      // pane; only a duplicate plain owner beside a cascade retires.
+      if (cascadeMain && ownerPane !== undefined) workspace.closePane(ownerPane.id);
+    } else {
+      // An unrelated primary still clears. Keep the child and an existing
+      // owner pane, then promote the owner.
+      for (const pane of [...workspace.panes]) {
+        if (pane.id !== child.id && pane.id !== ownerPane?.id) workspace.closePane(pane.id);
+      }
       const ownerId = ownerPane?.id ?? workspace.openPane("session", { ref: ownerRef }, { slot: "secondary" });
       workspace.promotePane(ownerId);
     }

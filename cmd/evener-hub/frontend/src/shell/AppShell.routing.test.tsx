@@ -36,6 +36,7 @@ import { paletteStore } from "./palette/paletteController";
 import { conversationPaneLifetime } from "./paneLifetime";
 import { navigate, refParam } from "./routing";
 import {
+  conversationOpenParentRef,
   documentPaneState,
   getDockviewApi,
   type OpenPaneRecord,
@@ -1162,59 +1163,65 @@ test("a delayed nested location reply keeps the immediately opened child pane", 
   expect(state.focusedPaneId).toBe(child.id);
 });
 
-test("a nested rail link from an unrelated main keeps its child pane before the location read answers", async () => {
-  const location = deferred<void>();
-  const client = navClient();
-  client.on("evener/navigation/read", (params: NavigationReadParams) => {
-    if (params.resource === "section" && params.section === "live") {
-      return wireSnapshot(
-        params,
-        { sessions: [{ ...TREE_SESSION, kind: "subagent" }], remaining: 0, truncated: false },
-        '"test"',
-      );
-    }
-    if (params.resource === "location") {
-      return location.promise.then(() =>
-        wireSnapshot(
+test.each(["unrelated", "owner"])(
+  "a nested rail link beside an %s main keeps its child pane before the location read answers",
+  async (initialMain) => {
+    const location = deferred<void>();
+    const client = navClient();
+    client.on("evener/navigation/read", (params: NavigationReadParams) => {
+      if (params.resource === "section" && params.section === "live") {
+        return wireSnapshot(
           params,
-          {
-            ref: params.ref,
-            top_level_ref: "local:owner",
-            top_level: false,
-            session: { ...TREE_SESSION, ref: params.ref, session_id: params.ref, kind: "subagent" },
-          },
+          { sessions: [{ ...TREE_SESSION, kind: "subagent" }], remaining: 0, truncated: false },
           '"test"',
-        ),
-      );
-    }
-    return navigationRead(params);
-  });
+        );
+      }
+      if (params.resource === "location") {
+        return location.promise.then(() =>
+          wireSnapshot(
+            params,
+            {
+              ref: params.ref,
+              top_level_ref: "local:owner",
+              top_level: false,
+              session: { ...TREE_SESSION, ref: params.ref, session_id: params.ref, kind: "subagent" },
+            },
+            '"test"',
+          ),
+        );
+      }
+      return navigationRead(params);
+    });
 
-  const user = userEvent.setup();
-  workspaceStore.getState().openPane("session", { ref: "local:unrelated" });
-  render(<AppShell client={client} />);
-  await screen.findByText("Session one");
-  await user.click(screen.getByText("Session one"));
+    const user = userEvent.setup();
+    const initialRef = initialMain === "owner" ? "local:owner" : "local:unrelated";
+    workspaceStore.getState().openPane("session", { ref: initialRef });
+    render(<AppShell client={client} />);
+    await screen.findByText("Session one");
+    await user.click(screen.getByText("Session one"));
 
-  const child = workspaceStore
-    .getState()
-    .panes.find((pane) => pane.type === "session" && refParam(pane.params) === "local:s1");
-  expect(child).toBeTruthy();
-  expect(child?.slot).toBe("secondary");
-  expect(workspaceStore.getState().focusedPaneId).toBe(child?.id);
+    const child = workspaceStore
+      .getState()
+      .panes.find((pane) => pane.type === "session" && refParam(pane.params) === "local:s1");
+    expect(child).toBeTruthy();
+    expect(child?.slot).toBe("secondary");
+    expect(workspaceStore.getState().focusedPaneId).toBe(child?.id);
+    if (initialMain === "owner") expect(child && conversationOpenParentRef(child)).toBeUndefined();
 
-  await act(async () => {
-    location.resolve(undefined);
-    await location.promise;
-  });
-  await waitFor(() => {
-    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:owner" });
-  });
-  const state = workspaceStore.getState();
-  expect(state.panes.find((pane) => pane.id === child?.id)).toBe(child);
-  expect(state.panes.find((pane) => pane.id === child?.id)?.slot).toBe("secondary");
-  expect(state.focusedPaneId).toBe(child?.id);
-});
+    await act(async () => {
+      location.resolve(undefined);
+      await location.promise;
+    });
+    await waitFor(() => {
+      expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:owner" });
+    });
+    const state = workspaceStore.getState();
+    expect(state.panes.find((pane) => pane.id === child?.id)).toBe(child);
+    expect(state.panes.find((pane) => pane.id === child?.id)?.slot).toBe("secondary");
+    expect(state.focusedPaneId).toBe(child?.id);
+    expect(child && conversationOpenParentRef(child)).toBe("local:owner");
+  },
+);
 
 // Closing a deleted session's pane is not enough for the pane the ADDRESS BAR
 // names (kata 1hdc): the route-application effect below re-runs on every

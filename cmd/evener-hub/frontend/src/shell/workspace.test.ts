@@ -804,6 +804,27 @@ describe("replacePrimary", () => {
     expect(workspaceStore.getState().focusedPaneId).toBe(existing);
   });
 
+  test("does not reuse a secondary singleton with stale params", () => {
+    const workspace = workspaceStore.getState();
+    workspace.replacePrimary("settings", { section: "general" });
+    const stale: OpenPaneRecord = {
+      id: "pane_settings_secondary",
+      type: "settings",
+      params: { section: "theme" },
+      slot: "secondary",
+    };
+    workspaceStore.setState({
+      panes: [...workspaceStore.getState().panes, stale],
+      focusedPaneId: workspaceStore.getState().focusedPaneId,
+    });
+
+    const replaced = workspace.replacePrimary("settings", { section: "credentials" });
+
+    expect(replaced).not.toBe(stale);
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ section: "credentials" });
+    expect(workspaceStore.getState().panes).toHaveLength(1);
+  });
+
   // A replacement that always rebuilds the workspace clears useful secondary
   // panes even when the requested primary is already the current identity.
   test("preserves secondary panes when the requested primary identity is already main", () => {

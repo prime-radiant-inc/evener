@@ -155,6 +155,39 @@ describe("openNestedSessionWithOwner", () => {
     expect(preserved && conversationOpenParentRef(preserved)).toBe("local:owner");
     expect(state.panes).toHaveLength(2);
   });
+
+  test("keeps neighboring nested tabs when the owner already occupies main", () => {
+    const workspace = workspaceStore.getState();
+    workspace.replacePrimary("session", { ref: "local:owner" });
+    const a = workspace.openPane("session", { ref: "local:a" }, { slot: "secondary" });
+    const b = workspace.openPane("session", { ref: "local:b" }, { slot: "secondary" });
+
+    openNestedSessionWithOwner("local:a", "local:owner");
+
+    const panes = workspaceStore.getState().panes;
+    expect(panes.some((pane) => pane.id === b)).toBe(true);
+    const aPane = panes.find((pane) => pane.id === a);
+    expect(aPane?.slot).toBe("secondary");
+    expect(workspaceStore.getState().focusedPaneId).toBe(a);
+    expect(aPane && conversationOpenParentRef(aPane)).toBe("local:owner");
+  });
+
+  test("keeps a matching cascade and child when a duplicate owner sits secondary", () => {
+    const cascade = promoteMainToCascade("local:owner");
+    const workspace = workspaceStore.getState();
+    const duplicate = workspace.openPane("session", { ref: "local:owner" }, { slot: "secondary" });
+    const child = workspace.openPane("session", { ref: "local:child" }, { slot: "secondary" });
+
+    openNestedSessionWithOwner("local:child", "local:owner");
+
+    const state = workspaceStore.getState();
+    expect(state.mainPane()?.id).toBe(cascade);
+    expect(state.panes.some((pane) => pane.id === duplicate)).toBe(false);
+    expect(state.panes.find((pane) => pane.id === child)?.slot).toBe("secondary");
+    expect(state.focusedPaneId).toBe(child);
+    const childPane = state.panes.find((pane) => pane.id === child);
+    expect(childPane && conversationOpenParentRef(childPane)).toBe("local:owner");
+  });
 });
 
 test("an ordinary session link from an attention entry pushes a new history entry", () => {
