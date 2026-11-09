@@ -485,7 +485,8 @@ func TestDelegateGenerationTurnHeldDuringQuotaWait(t *testing.T) {
 			t.Fatal("the delegate's run finished on the usage limit instead of waiting for its reset")
 		case <-ctx.Done():
 			t.Fatal("the delegate never began waiting for quota")
-		case <-time.After(time.Millisecond):
+		default:
+			time.Sleep(time.Millisecond)
 		}
 	}
 	limited := streamCalls(adapter)
@@ -580,5 +581,143 @@ func TestOneShotRunFailsFastOnUsageLimit(t *testing.T) {
 	}
 	if s.waitingForQuota() {
 		t.Fatal("a one-shot session began a quota wait")
+	}
+}
+
+// waitUntil polls cond until it holds, failing at the test's tripwire.
+func waitUntil(t *testing.T, ctx context.Context, what string, cond func() bool) {
+	t.Helper()
+	for !cond() {
+		if ctx.Err() != nil {
+			t.Fatalf("never reached: %s", what)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// Stopping a delegate that waits for quota is a Stop, not a failure: the run
+// settles as cancelled through the ordinary cancellation path, and its error
+// is not the fatal kind that makes settlement stop the work the delegate's
+// subtree owns.
+func TestStoppingAQuotaWaitingDelegateSettlesAsStopped(t *testing.T) {
+	resetAt := time.Unix(1000, 0).Add(2 * time.Hour)
+	s, _, _, _ := newAttentionLivelockSession(t, usageLimitError(t, "openai", resetAt))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sub := &subagent{id: s.id, sess: s, running: true, status: SubagentRunning, done: make(chan struct{}), cancel: cancel}
+	finished := make(chan struct{})
+	go func() {
+		sub.run(ctx, "do the delegated work", nil)
+		close(finished)
+	}()
+	trip := tripwireCtx(t)
+	waitUntil(t, trip, "the delegate waits for quota", s.waitingForQuota)
+
+	sub.mu.Lock()
+	sub.cancelRequested = true
+	sub.mu.Unlock()
+	cancel()
+	select {
+	case <-finished:
+	case <-trip.Done():
+		t.Fatal("the stopped delegate's run did not end")
+	}
+	// A stable delegate's settlement stops its subtree's work only for a
+	// fatal run error (delegateFatalRun); this direct run has no controller,
+	// so the run error's own classification is what that settlement reads.
+	sub.mu.Lock()
+	status, runErr := sub.status, sub.err
+	sub.mu.Unlock()
+	if status != SubagentCancelled || delegateFatalRun(runErr) {
+		t.Fatalf("stopped quota-waiting delegate: status=%q fatal=%t (err %v), want a nonfatal cancellation", status, delegateFatalRun(runErr), runErr)
+	}
+}
+
+// A delegate can first meet the usage limit after its own turn succeeded:
+// in a finalization drain's notification turn. That turn is held like any
+// other: the run waits for the reset instead of failing and stopping the work
+// its subtree still owns, then drains again and finishes.
+func TestDelegateFinalizationTurnHeldDuringQuotaWait(t *testing.T) {
+	resetAt := time.Unix(1000, 0).Add(2 * time.Hour)
+	limit := usageLimitError(t, "openai", resetAt)
+	s, clk, _, adapter := newAttentionLivelockSession(t, nil)
+	// The delegate's own turn succeeds; every request after it meets the
+	// usage limit until the provider recovers.
+	adapter.mu.Lock()
+	adapter.streamScript = func(st *llm.ChanStream) {
+		call := communicateCall("delegate-report", "done with the delegated work")
+		sendCommunicatePreview(st, call)
+		st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &call})
+		finish := llm.FinishReason{Reason: llm.FinishReasonToolCalls}
+		st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &finish})
+		adapter.mu.Lock()
+		adapter.streamErr = limit
+		adapter.mu.Unlock()
+	}
+	adapter.mu.Unlock()
+	// A job the delegate owns runs past its turn, holding the drain open.
+	jm := s.jobManager
+	running := &jobstore.JobRecord{JobID: "job_owned", Type: jobstore.JobShell, Status: jobstore.StatusRunning, Background: true, OwnerSessionID: s.ID()}
+	jm.mu.Lock()
+	jm.running[running.JobID] = &runningJob{rec: running}
+	jm.mu.Unlock()
+	t.Cleanup(func() {
+		jm.mu.Lock()
+		delete(jm.running, running.JobID)
+		jm.mu.Unlock()
+	})
+
+	sub := &subagent{id: s.id, sess: s, running: true, status: SubagentRunning, done: make(chan struct{})}
+	finished := make(chan struct{})
+	go func() {
+		sub.run(context.Background(), "do the delegated work", nil)
+		close(finished)
+	}()
+	trip := tripwireCtx(t)
+	waitUntil(t, trip, "the delegate's finalization drain", func() bool {
+		sub.mu.Lock()
+		defer sub.mu.Unlock()
+		return sub.finalizing
+	})
+
+	// The job finishes; its completion's notification turn meets the limit.
+	jm.mu.Lock()
+	delete(jm.running, running.JobID)
+	jm.mu.Unlock()
+	enqueueCompletedJobNotification(t, s, "job_owned_done")
+	s.notify()
+	waitUntil(t, trip, "the delegate waits for quota", func() bool {
+		select {
+		case <-finished:
+			return true
+		default:
+			return s.waitingForQuota()
+		}
+	})
+	select {
+	case <-finished:
+		sub.mu.Lock()
+		status, err := sub.status, sub.err
+		sub.mu.Unlock()
+		t.Fatalf("the delegate's run ended (status=%q err=%v) when its finalization turn met the usage limit, instead of waiting for the reset", status, err)
+	default:
+	}
+
+	recoverProvider(adapter)
+	clk.Advance(2 * time.Hour)
+	clk.Drain()
+	select {
+	case <-finished:
+	case <-trip.Done():
+		t.Fatal("the delegate's run did not resume at the reset")
+	}
+	sub.mu.Lock()
+	status, fatal := sub.status, sub.fatalRunGated
+	sub.mu.Unlock()
+	if status == SubagentFailed || fatal {
+		t.Fatalf("delegate after the reset: status=%q fatal-gated=%t, want it finished without failing", status, fatal)
+	}
+	if got := s.jobNotificationsDelivered(); got != 1 {
+		t.Fatalf("job notifications delivered = %d, want the held completion delivered after the reset", got)
 	}
 }

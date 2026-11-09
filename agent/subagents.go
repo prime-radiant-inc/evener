@@ -1691,7 +1691,8 @@ func (a *subagent) deliverCommunicateNudge(ctx context.Context, inputProvenance 
 		// still runs as a runtime entry, never as caller input.
 		a.sess.appendSteeringTurn(wrapHookContext(nudge), events.SteeringKindDelegateNudge)
 	}
-	return a.sess.processRuntimeInput(ctx, a.followUpProvenance(inputProvenance))
+	resume := a.resumeFromTranscript(ctx, inputProvenance)
+	return a.holdingForQuota(ctx, resume, resume)
 }
 
 func (a *subagent) run(ctx context.Context, input string, inputProvenance *provenance.Causal) {
@@ -1714,13 +1715,9 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		if observer := a.sess.cfg.testOnly.subagentRunIteration; observer != nil {
 			observer(a, iteration)
 		}
-		res, err = a.sess.processInputKindWithProvenance(ctx, input, nil, kind, inputProvenance)
-		// A usage limit with a known reset holds the run open until it
-		// resets, then resumes from the transcript as a runtime turn: the
-		// input is already recorded, and repeating it would say it twice.
-		for a.holdDelegateRunForQuota(ctx, err) {
-			res, err = a.sess.processRuntimeInput(ctx, a.followUpProvenance(inputProvenance))
-		}
+		res, err = a.holdingForQuota(ctx, func() (string, error) {
+			return a.sess.processInputKindWithProvenance(ctx, input, nil, kind, inputProvenance)
+		}, a.resumeFromTranscript(ctx, inputProvenance))
 		_, budgetExhausted := budgetExhaustionFromError(err)
 		a.mu.Lock()
 		cancelRequested := a.cancelRequested
@@ -2111,7 +2108,8 @@ func (a *subagent) drainForFinalization(ctx context.Context, result string) (str
 	// a foreign prune can release the lane mid-finalization.
 	stopEvidenceTicker := a.sess.startLaneEvidenceTicker(ctx)
 	defer stopEvidenceTicker()
-	drained, err := a.sess.drainJobTreeKeepingReport(ctx)
+	drain := func() (string, error) { return a.sess.drainJobTreeKeepingReport(ctx) }
+	drained, err := a.holdingForQuota(ctx, drain, drain)
 	if err != nil {
 		return result, parentDriveNotify, err
 	}
@@ -2505,7 +2503,9 @@ func (a *subagent) runSubagentStopHook(ctx context.Context, res string, err erro
 	if reason == "" {
 		reason = "SubagentStop hook blocked completion. Continue and address the hook feedback before stopping."
 	}
-	return a.sess.processInputWithProvenance(ctx, reason, nil, inputProvenance)
+	return a.holdingForQuota(ctx, func() (string, error) {
+		return a.sess.processInputWithProvenance(ctx, reason, nil, inputProvenance)
+	}, a.resumeFromTranscript(ctx, inputProvenance))
 }
 
 func (a *subagent) followUpProvenance(inputProvenance *provenance.Causal) *provenance.Causal {

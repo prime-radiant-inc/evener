@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/internal/clock"
+	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -18,8 +19,8 @@ import (
 // provider's reset time, on a model switch, or when a turn succeeds (a user
 // message still tries the provider, since the user may know the quota came
 // back). Ending it by the clock or a switch asks for the wakes it refused.
-// A delegate's own run waits too (holdDelegateRunForQuota): its generation
-// stays open, and resumes when the wait ends.
+// A delegate's own run waits too (holdingForQuota): its generation stays
+// open, and resumes when the wait ends.
 //
 // Only a quota failure that names its reset time begins a wait. One that
 // does not keeps the permanent-failure pause the root attention rail already
@@ -177,25 +178,40 @@ func (s *Session) wakeAfterQuotaWait() {
 	}
 }
 
-// holdDelegateRunForQuota holds a delegate's run whose turn met a usage limit
-// with a known reset, instead of letting the run finish as failed: no
-// missing-report reminder, stop-hook or settlement turn runs against the
-// limit, and the parent keeps the delegate as running rather than failed. It
-// reports true when the wait ended (at the reset, or on a model switch) and
-// the run should resume, and false when err began no wait or the run was
-// stopped or cancelled meanwhile.
-func (a *subagent) holdDelegateRunForQuota(ctx context.Context, err error) bool {
-	ended, waiting := a.sess.quotaWaitEndedFor(err)
-	if !waiting {
-		return false
+// holdingForQuota runs one of a delegate run's turns — its generation turn,
+// a missing-report reminder, a stop-hook turn, or its finalization drain —
+// and holds the run while a usage limit with a known reset holds its
+// session, instead of letting the failure settle the run as failed and stop
+// the work its subtree owns. When the wait ends (at the reset, or on a model
+// switch) it runs resume and holds again if that meets the limit too. A Stop
+// or cancellation during the wait ends the run as cancelled, the ordinary
+// nonfatal path. A one-shot run never waits, so it fails fast.
+func (a *subagent) holdingForQuota(ctx context.Context, turn, resume func() (string, error)) (string, error) {
+	res, err := turn()
+	for {
+		ended, waiting := a.sess.quotaWaitEndedFor(err)
+		if !waiting {
+			return res, err
+		}
+		select {
+		case <-ended:
+		case <-ctx.Done():
+		}
+		a.mu.Lock()
+		cancelRequested := a.cancelRequested
+		a.mu.Unlock()
+		if cancelRequested || ctx.Err() != nil {
+			return res, errors.Join(err, context.Canceled)
+		}
+		res, err = resume()
 	}
-	select {
-	case <-ended:
-	case <-ctx.Done():
-		return false
+}
+
+// resumeFromTranscript continues a held run as a runtime turn: the turn that
+// met the limit already recorded its input, and repeating it would say it
+// twice.
+func (a *subagent) resumeFromTranscript(ctx context.Context, inputProvenance *provenance.Causal) func() (string, error) {
+	return func() (string, error) {
+		return a.sess.processRuntimeInput(ctx, a.followUpProvenance(inputProvenance))
 	}
-	a.mu.Lock()
-	cancelRequested := a.cancelRequested
-	a.mu.Unlock()
-	return !cancelRequested && ctx.Err() == nil
 }
