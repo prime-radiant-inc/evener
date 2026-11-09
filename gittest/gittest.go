@@ -47,7 +47,7 @@ func isConfigEnvironment(key string) bool {
 // fixed author and committer.
 func Env() []string {
 	base := identifier.FilteredGitEnvironment(os.Environ())
-	env := make([]string, 0, len(base)+14)
+	var env []string
 	for _, entry := range base {
 		if key, _, _ := strings.Cut(entry, "="); !isConfigEnvironment(key) {
 			env = append(env, entry)

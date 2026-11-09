@@ -3,6 +3,7 @@ package agent
 import (
 	"testing"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/gittest"
 )
 
@@ -12,8 +13,7 @@ import (
 // reach it.
 func TestSessionGitRunsUnderTheTestProcessGitConfig(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	gittest.RequireIsolated(t, func(_ string, args ...string) (string, error) {
-		return gitRunner(t.Context(), r.s.currentEnv())(args...)
-	}, r.mainRoot)
+	gittest.RequireIsolated(t, func(dir string, args ...string) (string, error) {
+		return gitRunner(t.Context(), execenv.NewLocalExecutionEnvironment(dir))(args...)
+	})
 }

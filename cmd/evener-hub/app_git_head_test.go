@@ -258,12 +258,10 @@ func TestResolveGitOriginRealRepo(t *testing.T) {
 // process environment: TestMain's gittest.IsolateProcess must reach it.
 func TestHubGitRunsUnderTheTestProcessGitConfig(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	gittest.Run(t, dir, "init", "-q")
 	gittest.RequireIsolated(t, func(dir string, args ...string) (string, error) {
 		out, err := gitCommand(t.Context(), "git", append([]string{"-C", dir}, args...)...).Output()
 		return string(out), err
-	}, dir)
+	})
 }
 
 func TestHubRPCGitHeadUsesCanonicalDirectory(t *testing.T) {

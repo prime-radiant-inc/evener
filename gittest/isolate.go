@@ -13,9 +13,9 @@ import (
 // maintenance and gc are off because either can leave a detached process
 // writing into a repository after the command that started it has returned,
 // racing the test's cleanup of that repository.
-var quiescentSettings = []struct{ section, name, value string }{
-	{"maintenance", "auto", "false"},
-	{"gc", "auto", "0"},
+var quiescentSettings = []struct{ key, value string }{
+	{"maintenance.auto", "false"},
+	{"gc.auto", "0"},
 }
 
 // IsolateProcess makes every git this process and its children spawn, the
@@ -39,7 +39,8 @@ func IsolateProcess() (remove func(), err error) {
 
 	var config strings.Builder
 	for _, setting := range quiescentSettings {
-		fmt.Fprintf(&config, "[%s]\n\t%s = %s\n", setting.section, setting.name, setting.value)
+		dot := strings.LastIndex(setting.key, ".")
+		fmt.Fprintf(&config, "[%s]\n\t%s = %s\n", setting.key[:dot], setting.key[dot+1:], setting.value)
 	}
 	path := filepath.Join(dir, "gitconfig")
 	if err := os.WriteFile(path, []byte(config.String()), 0o644); err != nil {
@@ -64,38 +65,36 @@ func quiescentEnvironment() []string {
 	env := []string{"GIT_CONFIG_COUNT=" + strconv.Itoa(len(quiescentSettings))}
 	for i, setting := range quiescentSettings {
 		env = append(env,
-			fmt.Sprintf("GIT_CONFIG_KEY_%d=%s.%s", i, setting.section, setting.name),
+			fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", i, setting.key),
 			fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", i, setting.value),
 		)
 	}
 	return env
 }
 
-// RequireIsolated fails t unless git run through run in the repository at dir
+// RequireIsolated fails t unless git run through run, in a fresh repository,
 // sees the quiescent settings, no system-scope config and no global config
-// beyond them. A package passes the
-// runner its code under test spawns git through, so the check covers the
-// environment that code really builds.
-func RequireIsolated(t testing.TB, run Runner, dir string) {
+// beyond them. A package passes the runner its code under test spawns git
+// through, so the check covers the environment that code really builds.
+func RequireIsolated(t testing.TB, run Runner) {
 	t.Helper()
+	dir := t.TempDir()
+	Run(t, dir, "init", "-q")
+	quiescent := make(map[string]bool, len(quiescentSettings))
 	for _, setting := range quiescentSettings {
-		key := setting.section + "." + setting.name
-		out, err := run(dir, "config", "--get", key)
+		quiescent[setting.key+"="+setting.value] = true
+		out, err := run(dir, "config", "--get", setting.key)
 		if err != nil {
-			t.Errorf("git config --get %s: %v", key, err)
+			t.Errorf("git config --get %s: %v", setting.key, err)
 			continue
 		}
 		if got := strings.TrimSpace(out); got != setting.value {
-			t.Errorf("git config --get %s = %q, want %q", key, got, setting.value)
+			t.Errorf("git config --get %s = %q, want %q", setting.key, got, setting.value)
 		}
 	}
 	listing, err := run(dir, "config", "--list", "--show-scope")
 	if err != nil {
 		t.Fatalf("git config --list --show-scope: %v", err)
-	}
-	quiescent := make(map[string]bool, len(quiescentSettings))
-	for _, setting := range quiescentSettings {
-		quiescent[setting.section+"."+setting.name+"="+setting.value] = true
 	}
 	for line := range strings.Lines(listing) {
 		scope, entry, _ := strings.Cut(strings.TrimSpace(line), "\t")

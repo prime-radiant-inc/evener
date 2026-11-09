@@ -261,14 +261,11 @@ func (e *shellOnlyEnv) ExecCommand(_ context.Context, command string, timeoutMS 
 // environment: TestMain's gittest.IsolateProcess must reach it.
 func TestRunGitRunsUnderTheTestProcessGitConfig(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	gittest.Run(t, dir, "init", "-q")
-	env := NewLocalExecutionEnvironment(dir)
 	gittest.RequireIsolated(t, func(dir string, args ...string) (string, error) {
-		res, err := RunGit(t.Context(), env, dir, 0, args...)
+		res, err := RunGit(t.Context(), NewLocalExecutionEnvironment(dir), dir, 0, args...)
 		if err == nil && res.ExitCode != 0 {
 			err = fmt.Errorf("git %v: exit %d", args, res.ExitCode)
 		}
 		return res.Stdout, err
-	}, dir)
+	})
 }

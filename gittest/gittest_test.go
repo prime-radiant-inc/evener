@@ -171,11 +171,9 @@ func TestRunIgnoresAmbientGitConfigFile(t *testing.T) {
 // a detached writer in the repository after the command returns, racing the
 // test's cleanup of it.
 func TestRunDisablesAutomaticMaintenance(t *testing.T) {
-	dir := t.TempDir()
-	Run(t, dir, "init", "-q")
 	RequireIsolated(t, func(dir string, args ...string) (string, error) {
 		return Run(t, dir, args...), nil
-	}, dir)
+	})
 }
 
 // IsolateProcess must reach a git that inherits the process environment, the
@@ -198,12 +196,10 @@ func TestIsolateProcessReachesGitThatInheritsTheEnvironment(t *testing.T) {
 		t.Fatalf("IsolateProcess: %v", err)
 	}
 	t.Cleanup(remove)
-	dir := t.TempDir()
-	Run(t, dir, "init", "-q")
 	RequireIsolated(t, func(dir string, args ...string) (string, error) {
 		cmd := exec.CommandContext(t.Context(), "git", args...)
 		cmd.Dir = dir
 		out, err := cmd.Output()
 		return string(out), err
-	}, dir)
+	})
 }

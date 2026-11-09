@@ -368,9 +368,7 @@ func TestRunMatrixCommandBuildsFromVersionManifest(t *testing.T) {
 // TestMain's gittest.IsolateProcess must reach it.
 func TestRunGitRunsUnderTheTestProcessGitConfig(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	gittest.Run(t, dir, "init", "-q")
 	gittest.RequireIsolated(t, func(dir string, args ...string) (string, error) {
 		return runGit(t.Context(), dir, args...)
-	}, dir)
+	})
 }

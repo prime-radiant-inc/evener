@@ -142,9 +142,7 @@ func TestFetchPluginSource_RejectsExtTransport(t *testing.T) {
 // spawns git with the process environment: TestMain's gittest.IsolateProcess
 // must reach it.
 func TestGitRunsUnderTheTestProcessGitConfig(t *testing.T) {
-	dir := t.TempDir()
-	makeGitRepo(t, dir, "file.txt", "hello")
 	gittest.RequireIsolated(t, func(dir string, args ...string) (string, error) {
 		return git(t.Context(), dir, args...)
-	}, dir)
+	})
 }
