@@ -1,6 +1,39 @@
+import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { act } from "@testing-library/react";
 
-import { settleProjectionWorkForTests } from "../../../../../stores/projectionWork";
+import { whenProjectionWorkIdleForTests } from "../../../../../stores/projectionWork";
+
+// The stall bound and the macrotask hop are test-harness policy, so they live
+// here with the flush rather than in the package tracker (#1891). A durable
+// chain whose next step starts only once the step before it settled is briefly
+// empty between steps, which is why settle hops and checks again.
+const STALL_TRIPWIRE_MS = 4_000;
+
+export async function settleProjectionWorkForTests(): Promise<number> {
+  let seen = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const tripwire = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(
+      () =>
+        reject(
+          new Error(
+            `projection work stalled: operation(s) still unsettled after ${STALL_TRIPWIRE_MS}ms - release whatever storage or transport is holding this work open`,
+          ),
+        ),
+      STALL_TRIPWIRE_MS,
+    );
+  });
+  try {
+    for (;;) {
+      const count = await Promise.race([whenProjectionWorkIdleForTests(), tripwire]);
+      seen += count;
+      if (count === 0) return seen;
+      await nextMacrotask();
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 // The repeat loop every test wants: run rounds until one of them sees no work
 // at all. Each round settles the tracked work inside act. When the flush is the
