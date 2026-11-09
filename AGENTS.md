@@ -269,9 +269,12 @@ loading them, since each opens a socket the moment its body runs.
   head), never on comment identity or a coarse CI-state string; a verdict on a
   new head rides the same comment id with an unchanged CI reason.
 - **Triage each finding by evidence, not reflex.** Fix at the root
-  red-test-first: watch the reviewer's scenario fail, then pass, and post both
+  red-test-first: extend the nearest existing test or table with the
+  reviewer's scenario, watch it fail, then pass, and post both
   runs in a PR comment — the repo's convention is one evidence comment per
-  round covering every finding. When the finding is wrong, refute it with the
+  round covering every finding. Add a new test function only when no existing
+  test reaches that code path; the evidence comment says which was done.
+  When the finding is wrong, refute it with the
   code's own construction (e.g. Summarize counts every non-done/cancelled
   status as remaining, so the aggregate cannot claim completion) or the
   pinned toolchain (tsc 6.0.3 types `Element.textContent` as non-null,
