@@ -234,7 +234,7 @@ strict), dropping class names, the "one class only" rule, and the prose log.
 test lines, −2,000 characters of JSON prose.
 
 **F17. Root-level audit tests are 12,661 lines across 40 files, and the root Go
-module contains zero non-test files.** Largest: `makefiletargets_audit_test.go`
+package contains zero non-test files.** Largest: `makefiletargets_audit_test.go`
 1,219 (a hand-rolled Makefile parser that duplicates
 `internal/maketargetsdoc/parse.go`), `timingbudget_test.go` 1,024,
 `scenariosourcecite_audit_test.go` 967 (re-implements a TypeScript declaration
@@ -363,7 +363,9 @@ derivation. **Delta:** −150 lines now, one source of truth for the rest.
 is a 3.5 MB string; `mermaidPage.test.ts:26` re-bundles mermaid+DOMPurify and
 compares, every `npm test`. **Change:** move the freshness assertion behind a
 Make target; the committed bundle stays (it is what makes the WebView offline).
-**Risk:** low. **Delta:** one esbuild run per test, −3.5 MB in the module graph.
+**Risk:** low. **Delta:** one esbuild run per test run. The bundle stays in the
+module graph either way, because `MermaidDiagram.tsx` and
+`mermaidPageContent.ts` import it directly.
 
 **F31. Frontend guard harness: 43,482 lines of scripts against 125,803 lines of
 app.** `layoutguard` alone is 9,593 lines across 42 case directories, each with a
