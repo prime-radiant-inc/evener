@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -141,8 +142,7 @@ func TestResumeUnreadableOwnerSpawnsReplacement(t *testing.T) {
 		t.Fatalf("acquire canonical relay: %v", err)
 	}
 	defer lease.Close()
-	relayCtx, cancelRelay := context.WithCancel(context.Background())
-	defer cancelRelay()
+	relayCtx := t.Context()
 	first, err := lease.Read(relayCtx, appwire.ThreadReadParams{Ref: canonicalRef.String(), Subscribe: true})
 	if err != nil {
 		t.Fatalf("establish canonical relay: %v", err)
@@ -203,5 +203,83 @@ func TestResumeUnreadableOwnerSpawnsReplacement(t *testing.T) {
 	}
 	if second.Response.Thread.ID != sessionID {
 		t.Fatalf("subscribed read thread=%+v, want the replacement's thread for %s", second.Response.Thread, sessionID)
+	}
+}
+
+// TestResumeReplacementFailureKeepsReadCauseAndIsNotRetried reproduces the two
+// late review findings on the replacement fall-through: a refused launch must
+// carry the read failure that caused it, and a client retry against the same
+// unreadable owner must not launch another child for it.
+func TestResumeReplacementFailureKeepsReadCauseAndIsNotRetried(t *testing.T) {
+	root := t.TempDir()
+	workingDir := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-5530-failed-spawn-0000000000")
+	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
+
+	oldDaemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: appwire.LocalSourceID})
+	appserver.HandleTyped(oldDaemon.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("thread history is closed")
+	})
+	oldHTTP := httptest.NewServer(http.HandlerFunc(oldDaemon.ServeWebSocket))
+	defer oldHTTP.Close()
+
+	oldEntry := rendezvous.Entry{
+		PID:          108084,
+		Protocol:     appwire.ProtocolVersion,
+		Endpoint:     "ws" + strings.TrimPrefix(oldHTTP.URL, "http"),
+		SourceID:     appwire.LocalSourceID,
+		ThreadID:     sessionID,
+		SessionID:    sessionID,
+		WorkspaceRef: appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: sessionID}.String(),
+		WorkingDir:   workingDir,
+		StartedAt:    time.Now().UTC().Add(-time.Minute),
+	}
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, oldEntry)
+	prober := &flippableReadProber{sessionID: sessionID}
+	roster := hubcore.NewRoster(runDir, prober)
+	roster.SetProcessAlive(func(int) bool { return true })
+	roster.Refresh()
+	prober.failPID.Store(int64(oldEntry.PID))
+
+	spawnCalls := 0
+	launchFailure := errors.New("evener serve: session " + sessionID + " is already running; send work to the live session or fork it")
+	spawner := &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+		spawnCalls++
+		return rendezvous.Entry{}, launchFailure
+	}}
+	cfg := hubcore.WebConfig{
+		RunDir:      runDir,
+		Roster:      roster,
+		Spawner:     spawner,
+		Past:        past,
+		ResumeLocks: hubcore.NewResumeLocks(),
+	}
+	sources := newHubSourceRegistry(cfg)
+
+	_, firstErr := resumeThreadLocked(context.Background(), cfg, sources, appwire.ThreadResumeParams{Session: sessionID})
+	if firstErr == nil {
+		t.Fatal("first resume unexpectedly succeeded")
+	}
+	if !strings.Contains(firstErr.Error(), "thread history is closed") {
+		t.Fatalf("first resume lost the read cause: %v", firstErr)
+	}
+	if !strings.Contains(firstErr.Error(), "already running") {
+		t.Fatalf("first resume lost the launch cause: %v", firstErr)
+	}
+	if spawnCalls != 1 {
+		t.Fatalf("first resume spawns=%d, want 1", spawnCalls)
+	}
+
+	_, secondErr := resumeThreadLocked(context.Background(), cfg, sources, appwire.ThreadResumeParams{Session: sessionID})
+	if secondErr == nil {
+		t.Fatal("second resume unexpectedly succeeded")
+	}
+	if !strings.Contains(secondErr.Error(), "thread history is closed") {
+		t.Fatalf("second resume lost the read cause: %v", secondErr)
+	}
+	if spawnCalls != 1 {
+		t.Fatalf("second resume spawned again for the same unreadable owner: spawns=%d, want 1", spawnCalls)
 	}
 }

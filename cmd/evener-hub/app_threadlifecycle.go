@@ -724,6 +724,11 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 	// resume replaced. Its rendezvous record is retired only after the
 	// replacement is confirmed, so a failed launch leaves the old record alone.
 	var supersededOwner *rendezvous.Entry
+	// supersededReadErr is the read failure that sent this resume to a
+	// replacement. It is reported alongside a refused launch: the launch error
+	// alone ("already running") sends an operator to a session that cannot be
+	// read.
+	var supersededReadErr error
 	// Serialize concurrent resumes of the same session behind a per-session
 	// lock shared with the REST send path (kata sm1a). While one resume holds
 	// the lock, another RPC mutation that also decided to resume waits here
@@ -743,10 +748,22 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 		if cfg.Roster != nil {
 			if le, ok := liveDaemonForThread(cfg.Roster, sessionID); ok &&
 				le.Protocol == appwire.ProtocolVersion {
-				if response, readErr := hubResumedThreadResponse(ctx, cfg, sources, le.SessionID, le.ThreadID); readErr == nil {
+				response, readErr := hubResumedThreadResponse(ctx, cfg, sources, le.SessionID, le.ThreadID)
+				if readErr == nil {
+					cfg.ResumeLocks.ClearReplacementFailure(sessionID)
 					return response, nil
-				} else if ctx.Err() != nil {
+				}
+				if ctx.Err() != nil {
 					return appwire.ThreadResumeResponse{}, readErr
+				}
+				if ok, recordedErr := cfg.ResumeLocks.ReplacementFailure(sessionID, rendezvous.OwnershipFingerprint(le.Entry)); ok {
+					// The same unreadable owner still names the session, and a
+					// replacement for it was already refused. Report both causes
+					// instead of launching another child per client retry.
+					return appwire.ThreadResumeResponse{}, appwire.HubLaunchError(errors.Join(
+						fmt.Errorf("registered owner could not serve the session: %w", readErr),
+						recordedErr,
+					).Error())
 				}
 				// The entry is live enough for discovery but cannot serve this
 				// read, so reusing it again is the fail-loop from #5530. Fall
@@ -755,6 +772,7 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 				// so the attempt cannot take the session from a healthy owner.
 				owner := le.Entry
 				supersededOwner = &owner
+				supersededReadErr = readErr
 			}
 		}
 		if state := cfg.ResumeLocks.RecoveryState(sessionID); state.ResumeRequired && !state.ExitConfirmed {
@@ -803,7 +821,14 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 		if cleanup, ok := errors.AsType[*resumeCleanupError](err); ok {
 			launch.cleanupErr = cleanup
 		}
-		return appwire.ThreadResumeResponse{}, appwire.HubLaunchError(resumeFailureError(ctx, cfg, sessionID, err).Error())
+		launchErr := resumeFailureError(ctx, cfg, sessionID, err)
+		if supersededOwner != nil && cfg.ResumeLocks != nil {
+			cfg.ResumeLocks.NoteReplacementFailure(sessionID, rendezvous.OwnershipFingerprint(*supersededOwner), launchErr)
+		}
+		if supersededReadErr != nil {
+			launchErr = errors.Join(fmt.Errorf("registered owner could not serve the session: %w", supersededReadErr), launchErr)
+		}
+		return appwire.ThreadResumeResponse{}, appwire.HubLaunchError(launchErr.Error())
 	}
 	replacementConfirmed := false
 	if cfg.Roster != nil {
@@ -823,10 +848,10 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 			if err != nil {
 				return appwire.ThreadResumeResponse{}, appwire.Unavailable(errors.Join(refreshErr, err).Error())
 			}
-			replacementConfirmed = true
 			read.Thread = annotateThreadProject(read.Thread)
 			read.Thread = applyHubCapabilities(cfg, read.Thread)
 			retireSupersededOwner(ctx, cfg, sources, supersededOwner)
+			cfg.ResumeLocks.ClearReplacementFailure(sessionID)
 			return appwire.ThreadResumeResponse{Thread: read.Thread}, nil
 		}
 		if refreshErr != nil && !replacementConfirmed {
@@ -835,6 +860,7 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 	}
 	if replacementConfirmed {
 		retireSupersededOwner(ctx, cfg, sources, supersededOwner)
+		cfg.ResumeLocks.ClearReplacementFailure(sessionID)
 	}
 	return hubResumedThreadResponse(ctx, cfg, sources, entry.SessionID, entry.ThreadID)
 }

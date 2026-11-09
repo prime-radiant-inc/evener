@@ -1423,6 +1423,35 @@ func TestRelaySessionEOFBeforeConnectionInstallForcesNextReadToRedial(t *testing
 	}
 }
 
+// TestRelaySessionInvalidateConnectionLeavesNoStaleConnection pins the
+// invalidation race behind #5530: a connect that installs its connection after
+// invalidateConnection observed none must not survive the epoch advance as a
+// live connection. A surviving connection is returned by the next
+// ensureConnection with a revoked epoch, so its notifications are discarded and
+// disconnect ignores its transport.
+func TestRelaySessionInvalidateConnectionLeavesNoStaleConnection(t *testing.T) {
+	session := newRelaySession(func(context.Context, uint64, func(uint64, appwire.Message, error)) (*appwire.Client, appwire.Transport, error) {
+		t.Fatal("invalidateConnection must not dial")
+		return nil, nil, nil
+	}, nil)
+	t.Cleanup(session.cancel)
+	session.invalidateConnectionHook = func(s *relaySession) {
+		s.mu.Lock()
+		s.connection = &relayConnection{epoch: s.epoch, transport: newScriptedAppwireTransport(nil)}
+		s.mu.Unlock()
+	}
+
+	session.invalidateConnection()
+
+	session.mu.Lock()
+	connection := session.connection
+	epoch := session.epoch
+	session.mu.Unlock()
+	if connection != nil && !connection.disconnected && connection.epoch != epoch {
+		t.Fatalf("invalidateConnection left a live connection at epoch %d while the session advanced to %d", connection.epoch, epoch)
+	}
+}
+
 func TestRelaySessionCommitAbortRaceHasOneWinner(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}

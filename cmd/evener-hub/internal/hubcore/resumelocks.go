@@ -29,11 +29,63 @@ type ResumeLocks struct {
 	recovery      map[string]SessionRecoveryState
 	sequence      uint64
 	fences        []*ForceStopFence // held admission fences, newest last; guarded by mu
+	// replacementFailures remembers the last failed attempt to replace a
+	// session's registered owner, keyed by session id and the exact owner that
+	// could not serve it. A retry against that same owner must report the
+	// failure instead of launching another child for a daemon still holding the
+	// session.
+	replacementFailures map[string]replacementFailure
+}
+
+// replacementFailure is one recorded failed replacement attempt.
+type replacementFailure struct {
+	ownerFingerprint string
+	err              error
 }
 
 // NewResumeLocks returns an empty registry ready for use.
 func NewResumeLocks() *ResumeLocks {
 	return &ResumeLocks{locks: map[string]*ResumeMutex{}}
+}
+
+// NoteReplacementFailure records that replacing the owner named by
+// ownerFingerprint failed for sessionID.
+func (r *ResumeLocks) NoteReplacementFailure(sessionID, ownerFingerprint string, err error) {
+	if r == nil || sessionID == "" || ownerFingerprint == "" || err == nil {
+		return
+	}
+	r.mu.Lock()
+	if r.replacementFailures == nil {
+		r.replacementFailures = map[string]replacementFailure{}
+	}
+	r.replacementFailures[sessionID] = replacementFailure{ownerFingerprint: ownerFingerprint, err: err}
+	r.mu.Unlock()
+}
+
+// ReplacementFailure returns the recorded failed replacement when a retry
+// would replace the same exact owner.
+func (r *ResumeLocks) ReplacementFailure(sessionID, ownerFingerprint string) (bool, error) {
+	if r == nil || sessionID == "" || ownerFingerprint == "" {
+		return false, nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	failure, ok := r.replacementFailures[sessionID]
+	if !ok || failure.ownerFingerprint != ownerFingerprint {
+		return false, nil
+	}
+	return true, failure.err
+}
+
+// ClearReplacementFailure forgets a recorded failed replacement, after the
+// owner recovered or a replacement succeeded.
+func (r *ResumeLocks) ClearReplacementFailure(sessionID string) {
+	if r == nil || sessionID == "" {
+		return
+	}
+	r.mu.Lock()
+	delete(r.replacementFailures, sessionID)
+	r.mu.Unlock()
 }
 
 // NewPersistentResumeLocks restores explicit-resume authority before serving.

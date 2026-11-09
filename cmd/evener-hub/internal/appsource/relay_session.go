@@ -28,10 +28,11 @@ type relaySession struct {
 	// waiting for downstream acknowledgement. Revocation closes the epoch's
 	// fence before taking the write side so a blocked send can be interrupted
 	// without allowing a revoked epoch to enter a listener after replacement.
-	publishBoundary  sync.RWMutex
-	publishEntryHook func()
-	publicationEpoch uint64
-	publicationFence *relayPublicationFence
+	publishBoundary          sync.RWMutex
+	publishEntryHook         func()
+	invalidateConnectionHook func(*relaySession)
+	publicationEpoch         uint64
+	publicationFence         *relayPublicationFence
 
 	mu             sync.Mutex
 	epoch          uint64
@@ -554,17 +555,19 @@ func (s *relaySession) invalidateConnection() {
 		return
 	}
 	connection := s.connection
+	if connection == nil {
+		// Advance the epoch under this lock. A dial that resolved the
+		// pre-replacement route installs under the same lock, so it observes
+		// the revocation and cannot leave a stale connection installed.
+		s.advanceEpochLocked()
+	}
 	s.mu.Unlock()
+	if hook := s.invalidateConnectionHook; hook != nil {
+		hook(s)
+	}
 	if connection != nil {
 		s.disconnect(connection.epoch)
-		return
 	}
-	// Revoke a connection attempt already dialing from a route resolved before
-	// the replacement, so it cannot install the superseded socket. Its caller
-	// retries through the current route.
-	s.mu.Lock()
-	s.advanceEpochLocked()
-	s.mu.Unlock()
 }
 
 // publishPendingResync tells listeners to re-read once, before any frame from
