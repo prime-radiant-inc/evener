@@ -232,7 +232,11 @@ export function VirtualList({
   // cannot redefine the reader's point by filling the viewport top itself.
   const recordReadingPoint = () => {
     const port = scrollRef.current;
-    if (!port || recordedReadingTopRef.current === port.scrollTop) return;
+    if (!port) return;
+    const recorded = readingPointRef.current;
+    const viewportChanged =
+      recorded === undefined || recorded.width !== port.clientWidth || recorded.viewport !== port.clientHeight;
+    if (!viewportChanged && recordedReadingTopRef.current === port.scrollTop) return;
     recordedReadingTopRef.current = port.scrollTop;
     readingPointRef.current = readingPoint?.();
   };
@@ -394,7 +398,12 @@ export function VirtualList({
     );
     if (!entry) return false;
     const viewportTop = port.getBoundingClientRect().top;
-    if (Math.abs(entry.getBoundingClientRect().top - viewportTop - recorded.offset) > 1) return false;
+    const rect = entry.getBoundingClientRect();
+    if (Math.abs(rect.top - viewportTop - recorded.offset) > 1) return false;
+    // Growth inside the entry (a diagram above the visible paragraph) keeps the
+    // entry's top and moves the text under the reading line, so only an entry
+    // that kept its own height grew after the reader.
+    if (Math.abs(rect.height - recorded.height) > 1) return false;
     return offset + recorded.viewport < instance.getTotalSize() - 4;
   };
 
