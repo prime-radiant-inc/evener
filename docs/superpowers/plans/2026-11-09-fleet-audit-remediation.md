@@ -116,8 +116,8 @@ creation idempotency.
   the reset time. The human can change the model while it waits; that resumes
   immediately on the new model with the held notifications and goal. The state
   shows wherever sessions are listed. Implements R05 for the quota case.
-  Still open: whether launch config should default a cross-provider fallback
-  chain. Owns W1.4.
+  No default fallback chain: which model runs the work stays the human's
+  choice; the existing `model_fallbacks` setting remains available. Owns W1.4.
 - [x] **D4 Watch budget.** Decided 2026-11-09: remove the 50-delivery lifetime
   budget. A watch is rate limited to at most one delivery per minute; fires
   inside the window coalesce into the next delivery. The watch lives until its
