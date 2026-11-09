@@ -96,10 +96,12 @@ creation idempotency.
 
 ## Decisions (settle with Jesse before the owning slice)
 
-- [ ] **D1 Waiting primitive.** Recommended: `job_status` gains a bounded
-  `wait_ms` that returns on state change or timeout, and the breaker parks a
-  third identical `job_status` on an unchanged running target. Alternative: park
-  only, no wait parameter. Owns W1.2.
+- [x] **D1 Waiting.** Decided 2026-11-09: an agent that legitimately needs to
+  wait ends its turn; Evener adds no wait primitive. As in Claude Code, the
+  runtime refuses wait-shaped actions instead: a repeated identical
+  `job_status` on an unchanged running target, and shell commands that only
+  sleep. Condition waits use `job_watch` (`output_match`), which runs without
+  model turns. Open detail: the exact sleep rule (see W1.2). Owns W1.2.
 - [ ] **D2 Background job bounds.** Recommended: default deadline for promoted
   background shell jobs (proposed 2 h, overridable per call; detached processes
   exempt) and a per-session cap on concurrently running shell jobs (proposed 8,
@@ -209,21 +211,33 @@ test file that already drives `EntryNotification` turns; update
   the turn keeps its batch and still sees later arrivals.
 - [ ] Pass, docs, commit, PR.
 
-### W1.2 A sanctioned wait and a hard stop on repeated polling (after D1)
+### W1.2 Refuse wait-shaped actions so agents end the turn (D1)
 
-**Files:** `agent/internal/tool/definitions.go` (`DefJobStatus`),
-`agent/session_tools_jobs*.go` (handler), `agent/internal/tool/breaker.go`;
-tests beside each; `docs/job-control.md`.
+**Files:** `agent/internal/tool/breaker.go` (identical-success path),
+`agent/session_tools_shell.go` (command admission), `DefJobStatus`
+description in `agent/internal/tool/definitions.go`; tests beside each;
+`docs/job-control.md`.
 
-- [ ] Failing test `TestJobStatusWaitReturnsOnCompletion`: running job,
-  `job_status{wait_ms}` returns when the job finishes, before the timeout, with
-  the terminal status; and `TestJobStatusWaitTimesOut` returns the running
-  status at the bound.
-- [ ] Failing test `TestRepeatedIdenticalJobStatusOnRunningJobParks`: third
-  identical call with unchanged result is parked (tool error kind, not a nudge);
-  a call after the target's state changes is not parked; a check of a quiet
-  delegate is allowed.
-- [ ] Implement per D1. Pass, docs, commit, PR.
+- [ ] Failing test `TestRepeatedIdenticalJobStatusOnRunningJobIsRefused`: the
+  second identical call on a running target whose state has not changed is
+  refused with a distinct error kind; a call after the target's state changes
+  is allowed; a first check of a delegate Evener reports as quiet is allowed.
+- [ ] Failing test `TestSleepOnlyShellCommandIsRefused`: a command that only
+  sleeps (`sleep N`, a `sleep` loop with no other work) is refused before it
+  runs; a command that sleeps as part of real work is not (D1 option a: loops
+  that do work between sleeps are bounded by W1.3's deadline instead).
+- [ ] Rewrite the wait guidance where the agent reads it at the moment it acts,
+  in "when you want X, do Y" form: the `job_status` and `job_list`
+  descriptions, the repeated-poll refusal, the breaker's repetition nudge, and
+  the sleep refusal each say: nothing else to do until it finishes → end your
+  turn with `communicate(end_turn=true, end_reason="waiting_on_work")`; its
+  completion wakes you; to wake on a condition, set `job_watch` with
+  `output_match`. Drop `job_list`'s "if you have waited a long time" clause.
+- [ ] In `agent/prompts/system.md.tmpl` "Background work", replace "Start long
+  work in the background only when you have other work to do meanwhile" with
+  the table's rule: long work runs as a background job; then do other work or
+  end your turn. Update prompt golden output.
+- [ ] Implement. Pass, docs, commit, PR.
 
 ### W1.3 Background job bounds (after D2)
 
