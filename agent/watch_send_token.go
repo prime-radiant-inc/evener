@@ -142,11 +142,29 @@ func (jm *jobManager) releaseWatchSendDeliveryClaim(deliveryID string) {
 	delete(jm.deliveringWatchSends, deliveryID)
 	_, superseded := jm.supersededWatchSends[deliveryID]
 	delete(jm.supersededWatchSends, deliveryID)
+	handOff := superseded && jm.retryUnsettledWatchSendLocked(deliveryID)
 	_, retrying := jm.stableWatchSettlementRetries[deliveryID]
 	jm.mu.Unlock()
+	if handOff {
+		jm.kick()
+	}
 	if superseded && !retrying {
 		jm.releaseStableWatchReceipt(deliveryID)
 	}
+}
+
+// retryUnsettledWatchSendLocked hands a replaced frame the receiver took but
+// never acknowledged to the settlement retry, which keeps its receipt until it
+// acknowledges. It reports false when the frame has no failed acknowledgement
+// noted. Caller holds jm.mu.
+func (jm *jobManager) retryUnsettledWatchSendLocked(deliveryID string) bool {
+	unsettled, accepted := jm.unsettledWatchSends[deliveryID]
+	if !accepted {
+		return false
+	}
+	delete(jm.unsettledWatchSends, deliveryID)
+	jm.rememberStableWatchSettlementRetryLocked(unsettled)
+	return true
 }
 
 // watchSendSuperseded reports whether a coalesced frame replaced the claimed
