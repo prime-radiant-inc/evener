@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -22,7 +23,7 @@ type launchFailingEnv struct {
 }
 
 func (*launchFailingEnv) StreamCommand(context.Context, string, string, map[string]string, io.Writer) (*execenv.StreamHandle, error) {
-	return nil, fmt.Errorf("executor refused to launch")
+	return nil, errors.New("executor refused to launch")
 }
 
 // waitFailingEnv is a local environment whose streaming executor launches and
@@ -34,7 +35,7 @@ type waitFailingEnv struct {
 
 func (*waitFailingEnv) StreamCommand(context.Context, string, string, map[string]string, io.Writer) (*execenv.StreamHandle, error) {
 	return &execenv.StreamHandle{
-		Wait:   func() (int, error) { return 1, fmt.Errorf("stream wait failed") },
+		Wait:   func() (int, error) { return 1, errors.New("stream wait failed") },
 		Signal: func() {},
 	}, nil
 }
