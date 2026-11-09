@@ -607,9 +607,23 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 		resolveDelegateInlineClaim(plan.waiter, delegateInlineResolution{fallback: true})
 		return delegateMutationPlans{}, errDelegateStaleLease
 	}
+	// Re-plan a stale head before admission (see replanStaleDelivery).
+	replanned := false
+	if replan := plan.controller.replanStaleDelivery(plan); replan != nil {
+		plan = *replan
+		receiver = plan.receiver
+		replanned = true
+	}
 	token, admitted, err := plan.controller.BeginDelivery(plan)
 	if err != nil || !admitted {
 		resolveDelegateInlineClaim(plan.waiter, delegateInlineResolution{fallback: true})
+		if replanned && errors.Is(err, errDelegateDeliveryRetry) {
+			// The transient arm kept the re-planned claim. The caller requeues
+			// its original stale plan, which can only re-plan once this claim is
+			// gone; otherwise the retry fails the claim-token match and the
+			// head strands.
+			plan.controller.dropDeliveryClaim(plan)
+		}
 		return delegateMutationPlans{}, err
 	}
 	if plan.waiter != nil {
@@ -650,6 +664,30 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 		return plans, err
 	}
 	return plans, plan.controller.wakeDeliveryReceiver(receiver, attentionID)
+}
+
+// replanStaleDelivery re-plans a delivery whose claim is gone but whose durable
+// head is still this delivery. It reports nil when the durable state has moved
+// on (the head was settled, replaced, or stopped), which is a permanent refusal.
+// A caller-committed plan is excluded: rebuilding it from the store would drop
+// the inline acknowledgement that committed cold path exists to produce.
+func (c *delegateTreeController) replanStaleDelivery(plan delegateDeliveryPlan) *delegateDeliveryPlan {
+	if plan.deliveryID == "" || len(plan.carried) != 0 || plan.callerCommitted {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, claimed := c.deliveryClaims[plan.deliveryID]; claimed || c.hasDeliveryReceiptLocked(plan.deliveryID) {
+		return nil
+	}
+	aggregate := c.durable[plan.delegateID]
+	if aggregate == nil || len(aggregate.PendingDeliveries) == 0 {
+		return nil
+	}
+	if aggregate.PendingDeliveries[0].DeliveryID != plan.deliveryID {
+		return nil
+	}
+	return c.newHeadDeliveryPlanLocked(plan.delegateID, plan.deliveryID)
 }
 
 func delegateAttentionID(deliveryID string) string { return "delegate:" + deliveryID }
