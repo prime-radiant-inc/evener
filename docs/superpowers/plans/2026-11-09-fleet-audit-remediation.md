@@ -127,8 +127,11 @@ creation idempotency.
   loads the primeradiant-ops version. Verify afterwards that a new Evener
   session's skill inventory resolves `implementing-features` to the plugin
   path. Owns W5.2.
-- [ ] **D6 API logging.** Turn on `api_log` for one lunaroute session to settle
-  the cache-freeze question, or drop it. Owns W6.2.
+- [x] **D6 API logging.** Decided 2026-11-09: record one lunaroute
+  `glm-5.3-vision` session with API logging on to settle the cache-freeze
+  question. `api_log` is a per-launch control ("Log API requests", debug
+  logging group; `cmd/evener-hub/internal/launchconfig/schema.go`), so it is
+  set when the session is launched, not on a running one. Owns W6.2.
 
 ---
 
