@@ -164,6 +164,14 @@ type activityContinuation struct {
 	// delegates, so either journal changing presence renumbers the list.
 	JobsAbsent      bool `json:"jobs_absent,omitempty"`
 	DelegatesAbsent bool `json:"dlg_absent,omitempty"`
+	// JobsUnreadable records that this session's jobs.jsonl was there and
+	// could not be read when this token was minted. That read folds nothing
+	// and reports generation 0, the same number a journal folded for the
+	// first time reports, so a degraded page's empty job list cannot be
+	// distinguished from a readable empty one by the generation alone. A
+	// resume that finds the journal readable now must restart rather than
+	// apply ResumeIndex to jobs the minted page never rendered.
+	JobsUnreadable bool `json:"jobs_unreadable,omitempty"`
 	// DelegatesUnreadable records that the delegate journal was there and
 	// could not be read when this token was minted. That read folds
 	// nothing and reports generation 0, the same number a journal read
@@ -221,6 +229,12 @@ type activitySessionSnapshot struct {
 	// journal that appears or disappears between two requests moves every
 	// position a continuation counted — see activitySessionEpochs.
 	JobsJournalAbsent bool
+	// JobsJournalUnreadable records that this session's jobs.jsonl was there
+	// and could not be read, so the fold reported neither a generation it
+	// earned nor the file's absence. Carried into a continuation the same
+	// way JobsJournalAbsent is: a position counted over a degraded, empty
+	// job list must not be applied once the journal reads.
+	JobsJournalUnreadable bool
 	// DelegatesJournalAbsent is the same fact for the delegates.jsonl this
 	// session folds, read the same way from the same fold.
 	DelegatesJournalAbsent bool
@@ -459,6 +473,7 @@ func loadActivitySnapshotForParams(ctx context.Context, root activitySessionLoca
 	target := collectActivitySessionEpochs(*snapshot)[cont.SessionID]
 	if cont.JobsEpoch != jobsEpoch || cont.DelegatesEpoch != delegatesEpoch ||
 		cont.JobsAbsent != target.jobsAbsent || cont.DelegatesAbsent != target.delegatesAbsent ||
+		cont.JobsUnreadable != target.jobsUnreadable ||
 		cont.DelegatesUnreadable != target.delegatesUnreadable {
 		return nil, 0, 0, activityStaleContinuationError("the underlying journal changed")
 	}
@@ -796,6 +811,7 @@ func activityFilterSnapshotToDelegate(base activitySessionSnapshot, delegateID s
 		DelegatesEpoch: base.DelegatesEpoch,
 
 		JobsJournalAbsent:          base.JobsJournalAbsent,
+		JobsJournalUnreadable:      base.JobsJournalUnreadable,
 		DelegatesJournalAbsent:     base.DelegatesJournalAbsent,
 		DelegatesJournalUnreadable: base.DelegatesJournalUnreadable,
 		Jobs:                       []*jobstore.JobRecord{},
@@ -846,6 +862,7 @@ type activitySessionEpochs struct {
 	// say: a journal that was never there and a journal folded for the
 	// first time both report 0.
 	jobsAbsent          bool
+	jobsUnreadable      bool
 	delegatesAbsent     bool
 	delegatesUnreadable bool
 }
@@ -861,6 +878,7 @@ func (s activitySessionSnapshot) epochs() activitySessionEpochs {
 		jobs:                s.JobsEpoch,
 		delegates:           s.DelegatesEpoch,
 		jobsAbsent:          s.JobsJournalAbsent,
+		jobsUnreadable:      s.JobsJournalUnreadable,
 		delegatesAbsent:     s.DelegatesJournalAbsent,
 		delegatesUnreadable: s.DelegatesJournalUnreadable,
 	}
@@ -1300,11 +1318,14 @@ func activityConsumeWorkUnit(budget *activityBudget, units int) bool {
 // (checked in loadActivitySnapshotForParams).
 //
 // A load-phase truncation can never coincide with this projection-phase
-// one on the same session: loadHistoricalActivityBase always either loads
-// a session's full history through the fold caches or fails loudly
-// (ErrLineTooLong), never silently degrades to a partial snapshot that
-// could combine with a projection-phase budget trip into a non-advancing
-// continuation.
+// one on the same session: loadHistoricalActivityBase loads a session's
+// full history through the fold caches whenever that history is readable.
+// Its one degraded load — a required child whose jobs.jsonl is missing or
+// unreadable, with the delegate rows the shared root journal attributes to
+// it — renders no jobs, so a projection-phase cutoff there counts only the
+// delegate entries the page did render. The continuation carries that
+// journal's absent/unreadable condition (see activityContinuation), so a
+// resume refuses the position once the journal reads.
 func markActivitySessionTruncated(session *appwire.JobActivitySession, budget *activityBudget, sessionID string, path []string, resumeIndex int, own activitySessionEpochs) {
 	if session == nil {
 		return

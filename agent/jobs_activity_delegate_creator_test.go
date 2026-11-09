@@ -179,7 +179,7 @@ func TestHistoricalActivityTreeKeepsNestedDelegatesWhenCreatorSessionUnavailable
 				t.Fatalf("degraded child diagnostics = %q, want one naming the unreadable session", middleDelegate.Child.Diagnostics)
 			}
 
-			leafDelegate := findActivityDelegate(t, *middleDelegate.Child, leafID)
+			leafDelegate := pastFindDelegate(t, *middleDelegate.Child, leafID)
 			if leafDelegate.Child == nil {
 				t.Fatal("nested leaf delegate has no child session, want the readable leaf session loaded beneath the degraded branch")
 			}
@@ -196,15 +196,76 @@ func TestHistoricalActivityTreeKeepsNestedDelegatesWhenCreatorSessionUnavailable
 	}
 }
 
-func findActivityDelegate(t *testing.T, session appwire.JobActivitySession, childID string) appwire.JobActivityDelegate {
-	t.Helper()
-	for _, entry := range session.Entries {
-		if entry.Delegate != nil && entry.Delegate.ChildSessionID == childID {
-			return *entry.Delegate
-		}
+// A continuation minted while a degraded child's jobs journal was unreadable
+// must be refused once that journal reads: its ResumeIndex was counted over
+// an empty job list, and the recovered journal can renumber the delegate
+// entries the page did render. The unreadable condition travels in the token
+// for exactly the reason JobsAbsent does.
+func TestHistoricalActivityContinuationRejectsPositionAfterJobsJournalRecovers(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootID := "continuationdegraderoot"
+	middleID := "childcontinuationdegraded"
+	leafID := "childcontinuationleaf"
+	middle := pastStableDescriptor(rootID, middleID, "middle task")
+	leaf := pastStableDescriptor(rootID, leafID, "leaf task")
+	leaf.ParentDelegateID = "dlg_" + strings.TrimPrefix(middleID, "child")
+	leaf.VisibleSessionID = middleID
+	writePastDelegates(t, stateDir, rootID, middle, leaf)
+
+	started := time.Unix(9_001, 0).UTC()
+	s1cov_writeJobLog(t, stateDir, rootID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root", Type: jobstore.JobShell,
+		OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started,
+	})
+	s1cov_writeJobLog(t, stateDir, leafID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_leaf", Type: jobstore.JobShell,
+		OwnerSessionID: leafID, VisibleToSession: leafID, StartedAt: &started,
+	})
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	savePastActivityMetaWithTreeRevision(t, stateDir, middleID, "Middle", rootID, 0)
+	savePastActivityMetaWithTreeRevision(t, stateDir, leafID, "Leaf", rootID, 0)
+
+	journalPath := filepath.Join(jobsDir(stateDir, middleID), "jobs.jsonl")
+	if err := os.MkdirAll(journalPath, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	t.Fatalf("no delegate child=%q in %+v", childID, session.Entries)
-	return appwire.JobActivityDelegate{}
+	params := appwire.JobsListParams{Continuation: encodeActivityContinuation(activityContinuation{
+		Version:        activityContinuationVersion,
+		RootID:         rootID,
+		SessionID:      middleID,
+		Path:           []string{"dlg_" + strings.TrimPrefix(middleID, "child")},
+		JobsUnreadable: true,
+	})}
+	rootLoc := activitySessionLocator{stateDir: stateDir, sessionID: rootID}
+
+	degraded, _, _, err := loadActivitySnapshotForParams(context.Background(), rootLoc, params)
+	if err != nil {
+		t.Fatalf("continuation while the child journal is unreadable: %v", err)
+	}
+	target := degraded.Children[middleID]
+	if target == nil {
+		t.Fatalf("degraded target %q is absent from the resumed page", middleID)
+	}
+	if len(target.Jobs) != 0 || !target.JobsJournalUnreadable {
+		t.Fatalf("degraded target jobs=%d unreadable=%t, want an empty job list marked unreadable", len(target.Jobs), target.JobsJournalUnreadable)
+	}
+	if _, ok := target.Delegates["dlg_"+strings.TrimPrefix(leafID, "child")]; !ok {
+		t.Fatalf("degraded target delegates = %v, want the nested delegate row", delegateIDs(target.Delegates))
+	}
+
+	if err := os.RemoveAll(journalPath); err != nil {
+		t.Fatal(err)
+	}
+	s1cov_writeJobLog(t, stateDir, middleID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_middle", Type: jobstore.JobShell,
+		OwnerSessionID: middleID, VisibleToSession: middleID, StartedAt: &started,
+	})
+	if _, _, _, err := loadActivitySnapshotForParams(context.Background(), rootLoc, params); err == nil {
+		t.Fatal("expected the continuation to be rejected after the jobs journal became readable")
+	} else if !strings.Contains(err.Error(), "underlying journal changed") {
+		t.Fatalf("resume error = %v, want the underlying-journal-changed staleness error", err)
+	}
 }
 
 func delegateIDs(rows map[string]delegateSnapshot) []string {

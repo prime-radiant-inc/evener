@@ -429,11 +429,11 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool, cache
 		// delegates out of the root roster, so this branch is the only place
 		// they can be loaded. The diagnostic keeps the failure visible on the
 		// degraded session rather than silently presenting it as healthy.
+		reason := "unavailable in state directory"
 		if jobErr != nil {
-			diagnostics = append(diagnostics, fmt.Sprintf("child session %q job journal unreadable: %v; showing delegates from the root journal", sessionID, jobErr))
-		} else {
-			diagnostics = append(diagnostics, fmt.Sprintf("child session %q job journal unavailable in state directory; showing delegates from the root journal", sessionID))
+			reason = fmt.Sprintf("unreadable: %v", jobErr)
 		}
+		diagnostics = append(diagnostics, fmt.Sprintf("child session %q job journal %s; showing delegates from the root journal", sessionID, reason))
 	}
 	return activityLoadedBase{snapshot: activitySessionSnapshot{
 		SessionID:      sessionID,
@@ -450,6 +450,7 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool, cache
 		DelegatesEpoch: delegates.epoch,
 
 		JobsJournalAbsent:          jobsAbsent,
+		JobsJournalUnreadable:      jobErr != nil,
 		DelegatesJournalAbsent:     delegates.absent,
 		DelegatesJournalUnreadable: delegates.unreadable,
 	}}, nil
