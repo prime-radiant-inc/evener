@@ -230,13 +230,13 @@ export function VirtualList({
   // The reading point is the one the reader had when they last moved. A
   // measurement that does not move the port leaves it alone, so a late growth
   // cannot redefine the reader's point by filling the viewport top itself.
-  const recordReadingPoint = () => {
+  const recordReadingPoint = (force = false) => {
     const port = scrollRef.current;
     if (!port) return;
     const recorded = readingPointRef.current;
     const viewportChanged =
       recorded === undefined || recorded.width !== port.clientWidth || recorded.viewport !== port.clientHeight;
-    if (!viewportChanged && recordedReadingTopRef.current === port.scrollTop) return;
+    if (!force && !viewportChanged && recordedReadingTopRef.current === port.scrollTop) return;
     recordedReadingTopRef.current = port.scrollTop;
     readingPointRef.current = readingPoint?.();
   };
@@ -327,10 +327,11 @@ export function VirtualList({
   // Upstream onChange runs before React commits the new sizer and row window.
   // Consumers restoring a measured position also need that committed geometry.
   useLayoutEffect(() => {
-    // A committed geometry change can resize the viewport without any upstream
-    // onChange (a composer resize that keeps the same rows). The reading-point
-    // snapshot names the viewport it was taken in, so it must follow that.
-    recordReadingPoint();
+    // Row translations and the viewport commit here, after any upstream
+    // onChange already ran with the pre-commit geometry. A snapshot taken
+    // mid-compensation names a position the reader never held, so replace it
+    // with the committed one.
+    recordReadingPoint(true);
     onChange?.(virtualizer, false);
   });
 
