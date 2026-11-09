@@ -1715,6 +1715,12 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			observer(a, iteration)
 		}
 		res, err = a.sess.processInputKindWithProvenance(ctx, input, nil, kind, inputProvenance)
+		// A usage limit with a known reset holds the run open until it
+		// resets, then resumes from the transcript as a runtime turn: the
+		// input is already recorded, and repeating it would say it twice.
+		for a.holdDelegateRunForQuota(ctx, err) {
+			res, err = a.sess.processRuntimeInput(ctx, a.followUpProvenance(inputProvenance))
+		}
 		_, budgetExhausted := budgetExhaustionFromError(err)
 		a.mu.Lock()
 		cancelRequested := a.cancelRequested

@@ -385,24 +385,16 @@ func (s *Session) settleGoalOnIdle() bool {
 	wakePending := probe && s.hasWakePendingDependents()
 	s.mu.Lock()
 	s.goalInTurn = false
-	kick := s.kickFunc
-	pendingAsk := len(s.askPending) > 0
 	// Consume a pending dependents hold: suppress the kick only while the
 	// dependents the gate waited on still pend. Recomputed now (not trusted
 	// from the gate's read) so a stale hold — the last delegate terminated and
 	// its notification is already queued — cannot strand the goal.
 	held := s.goalDependentsHeld
 	s.goalDependentsHeld = false
-	// No kick while user steering is parked after a failed attempt
-	// (Session.steeringParked): the continuation would drain the parked steer
-	// under its own turn id. The goal stays active; the settle after the
-	// carrier the next external wake runs kicks it.
-	parked := s.steeringParked && s.hasPendingUserSteeringLocked()
+	var kick func(string)
 	var prompt string
-	if kick != nil && !pendingAsk && !parked && (!held || !wakePending) {
-		if snap, ok := s.getOrCreateGoalStore().Snapshot(); ok && snap.Status == goal.StatusActive {
-			prompt = goal.Render(snap.Objective)
-		}
+	if !held || !wakePending {
+		kick, prompt = s.idleGoalKickLocked()
 	}
 	s.mu.Unlock()
 	if prompt != "" {
@@ -410,6 +402,25 @@ func (s *Session) settleGoalOnIdle() bool {
 		return true
 	}
 	return false
+}
+
+// idleGoalKickLocked returns the kick callback and the active goal's
+// continuation prompt when an idle session may start its goal now: a kick is
+// wired, no question is pending, and no user steering is parked after a
+// failed attempt (Session.steeringParked), since the continuation would drain
+// the parked steer under its own turn id; the settle after the carrier the
+// next external wake runs kicks it instead. The prompt is empty when the goal
+// may not start. The caller holds s.mu and kicks after releasing it.
+func (s *Session) idleGoalKickLocked() (func(string), string) {
+	kick := s.kickFunc
+	if kick == nil || len(s.askPending) > 0 || (s.steeringParked && s.hasPendingUserSteeringLocked()) {
+		return nil, ""
+	}
+	snap, ok := s.getOrCreateGoalStore().Snapshot()
+	if !ok || snap.Status != goal.StatusActive {
+		return nil, ""
+	}
+	return kick, goal.Render(snap.Objective)
 }
 
 // terminateGoalOnError transitions an active goal to blocked and emits its

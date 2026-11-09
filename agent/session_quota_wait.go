@@ -1,10 +1,11 @@
 package agent
 
 import (
+	"context"
+	"errors"
 	"time"
 
 	"primeradiant.com/evener/agent/internal/clock"
-	"primeradiant.com/evener/agent/internal/goal"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -17,6 +18,8 @@ import (
 // provider's reset time, on a model switch, or when a turn succeeds (a user
 // message still tries the provider, since the user may know the quota came
 // back). Ending it by the clock or a switch asks for the wakes it refused.
+// A delegate's own run waits too (holdDelegateRunForQuota): its generation
+// stays open, and resumes when the wait ends.
 //
 // Only a quota failure that names its reset time begins a wait. One that
 // does not keeps the permanent-failure pause the root attention rail already
@@ -29,6 +32,8 @@ type quotaWait struct {
 	// err is the quota failure that began the wait, which a job-tree drain
 	// returns instead of running turns that would meet it again.
 	err error
+	// ended is closed when the wait ends, however it ends.
+	ended chan struct{}
 	// failure is the recorded turn failure that began the wait. The session
 	// rests on it for as long as it waits: a notification appended to the
 	// transcript meanwhile is held work, not a turn that ended the failure.
@@ -55,9 +60,10 @@ func (s *Session) beginQuotaWait(err error) {
 	}
 	failure, _ := historyTurnFailure(s.history)
 	s.stopQuotaWaitLocked()
-	wait := &quotaWait{resetAt: resetAt, err: err, failure: failure}
+	wait := &quotaWait{resetAt: resetAt, err: err, failure: failure, ended: make(chan struct{})}
 	wait.timer = s.sclock().AfterFunc(resetAt.Sub(now), func() { s.quotaResetReached(wait) })
 	s.quotaWait = wait
+	s.lastQuotaWait = wait
 }
 
 // quotaResetReached ends the wait its timer belongs to, unless something
@@ -66,7 +72,7 @@ func (s *Session) quotaResetReached(wait *quotaWait) {
 	s.mu.Lock()
 	current := s.quotaWait == wait && !s.closingOrClosedLocked()
 	if current {
-		s.quotaWait = nil
+		s.stopQuotaWaitLocked()
 	}
 	s.mu.Unlock()
 	if current {
@@ -96,11 +102,27 @@ func (s *Session) endQuotaWait() bool {
 	return true
 }
 
+// stopQuotaWaitLocked ends any wait: its timer no longer holds the session,
+// and whatever waits on it is released. Closing the session stops it too.
 func (s *Session) stopQuotaWaitLocked() {
 	if s.quotaWait != nil {
 		s.quotaWait.timer.Stop()
+		close(s.quotaWait.ended)
 	}
 	s.quotaWait = nil
+}
+
+// quotaWaitEndedFor returns a channel closed when the quota wait that err
+// began ends, or false when err began none: it is not a quota failure, or
+// its reset time had already passed.
+func (s *Session) quotaWaitEndedFor(err error) (<-chan struct{}, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	wait := s.lastQuotaWait
+	if err == nil || wait == nil || !errors.Is(err, wait.err) {
+		return nil, false
+	}
+	return wait.ended, true
 }
 
 // waitingForQuota reports whether a quota wait holds autonomous turns.
@@ -141,16 +163,36 @@ func (s *Session) wakeAfterQuotaWait() {
 		return
 	}
 	s.mu.Lock()
-	kick := s.kickFunc
-	idle := !s.goalInTurn && len(s.askPending) == 0
+	var kick func(string)
 	var prompt string
-	if kick != nil && idle {
-		if snap, ok := s.getOrCreateGoalStore().Snapshot(); ok && snap.Status == goal.StatusActive {
-			prompt = goal.Render(snap.Objective)
-		}
+	if !s.goalInTurn {
+		kick, prompt = s.idleGoalKickLocked()
 	}
 	s.mu.Unlock()
 	if prompt != "" {
 		kick(prompt)
 	}
+}
+
+// holdDelegateRunForQuota holds a delegate's run whose turn met a usage limit
+// with a known reset, instead of letting the run finish as failed: no
+// missing-report reminder, stop-hook or settlement turn runs against the
+// limit, and the parent keeps the delegate as running rather than failed. It
+// reports true when the wait ended (at the reset, or on a model switch) and
+// the run should resume, and false when err began no wait or the run was
+// stopped or cancelled meanwhile.
+func (a *subagent) holdDelegateRunForQuota(ctx context.Context, err error) bool {
+	ended, waiting := a.sess.quotaWaitEndedFor(err)
+	if !waiting {
+		return false
+	}
+	select {
+	case <-ended:
+	case <-ctx.Done():
+		return false
+	}
+	a.mu.Lock()
+	cancelRequested := a.cancelRequested
+	a.mu.Unlock()
+	return !cancelRequested && ctx.Err() == nil
 }

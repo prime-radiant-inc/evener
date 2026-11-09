@@ -746,8 +746,11 @@ type Session struct {
 	terminalCommunicateAccepted bool
 
 	// quotaWait is set while the provider's usage limit holds the session's
-	// autonomous turns (session_quota_wait.go); nil otherwise. Guarded by mu.
-	quotaWait *quotaWait
+	// autonomous turns (session_quota_wait.go); nil otherwise. lastQuotaWait
+	// is the most recent wait, ended or not, so a delegate run can tell
+	// whether its own failure began one. Guarded by mu.
+	quotaWait     *quotaWait
+	lastQuotaWait *quotaWait
 
 	// askPending is the per-turn pending set of questions posted by ask_user
 	// calls this turn (spec §5.1): its length lets a round-boundary check tell

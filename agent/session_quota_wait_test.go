@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/goal"
+	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -396,5 +397,148 @@ func TestUsageLimitWithoutResetTimeDoesNotWait(t *testing.T) {
 	}
 	if status, _, _ := s.GoalStatus(); status != string(goal.StatusBlocked) {
 		t.Fatalf("goal status = %q, want blocked as on any provider failure", status)
+	}
+}
+
+// A drain — a one-shot run's, or a delegate's finalization — keeps owned work
+// alive: when it returns, Close kills whatever still runs. A quota wait holds
+// the notification turns the drain would run, but it must not end the drain
+// while a managed job is still running. Once nothing runs, the drain ends
+// with the quota failure instead of spinning on the held notification.
+func TestDrainKeepsWaitingForRunningWorkDuringQuotaWait(t *testing.T) {
+	resetAt := time.Unix(1000, 0).Add(2 * time.Hour)
+	s, _, _, adapter := newAttentionLivelockSession(t, usageLimitError(t, "openai", resetAt))
+	serveSession(t, s)
+	ctx := context.Background()
+	_, _ = s.ProcessInput(ctx, "start the work", nil)
+	if !s.waitingForQuota() {
+		t.Fatal("precondition: the session is not waiting for quota")
+	}
+	// One job finished while waiting (its notification is held) and another
+	// is still running.
+	enqueueCompletedJobNotification(t, s, "job_done_while_waiting")
+	jm := s.jobManager
+	running := &jobstore.JobRecord{JobID: "job_still_running", Type: jobstore.JobShell, Status: jobstore.StatusRunning, Background: true, OwnerSessionID: s.ID()}
+	jm.mu.Lock()
+	jm.running[running.JobID] = &runningJob{rec: running}
+	jm.mu.Unlock()
+	t.Cleanup(func() {
+		jm.mu.Lock()
+		delete(jm.running, running.JobID)
+		jm.mu.Unlock()
+	})
+	failed := streamCalls(adapter)
+
+	recheck := make(chan time.Time)
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.drainJobTree(tripwireCtx(t), recheck)
+		done <- err
+	}()
+	// Each recheck the drain takes is a pass that parked waiting on the job.
+	for range 3 {
+		select {
+		case recheck <- time.Time{}:
+		case err := <-done:
+			t.Fatalf("the drain ended (err %v) while a managed job was still running: Close would kill it", err)
+		}
+	}
+
+	jm.mu.Lock()
+	delete(jm.running, running.JobID)
+	jm.mu.Unlock()
+	var err error
+	select {
+	case recheck <- time.Time{}:
+		err = <-done
+	case err = <-done:
+	}
+	if llm.Kind(err) != llm.KindQuotaExceeded {
+		t.Fatalf("drain error once nothing runs = %v, want the quota failure", err)
+	}
+	if got := streamCalls(adapter); got != failed {
+		t.Fatalf("the drain made %d model request(s) during the quota wait, want none", got-failed)
+	}
+}
+
+// A delegate is a session too. Its own generation turn meeting a usage limit
+// with a known reset holds the run open instead of finishing it as failed:
+// no missing-report reminder or other turn runs against the limit, the
+// parent keeps the delegate running, and the run resumes at the reset and
+// finishes its work.
+func TestDelegateGenerationTurnHeldDuringQuotaWait(t *testing.T) {
+	resetAt := time.Unix(1000, 0).Add(2 * time.Hour)
+	s, clk, _, adapter := newAttentionLivelockSession(t, usageLimitError(t, "openai", resetAt))
+	// The sub drives sub.run directly on its own session, as the cancel tests
+	// in subagents_test.go do.
+	sub := &subagent{id: s.id, sess: s, running: true, status: SubagentRunning, done: make(chan struct{}), nudgeEnabled: true}
+	finished := make(chan struct{})
+	go func() {
+		sub.run(context.Background(), "do the delegated work", nil)
+		close(finished)
+	}()
+
+	ctx := tripwireCtx(t)
+	for !s.waitingForQuota() {
+		select {
+		case <-finished:
+			t.Fatal("the delegate's run finished on the usage limit instead of waiting for its reset")
+		case <-ctx.Done():
+			t.Fatal("the delegate never began waiting for quota")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	limited := streamCalls(adapter)
+
+	recoverProvider(adapter)
+	clk.Advance(2 * time.Hour)
+	clk.Drain()
+	select {
+	case <-finished:
+	case <-ctx.Done():
+		t.Fatal("the delegate's run did not resume at the reset")
+	}
+	sub.mu.Lock()
+	status, runErr := sub.status, sub.err
+	sub.mu.Unlock()
+	if status == SubagentFailed || runErr != nil {
+		t.Fatalf("delegate after the reset: status=%q err=%v, want it to have resumed and finished its work", status, runErr)
+	}
+	if limited != 1 {
+		t.Fatalf("model requests against the usage limit = %d, want only the generation turn that met it", limited)
+	}
+	if streamCalls(adapter) == limited {
+		t.Fatal("the delegate made no model request after the reset")
+	}
+}
+
+// Closing a waiting session stops its reset timer: it no longer holds the
+// session until the reset, which can be days away.
+func TestCloseStopsTheQuotaWaitTimer(t *testing.T) {
+	resetAt := time.Unix(1000, 0).Add(48 * time.Hour)
+	s, clk, notifies, _ := newAttentionLivelockSession(t, usageLimitError(t, "openai", resetAt))
+	_, _ = s.ProcessInput(context.Background(), "start the work", nil)
+	ended, waiting := s.quotaWaitEndedFor(s.quotaWaitError())
+	if !waiting {
+		t.Fatal("precondition: the session is not waiting for quota")
+	}
+	s.mu.Lock()
+	timer := s.quotaWait.timer
+	s.mu.Unlock()
+
+	s.Close()
+	select {
+	case <-ended:
+	default:
+		t.Fatal("closing the session left its quota wait in place")
+	}
+	if timer.Stop() {
+		t.Fatal("closing the session left the reset timer armed")
+	}
+	wakes := notifies.Load()
+	clk.Advance(48 * time.Hour)
+	clk.Drain()
+	if notifies.Load() != wakes {
+		t.Fatal("a closed session asked for a wake at the reset")
 	}
 }

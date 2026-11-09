@@ -616,6 +616,26 @@ func (s *Session) subtreeHasLiveComponent() (bool, error) {
 	return false, nil
 }
 
+// subtreeStillRunning reports whether a managed job or an active child is
+// still at work anywhere in this session's subtree: work a drain's return
+// would leave Close to kill. Children the drain no longer drives are skipped
+// as in subtreeHasLiveComponent.
+func (s *Session) subtreeStillRunning() bool {
+	if s.jobManager != nil && s.jobManager.hasRunningDrainJob() {
+		return true
+	}
+	for _, sub := range s.liveDirectSubagents() {
+		active, child := s.subagentActive(sub)
+		if child != nil && (s.childStopGated(child.id) || s.childFatalRunGated(child.id) || s.childDrainAbandoned(child.id)) {
+			continue
+		}
+		if active || (child != nil && child.subtreeStillRunning()) {
+			return true
+		}
+	}
+	return false
+}
+
 // delegateAbandonedByDrain reports whether ONE delegate has completed the first
 // grace window. It does not itself license abandonment: production records a
 // generation-scoped second continuous-stall window and abandons only after that
@@ -1174,12 +1194,6 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		return true
 	}
 	for {
-		// A quota wait refuses the notification turns this loop runs, so a pass
-		// would spin on work it cannot deliver. End the drain with the quota
-		// failure, as a drain turn that met it would.
-		if err := s.quotaWaitError(); err != nil {
-			return lastResult, err
-		}
 		// Take this pass's wake edge before it reads any state. treeHasOutstandingWork
 		// consults eight independent signals in sequence, so it is not a snapshot, and
 		// a completion that hands work UP the tree moves two of them in turn:
@@ -1274,6 +1288,22 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 			return lastResult, nil
 		}
 		if notificationTurnOwed {
+			// A quota wait refuses the notification turn (session_quota_wait.go),
+			// so running it would spin. While owned work still runs the drain
+			// keeps waiting for it, as Close would kill it; the wait's end
+			// wakes this drain to deliver. With nothing running, the drain ends
+			// with the quota failure, as the turn that met it would.
+			if quotaErr := s.quotaWaitError(); quotaErr != nil {
+				if !s.subtreeStillRunning() {
+					return lastResult, quotaErr
+				}
+				wokeByWait, err := waitDrainWake(ctx, wake, recheck)
+				if err != nil {
+					return lastResult, err
+				}
+				wakePending = wokeByWait
+				continue
+			}
 			// A completion is queued on this (root) rail: run a notification turn so
 			// the coordinator's model receives it and can dispatch more work or wrap
 			// up. The turn's boundary also drives any idle descendant that has
