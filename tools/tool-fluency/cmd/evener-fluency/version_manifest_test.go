@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"primeradiant.com/evener/gittest"
 )
 
 // manifestFixtureRepo creates a git repository with two commits on main, each
@@ -359,4 +361,16 @@ func TestRunMatrixCommandBuildsFromVersionManifest(t *testing.T) {
 			t.Errorf("%s bin = %q, want a build of %s under %s", label, bins[label], sha, cache)
 		}
 	}
+}
+
+// TestRunGitRunsUnderTheTestProcessGitConfig pins TestMain's git isolation at
+// runGit, which builds version worktrees with the process environment:
+// TestMain's gittest.IsolateProcess must reach it.
+func TestRunGitRunsUnderTheTestProcessGitConfig(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	gittest.Run(t, dir, "init", "-q")
+	gittest.RequireIsolated(t, func(dir string, args ...string) (string, error) {
+		return runGit(t.Context(), dir, args...)
+	}, dir)
 }
