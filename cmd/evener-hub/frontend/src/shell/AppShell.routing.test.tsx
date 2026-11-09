@@ -6,6 +6,7 @@ import type {
 } from "@evener/appwire-client";
 import { APPWIRE_PROTOCOL_VERSION, type ConnectionState, WireError } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
@@ -1082,6 +1083,83 @@ test("rail activation updates the URL and a later Settings activation returns Se
   expect(workspaceStore.getState().panes.some((pane) => pane.type === "settings" && pane.slot === "secondary")).toBe(
     false,
   );
+});
+
+// A rail row's own summary says whether it is a top-level session, so a press
+// on that row can place the session in the same tick. It must not wait for the
+// route's location read: that read is a hub round trip, and on a busy or
+// remote hub the press would otherwise look ignored until it answered. The
+// route still reconciles a stale hint through the ordinary placement path.
+test("rail activation places a top-level session before its location read answers", async () => {
+  const location = deferred<void>();
+  const client = navClient();
+  client.on("evener/navigation/read", (params: NavigationReadParams) => {
+    if (params.resource !== "location") return navigationRead(params);
+    return location.promise.then(() => navigationRead(params));
+  });
+
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("Session one");
+
+  await user.click(screen.getByText("Session one"));
+
+  expect(window.location.pathname).toBe("/s/local%3As1");
+  // No waitFor: the held location read is still unanswered, so this must
+  // already be true in the press's own commit.
+  expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:s1" });
+
+  await act(async () => {
+    location.resolve(undefined);
+    await location.promise;
+  });
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:s1" });
+  });
+});
+
+// The rail's immediate placement trusts the row's kind. When the delayed
+// location read says the row was stale and the session is nested, the pane
+// must move beside its owner, not be disposed and recreated: image
+// attachments are per-mount composer state and would disappear with it.
+test("a delayed nested location reply keeps the immediately opened child pane", async () => {
+  const location = deferred<void>();
+  const client = navClient();
+  client.on("evener/navigation/read", (params: NavigationReadParams) => {
+    if (params.resource !== "location") return navigationRead(params);
+    return location.promise.then(() =>
+      wireSnapshot(
+        params,
+        {
+          ref: params.ref,
+          top_level_ref: "local:owner",
+          top_level: false,
+          session: { ...TREE_SESSION, ref: params.ref, session_id: params.ref, kind: "subagent" },
+        },
+        '"test"',
+      ),
+    );
+  });
+
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("Session one");
+  await user.click(screen.getByText("Session one"));
+
+  const child = workspaceStore.getState().mainPane();
+  if (!child) throw new Error("missing immediately opened child");
+  expect(child.params).toEqual({ ref: "local:s1" });
+
+  await act(async () => {
+    location.resolve(undefined);
+    await location.promise;
+  });
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:owner" });
+  });
+  const state = workspaceStore.getState();
+  expect(state.panes.find((pane) => pane.id === child.id)?.slot).toBe("secondary");
+  expect(state.focusedPaneId).toBe(child.id);
 });
 
 // Closing a deleted session's pane is not enough for the pane the ADDRESS BAR
