@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1282,6 +1283,12 @@ func (s *Session) appendOrFoldJobNotificationLocked(n jobNotification) {
 				return
 			}
 		}
+	}
+	// A long-running-jobs reminder is a snapshot of the jobs running when it was
+	// built, so a newer one replaces any still undelivered rather than queueing
+	// behind it listing jobs that may have finished.
+	if n.isLongRunningJobsReminder() {
+		s.pendingJobNotifs = slices.DeleteFunc(s.pendingJobNotifs, jobNotification.isLongRunningJobsReminder)
 	}
 	s.pendingJobNotifs = append(s.pendingJobNotifs, n)
 }
