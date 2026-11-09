@@ -1003,8 +1003,44 @@ func (s *RemoteHubSource) ItemCandidatesFromRead(ctx context.Context, params app
 
 // ItemCandidatesFromLegacyPage converts the supplied compatibility reread
 // without asking the remote hub to understand the controller's fetch cursor.
+// Unlike ItemCandidatesFromRead it is a pure conversion: a window read selects
+// several ranges from the same transcript, and retaining each selection would
+// rotate the cursor an ordinary item continuation of that thread still uses.
 func (s *RemoteHubSource) ItemCandidatesFromLegacyPage(ctx context.Context, params appwire.ThreadReadParams, response appwire.ThreadReadResponse) (ItemCandidateResult, error) {
-	return s.ItemCandidatesFromRead(ctx, params, response)
+	if err := ctx.Err(); err != nil {
+		return ItemCandidateResult{}, err
+	}
+	ref, err := s.toRemoteRef(params.Ref, params.ThreadID)
+	if err != nil {
+		return ItemCandidateResult{}, err
+	}
+	candidates, err := appitempaging.CandidatesFromTurns(response.Thread.Turns)
+	if err != nil {
+		return ItemCandidateResult{}, err
+	}
+	if err := validateRemotePagePositions(candidates); err != nil {
+		return ItemCandidateResult{}, err
+	}
+	// The identity names the history the reread came from, so a compatibility
+	// fetch can compare it against the cursor it was minted with. The snapshot
+	// incarnation is stable across every range selected from one read.
+	key := remoteItemPagingKey(s.id, ref.ThreadID)
+	state, retained := s.itemPaging.peek(key)
+	var cursorIdentity appitempaging.CursorIdentity
+	if retained {
+		cursorIdentity = state.identity
+	} else {
+		cursorIdentity = s.mintRemoteItemIdentity(key)
+	}
+	if response.Snapshot != nil && response.Snapshot.Incarnation != "" {
+		cursorIdentity.Incarnation = response.Snapshot.Incarnation
+	}
+	return ItemCandidateResult{
+		Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates},
+		Identity:   cursorIdentity,
+		Exhausted:  response.OlderCursor == "",
+		History:    ReadHistoryIdentity(response),
+	}, nil
 }
 
 // remoteItemPage issues one remote item-mode turn page and returns its

@@ -38,6 +38,49 @@ func TestItemSnapshotStateTypeContainsNoTranscriptPayloadTypes(t *testing.T) {
 	}
 }
 
+func TestRemoteLegacyPageConversionLeavesRetainedPagingState(t *testing.T) {
+	source := NewRemoteHubSource("remote", nil, nil)
+	key := remoteItemPagingKey("remote", "thread-1")
+	retainedHead := appwire.ThreadItemPosition{Entry: 2}
+	retained := remoteItemPagingState{
+		identity: appitempaging.CursorIdentity{ThreadRef: key, Incarnation: "retained-incarnation", ProjectionVersion: remoteHubItemCursorProjectionVersion},
+		native:   "native-cursor",
+		candidates: []appitempaging.TranscriptItemCandidate{{
+			TurnID: "turn-1", Position: retainedHead,
+			Item: appwire.ThreadItem{ID: "newest", Type: "agentMessage", TurnID: "turn-1", Position: &retainedHead, Version: 1},
+		}},
+		head: retainedHead, hasHead: true,
+	}
+	source.itemPaging.put(key, retained)
+
+	olderPosition := appwire.ThreadItemPosition{Entry: 1}
+	response := appwire.ThreadReadResponse{
+		Thread: appwire.Thread{
+			ID: "thread-1", SessionID: "thread-1", Evener: appwire.EvenerThread{Ref: "remote:thread-1"},
+			Turns: []appwire.Turn{{
+				ID: "turn-1", Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFragment,
+				Items: []appwire.ThreadItem{{
+					ID: "older", Type: "agentMessage", TurnID: "turn-1", TranscriptKey: "older",
+					Position: &olderPosition, Version: 1,
+				}},
+			}},
+		},
+		Snapshot: &appwire.SnapshotIdentity{Incarnation: "snapshot-incarnation", Length: 2},
+	}
+
+	converted, err := source.ItemCandidatesFromLegacyPage(t.Context(), appwire.ThreadReadParams{Ref: "remote:thread-1", ThreadID: "thread-1"}, response)
+	if err != nil {
+		t.Fatalf("legacy conversion: %v", err)
+	}
+	if converted.Identity.Incarnation != "snapshot-incarnation" {
+		t.Fatalf("legacy identity incarnation = %q, want the reread snapshot", converted.Identity.Incarnation)
+	}
+	state, ok := source.itemPaging.peek(key)
+	if !ok || state.identity != retained.identity || state.native != retained.native || len(state.candidates) != len(retained.candidates) {
+		t.Fatalf("legacy conversion changed retained paging state: %+v", state)
+	}
+}
+
 func typeContains(current, target reflect.Type, seen map[reflect.Type]bool) bool {
 	if current == target {
 		return true

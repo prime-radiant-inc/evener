@@ -670,6 +670,10 @@ const (
 	ThreadElisionRecoveryWiderItemTypes = "reread-wider-item-types"
 	ThreadElisionRecoveryContinuation   = "continuation"
 	ThreadElisionRecoveryWiderByteBound = "reread-wider-byte-bound"
+	// ThreadElisionRecoveryRereadSettled names the reread that recovers a
+	// withheld in-flight item: it has no version to fence, so no cursor can
+	// address it until the turn settles.
+	ThreadElisionRecoveryRereadSettled = "reread-after-settle"
 )
 
 type ThreadWindowResult struct {

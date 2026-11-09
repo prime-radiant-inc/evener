@@ -2041,6 +2041,58 @@ func TestSessionOperationsBoundsUnreachableHubCompatibilityFetch(t *testing.T) {
 	}
 }
 
+func TestSessionOperationsRejectsHubCompatibilityFetchAcrossHistoryIncarnation(t *testing.T) {
+	targetPosition := appwire.ThreadItemPosition{Entry: 1}
+	target := appwire.ThreadItem{
+		ID: "compat-target", Type: "agentMessage", TurnID: "turn-all", TranscriptKey: "compat-target",
+		Position: &targetPosition, Version: 3, Text: "target",
+	}
+	newestPosition := appwire.ThreadItemPosition{Entry: 2}
+	newest := appwire.ThreadItem{
+		ID: "compat-newest", Type: "agentMessage", TurnID: "turn-all", TranscriptKey: "compat-newest",
+		Position: &newestPosition, Version: 1, Text: "newest",
+	}
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "old-daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{
+			Thread: appwire.Thread{ID: "compat-rewritten", SessionID: "compat-rewritten", Evener: appwire.EvenerThread{Ref: params.Ref}, Turns: []appwire.Turn{{
+				ID: "turn-all", Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFragment, Items: []appwire.ThreadItem{newest}, HasEarlierItems: true,
+			}}},
+			OlderCursor: "native-older", Snapshot: &appwire.SnapshotIdentity{Incarnation: "compat-rewritten-before", Length: 2},
+		}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadTurnsList, func(_ context.Context, _ appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+		return appwire.ThreadTurnsListResponse{
+			Data:     []appwire.Turn{{ID: "turn-all", Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFragment, Items: []appwire.ThreadItem{target}}},
+			Snapshot: &appwire.SnapshotIdentity{Incarnation: "compat-rewritten-after", Length: 2},
+		}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		return []appsource.LocalDaemonEntry{{
+			Entry:             rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"), SourceID: "local", ThreadID: "compat-rewritten", SessionID: "compat-rewritten", WorkspaceRef: "local:compat-rewritten"},
+			Capabilities:      appwire.ThreadCapabilities{PageBefore: true},
+			CapabilitiesKnown: true,
+		}}
+	}, http.DefaultClient)
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
+	operations := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
+	window := appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Latest: 1}}
+	identity := appitempaging.CursorIdentity{
+		ThreadRef: "local:compat-rewritten", Incarnation: window.ViewIncarnation("compat-rewritten-before", appwire.TranscriptItemPageLimit), ProjectionVersion: appitempaging.TranscriptItemProjectionVersion,
+	}
+	_, err := operations.fetchHubCompatibilityTranscriptItem(t.Context(), identity.ThreadRef, identity, appitempaging.FetchCursor{
+		Position: targetPosition, ItemVersion: target.Version, Origin: appitempaging.FetchCursorOriginHubCompat,
+	})
+	if !errors.Is(err, appwire.TranscriptItemCursorStale()) {
+		t.Fatalf("rewritten-history compatibility fetch = %v, want stale", err)
+	}
+}
+
 func TestSessionOperationsFetchesTranslatedRemoteItem(t *testing.T) {
 	position := appwire.ThreadItemPosition{Entry: 11, Item: 2}
 	item := appwire.ThreadItem{

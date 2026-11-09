@@ -794,8 +794,16 @@ func packItemCandidates[T any](
 			}
 			if len(selectedCandidates) > itemLimit {
 				preparedTurn.capWithheld = len(selectedCandidates) - itemLimit
-				first := selectedCandidates[itemLimit]
-				preparedTurn.firstCapWithheld = &first
+				// An in-flight item has no version, so it cannot fence a
+				// continuation. Anchor on the first settled withheld candidate;
+				// withheld in-flight items are recovered by rereading the turn.
+				for _, withheld := range selectedCandidates[itemLimit:] {
+					if withheld.Item.Version != 0 {
+						first := withheld
+						preparedTurn.firstCapWithheld = &first
+						break
+					}
+				}
 				selectedCandidates = selectedCandidates[:itemLimit]
 			}
 			for _, candidate := range selectedCandidates {
@@ -848,9 +856,6 @@ func packItemCandidates[T any](
 					elision.TypeExcludedRecovery = appwire.ThreadElisionRecoveryWiderItemTypes
 				}
 				elision.CapWithheld = preparedTurn.capWithheld
-				if preparedTurn.capWithheld > 0 {
-					elision.CapWithheldRecovery = appwire.ThreadElisionRecoveryContinuation
-				}
 				var firstContinuation *appitempaging.TranscriptItemCandidate
 				if preparedTurn.firstCapWithheld != nil {
 					first := *preparedTurn.firstCapWithheld
@@ -913,6 +918,12 @@ func packItemCandidates[T any](
 				}
 				if err := setContinuation(); err != nil {
 					return zero, err
+				}
+				if preparedTurn.capWithheld > 0 {
+					elision.CapWithheldRecovery = appwire.ThreadElisionRecoveryRereadSettled
+					if elision.ContinuationCursor != "" {
+						elision.CapWithheldRecovery = appwire.ThreadElisionRecoveryContinuation
+					}
 				}
 				attachTranscriptWindowElision(&turn, elision)
 

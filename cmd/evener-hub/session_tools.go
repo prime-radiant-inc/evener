@@ -694,6 +694,13 @@ func (o *sessionOperations) fetchHubCompatibilityTranscriptItem(
 		if err := appwire.ValidateThreadTurnsListItemResponse(page); err != nil {
 			return appwire.SessionFetchResponse{}, err
 		}
+		// The initial read's incarnation was checked above. A Clear or rewrite
+		// between pages can reuse a position and version in a new incarnation,
+		// so every recovery page must still come from the history the cursor
+		// was minted against before its candidates are trusted.
+		if !compatRecoveryHistoryMatches(result.History, appsource.PageHistoryIdentity(page)) {
+			return appwire.SessionFetchResponse{}, appwire.TranscriptItemCursorStale()
+		}
 		candidates, err = appitempaging.CandidatesFromTurns(page.Data)
 		if err != nil {
 			return appwire.SessionFetchResponse{}, err
@@ -708,6 +715,20 @@ func (o *sessionOperations) fetchHubCompatibilityTranscriptItem(
 		}
 	}
 	return appwire.SessionFetchResponse{}, appwire.ItemUnreachableOnCompat()
+}
+
+// compatRecoveryHistoryMatches reports whether a compatibility recovery page
+// still comes from the history the fetch started against. A legacy peer may omit
+// the fields it does not stamp, and a missing side is not evidence of movement;
+// a present incarnation or epoch that differs is.
+func compatRecoveryHistoryMatches(want appsource.HistoryIdentity, got appsource.HistoryIdentity) bool {
+	if want.Snapshot != nil && got.Snapshot != nil && want.Snapshot.Incarnation != got.Snapshot.Incarnation {
+		return false
+	}
+	if want.Epoch != 0 && got.Epoch != 0 && want.Epoch != got.Epoch {
+		return false
+	}
+	return true
 }
 
 // hubCompatFetchPageLimit bounds compatibility fetch recovery against an old

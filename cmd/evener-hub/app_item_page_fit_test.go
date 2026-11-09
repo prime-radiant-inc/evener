@@ -704,6 +704,33 @@ func TestPackTranscriptItemWindowSharesCursorLineLimitAcrossTruncationAndElision
 	}
 }
 
+func TestPackTranscriptItemWindowRecoversWithheldInFlightItemByReread(t *testing.T) {
+	items := []appwire.ThreadItem{
+		{Type: "agentMessage", ID: "settled", Text: "settled", Version: 1},
+		{Type: "agentMessage", ID: "streaming", Text: "streaming"},
+	}
+	options := testWindowPackOptions(appwire.ThreadWindowParams{
+		TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn-live"},
+		ItemTypes:  []string{"messages"},
+	})
+	options.ItemLimit = 1
+
+	got, err := packThreadTurnsWindowItemCandidates(testWindowCandidateResult(testWindowTurnCandidates("turn-live", items)), nil, options)
+	if err != nil {
+		t.Fatalf("cap-withheld in-flight item: %v", err)
+	}
+	if len(got.Data) != 1 || len(got.Data[0].Items) != 1 || got.Data[0].Items[0].ID != "settled" {
+		t.Fatalf("cap-withheld page = %+v, want the settled item only", got.Data)
+	}
+	elision := got.Data[0].Elision
+	if elision == nil || elision.CapWithheld != 1 {
+		t.Fatalf("cap-withheld elision = %+v", elision)
+	}
+	if elision.CapWithheldRecovery != appwire.ThreadElisionRecoveryRereadSettled || elision.ContinuationCursor != "" {
+		t.Fatalf("in-flight recovery = %+v, want the settled reread without a cursor", elision)
+	}
+}
+
 func TestTranscriptWindowContinuationRejectsChangedBoundaryItem(t *testing.T) {
 	for _, test := range []struct {
 		name          string
