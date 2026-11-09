@@ -48,9 +48,7 @@ func TestLoginShellPATHOutputCapturesBounded(t *testing.T) {
 	fixture := filepath.Join(t.TempDir(), "flood-shell")
 	probeOutputFixture(t, fixture, pathLine, floodLines)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	capture, err := loginShellPATHOutput(ctx, fixture, "-lc", "echo $PATH")
+	capture, err := loginShellPATHOutput(5*time.Second, fixture, "-lc", "echo $PATH")
 	if err != nil {
 		t.Fatalf("probe: %v", err)
 	}
@@ -160,7 +158,7 @@ func TestLoginShellPATHUnderCapIsByteExact(t *testing.T) {
 	fixture := filepath.Join(t.TempDir(), "short-shell")
 	probeOutputFixture(t, fixture, pathLine, 0)
 
-	capture, err := loginShellPATHOutput(context.Background(), fixture, "-lc", "echo $PATH")
+	capture, err := loginShellPATHOutput(5*time.Second, fixture, "-lc", "echo $PATH")
 	if err != nil {
 		t.Fatalf("probe: %v", err)
 	}

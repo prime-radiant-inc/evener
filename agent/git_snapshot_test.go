@@ -91,7 +91,7 @@ func TestSnapshotGit_NonRepoDoesNotShellOut(t *testing.T) {
 	dir := t.TempDir()
 	env := &snapshotCountingEnv{root: dir}
 
-	inRepo, branch, modified, untracked, commits, _ := snapshotGit(context.Background(), env, dir)
+	inRepo, branch, modified, untracked, commits, _, _ := snapshotGit(context.Background(), env, dir)
 	if inRepo {
 		t.Fatal("expected inRepo=false for non-git directory")
 	}
@@ -101,6 +101,84 @@ func TestSnapshotGit_NonRepoDoesNotShellOut(t *testing.T) {
 	if env.execCalls != 0 {
 		t.Fatalf("ExecCommand calls = %d, want 0 for non-git directory", env.execCalls)
 	}
+}
+
+// TestSnapshotGitReportsAnExecFailureDistinctFromAnEmptyRepository pins #4517:
+// a git probe that could not run — killed at the deadline, failed to fork, or a
+// cancelled context — must be reported as a probe failure, not folded into the
+// empty values a repository with no commits or no changes legitimately
+// produces. truncationGitEnv returns an error for an unscripted command, which
+// is exactly `execenv.RunGit`'s "git did not run" contract.
+func TestSnapshotGitReportsAnExecFailureDistinctFromAnEmptyRepository(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("empty log answer is not a probe failure", func(t *testing.T) {
+		t.Parallel()
+		env := truncationGitEnv{results: map[string]execenv.ExecResult{
+			"rev-parse --is-inside-work-tree": {Stdout: "true\n"},
+			"rev-parse --abbrev-ref HEAD":     {Stdout: "main\n"},
+			"status --porcelain":              {},
+			// An empty repository's `git log` exits non-zero WITH an answer;
+			// that is an empty result, not "we could not ask".
+			"log -n 5 --pretty=format:%h%x20%s": {ExitCode: 128},
+		}}
+		inRepo, _, _, _, commits, _, probeFailed := snapshotGit(context.Background(), env, root)
+		if !inRepo {
+			t.Fatal("an answered snapshot reported inRepo=false")
+		}
+		if probeFailed {
+			t.Fatal("an answered empty log was reported as a probe failure")
+		}
+		if len(commits) != 0 {
+			t.Fatalf("empty log answer produced commits %v", commits)
+		}
+	})
+
+	t.Run("log exec failure is distinct", func(t *testing.T) {
+		t.Parallel()
+		env := truncationGitEnv{results: map[string]execenv.ExecResult{
+			"rev-parse --is-inside-work-tree": {Stdout: "true\n"},
+			"rev-parse --abbrev-ref HEAD":     {Stdout: "main\n"},
+			"status --porcelain":              {},
+			// The log probe is deliberately unscripted: ExecArgv returns an
+			// error, so git never ran.
+		}}
+		inRepo, _, _, _, _, _, probeFailed := snapshotGit(context.Background(), env, root)
+		if !inRepo {
+			t.Fatal("a failed log probe lost the repository state the other probes answered")
+		}
+		if !probeFailed {
+			t.Fatal("a log probe that did not run was reported as an empty commit list")
+		}
+	})
+
+	t.Run("inside probe exec failure is distinct from a non-repository", func(t *testing.T) {
+		t.Parallel()
+
+		failed := truncationGitEnv{}
+		inRepo, _, _, _, _, _, probeFailed := snapshotGit(context.Background(), failed, root)
+		if inRepo {
+			t.Fatal("an inside probe that did not run reported inRepo=true")
+		}
+		if !probeFailed {
+			t.Fatal("an inside probe that did not run was reported as a genuine non-repository")
+		}
+
+		answered := truncationGitEnv{results: map[string]execenv.ExecResult{
+			"rev-parse --is-inside-work-tree": {ExitCode: 1},
+		}}
+		inRepo, _, _, _, _, _, probeFailed = snapshotGit(context.Background(), answered, root)
+		if inRepo {
+			t.Fatal("an answered non-repository reported inRepo=true")
+		}
+		if probeFailed {
+			t.Fatal("an answered non-repository was reported as a probe failure")
+		}
+	})
 }
 
 func TestNewSession_TestConfigCanSkipGitSnapshot(t *testing.T) {
@@ -204,7 +282,7 @@ func TestSnapshotGit_InGitRepo(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	inRepo, branch, mod, untracked, commits, _ := snapshotGit(context.Background(), env, dir)
+	inRepo, branch, mod, untracked, commits, _, _ := snapshotGit(context.Background(), env, dir)
 	if !inRepo {
 		t.Fatal("expected inRepo=true")
 	}
@@ -227,7 +305,7 @@ func TestSnapshotGit_NotAGitRepo(t *testing.T) {
 	dir := t.TempDir()
 	env := execenv.NewLocalExecutionEnvironment(dir)
 	defer env.Cleanup()
-	inRepo, _, _, _, _, _ := snapshotGit(context.Background(), env, dir)
+	inRepo, _, _, _, _, _, _ := snapshotGit(context.Background(), env, dir)
 	if inRepo {
 		t.Fatal("expected inRepo=false for non-git directory")
 	}
@@ -243,7 +321,7 @@ func TestSnapshotGit_FreshRepoNoCommits(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	inRepo, _, _, _, commits, _ := snapshotGit(context.Background(), env, dir)
+	inRepo, _, _, _, commits, _, _ := snapshotGit(context.Background(), env, dir)
 	if !inRepo {
 		t.Fatal("expected inRepo=true")
 	}
@@ -281,7 +359,7 @@ func TestSnapshotGit_TracksModifiedAndUntracked(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, _, mod, untracked, _, _ := snapshotGit(context.Background(), env, dir)
+	_, _, mod, untracked, _, _, _ := snapshotGit(context.Background(), env, dir)
 	if mod != 1 {
 		t.Errorf("expected 1 modified, got %d", mod)
 	}

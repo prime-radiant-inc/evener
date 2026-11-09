@@ -1,7 +1,6 @@
 package execenv
 
 import (
-	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -19,17 +18,21 @@ import (
 func resetLoginShellPATHCache(t *testing.T) {
 	t.Helper()
 	prevValue := loginShellPATHValue
+	prevDone := loginShellPATHDone
 	prevOutput := loginShellPATHOutput
+	prevAfterFunc := loginShellPATHAfterFunc
 	t.Cleanup(func() {
-		// A sync.Once cannot be saved and restored by value (go vet copylocks);
-		// cleanup hands back a FRESH one, which costs a later caller at most one
-		// re-probe through the restored real output func.
-		loginShellPATHOnce = sync.Once{}
+		loginShellPATHMu.Lock()
 		loginShellPATHValue = prevValue
+		loginShellPATHDone = prevDone
+		loginShellPATHMu.Unlock()
 		loginShellPATHOutput = prevOutput
+		loginShellPATHAfterFunc = prevAfterFunc
 	})
-	loginShellPATHOnce = sync.Once{}
+	loginShellPATHMu.Lock()
 	loginShellPATHValue = ""
+	loginShellPATHDone = false
+	loginShellPATHMu.Unlock()
 }
 
 // --- kata 31gh: developer PATH -------------------------------------------
@@ -105,7 +108,7 @@ func TestLoginShellPATH_ResolvesAndCaches(t *testing.T) {
 	resetLoginShellPATHCache(t)
 	t.Setenv("SHELL", "/bin/zsh")
 	calls := 0
-	loginShellPATHOutput = func(ctx context.Context, name string, args ...string) (probeCapture, error) {
+	loginShellPATHOutput = func(timeout time.Duration, name string, args ...string) (probeCapture, error) {
 		calls++
 		if name != "/bin/zsh" || len(args) != 2 || args[0] != "-lc" || args[1] != "echo $PATH" {
 			t.Fatalf("unexpected probe invocation: name=%q args=%v", name, args)
@@ -130,7 +133,7 @@ func TestLoginShellPATH_ResolvesAndCaches(t *testing.T) {
 func TestLoginShellPATH_FallsBackOnProbeFailure(t *testing.T) {
 	resetLoginShellPATHCache(t)
 	t.Setenv("SHELL", "/bin/zsh")
-	loginShellPATHOutput = func(ctx context.Context, name string, args ...string) (probeCapture, error) {
+	loginShellPATHOutput = func(timeout time.Duration, name string, args ...string) (probeCapture, error) {
 		return probeCapture{}, errors.New("boom")
 	}
 	if got := LoginShellPATH(); got != "" {
@@ -138,11 +141,56 @@ func TestLoginShellPATH_FallsBackOnProbeFailure(t *testing.T) {
 	}
 }
 
+// TestLoginShellPATH_FailedProbeIsRetried pins #4495: a probe that times out or
+// cannot start is not a definitive answer, so it must not be cached. The next
+// caller retries, which is the retry path a loaded host needs — the alternative
+// is silently keeping the inherited launchd/GUI PATH for the process's whole
+// life.
+func TestLoginShellPATH_FailedProbeIsRetried(t *testing.T) {
+	resetLoginShellPATHCache(t)
+	t.Setenv("SHELL", "/bin/zsh")
+	calls := 0
+	loginShellPATHOutput = func(timeout time.Duration, name string, args ...string) (probeCapture, error) {
+		calls++
+		if calls == 1 {
+			return probeCapture{}, errors.New("fork: resource temporarily unavailable")
+		}
+		return probeCapture{view: []byte("/opt/homebrew/bin:/usr/bin:/bin\n")}, nil
+	}
+	if got := LoginShellPATH(); got != "" {
+		t.Fatalf("LoginShellPATH() on a failed first probe = %q, want empty", got)
+	}
+	if got := LoginShellPATH(); got != "/opt/homebrew/bin:/usr/bin:/bin" {
+		t.Fatalf("LoginShellPATH() after a failed first probe = %q, want the retried answer", got)
+	}
+	if calls != 2 {
+		t.Fatalf("probe ran %d times, want 2: a failed probe must not be cached", calls)
+	}
+}
+
+// TestLoginShellPATHProbe_ReportsTimeoutDistinctly pins the structured failure
+// a caller can render: a probe killed at the rc-chain deadline is named as a
+// timeout, not left as an unexplained empty PATH (#4495).
+func TestLoginShellPATHProbe_ReportsTimeoutDistinctly(t *testing.T) {
+	resetLoginShellPATHCache(t)
+	t.Setenv("SHELL", "/bin/zsh")
+	loginShellPATHOutput = func(timeout time.Duration, name string, args ...string) (probeCapture, error) {
+		return probeCapture{}, errLoginShellPATHTimeout
+	}
+	path, failure := LoginShellPATHProbe()
+	if path != "" {
+		t.Fatalf("LoginShellPATHProbe() path = %q, want empty", path)
+	}
+	if !strings.Contains(failure, "timed out") {
+		t.Fatalf("LoginShellPATHProbe() failure = %q, want a named timeout", failure)
+	}
+}
+
 // TestLoginShellPATH_NoShellFallsBack: an unset $SHELL never invokes the probe.
 func TestLoginShellPATH_NoShellFallsBack(t *testing.T) {
 	resetLoginShellPATHCache(t)
 	t.Setenv("SHELL", "")
-	loginShellPATHOutput = func(ctx context.Context, name string, args ...string) (probeCapture, error) {
+	loginShellPATHOutput = func(timeout time.Duration, name string, args ...string) (probeCapture, error) {
 		t.Fatal("probe must not run when $SHELL is unset")
 		return probeCapture{}, nil
 	}
@@ -159,7 +207,7 @@ func TestLoginShellPATH_NoShellFallsBack(t *testing.T) {
 func TestLoginShellPATH_TakesLastLineOverNoisyRCBanner(t *testing.T) {
 	resetLoginShellPATHCache(t)
 	t.Setenv("SHELL", "/bin/zsh")
-	loginShellPATHOutput = func(ctx context.Context, name string, args ...string) (probeCapture, error) {
+	loginShellPATHOutput = func(timeout time.Duration, name string, args ...string) (probeCapture, error) {
 		return probeCapture{view: []byte("nvm is not compatible with the npm config \"prefix\" option\n\n/opt/homebrew/bin:/usr/bin:/bin\n")}, nil
 	}
 	if got := LoginShellPATH(); got != "/opt/homebrew/bin:/usr/bin:/bin" {

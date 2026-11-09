@@ -3,8 +3,8 @@
 package execenv
 
 import (
-	"context"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/execsupport/orphanpipe/orphanpipetest"
 )
@@ -23,19 +23,15 @@ func TestLoginShellPATHProbeDeadlineDoesNotWaitForAnOrphanedPipeHolder(t *testin
 	t.Parallel()
 	h := orphanpipetest.New(t)
 	shell := h.WriteScript(t, "fake-shell", h.Spawn()+"\nwait\n")
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() {
-		h.AwaitStarted()
-		cancel()
-	}()
+	// The probe's own deadline is the only bound this test gives it; it ends
+	// once the shell is killed and WaitDelay drains the inherited pipe.
 	done := make(chan probeRun, 1)
 	go func() {
-		capture, err := loginShellPATHOutput(ctx, shell, "-lc", "echo $PATH")
+		capture, err := loginShellPATHOutput(200*time.Millisecond, shell, "-lc", "echo $PATH")
 		done <- probeRun{capture.view, err}
 	}()
 	if got := orphanpipetest.Await(t, h, done); got.err == nil {
-		t.Fatalf("probe after its context ended = nil error, output %q", got.out)
+		t.Fatalf("probe after its deadline ended = nil error, output %q", got.out)
 	}
 }
 
@@ -43,20 +39,17 @@ func TestLoginShellPATHProbeDeadlineDoesNotWaitForAnOrphanedPipeHolder(t *testin
 // background job still lets the shell print PATH and exit 0, and that PATH is
 // the probe's answer, not a failure.
 //
-// The probe's context is the test's, not resolveLoginShellPATH's
-// loginShellPATHTimeout. That deadline is armed before the login shell exists,
-// so on a loaded host it can kill the shell before it starts the grandchild
-// this test's premise needs — the pipe would close with the shell, and the test
-// would report the absent premise instead of the survival it means to prove
-// (issue #4127). The test cancels nothing, so its context must not expire; the
-// bound it proves is the probe's own WaitDelay.
+// The probe's deadline is armed after the login shell exists (#4495), so
+// process creation under load cannot kill it before it starts the grandchild
+// this test's premise needs. The 30s bound leaves the grandchild time to
+// announce itself; the bound this test proves is the probe's own WaitDelay.
 func TestLoginShellPATHSurvivesAnOrphanedPipeHolder(t *testing.T) {
 	t.Parallel()
 	h := orphanpipetest.New(t)
 	shell := h.WriteScript(t, "fake-shell", h.Spawn()+"\necho /from/login/shell\n")
 	done := make(chan probeRun, 1)
 	go func() {
-		capture, err := loginShellPATHOutput(context.Background(), shell, "-lc", "echo $PATH")
+		capture, err := loginShellPATHOutput(30*time.Second, shell, "-lc", "echo $PATH")
 		done <- probeRun{capture.view, err}
 	}()
 	got := orphanpipetest.Await(t, h, done)

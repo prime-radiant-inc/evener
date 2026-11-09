@@ -110,20 +110,25 @@ func snapshotGitBranch(env execenv.ExecutionEnvironment, cwd string) string {
 
 // snapshotGit reads the launch/refresh git summary for cwd. ctx is the
 // caller's work context: each exec is additionally bounded by gitExecTimeout,
-// and cancelling ctx stops the forks in flight and the ones still to come. A
-// failed or timed-out exec is reported as not-in-a-repo — indistinguishable
-// from a genuine non-repo — so a caller that must tell the two apart has to
-// probe structurally rather than read IsGitRepo (see #4138).
-func snapshotGit(ctx context.Context, env execenv.ExecutionEnvironment, cwd string) (inRepo bool, branch string, modifiedFiles int, untrackedFiles int, recentCommitTitles []string, statusKnown bool) {
+// and cancelling ctx stops the forks in flight and the ones still to come.
+//
+// probeFailed reports that a probe could not run (exec error, timeout,
+// cancellation) or was cut short, and so its empty value is not the answer
+// "nothing there". It is the #4517 distinction `execenv.RunGit` already makes
+// at its source ("an error means git did not run"): a failed `git log` is not
+// an empty repository, and a failed `rev-parse` is not a non-repository. A
+// non-zero EXIT is different again — git ran and answered, so an empty
+// repository's log stays an empty commit list, not a probe failure.
+func snapshotGit(ctx context.Context, env execenv.ExecutionEnvironment, cwd string) (inRepo bool, branch string, modifiedFiles int, untrackedFiles int, recentCommitTitles []string, statusKnown bool, probeFailed bool) {
 	if env == nil {
-		return false, "", 0, 0, nil, false
+		return false, "", 0, 0, nil, false, false
 	}
 	cwd = strings.TrimSpace(cwd)
 	if cwd == "" {
 		cwd = env.WorkingDirectory()
 	}
 	if !hasGitMetadataAncestor(cwd) {
-		return false, "", 0, 0, nil, false
+		return false, "", 0, 0, nil, false, false
 	}
 
 	run := func(args ...string) (execenv.ExecResult, error) {
@@ -133,12 +138,17 @@ func snapshotGit(ctx context.Context, env execenv.ExecutionEnvironment, cwd stri
 	}
 
 	inside, err := run("rev-parse", "--is-inside-work-tree")
-	if err != nil || inside.ExitCode != 0 || strings.TrimSpace(inside.Stdout) != "true" {
-		return false, "", 0, 0, nil, false
+	if err != nil {
+		return false, "", 0, 0, nil, false, true
+	}
+	if inside.ExitCode != 0 || strings.TrimSpace(inside.Stdout) != "true" {
+		return false, "", 0, 0, nil, false, false
 	}
 	inRepo = true
 
-	if br, err := run("rev-parse", "--abbrev-ref", "HEAD"); err == nil && br.ExitCode == 0 {
+	if br, err := run("rev-parse", "--abbrev-ref", "HEAD"); err != nil {
+		probeFailed = true
+	} else if br.ExitCode == 0 {
 		branch = strings.TrimSpace(br.Stdout)
 	}
 
@@ -148,7 +158,9 @@ func snapshotGit(ctx context.Context, env execenv.ExecutionEnvironment, cwd stri
 	// wrong one (#4568 round 2). A capped STDERR is not the status parser's
 	// business — it reads stdout — so a noisy stderr no longer discards counts
 	// that were read whole (#4621 round 15).
-	if st, err := run("status", "--porcelain"); err == nil && st.ExitCode == 0 && !st.StdoutTruncated {
+	if st, err := run("status", "--porcelain"); err != nil {
+		probeFailed = true
+	} else if st.ExitCode == 0 && !st.StdoutTruncated {
 		statusKnown = true
 		for line := range strings.SplitSeq(strings.ReplaceAll(st.Stdout, "\r\n", "\n"), "\n") {
 			line = strings.TrimSpace(line)
@@ -170,7 +182,15 @@ func snapshotGit(ctx context.Context, env execenv.ExecutionEnvironment, cwd stri
 	// (workspace_prompt_program_fuzz_test.go) and git_snapshot_test.go key
 	// their scripted responses on — switching it would be pure fixture churn
 	// for no behavior change.
-	if lg, err := run("log", "-n", "5", "--pretty=format:%h%x20%s"); err == nil && lg.ExitCode == 0 && !lg.StdoutTruncated {
+	lg, err := run("log", "-n", "5", "--pretty=format:%h%x20%s")
+	switch {
+	case err != nil:
+		// git did not run: an empty commit list here would claim "no commits".
+		probeFailed = true
+	case lg.ExitCode == 0 && lg.StdoutTruncated:
+		// A partial log is not "no commits" either; the trusted stream was cut.
+		probeFailed = true
+	case lg.ExitCode == 0:
 		for line := range strings.SplitSeq(strings.ReplaceAll(lg.Stdout, "\r\n", "\n"), "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" {
@@ -180,7 +200,7 @@ func snapshotGit(ctx context.Context, env execenv.ExecutionEnvironment, cwd stri
 		}
 	}
 
-	return inRepo, branch, modifiedFiles, untrackedFiles, recentCommitTitles, statusKnown
+	return inRepo, branch, modifiedFiles, untrackedFiles, recentCommitTitles, statusKnown, probeFailed
 }
 
 func hasGitMetadataAncestor(cwd string) bool {

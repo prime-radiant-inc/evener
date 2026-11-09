@@ -244,7 +244,15 @@ Sandbox: {{ .Sandbox }}
 {{- end }}
 </environment>
 
-{{ if .IsGitRepo }}<git>
+{{ if .GitSnapshotFailed }}<git>
+Git snapshot incomplete: a git probe could not run or was cut short, so missing values below are not a claim about the repository. Run git yourself for the current state.
+{{ if .IsGitRepo }}Branch: {{ .GitBranch }}
+{{ if not .GitStatusUnknown }}Modified files: {{ .GitModifiedFiles }}
+Untracked files: {{ .GitUntrackedFiles }}
+{{ end }}{{ if .GitRecentCommitTitles }}Recent commits:
+{{ range .GitRecentCommitTitles }}- {{ . }}
+{{ end }}{{ end }}{{ end }}</git>
+{{ else if .IsGitRepo }}<git>
 This is a snapshot taken at session start and may be stale. Run git yourself for the current state.
 Branch: {{ .GitBranch }}
 {{ if not .GitStatusUnknown }}Modified files: {{ .GitModifiedFiles }}
