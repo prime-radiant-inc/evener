@@ -297,15 +297,7 @@ func TestDelegateControllerRefusedBatchQueuesOnlyTheRefusedPlan(t *testing.T) {
 		if resolution.fallback || resolution.packet == nil || resolution.commit == nil {
 			t.Fatalf("second plan resolution = %#v, want the delivered report", resolution)
 		}
-		// Acknowledge the report as the waiting send's tool round does, so
-		// the root's Close finds no admitted delivery to wait on.
-		plans, err := resolution.commit.Complete(true)
-		if err != nil {
-			t.Fatalf("acknowledge the delivered report: %v", err)
-		}
-		if err := root.executeDelegateMutationPlans(plans); err != nil {
-			t.Fatalf("execute the acknowledgement: %v", err)
-		}
+		settleSendDelivery(t, root, inlineOutcome(sendMessageResult{}, resolution))
 	default:
 		t.Fatal("the never-tried waiter-bearing plan was not delivered normally")
 	}
