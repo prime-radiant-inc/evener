@@ -105,9 +105,17 @@ test("shows no status dot when the thread has ended", () => {
 });
 
 test("shows a 'needs you' dot when the thread is awaiting", () => {
-  threadsStore.setState({ threads: new Map([["ref_a", fixtureThread("ref_a", { type: "awaiting" })]]) });
+  threadsStore.setState({
+    threads: new Map([["ref_a", { ...fixtureThread("ref_a", { type: "awaiting" }), askPending: true }]]),
+  });
   render(<PaneTab {...tabProps({ paneType: "session", paneParams: { ref: "ref_a" } })} />);
   expect(screen.getByRole("img", { name: "Needs you" })).toBeTruthy();
+});
+
+test("shows no status dot for a finished awaiting turn", () => {
+  threadsStore.setState({ threads: new Map([["ref_a", fixtureThread("ref_a", { type: "awaiting" })]]) });
+  render(<PaneTab {...tabProps({ paneType: "session", paneParams: { ref: "ref_a" } })} />);
+  expect(screen.queryByRole("img")).toBeNull();
 });
 
 test("shows a 'working' dot when the thread is active", () => {
@@ -130,7 +138,7 @@ test("the dot re-renders when the thread's status changes, with no remount", asy
   act(() => {
     threadsStore.setState((s) => {
       const next = new Map(s.threads);
-      next.set("ref_a", { ...next.get("ref_a")!, status: { type: "awaiting" } });
+      next.set("ref_a", { ...next.get("ref_a")!, status: { type: "awaiting" }, askPending: true });
       return { threads: next };
     });
   });

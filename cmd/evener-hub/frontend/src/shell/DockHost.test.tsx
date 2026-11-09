@@ -1308,7 +1308,7 @@ test("a session pane's tab shows a live status dot wired to the real dockview ho
   act(() => {
     threadsStore.setState((s) => {
       const next = new Map(s.threads);
-      next.set("ref_x", { ...next.get("ref_x")!, status: { type: "awaiting" } });
+      next.set("ref_x", { ...next.get("ref_x")!, status: { type: "awaiting" }, askPending: true });
       return { threads: next };
     });
   });

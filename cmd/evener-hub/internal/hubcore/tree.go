@@ -1129,11 +1129,17 @@ func (b *treeBuilder) buildNode(m schema.SessionMeta, kind string, acc *projectA
 // needs you rather than reading as working. Subagent failures still show
 // in the session's own Subagents chip and list.
 func rollupSessions(sessions []TreeNode, workingRoots map[string]bool) (rollup string, rollupLive, rollupAttn int) {
+	bestRank := 0
+	activeRank := hubapi.RollupRank("active", false, false)
 	for _, s := range sessions {
-		taskState := hubapi.AttentionState(s.State, s.ApprovalPending)
+		taskState := s.State
+		// The root's own pending facts decide its attention; a descendant can
+		// only raise the task tree to "active", never invent a question or
+		// approval.
 		var includeDescendants func(TreeNode)
 		includeDescendants = func(node TreeNode) {
-			if (node.State == "active" || len(node.RunningJobs) > 0) && hubapi.RollupRank("active") > hubapi.RollupRank(taskState) {
+			if (node.State == "active" || len(node.RunningJobs) > 0) &&
+				activeRank > hubapi.RollupRank(taskState, s.AskPending, s.ApprovalPending) {
 				taskState = "active"
 			}
 			for _, child := range node.Children {
@@ -1141,20 +1147,32 @@ func rollupSessions(sessions []TreeNode, workingRoots map[string]bool) (rollup s
 			}
 		}
 		includeDescendants(s)
-		if workingRoots[s.ID] && hubapi.RollupRank("active") > hubapi.RollupRank(taskState) {
+		if workingRoots[s.ID] && activeRank > hubapi.RollupRank(taskState, s.AskPending, s.ApprovalPending) {
 			taskState = "active"
 		}
-		if hubapi.RollupRank(taskState) > hubapi.RollupRank(rollup) {
-			rollup = taskState
+		if rank := hubapi.RollupRank(taskState, s.AskPending, s.ApprovalPending); rank > bestRank {
+			bestRank = rank
+			rollup = reportedRollupState(taskState, s.AskPending, s.ApprovalPending)
 		}
-		switch taskState {
-		case "awaiting", "warning", "errored", appwire.ThreadStatusRestartRequired:
+		switch level := promotedAttentionLevel(taskState, s.AskPending, s.ApprovalPending); {
+		case level == "needs_you" || level == "error":
 			rollupAttn++
-		case "active":
+		case taskState == "active":
 			rollupLive++
 		}
 	}
 	return rollup, rollupLive, rollupAttn
+}
+
+// reportedRollupState is the state word a project reports for one task tree.
+// An approval-promoted active turn reads "awaiting", and a turn that merely
+// finished collapses to "idle" instead of raising the project's dot (#2629).
+func reportedRollupState(state string, askPending, approvalPending bool) string {
+	reported := hubapi.AttentionState(state, approvalPending)
+	if reported == "awaiting" && !askPending && !approvalPending {
+		return "idle"
+	}
+	return reported
 }
 
 // buildProject builds one project's row: its sessions split into activity
@@ -1362,7 +1380,7 @@ func (b *treeBuilder) needsYouTier() []TreeNode {
 		// call, not a second, independently-maintained copy of this rule. The
 		// node keeps reporting st below — promotion changes membership, not the
 		// node's own state.
-		if lvl := promotedAttentionLevel(st, le.PendingEscalation); lvl != "needs_you" && lvl != "error" {
+		if lvl := promotedAttentionLevel(st, le.PendingAsk, le.PendingEscalation); lvl != "needs_you" && lvl != "error" {
 			continue
 		}
 		metaValue, hasMeta := b.lv.metaMap[le.SessionID]
@@ -1425,7 +1443,7 @@ func ProjectNameLess(a, b TreeProject) bool {
 func sortLiveNodes(liveNodes []TreeNode, metaMap map[string]schema.SessionMeta, liveMap map[string]LiveEntry) {
 	sort.SliceStable(liveNodes, func(i, j int) bool {
 		a, b := &liveNodes[i], &liveNodes[j]
-		ri, rj := hubapi.AttentionRank(hubapi.AttentionState(a.State, a.ApprovalPending)), hubapi.AttentionRank(hubapi.AttentionState(b.State, b.ApprovalPending))
+		ri, rj := hubapi.AttentionRank(a.State, a.AskPending, a.ApprovalPending), hubapi.AttentionRank(b.State, b.AskPending, b.ApprovalPending)
 		if ri != rj {
 			return ri > rj
 		}

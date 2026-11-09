@@ -54,7 +54,7 @@ func fuzzScenarioBuildTree_RootRowsCarryTheTreesSubagentTally(t *testing.T) {
 	}
 	metaless := appwire.SubagentTally{Done: 4}
 	live := []LiveEntry{
-		{PID: 1, SessionID: "01ROOT", Status: appwire.ThreadStatusAwaiting, RunningSubagentIDs: []string{"01CHILD"}, Subagents: tally},
+		{PID: 1, SessionID: "01ROOT", Status: appwire.ThreadStatusAwaiting, PendingAsk: true, RunningSubagentIDs: []string{"01CHILD"}, Subagents: tally},
 		{PID: 2, SessionID: "01METALESS", Status: appwire.ThreadStatusIdle, Subagents: metaless},
 	}
 	tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, now)

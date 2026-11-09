@@ -1043,7 +1043,8 @@ test.each<{ name: string; before?: TrackStep; change: Partial<Geometry>; want: n
 
 test.each([
   ["active", "Active", "working"],
-  ["awaiting", "Awaiting", "needs-you"],
+  // A finished turn is Idle: no family glyph on the compact spine (#2629).
+  ["awaiting", "Awaiting", null],
   ["warning", "Warning", "needs-you"],
   ["restartRequired", "RestartRequired", "needs-you"],
   ["systemError", "SystemError", "failed"],
@@ -1111,7 +1112,7 @@ test("a paused ancestor updates its signal through runtime changes without repla
   expect(active.querySelector("[data-state]")?.getAttribute("data-state")).toBe("working");
   expect(within(active).queryByRole("img")).toBeNull();
   for (const [state, text, glyphState] of [
-    ["awaiting", "Awaiting", "needs-you"],
+    ["awaiting", "Awaiting", null],
     ["systemError", "SystemError", "failed"],
     ["idle", "Idle", null],
   ] as const) {

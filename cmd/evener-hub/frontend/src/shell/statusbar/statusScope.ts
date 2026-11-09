@@ -20,7 +20,7 @@ export interface ScopeCounts {
   tasksTotal: number;
 }
 export interface ActivityScope {
-  leaf: Pick<NavigationSessionSummary, "ref" | "title" | "tasks">;
+  leaf: Pick<NavigationSessionSummary, "ref" | "title" | "tasks" | "ask_pending" | "approval_pending">;
   path: ScopeCrumb[];
   ancestryKnown: boolean;
   counts: ScopeCounts;
@@ -61,6 +61,8 @@ export function deriveScope(
     ref,
     title: row?.ref === ref ? row.title : ref,
     ...(row?.ref === ref && row.tasks ? { tasks: row.tasks } : {}),
+    ...(row?.ref === ref && row.ask_pending === true ? { ask_pending: true } : {}),
+    ...(row?.ref === ref && row.approval_pending === true ? { approval_pending: true } : {}),
   };
   const context = activity?.context;
   const ancestryKnown = context?.ancestryKnown === true;

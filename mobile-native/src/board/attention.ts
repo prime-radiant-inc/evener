@@ -45,7 +45,6 @@ export interface LiveBands {
 const WORDS: Record<BoardState, string> = {
 	failed: "Failed",
 	question: "Question",
-	needsYou: "Needs you",
 	approval: "Approval",
 	warning: "Warning",
 	restartNeeded: "Restart needed",
@@ -118,7 +117,6 @@ function rowUnseen(row: NavigationSessionSummary, state: BoardState, seen: boole
 const BANDS: Record<BoardState, Band | null> = {
 	failed: "needsYou",
 	question: "needsYou",
-	needsYou: "needsYou",
 	approval: "needsYou",
 	warning: "needsYou",
 	restartNeeded: "needsYou",
@@ -175,8 +173,7 @@ function needsYouRank(item: ClassifiedRow): number {
 	if (
 		item.row.ask_pending ||
 		approvalWaiting(item.row.state, item.row.approval_pending === true) ||
-		item.state === "approval" ||
-		item.state === "needsYou"
+		item.state === "approval"
 	)
 		return 1;
 	return 2;

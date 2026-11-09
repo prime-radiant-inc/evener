@@ -691,7 +691,7 @@ SF Symbols only, weight matched to adjacent text. Core set: `questionmark.circle
 | Element | Source |
 |---|---|
 | Board sections, rows, children | `evener/navigation/read` (Live, needs-you, projects, pin sections, archived), `NavigationSessionSummary` (title, state, ask_pending, live, updated_at, host_id, project, branch, children, running_jobs, more_subagents, omitted_descendants), invalidated by `evener/navigation/invalidated`; task progress on rows needs S13 |
-| Needs you count | Computed on the phone from Live and `needs_you` rows (section 13.2). The hub's `AttentionSummary.needsYou` (`evener/attention/changed`, the manifest) counts every awaiting session and counts failures separately, so it is not this number |
+| Needs you count | Computed on the phone from Live and `needs_you` rows (section 13.2). The hub's `AttentionSummary.needsYou` (`evener/attention/changed`, the manifest) counts actionable sessions only — a pending question or approval, a warning, or a restart — and counts failures separately. A turn that merely finished is Idle, so it is not this number (#2629) |
 | Search | `evener/search` |
 | Session content | `thread/read` with subscribe; `item/*` streaming notifications; `thread/status/changed`, `thread/queueChanged`, `evener/goal/updated`, `evener/task/updated`, `evener/notes/updated`, `evener/urls/updated`, `evener/delegate/updated`, `evener/jobs/treeUpdated` |
 | Capabilities | `ThreadCapabilities` gates every control (send, steer, interrupt, compact, clear, forkFromTurn, shutdown, changeModel, queue, goal, sharedNotes, rename, skillInput) |

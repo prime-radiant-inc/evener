@@ -371,7 +371,16 @@ function StandardConversationBody({
 
   const recoveryOwnerRef = ownerRetainedRef(model, mutationStateAuthoritative);
 
-  const cadence = <Cadence state={cadenceStateFor(model.status.type)} frameTimes={frameTimes} now={now} />;
+  const cadence = (
+    <Cadence
+      state={cadenceStateFor(model.status.type, {
+        askPending: model.askPending,
+        approvalPending,
+      })}
+      frameTimes={frameTimes}
+      now={now}
+    />
+  );
 
   const transcriptContent = (
     <div className={styles.transcript} ref={transcriptContainerRef}>

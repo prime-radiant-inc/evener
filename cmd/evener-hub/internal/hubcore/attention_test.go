@@ -8,6 +8,31 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
+// A turn that merely ended on needs_response is finished, not blocked: the
+// session stays live and keeps its row, but neither the badge summary nor the
+// attention entry counts it as needing a person. #2629.
+func TestDeriveAttention_PlainAwaitingLeavesNeedsYou(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01FIN", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
+		{ID: "01ASK", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
+	}
+	live := []LiveEntry{
+		{PID: 1, SessionID: "01FIN", Status: appwire.ThreadStatusAwaiting},
+		{PID: 2, SessionID: "01ASK", Status: appwire.ThreadStatusAwaiting, PendingAsk: true},
+	}
+	entries, sum := DeriveAttention(metas, live, nil)
+	if sum.NeedsYou != 1 {
+		t.Fatalf("summary = %+v, want NeedsYou:1 (only the pending question)", sum)
+	}
+	if got := entries["01FIN"].Level; got != "idle" {
+		t.Errorf("finished entry Level = %q, want idle", got)
+	}
+	if got := entries["01ASK"].Level; got != "needs_you" {
+		t.Errorf("question entry Level = %q, want needs_you", got)
+	}
+}
+
 func fuzzScenarioDeriveAttention_SummaryCountsTierEligibleOnly(t *testing.T) {
 	now := time.Now()
 	metas := []schema.SessionMeta{
@@ -18,9 +43,9 @@ func fuzzScenarioDeriveAttention_SummaryCountsTierEligibleOnly(t *testing.T) {
 		{ID: "01WORK", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
 	}
 	live := []LiveEntry{
-		{PID: 1, SessionID: "01A", Status: appwire.ThreadStatusAwaiting},
-		{PID: 2, SessionID: "01SUB", Status: appwire.ThreadStatusAwaiting},
-		{PID: 3, SessionID: "01ARCH", Status: appwire.ThreadStatusAwaiting},
+		{PID: 1, SessionID: "01A", Status: appwire.ThreadStatusAwaiting, PendingAsk: true},
+		{PID: 2, SessionID: "01SUB", Status: appwire.ThreadStatusAwaiting, PendingAsk: true},
+		{PID: 3, SessionID: "01ARCH", Status: appwire.ThreadStatusAwaiting, PendingAsk: true},
 		{PID: 4, SessionID: "01ERR", Status: appwire.ThreadStatusSystemError},
 		{PID: 5, SessionID: "01WORK", Status: appwire.ThreadStatusActive},
 	}
@@ -54,8 +79,8 @@ func fuzzScenarioDeriveAttention_StaleUnarchivedNeverDecays(t *testing.T) {
 		{ID: "01STALEUN", UpdatedAt: stale, CreatedAt: stale, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
 	}
 	live := []LiveEntry{
-		{PID: 1, SessionID: "01STALE", Status: appwire.ThreadStatusAwaiting},
-		{PID: 2, SessionID: "01STALEUN", Status: appwire.ThreadStatusAwaiting},
+		{PID: 1, SessionID: "01STALE", Status: appwire.ThreadStatusAwaiting, PendingAsk: true},
+		{PID: 2, SessionID: "01STALEUN", Status: appwire.ThreadStatusAwaiting, PendingAsk: true},
 	}
 	// 01STALE has NO decision; 01STALEUN has an explicit un-archive (false)
 	// decision. Both are tier-eligible: only decision==true suppresses.

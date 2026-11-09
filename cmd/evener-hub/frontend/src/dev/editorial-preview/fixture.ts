@@ -64,18 +64,25 @@ export function createEditorialClient(): EditorialClient {
   });
   client.on("evener/navigation/read", (params) => {
     const wrap = (data: unknown) => wireSnapshot(params, data, `"editorial-${revision}"`, revision);
+    const needsYou = summaries.filter(
+      (row) =>
+        row.ask_pending === true ||
+        row.approval_pending === true ||
+        row.state === "warning" ||
+        row.state === "restartRequired",
+    ).length;
     switch (params.resource) {
       case "manifest":
         return wrap({
           sources: [],
           attentionSummary: {
-            needsYou: summaries.filter((row) => row.state === "awaiting").length,
+            needsYou,
             error: 0,
             working: 1,
           },
           sections: {
             live: { count: summaries.length },
-            needs_you: { count: summaries.filter((row) => row.state === "awaiting").length },
+            needs_you: { count: needsYou },
             pin_sections: { count: 0 },
           },
           catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },

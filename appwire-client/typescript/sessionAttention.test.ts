@@ -49,9 +49,11 @@ test.each<[string, AttentionFacts, AttentionClass]>([
   ["idle", approval, "approval"],
   // A question needs the session to be awaiting.
   ["active", ask, "working"],
-  // Awaiting without a question ended its turn on needs_response.
-  ["awaiting", {}, "needsYou"],
-  ["awaiting", children, "needsYou"],
+  // Awaiting without a question ended its turn on needs_response: it is
+  // finished and rests idle (#2629).
+  ["awaiting", {}, "idle"],
+  // A finished turn with running children is still working.
+  ["awaiting", children, "working"],
   ["active", {}, "working"],
   ["idle", children, "working"],
   ["idle", {}, "idle"],
@@ -65,7 +67,7 @@ test.each<[string, AttentionFacts, AttentionClass]>([
 });
 
 test("the needs-you family is the classes someone has to look at", () => {
-  const family: AttentionClass[] = ["question", "needsYou", "approval", "warning", "restartNeeded"];
+  const family: AttentionClass[] = ["question", "approval", "warning", "restartNeeded"];
   const rest: AttentionClass[] = ["failed", "working", "idle", "shutDown"];
   expect(family.filter(attentionNeedsYou)).toEqual(family);
   expect(rest.filter(attentionNeedsYou)).toEqual([]);

@@ -121,7 +121,7 @@ func TestProjectRollupGolden(t *testing.T) {
 			name:  "an awaiting root stays awaiting beside an active child",
 			metas: []schema.SessionMeta{meta("root", "", false), meta("child", "root", true)},
 			live: []LiveEntry{
-				{PID: 1, SessionID: "root", Status: appwire.ThreadStatusAwaiting, RunningSubagentIDs: []string{"child"}, RunningSubagentStates: active},
+				{PID: 1, SessionID: "root", Status: appwire.ThreadStatusAwaiting, PendingAsk: true, RunningSubagentIDs: []string{"child"}, RunningSubagentStates: active},
 			},
 			want: rollup{"awaiting", 0, 1, true},
 		},

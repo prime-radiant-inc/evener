@@ -104,7 +104,10 @@ export function ScopeRuntimeState({ scope, compact = false }: { scope: ActivityS
   const state = scope.activity?.runtime?.status.type;
   const label = state ? state.charAt(0).toUpperCase() + state.slice(1) : "State unknown";
   if (compact) {
-    const signal = cadenceStateFor(state ?? "");
+    const signal = cadenceStateFor(state ?? "", {
+      askPending: scope.leaf.ask_pending === true,
+      approvalPending: scope.leaf.approval_pending === true,
+    });
     // The compact spine's own exact runtime label is the single status name
     // assistive tech should hear: the shared session-list glyph stays for its
     // shape and motion, but it renders decoratively so a screen reader never

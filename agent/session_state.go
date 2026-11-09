@@ -29,8 +29,10 @@ const (
 	// turn ended on a communicate that said needs_response and no autonomous
 	// work (goal kick, pending notifications, queued input, a pending
 	// delegate report, working child subagents) is in flight. A plain reply
-	// rests idle. It is the daemon-truth source for the hub's "needs you"
-	// attention state.
+	// rests idle. It is the daemon-truth source for the session's raw state;
+	// only an actionable condition (a pending question or approval, a warning,
+	// or a restart) puts a session in the hub's "needs you" attention state
+	// (#2629). A turn that merely ended on needs_response is Idle.
 	// The string must stay byte-equal to appwire.ThreadStatusAwaiting
 	// ("awaiting"): every status pass-through switch on the wire journey
 	// defaults unrecognized strings to idle, so changing this string would

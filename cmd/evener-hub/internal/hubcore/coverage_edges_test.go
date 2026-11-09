@@ -191,7 +191,7 @@ func fuzzScenarioCoveragePersistenceEdges(t *testing.T) {
 }
 
 func fuzzScenarioCoveragePureEdges(t *testing.T) {
-	if attentionLevel("unknown") != "idle" {
+	if attentionLevel("unknown", false, false) != "idle" {
 		t.Fatal("attention fallback")
 	}
 	attn, _ := DeriveAttention(nil, []LiveEntry{{SessionID: "abcdefghijklmnop", Status: "active"}, {SessionID: "", Status: "active"}}, nil)

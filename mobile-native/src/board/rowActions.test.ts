@@ -43,7 +43,7 @@ describe("the long-press menu per state (spec 7.3)", () => {
 			["pin", "stop", "shutDown", "archive", "rename"],
 		],
 		["an idle one", row({ state: "idle" }), "idle", unarchived, ["pin", "shutDown", "archive"]],
-		["one needing your reply", row({ state: "awaiting" }), "needsYou", unarchived, ["pin", "shutDown", "archive"]],
+		["one whose turn merely finished", row({ state: "awaiting" }), "idle", unarchived, ["pin", "shutDown", "archive"]],
 		[
 			"one asking a question",
 			row({ state: "awaiting", ask_pending: true }),

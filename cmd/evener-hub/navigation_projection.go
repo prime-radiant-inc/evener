@@ -496,7 +496,7 @@ func navigationMergeProjectContext(ctx context.Context, first hubcore.TreeProjec
 		if group.LastActivity.After(lastActivity) {
 			lastActivity, age = group.LastActivity, group.Age
 		}
-		if hubapi.RollupRank(group.RollupState) > hubapi.RollupRank(rollupState) {
+		if hubapi.RollupRankWord(group.RollupState) > hubapi.RollupRankWord(rollupState) {
 			rollupState = group.RollupState
 		}
 		rollupLive += group.RollupLive
