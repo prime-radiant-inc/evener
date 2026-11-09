@@ -54,8 +54,10 @@ func newBrowserGate(slots int, buildFrontend bool) *webGate {
 	// skillguard is the longest guard: with more than one slot, starting it
 	// first overlaps it with the short guards instead of queueing it behind
 	// every one of them (#3634). One slot saves no wall time and would make an
-	// interrupt wait for the longest guard, so it keeps verdict order. Verdicts
-	// still print in browserGuards order, and the build fence still gates it.
+	// interrupt wait for the longest guard, so it keeps verdict order; on a
+	// multi-slot lane an interrupt now waits for skillguard, as it would once
+	// that guard had started in any slot. Verdicts still print in
+	// browserGuards order, and the build fence still gates it.
 	if slots > 1 {
 		gate.launchFirst = skillGuard
 	}
