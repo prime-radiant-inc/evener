@@ -32,9 +32,9 @@ func (jm *jobManager) releaseStableWatchReceipt(deliveryID string) {
 	jm.mu.Lock()
 	receipt := jm.stableWatchReceipts[deliveryID]
 	delete(jm.stableWatchReceipts, deliveryID)
-	// The frame is settled, dropped or retired: its failed acknowledgement,
-	// if one was noted, no longer needs a retry.
-	delete(jm.unsettledWatchSends, deliveryID)
+	// The frame is settled, dropped or retired: a queued settlement retry has
+	// no receipt left to keep it alive.
+	delete(jm.stableWatchSettlementRetries, deliveryID)
 	jm.mu.Unlock()
 	if receipt != nil {
 		jm.observeWatchReceiptBoundary()
@@ -47,9 +47,25 @@ func (jm *jobManager) rememberStableWatchSettlementRetry(cfg *watchConfig, state
 		return
 	}
 	jm.mu.Lock()
+	// A frame whose receipt was already released was retired meanwhile (its
+	// watch cleared or the frame dropped); nothing would ever clear a retry.
+	if _, held := jm.stableWatchReceipts[state.DeliveryID]; !held {
+		jm.mu.Unlock()
+		return
+	}
 	jm.rememberStableWatchSettlementRetryLocked(pendingWatchSendDelivery{cfg: cfg, state: state})
 	jm.mu.Unlock()
 	jm.kick()
+}
+
+// hasStableWatchSettlementRetry reports whether deliveryID is queued for the
+// settlement retry. It is the "the receiver already took this frame" oracle a
+// delivery exit consults before releasing the frame's receipt.
+func (jm *jobManager) hasStableWatchSettlementRetry(deliveryID string) bool {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	_, retrying := jm.stableWatchSettlementRetries[deliveryID]
+	return retrying
 }
 
 // rememberStableWatchSettlementRetryLocked queues retry for the settlement
@@ -148,24 +164,17 @@ func (jm *jobManager) retryStableWatchSettlements() (bool, error) {
 				return true, err
 			}
 			attentionID := stableWatchAttentionID(retry.state)
-			// A frame whose arm failed is armed before it is acknowledged:
-			// acknowledging releases its receipt and its retry, after which
-			// nothing would arm it.
-			if retry.unarmed {
-				if err := jm.armStableWatchFrame(controller, receiver, retry.state.ReceiverDelegateID, attentionID); err != nil {
-					return true, err
-				}
+			// Always arm before acknowledging: acknowledging releases the
+			// receipt and the retry, after which nothing would arm the frame.
+			// Re-arming a frame the first attempt already armed is idempotent
+			// (the attention ID is the same).
+			if err := jm.armStableWatchFrame(controller, receiver, retry.state.ReceiverDelegateID, attentionID); err != nil {
+				return true, err
 			}
 			if err := jm.settleWatchSendDelivered(retry.cfg, retry.state); err != nil {
 				return true, err
 			}
 			jm.forgetStableWatchSettlementRetry(retry.state)
-			if retry.unarmed {
-				continue
-			}
-			if err := jm.armStableWatchFrame(controller, receiver, retry.state.ReceiverDelegateID, attentionID); err != nil {
-				return true, err
-			}
 		}
 		var more bool
 		retries, more = jm.nextStableWatchSettlementRetryBatch()

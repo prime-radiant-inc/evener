@@ -319,7 +319,7 @@ func (jm *jobManager) deliverStableWatchSend(cfg *watchConfig, state jobstore.Wa
 			// A frame the receiver took on an earlier attempt keeps its
 			// receipt: releasing the claim hands it to the settlement retry
 			// (releaseWatchSendDeliveryClaim). One never taken is done.
-			if !jm.hasUnsettledWatchSend(state.DeliveryID) {
+			if !jm.hasStableWatchSettlementRetry(state.DeliveryID) {
 				jm.releaseStableWatchReceipt(state.DeliveryID)
 			}
 			return false, appendErr
@@ -340,45 +340,23 @@ func (jm *jobManager) deliverStableWatchSend(cfg *watchConfig, state jobstore.Wa
 		return false, err
 	}
 	if err := jm.settleWatchSendDelivered(cfg, state); err != nil {
-		// While the frame stays pending, the next drain redelivers it. If a
-		// replacement coalesces over it, it won't be, and the note sends it
-		// to the settlement retry instead (storeWatchSendPendingRecord,
-		// releaseWatchSendDeliveryClaim).
-		jm.noteUnsettledWatchSend(cfg, state, false)
+		// The receiver already took the frame. Queue the settlement retry
+		// rather than leave a pending frame the next drain would append
+		// again; the retry's pass runs before any redelivery (#4341).
+		jm.rememberStableWatchSettlementRetry(cfg, state)
 		return false, err
 	}
 	return true, nil
 }
 
-func (jm *jobManager) hasUnsettledWatchSend(deliveryID string) bool {
-	jm.mu.Lock()
-	defer jm.mu.Unlock()
-	_, accepted := jm.unsettledWatchSends[deliveryID]
-	return accepted
-}
-
-func (jm *jobManager) noteUnsettledWatchSend(cfg *watchConfig, state jobstore.WatchSendState, unarmed bool) {
-	jm.mu.Lock()
-	defer jm.mu.Unlock()
-	// A frame whose receipt is gone was retired meanwhile (its watch cleared
-	// or the frame dropped); nothing would ever clear a note for it.
-	if _, held := jm.stableWatchReceipts[state.DeliveryID]; !held {
-		return
-	}
-	if jm.unsettledWatchSends == nil {
-		jm.unsettledWatchSends = make(map[string]pendingWatchSendDelivery)
-	}
-	jm.unsettledWatchSends[state.DeliveryID] = pendingWatchSendDelivery{cfg: cfg, state: state, unarmed: unarmed}
-}
-
 // armAcceptedStableWatchFrame arms the attention of a frame the receiver has
-// durably taken. A failed arm notes the frame like a failed acknowledgement:
-// while it stays pending a redelivery re-arms it, and once a replacement
-// coalesces over it the settlement retry arms and acknowledges it.
+// durably taken. A failed arm queues the settlement retry like a failed
+// acknowledgement: the receiver already holds the frame, so appending it again
+// would duplicate the notification.
 func (jm *jobManager) armAcceptedStableWatchFrame(controller *delegateTreeController, receiver delegateDeliveryReceiver, cfg *watchConfig, state jobstore.WatchSendState, attentionID string) error {
 	err := jm.armStableWatchFrame(controller, receiver, state.ReceiverDelegateID, attentionID)
 	if err != nil {
-		jm.noteUnsettledWatchSend(cfg, state, true)
+		jm.rememberStableWatchSettlementRetry(cfg, state)
 	}
 	return err
 }
@@ -773,10 +751,10 @@ func (jm *jobManager) commitWatchSendPendingRecord(record watchSendPendingRecord
 // a deliverer holds the claim on is marked superseded under the same hold that
 // publishes its replacement, so that deliverer sees the mark however soon the
 // replacement settles; its receipt goes with the claim
-// (releaseWatchSendDeliveryClaim). An unclaimed replaced frame the receiver
-// took without an acknowledgement goes to the settlement retry, which keeps
+// (releaseWatchSendDeliveryClaim). An unclaimed replaced frame whose delivery
+// already failed post-append is queued in the settlement retry, which keeps
 // its receipt; the persist caller's wake of the owner runs it
-// (recordWatchSendsAndKick).
+// (recordWatchSendsAndKick). Anything else releases the replaced receipt.
 func (jm *jobManager) storeWatchSendPendingRecord(record watchSendPendingRecord, detached bool) (release string) {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
@@ -799,7 +777,7 @@ func (jm *jobManager) storeWatchSendPendingRecord(record watchSendPendingRecord,
 				jm.supersededWatchSends = make(map[string]struct{})
 			}
 			jm.supersededWatchSends[replaced] = struct{}{}
-		} else if !jm.retryUnsettledWatchSendLocked(replaced) {
+		} else if _, retrying := jm.stableWatchSettlementRetries[replaced]; !retrying {
 			release = replaced
 		}
 	}
@@ -1256,9 +1234,6 @@ func (jm *jobManager) appendWatchSendPendingState(cfg *watchConfig, state jobsto
 type pendingWatchSendDelivery struct {
 	cfg   *watchConfig
 	state jobstore.WatchSendState
-	// unarmed marks a settlement retry for a frame the receiver took whose
-	// attention arm failed: the retry arms it before acknowledging it.
-	unarmed bool
 }
 
 // drainJobManagerWatchSends drains jm through the session that owns jm. The
