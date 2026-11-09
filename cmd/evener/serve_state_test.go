@@ -706,6 +706,9 @@ type clearTestState struct {
 	failPrepareFrom int
 	prepareCalls    int
 	failRendezvous  bool
+	// beforeClear runs after the old session is live and before thread/clear,
+	// for a test that must first move the session (enter a worktree lane).
+	beforeClear func(*agent.Session)
 
 	srv *clearIdentityServer
 }
@@ -843,8 +846,8 @@ func newClearServeDeps(t *testing.T) (serveDeps, *clearTestState, []string) {
 		}
 		return prepare(sourceID, threadID, ref, transcriptPath)
 	}
-	updateSessionID := deps.updateSessionID
-	deps.updateSessionID = func(reg *rvreg.Registration, id string) error {
+	updateIdentity := deps.updateIdentity
+	deps.updateIdentity = func(reg *rvreg.Registration, id, workingDir string) error {
 		state.record("rendezvous")
 		state.mu.Lock()
 		fail := state.failRendezvous
@@ -852,7 +855,7 @@ func newClearServeDeps(t *testing.T) (serveDeps, *clearTestState, []string) {
 		if fail {
 			return errClearProbe
 		}
-		return updateSessionID(reg, id)
+		return updateIdentity(reg, id, workingDir)
 	}
 	args := []string{
 		"--model", "openai/gpt-test",
@@ -904,6 +907,9 @@ func runClearAttempt(t *testing.T, deps serveDeps, state *clearTestState, args [
 		}
 		if err := writer.Close(); err != nil {
 			t.Fatalf("close the old transcript writer: %v", err)
+		}
+		if state.beforeClear != nil {
+			state.beforeClear(oldSess)
 		}
 
 		before := len(state.recorded())

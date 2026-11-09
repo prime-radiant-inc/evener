@@ -64,6 +64,13 @@ type SessionConfig struct {
 	// separate from the execution environment's active working directory, which
 	// may be a linked worktree.
 	Project identifier.Project `json:"-"`
+	// AdoptWorktreeLane, when set, tells a fresh session its environment is
+	// already rooted in a lane a predecessor occupied. Init records the lane
+	// metadata and restore root instead of running the launch-inside occupancy
+	// rule; the caller takes the managed lane's lock after the predecessor
+	// closes and the replacement is published. Used by thread/clear to keep the
+	// lane (#2957). Not persisted.
+	AdoptWorktreeLane *WorktreeLane `json:"-"`
 	// MaxToolRoundsPerInput caps how many tool-call rounds a single
 	// ProcessInput may run before the turn stops with a TURN_LIMIT event.
 	// Zero defaults to unlimited; set an explicit positive value to cap it.

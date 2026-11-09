@@ -69,6 +69,7 @@ type worktreeState struct {
 	mainRepoRoot    string
 	worktreeRoot    string
 	currentWorktree string
+	currentManaged  bool
 	err             error
 }
 
