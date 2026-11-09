@@ -49,6 +49,12 @@ jobs:
           EVENER_WEB_VITEST_JSON: /tmp/gate-web-vitest.json
         run: make test-web
 
+      # The cache save must precede the timing gate: the gate fails on wall
+      # time while the cache this run warmed is good, and the save only acts
+      # on main pushes, so gating it behind the gate would leave a failing
+      # lane building cold until it fails again.
+      - uses: ./.github/actions/go-cache-save
+
       # The frontend's durations come from the same vitest run above (issue
       # #144): the JSON reporter it wrote is turned into the ratchet's rows and
       # the "web" budget entry is enforced. This lane owns the frontend scope,
@@ -58,8 +64,6 @@ jobs:
           . scripts/lib/timing-tsv-lib.sh
           vitest_json_to_tsv /tmp/gate-web-vitest.json > /tmp/gate-web-timing.tsv
           scripts/gate/test-timing-budget.sh --check --measured /tmp/gate-web-timing.tsv
-
-      - uses: ./.github/actions/go-cache-save
 
   web-browser:
     runs-on: ubuntu-24.04
@@ -482,14 +486,16 @@ jobs:
             /tmp/evener-module-tests.*/json/shards/hub/hub-shard[0-9]*.v
             /tmp/evener-module-tests.*/json/shards/agent/agent-shard[0-9]*.v
 
+      # Same ordering rule as web-unit above: the cache save precedes the
+      # timing gate so a budget failure cannot skip the save.
+      - uses: ./.github/actions/go-cache-save
+
       # The timing ratchet's rows come from the test run above (issue #144), so
       # the budget is enforced without a second full pass. Each lane checks its
       # own scope: the rows name only the packages this lane measured, and a
       # missing file fails the check rather than passing silently.
       - name: Timing budget (rows from the same test run)
         run: scripts/gate/test-timing-budget.sh --check --measured /tmp/gate-timing-${{ matrix.scope }}.tsv
-
-      - uses: ./.github/actions/go-cache-save
 
   # The hub's runner-bound integration tests: daemon retirement, host deploy,
   # live-stack E2E, and the remote-hub source-budget cases. The default gate
