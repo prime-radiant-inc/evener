@@ -122,16 +122,29 @@ func (o updateFileOp) apply(ctx context.Context, fm execenv.FileMutator) ([]stri
 			k = seekLineSequence(origLines, oldLines, pos)
 		}
 		if k < 0 {
-			diagLine := mismatchLineForMissingSequence(origLines, oldLines[0], searchStart)
-			return nil, fmt.Errorf("%s", formatPatchMismatchError(patchMismatchDiagnostic{
+			hunkLine, diagLine := firstDifferingLine(origLines, oldLines, pos)
+			d := patchMismatchDiagnostic{
 				kind:      "expected lines not found",
 				path:      o.path,
-				want:      oldLines[0],
+				hunkLine:  hunkLine,
+				want:      oldLines[hunkLine],
 				line:      diagLine,
 				got:       lineAt(origLines, diagLine-1),
 				lines:     origLines,
 				hunkLines: h,
-			}))
+			}
+			if hunkLine == 0 {
+				d.line = mismatchLineForMissingSequence(origLines, oldLines[0], searchStart)
+				d.got = lineAt(origLines, d.line-1)
+			}
+			return nil, &PatchMismatchError{
+				Path:     d.path,
+				HunkLine: d.hunkLine,
+				Want:     d.want,
+				Got:      d.got,
+				Line:     d.line,
+				message:  formatPatchMismatchError(d),
+			}
 		}
 		out = append(out, origLines[pos:k]...)
 		out = append(out, applyReplacementEntries(origLines[k:k+len(oldLines)], entries)...)
@@ -242,9 +255,26 @@ func hintFromHunk(hunkLines []string) string {
 	return ""
 }
 
+// PatchMismatchError reports where an update hunk stopped matching the file.
+// HunkLine indexes the hunk's old/context lines (context and '-' lines, in
+// order) at the first one that differs from the closest partial match; Want is
+// that hunk line and Got the file line at the same position (empty at end of
+// file). Line is the 1-based file line of Got.
+type PatchMismatchError struct {
+	Path     string
+	HunkLine int
+	Want     string
+	Got      string
+	Line     int
+	message  string
+}
+
+func (e *PatchMismatchError) Error() string { return e.message }
+
 type patchMismatchDiagnostic struct {
 	kind      string
 	path      string
+	hunkLine  int
 	want      string
 	got       string
 	line      int
@@ -392,6 +422,31 @@ func looseCandidateSequenceIndexes(lines, pattern []string, failedLine int, limi
 	return nearestIndexes(out, failedLine, limit)
 }
 
+// firstDifferingLine finds where pattern comes closest to matching lines at or
+// after start: the file position whose leading run of fuzzy-matching lines is
+// longest. It returns the pattern index of the first line that fails there and
+// the 1-based file line at that position (0 past the end of the file). With no
+// line matching anywhere it returns pattern index 0 and file line 0.
+func firstDifferingLine(lines, pattern []string, start int) (int, int) {
+	bestRun, bestAt := 0, -1
+	for i := max(start, 0); i < len(lines); i++ {
+		run := 0
+		for run < len(pattern) && i+run < len(lines) && fuzzyLineMatch(lines[i+run], pattern[run]) {
+			run++
+		}
+		if run > bestRun {
+			bestRun, bestAt = run, i
+		}
+	}
+	if bestAt < 0 || bestRun >= len(pattern) {
+		return 0, 0
+	}
+	if bestAt+bestRun >= len(lines) {
+		return bestRun, 0
+	}
+	return bestRun, bestAt + bestRun + 1
+}
+
 func mismatchLineForMissingSequence(lines []string, want string, searchStart int) int {
 	for i := searchStart; i < len(lines); i++ {
 		if fuzzyLineMatch(lines[i], want) {
@@ -447,18 +502,24 @@ type replacementEntry struct {
 }
 
 func replacementEntriesFromHunk(hunk []string) []replacementEntry {
+	// Empty lines after the last hunk line are separators before the next
+	// hunk or file marker, not context.
+	for len(hunk) > 0 && hunk[len(hunk)-1] == "" {
+		hunk = hunk[:len(hunk)-1]
+	}
 	var entries []replacementEntry
 	for _, l := range hunk {
-		if l == "" || strings.HasPrefix(l, "@@") {
+		if strings.HasPrefix(l, "@@") {
+			continue
+		}
+		if l == "" {
+			// A blank context line written without its leading space.
+			entries = append(entries, replacementEntry{prefix: ' '})
 			continue
 		}
 		switch l[0] {
 		case ' ', '-', '+':
-			body := ""
-			if len(l) > 1 {
-				body = l[1:]
-			}
-			entries = append(entries, replacementEntry{prefix: l[0], body: body})
+			entries = append(entries, replacementEntry{prefix: l[0], body: l[1:]})
 		}
 	}
 	return entries

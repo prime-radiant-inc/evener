@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -371,11 +372,11 @@ func TestApplyPatch_ContextMismatchReportsContextAndCandidates(t *testing.T) {
 	}
 	msg := err.Error()
 	for _, want := range []string{
-		"apply_patch: expected lines not found in f.go at line 7",
-		"wanted: \"\\tgot, err := resolve()\"",
-		"got:    \"\\tgot, err := resolve()\"",
-		"File context around line 7:",
-		">  7 | \tgot, err := resolve()",
+		"apply_patch: expected lines not found in f.go at line 8",
+		"wanted: \"\\tmodel := \\\"openai/gpt-5\\\"\"",
+		"got:    \"\\tif err != nil {\"",
+		"File context around line 8:",
+		">  8 | \tif err != nil {",
 		"Expected old/context lines from patch:",
 		"  \tgot, err := resolve()",
 		"Potential locations for old/context block:",
@@ -436,10 +437,10 @@ func TestApplyPatch_DeleteMismatchReportsFullBlockCandidate(t *testing.T) {
 	}
 	msg := err.Error()
 	for _, want := range []string{
-		"apply_patch: expected lines not found in hook_test.go at line 5",
-		"wanted: \"func target() {\"",
-		"got:    \"func target() {\"",
-		"File context around line 5:",
+		"apply_patch: expected lines not found in hook_test.go at line 6",
+		"wanted: \"\\tclose(done)\"",
+		"got:    \"\\tdefer sess.Close()\"",
+		"File context around line 6:",
 		"Expected old/context lines from patch:",
 		"  func target() {",
 		"  \tclose(done)",
@@ -544,5 +545,69 @@ func TestApplyPatch_SandboxOffOutsideWorkingDirectory(t *testing.T) {
 	}
 	if _, err := os.Stat(target); !os.IsNotExist(err) {
 		t.Fatalf("deleted target = %v", err)
+	}
+}
+
+func TestApplyPatchKeepsBareBlankContextLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "a.go")
+	if err := os.WriteFile(path, []byte("first\n\nsecond\nthird\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The blank context line is written with no leading space.
+	patch := "*** Begin Patch\n*** Update File: a.go\n@@\n first\n\n-second\n+SECOND\n third\n*** End Patch\n"
+	if _, err := ApplyPatch(testMutator(dir), patch); err != nil {
+		t.Fatalf("ApplyPatch: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "first\n\nSECOND\nthird\n"; string(got) != want {
+		t.Fatalf("file = %q, want %q", got, want)
+	}
+}
+
+func TestApplyPatchTrailingEmptyLineIsNotContext(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "a.go")
+	if err := os.WriteFile(path, []byte("one\ntwo\n\nthree\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Blank lines after the last hunk line are separators, not context: if
+	// they counted, the hunk would demand a blank line after "two" that the
+	// patch never described and the replacement would grow an extra one.
+	patch := "*** Begin Patch\n*** Update File: a.go\n@@\n one\n-two\n+TWO\n\n\n*** End Patch\n"
+	if _, err := ApplyPatch(testMutator(dir), patch); err != nil {
+		t.Fatalf("ApplyPatch: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "one\nTWO\n\nthree\n"; string(got) != want {
+		t.Fatalf("file = %q, want %q", got, want)
+	}
+}
+
+func TestApplyPatchMismatchReportsFirstDifferingLine(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("alpha\nbeta\ngamma\ndelta\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	patch := "*** Begin Patch\n*** Update File: a.go\n@@\n alpha\n beta\n-GAMMA\n+gamma2\n delta\n*** End Patch\n"
+	_, err := ApplyPatch(testMutator(dir), patch)
+	var mm *PatchMismatchError
+	if !errors.As(err, &mm) {
+		t.Fatalf("err = %v, want *PatchMismatchError", err)
+	}
+	if mm.HunkLine != 2 {
+		t.Errorf("HunkLine = %d, want 2", mm.HunkLine)
+	}
+	if mm.Want != "GAMMA" || mm.Got != "gamma" {
+		t.Errorf("Want/Got = %q/%q, want GAMMA/gamma", mm.Want, mm.Got)
+	}
+	if mm.Line != 3 {
+		t.Errorf("Line = %d, want 3", mm.Line)
 	}
 }

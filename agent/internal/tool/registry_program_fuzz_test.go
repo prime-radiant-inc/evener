@@ -577,7 +577,7 @@ func toolProgramPatchHelpers(t *testing.T) {
 	if got := formatExpectedLines(make([]string, 13)); !strings.Contains(got, "1 more lines") {
 		t.Fatalf("expected-line truncation = %q", got)
 	}
-	if got := replacementEntriesFromHunk([]string{"@@ h", "", "?ignored", " ", "-old", "+new"}); len(got) != 3 {
+	if got := replacementEntriesFromHunk([]string{"@@ h", "", "?ignored", " ", "-old", "+new"}); len(got) != 4 {
 		t.Fatalf("replacement entries = %#v", got)
 	}
 	if got := applyReplacementEntries(nil, []replacementEntry{{prefix: ' ', body: "fallback"}, {prefix: '-', body: "old"}, {prefix: '+', body: "new"}}); strings.Join(got, ",") != "fallback,new" {

@@ -49,11 +49,10 @@ func TestApplyPatch_MismatchReportsNearbyMatchesAndPotentialLocations(t *testing
 	}
 	msg := err.Error()
 	for _, want := range []string{
-		"apply_patch: expected lines not found in f.go at line 2",
+		"apply_patch: expected lines not found in f.go at line 9",
 		"wanted:",
 		"got:",
-		"File context around line 2:",
-		"Nearby matches for wanted line:",
+		"File context around line 9:",
 		"Expected old/context lines from patch:",
 		"  \tmodel := \"openai/gpt-5\"",
 		"  \tMISSING_LINE()",
