@@ -13,16 +13,13 @@ import (
 )
 
 // TestApplyPatch_MismatchReportsFirstDifferingLineAfterMatchingPrefix drives the
-// full diagnostic path: seekLineSequence fails, so updateFileOp.apply builds a
-// patchMismatchDiagnostic exercising formatPatchMismatchError, formatLineSnippet,
-// candidateLineIndexes (Nearby matches), candidateSequenceIndexes +
-// looseCandidateSequenceIndexes (Potential locations), nearestIndexes,
-// mismatchLineForMissingSequence, lineAt and formatExpectedLines.
+// failure path: seekLineSequence fails, so updateFileOp.apply returns a
+// PatchMismatchError whose fields name the first old/context line that differs
+// from the closest partial match.
 //
-// The file has "model := ..." twice (so the wanted line has a nearby match) and
-// the second block's first two old/context lines partially match near line 7 (so
-// the loose sequence search reports a potential location), while the third
-// old/context line ("MISSING_LINE()") appears nowhere, forcing the failure.
+// The file has "model := ..." twice and the second block's first two old/context
+// lines match at line 7, while the third ("MISSING_LINE()") appears nowhere, so
+// the mismatch is hunk line 2 against the file's "return config" at line 9.
 func TestApplyPatch_MismatchReportsFirstDifferingLineAfterMatchingPrefix(t *testing.T) {
 	dir := t.TempDir()
 	content := strings.Join([]string{
