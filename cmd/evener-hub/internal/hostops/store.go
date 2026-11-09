@@ -1576,14 +1576,19 @@ func ownedKeysFor(owned map[string]map[string]struct{}, path string) (map[string
 	if key, ok := strings.CutPrefix(path, "pendingCompensation."); ok && key != "" {
 		// The record's preimage rows are objects this store decodes too, and the
 		// walk reaches them as "<map>.<name>.rows[]" (the array itself carries
-		// no keys).
+		// no keys). The lookup's own ok is the answer, as in the sibling
+		// branches: the raw-region walk carries no table, and it must report the
+		// record's interior not-owned rather than judge its keys against a set
+		// it does not have.
 		if strings.HasSuffix(key, ".rows[]") {
-			return owned["pendingCompensation[].rows[]"], true
+			canonical, ok := owned["pendingCompensation[].rows[]"]
+			return canonical, ok
 		}
 		if strings.HasSuffix(key, ".rows") {
 			return nil, false
 		}
-		return owned["pendingCompensation[]"], true
+		canonical, ok := owned["pendingCompensation[]"]
+		return canonical, ok
 	}
 	return nil, false
 }
