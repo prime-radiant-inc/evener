@@ -16,37 +16,6 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// Input is the JSON payload piped to command hooks via stdin.
-type Input struct {
-	SessionID     string         `json:"session_id"`
-	CWD           string         `json:"cwd"`
-	HookEventName string         `json:"hook_event_name"`
-	ToolName      string         `json:"tool_name,omitempty"`
-	ToolInput     map[string]any `json:"tool_input,omitempty"`
-	Message       string         `json:"message,omitempty"`
-	Reason        string         `json:"reason,omitempty"`
-
-	// Official Claude-compatible fields (claude-compatible-subset).
-	// These are additive; hooks may read them when present.
-	TranscriptPath string `json:"transcript_path,omitempty"`
-	PermissionMode string `json:"permission_mode,omitempty"`
-	ToolUseID      string `json:"tool_use_id,omitempty"`
-	ToolResponse   string `json:"tool_response,omitempty"`
-	AgentID        string `json:"agent_id,omitempty"`
-	AgentType      string `json:"agent_type,omitempty"`
-	// Effort is the reasoning effort level for the current session (e.g. "low", "medium", "high").
-	// Used by Task 7 to set the CLAUDE_EFFORT env var for command hooks.
-	Effort string `json:"effort,omitempty"`
-	// Prompt is the official Claude UserPromptSubmit field. It carries the same
-	// value as the legacy UserPrompt alias; Claude-style hooks read "prompt".
-	Prompt string `json:"prompt,omitempty"`
-
-	// Legacy Evener aliases retained during migration.
-	// tool_result = tool_response; user_prompt = prompt.
-	ToolResult string `json:"tool_result,omitempty"`
-	UserPrompt string `json:"user_prompt,omitempty"`
-}
-
 // hookResult captures the output of a hook execution.
 type hookResult struct {
 	Stdout   string
@@ -309,6 +278,10 @@ func invalidMatcherWarning(pluginName, event, matcher string) string {
 
 // RunResult contains the aggregated output from running hooks.
 type RunResult struct {
+	// Stopped reports that a hook returned continue:false on an event that
+	// honors it; StopReason carries its stopReason verbatim.
+	Stopped    bool
+	StopReason string
 	// TerminalSequences is parsed but currently has no delivery-site consumer.
 	TerminalSequences []string
 	// ModelContext is delivered to the model (additionalContext, context-event
@@ -323,6 +296,10 @@ type RunResult struct {
 type PreToolUseResult struct {
 	Denied      bool
 	DenyMessage string
+	// Stopped reports that a hook returned continue:false on an event that
+	// honors it; StopReason carries its stopReason verbatim.
+	Stopped    bool
+	StopReason string
 	// TerminalSequences is parsed but currently has no delivery-site consumer.
 	TerminalSequences []string
 	UpdatedInput      map[string]any
@@ -338,6 +315,10 @@ type PreToolUseResult struct {
 type StopResult struct {
 	Blocked     bool
 	BlockReason string
+	// Stopped reports that a hook returned continue:false on an event that
+	// honors it; StopReason carries its stopReason verbatim.
+	Stopped    bool
+	StopReason string
 	// TerminalSequences is parsed but currently has no delivery-site consumer.
 	TerminalSequences []string
 	// ModelContext is delivered to the model (additionalContext, context-event
@@ -350,7 +331,10 @@ type StopResult struct {
 
 // parsedHookOutput is the structured interpretation of a hook's stdout and exit code.
 type parsedHookOutput struct {
+	// Continue is the top-level JSON continue field (default true), and
+	// StopReason is its stopReason partner. applyStopped consumes both.
 	Continue          bool
+	StopReason        string
 	SuppressOutput    bool
 	SystemMessage     string
 	AdditionalContext string
@@ -409,6 +393,9 @@ func parseHookOutput(stdout string, exitCode int) parsedHookOutput {
 	// Extract standard fields
 	if b, ok := parsed["continue"].(bool); ok {
 		result.Continue = b
+	}
+	if s, ok := parsed["stopReason"].(string); ok {
+		result.StopReason = s
 	}
 	if b, ok := parsed["suppressOutput"].(bool); ok {
 		result.SuppressOutput = b
@@ -618,6 +605,7 @@ func (r *Runner) RunPreToolUse(ctx context.Context, input Input) PreToolUseResul
 	outputs := r.runAll(ctx, plugin.HookPreToolUse, input.ToolName, input)
 	var result PreToolUseResult
 	for _, o := range outputs {
+		applyStopped(plugin.HookPreToolUse, o, &result.Stopped, &result.StopReason)
 		if o.TerminalSequence != "" {
 			result.TerminalSequences = append(result.TerminalSequences, o.TerminalSequence)
 		}
@@ -694,6 +682,7 @@ func (r *Runner) runStopEvent(ctx context.Context, event plugin.HookEvent, input
 	outputs := r.runAll(ctx, event, input.ToolName, input)
 	var result StopResult
 	for _, o := range outputs {
+		applyStopped(event, o, &result.Stopped, &result.StopReason)
 		if o.TerminalSequence != "" {
 			result.TerminalSequences = append(result.TerminalSequences, o.TerminalSequence)
 		}
@@ -772,11 +761,27 @@ func routeOutput(event plugin.HookEvent, o parsedHookOutput, model, user *[]stri
 	}
 }
 
+// applyStopped records a hook's continue:false on an event that honors it. A
+// stop takes precedence over the event-specific decision its caller aggregates,
+// so every aggregating runner calls this before routing; the dispatch site
+// delivers StopReason as a user-visible warning and ends the action. The first
+// non-empty stopReason wins, matching Claude's single-stop semantics.
+func applyStopped(event plugin.HookEvent, o parsedHookOutput, stopped *bool, stopReason *string) {
+	if o.Continue || !HonorsContinue(event) {
+		return
+	}
+	*stopped = true
+	if *stopReason == "" {
+		*stopReason = o.StopReason
+	}
+}
+
 // collectSystemMessages aggregates system messages, additional context, and terminal
 // sequences from parsed outputs, and routes into ModelContext/UserMessages buckets.
 func collectSystemMessages(event plugin.HookEvent, outputs []parsedHookOutput) RunResult {
 	var result RunResult
 	for _, o := range outputs {
+		applyStopped(event, o, &result.Stopped, &result.StopReason)
 		if o.TerminalSequence != "" {
 			result.TerminalSequences = append(result.TerminalSequences, o.TerminalSequence)
 		}

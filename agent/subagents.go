@@ -724,6 +724,17 @@ func (s *Session) sharedWorkspaceDelegateWarning(requestedIsolation string) stri
 	return ""
 }
 
+// subagentHookAgentType is the agent type a SubagentStart/SubagentStop matcher
+// targets and the value the same hooks receive as agent_type input. A plugin
+// agent is named by its catalog key (plugin:agent); an unnamed delegate's
+// descriptor carries the sentinel "default" and must report its resolved name.
+func subagentHookAgentType(requested, agentName string) string {
+	if r := strings.TrimSpace(requested); r != "" && r != "default" {
+		return r
+	}
+	return agentName
+}
+
 func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string, maxTurns int, agentType string, reasoningEffort string, parentTasks []taskpkg.TaskTemplate, grantTools []string) (any, error) {
 	selection, err := s.selectSubagentModel(ctx, model, agentType)
 	if err != nil {
@@ -985,6 +996,11 @@ func (s *Session) prepareSubagentRunFromSelection(
 		rolePrompt = defaultSubagentInstructions
 	}
 	subCfg.AgentName = agentName // ensure subagent gets its own tasks, not parent's
+	requestedAgentType := agentType
+	if frozen != nil {
+		requestedAgentType = frozen.AgentType
+	}
+	subCfg.spawn.agentType = subagentHookAgentType(requestedAgentType, agentName)
 
 	if frozen != nil {
 		subCfg.spawn.rolePromptOverride = rolePrompt

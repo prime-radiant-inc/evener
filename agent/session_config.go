@@ -827,6 +827,12 @@ type spawnConfig struct {
 	// parentSessionID links sub-agent sessions to their parent (set by spawnAgent).
 	parentSessionID string
 
+	// agentType is the child's agent type as its SubagentStart/SubagentStop
+	// hooks report it and match on: the plugin-scoped catalog key when the
+	// spawn named a plugin agent, else the resolved agent name ("subagent" for
+	// an unnamed delegate). Empty on a root session.
+	agentType string
+
 	// parentToolCallID is the tool call ID that spawned this sub-agent session.
 	parentToolCallID string
 

@@ -612,9 +612,17 @@ func (s *Session) hookInput(event plugin.HookEvent) hooks.Input {
 	// Effort is empty when no effort has been configured; omitempty silences it.
 	s.mu.Lock()
 	effort := s.cfg.ReasoningEffort
+	// A subagent's hook reports the child's own identity, never the parent's.
+	// Root sessions leave both empty, as Claude does.
+	parentSessionID := s.cfg.spawn.parentSessionID
+	agentType := s.cfg.spawn.agentType
 	s.mu.Unlock()
 	if effort != "" {
-		input.Effort = effort
+		input.Effort = &hooks.Effort{Level: effort}
+	}
+	if parentSessionID != "" {
+		input.AgentID = s.id
+		input.AgentType = agentType
 	}
 	// PermissionMode is intentionally left unset: evener has no permission-mode field
 	// on Session today. Do NOT fabricate a value the hook would act on.

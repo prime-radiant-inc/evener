@@ -176,7 +176,7 @@ func TestExecuteCommandHook_OfficialEnv(t *testing.T) {
 		PluginDir: "/pd",
 		Command:   "echo EFFORT=$CLAUDE_EFFORT PLUGIN=$PLUGIN_ROOT CR=$CLAUDE_PLUGIN_ROOT",
 	}
-	res, err := executeCommandHook(context.Background(), hook, Input{CWD: "/proj", HookEventName: "X", Effort: "high"})
+	res, err := executeCommandHook(context.Background(), hook, Input{CWD: "/proj", HookEventName: "X", Effort: &Effort{Level: "high"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1417,5 +1417,111 @@ func TestToolEventFailureStillFeedsTheModel(t *testing.T) {
 	r := runner.RunPostToolUse(context.Background(), Input{CWD: "/tmp", HookEventName: "PostToolUse", ToolName: "shell"})
 	if len(r.ModelContext) != 1 || !strings.Contains(r.ModelContext[0], "raw stderr for the model") {
 		t.Fatalf("PostToolUse exit-2 stderr must still reach the model; ModelContext = %q", r.ModelContext)
+	}
+}
+
+// --- Claude hook lifecycle compat: shared input layer ---
+
+func TestInput_EffortSerializesAsLevelObject(t *testing.T) {
+	b, err := json.Marshal(Input{Effort: &Effort{Level: "high"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	eff, ok := m["effort"].(map[string]any)
+	if !ok || eff["level"] != "high" {
+		t.Fatalf("effort = %v, want {\"level\":\"high\"}", m["effort"])
+	}
+}
+
+func TestInput_EffortAbsentWhenUnset(t *testing.T) {
+	b, _ := json.Marshal(Input{})
+	var m map[string]any
+	_ = json.Unmarshal(b, &m)
+	if _, present := m["effort"]; present {
+		t.Fatalf("effort must be absent, got %v", m["effort"])
+	}
+}
+
+// TestInput_EventFieldsJSONNames pins the Claude field names the later event
+// tasks fill. A rename here silently breaks every hook that reads them.
+func TestInput_EventFieldsJSONNames(t *testing.T) {
+	zero := false
+	var dur int64
+	b, err := json.Marshal(Input{
+		Trigger:              "manual",
+		CustomInstructions:   new("condense"),
+		CompactSummary:       "summary",
+		StopHookActive:       &zero,
+		LastAssistantMessage: "last",
+		Error:                "boom",
+		ErrorDetails:         "429",
+		IsInterrupt:          &zero,
+		DurationMS:           &dur,
+		ToolCalls:            []BatchToolCall{{ToolName: "Bash", ToolUseID: "id-1", ToolResponse: "ok"}},
+		NotificationType:     "warning",
+		Title:                "title",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"trigger":"manual"`, `"custom_instructions":"condense"`, `"compact_summary":"summary"`,
+		`"stop_hook_active":false`, `"last_assistant_message":"last"`, `"error":"boom"`,
+		`"error_details":"429"`, `"is_interrupt":false`, `"duration_ms":0`,
+		`"tool_calls":[{"tool_name":"Bash","tool_use_id":"id-1","tool_response":"ok"}]`,
+		`"notification_type":"warning"`, `"title":"title"`,
+	} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("missing %s in %s", want, b)
+		}
+	}
+}
+
+// TestHonorsContinue names the five events where Claude discards
+// continue/stopReason, and proves every other event honors it.
+func TestHonorsContinue(t *testing.T) {
+	for _, event := range []plugin.HookEvent{
+		plugin.HookStopFailure, plugin.HookNotification, plugin.HookPreCompact,
+		plugin.HookPostCompact, plugin.HookSessionEnd,
+	} {
+		if HonorsContinue(event) {
+			t.Errorf("%s must discard continue:false", event)
+		}
+	}
+	for _, event := range []plugin.HookEvent{
+		plugin.HookPreToolUse, plugin.HookPostToolUse, plugin.HookPostToolBatch,
+		plugin.HookPostToolUseFailure, plugin.HookUserPromptSubmit, plugin.HookSessionStart,
+		plugin.HookStop, plugin.HookSubagentStop, plugin.HookSubagentStart,
+	} {
+		if !HonorsContinue(event) {
+			t.Errorf("%s must honor continue:false", event)
+		}
+	}
+}
+
+func TestRunNotification_ContinueFalseIsDiscarded(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookNotification, plugin.RegisteredHook{Type: "command", Timeout: 5,
+		Command: `echo '{"continue":false,"stopReason":"no more"}'`})
+	out := r.RunNotification(context.Background(), Input{HookEventName: "Notification"})
+	if out.Stopped {
+		t.Fatalf("Notification must discard continue:false")
+	}
+}
+
+func TestRunPostToolUse_ContinueFalseStops(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPostToolUse, plugin.RegisteredHook{Type: "command", Timeout: 5,
+		Command: `echo '{"continue":false,"stopReason":"stop here"}'`})
+	out := r.RunPostToolUse(context.Background(), Input{HookEventName: "PostToolUse"})
+	if !out.Stopped {
+		t.Fatalf("PostToolUse must honor continue:false")
+	}
+	if out.StopReason == "" {
+		t.Fatalf("StopReason must be carried")
 	}
 }

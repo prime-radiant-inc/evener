@@ -2804,6 +2804,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			owningDelegateID:              started.lease.delegateID,
 			subscriberCount:               s.subscriberCountFn,
 			parentSessionID:               s.id,
+			agentType:                     subagentHookAgentType(descriptor.AgentType, descriptor.Config.AgentName),
 			parentToolCallID:              descriptor.OriginToolCallID,
 			parentItemID:                  descriptor.OriginItemID,
 			parentDelegateID:              started.lease.delegateID,

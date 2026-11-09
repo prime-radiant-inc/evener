@@ -487,7 +487,7 @@ func runHookRunnerProgram(t *testing.T, mode byte, token string) hookRunnerProgr
 	commandInput := input
 	commandInput.HookEventName = "PreToolUse"
 	commandInput.ToolName = "write_file"
-	commandInput.Effort = "high"
+	commandInput.Effort = &Effort{Level: "high"}
 	commandPre := runner.RunPreToolUse(ctx, commandInput)
 	if !commandPre.Denied || commandPre.DenyMessage != "command pre denied" || len(commandPre.ModelContext) != 0 {
 		t.Fatalf("command PreToolUse = %#v", commandPre)
