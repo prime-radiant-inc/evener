@@ -11,7 +11,7 @@ import (
 )
 
 func TestBwrapCleanManagedRootSkipsWalkButUserSkillsStillWalk(t *testing.T) {
-	home := t.TempDir()
+	home := canonicalTempDir(t)
 	cache := filepath.Join(home, ".config", "evener", "plugins", "cache")
 	skills := filepath.Join(home, ".config", "evener", "skills")
 	cacheGit := filepath.Join(cache, "mkt", "plugin", "abc", ".git")
@@ -43,7 +43,7 @@ func TestBwrapCleanManagedRootSkipsWalkButUserSkillsStillWalk(t *testing.T) {
 }
 
 func TestBwrapUnverifiedManagedRootKeepsWalk(t *testing.T) {
-	home := t.TempDir()
+	home := canonicalTempDir(t)
 	cache := filepath.Join(home, ".config", "evener", "plugins", "cache")
 	skills := filepath.Join(home, ".config", "evener", "skills")
 	cacheGit := filepath.Join(cache, "mkt", "plugin", "abc", ".git")
@@ -73,7 +73,7 @@ func TestBwrapUnverifiedManagedRootKeepsWalk(t *testing.T) {
 
 func TestSeatbeltCleanManagedRootSkipsLinkedTargetWalk(t *testing.T) {
 	host := seatbeltHost()
-	host.Home = t.TempDir()
+	host.Home = canonicalTempDir(t)
 	config := filepath.Join(host.Home, ".config", "evener")
 	cache := filepath.Join(config, "plugins", "cache")
 	skills := filepath.Join(config, "skills")
@@ -276,8 +276,8 @@ func TestManagedContentCleanAtFailsClosed(t *testing.T) {
 }
 
 func TestMissingManagedRootUsesProspectiveResolvedSpelling(t *testing.T) {
-	home := t.TempDir()
-	realConfig := t.TempDir()
+	home := canonicalTempDir(t)
+	realConfig := canonicalTempDir(t)
 	if err := os.MkdirAll(filepath.Join(home, ".config"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -365,7 +365,7 @@ func TestManagedWalkExemptUsesRecordedOnDiskSpelling(t *testing.T) {
 // These tests run only on a volume that actually exhibits the behavior; Linux
 // CI is case-sensitive and skips them.
 func TestManagedWalkExemptNativeCaseSpelling(t *testing.T) {
-	home := t.TempDir()
+	home := canonicalTempDir(t)
 	actual := filepath.Join(home, ".config", "evener", "plugins", "Cache")
 	if err := os.MkdirAll(actual, 0o755); err != nil {
 		t.Fatal(err)
@@ -388,7 +388,7 @@ func TestManagedWalkExemptNativeCaseSpelling(t *testing.T) {
 }
 
 func TestManagedWalkExemptNativeUnicodeSpelling(t *testing.T) {
-	home := t.TempDir()
+	home := canonicalTempDir(t)
 	actual := filepath.Join(home, ".config", "evener", "plugins", "café")
 	if err := os.MkdirAll(actual, 0o755); err != nil {
 		t.Fatal(err)
