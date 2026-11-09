@@ -745,7 +745,7 @@ test("a flush that can never settle trips instead of hanging inside act", async 
     );
     await vi.advanceTimersByTimeAsync(60_000);
     expect(await flushing).toMatchObject({
-      message: expect.stringMatching(/projection work stalled: 1 operation\(s\) still unsettled after \d+ms/),
+      message: expect.stringMatching(/projection work stalled: .*still unsettled after \d+ms/),
     });
   } finally {
     vi.useRealTimers();

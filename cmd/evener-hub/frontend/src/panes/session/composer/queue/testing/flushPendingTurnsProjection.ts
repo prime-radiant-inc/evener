@@ -1,4 +1,3 @@
-import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { act } from "@testing-library/react";
 
 import { whenProjectionWorkIdleForTests } from "../../../../../stores/projectionWork";
@@ -8,6 +7,20 @@ import { whenProjectionWorkIdleForTests } from "../../../../../stores/projection
 // chain whose next step starts only once the step before it settled is briefly
 // empty between steps, which is why settle hops and checks again.
 const STALL_TRIPWIRE_MS = 4_000;
+
+// A MessageChannel hop, not setTimeout: tests that fake timers still need the
+// flush to drain a durable chain (Composer.controls.test.tsx fakes setTimeout
+// around a tracked submission). The channel drains every pending microtask.
+function yieldMacrotask(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const hop = new MessageChannel();
+    hop.port1.onmessage = () => {
+      hop.port1.close();
+      resolve();
+    };
+    hop.port2.postMessage(undefined);
+  });
+}
 
 export async function settleProjectionWorkForTests(): Promise<number> {
   let seen = 0;
@@ -24,11 +37,17 @@ export async function settleProjectionWorkForTests(): Promise<number> {
     );
   });
   try {
+    // Work outstanding when the settle began counts once, before any hop.
+    seen = await Promise.race([whenProjectionWorkIdleForTests(), tripwire]);
     for (;;) {
+      // Wait out anything already outstanding, then always give one macrotask
+      // for a chain's next step to register. Only a quiet check after that hop
+      // ends the settle: accepting zero before the hop let a continuation
+      // queued by the operation that just finished escape the flush.
+      await Promise.race([yieldMacrotask(), tripwire]);
       const count = await Promise.race([whenProjectionWorkIdleForTests(), tripwire]);
       seen += count;
       if (count === 0) return seen;
-      await nextMacrotask();
     }
   } finally {
     clearTimeout(timer);
