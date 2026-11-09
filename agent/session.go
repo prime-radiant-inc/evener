@@ -888,6 +888,10 @@ type Session struct {
 	yieldRequest *quietYield
 	yieldArmed   *armedQuietYield
 	yieldDue     *quietYield
+	yieldQuiet   bool
+	// lastTurnYieldedFlag records that the newest turn ended on yield. Guarded
+	// by mu; read by the drain loop and delegate runtime.
+	lastTurnYieldedFlag bool
 
 	jobManager *jobManager
 
@@ -1510,7 +1514,7 @@ func (s *Session) scheduleJobNotificationRetryLocked() {
 			s.pendingJobNotifsMu.Unlock()
 			return
 		}
-		pending := len(s.pendingJobNotifs) > 0
+		pending := len(s.pendingJobNotifs) > 0 || s.hasDueQuietYield()
 		s.jobNotifyRetry.settle(pending, delay, jobNotificationRetryMaxDelay)
 		s.pendingJobNotifsMu.Unlock()
 		if pending {
@@ -1521,11 +1525,20 @@ func (s *Session) scheduleJobNotificationRetryLocked() {
 
 func (s *Session) resetJobNotificationRetry() {
 	s.pendingJobNotifsMu.Lock()
-	if len(s.pendingJobNotifs) > 0 {
+	if len(s.pendingJobNotifs) > 0 || s.hasDueQuietYield() {
 		s.pendingJobNotifsMu.Unlock()
 		return
 	}
 	s.jobNotifyRetry.reset()
+	s.pendingJobNotifsMu.Unlock()
+}
+
+// scheduleQuietYieldRetry arms the paced notification retry for a due yield
+// whose reminder could not be persisted. Without it the retained due record
+// has no wake: the session sleeps and the timeout notice is never delivered.
+func (s *Session) scheduleQuietYieldRetry() {
+	s.pendingJobNotifsMu.Lock()
+	s.scheduleJobNotificationRetryLocked()
 	s.pendingJobNotifsMu.Unlock()
 }
 

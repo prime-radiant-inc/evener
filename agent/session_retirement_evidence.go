@@ -157,6 +157,11 @@ func (s *Session) retirementLocalBlockersWithNaming(includeNaming bool) []Retire
 		blockers = append(blockers, RetirementBlocker{Category: "autonomous", SessionID: s.id})
 	}
 	s.mu.Unlock()
+	// A quiet yield is a scheduled resume: the armed/due fallback or the quiet
+	// wait it leaves must survive the idle timer, or the wake is lost.
+	if s.quietYieldActive() {
+		blockers = append(blockers, RetirementBlocker{Category: "autonomous", SessionID: s.id})
+	}
 	s.pendingJobNotifsMu.Lock()
 	if len(s.pendingJobNotifs) != 0 || s.jobNotifyRetry.active || s.jobNotifyCallbacks != 0 {
 		blockers = append(blockers, RetirementBlocker{Category: "notification", SessionID: s.id})

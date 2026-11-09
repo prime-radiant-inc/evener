@@ -282,6 +282,11 @@ func (s *Session) treeHasOutstandingWorkBesidesOwnJobs() (bool, error) {
 	if s.jobManager != nil && s.jobManager.hasPendingWatchSends() {
 		return true, nil
 	}
+	if s.quietYieldActive() {
+		// A yield's armed/due fallback and its quiet wait are work the drain
+		// must not settle past: the session resumes when that wake arrives.
+		return true, nil
+	}
 	if s.peekNotifications() > 0 {
 		return true, nil
 	}
@@ -577,6 +582,9 @@ func (s *Session) subtreeHasLiveComponent() (bool, error) {
 		if s.jobManager.hasRunningDrainJob() || s.jobManager.hasPendingWatchSends() {
 			return true, nil
 		}
+	}
+	if s.quietYieldActive() {
+		return true, nil
 	}
 	if s.peekNotifications() > 0 {
 		return true, nil

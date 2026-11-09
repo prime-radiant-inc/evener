@@ -533,6 +533,10 @@ type drainInputs struct {
 	// is not the receipt's -- so the input settles and the next external wake
 	// carries the steer. User work (a queued message) still runs.
 	SteeringParked bool
+	// RanYielded reports that the turn that just ran ended on a quiet yield.
+	// The yield resumed nothing, so no autonomous continuation may follow; a
+	// queued user message still runs.
+	RanYielded bool
 }
 
 // drainAction is the next action the drain loop takes after a completed turn.
@@ -585,12 +589,15 @@ const (
 // notification preempts, so the resulting turn depends on the (side-effectful)
 // fold result.
 func selectDrainNextAction(in drainInputs) (action drainAction, skipGoalGate bool) {
-	skipGoalGate = in.RanKind == EntryNotification || in.HaveDeferredCont || in.Awaiting || in.SteeringParked
+	skipGoalGate = in.RanKind == EntryNotification || in.HaveDeferredCont || in.Awaiting || in.SteeringParked || in.RanYielded
 	queued := strings.TrimSpace(in.QueuedText) != "" || in.QueuedImages > 0 || in.QueuedSkills > 0 || in.QueuedCommands > 0 || in.QueuedCarrier
 	if in.Awaiting {
 		if queued {
 			return runQueued, skipGoalGate
 		}
+		return goIdle, skipGoalGate
+	}
+	if in.RanYielded && !queued {
 		return goIdle, skipGoalGate
 	}
 	switch {
@@ -802,6 +809,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// marker between the two turns.
 		s.applyPendingModelSwitch()
 		out, progressed, err := s.processOneInput(processCtx, next, nextImages, nextKind, nextProvenance)
+		ranYielded := s.lastTurnYielded()
 		// The durable name of the turn that just ran, read before this turn's
 		// completion below releases it. An interrupt's marker is that turn's
 		// last record, written after this function returns, so it must name
@@ -1081,6 +1089,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			Awaiting:             awaiting,
 			QueuedCarrier:        queued.SteeringCarrier,
 			SteeringParked:       s.steeringParkedNow(),
+			RanYielded:           ranYielded,
 		})
 
 		if action == runQueued {
@@ -1443,23 +1452,22 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// that already moved. The successful yield path sets yielded and leaves
 	// its timer armed (issue #832).
 	yielded := false
-	if kind == EntryNotification {
-		// A notification turn's accept takes the due record the timer left.
-		// Clear only the request and timer here; clearing the due record would
-		// drop the very wake this turn exists to deliver.
-		s.cancelQuietYieldWait()
-	} else {
+	s.mu.Lock()
+	s.lastTurnYieldedFlag = false
+	s.mu.Unlock()
+	if kind != EntryNotification {
 		s.cancelPendingQuietYield()
 	}
 	defer func() {
 		if yielded {
 			return
 		}
-		if kind == EntryNotification {
-			s.cancelQuietYieldWait()
-			return
+		// A notification turn that stood down preserves the armed fallback:
+		// acceptNotificationInput cleared the wait only after admitting real
+		// work.
+		if kind != EntryNotification {
+			s.cancelPendingQuietYield()
 		}
-		s.cancelPendingQuietYield()
 	}()
 	communicatePreviewCalls := map[string]struct{}{}
 	defer func() {
@@ -1770,6 +1778,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			// leak it.
 			return "", false, nil
 		}
+		// Real notification work resumed the session, so the quiet-yield wait
+		// it was holding is over. A stand-down above returns before this and
+		// keeps the fallback armed.
+		s.cancelQuietYieldWait()
 		rootAttentionAccepted = true
 	} else if kind == EntryDelegateAttention {
 		s.acceptDelegateAttentionInput()
@@ -2137,6 +2149,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// events (or the armed fallback) are what resume it (issue #832).
 		if s.consumeQuietYieldRequest() {
 			yielded = true
+			s.markQuietYield()
+			s.mu.Lock()
+			s.lastTurnYieldedFlag = true
+			s.mu.Unlock()
 			s.finishProcessingAtBoundary(ctx, SessionIdle)
 			return "", progressed, nil
 		}
@@ -2619,8 +2635,10 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 			s.requeueJobNotifications(jobNotifications(jobNotifs))
 			if yieldDue != nil {
 				// Loss-proof: a failed append puts the fallback back for the
-				// next wake instead of consuming the only timeout notice.
+				// next wake instead of consuming the only timeout notice, and
+				// arms a paced retry so that next wake actually happens.
 				s.restoreDueQuietYield(*yieldDue)
+				s.scheduleQuietYieldRetry()
 			}
 			s.finishNotificationNoop()
 			return false

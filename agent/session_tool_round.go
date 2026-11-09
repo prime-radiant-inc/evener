@@ -501,7 +501,11 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 	// here would mark it incorporated in a result that ends the turn without a
 	// model request that can act on it.
 	if abortErr := s.withResponseSideEffects(ctx, func() {
-		if !s.Communicated() {
+		// A yield ends the activation just as a terminal communicate does:
+		// draining client steering now would mark it incorporated in a round
+		// no later model request reads. Leave it for the carrier turn the
+		// drain ladder (or wakeForPendingSteering) runs next.
+		if !s.Communicated() && !s.quietYieldRequested() {
 			if s.hasPendingSteering() {
 				yieldToObserverCallback = false
 			}

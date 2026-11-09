@@ -53,6 +53,14 @@ func (s *Session) requestQuietYield(intent string, timeout time.Duration) quietY
 // daemon to run its notification turn. The generation check drops a timer an
 // ordinary turn already canceled; a closed session is left for its teardown.
 func (s *Session) fireQuietYieldTimeout(generation uint64) {
+	release, err := s.beginRetirementMutation("autonomous")
+	if err != nil {
+		// Retirement is claiming. Keep the timer armed for a paced retry
+		// rather than firing into a runtime that is going away.
+		s.sclock().AfterFunc(jobNotificationRetryInitialDelay, func() { s.fireQuietYieldTimeout(generation) })
+		return
+	}
+	defer release()
 	s.yieldMu.Lock()
 	armed := s.yieldArmed
 	if armed == nil || armed.generation != generation {
@@ -67,6 +75,48 @@ func (s *Session) fireQuietYieldTimeout(generation uint64) {
 		return
 	}
 	s.notify()
+}
+
+// markQuietYield records that a yield ended the activation. The flag keeps
+// autonomous continuations from resuming the session before an ordinary event
+// does, and it survives until the next real turn starts (or the session is
+// stopped).
+func (s *Session) markQuietYield() {
+	s.yieldMu.Lock()
+	s.yieldQuiet = true
+	s.yieldMu.Unlock()
+}
+
+// lastTurnYielded reports whether the newest turn ended on a quiet yield.
+func (s *Session) lastTurnYielded() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastTurnYieldedFlag
+}
+
+// quietYieldRequested reports whether this round's tool call asked to yield.
+// It is read before the turn ends, so the round's steering is left for a
+// carrier rather than drained into an activation that has no further request.
+func (s *Session) quietYieldRequested() bool {
+	s.yieldMu.Lock()
+	defer s.yieldMu.Unlock()
+	return s.yieldRequest != nil
+}
+
+// quietYieldActive reports that the session is resting on a yield: an armed
+// fallback, a due fallback, or the quiet flag a successful yield set.
+func (s *Session) quietYieldActive() bool {
+	s.yieldMu.Lock()
+	defer s.yieldMu.Unlock()
+	return s.yieldQuiet || s.yieldArmed != nil || s.yieldDue != nil
+}
+
+// hasDueQuietYield reports whether a fired fallback still needs its
+// notification turn. The paced notification retry reads it as pending work.
+func (s *Session) hasDueQuietYield() bool {
+	s.yieldMu.Lock()
+	defer s.yieldMu.Unlock()
+	return s.yieldDue != nil
 }
 
 // takeDueQuietYield consumes the fallback a fired timer left for the next
@@ -107,12 +157,13 @@ func (s *Session) consumeQuietYieldRequest() bool {
 func (s *Session) cancelQuietYieldWait() {
 	s.yieldMu.Lock()
 	defer s.yieldMu.Unlock()
-	if s.yieldRequest == nil && s.yieldArmed == nil {
+	if s.yieldRequest == nil && s.yieldArmed == nil && !s.yieldQuiet {
 		return
 	}
 	s.yieldSeq++
 	s.yieldRequest = nil
 	s.yieldArmed = nil
+	s.yieldQuiet = false
 }
 
 // cancelPendingQuietYield drops the request, the fallback timer, and any due
@@ -122,12 +173,13 @@ func (s *Session) cancelQuietYieldWait() {
 func (s *Session) cancelPendingQuietYield() {
 	s.yieldMu.Lock()
 	defer s.yieldMu.Unlock()
-	if s.yieldRequest == nil && s.yieldArmed == nil && s.yieldDue == nil {
+	if s.yieldRequest == nil && s.yieldArmed == nil && s.yieldDue == nil && !s.yieldQuiet {
 		return
 	}
 	s.yieldSeq++
 	s.yieldRequest = nil
 	s.yieldArmed = nil
+	s.yieldQuiet = false
 	// A due record is the timer that already fired. An ordinary turn or a Stop
 	// that lands before its notification turn consumes it must cancel the wake
 	// too; the notification turn itself takes the record first, so this does

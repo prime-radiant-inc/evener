@@ -17,14 +17,14 @@ func registerYieldTool(reg *tool.Registry, s *Session) error {
 	return reg.Register(tool.RegisteredTool{
 		Definition: tool.DefYield(),
 		ReadOnly:   true,
-		Exec: func(_ context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			return quietYieldTool(s, args)
+		Exec: func(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+			return quietYieldTool(s, ctx, args)
 		},
 	})
 }
 
 // quietYieldTool validates one yield call and arms its optional fallback.
-func quietYieldTool(s *Session, args map[string]any) (any, error) {
+func quietYieldTool(s *Session, ctx context.Context, args map[string]any) (any, error) {
 	if s.cfg.TurnEndsProcess {
 		return nil, errors.New("invalid_request: yield needs a session that outlives this turn; call communicate with end_turn=true instead")
 	}
@@ -35,7 +35,7 @@ func quietYieldTool(s *Session, args map[string]any) (any, error) {
 	if !hasTimeout && !s.hasKnownRunningWork() {
 		return nil, errors.New("invalid_request: a yield without timeout_seconds needs a running shell job or stable delegate that can wake the session; pass timeout_seconds or start the work first")
 	}
-	y := s.requestQuietYield(stringArg(args, "intent"), time.Duration(timeoutSeconds)*time.Second)
+	y := s.requestQuietYield(tool.IntentFromContext(ctx), time.Duration(timeoutSeconds)*time.Second)
 	result := map[string]any{
 		"status":   "yielding",
 		"yield_id": y.ID,

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/llm"
 )
@@ -67,6 +69,43 @@ func TestQuietYieldEndsTheActivationWithoutAnotherModelRound(t *testing.T) {
 	}
 	if !historyHasToolResult(sess, "yield", "yielding") {
 		t.Fatal("the yield tool result was not recorded in the transcript")
+	}
+}
+
+// A yield ends the activation before another model request, so user steering
+// that arrived during its round must stay pending for a carrier turn rather
+// than being marked incorporated into a request that never happens.
+func TestQuietYieldRunLeavesUserSteeringForACarrier(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t)
+	sess.mu.Lock()
+	sess.steeringQueue = append(sess.steeringQueue, steeringMessage{Text: "also do this", Source: events.SteeringSourceUser})
+	sess.mu.Unlock()
+	sess.requestQuietYield("waiting", 0)
+	var sigs []string
+	var failed []bool
+	if _, err := sess.injectPostToolSteering(context.Background(), nil, nil, &sigs, &failed); err != nil {
+		t.Fatalf("injectPostToolSteering: %v", err)
+	}
+	if !sess.hasPendingUserSteering() {
+		t.Fatal("the yield round drained user steering into a turn with no further model request")
+	}
+}
+
+// The drain ladder must not start an autonomous continuation after a yielded
+// turn; queued user work still runs.
+func TestDrainSelectorStopsAfterAYieldedTurn(t *testing.T) {
+	t.Parallel()
+	action, skip := selectDrainNextAction(drainInputs{
+		RanKind:          EntryUserInput,
+		RanYielded:       true,
+		HaveDeferredCont: true,
+	})
+	if action != goIdle || !skip {
+		t.Fatalf("after a yielded turn with a deferred continuation: action=%v skipGoalGate=%t, want goIdle/true", action, skip)
+	}
+	if action, _ := selectDrainNextAction(drainInputs{RanKind: EntryUserInput, RanYielded: true, QueuedText: "next"}); action != runQueued {
+		t.Fatalf("a queued user message after a yielded turn = %v, want runQueued", action)
 	}
 }
 
@@ -220,15 +259,97 @@ func TestOrdinaryTurnCancelsADueQuietYieldFallback(t *testing.T) {
 	}
 }
 
+// A daemon wake that finds no deliverable notification work must preserve the
+// armed fallback; cancelling it before admission would silently lose the
+// timeout wake.
+func TestNotificationStandDownKeepsTheQuietYieldFallback(t *testing.T) {
+	t.Parallel()
+	fake := agenttest.NewFakeClock()
+	sess := newSession(t, withClock(fake), withSteps(
+		func(llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(quietYieldCall("yield-1", `{"timeout_seconds":30}`))
+		},
+	))
+	var wakes atomic.Int32
+	sess.SetNotifyFunc(func() { wakes.Add(1) })
+	if _, err := sess.ProcessInput(tripwireCtx(t), "start", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if _, err := sess.ProcessInputKind(t.Context(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("stand-down notification: %v", err)
+	}
+	fake.Advance(30 * time.Second)
+	fake.Drain()
+	if got := wakes.Load(); got != 1 {
+		t.Fatalf("fallback wakes after a stood-down notification = %d, want 1", got)
+	}
+}
+
+// A quiet-yield fallback keeps the session alive: the idle retirement timer
+// must not retire it while the armed or due wake is the only thing left.
+func TestQuietYieldBlocksRetirement(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t, withClock(agenttest.NewFakeClock()))
+	sess.requestQuietYield("waiting", time.Minute)
+	if !retirementHasCategory(sess.retirementLocalBlockers(), "autonomous") {
+		t.Fatal("an armed quiet yield is not a retirement blocker")
+	}
+	sess.cancelPendingQuietYield()
+	if retirementHasCategory(sess.retirementLocalBlockers(), "autonomous") {
+		t.Fatal("a cancelled quiet yield still blocks retirement")
+	}
+}
+
+// A due fallback whose reminder append failed must keep the paced notification
+// retry alive: the retry's pending predicate has to see it.
+func TestDueQuietYieldKeepsTheNotificationRetryAlive(t *testing.T) {
+	t.Parallel()
+	fake := agenttest.NewFakeClock()
+	sess := newSession(t, withClock(fake), withSteps(
+		func(llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(quietYieldCall("yield-1", `{"timeout_seconds":30}`))
+		},
+	))
+	var wakes atomic.Int32
+	sess.SetNotifyFunc(func() { wakes.Add(1) })
+	if _, err := sess.ProcessInput(tripwireCtx(t), "start", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	fake.Advance(30 * time.Second)
+	fake.Drain()
+	wakes.Store(0)
+	// The append-failure path arms this retry; the due record is what makes
+	// its firing notify instead of settling.
+	sess.scheduleQuietYieldRetry()
+	fake.Advance(jobNotificationRetryInitialDelay)
+	fake.Drain()
+	if got := wakes.Load(); got == 0 {
+		t.Fatal("the paced notification retry did not fire for a retained due yield")
+	}
+}
+
+func retirementHasCategory(blockers []RetirementBlocker, category string) bool {
+	for _, blocker := range blockers {
+		if blocker.Category == category {
+			return true
+		}
+	}
+	return false
+}
+
 // A no-timeout yield needs a source that can wake the session; without one the
 // tool refuses and the model must pass a timeout or start the work.
 func TestQuietYieldRequiresAWakeSourceWithoutATimeout(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t)
-	if _, err := quietYieldTool(sess, map[string]any{"intent": "waiting"}); err == nil || !strings.Contains(err.Error(), "running shell job") {
-		t.Fatalf("no-timeout yield with no running work = %v, want a running-work refusal", err)
+	ctx := context.Background()
+	if _, err := quietYieldTool(sess, ctx, map[string]any{"intent": "waiting"}); err == nil {
+		t.Fatal("a no-timeout yield with no running work was accepted")
 	}
-	if _, err := quietYieldTool(sess, map[string]any{"timeout_seconds": float64(30)}); err != nil {
+	if sess.quietYieldActive() {
+		t.Fatal("a refused yield armed a wait")
+	}
+	if _, err := quietYieldTool(sess, ctx, map[string]any{"timeout_seconds": float64(30)}); err != nil {
 		t.Fatalf("timeout-only yield was refused: %v", err)
 	}
 	sess.cancelPendingQuietYield()
@@ -238,8 +359,11 @@ func TestQuietYieldRequiresAWakeSourceWithoutATimeout(t *testing.T) {
 		{"timeout_seconds": 1.5},
 		{"timeout_seconds": "30"},
 	} {
-		if _, err := quietYieldTool(sess, args); err == nil {
+		if _, err := quietYieldTool(sess, ctx, args); err == nil {
 			t.Fatalf("timeout_seconds=%v was accepted, want a bounded-integer refusal", args["timeout_seconds"])
+		}
+		if sess.quietYieldActive() {
+			t.Fatalf("timeout_seconds=%v was refused but armed a wait", args["timeout_seconds"])
 		}
 	}
 }
@@ -250,8 +374,10 @@ func TestQuietYieldIsRefusedWhenTheTurnEndsTheProcess(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t)
 	sess.cfg.TurnEndsProcess = true
-	_, err := quietYieldTool(sess, map[string]any{"timeout_seconds": float64(30)})
-	if err == nil || !strings.Contains(err.Error(), "outlives this turn") {
-		t.Fatalf("one-shot yield = %v, want an outlives-this-turn refusal", err)
+	if _, err := quietYieldTool(sess, context.Background(), map[string]any{"timeout_seconds": float64(30)}); err == nil {
+		t.Fatal("a one-shot yield was accepted")
+	}
+	if sess.quietYieldActive() {
+		t.Fatal("a refused one-shot yield armed a wait")
 	}
 }

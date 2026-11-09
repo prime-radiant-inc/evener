@@ -363,6 +363,10 @@ func (s *Session) reportGoalEnded() {
 // in flight (attention-status-model v5: a kicked goal suppresses awaiting —
 // suppressor condition 3 of the idle→awaiting upgrade).
 func (s *Session) settleGoalOnIdle() bool {
+	// A quiet yield rests until an ordinary event arrives; an idle goal kick
+	// would resume the model at once and cancel the fallback it armed. Read
+	// the yield state before s.mu, per its own lock.
+	yieldWaiting := s.quietYieldActive()
 	// Probe the hold flag first so the delegate-tree snapshot is paid only when
 	// a hold actually stands. The flag can only transition true→false between
 	// the probe and the main section (the gate that sets it runs on this same
@@ -390,7 +394,7 @@ func (s *Session) settleGoalOnIdle() bool {
 	// carrier the next external wake runs kicks it.
 	parked := s.steeringParked && s.hasPendingUserSteeringLocked()
 	var prompt string
-	if kick != nil && !pendingAsk && !parked && (!held || !wakePending) {
+	if kick != nil && !pendingAsk && !parked && !yieldWaiting && (!held || !wakePending) {
 		if snap, ok := s.getOrCreateGoalStore().Snapshot(); ok && snap.Status == goal.StatusActive {
 			prompt = goal.Render(snap.Objective)
 		}

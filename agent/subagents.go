@@ -1752,6 +1752,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			!budgetExhausted &&
 			a.nudgeEnabled &&
 			needsNudge &&
+			!a.sess.quietYieldActive() &&
 			(err == nil || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted))
 		if shouldNudge {
 			nudgeAvailable = false
@@ -1767,6 +1768,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			res, restoreParentDriveNotify, err = a.drainForFinalization(ctx, res)
 		}
 		if stableRun && a.sess.delegateController != nil && nudgeAvailable && !cancelRequested && !budgetExhausted && a.nudgeEnabled &&
+			!a.sess.quietYieldActive() &&
 			(err == nil || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted)) {
 			decision, decisionErr := a.sess.delegateController.completionDecision(lease)
 			if decisionErr != nil {
