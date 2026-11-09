@@ -12,11 +12,13 @@ a retry, refusal, banner, or repair action.
 Version skew between hub, daemons, clients and remote hubs follows the
 direction rules in the [compatibility policy](README.md#compatibility).
 
-Session, turn, job, delegate, watch, task, goal, host operation and
-client-mutation lifecycles, their owners and their legal transitions are
-catalogued in [lifecycles](lifecycles.md). The core machines are declared once
-in [`appwire/lifecycle.go`](../../appwire/lifecycle.go), and clients read the
-generated catalog instead of keeping status lists of their own.
+The [lifecycle guide](lifecycles.md) distinguishes shared declarations, owner
+guards and projections. [`appwire/lifecycle.go`](../../appwire/lifecycle.go)
+declares shared vocabulary and classification; clients consume its generated
+catalog. Owners retain admission and recovery authority, and locally explicit
+protocols need not all enter the registry. The guide's [recovery and preservation
+map](lifecycles.md#recovery-and-preservation-ownership) links important protocols
+to their source owners and focused tests, without claiming a complete inventory.
 
 ## How the product fits together
 
@@ -99,6 +101,15 @@ folded Send or bypassing Stop and recovery fences. A delivery-uncertain row is
 local work like any other: QueueStrip's Edit and Remove reach it, and removing it
 wakes the queue behind it. Editing it carries the inherited wire identity: an unchanged resend replays the existing mutation - the journal deduplicates already-delivered work - and changed content sends as a new message. A submitting row the client has already attempted and
 is waiting on stays locked, as do the verbs that have their own controls.
+
+S02 and S03 both use the shared mutation outbox and dispatcher: the browser
+stores local intent in IndexedDB, while the [native mutation runtime](../../mobile-native/src/nativeMutationRuntime.ts)
+uses SQLite. S11's daemon journal owns accepted mutations, not either client's
+draft state. Outbox `superseded` retires dispatch while retaining predecessor
+identity and attempt evidence for late settlement. [Message recovery](message-recovery.md)
+owns the distinction between automatic own-pane draft restoration and deliberate
+QueueStrip actions on any owner's row; [lifecycles](lifecycles.md#recovery-and-preservation-ownership)
+links the preservation tests.
 
 For original transcript authors, **S10** owns durable author snapshots, first-live
 publication, indexed/history projection and preservation through ordinary and

@@ -1527,7 +1527,7 @@ describe("operations polling (S15)", () => {
   test("keeps polling an unverified orphan until its authoritative outcome arrives", async () => {
     const fake = connectReadyFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [row("beta")] }));
-    const states = ["orphan-unverified", "interrupted"];
+    const states = ["orphan-unverified", "interrupted"] as const;
     let reads = 0;
     await startedDeploy(fake, () => ({
       operations: [operationRecord({ state: states[reads++] })],
