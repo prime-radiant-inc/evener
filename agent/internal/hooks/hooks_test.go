@@ -1930,3 +1930,89 @@ func TestRunPostToolBatch_EmitsHookLifecycleEvents(t *testing.T) {
 		t.Fatalf("hook lifecycle events = %d start / %d end, want 1/1", starts, ends)
 	}
 }
+
+// TestRunPreCompactFor_MatchesTrigger proves PreCompact's matcher target is the
+// fold's trigger: a "manual" hook fires for /compact and not for a pressure
+// fold.
+func TestRunPreCompactFor_MatchesTrigger(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPreCompact, plugin.RegisteredHook{Matcher: "manual", Type: "command", Timeout: 5,
+		Command: `echo '{"hookSpecificOutput":{"hookEventName":"PreCompact","additionalContext":"manual-note"}}'`})
+	if got := r.RunPreCompactFor(context.Background(), Input{}, "manual"); len(got.ModelContext) != 1 {
+		t.Fatalf("manual must match, got %v", got.ModelContext)
+	}
+	if got := r.RunPreCompactFor(context.Background(), Input{}, "auto"); len(got.ModelContext) != 0 {
+		t.Fatalf("auto must not match a manual hook, got %v", got.ModelContext)
+	}
+}
+
+// TestRunPreCompactFor_MatchesTriggerWithoutJSONEventName proves the trigger
+// alone decides the match, independent of any input field.
+func TestRunPreCompactFor_MatchesTriggerWithoutJSONEventName(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPreCompact, plugin.RegisteredHook{Matcher: "auto|manual", Type: "command", Timeout: 5,
+		Command: `echo '{"hookSpecificOutput":{"hookEventName":"PreCompact","additionalContext":"either-note"}}'`})
+	if got := r.RunPreCompactFor(context.Background(), Input{}, "auto"); len(got.ModelContext) != 1 {
+		t.Fatalf("auto must match an either-trigger hook, got %v", got.ModelContext)
+	}
+	if got := r.RunPreCompactFor(context.Background(), Input{}, "manual"); len(got.ModelContext) != 1 {
+		t.Fatalf("manual must match an either-trigger hook, got %v", got.ModelContext)
+	}
+}
+
+// TestRunPostCompactFor_DiscardsOutputAndContinue pins PostCompact's contract:
+// it has no decision control, and systemMessage, additionalContext, and
+// continue:false are all discarded.
+func TestRunPostCompactFor_DiscardsOutputAndContinue(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPostCompact, plugin.RegisteredHook{Type: "command", Timeout: 5,
+		Command: `echo '{"systemMessage":"x","continue":false,"hookSpecificOutput":{"hookEventName":"PostCompact","additionalContext":"y"}}'`})
+	got := r.RunPostCompactFor(context.Background(), Input{}, "auto")
+	if len(got.ModelContext) != 0 || len(got.UserMessages) != 0 || got.Stopped {
+		t.Fatalf("PostCompact output must be discarded, got %+v", got)
+	}
+}
+
+// TestRunPostCompactFor_MatchesTrigger proves PostCompact matches the trigger
+// the same way PreCompact does, so a hook pair with one matcher stays
+// consistent.
+func TestRunPostCompactFor_MatchesTrigger(t *testing.T) {
+	r := newRunner(nil, "")
+	var runs int
+	r.Add(plugin.HookPostCompact, plugin.RegisteredHook{Matcher: "^manual$", Type: "command", Timeout: 5,
+		Command: "true"})
+	r.SetEventCallback(func(kind events.EventKind, data events.EventData) {
+		if kind == events.EventHookStart {
+			if start, ok := data.(events.HookStartData); ok && start.Event == string(plugin.HookPostCompact) {
+				runs++
+			}
+		}
+	})
+	r.RunPostCompactFor(context.Background(), Input{}, "auto")
+	if runs != 0 {
+		t.Fatalf("an auto fold ran a manual PostCompact %d time(s)", runs)
+	}
+	r.RunPostCompactFor(context.Background(), Input{}, "manual")
+	if runs != 1 {
+		t.Fatalf("a manual fold ran the manual PostCompact %d time(s), want 1", runs)
+	}
+}
+
+// TestRunPostCompactFor_FailureIsUserOnly proves the one output PostCompact
+// keeps: a failed hook's stderr reaches the operator, bounded to one line, and
+// never the model.
+func TestRunPostCompactFor_FailureIsUserOnly(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPostCompact, plugin.RegisteredHook{Type: "command", Timeout: 5,
+		Command: `printf 'first line\nsecond line\n' >&2; exit 2`})
+	got := r.RunPostCompactFor(context.Background(), Input{}, "auto")
+	if len(got.ModelContext) != 0 {
+		t.Fatalf("PostCompact failure must not reach the model, got %v", got.ModelContext)
+	}
+	if len(got.UserMessages) != 1 || got.UserMessages[0] != "first line" {
+		t.Fatalf("PostCompact failure must reach the user as one line, got %v", got.UserMessages)
+	}
+	if got.Stopped {
+		t.Fatalf("PostCompact has no decision control, got Stopped")
+	}
+}

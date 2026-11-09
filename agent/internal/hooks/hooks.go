@@ -779,10 +779,41 @@ func (r *Runner) RunSessionEnd(ctx context.Context, input Input) {
 	r.runAll(ctx, plugin.HookSessionEnd, "", input)
 }
 
-// RunPreCompact dispatches PreCompact hooks.
+// RunPreCompact dispatches PreCompact hooks for any trigger.
 func (r *Runner) RunPreCompact(ctx context.Context, input Input) RunResult {
-	outputs := r.runAll(ctx, plugin.HookPreCompact, "", input)
+	return r.RunPreCompactFor(ctx, input, "")
+}
+
+// RunPreCompactFor dispatches PreCompact hooks and matches them on the fold's
+// trigger ("manual" for /compact, "auto" for every other publisher), the same
+// value the input carries. An empty trigger matches every hook.
+func (r *Runner) RunPreCompactFor(ctx context.Context, input Input, trigger string) RunResult {
+	outputs := r.runAll(ctx, plugin.HookPreCompact, trigger, input)
 	return collectSystemMessages(plugin.HookPreCompact, outputs)
+}
+
+// RunPostCompactFor dispatches PostCompact hooks and matches them on the fold's
+// trigger. Claude gives this event no decision control: systemMessage,
+// additionalContext, and continue:false are all discarded, so a hook's stdout
+// never reaches the model or the operator. A FAILED hook is the exception the
+// event's contract keeps: a non-blocking error's stderr is shown to the user
+// only, one bounded line per hook. terminalSequence is still parsed by the
+// shared output parser and carried for a delivery site PostCompact does not yet
+// have.
+func (r *Runner) RunPostCompactFor(ctx context.Context, input Input, trigger string) RunResult {
+	outputs := r.runAll(ctx, plugin.HookPostCompact, trigger, input)
+	var result RunResult
+	for _, o := range outputs {
+		if o.TerminalSequence != "" {
+			result.TerminalSequences = append(result.TerminalSequences, o.TerminalSequence)
+		}
+		if o.IsError {
+			if line := firstLine(o.SystemMessage); line != "" {
+				result.UserMessages = append(result.UserMessages, line)
+			}
+		}
+	}
+	return result
 }
 
 // RunNotification dispatches Notification hooks.

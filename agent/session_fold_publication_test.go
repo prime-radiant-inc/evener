@@ -1270,11 +1270,12 @@ func TestFoldPublication_OlderFoldFlushSuppressedByNewerPublication(t *testing.T
 // Keeping it out of the production surface makes that caller impossible;
 // production publishers use stageCompactionEffects + publishFoldTransaction.
 func (s *Session) compactionEmitFunc(ctx context.Context, history *[]schema.Turn) (context.Context, func(events.EventKind, events.EventData), func(), func() int) {
-	ctx, emitFn, commit, injected := s.stageCompactionEffects(ctx, history)
+	ctx, emitFn, commit, injected := s.stageCompactionEffects(ctx, history, triggerAuto, "")
 	commitNow := func() {
 		s.mu.Lock()
 		commit.claimNoteLocked()
 		commit.publishedRevision = s.historyRevision
+		commit.actualCompaction = commit.stagedCompactionCount() > 0
 		s.mu.Unlock()
 		s.attentionMu.Lock()
 		commit.commitTranscriptsLocked()

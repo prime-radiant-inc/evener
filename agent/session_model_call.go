@@ -280,7 +280,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			// publication claims exactly that generation, note generation
 			// included — even for an empty note. A FORCED operation is never
 			// captured here; only its round-tail dispatch claims it.
-			compactionCtx, emitFn, commit, foldInjectedCount := s.stageCompactionEffects(ctx, &historyTurns)
+			compactionCtx, emitFn, commit, foldInjectedCount := s.stageCompactionEffects(ctx, &historyTurns, triggerAuto, "")
 			commit.captured = s.capturableAutomaticCompaction()
 			if err := s.strategy.ManageContext(compactionCtx, &historyTurns, len(sys), emitFn); err != nil {
 				s.emit(events.EventWarning, bareWarningDataFromError("context strategy error", err))
@@ -1625,7 +1625,7 @@ func (s *Session) forceCompactForModelRecovery(ctx context.Context) {
 	// precedes.
 	// The content-filter recovery fold captures no compaction operation —
 	// it is not any intent's requesting caller.
-	_, _ = s.foldWithForceCompact(ctx, "", nil)
+	_, _ = s.foldWithForceCompact(ctx, "", nil, triggerAuto)
 	s.maybeAutoSave()
 }
 
