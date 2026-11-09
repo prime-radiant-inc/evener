@@ -48,9 +48,9 @@ Claude Code 2.1.321 build:
   create a new commit.
 
 Evener already renders a per-session system prompt, so it can give the model the
-exact line. This needs no `core.hooksPath`, no hook dispatcher and no
-`launch.toml` entry. The hub keeps its value in the existing settings store
-pattern, not a TOML file.
+exact line. This needs no `core.hooksPath` and no hook dispatcher. The global
+value uses the existing launch settings facility, alongside the model, sandbox
+and limit defaults.
 
 ## How it works
 
@@ -85,43 +85,37 @@ version, model or parent session to fill a gap.
 
 ## Configuration
 
-Three surfaces resolve one value:
+The setting rides the existing launch settings facility. The global value is a
+field in the global launch layer; the per-session value is a launch-layer
+override.
 
 | Surface | Where | Scope |
 | --- | --- | --- |
-| Hub global | Settings → Agent setup → Git commits | User-wide on that host |
-| Hub per session | New session dialog | One session |
+| Hub global | Settings → Agent setup → Session defaults, the global launch layer | User-wide on that host |
+| Hub per session | New session dialog, the launch layer | One session |
 | CLI | `--commit-provenance` on `evener` or `evener serve` | One invocation |
 
-Precedence: the per-session toggle, then the hub global, then `coauthor`.
+`launchconfig.Layer` gains `CommitProvenance string` with TOML tag
+`commit_provenance,omitempty`. The schema offers it in the global layer
+(`DefaultableLayers: [global]`) and as a per-launch override (`PerLaunch:
+true`); a repository or project layer value is ignored with a diagnostic. The
+field is saved and loaded through the existing `launchconfig` loader and the
+existing `SetLayer` writer. No new store, RPC or settings section is added.
 
 ### Hub global
 
-Use the existing hub settings store facility, the same pattern as keybindings
-and conversation display: a small JSON state file under the state root with a
-get/set RPC and a changed broadcast. This is a hub setting, not a new TOML file
-and not a `launch.toml` entry.
-
-- `hubcore.CommitProvenanceStore` stores `<state-root>/commit-provenance/state.json`.
-  The default is `coauthor`; a malformed snapshot loads the default with a
-  diagnostic, as the keybindings and display stores do.
-- `evener/settings/commitProvenance/get`, `/set` and `/changed` carry the value.
-- Settings → Agent setup → Git commits is host-scoped and has one select. Each
-  host's hub owns its own value; Evener does not sync it between hosts.
-- `HubSpawner` and the launch preview read the store. A new hub session gets
-  the global value unless the per-session toggle overrides it, and the hub
-  passes `--commit-provenance=<resolved>` to `evener serve` so every host
-  agrees with the setting surface the person used.
-- A resume passes the session's saved value unless the resume request supplies
-  an override.
+Settings → Agent setup → Session defaults already edits
+`<config-root>/launch.toml` through `evener/launch/setLayer`. The form gains a
+`Commit provenance` select with `Record session details` (`coauthor`) and
+`Off`. A new hub session gets that value; the hub passes
+`--commit-provenance=<resolved>` to `evener serve`, so remote hosts agree with
+the selected host's setting.
 
 ### Hub per session
 
-The New session dialog gains a `Commit provenance` select: `(inherit)`,
-`Record session details` (`coauthor`) and `Off`. It is a per-launch-only launch
-option: `commit_provenance` in the launch schema with no defaultable layers and
-a `toml:"-"` field, so it can never be written to `launch.toml`. The hub
-resolves it in memory and `ToArgs` emits `--commit-provenance`.
+The New session dialog gains the same select as a launch-layer override:
+`(inherit)`, `Record session details` and `Off`. It overrides the global layer
+for that session, and `ToArgs` emits `--commit-provenance`.
 
 ### CLI
 
@@ -131,17 +125,18 @@ evener serve --commit-provenance=off ...
 ```
 
 The flag is added to `launchFlags`, so `evener` and `evener serve` share it.
-Values are `coauthor` and `off`. A direct CLI launch does not read the hub
-store; the flag or the default `coauthor` applies. This is the optional
-command-line setting; there is no `evener config` command.
+Values are `coauthor` and `off`. A standalone CLI launch does not read
+`launch.toml`; it uses the flag or the default `coauthor`. This keeps direct CLI
+and CI behavior unchanged. The hub passes the flag to the daemons it launches.
 
 ### Persistence and precedence
 
 `SessionConfig.CommitProvenance` persists the resolved value, like the model and
-sandbox settings. A new hub session resolves the per-session toggle, then the
-hub global, then `coauthor`. A direct CLI session resolves the flag, then
-`coauthor`. A resume keeps the saved value unless the caller supplies an
-explicit flag or toggle. A session already running keeps its value.
+sandbox settings. For a hub launch the existing launch resolver merges the
+global `launch.toml` value and the per-session override; for a standalone CLI
+launch the flag or `coauthor` applies. A resume keeps the saved value unless the
+caller supplies an explicit override. A session already running keeps its
+value.
 
 ## Coverage and limits
 
@@ -167,8 +162,9 @@ The trailer is best-effort and depends on the model following the prompt.
   hook repairs it, and no post-commit rewrite exists.
 - `--commit-provenance=off` removes the instruction; existing commits keep
   whatever trailers they already have.
-- A malformed hub store loads the default `coauthor` with a load diagnostic; a
-  write failure is reported by the settings RPC and does not change the value.
+- A malformed `launch.toml` follows the launch resolver's existing failure
+  handling; a save failure is reported by `evener/launch/setLayer` and leaves
+  the previous value.
 - A hub global change applies to the next launch; a running session keeps its
   value.
 - Signatures, hooks, author identity, staging state and refs are untouched.
@@ -183,7 +179,8 @@ The trailer is best-effort and depends on the model following the prompt.
 | `git` wrapper on `PATH` | Bypassed by absolute paths, libraries and changed environments; misses merge, cherry-pick and rebase |
 | Custom commit header (prototyped) | No native insertion point before signing; post-commit rewriting invalidates signatures and reports stale IDs; native rebase, cherry-pick and squash drop it; GitHub squash dropped it |
 | Git notes | A separate ref that ordinary clone and push do not carry without extra configuration |
-| A new TOML settings file or a `launch.toml` entry | Duplicates or disturbs existing configuration; rejected by Jesse |
+| A new TOML settings file | Duplicates the existing launch settings facility; rejected by Jesse |
+| Global launch.toml (chosen) | Existing facility, edited with the model and sandbox defaults; direct CLI does not read it |
 
 The standalone `tools/commit-provenance` writer stays as the record of the
 custom-header experiment. This design does not wire it into the product.
@@ -194,14 +191,15 @@ custom-header experiment. This design does not wire it into the product.
 | --- | --- |
 | Prompt | `CommitTrailer` in `promptData`, computed in `buildPromptData`, rendered by `agent/prompts/system.md.tmpl` |
 | Session config | `SessionConfig.CommitProvenance`, default on, persisted |
-| Hub global | `hubcore.CommitProvenanceStore` on the shared state-file facility, `evener/settings/commitProvenance/{get,set,changed}`, and the host-scoped Git commits settings section |
-| Hub per session | Per-launch-only `commit_provenance` launch option (`toml:"-"`, no defaultable layers), New session select, and `ToArgs` emission |
-| Hub spawn | `HubSpawner` and the launch preview read the store and pass the resolved flag to `evener serve` |
+| Launch config | `CommitProvenance` in `launchconfig.Layer`, the schema (`DefaultableLayers: [global]`, `PerLaunch: true`), merge, wire and `ToArgs` |
+| Hub global | The existing Session defaults form writes the global `launch.toml` layer through `evener/launch/setLayer`; no new section or store |
+| Hub per session | New session launch override; `ToArgs` emits `--commit-provenance` |
+| Hub spawn | The existing launch resolver and `HubSpawner` pass the resolved flag to `evener serve` |
 | CLI | `--commit-provenance` in `launchFlags`, passed by `run` and `serve`; no `evener config` command |
 
-No Git hook, no `core.hooksPath`, no sandbox grant, no environment overlay, no
-new TOML file and no `launch.toml` field. The hub store is the existing settings
-store pattern; the per-session field is memory-only.
+No Git hook, no `core.hooksPath`, no sandbox grant, no environment overlay and
+no new TOML file. The field is an ordinary entry in the existing global
+`launch.toml` layer.
 
 ## Testing and qualification
 
@@ -215,12 +213,13 @@ Unit tests:
    diagnostic.
 5. The flag parses `coauthor` and `off`, rejects other values, and overrides a
    resumed session's saved value.
-6. The hub store defaults to `coauthor`, round-trips `off`, rejects other
-   values, broadcasts changes, and reports a malformed snapshot.
-7. A hub spawn with no per-session toggle passes the stored global value; a
+6. Launch config: the field loads from the global layer, saves through
+   `SetLayer`, rejects invalid values, and a repository or project value is
+   ignored with a diagnostic.
+7. A hub spawn with no per-session override passes the global value; a
    per-session `off` overrides it; a resume passes the saved value.
-8. The New session field never appears in the global or project launch forms
-   and is never written to `launch.toml`.
+8. A standalone CLI launch ignores `launch.toml` and uses its flag or the
+   default.
 
 Live, opt-in qualification:
 
@@ -241,10 +240,10 @@ Documentation updates in the same change:
 
 - `docs/cli.md`: the `--commit-provenance` flag.
 - `docs/product/subsystems.md`: prompt composition and session configuration.
-- `docs/web-ui/README.md`: Settings → Agent setup → Git commits and the New
+- `docs/web-ui/README.md`: Settings → Agent setup → Session defaults and the New
   session override.
-- `docs/configuration.md`: the hub global lives in the hub settings store, not
-  `launch.toml`; the CLI flag is per invocation.
+- `docs/configuration.md`: the `commit_provenance` field in the global launch
+  layer, and the standalone CLI exception.
 
 ## Decisions
 
@@ -255,12 +254,9 @@ Approved by Jesse in review:
 - The trailer text is as shown.
 - The coverage limit: only commits whose message the model writes.
 - The hub has a global setting and a per-session toggle.
-- No `launch.toml` and no new TOML settings file; the CLI flag is optional.
+- The global value lives in `launch.toml`, alongside the model and sandbox
+  defaults.
+- The standalone CLI does not read `launch.toml`; it keeps the optional flag.
+- No new TOML settings file.
 
-Still open:
-
-1. Confirm the hub global uses the existing settings store pattern
-   (keybindings/conversation display) rather than `hub.toml`. This design adds
-   a store instance on that shared state-file facility.
-2. Confirm the per-session toggle may ride the existing launch-override channel
-   as a memory-only, `toml:"-"` field, so it never writes `launch.toml`.
+No open decisions.
