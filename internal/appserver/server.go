@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/apphistory"
+	"primeradiant.com/evener/internal/transcriptindex"
 )
 
 type Server struct {
@@ -389,8 +390,12 @@ func (s *Server) initialize(_ context.Context, params appwire.InitializeParams) 
 		)
 	}
 	protocolVersion := appwire.ProtocolVersion
+	schemaID := transcriptindex.SchemaID()
 	if s.cfg.AdapterNativeInitialize {
 		protocolVersion = ""
+		// A native adapter is not evener's transcript writer; claiming a schema
+		// identity for it would fence it against the hub for no reason.
+		schemaID = ""
 	}
 	capability := s.cfg.Navigation
 	if s.cfg.NavigationCapability != nil {
@@ -405,10 +410,11 @@ func (s *Server) initialize(_ context.Context, params appwire.InitializeParams) 
 			Arch:         s.cfg.Arch,
 			Roots:        append([]string(nil), s.cfg.Roots...),
 		},
-		ProtocolVersion: protocolVersion,
-		SourceID:        s.cfg.SourceID,
-		Features:        s.cfg.Features,
-		Navigation:      navigationCapability(capability),
+		ProtocolVersion:         protocolVersion,
+		SourceID:                s.cfg.SourceID,
+		Features:                s.cfg.Features,
+		Navigation:              navigationCapability(capability),
+		TranscriptIndexSchemaID: schemaID,
 	}, nil
 }
 

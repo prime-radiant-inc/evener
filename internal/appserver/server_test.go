@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/transcriptindex"
 )
 
 // TestServerLifetimeCanceledByShutdown pins the round-eight lifecycle handle:
@@ -144,6 +145,35 @@ func TestInitializeBuildVersionIsOptional(t *testing.T) {
 				t.Fatalf("serialized identity = %v, build = %q", fields, build)
 			}
 		})
+	}
+}
+
+// TestInitializeAdvertisesTheTranscriptIndexSchema pins the daemon side of the
+// #4368 handshake: a current daemon tells the hub which transcript-index shape
+// it writes, so the hub can fence a schema mismatch the protocol version
+// cannot reveal.
+func TestInitializeAdvertisesTheTranscriptIndexSchema(t *testing.T) {
+	server := NewServer(ServerConfig{Version: "test"})
+	response, err := server.initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := response.TranscriptIndexSchemaID, transcriptindex.SchemaID(); got != want {
+		t.Fatalf("schema advertisement = %q, want %q", got, want)
+	}
+}
+
+// TestInitializeAdapterNativeOmitsTheTranscriptIndexSchema keeps a native
+// adapter — which does not write evener's transcript index at all — from being
+// fenced against the hub for a schema it never writes.
+func TestInitializeAdapterNativeOmitsTheTranscriptIndexSchema(t *testing.T) {
+	server := NewServer(ServerConfig{Version: "test", AdapterNativeInitialize: true})
+	response, err := server.initialize(context.Background(), appwire.InitializeParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.TranscriptIndexSchemaID != "" {
+		t.Fatalf("adapter-native schema advertisement = %q, want absent", response.TranscriptIndexSchemaID)
 	}
 }
 

@@ -141,6 +141,11 @@ type LiveEntry struct {
 	// leaves that behind. A row names it, so rosterFingerprint hashes it: a
 	// switch moves nothing else a row shows.
 	CurrentModel string
+	// RestartRequiredCause distinguishes why a live daemon is fenced:
+	// "protocol" for a handshake version mismatch, "schema" for a
+	// transcript-index schema mismatch, empty when the daemon is compatible.
+	// It drives the fence's message, never its decision.
+	RestartRequiredCause string
 }
 
 // ProbeResult is the dynamic session state returned by a daemon liveness probe.
@@ -208,7 +213,12 @@ type ProbeResult struct {
 	// talk to (restart required). Such an answer names no session of its own,
 	// so it does not vouch for the entry's PID the way a bound answer does.
 	ProtocolMismatch bool
-	OK               bool
+	// SchemaMismatch: the endpoint answered with a current protocol but a
+	// transcript-index schema this hub cannot share (restart required). The
+	// daemon is reachable and bound to its session; the fence exists because
+	// every hub read would rebuild what the daemon keeps extending (#4368).
+	SchemaMismatch bool
+	OK             bool
 }
 
 // Prober is implemented by liveness-checking strategies.
@@ -1309,6 +1319,13 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 	// LiveEntryThreadFacts returns a CloneLiveEntry copy, so a field assigned
 	// straight from result (PendingEscalations, Watches, and so on) does not
 	// alias the probe's copy.
+	restartCause := ""
+	switch {
+	case result.ProtocolMismatch:
+		restartCause = "protocol"
+	case result.SchemaMismatch:
+		restartCause = "schema"
+	}
 	return LiveEntryThreadFacts(LiveEntry{
 		Entry:                 e,
 		SessionID:             result.SessionID,
@@ -1323,6 +1340,7 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 		Lifecycle:             result.Lifecycle,
 		LifecycleFresh:        result.LifecycleFresh,
 		ChildWatches:          result.ChildWatches,
+		RestartRequiredCause:  restartCause,
 	}, result)
 }
 

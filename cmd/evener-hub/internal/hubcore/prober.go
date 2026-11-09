@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/execsupport/componentlog"
+	"primeradiant.com/evener/internal/transcriptindex"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -52,7 +53,8 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	appClient := appwire.NewClient(transport)
 	appClient.SetLogf(hubConnectionLogf)
 	appClient.Start(ctx)
-	if _, err := appClient.Initialize(ctx, appwire.InitializeParams{ClientInfo: appwire.ClientInfo{Name: "evener-hub"}}); err != nil {
+	initialize, err := appClient.Initialize(ctx, appwire.InitializeParams{ClientInfo: appwire.ClientInfo{Name: "evener-hub"}})
+	if err != nil {
 		var wire appwire.WireError
 		var mismatch appwire.ProtocolVersionMismatchError
 		if errors.As(err, &mismatch) ||
@@ -65,6 +67,21 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 			if id != "" {
 				return ProbeResult{SessionID: id, Status: appwire.ThreadStatusRestartRequired, ProtocolMismatch: true, OK: true}
 			}
+		}
+		return ProbeResult{}
+	}
+	// A protocol-current daemon can still write a transcript-index schema this
+	// hub cannot share. Without this fence the two binaries fight over the
+	// sidecar forever: each hub read rebuilds what the daemon keeps extending
+	// under its old identity (#4368). An empty advertisement is an older daemon
+	// that predates the field: unknown, not a mismatch.
+	if transcriptSchemaMismatch(initialize.TranscriptIndexSchemaID) {
+		id := entry.SessionID
+		if id == "" {
+			id = entry.ThreadID
+		}
+		if id != "" {
+			return ProbeResult{SessionID: id, Status: appwire.ThreadStatusRestartRequired, SchemaMismatch: true, OK: true}
 		}
 		return ProbeResult{}
 	}
@@ -152,6 +169,14 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	result.LifecycleFresh = lifecycleFresh
 	result.OK = true
 	return result
+}
+
+// transcriptSchemaMismatch reports whether a daemon advertised a
+// transcript-index schema this hub cannot share. Empty means an older daemon
+// that predates the advertisement: unknown, never a mismatch.
+func transcriptSchemaMismatch(advertised string) bool {
+	advertised = strings.TrimSpace(advertised)
+	return advertised != "" && advertised != transcriptindex.SchemaID()
 }
 
 // ProbeResultFromThread builds the ProbeResult fields a single thread

@@ -27,6 +27,12 @@ import (
 // formatVersion/projectionID already show how easy that is to forget.
 var schemaID = schemaFieldFingerprint()
 
+// SchemaID returns this build's transcript-index schema fingerprint. It is what
+// currentProjection folds into a sidecar identity and what the AppWire
+// initialize handshake advertises, so a hub can fence a protocol-current daemon
+// whose projection schema differs from the hub's own (#4368).
+func SchemaID() string { return schemaID }
+
 // currentProjection is what this build's meta.Projection must equal:
 // projectionID with schemaID folded in, so a build whose reachable JSON
 // shape differs writes (and requires) a different string. Folding it into

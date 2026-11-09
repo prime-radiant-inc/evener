@@ -284,11 +284,22 @@ func daemonRestartRequiredError(ctx context.Context, cfg hubcore.WebConfig, ref,
 	if !ok {
 		return nil
 	}
-	wire := appwire.WireError{Code: appwire.CodeConflict, Message: fmt.Sprintf("Session restart required: daemon pid %d uses an incompatible protocol; this hub requires %s. Stop the daemon, then resume this session. Stopping interrupts active work.", entry.PID, appwire.ProtocolVersion), Data: appwire.ErrorData{EvenerErrorInfo: appwire.ErrorConflict, Cause: "daemonRestartRequired"}}
+	wire := appwire.WireError{Code: appwire.CodeConflict, Message: daemonRestartRequiredMessage(entry), Data: appwire.ErrorData{EvenerErrorInfo: appwire.ErrorConflict, Cause: "daemonRestartRequired"}}
 	if mutationID != "" {
 		return blockedAdmissionMutationError(wire, mutationID)
 	}
 	return wire
+}
+
+// daemonRestartRequiredMessage names the actual incompatibility. A schema
+// mismatch is not a protocol mismatch: the daemon speaks this hub's protocol
+// but writes a different transcript-index shape, so the recovery is the same
+// restart while the diagnosis must not mislead (#4368).
+func daemonRestartRequiredMessage(entry hubcore.LiveEntry) string {
+	if entry.RestartRequiredCause == "schema" {
+		return fmt.Sprintf("Session restart required: daemon pid %d writes a different transcript-index schema from this hub; every read would rebuild what the daemon keeps extending. Stop the daemon, then resume this session with a matching evener build. Stopping interrupts active work.", entry.PID)
+	}
+	return fmt.Sprintf("Session restart required: daemon pid %d uses an incompatible protocol; this hub requires %s. Stop the daemon, then resume this session. Stopping interrupts active work.", entry.PID, appwire.ProtocolVersion)
 }
 
 func isDaemonRestartRequiredError(err error) bool {

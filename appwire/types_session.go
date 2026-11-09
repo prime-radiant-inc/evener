@@ -29,6 +29,12 @@ type InitializeResponse struct {
 	SourceID        string                `json:"sourceId"`
 	Features        FeatureSet            `json:"features"`
 	Navigation      *NavigationCapability `json:"navigation,omitempty"`
+	// TranscriptIndexSchemaID identifies the JSON field shape this binary writes
+	// for transcript entries (transcriptindex's schema fingerprint). A hub whose
+	// own projection schema differs cannot share the daemon's sidecar: each read
+	// rebuilds what the other keeps extending. An older binary omits the field,
+	// which means unknown — never matching (#4368).
+	TranscriptIndexSchemaID string `json:"transcriptIndexSchemaId,omitempty"`
 }
 
 // NavigationCapability advertises the version and current ordered AppWire

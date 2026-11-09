@@ -31,6 +31,24 @@ import (
 	"primeradiant.com/evener/rendezvous"
 )
 
+// TestDaemonRestartRequiredMessageNamesASchemaMismatch keeps the fence's
+// diagnosis honest: a protocol-current daemon writing a stale transcript-index
+// schema has a different problem from a protocol-incompatible one, and the
+// message must say so (#4368).
+func TestDaemonRestartRequiredMessageNamesASchemaMismatch(t *testing.T) {
+	protocolMessage := daemonRestartRequiredMessage(hubcore.LiveEntry{Entry: rendezvous.Entry{PID: 42}})
+	if !strings.Contains(protocolMessage, "incompatible protocol") {
+		t.Fatalf("protocol message = %q, want the protocol diagnosis", protocolMessage)
+	}
+	schemaMessage := daemonRestartRequiredMessage(hubcore.LiveEntry{Entry: rendezvous.Entry{PID: 42}, RestartRequiredCause: "schema"})
+	if !strings.Contains(schemaMessage, "transcript-index schema") {
+		t.Fatalf("schema message = %q, want the transcript-index diagnosis", schemaMessage)
+	}
+	if strings.Contains(schemaMessage, "incompatible protocol") {
+		t.Fatalf("schema message = %q, misreports the daemon as protocol-incompatible", schemaMessage)
+	}
+}
+
 func TestHubProtocolUpgradePreservesTranscriptAndRejectsUndeliverableMessages(t *testing.T) {
 	for _, protocol := range []string{"evener-appwire-v3", "evener-appwire-v4"} {
 		for _, cleared := range []bool{false, true} {
