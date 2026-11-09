@@ -12,7 +12,7 @@ import { isPlainObject } from "./plainObject";
 
 // clip is a head-truncation: text at or under `max` passes through
 // unchanged; over budget, keeps the first `max` chars and appends a single
-// ellipsis character (mirrors renderer-format.js's clip()).
+// ellipsis character.
 export function clip(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max)}…`;
 }
@@ -29,9 +29,8 @@ export function clipJobID(jobID: string): string {
 
 // tailSlice keeps the LAST `max` chars, advancing the cut point by one when
 // it would otherwise land inside a UTF-16 surrogate pair (dropping the
-// orphaned low surrogate rather than rendering U+FFFD) - mirrors
-// renderer-format.js's tailSlice, used for shell/read's live streaming tail
-// and the tail-fold on success.
+// orphaned low surrogate rather than rendering U+FFFD). Used for shell/read's
+// live streaming tail and the tail-fold on success.
 export function tailSlice(text: string, max: number): string {
   if (text.length <= max) return text;
   let cut = text.length - max;
@@ -49,8 +48,8 @@ export function tailFoldNote(max: number): string {
 }
 
 // tailFold no-ops under `max` chars; over budget, prefixes the shared
-// elision note before the kept tail - mirrors renderer-tools.js's
-// tailFoldOutput, used wherever a settled (non-error) tool output is shown
+// elision note before the kept tail. Used wherever a settled (non-error) tool
+// output is shown
 // so a human always knows text was dropped rather than seeing a
 // silently-incomplete transcript.
 export function tailFold(text: string, max: number): string {
@@ -61,24 +60,19 @@ export function tailFold(text: string, max: number): string {
 // formatToolDuration and displayFormat.ts's formatDurationMs are the SAME
 // duration rule: a sub-1000ms duration floors at 1ms (rounding, never "0ms");
 // 1s-10s shows one decimal with a trailing ".0" stripped; 10s and up rounds to
-// whole seconds - the rule renderer-format.js's formatToolDuration encodes.
-// They were written as two independent implementations that disagreed for
-// fractional milliseconds (this one rounded the seconds tier from the raw ms;
-// formatDurationMs rounds to whole ms first), so this name now delegates to
-// the single implementation instead of duplicating the rule (#1228).
+// whole seconds. This name delegates to the single implementation (formatDurationMs
+// rounds to whole ms first) instead of duplicating the rule.
 export const formatToolDuration = formatDurationMs;
 
-// formatByteCount never unit-scales (no KB/MB) - renderer-format.js's
-// formatBytes is documented as deliberately literal; singular only for
-// exactly 1 byte.
+// formatByteCount never unit-scales (no KB/MB): deliberately literal; singular
+// only for exactly 1 byte.
 export function formatByteCount(n: number): string {
   return `${n} byte${n === 1 ? "" : "s"}`;
 }
 
 // lineCount splits on "\n" and drops exactly one trailing empty element (the
-// artifact of a final newline), never more than one - mirrors
-// renderer-tools.js's splitOutputLines, used for grep/ls/glob's hit/entry/
-// match counts.
+// artifact of a final newline), never more than one. Used for grep/ls/glob's
+// hit/entry/match counts.
 export function lineCount(text: string): number {
   if (text === "") return 0;
   const lines = text.split("\n");

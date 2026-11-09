@@ -40,6 +40,12 @@ test('prebuild delegates window startup to the Expo scene lifecycle', async () =
  assert.equal((swift.match(/RCTLinkingManager\.application\s*\(/g) ?? []).length, 2);
 });
 
+test('the app supports landscape with safe-area insets', () => {
+	// Expo maps "default" to portrait and landscape. The Board and conversation
+	// inset their content by the left/right safe areas.
+	assert.equal(app.orientation, 'default');
+});
+
 test('scene prebuild preserves application identity, linking and unrelated plist values', async () => {
  const existing = {
   CFBundleIdentifier: 'com.primeradiant.evener.native',

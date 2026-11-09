@@ -10,6 +10,7 @@ import { useSessionActivity, useSubagentCounts } from "../../stores/sessionActiv
 import { requireClass } from "../../widgets/internal/requireClass";
 import { activitySidebarStore } from "../activitybar/activitySidebarStore";
 import { ACTIVITY_TABS } from "../activitybar/activityTabs";
+import { useIsMobile } from "../useIsMobile";
 import { workspaceStore } from "../workspace";
 import styles from "./statusbar.module.css";
 import { deriveScope } from "./statusScope";
@@ -44,6 +45,9 @@ export function StatusBar({ sessionRef, paneId, leading }: StatusBarProps) {
     [resources, sessionRef, snapshot, subagents],
   );
   const { counts } = scope;
+  // A phone footer keeps the path and the chips on one line; the compact
+  // single count leaves the path room the active/total fraction would take.
+  const mobile = useIsMobile();
   return (
     <div className={CLASS.bar} data-testid="statusbar">
       <div className={CLASS.leading}>{leading}</div>
@@ -70,7 +74,7 @@ export function StatusBar({ sessionRef, paneId, leading }: StatusBarProps) {
               {tab.glyph}
             </span>
             <span className={CLASS.chipName}>{tab.label}</span>
-            <span className={CLASS.chipCount}>{tab.chipCount(counts)}</span>
+            <span className={CLASS.chipCount}>{mobile ? tab.mobileCount(counts) : tab.chipCount(counts)}</span>
           </button>
         ))}
       </div>

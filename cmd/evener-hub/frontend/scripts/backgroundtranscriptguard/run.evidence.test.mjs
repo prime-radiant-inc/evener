@@ -18,13 +18,94 @@ import {
   collectProductionPeak,
   countTargetRequestsInWindow,
   EVIDENCE_EXPR,
+  joinRendererToNative,
   narrowViewportContentPreserved,
+  nativeEntryEvidenceExpression,
   readTraceFrames,
   reduceProducedPeak,
   samplePeaksOnce,
+  selectTranscriptMeta,
   targetPagingEvidence,
   traceBytes,
+  waitForEntryComparison,
 } from "./run.mjs";
+
+describe("renderer/native entry comparison convergence (#5024)", () => {
+  const rendererItem = (overrides = {}) => ({
+    id: "item_early",
+    turnId: "turn_early",
+    transcriptKey: "item_early",
+    position: { entry: 1, item: 0, sub: 0 },
+    type: "assistant",
+    text: "early",
+    output: "",
+    arguments: null,
+    status: "complete",
+    callId: null,
+    version: 1,
+    ...overrides,
+  });
+  const nativeRow = (item) => ({
+    transcriptKey: item.transcriptKey,
+    position: item.position,
+    item: {
+      id: item.id,
+      turnId: item.turnId,
+      type: item.type,
+      text: item.text,
+      output: item.output,
+      argumentsJSON: item.arguments,
+      status: item.status,
+      callId: item.callId,
+      version: item.version,
+      position: item.position,
+    },
+  });
+
+  test("rereads a stale durable sample until every displayed row lands", async () => {
+    const early = rendererItem();
+    const late = rendererItem({ id: "item_late", turnId: "turn_late", transcriptKey: "item_late", text: "late" });
+    let durableReads = 0;
+    const comparison = await waitForEntryComparison({
+      readEvidence: async () => ({ rows: durableReads === 0 ? [nativeRow(early)] : [nativeRow(early), nativeRow(late)] }),
+      readTarget: async () => ({ items: [early, late] }),
+      deadline: Date.now() + 5000,
+      sleep: async () => {
+        durableReads += 1;
+      },
+    });
+    expect(durableReads).toBe(1);
+    expect(comparison.unmatchedRendererItems).toEqual([]);
+    expect(comparison.recordedRendererItems).toHaveLength(2);
+  });
+
+  test("a row that never lands is still reported at the deadline", async () => {
+    const early = rendererItem();
+    const late = rendererItem({ id: "item_late", turnId: "turn_late", transcriptKey: "item_late", text: "late" });
+    const comparison = await waitForEntryComparison({
+      readEvidence: async () => ({ rows: [nativeRow(early)] }),
+      readTarget: async () => ({ items: [early, late] }),
+      deadline: Date.now() - 1,
+      sleep: async () => {},
+    });
+    expect(comparison.unmatchedRendererItems.map((item) => item.id)).toEqual(["item_late"]);
+  });
+
+  test("a displayed row with changed content is unmatched, not merely present by identity", () => {
+    const displayed = rendererItem({ text: "edited after the durable write" });
+    const durable = nativeRow(rendererItem({ text: "the durable text" }));
+    const { unmatchedRendererItems } = joinRendererToNative([displayed], [durable]);
+    expect(unmatchedRendererItems.map((item) => item.id)).toEqual(["item_early"]);
+  });
+
+  test("a duplicate native row fails the one-to-one join instead of choosing one", () => {
+    const displayed = rendererItem();
+    const durable = nativeRow(displayed);
+    const { rendererToNative, unmatchedRendererItems } = joinRendererToNative([displayed], [durable, durable]);
+    expect(rendererToNative[0].matches).toBe(2);
+    expect(unmatchedRendererItems.map((item) => item.id)).toEqual(["item_early"]);
+  });
+});
 
 describe("real journey placement acceptance", () => {
   const older = () => ({
@@ -74,6 +155,85 @@ describe("real journey placement acceptance", () => {
   });
   test("rejects a vacuous close control that already read latest", () => {
     expect(() => assertNewPaneLatest(latest(), latest())).toThrow();
+  });
+});
+
+// --- entry-completed native evidence must read the renderer's own history ---
+//
+// transcriptMeta is keyed by historyKey, so a ref can own an earlier history's
+// metadata row (a Clear, or a new incarnation) beside the current one. The
+// production lookup (stores/sessionEntryCache.ts getSessionForRequestedRef)
+// resolves that set; the guard's previous `.find` took whichever row came first
+// in key order, so it could join renderer items against a different history's
+// rows and report item_user_237 as having no native row — the failure recorded
+// in #4832's linked CI job 119577335495 (run 39703296928).
+describe("native entry evidence selects the renderer's history", () => {
+  const binding = (ref) => [{ clientId: "https://hub.test", ref }];
+  const stale = {
+    historyKey: "history-old",
+    requestedRefs: binding("local:tgt"),
+    resolvedIdentity: { clientId: "https://hub.test" },
+    savedAt: 50,
+    accessedAt: 50,
+  };
+  const current = {
+    historyKey: "history-current",
+    requestedRefs: binding("local:tgt"),
+    resolvedIdentity: { clientId: "https://hub.test" },
+    savedAt: 100,
+    accessedAt: 100,
+  };
+  const otherRef = {
+    historyKey: "history-other",
+    requestedRefs: binding("local:other"),
+    resolvedIdentity: { clientId: "https://hub.test" },
+    savedAt: 900,
+    accessedAt: 900,
+  };
+  const otherClient = {
+    historyKey: "history-other-client",
+    requestedRefs: binding("local:tgt"),
+    resolvedIdentity: { clientId: "https://other.example" },
+    savedAt: 500,
+    accessedAt: 500,
+  };
+
+  test("the route's historyKey wins even when an older row sorts first", () => {
+    expect(selectTranscriptMeta([stale, current, otherRef], "local:tgt", "https://hub.test", "history-current")).toBe(
+      current,
+    );
+  });
+
+  test("another ref's newer row is never selected", () => {
+    expect(selectTranscriptMeta([stale, current, otherRef], "local:tgt", "https://hub.test", "history-current")).not.toBe(
+      otherRef,
+    );
+  });
+
+  test("without a route key the newest matching row matches production's recency rule", () => {
+    expect(selectTranscriptMeta([stale, current], "local:tgt", "https://hub.test", null)).toBe(current);
+  });
+
+  test("a route key with no matching row yet yields no metadata instead of a stale history", () => {
+    expect(selectTranscriptMeta([stale], "local:tgt", "https://hub.test", "history-current")).toBeUndefined();
+  });
+
+  test("a row resolved to another client is never selected", () => {
+    expect(selectTranscriptMeta([otherClient, stale, current], "local:tgt", "https://hub.test", null)).toBe(current);
+  });
+
+  test("the route's key does not override a different resolved identity", () => {
+    expect(
+      selectTranscriptMeta([otherClient, stale], "local:tgt", "https://hub.test", "history-other-client"),
+    ).toBeUndefined();
+  });
+
+  test("the generated page expression parses as the driver evaluates it", () => {
+    // The expression embeds helper source via toString(). A declaration
+    // spliced under `const` (the #4832 fix's first form) is a page-side
+    // SyntaxError that no unit test of the helper itself can see.
+    const expression = nativeEntryEvidenceExpression("local:tgt");
+    expect(() => new Function(`return (${expression})`)).not.toThrow();
   });
 });
 

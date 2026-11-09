@@ -74,25 +74,105 @@ construction and history fencing; after a stale cursor, a client refreshes the
 latest selected window without discarding unsent work. Source/index repair and
 transport recovery remain owned by their existing subsystems.
 
+## Original transcript authors
+
+Optional `ThreadItem.authorship` records an original author and an `inherited`
+flag. It does not change message roles, item identities, positions or paging.
+Authors are `human`, `agent`, `system` or `unknown`. An agent names its session
+with `sessionRef`; a delegate also carries its logical parent's `ownerRef`,
+stable `delegateId` and bounded canonical `delegateName`. The logical parent
+can differ from the root session that physically stores the delegate.
+
+```mermaid
+flowchart LR
+  Producer[Validated input or agent producer] --> Record[Durable Turn authorship]
+  Producer --> Overlay[First live chunk authorship]
+  Record --> History[Shared history and indexed projection]
+  Overlay --> Wire[AppWire item]
+  History --> Wire
+  Wire --> SDK[Shared SDK model and cache]
+```
+
+Fresh client input is human. Parent delegate instructions retain their actual
+sender, including active steering and input sent after the child completes.
+Internal harness nudges are not human input. Assistant text, reasoning and
+communicate previews use the same author snapshot as their durable records.
+Deferred communicate messages take authorship from the original call, not the
+later tool result or the page on which it appears. This includes inherited
+format-1 ASSISTANT calls. Delegate context forks copy the call/result exchange
+but exclude transcript-only COMMUNICATE records. The shared projector reconstructs
+those messages at their results, or at the existing unpaired flush when no result
+was recorded. Ordinary forks retain the complete prefix, including COMMUNICATE
+records; each dedicated record clears pending reconstruction for its call, even
+when echo suppression hides the record, so the same message appears only once.
+Fresh format-1 calls still render only through their dedicated COMMUNICATE record.
+Both paths preserve result/error behavior, call identity and echo suppression.
+
+The index retains the copied call's position and any later assistant-text context
+needed for echo suppression. A bounded page replays those entries with their
+original format, preserving identity text runs and the call's recorded author,
+without scanning earlier history. Pending context survives index close/reopen
+and result append. Projection-version invalidation rebuilds older sidecars that
+omitted or duplicated inherited messages; it does not rewrite the authoritative
+transcript.
+
+Ordinary forks and opt-in delegate context forks preserve original authors and
+mark copied entries `inherited: true`, without mutating their sources. Fresh
+edited human input is not inherited. Fork inclusion rules are unchanged.
+An absent authorship field means both author and inheritance are unknown,
+not fresh. Copying an old source-less entry proves inheritance but not its
+author, so it becomes unknown/inherited. Placement in a child transcript,
+the enclosing thread and prose that resembles a human message prove no author.
+
+Remote sources qualify only structural author refs into their own namespaces;
+opaque tool payloads and message text are unchanged. Live, reconnect, crash
+recovery and cold history reads use the same recorded evidence without extra
+subscriptions or context lookups. SDK normalization and cache codecs preserve
+valid metadata. Sparse updates preserve omitted attribution, but authoritative
+replacements can clear it or explicitly replace a known author with unknown.
+
+Semantically invalid but structurally decodable author evidence projects as
+unknown while preserving proven inheritance. Wrong-typed and unknown JSON
+fields retain the transcript decoder's existing strict outcomes. The transcript
+format marker is unchanged: older strict readers can reject records containing
+the new field, so downgrading a writer is not a promise of readable new history.
+This shared metadata does not change human-interaction permissions.
+
 ## Summary failure diagnostics
 
 A failed conversation summary leaves the existing history or the operation's
 deterministic checkpoint available. The authoritative transcript is unchanged.
 The next eligible compaction can install a valid summary and continue normal
-model work. Model selection, fallback eligibility, retry counts and warning
-visibility are unchanged; repeated failed compactions can still warn.
+model work. A locally rejected summarizer reply is one bad sample, not a route
+verdict. The conversation summary resamples such a reply — an empty reply, a
+reply with no summary section, an empty condensation batch — up to two more
+times on the route that produced it before the next route takes over, and a
+later sample that passes installs the summary without a warning. The
+session-log fork summary resamples a reply that does not parse as a JSON entry
+within the same budget before its error surfaces; the next completed tool
+round attempts the fork again. Cut-off replies (the model's own output limit)
+and deterministic failures get no resample, and a cancelled run resamples
+nothing. Model selection and fallback eligibility are unchanged; an automatic
+pass failing identically to the previously published failure warns once per
+streak, while explicit `/compact` and `compact_context` always report their
+outcome, and a completing summarize layer — including a no-op fold on a window
+too small to summarize — re-arms the warning.
 
 Context management emits `summary_failure` with the selected provider/model,
 terminal failure category and available HTTP status in the existing warning
-message. Advice distinguishes a failed fast/cheap route from the session model,
+message, stating the terminal route's sample count once it exceeds one. Advice
+distinguishes a failed fast/cheap route from the session model,
 since changing the main model need not change an independently configured summary
 model. CLI, AppWire, browser, native and Notification hooks carry these
 existing message/title/hint fields without a new renderer or visibility policy.
 Predictive-checkpoint recovery retains its informational `context_budget` code.
 
-The runtime's typed `summary_failure` record separates the terminal route from
-prior failed routes. It includes controlled category, stage and validation reason
-values, validated HTTP status and retryability when known. Provider/model names
+The runtime's typed `summary_failure` record separates the terminal attempt
+from the last failed sample of each route that attempted the work (the
+terminal route's own earlier samples included), at most two. It includes
+controlled category, stage and validation reason
+values, validated HTTP status and retryability when known, and each attempt's
+route sample count. Provider/model names
 come from routing, are bounded to 256 bytes each and have control characters
 removed from display. A pre-selection failure has no invented model identity.
 Provider messages, response bodies, raw error codes, prompts, summaries, headers

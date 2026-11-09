@@ -7,7 +7,7 @@ import (
 
 // The attention drive and a delegate send both refuse to start a generation on
 // a child that is not quiescent. delegate_send asks subagent.startBlockedLocked
-// (subagents.go); driveStableDelegateAttention used to list the same four flags
+// (subagents.go); driveDelegateAttention used to list the same four flags
 // inline, so the two busy lists could drift and one path would let a run start
 // on a state the other refused. The drive also has attention-only extras
 // (closed, fatalRunGated, the committed-send claim) layered on top, and it used
@@ -18,32 +18,32 @@ import (
 // session_emit_lock_guard_test.go: no behavioral test distinguishes the shared
 // predicate from an inline copy that happens to match today, so the drift
 // prevention has to be pinned in the source.
-func TestDriveStableDelegateAttentionSharesBusyPredicateAndRelease(t *testing.T) {
+func TestDriveDelegateAttentionSharesBusyPredicateAndRelease(t *testing.T) {
 	t.Parallel()
 	files := agentSourceFiles(t)
-	attention := methodDecl(t, files, "Session", "driveStableDelegateAttention")
+	attention := methodDecl(t, files, "Session", "driveDelegateAttention")
 
 	blocked := assignedExpr(attention, "blocked")
 	if blocked == nil {
-		t.Fatal("driveStableDelegateAttention no longer assigns a `blocked` guard expression: the busy predicate can no longer be checked")
+		t.Fatal("driveDelegateAttention no longer assigns a `blocked` guard expression: the busy predicate can no longer be checked")
 	}
 	used := selectorNames(blocked)
 	if !used["startBlockedLocked"] {
-		t.Error("driveStableDelegateAttention's busy guard no longer routes through subagent.startBlockedLocked: " +
+		t.Error("driveDelegateAttention's busy guard no longer routes through subagent.startBlockedLocked: " +
 			"the attention and send busy lists can drift again")
 	}
 	for _, flag := range []string{"running", "driving", "finalizing", "disposeGated"} {
 		if used[flag] {
-			t.Errorf("driveStableDelegateAttention's busy guard inlines the shared flag %q instead of deferring to startBlockedLocked", flag)
+			t.Errorf("driveDelegateAttention's busy guard inlines the shared flag %q instead of deferring to startBlockedLocked", flag)
 		}
 	}
 	for _, extra := range []string{"closed", "fatalRunGated", "childCommittedSendStart"} {
 		if !used[extra] {
-			t.Errorf("driveStableDelegateAttention's busy guard no longer layers the attention-only %q on top of startBlockedLocked", extra)
+			t.Errorf("driveDelegateAttention's busy guard no longer layers the attention-only %q on top of startBlockedLocked", extra)
 		}
 	}
 	if !callsIdent(attention, "releaseDriveGuard") {
-		t.Error("driveStableDelegateAttention no longer releases its drive guard through releaseDriveGuard: " +
+		t.Error("driveDelegateAttention no longer releases its drive guard through releaseDriveGuard: " +
 			"the two release copies can drift")
 	}
 }

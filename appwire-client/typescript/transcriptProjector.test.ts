@@ -50,8 +50,20 @@ function preset(level: "chat" | "intent" | "tools" | "activity" | "full", advanc
   return makeTranscriptDisplayConfig({ kind: "preset", level }, advanced);
 }
 
-function custom(content: { toolIntent: boolean; toolCalls: boolean; reasoning: boolean; expandByDefault: boolean }) {
-  return makeTranscriptDisplayConfig({ kind: "custom", ...content });
+function custom(content: {
+  toolIntent: boolean;
+  toolCalls: boolean;
+  reasoning: boolean;
+  expandByDefault: boolean;
+  thinkingOpenByDefault?: boolean;
+}) {
+  return makeTranscriptDisplayConfig({
+    kind: "custom",
+    ...content,
+    // The field is irrelevant to entry visibility; the migration-faithful
+    // default mirrors expandByDefault for call sites that do not state it.
+    thinkingOpenByDefault: content.thinkingOpenByDefault ?? content.expandByDefault,
+  });
 }
 
 function entriesFor(model: ThreadModel, config: TranscriptDisplayConfigV1) {
@@ -133,9 +145,9 @@ describe("transcript projector", () => {
 
   test.each([
     ["chat", ["user", "intent:tool", "agent"]],
-    ["intent", ["user", "intent:tool", "agent"]],
-    ["tools", ["user", "tool", "agent"]],
-    ["activity", ["user", "tool", "agent"]],
+    ["intent", ["user", "intent:tool", "think", "agent"]],
+    ["tools", ["user", "tool", "think", "agent"]],
+    ["activity", ["user", "tool", "think", "agent"]],
     ["full", ["user", "tool", "think", "agent"]],
   ] as const)("projects the cumulative %s content vector", (level, expectedIds) => {
     const model = threadWith(
@@ -830,7 +842,7 @@ describe("transcript projector", () => {
     });
     const model = { ...threadWith(), turns: [liveTurn] } as ThreadModel;
 
-    const placeholder = [expect.objectContaining({ kind: "thinking", id: "think" })];
+    const placeholder = [expect.objectContaining({ kind: "thinking", id: "think", live: true })];
     expect(entriesFor(model, preset("chat"))).toEqual(placeholder);
     expect(entriesFor(model, preset("tools"))).toEqual(placeholder);
     expect(
@@ -845,7 +857,44 @@ describe("transcript projector", () => {
     expect(entriesFor(model, preset("full")).map((entry) => entry.kind)).toEqual(["item"]);
   });
 
-  test("hides an in-progress reasoning item that is no longer the turn's current thought when reasoning is off", () => {
+  test("a round-keyed reasoning entry contributes its display key to the expansion baseline", () => {
+    // The thinking disclosure keys by the round display key, so the Full
+    // baseline's open-everything inventory must name that same key - or the
+    // baseline opens nothing for the row and a reader's earlier close
+    // survives a Full level switch.
+    const model = threadWith(
+      item("item_reasoning_1_0", "reasoning", {
+        roundId: "r-thought",
+        status: "completed",
+        reasoningSummaries: [["A"]],
+      }),
+    );
+    expect(projectThread(model, preset("full")).eligibleDisclosureIds).toContain("round:r-thought:reasoning");
+    expect(projectThread(model, preset("full")).eligibleDisclosureIds).not.toContain("item_reasoning_1_0");
+  });
+
+  test("keeps settled thoughts as compact trace rows at every reasoning-off level but the chat preset", () => {
+    const model = threadWith(
+      item("thought-a", "reasoning", { status: "completed", text: "first thought", reasoningSummaries: [["A"]] }),
+      item("thought-b", "reasoning", { status: "completed", text: "second thought", reasoningSummaries: [["B"]] }),
+    );
+    const compactRow = (id: string) => expect.objectContaining({ kind: "thinking", id, live: false });
+
+    expect(entriesFor(model, preset("tools"))).toEqual([compactRow("thought-a"), compactRow("thought-b")]);
+    expect(entriesFor(model, preset("activity"))).toEqual([compactRow("thought-a"), compactRow("thought-b")]);
+    expect(
+      entriesFor(model, custom({ toolIntent: true, toolCalls: true, reasoning: false, expandByDefault: false })),
+    ).toEqual([compactRow("thought-a"), compactRow("thought-b")]);
+    // The chat preset stays conversation-only: settled traces stay hidden.
+    expect(entriesFor(model, preset("chat"))).toEqual([]);
+    // With reasoning on the same items are ordinary content.
+    expect(entriesFor(model, preset("full")).map((entry) => entry.kind)).toEqual(["item", "item"]);
+    // A compact trace row is a reader-expandable disclosure, not part of the
+    // expansion baseline: its initial state comes from the config fallback.
+    expect(projectThread(model, preset("tools")).eligibleDisclosureIds).toEqual([]);
+  });
+
+  test("keeps a superseded live thought as a settled compact row while the turn continues", () => {
     const liveTurn = turn(
       [
         item("think", "reasoning", { status: "inProgress", text: "superseded thought" }),
@@ -855,16 +904,24 @@ describe("transcript projector", () => {
     );
     const model = { ...threadWith(), turns: [liveTurn] } as ThreadModel;
 
-    expect(entriesFor(model, preset("tools")).map((entry) => entry.id)).toEqual(["agent"]);
+    expect(entriesFor(model, preset("tools"))).toEqual([
+      expect.objectContaining({ kind: "thinking", id: "think" }),
+      expect.objectContaining({ kind: "item", id: "agent" }),
+    ]);
+    expect(entriesFor(model, preset("chat")).map((entry) => entry.id)).toEqual(["agent"]);
   });
 
-  test("does not show the content-free placeholder on a completed turn with a stale in-progress item", () => {
+  test("keeps a completed turn's stale in-progress thought as a settled compact row, never a live placeholder", () => {
     const completed = turn([item("think", "reasoning", { status: "inProgress", text: "stale" })], {
       status: "completed",
     });
     const model = { ...threadWith(), turns: [completed] } as ThreadModel;
 
-    expect(entriesFor(model, preset("tools"))).toEqual([]);
+    // The projector emits the compact row at reasoning-off levels; the turn's
+    // completed status is what the renderer uses to stop the live treatment
+    // (ThinkBlock's comparator compares it by value).
+    expect(entriesFor(model, preset("tools"))).toEqual([expect.objectContaining({ kind: "thinking", id: "think" })]);
+    expect(entriesFor(model, preset("chat"))).toEqual([]);
   });
 
   test("never shows the content-free placeholder on a terminal turn", () => {
@@ -1063,8 +1120,9 @@ describe("transcript projector", () => {
       model,
       custom({ toolIntent: false, toolCalls: true, reasoning: false, expandByDefault: true }),
     );
-    expect(toolsWithoutIntent.turns[0]?.entries.map((entry) => entry.id)).toEqual(["tool"]);
+    expect(toolsWithoutIntent.turns[0]?.entries.map((entry) => entry.id)).toEqual(["tool", "think"]);
     expect(toolsWithoutIntent.turns[0]?.entries[0]).toMatchObject({ kind: "item", id: "tool" });
+    expect(toolsWithoutIntent.turns[0]?.entries[1]).toMatchObject({ kind: "thinking", id: "think" });
 
     const reasoningWithoutTools = projectThread(
       model,
@@ -1119,6 +1177,49 @@ describe("transcript projector", () => {
       "item_assistant_1_1",
       "stream:preview",
     ]);
+  });
+
+  test("first thought retains its display key across attempt reset and recorded settlement", () => {
+    const thought = (id: string, status = "inProgress") =>
+      threadWith(item(id, "reasoning", { roundId: "r-thought", status, reasoningSummaries: [["A 🧭"]] }));
+    const live = entriesFor(thought("stream:r-thought/0:reasoning"), preset("full"))[0];
+    const reset = entriesFor(thought("stream:r-thought/1:reasoning"), preset("full"))[0];
+    const recorded = entriesFor(thought("item_reasoning_1_0", "completed"), preset("full"))[0];
+    expect([live?.id, reset?.id, recorded?.id]).toEqual([
+      "stream:r-thought/0:reasoning",
+      "stream:r-thought/1:reasoning",
+      "item_reasoning_1_0",
+    ]);
+    expect([live, reset, recorded].map((entry) => entry && entryDisplayKey(entry))).toEqual([
+      "round:r-thought:reasoning",
+      "round:r-thought:reasoning",
+      "round:r-thought:reasoning",
+    ]);
+    const multiple = threadWith(
+      item("item_reasoning_1_0", "reasoning", { roundId: "r-thought" }),
+      item("item_reasoning_1_1", "reasoning", { roundId: "r-thought" }),
+      item("item_assistant_1_0", "agentMessage", { roundId: "r-thought" }),
+    );
+    expect(entriesFor(multiple, preset("full")).map(entryDisplayKey)).toEqual([
+      "round:r-thought:reasoning",
+      "item_reasoning_1_1",
+      "round:r-thought:agentMessage",
+    ]);
+    const contentFree = {
+      ...multiple,
+      turns: [
+        turn(
+          [
+            item("stream:r-thought/0:reasoning", "reasoning", {
+              roundId: "r-thought",
+              status: "inProgress",
+            }),
+          ],
+          { status: "inProgress" },
+        ),
+      ],
+    } as ThreadModel;
+    expect(entriesFor(contentFree, preset("tools")).map(entryDisplayKey)).toEqual(["round:r-thought:reasoning"]);
   });
 });
 

@@ -26,7 +26,7 @@ plus the resumable follow-up path through `delegate_send`.
 
 - Creation returns a `delegate_id` and no job identity of any kind — a
   stable delegate is addressed only by `delegate_id`
-  (`agent/session_tools_delegate.go#stableDelegateCreateResult`), which is also
+  (`agent/session_tools_delegate.go#delegateCreateResult`), which is also
   the only handle `job_stop` and `delegate_send` accept for it.
 - A confirmed `job_stop` on a delegate returns `status` `idle` — the
   reusable resource's lifecycle, which has only `running` and `idle`
@@ -34,7 +34,7 @@ plus the resumable follow-up path through `delegate_send`.
   `reason` `stopped_by_parent`, `previous_status` `running`, and
   `outcome` `cancelled_by_request`, the field that records that the
   request cancelled a live run rather than finding it `already_idle`
-  (`agent/session_tools_job_status_stop.go#stableDelegateStopResult`). The RUN's own
+  (`agent/session_tools_job_status_stop.go#delegateStopJobResult`). The RUN's own
   terminal is `stopped`/`stopped_by_parent`, readable through
   `job_status(target=<delegate_id>)`'s `last_outcome`; the fold forces
   that pair for any finish landing in the stopping phase

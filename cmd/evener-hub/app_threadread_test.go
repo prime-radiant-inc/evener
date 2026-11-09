@@ -502,7 +502,7 @@ func skillDescription(skills []appwire.EvenerSkillInfo, name string) string {
 	return ""
 }
 
-func TestHubThreadReadStableDelegateIsReadOnly(t *testing.T) {
+func TestHubThreadReadDelegateIsReadOnly(t *testing.T) {
 	cfg, params := seedBoundedPastThread(t)
 	sessionID := strings.TrimPrefix(params.Ref, "local:")
 	entry, ok := cfg.Past.Find(sessionID)
@@ -674,7 +674,7 @@ func TestPastEntryThreadStampsInstanceID(t *testing.T) {
 	}
 }
 
-func TestPastThreadReadDoesNotReconcileStableDelegateFromActivationJob(t *testing.T) {
+func TestPastThreadReadDoesNotReconcileDelegateFromActivationJob(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-repo-0000000000")
 	parentID := "02wMz5Txv1C3Hut0M8GCeB"

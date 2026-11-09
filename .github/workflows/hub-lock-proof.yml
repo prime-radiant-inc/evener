@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   darwin-flock-query:
-    runs-on: macos-26
+    runs-on: xcode-27
     # Deadman for checkout, toolchain setup, compilation and focused proofs.
     timeout-minutes: 10
     steps:

@@ -28,6 +28,10 @@ export interface ActivityTabSpec {
   label: string;
   /** Active/total count, or settled/total for Tasks. */
   chipCount(counts: ScopeCounts): string;
+  /** The single count a phone footer shows beside the path, where the
+   * fraction would crowd the path off the one line. The full fraction stays
+   * in chipLabel and the Overview. */
+  mobileCount(counts: ScopeCounts): string;
   /** The chip's accessible label. */
   chipLabel(counts: ScopeCounts): string;
   /** Category and shared fraction on separate lines within the tab. */
@@ -40,6 +44,7 @@ export interface ActivityTabSpec {
 
 const fraction = (active: number | null, total: number | null) =>
   active === null || total === null ? "—" : `${active}/${total}`;
+const count = (value: number | null) => (value === null ? "—" : String(value));
 const countLabel = (kind: string, active: number | null, total: number | null, state: string) =>
   active === null || total === null ? `${kind}, counts unknown` : `${kind}, ${active} of ${total} ${state}`;
 
@@ -49,6 +54,7 @@ export const ACTIVITY_TABS: readonly ActivityTabSpec[] = [
     label: "Agents",
     glyph: "⌘",
     chipCount: (c) => fraction(c.activeSubagents, c.delegatesTotal),
+    mobileCount: (c) => count(c.activeSubagents),
     chipLabel: (c) => countLabel("Agents", c.activeSubagents, c.delegatesTotal, "active"),
     tabLabel: (c) => `Agents\n${fraction(c.activeSubagents, c.delegatesTotal)}`,
     chipVisible: () => true,
@@ -59,6 +65,7 @@ export const ACTIVITY_TABS: readonly ActivityTabSpec[] = [
     label: "Jobs",
     glyph: "$",
     chipCount: (c) => fraction(c.runningJobs, c.jobsTotal),
+    mobileCount: (c) => count(c.runningJobs),
     chipLabel: (c) => countLabel("Jobs", c.runningJobs, c.jobsTotal, "running"),
     tabLabel: (c) => `Jobs\n${fraction(c.runningJobs, c.jobsTotal)}`,
     chipVisible: () => true,
@@ -69,6 +76,7 @@ export const ACTIVITY_TABS: readonly ActivityTabSpec[] = [
     label: "Watches",
     glyph: <WatchGlyph className={WATCH_GLYPH_CLASS} testId="activity-tab-watch-glyph" />,
     chipCount: (c) => fraction(c.armedWatches, c.watchesTotal),
+    mobileCount: (c) => count(c.armedWatches),
     chipLabel: (c) => countLabel("Watches", c.armedWatches, c.watchesTotal, "armed"),
     tabLabel: (c) => `Watches\n${fraction(c.armedWatches, c.watchesTotal)}`,
     chipVisible: () => true,
@@ -79,6 +87,7 @@ export const ACTIVITY_TABS: readonly ActivityTabSpec[] = [
     label: "Tasks",
     glyph: "☑",
     chipCount: (c) => fraction(c.tasksSettled, c.tasksTotal),
+    mobileCount: (c) => count(c.tasksSettled),
     chipLabel: (c) => countLabel("Tasks", c.tasksSettled, c.tasksTotal, "settled"),
     tabLabel: (c) => `Tasks\n${fraction(c.tasksSettled, c.tasksTotal)}`,
     chipVisible: (c) => c.tasksTotal > 0,
@@ -89,6 +98,7 @@ export const ACTIVITY_TABS: readonly ActivityTabSpec[] = [
     glyph: null,
     label: "About",
     chipCount: () => "",
+    mobileCount: () => "",
     chipLabel: () => "About",
     tabLabel: () => "About",
     chipVisible: () => false,

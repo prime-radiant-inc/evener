@@ -94,10 +94,12 @@ func localSessionActivity(entry hubcore.LiveEntry, now time.Time) (appwire.Sessi
 	// inside one long model call emits nothing for minutes, so the tree's quiet
 	// clock cannot keep that promise alone; the quiet time is withheld outright
 	// while any subagent runs, and while the session is not working.
-	if hubcore.NormalizeState(entry.Status) == "active" && activity.RunningSubagents == 0 {
-		quiet := max(now.Sub(time.UnixMilli(entry.Activity.LastActivityAt)).Milliseconds(), 0)
-		activity.QuietForMS = &quiet
-	}
+	activity.QuietForMS = appsource.FleetQuietForMS(
+		hubcore.NormalizeState(entry.Status) == "active",
+		activity.RunningSubagents,
+		entry.Activity,
+		now,
+	)
 	return activity, true
 }
 

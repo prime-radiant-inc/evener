@@ -13,17 +13,23 @@ import (
 
 // SummaryAttempt contains bounded route metadata, never provider response text.
 type SummaryAttempt struct {
-	Provider  string `json:"provider,omitempty"`
-	Model     string `json:"model,omitempty"`
-	Route     string `json:"route"`
-	Kind      string `json:"kind"`
-	Stage     string `json:"stage"`
-	Reason    string `json:"reason,omitempty"`
-	Status    int    `json:"status,omitempty"`
-	Retryable *bool  `json:"retryable,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Route    string `json:"route"`
+	Kind     string `json:"kind"`
+	Stage    string `json:"stage"`
+	Reason   string `json:"reason,omitempty"`
+	Status   int    `json:"status,omitempty"`
+	// Attempts is how many samples this route produced in the resolution:
+	// one plus every same-route resample of a rejected reply. Zero (omitted)
+	// for a failure that reached no call.
+	Attempts  int   `json:"attempts,omitempty"`
+	Retryable *bool `json:"retryable,omitempty"`
 }
 
-// SummaryFailure separates the terminal route from earlier failed routes.
+// SummaryFailure separates the terminal attempt from the last failed sample of
+// each route that attempted the work (the terminal route's own earlier samples
+// included), at most two entries.
 type SummaryFailure struct {
 	Terminal SummaryAttempt   `json:"terminal"`
 	Previous []SummaryAttempt `json:"previous,omitempty"`
@@ -100,6 +106,9 @@ func SummaryFailureInfo(failure SummaryFailure) (string, Info) {
 	if a.Reason != "" {
 		message += ", " + a.Reason
 	}
+	if a.Attempts > 1 {
+		message += fmt.Sprintf(" after %d attempts", a.Attempts)
+	}
 	info := Info{Source: SourceEvener, Title: "Summary failure", Hint: "The cause is unknown. Inspect the safe summary diagnostic in the daemon log."}
 	if a.Stage == "provider" {
 		info.Source = SourceProvider
@@ -138,7 +147,15 @@ func SummaryFailureInfo(failure SummaryFailure) (string, Info) {
 	case "invalid_request":
 		info.Title, info.Hint = "Summary request rejected", "Check that this model supports the summary request."
 	case "rejected_output":
-		info.Title, info.Hint = "Summary output rejected", "The response could not safely replace the conversation. Retry or choose a more capable summary model."
+		info.Title = "Summary output rejected"
+		switch a.Reason {
+		case "output_limit":
+			info.Hint = "The summary was cut off at the model's output limit. Choose a summary model with enough output capacity."
+		case "uncondensable_partner_messages":
+			info.Hint = "The partner's messages could not be condensed to fit the summarizer's input budget. A summary model with a larger context window may work better."
+		default:
+			info.Hint = "The response could not safely replace the conversation. Evener resamples rejected summary replies automatically; a more capable summary model may work better if this repeats."
+		}
 	}
 	if a.Route == "cheap" {
 		info.Hint += " This is the fast/cheap model, which may be configured separately from the main model."

@@ -111,6 +111,8 @@ Instead, attention surfaces **within the single project hierarchy**:
 - the session's own dot goes amber (`--attention`) when it needs you;
 - an amber count badge rides the session row and bubbles up to its project row;
 - needs-you sessions **sort to the top within their project**.
+  (Amended: project sessions now keep newest-created order; attention shows
+  through the dot and badge, not row position.)
 
 Nothing appears twice. "Needs you" is unmissable (amber is reserved for exactly
 this) without a parallel list.

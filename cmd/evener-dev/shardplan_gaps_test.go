@@ -5,11 +5,10 @@ import (
 	"testing"
 )
 
-// TestParseSurveyMalformedCostSkipped covers the Sscanf error branch
-// (line 34) where a survey line matches the regex but the cost field
-// cannot be parsed as a float.
+// TestParseSurveyMalformedCostSkipped covers the float-parse error branch:
+// the line matches surveyLine's `[0-9.]+` cost field but is not a float.
 func TestParseSurveyMalformedCostSkipped(t *testing.T) {
-	got := parseSurvey("--- PASS: TestFoo (not-a-number)\n")
+	got := parseSurvey("--- PASS: TestFoo (1.2.3s)\n")
 	if len(got) != 0 {
 		t.Fatalf("malformed cost should be skipped, got %v", got)
 	}

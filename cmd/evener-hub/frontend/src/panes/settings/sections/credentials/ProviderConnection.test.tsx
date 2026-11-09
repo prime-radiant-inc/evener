@@ -7,7 +7,7 @@ import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { NEW_TAB_POLICY } from "../../../../shell/openInNewTab.testSupport";
-import { connectionStore } from "../../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { enterText } from "../../../../textEntryTestUtils";
@@ -120,7 +120,7 @@ function setup(list: InstanceListResponse = { instances: [], availableProviders:
   return { client, connected, close, openSettings, ...view, user: userEvent.setup() };
 }
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
+  resetConnectionStoreForTests();
   resetCredentialsStoreForTests();
   // The auth mutations carry the page identity on the wire now, so the exact
   // call assertions below can pin a value that does not vary per run.
@@ -796,7 +796,7 @@ test.each(PENDING_WRITE_CASES)(
 );
 afterEach(() => {
   cleanup();
-  connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
+  resetConnectionStoreForTests();
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -2999,11 +2999,14 @@ test("a failed follow-up after a reload keeps the confirmed claim", async () => 
   const reopened = screen.getByLabelText("Endpoint URL");
   await user.clear(reopened);
   await enterText(user, reopened, "https://second.example/v1");
+  const refusedEditArrived = deferred<void>();
   client.on("evener/instance/edit", () => {
+    refusedEditArrived.resolve();
     throw new Error("write refused");
   });
   await user.click(screen.getByRole("button", { name: "Save" }));
-  await waitFor(() => expect(editCalls(client)).toHaveLength(1));
+  await refusedEditArrived.promise;
+  expect(editCalls(client)).toHaveLength(1);
   expect(await alertReason()).toBe("save-failed");
 
   const second: InstanceEntry = {
@@ -3013,10 +3016,15 @@ test("a failed follow-up after a reload keeps the confirmed claim", async () => 
   };
   const secondListing: InstanceListResponse = { instances: [second], availableProviders: structuredClone(catalogue) };
   scriptListing(client, secondListing);
-  scriptEdit(client, secondListing);
+  const secondEditArrived = deferred<void>();
+  client.on("evener/instance/edit", () => {
+    secondEditArrived.resolve();
+    return structuredClone(secondListing);
+  });
   await user.click(screen.getByRole("button", { name: "Save" }));
 
-  await waitFor(() => expect(editCalls(client)).toHaveLength(2));
+  await secondEditArrived.promise;
+  expect(editCalls(client)).toHaveLength(2);
   expect(editCalls(client)[1]!.params).toMatchObject({
     name: "anthropic",
     baseUrl: "https://second.example/v1",
@@ -3054,10 +3062,15 @@ test("a settings reload re-anchors the clear on the confirmed row", async () => 
   const cleared: InstanceEntry = { ...authored, apiKeyEnv: undefined };
   const clearedListing: InstanceListResponse = { instances: [cleared], availableProviders: structuredClone(catalogue) };
   scriptListing(client, clearedListing);
-  scriptEdit(client, clearedListing);
+  const clearEditArrived = deferred<void>();
+  client.on("evener/instance/edit", () => {
+    clearEditArrived.resolve();
+    return structuredClone(clearedListing);
+  });
   await user.click(screen.getByRole("button", { name: "Save settings" }));
 
-  await waitFor(() => expect(editCalls(client)).toHaveLength(2));
+  await clearEditArrived.promise;
+  expect(editCalls(client)).toHaveLength(2);
   const params = editCalls(client)[1]!.params as Record<string, unknown>;
   expect(params).toMatchObject({ name: "anthropic", clearApiKeyEnv: true });
   expect(params.expectedEndpointFingerprint).toBe("fp-anthropic");

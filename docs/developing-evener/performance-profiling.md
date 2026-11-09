@@ -125,6 +125,17 @@ go test ./cmd/evener -run 'TestMemHarness$' -count=1 \
   -memharness-resume=<session-id> -memharness-turns=0
 ```
 
+Each input is correlated to the turn identity the daemon's receipt named (via
+`history/updated` or an authoritative `thread/read` recovery), and a sample is
+taken only once a live read shows no queue entry or pending mutation this run
+sent. After the daemon exits, the harness decodes the recorded transcript and
+the durable job output journal and fails a run whose inputs, completions, tool
+rounds, shell output (including the middle of a windowed result), or recorded
+provider/model/protocol provenance do not match what it scripted. The modern
+provenance variant records a real wire protocol through
+`llm.NoteAPIAttemptProtocol`; `-memharness-provenance=legacy` runs the variant
+whose recorded turns keep provider and model but no protocol.
+
 Read the profiles with `go tool pprof`: `-sample_index=inuse_space` for what
 is retained, `alloc_space` for churn, and `-diff_base` between two samples for
 growth, e.g.

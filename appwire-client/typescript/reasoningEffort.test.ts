@@ -25,9 +25,21 @@ describe("effortOptionLevels", () => {
     expect(effortOptionLevels(["high", "none", "low"], "")).toEqual(["", "high", "none", "low"]);
   });
 
-  test("appends the current level only when the ladder omits it", () => {
-    expect(effortOptionLevels(["low", "high"], "medium")).toEqual(["", "low", "high", "medium"]);
+  test("inserts the current level at its rank when the ladder omits it", () => {
+    expect(effortOptionLevels(["low", "high"], "medium")).toEqual(["", "low", "medium", "high"]);
     expect(effortOptionLevels(["low", "high"], "high")).toEqual(["", "low", "high"]);
+  });
+
+  test("never places the ladder's max below a lower current level", () => {
+    // xhigh ranks below max, so appending a current xhigh after the ladder
+    // would read max as the lower tier.
+    expect(effortOptionLevels(["low", "high", "max"], "xhigh")).toEqual(["", "low", "high", "xhigh", "max"]);
+    expect(effortOptionLevels(["minimal", "low", "high"], "max")).toEqual(["", "minimal", "low", "high", "max"]);
+  });
+
+  test("a level with no rank still rides after the ladder", () => {
+    expect(effortOptionLevels(["low", "high"], "turbo")).toEqual(["", "low", "high", "turbo"]);
+    expect(effortOptionLevels(["low", "high"], "none")).toEqual(["", "low", "high", "none"]);
   });
 
   test("an empty ladder still offers the default and the current level", () => {

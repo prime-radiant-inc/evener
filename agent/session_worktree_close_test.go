@@ -656,7 +656,7 @@ func TestDisposeKeptLane_TouchesSidecarBeforeUnlock(t *testing.T) {
 }
 
 // laneDisposalRunner builds the git control runner and observed lock state for
-// a seeded lane, mirroring disposeOneStableDelegateLane's setup, so a test can drive
+// a seeded lane, mirroring disposeOneDelegateLane's setup, so a test can drive
 // disposeUnchangedLaneMechanics directly with either downgrade policy.
 func (r *wtRepo) laneDisposalRunner(t *testing.T, lane isolationLane) (worktree.GitRunner, worktree.LockState) {
 	t.Helper()
@@ -795,7 +795,7 @@ func TestClose_DisposalRunsBeforeStoreClose(t *testing.T) {
 	}
 }
 
-// --- disposeOneStableDelegateLane: gaps left by the happy-path tests above ---
+// --- disposeOneDelegateLane: gaps left by the happy-path tests above ---
 
 // TestDisposeOneDelegateLane_MissingSidecarLeavesLane: without a sidecar the
 // recorded base SHA is unknown, so the lane's provenance cannot be judged —

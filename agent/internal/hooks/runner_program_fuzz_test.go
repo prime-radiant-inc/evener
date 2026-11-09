@@ -3,7 +3,6 @@
 package hooks
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -320,11 +319,6 @@ func (r *hookRunnerProgramCommandRuntime) Run(_ context.Context, invocation comm
 		!reflect.DeepEqual(cmd.Env, invocation.Env) {
 		return fmt.Errorf("scripted command setup = path:%q args:%#v env:%#v", cmd.Path, cmd.Args, cmd.Env)
 	}
-	stdout, stdoutOK := cmd.Stdout.(*bytes.Buffer)
-	stderr, stderrOK := cmd.Stderr.(*bytes.Buffer)
-	if !stdoutOK || !stderrOK {
-		return fmt.Errorf("scripted command streams = stdout:%T stderr:%T", cmd.Stdout, cmd.Stderr)
-	}
 	r.mu.Lock()
 	r.plans = append(r.plans, hookRunnerProgramCommandPlan{
 		Program: cmd.Path,
@@ -337,10 +331,10 @@ func (r *hookRunnerProgramCommandRuntime) Run(_ context.Context, invocation comm
 
 	switch cmd.Path {
 	case "/fixture/bin/fixture-pre":
-		_, _ = stderr.WriteString("command pre denied")
+		_, _ = io.WriteString(cmd.Stderr, "command pre denied")
 		return hookRunnerProgramExitError{code: 2}
 	case "/fixture/bin/fixture-post":
-		_, _ = stdout.WriteString(`{"systemMessage":"command post","terminalSequence":"command-post-terminal","hookSpecificOutput":{"additionalContext":"command post context"}}`)
+		_, _ = io.WriteString(cmd.Stdout, `{"systemMessage":"command post","terminalSequence":"command-post-terminal","hookSpecificOutput":{"additionalContext":"command post context"}}`)
 		return nil
 	case "/fixture/bin/fixture-canceled":
 		return errors.New("recorded cancellation executor fault")

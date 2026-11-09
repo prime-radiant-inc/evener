@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { resetThreadsStoreForTests } from "../../stores/threads";
 import { jobOutputMetadata } from "./JobLogTestUtils";
 import { type JobLogReader, type JobLogReaderSnapshot, retainedJobLogReader } from "./jobLogReader";
@@ -79,7 +79,7 @@ beforeEach(async () => {
 afterEach(() => {
   resetWorkspaceStoreForTests();
   for (const client of clients.splice(0)) client.close();
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   expect(vi.getTimerCount()).toBe(0);
   vi.useRealTimers();
@@ -94,6 +94,25 @@ test("output arrives independently of failed metadata and without transcript sub
   expect(snapshot.outputError).toBeNull();
   expect(peer.sent.map((raw) => JSON.parse(raw).method).filter((method) => method.startsWith("thread/"))).toEqual([]);
   expect(peer.sent.map((raw) => JSON.parse(raw).method).filter((method) => method.includes("subscribe"))).toEqual([]);
+});
+
+test("settleForTests joins the live output read it starts", async () => {
+  await initial();
+  reader.refresh();
+  // The previous live read paced the next one, so let the fake clock reach it.
+  await vi.advanceTimersByTimeAsync(1000);
+  const live = await peer.request(OUTPUT, 1);
+  let settled = false;
+  const joined = reader.settleForTests().then(() => {
+    settled = true;
+  });
+  await Promise.resolve();
+  // The join must not resolve before the page it is watching arrives.
+  expect(settled).toBe(false);
+  peer.reply(live, page());
+  await joined;
+  expect(settled).toBe(true);
+  expect(reader.getSnapshot().windows.live).not.toBeNull();
 });
 
 test("holds one output slot while demand and running ticks accumulate", async () => {

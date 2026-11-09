@@ -215,6 +215,26 @@ func startAll(t *testing.T, launcher *fakeLauncher) []*fakeGuard {
 	return guards
 }
 
+func TestBrowserSkillGuardRequiresSuccessfulBuild(t *testing.T) {
+	launcher := newFakeLauncher()
+	launcher.buildStatus = 17
+	gate := newBrowserGate(1, true)
+	gate.checks = []string{skillGuard}
+	tg := startGate(t, gate, launcher, make(chan os.Signal, 1))
+	select {
+	case name := <-launcher.started:
+		launcher.guard(name).exit <- 0
+		tg.await(t)
+		t.Fatalf("%s launched despite failed frontend build", name)
+	case result := <-tg.result:
+		if result.status != 17 || !launcher.built {
+			t.Fatalf("failed build result = %+v, built=%t", result, launcher.built)
+		}
+	case <-time.After(tripwire):
+		t.Fatal("skillguard build fence did not settle")
+	}
+}
+
 func TestBrowserGateSuccessIsConcise(t *testing.T) {
 	launcher := newFakeLauncher()
 	launcher.output["layoutguard"] = "browser chatter\n"

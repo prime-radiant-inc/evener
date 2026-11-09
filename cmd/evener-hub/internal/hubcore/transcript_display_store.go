@@ -215,11 +215,16 @@ func loadTranscriptDisplaySnapshotFS(fs afero.Fs, stateRoot string) (transcriptD
 	if err := decodeStateFileStrict(data, "transcript display", &state); err != nil {
 		return empty, err
 	}
-	if err := validateTranscriptDisplaySnapshotShape(data); err != nil {
+	thinkingOpenPresent, err := validateTranscriptDisplaySnapshotShape(data)
+	if err != nil {
 		return empty, fmt.Errorf("validate transcript display state shape: %w", err)
 	}
 	if err := validateTranscriptDisplaySnapshot(state); err != nil {
 		return empty, fmt.Errorf("validate transcript display state: %w", err)
+	}
+	for _, layout := range []appwire.TranscriptViewportClass{appwire.TranscriptViewportDesktop, appwire.TranscriptViewportMobile} {
+		def := transcriptDisplaySnapshotLayoutPtr(&state, layout)
+		appwire.ApplyTranscriptDisplayThinkingOpenFixup(def.Config.Content.Custom, thinkingOpenPresent[layout])
 	}
 	return state, nil
 }
@@ -251,91 +256,107 @@ func validateTranscriptDisplaySnapshot(state transcriptDisplaySnapshot) error {
 	return nil
 }
 
-func validateTranscriptDisplaySnapshotShape(raw []byte) error {
+// validateTranscriptDisplaySnapshotShape checks the stored shape and reports,
+// per layout, whether the custom vector carried thinkingOpenByDefault - the
+// one fact the legacy fixup needs that the canonical struct cannot express.
+func validateTranscriptDisplaySnapshotShape(raw []byte) (map[appwire.TranscriptViewportClass]bool, error) {
+	thinkingOpenPresent := map[appwire.TranscriptViewportClass]bool{}
 	top, err := transcriptDisplaySnapshotObjectFields(raw)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := requireTranscriptDisplaySnapshotFields(top, "version", "desktop", "mobile"); err != nil {
-		return err
+		return nil, err
 	}
 	for _, layout := range []string{"desktop", "mobile"} {
-		if err := validateTranscriptDisplaySnapshotDefaultShape(layout, top[layout]); err != nil {
-			return err
+		present, err := validateTranscriptDisplaySnapshotDefaultShape(layout, top[layout])
+		if err != nil {
+			return nil, err
 		}
+		thinkingOpenPresent[appwire.TranscriptViewportClass(layout)] = present
 	}
-	return nil
+	return thinkingOpenPresent, nil
 }
 
-func validateTranscriptDisplaySnapshotDefaultShape(layout string, raw json.RawMessage) error {
+func validateTranscriptDisplaySnapshotDefaultShape(layout string, raw json.RawMessage) (bool, error) {
 	fields, err := transcriptDisplaySnapshotObjectFields(raw)
 	if err != nil {
-		return fmt.Errorf("%s: %w", layout, err)
+		return false, fmt.Errorf("%s: %w", layout, err)
 	}
 	if err := requireTranscriptDisplaySnapshotFields(fields, "revision", "config"); err != nil {
-		return fmt.Errorf("%s: %w", layout, err)
+		return false, fmt.Errorf("%s: %w", layout, err)
 	}
 	if bytes.Equal(bytes.TrimSpace(fields["revision"]), []byte("null")) {
-		return fmt.Errorf("%s revision must be an unsigned integer", layout)
+		return false, fmt.Errorf("%s revision must be an unsigned integer", layout)
 	}
 	configFields, err := transcriptDisplaySnapshotObjectFields(fields["config"])
 	if err != nil {
-		return fmt.Errorf("%s config: %w", layout, err)
+		return false, fmt.Errorf("%s config: %w", layout, err)
 	}
 	if err := requireTranscriptDisplaySnapshotFields(configFields, "version", "content", "advanced"); err != nil {
-		return fmt.Errorf("%s config: %w", layout, err)
+		return false, fmt.Errorf("%s config: %w", layout, err)
 	}
 	advancedFields, err := transcriptDisplaySnapshotObjectFields(configFields["advanced"])
 	if err != nil {
-		return fmt.Errorf("%s advanced: %w", layout, err)
+		return false, fmt.Errorf("%s advanced: %w", layout, err)
 	}
 	if err := requireTranscriptDisplaySnapshotFields(advancedFields, "roundTimings", "tokenCounts", "estimatedCost", "systemEvents", "promptEvents", "hookExits"); err != nil {
-		return fmt.Errorf("%s advanced: %w", layout, err)
+		return false, fmt.Errorf("%s advanced: %w", layout, err)
 	}
 	if err := requireTranscriptDisplaySnapshotBooleans(advancedFields, "roundTimings", "tokenCounts", "estimatedCost", "systemEvents", "promptEvents"); err != nil {
-		return fmt.Errorf("%s advanced: %w", layout, err)
+		return false, fmt.Errorf("%s advanced: %w", layout, err)
 	}
 
 	contentFields, err := transcriptDisplaySnapshotObjectFields(configFields["content"])
 	if err != nil {
-		return fmt.Errorf("%s content: %w", layout, err)
+		return false, fmt.Errorf("%s content: %w", layout, err)
 	}
 	if err := requireTranscriptDisplaySnapshotFields(contentFields, "kind"); err != nil {
-		return fmt.Errorf("%s content: %w", layout, err)
+		return false, fmt.Errorf("%s content: %w", layout, err)
 	}
 	var kind appwire.TranscriptContentKind
 	if err := json.Unmarshal(contentFields["kind"], &kind); err != nil {
-		return fmt.Errorf("%s content kind: %w", layout, err)
+		return false, fmt.Errorf("%s content kind: %w", layout, err)
 	}
 	switch kind {
 	case appwire.TranscriptContentKindPreset:
 		if err := requireTranscriptDisplaySnapshotFields(contentFields, "level"); err != nil {
-			return fmt.Errorf("%s content: %w", layout, err)
+			return false, fmt.Errorf("%s content: %w", layout, err)
 		}
 		if _, ok := contentFields["custom"]; ok {
-			return fmt.Errorf("%s content cannot contain both preset and custom representations", layout)
+			return false, fmt.Errorf("%s content cannot contain both preset and custom representations", layout)
 		}
 	case appwire.TranscriptContentKindCustom:
 		if err := requireTranscriptDisplaySnapshotFields(contentFields, "custom"); err != nil {
-			return fmt.Errorf("%s content: %w", layout, err)
+			return false, fmt.Errorf("%s content: %w", layout, err)
 		}
 		if _, ok := contentFields["level"]; ok {
-			return fmt.Errorf("%s content cannot contain both custom and preset representations", layout)
+			return false, fmt.Errorf("%s content cannot contain both custom and preset representations", layout)
 		}
 		customFields, err := transcriptDisplaySnapshotObjectFields(contentFields["custom"])
 		if err != nil {
-			return fmt.Errorf("%s custom: %w", layout, err)
+			return false, fmt.Errorf("%s custom: %w", layout, err)
 		}
 		if err := requireTranscriptDisplaySnapshotFields(customFields, "toolIntent", "toolCalls", "reasoning", "expandByDefault"); err != nil {
-			return fmt.Errorf("%s custom: %w", layout, err)
+			return false, fmt.Errorf("%s custom: %w", layout, err)
 		}
 		if err := requireTranscriptDisplaySnapshotBooleans(customFields, "toolIntent", "toolCalls", "reasoning", "expandByDefault"); err != nil {
-			return fmt.Errorf("%s custom: %w", layout, err)
+			return false, fmt.Errorf("%s custom: %w", layout, err)
+		}
+		// thinkingOpenByDefault is optional in a stored custom vector (see
+		// fixupTranscriptDisplaySnapshotThinkingOpen); when present it must
+		// be a literal boolean, which strict decoding alone does not enforce
+		// for null.
+		if _, ok := customFields["thinkingOpenByDefault"]; ok {
+			if err := requireTranscriptDisplaySnapshotBooleans(customFields, "thinkingOpenByDefault"); err != nil {
+				return false, fmt.Errorf("%s custom: %w", layout, err)
+			}
+			return true, nil
 		}
 	default:
 		// Semantic validation reports the canonical invalid-kind error.
 	}
-	return nil
+	return false, nil
 }
 
 func transcriptDisplaySnapshotObjectFields(raw json.RawMessage) (map[string]json.RawMessage, error) {

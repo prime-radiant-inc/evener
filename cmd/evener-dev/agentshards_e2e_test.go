@@ -8,11 +8,15 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+
+	"primeradiant.com/evener/execsupport/shellquote"
+	"primeradiant.com/evener/internal/devtool/shardrun"
 )
 
 // fixtureModule returns the absolute path of the real test module the
@@ -760,13 +764,66 @@ func hubFixtureRoot(t *testing.T) string {
 	return root
 }
 
+// hubFixtureLiveStackRoot is hubFixtureRoot with a real cmd/evener package, the
+// layout hub-shards needs to build the live-stack binaries the hub package's
+// TestMain would otherwise warm per shard.
+func hubFixtureLiveStackRoot(t *testing.T) string {
+	t.Helper()
+	root := hubFixtureRoot(t)
+	dir := filepath.Join(root, "cmd", "evener")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	main := "package main\n\nimport \"fmt\"\n\nfunc main() { fmt.Println(\"fixture-live-stack\") }\n"
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(main), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
 // hubFixtureToolchainEnv is the child environment a hub-shards run over
 // hubFixtureRoot needs, appended after the ambient one so it wins: a private
 // TMPDIR and survey cache, and a toolchain that resolves the fixture's own
 // go.mod rather than an ambient GOWORK, GOENV or GOFLAGS.
 func hubFixtureToolchainEnv(t *testing.T) []string {
 	t.Helper()
-	return []string{"TMPDIR=" + t.TempDir(), "HUB_SHARD_CACHE_DIR=" + t.TempDir(), "GOWORK=off", "GOENV=off", "GOFLAGS="}
+	return []string{
+		"TMPDIR=" + t.TempDir(),
+		"HUB_SHARD_CACHE_DIR=" + t.TempDir(),
+		"GOWORK=off", "GOENV=off", "GOFLAGS=",
+		// A hub-shards run publishes these into its children. A fixture run
+		// must decide its own prebuild, not inherit an outer runner's.
+		shardrun.PrebuiltBinDirEnv + "=",
+		shardrun.PrebuiltBinWarmEnv + "=",
+	}
+}
+
+// goWrapper puts a `go` first on a child PATH that records every invocation and
+// runs the real toolchain. It proves which builds a run attempted.
+func goWrapper(t *testing.T) (dir, logPath string) {
+	t.Helper()
+	realGo, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir = t.TempDir()
+	logPath = filepath.Join(t.TempDir(), "go.log")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + shellquote.Literal(logPath) + "\nexec " + shellquote.Literal(realGo) + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "go"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir, logPath
+}
+
+// countBuilds counts the wrapper's invocations that built target.
+func countBuilds(log []byte, target string) int {
+	builds := 0
+	for line := range strings.SplitSeq(string(log), "\n") {
+		if strings.HasPrefix(line, "build ") && strings.HasSuffix(line, " "+target) {
+			builds++
+		}
+	}
+	return builds
 }
 
 // TestHubShardsReadsItsOwnVariablesAndPackage pins the hub-shards entry point:
@@ -824,6 +881,101 @@ func TestHubShardsReadsItsOwnVariablesAndPackage(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("hub-shards output lacks %q:\n%s", want, out)
 		}
+	}
+}
+
+// TestHubShardsBuildsTheLiveStackBinariesOnce pins the follow-up to #5695:
+// hub-shards builds ./cmd/evener for the whole run, and every shard inherits
+// the directory through the environment instead of letting the hub TestMain
+// warm its own copy.
+func TestHubShardsBuildsTheLiveStackBinariesOnce(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the go wrapper this test counts through is a POSIX shell script")
+	}
+	bin := buildEvenerDev(t)
+	workRoot := hubFixtureLiveStackRoot(t)
+	liveDir := t.TempDir()
+	wrapperDir, goLog := goWrapper(t)
+
+	cmd := exec.Command(bin, "dev", "hub-shards")
+	cmd.Dir = workRoot
+	cmd.Env = append(os.Environ(), append(hubFixtureToolchainEnv(t),
+		"HUB_SHARD_COUNT=2",
+		// The live-shard announcement below needs both shards alive at once;
+		// do not inherit the gate's busy-host concurrency cap.
+		"HUB_SHARD_CONCURRENCY=2",
+		"SHARD_FIXTURE_LIVE_STACK=1",
+		"SHARD_FIXTURE_LIVE_DIR="+liveDir,
+		"SHARD_FIXTURE_LIVE_EXPECT=2",
+		"PATH="+wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+	)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("hub-shards over the live-stack fixture failed: %v\n%s", err, out)
+	}
+	data, err := os.ReadFile(goLog)
+	if err != nil {
+		t.Fatalf("reading the go wrapper log: %v", err)
+	}
+	if builds := countBuilds(data, shardrun.PrebuiltBinTarget); builds != 1 {
+		t.Fatalf("go build ./cmd/evener ran %d times, want once for the run:\n%s", builds, data)
+	}
+	seen, err := filepath.Glob(filepath.Join(liveDir, "seen.*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != 2 {
+		t.Fatalf("expected both fixture shards to start, got %v:\n%s", seen, out)
+	}
+	timeouts, err := filepath.Glob(filepath.Join(liveDir, "timeout.*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(timeouts) != 0 {
+		t.Fatalf("fixture shards did not rendezvous: %v\n%s", timeouts, out)
+	}
+}
+
+// TestHubShardsNamesALiveStackBuildFailure keeps a broken ./cmd/evener from
+// surfacing as an opaque shard failure: the run exits nonzero at the build and
+// no fixture test runs.
+func TestHubShardsNamesALiveStackBuildFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the go wrapper this test counts through is a POSIX shell script")
+	}
+	bin := buildEvenerDev(t)
+	workRoot := hubFixtureLiveStackRoot(t)
+	broken := "package main\n\nfunc main() { thisSymbolDoesNotExist() }\n"
+	if err := os.WriteFile(filepath.Join(workRoot, "cmd", "evener", "main.go"), []byte(broken), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	liveDir := t.TempDir()
+	wrapperDir, goLog := goWrapper(t)
+	cmd := exec.Command(bin, "dev", "hub-shards")
+	cmd.Dir = workRoot
+	cmd.Env = append(os.Environ(), append(hubFixtureToolchainEnv(t),
+		"HUB_SHARD_COUNT=2",
+		"SHARD_FIXTURE_LIVE_DIR="+liveDir,
+		"SHARD_FIXTURE_LIVE_EXPECT=1",
+		"PATH="+wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+	)...)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("a broken cmd/evener did not fail the run:\n%s", out)
+	}
+	data, err := os.ReadFile(goLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if builds := countBuilds(data, shardrun.PrebuiltBinTarget); builds != 1 {
+		t.Fatalf("the live-stack build was not attempted (builds=%d):\n%s\n%s", builds, data, out)
+	}
+	seen, err := filepath.Glob(filepath.Join(liveDir, "seen.*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != 0 {
+		t.Fatalf("a fixture shard started despite the live-stack build failing: %v\n%s", seen, out)
 	}
 }
 

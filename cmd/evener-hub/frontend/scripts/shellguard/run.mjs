@@ -349,6 +349,16 @@ function assertResult(result) {
   // measurement of a loaded shell, not of an empty one that never drew the
   // rail (docs/developing-evener/testing.md's unfalsifiable-fixture trap).
   if (result.treeRows < 120) failures.push(`expected the tall tree in the page, found ${result.treeRows} rows`);
+  if (!result.railNewSession?.present) failures.push("the rail's New session control did not render");
+  if (result.railNewSession?.primary) {
+    failures.push("the rail's New session control is a filled primary and outranks the current task");
+  }
+  if (!result.railNewSession?.secondary) {
+    failures.push("the rail's New session control lost its secondary treatment");
+  }
+  if (result.primaryButtons > 1) {
+    failures.push(`the shell route shows ${result.primaryButtons} filled primaries, expected at most one`);
+  }
 
   // The property the bug broke: with a tree taller than the viewport, the
   // RAIL's own body must be the box that scrolls...
@@ -785,6 +795,24 @@ async function measureOverview(send) {
       footerTabs: Array.from(document.querySelectorAll('[data-testid="statusbar"]'))
         .filter(e => !e.closest('[data-pane-footer-fixture]'))
         .map(e => Array.from(e.querySelectorAll('[data-activity-tab]'), button => button.dataset.activityTab)),
+      footer: (() => {
+        const bar = Array.from(document.querySelectorAll('[data-testid="statusbar"]'))
+          .find(e => !e.closest('[data-pane-footer-fixture]'));
+        if (!bar) return null;
+        const path = bar.querySelector('[data-testid="composer-repo-path"]');
+        const chips = Array.from(bar.querySelectorAll('[data-activity-tab]'));
+        const chipRow = chips[0]?.parentElement ?? null;
+        return {
+          box: box(bar),
+          path: path && box(path),
+          chips: chips.map(element => ({
+            tab: element.dataset.activityTab, box: box(element)
+          })),
+          chipRow: chipRow && {
+            box: box(chipRow), scrollWidth: chipRow.scrollWidth, clientWidth: chipRow.clientWidth
+          },
+        };
+      })(),
       document: { width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight },
       errors: window.__shellGuardErrors || [], state: window.overviewGuardState()
     };
@@ -880,13 +908,14 @@ function assertOverview(result, viewport, theme) {
     result.close.bottom > viewport.height + 1
   )
     failures.push(`close control escapes viewport: ${JSON.stringify(result.close)}`);
+  // The focused session pane carries the footer on both viewports, with the
+  // same four identities: desktop draws it in the pane and the phone keeps it
+  // at the pane's bottom edge rather than dropping it.
   if (
-    !viewport.mobile &&
-    (result.footerTabs.length !== 1 ||
-      JSON.stringify(result.footerTabs[0]) !== JSON.stringify(["agents", "jobs", "watches", "tasks"]))
+    result.footerTabs.length !== 1 ||
+    JSON.stringify(result.footerTabs[0]) !== JSON.stringify(["agents", "jobs", "watches", "tasks"])
   )
     failures.push(`actual pane footer identities ${JSON.stringify(result.footerTabs)}`);
-  if (viewport.mobile && result.footerTabs.length) failures.push("phone unexpectedly rendered activity footers");
   if (JSON.stringify(result.categories.map((c) => c.text)) !== JSON.stringify(labels))
     failures.push(`categories/counts ${JSON.stringify(result.categories.map((c) => c.text))}`);
   if (
@@ -924,6 +953,48 @@ function assertOverview(result, viewport, theme) {
     for (const control of [...result.categories.map((c) => c.box), result.close]) {
       if (!control || control.width < result.tapMin - 1 || control.height < result.tapMin - 1)
         failures.push(`sub-floor Overview target: ${JSON.stringify(control)}`);
+    }
+    const footer = result.footer;
+    if (!footer) {
+      failures.push("phone session footer is not rendered");
+    } else {
+      if (footer.box.height < result.tapMin - 1)
+        failures.push(`phone session footer is under the tap floor: ${JSON.stringify(footer.box)}`);
+      if (Math.abs(footer.box.bottom - viewport.height) > 1)
+        failures.push(`phone session footer is not on the pane's bottom edge: ${JSON.stringify(footer.box)}`);
+      if (footer.box.left < -1 || footer.box.right > viewport.width + 1)
+        failures.push(`phone session footer escapes the viewport: ${JSON.stringify(footer.box)}`);
+      if (footer.chips.length !== 4) failures.push(`phone session footer chips: ${JSON.stringify(footer.chips)}`);
+      for (const chip of footer.chips) {
+        if (
+          chip.box.width < result.tapMin - 1 ||
+          chip.box.height < result.tapMin - 1 ||
+          chip.box.top < footer.box.top - 1 ||
+          chip.box.bottom > footer.box.bottom + 1 ||
+          chip.box.left < footer.box.left - 1 ||
+          chip.box.right > footer.box.right + 1
+        )
+          failures.push(`phone session footer chip ${chip.tab} misses the tap floor: ${JSON.stringify(chip.box)}`);
+      }
+      const row = footer.chipRow;
+      if (!row || row.box === null || row.box.left < footer.box.left - 1 || row.box.right > footer.box.right + 1)
+        failures.push(`phone session footer chip row escapes the bar: ${JSON.stringify(row)}`);
+      else {
+        if (row.scrollWidth > row.clientWidth + 1)
+          failures.push(
+            `phone session footer clips its chips (${row.scrollWidth}px in ${row.clientWidth}px): ${JSON.stringify(row)}`,
+          );
+        for (const chip of footer.chips) {
+          if (chip.box.left < row.box.left - 1 || chip.box.right > row.box.right + 1)
+            failures.push(`phone session footer chip ${chip.tab} is clipped by its row: ${JSON.stringify(chip.box)}`);
+        }
+      }
+      if (!footer.path || footer.path.width <= 0 || footer.path.right > viewport.width + 1)
+        failures.push(`phone session footer lost its working directory: ${JSON.stringify(footer)}`);
+      else if (footer.chips.length > 0 && footer.path.bottom <= footer.chips[0].box.top + 1)
+        failures.push(`phone session footer put the path above the counts: ${JSON.stringify(footer)}`);
+      if (footer.box.height > result.tapMin + 6)
+        failures.push(`phone session footer is more than one row: ${JSON.stringify(footer.box)}`);
     }
   }
   if (result.document.width > viewport.width + 1 || result.document.height > viewport.height + 1)

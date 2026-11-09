@@ -66,11 +66,16 @@ test("queuedMessageActionsRespectOwnership", () => {
   expect(canEditQueuedMessage(canceledQueue)).toBe(true);
   expect(canRemoveQueuedMessage(canceledQueue)).toBe(true);
   expect(canEditQueuedMessage(unattemptedQueue)).toBe(true);
+  // Another pass is sending the submitting row: the click must not race it.
   expect(canEditQueuedMessage(attemptedQueue)).toBe(false);
   expect(canRemoveQueuedMessage(attemptedQueue)).toBe(false);
-  expect(canEditQueuedMessage(contradictoryCanceledQueue)).toBe(false);
-  expect(canRemoveQueuedMessage(contradictoryCanceledQueue)).toBe(false);
-  expect(canEditQueuedMessage(unknownQueue)).toBe(false);
+  // A canceled row is parked, and an uncertain row closes its queue: both are
+  // the user's to clear, whatever their attempt evidence says.
+  expect(canEditQueuedMessage(contradictoryCanceledQueue)).toBe(true);
+  expect(canRemoveQueuedMessage(contradictoryCanceledQueue)).toBe(true);
+  // Uncertain delivery is the user's to clear or to send again as a new message.
+  expect(canEditQueuedMessage(unknownQueue)).toBe(true);
+  expect(canRemoveQueuedMessage(unknownQueue)).toBe(true);
   expect(canEditQueuedMessage(legacyUnknownQueue)).toBe(false);
   expect(canEditQueuedMessage(note)).toBe(false);
   expect(canRemoveQueuedMessage(note)).toBe(false);
@@ -90,4 +95,34 @@ test.each(["turn/start", "turn/steer"])("allows unattempted and canceled %s comp
     expect(canEditQueuedMessage(record)).toBe(true);
     expect(canRemoveQueuedMessage(record)).toBe(true);
   }
+});
+
+// RoboRev round-2 H2, REWRITTEN for Jesse's 2026-11-03 ruling on the #5583
+// collision: both Edit and Remove reach an inherited-wire row like any local
+// message - hiding the verb was the old fix, and the ruling supersedes it.
+// The duplicate problem that gate closed is solved MECHANICALLY instead: the
+// edit seam stamps the row's delivery-uncertainty identity onto the editing
+// recovery (the same marking transferToRecovery does), so an UNCHANGED
+// resend replays under the inherited wire id and the daemon's journal
+// dedupes it, while changed content resends as the user's new message under
+// a fresh id. Those contracts are pinned at the storage seam
+// (mutationOutboxIndexedDB.queuedMessages.test.ts).
+test("an inherited-wire replacement is editable and removable like any local row (Jesse's 2026-11-03 ruling)", () => {
+  const input = [{ type: "text" as const, text: "queued input" }];
+  const inheritedReplacement = queuedRecord("turn/start", {
+    state: "canceled",
+    clientMutationId: "mutation-fresh",
+    payload: { ref: "local:thread-1", clientMutationId: "mutation-inherited", input },
+  });
+  expect(canEditQueuedMessage(inheritedReplacement)).toBe(true);
+  expect(canRemoveQueuedMessage(inheritedReplacement)).toBe(true);
+  // The no-op pin: a row whose payload id is its own key keeps its
+  // eligibility - this is every row native ever writes.
+  const ordinaryRow = queuedRecord("turn/start", {
+    state: "canceled",
+    clientMutationId: "mutation-own",
+    payload: { ref: "local:thread-1", clientMutationId: "mutation-own", input },
+  });
+  expect(canEditQueuedMessage(ordinaryRow)).toBe(true);
+  expect(canRemoveQueuedMessage(ordinaryRow)).toBe(true);
 });

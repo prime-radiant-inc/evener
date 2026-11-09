@@ -31,6 +31,23 @@ explains why the bundle is required alongside tests and type checking. The
 [build guide](../docs/design/mobile/ios-build-distribution.md) covers locked iOS
 project generation and distribution prerequisites.
 
+## iPhone Duo
+
+The app fills both iPhone Duo displays. The outer display keeps the Board
+single-pane. The inner display puts the Board on the left and the open
+conversation on the right; the Board's search, scroll and live state keep
+running while the conversation is open. The split is chosen by window size (both
+sides at least 600 points), not by device name. Landscape is supported: a regular
+iPhone in landscape keeps the single-pane Board and conversation, and the Board,
+conversation, agent and job screens, reader and Hub pages, and the alert banner
+inset their content by the left/right safe areas.
+
+A conversation opened from the Board uses the split. Conversations opened from a
+root route (a share, an alert, a restored root location) still open full screen;
+that entry-point work is separate. The app does not render on both displays at
+once and does not lay out around a partially folded hinge. See
+[the design](../docs/design/mobile/iphone-duo.md).
+
 ## Run on simulators
 
 Install dependencies with `npm ci`. Start Metro with:
@@ -99,6 +116,14 @@ npx tsx scripts/check-hub.mts http://127.0.0.1:9180 /path/to/auth-token
 
 No script in the default tests calls a real hub or LLM provider.
 
+One runtime rule the green suite cannot catch: a `useAnimatedStyle` (or any
+other react-native-worklets worklet) body runs on the UI runtime, so it cannot
+call an ordinary app function. The vitest testkit executes the updater as
+plain JavaScript on the JS thread, so a worklet that calls app code
+typechecks and passes every test, then crashes the screen on device. Hoist
+any such call to the component body and capture its result in the closure;
+the worklet may then only read numbers and animated values.
+
 ## Queued-message recovery
 
 Transcript ghosts and the Queue sheet offer local Edit and Remove for safely
@@ -145,6 +170,14 @@ at every level. See the [shared-notes guide](../docs/web-ui/shared-notes.md).
 The dated 8 September execution checkpoint remains in the development archive. Its simulator and controller results identify earlier artifacts; use the current acceptance index for the joined checkpoint journey.
 
 ## Older-history recovery
+
+A session opens at the **latest** (live end), never at a saved reading position
+(`openingTarget` in `src/readerPosition.ts`). The one exception is the
+unread-reply jump — opening at the start of a reply that finished since the
+reader last reached the end — which lives behind the "Open at unread replies"
+setting (Display page, default on). The position store still records
+`turnsSeen` for that jump to read; do not reintroduce a saved-position opening
+default.
 
 [`useOlderHistory`](src/session/useOlderHistory.ts) shares browse and Find demand
 through [`HistoryPaging`](../appwire-client/typescript/historyPaging.ts). Transient
@@ -235,7 +268,16 @@ do not establish installed-device rendering or touch behavior.
   offline and stale-input rules remain unchanged.
 - Historical production roster reads were slow. Representative-data measurement
   and normal deployment verification remain open; tiny fixtures do not establish
-  production responsiveness. Voice/barge-in is outside v1.
+  production responsiveness.
+- Opt-in voice offers manager selection, Arm/Disarm, Talk and Stop through the
+  [native voice owner](modules/evener-voice/README.md). The native service owns
+  microphone and playback independently of foreground chat sockets. Local
+  openWakeWord activation defaults to the custom **Hey Evener.** model at **0.99**,
+  with persisted **Test wake word** trials for qualification. Offline synthetic,
+  speaker-disjoint results are 598/600 positives and zero false accepts over
+  2.09 h negatives, not physical qualification. Acoustic accuracy, microphone, audible barge-in, locked listening
+  and battery remain physical-device qualification gates. See the
+  [voice contract](../docs/product/voice.md).
 
 Run the native gate against the exact candidate being qualified and record its
 result with that revision. Passing automated tests, type checking and the Metro

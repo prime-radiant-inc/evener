@@ -2,6 +2,7 @@ package contextmgr
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -13,24 +14,19 @@ import (
 )
 
 // summarizeReplying runs one summarization whose model replies with reply and
-// returns the summarizer's result.
+// returns the summarizer's result. The model answers every sample with the
+// same reply, so a rejected reply stays rejected across the route's retries.
 func summarizeReplying(t *testing.T, reply, instructions string) ([]schema.Turn, error) {
 	t.Helper()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(reply)} },
-		},
-	}
 	client := llm.NewClient()
-	client.Register(adapter)
+	client.Register(alwaysReplying(func(llm.Request) string { return reply }))
 	cm := NewManager(NewOpenAIProfile("gpt-5.2"), client, cheapmodel.New(client))
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("Fix the auth bug")},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("I'll fix it")},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 	}
-	return cm.summarizeWithLLMSteered(context.Background(), history, 1, instructions)
+	return cm.summarizeFold(context.Background(), history, 1, instructions, nil)
 }
 
 // A reply that is not a summary would be stored as the session's only record of
@@ -64,7 +60,7 @@ func TestSummarizeWithLLM_RejectsNonSummaryReplies(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			result, err := summarizeReplying(t, reply, "")
 			if err == nil {
-				t.Fatalf("summarizeWithLLM stored %q as a summary, want an error", result[0].Message.Text())
+				t.Fatalf("summarizeFold stored %q as a summary, want an error", result[0].Message.Text())
 			}
 		})
 	}
@@ -91,7 +87,7 @@ func TestSummarizeWithLLM_StoresReplyWithRequiredSection(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			result, err := summarizeReplying(t, reply, "")
 			if err != nil {
-				t.Fatalf("summarizeWithLLM: %v", err)
+				t.Fatalf("summarizeFold: %v", err)
 			}
 			if got := result[0].Message.Text(); !strings.Contains(got, reply) {
 				t.Fatalf("summary = %q, want it to hold the reply", got)
@@ -104,15 +100,16 @@ func TestSummarizeWithLLM_StoresReplyWithRequiredSection(t *testing.T) {
 // rejected under them.
 func TestSummarizeWithLLM_InstructionsRequireOnlyANonEmptyReply(t *testing.T) {
 	if _, err := summarizeReplying(t, "Kept: the auth fix and its failing test.", "keep only the auth work"); err != nil {
-		t.Fatalf("summarizeWithLLM: %v", err)
+		t.Fatalf("summarizeFold: %v", err)
 	}
 	if _, err := summarizeReplying(t, "", "keep only the auth work"); err == nil {
-		t.Fatal("summarizeWithLLM stored an empty reply under instructions, want an error")
+		t.Fatal("summarizeFold stored an empty reply under instructions, want an error")
 	}
 }
 
-// A configured cheap model whose reply is not a summary falls through to the
-// session model, like a cheap model that fails outright.
+// A configured cheap model whose reply is not a summary is resampled within
+// its route's budget, then falls through to the session model, like a cheap
+// model that fails outright.
 func TestSummarizeWithLLM_RejectedCheapReplyFallsBackToSessionModel(t *testing.T) {
 	for name, tc := range map[string]struct {
 		sessionReply string
@@ -122,12 +119,23 @@ func TestSummarizeWithLLM_RejectedCheapReplyFallsBackToSessionModel(t *testing.T
 		"session model narrates":   {"I'll check the task list first.", false},
 	} {
 		t.Run(name, func(t *testing.T) {
-			adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-				func(llm.Request) llm.Response {
-					return llm.Response{Message: llm.Assistant("I'll read the plan, then check current state.")}
-				},
-				func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(tc.sessionReply)} },
-			}}
+			cheapNarration := func(llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("I'll read the plan, then check current state.")}
+			}
+			steps := []func(llm.Request) llm.Response{cheapNarration, cheapNarration, cheapNarration}
+			if tc.wantStored {
+				steps = append(steps, func(llm.Request) llm.Response {
+					return llm.Response{Message: llm.Assistant(tc.sessionReply)}
+				})
+			} else {
+				sessionNarration := func(llm.Request) llm.Response {
+					return llm.Response{Message: llm.Assistant(tc.sessionReply)}
+				}
+				for range 3 {
+					steps = append(steps, sessionNarration)
+				}
+			}
+			adapter := &fakeAdapter{name: "openai", steps: steps}
 			client := llm.NewClient()
 			client.Register(adapter)
 			profile := provider.WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-5-mini")
@@ -138,14 +146,18 @@ func TestSummarizeWithLLM_RejectedCheapReplyFallsBackToSessionModel(t *testing.T
 				{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 			}
 
-			result, err := cm.summarizeWithLLM(context.Background(), history, 1)
+			result, err := cm.summarizeFold(context.Background(), history, 1, "", nil)
 
 			var models []string
 			for _, r := range adapter.Requests() {
 				models = append(models, r.Model)
 			}
-			if strings.Join(models, " ") != "gpt-5-mini gpt-5.2" {
-				t.Fatalf("summary models = %q, want [gpt-5-mini gpt-5.2]", models)
+			want := []string{"gpt-5-mini", "gpt-5-mini", "gpt-5-mini", "gpt-5.2"}
+			if !tc.wantStored {
+				want = append(want, "gpt-5.2", "gpt-5.2")
+			}
+			if !slices.Equal(models, want) {
+				t.Fatalf("summary models = %v, want %v", models, want)
 			}
 			if !tc.wantStored {
 				if err == nil {
@@ -154,7 +166,7 @@ func TestSummarizeWithLLM_RejectedCheapReplyFallsBackToSessionModel(t *testing.T
 				return
 			}
 			if err != nil {
-				t.Fatalf("summarizeWithLLM: %v", err)
+				t.Fatalf("summarizeFold: %v", err)
 			}
 			if got := result[0].Message.Text(); !strings.Contains(got, tc.sessionReply) {
 				t.Fatalf("summary = %q, want the session model's reply", got)
@@ -193,8 +205,8 @@ func TestSummarizeWithLLM_LabelsPartnerSteeringAsUser(t *testing.T) {
 		schema.NewTurn(schema.TurnSteering, llm.User("DAEMON_NUDGE_SENTINEL")),
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent")),
 	}
-	if _, err := cm.summarizeWithLLMSteered(context.Background(), history, 1, ""); err != nil {
-		t.Fatalf("summarizeWithLLMSteered: %v", err)
+	if _, err := cm.summarizeFold(context.Background(), history, 1, "", nil); err != nil {
+		t.Fatalf("summarizeFold: %v", err)
 	}
 	if !strings.Contains(prompt, "User: PARTNER_STEER_SENTINEL") || !strings.Contains(prompt, "System: DAEMON_NUDGE_SENTINEL") {
 		t.Fatalf("steering labels wrong in the summarizer input:\n%s", prompt)

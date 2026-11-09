@@ -1,14 +1,10 @@
 package execenv
 
 import (
-	"crypto/rand"
-	"encoding/hex"
-	"errors"
 	"fmt"
 	"os"
 	"path"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -24,9 +20,7 @@ import (
 // fail-closed stand-ins elsewhere.
 
 var (
-	canonicalPathForFd = canonicalPathOfFd
-	secureRandRead     = rand.Read
-	securePathRel      = filepath.Rel
+	securePathRel = filepath.Rel
 )
 
 // sandboxFS enforces a resolved sandbox policy on file operations using
@@ -122,12 +116,6 @@ func (s *sandboxFS) retire() {
 	}
 }
 
-// isGranted reports whether abs is exactly this fs's single per-invocation granted
-// path (never a sibling, never a subtree — precisely one leaf).
-func (s *sandboxFS) isGranted(abs string) bool {
-	return s.grant != "" && abs == s.grant
-}
-
 // rootDead reports whether root is gone from beneath a running session: its
 // descriptor references a directory unlinked from the filesystem (link count
 // zero), or, for a root never opened yet, its path no longer names a directory.
@@ -196,20 +184,6 @@ const (
 	denyReasonEscape       = "path resolves outside the sandbox root"
 	denyReasonRootTarget   = "cannot operate on a sandbox root itself"
 )
-
-// errEscapesRoot is the sentinel a component walk returns when a path would
-// escape its anchoring root (the macOS/other analogue of openat2's EXDEV under
-// RESOLVE_BENEATH). Kept package-level so both the darwin walk and the shared
-// error mapper agree on it.
-var errEscapesRoot = errors.New("path escapes sandbox root")
-
-// errSymlinkComponent is the sentinel a component walk returns when it refused to
-// traverse a component: a symlinked directory opened with O_DIRECTORY|O_NOFOLLOW
-// surfaces as either ELOOP or ENOTDIR depending on kernel check order (and a real
-// swap during a race can flip which), so the walks map BOTH to this one sentinel
-// without a second, race-prone lstat — the open already refused to follow, and
-// this only classifies the resulting error into a legible typed denial.
-var errSymlinkComponent = errors.New("sandbox: refused non-traversable path component")
 
 // deny builds a typed *sandbox.DeniedError for a file-tool denial and emits one
 // redacted audit line. Command/OutputSoFar are left empty — those belong to the
@@ -345,22 +319,10 @@ func denialReasonKind(reason string) sandbox.DenialReason {
 	}
 }
 
-// underMasked reports whether the resolved policy masks abs (a secrets/pseudo-fs
-// path not inside a root carved out of the mask; see ResolvedPolicy.Masks).
-func (s *sandboxFS) underMasked(abs string) bool {
-	return s.policy.Masks(abs)
-}
-
 // underMaskedForWrite is underMasked for a write: the carve-outs are read-only,
 // so a write into one is denied like a write into the rest of the mask.
 func (s *sandboxFS) underMaskedForWrite(abs string) bool {
 	return s.policy.MasksWrite(abs)
-}
-
-// isGrantedRoot reports whether abs is exactly one of the policy's granted roots
-// (file-tool read or write roots), whose parent may lie outside the policy.
-func (s *sandboxFS) isGrantedRoot(abs string) bool {
-	return slices.Contains(s.policy.FileTool.ReadRoots, abs) || slices.Contains(s.policy.FileTool.WriteRoots, abs)
 }
 
 // underProtected reports whether abs is at or beneath any git config/hook surface
@@ -375,20 +337,6 @@ func (s *sandboxFS) underProtected(abs string) bool {
 }
 
 // ---- shared, platform-independent primitives ----
-
-// tempName returns an unpredictable temp basename for the atomic write. The
-// randomness avoids a griefing pre-create DoS (a predictable name could be
-// pre-planted to make O_EXCL creation fail); combined with O_EXCL, a collision
-// fails the create rather than clobbering anything.
-func tempName() string {
-	var b [12]byte
-	if _, err := secureRandRead(b[:]); err != nil {
-		// crypto/rand should never fail; fall back to a pid-tagged name rather than
-		// panicking. Still O_EXCL-guarded at the create site.
-		return fmt.Sprintf(".evener-sbtmp-%d", os.Getpid())
-	}
-	return ".evener-sbtmp-" + hex.EncodeToString(b[:])
-}
 
 // containingRoot returns the first root that contains abs, the slash-relative
 // path from that root to abs (".": abs is the root itself), and ok.
@@ -445,7 +393,7 @@ func relUnderRealAncestor(root, abs string) (rel string, ok bool) {
 	found := false
 	rel = ""
 	for {
-		if curReal, rerr := filepath.EvalSymlinks(cur); rerr == nil && curReal == realRoot {
+		if curReal, rerr := filepath.EvalSymlinks(cur); rerr == nil && (curReal == realRoot || sameExistingFile(curReal, realRoot)) {
 			found = true
 			if len(tail) == 0 {
 				rel = "."
@@ -461,6 +409,16 @@ func relUnderRealAncestor(root, abs string) (rel string, ok bool) {
 		cur = parent
 	}
 	return rel, found
+}
+
+// sameExistingFile reports whether a and b both exist and are the same file. It
+// asks the filesystem rather than comparing spellings, so a path in another
+// letter case on a case-insensitive volume names the same directory while a
+// different entry never matches.
+func sameExistingFile(a, b string) bool {
+	fa, aerr := os.Stat(a)
+	fb, berr := os.Stat(b)
+	return aerr == nil && berr == nil && os.SameFile(fa, fb)
 }
 
 // splitLeaf splits a slash-relative path into its parent directory and leaf. The

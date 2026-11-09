@@ -184,16 +184,18 @@ test("skips individual malformed entries (missing a required field) rather than 
   ]);
 });
 
-test("drops a row carrying a status outside the daemon's four-status enum rather than casting it to TaskStatus", () => {
-  // TaskStatus is the closed enum the Go store mints (open/in_progress/
-  // done/cancelled), but the wire field is a bare string: a status a
-  // newer daemon adds must not survive the cast into a settled group it
-  // does not belong to (groupTasks routes everything unmatched there).
+test("keeps a row carrying a status outside the daemon's four-status enum, as the raw status word", () => {
+  // The wire field is a bare string, so a newer daemon can add a status this
+  // client has not learned. Dropping it left the row counted but visible in
+  // no list (issue #2256); the unknown word now rides through as written.
   const rows = parseTaskListData([
     { id: 1, type: "implement", description: "good", prompt: "", status: "open" },
     { id: 2, type: "implement", description: "unrecognized", prompt: "", status: "blocked" },
   ]);
-  expect(rows).toEqual([{ id: 1, type: "implement", description: "good", prompt: "", status: "open" }]);
+  expect(rows).toEqual([
+    { id: 1, type: "implement", description: "good", prompt: "", status: "open" },
+    { id: 2, type: "implement", description: "unrecognized", prompt: "", status: "blocked" },
+  ]);
 });
 
 test("keeps a row for every status the Go enum defines", () => {

@@ -33,7 +33,6 @@ func FuzzIsolateOpenAIAuth(f *testing.F) {
 			envvars.OpenAICodexBaseURL,
 			envvars.OpenAIOrgID,
 			envvars.OpenAIProjectID,
-			envvars.OpenAIChatGPTClientID,
 		}
 		for _, v := range authVars {
 			t.Setenv(v.Name, ambient)

@@ -1,6 +1,8 @@
 package hubcore
 
 import (
+	"time"
+
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/hubapi"
@@ -88,6 +90,7 @@ func DeriveAttentionFromRoots(roots *RootIndex, meta func(id string) (schema.Ses
 	runningSubagents := RunningSubagentIDs(live)
 	out := make(map[string]appwire.AttentionEntry, len(live))
 	var sum appwire.AttentionSummary
+	publishedAt := time.Now().UnixMilli()
 	for _, le := range live {
 		if le.SessionID == "" {
 			continue
@@ -103,6 +106,16 @@ func DeriveAttentionFromRoots(roots *RootIndex, meta func(id string) (schema.Ses
 			AskPending:      le.PendingAsk,
 			ApprovalPending: le.PendingEscalation,
 			NeedsResponse:   hubapi.NeedsResponse(state, le.PendingAsk),
+			PublishedAt:     publishedAt,
+		}
+		if le.PendingAsk {
+			e.PendingQuestion = appwire.ClonePendingQuestion(le.PendingQuestion)
+			e.AskPageable = le.Capabilities.AskFence
+			if pending := le.PendingAskState; pending != nil {
+				e.AskBootGeneration, e.AskRevision = pending.BootGeneration, pending.Revision
+				e.CompositeList = append([]appwire.PendingAskCall(nil), pending.Calls...)
+				e.CompositeTotal, e.CalllessCount = pending.CompositeTotal, pending.CalllessCount
+			}
 		}
 		if m, ok := meta(le.SessionID); ok {
 			e.Title = nodeTitle(m, nodeKind(m))

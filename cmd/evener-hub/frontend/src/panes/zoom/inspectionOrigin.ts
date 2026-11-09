@@ -1,7 +1,7 @@
 import { conversationPaneLifetime, type PaneLifetime } from "../../shell/paneLifetime";
 import { refParam } from "../../shell/routing";
 import { type OpenPaneRecord, onWorkspaceRestore, workspaceStore } from "../../shell/workspace";
-import { parseZoomParams, type SessionZoomParams } from "./intent";
+import { type SessionZoomParams, zoomIntentOf } from "./intent";
 
 const bindings = new WeakMap<PaneLifetime, PaneLifetime | null>();
 
@@ -10,9 +10,7 @@ function isConversation(pane: OpenPaneRecord): boolean {
   return (
     ref !== null &&
     !ref.startsWith("job:") &&
-    (pane.type === "session" ||
-      pane.type === "transcript" ||
-      (pane.type === "sessionZoom" && parseZoomParams(pane.params) !== null))
+    (pane.type === "session" || pane.type === "transcript" || zoomIntentOf(pane) !== null)
   );
 }
 
@@ -38,7 +36,7 @@ function boundOrigin(lifetime: PaneLifetime): OpenPaneRecord | null {
 
 export function recordCascadeOrigin(inspector: OpenPaneRecord, origin: OpenPaneRecord | null): void {
   const panes = workspaceStore.getState().panes;
-  const params = inspector.type === "sessionZoom" ? parseZoomParams(inspector.params) : null;
+  const params = zoomIntentOf(inspector);
   if (!params?.inspection || !panes.includes(inspector)) return;
   const valid = origin !== null && panes.includes(origin) && restoredOrigin(params, panes) === origin;
   bindings.set(conversationPaneLifetime(inspector), valid ? conversationPaneLifetime(origin) : null);
@@ -52,7 +50,7 @@ export function recordCascadeOrigin(inspector: OpenPaneRecord, origin: OpenPaneR
 
 export function cascadeOrigin(inspector: OpenPaneRecord): OpenPaneRecord | null {
   if (!workspaceStore.getState().panes.includes(inspector)) return null;
-  if (inspector.type !== "sessionZoom" || !parseZoomParams(inspector.params)?.inspection) return null;
+  if (!zoomIntentOf(inspector)?.inspection) return null;
   return boundOrigin(conversationPaneLifetime(inspector));
 }
 
@@ -73,7 +71,7 @@ export function associatedCascade(origin: OpenPaneRecord): OpenPaneRecord | null
 // inherit the old inspector's Return destination.
 onWorkspaceRestore((panes) => {
   for (const pane of panes) {
-    const params = pane.type === "sessionZoom" ? parseZoomParams(pane.params) : null;
+    const params = zoomIntentOf(pane);
     if (!params?.inspection) continue;
     const origin = restoredOrigin(params, panes);
     bindings.set(conversationPaneLifetime(pane), origin ? conversationPaneLifetime(origin) : null);
@@ -84,7 +82,7 @@ onWorkspaceRestore((panes) => {
 workspaceStore.subscribe((state, previous) => {
   if (state.panes === previous.panes) return;
   for (const pane of state.panes) {
-    const params = pane.type === "sessionZoom" ? parseZoomParams(pane.params) : null;
+    const params = zoomIntentOf(pane);
     if (!params?.inspection) continue;
     const lifetime = conversationPaneLifetime(pane);
     if (!bindings.has(lifetime) || boundOrigin(lifetime) !== null) continue;

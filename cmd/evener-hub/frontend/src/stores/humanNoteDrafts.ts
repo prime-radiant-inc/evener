@@ -1,7 +1,12 @@
 import { sessionActionError } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import type { MutationOutboxRecord, MutationRecord, MutationRecoveryRecord } from "./mutationOutbox";
+import {
+  effectiveWireId,
+  type MutationOutboxRecord,
+  type MutationRecord,
+  type MutationRecoveryRecord,
+} from "./mutationOutbox";
 import { registerPanelStoreEvictor, schedulePanelStoreEviction } from "./panelStoreEviction";
 import { readMutationPersistence, retryBlockedMutation, subscribeMutationPersistence, threadsStore } from "./threads";
 
@@ -38,15 +43,23 @@ const SETTLED_ELSEWHERE_STATUS =
   "Note is still unsaved: the blocked save it was waiting on is no longer pending in this tab";
 // The state and status text a retained row maps to on the draft's submitted
 // record: a row in the recovery store is a refusal (its reason when the daemon
-// gave one), a blocked row is still waiting on session recovery, any other
-// state is taken as-is. refreshPersistence applies this on a persistence
-// notification; the blur-save retry path applies the same mapping to the row
-// its post-retry read observes.
+// gave one), a blocked row is still waiting on session recovery, a superseded
+// row's save is in flight under the fresh row a mint or reconcile queued, and
+// any other state is taken as-is. CALLERS resolve the LIVE record by wire
+// identity first (refreshPersistence skips superseded rows; the blur retry
+// filters them) - a superseded row with no live successor must take the
+// settled-elsewhere path instead, never this mapping, or dead work reports an
+// in-flight save that does not exist. The superseded mapping is about STATUS only:
+// the draft's submitted identity keeps the WIRE id it saved under (a minted
+// row re-submits under its predecessor's payload id), because the daemon's
+// acknowledgement names that id. refreshPersistence applies this on a
+// persistence notification; the blur-save retry path applies the same mapping
+// to the row its post-retry read observes.
 function submittedStatusFor(
   record: MutationOutboxRecord,
   refused: MutationRecoveryRecord | undefined,
 ): { state: "submitting" | "blockedUnknown" | "canceled" | "rejected"; error: string | null } {
-  const state = refused ? "rejected" : record.state;
+  const state = refused ? "rejected" : record.state === "superseded" ? "submitting" : record.state;
   const error = refused
     ? (refused.recoveryReason ?? "Note could not be saved")
     : state === "blockedUnknown"
@@ -69,6 +82,10 @@ function refreshPersistence(): void {
       const latest = new Map<string, MutationOutboxRecord>();
       for (const record of [...outbox, ...recovery]) {
         if (record.method !== "notes/human/set") continue;
+        // A superseded row is dead work: the fresh row a mint or reconcile
+        // queued speaks for the save, so the dead predecessor never becomes
+        // a draft's adopted or latest identity.
+        if ("state" in record && record.state === "superseded") continue;
         if (record.intentSequence > (latest.get(record.targetRef)?.intentSequence ?? -1))
           latest.set(record.targetRef, record);
       }
@@ -81,20 +98,37 @@ function refreshPersistence(): void {
           draft.generation === 0 &&
           typeof record.payload.note === "string"
         ) {
+          const adopted = submittedStatusFor(record, undefined);
           draft = {
             ...draft,
             generation: 1,
             text: record.payload.note,
             dirty: true,
-            submitted: { generation: 1, id: record.clientMutationId, text: record.payload.note, state: record.state },
+            submitted: {
+              generation: 1,
+              // The WIRE id, never the storage key: a reconciled save lives
+              // on as a replacement carrying its predecessor's id inside the
+              // payload under a fresh key, and every status and
+              // acknowledgement comparison below meets the wire. Adopting
+              // the storage key strands the reloaded draft - its own save's
+              // success could never acknowledge it again.
+              id: effectiveWireId(record),
+              text: record.payload.note,
+              state: adopted.state,
+            },
           };
           put(record.targetRef, draft);
         }
-        if (draft?.submitted?.id !== record.clientMutationId || draft.generation !== draft.submitted.generation)
-          continue;
-        const refused = recovery.find((item) => item.clientMutationId === record.clientMutationId);
-        const { state, error } = submittedStatusFor(record, refused);
-        put(record.targetRef, { ...draft, submitted: { ...draft.submitted, state }, error, saved: false });
+        if (!draft?.submitted || draft.generation !== draft.submitted.generation) continue;
+        // The draft keeps the WIRE id it saved under, while a reconciled
+        // save lives on as a replacement row with its own storage key - so
+        // the status follows the replacement only when the comparison meets
+        // the wire: effectiveWireId(record), never the storage key alone.
+        if (draft.submitted.id === effectiveWireId(record)) {
+          const refused = recovery.find((item) => item.clientMutationId === record.clientMutationId);
+          const { state, error } = submittedStatusFor(record, refused);
+          put(record.targetRef, { ...draft, submitted: { ...draft.submitted, state }, error, saved: false });
+        }
       }
       // The optimistic store holds accepted-but-unreflected rows: another
       // connection's "pending" receipt moved this tab's blocked note out of
@@ -118,7 +152,9 @@ function refreshPersistence(): void {
         )
           continue;
         const draft = get(accepted.targetRef);
-        if (draft?.submitted?.id !== accepted.clientMutationId || draft.generation !== draft.submitted.generation)
+        // The same wire-id comparison: the accepted copy may be the
+        // replacement row a settlement retained under its own key.
+        if (draft?.submitted?.id !== effectiveWireId(accepted) || draft.generation !== draft.submitted.generation)
           continue;
         // Idempotent: the accepted copy persists until reconcileIdentities
         // settles it, while refreshes fire on every notification and mount.
@@ -235,12 +271,23 @@ export function blurHumanNote(ref: string, owner: symbol): void {
         // (readMutationPersistence), never a queue-wide freshen, and never a
         // resave.
         const { outbox, optimistic, recovery } = await readMutationPersistence(ref);
-        const refused = recovery.find((record) => record.clientMutationId === blockedId);
-        const record = refused ?? outbox.find((record) => record.clientMutationId === blockedId);
+        // Resolve the save's LIVE record by WIRE identity: the blocked id the
+        // draft holds is the wire id the save traveled under, so a minted
+        // replacement carrying it under a fresh key is the row that speaks
+        // for the save - while a superseded predecessor is dead work whose
+        // state must never masquerade as this save. A superseded row with no
+        // live successor means nothing is left to settle this save: the
+        // unsaved branch below, never an invented in-flight status (round-5
+        // L1: the invented status is what suppressed a generation's blur
+        // saves indefinitely).
+        const refused = recovery.find((record) => effectiveWireId(record) === blockedId);
+        const record =
+          refused ?? outbox.find((record) => effectiveWireId(record) === blockedId && record.state !== "superseded");
         // The optimistic store holds accepted-but-unreflected rows: another
         // dispatcher's receipt (projectionState "pending") moved the row there
-        // while its canonical note state is still on the way.
-        const accepted = optimistic.find((record) => record.clientMutationId === blockedId);
+        // while its canonical note state is still on the way - possibly under
+        // the replacement's fresh key, so match by wire here too.
+        const accepted = optimistic.find((record) => effectiveWireId(record) === blockedId);
         const latest = get(ref);
         // The same generation AND the same submitted identity: a newer edit, or
         // an acknowledgement that landed while the read ran, owns the status now.
@@ -334,7 +381,12 @@ function flushPendingHumanNoteSaves(): void {
 }
 export function acknowledgeHumanNote(record: MutationRecord, note: string): void {
   const draft = get(record.targetRef);
-  if (!draft || draft.submitted?.id !== record.clientMutationId) return;
+  // An acknowledgement names the composition's wire id - the id the daemon's
+  // response echoes - which a replacement row carries inside its payload while
+  // owning a different storage key. Match by effective wire id so a
+  // replacement's success still acknowledges the draft that saved the text;
+  // durable operations elsewhere stay keyed on storage ids.
+  if (!draft || draft.submitted?.id !== effectiveWireId(record)) return;
   const next =
     draft.generation !== draft.submitted.generation
       ? { ...draft, submitted: undefined }

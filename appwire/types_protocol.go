@@ -199,6 +199,9 @@ const (
 	// ScopeBoth (the root's daemon serves it; the hub relays). A UI-only
 	// request, never advertised to the model.
 	MethodEvenerDelegateStop = "evener/delegate/stop"
+	// MethodEvenerJobsStop asks the owning session to run its existing job_stop
+	// owner for one typed job or stable owned-delegate target. ScopeBoth.
+	MethodEvenerJobsStop = "evener/jobs/stop"
 	// MethodEvenerHostRequest forwards one hub-scoped admin RPC to a named
 	// remote host's hub (component 07a). Host is the component-03 source ID;
 	// Method must be in the proxy's exact allow-list. See HostRequestParams.
@@ -302,11 +305,12 @@ const (
 )
 
 const (
-	NotifyThreadStarted       = "thread/started"
-	NotifyThreadClosed        = "thread/closed"
-	NotifyThreadStatusChanged = "thread/status/changed"
-	NotifyThreadQueueChanged  = "thread/queueChanged"
-	NotifyThreadNameChanged   = "evener/thread/name/changed"
+	NotifyThreadStarted                 = "thread/started"
+	NotifyThreadClosed                  = "thread/closed"
+	NotifyThreadStatusChanged           = "thread/status/changed"
+	NotifyThreadQueueChanged            = "thread/queueChanged"
+	NotifyConversationProvenanceChanged = "thread/conversation-provenance/changed"
+	NotifyThreadNameChanged             = "evener/thread/name/changed"
 	// NotifyThreadModelChanged pushes a mid-session model/provider switch so
 	// clients converge without re-reading the thread. See ThreadModelChangedParams.
 	NotifyThreadModelChanged = "thread/model/changed"

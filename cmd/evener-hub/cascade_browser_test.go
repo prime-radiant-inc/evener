@@ -30,6 +30,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
+	"primeradiant.com/evener/execsupport/fsatomic"
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
@@ -41,6 +42,11 @@ const cascadePagingDelegates = 51              // Exceeds the real public defaul
 // driver asks for the tier; its first model round fails on the provider
 // boundary, which lands it in needs_you as errored with no pending question.
 const cascadeAttentionSessions = 52
+
+// cascadeAttentionStartClients spreads the fixture's thread starts over
+// connections: thread/start is a serial request on its connection, so one
+// client would queue all 52 daemon starts behind each other.
+const cascadeAttentionStartClients = 8
 
 // Reverting AgentsTab to openTranscript must fail this journey. Every edge and
 // transcript comes from a real delegate tool through the daemon and public hub.
@@ -175,7 +181,7 @@ func TestAgentCascadeBrowser(t *testing.T) {
 			// releases it unchanged.
 			if strings.Contains(input, "CASCADE_ATTENTION_HELD_INPUT") {
 				toolOwners[call.ToolCallID()] = 0
-				if err := os.WriteFile(filepath.Join(artifacts, "attention-held-call.json"), []byte(`{"input":"CASCADE_ATTENTION_HELD_INPUT"}`), 0600); err != nil {
+				if err := fsatomic.WriteWithoutSync(filepath.Join(artifacts, "attention-held-call.json"), []byte(`{"input":"CASCADE_ATTENTION_HELD_INPUT"}`), 0600); err != nil {
 					scriptErr <- err
 					return
 				}
@@ -219,7 +225,7 @@ func TestAgentCascadeBrowser(t *testing.T) {
 					scriptErr <- fmt.Errorf("source input reached role %d, want root", role)
 					return
 				}
-				if err := os.WriteFile(filepath.Join(artifacts, "provider-held.json"), []byte(`{"role":0,"input":"CASCADE_BUSY_INPUT"}`), 0600); err != nil {
+				if err := fsatomic.WriteWithoutSync(filepath.Join(artifacts, "provider-held.json"), []byte(`{"role":0,"input":"CASCADE_BUSY_INPUT"}`), 0600); err != nil {
 					scriptErr <- err
 					return
 				}
@@ -433,6 +439,11 @@ func TestAgentCascadeBrowser(t *testing.T) {
 		attentionWatcher.Close()
 		t.Fatal(err)
 	}
+	attentionClients := make([]*appwire.Client, cascadeAttentionStartClients)
+	attentionClients[0] = client
+	for index := 1; index < len(attentionClients); index++ {
+		attentionClients[index] = stack.dialRPC(ctx, t)
+	}
 	attentionDone := make(chan error, 1)
 	createAttention := make(chan struct{})
 	go func() {
@@ -445,7 +456,7 @@ func TestAgentCascadeBrowser(t *testing.T) {
 			attentionDone <- nil
 			return
 		}
-		if err := cascadeCreateAttentionSessions(ctx, t, client, stack, filepath.Join(artifacts, "attention-ready.json")); err != nil {
+		if err := cascadeCreateAttentionSessions(ctx, t, attentionClients, stack, filepath.Join(artifacts, "attention-ready.json")); err != nil {
 			attentionDone <- err
 			return
 		}
@@ -1140,7 +1151,7 @@ func cascadeAwaitCommands(ctx context.Context, watcher *fsnotify.Watcher, contro
 // first model round fails on the provider boundary, which lands it in the
 // public needs_you tier as errored. The helper returns only once the public
 // page carries every session, and records the refs for the driver.
-func cascadeCreateAttentionSessions(ctx context.Context, t *testing.T, client *appwire.Client, stack hubStack, readyPath string) error {
+func cascadeCreateAttentionSessions(ctx context.Context, t *testing.T, clients []*appwire.Client, stack hubStack, readyPath string) error {
 	t.Helper()
 	created := make([]string, cascadeAttentionSessions)
 	var mu sync.Mutex
@@ -1150,7 +1161,8 @@ func cascadeCreateAttentionSessions(ctx context.Context, t *testing.T, client *a
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
-			started, err := appwiretest.ThreadStart(ctx, client, appwire.ThreadStartParams{
+			startClient := clients[index%len(clients)]
+			started, err := appwiretest.ThreadStart(ctx, startClient, appwire.ThreadStartParams{
 				Harness: "evener", CWD: stack.workDir, Model: stack.model,
 				Input:           []appwire.InputItem{{Type: "text", Text: fmt.Sprintf("CASCADE_ATTENTION_INPUT_%d", index)}},
 				LaunchOverrides: &appwire.LaunchConfigLayer{Sandbox: "off"},
@@ -1170,7 +1182,7 @@ func cascadeCreateAttentionSessions(ctx context.Context, t *testing.T, client *a
 			t.Cleanup(func() {
 				cleanupCtx, stop := context.WithTimeout(context.Background(), 10*time.Second)
 				defer stop()
-				_ = client.ThreadShutdown(cleanupCtx, appwire.ThreadShutdownParams{Ref: ref})
+				_ = startClient.ThreadShutdown(cleanupCtx, appwire.ThreadShutdownParams{Ref: ref})
 			})
 		}(index)
 	}
@@ -1180,13 +1192,13 @@ func cascadeCreateAttentionSessions(ctx context.Context, t *testing.T, client *a
 	}
 	deadline := time.Now().Add(90 * time.Second)
 	for {
-		rows, err := cascadeNeedsYouRefs(ctx, client)
+		rows, err := cascadeNeedsYouRefs(ctx, clients[0])
 		if err == nil && len(rows) == cascadeAttentionSessions {
 			body, err := json.Marshal(map[string]any{"refs": rows, "created": created})
 			if err != nil {
 				return err
 			}
-			return os.WriteFile(readyPath, body, 0600)
+			return fsatomic.WriteWithoutSync(readyPath, body, 0600)
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("attention tier never reached %d rows (last read %d, err %v)", cascadeAttentionSessions, len(rows), err)
@@ -1226,7 +1238,7 @@ func cascadeHeldAttentionSession(ctx context.Context, watcher *fsnotify.Watcher,
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(readyPath, body, 0600); err != nil {
+	if err := fsatomic.WriteWithoutSync(readyPath, body, 0600); err != nil {
 		return err
 	}
 	if err := cascadeAwaitCommandAt(ctx, watcher, controlPath, 2, "release-attention-response"); err != nil {

@@ -17,9 +17,9 @@ import {
   type DelegateEdgeIntent,
   deriveCascadePath,
   drillZoomIntent,
-  parseZoomParams,
   popZoomIntent,
   type SessionZoomParams,
+  zoomIntentOf,
 } from "./intent";
 import "./index";
 import "../session";
@@ -39,8 +39,7 @@ function contextFor(ref: string): SessionActivityContext | null {
   return client ? (sessionActivitySnapshot(client, ref, "session")?.context ?? null) : null;
 }
 function intentFor(pane: OpenPaneRecord): SessionZoomParams | null {
-  if (pane.type !== "sessionZoom") return null;
-  const parsed = parseZoomParams(pane.params);
+  const parsed = zoomIntentOf(pane);
   // Legacy Return retains the exact source params. Inspection uses the
   // validated read-only descriptor and leaves its separate source untouched.
   if (!parsed) return null;

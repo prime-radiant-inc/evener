@@ -6,23 +6,8 @@ import { resetHumanNoteDrafts, useHumanNoteDraft } from "../../../stores/humanNo
 import { putThreadModel, resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { topNotesStore } from "../../../stores/topNotes";
 import { readModuleCss } from "../../../styles/cssBlock";
+import { ALL_CAPABILITIES } from "../../../threadTestUtils";
 import { TopNotesPanel } from "./TopNotesPanel";
-
-const FULL_CAPABILITIES = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
 
 function makeModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
   const { jobsTreeRevision = null, ...rest } = overrides;
@@ -41,7 +26,7 @@ function makeModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     tasks: null,
     jobsUpdatedAt: null,
     lastFrameAt: 0,
-    capabilities: FULL_CAPABILITIES,
+    capabilities: ALL_CAPABILITIES,
     goal: null,
     humanNote: "",
     agentNote: "",

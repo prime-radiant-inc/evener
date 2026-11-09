@@ -3,6 +3,7 @@ package appsource
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -86,6 +87,31 @@ func (s *RemoteHubSource) fromRemoteRefString(raw string) (string, error) {
 	return appwire.Ref{SourceID: s.id, ThreadID: ref.ThreadID}.String(), nil
 }
 
+// fromRemoteThreadStartError rewrites evidence carried by a failed creation.
+// Successful response translation cannot see it: the router discards the
+// result when the owner's handler fails.
+func (s *RemoteHubSource) fromRemoteThreadStartError(err error) error {
+	wire, ok := errors.AsType[appwire.WireError](err)
+	if !ok {
+		return err
+	}
+	encoded, marshalErr := json.Marshal(wire.Data)
+	if marshalErr != nil {
+		return err
+	}
+	var partial appwire.ThreadStartPartialErrorData
+	if json.Unmarshal(encoded, &partial) != nil || partial.CreatedRef == "" {
+		return err
+	}
+	ref, translateErr := s.fromRemoteRefString(partial.CreatedRef)
+	if translateErr != nil {
+		// An unaddressable remote ref cannot name a controller-owned session.
+		// Preserve the refusal, but never leak a remote-local address.
+		return wire.WithThreadStartPartial("", "")
+	}
+	return wire.WithThreadStartPartial(ref, partial.CreatedInstanceID)
+}
+
 // forwardedRemoteThreadCapabilities is the controller-side half of a remote
 // thread's capability answer: the actions this source can forward to a host
 // whose initialize handshake advertises features. maskRemoteThreadCapabilities
@@ -106,9 +132,11 @@ func (s *RemoteHubSource) fromRemoteRefString(raw string) (string, error) {
 // intersection.
 //
 // PageBefore stays off: the controller cannot yet join a remote page to its
-// paging window (#3176). Every field starts masked, so a capability added to
-// appwire.ThreadCapabilities later stays invisible until this policy names the
-// method that answers for it.
+// paging window (#3176). VoicePresentationContextV1 stays off too: turn forwarding
+// reaches the peer's public hub input, which cannot accept this controller's
+// journal-backed voice transport identity. Every field starts masked, so a
+// capability added to appwire.ThreadCapabilities later stays invisible until
+// this policy names the method that answers for it.
 func forwardedRemoteThreadCapabilities(features appwire.FeatureSet) appwire.ThreadCapabilities {
 	return appwire.ThreadCapabilities{
 		Send:              features.TurnStart,
@@ -126,6 +154,7 @@ func forwardedRemoteThreadCapabilities(features appwire.FeatureSet) appwire.Thre
 		Rename:            true,
 		SkillInput:        true,
 		CommandInput:      true,
+		AskFence:          true,
 		StopSubagent:      true,
 	}
 }
@@ -171,6 +200,7 @@ func maskRemoteThreadCapabilities(remote, forwarded appwire.ThreadCapabilities) 
 		Rename:            remote.Rename && forwarded.Rename,
 		SkillInput:        remote.SkillInput && forwarded.SkillInput,
 		CommandInput:      remote.CommandInput && forwarded.CommandInput,
+		AskFence:          remote.AskFence && forwarded.AskFence,
 		StopSubagent:      remote.StopSubagent && forwarded.StopSubagent,
 	}
 }
@@ -401,11 +431,28 @@ func (s *RemoteHubSource) fromRemoteThread(thread appwire.Thread, forwarded appw
 	for index := range thread.Evener.PendingEscalations {
 		thread.Evener.PendingEscalations[index].Ref = s.fromRemoteNestedRef(thread.Evener.PendingEscalations[index].Ref)
 	}
+	// A queued or pending steering input carries its author on the mutation
+	// entry. Left untranslated, a remote-local Manager author would read as
+	// this controller's own namespace — wrong session on an id collision,
+	// source-not-found otherwise — while the transcript actors beside it are
+	// host-qualified.
+	for index := range thread.Evener.PendingMutations {
+		mutation := &thread.Evener.PendingMutations[index]
+		mutation.Actor = s.projectManagerActor(mutation.Actor)
+	}
 	s.fromRemoteDiagnostics(thread.Evener.Diagnostics)
+	for i := range thread.Turns {
+		s.translateTurnActors(&thread.Turns[i])
+	}
 	// The remote hub stamps its own origin-relative image URLs into the thread;
 	// the shared visitor moves every one of them onto the host-qualified
 	// controller route the browser fetches them from.
 	rewriteThreadImageURLs(s.id, &thread)
+	for i := range thread.Turns {
+		for j := range thread.Turns[i].Items {
+			s.translateItemAuthorship(&thread.Turns[i].Items[j])
+		}
+	}
 	return thread, nil
 }
 
@@ -425,6 +472,63 @@ func (s *RemoteHubSource) fromRemoteNestedRef(raw string) string {
 	return appwire.Ref{SourceID: s.id, ThreadID: ref.ThreadID}.String()
 }
 
+func (s *RemoteHubSource) translateItemActor(item *appwire.ThreadItem) {
+	if item.Actor != nil && item.Actor.Kind == "manager" {
+		actor := s.projectManagerActor(*item.Actor)
+		item.Actor = &actor
+	}
+}
+
+// projectManagerActor moves a manager author's ref into the controller
+// namespace; every other actor is returned unchanged, and a ref already
+// qualified by another hub passes through fromRemoteNestedRef byte-for-byte.
+func (s *RemoteHubSource) projectManagerActor(actor appwire.SessionActor) appwire.SessionActor {
+	if actor.Kind != "manager" {
+		return actor
+	}
+	projected := actor
+	projected.ManagerRef = s.fromRemoteNestedRef(actor.ManagerRef)
+	return projected
+}
+
+func (s *RemoteHubSource) translateTurnActors(turn *appwire.Turn) {
+	for i := range turn.Items {
+		s.translateItemActor(&turn.Items[i])
+	}
+}
+
+// Visit only the typed item actor, preserving unknown fields and payload strings.
+func (s *RemoteHubSource) translateRawItemActor(raw json.RawMessage) json.RawMessage {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil || fields == nil {
+		return raw
+	}
+	var actor map[string]json.RawMessage
+	if json.Unmarshal(fields["actor"], &actor) != nil || actor == nil {
+		return raw
+	}
+	var kind, ref string
+	if json.Unmarshal(actor["kind"], &kind) != nil || kind != "manager" || json.Unmarshal(actor["managerRef"], &ref) != nil {
+		return raw
+	}
+	actor["managerRef"], _ = json.Marshal(s.fromRemoteNestedRef(ref))
+	fields["actor"], _ = json.Marshal(actor)
+	encoded, _ := json.Marshal(fields)
+	return encoded
+}
+
+func (s *RemoteHubSource) translateRawTurnActors(raw json.RawMessage) json.RawMessage {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil || fields == nil {
+		return raw
+	}
+	if items, ok := fields["items"]; ok {
+		fields["items"] = s.rewriteRawArray(items, s.translateRawItemActor)
+	}
+	encoded, _ := json.Marshal(fields)
+	return encoded
+}
+
 // translateThreadRaw rewrites a thread object's ref-bearing fields at the JSON
 // level, preserving every field this hub does not understand. Round-tripping
 // through appwire.Thread would silently drop a field a newer remote hub sent —
@@ -433,7 +537,10 @@ func (s *RemoteHubSource) fromRemoteNestedRef(raw string) string {
 // masked to the actions this source can forward, exactly as fromRemoteThread
 // masks the snapshot's, so a subscribed client cannot re-enable a mutation from
 // a thread-bearing notification that the read path answered as unavailable.
-// InstanceID and everything else pass through byte-for-byte. Nested session
+// InstanceID and unknown fields pass through byte-for-byte. The new probe-state
+// and crash classification fields are local to the hub that sampled them and
+// are removed; the existing running-turn fields keep their established
+// notification semantics. Nested session
 // handles under Evener (diagnostics job/delegate transcriptRefs, and each
 // pendingEscalations entry's ref) are rewritten as well.
 func (s *RemoteHubSource) translateThreadRaw(raw json.RawMessage, forwarded appwire.ThreadCapabilities) (json.RawMessage, error) {
@@ -451,10 +558,16 @@ func (s *RemoteHubSource) translateThreadRaw(raw json.RawMessage, forwarded appw
 		return nil, err
 	}
 	fields["source"] = source
+	if turns, ok := fields["turns"]; ok {
+		fields["turns"] = s.rewriteRawArray(turns, s.translateRawTurnActors)
+	}
 	if evener, ok := fields["evener"]; ok && len(evener) > 0 {
 		var evenerFields map[string]json.RawMessage
 		if err := json.Unmarshal(evener, &evenerFields); err != nil {
 			return nil, err
+		}
+		for _, key := range []string{"quietForMs", "probeState", "crashed"} {
+			delete(evenerFields, key)
 		}
 		for _, key := range []string{"ref", "parentRef"} {
 			field, ok := evenerFields[key]
@@ -483,6 +596,12 @@ func (s *RemoteHubSource) translateThreadRaw(raw json.RawMessage, forwarded appw
 		}
 		if rawEscalations, ok := evenerFields[pendingEscalationsField]; ok && len(rawEscalations) > 0 {
 			evenerFields[pendingEscalationsField] = s.translatePendingEscalationsRaw(rawEscalations)
+		}
+		// Pending steering input entries carry the same "actor" object as a
+		// transcript item, so the per-entry rewriter that projects item actors
+		// applies unchanged: only actor.managerRef moves, unknown fields stay.
+		if rawMutations, ok := evenerFields["pendingMutations"]; ok && len(rawMutations) > 0 {
+			evenerFields["pendingMutations"] = s.rewriteRawArray(rawMutations, s.translateRawItemActor)
 		}
 		encoded, err := json.Marshal(evenerFields)
 		if err != nil {
@@ -570,6 +689,11 @@ func (s *RemoteHubSource) translateOutWithCapabilities(out any, forwarded func()
 			if err != nil {
 				continue
 			}
+			thread.Evener.ActiveTurnID = ""
+			thread.Evener.ActiveTurnStartedAt = 0
+			thread.Evener.QuietForMS = nil
+			thread.Evener.ProbeState = ""
+			thread.Evener.Crashed = false
 			translated = append(translated, thread)
 		}
 		response.Data = translated
@@ -579,13 +703,30 @@ func (s *RemoteHubSource) translateOutWithCapabilities(out any, forwarded func()
 			return err
 		}
 		response.Thread = thread
+		for i := range response.Overlay {
+			s.translateItemActor(&response.Overlay[i].Item)
+			s.translateItemAuthorship(&response.Overlay[i].Item)
+		}
+		if response.Changes != nil {
+			for i := range response.Changes.Items {
+				s.translateItemActor(&response.Changes.Items[i])
+				s.translateItemAuthorship(&response.Changes.Items[i])
+			}
+			for i := range response.Changes.Turns {
+				for j := range response.Changes.Turns[i].Items {
+					s.translateItemActor(&response.Changes.Turns[i].Items[j])
+					s.translateItemAuthorship(&response.Changes.Turns[i].Items[j])
+				}
+			}
+		}
 	case *appwire.ThreadStartResponse:
 		thread, err := s.fromRemoteThread(response.Thread, forwarded())
 		if err != nil {
 			return err
 		}
 		response.Thread = thread
-		rewriteTurnImageURLs(s.id, &response.Turn)
+		s.translateTurnActors(&response.Turn)
+		s.translateTurnItems(&response.Turn)
 	case *appwire.ThreadResumeResponse:
 		thread, err := s.fromRemoteThread(response.Thread, forwarded())
 		if err != nil {
@@ -611,17 +752,23 @@ func (s *RemoteHubSource) translateOutWithCapabilities(out any, forwarded func()
 		response.Ref = ref
 	case *appwire.ThreadTurnsListResponse:
 		for index := range response.Data {
-			rewriteTurnImageURLs(s.id, &response.Data[index])
+			s.translateTurnActors(&response.Data[index])
+			s.translateTurnItems(&response.Data[index])
 		}
 	case *appwire.ThreadTurnItemsListResponse:
 		for index := range response.Data {
+			s.translateItemActor(&response.Data[index])
 			rewriteItemImageURLs(s.id, &response.Data[index])
+			s.translateItemAuthorship(&response.Data[index])
 		}
 	case *appwire.TurnStartResponse:
-		rewriteTurnImageURLs(s.id, &response.Turn)
+		s.translateTurnActors(&response.Turn)
+		s.translateTurnItems(&response.Turn)
 	case *appwire.EvenerSubagentPreviewResponse:
 		for index := range response.Items {
+			s.translateItemActor(&response.Items[index])
 			rewriteItemImageURLs(s.id, &response.Items[index])
+			s.translateItemAuthorship(&response.Items[index])
 		}
 	case *appwire.SessionActivitySummary:
 		page := appwire.SessionActivityPage{Issues: response.Issues}

@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
@@ -212,6 +213,29 @@ func TestFixtureDelta(t *testing.T) {}
 func TestFixtureSlow(t *testing.T) {
 	if os.Getenv("SHARD_FIXTURE_SLOW") != "" {
 		time.Sleep(400 * time.Millisecond)
+	}
+}
+
+// TestFixtureLiveStackBin is how the hub-shards harness sees the directory of
+// binaries the runner built once and handed to every shard. Inert unless the
+// harness asks for it, so every other fixture run is unaffected.
+func TestFixtureLiveStackBin(t *testing.T) {
+	if os.Getenv("SHARD_FIXTURE_LIVE_STACK") != "1" {
+		t.Skip("not asked for: this check belongs to one e2e test")
+	}
+	dir := os.Getenv("EVENER_HUB_LIVE_STACK_BIN")
+	if dir == "" {
+		t.Fatal("EVENER_HUB_LIVE_STACK_BIN is unset in a shard")
+	}
+	if os.Getenv("EVENER_HUB_LIVE_STACK_WARM") == "" {
+		t.Fatal("EVENER_HUB_LIVE_STACK_WARM is unset in a shard")
+	}
+	out, err := exec.Command(filepath.Join(dir, "evener")).CombinedOutput()
+	if err != nil {
+		t.Fatalf("running the shared evener binary: %v\n%s", err, out)
+	}
+	if got := strings.TrimSpace(string(out)); got != "fixture-live-stack" {
+		t.Fatalf("shared evener binary printed %q, want fixture-live-stack", got)
 	}
 }
 

@@ -275,7 +275,8 @@ func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallDa
 					path, _ = args["file_path"].(string)
 				}
 			}
-			if vision.outcome == visionSideChannelOwnedTimeout || vision.outcome == visionSideChannelProviderFailure {
+			if vision.outcome == visionSideChannelOwnedTimeout || vision.outcome == visionSideChannelProviderFailure ||
+				vision.outcome == visionSideChannelUndeliverableDocument {
 				owner := &struct{ _ byte }{}
 				if abortErr := s.withResponseSideEffects(ctx, func() {
 					s.trySteerTurnOwnedMessage(steeringMessage{Text: visionFailureSteering(path, vision), Kind: events.SteeringKindImageDescription}, owner)

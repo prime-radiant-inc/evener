@@ -216,15 +216,16 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 		return grepNamedFile(ctx, baseFd, canonical, a, globFilters, skip)
 	}
 	defer func() { _ = unix.Close(baseFd) }()
+	basePath := browseBasePath(baseFd, canonical)
 
 	budget := newGlobBudget("grep")
-	fsys := cancelFS{ctx: ctx, fsys: &secureDirFS{baseFd: baseFd, basePath: canonical, fs: s, budget: budget, ctx: ctx}}
+	fsys := cancelFS{ctx: ctx, fsys: &secureDirFS{baseFd: baseFd, basePath: basePath, fs: s, budget: budget, ctx: ctx}}
 	return grepTreeWalk{
 		ctx:         ctx,
 		acc:         a,
 		globFilters: globFilters,
 		skip:        skip,
-		root:        canonical,
+		root:        basePath,
 		ignoreFS:    fsys,
 		budget:      budget,
 		walk:        func(fn fs.WalkDirFunc) error { return secureBrowseWalkDir(fsys, ".", fn) },

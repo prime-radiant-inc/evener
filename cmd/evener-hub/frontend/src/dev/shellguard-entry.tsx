@@ -47,6 +47,7 @@ import {
   activityThread,
   activityWatch,
 } from "../stores/sessionActivityTestUtils";
+import buttonStyles from "../widgets/button/button.module.css";
 import "../styles/tokens.css";
 import "../styles/global.css";
 import { PaneScaffold } from "../widgets/panescaffold";
@@ -612,6 +613,7 @@ function measureShell() {
   const shell = root.firstElementChild;
   // Select the rail directly, independently of header control placement.
   const rail = document.querySelector(`.${railStyles.rail}`);
+  const newSession = rail === null ? null : rail.querySelector<HTMLButtonElement>(`.${railStyles.newSession} button`);
   const railBody =
     rail === null ? null : ([...rail.children].find((el) => getComputedStyle(el).overflowY !== "visible") ?? null);
   // The rail's full ancestor chain up to <body>, with the computed properties
@@ -700,6 +702,14 @@ function measureShell() {
             overflowY: getComputedStyle(railBody).overflowY,
           },
     treeRows: document.querySelectorAll('[role="treeitem"]').length,
+    railNewSession: {
+      present: newSession !== null,
+      primary: newSession?.classList.contains(buttonStyles.primary ?? "") ?? false,
+      secondary: newSession?.classList.contains(buttonStyles.secondary ?? "") ?? false,
+    },
+    primaryButtons: [...document.querySelectorAll<HTMLButtonElement>("button")].filter(
+      (button) => button.getClientRects().length > 0 && button.classList.contains(buttonStyles.primary ?? ""),
+    ).length,
     leaks: leakingElements(window.innerHeight),
     chain,
     experiments,

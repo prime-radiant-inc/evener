@@ -18,6 +18,7 @@ type ClientInfo struct {
 }
 
 type Capabilities struct {
+	SessionTools            bool     `json:"sessionTools,omitempty"`
 	ExperimentalAPI         bool     `json:"experimentalApi"`
 	OptOutNotificationNames []string `json:"optOutNotificationMethods,omitempty"`
 }
@@ -619,6 +620,14 @@ type ServerInfo struct {
 }
 
 type FeatureSet struct {
+	VoicePresentationContextV1 bool `json:"voicePresentationContextV1,omitempty"`
+	// VoiceArmV1 marks a hub that stamps ThreadCapabilities.VoiceArm, its
+	// per-session answer to whether the iPhone may offer voice now. A client
+	// reads the thread bit only when this feature is present.
+	VoiceArmV1                bool `json:"voiceArmV1,omitempty"`
+	ConversationProvenance    bool `json:"conversationProvenance,omitempty"`
+	Voice                     bool `json:"voice,omitempty"`
+	SessionTools              bool `json:"sessionTools,omitempty"`
 	ThreadList                bool `json:"threadList"`
 	ThreadTurnsList           bool `json:"threadTurnsList"`
 	TurnStart                 bool `json:"turnStart"`

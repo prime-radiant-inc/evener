@@ -62,7 +62,7 @@ test("a recorded summary failure retains attention and route details beside succ
   expect(screen.getAllByTestId("warning-item")).toHaveLength(1);
   expect(screen.queryByTestId("warning-quiet-line")).toBeNull();
   const message = screen.getByTestId("warning-message");
-  for (const identifier of ["openai/summary-model-8af1", "429", "rate_limit"])
+  for (const identifier of ["openai/gpt-5.2", "rejected_output", "empty_reply"])
     expect(message.textContent).toContain(identifier);
   expect(message.textContent).toBe(fixture.warning.message);
   expect(screen.getByTestId("warning-hint").textContent).toBe(fixture.warning.hint);

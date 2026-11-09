@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
@@ -167,10 +168,10 @@ func historyTurnFailure(history []schema.Turn) (schema.Turn, bool) {
 // without user input. Child activity is excluded because it is projected on
 // the child session, while its eventual notification is included once queued.
 func (s *Session) sessionWorkPending() bool {
-	return s.peekNotifications() > 0 || s.pendingQueueDepth() > 0 || s.hasRunnableClientMutationStart() || s.hasPendingDelegateDeliveries() || s.pendingRootDelegateAttention() || s.hasPendingDelegateAttentionArmRetry() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry())
+	return s.pendingQueueDepth() > 0 || s.hasRunnableClientMutationStart() || s.hasPendingDelegateDeliveries() || s.pendingRootDelegateAttention() || s.hasPendingDelegateAttentionArmRetry() || s.hasPendingDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) || s.peekNotifications() > 0
 }
 
-func (s *Session) hasPendingStableDelegateAttention() bool {
+func (s *Session) hasPendingDelegateAttention() bool {
 	return s != nil && s.isRootDelegateAttentionReceiver() && s.delegateController.hasPendingDelegateAttention()
 }
 
@@ -185,20 +186,25 @@ func (s *Session) hasPendingStableSteering() bool {
 }
 
 // pendingDelegateUpdateAttentionIDs lists the updates from this session's own
-// delegates that no turn has consumed. A delegate run parked in its
-// finalization drain reads this to run a turn for them: a parent waiting on
-// its delegates is idle, and an update wakes an idle parent, so a delegate's
-// mid-work question is not hidden until that delegate finishes. A child's
-// report waits for the generation's end, where the next attention generation
-// takes it with everything else pending. The root's attention has its own
-// rail, so this is always empty there. A failed transcript read reads as no
-// update: the drain keeps waiting, and the generation's end still delivers
-// the attention.
+// delegates that no turn has consumed and an automatic drive may still
+// present. A delegate run parked in its finalization drain reads this to run
+// a turn for them: a parent waiting on its delegates is idle, and an update
+// wakes an idle parent, so a delegate's mid-work question is not hidden
+// until that delegate finishes. The list is the automatic drive's own, so a
+// row a user's stop holds out of the drives is owed no drain turn either —
+// the drain's turn presents exactly what a drive presents, and a held row is
+// filtered from every leased request, so a turn run for it would neither
+// present nor consume it and the drain would never fall quiet; the row waits
+// for its hold's release. A child's report waits for the generation's end,
+// where the next attention generation takes it with everything else pending.
+// The root's attention has its own rail, so this is always empty there. A
+// failed transcript read reads as no update: the drain keeps waiting, and the
+// generation's end still delivers the attention.
 func (s *Session) pendingDelegateUpdateAttentionIDs() []string {
 	if s == nil || s.owningDelegateID == "" {
 		return nil
 	}
-	ids, err := s.pendingDelegateAttentionIDs()
+	ids, err := s.automaticDelegateAttentionIDs()
 	if err != nil {
 		return nil
 	}
@@ -249,6 +255,35 @@ func (s *Session) autonomyInFlight() bool {
 		return true
 	}
 	return s.sessionWorkPending()
+}
+
+// hasWakeableWork reports whether anything can wake a resting session. Used by
+// communicate to refuse waiting_on_work only when nothing can wake it. Producers
+// are read before queues, with notifications last among queue terms, so a
+// retirement-to-enqueue handoff cannot fall between reads. Detached processes,
+// Stop-held steering, and daemon nudges never count; watch and emission terms
+// overcount on purpose because refusing too little is safe. See the spec for
+// the full source list.
+func (s *Session) hasWakeableWork() bool {
+	if len(sessionRunningJobIDs(s)) > 0 {
+		return true
+	}
+	if s.jobManager != nil && s.jobManager.hasLiveRuns() {
+		return true
+	}
+	if s.hasWorkingSubagent() {
+		// A working child wakes this session through its delivery; checking it
+		// before the holder walk skips that recursive inventory on the common
+		// delegate-waiting path.
+		return true
+	}
+	for _, holder := range s.watchHolderSessions() {
+		jm := holder.jobManager
+		if jm.hasArmedWatch() || jm.hasNoticeEmissionInFlight() {
+			return true
+		}
+	}
+	return s.hasRunnableUserSteering() || s.autonomyInFlight() || s.HasPendingAsk()
 }
 
 // cumulativeUsageSnapshot converts the context manager's llm.Usage total to
@@ -324,6 +359,39 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 	if root := s.scratchTreeRootID(); root != s.id {
 		scratchTreeRootID = root
 	}
+	// The scratch the hub serves this session's documents from is the one its
+	// environment actually writes into: a delegate that shares its parent's
+	// environment, or one that re-roots its parent's kernel wrapper, writes
+	// into the parent's scratch directory, while an isolated delegate owns its
+	// own. The directory's owning session is the environment's effective
+	// scratch owner, not this session's own id.
+	scratchDirSessionID := ""
+	// The base recorded is the one the session's scratch was actually allocated
+	// in — allocation refuses a temp base inside the session's workspace and
+	// falls back to the user cache dir, and a hub that searched the refused
+	// base first would find a retained old tree there instead of the session's
+	// current scratch — or this process's temp dir while no scratch exists yet,
+	// which the archive removal path still needs to find a tree an earlier run
+	// recorded.
+	scratchTempDir := sandbox.ProcessScratchTempDir()
+	// This runs under s.mu, so it reads s.env directly rather than through
+	// currentEnv.
+	if local, ok := s.env.(*execenv.LocalExecutionEnvironment); ok {
+		if session := local.ScratchOwnerSession(); session != "" && session != s.id {
+			scratchDirSessionID = session
+		}
+		if base := local.SessionScratchBase(); base != "" {
+			scratchTempDir = base
+		}
+		// The tree recorded is the one the scratch occupies: a child spawned by
+		// a delegate resumed on its own inherits the resumed delegate's id as
+		// its delegate-tree root while its environment writes into the original
+		// root's tree, so the bookkeeping answer would name a tree nobody wrote
+		// into.
+		if root := local.SessionScratchTreeRoot(); root != "" && root != s.id {
+			scratchTreeRootID = root
+		}
+	}
 	skills := s.skillLifecycle.Clone()
 	skills.PinnedNoteGen = s.pinnedNoteGen
 	return schema.SessionMeta{
@@ -332,6 +400,7 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		Model:                    s.profile.Model(),
 		CheapModel:               s.profile.CheapModelRefString(),
 		VisionModel:              s.cfg.VisionModel,
+		Manager:                  s.cfg.Manager,
 		Config:                   s.cfg.toSnapshot(),
 		ReasoningEffortEscalated: s.loopEffortEscalated,
 		EnvInfo:                  s.envInfo,
@@ -365,8 +434,9 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		LastMessage:              s.lastMessage,
 		CumulativeUsage:          cumulativeUsageSnapshot(s.contextMgr.CumulativeUsage()),
 		JobTreeRootSessionID:     jobTreeRootSessionID,
-		ScratchTempDir:           sandbox.ProcessScratchTempDir(),
+		ScratchTempDir:           scratchTempDir,
 		ScratchTreeRootID:        scratchTreeRootID,
+		ScratchDirSessionID:      scratchDirSessionID,
 		JobTreeRevision:          jobTreeRevision,
 		EnvContext:               s.envContextState,
 	}
@@ -485,12 +555,19 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 	var restoredHistory []schema.Turn
 	var restoredRepairInsertions []int
 	var restoredEntries []transcript.Entry
+	// The superseded attention identities the history build and the
+	// coordinate mappers below share: the transcript folds for them once,
+	// not once per reopen marker and boundary they map.
+	var restoredSuperseded map[string]bool
 	path := s.TranscriptPath()
 	s.attentionMu.Lock()
 	if path != "" {
-		_, entries, _, err := readTranscript(path, s.stateDir)
+		// The interrupt that sends us here already cancelled ctx; the durable
+		// transcript must still be read to reconcile the boundary.
+		_, entries, _, err := readTranscript(context.Background(), path, s.stateDir)
 		if err == nil {
-			restoredHistory, restoredRepairInsertions = resumeHistoryIndexed(entries)
+			restoredSuperseded = supersededDelegateAttentionIDs(entries)
+			restoredHistory, restoredRepairInsertions = resumeHistoryIndexedWithSuperseded(entries, restoredSuperseded)
 			restoredEntries = entries
 		}
 	}
@@ -509,7 +586,7 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 		// Map the immutable full-transcript divergence into the resumed
 		// history's coordinates (retained window, skipped transcript-only
 		// entries and repair insertions) before consulting journal provenance.
-		divergence = resumedDivergence(restoredEntries, divergence, restoredRepairInsertions)
+		divergence = resumedDivergence(restoredEntries, divergence, restoredRepairInsertions, restoredSuperseded)
 	}
 	origins := s.clientMutations.steeringOrigins()
 	if restoredHistory == nil {
@@ -523,7 +600,7 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 		release(transitioned, turnMS)
 		return
 	}
-	state := deriveRestoredState(restoredHistory, divergence, origins, latestAttemptStarts(restoredEntries, restoredRepairInsertions))
+	state := deriveRestoredState(restoredHistory, divergence, origins, latestAttemptStarts(restoredEntries, restoredRepairInsertions, restoredSuperseded))
 	pending, isAskRound := deriveRestoredAskPending(restoredHistory, divergence, origins)
 	transitioned, turnMS := s.transitionProcessingAtBoundaryLocked(state)
 	if transitioned {

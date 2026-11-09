@@ -1,35 +1,55 @@
 {
   "warning": {
-    "message": "Summary failed for fast/cheap model openai/summary-model-8af1: rate_limit (HTTP 429)",
-    "source": "provider",
+    "message": "Summary failed for session model openai/gpt-5.2: rejected_output, empty_reply after 3 attempts",
+    "source": "evener",
     "code": "summary_failure",
-    "title": "Summary rate limited",
-    "hint": "Wait before retrying, or choose a summary route with available rate capacity. This is the fast/cheap model, which may be configured separately from the main model. Existing history or the checkpoint remains available.",
+    "title": "Summary output rejected",
+    "hint": "The response could not safely replace the conversation. Evener resamples rejected summary replies automatically; a more capable summary model may work better if this repeats. Existing history or the checkpoint remains available.",
     "summary_failure": {
       "terminal": {
         "provider": "openai",
-        "model": "summary-model-8af1",
-        "route": "cheap",
-        "kind": "rate_limit",
-        "stage": "provider",
-        "status": 429,
-        "retryable": true
-      }
+        "model": "gpt-5.2",
+        "route": "session",
+        "kind": "rejected_output",
+        "stage": "validation",
+        "reason": "empty_reply",
+        "attempts": 3
+      },
+      "previous": [
+        {
+          "provider": "openai",
+          "model": "summary-model-8af1",
+          "route": "cheap",
+          "kind": "rejected_output",
+          "stage": "validation",
+          "reason": "empty_reply",
+          "attempts": 3
+        },
+        {
+          "provider": "openai",
+          "model": "gpt-5.2",
+          "route": "session",
+          "kind": "rejected_output",
+          "stage": "validation",
+          "reason": "empty_reply",
+          "attempts": 2
+        }
+      ]
     }
   },
   "item": {
     "type": "systemMessage",
     "id": "notice:0",
     "turnId": "turn_1",
-    "text": "Summary failed for fast/cheap model openai/summary-model-8af1: rate_limit (HTTP 429)",
-    "description": "Summary rate limited",
+    "text": "Summary failed for session model openai/gpt-5.2: rejected_output, empty_reply after 3 attempts",
+    "description": "Summary output rejected",
     "status": "completed",
     "raw": {
       "warning": {
         "code": "summary_failure",
-        "hint": "Wait before retrying, or choose a summary route with available rate capacity. This is the fast/cheap model, which may be configured separately from the main model. Existing history or the checkpoint remains available.",
-        "source": "provider",
-        "title": "Summary rate limited"
+        "hint": "The response could not safely replace the conversation. Evener resamples rejected summary replies automatically; a more capable summary model may work better if this repeats. Existing history or the checkpoint remains available.",
+        "source": "evener",
+        "title": "Summary output rejected"
       }
     },
     "eventKind": "warning"

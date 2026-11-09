@@ -31,7 +31,7 @@ func TestReadTranscriptNeutralMaterializedRetainedOptions(t *testing.T) {
 		deps := &toolDeps{stateDir: stateDir, sessionID: owner}
 		ref := "job:" + jobID
 
-		omitted, err := execReadTranscript(deps, map[string]any{"transcript_ref": ref})
+		omitted, err := execReadTranscript(context.Background(), deps, map[string]any{"transcript_ref": ref})
 		if err != nil {
 			t.Fatalf("omitted options: %v", err)
 		}
@@ -44,7 +44,7 @@ func TestReadTranscriptNeutralMaterializedRetainedOptions(t *testing.T) {
 			"context_lines":  float64(0),
 		}
 		normalized, _ := normalizeRetainedReadArgs(materializedArgs)
-		materialized, err := execReadTranscript(deps, normalized)
+		materialized, err := execReadTranscript(context.Background(), deps, normalized)
 		if err != nil {
 			t.Fatalf("materialized defaults: %v", err)
 		}
@@ -55,7 +55,7 @@ func TestReadTranscriptNeutralMaterializedRetainedOptions(t *testing.T) {
 
 	t.Run("artifact default page", func(t *testing.T) {
 		deps, ref := artifactTranscriptFixture(t, "ready\n")
-		omitted, err := execReadTranscript(deps, map[string]any{"transcript_ref": ref})
+		omitted, err := execReadTranscript(context.Background(), deps, map[string]any{"transcript_ref": ref})
 		if err != nil {
 			t.Fatalf("omitted options: %v", err)
 		}
@@ -67,7 +67,7 @@ func TestReadTranscriptNeutralMaterializedRetainedOptions(t *testing.T) {
 			"context_lines":  float64(0),
 		}
 		normalized, _ := normalizeRetainedReadArgs(materializedArgs)
-		materialized, err := execReadTranscript(deps, normalized)
+		materialized, err := execReadTranscript(context.Background(), deps, normalized)
 		if err != nil {
 			t.Fatalf("materialized defaults: %v", err)
 		}
@@ -475,7 +475,7 @@ func TestReadTranscriptCompositeInvalidJobReportsParseAndModeFields(t *testing.T
 	owner := identifier.MustNewSessionID()
 	jobID := identifier.MustNewJobID(owner)
 	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", "ready\n", maxJobOutputRetentionBytes, true, int64(len("ready\n")), nil)
-	_, err := execReadTranscript(&toolDeps{stateDir: stateDir, sessionID: owner}, map[string]any{
+	_, err := execReadTranscript(context.Background(), &toolDeps{stateDir: stateDir, sessionID: owner}, map[string]any{
 		"transcript_ref": "job:" + jobID,
 		"range":          "1-2",
 		"expand_turn":    float64(1),
@@ -741,7 +741,7 @@ func TestRetainedReadDiagnosticBoundsLongReceivedRange(t *testing.T) {
 	owner := identifier.MustNewSessionID()
 	jobID := identifier.MustNewJobID(owner)
 	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", "ready\n", maxJobOutputRetentionBytes, true, int64(len("ready\n")), nil)
-	_, err := execReadTranscript(&toolDeps{stateDir: stateDir, sessionID: owner}, map[string]any{
+	_, err := execReadTranscript(context.Background(), &toolDeps{stateDir: stateDir, sessionID: owner}, map[string]any{
 		"transcript_ref": "job:" + jobID,
 		"range":          strings.Repeat("界", 300),
 	})

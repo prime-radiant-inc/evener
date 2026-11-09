@@ -1,0 +1,108 @@
+{
+  "corpus_sha256": "79f3e44f902cfe19dd0fcf9c4d00fee7f304f478ef6b46aa2f7a631fe808bf09",
+  "detected_positive_clips": 598,
+  "false_accept_events": 0,
+  "false_accepts_per_hour": 0.0,
+  "groups": {
+    "librispeech/negative": {
+      "activation_events": 0,
+      "clips": 491,
+      "detected_clips": 0,
+      "detected_fraction": 0.0,
+      "events_per_hour": 0.0,
+      "hours": 1.08542640625,
+      "minimum_clip_peak": 2.9802322387695312e-08,
+      "peak": 0.9557856321334839,
+      "samples": 62520561
+    },
+    "piper/negative": {
+      "activation_events": 0,
+      "clips": 800,
+      "detected_clips": 0,
+      "detected_fraction": 0.0,
+      "events_per_hour": 0.0,
+      "hours": 0.6710436979166666,
+      "minimum_clip_peak": 9.834766387939453e-07,
+      "peak": 0.9169903993606567,
+      "samples": 38652117
+    },
+    "piper/positive": {
+      "activation_events": 599,
+      "clips": 600,
+      "detected_clips": 598,
+      "detected_fraction": 0.9966666666666667,
+      "events_per_hour": 1304.5874194643457,
+      "hours": 0.45914899305555557,
+      "minimum_clip_peak": 0.05791810154914856,
+      "peak": 1.0,
+      "samples": 26446982
+    },
+    "procedural/negative": {
+      "activation_events": 0,
+      "clips": 20,
+      "detected_clips": 0,
+      "detected_fraction": 0.0,
+      "events_per_hour": 0.0,
+      "hours": 0.3333333333333333,
+      "minimum_clip_peak": 9.834766387939453e-07,
+      "peak": 0.009420037269592285,
+      "samples": 19200000
+    }
+  },
+  "models": {
+    "embedding_model.onnx": "79b5db230f6fd7a4a5bb1b28e58778d5c1cf5cee0fa4e3cb5ac481872463b45d",
+    "hey_evener.onnx": "a519522a2fa56b8a1c761fc71a17ff38e9c8d980c0584610214f61d42cf6851d",
+    "melspectrogram.onnx": "fd9edc912b9c020a36d55e1f0d0355976dcec1d4606e6f9a037035456f72df75"
+  },
+  "negative_clips": 1311,
+  "negative_hours": 2.0898034375,
+  "positive_clips": 600,
+  "seconds": 263.5956778849941,
+  "split": "test",
+  "threshold": 0.99,
+  "threshold_sweep": [
+    {
+      "detected_positive_clips": 599,
+      "false_accept_events": 9,
+      "false_accepts_per_hour": 4.3066251296660525,
+      "positive_clips": 600,
+      "threshold": 0.25
+    },
+    {
+      "detected_positive_clips": 599,
+      "false_accept_events": 7,
+      "false_accepts_per_hour": 3.3495973230735965,
+      "positive_clips": 600,
+      "threshold": 0.5
+    },
+    {
+      "detected_positive_clips": 599,
+      "false_accept_events": 3,
+      "false_accepts_per_hour": 1.4355417098886842,
+      "positive_clips": 600,
+      "threshold": 0.75
+    },
+    {
+      "detected_positive_clips": 599,
+      "false_accept_events": 3,
+      "false_accepts_per_hour": 1.4355417098886842,
+      "positive_clips": 600,
+      "threshold": 0.9
+    },
+    {
+      "detected_positive_clips": 599,
+      "false_accept_events": 1,
+      "false_accepts_per_hour": 0.47851390329622806,
+      "positive_clips": 600,
+      "threshold": 0.95
+    },
+    {
+      "detected_positive_clips": 598,
+      "false_accept_events": 0,
+      "false_accepts_per_hour": 0.0,
+      "positive_clips": 600,
+      "threshold": 0.99
+    }
+  ],
+  "warmup_peak": 9.760260581970215e-05
+}

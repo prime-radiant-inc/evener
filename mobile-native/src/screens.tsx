@@ -1,7 +1,6 @@
 import { canWriteSharedNotes } from "@evener/appwire-client";
 import { isValidTranscriptRef } from "@evener/appwire-client";
 import { reconcilePendingEntries } from "@evener/appwire-client/state/mutation";
-import type { CellRendererProps } from "@react-native/virtualized-lists";
 import { bindFilePath, type FileReference } from "@evener/appwire-client/docContent";
 import { ownPendingTurnInput } from "@evener/appwire-client/state/mutation";
 import { useHeaderHeight } from "@react-navigation/elements";
@@ -11,7 +10,6 @@ import * as Clipboard from "expo-clipboard";
 import { randomUUID } from "expo-crypto";
 import { Storage } from "expo-sqlite/kv-store";
 import {
-	Component,
 	type RefObject,
 	useCallback,
 	useEffect,
@@ -37,6 +35,7 @@ import {
 } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { useDetailPaneWidth } from "./duo/paneWidth";
 import {
 	type AskBatch,
 	type AskQuestionRef,
@@ -72,11 +71,10 @@ import { canComposeFor, conversationControls, queueActionRefusal } from "./conve
 import { goalObjective, submitGoalCommand } from "./goalCommand";
 import type { HubRoutes } from "./hub/hubSheetContext";
 import { ImageAttachments } from "./ImageAttachments";
-import { ImageSelection } from "./imageSelection";
 import { projectNativeMutationRecovery, RecoveryFailure, useRecoveryPanel } from "./MutationRecoveryPanel";
 import { useNativePreferences } from "./NativePreferencesProvider";
 import { drafts } from "./nativeDrafts";
-import { nativeImagePicker } from "./nativeImagePicker";
+import { useComposerDraft } from "./session/useComposerDraft";
 import { NATIVE_MUTATION_HOST_UNAVAILABLE } from "./nativeMutationHost";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
 import { readerPositions } from "./nativeReaderPosition";
@@ -126,6 +124,8 @@ import {
 	exactRestoreDue,
 } from "./readerPosition";
 import { type SessionDestination, SessionMenu } from "./SessionMenu";
+import { VoiceControls } from "./voice/VoiceControls";
+import { useVoiceClient } from "./voice/voiceContext";
 import { canonicalFailureAction, type ErrorAction, errorAction } from "./session/errorAction";
 import { TURN_CONTINUATION_TEXT } from "@evener/appwire-client";
 import {
@@ -175,9 +175,10 @@ import { ComposerFocus } from "./session/composerFocus";
 import { type ModelHost, modelHosts } from "./session/ModelSheet";
 import { type CommandsHost, commandHosts, insertInvocation } from "./session/CommandsSheet";
 import { FindBar } from "./session/FindBar";
+import { useFindInSession } from "./session/useFindInSession";
 import { historyForSession } from "./session/historyMemory";
 import { useOlderHistory } from "./session/useOlderHistory";
-import { type FindState, newFind, findMatches, matchLabel, matchPosition, stepMatch } from "./session/findInSession";
+import { type FindState, newFind, matchLabel, matchPosition } from "./session/findInSession";
 import { currentLevel, displayForLevel, levelToast } from "./session/detailLevels";
 import { detailLevels } from "./session/nativeDetailLevels";
 import { type OfflineTarget, offlineRequest } from "./outbox/offlineSend";
@@ -186,12 +187,9 @@ import { NotesBar } from "./session/NotesBar";
 import { type NotesHost, notesHosts } from "./session/NotesSheet";
 import { SessionHeader, useHeaderHiding } from "./session/SessionHeader";
 import { type SessionMenuAction, sessionMenu } from "./session/sessionMenu";
-import {
-	confirmShutDown,
-	type SessionInfoAction,
-	type SessionInfoHost,
-	sessionInfoHosts,
-} from "./session/SessionInfoSheet";
+import { type SessionInfoAction, type SessionInfoHost, sessionInfoHosts } from "./session/SessionInfoSheet";
+import { confirmShutDown } from "./session/confirmShutDown";
+import { createReaderCell } from "./session/ReaderCell";
 import { SessionNotice } from "./session/SessionNotice";
 import { useSessionRestart } from "./session/sessionRestart";
 import {
@@ -315,8 +313,9 @@ export type Routes = {
 		hubId: string;
 		sessionRef: string;
 		path: string;
-		/** Set for a document the session filed in its retained artifacts. */
-		root?: "artifacts";
+		/** Set for a document the session filed in a retained root
+		 * (artifacts, scratch). */
+		root?: "artifacts" | "scratch";
 		blockIndex: number;
 		blockHash: string;
 		/** The words the comment is on: a selection, or its block's words. */
@@ -345,7 +344,7 @@ type ReviewSheetParams = {
 	sessionRef: string;
 	path: string;
 	sessionTitle: string;
-	root?: "artifacts";
+	root?: "artifacts" | "scratch";
 	readTarget?: string;
 };
 
@@ -424,9 +423,11 @@ function ConversationScreenView({
 	attachment: NativeConversationAttachment;
 }) {
 	const { activeProfile, profiles, client, state: connectionState } = useConnection();
+	const voiceClient = useVoiceClient();
 	const focused = useScreenInFront(route.key);
 	const colors = useColors();
 	const textScale = useTextScale();
+	const detailPaneWidth = useDetailPaneWidth();
 	const displayChoices = useDisplayChoices();
 	const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
 	// Find in session (ruling 29), open while non-null. The current match is
@@ -560,29 +561,12 @@ function ConversationScreenView({
 	const [commandPending, setCommandPending] = useState(false);
 	const commandBusy = useRef(false);
 	const projectLookup = useRef<AbortController | null>(null);
-	const document = useMemo(
-		() => drafts.open({ hubId: route.params.hubId, sessionRef: route.params.ref }),
-		[route.params.hubId, route.params.ref],
-	);
-	const draft = useSyncExternalStore(document.subscribe, document.getSnapshot);
-	// A handoff can fail its storage write while the resume itself already moved
-	// the rows. Retry it as the replacement screen mounts and whenever the draft
-	// becomes writable again; the source composition stays under the old ref
-	// until the destination write commits.
-	useEffect(() => {
-		if (draft.loaded && !draft.error) drafts.retryPendingHandoffs();
-	}, [draft.loaded, draft.error, draft.record]);
-	const imageSelection = useMemo(() => new ImageSelection(document, nativeImagePicker), [document]);
-	const imageState = useSyncExternalStore(imageSelection.subscribe, imageSelection.getSnapshot);
-	// Follows the screen in front rather than focus, so a photo being attached
-	// survives one of the screen's own sheets opening.
-	useEffect(() => {
-		if (!focused) return;
-		return () => {
-			imageSelection.cancel();
-			projectLookup.current?.abort();
-		};
-	}, [focused, imageSelection]);
+	const { document, draft, imageSelection, imageState } = useComposerDraft({
+		hubId: route.params.hubId,
+		sessionRef: route.params.ref,
+		focused,
+		abortOnLeave: projectLookup,
+	});
 	const unconfirmedSend = draft.submitting ? null : draft.record.unconfirmed;
 	// A draft operation in flight, or one still uncertain, keeps Retry visible
 	// but disabled: the document itself refuses a second submitText.
@@ -1409,6 +1393,7 @@ function ConversationScreenView({
 	// Map, and each message's chips skip re-reading its markdown.
 	const documentCwd = conversation?.cwd ?? "";
 	const artifactsDir = conversation?.artifactsDir;
+	const scratchDir = conversation?.scratchDir;
 	const turns = conversation?.turns;
 	const writesKey = useMemo(() => JSON.stringify([...fileWrites(turns ?? [], documentCwd)]), [turns, documentCwd]);
 	const writes = useMemo(() => new Map<string, string>(JSON.parse(writesKey) as [string, string][]), [writesKey]);
@@ -1432,9 +1417,9 @@ function ConversationScreenView({
 	const fileContext = useMemo<NativeFileOpenContext | undefined>(
 		() =>
 			documentCwd && route.params.hubId && isValidTranscriptRef(route.params.ref)
-				? { cwd: documentCwd, artifactsDir, openFile }
+				? { cwd: documentCwd, artifactsDir, scratchDir, openFile }
 				: undefined,
-		[documentCwd, route.params.hubId, route.params.ref, artifactsDir, openFile],
+		[documentCwd, route.params.hubId, route.params.ref, artifactsDir, scratchDir, openFile],
 	);
 	const openDocument = useCallback(
 		(path: string, updatedAt: string | undefined) => {
@@ -1613,111 +1598,29 @@ function ConversationScreenView({
 		setFind,
 		binding: bindingInstance,
 	});
-	const findQuery = find?.query ?? "";
-	const findHits = useMemo(
-		() => findMatches(timelineRows, findQuery, conversation?.delegates),
-		[timelineRows, findQuery, conversation?.delegates],
-	);
-	const findKey = find?.key ?? null;
-	const findIndex = findKey === null ? -1 : timelineRows.findIndex((row) => readerKey(row) === findKey);
-	const findCurrent = findIndex < 0 ? null : findIndex;
-	function stepFind(direction: 1 | -1) {
-		if (!find) return;
-		const next = stepMatch(findHits, findCurrent, direction);
-		if (next !== null)
-			setFind({
-				...find,
-				key: readerKey(timelineRows[next]),
-				seeking: false,
-				exhausted: false,
-			});
-		// Nothing older is loaded: look in older history.
-		else if (direction === -1) setFind({ ...find, seeking: true, exhausted: false });
-	}
-	// While seeking, find the newest match older than the current one (or
-	// the newest of all), loading one older page at a time until a match
-	// appears or history ends.
-	useEffect(() => {
-		if (!isCurrentReader() || !find?.seeking || !focused || snapshot.status !== "open" || !conversation) return;
-		// A resumed search first reloads its saved boundary; newer matches
-		// in the fresh window have already been searched.
-		const next = find.key !== null && findCurrent === null ? null : stepMatch(findHits, findCurrent, -1);
-		if (next !== null) {
-			setFind({ ...find, key: readerKey(timelineRows[next]), seeking: false });
-			return;
-		}
-		if (snapshot.loadingOlder) return;
-		const pageKey = olderPage;
-		if (!pageKey) {
-			// Stepped past the oldest match: say so. With none at all, the
-			// label already reads "No matches".
-			setFind({ ...find, seeking: false, exhausted: findHits.length > 0 });
-			return;
-		}
-		// Failure or disconnection leaves the search incomplete. Demand resumes
-		// when this reader is active, without another Find step.
-		if (!service || !connected || olderHistory.permanent) return;
-		// Paging older history reads away from the live end, so new rows stop
-		// pulling the list down while find looks.
-		if (follow.state.current.following) {
-			findLeftTheEnd.current = true;
-			follow.dispatch({ type: "unfollow" });
-		}
-		findOlder();
-	});
-	// A search that ends with no match, or find closing, gives the end back to
-	// a list find unfollowed, when the list is still there. A jump to a match
-	// is reading, and keeps it.
-	const findLeftTheEnd = useRef(false);
-	useEffect(() => {
-		if (!findLeftTheEnd.current || (find !== null && (find.seeking || find.key !== null))) return;
-		findLeftTheEnd.current = false;
-		const stillAtEnd = atEnd({
-			contentOffset: { y: listOffset.current },
-			contentSize: { height: readerContentHeight.current },
-			layoutMeasurement: { height: readerViewportHeight.current },
-			contentInset: listUnderBar.contentInset,
+	const { findHits, findKey, findCurrent, stepFind, findJumping, findAttempts, findRetryFrame, retryFindMatch } =
+		useFindInSession({
+			find,
+			setFind,
+			timelineRows,
+			conversation,
+			focused,
+			status: snapshot.status,
+			loadingOlder: snapshot.loadingOlder,
+			olderPage,
+			service,
+			connected,
+			olderHistory,
+			isCurrentReader,
+			findOlder,
+			follow,
+			timeline,
+			listOffset,
+			readerContentHeight,
+			readerViewportHeight,
+			listUnderBar,
+			captureSuppressed,
 		});
-		if (stillAtEnd) follow.dispatch({ type: "follow" });
-	});
-	// The current match comes into view, 30% down the list. A row the list
-	// hasn't measured fails the jump (onScrollToIndexFailed, while
-	// findJumping holds); the list then moves near it and tries again, for as
-	// long as each try measures rows closer to it, as the reader's restore
-	// does (ReaderRestoreAttempts.retryUnmeasured). A retry belongs to the
-	// match it started for: a new match or closing find cancels it, and it
-	// finds its row again when it runs, since older pages may have prepended.
-	const findJumping = useRef(false);
-	const findAttempts = useRef(new ReaderRestoreAttempts());
-	const findRetryFrame = useRef<number | null>(null);
-	const findCurrentNow = useRef(findCurrent);
-	useEffect(() => {
-		findCurrentNow.current = findCurrent;
-	});
-	function cancelFindRetry() {
-		if (findRetryFrame.current !== null) cancelAnimationFrame(findRetryFrame.current);
-		findRetryFrame.current = null;
-	}
-	function retryFindMatch() {
-		findRetryFrame.current = null;
-		if (findCurrentNow.current !== null) scrollToFindMatch(findCurrentNow.current);
-	}
-	function scrollToFindMatch(index: number) {
-		findLeftTheEnd.current = false;
-		follow.dispatch({ type: "unfollow" });
-		// The reading position follows the jump, so nothing pulls the list back.
-		captureSuppressed.current = false;
-		findJumping.current = true;
-		timeline.current?.scrollToIndex({ index, viewPosition: 0.3, animated: true });
-		findJumping.current = false;
-	}
-	// biome-ignore lint/correctness/useExhaustiveDependencies: only a new current match scrolls; rows prepending above it keep it in view.
-	useEffect(() => {
-		cancelFindRetry();
-		findAttempts.current.reset();
-		if (findCurrent !== null) scrollToFindMatch(findCurrent);
-		return cancelFindRetry;
-	}, [findKey]);
 	// Moves the list to the reading position once what it needs has laid out.
 	// It runs when what it reads changes: the effect below for the screen's
 	// state, and after the cells' layouts and the list's content size, which it
@@ -2380,6 +2283,8 @@ function ConversationScreenView({
 	// already on its way, "notKept" when the phone couldn't keep it to send (the
 	// store reports why), "notStopped" when nothing was tried.
 	async function stop(): Promise<"stopped" | "stopping" | "notKept" | "notStopped"> {
+		const voiceTarget = voiceClient?.getTarget();
+		if (voiceTarget?.hub.id === route.params.hubId && voiceTarget.ref === route.params.ref) voiceClient?.stopSpeaking();
 		if (stopBusy.current) return "stopping";
 		if (!service || !connectionReady.current || store.getState().pendingSubmission !== null) return "notStopped";
 		stopBusy.current = true;
@@ -3390,40 +3295,21 @@ function ConversationScreenView({
 		},
 		onMore: openQueue,
 	};
-	const readerCellRenderer = useMemo(() => {
-		return class ReaderCell extends Component<CellRendererProps<SessionListRow>> {
-			componentWillUnmount() {
-				readerMeasurements.current.delete(sessionListKey(this.props.item));
-			}
-			render() {
-				const { children, item, onLayout, onFocusCapture, style } = this.props;
-				return (
-					<View
-						style={style}
-						{...{ onFocusCapture }}
-						onLayout={(event) => {
-							onLayout?.(event);
-							if (!item) return;
-							const key = sessionListKey(item);
-							readerMeasurements.current.set(key, {
-								key,
-								y: event.nativeEvent.layout.y,
-								height: event.nativeEvent.layout.height,
-							});
-							// Opening at the live end lands once its last row has
-							// measured: pin the end, then show the list.
-							if (!openingLandedNow.current && key === listEndKey.current && follow.state.current.following) {
-								pinOpeningToEnd();
-							}
-							restoreAfterLayout();
-						}}
-					>
-						{children}
-					</View>
-				);
-			}
-		};
-	}, []);
+	const readerCellRenderer = useMemo(
+		() =>
+			createReaderCell({
+				measurements: readerMeasurements,
+				onLaidOut: (key) => {
+					// Opening at the live end lands once its last row has
+					// measured: pin the end, then show the list.
+					if (!openingLandedNow.current && key === listEndKey.current && follow.state.current.following) {
+						pinOpeningToEnd();
+					}
+					restoreAfterLayout();
+				},
+			}),
+		[],
+	);
 
 	// One render function for the list's lifetime: FlatList sees the same
 	// reference across a re-render that changes nothing a row reads (the
@@ -3466,6 +3352,7 @@ function ConversationScreenView({
 							sourceTurns={conversation?.turns}
 							activityPresentation={presentation.activityPresentation.get(item.id)}
 							expandByDefault={presentation.expandByDefault}
+							thinkingOpenByDefault={presentation.thinkingOpenByDefault}
 							showDuration={presentation.showDuration}
 							fork={snapshot.conversation?.capabilities?.forkFromTurn ? forkMessage : undefined}
 							forkDisabled={!connected || !focused || snapshot.status !== "open"}
@@ -3533,7 +3420,10 @@ function ConversationScreenView({
 	);
 
 	return (
-		<SafeAreaView edges={["left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
+		<SafeAreaView
+			edges={detailPaneWidth === null ? ["left", "right"] : ["right"]}
+			style={[styles.fill, { backgroundColor: colors.background }]}
+		>
 			{sessionMenuOpen ? (
 				<SessionMenu
 					title={conversation?.name || route.params.title}
@@ -3851,6 +3741,26 @@ function ConversationScreenView({
 						}}
 						onLayout={bottomBar.onLayout}
 					>
+						{activeProfile && conversation ? (
+							<VoiceControls
+								target={{
+									hub: activeProfile,
+									ref: route.params.ref,
+									instanceId: conversation.instanceId ?? "",
+									manager: conversation.manager === true,
+									voiceAvailable:
+										client?.initializeResult?.features != null &&
+										"voice" in client.initializeResult.features &&
+										client.initializeResult.features.voice === true,
+									// A hub that stamps voiceArm says which sessions can arm;
+									// an older hub keeps the earlier behavior.
+									armable:
+										client?.initializeResult?.features?.voiceArmV1 === true
+											? conversation.capabilities?.voiceArm === true
+											: true,
+								}}
+							/>
+						) : null}
 						<ScrollView
 							style={{ ...shrinkingScroller, marginBottom: 4 }}
 							contentContainerStyle={{ gap: 4, paddingHorizontal: 12 }}

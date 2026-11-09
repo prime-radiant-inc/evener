@@ -2,7 +2,6 @@ package doctor
 
 import (
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -182,7 +181,7 @@ func (c delegateCache) get(paths Paths) (string, delegatestore.State, []string, 
 func (c delegateCache) getForRoot(bucketDir, rootSessionID string) (string, delegatestore.State, []string, error) {
 	key := delegateCacheKey{bucketDir: bucketDir, rootSessionID: rootSessionID}
 	if entry, ok := c[key]; ok {
-		return delegateJournalPath(bucketDir, rootSessionID), entry.state, entry.diagnostics, nil
+		return schema.SessionDelegateJournalPath(bucketDir, rootSessionID), entry.state, entry.diagnostics, nil
 	}
 	path, state, diagnostics, err := stableDoctorDelegatesForRoot(bucketDir, rootSessionID)
 	if err != nil {
@@ -215,10 +214,6 @@ func delegateRootFromMeta(meta schema.SessionMeta, self string) string {
 	return self
 }
 
-func delegateJournalPath(bucketDir, rootSessionID string) string {
-	return filepath.Join(bucketDir, "sessions", rootSessionID, "delegates.jsonl")
-}
-
 // stableDoctorDelegates resolves the root session (meta.JobTreeRootSessionID
 // override, else the session itself) and reads that root's delegates.jsonl.
 func stableDoctorDelegates(paths Paths) (string, delegatestore.State, []string, error) {
@@ -230,7 +225,7 @@ func stableDoctorDelegates(paths Paths) (string, delegatestore.State, []string, 
 // lifecycle authority. Reads are pure: this never opens an append-capable
 // store.
 func stableDoctorDelegatesForRoot(bucketDir, rootSessionID string) (string, delegatestore.State, []string, error) {
-	path := delegateJournalPath(bucketDir, rootSessionID)
+	path := schema.SessionDelegateJournalPath(bucketDir, rootSessionID)
 	delegateJournalRead(path)
 	events, readDiagnostics, err := delegatestore.ReadEventsWithDiagnostics(path)
 	if err != nil {

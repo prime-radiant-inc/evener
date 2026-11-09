@@ -27,7 +27,7 @@ export type MutationSubmissionCommitted = ReturnType<PendingTurnsStore["settleSu
 // `track` registers the whole call, from before `perform` starts, as
 // outstanding - not just the refresh it ends with. A caller that instead
 // tracked only the tail left a window where a settle round found nothing
-// outstanding while a send was still in flight (kata 3p22); tracking from
+// outstanding while a send was still in flight; tracking from
 // here makes one zero round genuine proof, for any host.
 //
 // `refresh` runs in the `finally` unconditionally: a submission's durable

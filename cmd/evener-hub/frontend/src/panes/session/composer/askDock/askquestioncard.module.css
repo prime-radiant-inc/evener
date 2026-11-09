@@ -102,12 +102,23 @@
 
 .textInput {
   flex: 1;
+  font-family: var(--font-sans);
   font-size: var(--font-size-control);
+  line-height: var(--line-height-ui);
   color: var(--ink-hi);
   background: var(--field);
   border: 1px solid var(--edge-strong);
   border-radius: var(--radius-control);
   padding: var(--space-1) var(--space-2);
+}
+
+.textInput::placeholder {
+  color: var(--ink-low);
+}
+
+.textInput:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
 }
 
 .noteRow {

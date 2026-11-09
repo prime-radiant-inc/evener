@@ -1,3 +1,4 @@
+import type { LaunchOptionSchemaResponse } from "@evener/appwire-client";
 import { type HostRow, type ModelDescriptor, type PluginPreviewResponse, WireError } from "@evener/appwire-client";
 import type { NativeStackNavigationOptions, NativeStackScreenProps } from "@react-navigation/native-stack";
 import type { ReactElement } from "react";
@@ -27,7 +28,7 @@ import { creationStore, forgetCreationForHub } from "./creations";
 import { formFront } from "./formFront";
 import { NewSessionForm } from "./NewSessionForm";
 import type { NewSessionRoutes } from "./newSessionContext";
-import { memoryStorage, sheetContext, TestSheet } from "./newSessionTestUtils";
+import { launchSchemaOf, memoryStorage, sheetContext, TestSheet } from "./newSessionTestUtils";
 
 const status = vi.hoisted(() => ({ line: null as string | null }));
 vi.mock("../board/connectionStatus", async (importOriginal) => ({
@@ -50,7 +51,10 @@ vi.mock("@react-navigation/native", async () => {
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
-vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
+vi.mock("react-native-safe-area-context", () => ({
+	SafeAreaView: "SafeAreaView",
+	useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
 vi.mock("../nativeImagePicker", () => ({
 	nativeImagePicker: {
 		pick: async () => [],
@@ -66,6 +70,9 @@ const glm: ModelDescriptor = {
 	displayName: "GLM 5.3 Vision",
 	reasoningEffortLevels: ["low", "medium", "high", "xhigh", "max"],
 };
+
+const SCHEMA_WITH_MEMORY = launchSchemaOf(["contextStrategy", "memoryEnabled"]);
+const SCHEMA_WITHOUT_MEMORY = launchSchemaOf(["contextStrategy"]);
 
 interface Options {
 	hosts?: HostRow[];
@@ -92,6 +99,8 @@ interface Options {
 	defaults?: Record<string, unknown>;
 	/** evener/launch/resolve fails, so the hub's defaults stay unknown. */
 	refuseDefaults?: boolean;
+	/** The hub's launch schema for the chosen host; null while unanswered. */
+	schema?: LaunchOptionSchemaResponse | null;
 }
 
 /** The form inside a context as NewSessionSheet builds it: a real creation
@@ -166,7 +175,13 @@ async function mount(options: Options = {}) {
 	const hosts = new HostsController(client as never, undefined, options.hostPollMs);
 	const live = new LiveSessionsReader(client as never);
 	const memory = new LaunchMemory(memoryStorage(), "hub-1");
-	let context = sheetContext(store, { client: client as never, hosts, live, memory });
+	let context = sheetContext(store, {
+		client: client as never,
+		hosts,
+		live,
+		memory,
+		launchSchema: options.schema ?? null,
+	});
 	// The app's real alert center, so a start the form can no longer open
 	// reaches the banner.
 	const alerts = new AlertCenter({
@@ -350,6 +365,57 @@ it("never starts on an offline host, and says why (Review Focus 3)", async () =>
 	expect(form.row("Host")?.props.accessibilityLabel).toBe("Host, paradise-park, Offline");
 	expect(startBlocks(form.tree)).toEqual(["host"]);
 	expect(withTestID(form.tree, "start-block:host").map(textOf).join("")).toContain("paradise-park");
+	const start = form.header("headerRight");
+	expect(start.props.disabled).toBe(true);
+	await act(async () => start.props.onPress());
+	expect(form.calls.some((call) => call.method === "thread/start")).toBe(false);
+	form.dispose();
+});
+
+it("holds Start over a Memory choice this hub can't honor, and clearing it frees Start", async () => {
+	const form = await mount({
+		schema: SCHEMA_WITHOUT_MEMORY,
+		draft: { cwd: "/home/jesse/git/evener", prompt: "go", launchOverrides: { memoryEnabled: false } },
+	});
+	expect(startBlocks(form.tree)).toEqual(["moreOptions"]);
+	expect(withTestID(form.tree, "start-block:moreOptions").map(textOf).join("")).toContain("magic-kingdom");
+	const start = form.header("headerRight");
+	expect(start.props.disabled).toBe(true);
+	await act(async () => start.props.onPress());
+	expect(form.calls.some((call) => call.method === "thread/start")).toBe(false);
+	// The block's way through: clear the choice in More options.
+	await act(async () => form.store.getState().setLaunchOverrides({}));
+	expect(startBlocks(form.tree)).toEqual([]);
+	const freed = form.header("headerRight");
+	expect(freed.props.disabled).toBe(false);
+	await act(async () => freed.props.onPress());
+	expect(form.calls.some((call) => call.method === "thread/start")).toBe(true);
+	form.dispose();
+});
+
+it("starts with Memory off once the hub offers the field, and names the choice on the form", async () => {
+	const form = await mount({
+		schema: SCHEMA_WITH_MEMORY,
+		draft: { cwd: "/home/jesse/git/evener", prompt: "go", launchOverrides: { memoryEnabled: false } },
+	});
+	expect(startBlocks(form.tree)).toEqual([]);
+	const start = form.header("headerRight");
+	expect(start.props.disabled).toBe(false);
+	await act(async () => start.props.onPress());
+	const submitted = form.calls.find((call) => call.method === "thread/start");
+	expect(submitted).toBeDefined();
+	expect((submitted?.params as { launchOverrides?: { memoryEnabled?: boolean } }).launchOverrides?.memoryEnabled).toBe(
+		false,
+	);
+	form.dispose();
+});
+
+it("holds Start over a kept Memory off until the hub's schema answers", async () => {
+	const form = await mount({
+		schema: null,
+		draft: { cwd: "/home/jesse/git/evener", prompt: "go", launchOverrides: { memoryEnabled: false } },
+	});
+	expect(startBlocks(form.tree)).toEqual(["moreOptions"]);
 	const start = form.header("headerRight");
 	expect(start.props.disabled).toBe(true);
 	await act(async () => start.props.onPress());

@@ -44,6 +44,9 @@ func TestTaskTool_AutoAdvanceFiresOnceWithSteering(t *testing.T) {
 	if h.store.View()[1].Status != taskpkg.TaskInProgress {
 		t.Fatal("auto-advance did not start task 2")
 	}
+	if h.autoAdvanceAttempts != 1 {
+		t.Fatalf("auto-advance update attempts = %d, want 1", h.autoAdvanceAttempts)
+	}
 }
 
 func TestTaskTool_EventsPayloadShapeUnchanged(t *testing.T) {

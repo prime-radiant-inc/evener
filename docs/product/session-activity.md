@@ -3,17 +3,73 @@
 Session activity describes the delegates, shell jobs and watches owned by a
 conversation. The primary navigation rail reduces each navigation summary to a
 one-line status and title; its title HoverCard exposes the summary's project,
-host, branch, running-job, subagent, watch, pin-section, tier and age context. This remains a
-navigation-domain read. Hovering the title or focusing its tree row reveals that
-context; on a hoverless device, a long press on the title reveals it, and a tap
-activates the session. The card floats beside the sidebar, aligned with the row,
-with viewport-aware above/below fallback in the sessions drawer or a narrow
-window. Scroll and resize cancel visible and pending reveals; a fresh gesture
-opens it at the new position. See the [placement contract](../web-ui/design-system.md).
+host, branch, running-job, subagent, watch, pin-section, tier and age context.
+Those context rows remain a navigation-domain read. The card's status line is
+the exception: on a working row it reads that session's pulse from the
+hub-level [`evener/activity/read`](pulse-meter.md) while the card is open.
+Hovering the title or focusing its tree row reveals that context; on a
+hoverless device, a long press on the title reveals it, and a tap activates the
+session. The card floats beside the sidebar, aligned with the row, with
+viewport-aware above/below fallback in the sessions drawer or a narrow window.
+Scroll and resize cancel visible and pending reveals; a fresh gesture opens it
+at the new position. See the [placement contract](../web-ui/design-system.md).
 Reading a session's activity is a separate operation, so
 browsing navigation does not load every session's work tree. A session's seen
 mark lives on the hub: a live navigation row carries its `seen_through`, and
 the activity read carries when the session's tree last moved (`lastMovedAt`).
+Manager discovery is also a shallow read: it lists source-qualified sessions
+and every configured host, even if that host has no sessions or is offline.
+It does not open activity rows, mark a session seen, acknowledge reports or
+expose host credentials. A Manager calls `job_list` with
+`hub:{mode:"activity",ref,resource:"summary"}` for the existing domain-owned
+summary, or uses `resource:"delegates"`, `"jobs"` or `"watches"` and follows
+each collection's cursor. Each row retains its qualified owner, so a child
+read cannot confer the parent's writable identity. Partial and unknown counts
+keep their existing meanings; they are not inferred from navigation.
+
+Manager discovery joins `attentionLevel` and `attentionAsOf` through the same
+workspace-ref map as the roster broker. These fields describe the roster's
+published observation, which can lag the row's newer status; they are absent
+for subagents and disk-only rows outside that population. Archived and remote
+roster lanes retain their facts. `AskPending` remains the session's own question
+fact, and `needsResponse` means awaiting without a pending question.
+
+Roster question notices carry the bounded excerpt, exact composite identities,
+the boot/revision pair, instance identity, composite total and call-less count.
+Appending an ask or restarting the same pending set can deliver another
+`needs_you` event even when the attention level stays unchanged. The roster
+segment is bounded to 57,344 runes, separate from the frame body. Whole-entry
+drops carry a count, up to 64 named references and pull-recovery instructions;
+coalescing reapplies that bound and preserves earlier drop evidence. The
+300-entry ASCII recovery fixture remains complete in a 49,267-byte frame,
+below 64 KiB. Discovery and
+lane-scoped status/history reads remain the detection and recovery path when
+every push delivery is lost. See [session questions](session-questions.md) and
+[Manager automation](../automation.md#manager-questions-and-fenced-answers).
+
+The Manager role is fixed at session start and persists across resume, process
+restart and Clear. Its `job_watch` belongs to its receiving session's watch
+activity, even while it observes an independent worker. A hub watch create
+takes the ordinary watch arguments that apply to a session watch — the `note`
+payload rides every delivery, and `every` throttles observation fires where
+the hub object selects exactly one event kind — and refuses the arguments a
+session watch cannot express, naming each. Its recorded snapshot
+and live entries keep causal generation/entry evidence; accepted terminal
+completion, not an idle label or an unaccepted result, ends a completion watch.
+Recorded answer links let completion follow the watched work through questions.
+The existing history index answers a targeted, non-subscribing read from one
+cut; the watch retains no ancestry graph or unrelated terminal backlog. Lookup
+failure ends observation explicitly, without completing the work.
+Pending notices survive interruption. On reconnect the watch checks the saved
+Manager caller ref and instance, then retains observation only when the target's
+ref, instance and generation also match. Resync re-reads authoritative state,
+including for completion-only watches. Local and remote Manager watches use the
+same shared hub subscription path as human clients, with an independent lifetime
+for each subscriber. Replacement or exhausted recovery ends the watch with
+re-registration guidance. A runtime restart likewise ends continuing registrations
+with a notice, even after prior event delivery; reconnect never revives an ended
+watch. See [job control](../job-control.md#manager-observation-evidence).
+
 Opening a session (on the web, a pane opening or the page becoming visible
 with it open) marks it seen through the later of an unseen turn end and motion
 after that mark. The web reads that session's activity once per open for this,
@@ -94,6 +150,25 @@ state line, Board search marks, the browser's Cadence family and the
 notification level all read it. A pending approval never masks a failure, a
 restart need, an ended or not-loaded session; the hub states the same rule in
 `hubapi.AttentionState`, and both run the cases in `testdata/attention`.
+
+The rail's title card is the one navigation surface that also consumes the
+[session pulse meter](pulse-meter.md). While the card is open on a working row,
+the [rail activity hook](../../cmd/evener-hub/frontend/src/shell/rail/railActivity.ts)
+reads `evener/activity/read` for that row's ref: immediately on open, then
+every ten seconds while the tab is visible. The timer pauses while the tab is
+hidden, and the next visible moment reads at once. A read older than two poll
+intervals (twenty seconds) is treated as absent, and the read is withheld while
+the connection is not ready or after the row stops working, so a resumed card
+asks afresh. A method-not-found answer means the hub predates the read: the
+card stops asking and keeps its fallback.
+
+The card settles a working status in the phone Board's order: running
+subagents, then the shared quiet/stuck rule, then `latestIntent`, then the
+row's running job command, then the state word. Without a usable read it keeps
+the state word, or the row's running job command when it carries one. It does
+not derive a subagent line from the row's tally, which the card's own Subagents
+row already names. The non-working statuses keep their existing vocabulary
+(`Not started`, `Failed`, or the humanized state).
 
 ## APIs and ownership
 
@@ -223,6 +298,13 @@ code points, including an ellipsis when truncated. Browser and native activity
 rows prefer this label; genuinely unnamed records keep each view's existing prompt or ID
 fallback. Names are display data: owner refs and delegate IDs still identify and
 address delegates. Reading a name needs no child transcript or navigation lookup.
+
+The `outcome`, `reason`, `error`, `runEndedAt` and terminal settlement belong to
+the current run generation. While that generation is open, the row does not
+expose a previous generation's ending: its string and timestamp fields are
+omitted and `terminal` is false. `RunFinished` atomically publishes the current
+generation's outcome and terminal packet. A previously captured historical
+snapshot remains immutable.
 
 `evener/thread/delegates/list` carries `reportPreview` from the durable reported
 completion packet of the current settled run. It preserves a useful prefix of
@@ -357,6 +439,15 @@ dispatched read may finish its bounded work. It does not disconnect other
 subscriptions or claim to cancel remote execution.
 
 ## Shared client responsibilities
+
+`buildEntityView` chooses the authoritative generation. Activity headings use
+proven context `delegateName` fields, not ancestor titles or task descriptions.
+Transcript authorship comes separately from shared `ItemModel.authorship`:
+original authors survive inherited context, and missing authors stay neutral
+rather than borrowing the current child or parent. Neither path acquires a
+parent activity lease. Human questions and sandbox approvals remain
+interactive-root-only; model-facing delegate attention is not a human request.
+Route changes and late action settlement stay with their captured root ref.
 
 [`SessionActivityStore`](../../appwire-client/typescript/sessionActivityStore.ts)
 owns summary and collection demand, request coalescing, cursor recovery,
@@ -770,10 +861,11 @@ describe the executable proof and presentation contract.
 
 The [browser binding](../../cmd/evener-hub/frontend/src/stores/sessionActivity.ts)
 shares a store by actual client object, requested ref and scope. A committed view
-acquires its holder; an abandoned render starts no read. Every visible desktop
-session pane has a status footer that observes that pane's summary and its
-subtree summary (for the Agents count) by explicit ref, so side-by-side panes
-retain independent counts while duplicate consumers of one ref and scope share
+acquires its holder; an abandoned render starts no read. Every visible ordinary
+session pane has a status footer on both viewports that observes that pane's
+summary and its subtree summary (for the Agents count) by explicit ref, so
+side-by-side panes retain independent counts while duplicate consumers of one
+ref and scope share
 the same owner. Agents, Jobs and Watches tabs observe their own
 session-scoped collection. A visible page boundary supplies further demand,
 while the shared store retains and retries an interrupted continuation. The
@@ -901,7 +993,9 @@ initial collection reads. Closing it releases that demand. Transcript watch
 references use the transcript's own watch evidence. The
 [recursive activity panel](../../cmd/evener-hub/frontend/src/panes/session/chrome/ActivityPanel.tsx)
 observes subtree collections while its body is open. These view lifetimes do not
-cause an activity read for every session in the navigation rail.
+cause an `evener/thread/*` activity read for every session in the navigation
+rail; the rail's open title card makes only its own one-ref pulse read, as
+described under [Navigation session status](#navigation-session-status).
 
 Session chrome and the navigation rail expose Overview through their session
 action menus. On the phone, that action opens the full-screen shared activity

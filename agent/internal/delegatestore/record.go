@@ -59,8 +59,9 @@ const ReasonStoppedByParent = "stopped_by_parent"
 type ExhaustionBudget string
 
 const (
-	ExhaustionBudgetTurns      ExhaustionBudget = "max_turns"
-	ExhaustionBudgetToolRounds ExhaustionBudget = "max_tool_rounds_per_input"
+	ExhaustionBudgetTurns               ExhaustionBudget = "max_turns"
+	ExhaustionBudgetToolRounds          ExhaustionBudget = "max_tool_rounds_per_input"
+	ExhaustionBudgetServerContinuations ExhaustionBudget = "max_server_continuations"
 )
 
 type PacketKind string

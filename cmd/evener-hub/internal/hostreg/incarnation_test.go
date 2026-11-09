@@ -524,3 +524,28 @@ func TestSameRegistrationAndPresence(t *testing.T) {
 		t.Fatal("SameRegistration must keep ignoring the presence epoch")
 	}
 }
+
+func TestAddRestoredKeepsThePersistedIdentityAndRefusesALiveName(t *testing.T) {
+	r, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	restored := Host{Name: "back", SSH: "back.example", Generation: 7, IncarnationID: "inc-back", PresenceEpoch: 4}
+	if err := r.AddRestored(restored); err != nil {
+		t.Fatalf("AddRestored: %v", err)
+	}
+	got, ok := r.Get("back")
+	if !ok || got.Generation != 7 || got.IncarnationID != "inc-back" || got.PresenceEpoch != 4 {
+		t.Fatalf("restored entry = %+v/%v, want the persisted identity", got, ok)
+	}
+	next := Host{Name: "later", SSH: "later.example"}
+	if err := r.Add(next); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if later, _ := r.Get("later"); later.Generation <= 7 {
+		t.Fatalf("a later add minted generation %d at or below the restored 7", later.Generation)
+	}
+	if err := r.AddRestored(restored); !errors.Is(err, ErrDuplicateHost) {
+		t.Fatalf("AddRestored of a live name = %v, want ErrDuplicateHost", err)
+	}
+}

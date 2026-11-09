@@ -84,7 +84,9 @@ export function AboutSection() {
         <CodeBlock text={MIT_LICENSE_TEXT} fold={false} />
       </Disclosure>
 
-      <p className={CLASS.help}>Inter and JetBrains Mono, used under the SIL Open Font License.</p>
+      <p className={CLASS.help}>
+        Schibsted Grotesk, Source Serif 4 and JetBrains Mono, used under the SIL Open Font License.
+      </p>
 
       <p className={CLASS.help}>Full third-party notices live in the repository.</p>
     </div>

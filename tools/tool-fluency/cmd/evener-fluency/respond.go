@@ -10,7 +10,7 @@ import (
 	"os"
 	"strings"
 
-	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -37,7 +37,7 @@ type askExchange struct {
 
 // runRespond implements the "respond" subcommand: it reads the pending
 // ask_user questions as JSON from stdin (the same shape evener run's
-// --ask-responder writes: {"questions": [agent.AskUserQuestion, ...]}),
+// --ask-responder writes: {"questions": [schema.AskUserQuestion, ...]}),
 // answers them with one model call playing the person described by
 // --brief-file, prints the answers numbered, and — when --log is given — appends one
 // JSON line per question, pairing it with the answer, so the harness can
@@ -65,7 +65,7 @@ func runRespond(args []string) error {
 		return fmt.Errorf("respond: read questions from stdin: %w", err)
 	}
 	var payload struct {
-		Questions []agent.AskUserQuestion `json:"questions"`
+		Questions []schema.AskUserQuestion `json:"questions"`
 	}
 	if err := json.Unmarshal(stdinJSON, &payload); err != nil {
 		return fmt.Errorf("respond: parse questions JSON: %w", err)
@@ -113,7 +113,7 @@ func runRespond(args []string) error {
 // person: whether several options may be chosen, why the answer matters, the
 // fallback the model would take if unanswered, and which option the model
 // recommends.
-func renderQuestionsForRespond(questions []agent.AskUserQuestion) string {
+func renderQuestionsForRespond(questions []schema.AskUserQuestion) string {
 	var b strings.Builder
 	for i, q := range questions {
 		if q.Header != "" {
@@ -148,7 +148,7 @@ func renderQuestionsForRespond(questions []agent.AskUserQuestion) string {
 // appendAskLog appends one JSON line per question in questions, each paired
 // with that question's own answer (answers[i]; runRespond has checked the
 // counts match).
-func appendAskLog(path string, questions []agent.AskUserQuestion, answers []string) error {
+func appendAskLog(path string, questions []schema.AskUserQuestion, answers []string) error {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return err

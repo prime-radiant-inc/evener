@@ -1234,7 +1234,7 @@
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_prune",
-      "output": "{\n  \"message\": \"Removed 0, skipped 2. Git worktree registry pruned.\",\n  \"registry_pruned\": true,\n  \"registry_skip_reason\": \"\",\n  \"removed\": [],\n  \"skipped\": [\n    {\n      \"branch_removed\": false,\n      \"name\": \"lane\",\n      \"path\": \"/home/jesse/.local/state/evener/projects/evener/worktrees/evener/lane\",\n      \"reason\": \"sidecar-less\",\n      \"sidecar_removed\": false,\n      \"worktree_removed\": false\n    },\n    {\n      \"branch_removed\": false,\n      \"name\": \"settle-fix\",\n      \"path\": \"\",\n      \"reason\": \"in-grace\",\n      \"sidecar_removed\": false,\n      \"worktree_removed\": false\n    }\n  ],\n  \"status\": \"pruned\"\n}",
+      "output": "{\n  \"message\": \"Removed 0, skipped 2. Git worktree registry pruned.\",\n  \"registry_pruned\": true,\n  \"registry_skip_reason\": \"\",\n  \"removed\": [],\n  \"skipped\": [\n    {\n      \"branch_removed\": false,\n      \"name\": \"lane\",\n      \"path\": \"/home/jesse/.local/state/evener/projects/evener/worktrees/evener/lane\",\n      \"reason\": \"sidecar-less\",\n      \"sidecar_removed\": false,\n      \"worktree_removed\": false\n    },\n    {\n      \"branch_removed\": false,\n      \"name\": \"settle-fix\",\n      \"path\": \"\",\n      \"reason\": \"in-grace\",\n      \"sidecar_removed\": false,\n      \"worktree_removed\": false\n    }\n  ],\n  \"status\": \"pruned\",\n  \"unlocked\": []\n}",
       "status": "completed",
       "completedAt": 1790625602000
     },
@@ -1256,7 +1256,27 @@
       "callId": "call_ask_user",
       "output": "questions posted; answers arrive in the user's reply after your turn ends",
       "status": "completed",
-      "completedAt": 1790625602000
+      "completedAt": 1790625602000,
+      "raw": {
+        "version": 1,
+        "questions": [
+          {
+            "header": "Deploy",
+            "question": "Ship the settle fix tonight, or wait for the race run?",
+            "options": [
+              {
+                "label": "Ship tonight",
+                "detail": "The fix is small and the drain test passes.",
+                "recommended": true
+              },
+              {
+                "label": "Wait",
+                "detail": "Let go test -race run overnight first."
+              }
+            ]
+          }
+        ]
+      }
     },
     {
       "type": "commandExecution",

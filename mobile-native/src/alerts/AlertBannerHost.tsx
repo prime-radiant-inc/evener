@@ -62,7 +62,7 @@ export function AlertBannerHost({ navigation }: { navigation: NavigationContaine
 	};
 
 	return (
-		<View pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0, top }}>
+		<View pointerEvents="box-none" style={{ position: "absolute", left: insets.left, right: insets.right, top }}>
 			{banner ? (
 				<AlertBanner
 					key={banner.id}

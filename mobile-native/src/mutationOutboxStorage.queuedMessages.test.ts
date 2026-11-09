@@ -5,11 +5,10 @@ import {
 	describeQueuedMessageStorage,
 	queuedIntent,
 } from "@evener/appwire-client/testing/queuedMessageStorageConformance";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, expect, test } from "vitest";
 import { MutationOutboxSQLite } from "./mutationOutboxStorage";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
 import type { SqliteSync } from "./sqliteSync";
-vi.mock("expo-crypto", () => ({ randomUUID: () => "unused", getRandomValues: (array: Uint8Array) => array }));
 const databases: SqliteDoubleDatabase[] = [];
 const directories: string[] = [];
 afterEach(() => {

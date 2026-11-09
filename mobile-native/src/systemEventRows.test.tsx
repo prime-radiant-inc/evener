@@ -188,7 +188,7 @@ describe("recorded summary failure", () => {
 		if (row?.kind !== "notice") throw new Error("summary warning notice was lost");
 		expect(isCriticalNotice(row)).toBe(true);
 		const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="summary-fixture" />);
-		for (const identifier of ["openai/summary-model-8af1", "429", "rate_limit"])
+		for (const identifier of ["openai/gpt-5.2", "rejected_output", "empty_reply"])
 			expect(renderedText(tree)).toContain(identifier);
 		expect(inked(tree, palettes.light.attention)).toBe(true);
 		expect(tree.root.findAll((node) => node.props.accessibilityRole === "button")).toHaveLength(0);

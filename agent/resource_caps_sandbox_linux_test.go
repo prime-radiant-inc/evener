@@ -65,7 +65,7 @@ func TestLinuxEnforcedSandboxKeepsTrustedResourcesOutsideModelShellMask(t *testi
 	if resources == nil || resources.CPUs <= 0 || resources.MemoryMB <= 0 {
 		t.Skip("host does not expose finite CPU and memory cgroup caps")
 	}
-	_, warning := sess.renderSystemPrompt(local)
+	_, warning, _ := sess.renderSystemPrompt(local)
 	if warning != "" {
 		t.Fatalf("render system prompt: %s", warning)
 	}

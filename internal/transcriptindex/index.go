@@ -27,12 +27,10 @@ import (
 const (
 	// formatVersion is the sidecar's layout. projectionID names the projection
 	// its records reproduce; either changing rebuilds every index.
-	formatVersion = 6
-	// v8: a settled tool result's nonzero exit no longer counts as a failure
-	// (Jesse, 2026-10-16), so a sidecar built under v7 carries per-turn
-	// FailedToolCalls counts from the OLD rule. The JSON field shapes did not
-	// change, so schemaID cannot tell the two apart; the projection name must.
-	projectionID = "transcript-read-model-v8"
+	formatVersion = 7
+	// Dedicated COMMUNICATE records consume inherited call reconstruction.
+	// Older sidecars can contain duplicate messages from ordinary forks.
+	projectionID = "transcript-read-model-v11"
 
 	// tailBytes is how much of the covered prefix's end validation compares,
 	// the check the attention fold cursor uses (agent/session_attention.go).
@@ -184,7 +182,10 @@ type meta struct {
 	HeaderLength int64  `json:"header_length"` // 0: no header yet
 	Items        uint64 `json:"items"`
 	Turns        uint64 `json:"turns"`
-	Updates      uint64 `json:"updates"`
+	// LatestExecutionTurnSlot is the one-based turn-table slot of the latest
+	// execution summary; zero means the covered transcript has no execution.
+	LatestExecutionTurnSlot uint64 `json:"latest_execution_turn_slot,omitempty"`
+	Updates                 uint64 `json:"updates"`
 	// UpdatesFile names the update log's file in the build ("" is the
 	// first, updatesFile); a cut writes the kept records to a new file.
 	// UpdatesFrom is the offset from which the log holds every update: those
@@ -299,6 +300,13 @@ type Index struct {
 	// refusing marks a handle opened by OpenRefusing: it runs no full
 	// rebuild and never blocks on the sidecar's lock, in any operation.
 	refusing bool
+	// readView borrows the parent's shared lock and transcript handle. Its
+	// derived records are private when reconstruction at an older cut is needed.
+	readView bool
+	// cutView retains only the last exceptional reconstruction, never one per
+	// entry or reader. The ordinary current-boundary path releases it.
+	cutView   *Index
+	cutLength int64
 }
 
 // Open returns the index for the transcript at path, kept in dir. A missing,
@@ -386,6 +394,14 @@ func (x *Index) Rebuild(length int64) error {
 	return x.locked(true, func() error { return x.rebuild(length, "") })
 }
 
+// RebuildAtLeast repairs a shared sidecar without discarding bytes another
+// handle already indexed. Readers still apply their own publication cut.
+func (x *Index) RebuildAtLeast(length int64) error {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return x.locked(true, func() error { return x.rebuild(max(length, x.meta.Length), "") })
+}
+
 // RebuildIfStillRefused rebuilds the sidecar only while the live build is
 // still the one the caller's refusal named — the repair path's revalidation.
 // A registration can land after another repair already committed a fresh
@@ -417,10 +433,17 @@ func (x *Index) RebuildIfStillRefused(length int64, refused string) error {
 // locked runs fn holding the sidecar lock, shared or exclusive, after taking
 // up whatever other handles wrote.
 func (x *Index) locked(exclusive bool, fn func() error) error {
+	return x.lockedMode(exclusive, false, fn)
+}
+
+func (x *Index) lockedMode(exclusive, nonblocking bool, fn func() error) error {
+	if x.readView {
+		return fn()
+	}
 	if x.lock == nil {
 		return errors.New("transcript index is closed")
 	}
-	if x.refusing {
+	if x.refusing || nonblocking {
 		if err := lockFileTry(x.lock, exclusive); err != nil {
 			// Only contention is busy: a fault on the lock itself — a dead
 			// fd, an exhausted lock table — must surface as itself, or the
@@ -624,6 +647,9 @@ func (x *Index) adopt(m meta) error {
 		if err := x.stopBufferingStrings(); err != nil {
 			return err
 		}
+	}
+	if _, err := x.latestExecutionTurnID(); err != nil {
+		return fmt.Errorf("%w: invalid latest execution locator: %w", errCorrupt, err)
 	}
 	return x.readHeader()
 }
@@ -1256,6 +1282,9 @@ func (x *Index) stopBufferingStrings() error {
 
 // publishMeta writes the covered state.
 func (x *Index) publishMeta() error {
+	if _, err := x.latestExecutionTurnID(); err != nil {
+		return fmt.Errorf("publish invalid latest execution locator: %w", err)
+	}
 	sum, err := x.tailSum(x.meta.Length)
 	if err != nil {
 		return err
