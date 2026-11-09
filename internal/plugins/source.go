@@ -318,10 +318,9 @@ func isHexPair(name string) bool {
 // regular files), creating directories as needed and overwriting existing files.
 // Every entry named .git is skipped, and a symlink reaching Git metadata is
 // refused: those bytes must never enter a published plugin tree (#4768). The
-// link's target is opened once and the opened descriptor is what gets copied,
-// so a link retargeted after a name check cannot substitute Git metadata. A
-// named pipe or other non-regular entry fails the copy rather than blocking on
-// its open (#4847).
+// opened descriptor is what gets copied, so a retarget cannot substitute Git
+// metadata. A named pipe or other non-regular entry fails the copy rather than
+// blocking on its open (#4847).
 func copyTree(src, dst string) error {
 	info, err := sourceStat(src)
 	if err != nil {
@@ -351,15 +350,17 @@ func copyTree(src, dst string) error {
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
 		}
+		var in *os.File
 		if fi.Mode()&os.ModeSymlink != 0 {
-			in, err := openPluginSourceLink(src, path)
-			if err != nil {
-				return err
-			}
-			defer func() { _ = in.Close() }()
-			return copyOpenedFile(in, target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, fi.Mode().Perm())
+			in, err = openPluginSourceLink(src, path)
+		} else {
+			in, err = openRegularNoBlock(path)
 		}
-		return copyRegularFile(path, target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, fi.Mode().Perm())
+		if err != nil {
+			return err
+		}
+		defer func() { _ = in.Close() }()
+		return copyOpenedFile(in, target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, fi.Mode().Perm())
 	})
 }
 

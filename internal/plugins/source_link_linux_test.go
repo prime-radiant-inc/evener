@@ -26,12 +26,10 @@ func TestCopyTreeRefusesLinkRetargetedBetweenCheckAndOpen(t *testing.T) {
 	}
 
 	previous := pluginSourceBeforeLinkOpen
-	swapped := false
 	pluginSourceBeforeLinkOpen = func(path string) {
-		if path != link || swapped {
+		if path != link {
 			return
 		}
-		swapped = true
 		if err := os.Remove(safe); err != nil {
 			t.Fatalf("retarget target: %v", err)
 		}
