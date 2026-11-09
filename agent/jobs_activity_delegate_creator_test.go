@@ -8,9 +8,15 @@ package agent
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/appwire"
 )
 
 func delegateCreatedBySession(delegateID, parentID, ownerSessionID, visibleSessionID, childSessionID string) delegatestore.Event {
@@ -96,6 +102,109 @@ func TestHistoricalDelegateRosterAttributesNestedDelegateToCreator(t *testing.T)
 	if len(creatorRows) != 1 {
 		t.Fatalf("creator roster = %v, want exactly its own child", delegateIDs(creatorRows))
 	}
+}
+
+// Issue #5643: after #5012 the root roster holds only the rows the root
+// created, so an intermediate delegate session whose jobs journal is missing
+// or unreadable used to take its nested delegates with it. Their rows are
+// still in the shared root journal, attributed to that creator, and the tree
+// must keep rendering them under the degraded child.
+func TestHistoricalActivityTreeKeepsNestedDelegatesWhenCreatorSessionUnavailable(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name            string
+		makeUnavailable func(t *testing.T, stateDir, sessionID string)
+	}{
+		{
+			name:            "missing jobs journal",
+			makeUnavailable: func(*testing.T, string, string) {},
+		},
+		{
+			name: "unreadable jobs journal",
+			makeUnavailable: func(t *testing.T, stateDir, sessionID string) {
+				t.Helper()
+				if err := os.MkdirAll(filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			stateDir := t.TempDir()
+			rootID := "unreadablecreatorroot"
+			middleID := "childmiddleunreadable"
+			leafID := "childleafreadable"
+			middle := pastStableDescriptor(rootID, middleID, "middle task")
+			leaf := pastStableDescriptor(rootID, leafID, "leaf task")
+			leaf.ParentDelegateID = "dlg_" + strings.TrimPrefix(middleID, "child")
+			leaf.VisibleSessionID = middleID
+			writePastDelegates(t, stateDir, rootID, middle, leaf)
+
+			started := time.Unix(9_000, 0).UTC()
+			s1cov_writeJobLog(t, stateDir, rootID, jobstore.Event{
+				Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root", Type: jobstore.JobShell,
+				OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started,
+			})
+			s1cov_writeJobLog(t, stateDir, leafID, jobstore.Event{
+				Kind: jobstore.EventJobStarted, TS: started, JobID: "job_leaf", Type: jobstore.JobShell,
+				OwnerSessionID: leafID, VisibleToSession: leafID, StartedAt: &started,
+			})
+			savePastActivityMeta(t, stateDir, rootID, "Root")
+			// The middle session exists (meta and transcript) but its own jobs
+			// journal does not load. Its nested delegate row still lives in the
+			// root journal.
+			savePastActivityMetaWithTreeRevision(t, stateDir, middleID, "Middle", rootID, 0)
+			savePastActivityMetaWithTreeRevision(t, stateDir, leafID, "Leaf", rootID, 0)
+			tc.makeUnavailable(t, stateDir, middleID)
+
+			tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
+			if err != nil {
+				t.Fatalf("LoadSessionJobActivityTree: %v", err)
+			}
+			middleDelegate := pastFindDelegate(t, tree.Root, middleID)
+			if middleDelegate.Child == nil {
+				t.Fatal("middle delegate child is absent: the nested delegate rows attributed to its creator were dropped with the unreadable session (#5643)")
+			}
+			diagnosed := false
+			for _, diagnostic := range middleDelegate.Child.Diagnostics {
+				if strings.Contains(diagnostic, middleID) {
+					diagnosed = true
+				}
+			}
+			if !diagnosed {
+				t.Fatalf("degraded child diagnostics = %q, want one naming the unreadable session", middleDelegate.Child.Diagnostics)
+			}
+
+			leafDelegate := findActivityDelegate(t, *middleDelegate.Child, leafID)
+			if leafDelegate.Child == nil {
+				t.Fatal("nested leaf delegate has no child session, want the readable leaf session loaded beneath the degraded branch")
+			}
+			foundJob := false
+			for _, entry := range leafDelegate.Child.Entries {
+				if entry.Job != nil && entry.Job.JobID == "job_leaf" {
+					foundJob = true
+				}
+			}
+			if !foundJob {
+				t.Fatalf("nested leaf entries = %+v, want job %q", leafDelegate.Child.Entries, "job_leaf")
+			}
+		})
+	}
+}
+
+func findActivityDelegate(t *testing.T, session appwire.JobActivitySession, childID string) appwire.JobActivityDelegate {
+	t.Helper()
+	for _, entry := range session.Entries {
+		if entry.Delegate != nil && entry.Delegate.ChildSessionID == childID {
+			return *entry.Delegate
+		}
+	}
+	t.Fatalf("no delegate child=%q in %+v", childID, session.Entries)
+	return appwire.JobActivityDelegate{}
 }
 
 func delegateIDs(rows map[string]delegateSnapshot) []string {

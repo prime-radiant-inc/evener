@@ -405,16 +405,35 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool, cache
 	// journal was there at all, from the same stat it reads through, so
 	// nothing here can see the file appear or vanish between a presence
 	// check and the read.
-	jobs, jobsEpoch, jobsAbsent, err := loadCachedJobRecords(cache.ctx, jobsPath)
-	if err != nil {
-		return activityLoadedBase{}, err
+	jobs, jobsEpoch, jobsAbsent, jobErr := loadCachedJobRecords(cache.ctx, jobsPath)
+	if jobErr != nil && !required {
+		return activityLoadedBase{}, jobErr
 	}
-	if jobsAbsent && required {
-		return activityLoadedBase{}, fmt.Errorf("child session %q unavailable in state directory", sessionID)
+	if cache.ctx.Err() != nil {
+		return activityLoadedBase{}, cache.ctx.Err()
 	}
 	stable, delegates, diagnostics, err := loadHistoricalStableActivity(cache, stateDir, rootID, sessionID)
 	if err != nil {
 		return activityLoadedBase{}, err
+	}
+	if required && (jobErr != nil || jobsAbsent) {
+		if len(stable) == 0 {
+			if jobErr != nil {
+				return activityLoadedBase{}, jobErr
+			}
+			return activityLoadedBase{}, fmt.Errorf("child session %q unavailable in state directory", sessionID)
+		}
+		// #5643: this session's own jobs journal is missing or unreadable, but
+		// the shared root journal still attributes delegate rows to it. Degrade
+		// to those rows instead of dropping the branch: #5012 keeps nested
+		// delegates out of the root roster, so this branch is the only place
+		// they can be loaded. The diagnostic keeps the failure visible on the
+		// degraded session rather than silently presenting it as healthy.
+		if jobErr != nil {
+			diagnostics = append(diagnostics, fmt.Sprintf("child session %q job journal unreadable: %v; showing delegates from the root journal", sessionID, jobErr))
+		} else {
+			diagnostics = append(diagnostics, fmt.Sprintf("child session %q job journal unavailable in state directory; showing delegates from the root journal", sessionID))
+		}
 	}
 	return activityLoadedBase{snapshot: activitySessionSnapshot{
 		SessionID:      sessionID,
