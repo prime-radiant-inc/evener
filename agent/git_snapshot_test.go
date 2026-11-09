@@ -321,12 +321,15 @@ func TestSnapshotGit_FreshRepoNoCommits(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	inRepo, _, _, _, commits, _, _ := snapshotGit(context.Background(), env, dir)
+	inRepo, _, _, _, commits, _, probeFailed := snapshotGit(context.Background(), env, dir)
 	if !inRepo {
 		t.Fatal("expected inRepo=true")
 	}
 	if len(commits) != 0 {
 		t.Errorf("expected 0 commits for fresh repo, got %d", len(commits))
+	}
+	if probeFailed {
+		t.Fatal("a fresh repository's normal nonzero exits were reported as probe failures")
 	}
 }
 

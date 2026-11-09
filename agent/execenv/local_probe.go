@@ -94,24 +94,35 @@ var (
 		// it against loginShellPATHTimeout killed the shell before it ran and
 		// silently dropped the login-shell PATH (#4495).
 		var timedOut atomic.Bool
-		timer := loginShellPATHAfterFunc(timeout, func() {
+		stop := loginShellPATHAfterFunc(timeout, func() {
 			timedOut.Store(true)
 			_ = cmd.Process.Kill()
 		})
 		err := cmd.Wait()
-		timer.Stop()
+		stop()
+		// A successful exit survives the deadline. WaitDelay can keep Wait
+		// pending past timeout while a background job holds stdout open; if the
+		// shell itself exited 0 in that window, its answer is valid and
+		// orphanpipe.ChildErr folds the drain-only exec.ErrWaitDelay away.
+		childErr := orphanpipe.ChildErr(cmd, err)
+		if childErr == nil {
+			return newProbeCapture(out), nil
+		}
 		if timedOut.Load() {
 			return newProbeCapture(out), errLoginShellPATHTimeout
 		}
-		return newProbeCapture(out), orphanpipe.ChildErr(cmd, err)
+		return newProbeCapture(out), childErr
 	}
 )
 
 var (
 	// loginShellPATHAfterFunc is the probe's deadline seam. Tests replace it to
-	// observe that the deadline is armed after the process exists; production
-	// uses time.AfterFunc.
-	loginShellPATHAfterFunc = time.AfterFunc
+	// fire the deadline only after the fixture has established its process;
+	// production uses time.AfterFunc and returns its Stop.
+	loginShellPATHAfterFunc = func(timeout time.Duration, fire func()) func() bool {
+		timer := time.AfterFunc(timeout, fire)
+		return timer.Stop
+	}
 
 	loginShellPATHMu    sync.Mutex
 	loginShellPATHValue string

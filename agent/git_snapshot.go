@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -138,17 +140,17 @@ func snapshotGit(ctx context.Context, env execenv.ExecutionEnvironment, cwd stri
 	}
 
 	inside, err := run("rev-parse", "--is-inside-work-tree")
-	if err != nil {
+	if err != nil && !gitExited(err) {
 		return false, "", 0, 0, nil, false, true
 	}
-	if inside.ExitCode != 0 || strings.TrimSpace(inside.Stdout) != "true" {
+	if err != nil || inside.ExitCode != 0 || strings.TrimSpace(inside.Stdout) != "true" {
 		return false, "", 0, 0, nil, false, false
 	}
 	inRepo = true
 
-	if br, err := run("rev-parse", "--abbrev-ref", "HEAD"); err != nil {
+	if br, err := run("rev-parse", "--abbrev-ref", "HEAD"); err != nil && !gitExited(err) {
 		probeFailed = true
-	} else if br.ExitCode == 0 {
+	} else if err == nil && br.ExitCode == 0 {
 		branch = strings.TrimSpace(br.Stdout)
 	}
 
@@ -158,9 +160,9 @@ func snapshotGit(ctx context.Context, env execenv.ExecutionEnvironment, cwd stri
 	// wrong one (#4568 round 2). A capped STDERR is not the status parser's
 	// business — it reads stdout — so a noisy stderr no longer discards counts
 	// that were read whole (#4621 round 15).
-	if st, err := run("status", "--porcelain"); err != nil {
+	if st, err := run("status", "--porcelain"); err != nil && !gitExited(err) {
 		probeFailed = true
-	} else if st.ExitCode == 0 && !st.StdoutTruncated {
+	} else if err == nil && st.ExitCode == 0 && !st.StdoutTruncated {
 		statusKnown = true
 		for line := range strings.SplitSeq(strings.ReplaceAll(st.Stdout, "\r\n", "\n"), "\n") {
 			line = strings.TrimSpace(line)
@@ -184,13 +186,13 @@ func snapshotGit(ctx context.Context, env execenv.ExecutionEnvironment, cwd stri
 	// for no behavior change.
 	lg, err := run("log", "-n", "5", "--pretty=format:%h%x20%s")
 	switch {
-	case err != nil:
+	case err != nil && !gitExited(err):
 		// git did not run: an empty commit list here would claim "no commits".
 		probeFailed = true
-	case lg.ExitCode == 0 && lg.StdoutTruncated:
+	case err == nil && lg.ExitCode == 0 && lg.StdoutTruncated:
 		// A partial log is not "no commits" either; the trusted stream was cut.
 		probeFailed = true
-	case lg.ExitCode == 0:
+	case err == nil && lg.ExitCode == 0:
 		for line := range strings.SplitSeq(strings.ReplaceAll(lg.Stdout, "\r\n", "\n"), "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" {
@@ -201,6 +203,16 @@ func snapshotGit(ctx context.Context, env execenv.ExecutionEnvironment, cwd stri
 	}
 
 	return inRepo, branch, modifiedFiles, untrackedFiles, recentCommitTitles, statusKnown, probeFailed
+}
+
+// gitExited reports that err is git's completed nonzero exit rather than a
+// failure to run it. LocalExecutionEnvironment returns the exec.ExitError
+// alongside the ExecResult, so RunGit's "an error means git did not run"
+// contract does not hold for the real environment; a fresh repository's
+// `rev-parse` and `log` exit nonzero as normal answers (#4517 review).
+func gitExited(err error) bool {
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr)
 }
 
 func hasGitMetadataAncestor(cwd string) bool {

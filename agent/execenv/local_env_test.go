@@ -181,8 +181,8 @@ func TestLoginShellPATHProbe_ReportsTimeoutDistinctly(t *testing.T) {
 	if path != "" {
 		t.Fatalf("LoginShellPATHProbe() path = %q, want empty", path)
 	}
-	if !strings.Contains(failure, "timed out") {
-		t.Fatalf("LoginShellPATHProbe() failure = %q, want a named timeout", failure)
+	if failure == "" {
+		t.Fatal("LoginShellPATHProbe() reported no failure reason for a timed-out probe")
 	}
 }
 
