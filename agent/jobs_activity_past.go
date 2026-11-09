@@ -429,6 +429,7 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool, cache
 	if err != nil {
 		return activityLoadedBase{}, err
 	}
+	degradedJobHistory := false
 	if required && (jobErr != nil || jobsAbsent) {
 		if len(stable) == 0 {
 			if jobErr != nil {
@@ -447,20 +448,22 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool, cache
 			reason = fmt.Sprintf("unreadable: %v", jobErr)
 		}
 		diagnostics = append(diagnostics, fmt.Sprintf("child session %q job journal %s; showing delegates from the root journal", sessionID, reason))
+		degradedJobHistory = true
 	}
 	return activityLoadedBase{snapshot: activitySessionSnapshot{
-		SessionID:      sessionID,
-		Ref:            encodeRef("", sessionID),
-		Label:          activityLabelFromMeta(sessionID, meta, metaErr),
-		RootID:         rootID,
-		Revision:       activityRevisionFromMeta(meta),
-		Jobs:           jobs,
-		LiveJobs:       map[string]*jobstore.JobRecord{},
-		Delegates:      stable,
-		Usage:          historicalActivityUsage(stateDir, sessionID, meta),
-		Diagnostics:    diagnostics,
-		JobsEpoch:      jobsEpoch,
-		DelegatesEpoch: delegates.epoch,
+		SessionID:          sessionID,
+		Ref:                encodeRef("", sessionID),
+		Label:              activityLabelFromMeta(sessionID, meta, metaErr),
+		RootID:             rootID,
+		Revision:           activityRevisionFromMeta(meta),
+		Jobs:               jobs,
+		LiveJobs:           map[string]*jobstore.JobRecord{},
+		Delegates:          stable,
+		Usage:              historicalActivityUsage(stateDir, sessionID, meta),
+		Diagnostics:        diagnostics,
+		DegradedJobHistory: degradedJobHistory,
+		JobsEpoch:          jobsEpoch,
+		DelegatesEpoch:     delegates.epoch,
 
 		JobsJournalAbsent:          jobsAbsent,
 		JobsJournalUnreadable:      jobErr != nil,

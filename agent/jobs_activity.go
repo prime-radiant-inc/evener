@@ -209,6 +209,11 @@ type activitySessionSnapshot struct {
 	Delegates   map[string]delegateSnapshot
 	Usage       *appwire.EvenerUsage // cumulative self-only tokens; nil = unknown
 	Diagnostics []string
+	// DegradedJobHistory records that this session's own jobs journal was
+	// unavailable, but its delegate rows survived because they live in the
+	// shared root journal. The job counts are incomplete, so the projected
+	// branch carries an error instead of reporting a complete history.
+	DegradedJobHistory bool
 	// JobsEpoch and DelegatesEpoch are historicalJobFoldCache's and
 	// historicalDelegateFoldCache's current generation counters for this
 	// session's own jobs.jsonl and the delegates.jsonl it folds,
@@ -825,6 +830,7 @@ func activityFilterSnapshotToDelegate(base activitySessionSnapshot, delegateID s
 		LiveJobs:                   map[string]*jobstore.JobRecord{},
 		Delegates:                  make(map[string]delegateSnapshot, 1),
 		Diagnostics:                append([]string(nil), base.Diagnostics...),
+		DegradedJobHistory:         base.DegradedJobHistory,
 		Children:                   make(map[string]*activitySessionSnapshot),
 		Errors:                     make(map[string]error),
 	}
@@ -1072,6 +1078,9 @@ func projectActivitySessionAt(snapshot activitySessionSnapshot, budget *activity
 		Label:       activitybound.Truncate(snapshot.Label, activityMaxLabelRunes),
 		Entries:     make([]appwire.JobActivityEntry, 0),
 		Diagnostics: append([]string(nil), snapshot.Diagnostics...),
+	}
+	if snapshot.DegradedJobHistory {
+		appendActivityBranchError(&projected.Branch, "job history is incomplete: the session job journal was unavailable; showing delegates from the root journal")
 	}
 
 	cycleKey := snapshot.SessionID + "\x00" + snapshot.Ref

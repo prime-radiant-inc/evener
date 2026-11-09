@@ -116,10 +116,19 @@ func TestHistoricalActivityTreeKeepsNestedDelegatesWhenCreatorSessionUnavailable
 	cases := []struct {
 		name            string
 		makeUnavailable func(t *testing.T, stateDir, sessionID string)
+		recover         func(t *testing.T, stateDir, sessionID string)
 	}{
 		{
 			name:            "missing jobs journal",
 			makeUnavailable: func(*testing.T, string, string) {},
+			recover: func(t *testing.T, stateDir, sessionID string) {
+				t.Helper()
+				started := time.Unix(9_001, 0).UTC()
+				s1cov_writeJobLog(t, stateDir, sessionID, jobstore.Event{
+					Kind: jobstore.EventJobStarted, TS: started, JobID: "job_middle", Type: jobstore.JobShell,
+					OwnerSessionID: sessionID, VisibleToSession: sessionID, StartedAt: &started,
+				})
+			},
 		},
 		{
 			name: "unreadable jobs journal",
@@ -128,6 +137,17 @@ func TestHistoricalActivityTreeKeepsNestedDelegatesWhenCreatorSessionUnavailable
 				if err := os.MkdirAll(filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl"), 0o755); err != nil {
 					t.Fatal(err)
 				}
+			},
+			recover: func(t *testing.T, stateDir, sessionID string) {
+				t.Helper()
+				if err := os.Remove(filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl")); err != nil {
+					t.Fatal(err)
+				}
+				started := time.Unix(9_002, 0).UTC()
+				s1cov_writeJobLog(t, stateDir, sessionID, jobstore.Event{
+					Kind: jobstore.EventJobStarted, TS: started, JobID: "job_middle", Type: jobstore.JobShell,
+					OwnerSessionID: sessionID, VisibleToSession: sessionID, StartedAt: &started,
+				})
 			},
 		},
 		{
@@ -188,6 +208,12 @@ func TestHistoricalActivityTreeKeepsNestedDelegatesWhenCreatorSessionUnavailable
 			if !diagnosed {
 				t.Fatalf("degraded child diagnostics = %q, want one naming the unreadable session", middleDelegate.Child.Diagnostics)
 			}
+			if middleDelegate.Child.Branch.Error == "" {
+				t.Fatal("degraded child branch error is empty; aggregation would report the job counts complete")
+			}
+			if middleDelegate.Child.Counts.Complete {
+				t.Fatalf("degraded child counts = %+v, want Complete false", middleDelegate.Child.Counts)
+			}
 
 			leafDelegate := pastFindDelegate(t, *middleDelegate.Child, leafID)
 			if leafDelegate.Child == nil {
@@ -201,6 +227,21 @@ func TestHistoricalActivityTreeKeepsNestedDelegatesWhenCreatorSessionUnavailable
 			}
 			if !foundJob {
 				t.Fatalf("nested leaf entries = %+v, want job %q", leafDelegate.Child.Entries, "job_leaf")
+			}
+			if tc.recover == nil {
+				return
+			}
+			tc.recover(t, stateDir, middleID)
+			tree, err = LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
+			if err != nil {
+				t.Fatalf("LoadSessionJobActivityTree after recovery: %v", err)
+			}
+			recovered := pastFindDelegate(t, tree.Root, middleID)
+			if recovered.Child == nil {
+				t.Fatal("recovered child is absent")
+			}
+			if recovered.Child.Branch.Error != "" || !recovered.Child.Counts.Complete {
+				t.Fatalf("recovered child branch = %q counts = %+v, want no error and Complete true", recovered.Child.Branch.Error, recovered.Child.Counts)
 			}
 		})
 	}
