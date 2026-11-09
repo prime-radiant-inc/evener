@@ -7,6 +7,7 @@ import {
   readDisposition,
   readWindowBounds,
 } from "@evener/appwire-client";
+import { createBrowserBroadcastChannel } from "./browserBroadcastChannel";
 import { createVersionedChannel, makeSourceId, type VersionedChannelMessage } from "./versionedChannel";
 
 // The session cache's tab-level lifetime state: the epoch this tab has
@@ -109,8 +110,7 @@ function isCacheChannelMessage(value: VersionedChannelMessage): value is CacheCh
 // test file's broadcasts reach another concurrently-running file's handler
 // (and stall its worker at exit). Tests that need a channel install one
 // through the seam; DEFAULT_OPEN_DIAGNOSTIC's MODE gate is the precedent.
-const defaultCacheChannelFactory = (name: string): BroadcastChannel | null =>
-  typeof BroadcastChannel !== "undefined" && import.meta.env.MODE !== "test" ? new BroadcastChannel(name) : null;
+const defaultCacheChannelFactory = createBrowserBroadcastChannel;
 let createCacheChannel: (name: string) => BroadcastChannel | null = defaultCacheChannelFactory;
 let cacheChannel: CacheChannel | undefined;
 

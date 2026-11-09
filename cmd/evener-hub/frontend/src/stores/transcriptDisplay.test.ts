@@ -75,6 +75,9 @@ function viewSnapshot(id: string): CapturedTranscriptView {
 }
 
 beforeEach(() => {
+  // The default BroadcastChannel factory is deliberately inert in test mode.
+  // These cases that install a fake channel exercise its production attempt.
+  vi.stubEnv("MODE", "production");
   storage.clear();
   installLocalStorage(storage);
   connectionStore.setState({ state: "idle", serverInfo: undefined, features: undefined, client: null });
@@ -89,6 +92,7 @@ afterEach(() => {
   resetTranscriptViewRegistryForTests();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 describe("effective transcript display state", () => {
