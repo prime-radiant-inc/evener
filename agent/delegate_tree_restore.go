@@ -349,7 +349,7 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 	}
 	plans.updates = append(plans.updates, deliveryPlans.updates...)
 	plans.deliveries = append(plans.deliveries, deliveryPlans.deliveries...)
-	if c.stopHasInFlightDeliveriesLocked(stop) {
+	if len(stop.deliveries) != 0 {
 		// A receipt still in flight will untrack itself when its executor
 		// commits or abandons it, waking this drain.
 		return plans, nil
@@ -407,7 +407,6 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 	}); err != nil {
 		return delegateMutationPlans{}, err
 	}
-	c.dropStoppedRetryableAdmissionsLocked()
 	close(stop.done)
 	c.stop = nil
 	c.evidenceVersion++
