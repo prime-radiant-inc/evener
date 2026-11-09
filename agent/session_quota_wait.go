@@ -156,13 +156,15 @@ func (s *Session) quotaWaitKeepsGoal(err error) bool {
 }
 
 // wakeAfterQuotaWait asks for the turns the wait held back. Held
-// notifications get one notification turn, whose idle settle then continues
-// an active goal; with no notification held, the active goal is kicked
-// directly. Root attention a quota failure paused is re-armed first, so the
-// notification turn carries it.
+// notifications — queued ones, root attention, and watch sends addressed to
+// this session, whose own wake the entry gate refused — get one notification
+// turn, whose idle settle then continues an active goal; with none held, the
+// active goal is kicked directly. Root attention a quota failure paused is
+// re-armed first, so the notification turn carries it.
 func (s *Session) wakeAfterQuotaWait() {
 	s.resumePausedRootAttention()
-	if s.peekNotifications() > 0 || s.pendingRootDelegateAttention() {
+	watchSendsPending := s.jobManager != nil && s.jobManager.hasPendingWatchSends()
+	if s.peekNotifications() > 0 || s.pendingRootDelegateAttention() || watchSendsPending {
 		s.notify()
 		return
 	}

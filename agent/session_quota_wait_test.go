@@ -584,14 +584,17 @@ func TestOneShotRunFailsFastOnUsageLimit(t *testing.T) {
 	}
 }
 
-// waitUntil polls cond until it holds, failing at the test's tripwire.
-func waitUntil(t *testing.T, ctx context.Context, what string, cond func() bool) {
+// waitUntil polls cond until it holds, failing once tripped is closed (the
+// test's tripwire).
+func waitUntil(t *testing.T, tripped <-chan struct{}, what string, cond func() bool) {
 	t.Helper()
 	for !cond() {
-		if ctx.Err() != nil {
+		select {
+		case <-tripped:
 			t.Fatalf("never reached: %s", what)
+		default:
+			time.Sleep(time.Millisecond)
 		}
-		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -611,7 +614,7 @@ func TestStoppingAQuotaWaitingDelegateSettlesAsStopped(t *testing.T) {
 		close(finished)
 	}()
 	trip := tripwireCtx(t)
-	waitUntil(t, trip, "the delegate waits for quota", s.waitingForQuota)
+	waitUntil(t, trip.Done(), "the delegate waits for quota", s.waitingForQuota)
 
 	sub.mu.Lock()
 	sub.cancelRequested = true
@@ -674,7 +677,7 @@ func TestDelegateFinalizationTurnHeldDuringQuotaWait(t *testing.T) {
 		close(finished)
 	}()
 	trip := tripwireCtx(t)
-	waitUntil(t, trip, "the delegate's finalization drain", func() bool {
+	waitUntil(t, trip.Done(), "the delegate's finalization drain", func() bool {
 		sub.mu.Lock()
 		defer sub.mu.Unlock()
 		return sub.finalizing
@@ -686,7 +689,7 @@ func TestDelegateFinalizationTurnHeldDuringQuotaWait(t *testing.T) {
 	jm.mu.Unlock()
 	enqueueCompletedJobNotification(t, s, "job_owned_done")
 	s.notify()
-	waitUntil(t, trip, "the delegate waits for quota", func() bool {
+	waitUntil(t, trip.Done(), "the delegate waits for quota", func() bool {
 		select {
 		case <-finished:
 			return true
@@ -703,6 +706,7 @@ func TestDelegateFinalizationTurnHeldDuringQuotaWait(t *testing.T) {
 	default:
 	}
 
+	limitedCalls := streamCalls(adapter)
 	recoverProvider(adapter)
 	clk.Advance(2 * time.Hour)
 	clk.Drain()
@@ -718,6 +722,40 @@ func TestDelegateFinalizationTurnHeldDuringQuotaWait(t *testing.T) {
 		t.Fatalf("delegate after the reset: status=%q fatal-gated=%t, want it finished without failing", status, fatal)
 	}
 	if got := s.jobNotificationsDelivered(); got != 1 {
-		t.Fatalf("job notifications delivered = %d, want the held completion delivered after the reset", got)
+		t.Fatalf("job notifications delivered = %d, want the held completion delivered once", got)
+	}
+	// The completion reached the model after the reset, and the delegate acted
+	// on the answer: its report is the one the post-reset turn gave.
+	reqs := adapterRequests(adapter)
+	if !requestsContain(reqs[limitedCalls:], "job_owned_done") {
+		t.Fatal("no request after the reset carried the held completion")
+	}
+	if reply, _ := s.communicatedReply(); reply != "back at work" {
+		t.Fatalf("delegate report after the reset = %q, want the post-reset turn's answer to the completion", reply)
+	}
+}
+
+// A watch send addressed to this session is held during a quota wait like
+// any notification: its wake is refused at the entry gate. With nothing else
+// held and no goal, the wait's end must still ask for the wake that delivers
+// it.
+func TestQuotaWaitEndWakesForAPendingWatchSend(t *testing.T) {
+	resetAt := time.Unix(1000, 0).Add(2 * time.Hour)
+	s, clk, notifies, _ := newAttentionLivelockSession(t, usageLimitError(t, "openai", resetAt))
+	_, _ = s.ProcessInput(context.Background(), "start the work", nil)
+	if !s.waitingForQuota() {
+		t.Fatal("precondition: the session is not waiting for quota")
+	}
+	jm := s.jobManager
+	wk := watchKey{VisibleSessionID: jm.sessionID, Target: "t1"}
+	jm.mu.Lock()
+	jm.watches[wk] = &watchConfig{pendingOrder: []jobstore.WatchSendKey{{VisibleSessionID: jm.sessionID}}}
+	jm.mu.Unlock()
+
+	wakes := notifies.Load()
+	clk.Advance(2 * time.Hour)
+	clk.Drain()
+	if notifies.Load() == wakes {
+		t.Fatal("the reset passed without asking for the wake that delivers the pending watch send")
 	}
 }

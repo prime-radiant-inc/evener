@@ -2109,7 +2109,25 @@ func (a *subagent) drainForFinalization(ctx context.Context, result string) (str
 	stopEvidenceTicker := a.sess.startLaneEvidenceTicker(ctx)
 	defer stopEvidenceTicker()
 	drain := func() (string, error) { return a.sess.drainJobTreeKeepingReport(ctx) }
-	drained, err := a.holdingForQuota(ctx, drain, drain)
+	// A drain turn that met the limit already recorded what it was carrying
+	// (a completion it accepted is in the transcript, not the queue), so
+	// draining again alone would skip it: resume that turn from the
+	// transcript, keeping the accepted report as a drain turn does, then
+	// drain whatever is left.
+	resume := func() (string, error) {
+		resumed, err := a.sess.keepingReport(func(ctx context.Context, _ string, _ []ImageAttachment, _ EntryKind) (string, error) {
+			return a.sess.processRuntimeInput(ctx, nil)
+		})(ctx, "", nil, EntryRuntime)
+		if err != nil {
+			return resumed, err
+		}
+		drained, err := drain()
+		if drained == "" {
+			drained = resumed
+		}
+		return drained, err
+	}
+	drained, err := a.holdingForQuota(ctx, drain, resume)
 	if err != nil {
 		return result, parentDriveNotify, err
 	}
