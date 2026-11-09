@@ -1509,7 +1509,8 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	var toolSigFailed []bool
 	var lastText string // accumulated assistant text for round-limit return
 	ctxWarned := false
-	contentFilterRetried := false // track whether we've already tried recovering from a content filter error
+	contentFilterRetried := false  // track whether we've already tried recovering from a content filter error
+	documentRejectRetried := false // track whether we've already retried without a provider-rejected tool-result document
 	localAdmissionCompacted := false
 	providerContextRecovered := false
 	var tracker retryTracker
@@ -1669,7 +1670,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				s.forceCompactForModelRecovery(ctx)
 				continue
 			}
-			retry, ferr := s.handleModelError(ctx, err, req, &contentFilterRetried, providerContextRecovered)
+			retry, ferr := s.handleModelError(ctx, err, req, &contentFilterRetried, &documentRejectRetried, providerContextRecovered)
 			if retry {
 				s.resetCommunicatePreviews(communicatePreviewCalls)
 				continue

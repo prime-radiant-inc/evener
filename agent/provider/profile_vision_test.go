@@ -60,8 +60,9 @@ func TestProfileImageInputPredicates(t *testing.T) {
 		{"openai/gpt-5.2", "image/png", true, true},
 		// An empty media type reads as the tool layer's image default.
 		{"openai/gpt-5.2", "", true, true},
-		// Image input alone does not deliver a document: no adapter puts PDF
-		// tool-result bytes in front of the model.
+		// Image input alone does not deliver a document on the Responses
+		// protocol: its tool-result shape carries no document (Anthropic does,
+		// #4465).
 		{"openai/gpt-5.2", "application/pdf", true, false},
 		// No declared image input: not vision-capable either way.
 		{"openai/gpt-5.2-codex", "image/png", false, false},

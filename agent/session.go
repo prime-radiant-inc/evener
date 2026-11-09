@@ -147,6 +147,11 @@ type Session struct {
 	// and callModelWithFallback takes and clears it on the same turn goroutine;
 	// mu guards the exchange (#4563).
 	roundFallbackMessages []llm.Message
+	// rejectedToolResultDocuments holds tool-call IDs whose document payload a
+	// provider rejected. Request assembly omits those bytes for the rest of the
+	// session (the transcript keeps them); the rejection recovery adds the IDs
+	// and retries once. Guarded by mu.
+	rejectedToolResultDocuments map[string]struct{}
 	// httpClient issues the web_fetch HTTP GET. Nil means the production default
 	// (http.DefaultClient); tests set it on their own session to serve a fabricated
 	// response through an injected transport without touching the network.

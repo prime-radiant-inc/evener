@@ -1503,7 +1503,8 @@ func testContentFilterRecoveryAdjustsBaseline(t *testing.T, withGoalSteering boo
 		nil,
 	)
 	retried := false
-	retry, err := s.handleModelError(context.Background(), contentFilterErr, llm.Request{}, &retried, false)
+	documentRejectRetried := false
+	retry, err := s.handleModelError(context.Background(), contentFilterErr, llm.Request{}, &retried, &documentRejectRetried, false)
 	if err != nil {
 		t.Fatalf("handleModelError: %v", err)
 	}
@@ -1578,13 +1579,14 @@ func TestHandleModelError_ContentFilterRetry_PreservesConcurrentAppendDuringSlow
 		nil,
 	)
 	retried := false
+	documentRejectRetried := false
 	type result struct {
 		retry bool
 		err   error
 	}
 	resultCh := make(chan result, 1)
 	go func() {
-		retry, err := s.handleModelError(context.Background(), contentFilterErr, llm.Request{}, &retried, false)
+		retry, err := s.handleModelError(context.Background(), contentFilterErr, llm.Request{}, &retried, &documentRejectRetried, false)
 		resultCh <- result{retry, err}
 	}()
 
