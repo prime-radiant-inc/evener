@@ -50,7 +50,7 @@ export interface SessionOpenOptions {
 // a nested row or palette link sat ignored for the length of that read.
 export function openSessionByRef(ref: string, options: SessionOpenOptions = {}): void {
   const workspace = workspaceStore.getState();
-  const existing = presentedPanes(workspace.panes).find((pane) => isSessionPaneFor(pane, ref));
+  const existing = presentedPanes(workspace.panes).find((pane) => isSessionPaneFor(sessionRouteRole(pane), ref));
   const url = paneToURL("session", { ref });
   // Publish the ordinary route BEFORE touching the workspace. Replacing or
   // focusing a pane can retire an attention-owned history entry, and that

@@ -119,9 +119,10 @@ export function transcriptOpenOrigin(pane: OpenPaneRecord): OpenPaneRecord | und
 
 export function recordConversationOpenParent(pane: OpenPaneRecord, parentRef: string | undefined): void {
   conversationOpenParentRefs.delete(pane);
-  const params = pane.params as { ref?: unknown };
+  const params = pane.params as { ref?: unknown; source?: { type?: unknown } };
+  const presentsSession = pane.type === "session" || (pane.type === "sessionZoom" && params.source?.type === "session");
   if (
-    pane.type === "session" &&
+    presentsSession &&
     typeof parentRef === "string" &&
     parentRef !== "" &&
     parentRef !== params.ref &&

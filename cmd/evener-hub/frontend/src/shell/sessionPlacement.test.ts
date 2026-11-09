@@ -216,6 +216,38 @@ describe("openNestedSessionWithOwner", () => {
     const childPane = state.panes.find((pane) => pane.id === child);
     expect(childPane && conversationOpenParentRef(childPane)).toBe("local:owner");
   });
+
+  test("a link to a cascade's source focuses the retained cascade", () => {
+    const cascade = promoteMainToCascade("local:child");
+
+    openSessionByRef("local:child");
+
+    const panes = workspaceStore.getState().panes;
+    expect(panes.filter((pane) => pane.type === "session" && sessionRefOf(pane) === "local:child")).toHaveLength(0);
+    expect(workspaceStore.getState().focusedPaneId).toBe(cascade);
+  });
+
+  test("retaining a cascade child keeps its recorded parent edge", () => {
+    const workspace = workspaceStore.getState();
+    workspace.replacePrimary("session", { ref: "local:owner" });
+    const sourceId = workspace.openPane("session", { ref: "local:child" }, { slot: "secondary" });
+    const source = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+    if (!source) throw new Error("missing nested cascade source");
+    workspaceStore.getState().retypePane(source, "sessionZoom", {
+      ref: "local:child",
+      source: { type: "session", params: { ref: "local:child" } },
+      edges: [],
+    });
+    const cascade = workspaceStore.getState().panes.find((pane) => pane.type === "sessionZoom");
+    if (!cascade) throw new Error("missing nested cascade");
+    recordConversationOpenParent(cascade, "local:owner");
+    expect(conversationOpenParentRef(cascade)).toBe("local:owner");
+
+    openNestedSessionWithOwner("local:child", "local:owner");
+
+    expect(conversationOpenParentRef(cascade)).toBe("local:owner");
+    expect(workspaceStore.getState().focusedPaneId).toBe(cascade.id);
+  });
 });
 
 test("an ordinary session link from an attention entry pushes a new history entry", () => {
