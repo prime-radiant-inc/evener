@@ -17,6 +17,7 @@ import { deriveScope } from "./statusScope";
 
 const CLASS = {
   chips: requireClass(styles.chips, "statusbar.module.css", "chips"),
+  chipsWrap: requireClass(styles.chipsWrap, "statusbar.module.css", "chipsWrap"),
   chip: requireClass(styles.chip, "statusbar.module.css", "chip"),
   chipName: requireClass(styles.chipName, "statusbar.module.css", "chipName"),
   chipCount: requireClass(styles.chipCount, "statusbar.module.css", "chipCount"),
@@ -26,12 +27,17 @@ const CLASS = {
 export interface ActivityChipsProps {
   sessionRef: string;
   paneId?: string;
+  // The composer's control row shares its width with attach, the status
+  // chrome and Send; wrapped chips take a second line there instead of
+  // crushing that chrome to nothing, while the status bar keeps its
+  // single-line contract.
+  wrap?: boolean;
 }
 
 // Memoized: the phone composer re-renders on every keystroke, but this row
 // changes only when its own store subscriptions do, so the two stable props
 // hold it quiet while the editor types.
-export const ActivityChips = memo(function ActivityChips({ sessionRef, paneId }: ActivityChipsProps) {
+export const ActivityChips = memo(function ActivityChips({ sessionRef, paneId, wrap = false }: ActivityChipsProps) {
   // Narrow subscriptions: re-render on the resources map (nav data), not on
   // every store touch (mode flips, expansion, attention).
   const resources = useNavigationStore((state) => state.resources);
@@ -50,7 +56,7 @@ export const ActivityChips = memo(function ActivityChips({ sessionRef, paneId }:
   // fraction stays in the chip's accessible name.
   const mobile = useIsMobile();
   return (
-    <div className={CLASS.chips}>
+    <div className={wrap ? `${CLASS.chips} ${CLASS.chipsWrap}` : CLASS.chips}>
       {ACTIVITY_TABS.filter((tab) => tab.chipVisible(counts)).map((tab) => (
         <button
           key={tab.id}

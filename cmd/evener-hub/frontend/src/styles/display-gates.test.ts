@@ -211,11 +211,13 @@ test("the folded-run summary meets the phone tap floor", () => {
   expect(phone![1]).toMatch(/\.summary\s*\{[^}]*min-height:\s*var\(--tap-min\)/);
 });
 
-// The session status footer is the phone pane's bottom edge, so every chip is
-// a thumb target and the bar owns the home-indicator band (the composer dock
-// above it gives that inset up; panescaffold's own test pins that half). It
-// stays one line: the path flexes beside the touch-floor chips.
-test("the phone session status bar keeps the path beside touch-floor chips and owns the bottom inset", () => {
+// A phone mounts no status bar: the session's activity counts ride the
+// composer's engaged control row instead, sharing that row's width with the
+// status chrome and Send. The wrap contract is what keeps every control
+// tappable there: the chip strip yields before the chrome compresses
+// (shrink 999 beside the chrome's 1) and wraps to a second line rather than
+// scrolling sideways or crushing a target below the tap floor.
+test("the phone composer's activity chips yield to the row and wrap at the tap floor", () => {
   const srcRoot = dirname(dirname(fileURLToPath(import.meta.url)));
   const css = readFileSync(join(srcRoot, "shell/statusbar/statusbar.module.css"), "utf8");
   const blocks = mediaBlocks(css);
@@ -224,11 +226,13 @@ test("the phone session status bar keeps the path beside touch-floor chips and o
   expect(tapFloor!.body).toMatch(/\.chip\s*\{[^}]*min-height:\s*var\(--tap-min\)[^}]*min-width:\s*var\(--tap-min\)/);
   const phone = blocks.find((block) => block.prelude === "(max-width: 899px)");
   expect(phone, "statusbar.module.css must have a max-width:899px block").toBeDefined();
-  expect(phone!.body).toMatch(/\.bar\s*\{[^}]*flex-wrap:\s*nowrap/);
-  expect(phone!.body).toMatch(/\.bar\s*\{[^}]*padding:\s*0 var\(--space-2\) max\(0px,\s*env\(safe-area-inset-bottom\)/);
-  expect(phone!.body).toMatch(/\.leading\s*\{[^}]*flex:\s*1 1 0[^}]*min-width:\s*48px/);
-  expect(phone!.body).toMatch(
-    /\.chips\s*\{[^}]*flex:\s*0 1 auto[^}]*justify-content:\s*flex-start[^}]*overflow-x:\s*auto/,
+  // The phone's chips are the composer's wrapped row, and the narrow-pane
+  // grid below (two max-content columns, ~130px) overflows a leading slot
+  // the open Overview can squeeze under that; the phone must stay a
+  // wrapping flex row. mediaBlocks strips comments, so this reads rules only.
+  expect(phone!.body).toMatch(/\.chips\s*\{[^}]*display:\s*flex/);
+  const chipsWrap = /\.chipsWrap\s*\{[^}]*margin-left:\s*0[^}]*flex:\s*0 999 auto[^}]*flex-wrap:\s*wrap/.exec(
+    css.replace(/\/\*[\s\S]*?\*\//g, " "),
   );
-  expect(phone!.body).toMatch(/:global\(body\):has\(\[data-composer-editing\]\) \.bar \{\s*display: none;/);
+  expect(chipsWrap, "statusbar.module.css must keep the wrapped chips strip yielding and wrapping").not.toBeNull();
 });

@@ -962,7 +962,7 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
           {!askPending && sessionChrome}
           {/* The phone pane has no footer strip (Session.tsx's edgeFooter), so
               this row is where the activity counts live on a phone. */}
-          {isMobile && <ActivityChips sessionRef={ref} paneId={paneId} />}
+          {isMobile && <ActivityChips sessionRef={ref} paneId={paneId} wrap />}
         </>
       )}
     </div>

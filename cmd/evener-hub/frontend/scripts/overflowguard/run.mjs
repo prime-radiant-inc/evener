@@ -388,15 +388,17 @@ async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported)
               // Start from a non-editing composer, then focus a control the
               // resting row keeps. The editing state must not turn on for a
               // button alone, and the resting row must not expand for it.
+              // The harness session runs a turn, so Stop takes Send's slot.
               textbox?.blur();
               await frame();
-              pane?.querySelector('[data-testid="composer-submit"]')?.focus();
+              pane?.querySelector('[data-testid="composer-stop"], [data-testid="composer-submit"]')?.focus();
             }
             else textbox?.blur();
             await frame();
             const form = pane?.querySelector('[data-testid="composer-form"]');
             const attach = form?.querySelector('[data-testid="composer-attach"]');
             const submit = form?.querySelector('[data-testid="composer-submit"]');
+            const stop = form?.querySelector('[data-testid="composer-stop"]');
             const rowChips = form ? [...form.querySelectorAll('[data-activity-tab]')] : [];
             const cards = [...(footer?.querySelectorAll('[data-testid="composer-input-card"]') ?? [])]
               .filter((card) => card.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }));
@@ -430,6 +432,7 @@ async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported)
               statusbar: rect(statusbar),
               attachVisible: visible(attach),
               submitVisible: visible(submit),
+              stopVisible: visible(stop),
               rowChipCount: rowChips.filter((chip) => visible(chip)).length,
               pathBox: rect(path),
               statusChips: statusbar
@@ -482,19 +485,19 @@ function assertComposerFooter(measurement, width) {
       measurement.footerBottom === null ||
       !nearlyEqual(measurement.footerBottom, measurement.paneBottom)
     ) {
-      failures.push(
-        `composer dock bottom=${measurement.footerBottom}px, pane bottom=${measurement.paneBottom}px`,
-      );
+      failures.push(`composer dock bottom=${measurement.footerBottom}px, pane bottom=${measurement.paneBottom}px`);
     }
     if (measurement.paddingBottom === null || !nearlyEqual(measurement.paddingBottom, requiredClearance)) {
       failures.push(
         `composer dock padding=${measurement.paddingBottom}px, expected safe-area clearance=${requiredClearance}px`,
       );
     }
-    // The resting row sheds attach and the activity chips but never Send;
+    // The resting row sheds attach and the activity chips but never its
+    // actions control - Send, or Stop while the harness session runs a turn;
     // editor engagement brings the full row back, and a composer button's
     // own focus must not expand the row out from under it.
-    if (!measurement.submitVisible) failures.push("phone resting row lost its Send");
+    if (!measurement.submitVisible && !measurement.stopVisible)
+      failures.push("phone resting row lost its Send/Stop actions control");
     if (measurement.focus === "editor") {
       if (!measurement.attachVisible) failures.push("focused editor did not bring the full row back (attach hidden)");
       if (measurement.rowChipCount === 0) failures.push("focused editor did not bring the activity chips back");
