@@ -493,7 +493,7 @@ test("reader transfer retains admitted movement before the final row measurement
 
 test.each([
   { direction: "backward", want: 100, top: -100 },
-  { direction: "forward", want: 228, top: -228 },
+  { direction: "forward", want: 200, top: -200 },
   { direction: "index", want: 0, top: 0 },
 ])(
   "real $direction movement arbitration survives a valid commit before later partial measurement",
