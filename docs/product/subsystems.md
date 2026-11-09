@@ -236,7 +236,7 @@ output excerpts and watch frames cannot settle completion delivery. This
 authority boundary applies to every client; S10 preserves the original
 conversation content. A completion arriving during a notification turn joins
 that turn's next model request rather than waiting for the turn to end. A
-completion settles as delivered once a model call carrying it returns; a turn
+completion settles as delivered once a request carrying it is sent to the provider; a turn
 that ends before then leaves it owed to one more wake without writing it twice.
 Watch frames settle when written, before the call.
 See [job control](../job-control.md).

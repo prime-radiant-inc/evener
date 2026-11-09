@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
@@ -1484,15 +1485,15 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		tPhaseStart := s.sclock().Now()
 
 		s.noteParentJobActivity(jobPhaseAwaitingModel)
-		stoppedBeforeDispatch := ctx.Err() != nil
-		modelResp, req, attempt, usedProfile, err := s.callModelWithFallback(ctx, profile, req, fullHistory, reqEffort, round)
-		// The request was built from the transcript holding every completion
-		// reminder still awaiting one. The call has returned, so the completions
-		// settle unless the turn was stopped before it or local context
-		// admission refused the request. Any other failure, including a
-		// provider error, settles them: the turn fails visibly, and settling
-		// keeps a request that can never succeed from waking the session again.
-		if !stoppedBeforeDispatch && !isLocalContextBudgetError(err) {
+		// Completions awaiting a request settle only once one built from the
+		// transcript holding their reminders has actually been handed to the
+		// provider; the client reports that moment. A provider error after it
+		// still settles them (the turn fails visibly), while a Stop, an
+		// admission refusal or any other failure before it leaves them owed.
+		var requestSent atomic.Bool
+		sentCtx := llm.WithRequestSentObserver(ctx, func() { requestSent.Store(true) })
+		modelResp, req, attempt, usedProfile, err := s.callModelWithFallback(sentCtx, profile, req, fullHistory, reqEffort, round)
+		if requestSent.Load() {
 			s.settleJobNotificationsCarriedByRequest(ctx)
 		}
 		for _, callID := range modelResp.CommunicatePreviewCallIDs {

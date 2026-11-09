@@ -53,11 +53,12 @@ and the turn does not hold it until the turn ends. An ordinary turn instead
 yields at the boundary so the drain runs a notification turn. Each completion is
 delivered and recorded once.
 
-A completion counts as delivered once a model call built from a transcript
-holding its runtime entry has returned, not when the entry is written. A provider
-error also settles it, because the turn fails visibly. A turn that ends without
-such a call (stopped before it, out of rounds, or refused by local context
-admission) leaves the completion owed. That includes a Stop before the turn's
+A completion counts as delivered once the model client hands the provider a
+request built from a transcript holding its runtime entry, not when the entry is
+written. A provider error after that point also settles it, because the turn
+fails visibly. A turn that ends before any request is sent (stopped, out of
+rounds, refused by local context admission, or failing any other check on the
+way) leaves the completion owed. That includes a Stop before the turn's
 first request, because job notifications are not the user's to stop. The session
 wakes again, and the next turn's request carries the entry already in the
 transcript, or the compaction summary that folded it, without writing it a
