@@ -8,8 +8,10 @@ import (
 	"sync"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/internal/toolname"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
@@ -121,6 +123,37 @@ func decideNoToolCalls(noContent bool, t retryTracker, resultToolName string) no
 		}
 	}
 	return noToolCallsDecision{Tracker: t, TerminalKind: noToolTerminalBareTextExhausted}
+}
+
+// batchToolCalls renders one PostToolBatch tool_calls entry per call in the
+// round. It maps the four fields the event documents directly instead of going
+// through toolHookInput, which would run the whole hookInput builder (two mu
+// sections, currentEnv, TranscriptPath) per call for three of them:
+//
+// Deliberate divergence from the per-tool events: toolHookInput is told whether
+// the repair step rejected the raw bytes, but the batch has no per-call prep
+// result, so a call whose arguments the repair step rewrote shows its parsed
+// tool_input here, where PostToolUse for that same call shows none. A call with
+// no positional result (an aborted round) carries an empty tool_response.
+func (s *Session) batchToolCalls(calls []llm.ToolCallData, results []tool.ExecResult) []hooks.BatchToolCall {
+	out := make([]hooks.BatchToolCall, len(calls))
+	for i, call := range calls {
+		var input map[string]any
+		if len(call.Arguments) > 0 {
+			_ = json.Unmarshal(call.Arguments, &input)
+		}
+		response := ""
+		if i < len(results) {
+			response = results[i].Output
+		}
+		out[i] = hooks.BatchToolCall{
+			ToolName:     toolname.EvenerToClaude(call.Name),
+			ToolInput:    input,
+			ToolUseID:    call.ID,
+			ToolResponse: response,
+		}
+	}
+	return out
 }
 
 // execToolBatch executes the round's tool calls and returns their results. When the

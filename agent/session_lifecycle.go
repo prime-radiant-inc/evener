@@ -13,9 +13,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
-	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/internal/jobstore"
-	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
@@ -65,6 +63,14 @@ const (
 	maxTotalEmptyResponses = 8 // prevent repeated burst-and-recover spirals
 	maxBareTextRetries     = 3
 )
+
+// maxHookStopReasonRunes bounds a hook-supplied stop reason at the dispatch
+// site. It becomes a user-visible warning AND a steering turn, so a shell
+// stderr that happens to be one enormous line must not fill the transcript.
+// The hooks package already reduces a reason to its first line and to this
+// same width (maxHookFailureDetail); this is the second, independent bound at
+// the place the text is actually delivered.
+const maxHookStopReasonRunes = 160
 
 // retryTracker counts the degenerate (empty / bare-text) model responses seen so
 // far in one input turn. consecutiveEmpty and consecutiveBareText reset once the
@@ -1901,30 +1907,6 @@ func delegateEntryRequiresReport(kind EntryKind) bool {
 	}
 }
 
-// batchToolCalls renders one PostToolBatch tool_calls entry per call in the
-// round. Each entry carries the shared per-tool hook fields (the Claude tool
-// name, the call id, and the parsed tool_input) plus tool_response, which is
-// res.Output — the serialized content the model receives, which is what makes
-// PostToolBatch differ from PostToolUse here. A call whose arguments do not
-// unmarshal contributes no tool_input rather than an erroring batch.
-func (s *Session) batchToolCalls(calls []llm.ToolCallData, results []tool.ExecResult) []hooks.BatchToolCall {
-	out := make([]hooks.BatchToolCall, len(calls))
-	for i, call := range calls {
-		hi := s.toolHookInput(plugin.HookPostToolBatch, call, false)
-		response := ""
-		if i < len(results) {
-			response = results[i].Output
-		}
-		out[i] = hooks.BatchToolCall{
-			ToolName:     hi.ToolName,
-			ToolInput:    hi.ToolInput,
-			ToolUseID:    hi.ToolUseID,
-			ToolResponse: response,
-		}
-	}
-	return out
-}
-
 func (s *Session) processOneInput(ctx context.Context, input string, images []ImageAttachment, kind EntryKind, inputProvenance *provenance.Causal) (out string, progressed bool, err error) {
 	communicatePreviewCalls := map[string]struct{}{}
 	defer func() {
@@ -2595,7 +2577,15 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// recorded block owns the turn: deliver its reason, record it as
 		// steering, and end through the same failure boundary the other
 		// pre-request stops use. The tool results are already persisted.
+		//
+		// A Stop hook that vetoed one of this round's communicate calls lands
+		// here too (deliverIfCommunicated returned not-done), so the batch block
+		// yields to nothing and ends the turn. Reaching another model request
+		// would be the alternative, and the loop the previous behavior could run.
+		// firstLineClamp bounds the reason: it becomes a warning AND a steering
+		// turn, and multi-line shell stderr must not fill the transcript.
 		if batchBlocked {
+			batchStop = firstLineClamp(batchStop, maxHookStopReasonRunes)
 			if batchStop == "" {
 				// A block with no stated reason still ends the turn with a
 				// legible line, rather than a silent stop.

@@ -290,7 +290,9 @@ func invalidMatcherWarning(pluginName, event, matcher string) string {
 // RunResult contains the aggregated output from running hooks.
 type RunResult struct {
 	// Stopped reports that a hook returned continue:false on an event that
-	// honors it; StopReason carries its stopReason verbatim.
+	// honors it, or that the event's runner treated a hook output as blocking
+	// the action (PostToolBatch on exit 2 or decision:"block"). StopReason
+	// carries the resulting reason, reduced to one line.
 	Stopped    bool
 	StopReason string
 	// TerminalSequences is parsed but currently has no delivery-site consumer.
@@ -819,15 +821,25 @@ func routeOutput(event plugin.HookEvent, o parsedHookOutput, model, user *[]stri
 // stop takes precedence over the event-specific decision its caller aggregates,
 // so every aggregating runner calls this before routing; the dispatch site,
 // once wired, delivers StopReason as a user-visible warning and ends the
-// action. The first non-empty stopReason wins, matching Claude's single-stop
+// action. The first non-empty reason wins, matching Claude's single-stop
 // semantics.
+//
+// The reason is stopReason, or the JSON reason field when a hook set only that
+// (spec §4.4: the block message comes from JSON reason/stopReason). It is
+// reduced to its first line and bounded, because it becomes a user warning and
+// a steering turn verbatim — a multi-line shell stderr must not dump a wall
+// into the transcript.
 func applyStopped(event plugin.HookEvent, o parsedHookOutput, stopped *bool, stopReason *string) {
 	if o.Continue || !HonorsContinue(event) {
 		return
 	}
 	*stopped = true
 	if *stopReason == "" {
-		*stopReason = o.StopReason
+		reason := o.StopReason
+		if reason == "" {
+			reason = o.BlockReason
+		}
+		*stopReason = firstLine(reason)
 	}
 }
 
@@ -861,13 +873,13 @@ func collectPostToolBatchMessages(outputs []parsedHookOutput) RunResult {
 			result.Stopped = true
 			if result.StopReason == "" {
 				// A JSON block carries its reason; exit 2 carries its stderr,
-				// which parseHookOutput parked in SystemMessage.
+				// which parseHookOutput parked in SystemMessage. Either becomes
+				// a user warning and a steering turn downstream, so it is
+				// reduced to its first line and bounded here.
 				if o.BlockReason != "" {
-					result.StopReason = o.BlockReason
+					result.StopReason = firstLine(o.BlockReason)
 				} else if o.IsError {
-					// Exit-2 stderr is carried verbatim by parseHookOutput; a
-					// reason read by a human should not end in a newline.
-					result.StopReason = strings.TrimSpace(o.SystemMessage)
+					result.StopReason = firstLine(o.SystemMessage)
 				}
 			}
 		}

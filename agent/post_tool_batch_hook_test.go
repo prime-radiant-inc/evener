@@ -13,6 +13,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/hooks"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/execsupport/shellquote"
@@ -333,5 +334,93 @@ func TestPostToolBatch_RunnerIsWired(t *testing.T) {
 	res := f.sess.hookRunner.RunPostToolBatch(context.Background(), hooks.Input{HookEventName: string(plugin.HookPostToolBatch)})
 	if len(res.ModelContext) != 1 || res.ModelContext[0] != "wired" {
 		t.Fatalf("RunPostToolBatch = %+v, want the hook's context despite its Bash matcher", res)
+	}
+}
+
+// TestPostToolBatch_ToolCallsCarryClaudeNameAndModelOutput covers the session's
+// own batch rendering, which the hand-built Input in the runner test cannot:
+// tool_name is the Claude name for the canonical tool, and tool_response is
+// res.Output (the model-facing text), not res.FullOutput.
+//
+// The probe is a TextResult whose Output and FullOutput differ, so swapping one
+// for the other here fails. It also proves the round's batch hook saw both calls.
+func TestPostToolBatch_ToolCallsCarryClaudeNameAndModelOutput(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	capture := filepath.Join(dir, "batch-input.jsonl")
+	captureCmd := fmt.Sprintf("cat >> %s; echo >> %s",
+		shellquote.Literal(capture), shellquote.Literal(capture))
+	mats := []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": captureCmd}}}}
+
+	f := newPostToolBatchFixture(t, mats, func(round int, req llm.Request) llm.Response {
+		if round == 0 {
+			return toolCallResponse(batchShellCall("shell-0"))
+		}
+		return finalResponse("done")
+	})
+	f.sess.RegisterTool("read_file", "returns distinct model and event text",
+		map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"file_path": map[string]any{"type": "string"}},
+		},
+		func(context.Context, any) (any, error) {
+			return tool.TextResult{Output: "model-facing text", FullOutput: "event-facing text"}, nil
+		})
+	res := f.sess.execTool(context.Background(), llm.ToolCallData{
+		ID:        "read-0",
+		Name:      "read_file",
+		Arguments: json.RawMessage(`{"file_path":"/tmp/x"}`),
+	}, "")
+	if res.IsError {
+		t.Fatalf("read_file probe failed: %s", res.Output)
+	}
+	if res.Output == res.FullOutput {
+		t.Fatalf("probe Output %q equals FullOutput; the assertion could not tell them apart", res.Output)
+	}
+
+	// Render the batch the round tail renders, so the assertion covers the
+	// session's mapping rather than a hand-built Input.
+	hi := f.sess.hookInput(plugin.HookPostToolBatch)
+	hi.ToolCalls = f.sess.batchToolCalls([]llm.ToolCallData{{
+		ID:        "read-0",
+		Name:      "read_file",
+		Arguments: json.RawMessage(`{"file_path":"/tmp/x"}`),
+	}}, []tool.ExecResult{res})
+	batchRes := f.sess.hookRunner.RunPostToolBatch(context.Background(), hi)
+	if len(batchRes.UserMessages) != 0 || len(batchRes.ModelContext) != 0 {
+		t.Fatalf("capture hook produced output: %+v", batchRes)
+	}
+
+	raw, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatalf("read captured hook input: %v", err)
+	}
+	first, _, _ := strings.Cut(strings.TrimSpace(string(raw)), "\n")
+	var captured struct {
+		ToolCalls []struct {
+			ToolName     string         `json:"tool_name"`
+			ToolInput    map[string]any `json:"tool_input"`
+			ToolUseID    string         `json:"tool_use_id"`
+			ToolResponse string         `json:"tool_response"`
+		} `json:"tool_calls"`
+	}
+	if err := json.Unmarshal([]byte(first), &captured); err != nil {
+		t.Fatalf("decode captured hook input: %v (raw: %s)", err, first)
+	}
+	if len(captured.ToolCalls) != 1 {
+		t.Fatalf("tool_calls = %+v, want one entry", captured.ToolCalls)
+	}
+	call := captured.ToolCalls[0]
+	if call.ToolName != "Read" {
+		t.Errorf("tool_calls[0].tool_name = %q, want the Claude name %q", call.ToolName, "Read")
+	}
+	if call.ToolResponse != "model-facing text" {
+		t.Errorf("tool_calls[0].tool_response = %q, want the model-facing Output %q", call.ToolResponse, "model-facing text")
+	}
+	if call.ToolUseID != "read-0" {
+		t.Errorf("tool_calls[0].tool_use_id = %q, want read-0", call.ToolUseID)
+	}
+	if got := call.ToolInput["file_path"]; got != "/tmp/x" {
+		t.Errorf("tool_calls[0].tool_input.file_path = %v, want /tmp/x", got)
 	}
 }

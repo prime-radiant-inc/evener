@@ -1789,12 +1789,47 @@ func TestRunPostToolBatch_DecisionBlockStops(t *testing.T) {
 	}
 }
 
+// TestRunPostToolBatch_ContinueFalseCarriesReason covers continue:false with a
+// top-level reason but no stopReason: spec §4.4 says the block message comes
+// from JSON reason/stopReason, so the reason must reach StopReason rather than
+// falling back to the dispatch site's generic line.
+func TestRunPostToolBatch_ContinueFalseCarriesReason(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPostToolBatch, plugin.RegisteredHook{Type: "command", Timeout: 5,
+		Command: `echo '{"continue":false,"reason":"batch says stop"}'`})
+	got := r.RunPostToolBatch(context.Background(), Input{HookEventName: "PostToolBatch"})
+	if !got.Stopped {
+		t.Fatalf("continue:false must stop the loop, got %+v", got)
+	}
+	if got.StopReason != "batch says stop" {
+		t.Fatalf("StopReason = %q, want the JSON reason %q", got.StopReason, "batch says stop")
+	}
+}
+
+// TestRunPostToolBatch_ReasonIsOneLine bounds the reason: multi-line shell
+// stderr must not dump a wall of text into the user warning and the steering
+// turn it becomes downstream.
+func TestRunPostToolBatch_ReasonIsOneLine(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPostToolBatch, plugin.RegisteredHook{Type: "command", Timeout: 5,
+		Command: `printf 'first line\nsecond line\nthird line\n' >&2; exit 2`})
+	got := r.RunPostToolBatch(context.Background(), Input{HookEventName: "PostToolBatch"})
+	if !got.Stopped {
+		t.Fatalf("exit 2 must stop the loop, got %+v", got)
+	}
+	if got.StopReason != "first line" {
+		t.Fatalf("StopReason = %q, want just the first line %q", got.StopReason, "first line")
+	}
+}
+
 // TestSupportedSummary_PostToolBatchMatcherIsRunnable proves the runnable-hook
 // count does not probe a matcher that PostToolBatch never consults: a hook whose
 // matcher names no tool still fires, so it must be counted.
 func TestSupportedSummary_PostToolBatchMatcherIsRunnable(t *testing.T) {
 	r := newRunner(nil, "")
-	r.Add(plugin.HookPostToolBatch, plugin.RegisteredHook{Matcher: "Bash", Type: "command", Command: "echo batch"})
+	// "(" is the only value the old matchTarget(matcher, "") probe rejected, so
+	// this is a real red-before-green: "Bash" was always runnable.
+	r.Add(plugin.HookPostToolBatch, plugin.RegisteredHook{Matcher: "(", Type: "command", Command: "echo batch"})
 	if got := r.SupportedSummary()[plugin.HookPostToolBatch]; got != 1 {
 		t.Fatalf("SupportedSummary[PostToolBatch] = %d, want 1: the matcher is not consulted", got)
 	}
