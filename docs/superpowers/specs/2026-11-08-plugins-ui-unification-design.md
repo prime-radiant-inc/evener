@@ -101,13 +101,48 @@ sheet shaped so that step inherits everything.
 - `PluginLaunchCandidate` (launcher preview): counts only — skillCount,
   agentCount, commandCount, hookCount, mcpCount.
 - The Go loader (`agent/plugin`) already produces everything the Contents
-  block needs for an installed plugin: `Skills`, `Agents`, `Commands`,
+  block needs for a plugin that loads: `Skills`, `Agents`, `Commands`,
   `Hooks` (by event), `MCPConfigs`, `MCPConfigWarnings`,
-  `SkippedComponents`, `UnsupportedHooks`, `UnknownHooks`. Only the RPC
-  surface is missing.
+  `SkippedComponents`, `UnsupportedHooks`, `UnknownHooks`. One correction
+  from the builder check: the hub's plugin list is built from the install
+  registry WITHOUT loading `Instance`s, so the components read performs the
+  disk loads itself (fail-soft, the same skip semantics as
+  `LoadAllFailSoft`); whether and how it caches is left to the builder.
+  A `broken` registry entry is a directory that fails load/validation, so
+  it has no components at all — see below.
 - Widget law (docs/developing-evener/design-system.md): compose from
   widgets; a row is one tap target; changing a widget's API is a design
   decision — made here for `ListRow` (decision 1).
+
+## Resolutions added after the builder check (my calls, 2026-11-08)
+
+- **The components read covers every source kind.** It takes a plugin
+  identity that is either an installed `{plugin, marketplace}` pair or a
+  launch-directory `{path}` (which also covers bundled candidates, since
+  both resolve to a directory the loader can read). `PluginLaunchCandidate`
+  stays counts-only — launch previews stay cheap — and the launcher sheet
+  lazy-loads the contents through this same read. No candidate is fattened
+  and no source kind is left without a sheet.
+- **A broken plugin shows why it is broken.** The read returns a per-plugin
+  error entry (fail-soft, never failing the whole batch) when a plugin's
+  directory fails to load. In the installed sheet, a danger `InlineNotice`
+  with the load reason replaces the Contents block; the chips (including
+  "broken"), the switches, and the Remove action stay, exactly as the
+  current sheet already offers them on broken entries. "Manifest only" is
+  reserved for a plugin that loads and genuinely ships nothing.
+- **Hooks vocabulary.** The read returns hook events, each with its
+  registered-hook count. List rows keep the registered-hook total ("5
+  hooks"); the sheet's Badge shows that same total and the names list
+  events with their counts ("PreToolUse (3), PostToolUse (2)"). The row and
+  the sheet can no longer disagree.
+
+- **Launcher sheet-open (Jesse, 2026-11-09): a quiet Details action in the
+  row description.** The launcher Switch row and its one-tap toggling are
+  untouched; a small quiet "Details" action at the end of the description
+  line (source · counts · description) opens the same sheet. Two keyboard
+  targets (the Switch, then Details), no new widget API — the description
+  slot already renders caller-supplied content and is not the toggle
+  target.
 
 ## The how, as decided
 

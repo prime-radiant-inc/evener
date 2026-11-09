@@ -477,6 +477,9 @@ function LauncherSwitchRow({ plugin }: { plugin: MockPlugin }) {
           <span className={psStyles.source}>{`installed from ${plugin.marketplace}`}</span>
           <span className={psStyles.counts}>{countsSummary(plugin.contents)}</span>
           <span className={psStyles.description}>{plugin.description}</span>
+          <Button variant="link" size="xs" onClick={() => {}}>
+            Details
+          </Button>
         </span>
       }
     />
@@ -950,8 +953,8 @@ function LauncherSection({ live }: { live: boolean }) {
       <h2 className={styles.sectionTitle}>4 · Session launcher</h2>
       <p className={styles.sectionNote}>
         The launcher keeps its Switch rows and its one-tap toggling; the rows now speak the same vocabulary (source,
-        counts, description) and open the same detail sheet. The variant below trades one-tap toggling for a fully
-        unified drill-in row.
+        counts, description) and a quiet Details action in the description opens the same detail sheet. The variant
+        below trades one-tap toggling for a fully unified drill-in row.
       </p>
       <div className={styles.frameGrid}>
         <div className={styles.frameCell}>
@@ -1066,7 +1069,8 @@ function SpecSection() {
         </li>
         <li>
           <strong>Launcher rows: Switch rows, shared vocabulary.</strong> One-tap toggling unchanged, description speaks
-          the shared source · counts language, and rows open the same detail sheet for contents.
+          the shared source · counts language, and a quiet Details action at the end of the description opens the same
+          detail sheet for contents.
         </li>
       </ol>
       <p className={styles.sectionNote}>
