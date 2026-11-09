@@ -72,7 +72,7 @@ func TestBackgroundWorkProseGoldens(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			s := tc.build(t)
-			prompt, warning := s.renderSystemPrompt(s.env)
+			prompt, warning, _ := s.renderSystemPrompt(s.env)
 			if warning != "" {
 				t.Fatalf("render failed: %s", warning)
 			}

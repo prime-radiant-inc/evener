@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
@@ -32,9 +33,9 @@ func TestWaitingRootIsWokenByItsDelegateReport(t *testing.T) {
 		},
 		func(req llm.Request) llm.Response {
 			if !requestContainsText(req, "CHILD-ANSWER") {
-				return finalResponse("woke without the child's report")
+				return communicateWithDefaultOutput("woke without the child's report")
 			}
-			return finalResponse("got the answer")
+			return communicateWithDefaultOutput("got the answer")
 		},
 	)
 	reportGate := make(chan struct{})
@@ -42,7 +43,7 @@ func TestWaitingRootIsWokenByItsDelegateReport(t *testing.T) {
 	t.Cleanup(releaseReport)
 	adapter.script("WAITED-CHILD", func(llm.Request) llm.Response {
 		<-reportGate
-		return finalResponse("CHILD-ANSWER")
+		return communicateWithDefaultOutput("CHILD-ANSWER")
 	})
 	root := newMessagingRoot(t, adapter, func(cfg *SessionConfig) { cfg.NonInteractive = false })
 	wakes := make(chan struct{}, 8)
@@ -101,7 +102,14 @@ func TestWaitingRootIsWokenByItsDelegateReport(t *testing.T) {
 
 	// The reported answer, not the wait line, is the root's latest turn end.
 	reply, reported := root.communicatedReply()
-	if !reported || strings.TrimSpace(reply) != "got the answer" {
-		t.Fatalf("root's last report = %q (reported=%t), want the answer its wake produced", reply, reported)
+	if !reported {
+		t.Fatal("the root accepted no turn-ending communicate")
+	}
+	var envelope struct{ Message string }
+	if err := json.Unmarshal([]byte(reply), &envelope); err != nil {
+		t.Fatalf("root's reply is not the canonical output envelope (%v): %q", err, reply)
+	}
+	if got := strings.TrimSpace(envelope.Message); got != "got the answer" {
+		t.Fatalf("root's last report = %q, want the answer its wake produced", got)
 	}
 }
