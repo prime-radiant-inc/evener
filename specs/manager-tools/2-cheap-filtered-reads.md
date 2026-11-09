@@ -831,16 +831,18 @@ Existing call shapes keep their meaning byte-for-byte. The new surface:
    serves the cap's items in transcript order plus one elision record
    naming the withheld count, with a cursor that continues inside the
    turn.
-7. **Older-daemon tolerance, visible and narrow.** Against a daemon
-   predating the capability bit (local or remote, once the remote
-   rebuild forwards the bit), `latest` windows answer through the
+7. **Older-daemon tolerance, visible and narrow.** Against a live daemon
+   predating the capability bit, `latest` windows answer through the
    hub-compat projection with `appliedBy: hub-compat`, partial when the
    page cannot cover the window, and `since`/`before`/`turn` fail the
    typed `window-unsupported-on-daemon` error; a legacy read (no window
-   params) is unchanged. Never a silent fallback: when spec 3 has
-   landed, its serving facts mark the read, and `appliedBy`
-   distinguishes who did the work — `serving-daemon`, `hub-compat`,
-   or `saved-index` for the hub's own daemonless index.
+   params) is unchanged. A stopped remote session has no live daemon to
+   advertise the bit, so for every selector form the controller asks the
+   owning hub for its saved window and passes that hub's typed failure
+   through unchanged (Jesse's ruling, 2026-11-09). Never a silent
+   fallback: when spec 3 has landed, its serving facts mark the read, and
+   `appliedBy` distinguishes who did the work — `serving-daemon`,
+   `hub-compat`, or `saved-index` for the hub's own daemonless index.
 8. **Follow-ups keep the shape.** A suggestion followed from a
    messages-only bounded window re-issues a messages-only bounded
    read, asserted.

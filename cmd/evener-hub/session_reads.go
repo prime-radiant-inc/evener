@@ -134,7 +134,10 @@ func continueLiveTranscriptWindowOwned(
 	owner *sessionOperations,
 ) (appwire.ThreadTurnsListResponse, error) {
 	advertised := sourceAdvertisesWindowRead(ctx, source, params.Ref, params.ThreadID)
-	if remote, ok := source.(*appsource.RemoteHubSource); ok && (advertised || params.TurnWindow.Latest <= 0) {
+	// A remote hub owns its saved window whether or not its thread row
+	// advertises the live daemon's capability, so the controller forwards every
+	// continuation form and passes the hub's typed failure through.
+	if remote, ok := source.(*appsource.RemoteHubSource); ok {
 		page, err := remote.ListTurns(ctx, params)
 		if err != nil {
 			return appwire.ThreadTurnsListResponse{}, err

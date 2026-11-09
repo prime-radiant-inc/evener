@@ -1107,28 +1107,30 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 	hubCompatibility := params.TurnWindow != nil && !sourceAdvertisesWindowRead(ctx, source, params.Ref, params.ThreadID)
 	remoteSavedWindowAttempt := false
 	if hubCompatibility {
-		if params.TurnWindow.Latest <= 0 {
-			if _, ok := source.(*appsource.RemoteHubSource); ok {
-				hubCompatibility = false
-				remoteSavedWindowAttempt = true
-			} else {
-				if daemon, ok := source.(*appsource.LocalDaemonSource); ok {
-					_, admissionErr := daemon.ResolveSubscriptionAdmission(params)
-					if isDeadSessionError(admissionErr) {
-						saved, found, savedErr := unavailableThreadReadResponseOwned(ctx, cfg, sources, params, func(options *transcriptWindowPackOptions) {
-							o.retainCanonicalWindowOptions(options)
-						})
-						if savedErr != nil {
-							return appwire.ThreadReadResponse{}, savedErr
-						}
-						if found {
-							return saved, nil
-						}
-						return appwire.ThreadReadResponse{}, admissionErr
+		if _, ok := source.(*appsource.RemoteHubSource); ok {
+			// A stopped remote session has no live daemon to advertise the window
+			// capability, but its owning hub can still serve the saved window.
+			// Ask it for every selector form and pass its typed failure through
+			// unchanged, instead of rebuilding the window here.
+			hubCompatibility = false
+			remoteSavedWindowAttempt = true
+		} else if params.TurnWindow.Latest <= 0 {
+			if daemon, ok := source.(*appsource.LocalDaemonSource); ok {
+				_, admissionErr := daemon.ResolveSubscriptionAdmission(params)
+				if isDeadSessionError(admissionErr) {
+					saved, found, savedErr := unavailableThreadReadResponseOwned(ctx, cfg, sources, params, func(options *transcriptWindowPackOptions) {
+						o.retainCanonicalWindowOptions(options)
+					})
+					if savedErr != nil {
+						return appwire.ThreadReadResponse{}, savedErr
 					}
+					if found {
+						return saved, nil
+					}
+					return appwire.ThreadReadResponse{}, admissionErr
 				}
-				return appwire.ThreadReadResponse{}, appwire.WindowUnsupportedOnDaemon()
 			}
+			return appwire.ThreadReadResponse{}, appwire.WindowUnsupportedOnDaemon()
 		}
 		if hubCompatibility {
 			sourceParams.ThreadWindowParams = appwire.ThreadWindowParams{}
