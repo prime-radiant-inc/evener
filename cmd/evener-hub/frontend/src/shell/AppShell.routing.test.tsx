@@ -1118,6 +1118,50 @@ test("rail activation places a top-level session before its location read answer
   });
 });
 
+// The rail's immediate placement trusts the row's kind. When the delayed
+// location read says the row was stale and the session is nested, the pane
+// must move beside its owner, not be disposed and recreated: image
+// attachments are per-mount composer state and would disappear with it.
+test("a delayed nested location reply keeps the immediately opened child pane", async () => {
+  const location = deferred<void>();
+  const client = navClient();
+  client.on("evener/navigation/read", (params: NavigationReadParams) => {
+    if (params.resource !== "location") return navigationRead(params);
+    return location.promise.then(() =>
+      wireSnapshot(
+        params,
+        {
+          ref: params.ref,
+          top_level_ref: "local:owner",
+          top_level: false,
+          session: { ...TREE_SESSION, ref: params.ref, session_id: params.ref, kind: "subagent" },
+        },
+        '"test"',
+      ),
+    );
+  });
+
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("Session one");
+  await user.click(screen.getByText("Session one"));
+
+  const child = workspaceStore.getState().mainPane();
+  if (!child) throw new Error("missing immediately opened child");
+  expect(child.params).toEqual({ ref: "local:s1" });
+
+  await act(async () => {
+    location.resolve(undefined);
+    await location.promise;
+  });
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:owner" });
+  });
+  const state = workspaceStore.getState();
+  expect(state.panes.find((pane) => pane.id === child.id)?.slot).toBe("secondary");
+  expect(state.focusedPaneId).toBe(child.id);
+});
+
 // Closing a deleted session's pane is not enough for the pane the ADDRESS BAR
 // names (kata 1hdc): the route-application effect below re-runs on every
 // workspace change, so a URL still naming the deleted session re-opens a pane

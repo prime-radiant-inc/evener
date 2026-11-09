@@ -1,4 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { openAttentionSession } from "./attentionHistory";
 import { captureAttentionPlacement, presentAttentionTarget } from "./attentionPlacement";
 import { openNestedSessionWithOwner, openSessionByRef, openTopLevelSession } from "./sessionPlacement";
 import {
@@ -17,6 +18,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();
+  window.history.replaceState({}, "", "/");
 });
 
 afterEach(() => {
@@ -131,6 +133,43 @@ describe("openNestedSessionWithOwner", () => {
     expect(workspaceStore.getState().focusedPaneId).toBe(childPane?.id);
     expect(unrelatedPane).toBeUndefined();
   });
+
+  test("preserves the immediately opened top-level pane when the location confirms it is nested", () => {
+    // The rail's row kind placed this session in main before the location
+    // read answered. The answer says the hint was stale, so reconciliation
+    // must move the owner in beside the existing pane rather than replacing
+    // the workspace and remounting the child (which would drop its staged
+    // per-mount composer work).
+    openTopLevelSession("local:child");
+    const child = workspaceStore.getState().mainPane();
+    if (!child) throw new Error("missing optimistic child");
+
+    openNestedSessionWithOwner("local:child", "local:owner");
+
+    const state = workspaceStore.getState();
+    const preserved = state.panes.find((pane) => pane.id === child.id);
+    expect(state.mainPane()?.params).toEqual({ ref: "local:owner" });
+    expect(preserved).toBeDefined();
+    expect(preserved?.slot).toBe("secondary");
+    expect(state.focusedPaneId).toBe(child.id);
+    expect(preserved && conversationOpenParentRef(preserved)).toBe("local:owner");
+    expect(state.panes).toHaveLength(2);
+  });
+});
+
+test("an ordinary session link from an attention entry pushes a new history entry", () => {
+  window.history.replaceState({}, "", "/s/local%3Aorigin");
+  workspaceStore.getState().openPane("session", { ref: "local:origin" });
+  openAttentionSession("local:attention");
+  const before = window.history.length;
+
+  openSessionByRef("local:new", { topLevel: true });
+
+  expect(window.location.pathname).toBe("/s/local%3Anew");
+  // Replacing the pane retires the attention entry, but the ordinary route
+  // must already own a new entry by then. Otherwise retirement replaces the
+  // departing entry and Back skips the session just left.
+  expect(window.history.length).toBe(before + 1);
 });
 
 test("session links request live routing instead of reusing read-only transcripts", () => {
