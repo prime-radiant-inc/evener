@@ -13,12 +13,10 @@ import (
 func TestResolveTranscriptWindowContinuationLoadsStableRangeAndIndependentAnchor(t *testing.T) {
 	const ref = "local:resolver"
 	params := appwire.ThreadTurnsListParams{
-		Ref: ref,
-		ThreadWindowParams: appwire.ThreadWindowParams{
-			TurnWindow:        &appwire.ThreadTurnWindow{Latest: 3},
-			ItemTypes:         []string{"messages"},
-			WindowBudgetBytes: 1,
-		},
+		Ref:               ref,
+		TurnWindow:        &appwire.ThreadTurnWindow{Latest: 3},
+		ItemTypes:         []string{"messages"},
+		WindowBudgetBytes: 1,
 	}
 	const itemLimit = 10
 	identity := appitempaging.CursorIdentity{
@@ -81,11 +79,9 @@ func TestResolveTranscriptWindowContinuationLoadsStableRangeAndIndependentAnchor
 func TestResolveTranscriptWindowContinuationRejectsInvalidItemProofs(t *testing.T) {
 	const ref = "local:resolver"
 	baseParams := appwire.ThreadTurnsListParams{
-		Ref: ref,
-		ThreadWindowParams: appwire.ThreadWindowParams{
-			TurnWindow: &appwire.ThreadTurnWindow{Latest: 2},
-			ItemTypes:  []string{"messages"},
-		},
+		Ref:        ref,
+		TurnWindow: &appwire.ThreadTurnWindow{Latest: 2},
+		ItemTypes:  []string{"messages"},
 	}
 	const itemLimit = 10
 	identity := appitempaging.CursorIdentity{
@@ -200,8 +196,8 @@ func TestResolveTranscriptWindowContinuationRejectsInvalidItemProofs(t *testing.
 func TestResolveTranscriptWindowContinuationValidatesAllEmptyDigest(t *testing.T) {
 	const ref = "local:resolver"
 	params := appwire.ThreadTurnsListParams{
-		Ref:                ref,
-		ThreadWindowParams: appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Latest: 2}},
+		Ref:        ref,
+		TurnWindow: &appwire.ThreadTurnWindow{Latest: 2},
 	}
 	const itemLimit = 10
 	identity := appitempaging.CursorIdentity{

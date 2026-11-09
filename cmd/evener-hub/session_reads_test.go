@@ -840,10 +840,8 @@ func TestManagerReadRefreshAcrossPages(t *testing.T) {
 func TestTranscriptReadFollowUps(t *testing.T) {
 	params := appwire.ThreadTurnsListParams{
 		Ref: "local:follow-ups", ItemLimit: 7,
-		ThreadWindowParams: appwire.ThreadWindowParams{
-			TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn-target"}, ItemTypes: []string{"messages", "tool-results"},
-			PreviewBytes: 100, MessageBytes: 200, WindowBudgetBytes: 16_384,
-		},
+		TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn-target"}, ItemTypes: []string{"messages", "tool-results"},
+		PreviewBytes: 100, MessageBytes: 200, WindowBudgetBytes: 16_384,
 	}
 	followUp := func(cursor string) appwire.SessionStatusFollowUp {
 		return appwire.SessionStatusFollowUp{

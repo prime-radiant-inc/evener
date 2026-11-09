@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"slices"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appitempaging"
@@ -139,7 +140,7 @@ func transcriptWindowContainsTurn(result transcriptItemCandidateResult, turnID s
 	if turnID == "" {
 		return false
 	}
-	if slicesContains(result.TurnIDs, turnID) {
+	if slices.Contains(result.TurnIDs, turnID) {
 		return true
 	}
 	for _, candidate := range result.Candidates.Candidates {
@@ -149,15 +150,6 @@ func transcriptWindowContainsTurn(result transcriptItemCandidateResult, turnID s
 	}
 	for _, turn := range result.TurnShells {
 		if turn.ID == turnID {
-			return true
-		}
-	}
-	return false
-}
-
-func slicesContains(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
 			return true
 		}
 	}

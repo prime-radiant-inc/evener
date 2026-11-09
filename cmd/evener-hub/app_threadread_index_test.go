@@ -437,11 +437,9 @@ func TestDaemonlessLatestContinuationIgnoresLaterAppend(t *testing.T) {
 	operations := &sessionOperations{cfg: cfg, sources: sources, server: server, relays: newHubRelay(server, cfg, sources)}
 	ref := "local:" + entry.Meta.ID
 	params := appwire.ThreadTurnsListParams{
-		Ref: ref,
-		ThreadWindowParams: appwire.ThreadWindowParams{
-			TurnWindow:        &appwire.ThreadTurnWindow{Latest: 3},
-			WindowBudgetBytes: 1,
-		},
+		Ref:               ref,
+		TurnWindow:        &appwire.ThreadTurnWindow{Latest: 3},
+		WindowBudgetBytes: 1,
 	}
 
 	initial, err := operations.turns(t.Context(), params)
@@ -497,11 +495,9 @@ func TestSessionOperationsContinuesAcrossEmptyBoundarySaved(t *testing.T) {
 	server := appserver.NewServer(appserver.ServerConfig{})
 	operations := &sessionOperations{cfg: cfg, sources: sources, server: server, relays: newHubRelay(server, cfg, sources)}
 	params := appwire.ThreadTurnsListParams{
-		Ref: "local:" + entry.Meta.ID,
-		ThreadWindowParams: appwire.ThreadWindowParams{
-			TurnWindow:        &appwire.ThreadTurnWindow{Latest: 3},
-			WindowBudgetBytes: 1,
-		},
+		Ref:               "local:" + entry.Meta.ID,
+		TurnWindow:        &appwire.ThreadTurnWindow{Latest: 3},
+		WindowBudgetBytes: 1,
 	}
 	initial, err := operations.turns(t.Context(), params)
 	if err != nil {

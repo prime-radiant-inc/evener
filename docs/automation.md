@@ -278,8 +278,9 @@ tool output, message bodies, each turn and the complete encoded result bounded.
 The response reports the effective bounds and any excluded, withheld, truncated
 or budget-elided populations instead of implying that the view is complete.
 
-Use each returned structured `followUps` entry unchanged. A window continuation retains
-the original selection and bounds. A truncated settled item can carry a
+Use each returned structured `followUps` entry unchanged. Every page-level and
+per-turn continuation has its own shape-preserving entry with the original
+selection and bounds. A truncated settled item can carry a
 `fetchCursor`; call `read_transcript` with only `hub:{ref,fetchCursor}` and follow
 the next fetch cursor until the base64 ranges are complete. Cursors are bound to
 the exact thread, source incarnation, projection and item version. Refresh the

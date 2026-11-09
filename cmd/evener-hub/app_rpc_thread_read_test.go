@@ -296,10 +296,8 @@ func TestManagerTurnsPublishesPerTurnElisionFollowUp(t *testing.T) {
 
 	params := appwire.ThreadTurnsListParams{
 		Ref: "local:window-default", ItemLimit: 2,
-		ThreadWindowParams: appwire.ThreadWindowParams{
-			TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn-default"}, ItemTypes: []string{"messages"},
-			PreviewBytes: 512, MessageBytes: 1024, WindowBudgetBytes: appwire.ThreadWindowBudgetBytesFloor,
-		},
+		TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn-default"}, ItemTypes: []string{"messages"},
+		PreviewBytes: 512, MessageBytes: 1024, WindowBudgetBytes: appwire.ThreadWindowBudgetBytesFloor,
 	}
 	response, err := operations.Invoke(t.Context(), appwire.ManagerView{Ref: "local:manager", Manager: true}, appwire.SessionOperationRequest{Turns: &params})
 	if err != nil {
@@ -537,7 +535,7 @@ func TestContinueLiveTranscriptWindowBudgetsCanonicalImages(t *testing.T) {
 	}
 	identity := transcriptWindowCursorIdentity(candidates.Identity, windowParams, appwire.ThreadWindowItemLimitDefault)
 	cursor, err := appitempaging.EncodeWindowCursor(identity, appitempaging.WindowCursorDirectionForward, appitempaging.WindowCursor{
-		Position: position, ItemVersion: 1, ResumeWindow: &appwire.ThreadTurnWindow{Turn: "turn_1"},
+		AnchorTurnID: "turn_1", Position: position, ItemVersion: 1, ResumeWindow: &appwire.ThreadTurnWindow{Turn: "turn_1"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -608,11 +606,9 @@ func TestSessionOperationsContinuesAcrossEmptyBoundary(t *testing.T) {
 	turnC.Items[0].Text = strings.Repeat("c", 9_000)
 	operations, source := newMovingWindowOperations(t, []appwire.Turn{turnA, turnB, turnC})
 	params := appwire.ThreadTurnsListParams{
-		Ref: "local:moving",
-		ThreadWindowParams: appwire.ThreadWindowParams{
-			TurnWindow:        &appwire.ThreadTurnWindow{Latest: 3},
-			WindowBudgetBytes: 1,
-		},
+		Ref:               "local:moving",
+		TurnWindow:        &appwire.ThreadTurnWindow{Latest: 3},
+		WindowBudgetBytes: 1,
 	}
 
 	initial, err := operations.turns(t.Context(), params)
@@ -673,11 +669,9 @@ func TestSessionOperationsContinuesAllEmptyBudgetWindow(t *testing.T) {
 	}
 	operations, source := newMovingWindowOperations(t, cloneTranscriptTurnShells(original))
 	params := appwire.ThreadTurnsListParams{
-		Ref: "local:moving",
-		ThreadWindowParams: appwire.ThreadWindowParams{
-			TurnWindow:        &appwire.ThreadTurnWindow{Latest: shellCount},
-			WindowBudgetBytes: 1,
-		},
+		Ref:               "local:moving",
+		TurnWindow:        &appwire.ThreadTurnWindow{Latest: shellCount},
+		WindowBudgetBytes: 1,
 	}
 	initial, err := operations.turns(t.Context(), params)
 	if err != nil {
@@ -961,7 +955,7 @@ func TestSessionOperationsCompatibilityCountsLogicalTurnsAcrossFragments(t *test
 	caller := appwire.ManagerView{Ref: "local:manager", Manager: true}
 	var bItems []string
 	seenC := false
-	for pageNumber := 0; pageNumber < 10; pageNumber++ {
+	for range 10 {
 		page, invokeErr := operations.Invoke(t.Context(), caller, appwire.SessionOperationRequest{Turns: &params})
 		if invokeErr != nil {
 			t.Fatal(invokeErr)
@@ -1040,7 +1034,7 @@ func TestSessionOperationsCompatibilityExhaustsSelectedWindowBeforeNativeHistory
 	caller := appwire.ManagerView{Ref: "local:manager", Manager: true}
 	var got []string
 	var final *appwire.ThreadTurnsListResponse
-	for pageNumber := 0; pageNumber < 10; pageNumber++ {
+	for range 10 {
 		response, invokeErr := operations.Invoke(t.Context(), caller, appwire.SessionOperationRequest{Turns: &params})
 		if invokeErr != nil {
 			t.Fatal(invokeErr)
