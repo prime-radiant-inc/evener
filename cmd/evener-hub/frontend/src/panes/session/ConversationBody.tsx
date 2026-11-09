@@ -5,6 +5,7 @@ import { focusedSessionRef } from "../../shell/focusedSession";
 import { useOptionalNeedsYouController } from "../../shell/NeedsYouProvider";
 import { navigate, paneToURL, refParam } from "../../shell/routing";
 import { cadenceStateFor } from "../../shell/sessionStatus";
+import { useIsMobile } from "../../shell/useIsMobile";
 import { workspaceStore } from "../../shell/workspace";
 import { controlsFor, recoveryFence } from "../../stores/liveControls";
 import { ownerRetainedRef } from "../../stores/recoveryFence";
@@ -203,6 +204,7 @@ function StandardConversationBody({
   const deletedRef = useThreadsStore((s) => s.deletedRefs.has(ref));
   const restartPending = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
   const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(ref));
+  const isMobile = useIsMobile();
 
   const frameTimes = useThreadsStore((s) => s.frameTimes.get(ref) ?? EMPTY_FRAME_TIMES);
   const now = useNowTick(NOW_TICK_MS);
@@ -489,11 +491,15 @@ function StandardConversationBody({
         />
         <ConversationRecoveryNotices sessionRef={ref} />
         {/* Recovery keeps the composer and its menu mounted. Retain the
-            fallback only for other local snapshots with no Send surface;
-            owner-retained sessions direct recovery to their owner. */}
+            fallback for other local snapshots with no Send surface, and for
+            remote ones on a phone: the composer never mounts for a
+            notLoaded remote share, the phone layout has no status bar to
+            carry the menu, and a single-pane phone hides the rail, so this
+            menu is the only remaining way into Overview and About.
+            Owner-retained sessions still direct recovery to their owner. */}
         {model.status.type === "notLoaded" &&
           !recoveryOwnerRef &&
-          ref.startsWith("local:") &&
+          (ref.startsWith("local:") || isMobile) &&
           !restartPending &&
           !controlsFor(model).send &&
           seat.sessionMenu && (
