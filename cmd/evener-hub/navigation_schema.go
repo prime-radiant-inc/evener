@@ -117,10 +117,8 @@ func validateNavigationResourceSnapshot(
 
 	expectedRoot := navigationExpectedRootSlot(key.Kind)
 	rootCount := 0
-	// snapshot.Validate has already refused a child with more than one parent and
-	// a container owner that names no entity, so this walk keeps only the part of
-	// the parent rule the graph does not: every non-anchor entity is parented at
-	// least once, and the project anchor is parented never.
+	// snapshot.Validate already refused two parents and an owner that names no
+	// entity, so presence is all this walk needs to know about parenting.
 	parented := make(map[string]bool, len(snapshot.Entities))
 	ownedSlots := make(map[string]map[string]bool, len(snapshot.Entities))
 	for _, container := range snapshot.Containers {
