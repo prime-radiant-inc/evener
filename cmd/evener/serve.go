@@ -863,7 +863,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	bridge := newServeBridge(srv, deps, eventObserver, closeEventObserver)
 	defer bridge.awaitDrains()
 
-	pendingEscalations := bindServerCallbacks(ctx, srv, deps, live, bridge, retirement, retiring, rvRegistration, sessionCfg, client, profile, wd, sd, logOut, workspaceRef, &servedBootGeneration, cancel)
+	envelopeSource := bindServerCallbacks(ctx, srv, deps, live, bridge, retirement, retiring, rvRegistration, sessionCfg, client, profile, wd, sd, logOut, workspaceRef, &servedBootGeneration, cancel)
 
 	// Seed the envelope from the live session before its bridge starts. Every
 	// envelope value changes at once when the session behind them changes, and
@@ -892,7 +892,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if deps.observeCallbacks != nil {
 		deps.observeCallbacks(serveCallbackObserver{
 			notify:          bridge.notifyCallback,
-			subscriberCount: bridge.subscriberCallback, pendingEscalations: pendingEscalations,
+			subscriberCount: bridge.subscriberCallback, pendingEscalations: envelopeSource.PendingEscalations,
 			setSession: func(next *agent.Session) { live.set(next, live.environment()) },
 			session:    sess,
 		})

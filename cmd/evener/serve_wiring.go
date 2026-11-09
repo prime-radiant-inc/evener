@@ -5,10 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"strings"
 	"sync/atomic"
-	"time"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/execenv"
@@ -23,69 +21,11 @@ import (
 	"primeradiant.com/evener/server"
 )
 
-// setupRetirement builds the retirement controller, attaches it to the root
-// session and installs the lifecycle, idle-timeout and admission hooks that
-// drive it. A construction or attach failure closes the session and the
-// listener, as the launch did before this block became a func, and returns the
-// same wrapped error.
-func setupRetirement(ctx context.Context, deps serveDeps, live *liveSession, srv serveServer, sess *agent.Session, listener net.Listener, rvRegistration *rvreg.Registration, daemonIdleTimeout time.Duration, cancel context.CancelFunc) (*agent.RetirementController, *serveRetirement, error) {
-	// The retirement controller owns the daemon's idle deadline. Exactly one
-	// consumer drives a claim to process exit; the timer (controller Run) is
-	// the only automatic claimant, and evener/daemon/retire is the manual one.
-	retireClock := deps.retirementClock
-	if retireClock == nil {
-		retireClock = agent.RealRetirementClock()
-	}
-	retirement, err := agent.NewRetirementController(daemonIdleTimeout, retireClock)
-	if err != nil {
-		sess.Close()
-		listener.Close() //nolint:errcheck // returning the construction failure; the close error is not actionable
-		return nil, nil, fmt.Errorf("retirement controller: %w", err)
-	}
-	// commitRetirement is the controller's Commit step. serveDeps may inject a
-	// failure so a test can drive the pre-commit rollback below; nil means the
-	// controller's own Commit.
-	commitRetirement := deps.retirementCommit
-	if commitRetirement == nil {
-		commitRetirement = func(c *agent.RetirementController, claim *agent.RetirementClaim) error {
-			return c.Commit(claim)
-		}
-	}
-	retiring := &serveRetirement{deps: deps, live: live, retirement: retirement, rvRegistration: rvRegistration, commit: commitRetirement, ctx: ctx, cancel: cancel}
-	if err := retirement.AttachRoot(sess); err != nil {
-		sess.Close()
-		listener.Close() //nolint:errcheck // as above
-		return nil, nil, fmt.Errorf("retirement root: %w", err)
-	}
-	retiring.observe("root_published", sess.ID())
-	srv.SetDaemonLifecycle(func() appwire.DaemonLifecycle {
-		return server.DaemonLifecycleFromSnapshot(retirement.Snapshot())
-	}, retiring.requestRetirement)
-	srv.SetDaemonIdleTimeoutSet(retiring.requestIdleTimeoutSet)
-	// Install the retirement admission boundary on the router. Every routed
-	// handler is classified by access kind (server/appwire_retirement_admission.go):
-	// a mutation holds a lease for the handler's duration and is refused while
-	// the process is preparing or retiring; a read borrows only for its
-	// in-flight handler access and is refused once retirement commits. Without
-	// this install the router skips admission entirely, DrainReaders can never
-	// wait for a reader, and a mid-retirement mutation is normalized into the
-	// wrong (non-retryable) error shape. The category is the reserved
-	// "admission" blocker, not the raw access kind: BeginMutation's whitelist
-	// does not contain "mutation" and would silently demote it to "unsupported".
-	srv.SetRetirementAdmission(func(_ context.Context, kind string) (func(), error) {
-		if kind == "read" {
-			return retirement.Borrow()
-		}
-		return retirement.BeginMutation(live.session().ID(), "admission")
-	})
-	return retirement, retiring, nil
-}
-
 // bindServerCallbacks installs every session- and daemon-scoped RPC hook on the
 // server, including thread/clear. Each hook resolves the live session per call,
-// so a thread/clear replacement is never pinned. It returns the pending
-// escalation sampler the startup write reports through.
-func bindServerCallbacks(ctx context.Context, srv serveServer, deps serveDeps, live *liveSession, bridge *serveBridge, retirement *agent.RetirementController, retiring *serveRetirement, rvRegistration *rvreg.Registration, sessionCfg agent.SessionConfig, client *llm.Client, profile *provider.Profile, wd, sd string, logOut io.Writer, workspaceRef string, servedBootGeneration *atomic.Uint64, cancel context.CancelFunc) func() []appwire.SandboxEscalationRequested {
+// so a thread/clear replacement is never pinned. It returns the envelope
+// source it installed, whose PendingEscalations the startup write reports.
+func bindServerCallbacks(ctx context.Context, srv serveServer, deps serveDeps, live *liveSession, bridge *serveBridge, retirement *agent.RetirementController, retiring *serveRetirement, rvRegistration *rvreg.Registration, sessionCfg agent.SessionConfig, client *llm.Client, profile *provider.Profile, wd, sd string, logOut io.Writer, workspaceRef string, servedBootGeneration *atomic.Uint64, cancel context.CancelFunc) liveThreadEnvelopeSource {
 	srv.SetSandboxEscalationResolveFunc(func(id string, approve bool) error {
 		return live.session().ResolveSandboxEscalation(id, approve)
 	})
@@ -172,12 +112,10 @@ func bindServerCallbacks(ctx context.Context, srv serveServer, deps serveDeps, l
 	// One seam replaces sixteen read-time callbacks. The daemon samples session
 	// state through this at the moments it changes (server/thread_envelope.go's
 	// facetsByEvent) and never on a read.
-	srv.SetThreadEnvelopeSource(liveThreadEnvelopeSource{
+	envelopeSource := liveThreadEnvelopeSource{
 		session: func() agent.EnvelopeSampling { return live.session() },
-	})
-	pendingEscalations := func() []appwire.SandboxEscalationRequested {
-		return mapServePendingEscalations(live.session().PendingEscalations())
 	}
+	srv.SetThreadEnvelopeSource(envelopeSource)
 	srv.SetModelFunc(func(model string) error {
 		sess := live.session()
 		// SetModel queues a pick made while a turn runs (applied at the turn
@@ -394,5 +332,5 @@ func bindServerCallbacks(ctx context.Context, srv serveServer, deps serveDeps, l
 		cancel()
 	})
 
-	return pendingEscalations
+	return envelopeSource
 }
