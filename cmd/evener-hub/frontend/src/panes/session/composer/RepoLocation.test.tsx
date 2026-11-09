@@ -48,6 +48,23 @@ test("shows only the working dir for a non-local session, without a git lookup",
   expect(client.calls).toHaveLength(0);
 });
 
+// A lookup resolved while the session was local stops displaying the moment
+// locality flips off: a source-backed session's cwd belongs to another host,
+// so the cached local answer must not survive the transition.
+test("a resolved branch stops displaying once the session is not local", async () => {
+  const client = clientReporting({ head: "main", originUrl: "git@github.com:owner/repo.git" });
+  const view = renderLocation("/repo", client, true);
+  await screen.findByTestId("composer-repo-link");
+  view.rerender(
+    <ClientProvider client={client}>
+      <RepoLocation cwd="/repo" local={false} />
+    </ClientProvider>,
+  );
+  expect(screen.getByTestId("composer-repo-path").textContent).toBe("/repo");
+  expect(screen.queryByTestId("composer-repo-branch")).toBeNull();
+  expect(screen.queryByTestId("composer-repo-link")).toBeNull();
+});
+
 test("names the repository as owner/repo#branch and links it to the forge page", async () => {
   const client = clientReporting({ head: "feature/x", originUrl: "git@github.com:owner/repo.git" });
   renderLocation("/home/jesse/repo", client);

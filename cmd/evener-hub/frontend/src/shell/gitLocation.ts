@@ -113,7 +113,7 @@ function useGitHead(client: AppwireClientLike, cwd: string, includeOrigin: boole
       unwatch();
     };
   }, [client, cwd, enabled, includeOrigin]);
-  return resolved !== null && resolved.client === client && resolved.cwd === cwd ? resolved.location : EMPTY;
+  return enabled && resolved !== null && resolved.client === client && resolved.cwd === cwd ? resolved.location : EMPTY;
 }
 
 /** The mounted, fail-soft, retry-on-recovery form of resolveHeadBranch. */
