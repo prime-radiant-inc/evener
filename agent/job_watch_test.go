@@ -31,9 +31,6 @@ func drainAndAccept(t *testing.T, s *Session) {
 		t.Fatalf("drain: %v", err)
 	}
 	_ = s.acceptNotificationInput(context.Background(), "") // ok to no-op on empty queue
-	// Stand in for the turn's dispatched model request, which settles what the
-	// opener wrote into the transcript.
-	s.settleJobNotificationsCarriedByRequest(context.Background())
 }
 
 // installWatchBelowValidation installs a watch directly into jm.watches the way

@@ -53,13 +53,25 @@ and the turn does not hold it until the turn ends. An ordinary turn instead
 yields at the boundary so the drain runs a notification turn. Each completion is
 delivered and recorded once.
 
-A completion counts as delivered when a model request carrying its runtime entry
-is dispatched to the provider, not when the entry is written. A turn that ends
-first (stopped, out of rounds, or refused by local context admission) leaves it
-owed: the session wakes again, and the next turn's request carries the entry
-already in the transcript without writing it a second time. A restart loses that
-in-memory distinction, so after one the recorded entry settles the completion as
+A completion counts as delivered once a model call built from a transcript
+holding its runtime entry has returned, not when the entry is written. A provider
+error also settles it, because the turn fails visibly. A turn that ends without
+such a call (stopped before it, out of rounds, or refused by local context
+admission) leaves the completion owed. That includes a Stop before the turn's
+first request, because job notifications are not the user's to stop. The session
+wakes again, and the next turn's request carries the entry already in the
+transcript, or the compaction summary that folded it, without writing it a
+second time. A completion gets one such retry: if the next turn also ends without
+a request, the completion settles with that turn's failure visible, and its entry
+stays in the transcript for whatever request comes next. A restart loses the
+in-memory owed state, so after one the recorded entry settles the completion as
 described above.
+
+Watch and watch-send frames settle when the notification turn writes them,
+before its model call. They have no replay detection, so a restart during the
+call would otherwise render the same frame twice. A turn that ends before its
+request leaves the written frame in the transcript, and the next request
+carries it.
 
 ```mermaid
 flowchart LR

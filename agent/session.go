@@ -870,13 +870,13 @@ type Session struct {
 	pendingJobNotifs   []jobNotification
 	// jobStatusPolls backs the refusal of repeated job_status calls that carry no news.
 	jobStatusPolls jobStatusPolls
-	// jobNotifsAwaitingRequest holds the notifications whose reminder is
-	// durable in the transcript but which no dispatched model request has
-	// carried yet. They are settled as delivered when one is dispatched; until
-	// then they stay owed, so a turn that ends first leaves them to the next
-	// wake, which carries them without writing their reminder again. Guarded by
+	// jobNotifsAwaitingRequest holds the durable completions whose reminder
+	// is in the transcript but which no dispatched model request has carried
+	// yet. They settle as delivered when one is dispatched; until then they
+	// stay owed, so a turn that ends first leaves them to the next wake, which
+	// carries them without writing their reminder again. Guarded by
 	// pendingJobNotifsMu.
-	jobNotifsAwaitingRequest []deliverableJobNotification
+	jobNotifsAwaitingRequest []awaitedJobNotification
 	// jobNotifsDelivered counts the job notifications acceptNotificationInput
 	// has delivered to the model over the session's lifetime. The one-shot
 	// drain reads it across an undisposed-job announcement turn: growth means a

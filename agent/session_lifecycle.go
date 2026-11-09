@@ -1059,7 +1059,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			s.emit(events.CommunicatePreviewResetData{CallID: callID})
 		}
 	}()
-	defer s.wakeForJobNotificationsAwaitingRequest()
+	defer s.endTurnForJobNotificationsAwaitingRequest()
 	var rootAttentionIDs []string
 	rootAttentionAccepted := false
 	// Consume the deliveries this turn's settled rounds presented, armed
@@ -1466,7 +1466,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// does not advance the round. They count as delivered only once a request
 		// is dispatched (below), so any exit before that leaves them owed.
 		if kind == EntryNotification {
-			s.injectLaterJobNotifications()
+			s.injectLaterJobNotifications(ctx)
 		}
 
 		profile, sys, _, req, fullHistory, reqEffort, prepareErr := s.prepareModelRequestWithError(ctx, round, &timings)
@@ -1486,10 +1486,12 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		s.noteParentJobActivity(jobPhaseAwaitingModel)
 		stoppedBeforeDispatch := ctx.Err() != nil
 		modelResp, req, attempt, usedProfile, err := s.callModelWithFallback(ctx, profile, req, fullHistory, reqEffort, round)
-		// The request was built from the transcript holding every notification
-		// reminder still awaiting one. Unless the turn was stopped first or
-		// local context admission refused it, it went to the provider, so they
-		// are delivered.
+		// The request was built from the transcript holding every completion
+		// reminder still awaiting one. The call has returned, so the completions
+		// settle unless the turn was stopped before it or local context
+		// admission refused the request. Any other failure, including a
+		// provider error, settles them: the turn fails visibly, and settling
+		// keeps a request that can never succeed from waking the session again.
 		if !stoppedBeforeDispatch && !isLocalContextBudgetError(err) {
 			s.settleJobNotificationsCarriedByRequest(ctx)
 		}

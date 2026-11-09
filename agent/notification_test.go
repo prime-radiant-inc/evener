@@ -1630,23 +1630,29 @@ func TestNotificationTurnOpeningBatchSurvivesLocalAdmissionFailure(t *testing.T)
 	}
 }
 
-// TestNotificationTurnWatchSendSurvivesLocalAdmissionFailureWithoutDuplicateFrame
-// pins the rule for a caller watch send: a frame whose only request was refused
-// by local context admission stays pending, and the next notification turn
-// carries the frame already in the transcript instead of rendering it again.
-func TestNotificationTurnWatchSendSurvivesLocalAdmissionFailureWithoutDuplicateFrame(t *testing.T) {
+// TestNotificationTurnSettlesCallerWatchSendBeforeItsModelCall pins that a
+// caller watch-send frame settles as soon as the notification turn writes it,
+// before the model call. Watch sends have no transcript replay detection, so a
+// frame left pending through the call would be rendered a second time by a
+// restart during it.
+func TestNotificationTurnSettlesCallerWatchSendBeforeItsModelCall(t *testing.T) {
 	t.Parallel()
-	const ping = "awaiting-request-ping"
-	adapter := &fakeErrAdapter{
+	const ping = "settled-before-call-ping"
+	var (
+		sess       *Session
+		deliveryID string
+		settled    bool
+	)
+	adapter := &fakeAdapter{
 		name: "openai",
-		steps: []func(llm.Request) (llm.Response, error){
-			func(llm.Request) (llm.Response, error) {
-				return llm.Response{}, &llm.ContextBudgetError{Provider: "openai", Model: "gpt-5.2", Limit: "context_window", InputTokens: 101, Maximum: 100}
+		steps: []func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				settled = sess.jobManager.watchSendDelivered(deliveryID)
+				return agenttest.FinalResponse("saw the frame")
 			},
-			func(llm.Request) (llm.Response, error) { return agenttest.FinalResponse("saw the frame"), nil },
 		},
 	}
-	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{MaxToolRoundsPerInput: 1}))
+	sess = newSession(t, withAdapter(adapter), withConfig(SessionConfig{}))
 	jm := sess.jobManager
 	installWatchBelowValidation(t, jm, watchArgs{
 		Target: runtimeMessageAliasCaller,
@@ -1654,36 +1660,74 @@ func TestNotificationTurnWatchSendSurvivesLocalAdmissionFailureWithoutDuplicateF
 		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: ping},
 	})
 	onSessionEventKD(jm, events.EventCommunicate, nil)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	defer cancel()
 	pending := jm.pendingWatchSendDeliveries(nil)
 	if len(pending) != 1 {
 		t.Fatalf("pending watch sends = %d, want the one frame", len(pending))
 	}
-	deliveryID := pending[0].state.DeliveryID
+	deliveryID = pending[0].state.DeliveryID
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	defer cancel()
 	if err := sess.drainPendingWatchSends(ctx); err != nil {
 		t.Fatalf("drain watch sends: %v", err)
 	}
-	// The capped turn ends at its round limit; that error is expected.
-	_, _ = sess.ProcessInputKind(ctx, "", nil, EntryNotification)
-	if jm.watchSendDelivered(deliveryID) {
-		t.Fatal("the watch send settled by a turn whose only request never reached the provider")
-	}
-
 	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
-		t.Fatalf("next notification turn: %v", err)
+		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
 	}
-	reqs := adapter.Requests()
-	if len(reqs) != 2 || !requestsContain(reqs[1:], ping) {
-		t.Fatalf("the next turn did not carry the frame in its one request (model calls = %d)", len(reqs))
+	if !requestsContain(adapter.Requests(), ping) {
+		t.Fatal("the notification turn's request did not carry the frame")
+	}
+	if !settled {
+		t.Fatal("the watch send was still pending while the model call carrying it ran")
 	}
 	if n := countHistoryNeedle(sess, ping); n != 1 {
 		t.Errorf("the frame appears in the transcript %d times, want 1", n)
 	}
-	// The turn's own reply can fire the caller watch again; only the frame the
-	// request carried must have settled.
-	if !jm.watchSendDelivered(deliveryID) {
-		t.Error("the watch send did not settle after a request carried it")
+}
+
+// TestNotificationOwedThroughRepeatedAdmissionRefusalStopsWaking pins the bound
+// on an owed notification: when local context admission keeps refusing every
+// request, the notification gets one more turn and is then settled with that
+// turn's failure visible, so the session stops waking for it and can go idle.
+func TestNotificationOwedThroughRepeatedAdmissionRefusalStopsWaking(t *testing.T) {
+	t.Parallel()
+	const jobA = "job_never_admitted"
+	refuse := func(llm.Request) (llm.Response, error) {
+		return llm.Response{}, &llm.ContextBudgetError{Provider: "openai", Model: "gpt-5.2", Limit: "context_window", InputTokens: 101, Maximum: 100}
+	}
+	adapter := &fakeErrAdapter{name: "openai", steps: []func(llm.Request) (llm.Response, error){refuse, refuse, refuse, refuse, refuse, refuse}}
+	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{MaxToolRoundsPerInput: 1}))
+	clk := agenttest.NewFakeClock()
+	sess.clock = clk
+	var wakes atomic.Int32
+	sess.SetNotifyFunc(func() { wakes.Add(1) })
+	enqueueCompletedJobNotification(t, sess, jobA)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	defer cancel()
+	// Drive notification turns the way the paced retry would, for as long as it
+	// keeps waking the session, up to a ceiling the bound must stay well under.
+	turns := 0
+	for ; turns < 5; turns++ {
+		_, _ = sess.ProcessInputKind(ctx, "", nil, EntryNotification)
+		before := wakes.Load()
+		clk.Advance(jobNotificationRetryMaxDelay)
+		clk.Drain()
+		if wakes.Load() == before {
+			turns++
+			break
+		}
+	}
+	if turns > 2 {
+		t.Fatalf("an owed notification no request could carry woke %d turns, want at most 2", turns)
+	}
+	if sess.peekNotifications() != 0 {
+		t.Fatal("the never-admitted notification is still owed, so the session cannot go idle")
+	}
+	if n := notificationDeliveredCount(t, sess.jobManager, jobA); n != 1 {
+		t.Errorf("job A recorded delivered %d times, want 1 once its turns gave up", n)
+	}
+	if n := countHistoryNeedle(sess, fmt.Sprintf(`job_id=%q`, jobA)); n != 1 {
+		t.Errorf("job A appears in the transcript %d times, want 1", n)
 	}
 }

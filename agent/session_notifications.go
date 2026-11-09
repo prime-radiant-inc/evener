@@ -115,7 +115,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 		s.emit(events.SteeringInjectedData{Text: reminder, Kind: events.SteeringKindNotification})
 	}
 
-	s.awaitRequestForJobNotifications(jobNotifs)
+	s.awaitRequestForJobNotifications(ctx, jobNotifs)
 
 	// Drain any pending steering messages before the first LLM call (spec 2.5).
 	s.injectDrainedSteering()
@@ -147,9 +147,10 @@ func (s *Session) settleDeliveredJobNotifications(ctx context.Context, jobNotifs
 // injectLaterJobNotifications writes the reminder for notifications that
 // arrived while a notification turn was running, at the round boundary, so the
 // turn's next model request carries them instead of waiting for the turn to
-// end. They are settled when that request is dispatched; a failed transcript
-// write puts them back in the queue for the next wake.
-func (s *Session) injectLaterJobNotifications() {
+// end. Completions among them settle when that request is dispatched (see
+// awaitRequestForJobNotifications); a failed transcript write puts them all
+// back in the queue for the next wake.
+func (s *Session) injectLaterJobNotifications(ctx context.Context) {
 	jobNotifs, retryJobNotifs, injectedJobNotifs := s.filterDeliverableJobNotifications(s.drainJobNotifications())
 	jobNotifs, injectedJobNotifs = s.withoutAwaitingRequest(jobNotifs), s.withoutAwaitingRequest(injectedJobNotifs)
 	s.requeueJobNotifications(retryJobNotifs)
@@ -166,79 +167,90 @@ func (s *Session) injectLaterJobNotifications() {
 		s.unionActiveProvenance(n.notification.Provenance)
 	}
 	s.emit(events.SteeringInjectedData{Text: reminder, Kind: events.SteeringKindNotification})
-	s.awaitRequestForJobNotifications(jobNotifs)
+	s.awaitRequestForJobNotifications(ctx, jobNotifs)
 }
 
-// awaitRequestForJobNotifications records jobNotifs, whose reminder is now
-// durable in the transcript, as owed until a dispatched model request carries
-// them. Settling them any earlier would mark delivered a notification the
-// model never receives when the turn ends before its next request: a stop, a
-// round limit, or a request refused by local context admission.
-func (s *Session) awaitRequestForJobNotifications(jobNotifs []deliverableJobNotification) {
-	if len(jobNotifs) == 0 {
-		return
-	}
+// maxUndispatchedNotificationTurns bounds how many turns may end without
+// dispatching a request after writing a completion's reminder. A turn that
+// stopped or spent its rounds early is followed by one more; when that one
+// cannot dispatch either (local context admission keeps refusing), the
+// completion settles with that turn's failure visible rather than waking the
+// session forever. Its reminder stays in the transcript for the next request.
+const maxUndispatchedNotificationTurns = 2
+
+// awaitedJobNotification is a completion whose reminder is in the transcript
+// but which no dispatched request has carried yet.
+type awaitedJobNotification struct {
+	deliverable       deliverableJobNotification
+	undispatchedTurns int
+}
+
+// awaitRequestForJobNotifications takes jobNotifs once their reminder is
+// durable in the transcript. Durable completions stay owed until a dispatched
+// model request carries them: settling one earlier would mark delivered a
+// completion the model never receives when the turn ends before its next
+// request (a stop, a round limit, a request refused by local context
+// admission), and replay detection keeps a restart from writing it twice.
+// Watch frames have no replay detection, so they settle here, before the model
+// call, as they always have: a restart during the call must find nothing
+// pending to render again.
+func (s *Session) awaitRequestForJobNotifications(ctx context.Context, jobNotifs []deliverableJobNotification) {
+	var settleNow []deliverableJobNotification
 	s.pendingJobNotifsMu.Lock()
-	s.jobNotifsAwaitingRequest = append(s.jobNotifsAwaitingRequest, jobNotifs...)
+	for _, d := range jobNotifs {
+		if d.terminalGen == "" {
+			settleNow = append(settleNow, d)
+			continue
+		}
+		s.jobNotifsAwaitingRequest = append(s.jobNotifsAwaitingRequest, awaitedJobNotification{deliverable: d})
+	}
 	s.pendingJobNotifsMu.Unlock()
-}
-
-// awaitedNotificationKey identifies a deliverable that has a durable reminder:
-// a caller watch send by its key and update, a durable completion by its job
-// and terminal generation. Timer ticks have no such identity; each is new.
-type awaitedNotificationKey struct {
-	watchSend   jobstore.WatchSendKey
-	updateSeq   uint64
-	jobID       string
-	terminalGen string
-}
-
-func awaitedKeyOf(d deliverableJobNotification) (awaitedNotificationKey, bool) {
-	if d.watchJM != nil {
-		return awaitedNotificationKey{watchSend: d.watchState.Key, updateSeq: d.watchState.UpdateSeq}, true
+	if len(settleNow) > 0 {
+		s.settleDeliveredJobNotifications(ctx, settleNow)
 	}
-	if d.terminalGen != "" {
-		return awaitedNotificationKey{jobID: d.notification.JobID, terminalGen: d.terminalGen}, true
-	}
-	return awaitedNotificationKey{}, false
 }
 
-// withoutAwaitingRequest drops the notifications whose reminder is already in
-// the transcript awaiting a request. A wake re-queues them (the opener re-tokens
-// every pending caller watch send), and rendering them again would write a
-// duplicate reminder; the awaited copy settles when the request is dispatched.
+type awaitedNotificationKey struct{ jobID, terminalGen string }
+
+// withoutAwaitingRequest drops the completions whose reminder is already in
+// the transcript awaiting a request, so a wake that re-queues one cannot write
+// its reminder again or settle it before that request.
 func (s *Session) withoutAwaitingRequest(notifs []deliverableJobNotification) []deliverableJobNotification {
 	s.pendingJobNotifsMu.Lock()
 	awaited := make(map[awaitedNotificationKey]bool, len(s.jobNotifsAwaitingRequest))
-	for _, d := range s.jobNotifsAwaitingRequest {
-		if key, ok := awaitedKeyOf(d); ok {
-			awaited[key] = true
-		}
+	for _, a := range s.jobNotifsAwaitingRequest {
+		awaited[awaitedNotificationKey{a.deliverable.notification.JobID, a.deliverable.terminalGen}] = true
 	}
 	s.pendingJobNotifsMu.Unlock()
 	if len(awaited) == 0 {
 		return notifs
 	}
 	return slices.DeleteFunc(notifs, func(d deliverableJobNotification) bool {
-		key, ok := awaitedKeyOf(d)
-		return ok && awaited[key]
+		return d.terminalGen != "" && awaited[awaitedNotificationKey{d.notification.JobID, d.terminalGen}]
 	})
 }
 
-// jobNotificationsAwaitingRequest returns a copy of the notifications whose
-// reminder no dispatched request has carried yet.
+// jobNotificationsAwaitingRequest returns the completions whose reminder no
+// dispatched request has carried yet.
 func (s *Session) jobNotificationsAwaitingRequest() []deliverableJobNotification {
 	s.pendingJobNotifsMu.Lock()
 	defer s.pendingJobNotifsMu.Unlock()
-	return slices.Clone(s.jobNotifsAwaitingRequest)
+	out := make([]deliverableJobNotification, 0, len(s.jobNotifsAwaitingRequest))
+	for _, a := range s.jobNotifsAwaitingRequest {
+		out = append(out, a.deliverable)
+	}
+	return out
 }
 
-// settleJobNotificationsCarriedByRequest settles every notification awaiting a
+// settleJobNotificationsCarriedByRequest settles every completion awaiting a
 // request once the round loop has dispatched one: the request was built from
 // the transcript that holds their reminders.
 func (s *Session) settleJobNotificationsCarriedByRequest(ctx context.Context) {
 	s.pendingJobNotifsMu.Lock()
-	carried := s.jobNotifsAwaitingRequest
+	carried := make([]deliverableJobNotification, 0, len(s.jobNotifsAwaitingRequest))
+	for _, a := range s.jobNotifsAwaitingRequest {
+		carried = append(carried, a.deliverable)
+	}
 	s.jobNotifsAwaitingRequest = nil
 	s.pendingJobNotifsMu.Unlock()
 	if len(carried) > 0 {
@@ -246,15 +258,30 @@ func (s *Session) settleJobNotificationsCarriedByRequest(ctx context.Context) {
 	}
 }
 
-// wakeForJobNotificationsAwaitingRequest runs when a turn ends. Notifications
-// the turn wrote into the transcript but never dispatched are still owed, and
-// the drain loop does not run a notification turn straight after one, so it
-// arms the paced notification retry to wake the session for them.
-func (s *Session) wakeForJobNotificationsAwaitingRequest() {
+// endTurnForJobNotificationsAwaitingRequest runs when a turn ends. Completions
+// the turn left without a dispatched request are still owed; the drain loop
+// does not run a notification turn straight after one, so the paced
+// notification retry wakes the session for them. A completion that has now
+// ended maxUndispatchedNotificationTurns turns undispatched settles instead.
+func (s *Session) endTurnForJobNotificationsAwaitingRequest() {
+	var exhausted []deliverableJobNotification
 	s.pendingJobNotifsMu.Lock()
-	defer s.pendingJobNotifsMu.Unlock()
-	if len(s.jobNotifsAwaitingRequest) > 0 {
+	owed := s.jobNotifsAwaitingRequest[:0]
+	for _, a := range s.jobNotifsAwaitingRequest {
+		a.undispatchedTurns++
+		if a.undispatchedTurns >= maxUndispatchedNotificationTurns {
+			exhausted = append(exhausted, a.deliverable)
+			continue
+		}
+		owed = append(owed, a)
+	}
+	s.jobNotifsAwaitingRequest = owed
+	if len(owed) > 0 {
 		s.scheduleJobNotificationRetryLocked()
+	}
+	s.pendingJobNotifsMu.Unlock()
+	if len(exhausted) > 0 {
+		s.settleDeliveredJobNotifications(context.Background(), exhausted)
 	}
 }
 
