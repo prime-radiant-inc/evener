@@ -96,3 +96,9 @@ func longRunningJobsNotification(jobs []*jobstore.JobRecord, now time.Time) jobN
 	n.Note = b.String()
 	return n
 }
+
+// isLongRunningJobsReminder reports whether n is the reminder built by
+// longRunningJobsNotification. Its identity on the wire is the reason attr.
+func (n jobNotification) isLongRunningJobsReminder() bool {
+	return n.isWatch() && n.JobID == "" && n.WatchID == "" && n.Reason == longRunningJobsReason
+}

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/llm"
 )
 
@@ -148,11 +149,8 @@ func TestActiveTurnReceivesLongRunningJobReminder(t *testing.T) {
 	if !requestsContain(requests[1:], "<job-notification", jobID) {
 		t.Fatal("the request after the tool round does not carry the reminder naming the job")
 	}
-	r.sess.mu.Lock()
-	turns := r.sess.turns
-	r.sess.mu.Unlock()
-	if turns != 1 {
-		t.Fatalf("turns = %d, want 1: the reminder must not start a user turn", turns)
+	if pending := r.sess.peekNotifications(); pending != 0 {
+		t.Fatalf("pending job notifications after the turn = %d, want 0: the reminder must be consumed in-turn", pending)
 	}
 }
 
@@ -191,5 +189,71 @@ func TestNoReminderAfterLongJobsFinish(t *testing.T) {
 	}
 	if got := len(r.woken); got != 0 {
 		t.Fatalf("wakes after every job finished = %d, want 0", got)
+	}
+}
+
+func TestPendingLongRunningJobReminderIsReplacedNotQueued(t *testing.T) {
+	t.Parallel()
+	r := newReminderRig(t)
+	first, second := r.startShell(t), r.startShell(t)
+
+	// Nothing drains the queue, as when an open question parks the session.
+	r.advance(longRunningJobReminderInterval)
+	if _, err := r.sess.jobManager.stop(first); err != nil {
+		t.Fatalf("stop %s: %v", first, err)
+	}
+	waitForShellDone(t, r.sess.jobManager, first)
+	r.advance(longRunningJobReminderInterval)
+	r.advance(longRunningJobReminderInterval)
+
+	reminders := r.reminders()
+	if len(reminders) != 1 {
+		t.Fatalf("queued reminders = %d, want 1", len(reminders))
+	}
+	if listed(reminders[0], first) || !listed(reminders[0], second) {
+		t.Fatalf("the surviving reminder must list only %s", second)
+	}
+}
+
+func TestLongRunningJobReminderListsShellJobsOnly(t *testing.T) {
+	t.Parallel()
+	r := newReminderRig(t)
+	shell := r.startShell(t)
+	jm := r.sess.jobManager
+	const delegateID = "job_delegate_not_listed"
+	jm.mu.Lock()
+	jm.running[delegateID] = &runningJob{rec: &jobstore.JobRecord{JobID: delegateID, Type: jobstore.JobType(delegateResourceType), StartedAt: jm.now()}}
+	jm.mu.Unlock()
+	defer func() {
+		jm.mu.Lock()
+		delete(jm.running, delegateID)
+		jm.mu.Unlock()
+	}()
+
+	r.advance(longRunningJobReminderInterval)
+
+	reminders := r.reminders()
+	if len(reminders) != 1 || !listed(reminders[0], shell) || listed(reminders[0], delegateID) {
+		t.Fatalf("reminders = %+v, want one naming only the shell job", reminders)
+	}
+}
+
+func TestNoLongRunningJobReminderAfterClose(t *testing.T) {
+	t.Parallel()
+	r := newReminderRig(t)
+	r.startShell(t)
+
+	r.sess.Close()
+	for len(r.woken) > 0 {
+		<-r.woken
+	}
+	r.sess.drainJobNotifications()
+	r.advance(longRunningJobReminderInterval)
+
+	if got := r.reminders(); len(got) != 0 {
+		t.Fatalf("reminders after close = %+v, want none", got)
+	}
+	if got := len(r.woken); got != 0 {
+		t.Fatalf("wakes after close = %d, want 0", got)
 	}
 }

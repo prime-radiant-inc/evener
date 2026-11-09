@@ -1283,6 +1283,18 @@ func (s *Session) appendOrFoldJobNotificationLocked(n jobNotification) {
 			}
 		}
 	}
+	// A long-running-jobs reminder is a snapshot of the jobs running when it was
+	// built, so a newer one replaces any still undelivered rather than queueing
+	// behind it listing jobs that may have finished.
+	if n.isLongRunningJobsReminder() {
+		kept := s.pendingJobNotifs[:0]
+		for _, p := range s.pendingJobNotifs {
+			if !p.isLongRunningJobsReminder() {
+				kept = append(kept, p)
+			}
+		}
+		s.pendingJobNotifs = kept
+	}
 	s.pendingJobNotifs = append(s.pendingJobNotifs, n)
 }
 

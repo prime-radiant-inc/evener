@@ -458,6 +458,25 @@ Job job_blank_status failed.
   expect(notif(notificationsOf(parseSteeringNotifications(block)), 0).tone).toBe("error");
 });
 
+test("the long-running-jobs reminder is identified as a reminder, not an anonymous watch trigger", () => {
+  const block = `<job-notification job_id="" event="watch" job_type="" status="watch" reason="long_running_jobs" output_bytes="0">
+1 shell job(s) are still running.
+- job_a: running 31m
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.type).toBe("watch");
+  expect(n.reminder).toBe("long-running-jobs");
+  expect(n.tone).toBe("neutral");
+  expect(n.secondary).toBe("");
+  expect(n.prose).toContain("job_a");
+  const plain = `<job-notification job_id="" event="watch" job_type="" status="watch" reason="file changed" output_bytes="0">
+Watch event triggered: file changed.
+</job-notification>`;
+  const other = notif(notificationsOf(parseSteeringNotifications(plain)), 0);
+  expect(other.reminder).toBeUndefined();
+  expect(n.title).not.toBe(other.title);
+});
+
 test("a job-less watch event classifies as a watch notification", () => {
   const block = `<job-notification job_id="" event="watch" job_type="" status="watch" reason="file changed" output_bytes="0">
 Watch event triggered: file changed.
