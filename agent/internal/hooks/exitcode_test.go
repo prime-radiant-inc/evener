@@ -124,3 +124,42 @@ func TestHookRunner_PostToolUse_ExitCode2_DoesNotBlock(t *testing.T) {
 		t.Fatalf("PostToolUse exit 2 model context = %v, want it to contain the stderr", result.ModelContext)
 	}
 }
+
+// TestHookRunner_PostToolUseFailure_ExitCode2_DoesNotBlock pins the failure
+// event's exit-2 contract: RunResult has no Denied/Blocked field at all, so
+// exit 2 can only route its stderr to the model. The action already failed;
+// a failure hook cannot block it again.
+func TestHookRunner_PostToolUseFailure_ExitCode2_DoesNotBlock(t *testing.T) {
+	runner := newRunner(nil, "")
+	runner.Add(plugin.HookPostToolUseFailure, plugin.RegisteredHook{
+		Matcher: "*",
+		Type:    "command",
+		Command: `echo "post-failure-error" >&2; exit 2`,
+		Timeout: 5,
+	})
+
+	result := runner.RunPostToolUseFailure(context.Background(), Input{
+		CWD:           "/tmp",
+		HookEventName: "PostToolUseFailure",
+		ToolName:      "Bash",
+	})
+	if exitBehavior(plugin.HookPostToolUseFailure).BlockOnExit2 {
+		t.Fatal("PostToolUseFailure must never claim block-on-exit-2")
+	}
+	if len(result.ModelContext) == 0 {
+		t.Fatal("PostToolUseFailure exit 2 should surface the stderr to the model")
+	}
+	found := false
+	for _, msg := range result.ModelContext {
+		if strings.Contains(msg, "post-failure-error") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("PostToolUseFailure exit 2 model context = %v, want it to contain the stderr", result.ModelContext)
+	}
+	if len(result.UserMessages) != 0 {
+		t.Fatalf("PostToolUseFailure exit 2 stderr must not go to the user: %v", result.UserMessages)
+	}
+}

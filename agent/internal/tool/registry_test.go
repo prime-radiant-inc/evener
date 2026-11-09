@@ -1577,3 +1577,142 @@ func TestToolRegistry_UseSkillHasNoDefaultTailLimit(t *testing.T) {
 		t.Fatalf("default use_skill dispatch truncated complete content: error=%v truncated=%v", res.IsError, res.Truncated)
 	}
 }
+
+// TestRegistry_MarksPreExecutionRejections proves Rejected names exactly the
+// calls a pre-execution gate refused: the breaker park, unknown tool,
+// ValidateRawArguments, invalid arguments JSON, PreValidate, schema validation,
+// and a middleware refusal. A tool that RAN and returned an error is not a
+// rejection, so the hook partition can tell a refusal from a failure.
+func TestRegistry_MarksPreExecutionRejections(t *testing.T) {
+	registerProbe := func(t *testing.T, r *Registry, name string, preValidate func(map[string]any) error) *int {
+		t.Helper()
+		calls := 0
+		if err := r.Register(RegisteredTool{
+			Definition: llm.ToolDefinition{
+				Name:        name,
+				Description: "rejection probe",
+				Parameters: map[string]any{
+					"type":       "object",
+					"properties": map[string]any{"path": map[string]any{"type": "string"}},
+					"required":   []string{"path"},
+				},
+			},
+			PreValidate: preValidate,
+			// Arguments are dropped on purpose: the run must be counted even
+			// when the call reaches only the schema gate.
+			Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+				calls++
+				return "ran", nil
+			},
+		}); err != nil {
+			t.Fatalf("Register(%s): %v", name, err)
+		}
+		return &calls
+	}
+
+	t.Run("unknown_tool", func(t *testing.T) {
+		reg := NewRegistry()
+		res := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{Name: "unknown_tool", ID: "id", Arguments: json.RawMessage(`{}`)})
+		if !res.IsError || !res.Rejected {
+			t.Fatalf("result = %+v, want IsError and Rejected", res)
+		}
+	})
+
+	t.Run("validate_raw_arguments", func(t *testing.T) {
+		reg := NewRegistry()
+		registerProbe(t, reg, "probe", nil)
+		oversized := json.RawMessage(strings.Repeat("a", MaxToolArgumentBytes+1))
+		res := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{Name: "probe", ID: "id", Arguments: oversized})
+		if !res.IsError || !res.Rejected {
+			t.Fatalf("result = %+v, want IsError and Rejected", res)
+		}
+	})
+
+	t.Run("invalid_arguments_json", func(t *testing.T) {
+		reg := NewRegistry()
+		registerProbe(t, reg, "probe", nil)
+		res := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{Name: "probe", ID: "id", Arguments: json.RawMessage(`{"path":`)})
+		if !res.IsError || !res.Rejected {
+			t.Fatalf("result = %+v, want IsError and Rejected", res)
+		}
+	})
+
+	t.Run("prevalidate", func(t *testing.T) {
+		reg := NewRegistry()
+		registerProbe(t, reg, "probe", func(map[string]any) error { return errors.New("prevalidate refused") })
+		res := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{Name: "probe", ID: "id", Arguments: json.RawMessage(`{"path":"x"}`)})
+		if !res.IsError || !res.Rejected {
+			t.Fatalf("result = %+v, want IsError and Rejected", res)
+		}
+	})
+
+	t.Run("schema_validation", func(t *testing.T) {
+		reg := NewRegistry()
+		registerProbe(t, reg, "probe", nil)
+		res := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{Name: "probe", ID: "id", Arguments: json.RawMessage(`{}`)})
+		if !res.IsError || !res.Rejected {
+			t.Fatalf("result = %+v, want IsError and Rejected", res)
+		}
+	})
+
+	t.Run("middleware_refusal", func(t *testing.T) {
+		reg := NewRegistry()
+		registerProbe(t, reg, "probe", nil)
+		reg.Use(func(context.Context, string, map[string]any) error { return errors.New("middleware refused") })
+		res := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{Name: "probe", ID: "id", Arguments: json.RawMessage(`{"path":"x"}`)})
+		if !res.IsError || !res.Rejected {
+			t.Fatalf("result = %+v, want IsError and Rejected", res)
+		}
+	})
+
+	t.Run("breaker_park", func(t *testing.T) {
+		reg := NewRegistry()
+		// The call must FAIL to build a streak; only failures park.
+		if err := reg.Register(RegisteredTool{
+			Definition: llm.ToolDefinition{
+				Name:        "flaky",
+				Description: "fails every time",
+				Parameters:  map[string]any{"type": "object"},
+			},
+			Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+				return nil, errors.New("same failure")
+			},
+		}); err != nil {
+			t.Fatalf("Register(flaky): %v", err)
+		}
+		call := llm.ToolCallData{Name: "flaky", ID: "id", Arguments: json.RawMessage(`{"path":"same"}`)}
+		// breakerThreshold failures park the next identical call; each of the
+		// first two runs is the tool's own failure, not a rejection.
+		for i := 0; i < breakerThreshold; i++ {
+			res := reg.ExecuteCall(context.Background(), nil, call)
+			if !res.IsError || res.Rejected {
+				t.Fatalf("pre-park run %d = %+v, want IsError and Rejected=false", i, res)
+			}
+		}
+		res := reg.ExecuteCall(context.Background(), nil, call)
+		if !res.IsError || !res.Rejected {
+			t.Fatalf("parked run = %+v, want IsError and Rejected", res)
+		}
+	})
+
+	t.Run("executed_failure_is_not_rejected", func(t *testing.T) {
+		reg := NewRegistry()
+		reg.Register(RegisteredTool{
+			Definition: llm.ToolDefinition{
+				Name:        "boom",
+				Description: "fails after running",
+				Parameters:  map[string]any{"type": "object"},
+			},
+			Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+				return nil, errors.New("ran and failed")
+			},
+		})
+		res := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{Name: "boom", ID: "id", Arguments: json.RawMessage(`{}`)})
+		if !res.IsError {
+			t.Fatalf("result = %+v, want IsError", res)
+		}
+		if res.Rejected {
+			t.Fatalf("a tool that ran and returned an error is not a rejection: %+v", res)
+		}
+	})
+}

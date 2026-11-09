@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/goal"
+	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/internal/toolname"
 	"primeradiant.com/evener/agent/plugin"
@@ -1014,22 +1015,47 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	s.responseSideEffectsMu.Unlock()
 	closeToolEvent()
 
-	// PostToolUse hooks
+	// PostToolUse / PostToolUseFailure hooks. Claude partitions the two: a tool
+	// that ran and succeeded fires PostToolUse, one that ran and failed fires
+	// PostToolUseFailure, and a call refused before execution (unknown tool, bad
+	// arguments, breaker park, validation, or a PreToolUse deny, which returned
+	// above) fires neither. res.Output rather than FullOutput is the error
+	// text because it is the model-facing text Claude means by the failed
+	// tool's result.
 	if s.hookRunner != nil {
-		hi := s.hookInput(plugin.HookPostToolUse)
-		hi.ToolName = toolname.EvenerToClaude(call.Name)
-		hi.ToolUseID = call.ID
-		hi.ToolResult = res.FullOutput   // legacy alias
-		hi.ToolResponse = res.FullOutput // official field
-		postResult := s.hookRunner.RunPostToolUse(s.apiLogContext(ctx), hi)
-		for _, m := range postResult.ModelContext {
+		var hookResult hooks.RunResult
+		switch {
+		case !res.IsError:
+			hi := s.hookInput(plugin.HookPostToolUse)
+			hi.ToolName = toolname.EvenerToClaude(call.Name)
+			hi.ToolUseID = call.ID
+			hi.ToolResult = res.FullOutput   // legacy alias
+			hi.ToolResponse = res.FullOutput // official field
+			hookResult = s.hookRunner.RunPostToolUse(s.apiLogContext(ctx), hi)
+		case !res.PrevalOnly && !res.Rejected:
+			hi := s.hookInput(plugin.HookPostToolUseFailure)
+			hi.ToolName = toolname.EvenerToClaude(call.Name)
+			hi.ToolUseID = call.ID
+			hi.Error = res.Output
+			hi.DurationMS = &res.DurationMS
+			// A real cancel returns through skippedToolResult/emitCanceledEnd
+			// before this point, so the flag is always false here rather than
+			// inferred.
+			notInterrupt := false
+			hi.IsInterrupt = &notInterrupt
+			if !prep.RawArgumentsRejected && len(call.Arguments) > 0 {
+				_ = json.Unmarshal(call.Arguments, &hi.ToolInput)
+			}
+			hookResult = s.hookRunner.RunPostToolUseFailure(s.apiLogContext(ctx), hi)
+		}
+		for _, m := range hookResult.ModelContext {
 			if err := s.deliverHookContext(m); err != nil {
 				// Keep the tool state: a turn-ending communicate's records the
 				// end reason restore reads (endedOnNeedsResponse).
 				return tool.ExecResult{ToolName: call.Name, CallID: call.ID, Output: err.Error(), FullOutput: err.Error(), IsError: true, ToolState: res.ToolState}
 			}
 		}
-		for _, m := range postResult.UserMessages {
+		for _, m := range hookResult.UserMessages {
 			s.deliverHookUserMessage(m)
 		}
 	}

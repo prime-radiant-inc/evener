@@ -321,6 +321,16 @@ type ExecResult struct {
 	// Meaningless when IsError is false.
 	PrevalOnly bool
 
+	// Rejected is true when the registry refused this call BEFORE executing it:
+	// the repeated-call breaker park, an unknown tool name, ValidateRawArguments,
+	// invalid arguments JSON, the tool's PreValidate, schema validation, or a
+	// middleware refusal. It is the registry-side twin of PrevalOnly (the session
+	// repair step's refusal). A tool that RAN and returned an error is NOT
+	// rejected. Claude fires neither PostToolUse nor PostToolUseFailure for a
+	// refused call, so the hook partition reads this flag to stay silent.
+	// Meaningless when IsError is false.
+	Rejected bool
+
 	// DurationMS is the wall-clock duration of the tool execution in milliseconds.
 	DurationMS int64
 
@@ -739,7 +749,7 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 	key := newDispatchKey(name, call.Arguments, t.NormalizeArgs)
 	if judged {
 		if failStreak, _, snippets := r.breaker.check(key); failStreak >= breakerThreshold {
-			return truncateResult(name, callID, failureParkText(name, snippets), true, defaultToolLimit(name))
+			return rejectedResult(name, callID, failureParkText(name, snippets), defaultToolLimit(name))
 		}
 	} else {
 		// A human authorized this dispatch, which retires the refusals that
@@ -753,18 +763,18 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 
 	if !ok {
 		msg := "unknown tool: " + name
-		return truncateResult(name, callID, msg, true, defaultToolLimit(name))
+		return rejectedResult(name, callID, msg, defaultToolLimit(name))
 	}
 
 	if err := ValidateRawArguments(call.Arguments); err != nil {
-		return truncateResult(name, callID, err.Error(), true, defaultToolLimit(name))
+		return rejectedResult(name, callID, err.Error(), defaultToolLimit(name))
 	}
 
 	var args map[string]any
 	if len(call.Arguments) > 0 {
 		if err := json.Unmarshal(call.Arguments, &args); err != nil {
 			msg := fmt.Sprintf("invalid tool arguments JSON: %v", err)
-			return truncateResult(name, callID, msg, true, t.Limit)
+			return rejectedResult(name, callID, msg, t.Limit)
 		}
 	}
 	if args == nil {
@@ -776,27 +786,27 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 	if name == "ask_user" {
 		normalized, err := normalizeAskUserArgs(args)
 		if err != nil {
-			return truncateResult(name, callID, err.Error(), true, t.Limit)
+			return rejectedResult(name, callID, err.Error(), t.Limit)
 		}
 		args = normalized
 	}
 	if t.NormalizeArgs != nil {
 		normalized, err := t.NormalizeArgs(args)
 		if err != nil {
-			return truncateResult(name, callID, err.Error(), true, t.Limit)
+			return rejectedResult(name, callID, err.Error(), t.Limit)
 		}
 		args = normalized
 	}
 
 	if !prevalidated && t.PreValidate != nil {
 		if err := t.PreValidate(args); err != nil {
-			return truncateResult(name, callID, err.Error(), true, t.Limit)
+			return rejectedResult(name, callID, err.Error(), t.Limit)
 		}
 	}
 
 	if err := t.Schema.Validate(args); err != nil {
 		msg := fmt.Sprintf("tool args schema validation failed: %v", err)
-		return truncateResult(name, callID, msg, true, t.Limit)
+		return rejectedResult(name, callID, msg, t.Limit)
 	}
 
 	r.mu.RLock()
@@ -804,7 +814,7 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 	r.mu.RUnlock()
 	for _, mw := range mws {
 		if err := mw(ctx, name, args); err != nil {
-			return truncateResult(name, callID, err.Error(), true, t.Limit)
+			return rejectedResult(name, callID, err.Error(), t.Limit)
 		}
 	}
 
@@ -942,6 +952,16 @@ func truncateResult(toolName, callID, full string, isErr bool, lim schema.ToolOu
 		Truncated:         truncated,
 		IsError:           isErr,
 	}
+}
+
+// rejectedResult is truncateResult for a call a pre-execution gate refused.
+// Every refusal return in executeCall goes through this, so Rejected is set at
+// exactly the gates its doc names and a result built for a dispatched tool
+// (dispatchedResult) can never carry it.
+func rejectedResult(toolName, callID, full string, lim schema.ToolOutputLimit) ExecResult {
+	res := truncateResult(toolName, callID, full, true, lim)
+	res.Rejected = true
+	return res
 }
 
 func truncateChars(s string, limit int, strategy schema.TruncationStrategy) string {

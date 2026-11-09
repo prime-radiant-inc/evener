@@ -33,6 +33,10 @@ type eventExitPolicy struct {
 // SubagentStart, PostToolUseFailure, PostToolBatch, StopFailure, PostCompact,
 // and all reserved/unimplemented events) are non-blocking: exit 2 does not
 // block the action.
+// PostToolUse and PostToolUseFailure are the two halves of one partition: the
+// tool already ran, so neither can prevent it. RunPostToolUseFailure returns a
+// RunResult with no Denied/Blocked field, which is what makes the default arm
+// here true rather than merely claimed.
 // Where the exit-2 stderr goes is event-specific and decided by the runners /
 // routeOutput, not here — to the model for PostToolUse, user-visible for most
 // others, and discarded for SessionEnd (whose runner ignores all output).

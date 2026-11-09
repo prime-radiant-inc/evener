@@ -1627,6 +1627,50 @@ func TestRunStop_ContinueFalseStops(t *testing.T) {
 	}
 }
 
+// TestRunPostToolUseFailure_DispatchesAndRoutes proves the failure event has a
+// runner that dispatches its own hooks (never PostToolUse's), matches the
+// Bash-style name, and routes additionalContext to the model and a JSON
+// systemMessage to the user — the same routing PostToolUse uses.
+func TestRunPostToolUseFailure_DispatchesAndRoutes(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPostToolUseFailure, plugin.RegisteredHook{
+		Matcher: "Bash", Type: "command", Timeout: 5,
+		Command: `echo '{"systemMessage":"failure-to-user","hookSpecificOutput":{"hookEventName":"PostToolUseFailure","additionalContext":"failure-to-model"}}'`,
+	})
+	// A PostToolUse hook in the same runner must not fire for the failure event.
+	r.Add(plugin.HookPostToolUse, plugin.RegisteredHook{
+		Matcher: "*", Type: "command", Timeout: 5, Command: `echo '{"systemMessage":"success-hook-fired"}'`,
+	})
+
+	out := r.RunPostToolUseFailure(context.Background(), Input{CWD: "/tmp", HookEventName: "PostToolUseFailure", ToolName: "Bash"})
+	if len(out.ModelContext) != 1 || out.ModelContext[0] != "failure-to-model" {
+		t.Fatalf("ModelContext = %v, want [failure-to-model]", out.ModelContext)
+	}
+	if len(out.UserMessages) != 1 || out.UserMessages[0] != "failure-to-user" {
+		t.Fatalf("UserMessages = %v, want [failure-to-user]", out.UserMessages)
+	}
+	for _, msg := range append(out.ModelContext, out.UserMessages...) {
+		if strings.Contains(msg, "success-hook-fired") {
+			t.Fatalf("RunPostToolUseFailure dispatched a PostToolUse hook: %v", msg)
+		}
+	}
+}
+
+// TestRunPostToolUseFailure_HonorsContinueFalse keeps the failure event in the
+// honored-continue set, matching Claude's table.
+func TestRunPostToolUseFailure_HonorsContinueFalse(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPostToolUseFailure, plugin.RegisteredHook{Type: "command", Timeout: 5,
+		Command: `echo '{"continue":false,"stopReason":"stop after failure"}'`})
+	out := r.RunPostToolUseFailure(context.Background(), Input{HookEventName: "PostToolUseFailure", ToolName: "Bash"})
+	if !out.Stopped {
+		t.Fatal("PostToolUseFailure must honor continue:false")
+	}
+	if out.StopReason != "stop after failure" {
+		t.Fatalf("StopReason = %q, want %q", out.StopReason, "stop after failure")
+	}
+}
+
 // TestRunSubagentStop_ContinueFalseStops covers the SubagentStop aggregation
 // site, which shares runStopEvent but has its own event key and block row.
 func TestRunSubagentStop_ContinueFalseStops(t *testing.T) {

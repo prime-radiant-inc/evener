@@ -676,6 +676,14 @@ func (r *Runner) RunPostToolUse(ctx context.Context, input Input) RunResult {
 	return collectSystemMessages(plugin.HookPostToolUse, outputs)
 }
 
+// RunPostToolUseFailure dispatches PostToolUseFailure hooks and aggregates
+// system messages. Claude fires this event instead of PostToolUse when the
+// tool ran and failed; a call refused before execution fires neither.
+func (r *Runner) RunPostToolUseFailure(ctx context.Context, input Input) RunResult {
+	outputs := r.runAll(ctx, plugin.HookPostToolUseFailure, input.ToolName, input)
+	return collectSystemMessages(plugin.HookPostToolUseFailure, outputs)
+}
+
 // RunStop dispatches Stop hooks and aggregates results.
 // Any block from any hook means blocked.
 func (r *Runner) RunStop(ctx context.Context, input Input) StopResult {
