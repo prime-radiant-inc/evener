@@ -102,10 +102,13 @@ creation idempotency.
   `job_status` on an unchanged running target, and shell commands that only
   sleep. Condition waits use `job_watch` (`output_match`), which runs without
   model turns. Open detail: the exact sleep rule (see W1.2). Owns W1.2.
-- [ ] **D2 Background job bounds.** Recommended: default deadline for promoted
-  background shell jobs (proposed 2 h, overridable per call; detached processes
-  exempt) and a per-session cap on concurrently running shell jobs (proposed 8,
-  queue beyond it). Owns W1.3.
+- [x] **D2 Long-running jobs.** Decided 2026-11-09: no forced deadline and no
+  "expected" acknowledgement (what is right at 30 minutes is not right at 3,000).
+  Every 30 minutes while a session owns a shell job running longer than 30
+  minutes, Evener sends that session one reminder listing all such jobs. An
+  active turn receives it with its next model request; an idle session is woken
+  for it. The per-session concurrency cap is deferred: revisit if the W6.1
+  follow-up still shows load spikes after the workflow rules land. Owns W1.3.
 - [ ] **D3 Usage-limit behavior.** Recommended: on a usage-limit 429 with no
   eligible fallback, the session waits until the provider's reset time (or a
   model switch), holds notifications instead of starting failing turns, and
@@ -239,18 +242,28 @@ description in `agent/internal/tool/definitions.go`; tests beside each;
   end your turn. Update prompt golden output.
 - [ ] Implement. Pass, docs, commit, PR.
 
-### W1.3 Background job bounds (after D2)
+### W1.3 Long-running job reminders (D2)
 
-**Files:** `agent/job_shell.go`, job manager admission in `agent/jobs.go`;
-`docs/job-control.md` (close the "standing gap" paragraph).
+**Files:** job manager timer and notification enqueue in `agent/jobs.go`
+(reuse the existing notification path so delivery, wake and dedupe behave like
+job completions); `docs/job-control.md`; `docs/product/subsystems.md` row.
 
-- [ ] Failing test `TestPromotedShellJobStopsAtDefaultDeadline` (fake clock or
-  short configured default): a promoted job without `max_runtime_ms` ends with
-  a deadline outcome and its output retained; an explicit longer bound is
-  honored; a detached process is exempt.
-- [ ] Failing test `TestShellJobsBeyondSessionCapQueue`: the (cap+1)th job
-  waits and starts when one finishes; the caller sees it queued.
-- [ ] Implement per D2. Pass, docs, commit, PR.
+Each reminder lists every running shell job older than 30 minutes with its
+command, age and time since its last output, and says in "when X, do Y" form:
+if one of these is unexpected, stop it with `job_stop`.
+
+- [ ] Failing test `TestIdleSessionIsWokenWithLongRunningJobReminder` (fake
+  clock): one job crosses 30 minutes while the session is idle; the session is
+  woken once with a reminder naming that job; at 60 minutes, again.
+- [ ] Failing test `TestLongRunningJobReminderIsOnePerSession`: three jobs past
+  30 minutes produce one reminder listing all three, not three.
+- [ ] Failing test `TestActiveTurnReceivesLongRunningJobReminder`: during an
+  active turn the reminder arrives with the next model request and does not
+  start a second turn.
+- [ ] Failing test `TestNoReminderAfterLongJobsFinish`: once no job is older
+  than 30 minutes, the cadence stops; a job finishing between ticks is not
+  listed.
+- [ ] Implement. Pass, docs, commit, PR.
 
 ### W1.4 Usage-limit 429: wait instead of re-kick (after D3; implements R05 for quota)
 
