@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
@@ -695,23 +696,6 @@ func TestDoctorSessionsStopsWhenContextCancelled(t *testing.T) {
 	}
 }
 
-// cancelAfterChecks is a context that reports cancellation once Err has been
-// polled more than allowed times, so a test cancels at a deterministic point
-// inside a read loop without sleeps or goroutines.
-type cancelAfterChecks struct {
-	context.Context
-	allowed int
-	polls   int
-}
-
-func (c *cancelAfterChecks) Err() error {
-	c.polls++
-	if c.polls > c.allowed {
-		return context.Canceled
-	}
-	return nil
-}
-
 // Cancellation arriving while a session's transcript is being decoded stops
 // the census with the cancellation error, even when that session is the last
 // one (no later between-session check exists to catch it).
@@ -725,7 +709,7 @@ func TestDoctorSessionsCancelDuringSessionRead(t *testing.T) {
 	writeSessionsFixtureSession(t, bucket, newSessionsTestSID(t),
 		transcript.Header{CreatedAt: time.Now(), Model: "m"}, turns, schema.SessionMeta{Model: "m"}, nil, time.Now())
 
-	ctx := &cancelAfterChecks{Context: context.Background(), allowed: 20}
+	ctx := &agenttest.CountdownContext{Context: context.Background(), Allow: 20}
 	res, err := ListSessions(ctx, base, SessionsOpts{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)

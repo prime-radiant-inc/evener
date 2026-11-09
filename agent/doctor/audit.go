@@ -898,14 +898,14 @@ func RunAudit(ctx context.Context, stateBase string, runbook Runbook, opts Audit
 				}
 			}
 		}
-		health, err := TranscriptHealth(stateBase, sel)
+		health, err := TranscriptHealth(ctx, stateBase, sel)
 		if err != nil {
 			res.Unreadable = append(res.Unreadable, UnreadableSession{SessionID: paths.SessionID, TranscriptRef: paths.TranscriptRef, Error: err.Error()})
 			continue
 		}
 		source := metricSource{health: health}
 		if needsAPILog {
-			apiRes, err := APILog(stateBase, sel, APILogOpts{SummaryOnly: true})
+			apiRes, err := APILog(ctx, stateBase, sel, APILogOpts{SummaryOnly: true})
 			if err != nil {
 				res.Unreadable = append(res.Unreadable, UnreadableSession{SessionID: paths.SessionID, TranscriptRef: paths.TranscriptRef, Error: err.Error()})
 				continue
@@ -914,7 +914,7 @@ func RunAudit(ctx context.Context, stateBase string, runbook Runbook, opts Audit
 			source.haveAPILog = true
 		}
 		if needsAPIHealth {
-			apiHealthRes, err := APIHealth(stateBase, sel)
+			apiHealthRes, err := APIHealth(ctx, stateBase, sel)
 			if err != nil {
 				res.Unreadable = append(res.Unreadable, UnreadableSession{SessionID: paths.SessionID, TranscriptRef: paths.TranscriptRef, Error: err.Error()})
 				continue

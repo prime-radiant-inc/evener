@@ -113,7 +113,7 @@ func ListSessions(ctx context.Context, stateBase string, opts SessionsOpts) (Ses
 		if err := ctx.Err(); err != nil {
 			return SessionsResult{}, err
 		}
-		metas, loadErrs, err := schema.ListSessionMetasWithErrors(b.dir)
+		metas, loadErrs, err := schema.ListSessionMetasWithErrors(ctx, b.dir)
 		if err != nil {
 			return SessionsResult{}, fmt.Errorf("list session metas in bucket %s: %w", b.dir, err)
 		}
@@ -195,7 +195,7 @@ func sessionRow(ctx context.Context, b bucket, paths Paths, meta schema.SessionM
 	// directly instead of going through delegates.get, which would re-read
 	// the same meta from disk.
 	rootSessionID := delegateRootFromMeta(meta, paths.SessionID)
-	_, stable, _, err := delegates.getForRoot(b.dir, rootSessionID)
+	_, stable, _, err := delegates.getForRoot(ctx, b.dir, rootSessionID)
 	if err != nil {
 		return SessionRow{}, fmt.Errorf("session %s: %w", meta.ID, err)
 	}

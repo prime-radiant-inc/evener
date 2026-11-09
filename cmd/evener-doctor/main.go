@@ -246,7 +246,7 @@ func cmdTranscript(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if *health {
-		res, err := doctor.TranscriptHealth(base, sel)
+		res, err := doctor.TranscriptHealth(context.Background(), base, sel)
 		if err != nil {
 			return fail(stderr, "transcript", err)
 		}
@@ -318,7 +318,7 @@ func cmdAPILog(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if *health {
-		res, err := doctor.APIHealth(base, sel)
+		res, err := doctor.APIHealth(context.Background(), base, sel)
 		if err != nil {
 			return fail(stderr, "apilog", err)
 		}
@@ -336,7 +336,7 @@ func cmdAPILog(args []string, stdout, stderr io.Writer) int {
 		SummaryOnly:    *summary,
 		Recompute:      *recompute,
 	}
-	res, err := doctor.APILog(base, sel, opts)
+	res, err := doctor.APILog(context.Background(), base, sel, opts)
 	if err != nil {
 		return fail(stderr, "apilog", err)
 	}

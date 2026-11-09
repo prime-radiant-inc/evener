@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -82,7 +83,7 @@ func TestAPILogRecomputeReExtractsZeroedResponsesRecord(t *testing.T) {
 
 	// Without --recompute, the row and totals report the recorded zeros
 	// verbatim; recomputation must not run unbidden.
-	plain, err := APILog(base, sidA, APILogOpts{})
+	plain, err := APILog(context.Background(), base, sidA, APILogOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +97,7 @@ func TestAPILogRecomputeReExtractsZeroedResponsesRecord(t *testing.T) {
 		t.Fatalf("recomputed_nonempty = %d without --recompute, want 0", plain.Totals.RecomputedNonEmpty)
 	}
 
-	result, err := APILog(base, sidA, APILogOpts{Recompute: true})
+	result, err := APILog(context.Background(), base, sidA, APILogOpts{Recompute: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +177,7 @@ func TestAPILogRecomputeReExtractsRetiredCompatChatRecord(t *testing.T) {
 	attempt := zeroedCompatChatAttempt("ag_zeroed_compat")
 	writeRichSession(t, bucket, sidA, nil, []apilog.APILogRecord{attempt, doctorSettlement(attempt, 1)}, schema.SessionMeta{})
 
-	result, err := APILog(base, sidA, APILogOpts{Recompute: true})
+	result, err := APILog(context.Background(), base, sidA, APILogOpts{Recompute: true})
 	if err != nil {
 		t.Fatal(err)
 	}

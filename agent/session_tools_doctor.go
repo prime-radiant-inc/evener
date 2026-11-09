@@ -144,7 +144,7 @@ func dispatchDoctorEvener(ctx context.Context, deps *toolDeps, args map[string]a
 			return doctor.Count(stateBase, selector, v)
 		}
 		if shellBoolArg(args, "health") {
-			return doctor.TranscriptHealth(stateBase, selector)
+			return doctor.TranscriptHealth(ctx, stateBase, selector)
 		}
 		// No format argument: the tool returns the CLI's --json struct shape,
 		// where render format doesn't apply (the CLI's --format governs its own
@@ -168,7 +168,7 @@ func dispatchDoctorEvener(ctx context.Context, deps *toolDeps, args map[string]a
 			return doctor.ValidateAPILog(stateBase, selector)
 		}
 		if shellBoolArg(args, "health") {
-			return doctor.APIHealth(stateBase, selector)
+			return doctor.APIHealth(ctx, stateBase, selector)
 		}
 		opts := doctor.APILogOpts{}
 		opts.EmptyOnly = shellBoolArg(args, "empty")
@@ -179,7 +179,7 @@ func dispatchDoctorEvener(ctx context.Context, deps *toolDeps, args map[string]a
 		}
 		opts.SummaryOnly = shellBoolArg(args, "summary")
 		opts.Recompute = shellBoolArg(args, "recompute")
-		return doctor.APILog(stateBase, selector, opts)
+		return doctor.APILog(ctx, stateBase, selector, opts)
 
 	case "jobs":
 		opts := doctor.JobOpts{}

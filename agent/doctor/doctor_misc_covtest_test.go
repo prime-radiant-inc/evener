@@ -169,7 +169,7 @@ func TestTranscriptHealth_SteeringKindUnknown(t *testing.T) {
 		nil,
 		time.Unix(2, 0).UTC(),
 	)
-	r, err := TranscriptHealth(base, sid)
+	r, err := TranscriptHealth(context.Background(), base, sid)
 	if err != nil {
 		t.Fatalf("TranscriptHealth: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestTranscriptHealth_NilToolCallAndResult(t *testing.T) {
 		nil,
 		time.Unix(2, 0).UTC(),
 	)
-	r, err := TranscriptHealth(base, sid)
+	r, err := TranscriptHealth(context.Background(), base, sid)
 	if err != nil {
 		t.Fatalf("TranscriptHealth: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestTranscriptHealth_JobsReadError(t *testing.T) {
 	sid := sidA
 	writeSession(t, bucket, sid)
 	writeFile(t, filepath.Join(bucket, "sessions", sid, "jobs.jsonl"), "{not json}\n")
-	_, err := TranscriptHealth(base, sid)
+	_, err := TranscriptHealth(context.Background(), base, sid)
 	if err == nil {
 		t.Fatal("expected error from corrupt jobs.jsonl, got nil")
 	}
@@ -247,7 +247,7 @@ func TestTranscriptHealth_JobsTerminalReasons(t *testing.T) {
 		},
 		time.Unix(2, 0).UTC(),
 	)
-	r, err := TranscriptHealth(base, sid)
+	r, err := TranscriptHealth(context.Background(), base, sid)
 	if err != nil {
 		t.Fatalf("TranscriptHealth: %v", err)
 	}

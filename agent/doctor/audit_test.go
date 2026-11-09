@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -2171,15 +2172,15 @@ func TestRunAudit_ExplicitSessionsHonorCancellation(t *testing.T) {
 	rb := mustParseFixtureRunbook(t)
 
 	for name, tc := range map[string]struct {
-		allowed  int
+		allow    int32
 		sessions []string
 	}{
-		"before first session":   {allowed: 0, sessions: sids},
-		"between sessions":       {allowed: 1, sessions: sids},
-		"after the last session": {allowed: 1, sessions: sids[:1]},
+		"before first session":   {allow: 0, sessions: sids},
+		"between sessions":       {allow: 1, sessions: sids},
+		"after the last session": {allow: 1, sessions: sids[:1]},
 	} {
 		t.Run(name, func(t *testing.T) {
-			ctx := &cancelAfterChecks{Context: context.Background(), allowed: tc.allowed}
+			ctx := &agenttest.CountdownContext{Context: context.Background(), Allow: tc.allow}
 			res, err := RunAudit(ctx, base, rb, AuditOpts{Sessions: tc.sessions})
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("err = %v, want context.Canceled", err)
