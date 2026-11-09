@@ -85,13 +85,13 @@ func TestInitPlugins_UnknownHookEventWarnsLoudly(t *testing.T) {
 
 // TestInitPlugins_UnsupportedHookEventWarns asserts that a plugin declaring a
 // hook for a recognized-but-unsupported Claude event (one evener does not fire
-// yet, e.g. PostToolUseFailure) produces a visible WARNING that the hook is
+// yet, e.g. WorktreeCreate) produces a visible WARNING that the hook is
 // declared for a reserved event evener does not yet fire, so it will not run.
 func TestInitPlugins_UnsupportedHookEventWarns(t *testing.T) {
 	t.Parallel()
 	dir := writePluginHooks(t, "reserved-plugin", `{
 		"hooks": {
-			"PostToolUseFailure": [
+			"WorktreeCreate": [
 				{"matcher": "*", "hooks": [{"type": "command", "command": "echo reserved"}]}
 			]
 		}
@@ -101,13 +101,13 @@ func TestInitPlugins_UnsupportedHookEventWarns(t *testing.T) {
 
 	var found *events.WarningData
 	for i := range warnings {
-		if warnings[i].EventName == "PostToolUseFailure" {
+		if warnings[i].EventName == "WorktreeCreate" {
 			found = &warnings[i]
 			break
 		}
 	}
 	if found == nil {
-		t.Fatalf("expected a WARNING naming the reserved event PostToolUseFailure; got %+v", warnings)
+		t.Fatalf("expected a WARNING naming the reserved event WorktreeCreate; got %+v", warnings)
 	}
 	if found.PluginName != "reserved-plugin" {
 		t.Errorf("PluginName = %q, want %q", found.PluginName, "reserved-plugin")

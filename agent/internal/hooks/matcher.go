@@ -11,9 +11,11 @@ import (
 //
 // Rules, in priority order:
 //  1. Trimmed matcher "" or "*" matches everything.
-//  2. Matcher containing only [A-Za-z0-9_|] characters is treated as exact
-//     string matching or a pipe-separated exact-alternative list. "Bash" matches
-//     only "Bash", not "BashOutput". "Edit|Write" matches "Edit" or "Write".
+//  2. Matcher containing only [A-Za-z0-9_|,-] and space is treated as exact
+//     string matching or an exact-alternative list separated by "|" or ",".
+//     "Bash" matches only "Bash", not "BashOutput". "Edit|Write" and
+//     "Edit, Write" both match "Edit" or "Write". Alternatives are trimmed, so
+//     " Edit , Write " yields "Edit" and "Write".
 //  3. Anything else is treated as a regular expression (Go RE2). On compile
 //     error, returns (false, err).
 //
@@ -21,6 +23,11 @@ import (
 // before classification (a convenience), so " Bash " is treated as the exact
 // matcher "Bash". Claude treats the matcher as a literal regex and would not trim.
 // This is a minor, intentional evener-native nicety.
+//
+// Evener-native divergence: the widened exact set (hyphen, comma, space) applies
+// to every event. Claude's exact set is narrower for FileChanged and StopFailure
+// (no comma, space, or hyphen); there is no per-event discriminator here, so a
+// hyphenated FileChanged matcher is exact rather than a regex in evener.
 //
 // Caveat: Claude documents JavaScript regular expressions. Go RE2 is a strict
 // subset: lookbehind assertions and backreferences are not supported. If exact
@@ -34,9 +41,11 @@ func matchTarget(matcher, target string) (bool, error) {
 		return true, nil
 	}
 
-	// Rule 2: exact / pipe-list mode when matcher is only [A-Za-z0-9_|].
+	// Rule 2: exact / list mode when the matcher uses only the exact set.
 	if isExactMatcher(m) {
-		return slices.Contains(strings.Split(m, "|"), target), nil
+		return slices.ContainsFunc(splitExactMatcher(m), func(alt string) bool {
+			return strings.TrimSpace(alt) == target
+		}), nil
 	}
 
 	// Rule 3: regex mode (Go RE2).
@@ -48,15 +57,23 @@ func matchTarget(matcher, target string) (bool, error) {
 }
 
 // isExactMatcher returns true when s contains only ASCII letters, digits,
-// underscores, and pipes — the set that triggers exact/pipe-list matching.
+// underscores, hyphens, pipes, commas, and spaces — the set that triggers
+// exact/list matching.
 func isExactMatcher(s string) bool {
 	for _, c := range s {
 		isUpper := 'A' <= c && c <= 'Z'
 		isLower := 'a' <= c && c <= 'z'
 		isDigit := '0' <= c && c <= '9'
-		if !isUpper && !isLower && !isDigit && c != '_' && c != '|' {
+		if !isUpper && !isLower && !isDigit && c != '_' && c != '|' && c != ',' && c != '-' && c != ' ' {
 			return false
 		}
 	}
 	return true
+}
+
+// splitExactMatcher splits an exact matcher into its alternatives on "|" and ",".
+// Surrounding whitespace is not trimmed here; callers trim each alternative so a
+// matcher like " Edit , Write " matches "Edit" and "Write".
+func splitExactMatcher(m string) []string {
+	return strings.FieldsFunc(m, func(r rune) bool { return r == '|' || r == ',' })
 }

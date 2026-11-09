@@ -14,9 +14,10 @@ import (
 //
 // Oracles (never bare no-panic):
 //   - A trimmed "" or "*" matcher matches every target with no error.
-//   - When the trimmed matcher is exact-class ([A-Za-z0-9_|] only) the result is
-//     never an error and equals membership of target in the '|'-split segments —
-//     pure set membership, independent of regexp.
+//   - When the trimmed matcher is exact-class ([A-Za-z0-9_|,-] and space only)
+//     the result is never an error and equals membership of target in the
+//     segments split on '|' and ',', each trimmed — pure set membership,
+//     independent of regexp.
 //   - When matchTarget falls through to regexp mode and compiles, its verdict
 //     equals regexp.MatchString; a compile error yields (false, err).
 //   - matchTarget is deterministic.
@@ -52,7 +53,7 @@ func FuzzMatchTarget(f *testing.F) {
 			if err != nil {
 				t.Fatalf("exact matcher %q returned error %v", matcher, err)
 			}
-			want := slices.Contains(strings.Split(m, "|"), target)
+			want := slices.Contains(trimmedSplit(m), target)
 			if ok != want {
 				t.Fatalf("exact matcher %q vs %q: got %v, want %v", matcher, target, ok, want)
 			}
@@ -75,4 +76,15 @@ func FuzzMatchTarget(f *testing.F) {
 			}
 		}
 	})
+}
+
+// trimmedSplit returns an exact matcher's alternatives split on '|' and ',',
+// each trimmed. It is written independently of splitExactMatcher so the oracle
+// stays a real check rather than a mirror of the implementation.
+func trimmedSplit(m string) []string {
+	parts := strings.FieldsFunc(m, func(r rune) bool { return r == '|' || r == ',' })
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
+	return parts
 }

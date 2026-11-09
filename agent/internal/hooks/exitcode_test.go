@@ -23,6 +23,8 @@ func TestExitBehavior_PerEvent(t *testing.T) {
 	for _, e := range []plugin.HookEvent{
 		plugin.HookUserPromptSubmit, plugin.HookPreCompact,
 		plugin.HookPostToolUse, plugin.HookSessionStart, plugin.HookSessionEnd, plugin.HookNotification,
+		plugin.HookSubagentStart, plugin.HookPostToolUseFailure, plugin.HookPostToolBatch,
+		plugin.HookStopFailure, plugin.HookPostCompact,
 	} {
 		if exitBehavior(e).BlockOnExit2 {
 			t.Fatalf("%s must NOT claim block-on-exit-2 in the table: nothing enforces it", e)

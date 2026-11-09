@@ -29,8 +29,10 @@ type eventExitPolicy struct {
 // entry — when the dispatch sites grow a block path, flip them back and add a runner
 // that consumes the flag (TestExitBehavior_BlockEntriesAreEnforced guards this).
 //
-// All other events (PostToolUse, SessionStart, SessionEnd, Notification, and all
-// reserved/unimplemented events) are non-blocking: exit 2 does not block the action.
+// All other events (PostToolUse, SessionStart, SessionEnd, Notification,
+// SubagentStart, PostToolUseFailure, PostToolBatch, StopFailure, PostCompact,
+// and all reserved/unimplemented events) are non-blocking: exit 2 does not
+// block the action.
 // Where the exit-2 stderr goes is event-specific and decided by the runners /
 // routeOutput, not here — to the model for PostToolUse, user-visible for most
 // others, and discarded for SessionEnd (whose runner ignores all output).
