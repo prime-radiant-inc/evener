@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -753,7 +754,7 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 	if len(opts.Sessions) > 0 {
 		refs = opts.Sessions
 	} else {
-		sweep, err := ListSessions(stateBase, SessionsOpts{Since: opts.Since})
+		sweep, err := ListSessions(context.Background(), stateBase, SessionsOpts{Since: opts.Since})
 		if err != nil {
 			return AuditResult{}, err
 		}

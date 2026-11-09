@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -65,7 +66,7 @@ func TestSessionRow_ReadEventsError(t *testing.T) {
 	writeSession(t, bucket, sidA)
 	// Overwrite jobs.jsonl with corrupt content.
 	writeFile(t, filepath.Join(bucket, "sessions", sidA, "jobs.jsonl"), "{not json}\n")
-	_, err := ListSessions(base, SessionsOpts{})
+	_, err := ListSessions(context.Background(), base, SessionsOpts{})
 	if err == nil { //nolint:staticcheck // intentional: ListSessions tolerates unreadable sessions
 		// ListSessions tolerates unreadable sessions; check the result.
 		_ = err
@@ -73,7 +74,7 @@ func TestSessionRow_ReadEventsError(t *testing.T) {
 	// Actually ListSessions should return an error because ReadEvents returns
 	// an error and sessionRow wraps it into UnreadableSession. Let me check
 	// that the session appears as unreadable.
-	res, err := ListSessions(base, SessionsOpts{})
+	res, err := ListSessions(context.Background(), base, SessionsOpts{})
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -92,7 +93,7 @@ func TestSessionRow_DelegateError(t *testing.T) {
 	writeSession(t, bucket, sid)
 	// Write a corrupt delegates.jsonl.
 	writeFile(t, filepath.Join(bucket, "sessions", sid, "delegates.jsonl"), "{not json}\n")
-	res, err := ListSessions(base, SessionsOpts{})
+	res, err := ListSessions(context.Background(), base, SessionsOpts{})
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}

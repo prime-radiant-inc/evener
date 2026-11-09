@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -772,7 +773,7 @@ func TestRunAudit_DuplicateSIDAcrossBucketsAuditsBoth(t *testing.T) {
 
 	// ListSessions enumerates one row per (bucket, session): two rows for the
 	// duplicate sid across two buckets — the coverage the audit must match.
-	sweep, err := ListSessions(base, SessionsOpts{Since: 24 * time.Hour})
+	sweep, err := ListSessions(context.Background(), base, SessionsOpts{Since: 24 * time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}

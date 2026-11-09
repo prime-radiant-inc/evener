@@ -109,6 +109,9 @@ evener doctor jobs SESSION_ID
 ```
 
 Replace `SESSION_ID` with an ID from `sessions`, or copy its full session ref.
+With `--since`, `sessions` reads only sessions whose transcript changed in the window, so a
+large state root is not parsed in full. The CLI has no default window; the
+`doctor_evener` tool defaults to the last 168 hours (7 days) and honors Stop.
 The selector grammar is:
 
 | Form | Resolution |

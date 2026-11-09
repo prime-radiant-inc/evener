@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -65,9 +66,9 @@ type SessionsResult struct {
 // SessionsOpts narrows a ListSessions enumeration.
 type SessionsOpts struct {
 	// Since, when > 0, drops rows whose LastActivity is older than
-	// time.Now().Add(-Since). Zero means no recency filter. Unreadable
-	// sessions are never dropped by this filter — their last activity is
-	// exactly the fact ListSessions couldn't determine.
+	// time.Now().Add(-Since). Zero means no recency filter. A session whose
+	// last activity cannot be determined (transcript missing) is never
+	// dropped by this filter; it is reported as unreadable.
 	Since time.Duration
 	// Bucket scopes the enumeration to one project id. Empty enumerates every
 	// bucket under the state root (the default — the shape a fleet-wide batch
@@ -84,8 +85,11 @@ type SessionsOpts struct {
 // named in Unreadable rather than silently skipped the way a tolerant UI
 // listing would drop it. One corrupt session never aborts the sweep or
 // silently vanishes from the count — mirroring ScanTurnIDs, the established
-// convention for a whole-state-root sweep.
-func ListSessions(stateBase string, opts SessionsOpts) (SessionsResult, error) {
+// convention for a whole-state-root sweep. A cancelled ctx stops the walk and
+// returns its error with no partial result. With a Since cutoff, a session
+// whose transcript is older than the cutoff is skipped unread, so a corrupt
+// transcript outside the window is not reported as unreadable.
+func ListSessions(ctx context.Context, stateBase string, opts SessionsOpts) (SessionsResult, error) {
 	buckets, stateRoot, err := resolveBuckets(stateBase)
 	if err != nil {
 		return SessionsResult{}, err
@@ -106,6 +110,9 @@ func ListSessions(stateBase string, opts SessionsOpts) (SessionsResult, error) {
 	res := SessionsResult{Sessions: []SessionRow{}, Unreadable: []UnreadableSession{}}
 	delegates := delegateCache{}
 	for _, b := range buckets {
+		if err := ctx.Err(); err != nil {
+			return SessionsResult{}, err
+		}
 		metas, loadErrs, err := schema.ListSessionMetasWithErrors(b.dir)
 		if err != nil {
 			return SessionsResult{}, fmt.Errorf("list session metas in bucket %s: %w", b.dir, err)
@@ -121,7 +128,13 @@ func ListSessions(stateBase string, opts SessionsOpts) (SessionsResult, error) {
 			})
 		}
 		for _, meta := range metas {
+			if err := ctx.Err(); err != nil {
+				return SessionsResult{}, err
+			}
 			paths := pathsFor(b, meta.ID)
+			if !cutoff.IsZero() && transcriptOlderThan(paths.TranscriptPath, cutoff) {
+				continue
+			}
 			row, err := sessionRow(b, paths, meta, delegates)
 			if err != nil {
 				res.Unreadable = append(res.Unreadable, UnreadableSession{
@@ -140,6 +153,16 @@ func ListSessions(stateBase string, opts SessionsOpts) (SessionsResult, error) {
 	sort.Slice(res.Sessions, func(i, j int) bool { return res.Sessions[i].LastActivity.After(res.Sessions[j].LastActivity) })
 	sort.Slice(res.Unreadable, func(i, j int) bool { return res.Unreadable[i].SessionID < res.Unreadable[j].SessionID })
 	return res, nil
+}
+
+// transcriptOlderThan reports, from a stat alone, that the transcript's last
+// write predates cutoff. sessionRow reports exactly that mtime as
+// LastActivity, so such a session can never pass the cutoff and its
+// transcript, jobs and delegate files need not be read. A transcript that
+// cannot be stat'd is not skipped: sessionRow reports it as unreadable.
+func transcriptOlderThan(path string, cutoff time.Time) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.ModTime().Before(cutoff)
 }
 
 // sessionRow builds one SessionRow from a session's durable state: the

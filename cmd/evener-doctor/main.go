@@ -25,6 +25,7 @@
 package doctor
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -498,7 +499,7 @@ func cmdSessions(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, "state", err)
 	}
-	res, err := doctor.ListSessions(base, doctor.SessionsOpts{Since: sinceDur, Bucket: *bucketFlag})
+	res, err := doctor.ListSessions(context.Background(), base, doctor.SessionsOpts{Since: sinceDur, Bucket: *bucketFlag})
 	if err != nil {
 		return fail(stderr, "sessions", err)
 	}

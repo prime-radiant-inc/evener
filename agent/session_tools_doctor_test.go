@@ -644,10 +644,46 @@ func TestDoctorEvener_NoStateHomeOnlyBlocksStateScopedCommands(t *testing.T) {
 	t.Setenv("HOME", "")
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
-	if _, err := execDoctorEvener(nil, map[string]any{"command": "sessions"}); !errors.Is(err, userdirs.ErrNoStateHome) {
+	if _, err := execDoctorEvener(context.Background(), nil, map[string]any{"command": "sessions"}); !errors.Is(err, userdirs.ErrNoStateHome) {
 		t.Fatalf("sessions error = %v, want ErrNoStateHome", err)
 	}
-	if _, err := execDoctorEvener(nil, map[string]any{"command": "plugins"}); errors.Is(err, userdirs.ErrNoStateHome) {
+	if _, err := execDoctorEvener(context.Background(), nil, map[string]any{"command": "plugins"}); errors.Is(err, userdirs.ErrNoStateHome) {
 		t.Fatalf("plugins must not need a state home: %v", err)
+	}
+}
+
+// A sessions census with no since covers only the default window; an explicit
+// since reaches further back. Sessions older than the window are never read.
+func TestDoctorSessionsToolAppliesDefaultSince(t *testing.T) {
+	stateHome := newStateHome(t)
+	bucket := newBucketUnder(t, stateHome)
+	recent := writeDoctorFixtureSession(t, bucket)
+	old := writeDoctorFixtureSession(t, bucket)
+	oldTime := time.Now().Add(-2 * doctorSessionsDefaultSince)
+	if err := os.Chtimes(bucket+"/sessions/"+old+".transcript.jsonl", oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+
+	rt := doctorToolForTest(t, stateHome)
+	census := func(args map[string]any) map[string]bool {
+		t.Helper()
+		args["command"] = "sessions"
+		out, err := rt.Exec(context.Background(), nil, args)
+		if err != nil {
+			t.Fatalf("doctor_evener sessions: %v", err)
+		}
+		ids := map[string]bool{}
+		for _, r := range out.(doctorSessionsEnvelope).Sessions {
+			ids[r.SessionID] = true
+		}
+		return ids
+	}
+
+	if ids := census(map[string]any{}); !ids[recent] || ids[old] {
+		t.Errorf("default census = %v, want recent only", ids)
+	}
+	wide := (3 * doctorSessionsDefaultSince).String()
+	if ids := census(map[string]any{"since": wide}); !ids[recent] || !ids[old] {
+		t.Errorf("explicit wide since census = %v, want both", ids)
 	}
 }

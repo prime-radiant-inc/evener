@@ -33,13 +33,17 @@ func doctorTools(deps *toolDeps) []tool.RegisteredTool {
 			Definition: tool.DefDoctorEvener(),
 			ReadOnly:   true,
 			Exec: func(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-				_ = ctx
-				return execDoctorEvener(deps, args)
+				return execDoctorEvener(ctx, deps, args)
 			},
 			Limit: schema.ToolOutputLimit{MaxChars: transcriptToolMaxChars, Strategy: schema.TruncTail},
 		},
 	}
 }
+
+// doctorSessionsDefaultSince bounds a sessions census that names no since.
+// A state root can hold tens of thousands of sessions; an unbounded census
+// from a turn would run for the better part of an hour.
+const doctorSessionsDefaultSince = 7 * 24 * time.Hour
 
 // doctorEvenerCommandNames is the single source for the command enum: the
 // definition's schema and this dispatcher both derive from it, so the tool
@@ -85,7 +89,7 @@ var doctorBundledSkills = bundled.Skills
 // so the tool and `evener doctor --json` cannot disagree on shape.
 // Command-option precedence mirrors the CLI exactly (count, then health,
 // then render; validate over health on apilog).
-func execDoctorEvener(deps *toolDeps, args map[string]any) (any, error) {
+func execDoctorEvener(ctx context.Context, deps *toolDeps, args map[string]any) (any, error) {
 	command, _ := args["command"].(string)
 	if command == "" {
 		return nil, fmt.Errorf("doctor_evener requires a command (one of: %s)", strings.Join(doctorEvenerCommandNames, ", "))
@@ -117,7 +121,7 @@ func execDoctorEvener(deps *toolDeps, args map[string]any) (any, error) {
 		return nil, err
 	}
 
-	res, err := dispatchDoctorEvener(deps, args, command, stateBase, selector)
+	res, err := dispatchDoctorEvener(ctx, deps, args, command, stateBase, selector)
 	if err != nil {
 		// One seam for every command: a doctor miss is an explicit error and
 		// no data. The doctor functions return their zero structs alongside
@@ -135,7 +139,7 @@ func execDoctorEvener(deps *toolDeps, args map[string]any) (any, error) {
 // agent/doctor package. execDoctorEvener's error seam above is what makes a
 // miss explicit on this surface; the branches here may return the doctor
 // functions' (value, err) pairs directly.
-func dispatchDoctorEvener(deps *toolDeps, args map[string]any, command, stateBase, selector string) (any, error) {
+func dispatchDoctorEvener(ctx context.Context, deps *toolDeps, args map[string]any, command, stateBase, selector string) (any, error) {
 	switch command {
 	case "locate":
 		return doctor.Locate(stateBase, selector)
@@ -216,7 +220,7 @@ func dispatchDoctorEvener(deps *toolDeps, args map[string]any, command, stateBas
 		return doctor.ScanTurnIDs(stateBase)
 
 	case "sessions":
-		opts := doctor.SessionsOpts{}
+		opts := doctor.SessionsOpts{Since: doctorSessionsDefaultSince}
 		if v := stringArg(args, "since"); v != "" {
 			d, err := time.ParseDuration(v)
 			if err != nil {
@@ -227,7 +231,7 @@ func dispatchDoctorEvener(deps *toolDeps, args map[string]any, command, stateBas
 		if v := stringArg(args, "bucket"); v != "" {
 			opts.Bucket = v
 		}
-		res, err := doctor.ListSessions(stateBase, opts)
+		res, err := doctor.ListSessions(ctx, stateBase, opts)
 		if err != nil {
 			return nil, err
 		}
