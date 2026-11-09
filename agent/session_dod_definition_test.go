@@ -794,16 +794,13 @@ func TestSession_ContextWindowAwareness_EmitsWarningOver80Percent(t *testing.T) 
 	input := strings.Repeat("a", 40)
 	window := standingRequestTokens(t, dir, profile, input) * 11 / 10
 
-	sess, err := NewSession(c, WithContextWindow(profile, window), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(WithContextWindow(profile, window)), withDir(dir), withConfig(SessionConfig{}))
 	// This test scripts exactly one model step and crosses the compaction threshold;
 	// mute the default-on note elicitation so it doesn't steal that step.
 	muteNoteElicitation(sess)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, input, nil)
+	_, err := sess.ProcessInput(ctx, input, nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -835,13 +832,10 @@ func TestSession_ContextWindowAwareness_DoesNotWarnUnderThreshold(t *testing.T) 
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, WithContextWindow(namedInstanceProfile("tiny", "openai", "m"), 1_000_000), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(WithContextWindow(namedInstanceProfile("tiny", "openai", "m"), 1_000_000)), withDir(dir), withConfig(SessionConfig{}))
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, strings.Repeat("a", 40), nil)
+	_, err := sess.ProcessInput(ctx, strings.Repeat("a", 40), nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -870,13 +864,10 @@ func TestSession_ContextWindowAwareness_DoesNotWarnForLargeImageBytes(t *testing
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, WithContextWindow(namedInstanceProfile("tiny", "openai", "m"), 262_144), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(WithContextWindow(namedInstanceProfile("tiny", "openai", "m"), 262_144)), withDir(dir), withConfig(SessionConfig{}))
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "describe this image", []ImageAttachment{{
+	_, err := sess.ProcessInput(ctx, "describe this image", []ImageAttachment{{
 		MediaType: "image/png",
 		Data:      bytes.Repeat([]byte{0x89}, 1_500_000),
 	}})
@@ -2040,14 +2031,11 @@ func TestProviderOptions_PassedToLLMRequest(t *testing.T) {
 	profile := newGeminiProfile("gemini-2.5-pro")
 
 	dir := t.TempDir()
-	sess, err := NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(profile), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 	drainSessionEvents(sess)
 
-	_, err = sess.ProcessInput(context.Background(), "hello", nil)
+	_, err := sess.ProcessInput(context.Background(), "hello", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -2201,10 +2189,7 @@ func TestSession_GracefulShutdown_ClosesSubagents(t *testing.T) {
 	c.Register(f)
 
 	dir := t.TempDir()
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	drainSessionEvents(sess)
 
 	// Create a sub-session and manually register it as a subagent.

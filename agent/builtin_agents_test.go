@@ -143,10 +143,7 @@ func TestSession_DefaultFallbackUsesDefaultAgentPrompt(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("gpt-5")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	foundDefaultRoleSource := false
@@ -261,10 +258,7 @@ func TestSession_HasBuiltinExplorerAgent(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("gpt-5")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	explorer, ok := sess.pluginAgents["explorer"]
@@ -282,10 +276,7 @@ func TestSession_DoesNotLoadWorkflowPluginByDefault(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("gpt-5")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	if _, ok := sess.pluginAgents["reviewer"]; ok {
@@ -608,10 +599,7 @@ func TestStuckEscalation_BumpsReasoning(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	// First stuck: should bump to high
