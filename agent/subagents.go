@@ -2065,6 +2065,12 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 // the run-end taxonomy classifyRunEnd owns, read from its own projections: a
 // run settles ordinarily exactly when it ended nil or on a model-behavior
 // sentinel, and the exhausted status is the budget exhaustion.
+//
+// The 2026-11-09 lifecycle ruling settles the trade this deliberately makes
+// (issue #5674): a report may be presented twice in a narrow window rather
+// than lost. Do not move an unlisted error class into "presented" to reduce
+// duplication; that needs a presented-marker durable across tool rounds and
+// restarts, not a wider verdict here.
 func attentionRunPresentedItsReport(err error) bool {
 	end := classifyRunEnd(err, false)
 	return end.mode == delegateSettlementOrdinary || end.status == SubagentExhausted
