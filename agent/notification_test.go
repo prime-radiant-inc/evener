@@ -1387,3 +1387,77 @@ func TestNotificationArrivingOnLastAllowedRoundStaysPending(t *testing.T) {
 		t.Errorf("job B appears in the transcript %d times, want 1", n)
 	}
 }
+
+// TestNotificationTurnStoppedDuringRoundEndCompactionLeavesLateArrivalPending
+// pins that a notification turn stopped while its end-of-round compaction runs
+// does not consume a notification that arrived during that round: no further
+// model request follows, so the notification stays pending and the next turn
+// delivers it once.
+func TestNotificationTurnStoppedDuringRoundEndCompactionLeavesLateArrivalPending(t *testing.T) {
+	t.Parallel()
+	const jobA, jobB = "job_opens_stopped_turn", "job_arrives_before_stop"
+	const summarizerProvider = "notification-stop-summarizer"
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	defer cancel()
+	turnCtx, stop := context.WithCancel(ctx)
+	defer stop()
+
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(notificationToolCall("c1", "enqueue_test_notification"))
+			},
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("handled the late one") },
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	client.Register(&agenttest.ScriptedAdapter{
+		Provider: summarizerProvider,
+		Responder: func(llm.Request) llm.Response {
+			stop() // the user's Stop lands while the compaction is running
+			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
+		},
+	})
+	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), summarizerProvider+"/model")
+	sess := newSession(t, withClient(client), withProfile(profile), withoutGitSnapshot())
+	seedNumberedSessionHistory(t, sess, 12) // enough turns that the forced compaction really folds
+	sess.registerTool("enqueue_test_notification", "test-only: finish a managed job and request a compaction",
+		map[string]any{"type": "object", "properties": map[string]any{}},
+		func(context.Context, any) (any, error) {
+			enqueueCompletedJobNotification(t, sess, jobB)
+			if err := sess.requestForceCompact(""); err != nil {
+				return nil, err
+			}
+			return "queued", nil
+		})
+	enqueueCompletedJobNotification(t, sess, jobA)
+
+	// The stopped turn returns the cancellation; that error is expected.
+	_, _ = sess.ProcessInputKind(turnCtx, "", nil, EntryNotification)
+
+	if turnCtx.Err() == nil {
+		t.Fatal("the compaction never ran, so the turn was not stopped where this test needs")
+	}
+	if n := notificationDeliveredCount(t, sess.jobManager, jobB); n != 0 {
+		t.Fatalf("job B recorded delivered %d times by a turn that stopped before another model request", n)
+	}
+	if sess.peekNotifications() != 1 {
+		t.Fatal("job B is not pending for the next wake")
+	}
+
+	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
+		t.Fatalf("next notification turn: %v", err)
+	}
+	reqs := adapter.Requests()
+	if !lastMessageIsNotification(reqs[len(reqs)-1]) {
+		t.Fatal("the next turn's request did not carry job B")
+	}
+	if n := notificationDeliveredCount(t, sess.jobManager, jobB); n != 1 {
+		t.Errorf("job B recorded delivered %d times, want 1", n)
+	}
+	if n := countHistoryNeedle(sess, fmt.Sprintf(`job_id=%q`, jobB)); n != 1 {
+		t.Errorf("job B appears in the transcript %d times, want 1", n)
+	}
+}

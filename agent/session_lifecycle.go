@@ -1460,6 +1460,13 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		default:
 		}
 
+		// Notifications that arrived during the previous round join this round's
+		// request. Placed after every check that can end the turn before a
+		// request, so an exit on that path leaves them pending for the next wake.
+		if kind == EntryNotification && round > 0 && s.peekNotifications() > 0 {
+			s.injectLaterJobNotifications(ctx)
+		}
+
 		profile, sys, _, req, fullHistory, reqEffort, prepareErr := s.prepareModelRequestWithError(ctx, round, &timings)
 		if prepareErr != nil {
 			if isLocalContextCompactionError(prepareErr) && !localAdmissionCompacted && s.contextMgr != nil {
@@ -1733,17 +1740,11 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// A managed job can finish while this tool batch is running. An ordinary
 		// turn yields before another model round so the outer drain delivers that
 		// completion as an EntryNotification turn. A notification turn is that
-		// delivery already, so it folds the arrival into its next model request.
-		if s.peekNotifications() > 0 {
-			if kind != EntryNotification {
-				s.finishProcessingAtFailureBoundary(ctx)
-				return "", progressed, nil
-			}
-			// Only a round that will run can show it to the model; on the last
-			// allowed round it stays pending for the next wake.
-			if roundCap < 0 || round+1 < roundCap {
-				s.injectLaterJobNotifications(ctx)
-			}
+		// delivery already: it folds the arrival in at the start of its next
+		// round, once that round is certain to make a model request.
+		if kind != EntryNotification && s.peekNotifications() > 0 {
+			s.finishProcessingAtFailureBoundary(ctx)
+			return "", progressed, nil
 		}
 	}
 
