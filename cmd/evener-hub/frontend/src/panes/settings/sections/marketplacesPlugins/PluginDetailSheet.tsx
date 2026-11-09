@@ -21,9 +21,9 @@ import {
   useToasts,
 } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { pluginStatusChips } from "../../../plugins/pluginStatusChips";
 import { useExtensionsHostState, useExtensionsHostStore } from "./hostStore";
 import styles from "./marketplacesPlugins.module.css";
-import { pluginStatusChips } from "./pluginStatusChips";
 
 const CLASS = {
   sheetDesc: requireClass(styles.sheetDesc, "marketplacesPlugins.module.css", "sheetDesc"),

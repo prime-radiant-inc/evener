@@ -11,7 +11,6 @@ import { type Dispatch, type SetStateAction, useEffect, useRef, useState } from 
 import type { MarketplaceCatalogEntry } from "../../../../stores/extensions";
 import {
   Button,
-  Chip,
   ConfirmDialog,
   Disclosure,
   EmptyState,
@@ -21,6 +20,7 @@ import {
   useToasts,
 } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { CatalogPluginRow } from "../../../plugins/PluginRow";
 import { useExtensionsHostState, useExtensionsHostStore } from "./hostStore";
 import styles from "./marketplacesPlugins.module.css";
 
@@ -31,11 +31,7 @@ const CLASS = {
   treeNode: requireClass(styles.treeNode, "marketplacesPlugins.module.css", "treeNode"),
   treeCount: requireClass(styles.treeCount, "marketplacesPlugins.module.css", "treeCount"),
   treeChildren: requireClass(styles.treeChildren, "marketplacesPlugins.module.css", "treeChildren"),
-  row: requireClass(styles.row, "marketplacesPlugins.module.css", "row"),
-  rowMain: requireClass(styles.rowMain, "marketplacesPlugins.module.css", "rowMain"),
-  rowText: requireClass(styles.rowText, "marketplacesPlugins.module.css", "rowText"),
   rowMeta: requireClass(styles.rowMeta, "marketplacesPlugins.module.css", "rowMeta"),
-  rowActions: requireClass(styles.rowActions, "marketplacesPlugins.module.css", "rowActions"),
 };
 
 const FILTER_DEBOUNCE_MS = 150;
@@ -317,23 +313,19 @@ function MarketplaceNode({
             </li>
           ) : (
             rows.map((p) => (
-              <li key={p.name} className={CLASS.row}>
-                <div className={CLASS.rowMain}>
-                  <div className={CLASS.rowText}>{p.name}</div>
-                  <div className={CLASS.rowMeta}>
-                    {p.description}
-                    {p.category ? ` · ${p.category}` : ""}
-                  </div>
-                </div>
-                <div className={CLASS.rowActions}>
-                  {isInstalled(p.name, marketplace.name) ? (
-                    <Chip kind="installed">Installed</Chip>
-                  ) : (
-                    <Button size="sm" disabled={installDisabled} onClick={() => onInstall(p.name, marketplace.name)}>
-                      Install
-                    </Button>
-                  )}
-                </div>
+              <li key={p.name}>
+                <CatalogPluginRow
+                  plugin={p}
+                  installed={isInstalled(p.name, marketplace.name)}
+                  installDisabled={installDisabled}
+                  // The main area's open target is the plugin detail sheet,
+                  // which this surface does not own: the section's parent
+                  // wires it once the sheet can open a catalog row. Until
+                  // then the main area holds the shared row's shape and only
+                  // the trailing Install acts.
+                  onOpen={() => {}}
+                  onInstall={() => onInstall(p.name, marketplace.name)}
+                />
               </li>
             ))
           )}

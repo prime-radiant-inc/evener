@@ -1,4 +1,5 @@
-import type { PluginEntry } from "@evener/appwire-client";
+import type { PluginComponents, PluginEntry } from "@evener/appwire-client";
+import { type PluginComponentsEntry, pluginComponentsKey } from "@evener/appwire-client/state/extensions";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -6,6 +7,7 @@ import { connectionStore } from "../../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { countsSummary } from "../../../plugins/pluginCounts";
 import { InstalledSection } from "./InstalledSection";
 import { chipKinds, showsEmptyRow } from "./marketplacesTestUtils";
 
@@ -151,4 +153,29 @@ test("marks a plugin the hub found an update for", () => {
   extensionsStore.setState({ plugins: [{ ...LINTER, updateAvailable: true }, FORMATTER] });
   render(<InstalledSection onSelect={() => {}} />);
   expect(chipKinds()).toEqual(["update-available"]);
+});
+
+test("a loaded cache entry shows the plugin's component counts in its row meta", () => {
+  connectReadyFakeClient();
+  const components: PluginComponents = {
+    skills: ["lint"],
+    agents: ["reviewer", "planner"],
+    mcpServers: ["github"],
+  };
+  const entry: PluginComponentsEntry = { status: "loaded", components };
+  extensionsStore.setState({
+    plugins: [LINTER],
+    pluginComponents: new Map([
+      [pluginComponentsKey({ plugin: LINTER.plugin, marketplace: LINTER.marketplace }), entry],
+    ]),
+  });
+  render(<InstalledSection onSelect={() => {}} />);
+  const expected = ` · ${countsSummary(
+    components.skills?.length ?? 0,
+    components.agents?.length ?? 0,
+    components.commands?.length ?? 0,
+    components.hooks?.length ?? 0,
+    components.mcpServers?.length ?? 0,
+  )}`;
+  expect(screen.getByRole("button", { name: /linter/ }).textContent).toContain(expected);
 });

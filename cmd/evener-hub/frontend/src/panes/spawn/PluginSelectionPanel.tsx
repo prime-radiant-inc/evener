@@ -11,6 +11,7 @@ import {
 import { type ReactElement, useState } from "react";
 import { Button, Card, Disclosure, EmptyState, InlineNotice, Switch } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { countsSummary } from "../plugins/pluginCounts";
 import styles from "./pluginSelection.module.css";
 
 export interface PluginSelectionPanelProps {
@@ -40,16 +41,6 @@ function sourceLabel(plugin: PluginLaunchCandidate): string {
   if (plugin.source === "installed" && plugin.marketplace) return `installed from ${plugin.marketplace}`;
   if (plugin.path) return `${plugin.source}: ${plugin.path}`;
   return plugin.source;
-}
-
-function componentCounts(plugin: PluginLaunchCandidate): string {
-  const counts: string[] = [];
-  if (plugin.skillCount > 0) counts.push(`${plugin.skillCount} skill${plugin.skillCount === 1 ? "" : "s"}`);
-  if (plugin.agentCount > 0) counts.push(`${plugin.agentCount} agent${plugin.agentCount === 1 ? "" : "s"}`);
-  if (plugin.commandCount > 0) counts.push(`${plugin.commandCount} command${plugin.commandCount === 1 ? "" : "s"}`);
-  if (plugin.hookCount > 0) counts.push(`${plugin.hookCount} hook${plugin.hookCount === 1 ? "" : "s"}`);
-  if (plugin.mcpCount > 0) counts.push(`${plugin.mcpCount} MCP server${plugin.mcpCount === 1 ? "" : "s"}`);
-  return counts.length > 0 ? counts.join(" · ") : "No components";
 }
 
 export function PluginSelectionPanel({
@@ -137,7 +128,15 @@ export function PluginSelectionPanel({
                   description={
                     <span className={CLASS.metadata} data-testid="plugin-row-metadata">
                       <span className={CLASS.source}>{sourceLabel(plugin)}</span>
-                      <span className={CLASS.counts}>{componentCounts(plugin)}</span>
+                      <span className={CLASS.counts}>
+                        {countsSummary(
+                          plugin.skillCount,
+                          plugin.agentCount,
+                          plugin.commandCount,
+                          plugin.hookCount,
+                          plugin.mcpCount,
+                        )}
+                      </span>
                       {plugin.description && <span className={CLASS.description}>{plugin.description}</span>}
                     </span>
                   }
