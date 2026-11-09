@@ -18,7 +18,6 @@ import (
 	"primeradiant.com/evener/agent/internal/goal"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/internal/tool"
-	"primeradiant.com/evener/agent/internal/toolname"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
@@ -810,12 +809,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 
 	// PreToolUse hooks
 	if s.hookRunner != nil {
-		hi := s.hookInput(plugin.HookPreToolUse)
-		hi.ToolName = toolname.EvenerToClaude(call.Name)
-		hi.ToolUseID = call.ID
-		if !prep.RawArgumentsRejected && len(call.Arguments) > 0 {
-			_ = json.Unmarshal(call.Arguments, &hi.ToolInput)
-		}
+		hi := s.toolHookInput(plugin.HookPreToolUse, call, prep.RawArgumentsRejected)
 
 		preResult := s.hookRunner.RunPreToolUse(s.apiLogContext(ctx), hi)
 		for _, m := range preResult.ModelContext {
@@ -1031,16 +1025,12 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		var hookResult hooks.RunResult
 		switch {
 		case !res.IsError:
-			hi := s.hookInput(plugin.HookPostToolUse)
-			hi.ToolName = toolname.EvenerToClaude(call.Name)
-			hi.ToolUseID = call.ID
+			hi := s.toolHookInput(plugin.HookPostToolUse, call, prep.RawArgumentsRejected)
 			hi.ToolResult = res.FullOutput   // legacy alias
 			hi.ToolResponse = res.FullOutput // official field
 			hookResult = s.hookRunner.RunPostToolUse(s.apiLogContext(ctx), hi)
 		case !res.PrevalOnly && !res.Rejected:
-			hi := s.hookInput(plugin.HookPostToolUseFailure)
-			hi.ToolName = toolname.EvenerToClaude(call.Name)
-			hi.ToolUseID = call.ID
+			hi := s.toolHookInput(plugin.HookPostToolUseFailure, call, prep.RawArgumentsRejected)
 			hi.Error = res.Output
 			hi.DurationMS = &res.DurationMS
 			// A real cancel returns through skippedToolResult/emitCanceledEnd
@@ -1048,9 +1038,6 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 			// inferred.
 			notInterrupt := false
 			hi.IsInterrupt = &notInterrupt
-			if !prep.RawArgumentsRejected && len(call.Arguments) > 0 {
-				_ = json.Unmarshal(call.Arguments, &hi.ToolInput)
-			}
 			hookResult = s.hookRunner.RunPostToolUseFailure(s.apiLogContext(ctx), hi)
 		}
 		for _, m := range hookResult.ModelContext {

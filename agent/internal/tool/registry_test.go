@@ -1580,18 +1580,26 @@ func TestToolRegistry_UseSkillHasNoDefaultTailLimit(t *testing.T) {
 
 // TestRegistry_MarksPreExecutionRejections proves Rejected names exactly the
 // calls a pre-execution gate refused: the breaker park, unknown tool,
-// ValidateRawArguments, invalid arguments JSON, PreValidate, schema validation,
-// and a middleware refusal. A tool that RAN and returned an error is not a
-// rejection, so the hook partition can tell a refusal from a failure.
+// ValidateRawArguments, invalid arguments JSON, the ask_user shorthand
+// normalization, NormalizeArgs, PreValidate, schema validation, and a
+// middleware refusal — the nine gates ExecResult.Rejected's doc names. A tool
+// that RAN and returned an error is not a rejection, so the hook partition can
+// tell a refusal from a failure.
 //
-// This is the ONLY test covering the registry's unknown-tool gate. From a real
-// session execTool, an unknown name is refused one layer earlier by
-// prepareToolCall, so it arrives as PrevalOnly and ExecuteCall never sees it —
-// which is why the session-level partition test
+// This is the only test asserting Rejected at the unknown-tool gate;
+// TestToolRegistry_UnknownTool_ReturnsErrorResult covers that gate's error
+// result, but not the flag. From a real session execTool, an unknown name is
+// refused one layer earlier by prepareToolCall, so it arrives as PrevalOnly and
+// ExecuteCall never sees it — which is why the session-level partition test
 // (TestPostToolUseFailure_FiresForExecutedFailureOnly) exercises the breaker
 // park as its Rejected case instead, and does not claim unknown-tool coverage.
 func TestRegistry_MarksPreExecutionRejections(t *testing.T) {
-	registerProbe := func(t *testing.T, r *Registry, name string, preValidate func(map[string]any) error) *int {
+	// registerProbe registers a tool that counts its own executions, so a
+	type probeOpts struct {
+		preValidate   func(map[string]any) error
+		normalizeArgs func(map[string]any) (map[string]any, error)
+	}
+	registerProbe := func(t *testing.T, r *Registry, name string, opts probeOpts) *int {
 		t.Helper()
 		calls := 0
 		if err := r.Register(RegisteredTool{
@@ -1604,7 +1612,8 @@ func TestRegistry_MarksPreExecutionRejections(t *testing.T) {
 					"required":   []string{"path"},
 				},
 			},
-			PreValidate: preValidate,
+			PreValidate:   opts.preValidate,
+			NormalizeArgs: opts.normalizeArgs,
 			// Arguments are dropped on purpose: the run must be counted even
 			// when the call reaches only the schema gate.
 			Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
@@ -1616,60 +1625,80 @@ func TestRegistry_MarksPreExecutionRejections(t *testing.T) {
 		}
 		return &calls
 	}
+	// assertRejectedRefusal checks the refusal named its flag and that the tool
+	// never executed.
+	assertRejectedRefusal := func(t *testing.T, res ExecResult, calls *int) {
+		t.Helper()
+		if !res.IsError || !res.Rejected {
+			t.Fatalf("result = %+v, want IsError and Rejected", res)
+		}
+		if calls != nil && *calls != 0 {
+			t.Fatalf("tool ran %d time(s) for a pre-execution refusal; want 0", *calls)
+		}
+	}
 
 	t.Run("unknown_tool", func(t *testing.T) {
 		reg := NewRegistry()
 		res := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{Name: "unknown_tool", ID: "id", Arguments: json.RawMessage(`{}`)})
-		if !res.IsError || !res.Rejected {
-			t.Fatalf("result = %+v, want IsError and Rejected", res)
-		}
+		assertRejectedRefusal(t, res, nil)
 	})
 
 	t.Run("validate_raw_arguments", func(t *testing.T) {
 		reg := NewRegistry()
-		registerProbe(t, reg, "probe", nil)
+		calls := registerProbe(t, reg, "probe", probeOpts{})
 		oversized := json.RawMessage(strings.Repeat("a", MaxToolArgumentBytes+1))
 		res := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{Name: "probe", ID: "id", Arguments: oversized})
-		if !res.IsError || !res.Rejected {
-			t.Fatalf("result = %+v, want IsError and Rejected", res)
-		}
+		assertRejectedRefusal(t, res, calls)
 	})
 
 	t.Run("invalid_arguments_json", func(t *testing.T) {
 		reg := NewRegistry()
-		registerProbe(t, reg, "probe", nil)
+		calls := registerProbe(t, reg, "probe", probeOpts{})
 		res := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{Name: "probe", ID: "id", Arguments: json.RawMessage(`{"path":`)})
-		if !res.IsError || !res.Rejected {
-			t.Fatalf("result = %+v, want IsError and Rejected", res)
-		}
+		assertRejectedRefusal(t, res, calls)
+	})
+
+	t.Run("ask_user_shorthand_normalization", func(t *testing.T) {
+		reg := NewRegistry()
+		calls := registerProbe(t, reg, "ask_user", probeOpts{})
+		// A question without its options is the incomplete-shorthand refusal.
+		res := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{Name: "ask_user", ID: "id", Arguments: json.RawMessage(`{"question":"q"}`)})
+		assertRejectedRefusal(t, res, calls)
+	})
+
+	t.Run("normalize_args", func(t *testing.T) {
+		reg := NewRegistry()
+		calls := registerProbe(t, reg, "probe", probeOpts{
+			normalizeArgs: func(map[string]any) (map[string]any, error) {
+				return nil, errors.New("normalize refused")
+			},
+		})
+		res := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{Name: "probe", ID: "id", Arguments: json.RawMessage(`{"path":"x"}`)})
+		assertRejectedRefusal(t, res, calls)
 	})
 
 	t.Run("prevalidate", func(t *testing.T) {
 		reg := NewRegistry()
-		registerProbe(t, reg, "probe", func(map[string]any) error { return errors.New("prevalidate refused") })
+		calls := registerProbe(t, reg, "probe", probeOpts{preValidate: func(map[string]any) error {
+			return errors.New("prevalidate refused")
+		}})
 		res := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{Name: "probe", ID: "id", Arguments: json.RawMessage(`{"path":"x"}`)})
-		if !res.IsError || !res.Rejected {
-			t.Fatalf("result = %+v, want IsError and Rejected", res)
-		}
+		assertRejectedRefusal(t, res, calls)
 	})
 
 	t.Run("schema_validation", func(t *testing.T) {
 		reg := NewRegistry()
-		registerProbe(t, reg, "probe", nil)
+		calls := registerProbe(t, reg, "probe", probeOpts{})
 		res := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{Name: "probe", ID: "id", Arguments: json.RawMessage(`{}`)})
-		if !res.IsError || !res.Rejected {
-			t.Fatalf("result = %+v, want IsError and Rejected", res)
-		}
+		assertRejectedRefusal(t, res, calls)
 	})
 
 	t.Run("middleware_refusal", func(t *testing.T) {
 		reg := NewRegistry()
-		registerProbe(t, reg, "probe", nil)
+		calls := registerProbe(t, reg, "probe", probeOpts{})
 		reg.Use(func(context.Context, string, map[string]any) error { return errors.New("middleware refused") })
 		res := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{Name: "probe", ID: "id", Arguments: json.RawMessage(`{"path":"x"}`)})
-		if !res.IsError || !res.Rejected {
-			t.Fatalf("result = %+v, want IsError and Rejected", res)
-		}
+		assertRejectedRefusal(t, res, calls)
 	})
 
 	t.Run("breaker_park", func(t *testing.T) {

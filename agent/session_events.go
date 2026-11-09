@@ -2,11 +2,13 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/hooks"
+	"primeradiant.com/evener/agent/internal/toolname"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
@@ -627,6 +629,22 @@ func (s *Session) hookInput(event plugin.HookEvent) hooks.Input {
 	// PermissionMode is intentionally left unset: evener has no permission-mode field
 	// on Session today. Do NOT fabricate a value the hook would act on.
 	return input
+}
+
+// toolHookInput starts an event's hook input with the fields every tool event
+// carries: the Claude tool name, the call id, and the parsed tool_input. A call
+// whose raw arguments were refused keeps its unvalidated bytes out of
+// tool_input, exactly as the event it describes never had them applied. Each
+// caller then sets only its own event-specific fields (tool_response, error,
+// duration_ms, and so on).
+func (s *Session) toolHookInput(event plugin.HookEvent, call llm.ToolCallData, rawRejected bool) hooks.Input {
+	hi := s.hookInput(event)
+	hi.ToolName = toolname.EvenerToClaude(call.Name)
+	hi.ToolUseID = call.ID
+	if !rawRejected && len(call.Arguments) > 0 {
+		_ = json.Unmarshal(call.Arguments, &hi.ToolInput)
+	}
+	return hi
 }
 
 // settleFailedRound persists what a terminally failed round produced, so the

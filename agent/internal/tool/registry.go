@@ -321,14 +321,22 @@ type ExecResult struct {
 	// Meaningless when IsError is false.
 	PrevalOnly bool
 
-	// Rejected is true when the registry refused this call BEFORE executing it:
-	// the repeated-call breaker park, an unknown tool name, ValidateRawArguments,
-	// invalid arguments JSON, the tool's PreValidate, schema validation, or a
-	// middleware refusal. It is the registry-side twin of PrevalOnly (the session
-	// repair step's refusal). A tool that RAN and returned an error is NOT
-	// rejected. Claude fires neither PostToolUse nor PostToolUseFailure for a
-	// refused call, so the hook partition reads this flag to stay silent.
-	// Meaningless when IsError is false.
+	// Rejected is true when the registry refused this call BEFORE executing it.
+	// Exactly these gates set it, and nothing else in this package does:
+	//   - the repeated-call breaker park
+	//   - an unknown tool name
+	//   - ValidateRawArguments
+	//   - invalid arguments JSON
+	//   - the ask_user shorthand normalization (question + options)
+	//   - the tool's NormalizeArgs
+	//   - the tool's PreValidate
+	//   - schema validation
+	//   - a middleware refusal
+	// It is the registry-side twin of PrevalOnly (the session repair step's
+	// refusal). A tool that RAN and returned an error is NOT rejected. Claude
+	// fires neither PostToolUse nor PostToolUseFailure for a refused call, so the
+	// hook partition reads this flag to stay silent. Meaningless when IsError is
+	// false.
 	Rejected bool
 
 	// DurationMS is the wall-clock duration of the tool execution in milliseconds.
