@@ -134,7 +134,7 @@ now checks and confirms the test fails.
 
 ## Flakes and Timeouts
 
-Two rules, both absolute.
+Two rules.
 
 **A flake that repeats gets a root-cause fix.** A fix is warranted when the test
 fails again on rerun, fails on an idle host, or recurs across independent runs,
@@ -1535,14 +1535,19 @@ change, separate from a file split. Three kinds of test are candidates:
 - a test whose subject is test-only code.
 
 The change proves no behavior coverage was lost, and the PR description carries
-both proofs:
+the proof:
 
-- The package's statement coverage is the same before and after.
 - A seeded mutation of the behavior the removed test covered still fails a
   remaining test. Name the mutation and the test that catches it.
+- The package's statement coverage under `go test -cover` is the same before
+  and after a merge or the removal of a duplicate.
+- Removing a test that asserted nothing can lower statement coverage. List the
+  statements it alone executed and show that the removed test passed against a
+  seeded mutation of them: it caught nothing there, so nothing is lost.
 
 Here the `scripts/ops/test-inventory.sh` diff lists the names that went away, and
-it goes in the PR description beside the proofs.
+it goes in the PR description beside the proof. A test folded into a table as
+a subtest appears in that diff as removed; name the subtest that replaces it.
 
 ## Targets
 
