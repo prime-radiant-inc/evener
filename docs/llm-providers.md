@@ -495,12 +495,18 @@ no catalog entry). Either shape carries `includeThoughts: true`. Clearing
 `fields."generationConfig.thinkingConfig"` on a row prunes the object
 entirely, for a model that takes no thinking fields at all.
 
-**Replay.** Prior thinking on the openai-chat protocol writes back to
-whichever field it arrived on — `reasoning_content`, `reasoning`, or
-`reasoning_text` as a plain string field, or `reasoning_details` as
-OpenRouter's array form. The value comes from models.dev's
-`interleaved.field` when the catalog states one, else the field the text
-actually arrived on, else `reasoning_content`.
+**Replay.** An openai-chat target carries no reasoning as continuation state:
+`reasoning_content` is display output, so request assembly drops prior
+assistant thinking from every replayed message, including the current turn's
+earlier rounds, and the transcript keeps it (#4563). A row that declares
+`thinking_as_text` is the deliberate exception: its adapter merges the
+thinking into assistant text because that gateway wants it there. When
+thinking does reach the chat builder (a `thinking_as_text` row, or a caller
+that builds a request directly), it writes back to whichever field it arrived
+on — `reasoning_content`, `reasoning`, or `reasoning_text` as a plain string
+field, or `reasoning_details` as OpenRouter's array form. The value comes from
+models.dev's `interleaved.field` when the catalog states one, else the field
+the text actually arrived on, else `reasoning_content`.
 
 What changed structurally: `thinking_format` is now a `Caps` field set in
 `providers.toml`/the curated overlay (a provider- or model-level TOML key),

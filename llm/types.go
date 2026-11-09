@@ -307,6 +307,91 @@ func IsOpenAICompatEncryptedReasoning(s string) bool {
 	return true
 }
 
+// OpenAICompatSignatureReasoningNeedsText reports whether the opaque
+// reasoning_details array carries a signature-bearing reasoning.text item
+// whose text field is empty. The chat builder fills that field from the part's
+// ThinkingData.Text, so the text is signed continuation state, not display
+// reasoning, and must survive a replay trim. A part whose array has no such
+// item carries display text only.
+func OpenAICompatSignatureReasoningNeedsText(s string) bool {
+	if !IsOpenAICompatEncryptedReasoning(s) {
+		return false
+	}
+	var items []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal([]byte(s), &items) != nil {
+		return false
+	}
+	for _, it := range items {
+		if it.Type == "reasoning.text" && it.Text == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// TrimThinkingForReplay applies a target's thinking-replay policy to one
+// content part. When dropPlain is true, plain reasoning is dropped; an
+// encrypted reasoning_details array is kept because the chat adapter
+// round-trips it, with its display text cleared unless a signature-bearing
+// reasoning.text item needs that text merged into it. The returned part is the
+// input unchanged when nothing applies, and dropped reports whether the part
+// must be omitted.
+func TrimThinkingForReplay(p ContentPart, dropPlain bool) (trimmed ContentPart, dropped bool) {
+	if p.Kind != ContentThinking && p.Kind != ContentRedThinking {
+		return p, false
+	}
+	if !dropPlain {
+		return p, false
+	}
+	if p.Kind == ContentRedThinking || p.Thinking == nil {
+		return p, true
+	}
+	if !IsOpenAICompatEncryptedReasoning(p.Thinking.EncryptedContent) {
+		return p, true
+	}
+	if p.Thinking.Text == "" || OpenAICompatSignatureReasoningNeedsText(p.Thinking.EncryptedContent) {
+		return p, false
+	}
+	display := *p.Thinking
+	display.Text = ""
+	p.Thinking = &display
+	return p, false
+}
+
+// TrimThinkingForReplayMessage maps TrimThinkingForReplay over a message,
+// returning the input unchanged when nothing has to change.
+func TrimThinkingForReplayMessage(msg Message, dropPlain bool) Message {
+	if !dropPlain {
+		return msg
+	}
+	needs := false
+	for _, p := range msg.Content {
+		if p.Kind != ContentThinking && p.Kind != ContentRedThinking {
+			continue
+		}
+		if np, dropped := TrimThinkingForReplay(p, true); dropped || np.Thinking != p.Thinking {
+			needs = true
+			break
+		}
+	}
+	if !needs {
+		return msg
+	}
+	out := make([]ContentPart, 0, len(msg.Content))
+	for _, p := range msg.Content {
+		np, dropped := TrimThinkingForReplay(p, true)
+		if dropped {
+			continue
+		}
+		out = append(out, np)
+	}
+	msg.Content = out
+	return msg
+}
+
 // WebSearchData holds a web-search content part, including the query and the raw provider payload.
 type WebSearchData struct {
 	Query string          `json:"query,omitempty"`

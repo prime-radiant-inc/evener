@@ -505,8 +505,11 @@ func TestApplyTokenBudget_NonReasoningOpenAIChatRowDoesNotBillUnsignedThinking(t
 	}
 }
 
-// The resolved row decides, not the name: the same openai-named provider bills
-// the text only when its row says the adapter replays it.
+// The resolved row decides, not the name: an openai-named provider bills
+// nothing under the curated Responses rows, and a resolved row that does
+// replay thinking bills it even under that name. A resolved openai-chat row
+// bills nothing for plain thinking either — request assembly strips it
+// (#4563) — which is the row's answer, not the name's.
 func TestEstimateInputTokens_ResolvedRowBeatsTheNameFallback(t *testing.T) {
 	const text = 400
 	req := thinkingOnlyRequest("openai", "gpt-x", strings.Repeat("t", text))
@@ -516,7 +519,7 @@ func TestEstimateInputTokens_ResolvedRowBeatsTheNameFallback(t *testing.T) {
 	reasoning := true
 	res := registry.Resolved{Protocol: registry.ProtocolOpenAIChat, Caps: registry.Caps{Reasoning: &reasoning}}
 	if got, want := EstimateInputTokensForResolved(res, req).Tokens, text/4; got != want {
-		t.Fatalf("resolved estimate = %d, want %d: the row says openai-chat, which replays the text", got, want)
+		t.Fatalf("resolved estimate = %d, want %d: the row says openai-chat, which serializes the text", got, want)
 	}
 }
 

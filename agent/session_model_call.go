@@ -335,8 +335,18 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 
 	t.HistoryExpand = time.Since(tPhaseStart)
 
+	// The expanded history keeps the target-policy thinking so the fallback
+	// chain can apply each target's own replay policy; the primary's request is
+	// trimmed for the primary's wire before it is built and budgeted (#4563).
+	untrimmedHistory := history
+	history = projectThinkingForTarget(profile, history)
+
 	// --- Phase: ToolDefs --- (toolDefs snapshotted with profile/sys above)
 	req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort)
+	untrimmedReq := s.buildModelRequest(profile, sys, untrimmedHistory, toolDefs, reasoningEffort)
+	s.mu.Lock()
+	s.roundFallbackMessages = untrimmedReq.Messages
+	s.mu.Unlock()
 	req = s.attachFullHistoryInputEstimate(req, historyTurns, len(sys))
 	var budget llm.TokenBudget
 	if req, budget, err = budgetModelDispatchRequestWithBudget(profile, req); err != nil {
@@ -967,6 +977,16 @@ func isProviderTerminalError(err error) bool {
 	return strings.HasPrefix(err.Error(), "provider error: ") && errors.As(err, &providerErr)
 }
 
+// takeRoundFallbackMessages returns and clears the round's untrimmed request
+// messages kept for per-target fallback projection (#4563).
+func (s *Session) takeRoundFallbackMessages() []llm.Message {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	msgs := s.roundFallbackMessages
+	s.roundFallbackMessages = nil
+	return msgs
+}
+
 // modelErrorAction names the branch handleModelError takes on a failed model call.
 type modelErrorAction int
 
@@ -1272,6 +1292,14 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	if s.cfg.LLMRetryPolicy != nil {
 		policy = *s.cfg.LLMRetryPolicy
 	}
+	// The primary request was trimmed for its target. Fallbacks apply their own
+	// thinking policy to the round's untrimmed messages instead of inheriting
+	// the primary's (#4563). A direct caller with no prepared round keeps the
+	// request's own full-history shadows.
+	fallbackHistory := fullHistory
+	if base := s.takeRoundFallbackMessages(); len(base) > 0 {
+		fallbackHistory = base
+	}
 	// The round's fallback chain is fixed here, at the round's model-call
 	// boundary, from a copy taken under s.mu. SetModel revalidates and may
 	// rewrite s.cfg.ModelFallbacks while this round's primary call is
@@ -1386,10 +1414,11 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 					fmt.Sprintf("model_fallbacks entry %q could not be resolved; skipping it", fbModel), resolveErr))
 				continue
 			}
-			fbReq, ok := responsesContinuationModelFallbackRequest(fbProfile.Resolved(), req, fullHistory)
+			fbReq, ok := responsesContinuationModelFallbackRequest(fbProfile.Resolved(), req, fallbackHistory)
 			if !ok {
 				break
 			}
+			fbReq.Messages = projectThinkingForTarget(fbProfile, fbReq.Messages)
 			// The same rule as the primary path, against the FALLBACK model's
 			// own facts: fbProfile is resolved from the fallback reference, so
 			// its ladder and stated default are the fallback model's, not the
@@ -1663,6 +1692,12 @@ type replayScope struct {
 	// notesSelfEchoFiltered marks a delta slice whose self-echo TurnNotesContext
 	// turns were already filtered against the full history slice.
 	notesSelfEchoFiltered bool
+
+	// DropThinking strips assistant thinking/redacted_thinking from every
+	// replayed message, including the in-flight turn. See dropsReplayedThinking
+	// for the policy and its exception; provenance rules only apply when this
+	// is false.
+	DropThinking bool
 }
 
 // active reports whether the scope enforces the N4 replay-provenance rules. An
@@ -1682,6 +1717,31 @@ func (rs replayScope) producerProtocol(t schema.Turn) string {
 	return rs.protocolOf(t.ResponseProvider)
 }
 
+// dropsReplayedThinking reports whether the outgoing target takes no replayed
+// assistant thinking, per llm.ReplaysAssistantThinking — the one policy the
+// token estimate also uses, so pressure and compaction size what the request
+// actually carries. An OpenAI-chat target carries no reasoning as protocol
+// state (#4563); the thinking_as_text row is its deliberate exception.
+func dropsReplayedThinking(p *provider.Profile) bool {
+	return p != nil && !llm.ReplaysAssistantThinking(p.Resolved())
+}
+
+// projectThinkingForTarget returns messages with the target's thinking-replay
+// policy applied: a target that does not replay assistant thinking drops it,
+// while Anthropic, Google, OpenAI Responses and a thinking_as_text row keep
+// every message as is. The round keeps the untrimmed source so each fallback
+// applies its own policy instead of inheriting the primary's (#4563).
+func projectThinkingForTarget(profile *provider.Profile, messages []llm.Message) []llm.Message {
+	if !dropsReplayedThinking(profile) {
+		return messages
+	}
+	out := append([]llm.Message(nil), messages...)
+	for i := range out {
+		out[i] = llm.TrimThinkingForReplayMessage(out[i], true)
+	}
+	return out
+}
+
 // thinkingReplayEligible reports whether a completed prior turn's
 // thinking/redacted_thinking blocks may replay into the outgoing request.
 // Empty provenance (legacy transcripts) is always eligible. An anthropic
@@ -1692,8 +1752,11 @@ func (rs replayScope) producerProtocol(t schema.Turn) string {
 // tool-call thought signatures regardless of model, and openai Responses
 // carries an opaque encrypted_content blob that only its issuing deployment
 // can decrypt (a cross-deployment replay yields "Encrypted content is not
-// supported"). Every other target keeps its own builder guard, so expansion
-// never strips thinking for it.
+// supported"). An openai-chat target never reaches this comparison: its
+// reasoning is display output rather than continuation state, so
+// dropsReplayedThinking strips it for the whole replay (except a
+// thinking_as_text row). Unknown protocols keep their builder guard, so
+// expansion does not strip thinking for them.
 func (rs replayScope) thinkingReplayEligible(t schema.Turn) bool {
 	if strings.TrimSpace(t.ResponseProvider) == "" {
 		return true
@@ -1737,27 +1800,74 @@ func (rs replayScope) webSearchReplayEligible(t schema.Turn) bool {
 	return rs.producerProtocol(t) == rs.Protocol
 }
 
+// projectThinkingPart applies the N4 provenance rule and the target's thinking
+// policy to one part. provenanceKeeps is the per-turn rule (true for an
+// eligible turn or an in-flight round); false drops every thinking part.
+// Otherwise the target policy drops plain reasoning, but keeps an encrypted
+// reasoning_details array — wire continuation state the chat adapter must
+// round-trip, not the text #4563 measured — with its display text removed so
+// only the opaque detail rides. The returned part is the input unchanged when
+// nothing applies.
+func (rs replayScope) projectThinkingPart(p llm.ContentPart, provenanceKeeps bool) (llm.ContentPart, bool) {
+	if p.Kind != llm.ContentThinking && p.Kind != llm.ContentRedThinking {
+		return p, false
+	}
+	if !provenanceKeeps {
+		return p, true
+	}
+	return llm.TrimThinkingForReplay(p, rs.DropThinking)
+}
+
 // projectTurnMessage returns t.Message with provider/model-scoped content
-// filtered per the N4 rules for the scope. In-flight turns and inactive scopes
-// pass through unchanged (identical to legacy expansion). tool_call/tool_result
-// and text/image content is never touched.
+// filtered per the N4 rules for the scope, plus the target's own thinking
+// policy. An inactive scope passes through unchanged (identical to legacy
+// expansion) unless the target policy drops thinking. In-flight turns keep the
+// N4 exemption but still lose thinking the target does not want.
+// tool_call/tool_result and text/image content is never touched.
 func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Message {
 	t.Message = projectVoicePresentation(t)
-	if !rs.active() || inFlight {
+	if !rs.active() && !rs.DropThinking {
 		return t.Message
 	}
-	keepThinking := rs.thinkingReplayEligible(t)
-	keepWebSearch := rs.webSearchReplayEligible(t)
-	if keepThinking && keepWebSearch {
+	// N4 provenance and the target's thinking policy are independent gates: an
+	// inactive scope keeps the provenance rules off, while a target that does
+	// not want thinking still gets the drop.
+	provenanceKeepsThinking := true
+	keepWebSearch := true
+	if rs.active() && !inFlight {
+		provenanceKeepsThinking = rs.thinkingReplayEligible(t)
+		keepWebSearch = rs.webSearchReplayEligible(t)
+	}
+	// Allocate only when a part actually has to go: the chat drop visits every
+	// replayed message, and most carry no thinking part at all.
+	needsFilter := false
+	for _, p := range t.Message.Content {
+		switch p.Kind {
+		case llm.ContentThinking, llm.ContentRedThinking:
+			if np, drop := rs.projectThinkingPart(p, provenanceKeepsThinking); drop || np.Thinking != p.Thinking {
+				needsFilter = true
+			}
+		case llm.ContentWebSearch:
+			if !keepWebSearch {
+				needsFilter = true
+			}
+		}
+		if needsFilter {
+			break
+		}
+	}
+	if !needsFilter {
 		return t.Message
 	}
 	filtered := make([]llm.ContentPart, 0, len(t.Message.Content))
 	for _, p := range t.Message.Content {
 		switch p.Kind {
 		case llm.ContentThinking, llm.ContentRedThinking:
-			if !keepThinking {
+			np, drop := rs.projectThinkingPart(p, provenanceKeepsThinking)
+			if drop {
 				continue
 			}
+			p = np
 		case llm.ContentWebSearch:
 			if !keepWebSearch {
 				continue
