@@ -22,11 +22,12 @@ const worktreeGitTimeoutMS = 300_000
 // It lives in cfg.testOnly and is zero in production, so the wrappers below
 // preserve the normal direct calls.
 type worktreeTestSeams struct {
-	useControlPolicy func(*execenv.LocalExecutionEnvironment, string) error
-	enterWorktree    func(string, bool) error
-	writeSidecar     func(string, string, worktree.Sidecar) error
-	deleteSidecar    func(string, string) error
-	updateSidecar    func(string, string, func(*worktree.Sidecar)) error
+	useControlPolicy      func(*execenv.LocalExecutionEnvironment, string) error
+	enterWorktree         func(string, bool) error
+	writeSidecar          func(string, string, worktree.Sidecar) error
+	deleteSidecar         func(string, string) error
+	updateSidecar         func(string, string, func(*worktree.Sidecar)) error
+	beforeLaneLockRewrite func(string)
 }
 
 func (s *Session) useWorktreeControlPolicy(env *execenv.LocalExecutionEnvironment, root string) error {

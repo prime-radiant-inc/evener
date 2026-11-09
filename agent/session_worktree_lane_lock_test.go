@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -43,5 +44,41 @@ func TestTransferWorktreeLaneTo_movesTheMarker(t *testing.T) {
 	out = wtGit(t, r.mainRoot, "worktree", "list", "--porcelain")
 	if !strings.Contains(out, "locked "+oldMarker) {
 		t.Fatalf("undo did not restore the predecessor's marker:\n%s", out)
+	}
+}
+
+// TestTransferWorktreeLaneTo_keepsTheLockDuringRewrite pins the no-unlock half
+// of the transfer: a competing git worktree lock must keep failing while the
+// predecessor's marker is rewritten for the replacement. The old unlock/relock
+// implementation opened a window where that acquisition could succeed.
+func TestTransferWorktreeLaneTo_keepsTheLockDuringRewrite(t *testing.T) {
+	r := newWorktreeRepo(t)
+	lane := filepath.Join(t.TempDir(), "adopted-lane")
+	wtGit(t, r.mainRoot, "worktree", "add", "-q", lane, "-b", "adopted-lane")
+	if err := r.s.enterWorktree(lane, true); err != nil {
+		t.Fatalf("enter the lane: %v", err)
+	}
+	oldMarker := worktree.FormatSessionMarker(r.s.ID())
+	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", oldMarker, lane)
+
+	installWorktreeSeams(t, r.s, worktreeTestSeams{
+		beforeLaneLockRewrite: func(lanePath string) {
+			cmd := exec.Command("git", "-C", r.mainRoot, "worktree", "lock", "--reason", "competitor", lanePath)
+			if err := cmd.Run(); err == nil {
+				t.Error("a competing acquisition succeeded while the lane lock was being rewritten")
+			}
+		},
+	})
+
+	newID, err := identifier.NewSessionID()
+	if err != nil {
+		t.Fatalf("new session id: %v", err)
+	}
+	if _, err := r.s.TransferWorktreeLaneTo(newID); err != nil {
+		t.Fatalf("TransferWorktreeLaneTo: %v", err)
+	}
+	out := wtGit(t, r.mainRoot, "worktree", "list", "--porcelain")
+	if !strings.Contains(out, "locked evener:"+newID) {
+		t.Fatalf("lane is not locked for the replacement:\n%s", out)
 	}
 }

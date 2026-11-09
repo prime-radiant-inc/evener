@@ -207,17 +207,26 @@ func (s *Session) worktreeControlRunWithFiles(ctx context.Context, mainRepoRoot 
 // already cancelled. The returned done cancels the context and disposes the
 // control environment; the caller runs it when the rollback is over.
 func (s *Session) worktreeCleanupRun(mainRepoRoot string) (worktree.GitRunner, func(), error) {
+	run, _, dispose, err := s.worktreeCleanupRunWithFiles(mainRepoRoot)
+	return run, dispose, err
+}
+
+// worktreeCleanupRunWithFiles is worktreeCleanupRun with the control
+// environment's file layer, for an undo that edits the worktree registry.
+func (s *Session) worktreeCleanupRunWithFiles(
+	mainRepoRoot string,
+) (worktree.GitRunner, execenv.FileMutator, func(), error) {
 	s.closeCtxMu.RLock()
 	closeCtx := s.closeCtx
 	s.closeCtxMu.RUnlock()
 	budget := closePassBudget(closeCtx)
 	ctx, cancel := context.WithTimeout(context.Background(), budget)
-	run, dispose, err := s.worktreeControlRun(ctx, mainRepoRoot)
+	run, files, dispose, err := s.worktreeControlRunWithFiles(ctx, mainRepoRoot)
 	if err != nil {
 		cancel()
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return run, func() { cancel(); dispose() }, nil
+	return run, files, func() { cancel(); dispose() }, nil
 }
 
 // relPathUnderManagedDir canonicalizes projectDir (spec §5: "canonicalize
@@ -714,10 +723,9 @@ func (s *Session) WorktreeLane() WorktreeLane {
 
 // TransferWorktreeLaneTo rewrites this session's managed-lane occupancy marker
 // to the replacement session. It runs while the predecessor is still live, so
-// the lane is never unlocked between owners: an old-marker lock is unlocked and
-// immediately relocked for newSessionID, and a failed relock restores the old
-// marker. The returned undo reverses a successful transfer when a later clear
-// step aborts. An unmanaged, unlocked or foreign lane is a no-op.
+// the lane is never unlocked between owners: the lock file is rewritten in
+// place under the control policy's write authority, and the undo rewrites the
+// old marker the same way. An unmanaged, unlocked or foreign lane is a no-op.
 func (s *Session) TransferWorktreeLaneTo(newSessionID string) (func(), error) {
 	newSessionID = strings.TrimSpace(newSessionID)
 	if newSessionID == "" {
@@ -733,7 +741,7 @@ func (s *Session) TransferWorktreeLaneTo(newSessionID string) (func(), error) {
 	path := st.currentWorktree
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(worktreeGitTimeoutMS)*time.Millisecond)
 	defer cancel()
-	run, done, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
+	run, files, done, err := s.worktreeControlRunWithFiles(ctx, st.mainRepoRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -747,29 +755,43 @@ func (s *Session) TransferWorktreeLaneTo(newSessionID string) (func(), error) {
 	}
 	oldMarker := worktree.FormatSessionMarker(s.id)
 	newMarker := worktree.FormatSessionMarker(newSessionID)
-	if _, err := run("worktree", "unlock", path); err != nil {
-		return nil, fmt.Errorf("unlock the lane for transfer: %w", err)
-	}
-	if _, err := run("worktree", "lock", "--reason", newMarker, path); err != nil {
-		if _, relockErr := run("worktree", "lock", "--reason", oldMarker, path); relockErr != nil {
-			return nil, errors.Join(
-				fmt.Errorf("lock the lane for the replacement: %w", err),
-				fmt.Errorf("restore the old lane lock: %w", relockErr),
-			)
-		}
-		return nil, fmt.Errorf("lock the lane for the replacement: %w", err)
+	if err := s.rewriteLaneLock(files, path, oldMarker, newMarker); err != nil {
+		return nil, fmt.Errorf("rewrite the lane lock for the replacement: %w", err)
 	}
 	return func() {
-		undoRun, undoDone, err := s.worktreeCleanupRun(st.mainRepoRoot)
+		_, undoFiles, undoDone, err := s.worktreeCleanupRunWithFiles(st.mainRepoRoot)
 		if err != nil {
 			return
 		}
 		defer undoDone()
-		if _, err := undoRun("worktree", "unlock", path); err != nil {
-			return
-		}
-		_, _ = undoRun("worktree", "lock", "--reason", oldMarker, path)
+		_ = s.rewriteLaneLock(undoFiles, path, newMarker, oldMarker)
 	}, nil
+}
+
+// rewriteLaneLock replaces the lane lock file's marker without unlocking it:
+// the expected marker is verified through the control file layer, then written
+// atomically over the lock file, so a competing git worktree lock sees the path
+// occupied throughout. The control policy's write authority is checked before
+// the file layer is asked to write.
+func (s *Session) rewriteLaneLock(files execenv.FileMutator, lanePath, expected, marker string) error {
+	lockFile, err := laneLockFile(lanePath)
+	if err != nil {
+		return err
+	}
+	current, err := files.ReadFileRaw(lockFile)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(current)) != expected {
+		return fmt.Errorf("lane lock is no longer the expected marker")
+	}
+	if err := requireRegistryWrite(files, filepath.Dir(lockFile)); err != nil {
+		return err
+	}
+	if hook := s.cfg.testOnly.worktree.beforeLaneLockRewrite; hook != nil {
+		hook(lanePath)
+	}
+	return files.WriteFileRaw(lockFile, []byte(marker+"\n"), 0o644)
 }
 
 // exitWorktree implements worktreeGuard.exitWorktree() (spec §7): restore the
