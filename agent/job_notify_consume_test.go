@@ -382,7 +382,7 @@ func TestTerminalJobStatusReadContinuesCurrentTurn(t *testing.T) {
 func TestRunningJobStatusReadLeavesNotificationArmed(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
-	jobID := startBackgroundShellJob(t, s, "exec sleep 30")
+	jobID := startBackgroundShellJob(t, s, idleShellCommand)
 	t.Cleanup(func() { _, _ = s.jobManager.stop(jobID) })
 
 	if _, err := jobStatusTool(s, map[string]any{"target": jobID}, 8000); err != nil {
@@ -560,7 +560,7 @@ func TestBackgroundShellReplyWithTerminalStatusLeavesNotificationPending(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	call := llm.ToolCallData{ID: "fg-timeout", Name: "shell", Arguments: json.RawMessage(`{"command":"exec sleep 999"}`)}
+	call := llm.ToolCallData{ID: "fg-timeout", Name: "shell", Arguments: idleShellJSON(``)}
 	result := tooldefs.ExecResult{ToolName: "shell", CallID: call.ID, Output: reply.Output, ToolState: state}
 	if err := s.persistToolResults(context.Background(), []llm.ToolCallData{call}, []tooldefs.ExecResult{result}); err != nil {
 		t.Fatalf("persistToolResults: %v", err)

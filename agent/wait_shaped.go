@@ -2,7 +2,6 @@ package agent
 
 import (
 	"errors"
-	"fmt"
 	"regexp"
 	"strings"
 	"sync"
@@ -12,12 +11,18 @@ import (
 
 // errWaitRefused marks a call refused because its only purpose is to wait. The
 // runtime offers no wait primitive: an agent with nothing else to do ends its
-// turn and the completion wakes it. The error text starts with the kind so a
-// reader of the transcript can count refusals.
-var errWaitRefused = errors.New("wait_refused")
+// turn and the completion wakes it.
+var errWaitRefused = errors.New("wait-shaped call")
 
-func waitRefusal(resultTool, what string) error {
-	return fmt.Errorf("%w: %s %s", errWaitRefused, what, tool.EndTurnToWait(resultTool))
+// waitRefusalError is the refusal's error. Its text follows the breaker's park
+// convention (tool.ParkPrefix), which other layers count refusals by.
+type waitRefusalError struct{ text string }
+
+func (e waitRefusalError) Error() string        { return tool.ParkPrefix + e.text }
+func (e waitRefusalError) Is(target error) bool { return target == errWaitRefused }
+
+func (s *Session) waitRefusal(what string) error {
+	return waitRefusalError{what + " " + tool.EndTurnToWait(s.resultToolName(), s.hasHumanPartnerToAsk())}
 }
 
 // jobStatusPolls remembers, per target, the state a job_status call last
@@ -39,6 +44,18 @@ func (p *jobStatusPolls) repeatsWithoutNews(target, state string) bool {
 	prev, seen := p.last[target]
 	p.last[target] = state
 	return seen && prev == state
+}
+
+// forgetDelegates drops every delegate's remembered state, for an attention
+// report about a delegate.
+func (p *jobStatusPolls) forgetDelegates() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for target := range p.last {
+		if strings.HasPrefix(target, "dlg_") {
+			delete(p.last, target)
+		}
+	}
 }
 
 // forget drops target's remembered state; the next job_status call on it is
@@ -64,7 +81,7 @@ func jobStatusPollState(state any) string {
 		if st.RunningForMS == nil {
 			return ""
 		}
-		return fmt.Sprintf("%s/%t/%s", st.Status, st.NeedsAttention, st.LatestActivityAt)
+		return st.pollState
 	}
 	return ""
 }
@@ -86,13 +103,13 @@ func (s *Session) refuseRepeatedJobStatus(target string, value any, err error) (
 		return value, nil
 	}
 	if s.jobStatusPolls.repeatsWithoutNews(target, state) {
-		return "", waitRefusal(s.resultToolName(), target+" is still running and its status and phase have not changed since your last job_status call.")
+		return "", s.waitRefusal(target + " is still running and its status and phase have not changed since your last job_status call.")
 	}
 	return value, nil
 }
 
 var (
-	sleepSegment  = regexp.MustCompile(`^sleep +[0-9]+(\.[0-9]+)?[smhd]?$`)
+	sleepSegment  = regexp.MustCompile(`^(exec +|command +)?(/usr/bin/|/bin/)?sleep +([0-9]+(\.[0-9]+)?[smhd]?|infinity)$`)
 	fillerSegment = regexp.MustCompile(`^(echo|printf)( +[^ ].*)?$|^(true|:)$`)
 	loopHeader    = regexp.MustCompile(`^(while +(true|:)|for +[A-Za-z_][A-Za-z0-9_]* +in +[A-Za-z0-9_{}. ]+)$`)
 )
@@ -137,5 +154,5 @@ func (s *Session) refuseSleepOnlyShell(command string) error {
 	if !isSleepOnlyCommand(command) {
 		return nil
 	}
-	return waitRefusal(s.resultToolName(), "this command only sleeps, and it was not run. Run the work you are waiting for as a background job, then do other work or stop.")
+	return s.waitRefusal("this command only sleeps, and it was not run. Run the work you are waiting for as a background job, then do other work or stop.")
 }

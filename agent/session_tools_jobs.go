@@ -70,7 +70,7 @@ func registerJobTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 // inject a failure at each registration boundary.
 func registerJobToolsWith(reg *tool.Registry, register func(tool.RegisteredTool) error, s *Session) error {
 	if err := register(tool.RegisteredTool{
-		Definition: tool.DefJobStatusNamed(s.resultToolName()), ReadOnly: true,
+		Definition: tool.DefJobStatusNamed(s.resultToolName(), s.hasHumanPartnerToAsk()), ReadOnly: true,
 		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			if _, hub := args["hub"]; hub {
@@ -84,7 +84,7 @@ func registerJobToolsWith(reg *tool.Registry, register func(tool.RegisteredTool)
 		return err
 	}
 	if err := register(tool.RegisteredTool{
-		Definition: tool.DefJobListNamed(s.resultToolName()), ReadOnly: true,
+		Definition: tool.DefJobListNamed(s.resultToolName(), s.hasHumanPartnerToAsk()), ReadOnly: true,
 		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			if _, hub := args["hub"]; hub {

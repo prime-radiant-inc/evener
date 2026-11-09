@@ -4,12 +4,24 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/llm"
 )
+
+// idleShellCommand is a long-running command that does nothing and is not
+// sleep-only by the wait classifier's rules, for tests that need a job that
+// stays running until the test stops it.
+const idleShellCommand = "exec tail -f /dev/null"
+
+// idleShellJSON is shell tool arguments running idleShellCommand; fields is
+// extra JSON members such as `,"mode":"background"`.
+func idleShellJSON(fields string) json.RawMessage {
+	return json.RawMessage(`{"command":` + mustJSONString(idleShellCommand) + fields + `}`)
+}
 
 func callTool(s *Session, name string, args map[string]any) tool.ExecResult {
 	raw, _ := json.Marshal(args)
@@ -90,6 +102,11 @@ func TestSleepOnlyShellCommandIsRefused(t *testing.T) {
 		"while true; do sleep 60; done",
 		"for i in 1 2 3; do sleep 10; done",
 		"  sleep   30  ",
+		"exec sleep 30",
+		"/bin/sleep 30",
+		"command sleep 30",
+		"sleep infinity",
+		"exec sleep 30 && echo done",
 	}
 	for _, cmd := range refused {
 		t.Run("refused/"+cmd, func(t *testing.T) {
@@ -121,6 +138,79 @@ func TestSleepOnlyShellCommandIsRefused(t *testing.T) {
 			res := callTool(s, "shell", map[string]any{"command": cmd})
 			if isWaitRefused(res) {
 				t.Fatalf("%q was refused: %+v", cmd, res)
+			}
+		})
+	}
+}
+
+func TestRepeatedJobStatusOnUnchangedRunningDelegateIsRefused(t *testing.T) {
+	t.Parallel()
+	s := newSession(t, withoutGitSnapshot())
+	id := "dlg_repeat_wait"
+	seedStableToolRunningDelegate(t, s, id, "", time.Unix(10, 0).UTC())
+
+	if res := callTool(s, "job_status", map[string]any{"target": id}); res.IsError {
+		t.Fatalf("first job_status on a delegate was refused: %s", res.Output)
+	}
+	if res := callTool(s, "job_status", map[string]any{"target": id}); !isWaitRefused(res) {
+		t.Fatalf("repeat job_status on an unchanged running delegate executed: %+v", res)
+	}
+}
+
+// A delegate that Evener reports as quiet may still be working, and the
+// prompt tells the agent to check it before stopping it. That check follows an
+// attention report, so it must run even when the agent polled earlier.
+func TestJobStatusOnDelegateAfterAttentionReportIsAllowed(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	s := newSession(t, withDir(stateDir), withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}))
+	id := "dlg_quiet_recheck"
+	seedStableToolRunningDelegate(t, s, id, "", time.Unix(10, 0).UTC())
+
+	callTool(s, "job_status", map[string]any{"target": id})
+	if res := callTool(s, "job_status", map[string]any{"target": id}); !isWaitRefused(res) {
+		t.Fatalf("setup: repeat was not refused: %+v", res)
+	}
+	if _, err := s.appendDelegateNotificationDurably("delegate:dlg_quiet_recheck/delivery/1", `<delegate-notification delegate_id="dlg_quiet_recheck">quiet</delegate-notification>`); err != nil {
+		t.Fatalf("append attention: %v", err)
+	}
+	if res := callTool(s, "job_status", map[string]any{"target": id}); res.IsError {
+		t.Fatalf("job_status after a delegate attention report was refused: %s", res.Output)
+	}
+}
+
+// Only a session that has a human partner is offered end_reason on its result
+// tool; advice to pass it elsewhere fails schema validation.
+func TestWaitGuidanceNamesEndReasonOnlyWhereTheResultToolOffersIt(t *testing.T) {
+	t.Parallel()
+	child := minimalTestSessionConfig(t)
+	child.spawn.parentSessionID = "01PARENT"
+	for name, s := range map[string]*Session{
+		"root":     newTestSession(t),
+		"delegate": newSession(t, withConfig(child)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			offered := false
+			if def := s.reg.Get(s.resultToolName()); def != nil {
+				props, _ := def.Definition.Parameters["properties"].(map[string]any)
+				_, offered = props["end_reason"]
+			}
+			if offered != s.hasHumanPartnerToAsk() {
+				t.Fatalf("setup: end_reason offered = %v, human partner = %v", offered, s.hasHumanPartnerToAsk())
+			}
+			mentions := func(text string) bool { return strings.Contains(text, "end_reason") }
+			for _, toolName := range []string{"job_status", "job_list"} {
+				if got := mentions(s.reg.Get(toolName).Definition.Description); got != offered {
+					t.Errorf("%s description names end_reason = %v, result tool offers it = %v", toolName, got, offered)
+				}
+			}
+			refusal := callTool(s, "shell", map[string]any{"command": "sleep 30"})
+			if !isWaitRefused(refusal) {
+				t.Fatalf("sleep not refused: %+v", refusal)
+			}
+			if got := mentions(refusal.Output); got != offered {
+				t.Errorf("shell refusal names end_reason = %v, result tool offers it = %v", got, offered)
 			}
 		})
 	}

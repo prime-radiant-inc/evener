@@ -25,7 +25,7 @@ func endTurnWarningWithRunningJob(t *testing.T, s *Session) (warning, jobID stri
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"exec sleep 30","mode":"background"}`),
+		Arguments: idleShellJSON(`,"mode":"background"`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)
@@ -129,7 +129,7 @@ func TestCommunicate_EndTurnWarnsForLiveDetachedProcess(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "detached-shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"exec sleep 30","mode":"detached"}`),
+		Arguments: idleShellJSON(`,"mode":"detached"`),
 	})
 	if res.IsError {
 		t.Fatalf("detached shell returned error: %s", res.Output)
