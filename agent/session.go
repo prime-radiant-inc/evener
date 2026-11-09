@@ -2172,16 +2172,22 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 			}
 		}
 	}
-	markerText := buildModelSwitchMarkerText(modelSwitchMarkerParams{
-		oldProfile:           commitPrev,
-		nextProfile:          nextProfile,
-		contextWarning:       contextWarning,
-		contextWarningPct:    contextWarningPct,
-		contextWindowAssumed: contextWindowAssumed,
-		assumedWindowTokens:  assumedWindowTokens,
-		droppedFallbacks:     s.lastDroppedModelFallbacks,
-	})
+	// Snapshot the facts the marker needs and leave the lock before the
+	// history scan: the count walks every turn, and the lock is shared with
+	// turn processing.
+	markerHistory := append([]schema.Turn(nil), s.history...)
+	droppedFallbacks := append([]string(nil), s.lastDroppedModelFallbacks...)
 	s.mu.Unlock()
+	markerText := buildModelSwitchMarkerText(modelSwitchMarkerParams{
+		oldProfile:              commitPrev,
+		nextProfile:             nextProfile,
+		contextWarning:          contextWarning,
+		contextWarningPct:       contextWarningPct,
+		contextWindowAssumed:    contextWindowAssumed,
+		assumedWindowTokens:     assumedWindowTokens,
+		droppedFallbacks:        droppedFallbacks,
+		orphanedToolResultMedia: orphanedToolResultMediaCount(markerHistory, commitPrev, nextProfile),
+	})
 	if hook := s.cfg.testOnly.beforeModelSwitchPublish; hook != nil {
 		hook()
 	}
@@ -2352,6 +2358,11 @@ type modelSwitchMarkerParams struct {
 	contextWindowAssumed bool
 	assumedWindowTokens  int
 	droppedFallbacks     []string
+	// orphanedToolResultMedia counts tool-result media payloads already in the
+	// transcript that the new target cannot see. Request assembly drops their
+	// bytes (#4217); the marker makes that drop visible instead of silent. The
+	// same count covers images and documents once a protocol carries one.
+	orphanedToolResultMedia int
 }
 
 func buildModelSwitchMarkerText(p modelSwitchMarkerParams) string {
@@ -2366,7 +2377,33 @@ func buildModelSwitchMarkerText(p modelSwitchMarkerParams) string {
 	if len(p.droppedFallbacks) > 0 {
 		lines = append(lines, fmt.Sprintf("Warning: dropped model fallbacks no longer valid for %s: %s", p.nextProfile.ID(), strings.Join(p.droppedFallbacks, ", ")))
 	}
+	if p.orphanedToolResultMedia > 0 {
+		lines = append(lines, fmt.Sprintf("Warning: %s read earlier in this session cannot be seen by %s; they stay in the transcript but are omitted from requests.", pluralizedUnit(p.orphanedToolResultMedia, "tool-result media item"), p.nextProfile.ID()))
+	}
 	return strings.Join(lines, "\n")
+}
+
+// orphanedToolResultMediaCount counts the tool-result media payloads already in
+// history that from saw and to cannot: those are the attachments this switch
+// puts out of the model's view. The delivery predicates decide per media type,
+// so the count covers images and, on a protocol that carries one, documents.
+func orphanedToolResultMediaCount(history []schema.Turn, from, to *provider.Profile) int {
+	if from == nil || to == nil {
+		return 0
+	}
+	count := 0
+	for _, t := range history {
+		for _, p := range t.Message.Content {
+			if p.Kind != llm.ContentToolResult || p.ToolResult == nil || len(p.ToolResult.ImageData) == 0 {
+				continue
+			}
+			mt := p.ToolResult.ImageMediaType
+			if llm.RowSeesToolResultMedia(from.Resolved(), mt) && !llm.RowSeesToolResultMedia(to.Resolved(), mt) {
+				count++
+			}
+		}
+	}
+	return count
 }
 
 // Rename sets a user-chosen session title. It records NameSource="user" so the

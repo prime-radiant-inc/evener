@@ -297,8 +297,11 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		// A dropped document was rejected for delivery, not read successfully;
 		// the request copy says so and the transcript keeps the payload (#4465).
 		annotateDroppedToolResult: true,
-		protocolOf:                s.instanceProtocol,
-		canonicalModel:            func(model string) string { return s.canonicalModelID(profile.ID(), model) },
+		dropsToolResultMedia: func(mediaType string) bool {
+			return !llm.RowSeesToolResultMedia(profile.Resolved(), mediaType)
+		},
+		protocolOf:     s.instanceProtocol,
+		canonicalModel: func(model string) string { return s.canonicalModelID(profile.ID(), model) },
 	}
 	// presentedTurns is the history this request projects: a leased delegate
 	// turn projects the controller's own later snapshot, which can hold turns
@@ -719,7 +722,9 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 		req, _ = llm.ApplyResponsesContinuationStoreOverride(req, plan.StoragePolicyLabel)
 		req.HistoryMode = llm.HistoryModeResponsesDelta
 		req.PreviousResponseID = strings.TrimSpace(candidate.Turn.ResponseID)
-		req.Messages = responsesContinuationDeltaMessages(req.Messages, candidate.Delta)
+		req.Messages = responsesContinuationDeltaMessages(req.Messages, candidate.Delta, func(mediaType string) bool {
+			return !profile.SeesToolResultMedia(mediaType)
+		})
 		req.Continuation = &llm.ContinuationMetadata{
 			PreviousResponseIDHash:  candidate.Turn.ResponseIDHash,
 			AnchorTurnIndex:         candidate.TurnIndex,
@@ -832,7 +837,7 @@ func responsesContinuationCandidateMatchesPlan(candidate responsesContinuationAn
 		candidate.Turn.ResponseContextMarker == responseContextMarkerV1
 }
 
-func responsesContinuationDeltaMessages(base []llm.Message, deltaTurns []schema.Turn) []llm.Message {
+func responsesContinuationDeltaMessages(base []llm.Message, deltaTurns []schema.Turn, dropsMedia func(string) bool) []llm.Message {
 	messages := make([]llm.Message, 0, len(base)+len(deltaTurns))
 	for _, msg := range base {
 		if msg.Role != llm.RoleSystem && msg.Role != llm.RoleDeveloper {
@@ -843,8 +848,26 @@ func responsesContinuationDeltaMessages(base []llm.Message, deltaTurns []schema.
 	// Responses-continuation delta path (openai target): the Responses builder
 	// keeps its own reasoning guard, and selectResponsesContinuationAnchorCandidate
 	// already filtered self-echo TurnNotesContext turns against the full history.
-	messages = append(messages, expandHistory(deltaTurns, replayScope{notesSelfEchoFiltered: true})...)
+	messages = append(messages, expandHistory(deltaTurns, replayScope{notesSelfEchoFiltered: true, dropsToolResultMedia: dropsMedia})...)
 	return messages
+}
+
+// projectToolResultMediaFor returns messages with tool-result media bytes the
+// profile's row cannot see removed. A fallback reuses the primary's built
+// request, so it applies the fallback's own delivery decision before dispatch
+// and budgeting (#4217).
+func projectToolResultMediaFor(profile *provider.Profile, messages []llm.Message) []llm.Message {
+	if profile == nil {
+		return messages
+	}
+	scope := replayScope{dropsToolResultMedia: func(mediaType string) bool {
+		return !llm.RowSeesToolResultMedia(profile.Resolved(), mediaType)
+	}}
+	out := append([]llm.Message(nil), messages...)
+	for i := range out {
+		out[i] = scope.projectToolResultMedia(out[i])
+	}
+	return out
 }
 
 func responsesContinuationTurnKinds(turns []schema.Turn) []string {
@@ -1622,9 +1645,13 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 				break
 			}
 			fbReq.Messages = projectThinkingForTarget(fbProfile, fbReq.Messages)
-			// The continuation builder priced the untrimmed messages; the
-			// projection above removed thinking this target does not replay, so
-			// reprice both estimates before admission (#4563).
+			// A fallback reuses the primary's built messages, so it applies its
+			// own media decision here; the budget below then prices exactly what
+			// this target receives (#4217).
+			fbReq.Messages = projectToolResultMediaFor(fbProfile, fbReq.Messages)
+			// The continuation builder priced the untrimmed, unprojected
+			// messages; reprice both estimates after both projections and
+			// before admission (#4563, #4217).
 			fbReq = responsesContinuationFullHistoryWithInputEstimate(fbProfile.Resolved(), fbReq)
 			// The same rule as the primary path, against the FALLBACK model's
 			// own facts: fbProfile is resolved from the fallback reference, so
@@ -1913,11 +1940,54 @@ type replayScope struct {
 	// as a delivery failure the model can see; the transcript keeps the
 	// original payload and its success state (#4465).
 	annotateDroppedToolResult bool
+	// dropsToolResultMedia reports whether the outgoing target cannot accept a
+	// tool-result media payload of this type. Nil keeps every payload. Set from
+	// the profile's advertised capabilities (profile.SeesToolResultMedia), so
+	// request assembly never hands an image-blind model bytes it would reject
+	// or ignore (#4217); the result's text still reaches it.
+	dropsToolResultMedia func(mediaType string) bool
 }
 
 // active reports whether the scope enforces the N4 replay-provenance rules. An
 // empty protocol means "expand without filtering".
 func (rs replayScope) active() bool { return strings.TrimSpace(rs.Protocol) != "" }
+
+// dropsMedia reports whether the outgoing target cannot accept a tool-result
+// media payload of this type. A nil predicate keeps every payload.
+func (rs replayScope) dropsMedia(mediaType string) bool {
+	return rs.dropsToolResultMedia != nil && rs.dropsToolResultMedia(mediaType)
+}
+
+// projectToolResultMedia returns msg with tool-result media bytes the target
+// cannot see removed; the result's text stays (#4217). It returns msg
+// unchanged when nothing drops.
+func (rs replayScope) projectToolResultMedia(msg llm.Message) llm.Message {
+	if rs.dropsToolResultMedia == nil {
+		return msg
+	}
+	drops := false
+	for _, p := range msg.Content {
+		if p.Kind == llm.ContentToolResult && p.ToolResult != nil && len(p.ToolResult.ImageData) > 0 && rs.dropsMedia(p.ToolResult.ImageMediaType) {
+			drops = true
+			break
+		}
+	}
+	if !drops {
+		return msg
+	}
+	parts := make([]llm.ContentPart, len(msg.Content))
+	for i, p := range msg.Content {
+		parts[i] = p
+		if p.Kind != llm.ContentToolResult || p.ToolResult == nil || len(p.ToolResult.ImageData) == 0 || !rs.dropsMedia(p.ToolResult.ImageMediaType) {
+			continue
+		}
+		tr := *p.ToolResult
+		tr.ImageData, tr.ImageMediaType = nil, ""
+		parts[i].ToolResult = &tr
+	}
+	msg.Content = parts
+	return msg
+}
 
 // producerProtocol is the wire protocol that produced a stored turn: the one
 // recorded on the turn, or — for a turn written before ResponseProtocol
@@ -2208,38 +2278,29 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 			// Expand aggregated tool results into individual messages.
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
-					imageData, imageMediaType := p.ToolResult.ImageData, p.ToolResult.ImageMediaType
-					dropped := len(imageData) > 0 && scope.dropsToolResult != nil && scope.dropsToolResult(p.ToolResult)
-					if dropped {
-						// The provider rejected this document once; omit the
-						// bytes from every later request (#4465). The text
-						// form stays and the transcript keeps the payload.
-						imageData, imageMediaType = nil, ""
+					tr := *p.ToolResult
+					droppedDocument := len(tr.ImageData) > 0 && scope.dropsToolResult != nil && scope.dropsToolResult(p.ToolResult)
+					if len(tr.ImageData) > 0 && (droppedDocument || scope.dropsMedia(tr.ImageMediaType)) {
+						// The target cannot see this payload (or the provider
+						// rejected its document bytes), so the bytes are dropped
+						// rather than sent and rejected (#4217, #4465). The text
+						// form of the result stays; a switch that orphans earlier
+						// images says so in its persisted marker.
+						tr.ImageData, tr.ImageMediaType = nil, ""
 					}
-					tr := &llm.ToolResultData{
-						ToolCallID:     p.ToolResult.ToolCallID,
-						Name:           p.ToolResult.Name,
-						Content:        p.ToolResult.Content,
-						IsError:        p.ToolResult.IsError,
-						PrevalOnly:     p.ToolResult.PrevalOnly,
-						DurationMS:     p.ToolResult.DurationMS,
-						ToolState:      p.ToolResult.ToolState,
-						ImageData:      imageData,
-						ImageMediaType: imageMediaType,
-					}
-					if dropped && scope.annotateDroppedToolResult {
-						annotateSuppressedToolResult(tr)
+					if droppedDocument && scope.annotateDroppedToolResult {
+						annotateSuppressedToolResult(&tr)
 					}
 					history = append(history, llm.Message{
 						Role:       llm.RoleTool,
-						ToolCallID: p.ToolResult.ToolCallID,
-						Content:    []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: tr}},
+						ToolCallID: tr.ToolCallID,
+						Content:    []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &tr}},
 					})
 				}
 			}
 			resolveToolResults(t.Message)
 		case schema.TurnTool:
-			history = append(history, scope.stripToolResultMedia(scope.projectTurnMessage(t, inFlight)))
+			history = append(history, scope.stripToolResultMedia(scope.projectToolResultMedia(scope.projectTurnMessage(t, inFlight))))
 			resolveToolResults(t.Message)
 		case schema.TurnAssistant:
 			endToolRound()

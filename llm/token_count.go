@@ -432,7 +432,11 @@ type targetInfo struct {
 	// and speaks a protocol whose tool-result shape carries a document. The
 	// estimate prices a document only for such a row (#4465).
 	seenToolResultDocuments bool
-	unsignedThinking        bool
+	// seesToolResultImages marks a resolved row whose model declares image
+	// input on a protocol that delivers tool-result images. Request assembly
+	// drops images the row cannot see (#4217), so the estimate prices none.
+	seesToolResultImages bool
+	unsignedThinking     bool
 }
 
 // vendorNameBasis is the provider name the media-family name rule may read. A
@@ -566,7 +570,8 @@ func targetFromResolved(res registry.Resolved, provider, model string) targetInf
 		dropsToolResultImages: dropsToolResultImages(res),
 		seenToolResultDocuments: !res.Synthesized && res.Caps.AcceptsModality("pdf") &&
 			deliversToolResultDocuments(res.Protocol),
-		unsignedThinking: unsignedThinkingReplayed(res, fallbackProvider, model),
+		seesToolResultImages: res.Caps.AcceptsModality("image") && !dropsToolResultImages(res),
+		unsignedThinking:     unsignedThinkingReplayed(res, fallbackProvider, model),
 	}
 }
 
@@ -603,7 +608,13 @@ func (t targetInfo) billsToolResultMedia(tr *ToolResultData) bool {
 		return false
 	}
 	mt := strings.ToLower(strings.TrimSpace(tr.ImageMediaType))
-	if mt == "" || strings.HasPrefix(mt, "image/") {
+	if IsImageMediaType(mt) {
+		if t.resolved {
+			// A resolved row's estimate follows the same decision request
+			// assembly makes: no bytes are sent to a row that cannot see them
+			// (#4217), so none are billed.
+			return t.seesToolResultImages
+		}
 		return !t.dropsToolResultImages
 	}
 	if IsDocumentMediaType(mt) {
@@ -641,11 +652,10 @@ func DeliversToolResultImages(res registry.Resolved) bool {
 // user-message side-channel (#4465). An empty media type reads as the image
 // default the tool layer applies.
 func DeliversToolResultMedia(res registry.Resolved, mediaType string) bool {
-	mt := strings.ToLower(strings.TrimSpace(mediaType))
-	if mt == "" || strings.HasPrefix(mt, "image/") {
+	if IsImageMediaType(mediaType) {
 		return DeliversToolResultImages(res)
 	}
-	if IsDocumentMediaType(mt) {
+	if IsDocumentMediaType(mediaType) {
 		return deliversToolResultDocuments(res.Protocol)
 	}
 	return false
@@ -666,6 +676,15 @@ func IsDocumentMediaType(mt string) bool {
 // one, so they route documents through the side-channel.
 func deliversToolResultDocuments(protocol string) bool {
 	return protocol == registry.ProtocolAnthropic
+}
+
+// IsImageMediaType reports whether a tool result's media type is a raster
+// image the inline path handles. An empty media type reads as the image
+// default the tool layer applies. Request assembly, the delivery predicates
+// and the switch marker's orphan count share this one definition.
+func IsImageMediaType(mediaType string) bool {
+	mt := strings.ToLower(strings.TrimSpace(mediaType))
+	return mt == "" || strings.HasPrefix(mt, "image/")
 }
 
 // DeliversUserMessageDocuments reports whether the row's adapter represents
