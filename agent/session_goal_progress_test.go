@@ -25,6 +25,20 @@ func (*launchFailingEnv) StreamCommand(context.Context, string, string, map[stri
 	return nil, fmt.Errorf("executor refused to launch")
 }
 
+// waitFailingEnv is a local environment whose streaming executor launches and
+// then fails in Wait, so the shell tool returns failed/wait_failed through the
+// complete-or-handle marshal path.
+type waitFailingEnv struct {
+	*execenv.LocalExecutionEnvironment
+}
+
+func (*waitFailingEnv) StreamCommand(context.Context, string, string, map[string]string, io.Writer) (*execenv.StreamHandle, error) {
+	return &execenv.StreamHandle{
+		Wait:   func() (int, error) { return 1, fmt.Errorf("stream wait failed") },
+		Signal: func() {},
+	}, nil
+}
+
 // toolResultsMadeProgress is the goal no-progress signal: only an executed,
 // successful, progress-eligible result counts. Unknown names, read-only tools,
 // the result/communicate tool, task_list, failed calls and prevalidation-only
@@ -294,5 +308,65 @@ func TestGoalNoProgressBreakerIgnoresShellLaunchFailures(t *testing.T) {
 	}
 	if snap, _ := store.Snapshot(); snap.Status != goal.StatusBlocked {
 		t.Fatalf("goal after failed shell launches = %+v, want blocked by the no-progress breaker", snap)
+	}
+}
+
+// A shell whose Wait fails comes back as a structured failed/wait_failed result
+// through the complete-or-handle marshal path. That failed call is not a
+// successful mutation and must not reset the goal no-progress streak.
+func TestGoalNoProgressBreakerIgnoresShellWaitFailures(t *testing.T) {
+	t.Parallel()
+	var calls int
+	responder := func(llm.Request) llm.Response {
+		calls++
+		if calls%2 == 1 {
+			return llm.Response{
+				Model: "gpt-5.2",
+				Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+					Kind:     llm.ContentToolCall,
+					ToolCall: &llm.ToolCallData{ID: fmt.Sprintf("call-%d", calls), Name: "shell", Arguments: []byte(`{"command":"echo hi"}`)},
+				}}},
+				Finish: llm.FinishReason{Reason: "tool_use"},
+			}
+		}
+		return agenttest.CommunicateResponse(true, "done")
+	}
+	adapter := &agenttest.ScriptedAdapter{Provider: "openai", Responder: responder}
+	client := llm.NewClient()
+	client.Register(adapter)
+	env := &waitFailingEnv{LocalExecutionEnvironment: execenv.NewLocalExecutionEnvironment(t.TempDir())}
+	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), env, SessionConfig{
+		MaxToolRoundsPerInput: 5,
+		clock:                 agenttest.NewFakeClock(),
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			noSyncJobStore:      true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(sess.Close)
+	store := sess.getOrCreateGoalStore()
+	store.Set("ship it", sess.sclock().Now())
+
+	for turn := 0; ; turn++ {
+		_, progressed, err := sess.processOneInput(context.Background(), "continue", nil, EntryContinuation, nil)
+		if err != nil {
+			t.Fatalf("continuation turn %d: %v", turn, err)
+		}
+		if progressed {
+			t.Fatalf("continuation turn %d credited a failed shell wait as progress", turn)
+		}
+		if _, continued := sess.armGoalContinuation(progressed, true); !continued {
+			break
+		}
+		if turn > goal.NeverProgressedLimit {
+			t.Fatal("goal did not reach the no-progress breaker")
+		}
+	}
+	if snap, _ := store.Snapshot(); snap.Status != goal.StatusBlocked {
+		t.Fatalf("goal after failed shell waits = %+v, want blocked by the no-progress breaker", snap)
 	}
 }
