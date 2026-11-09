@@ -74,6 +74,8 @@ func isExactMatcher(s string) bool {
 // splitExactMatcher splits an exact matcher into its alternatives on "|" and ",".
 // Surrounding whitespace is not trimmed here; callers trim each alternative so a
 // matcher like " Edit , Write " matches "Edit" and "Write".
+// Empty alternatives are dropped, so "a|" yields only "a" and never matches an
+// empty target; the zero-target probe in hookCanRun/Validate still gets no error.
 func splitExactMatcher(m string) []string {
 	return strings.FieldsFunc(m, func(r rune) bool { return r == '|' || r == ',' })
 }

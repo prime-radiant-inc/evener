@@ -112,9 +112,8 @@ func TestInitPlugins_UnsupportedHookEventWarns(t *testing.T) {
 	if found.PluginName != "reserved-plugin" {
 		t.Errorf("PluginName = %q, want %q", found.PluginName, "reserved-plugin")
 	}
-	msg := strings.ToLower(found.Message)
-	if !strings.Contains(msg, "not") || !strings.Contains(msg, "fire") {
-		t.Errorf("warning %q should say the event is not fired by evener", found.Message)
+	if found.Title != "unsupported hook event" {
+		t.Errorf("Title = %q, want %q", found.Title, "unsupported hook event")
 	}
 }
 

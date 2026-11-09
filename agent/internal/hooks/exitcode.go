@@ -41,7 +41,7 @@ func exitBehavior(e plugin.HookEvent) eventExitPolicy {
 	switch e {
 	case plugin.HookPreToolUse, plugin.HookStop, plugin.HookSubagentStop:
 		return eventExitPolicy{BlockOnExit2: true}
-	default: // PostToolUse, SessionStart, SessionEnd, Notification, UserPromptSubmit, PreCompact, and all reserved events
+	default: // every other event (all non-blocking)
 		return eventExitPolicy{BlockOnExit2: false}
 	}
 }

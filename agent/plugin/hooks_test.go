@@ -172,7 +172,9 @@ func TestParsePluginHooks_AllEvents(t *testing.T) {
 	evs := []HookEvent{
 		HookPreToolUse, HookPostToolUse, HookStop, HookSubagentStop,
 		HookUserPromptSubmit, HookSessionStart, HookSessionEnd,
-		HookPreCompact, HookNotification,
+		HookPreCompact, HookNotification, HookSubagentStart,
+		HookPostToolUseFailure, HookPostToolBatch, HookStopFailure,
+		HookPostCompact,
 	}
 
 	// Build JSON with all event types
