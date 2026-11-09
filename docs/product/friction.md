@@ -742,7 +742,7 @@ replacement/crash restoration rather than every idle transition.
 
 **Evidence.** [Goal restoration](../../agent/session_init.go#L1271),
 [continuation callback wiring](../../agent/session_goal.go#L18), and daemon
-[wiring](../../cmd/evener/serve.go#L1268) load and wire without a restore wake.
+[wiring](../../cmd/evener/serve.go#L918) load and wire without a restore wake.
 Existing goal/ask tests distinguish persisted state from pending-question holds.
 
 **Decision.** Automatically resume an unfinished active goal when its runtime
@@ -769,7 +769,7 @@ preserving an unanswered question.
 
 **Evidence.** [Compact](../../agent/session_compaction.go#L30) checks pending asks
 before compaction, and the [explicit command
-callback](../../cmd/evener/serve.go#L1430) uses that entry point. Automatic
+callback](../../cmd/evener/serve.go#L946) uses that entry point. Automatic
 [context management](../../agent/internal/contextmgr/context_strategy.go#L68)
 calls the context manager separately. Existing `session_ask_test.go` tests the
 explicit-compaction refusal.
@@ -839,7 +839,7 @@ path; this case concerns API-key snapshots.
 
 **Evidence.** [LoadRegistry](../../cmdutil/registry.go#L64),
 [Store.Get](../../internal/credentials/store.go#L86),
-[daemon client construction](../../cmd/evener/serve.go#L588),
+[daemon client construction](../../cmd/evener/serve.go#L585),
 [session client retention](../../agent/session_init.go#L1116), and
 [hub credential save](../../cmd/evener-hub/app_auth.go#L613) have different
 lifetimes. A new runtime reloads configuration; a running one lacks that repair
