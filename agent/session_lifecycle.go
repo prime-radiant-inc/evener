@@ -2864,6 +2864,12 @@ func (s *Session) jobNotificationAlreadyInjected(jobID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, turn := range s.history {
+		// Only runtime notification steering can acknowledge delivery. Untyped
+		// runtime steering remains eligible for replay recovery.
+		if turn.Kind != schema.TurnSteering || turn.SteeringSource != "" ||
+			(turn.SteeringKind != "" && turn.SteeringKind != events.SteeringKindNotification) {
+			continue
+		}
 		if durableJobNotificationAlreadyInjected(turn.Message.Text(), needle) {
 			return true
 		}
@@ -2878,16 +2884,20 @@ func durableJobNotificationAlreadyInjected(text, needle string) bool {
 			return false
 		}
 		text = text[start:]
-		end := strings.Index(text, "</job-notification>")
-		block := text
-		if end >= 0 {
-			block = text[:end]
+		headerEnd := strings.IndexByte(text, '>')
+		if headerEnd < 0 {
+			return false
 		}
-		if strings.Contains(block, needle) &&
-			!strings.Contains(block, `event="watch"`) &&
-			!strings.Contains(block, `status="watch"`) {
+		// The formatter escapes attribute delimiters. Only the header carries
+		// delivery identity; output excerpts can contain arbitrary job IDs.
+		header := text[:headerEnd]
+		if strings.Contains(header, needle) &&
+			!strings.Contains(header, `event="watch"`) &&
+			!strings.Contains(header, `event="watch_send"`) &&
+			!strings.Contains(header, `status="watch"`) {
 			return true
 		}
+		end := strings.Index(text, "</job-notification>")
 		if end < 0 {
 			return false
 		}
