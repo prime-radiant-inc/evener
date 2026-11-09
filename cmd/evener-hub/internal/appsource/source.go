@@ -688,11 +688,19 @@ func (s *LocalDaemonSource) resolveLocalDaemonItemThread(rawRef, threadID string
 		return localDaemonItemThread{}, err
 	}
 	threadID = firstLocalNonEmpty(entry.SessionID, entry.ThreadID, threadID)
+	routeRef := localDaemonWorkspaceRef(s.sourceID, entry, threadID)
+	pagingRef := rawRef
+	if parsed, parseErr := appwire.ParseRef(rawRef); parseErr == nil {
+		pagingRef = parsed.String()
+	}
+	if pagingRef == "" {
+		pagingRef = routeRef
+	}
 	return localDaemonItemThread{
 		entry:     entry,
 		threadID:  threadID,
-		routeRef:  localDaemonWorkspaceRef(s.sourceID, entry, threadID),
-		pagingRef: appwire.Ref{SourceID: s.sourceID, ThreadID: threadID}.String(),
+		routeRef:  routeRef,
+		pagingRef: pagingRef,
 	}, nil
 }
 

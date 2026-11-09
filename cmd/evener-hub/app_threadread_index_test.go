@@ -357,13 +357,14 @@ func TestDaemonlessThreadTurnsContinuesInsideWindowedTurn(t *testing.T) {
 		MessageBytes: len("answer-00"),
 	}
 	initial, err := operations.turns(t.Context(), appwire.ThreadTurnsListParams{
-		Ref: ref, ItemLimit: 10, ThreadWindowParams: window,
+		Ref: ref, ThreadWindowParams: window,
 	})
 	if err != nil {
 		t.Fatalf("initial daemonless window: %v", err)
 	}
 
 	got := make([]string, 0, 25)
+	pageSizes := make([]int, 0, 3)
 	assertRetained := func(items []appwire.ThreadItem) {
 		t.Helper()
 		for _, item := range items {
@@ -382,6 +383,7 @@ func TestDaemonlessThreadTurnsContinuesInsideWindowedTurn(t *testing.T) {
 		}
 	}
 	initialItems := flattenTestItems(initial.Data)
+	pageSizes = append(pageSizes, len(initialItems))
 	assertRetained(initialItems)
 	for _, item := range initialItems {
 		got = append(got, item.Text)
@@ -392,12 +394,13 @@ func TestDaemonlessThreadTurnsContinuesInsideWindowedTurn(t *testing.T) {
 	cursor := initial.Data[0].Elision.ContinuationCursor
 	for cursor != "" {
 		page, err := operations.turns(t.Context(), appwire.ThreadTurnsListParams{
-			Ref: ref, Cursor: cursor, ItemLimit: 10, ThreadWindowParams: window,
+			Ref: ref, Cursor: cursor, ThreadWindowParams: window,
 		})
 		if err != nil {
 			t.Fatalf("daemonless continuation after %d items: %v", len(got), err)
 		}
 		items := flattenTestItems(page.Data)
+		pageSizes = append(pageSizes, len(items))
 		assertRetained(items)
 		for _, item := range items {
 			got = append(got, item.Text)
@@ -413,6 +416,9 @@ func TestDaemonlessThreadTurnsContinuesInsideWindowedTurn(t *testing.T) {
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("continued saved item IDs = %v, want every item once in transcript order", got)
+	}
+	if wantSizes := []int{10, 10, 5}; !slices.Equal(pageSizes, wantSizes) {
+		t.Fatalf("saved window page sizes = %v, want omitted-limit default %v", pageSizes, wantSizes)
 	}
 }
 

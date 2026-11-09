@@ -62,6 +62,13 @@ const (
 	transcriptWindowAppliedBySavedIndex    = "saved-index"
 )
 
+func normalizeTranscriptWindowItemLimit(window *appwire.ThreadTurnWindow, requested int) (int, error) {
+	if window != nil && requested == 0 {
+		requested = appwire.ThreadWindowItemLimitDefault
+	}
+	return appwire.NormalizeTranscriptItemLimit(requested)
+}
+
 func transcriptWindowOptionsFor(
 	result transcriptItemCandidateResult,
 	params appwire.ThreadWindowParams,
@@ -108,15 +115,32 @@ func spendTranscriptWindowCursor(result transcriptItemCandidateResult, params ap
 			return transcriptItemCandidateResult{}, err
 		}
 		first := len(candidates)
+		boundaryTurnID := ""
 		for i := range candidates {
 			if appitempaging.ComparePosition(candidates[i].Position, cursor.Position) >= 0 {
 				first = i
+				boundaryTurnID = candidates[i].TurnID
 				break
 			}
 		}
 		selected := append([]appitempaging.TranscriptItemCandidate(nil), candidates[first:]...)
+		turnScoped := false
+		for _, candidate := range candidates[:first] {
+			if candidate.TurnID != boundaryTurnID {
+				continue
+			}
+			selected = slices.DeleteFunc(selected, func(candidate appitempaging.TranscriptItemCandidate) bool {
+				return candidate.TurnID != boundaryTurnID
+			})
+			turnScoped = true
+			break
+		}
 		result.Candidates = appitempaging.TranscriptItemWindow{Candidates: selected}
-		result.TurnIDs = turnIDsFromCandidateRange(result.TurnIDs, selected, transcriptWindowContinuationForward, "")
+		if turnScoped {
+			result.TurnIDs = []string{boundaryTurnID}
+		} else {
+			result.TurnIDs = turnIDsFromCandidateRange(result.TurnIDs, selected, transcriptWindowContinuationForward, "")
+		}
 		result.Exhausted = true
 		return result, nil
 	}
@@ -269,18 +293,23 @@ func turnIDsFromTurns(turns []appwire.Turn) []string {
 }
 
 func sourceItemCandidateResultForRead(ctx context.Context, source appsource.Source, params appwire.ThreadReadParams, response appwire.ThreadReadResponse) (transcriptItemCandidateResult, error) {
+	var result transcriptItemCandidateResult
 	if itemSource, ok := source.(appsource.ItemReadCandidateSource); ok {
-		result, err := itemSource.ItemCandidatesFromRead(ctx, params, response)
+		sourceResult, err := itemSource.ItemCandidatesFromRead(ctx, params, response)
 		if err != nil {
 			return transcriptItemCandidateResult{}, err
 		}
-		converted := transcriptItemCandidateResultFromSource(result)
-		converted.TurnIDs = turnIDsFromTurns(response.Thread.Turns)
-		return appendReadOverlayCandidates(converted, response)
+		result = transcriptItemCandidateResultFromSource(sourceResult)
+		result.TurnIDs = turnIDsFromTurns(response.Thread.Turns)
+	} else {
+		var err error
+		result, err = itemCandidateResultFromReadResponse(response)
+		if err != nil {
+			return transcriptItemCandidateResult{}, err
+		}
 	}
-	result, err := itemCandidateResultFromReadResponse(response)
-	if err != nil {
-		return transcriptItemCandidateResult{}, err
+	if params.TurnWindow == nil {
+		return result, nil
 	}
 	return appendReadOverlayCandidates(result, response)
 }
@@ -546,12 +575,16 @@ func packItemCandidates[T any](
 			effectiveBudget = transcriptWindowMaximumContentBudget
 		}
 
-		var candidateTurns []transcriptWindowCandidateTurn
+		candidateTurns := make([]transcriptWindowCandidateTurn, 0, len(result.TurnIDs))
+		candidateTurnIndexes := make(map[string]int, len(result.TurnIDs))
 		for _, candidate := range candidates {
-			if len(candidateTurns) == 0 || candidateTurns[len(candidateTurns)-1].turn.ID != candidate.TurnID {
+			turnIndex, ok := candidateTurnIndexes[candidate.TurnID]
+			if !ok {
+				turnIndex = len(candidateTurns)
+				candidateTurnIndexes[candidate.TurnID] = turnIndex
 				candidateTurns = append(candidateTurns, transcriptWindowCandidateTurn{turn: candidate.Turn})
 			}
-			candidateTurns[len(candidateTurns)-1].candidates = append(candidateTurns[len(candidateTurns)-1].candidates, candidate)
+			candidateTurns[turnIndex].candidates = append(candidateTurns[turnIndex].candidates, candidate)
 		}
 		candidateTurnShells := make([]appwire.Turn, len(candidateTurns))
 		for index := range candidateTurns {

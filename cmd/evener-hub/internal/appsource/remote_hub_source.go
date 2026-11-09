@@ -1001,6 +1001,12 @@ func (s *RemoteHubSource) ItemCandidatesFromRead(ctx context.Context, params app
 	return s.recordRemoteItemPage(key, identity, candidates, response.OlderCursor, ReadHistoryIdentity(response), head, hasHead, nil)
 }
 
+// ItemCandidatesFromLegacyPage converts the supplied compatibility reread
+// without asking the remote hub to understand the controller's fetch cursor.
+func (s *RemoteHubSource) ItemCandidatesFromLegacyPage(ctx context.Context, params appwire.ThreadReadParams, response appwire.ThreadReadResponse) (ItemCandidateResult, error) {
+	return s.ItemCandidatesFromRead(ctx, params, response)
+}
+
 // remoteItemPage issues one remote item-mode turn page and returns its
 // positioned candidates, the remote cursor for the next older page, and the
 // history identity the remote read it under.

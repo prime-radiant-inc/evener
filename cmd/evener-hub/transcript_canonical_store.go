@@ -32,6 +32,9 @@ func newTranscriptCanonicalStore(maxBytes int) *transcriptCanonicalStore {
 }
 
 func (s *transcriptCanonicalStore) putItem(key string, item appwire.ThreadItem) error {
+	if _, ok := s.borrow(key); ok {
+		return nil
+	}
 	data, err := json.Marshal(item)
 	if err != nil {
 		return err
@@ -53,10 +56,6 @@ func (s *transcriptCanonicalStore) putOwned(key string, data []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if current := s.entries[key]; current != nil {
-		entry := current.Value.(*transcriptCanonicalStoreEntry)
-		s.bytes -= len(entry.data)
-		entry.data = data
-		s.bytes += len(entry.data)
 		s.order.MoveToFront(current)
 	} else {
 		entry := &transcriptCanonicalStoreEntry{key: key, data: data}

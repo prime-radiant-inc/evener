@@ -439,6 +439,101 @@ func TestPackTranscriptItemWindowCapsFiftyItemTurnInOrder(t *testing.T) {
 	}
 }
 
+func TestPackTranscriptItemWindowGroupsInterleavedLogicalTurn(t *testing.T) {
+	turnA := testWindowTurnCandidates("turn-a", []appwire.ThreadItem{
+		{Type: "agentMessage", ID: "a-1", Text: "first", Version: 1},
+		{Type: "agentMessage", ID: "a-2", Text: "second", Version: 1},
+	})
+	turnB := testWindowTurnCandidates("turn-b", []appwire.ThreadItem{
+		{Type: "agentMessage", ID: "b-1", Text: "middle", Version: 1},
+	})
+	candidates := []appitempaging.TranscriptItemCandidate{turnA[0], turnB[0], turnA[1]}
+	for i := range candidates {
+		position := appwire.ThreadItemPosition{Entry: uint64(i)}
+		candidates[i].Position = position
+		candidates[i].Item.Position = &position
+	}
+	result := testWindowCandidateResult(candidates)
+	result.TurnIDs = []string{"turn-a", "turn-b"}
+	options := testWindowPackOptions(appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Latest: 2}})
+	options.ItemLimit = 1
+
+	got, err := packThreadTurnsWindowItemCandidates(result, nil, options)
+	if err != nil {
+		t.Fatalf("pack interleaved logical turn: %v", err)
+	}
+	if len(got.Data) != 2 || got.Data[0].ID != "turn-a" || got.Data[1].ID != "turn-b" {
+		t.Fatalf("packed logical turns = %+v, want turn-a then turn-b once each", got.Data)
+	}
+	if ids := testItemIDs(got.Data[0].Items); !reflect.DeepEqual(ids, []string{"a-1"}) {
+		t.Fatalf("turn-a item ids = %v, want first capped item", ids)
+	}
+	if elision := got.Data[0].Elision; elision == nil || elision.CapWithheld != 1 || elision.ContinuationCursor == "" {
+		t.Fatalf("turn-a elision = %+v, want one withheld item and continuation", elision)
+	}
+	if got.Window == nil || got.Window.ServedTurns != 2 {
+		t.Fatalf("window metadata = %+v, want two served logical turns", got.Window)
+	}
+}
+
+func TestTranscriptWindowContinuationKeepsInterleavedCapWithinLogicalTurn(t *testing.T) {
+	turnA := testWindowTurnCandidates("turn-a", []appwire.ThreadItem{
+		{Type: "agentMessage", ID: "a-1", Text: "first", Version: 1},
+		{Type: "agentMessage", ID: "a-2", Text: "second", Version: 1},
+		{Type: "agentMessage", ID: "a-3", Text: "third", Version: 1},
+	})
+	turnB := testWindowTurnCandidates("turn-b", []appwire.ThreadItem{
+		{Type: "agentMessage", ID: "b-1", Text: "middle", Version: 1},
+	})
+	candidates := []appitempaging.TranscriptItemCandidate{turnA[0], turnA[1], turnB[0], turnA[2]}
+	for i := range candidates {
+		position := appwire.ThreadItemPosition{Entry: uint64(i)}
+		candidates[i].Position = position
+		candidates[i].Item.Position = &position
+	}
+	result := testWindowCandidateResult(candidates)
+	result.TurnIDs = []string{"turn-a", "turn-b"}
+	params := appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Latest: 2}}
+	options := transcriptWindowOptionsFor(
+		result, params, 1, transcriptWindowAppliedByServingDaemon,
+		appitempaging.FetchCursorOriginServingDaemon,
+	)
+
+	initial, err := packThreadTurnsWindowItemCandidates(result, nil, options)
+	if err != nil {
+		t.Fatalf("pack initial interleaved window: %v", err)
+	}
+	if got, want := testItemIDs(flattenTestItems(initial.Data)), []string{"a-1", "b-1"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("initial item ids = %v, want %v", got, want)
+	}
+	cursor := initial.Data[0].Elision.ContinuationCursor
+	var continuedIDs []string
+	for cursor != "" {
+		continued, err := spendTranscriptWindowCursor(result, params, 1, cursor)
+		if err != nil {
+			t.Fatalf("spend interleaved cap continuation: %v", err)
+		}
+		page, err := packThreadTurnsWindowItemCandidates(continued, nil, transcriptWindowOptionsFor(
+			continued, params, 1, transcriptWindowAppliedByServingDaemon,
+			appitempaging.FetchCursorOriginServingDaemon,
+		))
+		if err != nil {
+			t.Fatalf("pack interleaved cap continuation: %v", err)
+		}
+		if len(page.Data) != 1 || page.Data[0].ID != "turn-a" {
+			t.Fatalf("continued logical turns = %+v, want only turn-a", page.Data)
+		}
+		continuedIDs = append(continuedIDs, testItemIDs(page.Data[0].Items)...)
+		cursor = ""
+		if page.Data[0].Elision != nil {
+			cursor = page.Data[0].Elision.ContinuationCursor
+		}
+	}
+	if want := []string{"a-2", "a-3"}; !reflect.DeepEqual(continuedIDs, want) {
+		t.Fatalf("continued item ids = %v, want %v without replaying turn-b", continuedIDs, want)
+	}
+}
+
 func TestPackTranscriptItemWindowRequiresTurnWindow(t *testing.T) {
 	_, err := packThreadTurnsWindowItemCandidates(
 		testWindowCandidateResult(testWindowTurnCandidates("turn-1", []appwire.ThreadItem{{Type: "agentMessage", ID: "item-1", Text: "x", Version: 1}})),

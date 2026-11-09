@@ -50,6 +50,20 @@ func TestTranscriptCanonicalStoreCopiesValues(t *testing.T) {
 	}
 }
 
+func TestTranscriptCanonicalStoreDuplicateKeyKeepsFirstBytes(t *testing.T) {
+	store := newTranscriptCanonicalStore(16)
+	store.put("item", []byte("first"))
+	store.put("item", []byte("second"))
+
+	got, ok := store.get("item")
+	if !ok {
+		t.Fatal("stored entry missing")
+	}
+	if string(got) != "first" {
+		t.Fatalf("stored entry = %q, want first canonical bytes", got)
+	}
+}
+
 func TestTranscriptCanonicalStoreRejectsOversizeItem(t *testing.T) {
 	store := newTranscriptCanonicalStore(1)
 	if err := store.putItem("item", appwire.ThreadItem{ID: "item"}); err == nil {

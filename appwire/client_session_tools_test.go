@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strconv"
 	"sync"
 	"testing"
@@ -124,16 +125,75 @@ func TestSessionFetchResponseCarriesRangedCanonicalItem(t *testing.T) {
 	}
 }
 
-func TestSessionOperationRequestAcceptsWindowedContentSelection(t *testing.T) {
-	includeThinking := false
-	request := SessionOperationRequest{Turns: &ThreadTurnsListParams{
-		IncludeThinking: &includeThinking,
-		Ref:             "local:session",
-		ItemLimit:       10,
-		TurnWindow:      &ThreadTurnWindow{Latest: 2},
-	}}
-	if err := request.Validate(); err != nil {
-		t.Fatalf("Validate rejected windowed content selection: %v", err)
+func TestSessionOperationRequestAcceptsOnlyMessagesShapedWindowContentSelection(t *testing.T) {
+	yes, no := true, false
+	for _, test := range []struct {
+		name    string
+		content ThreadContentParams
+		valid   bool
+	}{
+		{
+			name: "messages only",
+			content: ThreadContentParams{
+				IncludeThinking: &no, IncludeToolCalls: &no, IncludeToolCallIntents: &no,
+				IncludeSystemMessages: &no, IncludeDiagnostics: &no,
+			},
+			valid: true,
+		},
+		{
+			name: "explicit conversation",
+			content: ThreadContentParams{
+				IncludeConversation: &yes, IncludeThinking: &no, IncludeToolCalls: &no,
+				IncludeToolCallIntents: &no, IncludeSystemMessages: &no, IncludeDiagnostics: &no,
+			},
+			valid: true,
+		},
+		{name: "thinking only exclusion", content: ThreadContentParams{IncludeThinking: &no}},
+		{
+			name: "conversation excluded",
+			content: ThreadContentParams{
+				IncludeConversation: &no, IncludeThinking: &no, IncludeToolCalls: &no,
+				IncludeToolCallIntents: &no, IncludeSystemMessages: &no, IncludeDiagnostics: &no,
+			},
+		},
+		{
+			name: "tool calls included",
+			content: ThreadContentParams{
+				IncludeThinking: &no, IncludeToolCalls: &yes, IncludeToolCallIntents: &no,
+				IncludeSystemMessages: &no, IncludeDiagnostics: &no,
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := SessionOperationRequest{Turns: &ThreadTurnsListParams{
+				ThreadContentParams: test.content,
+				Ref:                 "local:session",
+				ItemLimit:           10,
+				TurnWindow:          &ThreadTurnWindow{Latest: 2},
+			}}
+			err := request.Validate()
+			if (err == nil) != test.valid {
+				t.Fatalf("Validate error = %v, valid = %t", err, test.valid)
+			}
+			if err != nil {
+				var wire WireError
+				if !errors.As(err, &wire) {
+					t.Fatalf("Validate error = %T %v, want typed wire error", err, err)
+				}
+				data, ok := DecodedErrorData(wire.Data)
+				if !ok || data.EvenerErrorInfo != ErrorInvalidParams {
+					t.Fatalf("Validate error data = %#v, want invalid params", wire.Data)
+				}
+				return
+			}
+			normalized, err := NormalizeSessionOperationRequest(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if normalized.Turns.ThreadContentParams != (ThreadContentParams{}) || !slices.Equal(normalized.Turns.ItemTypes, []string{"messages"}) {
+				t.Fatalf("normalized turns = %+v, want exact messages selector", normalized.Turns)
+			}
+		})
 	}
 }
 

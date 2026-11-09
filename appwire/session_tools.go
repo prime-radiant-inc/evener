@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/agent/provenance"
@@ -99,6 +100,29 @@ type SessionOperationRequest struct {
 	Stop      *SessionStopRequest     `json:"stop,omitempty"`
 }
 
+// NormalizeSessionOperationRequest translates the one supported coarse
+// Manager window selector into the exact item-type selector used by cursors.
+func NormalizeSessionOperationRequest(request SessionOperationRequest) (SessionOperationRequest, error) {
+	if request.Turns == nil || request.Turns.TurnWindow == nil || request.Turns.ThreadContentParams == (ThreadContentParams{}) {
+		return request, nil
+	}
+	no := false
+	messagesOnly := ThreadContentParams{
+		IncludeThinking: &no, IncludeToolCalls: &no, IncludeToolCallIntents: &no,
+		IncludeSystemMessages: &no, IncludeDiagnostics: &no,
+	}
+	if request.Turns.Selection() != messagesOnly.Selection() {
+		return SessionOperationRequest{}, InvalidParams("window content selection must use exact itemTypes")
+	}
+	turns := *request.Turns
+	turns.ThreadContentParams = ThreadContentParams{}
+	if !slices.Contains(turns.ItemTypes, "messages") {
+		turns.ItemTypes = append(append([]string(nil), turns.ItemTypes...), "messages")
+	}
+	request.Turns = &turns
+	return request, nil
+}
+
 func (r SessionOperationRequest) Validate() error {
 	if r.Start != nil && r.Start.ManagerProof != nil || r.Queue != nil && r.Queue.ManagerProof != nil || r.Steer != nil && r.Steer.ManagerProof != nil || r.Control != nil && (r.Control.Approval != nil && r.Control.Approval.ManagerProof != nil || r.Control.DrainQueue != nil && r.Control.DrainQueue.ManagerProof != nil || r.Control.PromoteQueued != nil && r.Control.PromoteQueued.ManagerProof != nil) {
 		return InvalidParams("actor metadata is not a tool argument")
@@ -135,6 +159,9 @@ func (r SessionOperationRequest) Validate() error {
 		}
 		if r.Turns.TurnWindow == nil && r.Turns.ThreadContentParams != (ThreadContentParams{}) {
 			return InvalidParams("legacy Manager history does not support content filters")
+		}
+		if _, err := NormalizeSessionOperationRequest(r); err != nil {
+			return err
 		}
 		if err := ValidateThreadWindowParams(r.Turns.ThreadWindowParams, r.Turns.ItemLimit); err != nil {
 			return err

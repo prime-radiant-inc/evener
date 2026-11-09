@@ -112,7 +112,7 @@ func (o *sessionOperations) turns(ctx context.Context, p appwire.ThreadTurnsList
 		return appwire.ThreadTurnsListResponse{}, err
 	}
 	page, ok, pastErr := pastThreadTurnsListOwned(ctx, o.cfg, p, func(options *transcriptWindowPackOptions) {
-		options.RetainFetchItem = o.canonicalItemStore().putItem
+		o.retainCanonicalWindowOptions(options)
 	})
 	if pastErr != nil {
 		return appwire.ThreadTurnsListResponse{}, pastErr
@@ -133,21 +133,25 @@ func continueLiveTranscriptWindowOwned(
 	params appwire.ThreadTurnsListParams,
 	owner *sessionOperations,
 ) (appwire.ThreadTurnsListResponse, error) {
-	if remote, ok := source.(*appsource.RemoteHubSource); ok && sourceAdvertisesWindowRead(ctx, source, params.Ref, params.ThreadID) {
+	advertised := sourceAdvertisesWindowRead(ctx, source, params.Ref, params.ThreadID)
+	if remote, ok := source.(*appsource.RemoteHubSource); ok && (advertised || params.TurnWindow.Latest <= 0) {
 		page, err := remote.ListTurns(ctx, params)
 		if err != nil {
 			return appwire.ThreadTurnsListResponse{}, err
-		}
-		thread := enrichSourcedThreadImages(source, appwire.Thread{Turns: page.Data})
-		page.Data = thread.Turns
-		if owner != nil {
-			if err := owner.retainRemoteWindowItems(ctx, remote, params.Ref, thread); err != nil {
-				return appwire.ThreadTurnsListResponse{}, err
+		} else if page.Window != nil {
+			thread := enrichSourcedThreadImages(source, appwire.Thread{Turns: page.Data})
+			page.Data = thread.Turns
+			if owner != nil {
+				if err := owner.retainRemoteWindowItems(ctx, remote, params.Ref, thread); err != nil {
+					return appwire.ThreadTurnsListResponse{}, err
+				}
 			}
+			return page, nil
+		} else if params.TurnWindow.Latest <= 0 {
+			return appwire.ThreadTurnsListResponse{}, appwire.WindowUnsupportedOnDaemon()
 		}
-		return page, nil
 	}
-	itemLimit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
+	itemLimit, err := normalizeTranscriptWindowItemLimit(params.TurnWindow, params.ItemLimit)
 	if err != nil {
 		return appwire.ThreadTurnsListResponse{}, err
 	}
@@ -156,7 +160,7 @@ func continueLiveTranscriptWindowOwned(
 		ThreadWindowParams: params.ThreadWindowParams,
 	}
 	sourceParams := readParams
-	hubCompatibility := !sourceAdvertisesWindowRead(ctx, source, params.Ref, params.ThreadID)
+	hubCompatibility := !advertised
 	if hubCompatibility {
 		sourceParams.ThreadWindowParams = appwire.ThreadWindowParams{}
 		sourceParams.ItemLimit = appwire.TranscriptItemPageLimit
@@ -187,12 +191,12 @@ func continueLiveTranscriptWindowOwned(
 		}
 	}
 	fetchOrigin := appitempaging.FetchCursorOriginServingDaemon
-	if _, remote := source.(*appsource.RemoteHubSource); remote {
-		fetchOrigin = appitempaging.FetchCursorOriginRemoteSource
-	}
 	appliedBy := transcriptWindowAppliedByServingDaemon
 	if hubCompatibility {
 		appliedBy = transcriptWindowAppliedByHubCompat
+		fetchOrigin = appitempaging.FetchCursorOriginHubCompat
+	} else if _, remote := source.(*appsource.RemoteHubSource); remote {
+		fetchOrigin = appitempaging.FetchCursorOriginRemoteSource
 	}
 	options := transcriptWindowOptionsFor(candidates, params.ThreadWindowParams, itemLimit, appliedBy, fetchOrigin)
 	if owner != nil {
@@ -211,10 +215,9 @@ func continueLiveTranscriptWindowOwned(
 	return candidates.History.StampPage(packed), nil
 }
 
-// continueHubCompatibilityTranscriptWindow resolves a backward window cursor
-// through the older daemon's legacy page cursor. The Spec 2 fields remain hub
-// local on both hops; the daemon receives only the read and turns/list shapes it
-// advertised.
+// continueHubCompatibilityTranscriptWindow resolves a window cursor through
+// the older daemon's bounded legacy pages. The Spec 2 fields remain hub local
+// on every hop.
 func continueHubCompatibilityTranscriptWindow(
 	ctx context.Context,
 	source appsource.Source,
@@ -224,22 +227,44 @@ func continueHubCompatibilityTranscriptWindow(
 	result transcriptItemCandidateResult,
 ) (transcriptItemCandidateResult, error) {
 	identity := transcriptWindowCursorIdentity(result.Identity, params.ThreadWindowParams, itemLimit)
-	boundaryCursor, err := appitempaging.DecodeWindowCursor(params.Cursor, identity, appitempaging.WindowCursorDirectionBackward)
-	if err != nil {
-		return transcriptItemCandidateResult{}, err
-	}
-	if err := appitempaging.ValidateWindowCursorBoundary(result.Candidates.Candidates, boundaryCursor); err != nil {
-		return transcriptItemCandidateResult{}, err
-	}
-	if selected := appitempaging.CandidatesBefore(result.Candidates.Candidates, boundaryCursor.Position, len(result.Candidates.Candidates)); len(selected) > 0 {
-		result.Candidates = appitempaging.TranscriptItemWindow{Candidates: selected}
-		result.TurnIDs = turnIDsFromCandidateRange(result.TurnIDs, selected, transcriptWindowContinuationBackward, "")
-		return result, nil
+	boundaryCursor, forwardErr := appitempaging.DecodeWindowCursor(params.Cursor, identity, appitempaging.WindowCursorDirectionForward)
+	direction := appitempaging.WindowCursorDirectionForward
+	if forwardErr != nil {
+		var err error
+		boundaryCursor, err = appitempaging.DecodeWindowCursor(params.Cursor, identity, appitempaging.WindowCursorDirectionBackward)
+		if err != nil {
+			return transcriptItemCandidateResult{}, err
+		}
+		direction = appitempaging.WindowCursorDirectionBackward
 	}
 
 	cursor := read.OlderCursor
 	seen := make(map[string]bool)
 	for range hubCompatFetchPageLimit {
+		candidates := result.Candidates.Candidates
+		boundaryFound := false
+		for _, candidate := range candidates {
+			if candidate.Position == boundaryCursor.Position {
+				boundaryFound = true
+				break
+			}
+		}
+		if boundaryFound {
+			if err := appitempaging.ValidateWindowCursorBoundary(candidates, boundaryCursor); err != nil {
+				return transcriptItemCandidateResult{}, err
+			}
+		}
+		if direction == appitempaging.WindowCursorDirectionForward && boundaryFound {
+			return spendTranscriptWindowCursor(result, params.ThreadWindowParams, itemLimit, params.Cursor)
+		}
+		if direction == appitempaging.WindowCursorDirectionBackward && boundaryFound {
+			selected := appitempaging.CandidatesBefore(candidates, boundaryCursor.Position, len(candidates))
+			if len(selected) > 0 {
+				result.Candidates = appitempaging.TranscriptItemWindow{Candidates: selected}
+				result.TurnIDs = turnIDsFromCandidateRange(result.TurnIDs, selected, transcriptWindowContinuationBackward, "")
+				return result, nil
+			}
+		}
 		if cursor == "" || seen[cursor] {
 			return transcriptItemCandidateResult{}, appwire.TranscriptItemCursorStale()
 		}
@@ -259,12 +284,11 @@ func continueHubCompatibilityTranscriptWindow(
 		if err := appitempaging.ValidateCandidates(pageCandidates); err != nil {
 			return transcriptItemCandidateResult{}, err
 		}
-		selected := appitempaging.CandidatesBefore(pageCandidates, boundaryCursor.Position, len(pageCandidates))
-		if len(selected) > 0 {
-			result.Candidates = appitempaging.TranscriptItemWindow{Candidates: selected}
-			result.TurnIDs = turnIDsFromCandidateRange(turnIDsFromTurns(page.Data), selected, transcriptWindowContinuationBackward, "")
-			result.Exhausted = page.NextCursor == ""
-			result.History = appsource.PageHistoryIdentity(page)
+		result.Candidates = appitempaging.TranscriptItemWindow{Candidates: pageCandidates}
+		result.TurnIDs = turnIDsFromTurns(page.Data)
+		result.Exhausted = page.NextCursor == ""
+		result.History = appsource.PageHistoryIdentity(page)
+		if direction == appitempaging.WindowCursorDirectionBackward && boundaryFound {
 			return result, nil
 		}
 		cursor = page.NextCursor

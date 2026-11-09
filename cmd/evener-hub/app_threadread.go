@@ -238,7 +238,7 @@ func pastThreadTurnsListOwned(
 	configureWindow func(*transcriptWindowPackOptions),
 ) (appwire.ThreadTurnsListResponse, bool, error) {
 	readParams := appwire.ThreadReadParams{Ref: params.Ref, ThreadID: params.ThreadID, IncludeTurns: true}
-	itemLimit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
+	itemLimit, err := normalizeTranscriptWindowItemLimit(params.TurnWindow, params.ItemLimit)
 	if err != nil {
 		return appwire.ThreadTurnsListResponse{}, true, err
 	}
@@ -345,7 +345,7 @@ func pastEntryItemReadResponseOwned(
 			BootGeneration:    appwire.DaemonlessBootGeneration,
 		}, true, nil
 	}
-	itemLimit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
+	itemLimit, err := normalizeTranscriptWindowItemLimit(params.TurnWindow, params.ItemLimit)
 	if err != nil {
 		return appwire.ThreadReadResponse{}, true, err
 	}

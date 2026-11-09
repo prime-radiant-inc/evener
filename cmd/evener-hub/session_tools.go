@@ -53,8 +53,58 @@ func (o *sessionOperations) canonicalWindowOptions(
 	options.CanonicalizeCandidates = func(candidates []appitempaging.TranscriptItemCandidate) ([]appitempaging.TranscriptItemCandidate, error) {
 		return canonicalizeTranscriptItemCandidates(source, base, candidates)
 	}
-	options.RetainFetchItem = o.canonicalItemStore().putItem
+	o.retainCanonicalWindowOptions(&options)
 	return options
+}
+
+func (o *sessionOperations) retainCanonicalWindowOptions(options *transcriptWindowPackOptions) {
+	store := o.canonicalItemStore()
+	canonicalize := options.CanonicalizeCandidates
+	type itemKey struct {
+		position appwire.ThreadItemPosition
+		version  uint64
+	}
+	encodedCursors := make(map[itemKey]string)
+	mintFetchCursor := options.MintFetchCursor
+	options.MintFetchCursor = func(candidate appitempaging.TranscriptItemCandidate) (string, error) {
+		key := itemKey{position: candidate.Position, version: candidate.Item.Version}
+		if cursor := encodedCursors[key]; cursor != "" {
+			return cursor, nil
+		}
+		cursor, err := mintFetchCursor(candidate)
+		if err == nil {
+			encodedCursors[key] = cursor
+		}
+		return cursor, err
+	}
+	options.CanonicalizeCandidates = func(candidates []appitempaging.TranscriptItemCandidate) ([]appitempaging.TranscriptItemCandidate, error) {
+		canonical := candidates
+		var err error
+		if canonicalize != nil {
+			canonical, err = canonicalize(candidates)
+		}
+		if err != nil {
+			return nil, err
+		}
+		for index := range canonical {
+			if canonical[index].Item.Version == 0 {
+				continue
+			}
+			cursor, err := options.MintFetchCursor(canonical[index])
+			if err != nil {
+				return nil, err
+			}
+			retained, ok := store.borrow(cursor)
+			if !ok {
+				continue
+			}
+			if err := json.Unmarshal(retained, &canonical[index].Item); err != nil {
+				return nil, err
+			}
+		}
+		return canonical, nil
+	}
+	options.RetainFetchItem = store.putItem
 }
 
 func (o *sessionOperations) retainRemoteWindowItems(
@@ -312,6 +362,11 @@ func (b *boundSessionOperations) Invoke(ctx context.Context, request appwire.Ses
 
 func (o *sessionOperations) Invoke(ctx context.Context, caller appwire.ManagerView, request appwire.SessionOperationRequest) (appwire.SessionOperationResponse, error) {
 	var response appwire.SessionOperationResponse
+	var err error
+	request, err = appwire.NormalizeSessionOperationRequest(request)
+	if err != nil {
+		return response, err
+	}
 	if err := request.Validate(); err != nil {
 		return response, err
 	}
@@ -323,7 +378,6 @@ func (o *sessionOperations) Invoke(ctx context.Context, caller appwire.ManagerVi
 	ctx = appsource.WithManagerInputCaller(ctx, caller.Ref)
 	response.Actor = appwire.SessionActor{Kind: "manager", ManagerRef: caller.Ref}
 	var proof *appwire.SessionActorProof
-	var err error
 	if request.Start != nil || request.Queue != nil || request.Steer != nil || request.Control != nil {
 		proof, err = sessionInputProof(ctx, caller.Ref)
 		if err != nil {
@@ -885,7 +939,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 	if err := appwire.ValidateThreadReadParams(params); err != nil {
 		return appwire.ThreadReadResponse{}, err
 	}
-	itemLimit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
+	itemLimit, err := normalizeTranscriptWindowItemLimit(params.TurnWindow, params.ItemLimit)
 	if err != nil {
 		return appwire.ThreadReadResponse{}, err
 	}
@@ -918,7 +972,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 			return appwire.ThreadReadResponse{}, err
 		}
 		resp, ok, pastErr := unavailableThreadReadResponseOwned(ctx, cfg, sources, params, func(options *transcriptWindowPackOptions) {
-			options.RetainFetchItem = o.canonicalItemStore().putItem
+			o.retainCanonicalWindowOptions(options)
 		})
 		if pastErr != nil {
 			return appwire.ThreadReadResponse{}, pastErr
@@ -957,27 +1011,35 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 	sourceParams := params
 	sourceParams.LiveOnly = false
 	hubCompatibility := params.TurnWindow != nil && !sourceAdvertisesWindowRead(ctx, source, params.Ref, params.ThreadID)
+	remoteSavedWindowAttempt := false
 	if hubCompatibility {
 		if params.TurnWindow.Latest <= 0 {
-			if daemon, ok := source.(*appsource.LocalDaemonSource); ok {
-				_, admissionErr := daemon.ResolveSubscriptionAdmission(params)
-				if isDeadSessionError(admissionErr) {
-					saved, found, savedErr := unavailableThreadReadResponseOwned(ctx, cfg, sources, params, func(options *transcriptWindowPackOptions) {
-						options.RetainFetchItem = o.canonicalItemStore().putItem
-					})
-					if savedErr != nil {
-						return appwire.ThreadReadResponse{}, savedErr
+			if _, ok := source.(*appsource.RemoteHubSource); ok {
+				hubCompatibility = false
+				remoteSavedWindowAttempt = true
+			} else {
+				if daemon, ok := source.(*appsource.LocalDaemonSource); ok {
+					_, admissionErr := daemon.ResolveSubscriptionAdmission(params)
+					if isDeadSessionError(admissionErr) {
+						saved, found, savedErr := unavailableThreadReadResponseOwned(ctx, cfg, sources, params, func(options *transcriptWindowPackOptions) {
+							o.retainCanonicalWindowOptions(options)
+						})
+						if savedErr != nil {
+							return appwire.ThreadReadResponse{}, savedErr
+						}
+						if found {
+							return saved, nil
+						}
+						return appwire.ThreadReadResponse{}, admissionErr
 					}
-					if found {
-						return saved, nil
-					}
-					return appwire.ThreadReadResponse{}, admissionErr
 				}
+				return appwire.ThreadReadResponse{}, appwire.WindowUnsupportedOnDaemon()
 			}
-			return appwire.ThreadReadResponse{}, appwire.WindowUnsupportedOnDaemon()
 		}
-		sourceParams.ThreadWindowParams = appwire.ThreadWindowParams{}
-		sourceParams.ItemLimit = appwire.TranscriptItemPageLimit
+		if hubCompatibility {
+			sourceParams.ThreadWindowParams = appwire.ThreadWindowParams{}
+			sourceParams.ItemLimit = appwire.TranscriptItemPageLimit
+		}
 	}
 	read, err := liveThreadRead(ctx, relays, source, sourceParams, capture, params.LiveOnly)
 	if err == nil && params.LiveOnly && liveReadDaemonless(read.response) {
@@ -1081,7 +1143,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		// discovered owner disappears before the retry lands.
 		if !recovered && allowPast {
 			saved, ok, pastErr := unavailableThreadReadResponseOwned(ctx, cfg, sources, params, func(options *transcriptWindowPackOptions) {
-				options.RetainFetchItem = o.canonicalItemStore().putItem
+				o.retainCanonicalWindowOptions(options)
 			})
 			if pastErr != nil {
 				return appwire.ThreadReadResponse{}, pastErr
@@ -1095,6 +1157,10 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		}
 	}
 	resp := read.response
+	if remoteSavedWindowAttempt && resp.Window == nil {
+		read.finish(false)
+		return appwire.ThreadReadResponse{}, appwire.WindowUnsupportedOnDaemon()
+	}
 	if hubCompatibility {
 		resp.Thread.Turns = compatibilityLatestTurns(resp.Thread.Turns, params.TurnWindow.Latest)
 	}
@@ -1115,7 +1181,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 	var pastPage *appwire.ThreadReadResponse
 	if !params.LiveOnly && params.IncludeTurns && liveItemCandidatesEmpty {
 		past, ok, pastErr := pastThreadItemReadResponseOwned(ctx, cfg, params, func(options *transcriptWindowPackOptions) {
-			options.RetainFetchItem = o.canonicalItemStore().putItem
+			o.retainCanonicalWindowOptions(options)
 		})
 		if pastErr != nil {
 			read.finish(false)
