@@ -289,6 +289,7 @@ func TestRemoveRenameMkdirConfined(t *testing.T) {
 // "<denied>" (never the basename, id_rsa would leak which secret was probed), and
 // any other denial keeps the informative basename.
 func TestDenialRedactionIsSingleRule(t *testing.T) {
+	t.Parallel()
 	s, home, worktree := newSB(t, sandbox.ModeReadOnly)
 
 	_, err := s.readFile("read_file", filepath.Join(home, ".ssh", "id_rsa"))
@@ -296,11 +297,9 @@ func TestDenialRedactionIsSingleRule(t *testing.T) {
 	if !asDenied(err, &masked) {
 		t.Fatalf("masked read must be a *sandbox.DeniedError, got %T: %v", err, err)
 	}
+	// Exact equality already excludes the secret basename.
 	if got := masked.Redacted(); got != "<denied>" {
 		t.Errorf("masked denial Redacted() = %q, want <denied>", got)
-	}
-	if strings.Contains(masked.Redacted(), "id_rsa") {
-		t.Errorf("masked denial leaked the secret basename: %q", masked.Redacted())
 	}
 
 	err = s.writeFile("write_file", filepath.Join(worktree, "note.txt"), []byte("x"), 0o644)

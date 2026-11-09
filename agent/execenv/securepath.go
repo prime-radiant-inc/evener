@@ -184,6 +184,12 @@ const (
 	denyReasonSymlink      = "refuses to traverse a symlinked or non-directory path component"
 	denyReasonEscape       = "path resolves outside the sandbox root"
 	denyReasonRootTarget   = "cannot operate on a sandbox root itself"
+
+	// immutablePolicyClause is appended to a NON-sensitive denial's reason: it
+	// tells the model the box is immutable — a per-session policy no tool call can
+	// relax — so it stops retrying the same denied path. Mode-agnostic and accurate
+	// for every mode.
+	immutablePolicyClause = "; this sandbox policy is fixed for the session"
 )
 
 // deny builds a typed *sandbox.DeniedError for a file-tool denial. Its Redacted
@@ -192,17 +198,14 @@ const (
 // M3 populates.
 func (s *sandboxFS) deny(tool, denyPath, reason string) *sandbox.DeniedError {
 	// A masked (credential/pseudo-fs) denial is Sensitive: neither the model
-	// message nor the audit log may echo even the basename (id_rsa, credentials,
-	// environ would reveal which secret was probed). Other reasons — outside a
-	// root, a read-only git surface, a symlink component — carry an informative
-	// non-secret path, so they keep the basename.
+	// message nor DeniedError.Redacted may echo even the basename (id_rsa,
+	// credentials, environ would reveal which secret was probed). Other reasons —
+	// outside a root, a read-only git surface, a symlink component — carry an
+	// informative non-secret path, so they keep the basename.
 	sensitive := reason == denyReasonMasked
 	modelReason := reason
 	if !sensitive {
-		// Tell the model the box is immutable — a per-session policy no tool call can
-		// relax — so it stops retrying the same denied path. Mode-agnostic and
-		// accurate for every mode.
-		modelReason = reason + "; this sandbox policy is fixed for the session"
+		modelReason = reason + immutablePolicyClause
 	}
 	if reason == denyReasonSymlink {
 		// The confined open (openat2/RESOLVE_NO_SYMLINKS on Linux, an O_NOFOLLOW

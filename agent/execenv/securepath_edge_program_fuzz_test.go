@@ -127,19 +127,31 @@ func runSecurePathEdgeContractProgram(t *testing.T, program []byte) securePathEd
 			t.Fatalf("masked denial was not sensitive: %+v", denied)
 		}
 		trace.Denials = append(trace.Denials, denied.ReasonKind)
-		if got := denied.Redacted(); got != tc.want {
-			t.Fatalf("denial %q Redacted()=%q, want %q", tc.reason, got, tc.want)
+		redacted := denied.Redacted()
+		if redacted != tc.want {
+			t.Fatalf("denial %q Redacted()=%q, want %q", tc.reason, redacted, tc.want)
 		}
 		if denied.Tool != "edge" {
 			t.Fatalf("denial %q tool=%q, want edge", tc.reason, denied.Tool)
 		}
-		// deny() appends the immutable-policy clause to a non-sensitive model
-		// reason and may append a symlink diagnostic, so the terse reason is a
-		// prefix rather than the whole text.
-		if !strings.HasPrefix(denied.Reason, tc.reason) {
-			t.Fatalf("denial %q reason=%q, want it to start with %q", tc.reason, denied.Reason, tc.reason)
+		// A masked denial is Sensitive and stays terse; every other reason gains
+		// the immutable-policy clause. A symlink denial may also append a
+		// best-effort diagnostic naming the offending component.
+		switch tc.reason {
+		case denyReasonMasked:
+			if denied.Reason != tc.reason {
+				t.Fatalf("denial %q reason=%q, want the terse reason", tc.reason, denied.Reason)
+			}
+		case denyReasonSymlink:
+			if want := tc.reason + immutablePolicyClause; !strings.HasPrefix(denied.Reason, want) {
+				t.Fatalf("denial %q reason=%q, want it to start with %q", tc.reason, denied.Reason, want)
+			}
+		default:
+			if want := tc.reason + immutablePolicyClause; denied.Reason != want {
+				t.Fatalf("denial %q reason=%q, want %q", tc.reason, denied.Reason, want)
+			}
 		}
-		trace.Redacted = append(trace.Redacted, denied.Redacted())
+		trace.Redacted = append(trace.Redacted, redacted)
 	}
 
 	// Resolver error mapping must reveal a safe typed denial, never raw path-walk
