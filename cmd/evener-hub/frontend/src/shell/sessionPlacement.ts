@@ -97,23 +97,32 @@ export function openTopLevelSession(ref: string): void {
 }
 
 // Keeps a nested session out of main by putting the owner in main and the
-// contextual child in secondary. A child already in main - the rail's
-// immediate top-level placement, before a stale hint is corrected - moves to
-// secondary instead of being recreated, preserving its per-mount work.
+// contextual child in secondary. A child already open - the rail's immediate
+// placement, before the location read confirms ownership - moves beside the
+// owner instead of being recreated, preserving its per-mount work.
 export function openNestedSessionWithOwner(ref: string, ownerRef: string): void {
-  const child = presentedPanes(workspaceStore.getState().panes).find((pane) => isSessionPaneFor(pane, ref));
-  if (child?.slot === "main") {
-    // The press placed this session in main from the rail row's top-level
-    // kind before the location read answered. Ownership is now confirmed
-    // nested, so keep that pane - and its per-mount composer work, including
-    // staged images - and move the owner in beside it instead of replacing
-    // the workspace and remounting the child.
-    for (const pane of [...workspaceStore.getState().panes]) {
-      if (pane.id !== child.id) workspaceStore.getState().closePane(pane.id);
+  const workspace = workspaceStore.getState();
+  const child = presentedPanes(workspace.panes).find((pane) => isSessionPaneFor(pane, ref));
+  if (child !== undefined) {
+    // Ownership is now confirmed nested, so keep the child - and its per-mount
+    // composer work, including staged images - and move the owner in beside it
+    // instead of replacing the workspace and remounting the child. A retained
+    // owner or cascade in main keeps its own record too.
+    const main = workspace.mainPane();
+    const ownerPane = presentedPanes(workspace.panes).find((pane) => isSessionPaneFor(pane, ownerRef));
+    const ownerIsMain = ownerPane !== undefined && ownerPane.id === main?.id;
+    const cascadeMain = ownerPane === undefined && cascadeMainCoversRef(ownerRef);
+    const keepMain = ownerIsMain || cascadeMain;
+    for (const pane of [...workspace.panes]) {
+      if (pane.id !== child.id && pane.id !== ownerPane?.id && pane.id !== main?.id) workspace.closePane(pane.id);
     }
-    const ownerId = workspaceStore.getState().openPane("session", { ref: ownerRef }, { slot: "secondary" });
-    workspaceStore.getState().promotePane(ownerId);
-    workspaceStore.getState().focusPane(child.id);
+    if (main !== null && main.id !== child.id && main.id !== ownerPane?.id && !cascadeMain)
+      workspace.closePane(main.id);
+    if (!keepMain) {
+      const ownerId = ownerPane?.id ?? workspace.openPane("session", { ref: ownerRef }, { slot: "secondary" });
+      workspace.promotePane(ownerId);
+    }
+    workspace.focusPane(child.id);
     const opened = workspaceStore.getState().panes.find((pane) => pane.id === child.id);
     if (opened) recordConversationOpenParent(opened, ownerRef);
     return;

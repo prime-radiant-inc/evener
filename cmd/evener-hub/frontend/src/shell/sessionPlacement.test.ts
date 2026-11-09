@@ -105,7 +105,7 @@ describe("openNestedSessionWithOwner", () => {
   // An owner-promotion implementation that moves only the child, or promotes
   // the child itself, leaves the unrelated main pane in place and violates
   // the route's owner/main invariant.
-  test("promotes local:owner to main, keeps local:child secondary and focused, and removes unrelated main", () => {
+  test("promotes the retained local:owner to main, keeps local:child secondary and focused, and removes unrelated main", () => {
     const workspace = workspaceStore.getState();
 
     const unrelated = workspace.openPane("session", { ref: "local:unrelated" });
@@ -127,7 +127,7 @@ describe("openNestedSessionWithOwner", () => {
     expect(ownerMain).not.toBeUndefined();
     expect(ownerMain?.slot).toBe("main");
     expect(ownerSecondary).toBeUndefined();
-    expect(ownerMain?.id).not.toBe(owner);
+    expect(ownerMain?.id).toBe(owner);
     expect(childPane?.slot).toBe("secondary");
     expect(workspaceStore.getState().mainPane()?.id).toBe(ownerMain?.id);
     expect(workspaceStore.getState().focusedPaneId).toBe(childPane?.id);
@@ -187,19 +187,27 @@ test("session links request live routing instead of reusing read-only transcript
   expect(window.location.pathname).toBe("/s/local%3Achild");
   openSessionByRef("local:root");
   expect(workspaceStore.getState().focusedPaneId).toBe(root?.id);
-  expect(workspaceStore.getState().panes).toHaveLength(3);
+  expect(workspaceStore.getState().panes).toHaveLength(4);
 });
 
-test("an unopened parent still requests normal routing without inventing placement", () => {
+test("an unopened parent opens a live session pane and requests normal routing", () => {
   window.history.replaceState({}, "", "/s/local%3Aroot");
   openTopLevelSession("local:root");
-  const child = workspaceStore
+  workspaceStore
     .getState()
     .openPane("transcript", { ref: "local:child", parentRef: "local:unloaded" }, { slot: "secondary" });
+  const before = workspaceStore
+    .getState()
+    .panes.find((pane) => pane.type === "session" && sessionRefOf(pane) === "local:unloaded");
   openSessionByRef("local:unloaded");
   expect(window.location.pathname).toBe("/s/local%3Aunloaded");
-  expect(workspaceStore.getState().focusedPaneId).toBe(child);
-  expect(workspaceStore.getState().panes).toHaveLength(2);
+  expect(before).toBeUndefined();
+  const opened = workspaceStore
+    .getState()
+    .panes.find((pane) => pane.type === "session" && sessionRefOf(pane) === "local:unloaded");
+  expect(opened).toBeDefined();
+  expect(workspaceStore.getState().focusedPaneId).toBe(opened?.id);
+  expect(workspaceStore.getState().panes).toHaveLength(3);
 });
 
 // The main pane zoomed on a session is a sessionZoom record in the SAME slot:

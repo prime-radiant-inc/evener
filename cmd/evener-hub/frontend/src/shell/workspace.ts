@@ -794,7 +794,10 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     if (ref !== null) cancelCarriedComposerSeat(ref);
     const reusable = presentedPanes(state.panes).find((pane) => primaryMatches(pane, type, params));
     if (reusable !== undefined) {
-      set({ panes: [{ ...reusable, slot: "main" }], focusedPaneId: reusable.id });
+      // Attach in place: paneLifetime keys by the record object, so publishing
+      // a copy would dispose the retained transcript and staged attachments.
+      reusable.slot = "main";
+      set({ panes: [reusable], focusedPaneId: reusable.id });
       return reusable.id;
     }
 
