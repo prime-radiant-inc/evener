@@ -2,10 +2,10 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -194,7 +194,7 @@ func TestResolveReadSourceKeepsTheFirstErrorWhenTheRetryFails(t *testing.T) {
 	t.Cleanup(func() { hubRosterRefresh = previous })
 
 	_, err := resolveReadSource(t.Context(), cfg, sources, appwire.ThreadReadParams{Ref: localAppRef(webTestSessionID)})
-	if err == nil || !strings.Contains(err.Error(), "source not found: local") {
+	if !errors.Is(err, appsource.ErrSourceNotFound) {
 		t.Fatalf("resolution error = %v, want the first attempt's source-not-found error", err)
 	}
 	if got := refreshes.Load(); got != 1 {
@@ -202,28 +202,36 @@ func TestResolveReadSourceKeepsTheFirstErrorWhenTheRetryFails(t *testing.T) {
 	}
 }
 
-// TestHubRPCThreadReadKeepsPendingAskPageTerminalWithoutARetry pins that a
+// TestThreadReadKeepsPendingAskPageTerminalWithoutARetry pins that a
 // pending-ask page is neither retried nor answered from saved history: the page
 // names a live ask set that only a resolved source can answer.
-func TestHubRPCThreadReadKeepsPendingAskPageTerminalWithoutARetry(t *testing.T) {
-	fixture := newSourceRetryHub(t, true)
-	fixture.sources.Remove("local")
+func TestThreadReadKeepsPendingAskPageTerminalWithoutARetry(t *testing.T) {
+	cfg := hubcore.WebConfig{Roster: hubcore.NewRosterWithEntries()}
+	var refreshes atomic.Int32
+	previous := hubRosterRefresh
+	hubRosterRefresh = func(context.Context, *hubcore.Roster) error {
+		refreshes.Add(1)
+		return nil
+	}
+	t.Cleanup(func() { hubRosterRefresh = previous })
+	// No local source: the page's resolution fails before any page can be read.
+	operations := newProjectReadOperations(t, cfg, nil)
 	revision, offset, limit := uint64(0), 0, 1
 
-	_, err := fixture.client.ThreadRead(context.Background(), appwire.ThreadReadParams{
-		Ref:                       "local:" + fixture.session,
+	response, err := operations.read(context.Background(), appwire.ThreadReadParams{
+		Ref:                       localAppRef(webTestSessionID),
 		ExpectedAskRevision:       &revision,
 		ExpectedAskBootGeneration: "boot-1",
 		Offset:                    &offset,
 		Limit:                     &limit,
-	})
-	if err == nil || !strings.Contains(err.Error(), "source not found: local") {
-		t.Fatalf("pending ask page error = %v, want the resolution error", err)
+	}, false)
+	if !errors.Is(err, appsource.ErrSourceNotFound) {
+		t.Fatalf("pending ask page error = %v, want the source-missing refusal", err)
 	}
-	if got := fixture.refreshes.Load(); got != 0 {
+	if response.Thread.ID != "" || response.PendingAskPage != nil {
+		t.Fatalf("pending ask page answered without a source: %+v", response)
+	}
+	if got := refreshes.Load(); got != 0 {
 		t.Fatalf("roster refreshes = %d, want none for a pending ask page", got)
-	}
-	if got := fixture.calls.Load(); got != 0 {
-		t.Fatalf("daemon thread/read calls = %d, want no live read", got)
 	}
 }
