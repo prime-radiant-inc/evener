@@ -185,7 +185,7 @@ func managerReadFixture(t *testing.T) (*sessionOperations, *managerReadSource, *
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), HubID: "hub-test", RemoteHostRegistry: hosts, RemoteHosts: hosts.All()}
+	cfg := testWebConfig(t, hubcore.WebConfig{HubID: "hub-test", RemoteHostRegistry: hosts, RemoteHosts: hosts.All()})
 	cfg.SessionSeen = hubcore.NewSessionSeenStore(filepath.Join(t.TempDir(), "seen.db"))
 	server := appserver.NewServer(appserver.ServerConfig{})
 	owner := &sessionOperations{cfg: cfg, sources: sources, server: server, relays: newHubRelay(server, cfg, sources)}
@@ -474,7 +474,7 @@ func TestManagerDiscoveryCarriesFreshLocalActiveTurn(t *testing.T) {
 		Activity:            &appwire.ThreadActivity{LastActivityAt: lastActivityAt},
 	}
 	roster := hubcore.NewRosterWithEntries(live)
-	cfg := hubcore.WebConfig{Roster: roster, Past: hubcore.NewPastIndex(""), HubStateRoot: t.TempDir()}
+	cfg := testWebConfig(t, hubcore.WebConfig{Roster: roster})
 	sources := newHubSourceRegistry(cfg)
 	server := appserver.NewServer(appserver.ServerConfig{})
 	owner := &sessionOperations{cfg: cfg, sources: sources, server: server, relays: newHubRelay(server, cfg, sources)}
@@ -532,7 +532,7 @@ func TestManagerDiscoveryDisplaysCrashedLocalLanes(t *testing.T) {
 		crashedEntry("crashed-with-failure", &appwire.ThreadFailure{}),
 		crashedEntry("crashed-mid-turn", nil),
 	)
-	cfg := hubcore.WebConfig{Roster: roster, Past: hubcore.NewPastIndex(""), HubStateRoot: t.TempDir()}
+	cfg := testWebConfig(t, hubcore.WebConfig{Roster: roster})
 	sources := newHubSourceRegistry(cfg)
 	server := appserver.NewServer(appserver.ServerConfig{})
 	owner := &sessionOperations{cfg: cfg, sources: sources, server: server, relays: newHubRelay(server, cfg, sources)}
@@ -867,7 +867,7 @@ func TestManagerTurnsContinuationFollowsInitialCursor(t *testing.T) {
 	}, upstream.Client())
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), HubID: "hub-test"}
+	cfg := testWebConfig(t, hubcore.WebConfig{HubID: "hub-test"})
 	server := appserver.NewServer(appserver.ServerConfig{})
 	owner := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, owner.Read)

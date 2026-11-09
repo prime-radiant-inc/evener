@@ -117,16 +117,15 @@ func testHubSteersSurvivingDaemon(t *testing.T, cleared bool) {
 	roster.Refresh()
 
 	resumeCalls := 0
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 		RunDir:      runDir,
 		Roster:      roster,
-		Past:        hubcore.NewPastIndex(""),
 		ResumeLocks: hubcore.NewResumeLocks(),
 		Spawner: &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
 			resumeCalls++
 			return rendezvous.Entry{}, errors.New("surviving daemon must be reused")
 		}},
-	})
+	}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 	resumed, err := appwiretest.ThreadResume(t.Context(), client, appwire.ThreadResumeParams{Ref: "local:" + resumeID})
@@ -158,7 +157,7 @@ func testHubSteersSurvivingDaemon(t *testing.T, cleared bool) {
 }
 
 func TestHubRPCAdvertisesTurnListsWithHandlers(t *testing.T) {
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{}))
 	defer hub.Close()
 
 	client := dialHubRPC(t, hub)
@@ -279,7 +278,7 @@ func TestHubRPCThreadActionsRouteToDaemon(t *testing.T) {
 	})
 	_, roster, runDir := startDaemonRoster(t, daemon, 104, "th_1", "sess_1")
 
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{RunDir: runDir, Roster: roster}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 	if err := client.ThreadCompactStart(context.Background(), appwire.ThreadCompactStartParams{Ref: "local:th_1"}); err != nil {
@@ -390,11 +389,10 @@ func TestHubRPCTurnMutationsForwardWithoutDynamicCapabilityGates(t *testing.T) {
 	})
 	roster := hubcore.NewRoster(runDir, nil)
 	roster.Refresh()
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 		RunDir: runDir,
 		Roster: roster,
-		Past:   hubcore.NewPastIndex(""),
-	})
+	}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 
@@ -478,11 +476,10 @@ func TestHubRPCTurnSteerMissingLocalSessionReturnsTerminalRejection(t *testing.T
 	runDir := t.TempDir()
 	roster := hubcore.NewRoster(runDir, nil)
 	roster.Refresh()
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 		RunDir: runDir,
 		Roster: roster,
-		Past:   hubcore.NewPastIndex(""),
-	})
+	}))
 	defer hub.Close()
 
 	client := dialHubRPCInitialized(t, hub)
@@ -741,7 +738,7 @@ func TestHubRPCUnsupportedThreadActionReturnsStructuredUnavailable(t *testing.T)
 	})
 	_, roster, runDir := startDaemonRoster(t, daemon, 105, "th_1", "sess_1")
 
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{RunDir: runDir, Roster: roster}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 	err := client.ThreadShutdown(context.Background(), appwire.ThreadShutdownParams{Ref: "local:th_1"})
@@ -787,7 +784,7 @@ func TestHubRPCGoalSetGatedByCapability(t *testing.T) {
 	})
 	_, roster, runDir := startDaemonRoster(t, daemon, 106, "th_1", "sess_1")
 
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{RunDir: runDir, Roster: roster}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 	_, err := client.GoalSet(context.Background(), appwire.GoalSetParams{Ref: "local:th_1", Objective: "do it"})
@@ -889,7 +886,7 @@ func TestHubRPCPathsCompleteReturnsMatchingDirectories(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 	resp, err := appwiretest.PathsComplete(context.Background(), client, appwire.PathsCompleteParams{Prefix: filepath.Join(root, "alph")})
@@ -1149,9 +1146,7 @@ func TestHubRPCTestServerRegistryReadsItsOwnCredentials(t *testing.T) {
 	secondClient := dialHubRPC(t, second)
 	defer secondClient.Close()
 	for _, client := range []*appwire.Client{firstClient, secondClient} {
-		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-			t.Fatalf("Initialize: %v", err)
-		}
+		mustInitializeHubClient(t, client)
 	}
 
 	var stored appwire.AuthStatusResponse
@@ -1466,9 +1461,7 @@ func TestHubRPCSavedDelegateReadDoesNotClaimMutationAuthority(t *testing.T) {
 			defer hub.Close()
 			client := dialHubRPC(t, hub)
 			defer client.Close()
-			if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-				t.Fatal(err)
-			}
+			mustInitializeHubClient(t, client)
 			response, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: "local:" + childID})
 			if err != nil {
 				t.Fatal(err)
@@ -1503,7 +1496,7 @@ func TestHubRPCNotesHumanSetGatedByCapability(t *testing.T) {
 	})
 	_, roster, runDir := startDaemonRoster(t, daemon, 106, "th_1", "sess_1")
 
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{RunDir: runDir, Roster: roster}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 	_, err := client.NotesHumanSet(context.Background(), appwire.NotesHumanSetParams{Ref: "local:th_1", ClientMutationID: "m1", ExpectedInstanceID: "sess_1", Note: "hi"})
@@ -1543,7 +1536,7 @@ func TestHubRPCUrlsRemoveGatedByCapability(t *testing.T) {
 	})
 	_, roster, runDir := startDaemonRoster(t, daemon, 106, "th_1", "sess_1")
 
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{RunDir: runDir, Roster: roster}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 	_, err := client.UrlsRemove(context.Background(), appwire.UrlsRemoveParams{Ref: "local:th_1", ClientMutationID: "m1", ExpectedInstanceID: "sess_1", ID: "u1"})
