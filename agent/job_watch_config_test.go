@@ -1281,13 +1281,11 @@ func TestWatchRepairErrorsNameTheResultTool(t *testing.T) {
 			}
 
 			// Name the tool the session actually has: the renamed case must not
-			// mention the default one at all.
+			// mention the default one at all. The whole-error goldens pin the
+			// rest of the repair text.
 			wantTool := "communicate"
 			if tc.resultTool != "" {
 				wantTool = tc.resultTool
-				if strings.Contains(outputMatchErr.Error(), "communicate(") {
-					t.Fatalf("renamed session's repair names the default tool: %s", outputMatchErr)
-				}
 			}
 			if !strings.Contains(outputMatchErr.Error(), wantTool+"(end_turn=true)") {
 				t.Fatalf("output_match repair does not name %q: %s", wantTool, outputMatchErr)
