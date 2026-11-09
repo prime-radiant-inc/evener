@@ -492,8 +492,6 @@ function NavigationRail({
   // host row returns undefined, leaving it without a selected state rather
   // than asserting it is a non-selection.
   const selectedSessionRef = useWorkspaceStore(currentSessionRef);
-  // The overlay host's dismiss action (the phone-width Sessions drawer), or
-  // null on desktop where navigation is always visible.
   const dismissNavigationChrome = useDismissNavigationChrome();
   const isRowSelected = (node: RailNode): boolean | undefined =>
     node.kind === "session" ? node.session.ref === selectedSessionRef : undefined;

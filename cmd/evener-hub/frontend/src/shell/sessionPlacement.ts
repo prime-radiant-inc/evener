@@ -17,9 +17,7 @@ function isSessionPaneFor(pane: OpenPaneRecord, ref: string): boolean {
 /** Placement facts the caller already holds about a session link. */
 export interface SessionOpenOptions {
   /** The caller's own row says this ref names a top-level session (the rail's
-   * navigation summary carries the session kind). Placement then happens in
-   * the press's own tick. The URL route still reconciles a stale hint through
-   * the ordinary location read, which runs in the background. */
+   * navigation summary carries the session kind). */
   readonly topLevel?: boolean;
 }
 
