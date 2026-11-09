@@ -39,6 +39,22 @@ export function recoveryComposerDraft(record: MutationRecoveryRecord): Recovered
   return draft;
 }
 
+// recoveredCompositionIsEmpty reports whether activating this draft would load
+// nothing into the composer. A rejected drain with no input is the shape that
+// matters: it is a notice (the queue strip shows the refusal and its reason),
+// not a draft, and auto-activating it only flashes an empty composer before
+// the persistence effect discards it again (lifecycle ruling 2026-11-09,
+// issue #1436).
+export function recoveredCompositionIsEmpty(draft: RecoveredComposerDraft): boolean {
+  return (
+    draft.text.trim() === "" &&
+    draft.attachments.length === 0 &&
+    draft.skillNames.length === 0 &&
+    (draft.commandNames?.length ?? 0) === 0 &&
+    (draft.mentions?.length ?? 0) === 0
+  );
+}
+
 export function mergeRecoveryComposerDraft(
   currentText: string,
   currentAttachments: PendingAttachment[],
