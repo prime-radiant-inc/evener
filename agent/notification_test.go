@@ -1325,3 +1325,62 @@ func readGoalCounters(t *testing.T, sess *Session) goalCounters {
 	}
 	return goalCounters{iterations: snap.Iterations, noProgressStreak: snap.NoProgressStreak}
 }
+
+// TestNotificationArrivingOnLastAllowedRoundStaysPending pins that a
+// notification arriving on a notification turn's last allowed round is not
+// consumed by that turn, which makes no further model request: it stays pending
+// for the next turn, which delivers it once.
+func TestNotificationArrivingOnLastAllowedRoundStaysPending(t *testing.T) {
+	t.Parallel()
+	const jobA, jobB = "job_opens_capped_turn", "job_arrives_on_last_round"
+	call := func(id, name string) llm.ToolCallData {
+		return llm.ToolCallData{ID: id, Name: name, Arguments: []byte(`{}`), Type: "function"}
+	}
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response { return agenttest.ToolCallResponse(call("c1", "idle_test_tool")) },
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(call("c2", "enqueue_test_notification"))
+			},
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("handled the late one") },
+		},
+	}
+	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{MaxToolRoundsPerInput: 2}))
+	sess.RegisterTool("idle_test_tool", "test-only: a round that changes nothing",
+		map[string]any{"type": "object", "properties": map[string]any{}},
+		func(context.Context, any) (any, error) { return "ok", nil })
+	sess.RegisterTool("enqueue_test_notification", "test-only: finish a managed job during this round",
+		map[string]any{"type": "object", "properties": map[string]any{}},
+		func(context.Context, any) (any, error) {
+			enqueueCompletedJobNotification(t, sess, jobB)
+			return "queued", nil
+		})
+	enqueueCompletedJobNotification(t, sess, jobA)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	defer cancel()
+	// The capped turn ends at its round limit; that error is expected.
+	_, _ = sess.ProcessInputKind(ctx, "", nil, EntryNotification)
+
+	if n := notificationDeliveredCount(t, sess.jobManager, jobB); n != 0 {
+		t.Fatalf("job B recorded delivered %d times by the turn that never showed it to the model", n)
+	}
+	if sess.peekNotifications() != 1 {
+		t.Fatal("job B is not pending for the next wake")
+	}
+
+	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
+		t.Fatalf("next notification turn: %v", err)
+	}
+	reqs := adapter.Requests()
+	if !lastMessageIsNotification(reqs[len(reqs)-1]) {
+		t.Fatal("the next turn's request did not carry job B")
+	}
+	if n := notificationDeliveredCount(t, sess.jobManager, jobB); n != 1 {
+		t.Errorf("job B recorded delivered %d times, want 1", n)
+	}
+	if n := countHistoryNeedle(sess, fmt.Sprintf(`job_id=%q`, jobB)); n != 1 {
+		t.Errorf("job B appears in the transcript %d times, want 1", n)
+	}
+}

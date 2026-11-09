@@ -1739,7 +1739,11 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				s.finishProcessingAtFailureBoundary(ctx)
 				return "", progressed, nil
 			}
-			s.injectLaterJobNotifications(ctx)
+			// Only a round that will run can show it to the model; on the last
+			// allowed round it stays pending for the next wake.
+			if roundCap < 0 || round+1 < roundCap {
+				s.injectLaterJobNotifications(ctx)
+			}
 		}
 	}
 
