@@ -24,6 +24,7 @@ var autofsHomePath = regexp.MustCompile(`(^|[=:])/home/[^/:\s]`)
 // package that names a path under /home/. Simulated hosts put their homes under
 // /fixture-home/, which exists on no host and is served by no automounter.
 func TestSandboxFixturesKeepOffTheHomeAutomount(t *testing.T) {
+	t.Parallel()
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
@@ -41,7 +42,7 @@ func TestSandboxFixturesKeepOffTheHomeAutomount(t *testing.T) {
 			}
 			value, err := strconv.Unquote(lit.Value)
 			if err != nil {
-				return true
+				t.Fatalf("%s: %v", fset.Position(lit.Pos()), err)
 			}
 			if autofsHomePath.MatchString(value) {
 				t.Errorf("%s: fixture path %q is under the macOS /home automount", fset.Position(lit.Pos()), value)
