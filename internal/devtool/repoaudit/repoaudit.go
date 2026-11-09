@@ -40,6 +40,7 @@ var checks = []check{
 	{"scratch-trap-before-mkdir", scratchTrapInstalledBeforeMkdir},
 	{"makefile-recursive-delete", noMakefileRecipeFeedsVariableToRecursiveDelete},
 	{"makefile-scratch-in-tmpdir", noMakefileRecipeCreatesScratchOutsideTMPDIR},
+	{"mobile-native-build-ignored", mobileNativeGitignoreIgnoresDerivedDataBuild},
 }
 
 // audit collects one check's findings. Errorf records a finding and the check

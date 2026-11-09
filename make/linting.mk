@@ -287,7 +287,8 @@ lint-tracked-file-size:
 ##   coverage scripts count through covstmt; the e2e and UI runners isolate
 ##   through the shared helpers; and no script or recipe mints scratch outside
 ##   TMPDIR, before its trap, or deletes recursively from a variable beyond
-##   the reviewed allowlists.
+##   the reviewed allowlists; and mobile-native/.gitignore keeps the
+##   mobile-native/build derived-data tree untracked.
 ## trigger: Required CI (via make lint); local pre-merge.
 ## requires: None beyond the Go toolchain and git.
 ## fails-when: Any check in internal/devtool/repoaudit reports a finding.
