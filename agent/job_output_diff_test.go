@@ -812,3 +812,58 @@ func TestShellToolDiffDigestStaysWithinRegistryLines(t *testing.T) {
 		t.Fatalf("registry changed the rendered shell result:\nwant:\n%s\ngot:\n%s", formatShellResult(out), res.Output)
 	}
 }
+
+// A constrained registry line limit must shorten the diff digest's head at a
+// file or hunk boundary, not let the registry cut inside a retained hunk
+// outside the marker's advertised omitted range.
+func TestShellToolDiffDigestFitsAConstrainedLineLimit(t *testing.T) {
+	t.Parallel()
+	var b strings.Builder
+	b.WriteString("diff --git a/x b/x\n--- a/x\n+++ b/x\n")
+	for h := range 3 {
+		fmt.Fprintf(&b, "@@ -%d,1 +%d,1 @@\n-a%d\n+b%d\n", h*2+1, h*2+1, h, h)
+	}
+	b.WriteString("@@ -100,1 +100,1 @@\n")
+	b.WriteString(strings.Repeat("x", 9000))
+	b.WriteString("\n")
+	full := b.String()
+	path := filepath.Join(t.TempDir(), "many.diff")
+	if err := os.WriteFile(path, []byte(full), 0o600); err != nil {
+		t.Fatalf("write diff fixture: %v", err)
+	}
+	cfg := minimalTestSessionConfig(t)
+	cfg.ToolOutputLimits = map[string]schema.ToolOutputLimit{
+		"shell": {MaxChars: 100_000, MaxLines: 10, Strategy: schema.TruncHeadTail},
+	}
+	s := newSession(t, withConfig(cfg))
+	args, err := json.Marshal(map[string]string{"command": "cat -- " + shellSingleQuote(path)})
+	if err != nil {
+		t.Fatalf("marshal shell args: %v", err)
+	}
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "diff-lines-10",
+		Name:      "shell",
+		Arguments: args,
+	})
+	if res.IsError {
+		t.Fatalf("shell returned error: %s", res.Output)
+	}
+	var out shellToolResult
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
+		t.Fatalf("unmarshal shell result: %v (output: %s)", err, res.Output)
+	}
+	if out.Output == nil {
+		t.Fatal("large diff result carries no inline output")
+	}
+	maxLines := shellToolResultMaxLines(s.reg)
+	if maxLines != 10 {
+		t.Fatalf("shell line limit = %d, want 10", maxLines)
+	}
+	if got := strings.Count(*out.Output, "\n") + 1; got > 8 {
+		t.Fatalf("digest has %d lines, want at most 8 before the footer", got)
+	}
+	// The registry must not have re-truncated the digest.
+	if res.Output != formatShellResult(out) {
+		t.Fatalf("registry changed the rendered shell result:\nwant:\n%s\ngot:\n%s", formatShellResult(out), res.Output)
+	}
+}

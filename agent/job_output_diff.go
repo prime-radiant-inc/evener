@@ -376,6 +376,26 @@ func unifiedDiffWindow(full string, headBudget, tailBudget int, startsMidStream,
 			tailStart = len(full)
 		}
 	}
+	if lineBudget > 0 {
+		// Reserve one line each for the marker and the rendered footer. A head
+		// that still overflows must be cut at a file or hunk boundary; the
+		// registry would otherwise cut inside a retained hunk, dropping bytes
+		// outside the marker's advertised omitted range.
+		if textLineCount(full[headStart:headEnd]) > lineBudget-2 {
+			maxHeadLines := max(lineBudget-2, 0)
+			cut := headStart
+			for i := startIndex + 1; i < len(lines) && lines[i].start < headEnd; i++ {
+				if !isDiffBoundary(lines[i]) {
+					continue
+				}
+				if textLineCount(full[headStart:lines[i].start]) > maxHeadLines {
+					break
+				}
+				cut = lines[i].start
+			}
+			headEnd = cut
+		}
+	}
 
 	file, hunk := describeDiffCut(full, lines, headEnd, tailStart)
 	return diffWindow{HeadStart: headStart, HeadEnd: headEnd, TailStart: tailStart, File: file, Hunk: hunk}, true
