@@ -189,7 +189,7 @@ type serveDiagnostic struct{ session, message string }
 func parseServeDiagnostics(t *testing.T, output string) []serveDiagnostic {
 	t.Helper()
 	var diagnostics []serveDiagnostic
-	for _, line := range strings.Split(strings.TrimSuffix(output, "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSuffix(output, "\n"), "\n") {
 		if line == "" {
 			continue
 		}
@@ -212,8 +212,11 @@ func parseServeDiagnostics(t *testing.T, output string) []serveDiagnostic {
 
 // assertServeDiagnostics requires exactly the diagnostics the
 // callbacks_and_input fixture provokes, all belonging to the daemon's session.
-// A missing, extra, or foreign diagnostic fails the test.
-func assertServeDiagnostics(t *testing.T, output, sessionID string, injected error) {
+// Each line is identified by the value the fixture owns — its injected error,
+// context.Canceled, or the fixture listener's address — not by the production
+// wording around it, which the serve log has no structured form for. A
+// missing, extra, or foreign diagnostic fails the test.
+func assertServeDiagnostics(t *testing.T, output, sessionID, listenAddr string, injected error) {
 	t.Helper()
 	diagnostics := parseServeDiagnostics(t, output)
 	var listening, registration, turnFailure int
@@ -222,11 +225,11 @@ func assertServeDiagnostics(t *testing.T, output, sessionID string, injected err
 			t.Fatalf("diagnostic session = %q, want %q", diagnostic.session, sessionID)
 		}
 		switch {
-		case strings.HasPrefix(diagnostic.message, "listening on "):
+		case strings.HasSuffix(diagnostic.message, listenAddr):
 			listening++
-		case diagnostic.message == "rendezvous write failed: "+injected.Error():
+		case strings.HasSuffix(diagnostic.message, injected.Error()):
 			registration++
-		case diagnostic.message == "error: "+context.Canceled.Error():
+		case strings.HasSuffix(diagnostic.message, context.Canceled.Error()):
 			turnFailure++
 		default:
 			t.Fatalf("unexpected serve diagnostic: %q", diagnostic.message)
@@ -427,7 +430,7 @@ func TestRunServeResidualCoverage(t *testing.T) {
 		if !registered {
 			t.Fatal("injected rendezvous registration failure did not run")
 		}
-		assertServeDiagnostics(t, diagnostics.String(), sessionID, registrationErr)
+		assertServeDiagnostics(t, diagnostics.String(), sessionID, exactServeListenAddr, registrationErr)
 	})
 
 	for _, clearCase := range []struct {

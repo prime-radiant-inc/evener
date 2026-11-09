@@ -423,10 +423,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	fs.Var(&modelFallbacks, "model-fallback", "fallback model (provider/model) tried on permanent provider errors (repeatable)")
 	daemonIdleTimeout := fs.Duration("daemon-idle-timeout", 0, "retire this daemon after continuous proven inactivity (default: 0 = automatic retirement disabled; the Hub passes its configured value)")
 	fs.Usage = func() {
-		fmt.Fprintf(logOut, "Usage: evener serve [flags]\n\n")
-		fmt.Fprintf(logOut, "Start evener as an app-wire JSON-RPC server.\n\n")
+		_, _ = fmt.Fprintf(logOut, "Usage: evener serve [flags]\n\n")
+		_, _ = fmt.Fprintf(logOut, "Start evener as an app-wire JSON-RPC server.\n\n")
 		fs.PrintDefaults()
-		fmt.Fprintf(logOut, "\nEnvironment variables:\n")
+		_, _ = fmt.Fprintf(logOut, "\nEnvironment variables:\n")
 		printServeEnvVars(logOut)
 	}
 	if err := fs.Parse(args); err != nil {
@@ -478,7 +478,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		return fatal
 	}
 	if resolveErr != nil {
-		fmt.Fprintf(logOut, "warning: listing installed plugins: %v\n", resolveErr)
+		_, _ = fmt.Fprintf(logOut, "warning: listing installed plugins: %v\n", resolveErr)
 	}
 	renderLaunchPluginDiagnostics(logOut, resolvedPlugins.Diagnostics)
 	if err := resolvedPlugins.ValidateSelection(); err != nil {
@@ -504,7 +504,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		defer stop()
 	}
 	_, stopPprof, pprofErr := deps.startLivePprof(func(format string, args ...any) {
-		fmt.Fprintf(logOut, format+"\n", args...)
+		_, _ = fmt.Fprintf(logOut, format+"\n", args...)
 	})
 	if pprofErr != nil {
 		return pprofErr
@@ -531,7 +531,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		}
 	}
 	if err := seedMarketplaces(ctx); err != nil {
-		fmt.Fprintf(logOut, "warning: seeding default marketplaces: %v\n", err)
+		_, _ = fmt.Fprintf(logOut, "warning: seeding default marketplaces: %v\n", err)
 	}
 	if err := startupInterrupted(ctx, stepSeedingMarketplaces); err != nil {
 		return err

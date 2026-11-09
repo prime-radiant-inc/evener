@@ -23,7 +23,7 @@ type hubDiagnosticCapture struct {
 func (c *hubDiagnosticCapture) Write(p []byte) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, line := range strings.Split(strings.TrimSuffix(string(p), "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSuffix(string(p), "\n"), "\n") {
 		if line != "" {
 			c.lines = append(c.lines, line)
 		}
@@ -153,8 +153,7 @@ func (c *rosterRefreshCapture) hasJSONSyntaxError() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, err := range c.errs {
-		var syntax *json.SyntaxError
-		if errors.As(err, &syntax) {
+		if _, ok := errors.AsType[*json.SyntaxError](err); ok {
 			return true
 		}
 	}

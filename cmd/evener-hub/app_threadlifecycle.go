@@ -123,7 +123,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 			}
 			// Spawning already established this daemon's identity. An unrelated
 			// discovery failure must not hide its identity or discard initial input.
-			fmt.Fprintf(hubDiagnosticOutput(), "[hub] spawned session %s; roster refresh failed: %v\n", entry.ThreadID, err)
+			_, _ = fmt.Fprintf(hubDiagnosticOutput(), "[hub] spawned session %s; roster refresh failed: %v\n", entry.ThreadID, err)
 		}
 		if entry.ThreadID == "" || entry.SessionID == "" {
 			for _, live := range hubRosterList(cfg.Roster) {
