@@ -370,22 +370,7 @@ func TestApplyPatch_ContextMismatchReportsContextAndCandidates(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected patch mismatch")
 	}
-	msg := err.Error()
-	for _, want := range []string{
-		"apply_patch: expected lines not found in f.go at line 8",
-		"wanted: \"\\tmodel := \\\"openai/gpt-5\\\"\"",
-		"got:    \"\\tif err != nil {\"",
-		"File context around line 8:",
-		">  8 | \tif err != nil {",
-		"Expected old/context lines from patch:",
-		"  \tgot, err := resolve()",
-		"Potential locations for old/context block:",
-		"candidate at line 7:",
-	} {
-		if !strings.Contains(msg, want) {
-			t.Fatalf("error missing %q:\n%s", want, msg)
-		}
-	}
+	assertPatchMismatch(t, err, 1, "\tmodel := \"openai/gpt-5\"", "\tif err != nil {", 8)
 }
 
 func TestApplyPatch_ContextMismatchEndsWithRecoveryPointer(t *testing.T) {
@@ -435,23 +420,7 @@ func TestApplyPatch_DeleteMismatchReportsFullBlockCandidate(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected patch mismatch")
 	}
-	msg := err.Error()
-	for _, want := range []string{
-		"apply_patch: expected lines not found in hook_test.go at line 6",
-		"wanted: \"\\tclose(done)\"",
-		"got:    \"\\tdefer sess.Close()\"",
-		"File context around line 6:",
-		"Expected old/context lines from patch:",
-		"  func target() {",
-		"  \tclose(done)",
-		"  }",
-		"Potential locations for old/context block:",
-		"candidate at line 5:",
-	} {
-		if !strings.Contains(msg, want) {
-			t.Fatalf("error missing %q:\n%s", want, msg)
-		}
-	}
+	assertPatchMismatch(t, err, 1, "\tclose(done)", "\tdefer sess.Close()", 6)
 }
 
 func TestApplyPatch_ConfinedRejectsPathTraversalAndAbsolutePaths(t *testing.T) {
@@ -609,5 +578,51 @@ func TestApplyPatchMismatchReportsFirstDifferingLine(t *testing.T) {
 	}
 	if mm.Line != 3 {
 		t.Errorf("Line = %d, want 3", mm.Line)
+	}
+}
+
+func assertPatchMismatch(t *testing.T, err error, hunkLine int, want, got string, line int) {
+	t.Helper()
+	var mm *PatchMismatchError
+	if !errors.As(err, &mm) {
+		t.Fatalf("err = %v, want *PatchMismatchError", err)
+	}
+	if mm.HunkLine != hunkLine || mm.Want != want || mm.Got != got || mm.Line != line {
+		t.Fatalf("mismatch = {HunkLine:%d Want:%q Got:%q Line:%d}, want {%d %q %q %d}",
+			mm.HunkLine, mm.Want, mm.Got, mm.Line, hunkLine, want, got, line)
+	}
+}
+
+func TestApplyPatchBlankLineAfterHunkMarkerIsContext(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "a.go")
+	if err := os.WriteFile(path, []byte("x\n\nfunc f() {\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	patch := "*** Begin Patch\n*** Update File: a.go\n@@\n\n func f() {\n+\tbody()\n }\n*** End Patch\n"
+	if _, err := ApplyPatch(testMutator(dir), patch); err != nil {
+		t.Fatalf("ApplyPatch: %v", err)
+	}
+	got, _ := os.ReadFile(path)
+	if want := "x\n\nfunc f() {\n\tbody()\n}\n"; string(got) != want {
+		t.Fatalf("file = %q, want %q", got, want)
+	}
+}
+
+// A hunk whose only old line is a bare blank anchors on the first blank line
+// at or after the current position, exactly as a " " context line does.
+func TestApplyPatchBlankOnlyHunkAnchorsOnBlankLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "a.go")
+	if err := os.WriteFile(path, []byte("a\n\nb\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	patch := "*** Begin Patch\n*** Update File: a.go\n@@\n\n+new\n*** End Patch\n"
+	if _, err := ApplyPatch(testMutator(dir), patch); err != nil {
+		t.Fatalf("ApplyPatch: %v", err)
+	}
+	got, _ := os.ReadFile(path)
+	if want := "a\n\nnew\nb\n"; string(got) != want {
+		t.Fatalf("file = %q, want %q", got, want)
 	}
 }

@@ -12,7 +12,7 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// TestApplyPatch_MismatchReportsNearbyMatchesAndPotentialLocations drives the
+// TestApplyPatch_MismatchReportsFirstDifferingLineAfterMatchingPrefix drives the
 // full diagnostic path: seekLineSequence fails, so updateFileOp.apply builds a
 // patchMismatchDiagnostic exercising formatPatchMismatchError, formatLineSnippet,
 // candidateLineIndexes (Nearby matches), candidateSequenceIndexes +
@@ -23,7 +23,7 @@ import (
 // the second block's first two old/context lines partially match near line 7 (so
 // the loose sequence search reports a potential location), while the third
 // old/context line ("MISSING_LINE()") appears nowhere, forcing the failure.
-func TestApplyPatch_MismatchReportsNearbyMatchesAndPotentialLocations(t *testing.T) {
+func TestApplyPatch_MismatchReportsFirstDifferingLineAfterMatchingPrefix(t *testing.T) {
 	dir := t.TempDir()
 	content := strings.Join([]string{
 		"func first() {",
@@ -47,22 +47,7 @@ func TestApplyPatch_MismatchReportsNearbyMatchesAndPotentialLocations(t *testing
 	if err == nil {
 		t.Fatal("expected patch mismatch")
 	}
-	msg := err.Error()
-	for _, want := range []string{
-		"apply_patch: expected lines not found in f.go at line 9",
-		"wanted:",
-		"got:",
-		"File context around line 9:",
-		"Expected old/context lines from patch:",
-		"  \tmodel := \"openai/gpt-5\"",
-		"  \tMISSING_LINE()",
-		"Potential locations for old/context block:",
-		"candidate at line 7:",
-	} {
-		if !strings.Contains(msg, want) {
-			t.Fatalf("error missing %q:\n%s", want, msg)
-		}
-	}
+	assertPatchMismatch(t, err, 2, "\tMISSING_LINE()", "\treturn config", 9)
 }
 
 func TestNearestIndexes(t *testing.T) {

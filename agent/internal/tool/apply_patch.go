@@ -123,27 +123,18 @@ func (o updateFileOp) apply(ctx context.Context, fm execenv.FileMutator) ([]stri
 		}
 		if k < 0 {
 			hunkLine, diagLine := firstDifferingLine(origLines, oldLines, pos)
-			d := patchMismatchDiagnostic{
-				kind:      "expected lines not found",
-				path:      o.path,
-				hunkLine:  hunkLine,
-				want:      oldLines[hunkLine],
-				line:      diagLine,
-				got:       lineAt(origLines, diagLine-1),
-				lines:     origLines,
-				hunkLines: h,
-			}
 			if hunkLine == 0 {
-				d.line = mismatchLineForMissingSequence(origLines, oldLines[0], searchStart)
-				d.got = lineAt(origLines, d.line-1)
+				diagLine = mismatchLineForMissingSequence(origLines, oldLines[0], searchStart)
 			}
 			return nil, &PatchMismatchError{
-				Path:     d.path,
-				HunkLine: d.hunkLine,
-				Want:     d.want,
-				Got:      d.got,
-				Line:     d.line,
-				message:  formatPatchMismatchError(d),
+				kind:      "expected lines not found",
+				Path:      o.path,
+				HunkLine:  hunkLine,
+				Want:      oldLines[hunkLine],
+				Line:      diagLine,
+				Got:       lineAt(origLines, diagLine-1),
+				lines:     origLines,
+				hunkLines: h,
 			}
 		}
 		out = append(out, origLines[pos:k]...)
@@ -255,52 +246,44 @@ func hintFromHunk(hunkLines []string) string {
 	return ""
 }
 
-// PatchMismatchError reports where an update hunk stopped matching the file.
-// HunkLine indexes the hunk's old/context lines (context and '-' lines, in
-// order) at the first one that differs from the closest partial match; Want is
-// that hunk line and Got the file line at the same position (empty at end of
-// file). Line is the 1-based file line of Got.
+// PatchMismatchError reports where an update hunk stopped matching the file;
+// its message is what the model sees. HunkLine is the 0-based index into the
+// hunk's old/context lines (context and '-' lines, in order) of the first one
+// that differs from the closest partial match; Want is that hunk line and Got
+// the file line at the same position (empty at end of file). Line is the
+// 1-based file line of Got.
 type PatchMismatchError struct {
 	Path     string
 	HunkLine int
 	Want     string
 	Got      string
 	Line     int
-	message  string
-}
 
-func (e *PatchMismatchError) Error() string { return e.message }
-
-type patchMismatchDiagnostic struct {
 	kind      string
-	path      string
-	hunkLine  int
-	want      string
-	got       string
-	line      int
 	gotEOF    bool
 	lines     []string
 	hunkLines []string
 }
 
-func formatPatchMismatchError(d patchMismatchDiagnostic) string {
+func (d *PatchMismatchError) Error() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "apply_patch: %s in %s", d.kind, d.path)
-	if d.line > 0 {
-		fmt.Fprintf(&b, " at line %d", d.line)
+	fmt.Fprintf(&b, "apply_patch: %s in %s", d.kind, d.Path)
+	if d.Line > 0 {
+		fmt.Fprintf(&b, " at line %d", d.Line)
 	}
-	fmt.Fprintf(&b, "\nwanted: %q", d.want)
+	fmt.Fprintf(&b, "\nfirst difference at old/context line %d of the hunk", d.HunkLine+1)
+	fmt.Fprintf(&b, "\nwanted: %q", d.Want)
 	if d.gotEOF {
 		fmt.Fprintf(&b, "\ngot:    end of file after %d lines", len(d.lines))
-	} else if d.got != "" || d.line > 0 {
-		fmt.Fprintf(&b, "\ngot:    %q", d.got)
+	} else if d.Got != "" || d.Line > 0 {
+		fmt.Fprintf(&b, "\ngot:    %q", d.Got)
 	}
 
-	if d.line > 0 {
-		fmt.Fprintf(&b, "\n\nFile context around line %d:\n%s", d.line, formatLineSnippet(d.lines, d.line, 2))
+	if d.Line > 0 {
+		fmt.Fprintf(&b, "\n\nFile context around line %d:\n%s", d.Line, formatLineSnippet(d.lines, d.Line, 2))
 	}
 
-	if matches := candidateLineIndexes(d.lines, d.want, d.line, 3); len(matches) > 0 {
+	if matches := candidateLineIndexes(d.lines, d.Want, d.Line, 3); len(matches) > 0 {
 		fmt.Fprintf(&b, "\n\nNearby matches for wanted line:\n")
 		for i, idx := range matches {
 			if i > 0 {
@@ -313,7 +296,7 @@ func formatPatchMismatchError(d patchMismatchDiagnostic) string {
 	oldLines := oldLinesFromHunk(d.hunkLines)
 	if len(oldLines) > 0 {
 		fmt.Fprintf(&b, "\n\nExpected old/context lines from patch:\n%s", formatExpectedLines(oldLines))
-		if matches := candidateSequenceIndexes(d.lines, oldLines, d.line, 2); len(matches) > 0 {
+		if matches := candidateSequenceIndexes(d.lines, oldLines, d.Line, 2); len(matches) > 0 {
 			fmt.Fprintf(&b, "\n\nPotential locations for old/context block:\n")
 			for i, idx := range matches {
 				if i > 0 {

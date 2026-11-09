@@ -568,7 +568,7 @@ func toolProgramPatchHelpers(t *testing.T) {
 	if got := nearestIndexes([]int{4, 3, 2}, 0, 2); len(got) != 2 || got[0] != 4 {
 		t.Fatalf("zero-line nearest indexes = %v", got)
 	}
-	if got := formatPatchMismatchError(patchMismatchDiagnostic{kind: "missing", path: "f", want: "target", gotEOF: true, line: 7, lines: lines, hunkLines: []string{"@@ hint", "-target", "+new"}}); !strings.Contains(got, "end of file") || !strings.Contains(got, "Expected old/context") {
+	if got := (&PatchMismatchError{kind: "missing", Path: "f", Want: "target", gotEOF: true, Line: 7, lines: lines, hunkLines: []string{"@@ hint", "-target", "+new"}}).Error(); !strings.Contains(got, "end of file") || !strings.Contains(got, "Expected old/context") {
 		t.Fatalf("mismatch diagnostic = %q", got)
 	}
 	if got := formatLineSnippet(nil, 0, 1); !strings.Contains(got, "empty") {
