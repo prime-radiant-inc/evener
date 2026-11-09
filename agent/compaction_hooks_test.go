@@ -180,6 +180,20 @@ func TestPreCompact_CarriesTriggerAndInstructions(t *testing.T) {
 		t.Fatalf("custom_instructions = %v, want %q", pre[0].CustomInstructions, instructions)
 	}
 
+	// Whitespace alone is absence, not an instruction: Claude's null means the
+	// user passed nothing.
+	blank := newCompactionHookSession(t, compactionEventStrategy{emitCompaction: true})
+	if ok, refusal := blank.sess.foldWithForceCompact(context.Background(), "   ", nil, triggerAuto); !ok {
+		t.Fatalf("fold with whitespace instructions lost publication: %v", refusal)
+	}
+	pre = readCompactionHookInputs(t, blank.pre)
+	if len(pre) != 1 {
+		t.Fatalf("a fold with whitespace instructions ran PreCompact %d time(s), want 1: %+v", len(pre), pre)
+	}
+	if pre[0].CustomInstructions != nil {
+		t.Fatalf("whitespace-only custom_instructions = %q, want absent", *pre[0].CustomInstructions)
+	}
+
 	manual := newCompactionHookSession(t, compactionEventStrategy{emitCompaction: true})
 	if err := manual.sess.Compact(context.Background()); err != nil {
 		t.Fatalf("Compact: %v", err)
@@ -302,6 +316,59 @@ func TestPostCompact_SupersededFoldStaysSilent(t *testing.T) {
 	post := readCompactionHookInputs(t, postPath)
 	if len(post) != 1 {
 		t.Fatalf("PostCompact fired %d time(s), want 1: a superseded fold must stay silent: %+v", len(post), post)
+	}
+	if !strings.Contains(post[0].CompactSummary, "fold-2") {
+		t.Fatalf("compact_summary = %q, want the newest fold's summary", post[0].CompactSummary)
+	}
+}
+
+// TestPostCompact_SupersessionReadAtTheHookNotFlushStart is the stale-flag
+// case. Fold A's flush samples "am I newest?" at its start, then runs every
+// deferred effect; a newer fold B publishing DURING that stretch means A's
+// answer is stale by the time the hook would fire, and A would announce a
+// summary that is no longer the newest compaction.
+//
+// The seam used here is afterFoldSideEffectsFlush, which sits at the end of
+// fold A's flush, so fold B publishes after A's flush-start check passed. Only
+// fold B's PostCompact may run.
+func TestPostCompact_SupersessionReadAtTheHookNotFlushStart(t *testing.T) {
+	var summaries atomic.Int32
+	var bPublished atomic.Bool
+	s, postPath := newSummaryCompactionHookSession(t, "post-compact-stale-flag-cheap", func(llm.Request) llm.Response {
+		n := summaries.Add(1)
+		text := "[CONTEXT SUMMARY]\n## Progress\nfold-" + strconv.Itoa(int(n)) + "\n[END SUMMARY]"
+		return llm.Response{Message: llm.Assistant(text)}
+	})
+	seedNumberedSessionHistory(t, s, 12)
+
+	var seams atomic.Int32
+	updateSessionTestConfig(s, func(cfg *testConfig) {
+		cfg.afterFoldSideEffectsFlush = func() {
+			if seams.Add(1) != 1 {
+				return // fold B's own flush: nothing to schedule
+			}
+			// Fold A's flush-start supersession check has already run and
+			// judged A current. Publish B now, in the window before A's hook.
+			if err := s.Compact(context.Background()); err != nil {
+				t.Errorf("Compact (B): %v", err)
+				return
+			}
+			bPublished.Store(true)
+		}
+	})
+
+	// Fold A is the outermost Compact; its seam publishes B synchronously.
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact (A): %v", err)
+	}
+	if !bPublished.Load() {
+		t.Fatal("fold B never published inside fold A's flush window")
+	}
+
+	post := readCompactionHookInputs(t, postPath)
+	if len(post) != 1 {
+		t.Fatalf("PostCompact fired %d time(s), want 1 (fold B's only): fold A's flush-start supersession answer was stale by the time its hook ran: %+v",
+			len(post), post)
 	}
 	if !strings.Contains(post[0].CompactSummary, "fold-2") {
 		t.Fatalf("compact_summary = %q, want the newest fold's summary", post[0].CompactSummary)

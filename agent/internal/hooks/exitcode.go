@@ -24,7 +24,7 @@ type eventExitPolicy struct {
 // In the Claude contract, exit 2 also blocks UserPromptSubmit (erase the prompt)
 // and PreCompact (block compaction); see the full Claude table in 07
 // §"Exit-code semantics". Evener does NOT yet enforce those blocks: RunUserPromptSubmit
-// and RunPreCompact only aggregate output and have no block path at their dispatch
+// and RunPreCompactFor only aggregate output and have no block path at their dispatch
 // sites (07 marks UserPromptSubmit erase-prompt and PreCompact blocking as deferred
 // parity items). They are therefore false here rather than carrying a dead "block"
 // entry — when the dispatch sites grow a block path, flip them back and add a runner

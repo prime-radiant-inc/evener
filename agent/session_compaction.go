@@ -792,18 +792,35 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 		// PostCompact fires once per WINNING fold that actually compacted: a
 		// request-time fold publishes on every model request whether or not a
 		// layer folded anything, so actualCompaction (the staged
-		// EventContextCompaction payloads) is the gate, and the supersession
-		// check keeps an older fold's late flush silent like every other
-		// last-write-wins effect. It runs here, outside attentionMu and outside
-		// the publish transaction, so a hook that steers or delivers re-enters
-		// the lock machinery safely.
-		if s.hookRunner != nil && commit.actualCompaction && !superseded {
-			hi := s.hookInput(plugin.HookPostCompact)
-			hi.Trigger = string(commit.trigger)
-			hi.CompactSummary = commit.compactSummary
-			result := s.hookRunner.RunPostCompactFor(s.apiLogContext(context.Background()), hi, hi.Trigger)
-			for _, m := range result.UserMessages {
-				s.deliverHookUserMessage(m)
+		// EventContextCompaction payloads) is the gate. Fairness is judged
+		// HERE, not from the flag sampled above: the events, turn effects,
+		// steering writes, note commit and nudge latch in between can take
+		// long enough for a newer fold to publish, and this hook's
+		// compact_summary would then describe a fold that is no longer the
+		// newest. Re-reading the marker under the same lock the publishers
+		// write it is what keeps the report current.
+		//
+		// It runs here, outside attentionMu and outside the publish
+		// transaction, so a hook that steers or delivers re-enters the lock
+		// machinery safely. It deliberately fires BEFORE
+		// commitSkillCompactionPublication, which runs after flush: that
+		// call finishes evener's OWN delivery bookkeeping for the compaction
+		// operation (the cycle slot, the receipt's phase, the metadata save),
+		// not part of the compaction the hook reports. Everything the hook
+		// describes — the summary, the markers, the history swap — is
+		// already durable when it fires.
+		if s.hookRunner != nil && commit.actualCompaction {
+			s.mu.Lock()
+			supersededNow := commit.publishedRevision < s.newestPublishedFoldRevision
+			s.mu.Unlock()
+			if !supersededNow {
+				hi := s.hookInput(plugin.HookPostCompact)
+				hi.Trigger = string(commit.trigger)
+				hi.CompactSummary = commit.compactSummary
+				result := s.hookRunner.RunPostCompactFor(s.apiLogContext(s.foldHookContext()), hi, hi.Trigger)
+				for _, m := range result.UserMessages {
+					s.deliverHookUserMessage(m)
+				}
 			}
 		}
 	}
@@ -892,10 +909,10 @@ func consumeMatchingCompactionArtifact(existing *[]schema.Turn, turn schema.Turn
 }
 
 // lastCompactionTurnText is the compact_summary PostCompact reports: the text of
-// the fold's last summary turn, else its last checkpoint turn, else empty. A
-// summary is preferred over a checkpoint regardless of order because the
-// summarize layer runs after the checkpoint layer and replaces it when it
-// produces one; preferring the later turn is the same rule stated as intent.
+// the fold's last summary turn, else its last checkpoint turn, else empty. Kind
+// outranks position: any summary wins over any checkpoint, even one that
+// arrives later, because the summarize layer runs after the checkpoint layer
+// and a fold that reports both still reports the summary as its result.
 func lastCompactionTurnText(turns []schema.Turn) string {
 	for _, want := range []schema.TurnKind{schema.TurnSummary, schema.TurnCheckpoint} {
 		for i := len(turns) - 1; i >= 0; i-- {
@@ -905,6 +922,24 @@ func lastCompactionTurnText(turns []schema.Turn) string {
 		}
 	}
 	return ""
+}
+
+// foldHookContext is the base context for a fold's hooks that fire outside any
+// turn: the session's own lifetime, superseded by the close cascade's shared
+// budget once one is published. Close is exactly what SessionEnd does, and the
+// warning hook does the same for the same reason — a hook still running when
+// shutdown starts is interrupted by that cancellation instead of holding the
+// close for its full timeout (spec §5.4). A session built without a lifetime
+// context degrades to Background.
+func (s *Session) foldHookContext() context.Context {
+	ctx := s.sessionContext()
+	s.closeCtxMu.RLock()
+	closeCtx := s.closeCtx
+	s.closeCtxMu.RUnlock()
+	if closeCtx != nil {
+		ctx = closeCtx
+	}
+	return ctx
 }
 
 // runPreCompactHook gathers the steering messages re-injected once per fold
@@ -947,7 +982,9 @@ func (s *Session) runPreCompactHook(ctx context.Context, history *[]schema.Turn,
 	if s.hookRunner != nil {
 		hi := s.hookInput(plugin.HookPreCompact)
 		hi.Trigger = string(trigger)
-		if instructions != "" {
+		// Claude's null custom_instructions means the user passed none, so
+		// whitespace alone is absence, not an instruction.
+		if strings.TrimSpace(instructions) != "" {
 			hi.CustomInstructions = &instructions
 		}
 		compactResult := s.hookRunner.RunPreCompactFor(s.apiLogContext(ctx), hi, hi.Trigger)

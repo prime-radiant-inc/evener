@@ -533,9 +533,9 @@ func runHookRunnerProgram(t *testing.T, mode byte, token string) hookRunnerProgr
 	}
 
 	runner.RunSessionEnd(ctx, input)
-	preCompact := runner.RunPreCompact(ctx, input)
+	preCompact := runner.RunPreCompactFor(ctx, input, "auto")
 	if !reflect.DeepEqual(preCompact.UserMessages, []string{"compact user"}) {
-		t.Fatalf("RunPreCompact = %#v", preCompact)
+		t.Fatalf("RunPreCompactFor = %#v", preCompact)
 	}
 	notification := runner.RunNotification(ctx, input)
 	if !reflect.DeepEqual(notification.UserMessages, []string{"notify json"}) ||

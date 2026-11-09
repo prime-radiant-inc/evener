@@ -1112,7 +1112,7 @@ func TestRunPreCompact_Routing(t *testing.T) {
 		Matcher: "*", Type: "command", Timeout: 5,
 		Command: `echo '{"hookSpecificOutput":{"additionalContext":"to-model"}}'`,
 	})
-	r := runner.RunPreCompact(context.Background(), Input{CWD: "/tmp", HookEventName: "PreCompact"})
+	r := runner.RunPreCompactFor(context.Background(), Input{CWD: "/tmp", HookEventName: "PreCompact"}, "auto")
 	if len(r.ModelContext) != 1 || r.ModelContext[0] != "to-model" {
 		t.Fatalf("PreCompact additionalContext must reach the model; ModelContext = %v", r.ModelContext)
 	}
@@ -1123,7 +1123,7 @@ func TestRunPreCompact_PlainStdoutToUser(t *testing.T) {
 	runner.Add(plugin.HookPreCompact, plugin.RegisteredHook{
 		Matcher: "*", Type: "command", Timeout: 5, Command: `echo compacting`,
 	})
-	r := runner.RunPreCompact(context.Background(), Input{CWD: "/tmp", HookEventName: "PreCompact"})
+	r := runner.RunPreCompactFor(context.Background(), Input{CWD: "/tmp", HookEventName: "PreCompact"}, "auto")
 	if len(r.UserMessages) != 1 || r.UserMessages[0] != "compacting" {
 		t.Fatalf("PreCompact plain stdout must go to the user; UserMessages = %v", r.UserMessages)
 	}
@@ -1999,18 +1999,28 @@ func TestRunPostCompactFor_MatchesTrigger(t *testing.T) {
 }
 
 // TestRunPostCompactFor_FailureIsUserOnly proves the one output PostCompact
-// keeps: a failed hook's stderr reaches the operator, bounded to one line, and
+// keeps: a failed hook's summarized warning — which names the event, the hook,
+// and its exit code before the first stderr line — reaches the operator, and
 // never the model.
 func TestRunPostCompactFor_FailureIsUserOnly(t *testing.T) {
 	r := newRunner(nil, "")
-	r.Add(plugin.HookPostCompact, plugin.RegisteredHook{Type: "command", Timeout: 5,
+	r.Add(plugin.HookPostCompact, plugin.RegisteredHook{Type: "command", Timeout: 5, PluginName: "compact-plugin",
 		Command: `printf 'first line\nsecond line\n' >&2; exit 2`})
 	got := r.RunPostCompactFor(context.Background(), Input{}, "auto")
 	if len(got.ModelContext) != 0 {
 		t.Fatalf("PostCompact failure must not reach the model, got %v", got.ModelContext)
 	}
-	if len(got.UserMessages) != 1 || got.UserMessages[0] != "first line" {
+	if len(got.UserMessages) != 1 {
 		t.Fatalf("PostCompact failure must reach the user as one line, got %v", got.UserMessages)
+	}
+	line := got.UserMessages[0]
+	for _, want := range []string{"PostCompact hook", "compact-plugin", "exit 2", "first line"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("failure line %q must name the event, hook, exit code, and stderr; missing %q", line, want)
+		}
+	}
+	if strings.Contains(line, "second line") {
+		t.Fatalf("failure line %q must be bounded to the first output line", line)
 	}
 	if got.Stopped {
 		t.Fatalf("PostCompact has no decision control, got Stopped")

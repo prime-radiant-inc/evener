@@ -516,9 +516,13 @@ const maxHookFailureDetail = 160
 // summarizesHookFailure reports whether a FAILED hook's output belongs to the
 // operator rather than the model. SessionStart's output is the session's first
 // steering input, and SubagentStart's is the child's; neither can act on shell
-// stderr, so both arrive as one summarized warning line.
+// stderr, so both arrive as one summarized warning line. PostCompact's stdout is
+// discarded by contract, so a failure is all it has to show — and it must name
+// the hook, because a raw "context deadline exceeded" says nothing about which
+// plugin timed out.
 func summarizesHookFailure(event plugin.HookEvent) bool {
-	return event == plugin.HookSessionStart || event == plugin.HookSubagentStart
+	return event == plugin.HookSessionStart || event == plugin.HookSubagentStart ||
+		event == plugin.HookPostCompact
 }
 
 // hookFailureWarning renders a failed hook as ONE user-facing warning line: the
@@ -779,14 +783,11 @@ func (r *Runner) RunSessionEnd(ctx context.Context, input Input) {
 	r.runAll(ctx, plugin.HookSessionEnd, "", input)
 }
 
-// RunPreCompact dispatches PreCompact hooks for any trigger.
-func (r *Runner) RunPreCompact(ctx context.Context, input Input) RunResult {
-	return r.RunPreCompactFor(ctx, input, "")
-}
-
 // RunPreCompactFor dispatches PreCompact hooks and matches them on the fold's
 // trigger ("manual" for /compact, "auto" for every other publisher), the same
-// value the input carries. An empty trigger matches every hook.
+// value the input carries. There is deliberately no target-less wrapper: an
+// empty trigger matches every hook, so one would let a caller bypass the
+// manual/auto contract silently.
 func (r *Runner) RunPreCompactFor(ctx context.Context, input Input, trigger string) RunResult {
 	outputs := r.runAll(ctx, plugin.HookPreCompact, trigger, input)
 	return collectSystemMessages(plugin.HookPreCompact, outputs)
@@ -796,10 +797,10 @@ func (r *Runner) RunPreCompactFor(ctx context.Context, input Input, trigger stri
 // trigger. Claude gives this event no decision control: systemMessage,
 // additionalContext, and continue:false are all discarded, so a hook's stdout
 // never reaches the model or the operator. A FAILED hook is the exception the
-// event's contract keeps: a non-blocking error's stderr is shown to the user
-// only, one bounded line per hook. terminalSequence is still parsed by the
-// shared output parser and carried for a delivery site PostCompact does not yet
-// have.
+// event's contract keeps: its summarized warning line (event, hook identity,
+// exit code, first output line — see summarizesHookFailure) is shown to the
+// user only. terminalSequence is still parsed by the shared output parser and
+// carried for a delivery site PostCompact does not yet have.
 func (r *Runner) RunPostCompactFor(ctx context.Context, input Input, trigger string) RunResult {
 	outputs := r.runAll(ctx, plugin.HookPostCompact, trigger, input)
 	var result RunResult
@@ -808,8 +809,8 @@ func (r *Runner) RunPostCompactFor(ctx context.Context, input Input, trigger str
 			result.TerminalSequences = append(result.TerminalSequences, o.TerminalSequence)
 		}
 		if o.IsError {
-			if line := firstLine(o.SystemMessage); line != "" {
-				result.UserMessages = append(result.UserMessages, line)
+			if o.SystemMessage != "" {
+				result.UserMessages = append(result.UserMessages, o.SystemMessage)
 			}
 		}
 	}
