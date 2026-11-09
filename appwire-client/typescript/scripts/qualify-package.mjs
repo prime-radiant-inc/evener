@@ -321,7 +321,10 @@ const displayConfig = client.makeTranscriptDisplayConfig({ kind: "preset", level
 assert.equal(client.advancedEnabledCount(displayConfig), 1);
 assert.equal(client.accessibleConfigSummary(client.shippedMobileConfig), "Intent");
 assert.equal(client.accessibleConfigSummary(displayConfig), "Tools · 1 advanced");
-assert.deepEqual(client.presetContent("chat"), { toolIntent: true, toolCalls: false, reasoning: false, expandByDefault: false, thinkingOpenByDefault: false });
+assert.deepEqual(
+  client.contentVectorForConfig(client.makeTranscriptDisplayConfig({ kind: "preset", level: "chat" })),
+  { toolIntent: true, toolCalls: false, reasoning: false, expandByDefault: false, thinkingOpenByDefault: false },
+);
 assert.deepEqual(client.decodeLocalConfig(client.encodeLocalConfig(displayConfig)), displayConfig);
 assert.equal(client.resolveEffectiveConfig({ local: null, hub: client.shippedDefault("desktop") }).content.level, "tools");
 assert.equal(client.visibleCategoryInventory(displayConfig).visible.includes("tokenCounts"), true);

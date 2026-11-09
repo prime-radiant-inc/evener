@@ -11,8 +11,8 @@
 //   the next connection, so there is nothing to press.
 import {
 	type ContentVector,
+	customContentForSelection,
 	HOOK_EXIT_DETAILS,
-	presetContent,
 	type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
@@ -243,7 +243,7 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 							disabled={busy}
 							onPress={() => {
 								if (config.content.kind === "custom") return;
-								choose({ ...config, content: { kind: "custom", ...presetContent(config.content.level) } });
+								choose({ ...config, content: { kind: "custom", ...customContentForSelection(config) } });
 							}}
 						/>
 					</Group>
