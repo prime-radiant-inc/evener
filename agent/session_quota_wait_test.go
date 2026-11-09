@@ -542,3 +542,43 @@ func TestCloseStopsTheQuotaWaitTimer(t *testing.T) {
 		t.Fatal("a closed session asked for a wake at the reset")
 	}
 }
+
+// A one-shot run (`evener run`, and every delegate under it) has no human to
+// switch models and exits when its work drains, so a wait until the reset
+// could hold the process for days. It fails fast instead: a delegate's
+// generation turn meeting a usage limit with a known reset ends its run with
+// that failure, and the session does not wait.
+func TestOneShotRunFailsFastOnUsageLimit(t *testing.T) {
+	resetAt := time.Unix(1000, 0).Add(2 * time.Hour)
+	dir := t.TempDir()
+	adapter := &streamingAdapter{name: "openai", streamErr: usageLimitError(t, "openai", resetAt)}
+	c := llm.NewClient()
+	c.Register(adapter)
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	s := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{
+		StateDir:        dir,
+		LLMRetryPolicy:  &policy,
+		clock:           agenttest.NewFakeClock(),
+		TurnEndsProcess: true,
+	}))
+	sub := &subagent{id: s.id, sess: s, running: true, status: SubagentRunning, done: make(chan struct{}), nudgeEnabled: true}
+	finished := make(chan struct{})
+	go func() {
+		sub.run(context.Background(), "do the delegated work", nil)
+		close(finished)
+	}()
+	select {
+	case <-finished:
+	case <-tripwireCtx(t).Done():
+		t.Fatal("a one-shot delegate's run held on the usage limit instead of failing")
+	}
+	sub.mu.Lock()
+	status, runErr := sub.status, sub.err
+	sub.mu.Unlock()
+	if status != SubagentFailed || llm.Kind(runErr) != llm.KindQuotaExceeded {
+		t.Fatalf("one-shot delegate: status=%q err=%v, want it failed with the usage-limit error", status, runErr)
+	}
+	if s.waitingForQuota() {
+		t.Fatal("a one-shot session began a quota wait")
+	}
+}

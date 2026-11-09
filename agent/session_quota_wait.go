@@ -24,6 +24,11 @@ import (
 // Only a quota failure that names its reset time begins a wait. One that
 // does not keeps the permanent-failure pause the root attention rail already
 // takes (finishRootDelegateAttentionTurn), with no timer invented for it.
+//
+// Only a long-lived session waits. A one-shot run (TurnEndsProcess: `evener
+// run` and every delegate under it) has no human to switch models and would
+// hold its process until the reset, so its turn fails fast as any provider
+// failure does.
 type quotaWait struct {
 	// resetAt is when the provider said the allowance returns.
 	resetAt time.Time
@@ -43,10 +48,10 @@ type quotaWait struct {
 // beginQuotaWait starts waiting out a quota failure that names its reset
 // time, or restarts the wait with the latest one. It runs after the failed
 // turn recorded its failure. A reset time already past is no reason to wait:
-// the provider says the allowance is back.
+// the provider says the allowance is back, and a one-shot run never waits.
 func (s *Session) beginQuotaWait(err error) {
 	resetAt, ok := llm.UsageLimitResetAt(err)
-	if !ok || llm.Kind(err) != llm.KindQuotaExceeded {
+	if !ok || llm.Kind(err) != llm.KindQuotaExceeded || s.cfg.TurnEndsProcess {
 		return
 	}
 	now := s.sclock().Now()
@@ -127,9 +132,7 @@ func (s *Session) quotaWaitEndedFor(err error) (<-chan struct{}, bool) {
 
 // waitingForQuota reports whether a quota wait holds autonomous turns.
 func (s *Session) waitingForQuota() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.quotaWait != nil
+	return s.quotaWaitError() != nil
 }
 
 // quotaWaitError is the quota failure the session is waiting out, nil when

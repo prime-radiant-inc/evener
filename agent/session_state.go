@@ -185,10 +185,11 @@ func historyTurnFailure(history []schema.Turn) (schema.Turn, bool) {
 // While the session waits for quota only user work counts: the autonomous
 // wakes are held until the wait ends, so they cannot move the session.
 func (s *Session) sessionWorkPending() bool {
-	if s.waitingForQuota() {
-		return s.pendingQueueDepth() > 0 || s.hasRunnableClientMutationStart()
+	userWork := s.pendingQueueDepth() > 0 || s.hasRunnableClientMutationStart()
+	if userWork || s.waitingForQuota() {
+		return userWork
 	}
-	return s.pendingQueueDepth() > 0 || s.hasRunnableClientMutationStart() || s.hasPendingDelegateDeliveries() || s.pendingRootDelegateAttention() || s.hasPendingDelegateAttentionArmRetry() || s.hasPendingDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) || s.peekNotifications() > 0
+	return s.hasPendingDelegateDeliveries() || s.pendingRootDelegateAttention() || s.hasPendingDelegateAttentionArmRetry() || s.hasPendingDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) || s.peekNotifications() > 0
 }
 
 func (s *Session) hasPendingDelegateAttention() bool {
