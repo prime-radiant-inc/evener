@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -370,6 +371,19 @@ func TestRunServeResidualCoverage(t *testing.T) {
 
 	t.Run("callbacks and input", func(t *testing.T) {
 		d, args := base(t)
+		adapter := &shutdownBlockingAdapter{
+			entered:   make(chan struct{}, 1),
+			cancelled: make(chan struct{}, 1),
+			release:   make(chan struct{}),
+		}
+		var releaseOnce sync.Once
+		releaseAdapter := func() { releaseOnce.Do(func() { close(adapter.release) }) }
+		t.Cleanup(releaseAdapter)
+		d.newClient = func(string, io.Writer) (*llm.Client, func() error, error) {
+			client := llm.NewClient()
+			client.Register(adapter)
+			return client, func() error { return nil }, nil
+		}
 		var diagnostics bytes.Buffer
 		d.serveLogOut = &diagnostics
 		// --verbose is part of the fixture's coverage, but its NDJSON is not a
@@ -413,8 +427,22 @@ func TestRunServeResidualCoverage(t *testing.T) {
 			}
 			captured.input <- server.InputMessage{Text: "hello", Kind: agent.EntryUserInput}
 			close(captured.input)
-			time.Sleep(20 * time.Millisecond)
-			_ = captured.clear(context.Background(), appwire.ThreadClearParams{Ref: "local:" + sessionID, ClientMutationID: "clear", ExpectedInstanceID: sessionID})
+			select {
+			case <-adapter.entered:
+			case <-time.After(10 * time.Second):
+				t.Fatal("fixture turn never reached the provider")
+			}
+			clearDone := make(chan error, 1)
+			go func() {
+				clearDone <- captured.clear(context.Background(), appwire.ThreadClearParams{Ref: "local:" + sessionID, ClientMutationID: "clear", ExpectedInstanceID: sessionID})
+			}()
+			select {
+			case <-adapter.cancelled:
+			case <-time.After(10 * time.Second):
+				t.Fatal("clear did not cancel the fixture turn")
+			}
+			releaseAdapter()
+			<-clearDone
 			captured.shutdown()
 			return http.ErrServerClosed
 		}

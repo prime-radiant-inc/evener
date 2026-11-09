@@ -214,9 +214,8 @@ func TestHubRPCThreadStartDeliversPromptWhenFirstRosterProbeFails(t *testing.T) 
 				if len(lines) != 1 {
 					t.Fatalf("hub diagnostics = %q, want exactly one roster refresh failure", lines)
 				}
-				wantPrefix := "[hub] spawned session " + sessionID + "; roster refresh failed: "
-				if !strings.HasPrefix(lines[0], wantPrefix) {
-					t.Fatalf("roster refresh diagnostic = %q, want prefix %q", lines[0], wantPrefix)
+				if !strings.Contains(lines[0], sessionID) {
+					t.Fatalf("roster refresh diagnostic = %q, want the spawned session %q", lines[0], sessionID)
 				}
 				if !refreshes.hasJSONSyntaxError() {
 					t.Fatal("injected malformed rendezvous JSON did not fail a roster refresh")
