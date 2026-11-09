@@ -159,7 +159,7 @@ install-system: install
 ## tree into a fixture, run the install target with a synthetic HOME, and
 ## verify the installed binaries and symlinks. Skipped under -short.
 test-install:
-	go test -count=1 -run '^TestInstallHomeGeneratedHome$$' .
+	go test -count=1 -run '^TestInstallTarget$$/^GeneratedHome$$' .
 
 # build-go compiles every non-fuzz Go workspace module. Keep it separate from
 # build: the runtime binary owns the embedded frontend, while this target
