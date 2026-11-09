@@ -2,6 +2,8 @@ package hub
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,11 +39,13 @@ const (
 // reporting. A forward Position names the first withheld item; a backward
 // Position names the first served item as its exclusive boundary.
 type transcriptWindowContinuation struct {
-	Direction    transcriptWindowContinuationDirection
-	TurnID       string
-	Position     appwire.ThreadItemPosition
-	Version      uint64
-	ResumeWindow *appwire.ThreadTurnWindow
+	Direction        transcriptWindowContinuationDirection
+	TurnID           string
+	AnchorTurnID     string
+	Position         appwire.ThreadItemPosition
+	Version          uint64
+	EmptyRangeDigest string
+	ResumeWindow     *appwire.ThreadTurnWindow
 }
 
 // transcriptWindowPackOptions keeps cursor encoding and view identity outside
@@ -93,7 +97,8 @@ func transcriptWindowOptionsFor(
 				direction = appitempaging.WindowCursorDirectionForward
 			}
 			return appitempaging.EncodeWindowCursor(identity, direction, appitempaging.WindowCursor{
-				Position: continuation.Position, ItemVersion: continuation.Version, ResumeWindow: continuation.ResumeWindow,
+				AnchorTurnID: continuation.AnchorTurnID, Position: continuation.Position, ItemVersion: continuation.Version,
+				EmptyRangeDigest: continuation.EmptyRangeDigest, ResumeWindow: continuation.ResumeWindow,
 			})
 		},
 	}
@@ -238,6 +243,61 @@ type transcriptWindowCandidateTurn struct {
 	candidates []appitempaging.TranscriptItemCandidate
 }
 
+func transcriptWindowCandidateTurns(
+	result transcriptItemCandidateResult,
+	candidates []appitempaging.TranscriptItemCandidate,
+) []transcriptWindowCandidateTurn {
+	candidatesByTurn := make(map[string][]appitempaging.TranscriptItemCandidate)
+	fallbackShells := make([]appwire.Turn, 0)
+	seenFallback := make(map[string]bool)
+	for _, candidate := range candidates {
+		candidatesByTurn[candidate.TurnID] = append(candidatesByTurn[candidate.TurnID], candidate)
+		if !seenFallback[candidate.TurnID] {
+			fallbackShells = append(fallbackShells, candidate.Turn)
+			seenFallback[candidate.TurnID] = true
+		}
+	}
+
+	shells := make([]appwire.Turn, 0, len(result.TurnShells)+len(fallbackShells))
+	seenShell := make(map[string]bool, len(result.TurnShells)+len(fallbackShells))
+	for _, turn := range append(append([]appwire.Turn(nil), result.TurnShells...), fallbackShells...) {
+		if turn.ID == "" || seenShell[turn.ID] {
+			continue
+		}
+		shells = append(shells, turn)
+		seenShell[turn.ID] = true
+	}
+	shells = appitempaging.PreserveSelectedTurnShells(shells, result.TurnIDs)
+
+	turns := make([]transcriptWindowCandidateTurn, 0, len(shells))
+	for _, shell := range shells {
+		turns = append(turns, transcriptWindowCandidateTurn{
+			turn: shell, candidates: candidatesByTurn[shell.ID],
+		})
+	}
+	return turns
+}
+
+func emptyTranscriptWindowDigest(result transcriptItemCandidateResult) (string, error) {
+	turns := transcriptWindowCandidateTurns(result, result.Candidates.Candidates)
+	shells := make([]appwire.Turn, len(turns))
+	for index, turn := range turns {
+		if len(turn.candidates) != 0 {
+			return "", errors.New("empty transcript window digest includes positioned candidates")
+		}
+		shell := appwire.CloneTurn(turn.turn)
+		shell.Items = nil
+		shell.Elision = nil
+		shells[index] = shell
+	}
+	encoded, err := json.Marshal(shells)
+	if err != nil {
+		return "", fmt.Errorf("marshal empty transcript window shells: %w", err)
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:]), nil
+}
+
 func transcriptWindowBoundaryCandidate(
 	turns []transcriptWindowCandidateTurn,
 	start int,
@@ -249,6 +309,39 @@ func transcriptWindowBoundaryCandidate(
 		}
 	}
 	return appitempaging.TranscriptItemCandidate{}, errors.New("transcript window continuation has no positioned boundary item")
+}
+
+func setTranscriptWindowContinuationProof(
+	continuation *transcriptWindowContinuation,
+	turns []transcriptWindowCandidateTurn,
+	boundaryStart int,
+	boundaryEnd int,
+	resumeStart int,
+	resumeEnd int,
+) error {
+	boundary, err := transcriptWindowBoundaryCandidate(turns, boundaryStart, boundaryEnd)
+	if err != nil {
+		boundary, err = transcriptWindowBoundaryCandidate(turns, resumeStart, resumeEnd)
+	}
+	if err == nil {
+		continuation.AnchorTurnID = boundary.TurnID
+		continuation.Position = boundary.Position
+		continuation.Version = boundary.Item.Version
+		return nil
+	}
+
+	remaining := transcriptItemCandidateResult{}
+	for _, turn := range turns[resumeStart:resumeEnd] {
+		remaining.TurnIDs = append(remaining.TurnIDs, turn.turn.ID)
+		remaining.TurnShells = append(remaining.TurnShells, turn.turn)
+		remaining.Candidates.Candidates = append(remaining.Candidates.Candidates, turn.candidates...)
+	}
+	digest, err := emptyTranscriptWindowDigest(remaining)
+	if err != nil {
+		return err
+	}
+	continuation.EmptyRangeDigest = digest
+	return nil
 }
 
 type transcriptWindowSelectedItem struct {
@@ -272,6 +365,7 @@ type transcriptWindowPreparedTurn struct {
 type transcriptItemCandidateResult struct {
 	Candidates appitempaging.TranscriptItemWindow
 	TurnIDs    []string
+	TurnShells []appwire.Turn
 	Identity   appitempaging.CursorIdentity
 	Exhausted  bool
 	History    appsource.HistoryIdentity
@@ -300,9 +394,21 @@ func itemCandidateResultFromTurns(turns []appwire.Turn, olderCursor string) (tra
 			Candidates:  candidates,
 			OlderCursor: olderCursor,
 		},
-		TurnIDs:   turnIDsFromTurns(turns),
-		Exhausted: olderCursor == "",
+		TurnIDs:    turnIDsFromTurns(turns),
+		TurnShells: cloneTranscriptTurnShells(turns),
+		Exhausted:  olderCursor == "",
 	}, nil
+}
+
+func cloneTranscriptTurnShells(turns []appwire.Turn) []appwire.Turn {
+	if turns == nil {
+		return nil
+	}
+	cloned := make([]appwire.Turn, len(turns))
+	for index := range turns {
+		cloned[index] = appwire.CloneTurn(turns[index])
+	}
+	return cloned
 }
 
 func turnIDsFromTurns(turns []appwire.Turn) []string {
@@ -327,6 +433,7 @@ func sourceItemCandidateResultForRead(ctx context.Context, source appsource.Sour
 		}
 		result = transcriptItemCandidateResultFromSource(sourceResult)
 		result.TurnIDs = turnIDsFromTurns(response.Thread.Turns)
+		result.TurnShells = cloneTranscriptTurnShells(response.Thread.Turns)
 	} else {
 		var err error
 		result, err = itemCandidateResultFromReadResponse(response)
@@ -401,6 +508,7 @@ func sourceItemCandidateResultForList(ctx context.Context, source appsource.Sour
 		}
 		converted := transcriptItemCandidateResultFromSource(result)
 		converted.TurnIDs = turnIDsFromTurns(response.Data)
+		converted.TurnShells = cloneTranscriptTurnShells(response.Data)
 		return converted, nil
 	}
 	result, err := itemCandidateResultFromTurns(response.Data, response.NextCursor)
@@ -601,35 +709,7 @@ func packItemCandidates[T any](
 			effectiveBudget = transcriptWindowMaximumContentBudget
 		}
 
-		candidateTurns := make([]transcriptWindowCandidateTurn, 0, len(result.TurnIDs))
-		candidateTurnIndexes := make(map[string]int, len(result.TurnIDs))
-		for _, candidate := range candidates {
-			turnIndex, ok := candidateTurnIndexes[candidate.TurnID]
-			if !ok {
-				turnIndex = len(candidateTurns)
-				candidateTurnIndexes[candidate.TurnID] = turnIndex
-				candidateTurns = append(candidateTurns, transcriptWindowCandidateTurn{turn: candidate.Turn})
-			}
-			candidateTurns[turnIndex].candidates = append(candidateTurns[turnIndex].candidates, candidate)
-		}
-		candidateTurnShells := make([]appwire.Turn, len(candidateTurns))
-		for index := range candidateTurns {
-			candidateTurnShells[index] = candidateTurns[index].turn
-		}
-		selectedTurns := appitempaging.PreserveSelectedTurnShells(candidateTurnShells, result.TurnIDs)
-		if len(selectedTurns) != len(candidateTurns) {
-			withShells := make([]transcriptWindowCandidateTurn, 0, len(selectedTurns))
-			candidateIndex := 0
-			for _, turn := range selectedTurns {
-				if candidateIndex < len(candidateTurns) && candidateTurns[candidateIndex].turn.ID == turn.ID {
-					withShells = append(withShells, candidateTurns[candidateIndex])
-					candidateIndex++
-					continue
-				}
-				withShells = append(withShells, transcriptWindowCandidateTurn{turn: turn})
-			}
-			candidateTurns = withShells
-		}
+		candidateTurns := transcriptWindowCandidateTurns(result, candidates)
 
 		prepared := make([]transcriptWindowPreparedTurn, 0, len(candidateTurns))
 		for _, candidateTurn := range candidateTurns {
@@ -751,6 +831,7 @@ func packItemCandidates[T any](
 					cursor, cursorErr := mintTranscriptWindowContinuation(windowOptions, transcriptWindowContinuation{
 						Direction:    transcriptWindowContinuationForward,
 						TurnID:       preparedTurn.turn.ID,
+						AnchorTurnID: firstContinuation.TurnID,
 						Position:     firstContinuation.Position,
 						Version:      firstContinuation.Item.Version,
 						ResumeWindow: &appwire.ThreadTurnWindow{Turn: preparedTurn.turn.ID},
@@ -855,33 +936,28 @@ func packItemCandidates[T any](
 					windowResult.FirstWithheldTurnID = prepared[0].turn.ID
 					windowResult.LastWithheldTurnID = prepared[start-1].turn.ID
 					request.TurnID = prepared[0].turn.ID
-					boundary, boundaryErr := transcriptWindowBoundaryCandidate(candidateTurns, start, end)
-					if boundaryErr != nil {
-						return zero, boundaryErr
-					}
-					request.Position = boundary.Position
-					request.Version = boundary.Item.Version
 					request.ResumeWindow = &appwire.ThreadTurnWindow{Before: &appwire.ThreadTurnBoundary{
 						TurnID: turns[0].ID, Limit: windowResult.WithheldTurns,
 					}}
+					if proofErr := setTranscriptWindowContinuationProof(&request, candidateTurns, start, end, 0, start); proofErr != nil {
+						return zero, proofErr
+					}
 				} else if end < len(prepared) {
 					windowResult.FirstWithheldTurnID = prepared[end].turn.ID
 					windowResult.LastWithheldTurnID = prepared[len(prepared)-1].turn.ID
 					request.TurnID = prepared[end].turn.ID
-					boundary, boundaryErr := transcriptWindowBoundaryCandidate(candidateTurns, end, len(candidateTurns))
-					if boundaryErr != nil {
-						return zero, boundaryErr
-					}
-					request.Position = boundary.Position
-					request.Version = boundary.Item.Version
 					request.ResumeWindow = &appwire.ThreadTurnWindow{
 						Since: turns[len(turns)-1].ID, Limit: windowResult.WithheldTurns,
+					}
+					if proofErr := setTranscriptWindowContinuationProof(&request, candidateTurns, end, len(candidateTurns), end, len(candidateTurns)); proofErr != nil {
+						return zero, proofErr
 					}
 				} else {
 					// An incomplete latest source page proves how many requested turns
 					// are absent but cannot name their IDs. Continue immediately before
 					// the oldest served position through the source-owned identity.
 					request.TurnID = prepared[0].turn.ID
+					request.AnchorTurnID = candidateTurns[0].candidates[0].TurnID
 					request.Position = candidateTurns[0].candidates[0].Position
 					request.Version = candidateTurns[0].candidates[0].Item.Version
 					request.ResumeWindow = &appwire.ThreadTurnWindow{Before: &appwire.ThreadTurnBoundary{
@@ -911,7 +987,7 @@ func packItemCandidates[T any](
 			}
 			if direction == transcriptWindowContinuationForward {
 				end--
-				for end > start && len(candidateTurns[end].candidates) == 0 {
+				for end > start+1 && len(candidateTurns[end].candidates) == 0 {
 					end--
 				}
 			} else {
