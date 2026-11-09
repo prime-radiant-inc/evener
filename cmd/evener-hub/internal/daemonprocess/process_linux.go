@@ -102,11 +102,8 @@ func (p *linuxProcess) inspect(t Target) (identity, error) {
 	if err != nil {
 		return identity{}, err
 	}
-	var boot, wall unix.Timespec
-	if err := unix.ClockGettime(unix.CLOCK_BOOTTIME, &boot); err != nil {
-		return identity{}, err
-	}
-	if err := unix.ClockGettime(unix.CLOCK_REALTIME, &wall); err != nil {
+	base, err := linuxBootEpoch()
+	if err != nil {
 		return identity{}, err
 	}
 	// The end of the kernel's reported clock tick is a conservative upper bound
@@ -115,7 +112,6 @@ func (p *linuxProcess) inspect(t Target) (identity, error) {
 	if err != nil {
 		return identity{}, err
 	}
-	base := time.Unix(wall.Sec, wall.Nsec).Add(-time.Duration(boot.Nano()))
 	started, startedLower := base.Add(upper), base.Add(lower)
 	// A retiring target never needs log ownership (judge doesn't read it),
 	// and a retiring daemon is closing its files, so scanning them could
@@ -135,6 +131,49 @@ func (p *linuxProcess) inspect(t Target) (identity, error) {
 		return identity{}, ErrExited
 	}
 	return identity{generation: strconv.FormatUint(ticks, 10), uid: int(procStat.Uid), startedAt: started, startedAtLower: startedLower, argv: strings.Split(strings.TrimSuffix(string(argv), "\x00"), "\x00"), ownsLog: owns, exiting: exiting}, nil
+}
+
+// linuxClockReadAttempts bounds how many clock pairs linuxBootEpoch reads
+// before giving up on a quiet one.
+const linuxClockReadAttempts = 8
+
+// linuxClockGettime reads a system clock. Tests replace it to stage a
+// preempted read.
+var linuxClockGettime = unix.ClockGettime
+
+// linuxBootEpoch is the wall-clock instant CLOCK_BOOTTIME counts from,
+// estimated from one CLOCK_BOOTTIME read and one CLOCK_REALTIME read. The
+// reads are sequential, so a preempted pair over-estimates the epoch by the
+// gap between them; that inflates the process start estimate and can report
+// a live daemon as possibly newer than its rendezvous (#5746). Retry until
+// the pair is read within one clock tick - the start's own resolution - and
+// refuse rather than vouch with a bound the read cannot justify.
+func linuxBootEpoch() (time.Time, error) {
+	hz, err := linuxClockHZ()
+	if err != nil {
+		return time.Time{}, err
+	}
+	tick, err := linuxTicksDuration(1, hz)
+	if err != nil {
+		return time.Time{}, err
+	}
+	for range linuxClockReadAttempts {
+		var before, wall, after unix.Timespec
+		if err := linuxClockGettime(unix.CLOCK_BOOTTIME, &before); err != nil {
+			return time.Time{}, err
+		}
+		if err := linuxClockGettime(unix.CLOCK_REALTIME, &wall); err != nil {
+			return time.Time{}, err
+		}
+		if err := linuxClockGettime(unix.CLOCK_BOOTTIME, &after); err != nil {
+			return time.Time{}, err
+		}
+		if time.Duration(after.Nano()-before.Nano()) > tick {
+			continue
+		}
+		return time.Unix(wall.Sec, wall.Nsec).Add(-time.Duration(before.Nano())), nil
+	}
+	return time.Time{}, errors.New("daemon process start clock read interrupted")
 }
 
 // linuxPFExiting is the kernel's PF_EXITING task flag: set when a process

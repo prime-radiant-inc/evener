@@ -5,11 +5,99 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
 	"golang.org/x/sys/unix"
 )
+
+// A preempted clock pair must not become the start estimate: retry, and use
+// the first pair whose two CLOCK_BOOTTIME reads are within one tick.
+func TestLinuxBootEpochBoundsClockReadGap(t *testing.T) {
+	hz, err := linuxClockHZ()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tick, err := linuxTicksDuration(1, hz)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wall := time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
+	bootReads := []time.Duration{0, 2 * tick, 3 * tick, 3*tick + time.Microsecond}
+	next := 0
+	calls := 0
+	previous := linuxClockGettime
+	t.Cleanup(func() { linuxClockGettime = previous })
+	linuxClockGettime = func(clock int32, ts *unix.Timespec) error {
+		calls++
+		switch clock {
+		case unix.CLOCK_BOOTTIME:
+			if next >= len(bootReads) {
+				t.Fatalf("boot clock read %d has no staged value", next)
+			}
+			*ts = unix.NsecToTimespec(int64(bootReads[next]))
+			next++
+		case unix.CLOCK_REALTIME:
+			*ts = unix.NsecToTimespec(wall.UnixNano())
+		default:
+			t.Fatalf("unexpected clock id %d", clock)
+		}
+		return nil
+	}
+	got, err := linuxBootEpoch()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := wall.Add(-3 * tick); !got.Equal(want) {
+		t.Fatalf("boot epoch = %v, want the quiet pair's %v", got, want)
+	}
+	if calls != 6 {
+		t.Fatalf("clock reads = %d, want 6 (one preempted pair, then a quiet one)", calls)
+	}
+}
+
+// Every pair preempted past the tick leaves the start unbounded; refusing is
+// the only answer that cannot vouch for the wrong process.
+func TestLinuxBootEpochRefusesPersistentPreemption(t *testing.T) {
+	hz, err := linuxClockHZ()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tick, err := linuxTicksDuration(1, hz)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := 0
+	previous := linuxClockGettime
+	t.Cleanup(func() { linuxClockGettime = previous })
+	linuxClockGettime = func(clock int32, ts *unix.Timespec) error {
+		if clock != unix.CLOCK_BOOTTIME && clock != unix.CLOCK_REALTIME {
+			t.Fatalf("unexpected clock id %d", clock)
+		}
+		if clock == unix.CLOCK_REALTIME {
+			*ts = unix.NsecToTimespec(time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC).UnixNano())
+			return nil
+		}
+		value := time.Duration(next/2) * 3 * tick
+		if next%2 == 1 {
+			value += tick + time.Millisecond
+		}
+		*ts = unix.NsecToTimespec(int64(value))
+		next++
+		return nil
+	}
+	got, err := linuxBootEpoch()
+	if err == nil {
+		t.Fatal("vouched with a start bound the clock reads could not justify")
+	}
+	if !got.IsZero() {
+		t.Fatalf("boot epoch = %v with an error, want the zero time", got)
+	}
+	if want := 2 * linuxClockReadAttempts; next != want {
+		t.Fatalf("boot clock reads = %d, want %d (every attempt preempted)", next, want)
+	}
+}
 
 func TestLinuxProcessExitedHandlesInterruptedPoll(t *testing.T) {
 	realErr := errors.New("poll failed")
@@ -88,7 +176,14 @@ func TestLinuxClockTicks(t *testing.T) {
 }
 
 // The fixture publishes its rendezvous after the kernel start tick has ended.
-// A Go test helper can start inside that tick, unlike a fully initialized daemon.
+// A Go test helper can start inside that tick, unlike a fully initialized
+// daemon, so its start is only settled when the next tick begins. The wait
+// runs on CLOCK_BOOTTIME, the clock the start tick counts, not on a wall-clock
+// conversion of it: linuxBootEpoch bounds the gap between its two clock reads
+// to one tick, so an estimate of the start cannot pass a rendezvous read one
+// tick after the start tick ends. The old wall-clock wait sampled the
+// conversion itself, and a preempted read (tens of milliseconds under load)
+// pushed the estimate past the rendezvous (#5746).
 func fixtureRendezvousTime(t *testing.T, target Target) time.Time {
 	t.Helper()
 	h, err := openLinuxProcess(target.PID)
@@ -100,12 +195,36 @@ func fixtureRendezvousTime(t *testing.T, target Target) time.Time {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if delay := time.Until(facts.startedAt); delay > 0 {
-		timer := time.NewTimer(delay)
-		defer timer.Stop()
-		<-timer.C
+	ticks, err := strconv.ParseUint(facts.generation, 10, 64)
+	if err != nil {
+		t.Fatalf("parse process start ticks %q: %v", facts.generation, err)
 	}
-	return time.Now()
+	hz, err := linuxClockHZ()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, upper, err := linuxStartOffsetBounds(ticks, hz)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tick, err := linuxTicksDuration(1, hz)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settle := upper + tick
+	for {
+		var boot unix.Timespec
+		if err := unix.ClockGettime(unix.CLOCK_BOOTTIME, &boot); err != nil {
+			t.Fatal(err)
+		}
+		remaining := settle - time.Duration(boot.Nano())
+		if remaining <= 0 {
+			return time.Now()
+		}
+		timer := time.NewTimer(remaining)
+		<-timer.C
+		timer.Stop()
+	}
 }
 
 func TestLinuxStartOffsetLargeTicks(t *testing.T) {
