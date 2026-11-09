@@ -29,11 +29,9 @@ func IsolateProcess() (remove func(), err error) {
 	if err != nil {
 		return nil, err
 	}
-	remove = func() { _ = os.RemoveAll(dir) }
 	defer func() {
 		if err != nil {
-			remove()
-			remove = nil
+			_ = os.RemoveAll(dir)
 		}
 	}()
 
@@ -56,7 +54,10 @@ func IsolateProcess() (remove func(), err error) {
 	if err := os.Setenv("GIT_CONFIG_GLOBAL", path); err != nil {
 		return nil, err
 	}
-	return remove, os.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	if err := os.Setenv("GIT_CONFIG_NOSYSTEM", "1"); err != nil {
+		return nil, err
+	}
+	return func() { _ = os.RemoveAll(dir) }, nil
 }
 
 // quiescentEnvironment injects the quiescent settings through git's
