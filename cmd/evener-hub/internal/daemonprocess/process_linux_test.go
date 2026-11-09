@@ -25,6 +25,21 @@ func fixtureClockTick(t *testing.T) time.Duration {
 	return tick
 }
 
+// linuxStartSettle is the boot-time instant after which a rendezvous for a
+// process started at ticks cannot be read as older than the process: the end
+// of the start tick plus the largest read gap linuxBootEpoch accepts.
+func linuxStartSettle(ticks, hz uint64) (time.Duration, error) {
+	_, upper, err := linuxStartOffsetBounds(ticks, hz)
+	if err != nil {
+		return 0, err
+	}
+	tick, err := linuxTicksDuration(1, hz)
+	if err != nil {
+		return 0, err
+	}
+	return upper + linuxBootEpochGapTicks*tick, nil
+}
+
 // stagedClock answers linuxBootEpoch's clock reads from bootReads and a fixed
 // wall time, failing the test on an unstaged read. calls counts every read.
 func stagedClock(t *testing.T, bootReads []time.Duration, wall time.Time, calls *int) func(int32, *unix.Timespec) error {

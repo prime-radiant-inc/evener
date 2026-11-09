@@ -189,21 +189,6 @@ func linuxBootEpoch(get func(int32, *unix.Timespec) error, tick time.Duration) (
 	return time.Time{}, errors.New("daemon process start clock read interrupted")
 }
 
-// linuxStartSettle is the boot-time instant after which a rendezvous for a
-// process started at ticks cannot be read as older than the process: the end
-// of the start tick plus the largest read gap linuxBootEpoch accepts.
-func linuxStartSettle(ticks, hz uint64) (time.Duration, error) {
-	_, upper, err := linuxStartOffsetBounds(ticks, hz)
-	if err != nil {
-		return 0, err
-	}
-	tick, err := linuxTicksDuration(1, hz)
-	if err != nil {
-		return 0, err
-	}
-	return upper + linuxBootEpochGapTicks*tick, nil
-}
-
 // linuxPFExiting is the kernel's PF_EXITING task flag: set when a process
 // begins exiting, before its pidfd polls readable.
 const linuxPFExiting = 0x4
