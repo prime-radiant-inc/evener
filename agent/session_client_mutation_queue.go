@@ -796,6 +796,14 @@ func (s *Session) AcceptClientMutationSteerAs(params appwire.TurnSteerParams, ac
 	if err != nil {
 		return appwire.TurnSteerResponse{}, err
 	}
+	// Only a FRESH application unparks: replay re-runs no accept callback, so
+	// it releases no hold, and a Stop that landed after the original steer
+	// must keep the attention rail silent. A fresh steer is a re-engagement
+	// like turn/start, so the deferred root attention re-arms with it
+	// (lifecycle ruling 2026-11-09, issue #191).
+	if lookup.Disposition != clientMutationDispositionReplayed {
+		s.unparkRootDelegateAttention()
+	}
 	if lookup.Disposition == clientMutationDispositionReplayed {
 		var replayed appwire.TurnSteerResponse
 		if err := replayClientMutation(lookup.Record, &replayed, &replayed.Receipt); err != nil {
