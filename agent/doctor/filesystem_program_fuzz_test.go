@@ -3,6 +3,7 @@
 package doctor
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"io"

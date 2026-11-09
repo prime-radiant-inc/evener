@@ -3,6 +3,7 @@
 package schema
 
 import (
+	"context"
 	"errors"
 	"os"
 	"testing"
@@ -44,7 +45,7 @@ func FuzzSchemaPersistenceFaultProgram(f *testing.F) {
 		if err := mem.MkdirAll("/state/sessions/nested", 0o755); err != nil {
 			t.Fatalf("write directory fixture: %v", err)
 		}
-		if metas, failures, err := listSessionMetasFSWithErrors(mem, "/state"); err != nil || len(metas) != 1 || metas[0].ID != id || len(failures) != 0 {
+		if metas, failures, err := listSessionMetasFSWithErrors(context.Background(), mem, "/state"); err != nil || len(metas) != 1 || metas[0].ID != id || len(failures) != 0 {
 			t.Fatalf("list valid metas = %+v failures=%+v, %v", metas, failures, err)
 		}
 
@@ -75,7 +76,7 @@ func FuzzSchemaPersistenceFaultProgram(f *testing.F) {
 		marshalSessionMeta = oldMarshal
 
 		readSentinel := errors.New("read-dir fault")
-		if _, _, err := listSessionMetasFSWithErrors(schemaFuzzFaultFS{Fs: afero.NewMemMapFs(), openErr: readSentinel}, "/state"); !errors.Is(err, readSentinel) {
+		if _, _, err := listSessionMetasFSWithErrors(context.Background(), schemaFuzzFaultFS{Fs: afero.NewMemMapFs(), openErr: readSentinel}, "/state"); !errors.Is(err, readSentinel) {
 			t.Fatalf("read-dir fault = %v", err)
 		}
 
