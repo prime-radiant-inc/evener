@@ -321,6 +321,33 @@ func TestE2E_VoiceReconnectRetriesRelayOutageBeforeReady(t *testing.T) {
 	f.speechRequest(t, f.openSpeaker(t), start, "RELAY-CUT-OUTPUT-91")
 }
 
+// A retry that blocks past the retry budget must not leave the device waiting
+// for ready: the budget ends it and the device is told the session is
+// unavailable, so it can reconnect.
+func TestE2E_VoiceReconnectReportsRelayOutageOutlastingRetryBudget(t *testing.T) {
+	f := newVoiceCorrectionStack(t)
+	var reads atomic.Int32
+	_, _, addr := voiceStopRecoveryServer(t, f, nil, false, func(ctx context.Context, params appwire.ThreadReadParams) error {
+		if bridge, _ := ctx.Value(voicePresentationContextKey{}).(bool); !bridge || !params.Subscribe {
+			return nil
+		}
+		if reads.Add(1) == 1 {
+			return appwire.RetryableSessionUnavailable("relay connection ended before route publication")
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	conn := voiceJourneyConnect(f.ctx, t, "ws://"+addr+f.armed.SocketPath, f.headers)
+	t.Cleanup(func() { _ = conn.CloseNow() })
+	device := realtimePeer{conn: conn, ctx: f.ctx, t: t}
+	if event := device.read(); event["type"] != "error" || event["code"] != "session_unavailable" {
+		t.Fatalf("blocked retry answered the device with %v", event)
+	}
+	if reads.Load() != 2 {
+		t.Fatalf("baseline reads = %d, want the cut read and one blocked retry", reads.Load())
+	}
+}
+
 func TestVoicePlaybackFenceRejectsUnrepresentableGeneration(t *testing.T) {
 	bridge := &voiceBridge{generation: 1}
 	if err := bridge.interruptSpeech(voiceControl{Generation: 1 << 53}); !errors.Is(err, hubcore.ErrVoiceInvalid) {

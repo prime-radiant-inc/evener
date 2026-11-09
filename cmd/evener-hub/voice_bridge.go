@@ -439,23 +439,32 @@ func (b *voiceBridge) readControls(controls chan<- voiceControl) {
 // readBaseline subscribes the bridge to its bound session. A replaced socket's
 // subscription can retire under this read, and the relay reports that cut as
 // a retryable outage, not a verdict on the session; it is read again within
-// the hub's live-read retry budget before the device is told otherwise.
+// the hub's live-read retry budget before the device is told otherwise. A
+// retry the budget ends keeps the outage as the verdict, so the device learns
+// of it and reconnects instead of waiting on a blocked read.
 func (b *voiceBridge) readBaseline() (appwire.ThreadReadResponse, error) {
 	params := appwire.ThreadReadParams{Ref: b.binding.Ref, IncludeTurns: true, Subscribe: true, ItemLimit: appwire.TranscriptItemPageLimit}
-	deadline := time.Now().Add(liveReadRetryBudget)
-	for {
-		read, err := b.client.ThreadRead(b.ctx, params)
-		if !voiceRelayOutage(err) || !time.Now().Before(deadline) {
-			return read, err
-		}
+	read, err := b.client.ThreadRead(b.ctx, params)
+	if !voiceRelayOutage(err) {
+		return read, err
+	}
+	budget, cancel := context.WithTimeout(b.ctx, liveReadRetryBudget)
+	defer cancel()
+	for voiceRelayOutage(err) {
 		retry := time.NewTimer(liveReadRetryDelay)
 		select {
 		case <-retry.C:
-		case <-b.ctx.Done():
+		case <-budget.Done():
 			retry.Stop()
 			return read, err
 		}
+		next, nextErr := b.client.ThreadRead(budget, params)
+		if nextErr != nil && budget.Err() != nil {
+			return read, err
+		}
+		read, err = next, nextErr
 	}
+	return read, err
 }
 
 func (b *voiceBridge) close() {
