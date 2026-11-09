@@ -45,8 +45,13 @@ const (
 // where it runs (see runWebGate).
 func newBrowserGate(slots int, buildFrontend bool) *webGate {
 	return &webGate{
-		name:          "web-browser-guards",
-		checks:        browserGuards,
+		name:   "web-browser-guards",
+		checks: browserGuards,
+		// skillguard is the longest guard: starting it first lets a two-slot
+		// lane overlap it with the short guards instead of queueing it behind
+		// every one of them (#3634). Verdicts still print in browserGuards
+		// order, and the build fence still gates it.
+		launchFirst:   skillGuard,
 		spec:          browserGuardSpec,
 		slots:         slots,
 		buildFrontend: buildFrontend,
