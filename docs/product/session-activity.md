@@ -119,6 +119,11 @@ Background attention paused by a permanent provider failure is not live work
 while no fresh wake or paced retry is armed: the session keeps its own failure
 presentation until a new delegate event, a sent message, a model switch, or
 another re-engagement re-arms delivery.
+A usage-limit failure that names its reset time holds every notification and
+goal wake instead, fresh delegate events included: the session keeps its failure
+presentation, which says when it resumes, until the reset, a model switch, or a
+sent message that the provider accepts. At the reset or switch one notification
+turn carries everything held, and an active goal continues after it.
 
 Question resolution returns to working presentation while children run. Once
 the last running child settles, each client resumes its normal parent-state and

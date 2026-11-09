@@ -669,7 +669,27 @@ Preserve the goal and completed work, show a quiet and accurate waiting status,
 and automatically continue when the provider recovers, even after a long outage.
 Waiting alone does not expire the user's instruction. Recheck cancellation,
 applicable budgets and newer instructions before resuming, so recovery continues
-the user's current intent. Implementation remains pending.
+the user's current intent.
+
+**Implemented for usage limits with a known reset.** A usage-limit failure
+that names its reset time, with no eligible fallback model, puts the session
+into a quota wait ([session quota wait](../../agent/session_quota_wait.go)).
+The active goal stays active; no provider request is made for notifications
+or goal continuations while waiting, and they stay pending; the wait ends at
+the reset, on a model switch, or when a user message the provider accepts
+succeeds, and the held work is delivered once with the goal continuing after
+it. A cleared goal does not resume. The session's failure summary carries the
+resume time to the web rail and phone Board. Behavior tests:
+`TestUsageLimitHoldsNotificationsUntilRecovery`,
+`TestUsageLimitKeepsGoalWaiting`,
+`TestModelSwitchWhileWaitingForQuotaResumesImmediately`,
+`TestUserMessageWhileWaitingForQuotaRetriesOnce` and
+`TestWaitingForQuotaIsVisibleInSessionState`. The wait is in-memory: after a
+daemon restart the first autonomous wake tries the provider once and, still
+limited, waits again.
+
+**Still pending.** Other temporary provider failures (an outage outlasting the
+transport retries, or a usage limit with no reset time) still block the goal.
 
 **Acceptance.** Let a temporary scripted provider failure persist well beyond
 normal retries, then heal it. Requests remain paced during the outage,
