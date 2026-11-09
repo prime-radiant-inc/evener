@@ -1529,7 +1529,7 @@ type communicateResult struct {
 	updated    bool // non-terminal communicate (end_turn=false) was invoked this turn
 	text       string
 	reply      string
-	output     string // canonical structured output (CommunicateOutput)
+	output     string // canonical structured output (communicateOutput)
 	structured any    // raw args["output"] object before communicate canonicalization
 	endReason  string // why the terminal call ended the turn (tool.CommunicateEndReasons); "" on a delegate
 }
