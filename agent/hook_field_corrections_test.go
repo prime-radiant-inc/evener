@@ -288,3 +288,98 @@ func TestNotification_CarriesTypeAndTitle(t *testing.T) {
 		t.Errorf("title = %v, want the warning's title", got)
 	}
 }
+
+// sessionEndReasonProbe closes one session through the daemon's shutdown path
+// (CloseForShutdown) and reports which reason hooks fired and what reason the
+// hook input carried.
+func sessionEndReasonProbe(t *testing.T, seed func(*Session)) (promptExit, other bool, captured []map[string]any) {
+	t.Helper()
+	dir := t.TempDir()
+	stdin := filepath.Join(dir, "session-end-input.jsonl")
+	promptMarker := filepath.Join(dir, "prompt-input-exit-matched")
+	otherMarker := filepath.Join(dir, "other-matched")
+	runner := hooks.NewRunner(nil, "")
+	runner.Add(plugin.HookSessionEnd, plugin.RegisteredHook{
+		Matcher: "*", Type: "command", Timeout: 5,
+		Command: appendStdinHook(stdin),
+	})
+	runner.Add(plugin.HookSessionEnd, plugin.RegisteredHook{
+		Matcher: "prompt_input_exit", Type: "command", Timeout: 5,
+		Command: "touch " + shellquote.Literal(promptMarker),
+	})
+	runner.Add(plugin.HookSessionEnd, plugin.RegisteredHook{
+		Matcher: "other", Type: "command", Timeout: 5,
+		Command: "touch " + shellquote.Literal(otherMarker),
+	})
+	sess := newSession(t)
+	sess.hookRunner = runner
+	drainSessionEvents(sess)
+	if seed != nil {
+		seed(sess)
+	}
+	sess.CloseForShutdown()
+	_, promptErr := os.Stat(promptMarker)
+	_, otherErr := os.Stat(otherMarker)
+	return promptErr == nil, otherErr == nil, decodeHookCapture(t, stdin)
+}
+
+// TestSessionEnd_PromptInputExitNeedsAnIdleShutdown proves Claude's
+// prompt_input_exit is only claimed where evener can prove it: the daemon's
+// shutdown close of an idle session. An idle shutdown fires the
+// prompt_input_exit hook and not the other hook; a shutdown with work still in
+// flight (a pending ask, or a running job) fires the other hook and not the
+// prompt_input_exit one, because the user did not exit a prompt — the session
+// died under work.
+func TestSessionEnd_PromptInputExitNeedsAnIdleShutdown(t *testing.T) {
+	t.Parallel()
+
+	t.Run("idle", func(t *testing.T) {
+		promptExit, other, captured := sessionEndReasonProbe(t, nil)
+		if !promptExit || other {
+			t.Fatalf("an idle shutdown fired prompt_input_exit=%v other=%v, want only prompt_input_exit", promptExit, other)
+		}
+		if len(captured) != 1 {
+			t.Fatalf("SessionEnd ran %d time(s), want 1", len(captured))
+		}
+		if got, _ := captured[0]["reason"].(string); got != "prompt_input_exit" {
+			t.Errorf("reason = %q, want prompt_input_exit", got)
+		}
+	})
+
+	t.Run("pending ask", func(t *testing.T) {
+		promptExit, other, captured := sessionEndReasonProbe(t, func(s *Session) {
+			s.mu.Lock()
+			s.setAskPendingLocked([]askQuestion{{Question: "which database?"}})
+			s.mu.Unlock()
+		})
+		if promptExit || !other {
+			t.Fatalf("a shutdown with a pending ask fired prompt_input_exit=%v other=%v, want only other", promptExit, other)
+		}
+		if len(captured) != 1 {
+			t.Fatalf("SessionEnd ran %d time(s), want 1", len(captured))
+		}
+		if got, _ := captured[0]["reason"].(string); got != "other" {
+			t.Errorf("reason = %q, want other", got)
+		}
+	})
+
+	t.Run("running job", func(t *testing.T) {
+		promptExit, other, captured := sessionEndReasonProbe(t, func(s *Session) {
+			// A zero grace keeps the close's own wait from spending its window;
+			// the assertion is about the reason sampled before teardown.
+			s.jobManager.closeGrace = 0
+			if _, err := s.jobManager.createShell(createShellOpts{Command: "sleep 30"}); err != nil {
+				t.Fatalf("create running job: %v", err)
+			}
+		})
+		if promptExit || !other {
+			t.Fatalf("a shutdown with a running job fired prompt_input_exit=%v other=%v, want only other", promptExit, other)
+		}
+		if len(captured) != 1 {
+			t.Fatalf("SessionEnd ran %d time(s), want 1", len(captured))
+		}
+		if got, _ := captured[0]["reason"].(string); got != "other" {
+			t.Errorf("reason = %q, want other", got)
+		}
+	})
+}

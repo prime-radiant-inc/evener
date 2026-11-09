@@ -1803,6 +1803,38 @@ func TestRunSessionEndFor_MatchesReason(t *testing.T) {
 	}
 }
 
+// TestRunSessionEndFor_MatchesPromptInputExit proves the shutdown close's reason
+// is a matcher target too, and that the never-sent words stay separate from it.
+func TestRunSessionEndFor_MatchesPromptInputExit(t *testing.T) {
+	dir := t.TempDir()
+	promptExit := filepath.Join(dir, "prompt-input-exit")
+	resume := filepath.Join(dir, "resume")
+	logout := filepath.Join(dir, "logout")
+	r := newRunner(nil, "")
+	r.Add(plugin.HookSessionEnd, plugin.RegisteredHook{
+		Matcher: "prompt_input_exit", Type: "command", Timeout: 5,
+		Command: "touch " + shellquote.Literal(promptExit),
+	})
+	r.Add(plugin.HookSessionEnd, plugin.RegisteredHook{
+		Matcher: "resume", Type: "command", Timeout: 5,
+		Command: "touch " + shellquote.Literal(resume),
+	})
+	r.Add(plugin.HookSessionEnd, plugin.RegisteredHook{
+		Matcher: "logout", Type: "command", Timeout: 5,
+		Command: "touch " + shellquote.Literal(logout),
+	})
+
+	r.RunSessionEndFor(context.Background(), Input{HookEventName: "SessionEnd", Reason: "prompt_input_exit"}, "prompt_input_exit")
+	if _, err := os.Stat(promptExit); err != nil {
+		t.Fatalf("the prompt_input_exit-matched hook did not fire: %v", err)
+	}
+	for name, path := range map[string]string{"resume": resume, "logout": logout} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("a %s-matched hook fired for prompt_input_exit; stat err = %v", name, err)
+		}
+	}
+}
+
 // TestRunNotification_MatchesNotificationType proves Notification's matcher
 // target is the input's notification_type: a hook for the emitted type fires and
 // one for a Claude type evener never emits does not.

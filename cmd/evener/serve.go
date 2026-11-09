@@ -2015,8 +2015,9 @@ func closeSupersededSession(sess *agent.Session, shutdownClaimed bool) {
 		return
 	}
 	// This close IS a clear: a concurrent thread/clear replaced this identity,
-	// which is the one session end reason evener can prove. A shutdown-claimed
-	// session was already closed by CloseForShutdown and reports no reason.
+	// which is the one reason only this path can prove. A shutdown-claimed
+	// session was already closed by CloseForShutdown, whose own reason
+	// (prompt_input_exit when idle, else other) belongs to that first close.
 	sess.CloseWithReason("clear")
 }
 

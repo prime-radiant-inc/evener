@@ -107,8 +107,14 @@ func (s *Session) CloseWithReason(reason string) {
 // CloseForShutdown closes the session with a terminal lifecycle boundary.
 // A cancelled in-flight turn may already have published an interrupted idle
 // boundary; that boundary must not suppress the session's closed notification.
+//
+// The close reports Claude's "prompt_input_exit": a daemon shutdown while the
+// user's prompt was up is the one provable form of the user exiting a session.
+// releaseRuntimeOnce downgrades it to "other" when the session still had work in
+// flight (a pending ask, an in-flight turn, a running job or delegate), because
+// then the user did not exit a prompt — the session died under work.
 func (s *Session) CloseForShutdown() {
-	s.close(context.Background(), closeOptions{cleanupEnv: true, forceTerminal: true})
+	s.close(context.Background(), closeOptions{cleanupEnv: true, forceTerminal: true, reason: sessionEndPromptInputExit})
 }
 
 type closeOptions struct {
@@ -130,15 +136,52 @@ var claudeSessionEndReasons = map[string]bool{
 	"other":             true,
 }
 
+// sessionEndPromptInputExit is Claude's reason for a session the user ended
+// while prompt input was up. The daemon's shutdown close reports it when the
+// session is provably idle.
+const sessionEndPromptInputExit = "prompt_input_exit"
+
 // claudeSessionEndReason maps a caller's reason onto Claude's vocabulary. Evener
-// can prove only "clear"; an empty or unrecognized reason is "other" rather than
-// a word a hook would act on.
+// proves two of these words: "clear" (a thread clear replaced this identity) and
+// "prompt_input_exit" (a shutdown close with the session idle and no work in
+// flight). "resume" and "logout" are accepted here but never sent by any caller,
+// because evener has no resume/logout event to prove them from. An empty or
+// unrecognized reason is "other" rather than a word a hook would act on.
 func claudeSessionEndReason(reason string) string {
 	trimmed := strings.TrimSpace(reason)
 	if claudeSessionEndReasons[trimmed] {
 		return trimmed
 	}
 	return "other"
+}
+
+// idleForPromptExit reports whether the session is idle enough for Claude's
+// "prompt_input_exit" to be true: no pending ask, no in-flight turn, and no
+// running job or delegate. It reads every facet before releaseRuntimeOnce
+// mutates any of them, and holds no session lock of its own — the helpers it
+// calls each take the lock they need.
+func (s *Session) idleForPromptExit() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	idle := s.state != SessionProcessing && !s.closing && len(s.askPending) == 0
+	s.mu.Unlock()
+	if !idle {
+		return false
+	}
+	// The same job/delegate gate the idle-runtime release uses
+	// (idleReleasePregatesClear): a running job, a pending terminal flush, or a
+	// watch send still owed is work the session owns.
+	if s.jobManager != nil && (s.jobManager.hasPendingWatchSends() || s.jobManager.hasRuntimeObligations()) {
+		return false
+	}
+	if s.subagents != nil && s.subagents.hasRunningChildren() {
+		return false
+	}
+	// Queued input, undelivered notifications, and undealt attention are work
+	// the session owns, so the prompt was not the only thing left standing.
+	return !s.sessionWorkPending()
 }
 
 // releaseRuntime runs the session's single one-time teardown under an explicit
@@ -452,6 +495,12 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 	retirement := policy == releaseRetirement
 	cleanupEnv := options.cleanupEnv
 	emitTerminal := options.forceTerminal
+	// Sampled before step 1 mutates state and closing: a shutdown close may claim
+	// prompt_input_exit only if the session was idle at that instant.
+	sessionEndReason := claudeSessionEndReason(options.reason)
+	if sessionEndReason == sessionEndPromptInputExit && !s.idleForPromptExit() {
+		sessionEndReason = "other"
+	}
 	var releaseErr error
 	{
 		// One budget per close cascade (spec §P0, Implementation-order item 4):
@@ -716,10 +765,9 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 			// SessionEnd hooks (best-effort, bounded timeout)
 			if s.hookRunner != nil {
 				hookCtx, hookCancel := context.WithTimeout(context.Background(), 10*time.Second)
-				reason := claudeSessionEndReason(options.reason)
 				in := s.hookInput(plugin.HookSessionEnd)
-				in.Reason = reason
-				s.hookRunner.RunSessionEndFor(s.apiLogContext(hookCtx), in, reason)
+				in.Reason = sessionEndReason
+				s.hookRunner.RunSessionEndFor(s.apiLogContext(hookCtx), in, sessionEndReason)
 				hookCancel()
 			}
 
