@@ -476,6 +476,22 @@ func startDaemonRoster(t *testing.T, daemon *appserver.Server, pid int, threadID
 	return daemonHTTP, roster, runDir
 }
 
+// testWebConfig is the baseline hub config a test builds its server or
+// handlers over: a hub state root private to the test and an empty past
+// index. Every field cfg sets is kept; HubStateRoot and Past take the baseline
+// only when cfg leaves them unset. A config that must keep Past nil, or a
+// root unset, is written out without this helper.
+func testWebConfig(t testing.TB, cfg hubcore.WebConfig) hubcore.WebConfig {
+	t.Helper()
+	if cfg.HubStateRoot == "" {
+		cfg.HubStateRoot = t.TempDir()
+	}
+	if cfg.Past == nil {
+		cfg.Past = hubcore.NewPastIndex("")
+	}
+	return cfg
+}
+
 func newHubRPCTestServer(t *testing.T, cfg hubcore.WebConfig) *httptest.Server {
 	t.Helper()
 	srv, _ := newHubRPCTestServerWithWeb(t, cfg)

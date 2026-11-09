@@ -29,12 +29,10 @@ import (
 func TestHubArchiveSetAppWirePersistsSessionDecision(t *testing.T) {
 	store := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
 	var attentionPokes int
-	web := NewWebServer(hubcore.WebConfig{
+	web := NewWebServer(testWebConfig(t, hubcore.WebConfig{
 		Archive:       store,
-		HubStateRoot:  t.TempDir(),
-		Past:          hubcore.NewPastIndex(""),
 		PokeAttention: func() { attentionPokes++ },
-	})
+	}))
 
 	response, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
 		Kind:     appwire.ArchiveTargetSession,
@@ -66,12 +64,10 @@ func TestHubArchiveSetAppWirePersistsSessionDecision(t *testing.T) {
 func TestArchiveSetDefersNavigationReceiptWhenRefreshTimesOut(t *testing.T) {
 	store := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
 	var attentionPokes int
-	cfg := hubcore.WebConfig{
+	cfg := testWebConfig(t, hubcore.WebConfig{
 		Archive:       store,
-		HubStateRoot:  t.TempDir(),
-		Past:          hubcore.NewPastIndex(""),
 		PokeAttention: func() { attentionPokes++ },
-	}
+	})
 	source := &churningNavigationSource{testNavigationSource: newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())}
 	navigation := newTestNavigationService(t, source.testNavigationSource, func(cfg *navigationServiceConfig) {
 		cfg.Source = source
@@ -142,11 +138,9 @@ func TestHubArchiveSetAppWireValidatesAndUnarchivesProject(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := hubcore.NewArchiveStore(filepath.Join(root, "archive.db"))
-	web := NewWebServer(hubcore.WebConfig{
-		Archive:      store,
-		HubStateRoot: t.TempDir(),
-		Past:         hubcore.NewPastIndex(""),
-	})
+	web := NewWebServer(testWebConfig(t, hubcore.WebConfig{
+		Archive: store,
+	}))
 	params := appwire.ArchiveParams{
 		Kind:       appwire.ArchiveTargetProject,
 		ID:         project.ID,
@@ -180,11 +174,9 @@ func TestHubArchiveSetAppWireRejectsProjectPathMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	web := NewWebServer(hubcore.WebConfig{
-		Archive:      hubcore.NewArchiveStore(filepath.Join(root, "archive.db")),
-		HubStateRoot: t.TempDir(),
-		Past:         hubcore.NewPastIndex(""),
-	})
+	web := NewWebServer(testWebConfig(t, hubcore.WebConfig{
+		Archive: hubcore.NewArchiveStore(filepath.Join(root, "archive.db")),
+	}))
 
 	_, err = dispatchArchiveSet(t, web, appwire.ArchiveParams{
 		Kind:       appwire.ArchiveTargetProject,
@@ -290,14 +282,12 @@ func archiveTestHubWithTimeout(t *testing.T, entry rendezvous.Entry, prober forc
 	roster := hubcore.NewRoster(runDir, prober).SetProcessAlive(func(int) bool { return true })
 	roster.Refresh()
 	archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
-	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{
+	hub, web := newHubRPCTestServerWithWeb(t, testWebConfig(t, hubcore.WebConfig{
 		RunDir:            runDir,
 		Roster:            roster,
 		Archive:           archive,
-		HubStateRoot:      t.TempDir(),
-		Past:              hubcore.NewPastIndex(""),
 		DaemonIdleTimeout: idleTimeout,
-	})
+	}))
 	t.Cleanup(hub.Close)
 	return hub, web, archive
 }
@@ -383,12 +373,10 @@ func TestArchiveSetNeverLengthensShorterConfiguredDeadline(t *testing.T) {
 // common archived session has nothing running to retarget.
 func TestArchiveSetWithoutResidentDaemonPersistsDecision(t *testing.T) {
 	archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
-	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{
+	hub, web := newHubRPCTestServerWithWeb(t, testWebConfig(t, hubcore.WebConfig{
 		Archive:           archive,
-		HubStateRoot:      t.TempDir(),
-		Past:              hubcore.NewPastIndex(""),
 		DaemonIdleTimeout: time.Hour,
-	})
+	}))
 	t.Cleanup(hub.Close)
 	sessionID := hubtest.SessionID(t)
 
@@ -414,7 +402,7 @@ func TestArchiveSetRemovesTheSessionsScratchTree(t *testing.T) {
 	}
 	writeSessionUpdatedAt(t, filepath.Join(projects, project.ID), sessionID, project.CanonicalPath, time.Now())
 	past := newRebuiltPastIndex(t, filepath.Join(projects, "*"))
-	cfg := hubcore.WebConfig{Archive: archive, HubStateRoot: t.TempDir(), Past: past}
+	cfg := testWebConfig(t, hubcore.WebConfig{Archive: archive, Past: past})
 	cfg.ScratchReconcile = func() { reconcileArchivedScratch(t.Context(), cfg.Past, cfg.Archive, cfg.Roster, time.Now()) }
 	web := NewWebServer(cfg)
 
@@ -531,12 +519,10 @@ func TestArchiveSetKicksTheScratchReconcile(t *testing.T) {
 		t.Fatal(err)
 	}
 	kicks := 0
-	web := NewWebServer(hubcore.WebConfig{
+	web := NewWebServer(testWebConfig(t, hubcore.WebConfig{
 		Archive:          hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db")),
-		HubStateRoot:     t.TempDir(),
-		Past:             hubcore.NewPastIndex(""),
 		ScratchReconcile: func() { kicks++ },
-	})
+	}))
 	sessionID := hubtest.SessionID(t)
 	for _, archived := range []bool{false, true} {
 		if _, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
@@ -937,13 +923,11 @@ func TestArchiveSetSerializesConcurrentDecisions(t *testing.T) {
 // decision is keyed by its own source, distinct from the controller key.
 func TestHubArchiveSetAppWireKeysNonLocalProjectBySource(t *testing.T) {
 	store := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
-	web := NewWebServer(hubcore.WebConfig{
+	web := NewWebServer(testWebConfig(t, hubcore.WebConfig{
 		Archive:          store,
-		HubStateRoot:     t.TempDir(),
-		Past:             hubcore.NewPastIndex(""),
 		RemoteHosts:      []hostreg.Host{{Name: "host-a"}, {Name: "host-b"}},
 		RemoteHostClient: unusedRemoteHostClient,
-	})
+	}))
 	projectID := identifier.ProjectFromCanonicalPath("/srv/remote/project").ID
 
 	for _, host := range []string{"host-a", "host-b"} {
@@ -986,14 +970,12 @@ func TestHubArchiveSetAppWireCrossChecksRemoteWorkingDir(t *testing.T) {
 			ProjectPath: "/srv/remote/project",
 		}},
 	})
-	web := NewWebServer(hubcore.WebConfig{
+	web := NewWebServer(testWebConfig(t, hubcore.WebConfig{
 		Archive:           hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db")),
 		RemoteThreadCache: cache,
-		HubStateRoot:      t.TempDir(),
-		Past:              hubcore.NewPastIndex(""),
 		RemoteHosts:       []hostreg.Host{{Name: "host-a"}},
 		RemoteHostClient:  unusedRemoteHostClient,
-	})
+	}))
 
 	if _, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
 		Kind:       appwire.ArchiveTargetProject,
@@ -1024,13 +1006,11 @@ func TestHubArchiveSetAppWireCrossChecksRemoteWorkingDir(t *testing.T) {
 // path addresses.
 func TestHubArchiveSetAppWireRejectsUnknownSource(t *testing.T) {
 	store := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
-	web := NewWebServer(hubcore.WebConfig{
+	web := NewWebServer(testWebConfig(t, hubcore.WebConfig{
 		Archive:          store,
-		HubStateRoot:     t.TempDir(),
-		Past:             hubcore.NewPastIndex(""),
 		RemoteHosts:      []hostreg.Host{{Name: "host-a"}},
 		RemoteHostClient: unusedRemoteHostClient,
-	})
+	}))
 	projectID := identifier.ProjectFromCanonicalPath("/srv/remote/project").ID
 
 	_, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
@@ -1086,25 +1066,21 @@ func TestHubArchiveSetRejectsConfiguredHostWithoutRemoteClient(t *testing.T) {
 		Archived: true,
 	}
 
-	unwired := NewWebServer(hubcore.WebConfig{
-		Archive:      store,
-		HubStateRoot: t.TempDir(),
-		Past:         hubcore.NewPastIndex(""),
-		RemoteHosts:  []hostreg.Host{{Name: "host-a"}},
-	})
+	unwired := NewWebServer(testWebConfig(t, hubcore.WebConfig{
+		Archive:     store,
+		RemoteHosts: []hostreg.Host{{Name: "host-a"}},
+	}))
 	_, err := dispatchArchiveSet(t, unwired, params)
 	var wireErr appwire.WireError
 	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams || !errors.Is(err, errUnknownDecisionSource) {
 		t.Fatalf("error = %v, want InvalidParams for an unregistered source", err)
 	}
 
-	wired := NewWebServer(hubcore.WebConfig{
+	wired := NewWebServer(testWebConfig(t, hubcore.WebConfig{
 		Archive:          store,
-		HubStateRoot:     t.TempDir(),
-		Past:             hubcore.NewPastIndex(""),
 		RemoteHosts:      []hostreg.Host{{Name: "host-a"}},
 		RemoteHostClient: unusedRemoteHostClient,
-	})
+	}))
 	if _, err := dispatchArchiveSet(t, wired, params); err != nil {
 		t.Fatalf("archive against a wired hub: %v", err)
 	}
@@ -1115,12 +1091,10 @@ func TestHubArchiveSetRejectsConfiguredHostWithoutRemoteClient(t *testing.T) {
 // silently writing an inert controller-key row.
 func TestHubArchiveSetAppWireRejectsSessionSource(t *testing.T) {
 	store := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
-	web := NewWebServer(hubcore.WebConfig{
-		Archive:      store,
-		HubStateRoot: t.TempDir(),
-		Past:         hubcore.NewPastIndex(""),
-		RemoteHosts:  []hostreg.Host{{Name: "host-a"}},
-	})
+	web := NewWebServer(testWebConfig(t, hubcore.WebConfig{
+		Archive:     store,
+		RemoteHosts: []hostreg.Host{{Name: "host-a"}},
+	}))
 	_, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
 		Kind:     appwire.ArchiveTargetSession,
 		ID:       "session-1",
@@ -1140,11 +1114,9 @@ func TestHubArchiveSetAppWireRejectsSessionSource(t *testing.T) {
 // decision into a second inert key.
 func TestHubArchiveSetAppWireNormalizesLocalSessionRef(t *testing.T) {
 	store := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
-	web := NewWebServer(hubcore.WebConfig{
-		Archive:      store,
-		HubStateRoot: t.TempDir(),
-		Past:         hubcore.NewPastIndex(""),
-	})
+	web := NewWebServer(testWebConfig(t, hubcore.WebConfig{
+		Archive: store,
+	}))
 
 	if _, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
 		Kind:     appwire.ArchiveTargetSession,
@@ -1206,14 +1178,12 @@ func TestHubArchiveSetAppWireArchivesRemoteSessionByRef(t *testing.T) {
 		}},
 	})
 	store := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
-	web := NewWebServer(hubcore.WebConfig{
+	web := NewWebServer(testWebConfig(t, hubcore.WebConfig{
 		Archive:           store,
 		RemoteThreadCache: cache,
-		HubStateRoot:      t.TempDir(),
-		Past:              hubcore.NewPastIndex(""),
 		RemoteHosts:       []hostreg.Host{{Name: "host-a"}},
 		RemoteHostClient:  unusedRemoteHostClient,
-	})
+	}))
 	liveTree := func(t *testing.T) hubcore.Tree {
 		t.Helper()
 		metas, live, projects := web.navigationTreeInputs(context.Background())

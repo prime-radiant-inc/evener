@@ -116,7 +116,7 @@ func TestSessionToolsWatchSnapshotHandoff(t *testing.T) {
 	sources.Add(&snapshotBoundarySource{LocalDaemonSource: source, afterRead: func() {
 		daemon.SetProcessingTurn("turn-at-snapshot-boundary")
 	}})
-	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), HubID: "hub-test"}
+	cfg := testWebConfig(t, hubcore.WebConfig{HubID: "hub-test"})
 	server := appserver.NewServer(appserver.ServerConfig{})
 	defer server.Shutdown(ctx)
 	relays := newHubRelay(server, cfg, sources)
@@ -230,7 +230,7 @@ func TestSessionToolsAutomaticBindingLifecycleAndReconnect(t *testing.T) {
 	}, upstream.Client())
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), HubID: "hub-test", Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: entry, SessionID: instance, Status: "active", Manager: true})}
+	cfg := testWebConfig(t, hubcore.WebConfig{HubID: "hub-test", Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: entry, SessionID: instance, Status: "active", Manager: true})})
 	web := NewWebServer(cfg)
 	hubServer := newHubAppServerWithNavigation(cfg, sources, web.navigation, web.resolveTopLevelSessionRef)
 	hubHTTP := httptest.NewServer(http.HandlerFunc(hubServer.ServeWebSocket))
@@ -434,7 +434,7 @@ func TestManagerAdmissionRealToolRead(t *testing.T) {
 	}, upstream.Client())
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), HubID: "hub-test", Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: entry, SessionID: session.ID(), Status: "active", Manager: true})}
+	cfg := testWebConfig(t, hubcore.WebConfig{HubID: "hub-test", Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: entry, SessionID: session.ID(), Status: "active", Manager: true})})
 	web := NewWebServer(cfg)
 	_ = newHubAppServerWithNavigation(cfg, sources, web.navigation, web.resolveTopLevelSessionRef)
 	// Establish the real canonical relay, not a test implementation of the hub interface.
@@ -631,7 +631,7 @@ func TestSessionToolsRuntimeIdentityReplacement(t *testing.T) {
 	}, upstream.Client())
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), HubID: "hub-test"}
+	cfg := testWebConfig(t, hubcore.WebConfig{HubID: "hub-test"})
 	web := NewWebServer(cfg)
 	_ = newHubAppServerWithNavigation(cfg, sources, web.navigation, web.resolveTopLevelSessionRef)
 	life, stop := context.WithCancel(ctx)

@@ -176,7 +176,7 @@ func testHubChildDiscovery(t *testing.T, scenario string) {
 	if err := roster.RefreshAndWait(ctx); err != nil {
 		t.Fatal(err)
 	}
-	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), StateDir: stateDir, RunDir: runDir, Past: hubcore.NewPastIndex(stateDir), Roster: roster, ResumeLocks: hubcore.NewResumeLocks()}
+	cfg := testWebConfig(t, hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, Past: hubcore.NewPastIndex(stateDir), Roster: roster, ResumeLocks: hubcore.NewResumeLocks()})
 	cfg.DeletionStore, err = hubcore.NewDeletionStore(cfg.HubStateRoot)
 	if err != nil {
 		t.Fatal(err)

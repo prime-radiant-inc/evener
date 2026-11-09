@@ -529,9 +529,7 @@ func TestHubRPCConcurrentMutationsResumeExitedSessionOnce(t *testing.T) {
 	clientB := dialHubRPC(t, hub)
 	defer clientB.Close()
 	for _, c := range []*appwire.Client{clientA, clientB} {
-		if _, err := c.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-			t.Fatalf("Initialize: %v", err)
-		}
+		mustInitializeHubClient(t, c)
 	}
 
 	var wg sync.WaitGroup
@@ -1045,9 +1043,7 @@ func TestHubRPCResumeRetrySourceResolutionFailureIsNotAccepted(t *testing.T) {
 
 			client := dialHubRPC(t, server)
 			defer client.Close()
-			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-				t.Fatalf("Initialize: %v", err)
-			}
+			mustInitializeHubClient(t, client)
 
 			mutationID := "mutation-source-resolution-retry"
 			ref := "local:" + sessionID

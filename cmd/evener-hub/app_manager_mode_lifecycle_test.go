@@ -52,9 +52,7 @@ func TestManagerModeClearColdRead(t *testing.T) {
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
-	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
+	mustInitializeHubClient(t, client)
 	ref := f.entry.WorkspaceRef
 	initial, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: ref})
 	if err != nil {
@@ -120,9 +118,7 @@ func TestManagerModeClearColdRead(t *testing.T) {
 	// Clear, the same selection must report its own historical identity.
 	aliasClient := dialHubRPC(t, hub)
 	defer aliasClient.Close()
-	if _, err := aliasClient.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
+	mustInitializeHubClient(t, aliasClient)
 	selectedBefore, err := aliasClient.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: "local:" + instance, Subscribe: true})
 	if err != nil {
 		t.Fatal(err)
@@ -144,9 +140,7 @@ func TestManagerModeClearColdRead(t *testing.T) {
 	}
 	liveClient := dialHubRPC(t, hub)
 	defer liveClient.Close()
-	if _, err := liveClient.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
+	mustInitializeHubClient(t, liveClient)
 	liveRead, err := liveClient.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: ref, Subscribe: true})
 	if err != nil {
 		t.Fatal(err)
@@ -174,9 +168,7 @@ func TestManagerModeClearColdRead(t *testing.T) {
 	// A new human transport exercises cold source resolution without a live relay.
 	cold := dialHubRPC(t, hub)
 	defer cold.Close()
-	if _, err := cold.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
+	mustInitializeHubClient(t, cold)
 	for _, selected := range []struct{ ref, instance string }{
 		{"local:" + instance, instance},
 		{"local:" + currentInstance, currentInstance},
@@ -232,9 +224,7 @@ func TestManagerModeClearColdRead(t *testing.T) {
 	defer restarted.Close()
 	reconnected := dialHubRPC(t, restarted)
 	defer reconnected.Close()
-	if _, err := reconnected.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
+	mustInitializeHubClient(t, reconnected)
 	resumed, err := reconnected.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: canonicalCurrentRef})
 	if err != nil {
 		t.Fatal(err)
