@@ -20,6 +20,7 @@ import { ActivitySidebar } from "../shell/activitybar/ActivitySidebar";
 import { activityContext, activitySummary } from "../stores/sessionActivityTestUtils";
 import { isElementVisible } from "./guardVisibility";
 import "../panes/session";
+import { askDockStore } from "../panes/session/composer/askDock/askDockStore";
 import { writeComposerDraft } from "../panes/session/composer/draft";
 import { refreshPendingTurnsProjection } from "../panes/session/composer/queue/pendingTurnsStore";
 import Session from "../panes/session/Session";
@@ -67,6 +68,12 @@ const intentTailMode = params.get("intenttail") === "1";
 const heldTailMode = params.get("heldtail") === "1";
 // The guard sweeps busy sessions with and without advertised Steer.
 const steerMode = params.get("steer") === "1";
+// ?ask=1: reconcile one live question into the ask dock after the fixture
+// settles, so the guard can measure the composer's pending-question state -
+// the chrome's standalone column mount. The static fixture carries no
+// ask_user call and no further thread event follows the boot, so the
+// injected batch persists for the measurement.
+const askMode = params.get("ask") === "1";
 
 // The width a container query or a flex line resolves against: the element's
 // content box, which clientWidth includes padding in.
@@ -1892,6 +1899,18 @@ const settled = new Promise<true>((resolve) => {
   requestAnimationFrame(() =>
     requestAnimationFrame(() =>
       setTimeout(() => {
+        if (askMode) {
+          askDockStore.reconcile(REF, [
+            {
+              key: "guard:0",
+              callId: "call_guard",
+              header: "Guard check",
+              question: "Clear the pending ask to continue?",
+              options: [{ label: "Yes, continue", detail: "" }],
+              multiSelect: false,
+            },
+          ]);
+        }
         // NotificationCard renders its body (and with it the raw-notification
         // overflow fixture) only when expanded. Expand it the way a user would
         // - through React's synthetic click - so the guard's two disclosure

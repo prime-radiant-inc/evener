@@ -591,6 +591,58 @@ function assertComposerFooter(measurement, width) {
   return failures;
 }
 
+async function measureComposerAsk(cdpEndpoint, url, width) {
+  const page = await connectOnlyPage(cdpEndpoint);
+  const { send } = page;
+  const mobile = width < 900;
+  try {
+    await applyViewport(send, { width, height: 900, mobile });
+    await navigateTo(page, url, BOOT);
+    await assertGuardOrigin(send, new URL(url).host);
+    await evaluate(send, "window.settled");
+    await waitForFonts(send);
+    return JSON.parse(
+      await evaluate(
+        send,
+        `(() => {
+          const pane = document.getElementById('oh-pane');
+          const chrome = pane?.querySelector('[data-testid="session-chrome-inline"]');
+          const model = pane?.querySelector('[data-testid="model-switch-trigger"]');
+          const askCount = pane?.querySelector('[data-testid="ask-dock-count"]');
+          return JSON.stringify({
+            mobile: matchMedia('(max-width: 899px)').matches,
+            askRendered: Boolean(askCount),
+            chromeHeight: chrome ? chrome.getBoundingClientRect().height : null,
+            chromeVisible: chrome ? chrome.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) : false,
+            modelVisible: model ? model.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) : false,
+          });
+        })()`,
+      ),
+    );
+  } finally {
+    await clearViewportOverride(send);
+    page.close();
+  }
+}
+
+function assertComposerAsk(measurement, width) {
+  const failures = [];
+  const mobile = width < 900;
+  if (measurement.mobile !== mobile) failures.push("realized ask viewport mismatch");
+  if (!measurement.askRendered) failures.push("pending ask never rendered its dock");
+  if (!measurement.chromeVisible || !measurement.modelVisible) {
+    failures.push(`pending-ask state lost its chrome (${JSON.stringify(measurement)})`);
+  }
+  // The pending-question mount stands alone in the composer's vertical
+  // column, so its chrome must keep an automatic basis: a width-oriented
+  // rung there supplies a height basis instead and inflates the chrome far
+  // past its natural control height, spending the transcript's space.
+  if (measurement.chromeHeight === null || measurement.chromeHeight > 60) {
+    failures.push(`pending-ask chrome height=${measurement.chromeHeight}px, expected the control row's own height`);
+  }
+  return failures;
+}
+
 async function measureDuoCompactStates(cdpEndpoint, url, profileDir) {
   const page = await connectOnlyPage(cdpEndpoint);
   const { send } = page;
@@ -1651,6 +1703,22 @@ async function main() {
               `${label} ... PASS - gap=${measurement.gap}px, total footer=${measurement.totalFooterHeight}px, editor=${measurement.editorMinLines}, metadata visible=${measurement.metadataVisible}`,
             );
           }
+        }
+      }
+      for (const width of [390, 700]) {
+        const askMeasurement = await measureComposerAsk(
+          cdpEndpoint,
+          `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}&ask=1`,
+          width,
+        );
+        const askFailures = assertComposerAsk(askMeasurement, width);
+        if (askFailures.length > 0) {
+          failed++;
+          console.log(`${width}px pending-ask composer ... FAIL - ${askFailures.join("; ")}`);
+        } else {
+          console.log(
+            `${width}px pending-ask composer ... PASS - ask dock rendered, standalone chrome ${askMeasurement.chromeHeight}px tall`,
+          );
         }
       }
       if (footerOnly) return failed > 0 ? 1 : 0;

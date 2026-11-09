@@ -94,11 +94,21 @@ export interface SessionChromeProps {
    * disablement, and the press handlers.
    */
   turnVerbs?: SessionMenuTurnVerbs;
+  /**
+   * The composer's leading slot mounts this chrome on one horizontal line it
+   * shares with attach and the activity strip, where it must carry its
+   * measured compact rung as the flex basis (its container-contained .body
+   * cannot report one) or the row starves the model picker. The standalone
+   * pending-question mount passes nothing: the composer's column there is
+   * vertical, and a 200px basis would inflate the chrome's height instead.
+   */
+  compactRung?: boolean;
 }
 
 const CLASS = {
   chrome: requireClass(styles.chrome, "sessionchrome.module.css", "chrome"),
   inline: requireClass(styles.inline, "sessionchrome.module.css", "inline"),
+  inlineRung: requireClass(styles.inlineRung, "sessionchrome.module.css", "inlineRung"),
   body: requireClass(styles.body, "sessionchrome.module.css", "body"),
   cadenceSlot: requireClass(styles.cadenceSlot, "sessionchrome.module.css", "cadenceSlot"),
   right: requireClass(styles.right, "sessionchrome.module.css", "right"),
@@ -116,6 +126,7 @@ export function SessionChrome({
   discoverActivity = false,
   discoveryOnly = false,
   turnVerbs,
+  compactRung = false,
 }: SessionChromeProps) {
   const client = useClient();
   const model = useThreadsStore((s) => s.threads.get(sessionRef));
@@ -313,7 +324,9 @@ export function SessionChrome({
           own chrome for exactly this state, so there is no status body to
           compress and no second menu to dedupe against. */}
       <div
-        className={placement === "composer" ? CLASS.inline : CLASS.chrome}
+        className={
+          placement === "composer" ? (compactRung ? `${CLASS.inline} ${CLASS.inlineRung}` : CLASS.inline) : CLASS.chrome
+        }
         data-testid={
           placement === "composer"
             ? "session-chrome-inline"

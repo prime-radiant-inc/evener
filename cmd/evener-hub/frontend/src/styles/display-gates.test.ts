@@ -246,9 +246,18 @@ test("the phone composer's activity chips yield to the row and wrap at the tap f
     /\/\*[\s\S]*?\*\//g,
     " ",
   );
-  const inline = /\.inline\s*\{[^}]*flex:\s*1 1 200px[^}]*min-width:\s*0/.exec(chromeCss);
+  // The pending-question mount stands alone in the composer's vertical
+  // column, so the shared .inline rule must keep an automatic basis: a fixed
+  // width-oriented rung there would supply a height basis and inflate the
+  // chrome out of the transcript.
+  const inline = /\.inline\s*\{[^}]*flex:\s*1 1 auto[^}]*min-width:\s*0[^}]*\}/.exec(chromeCss);
+  const rung = /\.inlineRung\s*\{[^}]*flex-basis:\s*200px/.exec(chromeCss);
   expect(
     inline,
+    "sessionchrome.module.css must keep the standalone composer chrome on an automatic basis",
+  ).not.toBeNull();
+  expect(
+    rung,
     "sessionchrome.module.css must give the composer chrome its compact-rung flex basis so the row wraps instead of starving it",
   ).not.toBeNull();
 });

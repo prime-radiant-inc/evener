@@ -957,7 +957,21 @@ export function Composer({
     reportEditing();
   }
 
-  const sessionChrome = (
+  // The leading slot's chrome carries its compact rung (one horizontal line
+  // shared with attach and the activity strip); the pending-question mount
+  // below keeps an automatic basis, because the composer's column is vertical
+  // there and a width-oriented rung would inflate the chrome's height.
+  const leadingChrome = (
+    <MemoizedSessionChrome
+      ref={ref}
+      paneId={paneId}
+      placement="composer"
+      discoverActivity
+      turnVerbs={turnVerbs}
+      compactRung
+    />
+  );
+  const askChrome = (
     <MemoizedSessionChrome ref={ref} paneId={paneId} placement="composer" discoverActivity turnVerbs={turnVerbs} />
   );
 
@@ -988,7 +1002,7 @@ export function Composer({
               onClick={() => fileInputRef.current?.click()}
             />
           </Tooltip>
-          {!askPending && sessionChrome}
+          {!askPending && leadingChrome}
           {/* The phone pane has no footer strip (Session.tsx's edgeFooter), so
               this row is where the activity counts live on a phone. */}
           {isMobile && !ownsActivityCounts && <ActivityChips sessionRef={ref} paneId={paneId} wrap />}
@@ -1051,7 +1065,7 @@ export function Composer({
           }
         }}
       />
-      {askPending && sessionChrome}
+      {askPending && askChrome}
       {/* Staged attachments. One rendering for every state, so nothing here
           swaps element types under a user mid-gesture - AttachmentTile.tsx's
           own header comment has the mechanism and the bug it closed. */}
