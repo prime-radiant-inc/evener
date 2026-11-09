@@ -1,8 +1,8 @@
 # Commit-to-session provenance: experimental design
 
-**Status:** proposed design informed by a standalone prototype. GitHub validation
-and the production insertion mechanism remain open. This is not a shipped
-product contract or permission to replace Git on users' machines.
+**Status:** proposed design informed by a standalone prototype and live GitHub
+experiments. The production insertion mechanism remains open. This is not a
+shipped product contract or permission to replace Git on users' machines.
 
 ## Intent
 
@@ -34,8 +34,17 @@ post-commit hook that rewrites HEAD makes `git commit` report the old commit ID,
 even though HEAD points to the new object. Therefore the successful storage
 experiment does not establish a safe transparent commit interceptor.
 
-GitHub acceptance, GitHub API visibility and GitHub-generated merge behavior
-remain untested. Local pack transport is not evidence of those boundaries.
+The authorized private GitHub experiment also preserved the source object's
+exact ID and complete bytes through HTTPS push and fresh clone. A regular
+GitHub merge retained the original commit in its ancestry without copying its
+header onto the merge tip. GitHub squash dropped the record. GitHub rebase
+retained the record on its replacement commit, unlike native Git 2.43.0 rebase.
+A second fresh clone confirmed that retained header was byte-identical.
+
+These results cover one unsigned source commit without conflicts, not every
+server-side rewrite path. GitHub's Git commit API returned no top-level custom
+header field; raw Git inspection remains the demonstrated lookup interface.
+The prototype README links the retained repository, pull requests and object IDs.
 
 ## Approaches considered
 
@@ -204,11 +213,12 @@ rewritten branch cannot reach it.
 GitHub-created squash/rebase commits are outside the local executing session.
 The [GitHub commit-creation API](https://docs.github.com/en/rest/git/commits#create-a-commit)
 has no custom-header field. A local Git patch cannot make GitHub synthesize
-these headers. The current remote merge
-workflow therefore needs a separate decision: preserve original commits in
-reachable ancestry, change where squash commits are constructed, or accept a
-stated boundary. Do not introduce message trailers, notes or force-push a merged
-branch as an unapproved workaround.
+new session records. The measured rebase path copied the source record, but the
+measured squash path dropped it. The current remote squash workflow therefore
+needs a separate decision: preserve original commits in reachable ancestry,
+change where squash commits are constructed, or accept a stated boundary. Do
+not introduce message trailers, notes or force-push a merged branch as an
+unapproved workaround.
 
 ## Failure and recovery
 
@@ -227,8 +237,8 @@ not invalidate the code or prevent ordinary Git operations.
 1. Create a real Evener session with a scripted provider, edit a fixture and
    commit through the supported ordinary command path. Inspect the raw object
    independently and verify message, author, tree and hook effects.
-2. Push to the authorized disposable GitHub destination. Clone into a fresh
-   repository without extra configuration and compare the full object bytes.
+2. Repeat the demonstrated GitHub push and fresh-clone comparison with commits
+   created by the real Evener integration, not only the standalone object writer.
 3. Resolve host/session ID back to the contributing session. Cover delegates,
    restored sessions, model switches and background-job launch snapshots.
 4. Exercise signed and unsigned commits, hooks that mutate the staged tree,
@@ -243,7 +253,6 @@ not invalidate the code or prevent ordinary Git operations.
 
 ## Decisions still needed
 
-- A disposable GitHub destination for the live transport experiment.
 - The production insertion mechanism and whether maintaining Git support is
   acceptable.
 - Whether the guarantee includes GitHub-generated squash commits on main.

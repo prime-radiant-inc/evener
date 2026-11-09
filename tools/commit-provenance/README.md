@@ -89,12 +89,48 @@ file content, not just the absence of a header.
 
 ## GitHub evidence
 
-GitHub transport has not yet been exercised by this prototype. A live test needs
-an explicitly chosen disposable repository. It should publish only synthetic
-metadata and a tiny fixture, push a new branch, clone into a fresh directory,
-and compare the raw commit bytes and object ID. GitHub-created squash/rebase
-commits need a separate test; ordinary transport does not establish their
-metadata preservation.
+The live experiment passed on 2026-11-09 in the private
+[`obra/evener-provenance-probe`](https://github.com/obra/evener-provenance-probe)
+repository. It published only synthetic metadata and two tiny fixture files.
+
+| GitHub operation | Observed result |
+| --- | --- |
+| HTTPS push and fresh clone | Exact source commit ID and complete raw bytes preserved |
+| Git commit API | No top-level field exposing the custom header |
+| [Regular merge](https://github.com/obra/evener-provenance-probe/pull/1) | Merge tip has no record, original annotated commit remains reachable |
+| [Squash merge](https://github.com/obra/evener-provenance-probe/pull/2) | New commit has no record, original commit absent from target ancestry |
+| [Rebase merge](https://github.com/obra/evener-provenance-probe/pull/3) | New commit retains the record, original commit absent from target ancestry |
+
+**GitHub rebase differed from native Git 2.43.0 rebase.** A second fresh clone
+and independent byte-level comparison confirmed the rebased provenance header
+is identical to the source. This is an observed unsigned, single-commit fixture,
+not a guarantee for every GitHub rewrite path or future implementation.
+
+The retained source branch is `probe-dmqf9uksgcsz-source`, at
+`3e5cc7d55a9bd7c5b72a866fe320e8ba44198e25`. Result branches share that prefix:
+`-merge-base` at `9247421b60bebebdcd61198bff310aed9360e6a5`,
+`-squash-base` at `b20e3382862ba11a1f633ad6859400523b271c8c`, and
+`-rebase-base` at `a864ac7bb1da3c1a2ca9083a693ddcd86cc167f1`.
+After an ordinary authenticated clone, inspect each with
+`git cat-file -p <object-id>` and its ancestry with `git rev-list <object-id>`.
+
+The live harness requires an authorized **private** repository and explicit
+opt-in. It creates uniquely prefixed fixture branches, opens and merges three
+test pull requests using merge, squash and rebase, and leaves all remote objects
+for inspection. It never updates a pre-existing branch. Default tests skip it.
+Run from the repository root after creating the disposable destination:
+
+```sh
+GH_CONFIG_DIR="$HOME/.config/gh" \
+EVENER_PROVENANCE_GITHUB_E2E=1 \
+EVENER_PROVENANCE_GITHUB_REPO=obra/evener-provenance-probe \
+TMPDIR="$EVENER_SCRATCH_DIR" GOMAXPROCS=2 \
+go test -p 1 ./tools/commit-provenance -run '^TestGitHubProvenance$' -count=1 -v
+```
+
+Use the actual absolute `gh` configuration directory for `GH_CONFIG_DIR`. The
+fixture isolates `HOME` and Git configuration, while the credential helper
+delegates HTTPS authentication to `gh`. No token is printed or stored in a URL.
 
 ## Design
 
