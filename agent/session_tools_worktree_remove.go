@@ -440,15 +440,30 @@ func (s *Session) retireRetainedSharedChild(ctx context.Context, lanePath, child
 	if sub == nil || sub.sess == nil {
 		return fmt.Errorf("manage_worktree remove: retained shared-workspace subagent %s is no longer tracked; retry", childID)
 	}
-	sub.mu.Lock()
-	active := sub.running || sub.driving || sub.finalizing || sub.disposeGated
-	sub.mu.Unlock()
-	if active {
+	// Acquire the disposal gate BEFORE re-reading anything else: a competing
+	// notification drive or finalizer that starts after a plain quiescence
+	// check carries no delegate lease, so the controller's process-work checks
+	// cannot see it. The gate refuses those starts for the whole closure and
+	// teardown, and its check includes finalizing atomically.
+	if !sub.trySetDisposeGate() {
 		return fmt.Errorf("manage_worktree remove: retained shared-workspace subagent %s became active; retry once it is idle", childID)
 	}
+	gateHeld := true
+	defer func() {
+		if gateHeld {
+			sub.clearDisposeGate()
+		}
+	}()
 	recorded := canonicalOrClean(strings.TrimSpace(sub.sess.currentEnv().WorkingDirectory()))
 	if recorded == "" || !identifier.PathUnder(recorded, canonicalOrClean(lanePath)) {
 		return fmt.Errorf("manage_worktree remove: retained shared-workspace subagent %s no longer works under %s; retry", childID, lanePath)
+	}
+	// The receiver must not be closed while an armed or pending watch still
+	// targets it; the isolated-delegate disposal path refuses for the same
+	// reason. The registration lives in the parent's job manager and would
+	// otherwise outlive the child and fail its later deliveries.
+	if s.subtreeWatchesTargeting(sub.sess.owningDelegateID, childID) {
+		return fmt.Errorf("manage_worktree remove: retained shared-workspace subagent %s is the target of an armed or pending watch; clear the watch before removing the lane", childID)
 	}
 	plans, err := s.delegateController.closeSharedDelegateResumability(s, sub.sess.owningDelegateID, sharedWorkspaceLaneRemovalReason)
 	if err != nil {
@@ -459,6 +474,9 @@ func (s *Session) retireRetainedSharedChild(ctx context.Context, lanePath, child
 		return fmt.Errorf("manage_worktree remove: retiring retained shared-workspace subagent %s: %w", childID, err)
 	}
 	s.subagents.removeSession(childID, sub.sess)
+	// The child is gone; leave the gate set so any stale pointer to it cannot
+	// start a drive during the rest of the removal.
+	gateHeld = false
 	return nil
 }
 

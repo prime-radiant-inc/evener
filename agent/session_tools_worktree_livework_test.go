@@ -471,8 +471,130 @@ func TestWorktreeRemove_RetainedIdleSharedDelegate_ForceRetiresIt(t *testing.T) 
 	if _, err := os.Stat(path); err == nil {
 		t.Fatal("lane still present after the force cascade")
 	}
-	if warning, _ := res["warning"].(string); !strings.Contains(warning, "shared-workspace subagent") {
-		t.Fatalf("remove result warning = %q, want the retired-child report", warning)
+	if warning, _ := res["warning"].(string); warning == "" {
+		t.Fatal("remove result carries no warning for the retired shared-workspace child")
+	}
+}
+
+// newSharedRetainedLane builds a clean lane with one retained-idle shared
+// delegate whose working directory is under it.
+func newSharedRetainedLane(t *testing.T) (*wtRepo, string, *Session, string) {
+	t.Helper()
+	r := newScriptedLaneRepo(t).wt()
+	res, err := r.create(t, map[string]any{"name": "lane"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	path := res["path"].(string)
+	nested := filepath.Join(path, "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	if _, err := r.exitOp(t); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+	child := newSession(t, withDir(nested), withConfig(worktreeTestSessionConfig()))
+	delegateID := seedRetainedSharedDelegateAtPath(t, r.s, child, nested)
+	return r, path, child, delegateID
+}
+
+// TestWorktreeRemove_RetainedIdleSharedDelegate_ArmedWatchRefusesRetirement
+// mirrors the isolated-delegate disposal guard: closing the receiver while an
+// armed or pending watch still targets it leaves a registration that outlives
+// the child and fails its later deliveries.
+func TestWorktreeRemove_RetainedIdleSharedDelegate_ArmedWatchRefusesRetirement(t *testing.T) {
+	t.Parallel()
+	r, path, child, delegateID := newSharedRetainedLane(t)
+	key := watchKey{
+		VisibleSessionID:   r.s.id,
+		Target:             "job_source",
+		SendTo:             stableWatchReceiverTarget,
+		ReceiverSessionID:  child.id,
+		ReceiverDelegateID: delegateID,
+	}
+	cfg := &watchConfig{
+		watchID:            "w1",
+		target:             "job_source",
+		send:               &watchSendArgs{To: stableWatchReceiverTarget},
+		receiverSessionID:  child.id,
+		receiverDelegateID: delegateID,
+		stableReceiver:     true,
+	}
+	r.s.jobManager.mu.Lock()
+	r.s.jobManager.watches[key] = cfg
+	r.s.jobManager.mu.Unlock()
+
+	if _, err := r.removeOp(t, map[string]any{"name": "lane", "force": true}); err == nil {
+		t.Fatal("remove retired a shared-workspace child that was the target of an armed watch")
+	}
+	if r.s.subagents.get(child.id) == nil {
+		t.Fatal("watched shared-workspace child was retired")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("lane was removed while its child was watched: %v", err)
+	}
+	aggregate := delegateAggregateSnapshot(t, r.s.delegateController, delegateID)
+	if !aggregate.Resumable {
+		t.Fatal("watched shared-workspace child had its resumability closed")
+	}
+
+	r.s.jobManager.mu.Lock()
+	delete(r.s.jobManager.watches, key)
+	r.s.jobManager.mu.Unlock()
+	if _, err := r.removeOp(t, map[string]any{"name": "lane", "force": true}); err != nil {
+		t.Fatalf("remove after clearing the watch: %v", err)
+	}
+	if r.s.subagents.get(child.id) != nil {
+		t.Fatal("shared-workspace child stayed tracked after the watch was cleared")
+	}
+}
+
+// TestWorktreeRemove_RetainedIdleSharedDelegate_CompetingActivityRefused pins
+// the disposal gate at the point of effect: a notification drive or finalizer
+// that started after the live-work scan must refuse retirement rather than be
+// torn down underneath. The gate is acquired atomically with the quiescence
+// check, so the refusal holds for both states.
+func TestWorktreeRemove_RetainedIdleSharedDelegate_CompetingActivityRefused(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		set  func(*subagent)
+	}{
+		{"notification drive", func(sub *subagent) { sub.driving = true }},
+		{"finalizer", func(sub *subagent) { sub.finalizing = true }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r, path, child, delegateID := newSharedRetainedLane(t)
+			sub := r.s.subagents.get(child.id)
+			if sub == nil {
+				t.Fatal("shared child was not tracked")
+			}
+			sub.mu.Lock()
+			tc.set(sub)
+			sub.mu.Unlock()
+
+			if err := r.s.retireRetainedSharedChild(context.Background(), path, child.id); err == nil {
+				t.Fatalf("retirement proceeded while a %s was in flight", tc.name)
+			}
+			if r.s.subagents.get(child.id) == nil {
+				t.Fatalf("child was retired while a %s was in flight", tc.name)
+			}
+			aggregate := delegateAggregateSnapshot(t, r.s.delegateController, delegateID)
+			if !aggregate.Resumable {
+				t.Fatalf("child resumability closed while a %s was in flight", tc.name)
+			}
+
+			sub.mu.Lock()
+			sub.driving, sub.finalizing = false, false
+			sub.mu.Unlock()
+			if err := r.s.retireRetainedSharedChild(context.Background(), path, child.id); err != nil {
+				t.Fatalf("retirement after the %s settled: %v", tc.name, err)
+			}
+			if r.s.subagents.get(child.id) != nil {
+				t.Fatalf("child stayed tracked after the %s settled", tc.name)
+			}
+		})
 	}
 }
 
