@@ -19,7 +19,7 @@ var ErrLegacySerfData = errors.New("legacy Serf data")
 //
 // cmd/evener-migrate treats an existing destination as "already migrated"
 // and silently skips it. If any Evener binary runs before the user runs
-// evener-migrate, EnsureUserConfigDirs (and the hub's own state-root
+// evener migrate, EnsureUserConfigDirs (and the hub's own state-root
 // mkdir, right behind it) would create an empty replacement XDG directory
 // first, and the user's real legacy data would then be stranded forever
 // with no error ever surfacing. This check runs before any of those
@@ -84,7 +84,7 @@ func checkLegacyDataDirs() error {
 			continue // already migrated (or the user created it deliberately)
 		}
 		return fmt.Errorf(
-			"found %w at %s, not yet migrated to %s: run evener-migrate before continuing, or create %s yourself to start fresh without migrating",
+			"found %w at %s, not yet migrated to %s: run 'evener migrate' before continuing, or create %s yourself to start fresh without migrating",
 			ErrLegacySerfData, p.legacy, p.target, p.target)
 	}
 
@@ -94,7 +94,7 @@ func checkLegacyDataDirs() error {
 	} {
 		if name, found := firstUnmigratedHomeRootFile(root); found {
 			return fmt.Errorf(
-				"found unmigrated Evener data at %s (e.g. %s): run evener-migrate before continuing, or remove %s yourself to start fresh without migrating",
+				"found unmigrated Evener data at %s (e.g. %s): run 'evener migrate' before continuing, or remove %s yourself to start fresh without migrating",
 				root, filepath.Join(root, name), root)
 		}
 	}

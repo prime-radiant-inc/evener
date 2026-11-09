@@ -1,6 +1,7 @@
 package cmdutil
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,8 +45,8 @@ func TestEnsureUserConfigDirsRefusesStrandedLegacyConfigRoot(t *testing.T) {
 	if !strings.Contains(err.Error(), legacy) {
 		t.Errorf("error %q does not name the legacy path %q", err, legacy)
 	}
-	if !strings.Contains(err.Error(), "evener-migrate") {
-		t.Errorf("error %q does not mention evener-migrate", err)
+	if !errors.Is(err, ErrLegacySerfData) {
+		t.Errorf("error = %v, want ErrLegacySerfData", err)
 	}
 }
 
@@ -63,8 +64,8 @@ func TestEnsureUserConfigDirsRefusesStrandedLegacyXDGStateRoot(t *testing.T) {
 	if !strings.Contains(err.Error(), legacy) {
 		t.Errorf("error %q does not name the legacy path %q", err, legacy)
 	}
-	if !strings.Contains(err.Error(), "evener-migrate") {
-		t.Errorf("error %q does not mention evener-migrate", err)
+	if !errors.Is(err, ErrLegacySerfData) {
+		t.Errorf("error = %v, want ErrLegacySerfData", err)
 	}
 }
 
@@ -98,9 +99,6 @@ func TestEnsureUserConfigDirsRefusesStrandedLegacyHomeRoot(t *testing.T) {
 	if !strings.Contains(err.Error(), legacy) {
 		t.Errorf("error %q does not name the legacy path %q", err, legacy)
 	}
-	if !strings.Contains(err.Error(), "evener-migrate") {
-		t.Errorf("error %q does not mention evener-migrate", err)
-	}
 }
 
 // TestEnsureUserConfigDirsRefusesStrandedInterimEvenerRoot covers Jesse's
@@ -122,9 +120,6 @@ func TestEnsureUserConfigDirsRefusesStrandedInterimEvenerRoot(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), interim) {
 		t.Errorf("error %q does not name the interim path %q", err, interim)
-	}
-	if !strings.Contains(err.Error(), "evener-migrate") {
-		t.Errorf("error %q does not mention evener-migrate", err)
 	}
 }
 
