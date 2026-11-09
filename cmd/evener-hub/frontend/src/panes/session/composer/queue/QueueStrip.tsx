@@ -474,13 +474,6 @@ export function QueueStrip({
     onDrainBusyChange(true);
     try {
       let expectedRecoveryRevision = activeRecoveryRevision;
-      if (activeRecoveryId && getRecoveryRevision) {
-        expectedRecoveryRevision = await getRecoveryRevision();
-        if (expectedRecoveryRevision === undefined) {
-          pushRecoveryRefusal("changed");
-          return;
-        }
-      }
       await submitWithPendingTracking(
         {
           ref: sessionRef,
@@ -495,6 +488,15 @@ export function QueueStrip({
           },
         },
         async () => {
+          // The revision read belongs to this submission, so the per-ref guard
+          // is held while it runs (#4605).
+          if (activeRecoveryId && getRecoveryRevision) {
+            expectedRecoveryRevision = await getRecoveryRevision();
+            if (expectedRecoveryRevision === undefined) {
+              recoveryRefusal = "changed";
+              throw recoveryResendRefusal;
+            }
+          }
           if (activeRecoveryId) {
             const outcome = await resendRecoveryPendingTurn(
               activeRecoveryId,
