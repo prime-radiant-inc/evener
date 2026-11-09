@@ -140,7 +140,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			descendantPublication:         s.cfg.spawn.descendantPublication,
 			treeCounter:                   s.cfg.spawn.treeCounter,
 			driveCounter:                  s.cfg.spawn.driveCounter,
-			parentSteer:                   s.SteerWithProvenance,
+			parentSteer:                   s.steerWithProvenance,
 			parentSystemNotification:      s.routeSystemNotification,
 			subagentTask:                  descriptor.Task,
 			depth:                         s.depth + 1,
@@ -207,7 +207,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		// never announced. Keep the single current-task reminder for it.
 		if descriptor.SharedTaskStoreOwnerSessionID != "" {
 			if current, ok := childStore.CurrentInProgress(); ok {
-				if err := child.SteerKind(formatCurrentTaskSteering(current, child.canInstructTool("task_list")), events.SteeringKindCurrentTask); err != nil {
+				if err := child.steerKind(formatCurrentTaskSteering(current, child.canInstructTool("task_list")), events.SteeringKindCurrentTask); err != nil {
 					child.discardRestoredCandidate()
 					return nil, false, err
 				}

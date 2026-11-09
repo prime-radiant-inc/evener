@@ -850,7 +850,7 @@ func (s *Session) wakeForPendingSteering() {
 // wake is cheap -- it finds nothing runnable and no-ops, and repeated wakes
 // coalesce into one parked send.
 func (s *Session) wakeForPendingQueuedInput() {
-	if s.QueueDepth() == 0 {
+	if s.queueDepth() == 0 {
 		return
 	}
 	s.wakePendingUserInput()
@@ -1947,7 +1947,7 @@ func (s *Session) completeClientMutationTurnWithState(clientMutationID, executio
 		s.wakeRunnableClientMutationStartAfterFence()
 	}
 	if returned {
-		// The durable queue grew a message back. QueueDepth,
+		// The durable queue grew a message back. queueDepth,
 		// WireState and the queued-input wake all read the process-local copy,
 		// so without this the message is durably present and invisible -- and
 		// the wake that would run it gates on that same stale depth.
@@ -2001,7 +2001,7 @@ func returnClaimedQueuedMutation(
 	}
 	// Callers own the queue revision and the runtime reflection: restore bumps
 	// the revision once for the whole rebuild, and the completion path bumps it
-	// per return. Both must reflect afterwards -- QueueDepth,
+	// per return. Both must reflect afterwards -- queueDepth,
 	// WireState and the queued-input wake all read the process-local copy, so a
 	// message restored only here would be durably present and invisible.
 	record.ProjectionState = acceptedClientMutationProjection(record.Method)

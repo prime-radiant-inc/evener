@@ -522,7 +522,7 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 // TestRunServe_StreamErrorPublishesSystemErrorStatus proves the real serve
 // input loop publishes owning Session state after an exhausted streaming
 // failure: the session rests on a failed turn, so it reports systemError until
-// its next turn (agent RestingWireState). The wrapper observes the production
+// its next turn (agent restingWireState). The wrapper observes the production
 // processing start and finish while forwarding every state mutation to the
 // real AppWire server projection.
 func TestRunServe_StreamErrorPublishesSystemErrorStatus(t *testing.T) {

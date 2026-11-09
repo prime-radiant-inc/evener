@@ -32,7 +32,7 @@ func TestQueuedInputRunsWhileAQuestionIsPending(t *testing.T) {
 		t.Fatalf("ProcessPendingUserInput: %v", err)
 	}
 
-	if depth := s.QueueDepth(); depth != 0 {
+	if depth := s.queueDepth(); depth != 0 {
 		t.Fatalf("queue depth = %d, want the message consumed; a message accepted and never run is lost more quietly than a refusal", depth)
 	}
 	// Jesse's ruling: the user's message supersedes the question. Leaving the

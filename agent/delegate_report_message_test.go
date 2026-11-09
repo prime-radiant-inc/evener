@@ -305,7 +305,7 @@ func TestDelegateReportMessageReusedRuntime(t *testing.T) {
 		if current.sess != runtime {
 			t.Fatal("runtime was not reused")
 		}
-		if runtime.Communicated() {
+		if runtime.communicated() {
 			t.Fatal("new generation inherited a report")
 		}
 		current.mu.Lock()

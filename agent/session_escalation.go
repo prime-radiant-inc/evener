@@ -266,11 +266,11 @@ func (s *Session) ResolveSandboxEscalationAs(id string, approve bool, actor sche
 	return nil
 }
 
-// HasPendingEscalations reports whether any sandbox-exemption escalation is
+// hasPendingEscalations reports whether any sandbox-exemption escalation is
 // currently blocked awaiting a human. The daemon surfaces it on AppWire as an
 // attention flag so the owning session lights up cross-session (the hub's
 // needs-you badge) — it is a HUMAN-CLIENT signal, never shown to the model.
-func (s *Session) HasPendingEscalations() bool {
+func (s *Session) hasPendingEscalations() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.pendingEscalations) > 0

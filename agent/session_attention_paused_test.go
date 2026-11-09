@@ -188,7 +188,7 @@ func TestPausedRootAttentionIsNotAutonomousWork(t *testing.T) {
 	if wake, retryActive, pending := attentionRailState(s); wake || retryActive || pending != 1 {
 		t.Fatalf("after the permanent failure: wake=%t retry=%t pending=%d, want deferred attention (false, false, 1)", wake, retryActive, pending)
 	}
-	if got := s.RestingWireState(); got != appwire.ThreadStatusSystemError {
+	if got := s.restingWireState(); got != appwire.ThreadStatusSystemError {
 		t.Fatalf("RestingWireState after the paused attention turn = %q, want %q", got, appwire.ThreadStatusSystemError)
 	}
 	if got := s.WireState(); got != appwire.ThreadStatusSystemError {

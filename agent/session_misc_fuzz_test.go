@@ -220,14 +220,14 @@ func FuzzSessionGoalCompactState(f *testing.F) {
 
 		s := &Session{}
 		s.setPinnedNote(instructions)
-		if got := s.PinnedNote(); got != instructions {
+		if got := s.pinnedNote(); got != instructions {
 			t.Fatalf("pinned note=%q, want %q", got, instructions)
 		}
 		_, gen := s.pinnedNoteSnapshot()
 		s.mu.Lock()
 		s.claimPinnedNoteLocked(gen)
 		s.mu.Unlock()
-		if got := s.PinnedNote(); got != "" {
+		if got := s.pinnedNote(); got != "" {
 			t.Fatalf("claimPinnedNoteLocked left %q", got)
 		}
 

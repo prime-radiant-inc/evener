@@ -220,7 +220,7 @@ func TestPreToolHookOrdinaryNumbersStayFloat64(t *testing.T) {
 	}
 	var forwarded map[string]any
 	var intent string
-	root.RegisterTool("number_probe", "records numeric arguments", map[string]any{"type": "object", "properties": map[string]any{
+	root.registerTool("number_probe", "records numeric arguments", map[string]any{"type": "object", "properties": map[string]any{
 		"integer": map[string]any{"type": "number"}, "fraction": map[string]any{"type": "number"},
 	}}, func(ctx context.Context, args any) (any, error) {
 		forwarded = args.(map[string]any)
@@ -242,7 +242,7 @@ func TestPreToolHookOrdinaryNumbersStayFloat64(t *testing.T) {
 		})
 		root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.PluginDirs = []string{pluginDir} })
 		var forwarded map[string]any
-		root.RegisterTool("number_probe", "records numeric arguments", map[string]any{"type": "object", "properties": map[string]any{
+		root.registerTool("number_probe", "records numeric arguments", map[string]any{"type": "object", "properties": map[string]any{
 			"integer": map[string]any{"type": "number"}, "fraction": map[string]any{"type": "number"},
 		}}, func(_ context.Context, args any) (any, error) {
 			forwarded = args.(map[string]any)
@@ -388,7 +388,7 @@ func TestPreToolHookNumberFallbackPreservesOriginal(t *testing.T) {
 				call, want := numberHookOriginalCall(t, name)
 				var ordinary map[string]any
 				if name == "number_probe" {
-					root.RegisterTool(name, "captures ordinary input", map[string]any{"type": "object"}, func(_ context.Context, args any) (any, error) {
+					root.registerTool(name, "captures ordinary input", map[string]any{"type": "object"}, func(_ context.Context, args any) (any, error) {
 						ordinary = args.(map[string]any)
 						return nil, nil
 					})

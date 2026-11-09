@@ -88,11 +88,11 @@ func TestClaimedQueuedTurnIsReturnedWhenItNeverRan(t *testing.T) {
 		t.Fatalf("turn/start after the unrun turn: %v", err)
 	}
 
-	// Durably back is not enough: QueueDepth, QueuePreview and WireState all
+	// Durably back is not enough: queueDepth, QueuePreview and WireState all
 	// read the process-local queue, and wakeForPendingQueuedInput gates on that
 	// same depth. A message restored only in the snapshot is invisible in the
 	// queue strip and cannot wake the session that owes it a turn.
-	if got := sess.QueueDepth(); got != 1 {
+	if got := sess.queueDepth(); got != 1 {
 		t.Fatalf("QueueDepth after the return = %d, want 1; the runtime queue is stale", got)
 	}
 	if preview := sess.QueuePreview(); len(preview) != 1 || preview[0] != "please still run me" {
@@ -335,7 +335,7 @@ func TestStopOnMidTurnMutationParksTheQueuedMessage(t *testing.T) {
 	if queuedRecord.OperationState == clientMutationOperationTerminal || queuedRecord.ExecutionState != "accepted" {
 		t.Fatalf("queued message record after the stop = %#v, want accepted and not terminal", queuedRecord)
 	}
-	if got := sess.QueueDepth(); got != 1 {
+	if got := sess.queueDepth(); got != 1 {
 		t.Fatalf("QueueDepth after the stop = %d, want 1", got)
 	}
 
@@ -463,7 +463,7 @@ func TestStopKeepsAQueuedMessageDurable(t *testing.T) {
 	if cancels != 1 {
 		t.Fatalf("Stop cancelled %d times, want exactly 1", cancels)
 	}
-	if got := sess.QueueDepth(); got != 1 {
+	if got := sess.queueDepth(); got != 1 {
 		t.Fatalf("QueueDepth after the Stop = %d, want 1: the queued message was consumed rather than kept for delivery", got)
 	}
 	snapshot := sess.clientMutations.snapshot()
@@ -584,7 +584,7 @@ func TestStopParksTheQueueAgainstBothRestartRails(t *testing.T) {
 		t.Fatalf("ProcessPendingUserInput ran work after a Stop: ranTurn=%v err=%v", ranTurn, err)
 	}
 	// And the message is still the user's.
-	if got := sess.QueueDepth(); got != 1 {
+	if got := sess.queueDepth(); got != 1 {
 		t.Fatalf("QueueDepth after the Stop = %d, want 1: parking must not cost the message", got)
 	}
 }
@@ -612,7 +612,7 @@ func TestAParkedQueueDoesNotMakeTheSessionLookBusy(t *testing.T) {
 		t.Fatalf("WireState over a parked queue = %q: the composer keeps showing a busy session with a Stop that cannot help", got)
 	}
 	// The strip must still show the message.
-	if got := sess.QueueDepth(); got != 1 {
+	if got := sess.queueDepth(); got != 1 {
 		t.Fatalf("QueueDepth = %d, want 1: the queue strip has nothing to show", got)
 	}
 }

@@ -265,7 +265,7 @@ func TestSession_CloseForShutdownAfterCompletedTurnEmitsOneClosedBoundary(t *tes
 // and then silence; its belief that a turn was still running leaked until it
 // left and re-entered the session. The failure exit announces systemError: the
 // session is idle inside and takes the next message, and the wire reports it
-// resting on a failed turn (RestingWireState).
+// resting on a failed turn (restingWireState).
 func TestSession_GenuineTurnFailureEmitsSessionEndWithFailedStatus(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -619,7 +619,7 @@ func TestSession_ExecToolRefusesClosedSession(t *testing.T) {
 	drainSessionEvents(sess)
 
 	ran := false
-	sess.RegisterTool("late_tool", "late tool", map[string]any{}, func(context.Context, any) (any, error) {
+	sess.registerTool("late_tool", "late tool", map[string]any{}, func(context.Context, any) (any, error) {
 		ran = true
 		return "ran", nil
 	})
@@ -656,7 +656,7 @@ func TestSession_ExecToolEmitsEndWhenCloseBeginsAfterStart(t *testing.T) {
 
 	toolStarted := make(chan struct{})
 	releaseTool := make(chan struct{})
-	sess.RegisterTool("slow_tool", "slow tool", map[string]any{}, func(context.Context, any) (any, error) {
+	sess.registerTool("slow_tool", "slow tool", map[string]any{}, func(context.Context, any) (any, error) {
 		close(toolStarted)
 		<-releaseTool
 		return "ran", nil
@@ -1367,7 +1367,7 @@ func TestSession_Enqueue_DrainsAfterTurnCompletes(t *testing.T) {
 	if err := sess.Enqueue(context.Background(), "queued message"); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
-	if depth := sess.QueueDepth(); depth != 1 {
+	if depth := sess.queueDepth(); depth != 1 {
 		t.Fatalf("QueueDepth after Enqueue: got %d, want 1", depth)
 	}
 
@@ -1379,7 +1379,7 @@ func TestSession_Enqueue_DrainsAfterTurnCompletes(t *testing.T) {
 	if !strings.Contains(out, "first reply") || !strings.Contains(out, "second reply") {
 		t.Fatalf("ProcessInput output should contain both replies; got %q", out)
 	}
-	if depth := sess.QueueDepth(); depth != 0 {
+	if depth := sess.queueDepth(); depth != 0 {
 		t.Fatalf("QueueDepth after drain: got %d, want 0", depth)
 	}
 
@@ -1431,7 +1431,7 @@ func TestSession_QueueMutationWaitsForQueuePublicationSlot(t *testing.T) {
 		t.Fatalf("Enqueue completed while queue publication slot was held: %v", err)
 	default:
 	}
-	if depth := sess.QueueDepth(); depth != 0 {
+	if depth := sess.queueDepth(); depth != 0 {
 		t.Fatalf("QueueDepth while publication slot held = %d, want 0", depth)
 	}
 
@@ -1446,7 +1446,7 @@ func TestSession_QueueMutationWaitsForQueuePublicationSlot(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("Enqueue did not complete after queue publication slot was released")
 	}
-	if depth := sess.QueueDepth(); depth != 1 {
+	if depth := sess.queueDepth(); depth != 1 {
 		t.Fatalf("QueueDepth after Enqueue = %d, want 1", depth)
 	}
 }
@@ -1480,7 +1480,7 @@ func TestSession_DrainAsSteer_JoinsWithDoubleNewline(t *testing.T) {
 	if err := sess.Enqueue(context.Background(), "charlie"); err != nil {
 		t.Fatalf("Enqueue charlie: %v", err)
 	}
-	if depth := sess.QueueDepth(); depth != 3 {
+	if depth := sess.queueDepth(); depth != 3 {
 		t.Fatalf("QueueDepth: got %d, want 3", depth)
 	}
 	sess.mu.Lock()
@@ -1490,7 +1490,7 @@ func TestSession_DrainAsSteer_JoinsWithDoubleNewline(t *testing.T) {
 	if err := sess.DrainAsSteer(context.Background()); err != nil {
 		t.Fatalf("DrainAsSteer: %v", err)
 	}
-	if depth := sess.QueueDepth(); depth != 0 {
+	if depth := sess.queueDepth(); depth != 0 {
 		t.Fatalf("QueueDepth after drain: got %d, want 0", depth)
 	}
 
@@ -1526,7 +1526,7 @@ func TestSession_DrainAsSteer_RejectsIdleWithoutMutatingQueue(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "no active turn") {
 		t.Fatalf("DrainAsSteerWithInput idle err=%v, want no active turn", err)
 	}
-	if depth := sess.QueueDepth(); depth != 1 {
+	if depth := sess.queueDepth(); depth != 1 {
 		t.Fatalf("QueueDepth after rejected drain: got %d, want 1", depth)
 	}
 	sess.mu.Lock()
@@ -1560,7 +1560,7 @@ func TestSession_Enqueue_OnEmptyText_ReturnsError(t *testing.T) {
 	if err := sess.Enqueue(context.Background(), "   "); err == nil {
 		t.Fatalf("Enqueue blank text: want error, got nil")
 	}
-	if depth := sess.QueueDepth(); depth != 0 {
+	if depth := sess.queueDepth(); depth != 0 {
 		t.Fatalf("QueueDepth after blank: got %d, want 0", depth)
 	}
 }

@@ -95,7 +95,7 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 	defer sess.Close()
 
 	var toolInputs []any
-	sess.RegisterTool("my_strict_tool", "requires valid JSON arguments", map[string]any{
+	sess.registerTool("my_strict_tool", "requires valid JSON arguments", map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"value": map[string]any{"type": "string"},
@@ -345,7 +345,7 @@ func TestSession_OpenAIUnquotedKeyToolCallRecoversAndExecutes(t *testing.T) {
 	defer sess.Close()
 
 	var toolInputs []any
-	sess.RegisterTool("my_strict_tool", "requires valid JSON arguments", map[string]any{
+	sess.registerTool("my_strict_tool", "requires valid JSON arguments", map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"value": map[string]any{"type": "string"},

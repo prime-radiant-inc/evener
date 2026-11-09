@@ -60,7 +60,7 @@ func (s *Session) FailedToolCallsSnapshot() (int, bool) {
 
 // CumulativeUsageSnapshot returns the session's running self-only token
 // totals from the context manager. Returns the zero llm.Usage when the
-// context manager is not initialized, mirroring ContextPressure's nil-guard.
+// context manager is not initialized, mirroring contextPressure's nil-guard.
 // Pull-callback-fed counterpart to Meta().CumulativeUsage (WS2 A7).
 func (s *Session) CumulativeUsageSnapshot() llm.Usage {
 	if s.contextMgr == nil {

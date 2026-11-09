@@ -592,7 +592,7 @@ func TestExecTool_HookContextFailureKeepsToolState(t *testing.T) {
 		}
 	}`)
 	defer sess.Close()
-	sess.RegisterTool("stateful_probe", "returns tool state", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
+	sess.registerTool("stateful_probe", "returns tool state", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
 		return tool.StateResult{Output: "ok", State: communicateEndState{EndReason: "needs_response"}}, nil
 	})
 	// A retiring session refuses the hook context's steering.

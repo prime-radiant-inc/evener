@@ -148,7 +148,7 @@ func steerDelegatePlan(sess *Session, store *taskpkg.TaskStore) error {
 	if current != nil {
 		plan = withCurrentStep(plan, *current)
 	}
-	return sess.SteerKind(plan, events.SteeringKindTaskList)
+	return sess.steerKind(plan, events.SteeringKindTaskList)
 }
 
 // withCurrentStep adds the step to work now to a rendered plan, inside the same

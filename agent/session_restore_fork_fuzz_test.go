@@ -275,8 +275,8 @@ func FuzzRfzRestoreSessionFromMeta(f *testing.F) {
 		if sess.fork.parentID != meta.ParentSessionID {
 			t.Fatalf("restored fork.parentID = %q, want meta.ParentSessionID %q", sess.fork.parentID, meta.ParentSessionID)
 		}
-		if sess.pinnedNote != meta.PinnedNote {
-			t.Fatalf("restored pinnedNote = %q, want meta.PinnedNote %q", sess.pinnedNote, meta.PinnedNote)
+		if sess.pinnedNoteText != meta.PinnedNote {
+			t.Fatalf("restored pinnedNoteText = %q, want meta.PinnedNote %q", sess.pinnedNoteText, meta.PinnedNote)
 		}
 	})
 }

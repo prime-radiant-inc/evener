@@ -301,7 +301,7 @@ func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallDa
 				}
 				var steerErr error
 				if abortErr := s.withResponseSideEffects(ctx, func() {
-					steerErr = s.SteerKind(label+": "+desc+"\n"+systemReminder(visionConsumerReminder),
+					steerErr = s.steerKind(label+": "+desc+"\n"+systemReminder(visionConsumerReminder),
 						events.SteeringKindImageDescription)
 				}); abortErr != nil {
 					return abortErr
@@ -501,7 +501,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 	// here would mark it incorporated in a result that ends the turn without a
 	// model request that can act on it.
 	if abortErr := s.withResponseSideEffects(ctx, func() {
-		if !s.Communicated() {
+		if !s.communicated() {
 			if s.hasPendingSteering() {
 				yieldToObserverCallback = false
 			}
