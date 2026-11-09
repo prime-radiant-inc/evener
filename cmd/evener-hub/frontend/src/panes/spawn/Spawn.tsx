@@ -9,6 +9,7 @@ import {
   collectAdvancedOverrides,
   effortLabel,
   errorText,
+  FALLBACK_EFFORT_LEVELS,
   findBuiltinArgument,
   friendlyLaunchErrorMessage,
   harnessSupportsPluginSelection,
@@ -118,7 +119,6 @@ import {
 } from "./spawnDrafts";
 import {
   catalogEffortLevels,
-  FALLBACK_EFFORT_LEVELS,
   resolveSpawnBuiltinLaunch,
   type SpawnLaunchScalars,
   spawnBuiltinBlockMessage,
