@@ -261,18 +261,19 @@ test("confirmed goal replacement invalidates pending attachments without later c
   expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
 });
 
-test("a recovery that leaves the text unchanged does not move the caret on the next keystroke", async () => {
-  // A rejected turn/drainAsSteer recovers with no input, so its activation
-  // writes the same empty text the composer already holds (#1308).
+test("an empty rejected drain stays a notice and leaves the caret stable", async () => {
+  // A rejected turn/drainAsSteer recovers with no input. The 2026-11-09
+  // lifecycle ruling makes it a notice, not a draft, so mount restore must not
+  // activate it into the empty composer.
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   const recovered = await seedRejectedRecovery(storage, "ref_a", "", { method: "turn/drainAsSteer", input: [] });
   await mountComposer("ref_a", { status: { type: "idle" } });
   await flushPendingTurnsProjectionForTests();
-  // Activated, then discarded again by the recovery persistence because the
-  // recovered draft is empty: only that path removes the durable row.
-  expect(await storage.getRecovery(recovered.clientMutationId)).toBeUndefined();
-  expect(screen.queryByRole("button", { name: "Edit message" })).toBeNull();
+  // The refused row stays in the strip as the notice; nothing was activated or
+  // re-persisted, so the next keystroke lands at the caret already there.
+  expect(await storage.getRecovery(recovered.clientMutationId)).toBeDefined();
+  expect(screen.getByRole("button", { name: "Edit message" })).toBeDefined();
   const editor = textarea();
   expect(editor.textContent).toBe("");
 
