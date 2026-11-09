@@ -359,6 +359,11 @@ var ErrCompleteOutputExceedsLimit = errors.New("complete output exceeds configur
 type StateResult struct {
 	Output string
 	State  any
+	// IsError marks the result as a failed execution even though Output is the
+	// model-facing text: a structured failure (for example a shell that could
+	// not start) is still a failure, and consumers such as the goal
+	// no-progress signal and the failure breaker must treat it as one.
+	IsError bool
 	// RequireCompleteOutput opts this result into complete-or-fail shaping:
 	// when the registry's output policy would truncate Output, the dispatch
 	// fails with ErrCompleteOutputExceedsLimit instead of returning partial
@@ -898,7 +903,7 @@ func dispatchedResult(name, callID string, lim schema.ToolOutputLimit, v any, er
 	// StateResult carries an LLM-facing Output plus a JSON-serializable
 	// State snapshot that rides along on the TOOL_CALL_END event.
 	if st, ok := v.(StateResult); ok {
-		res := truncateResult(name, callID, st.Output, false, lim)
+		res := truncateResult(name, callID, st.Output, st.IsError, lim)
 		if st.RequireCompleteOutput && res.Truncated {
 			// The operation promised complete content: a configured limit
 			// produces an explicit complete-delivery failure, never a

@@ -563,7 +563,14 @@ func marshalShellToolResult(res shellResult, maxChars int, turnEndsProcess bool)
 		out.DroppedBytes = res.DroppedBytes
 		out.OutputStatus = outputWindowStatus(res.TotalBytes, res.DroppedBytes, res.Truncated)
 	}
-	return tool.StateResult{Output: formatShellResult(out), State: out}, nil
+	return tool.StateResult{
+		Output: formatShellResult(out),
+		State:  out,
+		// A failed shell status means the machinery could not launch or
+		// finalize the command; the model and the no-progress signal must see
+		// that as a failed call, not a successful mutation.
+		IsError: res.Status == string(jobstore.StatusFailed),
+	}, nil
 }
 
 // marshalCompleteOrHandleResult implements spec §0.6 for within-bound shell
@@ -601,7 +608,14 @@ func marshalCompleteOrHandleResult(res shellResult, maxChars int, turnEndsProces
 	disp := shellResultDisposition(len(res.Output), len([]rune(formatShellResult(out))), maxChars, shellRideWholeBytes)
 	if !disp.Keep {
 		_ = res.settle(false)
-		return tool.StateResult{Output: formatShellResult(out), State: out}, nil
+		return tool.StateResult{
+			Output: formatShellResult(out),
+			State:  out,
+			// A failed shell status means the machinery could not finalize
+			// the command; the model and the no-progress signal must see that
+			// as a failed call, not a successful mutation.
+			IsError: res.Status == string(jobstore.StatusFailed),
+		}, nil
 	}
 
 	// Keep: output cannot ride whole inline. Commit + finalize the delayed job.
@@ -615,7 +629,11 @@ func marshalCompleteOrHandleResult(res shellResult, maxChars int, turnEndsProces
 	peekTruncated := true
 	out.Output = &digest
 	out.Truncated = &peekTruncated
-	return tool.StateResult{Output: formatShellResult(out), State: out}, nil
+	return tool.StateResult{
+		Output:  formatShellResult(out),
+		State:   out,
+		IsError: res.Status == string(jobstore.StatusFailed),
+	}, nil
 }
 
 // shellSettleDisposition is the keep-vs-discard decision for a within-bound
