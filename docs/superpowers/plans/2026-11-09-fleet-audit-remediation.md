@@ -118,8 +118,10 @@ creation idempotency.
   shows wherever sessions are listed. Implements R05 for the quota case.
   Still open: whether launch config should default a cross-provider fallback
   chain. Owns W1.4.
-- [ ] **D4 Watch budget.** Recommended: replace the 50-delivery lifetime budget
-  with a rate limit and a warning before any hard stop. Owns W2.2.
+- [x] **D4 Watch budget.** Decided 2026-11-09: remove the 50-delivery lifetime
+  budget. A watch is rate limited to at most one delivery per minute; fires
+  inside the window coalesce into the next delivery. The watch lives until its
+  target ends or it is cleared. Owns W2.2.
 - [ ] **D5 Local `implementing-features` copy.** `~/.config/evener/skills/implementing-features`
   is a divergent copy that shadows the primeradiant-ops skill in Evener.
   Recommended: delete it once W5.2 lands. Owns W5.2.
@@ -324,7 +326,10 @@ unless this slice implements it.
 
 - [ ] Failing test `TestWatchSettleIsIdempotentAcrossRetry`: a settle failure
   followed by retry delivers the frame once to the model.
-- [ ] Failing test for the D4 budget behavior.
+- [ ] Failing test `TestWatchSurvivesBeyondFiftyDeliveries` (fake clock): 60
+  fires spaced over an hour all deliver and the watch stays active.
+- [ ] Failing test `TestWatchFiresWithinRateWindowCoalesce`: five fires inside
+  one minute produce one delivery carrying all five events, in order.
 - [ ] Verify the manager error "hub watch cannot combine ordinary watch
   arguments" no longer occurs on main (the manager prompt now says hub watch
   creates take `note` and `every`); if it does, add a failing test first.
