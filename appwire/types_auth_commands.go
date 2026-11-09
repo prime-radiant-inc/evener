@@ -809,6 +809,59 @@ type PluginSetAutoUpgradeParams struct {
 	AutoUpgrade bool   `json:"autoUpgrade"`
 }
 
+// PluginComponentsTarget names one plugin whose components
+// evener/plugin/components should read. Exactly one form is set per target:
+// the installed pair (Plugin+Marketplace) or Path, a launch-directory or
+// bundled candidate.
+type PluginComponentsTarget struct {
+	Plugin      string `json:"plugin,omitempty"`
+	Marketplace string `json:"marketplace,omitempty"`
+	Path        string `json:"path,omitempty"`
+}
+
+// PluginHookEvent counts the hooks one plugin declares for one hook event
+// name.
+type PluginHookEvent struct {
+	Event string `json:"event"`
+	Count int    `json:"count"`
+}
+
+// PluginComponents is one plugin's loaded component inventory: the names of
+// its skills, agents, commands, and MCP servers, one row per hook event name
+// it declares, and any load warnings. Empty (every slice nil) is a loadable
+// plugin with zero components.
+type PluginComponents struct {
+	Skills     []string          `json:"skills,omitempty"`
+	Agents     []string          `json:"agents,omitempty"`
+	Commands   []string          `json:"commands,omitempty"`
+	Hooks      []PluginHookEvent `json:"hooks,omitempty"`
+	MCPServers []string          `json:"mcpServers,omitempty"`
+	Warnings   []string          `json:"warnings,omitempty"`
+}
+
+// PluginComponentsResult is one target's answer: its target echoed back, its
+// components, or an error. Components nil with a non-empty Error is a
+// broken/unreadable target; both empty is a loadable plugin with zero
+// components. Per-target failures never fail the batch: the call returns 200
+// with an Error on the affected rows only.
+type PluginComponentsResult struct {
+	PluginComponentsTarget
+	Components *PluginComponents `json:"components,omitempty"`
+	Error      string            `json:"error,omitempty"`
+}
+
+// PluginComponentsParams requests component inventories for many targets in
+// one call: the installed list asks for all its rows at once.
+type PluginComponentsParams struct {
+	Targets []PluginComponentsTarget `json:"targets"`
+}
+
+// PluginComponentsResponse is the per-target answers, in the order their
+// targets were requested.
+type PluginComponentsResponse struct {
+	Results []PluginComponentsResult `json:"results"`
+}
+
 // SettingsOverviewResponse is the result of evener/settings/overview: the field
 // bag behind five settings sections whose only data path today is Go-template
 // variables rendered server-side — General, Hub, Storage, Agents, and the

@@ -180,6 +180,7 @@ const (
 	MethodEvenerPluginDisable            = "evener/plugin/disable"
 	MethodEvenerPluginSetAutoUpgrade     = "evener/plugin/setAutoUpgrade"
 	MethodEvenerPluginCheckUpdates       = "evener/plugin/checkUpdates"
+	MethodEvenerPluginComponents         = "evener/plugin/components"
 	MethodEvenerCommandList              = "evener/command/list"
 	MethodEvenerSpawnSlashCatalog        = "evener/spawn/slashCatalog"
 

@@ -266,6 +266,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerMarketplaceEdit, MarketplaceEditParams{}, MarketplaceListResponse{}, ScopeHub, "Renames a registered marketplace and/or replaces its source, re-fetching it; returns the updated list and broadcasts evener/marketplace/updated and evener/plugin/updated."},
 	{MethodEvenerMarketplaceBrowse, MarketplaceBrowseParams{}, MarketplaceBrowseResponse{}, ScopeHub, "Lists a marketplace's plugin catalog for browsing/install."},
 	{MethodEvenerPluginList, EmptyParams{}, PluginListResponse{}, ScopeHub, "Lists installed plugins."},
+	{MethodEvenerPluginComponents, PluginComponentsParams{}, PluginComponentsResponse{}, ScopeHub, "Returns plugins' loaded components - skills, agents, commands, hook events, and MCP server names - plus load diagnostics; one target per installed plugin by name or any directory by path, results fail-soft per target."},
 	{MethodEvenerPluginInstall, PluginRefParams{}, PluginListResponse{}, ScopeHub, "Installs a plugin from a marketplace; returns the updated list."},
 	{MethodEvenerPluginUpgrade, PluginRefParams{}, PluginListResponse{}, ScopeHub, "Upgrades an installed plugin to its marketplace's latest; returns the updated list."},
 	{MethodEvenerPluginRemove, PluginRefParams{}, PluginListResponse{}, ScopeHub, "Removes an installed plugin; returns the updated list."},
