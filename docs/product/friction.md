@@ -510,7 +510,7 @@ the diagnostic instructs a restart.
 
 **Evidence.** [failClosed and retryDurabilityUntilSettledOrExhausted](../../agent/session_fail_closed.go#L54)
 set the cause without a reset;
-[refuseOnUnhealthyTranscript](../../agent/session_lifecycle.go#L1804) checks it
+[refuseOnUnhealthyTranscript](../../agent/session_transcript_refusal.go#L98) checks it
 before current writer health. Existing
 `TestRetainedCompletionFailsAServedSessionClosedAfterExhaustingRetries` and
 `TestRetainedCompletionSettlesAfterRetryingTheBarrier` distinguish
