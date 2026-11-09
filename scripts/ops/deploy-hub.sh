@@ -267,14 +267,23 @@ function processArgvMatches(actual, def, report) {
     const r = report.running, bound = r.bound_addr;
     const address = typeof bound === 'string' && bound.match(/^(?:\[([^\]]+)\]|([^:]+)):(\d+)$/);
     if (!address || bound.includes('%') || !isIP(address[1] || address[2]) || Number(address[3]) < 1 || Number(address[3]) > 65535) return false;
-    const ephemeral = value => typeof value === 'string' && /^(?:\[[^\]]+\]|[^:]*):0?$/.test(value);
     // An ephemeral listener still names the host it listens on. Compare that
     // host rather than accepting any ephemeral port: a report for a different
-    // installation must not select this service for an in-place rewrite.
-    const ephemeralHost = value => {
-        const address = ephemeral(value) && value.match(/^(?:\[([^\]]*)\]|([^:]*)):(?:\d*)$/);
-        return address ? (address[1] ?? address[2]).toLowerCase() : null;
+    // installation must not select this service for an in-place rewrite. The
+    // hub's ParseListenAddr trims and canonicalizes, so match that form.
+    const addressHost = value => {
+        if (typeof value !== 'string') return null;
+        const address = value.trim().match(/^(?:\[([^\]]+)\]|([^:]*)):(0?)$/);
+        if (!address) return null;
+        const host = address[1] ?? address[2];
+        try {
+            return new URL('http://' + (host.includes(':') ? '[' + host + ']' : host) + '/').hostname.replace(/^\[(.*)\]$/, '$1');
+        } catch (_) {
+            return host.toLowerCase();
+        }
     };
+    const ephemeral = value => addressHost(value) !== null;
+    const ephemeralHost = value => addressHost(value);
     const expected = [...def.argv];
     let index = -1, inline = false;
     for (let i = 2; i < def.argv.length; i++) {
@@ -291,11 +300,14 @@ function processArgvMatches(actual, def, report) {
         const env = def.env.EVENER_HUB_LISTEN_ADDR;
         // The endpoint report carries the normalized spelling of the environment
         // listener, so compare the ephemeral hosts rather than the raw values.
+        // Every address the report attributes to the environment must name that
+        // same host; a record from another listener spelling does not.
         const envHost = ephemeralHost(env);
         const configuredEnvHost = report.listen_source === 'env' ? ephemeralHost(report.configured_listen_addr) : null;
         const publishedEnvHost = r.listen_source === 'env' ? ephemeralHost(r.requested_listen_addr) : null;
-        const fromEnv = envHost !== null && ((configuredEnvHost !== null && configuredEnvHost === envHost) ||
-            (publishedEnvHost !== null && publishedEnvHost === envHost));
+        const fromEnv = envHost !== null && (report.listen_source === 'env' || r.listen_source === 'env') &&
+            (report.listen_source !== 'env' || configuredEnvHost === envHost) &&
+            (r.listen_source !== 'env' || publishedEnvHost === envHost);
         if (!configured && !published && !fromEnv) return false;
         expected.push('-addr', bound);
     } else if (inline) expected[index] = def.argv[index].split('=')[0]+'='+bound;
