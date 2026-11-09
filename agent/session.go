@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1287,13 +1288,7 @@ func (s *Session) appendOrFoldJobNotificationLocked(n jobNotification) {
 	// built, so a newer one replaces any still undelivered rather than queueing
 	// behind it listing jobs that may have finished.
 	if n.isLongRunningJobsReminder() {
-		kept := s.pendingJobNotifs[:0]
-		for _, p := range s.pendingJobNotifs {
-			if !p.isLongRunningJobsReminder() {
-				kept = append(kept, p)
-			}
-		}
-		s.pendingJobNotifs = kept
+		s.pendingJobNotifs = slices.DeleteFunc(s.pendingJobNotifs, jobNotification.isLongRunningJobsReminder)
 	}
 	s.pendingJobNotifs = append(s.pendingJobNotifs, n)
 }
