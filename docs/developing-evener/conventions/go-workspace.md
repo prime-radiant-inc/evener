@@ -100,8 +100,9 @@ Two details decide whether the probe answers the right question:
 - A consumer with no `go.sum` dies on "missing go.sum entry" before it can
   report a missing requirement. That is consumer setup, not a module defect.
   The script copies the union of the workspace modules' `go.sum` files (and
-  `go.work.sum`) into the scratch consumer so a readonly failure names a
-  requirement; it adds no require and runs no `-mod=mod` on the tree.
+  `go.work.sum`) into the scratch consumer so a missing sum does not
+  masquerade as a requirement gap; it adds no require and runs no `-mod=mod`
+  on the tree.
 
 The script separates the two answers. Exit 1 and "missing module requirement"
 means the module's own `go.mod` is incomplete; the message names the package
