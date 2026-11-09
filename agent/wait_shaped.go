@@ -128,8 +128,7 @@ func isSleepOnlyCommand(command string) bool {
 		return false
 	}
 	command = strings.ReplaceAll(command, "\n", ";")
-	sleeps, loops := 0, false
-	var filler int
+	sleeps, filler, loops := 0, 0, false
 	for seg := range strings.SplitSeq(command, ";") {
 		seg = strings.Join(strings.Fields(seg), " ")
 		seg = strings.TrimPrefix(seg, "do ")

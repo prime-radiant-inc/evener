@@ -296,6 +296,10 @@ func isIntegerLiteral(s string) bool {
 // state they read may have changed, so their repeats always dispatch.
 const breakerThreshold = 2
 
+// ParkPrefix begins the body of every call Evener refuses without executing;
+// layers that count refusals match on it.
+const ParkPrefix = "evener did not execute this call: "
+
 // The intervention texts. Parked results all begin with parkPrefix, which is
 // the stable marker other layers count them by.
 //
@@ -303,10 +307,6 @@ const breakerThreshold = 2
 // call once its failure streak reaches breakerThreshold, so record() only
 // observes a streak above that threshold for read-only calls, which are never
 // parked and keep receiving the fixed nudge.
-// ParkPrefix begins the body of every call Evener refuses without executing;
-// layers that count refusals match on it.
-const ParkPrefix = "evener did not execute this call: "
-
 const (
 	parkPrefix       = ParkPrefix
 	failureNudgeText = "You just ran the same tool twice with the same arguments and got the same failure. Consider an alternate approach"
