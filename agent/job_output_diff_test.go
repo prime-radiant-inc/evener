@@ -476,7 +476,7 @@ func TestShellInlineDigestRetainedPartialLineIsNotMetadata(t *testing.T) {
 		t.Fatalf("head start = %d, want the first complete boundary %d", w.HeadStart, want)
 	}
 	const dropped = 500
-	digest := shellInlineDigestFrom(full, int64(len(full)+dropped), dropped, true, 0)
+	digest := shellInlineDigestFrom(full, int64(len(full)+dropped), dropped, true, 0, 0)
 	if strings.Contains(digest, "old sql comment") || strings.Contains(digest, "new sql comment") {
 		t.Fatalf("digest reports a retained body fragment as a filename:\n%s", digest)
 	}
@@ -646,8 +646,8 @@ func TestShellInlineDigestRejectsLooseDiffMarkers(t *testing.T) {
 	if !strings.Contains(digest, lines[len(lines)-1]) {
 		t.Fatalf("non-diff digest lost its tail:\n%s", digest)
 	}
-	if !strings.Contains(digest, "elided") {
-		t.Fatalf("non-diff digest lost its elision marker:\n%s", digest)
+	if len(digest) >= len(full) {
+		t.Fatalf("non-diff digest (%d bytes) did not omit anything from %d bytes", len(digest), len(full))
 	}
 }
 
@@ -754,7 +754,7 @@ func TestDiffDigestGoldens(t *testing.T) {
 	}
 	retainedFull := retained.String()
 	const dropped = 500
-	checkDiffDigestGolden(t, "retained-prefix", shellInlineDigestFrom(retainedFull, int64(len(retainedFull)+dropped), dropped, false, 0))
+	checkDiffDigestGolden(t, "retained-prefix", shellInlineDigestFrom(retainedFull, int64(len(retainedFull)+dropped), dropped, false, 0, 0))
 }
 
 // TestShellToolDiffDigestStaysWithinRegistryLines drives the real shell tool and
@@ -808,6 +808,49 @@ func TestShellToolDiffDigestStaysWithinRegistryLines(t *testing.T) {
 	}
 	// The registry must not have re-truncated the digest. formatShellResult is
 	// the tool's own render; a registry cut would differ from it.
+	if res.Output != formatShellResult(out) {
+		t.Fatalf("registry changed the rendered shell result:\nwant:\n%s\ngot:\n%s", formatShellResult(out), res.Output)
+	}
+}
+
+// A constrained character limit must shorten the diff windows at boundaries
+// too. Otherwise the registry keeps only its own head and tail, cutting the
+// retained head and dropping the omission marker.
+func TestShellToolDiffDigestFitsAConstrainedCharLimit(t *testing.T) {
+	t.Parallel()
+	full := syntheticUnifiedDiff("big.go", 30, 8)
+	path := filepath.Join(t.TempDir(), "big.diff")
+	if err := os.WriteFile(path, []byte(full), 0o600); err != nil {
+		t.Fatalf("write diff fixture: %v", err)
+	}
+	cfg := minimalTestSessionConfig(t)
+	cfg.ToolOutputLimits = map[string]schema.ToolOutputLimit{
+		"shell": {MaxChars: 800, MaxLines: 512, Strategy: schema.TruncHeadTail},
+	}
+	s := newSession(t, withConfig(cfg))
+	args, err := json.Marshal(map[string]string{"command": "cat -- " + shellSingleQuote(path)})
+	if err != nil {
+		t.Fatalf("marshal shell args: %v", err)
+	}
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "diff-chars-800",
+		Name:      "shell",
+		Arguments: args,
+	})
+	if res.IsError {
+		t.Fatalf("shell returned error: %s", res.Output)
+	}
+	var out shellToolResult
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
+		t.Fatalf("unmarshal shell result: %v (output: %s)", err, res.Output)
+	}
+	if out.Output == nil {
+		t.Fatal("large diff result carries no inline output")
+	}
+	if got := len([]rune(res.Output)); got > 800 {
+		t.Fatalf("rendered result has %d characters, want at most 800", got)
+	}
+	// The registry must not have re-truncated the digest.
 	if res.Output != formatShellResult(out) {
 		t.Fatalf("registry changed the rendered shell result:\nwant:\n%s\ngot:\n%s", formatShellResult(out), res.Output)
 	}

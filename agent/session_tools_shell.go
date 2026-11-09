@@ -624,7 +624,18 @@ func marshalCompleteOrHandleResult(res shellResult, maxChars, maxLines int, turn
 
 	// The model sees only a small head+tail digest + the job_id; it reads the rest
 	// through the job transcript_ref. The full output is retained in the durable job.
-	digest := shellInlineDigestFrom(res.Output, res.TotalBytes, res.DroppedBytes, res.RetainedStartPartial, maxLines)
+	// Reserve the rendered footer (and its newline) from the character bound so
+	// the registry never truncates away the digest's omission marker.
+	out.Output = nil
+	footerChars := 0
+	if maxChars > 0 {
+		footerChars = len([]rune(formatShellResult(out))) + 1
+	}
+	charBudget := 0
+	if maxChars > 0 {
+		charBudget = max(maxChars-footerChars, 1)
+	}
+	digest := shellInlineDigestFrom(res.Output, res.TotalBytes, res.DroppedBytes, res.RetainedStartPartial, maxLines, charBudget)
 	peekTruncated := true
 	out.Output = &digest
 	out.Truncated = &peekTruncated
