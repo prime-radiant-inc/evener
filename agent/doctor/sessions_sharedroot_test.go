@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -68,7 +69,7 @@ func TestListSessions_SharedRootDelegatesReadOnce(t *testing.T) {
 	base, _ := sharedRootFixtureTB(t, children)
 
 	reset := instrumentDelegateJournalReads(t)
-	res, err := ListSessions(base, SessionsOpts{})
+	res, err := ListSessions(context.Background(), base, SessionsOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}

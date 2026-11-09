@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -565,7 +566,7 @@ func TestRunAudit_SweepListError(t *testing.T) {
 	// A file (not a directory) as state base causes ListSessions to fail.
 	tmpFile := t.TempDir() + "/notadir"
 	writeFile(t, tmpFile, "x")
-	if _, err := RunAudit(tmpFile, rb, AuditOpts{Since: time.Hour}); err == nil {
+	if _, err := RunAudit(context.Background(), tmpFile, rb, AuditOpts{Since: time.Hour}); err == nil {
 		t.Fatal("want error from ListSessions sweep on invalid state base")
 	}
 }
