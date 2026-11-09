@@ -39,6 +39,26 @@ export function recoveryComposerDraft(record: MutationRecoveryRecord): Recovered
   return draft;
 }
 
+// compositionIsEmpty reports whether a composition carries nothing the
+// composer would show. Mount restoration and recovery persistence must agree
+// on it: one decides whether a recovered record is a draft, the other decides
+// whether an activated draft is an empty cleanup.
+export function compositionIsEmpty(parts: {
+  text: string;
+  attachments: readonly unknown[];
+  skillNames: readonly string[];
+  commandNames?: readonly string[];
+  mentions?: readonly unknown[];
+}): boolean {
+  return (
+    parts.text.trim() === "" &&
+    parts.attachments.length === 0 &&
+    parts.skillNames.length === 0 &&
+    (parts.commandNames?.length ?? 0) === 0 &&
+    (parts.mentions?.length ?? 0) === 0
+  );
+}
+
 // recoveredCompositionIsEmpty reports whether activating this draft would load
 // nothing into the composer. A rejected drain with no input is the shape that
 // matters: it is a notice (the queue strip shows the refusal and its reason),
@@ -46,13 +66,7 @@ export function recoveryComposerDraft(record: MutationRecoveryRecord): Recovered
 // the persistence effect discards it again (lifecycle ruling 2026-11-09,
 // issue #1436).
 export function recoveredCompositionIsEmpty(draft: RecoveredComposerDraft): boolean {
-  return (
-    draft.text.trim() === "" &&
-    draft.attachments.length === 0 &&
-    draft.skillNames.length === 0 &&
-    (draft.commandNames?.length ?? 0) === 0 &&
-    (draft.mentions?.length ?? 0) === 0
-  );
+  return compositionIsEmpty(draft);
 }
 
 export function mergeRecoveryComposerDraft(
