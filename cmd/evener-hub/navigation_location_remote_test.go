@@ -259,8 +259,8 @@ func TestNavigationLocationRemoteLiveForkOriginal(t *testing.T) {
 	original, continuation := hubtest.SessionID(t), hubtest.SessionID(t)
 	live := liveActivityEntry(1, continuation, appwire.ThreadStatusActive, nil)
 	live.SourceID = "local"
-	live.Entry.Endpoint = "ws://127.0.0.1:1/rpc"
-	live.Entry.Protocol = appwire.ProtocolVersion
+	live.Endpoint = "ws://127.0.0.1:1/rpc"
+	live.Protocol = appwire.ProtocolVersion
 	f := newRemoteLocationFixture(t, live)
 	f.save(t, schema.SessionMeta{ID: original, ProfileID: "local", ForkLabel: "original"})
 	f.save(t, schema.SessionMeta{ID: continuation, ProfileID: "local", ParentSessionID: original})
