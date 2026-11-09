@@ -21,7 +21,7 @@ import {
 } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { type ScrollView, View } from "react-native";
+import { type ScrollViewInstance, View } from "react-native";
 import type { HostsController } from "../hosts/hostsController";
 import { Group, GroupedPage, GroupFooter, TextFieldRow } from "../sheet/Grouped";
 import { HeaderButton } from "../sheet/HeaderButton";
@@ -95,7 +95,7 @@ function HostEditForm({ navigation, route, row, hosts }: Props & { row: HostRow;
 	// Save sits in the header, so the person may be anywhere on the page when a
 	// refusal lands: the page scrolls to the field it names, or to the top for
 	// one above the fields, so Save never looks like it did nothing.
-	const page = useRef<ScrollView>(null);
+	const page = useRef<ScrollViewInstance>(null);
 	const fieldTops = useRef<Partial<Record<EditableHostField, number>>>({});
 	useEffect(() => {
 		if (error) page.current?.scrollTo({ y: error.field ? (fieldTops.current[error.field] ?? 0) : 0, animated: true });

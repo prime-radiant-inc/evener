@@ -29,8 +29,9 @@ import {
 	Platform,
 	Pressable,
 	ScrollView,
+	type ScrollViewInstance,
 	Text,
-	TextInput,
+	type TextInputInstance,
 	View,
 } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
@@ -361,7 +362,7 @@ type ReviewSheetParams = {
 export function useFocusAfterModal(
 	navigation: { isFocused: () => boolean },
 	focusAfterModal: RefObject<boolean>,
-	composerInput: RefObject<TextInput | null>,
+	composerInput: RefObject<TextInputInstance | null>,
 ): void {
 	useEffect(() => {
 		if (Platform.OS !== "android") return;
@@ -526,7 +527,7 @@ function ConversationScreenView({
 	}
 	const captureSuppressed = useRef(false);
 	const restoreFrame = useRef<number | null>(null);
-	const composerInput = useRef<TextInput>(null);
+	const composerInput = useRef<TextInputInstance>(null);
 	// The composer field's focus, for what steps aside while you type in it
 	// (useComposerTyping); the find bar's or a sheet's field raising the
 	// keyboard isn't typing in it.
@@ -995,7 +996,7 @@ function ConversationScreenView({
 	// biome-ignore lint/correctness/useExhaustiveDependencies: only a new bar height re-pins.
 	useLayoutEffect(() => {
 		if (follow.state.current.following)
-			(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
+			(timeline.current?.getScrollResponder() as ScrollViewInstance | null)?.scrollToEnd({ animated: false });
 	}, [barHeight]);
 	// Files (spec 10.1): what the session wrote or linked, and
 	// whether any of it is new or changed since you last opened it.
@@ -1488,7 +1489,7 @@ function ConversationScreenView({
 	// opening once the last row has measured (until then the cell's own layout
 	// lands it).
 	function pinOpeningToEnd() {
-		(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
+		(timeline.current?.getScrollResponder() as ScrollViewInstance | null)?.scrollToEnd({ animated: false });
 		if (lastRowMeasured()) landOpening();
 	}
 	// Where the session opens (spec 7.3, ruling 31; Jesse, 2026-10-18: always
@@ -2315,7 +2316,7 @@ function ConversationScreenView({
 		readerAnchor.current = null;
 		follow.dispatch({ type: "follow" });
 		captureSuppressed.current = false;
-		(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: true });
+		(timeline.current?.getScrollResponder() as ScrollViewInstance | null)?.scrollToEnd({ animated: true });
 	}
 	// The render-time action drives the placeholder, the label and whether
 	// Send is enabled; a press routes on the live state instead.
@@ -3457,7 +3458,9 @@ function ConversationScreenView({
 									// The viewport changed (the keyboard, a dock): while following,
 									// the end stays in view.
 									if (follow.state.current.following)
-										(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
+										(timeline.current?.getScrollResponder() as ScrollViewInstance | null)?.scrollToEnd({
+											animated: false,
+										});
 								}}
 								data={listRows}
 								// Cells re-render only for a new renderItem or new rows, and
@@ -3498,7 +3501,9 @@ function ConversationScreenView({
 									readerContentHeight.current = height;
 									restoreAfterLayout();
 									if (follow.state.current.following)
-										(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
+										(timeline.current?.getScrollResponder() as ScrollViewInstance | null)?.scrollToEnd({
+											animated: false,
+										});
 								}}
 								scrollEventThrottle={100}
 								onScroll={(event) => {

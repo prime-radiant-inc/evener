@@ -1,4 +1,4 @@
-import { AccessibilityInfo, Platform, Pressable, type TextInput, View } from "react-native";
+import { AccessibilityInfo, Platform, Pressable, type TextInputInstance, View } from "react-native";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { textContrast } from "../design/contrast.testkit";
 import { fonts, palettes } from "../design/tokens";
@@ -654,7 +654,7 @@ describe("a text field row", () => {
 
 	it("hands its return key to the form, and its input to a ref, so one field can lead to the next", () => {
 		const onSubmit = vi.fn();
-		const ref = createRef<TextInput>();
+		const ref = createRef<TextInputInstance>();
 		const tree = render(
 			<TextFieldRow
 				label="Instance name"

@@ -37,7 +37,7 @@
 // restored anywhere. A reload lands wherever the URL says (see the URL-
 // sync effect below), the same as any other fresh navigation - there is no
 // separate "last mobile screen" memory to restore independently of that.
-import { type ReactNode, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { parseZoomParams } from "../../panes/zoom/intent";
 import {
   conversationHandoffGeneration,
@@ -221,6 +221,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   }, [handoffGeneration, focusedPane]);
   const activityOpen = useActivitySidebarStore((s) => s.open);
   const [panelOpen, setPanelOpen] = useState(false);
+  const closePanel = useCallback(() => setPanelOpen(false), []);
   // True when no real pane is focused: either nothing at all, or the
   // welcome pane (the app's "nothing open" landing screen). The mobile
   // panel auto-opens in this state (see the effect below) so the rail —
@@ -539,7 +540,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       <div className={styles.activityOverlay}>
         <ActivitySidebar mobile />
       </div>
-      <MobilePanel rail={railSlot} open={panelOpen} onClose={() => setPanelOpen(false)} />
+      <MobilePanel rail={railSlot} open={panelOpen} onClose={closePanel} />
     </div>
   );
 }

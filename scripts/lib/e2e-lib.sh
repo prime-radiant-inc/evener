@@ -147,27 +147,37 @@ e2e_disarm_reaper() {
 	trap - EXIT INT TERM
 }
 
-# e2e_isolate_home RUN_DIR — point HOME at a throwaway dir and clear everything
-# that could redirect evener away from it.
+# e2e_unset_evener_env — drop every EVENER_* override an operator's shell can
+# carry into a fixture run.
+#
+# Everything that can redirect evener away from the fixture's private
+# directories is unset, not just the state dir: an operator with any of
+# these exported would otherwise have the fixture hub read or write their
+# real config, cache, run dir or hub token. An inherited EVENER_STATE_DIR or
+# EVENER_CREDENTIALS_CONFIG outranks every XDG path, and the two provider
+# paths outrank $HOME/.config/evener (envvars/envvars.go), so leaving them
+# set would load the operator's real providers and credentials instead of the
+# fake backend — a network call and a paid request out of a fixture whose
+# whole point is that neither happens. HOME is deliberately untouched:
+# callers that need a private HOME export it themselves.
+e2e_unset_evener_env() {
+	unset EVENER_STATE_DIR EVENER_RUN_DIR EVENER_HUB_TOKEN EVENER_HUB_ADDR EVENER_HUB_LISTEN_ADDR EVENER_HUB_URL EVENER_HUB_SPAWNED
+	unset EVENER_PROVIDERS_CONFIG EVENER_CREDENTIALS_CONFIG
+}
+
+# e2e_isolate_home RUN_DIR — point HOME at a throwaway dir and clear the
+# XDG paths that could redirect evener away from it.
 #
 # A throwaway $HOME keeps hub.lock, auth-token, and session history off the
 # real ~/.local/state/evener, and credentials.toml/providers.toml off the
-# real ~/.config/evener, entirely. Everything that can redirect evener away
-# from the throwaway $HOME is unset, not just the state dir: an operator with
-# any of these exported would otherwise have this hub read or write their
-# real config, cache, run dir or hub token while the header above promises
-# isolation. The two provider paths belong in this list above all: they
-# outrank $HOME/.config/evener (envvars/envvars.go), so leaving them set
-# would load the operator's real providers and credentials instead of the
-# fake backend — a network call and a paid request out of a fixture whose
-# whole point is that neither happens.
+# real ~/.config/evener, entirely; the EVENER_* overrides are dropped by the
+# shared helper so this list and the native runner's cannot drift.
 e2e_isolate_home() {
 	local run_dir="$1"
 	export HOME="$run_dir/home"
 	mkdir -p "$HOME/.config/evener" "$HOME/.local/state/evener"
 	unset XDG_STATE_HOME XDG_CONFIG_HOME XDG_CACHE_HOME
-	unset EVENER_STATE_DIR EVENER_RUN_DIR EVENER_HUB_TOKEN EVENER_HUB_ADDR EVENER_HUB_LISTEN_ADDR EVENER_HUB_URL EVENER_HUB_SPAWNED
-	unset EVENER_PROVIDERS_CONFIG EVENER_CREDENTIALS_CONFIG
+	e2e_unset_evener_env
 }
 
 # e2e_wait_for_port LOG_FILE PID LABEL — poll until the process logs a port.

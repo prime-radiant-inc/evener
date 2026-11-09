@@ -1112,7 +1112,9 @@ whole height. Measured before this, agent prose got 260px of a 375px screen,
 
 The sessions drawer renders the Rail flush inside the Sheet body (Sheet's
 `bodyClassName`, §3): no inner surface box, no inner radius, because the sheet
-already frames it.
+already frames it. Selecting a session closes the drawer, including the
+session already being read: the tap chose a reader, and the list must not stay
+over it.
 
 
 ## Source Serif 4 license notice

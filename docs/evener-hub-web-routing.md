@@ -61,6 +61,14 @@ placement through an indexed top-level row. A local session's current identity
 can resolve to its stable workspace row, including after the daemon exits.
 Child and fork locations retain their requested identity and nested placement.
 
+A presentation surface that already knows its link names a top-level session
+(the rail's row carries the navigation summary's session kind) places it in the
+press's own tick. The route's location read still runs and confirms the
+placement in the background; a stale hint is corrected through the ordinary
+nested-owner path. Nested refs and callers without that fact keep the
+location-first path, so a nested session still opens beside its owner instead
+of landing in main.
+
 For a remote alias, one bounded location read asks the owning source for its
 top-level placement. The controller preserves the source qualifier and uses its
 own indexed root and revision; it never substitutes a local session with the

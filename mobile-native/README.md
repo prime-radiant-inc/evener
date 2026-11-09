@@ -75,16 +75,16 @@ command is `npm run android` when deferred Android work resumes.
 `npx expo prebuild` generates the native directories from app.config.js. Both native
 platform configurations permit user-entered HTTP hubs; HTTPS should be used
 where transport encryption is needed. Native generated projects are ignored.
-Expo SDK 57 configuration reference: https://docs.expo.dev/versions/v57.0.0/.
+Expo SDK 58 configuration reference: https://docs.expo.dev/versions/v58.0.0/.
 
 The iOS build uses Expo's scene lifecycle, required when building with the iOS 27
-SDK. Keep Expo at 57.0.23 or newer within SDK 57 and the
-`expo-build-properties` `ios.enableSceneSupport` option enabled. Prebuild makes
-the standard Swift AppDelegate an `ExpoReactNativeFactoryProvider` and delegates
-window startup to `EXExpoAppSceneDelegate`; do not hand-edit generated Swift or
-the scene manifest. See the [versioned build-properties reference](https://docs.expo.dev/versions/v57.0.0/sdk/build-properties/).
-`npm test` exercises that real plugin against the installed Expo template and
-checks generated lifecycle structure. An actual simulator Release launch remains
+SDK. SDK 58 ships an AppDelegate that provides the React factory and a
+SceneDelegate that inherits `ExpoAppSceneDelegate`. The scene owns window startup;
+Expo's `SceneEventForwarder` forwards URLs, user activities and lifecycle events.
+Do not set the retired `ios.enableSceneSupport` option or hand-edit generated
+Swift or the scene manifest. See the [versioned build-properties reference](https://docs.expo.dev/versions/v58.0.0/sdk/build-properties/).
+`npm test` exercises the real plugin against the installed Expo template and
+checks startup and forwarding ownership. An actual simulator Release launch remains
 necessary to verify native startup; Metro export alone cannot catch UIKit traps.
 
 ## Checks
@@ -316,6 +316,42 @@ per-minute counts, running-subagent tally, quiet time and latest tool intent, so
 the demo Board draws real meters, subagent tallies and Quiet/May-be-stuck labels.
 
 ## Standalone simulator builds
+
+For a reproducible, non-publishing build, use a fresh checkout on macOS with
+Xcode 26.6, Node 22.13.1, Ruby 3.3.6, Bundler 2.7.2, the locked gems and installed
+npm dependencies:
+
+```sh
+bash scripts/native/ios/build-simulator.sh --output /absolute/new/qualification-output
+```
+
+Run this command from the repository root. It generates with the non-secret
+fixture team `EVENERCI01`, checks repeat generation and CocoaPods lock equality,
+then builds Release and inspects the signed host and embedded share extension.
+With `--with-ui`, the installed-app qualification journeys then run inside the
+same simulator lifetime: a private loopback provider scripts the model
+boundary, the app saves real hub credentials, renders the fixture response
+natively, keeps an unsent draft across a cold launch, answers the share scheme
+and survives gestures in a sheet. The journeys' connection data is
+fixture-only — a throwaway loopback hub that dies with the run — and its
+private per-run state, including the mode-0600 test-run configuration and the
+hub's state, never reaches uploaded artifacts. XCTest's own activity record
+of the real onboarding typing does appear, truncated, in the uploaded test
+log and result bundle: recording that flow is the journey's purpose.
+It discovers and deletes only its own iPhone simulator. Output must not exist;
+diagnostics include source revision, npm/pod digests, tool identities, the pod
+candidate/diff and `DerivedData`. A changed lock fails and requires review, never
+an automatic source update. When CocoaPods refuses the committed lock because
+its local development pods changed, the runner re-resolves every local
+development pod the lock declares to produce the reviewable candidate and diff;
+registry pods reachable only through them may move, so the diff is reviewed
+before the candidate is applied. Linux refuses before generation.
+
+The separate `iOS qualification` workflow runs this path with `--with-ui` on
+native pull requests without release credentials, so its green path always
+includes the installed-app journeys. Physical-device checks remain separate
+requirements. Neither a build nor its diagnostic artifact authorizes
+TestFlight publication or qualifies a physical-device update.
 
 Follow the [locked dependency procedure](../docs/design/mobile/ios-build-distribution.md) to prebuild iOS and install pods.
 Also rerun `pod install` after `npm ci`: CocoaPods restores generated vendored

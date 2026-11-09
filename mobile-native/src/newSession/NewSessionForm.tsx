@@ -185,6 +185,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 				<View style={{ paddingHorizontal: space.rowInset, paddingVertical: space.rowPadding, gap: 8 }}>
 					<TextInput
 						accessibilityLabel="What should the agent do?"
+						testID="session-prompt"
 						placeholder="What should the agent do?"
 						placeholderTextColor={palette.inkLow}
 						autoFocus

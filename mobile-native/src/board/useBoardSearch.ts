@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import type { TextInput } from "react-native";
+import type { TextInputInstance } from "react-native";
 import type { ConversationClientLike } from "../conversation/services/conversation";
 import { createSearchController, type SearchScope } from "./boardSearch";
 import { recentSearches } from "./nativeBoardMemory";
@@ -17,7 +17,7 @@ function useSearch(client: ConversationClientLike | null) {
  * searches and the controller bound to `client`. */
 export function useBoardSearch(hubId: string, client: ConversationClientLike | null) {
 	const search = useSearch(client);
-	const searchInput = useRef<TextInput>(null);
+	const searchInput = useRef<TextInputInstance>(null);
 	const [searchText, setSearchText] = useState("");
 	// Searching from the moment the field takes focus until Cancel.
 	const [searching, setSearching] = useState(false);

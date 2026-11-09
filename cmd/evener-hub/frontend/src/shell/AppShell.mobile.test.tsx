@@ -4,9 +4,10 @@ import { fileURLToPath } from "node:url";
 import type { NavigationReadParams, NavigationReadResponse, NavigationSessionLocation } from "@evener/appwire-client";
 import { APPWIRE_PROTOCOL_VERSION, type ConnectionState } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
@@ -1073,6 +1074,58 @@ test("crossing desktop → mobile → desktop preserves a focused panel and its 
   expect(
     workspaceStore.getState().panes.find((pane) => pane.id === workspaceStore.getState().focusedPaneId)?.type,
   ).toBe("session");
+});
+
+// --- a session tap dismisses the Sessions drawer as the tap's own intent ---
+
+// Reopening the drawer while the session is already focused and tapping its
+// row changes no focus. The drawer must still close: the tap selected a
+// session, and the list is a picker, not a persistent overlay over the reader.
+test("mobile: tapping the already-focused session closes the Sessions drawer", async () => {
+  installMobileViewport();
+  const user = userEvent.setup();
+  render(<AppShell client={navClient()} />);
+
+  // Welcome auto-opens the drawer as the phone's only way to pick a session.
+  const firstDrawer = await screen.findByRole("dialog", { name: "Sessions" });
+  await user.click(within(firstDrawer).getByText("Session one"));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Sessions" })).toBeNull());
+  expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:s1" });
+
+  await user.click(screen.getByRole("button", { name: "Sessions" }));
+  const reopened = await screen.findByRole("dialog", { name: "Sessions" });
+  await user.click(within(reopened).getByText("Session one"));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Sessions" })).toBeNull());
+});
+
+// The same tap must also dismiss the drawer and place the session while the
+// route's location read is still in flight. That read is a hub round trip;
+// tying both the placement and the dismissal to it makes a slow hub look like
+// a dead tap and leaves the drawer covering the result.
+test("mobile: a session tap places and dismisses before its location read answers", async () => {
+  installMobileViewport();
+  const location = deferred<void>();
+  const client = navClient();
+  client.on("evener/navigation/read", (params: NavigationReadParams) => {
+    if (params.resource !== "location") return navigationRead(params);
+    return location.promise.then(() => navigationRead(params));
+  });
+
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  const drawer = await screen.findByRole("dialog", { name: "Sessions" });
+  await user.click(within(drawer).getByText("Session one"));
+
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Sessions" })).toBeNull());
+  expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:s1" });
+
+  await act(async () => {
+    location.resolve(undefined);
+    await location.promise;
+  });
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:s1" });
+  });
 });
 
 // --- kata 098n: a /thread share link is not rewritten into /s ------------
