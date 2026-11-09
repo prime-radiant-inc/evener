@@ -34,8 +34,9 @@ type Input struct {
 	ToolResponse   string `json:"tool_response,omitempty"`
 	AgentID        string `json:"agent_id,omitempty"`
 	AgentType      string `json:"agent_type,omitempty"`
-	// Effort is the reasoning effort level for the current session (e.g. "low", "medium", "high").
-	// Used by Task 7 to set the CLAUDE_EFFORT env var for command hooks.
+	// Effort is the session's configured reasoning effort:
+	// minimal|low|medium|high|xhigh|max, or "none". Used by Task 7 to set the
+	// CLAUDE_EFFORT env var for command hooks.
 	Effort string `json:"effort,omitempty"`
 	// Prompt is the official Claude UserPromptSubmit field. It carries the same
 	// value as the legacy UserPrompt alias; Claude-style hooks read "prompt".
