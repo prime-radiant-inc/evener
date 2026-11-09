@@ -541,6 +541,32 @@ func (s *relaySession) disconnect(epoch uint64) {
 	}
 }
 
+// invalidateConnection drops the current daemon link so the next command
+// redials through the source's current roster route. It is the transport-loss
+// path: listeners get the pending resync and recovery, and an in-flight
+// capture is revoked. A relay session is keyed by the canonical ref, so a
+// replacement daemon reuses the same session and must not inherit the
+// superseded daemon's socket.
+func (s *relaySession) invalidateConnection() {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	connection := s.connection
+	s.mu.Unlock()
+	if connection != nil {
+		s.disconnect(connection.epoch)
+		return
+	}
+	// Revoke a connection attempt already dialing from a route resolved before
+	// the replacement, so it cannot install the superseded socket. Its caller
+	// retries through the current route.
+	s.mu.Lock()
+	s.advanceEpochLocked()
+	s.mu.Unlock()
+}
+
 // publishPendingResync tells listeners to re-read once, before any frame from
 // the connection that just replaced an interrupted one reaches them.
 //

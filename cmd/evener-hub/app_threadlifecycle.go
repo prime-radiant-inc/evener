@@ -826,7 +826,7 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 			replacementConfirmed = true
 			read.Thread = annotateThreadProject(read.Thread)
 			read.Thread = applyHubCapabilities(cfg, read.Thread)
-			retireSupersededOwner(ctx, cfg, supersededOwner)
+			retireSupersededOwner(ctx, cfg, sources, supersededOwner)
 			return appwire.ThreadResumeResponse{Thread: read.Thread}, nil
 		}
 		if refreshErr != nil && !replacementConfirmed {
@@ -834,9 +834,16 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 		}
 	}
 	if replacementConfirmed {
-		retireSupersededOwner(ctx, cfg, supersededOwner)
+		retireSupersededOwner(ctx, cfg, sources, supersededOwner)
 	}
 	return hubResumedThreadResponse(ctx, cfg, sources, entry.SessionID, entry.ThreadID)
+}
+
+// relayConnectionInvalidator is the local source's seam for dropping the
+// canonical relay connection whose daemon a resume replaced. A remote source
+// has no local relay to invalidate.
+type relayConnectionInvalidator interface {
+	InvalidateDaemonRelay(rendezvous.Entry)
 }
 
 // retireSupersededOwner removes the exact rendezvous record of the owner this
@@ -844,15 +851,25 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 // an alive-but-unprobeable PID becomes an unconfirmed claim when a new hub
 // constructs its roster from the run directory, and lookupDaemonOwner checks
 // unconfirmed claims before the healthy replacement, so the leftover would
-// block every later resume (#5530). Removal is exact-owned and best-effort:
-// the replacement is already serving, and a lost race with the old daemon's own
-// cleanup leaves a working session.
-func retireSupersededOwner(ctx context.Context, cfg hubcore.WebConfig, entry *rendezvous.Entry) {
+// block every later resume (#5530). The canonical relay is invalidated for the
+// same reason: its session is keyed by the shared ref, so it would otherwise
+// keep the superseded daemon's socket and every later subscribed read and send
+// would fail. Both steps are exact-owned and best-effort: the replacement is
+// already serving, and a lost race with the old daemon's own cleanup leaves a
+// working session.
+func retireSupersededOwner(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, entry *rendezvous.Entry) {
 	if entry == nil || cfg.Roster == nil || cfg.RunDir == "" {
 		return
 	}
 	_ = rendezvous.RemoveIfOwned(cfg.RunDir, *entry)
 	_ = hubRosterRefresh(ctx, cfg.Roster)
+	if sources != nil {
+		if source, ok := sources.Source(appwire.LocalSourceID); ok {
+			if invalidator, ok := source.(relayConnectionInvalidator); ok {
+				invalidator.InvalidateDaemonRelay(*entry)
+			}
+		}
+	}
 }
 
 // resumeOwnership keeps the verified stopped transcript authoritative even when

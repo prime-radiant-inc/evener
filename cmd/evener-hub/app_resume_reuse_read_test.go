@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/rendezvous"
@@ -46,8 +47,13 @@ func TestResumeUnreadableOwnerSpawnsReplacement(t *testing.T) {
 
 	// The wedged owner: alive enough for discovery, but its read is
 	// unavailable, which is the shape that failed 190 times in the incident.
+	// It serves reads until the relay below is established, then stops.
+	var oldUnreadable atomic.Bool
 	oldDaemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: appwire.LocalSourceID})
 	appserver.HandleTyped(oldDaemon.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		if !oldUnreadable.Load() {
+			return appwire.ThreadReadResponse{Thread: liveProjectThread(sessionID, workingDir)}, nil
+		}
 		return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("thread history is closed")
 	})
 	oldHTTP := httptest.NewServer(http.HandlerFunc(oldDaemon.ServeWebSocket))
@@ -117,7 +123,36 @@ func TestResumeUnreadableOwnerSpawnsReplacement(t *testing.T) {
 		ResumeLocks: hubcore.NewResumeLocks(),
 	}
 
-	response, err := resumeThreadLocked(context.Background(), cfg, newHubSourceRegistry(cfg), appwire.ThreadResumeParams{Session: sessionID})
+	// One persistent registry for the relay and the resume. Its relay session is
+	// keyed by the canonical ref the replacement also uses, so a retained
+	// connection must be invalidated after the swap.
+	sources := newHubSourceRegistry(cfg)
+	relaySource, ok := sources.Source(appwire.LocalSourceID)
+	if !ok {
+		t.Fatal("persistent registry has no local source")
+	}
+	relaySessions, ok := relaySource.(appsource.RelaySessionSource)
+	if !ok {
+		t.Fatal("local source has no relay session API")
+	}
+	canonicalRef := appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: sessionID}
+	lease, err := relaySessions.AcquireRelaySession(canonicalRef)
+	if err != nil {
+		t.Fatalf("acquire canonical relay: %v", err)
+	}
+	defer lease.Close()
+	relayCtx, cancelRelay := context.WithCancel(context.Background())
+	defer cancelRelay()
+	first, err := lease.Read(relayCtx, appwire.ThreadReadParams{Ref: canonicalRef.String(), Subscribe: true})
+	if err != nil {
+		t.Fatalf("establish canonical relay: %v", err)
+	}
+	if first.Handoff == nil || !first.Handoff.Commit() {
+		t.Fatal("establish canonical relay: handoff did not commit")
+	}
+	oldUnreadable.Store(true)
+
+	response, err := resumeThreadLocked(context.Background(), cfg, sources, appwire.ThreadResumeParams{Session: sessionID})
 	if err != nil {
 		t.Fatalf("resume reused the unreadable owner instead of spawning a replacement: %v", err)
 	}
@@ -134,7 +169,7 @@ func TestResumeUnreadableOwnerSpawnsReplacement(t *testing.T) {
 
 	// The replacement is now the confirmed owner: a later resume of the same
 	// session must reuse it rather than falling through to another spawn.
-	if _, err := resumeThreadLocked(context.Background(), cfg, newHubSourceRegistry(cfg), appwire.ThreadResumeParams{Session: sessionID}); err != nil {
+	if _, err := resumeThreadLocked(context.Background(), cfg, sources, appwire.ThreadResumeParams{Session: sessionID}); err != nil {
 		t.Fatalf("resume after recovery: %v", err)
 	}
 	if spawnCalls != 1 {
@@ -155,5 +190,18 @@ func TestResumeUnreadableOwnerSpawnsReplacement(t *testing.T) {
 	}
 	if spawnCalls != 1 {
 		t.Fatalf("replacement spawns after hub restart=%d, want 1", spawnCalls)
+	}
+
+	// The cached relay connection belonged to the superseded daemon. A
+	// subscribed read through the same lease must now reach the replacement.
+	second, err := lease.Read(relayCtx, appwire.ThreadReadParams{Ref: canonicalRef.String(), Subscribe: true})
+	if err != nil {
+		t.Fatalf("subscribed read after replacement reused the superseded relay: %v", err)
+	}
+	if second.Handoff != nil {
+		second.Handoff.Commit()
+	}
+	if second.Response.Thread.ID != sessionID {
+		t.Fatalf("subscribed read thread=%+v, want the replacement's thread for %s", second.Response.Thread, sessionID)
 	}
 }
