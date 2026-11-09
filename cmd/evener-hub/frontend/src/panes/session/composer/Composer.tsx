@@ -244,11 +244,12 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   // React focus events follow the composer's controls and portaled menus.
   const [followUpFocused, setFollowUpFocused] = useState(false);
   // Editor engagement is narrower than the card's focus above: it turns on
-  // only when the textbox itself is focused, and turns off only when focus
-  // leaves the card entirely (the same frame guard), so a press on a resting
-  // row's own controls - the session menu, Send - never counts as editor
-  // engagement. The phone collapse below keys on it, so pressing a resting
-  // control cannot expand the row out from under that press.
+  // only when the textbox itself is focused, and turns off only once focus
+  // rests outside the card (reconcileEditorEngagement decides from where
+  // focus actually sits, deferring through an in-flight press), so a press
+  // on a resting row's own controls - the session menu, Send - never counts
+  // as editor engagement. The phone collapse below keys on it, so pressing
+  // a resting control cannot expand the row out from under that press.
   const [editorEngaged, setEditorEngaged] = useState(false);
   const followUpFocusSequenceRef = useRef(0);
 
@@ -282,6 +283,18 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
       anchor.removeAttribute("data-composer-editing");
     });
   };
+  // Where focus actually sits decides the resting row: inside the composer
+  // or one of its portaled menus keeps the expanded row, body or anywhere
+  // else rests it. A blur's frame can fire before a press's focus transfer
+  // lands, so the blur path defers to the press's release, which reconciles
+  // here once the transfer has settled.
+  const reconcileEditorEngagement = (): void => {
+    const root = composerRootRef.current;
+    if (!root) return;
+    const active = root.ownerDocument.activeElement;
+    if (active && (root.contains(active) || active.closest('[role="menu"], [role="listbox"], [role="dialog"]'))) return;
+    setEditorEngaged(false);
+  };
   const holdComposerPress = (): void => {
     composerPressReleaseRef.current?.();
     composerPointerRef.current = true;
@@ -292,9 +305,11 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
       doc.removeEventListener("click", release, true);
       doc.removeEventListener("pointercancel", release, true);
       // A press's focus transfer can run after the click; clear on a later
-      // task so the blur that follows still sees the hold.
+      // task so the blur that follows still sees the hold, then reconcile
+      // the resting row now that the transfer has settled.
       setTimeout(() => {
         composerPointerRef.current = false;
+        reconcileEditorEngagement();
       }, 0);
     };
     composerPressReleaseRef.current = release;
@@ -873,10 +888,14 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     // Wait until the next frame so a control or portal keeps the empty editor
     // expanded without shrinking it during a focus transfer.
     requestAnimationFrame(() => {
-      if (mountedRef.current && followUpFocusSequenceRef.current === sequence) {
-        setFollowUpFocused(false);
-        setEditorEngaged(false);
-      }
+      if (!mountedRef.current || followUpFocusSequenceRef.current !== sequence) return;
+      setFollowUpFocused(false);
+      // A press inside the composer can blur the editor to body before the
+      // press's own focus transfer lands; clearing engagement here would
+      // collapse the row out from under the pressed control. Hold off during
+      // the press; its release reconciles once the transfer has settled.
+      if (composerPointerRef.current) return;
+      reconcileEditorEngagement();
     });
     endComposerEditingSoon();
   }
@@ -923,25 +942,29 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   // shrinks to the menu-only chrome: the session menu stays reachable, and
   // that placement's hidden panel keeps initial activity discovery
   // following the pane on screen (issue #1335) with no status chips.
-  const leadingControls = controlsCollapsed ? (
-    <MemoizedSessionChrome ref={ref} paneId={paneId} placement="menu" discoverActivity />
-  ) : (
+  const leadingControls = (
     <div className={CLASS.leading}>
-      <Tooltip label="Attach an image">
-        <IconButton
-          label="Attach image"
-          icon={<AttachIcon />}
-          variant="quiet"
-          size="xs"
-          type="button"
-          data-testid="composer-attach"
-          onClick={() => fileInputRef.current?.click()}
-        />
-      </Tooltip>
-      {!askPending && sessionChrome}
-      {/* The phone pane has no footer strip (Session.tsx's edgeFooter), so
-          this row is where the activity counts live on a phone. */}
-      {isMobile && <ActivityChips sessionRef={ref} paneId={paneId} />}
+      {controlsCollapsed ? (
+        <MemoizedSessionChrome ref={ref} paneId={paneId} placement="menu" discoverActivity />
+      ) : (
+        <>
+          <Tooltip label="Attach an image">
+            <IconButton
+              label="Attach image"
+              icon={<AttachIcon />}
+              variant="quiet"
+              size="xs"
+              type="button"
+              data-testid="composer-attach"
+              onClick={() => fileInputRef.current?.click()}
+            />
+          </Tooltip>
+          {!askPending && sessionChrome}
+          {/* The phone pane has no footer strip (Session.tsx's edgeFooter), so
+              this row is where the activity counts live on a phone. */}
+          {isMobile && <ActivityChips sessionRef={ref} paneId={paneId} />}
+        </>
+      )}
     </div>
   );
   return (

@@ -1221,19 +1221,25 @@ test("mobile keeps the session's activity chips in the composer's control row, w
 
   const user = userEvent.setup();
   // Engaging the editor brings the full row: attach and the activity chips
-  // ride in it, and a chip is the phone's one-tap way into the Overview.
+  // ride in it.
   await user.click(editor);
   const form = screen.getByTestId("composer-form");
   await waitFor(() => expect(form.querySelector('[data-testid="composer-attach"]')).toBeTruthy());
-  await user.click(await screen.findByRole("button", { name: /Jobs, 1 of 3 running/ }));
-  expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "jobs" });
 
   // A resting editor sheds the chips and attach; Send stays, so the
-  // resting card is still a usable one-line composer.
-  fireEvent.blur(editor);
+  // resting card is still a usable one-line composer. A real blur() moves
+  // focus off the editor, which the engagement reconcile reads.
+  act(() => {
+    editor.blur();
+  });
   await waitFor(() => expect(form.querySelector('[data-testid="composer-attach"]')).toBeNull());
   expect(form.querySelector("[data-activity-tab]")).toBeNull();
   expect(form.querySelector('[data-testid="composer-submit"]')).toBeTruthy();
+
+  // Re-engaged, a chip is the phone's one-tap way into the Overview list.
+  await user.click(editor);
+  await user.click(await screen.findByRole("button", { name: /Jobs, 1 of 3 running/ }));
+  expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "jobs" });
 });
 
 test.each(["closed", "ended", "notLoaded"] as const)(

@@ -36,6 +36,12 @@
   gap: var(--space-1);
   flex: 1 1 auto;
   min-width: 0;
+  /* The phone's activity chips ride in this slot (ActivityChips reuses the
+     statusbar's compact presentation), so the slot carries the same named
+     container the statusbar's own bar declares: chips drop their names and
+     glyphs by this slot's measured width, not the page's. Desktop renders
+     no chips here, so the container only ever holds them on a phone. */
+  container: statusbar / inline-size;
 }
 
 .attachments {

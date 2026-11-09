@@ -935,8 +935,12 @@ test("a mobile session pane keeps its activity chips in the composer's control r
 
   // Blurring the resting editor rests the row again: no attach, no chips.
   // Send stays (the actions slot never sheds), so the resting card remains
-  // a usable one-line composer.
-  fireEvent.blur(editor);
+  // a usable one-line composer. A real blur() moves focus off the editor,
+  // which the engagement reconcile reads; a synthetic blur event alone
+  // would leave activeElement on the editor.
+  act(() => {
+    editor.blur();
+  });
   await waitFor(() => expect(form.querySelector('[data-testid="composer-attach"]')).toBeNull());
   expect(form.querySelector("[data-activity-tab]")).toBeNull();
   expect(form.querySelector('[data-testid="composer-submit"]')).toBeTruthy();

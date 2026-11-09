@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Thread } from "@evener/appwire-client";
+import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
@@ -642,4 +643,58 @@ test("a collapsed mobile composer still offers Stop while a turn is running", as
   await screen.findByRole("textbox", { name: "Message" });
   await flushPendingTurnsProjectionForTests();
   await waitFor(() => expect(screen.getByTestId("composer-stop")).toBeTruthy());
+});
+
+// A press on a row control can blur the focused editor to body without
+// moving focus, and the press's focus transfer lands only a task after its
+// click. The collapse must hold through the press - clearing engagement on
+// the blur's frame would unmount the pressed control and lose its action -
+// and then rest once the press's release reconciles where focus sits.
+test("a phone press keeps the pressed control mounted through the press", async ({ onTestFinished }) => {
+  onTestFinished(installMobileViewport());
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  await threadsStore.getState().ensureThread("ref_a");
+  render(
+    <ClientProvider client={fake}>
+      <Composer ref="ref_a" source={createTestComposerSource("ref_a")} focused={false} />
+    </ClientProvider>,
+  );
+  const editor = await screen.findByRole("textbox", { name: "Message" });
+  await flushPendingTurnsProjectionForTests();
+
+  // The editor's focus engages the full row.
+  await act(async () => {
+    editor.focus();
+  });
+  await waitFor(() => expect(screen.getByTestId("composer-attach")).toBeTruthy());
+
+  // A press on Attach blurs the editor to body without focusing the button;
+  // the pressed control must stay mounted through the press and its click.
+  await act(async () => {
+    fireEvent.pointerDown(screen.getByTestId("composer-attach"));
+  });
+  await act(async () => {
+    editor.blur();
+  });
+  // jsdom schedules the frame on a ~16ms timer, so a plain task yield never
+  // reaches it; wait real milliseconds inside act() so the blur's frame has
+  // fired before the mid-press assertion.
+  await act(async () => {
+    await new Promise((resolve) => {
+      setTimeout(resolve, 50);
+    });
+  });
+  expect(screen.getByTestId("composer-attach")).toBeTruthy();
+  await act(async () => {
+    fireEvent.click(screen.getByTestId("composer-attach"));
+  });
+  await act(async () => {
+    await nextMacrotask();
+  });
+
+  // The press released and focus stayed on body: the row rests again, with
+  // the controls that never shed still in it.
+  await waitFor(() => expect(screen.queryByTestId("composer-attach")).toBeNull());
+  expect(screen.getByTestId("composer-submit")).toBeTruthy();
 });
