@@ -57,6 +57,65 @@ func TestHubArchiveSetAppWirePersistsSessionDecision(t *testing.T) {
 	}
 }
 
+// An archive decision is durable before its navigation receipt is built. When
+// the forced refresh exhausts its deadline, the mutation must report the
+// committed decision and defer the receipt instead of failing: a 503 would
+// invite a retry of a mutation that already applied.
+func TestArchiveSetDefersNavigationReceiptWhenRefreshTimesOut(t *testing.T) {
+	store := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+	var attentionPokes int
+	cfg := hubcore.WebConfig{
+		Archive:       store,
+		HubStateRoot:  t.TempDir(),
+		Past:          hubcore.NewPastIndex(""),
+		PokeAttention: func() { attentionPokes++ },
+	}
+	source := &churningNavigationSource{testNavigationSource: newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())}
+	navigation := newTestNavigationService(t, source.testNavigationSource, func(cfg *navigationServiceConfig) {
+		cfg.Source = source
+		cfg.BuildTimeout = 20 * time.Millisecond
+	})
+
+	response, err := archiveSet(context.Background(), cfg, nil, navigation, appwire.ArchiveParams{
+		Kind:     appwire.ArchiveTargetSession,
+		ID:       "session-1",
+		Archived: true,
+	})
+	if err != nil {
+		t.Fatalf("archive of a persisted decision failed: %v", err)
+	}
+	if !response.OK {
+		t.Fatalf("response = %+v, want OK for a persisted decision", response)
+	}
+	if !response.NavigationDeferred {
+		t.Fatalf("response = %+v, want NavigationDeferred for a timed-out receipt", response)
+	}
+	if attentionPokes != 1 {
+		t.Fatalf("attention pokes = %d, want 1 for an applied decision", attentionPokes)
+	}
+	decisions, err := store.Decisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decisions[hubcore.ArchiveKey{Kind: "session", ID: "session-1"}] {
+		t.Fatalf("session archive decision not persisted: %v", decisions)
+	}
+}
+
+// churningNavigationSource moves its revision on every capture, so a build
+// restarts until its deadline. It reproduces a fleet whose source changes
+// faster than a navigation build can commit.
+type churningNavigationSource struct {
+	*testNavigationSource
+	passes int
+}
+
+func (s *churningNavigationSource) Capture(ctx context.Context, generation string, now time.Time) (navigationSourceSnapshot, error) {
+	s.passes++
+	s.changeTitle(fmt.Sprintf("churn %d", s.passes))
+	return s.testNavigationSource.Capture(ctx, generation, now)
+}
+
 func TestHubArchiveSetAppWireValidatesAndUnarchivesProject(t *testing.T) {
 	root := t.TempDir()
 	projectDir := filepath.Join(root, "project")

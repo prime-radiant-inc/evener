@@ -126,7 +126,16 @@ func archiveSet(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.R
 	}
 	navigationMutation, err := navigation.Refresh(ctx, hint)
 	if err != nil {
-		return appwire.ArchiveResponse{}, appwire.Unavailable(err.Error())
+		// The decision persisted before this refresh, and the archive store's
+		// change hook (hub_startup wires Archive.SetOnChange to bump the inputs
+		// version and Invalidate) has already scheduled the rebuild. Reporting
+		// the archival as failed would invite a retry of a completed mutation,
+		// so report the committed decision and defer only the receipt: the
+		// rebuild publishes it as an invalidation.
+		if cfg.PokeAttention != nil {
+			cfg.PokeAttention()
+		}
+		return appwire.ArchiveResponse{OK: true, NavigationDeferred: true}, nil
 	}
 	if cfg.PokeAttention != nil {
 		cfg.PokeAttention()

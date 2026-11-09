@@ -82,6 +82,14 @@ export interface ArchiveParams {
 export interface ArchiveResponse {
   ok: boolean;
   navigation: NavigationMutation;
+  /**
+   * NavigationDeferred reports that the archive decision is durable but its
+   * synchronous navigation receipt was not built before the refresh deadline.
+   * The receipt arrives later as a navigation invalidation; the decision must
+   * not be retried as failed. Older clients ignore the field and converge
+   * from that invalidation.
+   */
+  navigationDeferred?: boolean;
 }
 
 export interface ArchivedListParams {

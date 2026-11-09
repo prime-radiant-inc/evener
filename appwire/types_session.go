@@ -202,6 +202,12 @@ type ArchiveParams struct {
 type ArchiveResponse struct {
 	OK         bool               `json:"ok"`
 	Navigation NavigationMutation `json:"navigation"`
+	// NavigationDeferred reports that the archive decision is durable but its
+	// synchronous navigation receipt was not built before the refresh deadline.
+	// The receipt arrives later as a navigation invalidation; the decision must
+	// not be retried as failed. Older clients ignore the field and converge
+	// from that invalidation.
+	NavigationDeferred bool `json:"navigationDeferred,omitempty"`
 }
 
 // ProjectDeleteParams identifies the exact local project to delete. WorkingDir

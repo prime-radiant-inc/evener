@@ -499,6 +499,7 @@ without that tag. These tables describe fields, not every validation constraint.
 |-------|---------|-----------|----------|
 | `ok` | bool |  |  |
 | `navigation` | [appwire.NavigationMutation](#navigationmutation) |  |  |
+| `navigationDeferred` | bool | yes |  |
 
 
 ### `ArchiveTargetKind`
