@@ -203,8 +203,9 @@ func runServeForegroundShellPersistenceCaseWithCheckpoint(t *testing.T, mode for
 	// window must not poll a vanished path forever (#4078). The wall-clock
 	// deadline is far beyond this test's 15s context.
 	shellCommand := fmt.Sprintf(
-		"sleep 600 & child=$!; printf '%%s' \"$child\" > %s; printf '%%s' $$ > %s; deadline=$((SECONDS+60)); "+
+		"sleep 600 & child=$!; "+
 			"trap 'kill \"$child\" 2>/dev/null; wait \"$child\" 2>/dev/null; exit 0' TERM; "+
+			"printf '%%s' \"$child\" > %s; printf '%%s' $$ > %s; "+
 			"while [ ! -f %s ] && [ \"$SECONDS\" -lt \"$deadline\" ]; do sleep 0.01; done; "+
 			"kill \"$child\" 2>/dev/null; wait \"$child\" 2>/dev/null; printf shell-complete",
 		strconv.Quote(shellChildPIDPath), strconv.Quote(shellPIDPath), strconv.Quote(gatePath))
