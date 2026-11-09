@@ -21,6 +21,7 @@ import type { FakeClient, RequestHandler } from "@evener/appwire-client/testing/
 import { IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readComposerDraft, writeComposerDraft } from "../panes/session/composer/draft";
+import { settleProjectionWorkForTests } from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
 import { setCacheChannelFactoryForTests } from "./cacheLifetime";
 import { resetConnectionStoreForTests } from "./connection";
 import {
@@ -29,7 +30,6 @@ import {
   setProductionEntryCacheForTests,
 } from "./entryTranscriptRoutes";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
-import { settleProjectionWorkForTests } from "./projectionWork";
 import { entryHistoryKey, type TranscriptResolvedIdentity } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { observeProductionEntryForTests } from "./testing/entryProductionHarness";
