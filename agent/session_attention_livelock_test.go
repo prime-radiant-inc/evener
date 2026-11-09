@@ -450,6 +450,41 @@ func TestStopReplayAfterReEngagementDoesNotReparkAttention(t *testing.T) {
 	}
 }
 
+// A steer is the user speaking again, so it releases the root attention rail
+// a Stop parked and re-arms its deferred deliveries. The holds are the park's
+// only storage, so the fresh accept's clear plus this wake is the whole
+// release (lifecycle ruling 2026-11-09, issue #191).
+func TestSteerReEngagesParkedRootAttention(t *testing.T) {
+	t.Parallel()
+	s, _, notifies, _ := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 503, "upstream unavailable", nil, nil))
+	drainSessionEvents(s)
+
+	armOneRootAttention(t, s, "dlg_steer", "delegate:dlg_steer/delivery/1")
+	if _, err := s.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
+		ClientMutationID: "stop-over-attention",
+	}, func() {}); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if !s.rootAttentionRailParked() {
+		t.Fatal("precondition: the Stop did not park the attention rail")
+	}
+	before := notifies.Load()
+
+	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-after-stop",
+		Input:            []appwire.InputItem{{Type: "text", Text: "do this instead"}},
+	}); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	wake, retryActive, pending := attentionRailState(s)
+	if !wake || retryActive || pending != 1 {
+		t.Fatalf("steer left wake=%t retry=%t pending=%d; the deferred attention must re-arm", wake, retryActive, pending)
+	}
+	if got := notifies.Load(); got == before {
+		t.Fatal("the steer did not notify the deferred attention wake")
+	}
+}
+
 // A replayed accept must not unpark the rail: replay re-runs no effect
 // callback, so it releases no QueueHeld, and a Stop that landed after the
 // original application must keep the session silent. A client retrying a
