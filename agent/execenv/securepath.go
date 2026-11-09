@@ -184,12 +184,6 @@ const (
 	denyReasonSymlink      = "refuses to traverse a symlinked or non-directory path component"
 	denyReasonEscape       = "path resolves outside the sandbox root"
 	denyReasonRootTarget   = "cannot operate on a sandbox root itself"
-
-	// immutablePolicyClause is appended to a NON-sensitive denial's reason: it
-	// tells the model the box is immutable — a per-session policy no tool call can
-	// relax — so it stops retrying the same denied path. Mode-agnostic and accurate
-	// for every mode.
-	immutablePolicyClause = "; this sandbox policy is fixed for the session"
 )
 
 // deny builds a typed *sandbox.DeniedError for a file-tool denial. Its Redacted
@@ -205,7 +199,10 @@ func (s *sandboxFS) deny(tool, denyPath, reason string) *sandbox.DeniedError {
 	sensitive := reason == denyReasonMasked
 	modelReason := reason
 	if !sensitive {
-		modelReason = reason + immutablePolicyClause
+		// Tell the model the box is immutable — a per-session policy no tool call can
+		// relax — so it stops retrying the same denied path. Mode-agnostic and
+		// accurate for every mode.
+		modelReason = reason + "; this sandbox policy is fixed for the session"
 	}
 	if reason == denyReasonSymlink {
 		// The confined open (openat2/RESOLVE_NO_SYMLINKS on Linux, an O_NOFOLLOW
