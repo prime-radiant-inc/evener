@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/internal/testfs"
 	"primeradiant.com/evener/llm"
 )
 
@@ -146,7 +147,7 @@ func TestReclaimCrashedSessionScratchSweepsEveryAllocationBase(t *testing.T) {
 // without touching the developer's cache.
 func redirectUserCacheDir(t *testing.T) string {
 	t.Helper()
-	home := t.TempDir()
+	home := testfs.CanonicalTempDir(t)
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
 	cache, err := os.UserCacheDir()
@@ -156,11 +157,7 @@ func redirectUserCacheDir(t *testing.T) string {
 	if err := os.MkdirAll(cache, 0o700); err != nil {
 		t.Fatalf("create cache base: %v", err)
 	}
-	canonical, err := filepath.EvalSymlinks(cache)
-	if err != nil {
-		t.Fatalf("resolve cache base: %v", err)
-	}
-	return canonical
+	return cache
 }
 
 // age moves directories past the reclaim window.
