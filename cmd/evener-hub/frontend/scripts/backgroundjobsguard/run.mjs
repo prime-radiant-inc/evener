@@ -19,7 +19,7 @@ const sidebar = '[data-testid="activity-sidebar"]';
 const viewport = `${sidebar} [class*="_body_"]`;
 const anchor = (jobId) => `job:${q([fixture.rootRef, jobId])}`;
 const row = (jobId) => `${sidebar} [data-activity-anchor=${q(anchor(jobId))}]`;
-const frames = [], sockets = [], errors = [], consoleEvents = [];
+const frames = [], sockets = [], errors = [], consoleEvents = [], wheelEvents = [];
 const requests = new Map();
 const methods = new Set(["evener/thread/jobs/list", "evener/thread/activity/read", "evener/jobs/output", "evener/jobs/get", "thread/read"]);
 const read = (source) => evaluate(driver.send, source);
@@ -306,7 +306,7 @@ try {
   }
 } catch (error) {
   if (driver.page) await capture("failure").catch(captureError => save("capture-error.json", String(captureError)));
-  save("failure.json", { message: String(error), stack: error.stack, frames, sockets, errors, consoleEvents });
+  save("failure.json", { message: String(error), stack: error.stack, frames, sockets, errors, consoleEvents, wheelEvents });
   console.error(redact({ error: String(error), evidence: fixture.artifactDir }));
   process.exitCode = 1;
 } finally {
@@ -388,11 +388,13 @@ async function runOutputPagingJourney(fixture) {
   const wheel = async deltaY => {
     const since = Date.now() - edgeWheelAt;
     if (since < 600) await new Promise(resolve => setTimeout(resolve, 600 - since));
-    const point = await read(`(() => { const scroller=${scrollerExpr}; if (!scroller) return null; const r=scroller.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2,extent:scroller.scrollHeight+scroller.clientHeight,
+    const point = await read(`(() => { const scroller=${scrollerExpr}; if (!scroller) return null; const r=scroller.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2,top:scroller.scrollTop,scrollHeight:scroller.scrollHeight,clientHeight:scroller.clientHeight,
       atEdge:${deltaY} < 0 ? scroller.scrollTop <= 1 : scroller.scrollTop >= scroller.scrollHeight - scroller.clientHeight - 1}; })()`);
     assert.ok(point, 'actual output scroller');
-    const {extent,atEdge,...position}=point;
-    await driver.send('Input.dispatchMouseEvent', {type:'mouseWheel',...position,deltaX:0,deltaY:Math.abs(deltaY)>=40000 ? Math.sign(deltaY)*extent : deltaY});
+    const {atEdge,x,y,top,scrollHeight,clientHeight}=point;
+    const extent=scrollHeight+clientHeight;
+    wheelEvents.push({at:new Date().toISOString(),deltaY,atEdge,x,y,scrollTop:top,scrollHeight,clientHeight});
+    await driver.send('Input.dispatchMouseEvent', {type:'mouseWheel',x,y,deltaX:0,deltaY:Math.abs(deltaY)>=40000 ? Math.sign(deltaY)*extent : deltaY});
     if (atEdge) edgeWheelAt = Date.now();
   };
   const latest = async (marker, after = 0, totalBytes = 0) => {
@@ -461,10 +463,24 @@ async function runOutputPagingJourney(fixture) {
       await wait('window.__pagingWire.replies.length===1','hold the owner response before renderer publication');
       await read('(() => { const entry=window.__pagingWire.replies.shift(); entry.socket.callback(entry.event); })()');
       await wait(`(() => { const glyph=${glyphExpr(byte)}; return glyph && glyph.rowStart<${byte}; })()`,'partial source fragment has been structurally repaired');
-      const afterGlyph=await read(glyphExpr(byte));
-      wrappedRepair={before,after:afterGlyph,shift:afterGlyph.top-before.top,allowedShift:2};
+      // Structural repair is not the final geometry: JobLog can still measure,
+      // resize, and restore through later callbacks. Sample across animation
+      // frames and assert on a position that held still for three consecutive
+      // frames, so a transient intermediate measurement cannot pass or fail the
+      // 2px behavior assertion (#4798).
+      const glyphSamples=[];
+      let afterGlyph=null,stableFrames=0;
+      for(let frame=0;frame<120 && stableFrames<3;frame++) {
+        const sample=await read(`new Promise(resolve => requestAnimationFrame(() => resolve(${glyphExpr(byte)})))`);
+        glyphSamples.push(sample);
+        if(sample && afterGlyph && sample.rowStart===afterGlyph.rowStart && sample.top===afterGlyph.top && sample.bottom===afterGlyph.bottom) stableFrames++;
+        else stableFrames=0;
+        afterGlyph=sample;
+      }
+      assert.ok(stableFrames>=3,`source glyph ${byte} never held still after structural repair: ${q(glyphSamples)}`);
+      wrappedRepair={before,after:afterGlyph,shift:afterGlyph.top-before.top,allowedShift:2,samples:glyphSamples};
       save('paging-wrapped-repair-glyph.json',wrappedRepair);
-      assert.ok(Math.abs(wrappedRepair.shift)<=2,`source glyph ${byte} moved ${wrappedRepair.shift}px during wrapped repair, allowed 2px`);
+      assert.ok(Math.abs(wrappedRepair.shift)<=2,`source glyph ${byte} moved ${wrappedRepair.shift}px during wrapped repair, allowed 2px; evidence: ${q(wrappedRepair)}`);
     }
     await waitFrames(() => outputCalls(after).some(request => request.params.beforeBytes !== undefined && page(request)), 'trusted wheel fetches adjacent retained history, latest-only output cannot satisfy this');
     await bounded();
@@ -611,16 +627,34 @@ async function runOutputPagingJourney(fixture) {
   const checkFinalHistory = () => {
     assertAdjacentHistory(finalHistoryPages(), finalProgress, 'finished-history pages remain adjacent');
   };
-  for (let index = 0; index < 132; index++) {
-    checkFinalHistory();
-    if (finalProgress.end >= liveStart) break;
-    await wheel(40000);
-    await waitFrames(() => finalHistoryPages().length > finalProgress.checked, 'trusted wheel advances the retained post-rollover gap');
-    checkFinalHistory();
-    await bounded();
+  try {
+    for (let index = 0; index < 132; index++) {
+      checkFinalHistory();
+      if (finalProgress.end >= liveStart) break;
+      await wheel(40000);
+      await waitFrames(() => finalHistoryPages().length > finalProgress.checked, 'trusted wheel advances the retained post-rollover gap');
+      checkFinalHistory();
+      await bounded();
+    }
+    assert.ok(finalProgress.end >= liveStart, 'trusted paging reaches the independently captured live interval');
+    await wait(`(() => { const value=${stateExpr}; return value?.rows.every(row => row.kind !== 'unloaded' || row.end !== ${liveStart}); })()`, 'retained gap joins the actual live rows');
+  } catch (error) {
+    // The CI failure that filed #4825 retained no wheel/DOM/demand trace. Save
+    // the wheel timing, scroll geometry, output calls and wire state before the
+    // failure leaves the driver, so a recurrence names its missing signal
+    // instead of only the timeout label.
+    const evidence={error:String(error?.stack ?? error),liveStart,finalProgress,wheelEvents};
+    try {
+      const [stateValue,wireValue]=await Promise.all([state(),read(`(() => { const w=window.__pagingWire; return {sent:w.sent.length,delivered:w.deliveredOutputs,holdSend:w.holdSend,holdReply:w.holdReply}; })()`)]);
+      save('paging-post-rollover-failure.json',{...evidence,
+        outputCalls:outputCalls(finalHistoryAfter).map(request=>({params:request.params,page:page(request)})),
+        state:stateValue,wire:wireValue});
+    } catch (captureError) {
+      save('paging-post-rollover-failure.json',{...evidence,captureError:String(captureError)});
+    }
+    try { await driver.screenshot('paging-post-rollover-failure'); } catch (screenshotError) { consoleEvents.push({type:'warning',args:[{screenshotError:String(screenshotError)}]}); }
+    throw error;
   }
-  assert.ok(finalProgress.end >= liveStart, 'trusted paging reaches the independently captured live interval');
-  await wait(`(() => { const value=${stateExpr}; return value?.rows.every(row => row.kind !== 'unloaded' || row.end !== ${liveStart}); })()`, 'retained gap joins the actual live rows');
   await wheel(40000);
   await wait(`document.querySelector(${q(content)})?.textContent.includes('FINAL_AFTER_PENDING_READ_é_😀')`,'literal final marker renders after drain recovery');
   await backward();
