@@ -39,7 +39,11 @@ import {
   watchDurationLabel,
   watchGloss,
 } from "@evener/appwire-client";
-import { subagentTallyToShow } from "@evener/appwire-client/state/navigation";
+import {
+  quotaWaitRemainingMs,
+  subagentTallyToShow,
+  waitingForQuotaText,
+} from "@evener/appwire-client/state/navigation";
 import { memo, type ReactNode, useCallback, useRef } from "react";
 import { settingsURLWithQuery } from "../../panes/settings/settingsHost";
 import {
@@ -476,7 +480,11 @@ function sessionStatusLabel(
   read: RailActivityRead | null,
 ): RailStatus {
   if (notStarted) return { kind: "not-started", text: "Not started" };
-  if (state === "failed") return { kind: "failed", text: STATUS_LABEL.failed };
+  if (state === "failed") {
+    const quotaWait = quotaWaitRemainingMs(session, Date.now());
+    if (quotaWait !== null) return { kind: "quota", text: waitingForQuotaText(quotaWait) };
+    return { kind: "failed", text: STATUS_LABEL.failed };
+  }
   if (state === "working") return workingStatus(session, read);
   const label = humanizeState(session.state, session.ask_pending === true, session.approval_pending === true);
   return { kind: "state", text: label.charAt(0).toUpperCase() + label.slice(1) };

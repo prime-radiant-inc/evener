@@ -661,6 +661,27 @@ describe("compact session status", () => {
     expect(within(panel).getByTestId("rail-context-status").textContent).toBe("Reading the board's row tests.");
   });
 
+  // A session waiting out a usage limit until a known reset is not just
+  // Failed: its status says it is waiting and resumes by itself. Once the
+  // resume time has passed it reads Failed again, as the hub refreshes the row
+  // only at the session's next turn.
+  test.each([
+    ["ahead", 90 * 60_000, "quota"],
+    ["passed", -60_000, "failed"],
+  ] as const)(
+    "a failed session whose quota wait resume time is %s (%d ms away) has the %s status",
+    (_when, offsetMs, kind) => {
+      const resumesAt = new Date(Date.now() + offsetMs).toISOString();
+      renderRow({
+        state: "errored",
+        failure: { title: "Usage limit reached", cause_kind: "provider", status: 429, resumes_at: resumesAt },
+      });
+
+      const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
+      expect(within(panel).getByTestId("rail-context-status").getAttribute("data-status-kind")).toBe(kind);
+    },
+  );
+
   // The bug this pins: on a touch-only device the row's own tap must open the
   // session, and only a long press may expose the context card. A real tap
   // first fires mousedown, which RailRow uses to focus the owning tree row -
