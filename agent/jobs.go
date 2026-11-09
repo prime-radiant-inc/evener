@@ -213,6 +213,9 @@ type jobManager struct {
 	// Nil in production.
 	stableWatchArmFailure func(attentionID string) error
 	clock                 clock.Clock
+	// longRunningTimer is the armed reminder cadence for long-running shell
+	// jobs, nil while no shell job is running. Guarded by mu.
+	longRunningTimer clock.Timer
 	// closeGrace bounds how long closeRuntimeState waits for each still-running
 	// job to finalize before abandoning it. Seeded from defaultCloseGrace at
 	// construction so tests can shrink the graceful-shutdown window.
@@ -729,6 +732,7 @@ func (jm *jobManager) closeRuntimeState(ctx context.Context) error {
 	jm.watchNotifyMu.Lock()
 	jm.mu.Lock()
 	jm.closing = true
+	jm.stopLongRunningReminderLocked()
 	targets := make([]watchConfigTerminalSnapshot, 0, len(jm.watches))
 	for key, cfg := range jm.watches {
 		targets = append(targets, watchConfigTerminalSnapshot{
@@ -827,6 +831,7 @@ func (jm *jobManager) releaseQuiescentRuntime() error {
 	// Refuse new process-local work and let idle progress tickers observe
 	// closing rather than being cancelled.
 	jm.closing = true
+	jm.stopLongRunningReminderLocked()
 	jm.mu.Unlock()
 	jm.watchNotifyMu.Unlock()
 
