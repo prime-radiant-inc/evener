@@ -268,6 +268,36 @@ func TestHistoricalActivityContinuationRejectsPositionAfterJobsJournalRecovers(t
 	}
 }
 
+// Both mint sites must carry the degraded session's unreadable condition, or
+// a continuation the service itself hands out is refused on its first resume
+// with "the underlying journal changed" while the journal is still unreadable.
+func TestActivityContinuationMintsCarryJobsUnreadable(t *testing.T) {
+	t.Parallel()
+	own := activitySessionEpochs{jobsUnreadable: true}
+
+	var marked appwire.JobActivitySession
+	markActivitySessionTruncated(&marked, newBoundedActivityBudget("root", time.Unix(1, 0).UTC(), 0), "child", nil, 0, own)
+	assertJobsUnreadableContinuation(t, "markActivitySessionTruncated", marked.Branch.Continuation)
+
+	trimmed := appwire.JobActivitySession{SessionID: "child"}
+	mintActivityTrimContinuation(activityTrimmedEntry{session: &trimmed}, "root", 0, map[string]activitySessionEpochs{"child": own}, 0)
+	assertJobsUnreadableContinuation(t, "mintActivityTrimContinuation", trimmed.Branch.Continuation)
+}
+
+func assertJobsUnreadableContinuation(t *testing.T, name, token string) {
+	t.Helper()
+	if token == "" {
+		t.Fatalf("%s minted no continuation", name)
+	}
+	cont, err := decodeActivityContinuation(token, "root")
+	if err != nil {
+		t.Fatalf("%s continuation decode: %v", name, err)
+	}
+	if !cont.JobsUnreadable {
+		t.Fatalf("%s continuation JobsUnreadable = false, want the degraded target's true", name)
+	}
+}
+
 func delegateIDs(rows map[string]delegateSnapshot) []string {
 	ids := make([]string, 0, len(rows))
 	for id := range rows {
