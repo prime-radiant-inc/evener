@@ -64,8 +64,11 @@ func TestHubRPCThreadStartKeepsProviderForModelIDsWithSlashes(t *testing.T) {
 func TestHubRPCThreadStartDeliversPromptWhenFirstRosterProbeFails(t *testing.T) {
 	for _, fault := range []string{"probe", "listing", "status", "stale-instance"} {
 		t.Run(fault, func(t *testing.T) {
+			capture := captureHubDiagnostics(t)
+			refreshes := captureRosterRefreshErrors(t)
 			const sessionID = "033snFBSHFr78ZbQQMAeBD"
 			daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+			lists := 0
 			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 				return appwire.ThreadReadResponse{Thread: appwire.Thread{
 					ID:        sessionID,
@@ -83,6 +86,7 @@ func TestHubRPCThreadStartDeliversPromptWhenFirstRosterProbeFails(t *testing.T) 
 				}}, nil
 			})
 			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+				lists++
 				if fault == "status" {
 					return appwire.ThreadListResponse{}, appwire.Unavailable("status temporarily unavailable")
 				}
@@ -201,7 +205,28 @@ func TestHubRPCThreadStartDeliversPromptWhenFirstRosterProbeFails(t *testing.T) 
 			if spawns != 1 || turns != 2 || gotPrompt != "continue review" {
 				t.Fatalf("follow-up delivery: spawns=%d turns=%d prompt=%q", spawns, turns, gotPrompt)
 			}
-
+			// The listing faults deliberately write malformed rendezvous JSON, so
+			// the spawn's roster refresh must report that decode failure for the
+			// session it just spawned. The other faults inject their failure
+			// elsewhere and must not produce a roster-refresh diagnostic at all.
+			lines := capture.recorded()
+			if fault == "listing" || fault == "stale-instance" {
+				if len(lines) != 1 {
+					t.Fatalf("hub diagnostics = %q, want exactly one roster refresh failure", lines)
+				}
+				wantPrefix := "[hub] spawned session " + sessionID + "; roster refresh failed: "
+				if !strings.HasPrefix(lines[0], wantPrefix) {
+					t.Fatalf("roster refresh diagnostic = %q, want prefix %q", lines[0], wantPrefix)
+				}
+				if !refreshes.hasJSONSyntaxError() {
+					t.Fatal("injected malformed rendezvous JSON did not fail a roster refresh")
+				}
+			} else if len(lines) != 0 {
+				t.Fatalf("unexpected hub diagnostics: %q", lines)
+			}
+			if fault == "status" && lists == 0 {
+				t.Fatal("injected status probe fault did not run")
+			}
 		})
 	}
 }
