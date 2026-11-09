@@ -188,6 +188,24 @@ func (s *LocalDaemonSource) AnnounceDaemonGone(entry rendezvous.Entry, sessionID
 	}
 }
 
+// InvalidateDaemonRelay drops the canonical relay connection that reaches
+// entry's daemon after a resume has replaced it. The relay session is keyed by
+// the workspace ref the replacement shares, so without this the next
+// subscribed read or send reuses the superseded daemon's socket even though
+// the roster now names the replacement.
+func (s *LocalDaemonSource) InvalidateDaemonRelay(entry rendezvous.Entry) {
+	ref, err := s.relaySessionRef(entry)
+	if err != nil {
+		return
+	}
+	s.relayMu.Lock()
+	session := s.relaySessions[ref.String()]
+	s.relayMu.Unlock()
+	if session != nil {
+		session.invalidateConnection()
+	}
+}
+
 func NewLocalDaemonSourceWithEntries(sourceID string, entries func() []LocalDaemonEntry, client *http.Client) *LocalDaemonSource {
 	if sourceID == "" {
 		sourceID = appwire.LocalSourceID
