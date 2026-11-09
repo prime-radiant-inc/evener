@@ -256,6 +256,9 @@ func clearThreadControl(ctx context.Context, cfg hubcore.WebConfig, sources *app
 	result, err := clearThreadWithResume(ctx, cfg, sources, p)
 	err = adoptCallerMutationResult(&result.Receipt, err, p.ClientMutationID)
 	if err == nil {
+		// #5842: thread/clear must return the same project key as thread/list
+		// and thread/read.
+		result.Thread = annotateThreadProject(result.Thread)
 		result.Thread = applyHubCapabilities(cfg, result.Thread)
 	}
 	return result, err

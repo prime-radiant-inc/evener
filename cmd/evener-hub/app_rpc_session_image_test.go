@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/testfs"
 	"primeradiant.com/evener/llm"
 )
 
@@ -191,7 +192,7 @@ func TestHubSessionImageServesFileBackedBytes(t *testing.T) {
 // not only macOS with its /var link. The folder is canonical so the symlink
 // made here is the only alias in play.
 func TestHubSessionImageServesFromASessionFolderReachedThroughASymlink(t *testing.T) {
-	folder := canonicalTempDir(t)
+	folder := testfs.CanonicalTempDir(t)
 	if err := os.WriteFile(filepath.Join(folder, "shot.png"), sessionImageTestPNG, 0o644); err != nil {
 		t.Fatal(err)
 	}

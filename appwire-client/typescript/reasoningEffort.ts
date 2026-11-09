@@ -4,6 +4,10 @@
 // "" is "(default)" (the session default applies), and "none" is an explicit
 // off the user chose — labelled by whether the model can actually express it.
 
+import { EFFORT_TIERS, FALLBACK_EFFORT_LEVELS } from "./reasoningEffort.gen";
+
+export { FALLBACK_EFFORT_LEVELS };
+
 export function effortLabel(level: string, levels: string[]): string {
   if (level === "") return "(default)";
   if (level === "none") {
@@ -16,16 +20,11 @@ export function effortLabel(level: string, levels: string[]): string {
 }
 
 // The effort lattice ranks the daemon's six reasoning-effort tiers, least to
-// most (the mirror of llm's effortRank). "none" is an off, not a tier, and a
-// level outside the lattice carries no rank.
-const EFFORT_RANK: Record<string, number> = {
-  minimal: 1,
-  low: 2,
-  medium: 3,
-  high: 4,
-  xhigh: 5,
-  max: 6,
-};
+// most. The tiers come from the generated mirror of llm/effort (#5553), so a
+// tier added or re-ranked there reaches every picker with no second edit.
+// "none" is an off, not a tier, and a level outside the lattice carries no
+// rank.
+const EFFORT_RANK: Record<string, number> = Object.fromEntries(EFFORT_TIERS.map((level, index) => [level, index + 1]));
 
 // Places level among levels at its rank. A picker must still display a level
 // the ladder omits (the session or draft already holds it), but where its
@@ -56,5 +55,5 @@ export function effortOptionLevels(levels: string[], current: string): string[] 
 // provider does not enumerate levels. The daemon clamps the requested value.
 export function sessionEffortLevels(levels: string[] | undefined, supportsReasoning: boolean | undefined): string[] {
   if (levels?.length) return levels;
-  return supportsReasoning ? ["minimal", "low", "medium", "high"] : [];
+  return supportsReasoning ? [...FALLBACK_EFFORT_LEVELS] : [];
 }

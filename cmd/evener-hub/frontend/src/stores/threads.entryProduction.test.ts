@@ -24,6 +24,7 @@ import { createElement, createRef, useEffect } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useStore } from "zustand";
 import { appliedReceipt } from "../mutationReceiptTestUtils";
+import { settleProjectionWorkForTests } from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
 import { useTranscriptViewRegistration } from "../panes/session/transcript/flow/useTranscriptViewRegistration";
 import { installTranscriptGeometry } from "../panes/session/transcript/transcriptReadingGeometryTestUtils";
 import { deleteSession } from "../shell/rail/actions";
@@ -43,7 +44,6 @@ import {
 } from "./entryTranscriptRoutes";
 import { entryWriteAdmissionFor } from "./entryWriteAdmission";
 import { DATABASE_VERSION, MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
-import { settleProjectionWorkForTests } from "./projectionWork";
 import {
   entryHistoryKey,
   SESSION_CACHE_DATABASE_NAME,

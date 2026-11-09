@@ -12,6 +12,7 @@ import { type CapturedTranscriptView, captureTranscriptView } from "./flow/trans
 import { useTranscriptScroll } from "./flow/useTranscriptScroll";
 import { useTranscriptScrollKeys } from "./flow/useTranscriptScrollKeys";
 import { useTranscriptViewRegistration } from "./flow/useTranscriptViewRegistration";
+import { readingEntryPoint } from "./flow/viewAnchor";
 import { TranscriptBody } from "./TranscriptBody";
 import { holdReaderFrames, installTranscriptGeometry } from "./transcriptReadingGeometryTestUtils";
 import { retainedTranscriptReadView } from "./transcriptReadView";
@@ -94,6 +95,10 @@ export function mountReaderScene(
               ref={listRef}
               dynamic
               anchorToEnd={!registration.hasRetainedPlacement()}
+              readingPoint={() => {
+                const port = listRef.current?.getScrollElement();
+                return port ? readingEntryPoint(port) : undefined;
+              }}
               count={rowHeights.length}
               estimateSize={() => widget.estimate}
               getItemKey={(index) => model.turns[index]?.id ?? index}

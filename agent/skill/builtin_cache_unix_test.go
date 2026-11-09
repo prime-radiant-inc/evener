@@ -133,6 +133,111 @@ func TestEnsureTrustedRoot_ChecksTheAncestorChain(t *testing.T) {
 	}
 }
 
+// A read-only mount refuses writes through this namespace, but it does not pin
+// the ordinary directories beneath it: another user with a writable mount of the
+// same host filesystem can rename one and replace its subtree, and path lookup
+// here follows the replacement. Only the filesystem root itself is pinned, so an
+// ordinary ancestor keeps every ownership and permission check whichever mount
+// it sits on. A writable mount boundary is no evidence of safety, and an
+// unreadable mount table is no evidence at all.
+func TestEnsureTrustedAncestors_RefusesAReplaceableAncestorOnAReadOnlyMount(t *testing.T) {
+	outer := t.TempDir()
+	inner := filepath.Join(outer, "inner")
+	if err := os.Mkdir(inner, 0o700); err != nil {
+		t.Fatalf("create inner: %v", err)
+	}
+	// Chmod rather than Mkdir, so the ambient umask cannot hide the case.
+	if err := os.Chmod(outer, 0o777); err != nil {
+		t.Fatalf("open up ancestor: %v", err)
+	}
+	saved := readMountInfo
+	t.Cleanup(func() { readMountInfo = saved })
+
+	readMountInfo = func() []byte { return nil }
+	if err := ensureTrustedAncestors(inner); err == nil {
+		t.Fatal("accepted a world-writable ancestor with no mount evidence")
+	}
+
+	readMountInfo = func() []byte {
+		return []byte("36 25 0:32 / " + outer + " rw,relatime - tmpfs tmpfs rw\n")
+	}
+	if err := ensureTrustedAncestors(inner); err == nil {
+		t.Fatal("accepted a world-writable ancestor on a writable mount")
+	}
+
+	// The shape the finding describes: a world-writable, non-sticky ancestor and
+	// a writable temp directory beneath it, on the sandbox's read-only root bind.
+	readMountInfo = func() []byte {
+		// A complete fake namespace, including the read-only root the sandbox's
+		// host-root bind presents, so the ordinary ancestor is the only component
+		// under test.
+		return []byte("1 0 0:1 / / ro - tmpfs tmpfs rw\n36 1 0:32 / " + outer + " ro,relatime - tmpfs tmpfs rw\n")
+	}
+	if err := ensureTrustedAncestors(inner); err == nil {
+		t.Fatal("accepted a replaceable ancestor on a read-only mount")
+	}
+}
+
+// The read-only exemption belongs to the filesystem root alone: the mount pins
+// that inode and no parent directory holds its name. An ordinary ancestor on a
+// read-only mount is still replaceable through a writable mount of the same host
+// filesystem, so it keeps the ownership and permission checks. This is the shape
+// of the reviewer's scenario: a world-writable, non-sticky /shared/public on the
+// sandbox's read-only root bind must not let another user rename a directory
+// beneath it.
+func TestReadOnlyFilesystemRoot_OnlyTheFilesystemRootIsExempt(t *testing.T) {
+	otherUser := uint32(os.Getuid()) + 1
+	// The owner is the unmapped overflow uid, which reads as another user here,
+	// so only the root's mount and mode can vouch for it.
+	unverifiableOwner := fakeFileInfo{mode: os.ModeDir | 0o755, uid: otherUser}
+	mounts := parseMountPoints("" +
+		"1 0 0:1 / / ro - tmpfs tmpfs rw\n" +
+		"2 1 0:2 / /work ro - tmpfs tmpfs rw\n")
+	for _, tc := range []struct {
+		name string
+		dir  string
+		want bool
+	}{
+		{"filesystem root", "/", true},
+		{"ordinary ancestor on the root mount", "/shared/public", false},
+		{"ordinary ancestor on a nested read-only mount", "/work/user", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if ancestorDirTrusted(unverifiableOwner) {
+				t.Fatal("ownership predicate trusted an unverifiable owner")
+			}
+			if got := readOnlyFilesystemRoot(unverifiableOwner, mounts, tc.dir); got != tc.want {
+				t.Fatalf("readOnlyFilesystemRoot(%q) = %v, want %v", tc.dir, got, tc.want)
+			}
+		})
+	}
+	// A root other users can write to is replaceable through the host mount, so
+	// it gets no exemption; neither does a writable mount.
+	worldWritableRoot := fakeFileInfo{mode: os.ModeDir | 0o777, uid: otherUser}
+	if readOnlyFilesystemRoot(worldWritableRoot, mounts, "/") {
+		t.Fatal("trusted a world-writable filesystem root")
+	}
+	writableRoot := parseMountPoints("1 0 0:1 / / rw - tmpfs tmpfs rw\n")
+	if readOnlyFilesystemRoot(unverifiableOwner, writableRoot, "/") {
+		t.Fatal("trusted a replaceable ancestor under a writable filesystem root")
+	}
+	// A read-only bind of a directory at / pins the source dentry: renaming the
+	// host source pathname does not change what the mount points at, so the
+	// namespace root is still stable and the mode check above is the remaining
+	// gate.
+	subdirectoryBind := parseMountPoints("1 0 252:0 /srv/shared/rootfs / ro - ext4 /dev/sda rw\n")
+	if !readOnlyFilesystemRoot(unverifiableOwner, subdirectoryBind, "/") {
+		t.Fatal("refused a read-only bind of a directory pinned at the namespace root")
+	}
+	// A Btrfs root subvolume reports its subvolume path as the mountinfo fsRoot;
+	// the mount still pins the namespace root, so the spelling "/@" must not
+	// defeat the exemption.
+	subvolumeRoot := parseMountPoints("1 0 0:32 /@ / ro - btrfs /dev/sda rw\n")
+	if !readOnlyFilesystemRoot(unverifiableOwner, subvolumeRoot, "/") {
+		t.Fatal("refused a read-only Btrfs root subvolume")
+	}
+}
+
 // The degraded extraction must not land in a temp root the shared cache refuses.
 func TestEmbeddedSkillsDir_RefusesAnUntrustedTempRootForTheProcessCopy(t *testing.T) {
 	root := t.TempDir()

@@ -1418,7 +1418,7 @@ func (s *LocalDaemonSource) localEntryForRefMode(rawRef, threadID string, allowR
 			return LocalDaemonEntry{}, err
 		}
 		if ref.SourceID != s.sourceID {
-			return LocalDaemonEntry{}, fmt.Errorf("source not found: %s", ref.SourceID)
+			return LocalDaemonEntry{}, fmt.Errorf("%w: %s", ErrSourceNotFound, ref.SourceID)
 		}
 		threadID = ref.ThreadID
 	}

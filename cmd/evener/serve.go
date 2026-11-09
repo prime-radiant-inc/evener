@@ -205,7 +205,13 @@ type serveDeps struct {
 	// Injectable so a test can wedge it: the reason the tee exists is that the
 	// real one can be a pipe nobody drains, and that is not reproducible against
 	// a real terminal.
-	verboseOut      io.Writer
+	verboseOut io.Writer
+	// serveLogOut is where the daemon writes its own diagnostic lines, the
+	// [serve] records below and the retirement teardown's. Nil means os.Stderr.
+	// Injectable so a failure-injection fixture can own the sink and assert on
+	// the diagnostics it deliberately provokes instead of leaking them into test
+	// output.
+	serveLogOut     io.Writer
 	subscriberCount func(serveServer, string) int
 	notifyContext   func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
 	// runContext derives the run's lifetime from the signal context. Its cancel
@@ -256,6 +262,15 @@ type serveCallbackObserver struct {
 	pendingEscalations func() []appwire.SandboxEscalationRequested
 	setSession         func(*agent.Session)
 	session            *agent.Session
+}
+
+// diagnosticOut is where the daemon writes its own diagnostic lines: the
+// test-owned sink when one is installed, otherwise os.Stderr.
+func (d serveDeps) diagnosticOut() io.Writer {
+	if d.serveLogOut != nil {
+		return d.serveLogOut
+	}
+	return os.Stderr
 }
 
 func defaultServeDeps() serveDeps {
@@ -394,6 +409,7 @@ func armInterruptRunner(setRunner, setCancel func()) {
 }
 
 func runServeWithDeps(args []string, deps serveDeps) error {
+	logOut := deps.diagnosticOut()
 	fs := deps.newFlagSet("serve", flag.ExitOnError)
 	lf := registerLaunchFlags(fs)
 	addr := fs.String("addr", "127.0.0.1:9131", "listen address")
@@ -407,11 +423,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	fs.Var(&modelFallbacks, "model-fallback", "fallback model (provider/model) tried on permanent provider errors (repeatable)")
 	daemonIdleTimeout := fs.Duration("daemon-idle-timeout", 0, "retire this daemon after continuous proven inactivity (default: 0 = automatic retirement disabled; the Hub passes its configured value)")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: evener serve [flags]\n\n")
-		fmt.Fprintf(os.Stderr, "Start evener as an app-wire JSON-RPC server.\n\n")
+		_, _ = fmt.Fprintf(logOut, "Usage: evener serve [flags]\n\n")
+		_, _ = fmt.Fprintf(logOut, "Start evener as an app-wire JSON-RPC server.\n\n")
 		fs.PrintDefaults()
-		fmt.Fprintf(os.Stderr, "\nEnvironment variables:\n")
-		printServeEnvVars(os.Stderr)
+		_, _ = fmt.Fprintf(logOut, "\nEnvironment variables:\n")
+		printServeEnvVars(logOut)
 	}
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -462,9 +478,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		return fatal
 	}
 	if resolveErr != nil {
-		fmt.Fprintf(os.Stderr, "warning: listing installed plugins: %v\n", resolveErr)
+		_, _ = fmt.Fprintf(logOut, "warning: listing installed plugins: %v\n", resolveErr)
 	}
-	renderLaunchPluginDiagnostics(os.Stderr, resolvedPlugins.Diagnostics)
+	renderLaunchPluginDiagnostics(logOut, resolvedPlugins.Diagnostics)
 	if err := resolvedPlugins.ValidateSelection(); err != nil {
 		return err
 	}
@@ -488,7 +504,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		defer stop()
 	}
 	_, stopPprof, pprofErr := deps.startLivePprof(func(format string, args ...any) {
-		fmt.Fprintf(os.Stderr, format+"\n", args...)
+		_, _ = fmt.Fprintf(logOut, format+"\n", args...)
 	})
 	if pprofErr != nil {
 		return pprofErr
@@ -515,7 +531,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		}
 	}
 	if err := seedMarketplaces(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: seeding default marketplaces: %v\n", err)
+		_, _ = fmt.Fprintf(logOut, "warning: seeding default marketplaces: %v\n", err)
 	}
 	if err := startupInterrupted(ctx, stepSeedingMarketplaces); err != nil {
 		return err
@@ -597,12 +613,12 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			return fmt.Errorf("resolve runtime directory: %w", err)
 		}
 	}
-	client, closeClient, err := deps.newClient(sd, os.Stderr)
+	client, closeClient, err := deps.newClient(sd, logOut)
 	if err != nil {
 		return err
 	}
 	defer closeClient() //nolint:errcheck
-	reserveSession, closeAPILog, err := deps.attachAPILogger(client, sd, os.Stderr, settings.apiLogEnabled)
+	reserveSession, closeAPILog, err := deps.attachAPILogger(client, sd, logOut, settings.apiLogEnabled)
 	if err != nil {
 		return err
 	}
@@ -641,9 +657,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	}
 	memoryProjectID := ""
 	if !resuming {
-		memoryProjectID = resolveMemoryProjectID(env, os.Stderr)
+		memoryProjectID = resolveMemoryProjectID(env, logOut)
 	}
-	memoryStateRoot := memoryStateRootForLaunch(*lf.disableMemory || (resuming && resumedMeta.Config.DisableMemory), os.Stderr)
+	memoryStateRoot := memoryStateRootForLaunch(*lf.disableMemory || (resuming && resumedMeta.Config.DisableMemory), logOut)
 	sessionCfg := agent.SessionConfig{
 		MemoryStateRoot: memoryStateRoot,
 		MemoryProjectID: memoryProjectID,
@@ -756,7 +772,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 				return fmt.Errorf("set reasoning effort: %w", err)
 			}
 		}
-		reportServeResume(os.Stderr, resumedMeta, modelRef, resumeProvider, resumeModel, strings.TrimSpace(*lf.model) != "")
+		reportServeResume(logOut, resumedMeta, modelRef, resumeProvider, resumeModel, strings.TrimSpace(*lf.model) != "")
 	} else {
 		sess, err = deps.newSession(client, profile, env, sessionCfg)
 		if err != nil {
@@ -770,7 +786,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// One startup line, loudly, states exactly what this host enforces (read from
 	// the env's resolved policy so it never overstates). Empty for an unsandboxed
 	// session — nothing to announce.
-	printServeSandboxLine(os.Stderr, sandboxEnforcementLine(env))
+	printServeSandboxLine(logOut, sandboxEnforcementLine(env))
 
 	if err := startupInterrupted(ctx, stepCreatingSession); err != nil {
 		sess.Close()
@@ -883,7 +899,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if *lf.verbose {
 		verboseOut := deps.verboseOut
 		if verboseOut == nil {
-			verboseOut = os.Stderr
+			verboseOut = logOut
 		}
 		tee := newVerboseEventTee(verboseOut, verboseEventTeeBuffer)
 		eventObserver = tee.observe
@@ -1161,7 +1177,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// since the top of this func keeps the controller resident, so this
 		// cannot fail; the idle interval restarts against the new root.
 		if err := retirement.AttachRoot(newSess); err != nil {
-			serveLogf(os.Stderr, newSess.ID(), "retirement root re-attach failed: %v", err)
+			serveLogf(logOut, newSess.ID(), "retirement root re-attach failed: %v", err)
 		}
 		retiring.observe("root_published", newSess.ID())
 		// The commit above zeroed the envelope with the identity it described.
@@ -1348,7 +1364,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			close(runnerDone)
 			bridge.clearMutationRunner(runnerDone)
 			if processErr != nil {
-				serveLogf(os.Stderr, sess.ID(), "error: %s", turnFailureSummary(processErr))
+				serveLogf(logOut, sess.ID(), "error: %s", turnFailureSummary(processErr))
 			}
 			_ = result
 			return processed
@@ -1364,7 +1380,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	}()
 
 	// Start HTTP server.
-	serveLogf(os.Stderr, live.session().ID(), "listening on %s", listener.Addr())
+	serveLogf(logOut, live.session().ID(), "listening on %s", listener.Addr())
 
 	spawnedBy := "user"
 	if envvars.EVENERHubSpawned.Getenv() == "1" {
@@ -1394,11 +1410,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// loop was started, so the shutdown path has nothing to join.
 	var retirementLoopDone chan struct{}
 	if err := deps.register(rvRegistration, runDir, rvEntry); err != nil {
-		serveLogf(os.Stderr, live.session().ID(), "rendezvous write failed: %v", err)
+		serveLogf(logOut, live.session().ID(), "rendezvous write failed: %v", err)
 	} else {
 		defer func() {
 			removeRendezvousAtShutdown(rvRegistration.Remove, deps.rendezvousRetryPause, func(err error) {
-				serveLogf(os.Stderr, live.session().ID(), "rendezvous removal failed after %d attempts, entry may be stale: %v", rendezvousRemovalAttempts, err)
+				serveLogf(logOut, live.session().ID(), "rendezvous removal failed after %d attempts, entry may be stale: %v", rendezvousRemovalAttempts, err)
 			})
 		}()
 		// The idle clock may only start once the daemon has published its
@@ -1413,7 +1429,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		go func() {
 			defer close(retirementLoopDone)
 			_ = retirement.Run(ctx, retiring.consumeClaim, func(attempt agent.RetirementAttempt) {
-				serveLogf(os.Stderr, live.session().ID(), "%s", retirementAttemptSummary(attempt))
+				serveLogf(logOut, live.session().ID(), "%s", retirementAttemptSummary(attempt))
 			})
 		}()
 	}

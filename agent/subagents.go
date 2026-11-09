@@ -1366,7 +1366,7 @@ func (s *Session) hasSalvageFromFinalRound() bool {
 func (a *subagent) trySetDisposeGate() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.running || a.driving {
+	if a.running || a.driving || a.finalizing || a.disposeGated {
 		return false
 	}
 	a.disposeGated = true
@@ -2065,6 +2065,12 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 // the run-end taxonomy classifyRunEnd owns, read from its own projections: a
 // run settles ordinarily exactly when it ended nil or on a model-behavior
 // sentinel, and the exhausted status is the budget exhaustion.
+//
+// The 2026-11-09 lifecycle ruling settles the trade this deliberately makes
+// (issue #5674): a report may be presented twice in a narrow window rather
+// than lost. Do not move an unlisted error class into "presented" to reduce
+// duplication; that needs a presented-marker durable across tool rounds and
+// restarts, not a wider verdict here.
 func attentionRunPresentedItsReport(err error) bool {
 	end := classifyRunEnd(err, false)
 	return end.mode == delegateSettlementOrdinary || end.status == SubagentExhausted
@@ -2309,11 +2315,12 @@ type delegateTerminalPacketMetadata struct {
 }
 
 type delegateTerminalWorktreeReport struct {
-	Path    string `json:"path"`
-	Branch  string `json:"branch"`
-	HeadSHA string `json:"head_sha"`
-	Ahead   int    `json:"ahead"`
-	Dirty   bool   `json:"dirty"`
+	Path         string `json:"path"`
+	Branch       string `json:"branch"`
+	HeadSHA      string `json:"head_sha"`
+	Ahead        int    `json:"ahead"`
+	Dirty        bool   `json:"dirty"`
+	DisposalHint string `json:"disposal_hint,omitempty"`
 }
 
 // delegateFinishFromRun constructs the one immutable packet used by
@@ -2449,11 +2456,12 @@ func delegateTerminalMetadataFromRun(inputs delegateTerminalRunInputs) delegateT
 	}
 	if inputs.worktree != nil {
 		metadata.Worktree = &delegateTerminalWorktreeReport{
-			Path:    inputs.worktree.Path,
-			Branch:  inputs.worktree.Branch,
-			HeadSHA: inputs.worktree.HeadSHA,
-			Ahead:   inputs.worktree.Ahead,
-			Dirty:   inputs.worktree.Dirty,
+			Path:         inputs.worktree.Path,
+			Branch:       inputs.worktree.Branch,
+			HeadSHA:      inputs.worktree.HeadSHA,
+			Ahead:        inputs.worktree.Ahead,
+			Dirty:        inputs.worktree.Dirty,
+			DisposalHint: inputs.worktree.DisposalHint,
 		}
 	}
 	metadata.ScratchPath = inputs.scratchPath

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/spf13/afero"
 )
 
 // seedStoreForTest mutates the store's state and commits it through the store's
@@ -455,8 +457,21 @@ func TestLoadRefusesNonCanonicalPendingCompensationKeys(t *testing.T) {
 		if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 			t.Fatalf("write store: %v", err)
 		}
-		if _, err := Open(path); err == nil {
+		// The walk under test is the loader's, so assert it directly: Open would
+		// complete a custody-first quarantine over these bytes (the compensation
+		// family is a raw region custody discards), which is not this rule.
+		if _, err := loadFS(afero.NewOsFs(), path); err == nil {
 			t.Fatalf("the store loaded a pendingCompensation %s outside the canonical spelling", name)
+		}
+		// Positive control: the same bytes under the canonical spelling load, so
+		// the refusal above is this rule and not an unrelated defect in the
+		// fixture.
+		canonical := strings.Replace(raw, `"Host":"m4"`, `"host":"m4"`, 1)
+		if err := os.WriteFile(path, []byte(canonical), 0o600); err != nil {
+			t.Fatalf("write canonical store: %v", err)
+		}
+		if _, err := loadFS(afero.NewOsFs(), path); err != nil {
+			t.Fatalf("the canonical spelling of the pendingCompensation %s was refused: %v", name, err)
 		}
 	}
 }

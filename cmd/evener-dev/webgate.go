@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -89,7 +90,11 @@ type webGate struct {
 	// checks are the checks in verdict order; spec says how to start one
 	// under its private root.
 	checks []string
-	spec   func(check, root string) guardSpec
+	// launchFirst, when it names a check, starts that check before the others:
+	// the order is otherwise checks' own. Verdicts and the exit status stay in
+	// checks order.
+	launchFirst string
+	spec        func(check, root string) guardSpec
 
 	launcher guardLauncher
 	// now is the clock each check's wall time is read from; nil is time.Now.
@@ -105,6 +110,20 @@ type webGate struct {
 type guardExit struct {
 	index  int
 	status int
+}
+
+// launchOrder is the order checks start in: launchFirst moved to the front,
+// or checks' own order when launchFirst is empty or names no check.
+func (g *webGate) launchOrder() []int {
+	order := make([]int, len(g.checks))
+	for i := range order {
+		order[i] = i
+	}
+	if first := slices.Index(g.checks, g.launchFirst); first > 0 {
+		copy(order[1:first+1], order[:first])
+		order[0] = first
+	}
+	return order
 }
 
 // signalStatus is the shell's exit status for a signal: 128 plus its number.
@@ -167,6 +186,7 @@ func (g *webGate) run() (int, bool) {
 	}
 
 	n := len(g.checks)
+	order := g.launchOrder()
 	statuses := make([]int, n)
 	// started and elapsed are each check's start and wall time; a check that
 	// never started has no wall time and its verdict names none.
@@ -177,7 +197,7 @@ func (g *webGate) run() (int, bool) {
 	next, running, done := 0, 0, 0
 	for done < n {
 		for running < g.slots && next < n {
-			index := next
+			index := order[next]
 			next++
 			if specs[index].needsBuild && buildStatus != 0 {
 				statuses[index] = buildStatus

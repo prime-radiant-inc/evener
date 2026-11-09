@@ -197,11 +197,16 @@ type ArchiveParams struct {
 	Source string `json:"source,omitempty"`
 }
 
-// ArchiveResponse confirms the durable decision and returns the navigation
-// receipt committed by the same refresh that publishes its invalidation.
+// ArchiveResponse confirms the durable decision and returns its navigation
+// receipt. When NavigationDeferred is set the receipt was not built before the
+// refresh deadline: Navigation carries the live generation with no targets, and
+// the change arrives later as an invalidation.
 type ArchiveResponse struct {
 	OK         bool               `json:"ok"`
 	Navigation NavigationMutation `json:"navigation"`
+	// NavigationDeferred reports that the archive decision is durable but its
+	// receipt was deferred; do not retry the decision as failed.
+	NavigationDeferred bool `json:"navigationDeferred,omitempty"`
 }
 
 // ProjectDeleteParams identifies the exact local project to delete. WorkingDir

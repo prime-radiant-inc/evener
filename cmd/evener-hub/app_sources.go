@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -31,7 +32,7 @@ func sourceForThread(sources *appsource.Registry, ref, threadID string) (appsour
 	}
 	source, ok := sources.Source(appwire.LocalSourceID)
 	if !ok {
-		return nil, errors.New("source not found: local")
+		return nil, fmt.Errorf("%w: %s", appsource.ErrSourceNotFound, appwire.LocalSourceID)
 	}
 	if threadID == "" {
 		return source, nil

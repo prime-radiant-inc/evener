@@ -170,7 +170,9 @@ it("recovers an overlay notice after content Clear without a recorded update", a
     },
   }));
   await tab.threads.threadsStore.getState().clearThread(ref);
-  await (await import("./projectionWork")).settleProjectionWorkForTests();
+  await (
+    await import("../panes/session/composer/queue/testing/flushPendingTurnsProjection")
+  ).settleProjectionWorkForTests();
   expect(tab.routes.productionEntryTranscriptForTests(ref).repository).toBeUndefined();
   expect(tab.threads.threadsStore.getState().threads.get(ref)?.history).toBeUndefined();
   const reads = tab.client.calls.filter((call) => call.method === "thread/read").length;

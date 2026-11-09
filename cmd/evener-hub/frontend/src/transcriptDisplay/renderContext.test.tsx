@@ -1,7 +1,7 @@
 import type { EntityView, ThreadModel, TranscriptMetadataVisibility } from "@evener/appwire-client";
 import {
+  contentVectorForConfig,
   makeTranscriptDisplayConfig,
-  presetContent,
   projectThread,
   scopedDisclosureId,
   type TranscriptDisplayConfigV1,
@@ -141,7 +141,10 @@ function DisclosureProbe({ id }: { id: string }) {
   );
 }
 
-const equivalentFull = makeTranscriptDisplayConfig({ kind: "custom", ...presetContent("full") });
+const equivalentFull = makeTranscriptDisplayConfig({
+  kind: "custom",
+  ...contentVectorForConfig(makeTranscriptDisplayConfig({ kind: "preset", level: "full" })),
+});
 const namedFull = makeTranscriptDisplayConfig({ kind: "preset", level: "full" });
 
 function baselineProvider(config: TranscriptDisplayConfigV1, eligibleDisclosureIds: readonly string[]) {

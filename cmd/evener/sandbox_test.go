@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/internal/testfs"
 )
 
 // TestConfigureSandboxOffIsNoop: --sandbox off (the default) leaves the config's
@@ -316,7 +317,7 @@ func backendlessSandboxHost(t *testing.T) sandbox.HostFacts {
 // ID, so provisioning picks it: the scratch EnableSandbox mints must sit in the
 // session's own tree, where archiving the session finds it.
 func TestProvisionSandboxNamesTheFreshSessionsScratch(t *testing.T) {
-	t.Setenv("TMPDIR", resolvedTempDir(t))
+	t.Setenv("TMPDIR", testfs.CanonicalTempDir(t))
 	facts := sandbox.HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true}
 	worktree := t.TempDir()
 	cfg := agent.SessionConfig{}

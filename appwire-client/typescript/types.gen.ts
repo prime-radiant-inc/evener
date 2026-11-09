@@ -82,6 +82,11 @@ export interface ArchiveParams {
 export interface ArchiveResponse {
   ok: boolean;
   navigation: NavigationMutation;
+  /**
+   * NavigationDeferred reports that the archive decision is durable but its
+   * receipt was deferred; do not retry the decision as failed.
+   */
+  navigationDeferred?: boolean;
 }
 
 export interface ArchivedListParams {

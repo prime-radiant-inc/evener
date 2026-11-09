@@ -1989,12 +1989,6 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			calls[i].Name = s.canonicalToolName(calls[i].Name)
 		}
 
-		// Progress signal for the goal engine: a turn "progressed" iff it made a
-		// real mutating tool call — !ReadOnly AND not the result/communicate tool
-		// AND not task_list (plan-spam and "I'm done" messages must not count).
-		// Accumulated as a turn-level OR across the turn's rounds (spec §2).
-		progressed = progressed || s.callsMadeProgress(calls)
-
 		if len(calls) == 0 {
 			// A bare-text (non-empty) response to a notification turn
 			// is the agent acknowledging a frame it has nothing to act on (it often
@@ -2057,6 +2051,15 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		if execErr != nil {
 			return "", progressed, execErr
 		}
+
+		// Progress signal for the goal engine: a turn "progressed" iff it
+		// executed a real mutating tool call — !ReadOnly, not the
+		// result/communicate tool, not task_list (plan-spam and "I'm done"
+		// messages must not count), and not a failed or prevalidation-only
+		// result. Credited from the executed results, not the proposed calls,
+		// so an unknown name or a rejected write never resets the no-progress
+		// streak. Accumulated as a turn-level OR across the turn's rounds.
+		progressed = progressed || s.toolResultsMadeProgress(results)
 
 		timings.ToolExec = time.Since(tPhaseStart)
 
@@ -2864,6 +2867,12 @@ func (s *Session) jobNotificationAlreadyInjected(jobID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, turn := range s.history {
+		// Only runtime notification steering can acknowledge delivery. Untyped
+		// runtime steering remains eligible for replay recovery.
+		if turn.Kind != schema.TurnSteering || turn.SteeringSource != "" ||
+			(turn.SteeringKind != "" && turn.SteeringKind != events.SteeringKindNotification) {
+			continue
+		}
 		if durableJobNotificationAlreadyInjected(turn.Message.Text(), needle) {
 			return true
 		}
@@ -2878,16 +2887,20 @@ func durableJobNotificationAlreadyInjected(text, needle string) bool {
 			return false
 		}
 		text = text[start:]
-		end := strings.Index(text, "</job-notification>")
-		block := text
-		if end >= 0 {
-			block = text[:end]
+		headerEnd := strings.IndexByte(text, '>')
+		if headerEnd < 0 {
+			return false
 		}
-		if strings.Contains(block, needle) &&
-			!strings.Contains(block, `event="watch"`) &&
-			!strings.Contains(block, `status="watch"`) {
+		// The formatter escapes attribute delimiters. Only the header carries
+		// delivery identity; output excerpts can contain arbitrary job IDs.
+		header := text[:headerEnd]
+		if strings.Contains(header, needle) &&
+			!strings.Contains(header, `event="watch"`) &&
+			!strings.Contains(header, `event="watch_send"`) &&
+			!strings.Contains(header, `status="watch"`) {
 			return true
 		}
+		end := strings.Index(text, "</job-notification>")
 		if end < 0 {
 			return false
 		}

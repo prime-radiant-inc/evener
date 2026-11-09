@@ -321,7 +321,10 @@ const displayConfig = client.makeTranscriptDisplayConfig({ kind: "preset", level
 assert.equal(client.advancedEnabledCount(displayConfig), 1);
 assert.equal(client.accessibleConfigSummary(client.shippedMobileConfig), "Intent");
 assert.equal(client.accessibleConfigSummary(displayConfig), "Tools · 1 advanced");
-assert.deepEqual(client.presetContent("chat"), { toolIntent: true, toolCalls: false, reasoning: false, expandByDefault: false, thinkingOpenByDefault: false });
+assert.deepEqual(
+  client.contentVectorForConfig(client.makeTranscriptDisplayConfig({ kind: "preset", level: "chat" })),
+  { toolIntent: true, toolCalls: false, reasoning: false, expandByDefault: false, thinkingOpenByDefault: false },
+);
 assert.deepEqual(client.decodeLocalConfig(client.encodeLocalConfig(displayConfig)), displayConfig);
 assert.equal(client.resolveEffectiveConfig({ local: null, hub: client.shippedDefault("desktop") }).content.level, "tools");
 assert.equal(client.visibleCategoryInventory(displayConfig).visible.includes("tokenCounts"), true);
@@ -1020,6 +1023,10 @@ memoryOutbox
   // decision that it stays internal; an entry a specifier starts to re-export,
   // or one the build stops shipping, fails below so the list cannot go stale.
   const internalModules = [
+    // The generated ladder is an implementation detail: surfaces consume the
+    // rank table and FALLBACK_EFFORT_LEVELS through reasoningEffort's
+    // re-exports, never the generated arrays directly.
+    "reasoningEffort.gen",
     "state/extensions/keyedRevision",
     "state/extensions/listRevision",
     "state/extensions/storeLifecycle",
