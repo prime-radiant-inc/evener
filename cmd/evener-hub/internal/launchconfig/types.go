@@ -23,6 +23,7 @@ type Layer struct {
 	OpenAIResponsesContinuation string            `toml:"openai_responses_continuation,omitempty"`
 	ProviderIdleTimeout         string            `toml:"provider_idle_timeout,omitempty"`
 	Sandbox                     string            `toml:"sandbox,omitempty"`
+	CommitProvenance            string            `toml:"commit_provenance,omitempty"`
 	SandboxNet                  *bool             `toml:"sandbox_net,omitempty"`
 	MaxRounds                   *int              `toml:"max_rounds,omitempty"`
 	MaxSubagentDepth            *int              `toml:"max_subagent_depth,omitempty"`

@@ -2119,6 +2119,7 @@ export interface LaunchConfigLayer {
   openAIResponsesContinuation?: string;
   providerIdleTimeout?: string;
   sandbox?: string;
+  commitProvenance?: string;
   sandboxNet?: boolean;
   maxRounds?: number;
   maxSubagentDepth?: number;

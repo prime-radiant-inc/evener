@@ -99,6 +99,7 @@ var (
 		"providerIdleTimeout":         func(l *Layer) *string { return &l.ProviderIdleTimeout },
 		"contextStrategy":             func(l *Layer) *string { return &l.ContextStrategy },
 		"sandbox":                     func(l *Layer) *string { return &l.Sandbox },
+		"commitProvenance":            func(l *Layer) *string { return &l.CommitProvenance },
 		"openAIResponsesContinuation": func(l *Layer) *string { return &l.OpenAIResponsesContinuation },
 		"exportATIFProviderHandles":   func(l *Layer) *string { return &l.ExportATIFProviderHandles },
 	}

@@ -35,6 +35,7 @@ import (
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/commitprovenance"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/llm"
 	_ "primeradiant.com/evener/llm/providers/all"
@@ -653,6 +654,13 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		memoryProjectID = resolveMemoryProjectID(env, os.Stderr)
 	}
 	memoryStateRoot := memoryStateRootForLaunch(*lf.disableMemory || (resuming && resumedMeta.Config.DisableMemory), os.Stderr)
+	if err := commitprovenance.Validate(*lf.commitProvenance); err != nil {
+		return err
+	}
+	commitProvenance, err := commitprovenance.Normalize(*lf.commitProvenance)
+	if err != nil {
+		return err
+	}
 	sessionCfg := agent.SessionConfig{
 		MemoryStateRoot: memoryStateRoot,
 		MemoryProjectID: memoryProjectID,
@@ -687,6 +695,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		ModelFallbacks:              []string(modelFallbacks),
 		OpenAIResponsesContinuation: resolvedOpenAIResponsesContinuation,
 		ProviderIdleTimeout:         *lf.providerIdleTimeout,
+		CommitProvenance:            commitProvenance,
 		ResolveProfile:              cmdutil.BuildResolveProfile(client),
 		StartupModelListing:         startupListing,
 	}
@@ -740,6 +749,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			ModelFallbacks:              sessionCfg.ModelFallbacks,
 			OpenAIResponsesContinuation: resolvedOpenAIResponsesContinuation,
 			ProviderIdleTimeout:         *lf.providerIdleTimeout,
+			CommitProvenance:            *lf.commitProvenance,
 			AgentsDocPath:               *agentsDoc,
 		})
 		if err != nil {

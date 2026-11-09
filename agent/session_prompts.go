@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/bundled"
+	"primeradiant.com/evener/internal/commitprovenance"
 	"primeradiant.com/evener/llm"
 )
 
@@ -94,6 +95,28 @@ func (s *Session) reportPromptRenderFailure(warning string) {
 	s.emit(events.WarningData{Message: warning})
 }
 
+// commitTrailerPrompt returns the exact Co-authored-by line and, when
+// provenance was asked for but cannot be built, the warning the prompt-render
+// path should report. It never invents a missing value.
+func (s *Session) commitTrailerPrompt() (string, string) {
+	mode, err := commitprovenance.Normalize(s.cfg.CommitProvenance)
+	if err != nil {
+		return "", fmt.Sprintf("commit provenance: %v", err)
+	}
+	if mode == commitprovenance.ModeOff {
+		return "", ""
+	}
+	host, err := os.Hostname()
+	if err != nil || strings.TrimSpace(host) == "" {
+		return "", "commit provenance: host name unavailable"
+	}
+	line, err := commitprovenance.Trailer(BuildVersion, s.profile.ID()+"/"+s.profile.Model(), host, s.ID())
+	if err != nil {
+		return "", fmt.Sprintf("commit provenance: %v", err)
+	}
+	return line, ""
+}
+
 // buildPromptData assembles a promptData from session state for template
 // rendering, plus the PROMPT_LOADED sources for the inputs it read: the role
 // and each append file. env is the ALREADY-RESOLVED execution environment
@@ -112,6 +135,7 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 
 	read := s.memoryContextEnabled()
 	saves := s.memorySaveInstructionsEnabled()
+	commitTrailer, commitWarning := s.commitTrailerPrompt()
 	data := promptData{
 		NonInteractive:           s.cfg.noOneToAsk(),
 		BaseInstructionsOverride: strings.TrimSpace(s.systemPromptOverride),
@@ -138,6 +162,8 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 		GitUntrackedFiles:        s.envInfo.GitUntrackedFiles,
 		GitStatusUnknown:         s.envInfo.GitStatusUnknown,
 		GitRecentCommitTitles:    s.envInfo.GitRecentCommitTitles,
+		CommitTrailer:            commitTrailer,
+		CommitProvenanceWarning:  commitWarning,
 		WorkspaceTree:            s.envInfo.Workspace.Tree,
 		BuildInfo:                s.envInfo.Workspace.BuildInfo,
 		ResultToolName:           s.resultToolName(),
@@ -295,5 +321,5 @@ func (s *Session) renderSystemPrompt(env execenv.ExecutionEnvironment) (string, 
 	sources = append(sources, promptSource{Label: systemPromptTemplateLabel, Size: len(result)})
 	sources = append(sources, inputSources...)
 	s.promptSourceLog = sources
-	return result, ""
+	return result, data.CommitProvenanceWarning
 }

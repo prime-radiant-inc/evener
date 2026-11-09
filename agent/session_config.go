@@ -60,6 +60,11 @@ type SessionConfig struct {
 	MemoryProjectID string `json:"memory_project_id,omitempty"`
 	DisableMemory   bool   `json:"disable_memory,omitempty"`
 
+	// CommitProvenance controls whether the system prompt tells the model to
+	// end commit messages with the Evener provenance trailer. Empty and
+	// "coauthor" enable it; "off" disables it. Persisted with the session.
+	CommitProvenance string `json:"commit_provenance,omitempty"`
+
 	// Project is the resolved canonical project identity for this launch. It is
 	// separate from the execution environment's active working directory, which
 	// may be a linked worktree.
@@ -542,6 +547,7 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 		ProviderIdleTimeout:         c.ProviderIdleTimeout,
 		Sandbox:                     c.Sandbox,
 		SandboxNet:                  c.SandboxNet,
+		CommitProvenance:            c.CommitProvenance,
 		VisionModel:                 c.VisionModel,
 	}
 }
@@ -586,6 +592,7 @@ func configFromSnapshot(s schema.ConfigSnapshot) SessionConfig {
 		ProviderIdleTimeout:         s.ProviderIdleTimeout,
 		Sandbox:                     s.Sandbox,
 		SandboxNet:                  s.SandboxNet,
+		CommitProvenance:            s.CommitProvenance,
 		VisionModel:                 s.VisionModel,
 	}
 }

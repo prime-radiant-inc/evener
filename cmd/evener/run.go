@@ -20,6 +20,7 @@ import (
 	"primeradiant.com/evener/execsupport/syncio"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/apptranscript"
+	"primeradiant.com/evener/internal/commitprovenance"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/llm"
 	_ "primeradiant.com/evener/llm/providers/all"
@@ -63,6 +64,7 @@ type runConfig struct {
 	runTimeout                  time.Duration // --timeout; zero disables
 	sandboxMode                 string        // --sandbox mode name (default "off")
 	sandboxNet                  string        // --sandbox-net on|off
+	commitProvenance            string        // --commit-provenance coauthor|off (empty keeps the default or a resumed value)
 	apiLog                      string        // --api-log on|off (default off)
 	askResponder                string        // --ask-responder command; non-empty makes the session interactive
 
@@ -364,6 +366,13 @@ func run(ctx context.Context, cfg runConfig) error {
 	}
 
 	memoryStateRoot := memoryStateRootForLaunch(cfg.disableMemory || (meta != nil && meta.Config.DisableMemory), cfg.stderr)
+	if err := commitprovenance.Validate(cfg.commitProvenance); err != nil {
+		return err
+	}
+	commitProvenance, err := commitprovenance.Normalize(cfg.commitProvenance)
+	if err != nil {
+		return err
+	}
 	var sess *agent.Session
 	baseSessionCfg := agent.SessionConfig{
 		MemoryStateRoot:             memoryStateRoot,
@@ -392,6 +401,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		SystemPromptAsUser:          cfg.systemPromptAsUser,
 		OpenAIResponsesContinuation: openAIResponsesContinuation,
 		ProviderIdleTimeout:         cfg.providerIdleTimeout,
+		CommitProvenance:            commitProvenance,
 		ResolveProfile:              cmdutil.BuildResolveProfile(client),
 		StartupModelListing:         startupListing,
 	}
@@ -446,6 +456,7 @@ func run(ctx context.Context, cfg runConfig) error {
 			OwnershipAlreadyAcquired:    true,
 			OpenAIResponsesContinuation: openAIResponsesContinuation,
 			ProviderIdleTimeout:         cfg.providerIdleTimeout,
+			CommitProvenance:            cfg.commitProvenance,
 			TurnEndsProcess:             baseSessionCfg.TurnEndsProcess,
 		})
 		if err != nil {

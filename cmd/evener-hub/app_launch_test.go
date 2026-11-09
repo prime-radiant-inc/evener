@@ -107,7 +107,7 @@ func TestLaunchController_SetLayer_GlobalRoundtrip(t *testing.T) {
 	fastCheapModel := "openai/gpt-5-mini"
 	_, err := c.SetLayer(context.Background(), appwire.LaunchConfigSetLayerParams{
 		CWD: cwd, Layer: "global",
-		Config: appwire.LaunchConfigLayer{Model: model, FastCheapModel: fastCheapModel},
+		Config: appwire.LaunchConfigLayer{Model: model, FastCheapModel: fastCheapModel, CommitProvenance: "off"},
 	})
 	if err != nil {
 		t.Fatalf("SetLayer: %v", err)
@@ -121,6 +121,9 @@ func TestLaunchController_SetLayer_GlobalRoundtrip(t *testing.T) {
 	}
 	if got.FastCheapModel != fastCheapModel {
 		t.Errorf("FastCheapModel = %q, want %q", got.FastCheapModel, fastCheapModel)
+	}
+	if got.CommitProvenance != "off" {
+		t.Errorf("CommitProvenance = %q, want off", got.CommitProvenance)
 	}
 }
 
@@ -183,6 +186,32 @@ func TestLaunchController_SetLayer_RejectsEnabledPlugins(t *testing.T) {
 	}
 	if _, statErr := os.Stat(paths.Global); !os.IsNotExist(statErr) {
 		t.Fatalf("global layer was persisted, stat error = %v", statErr)
+	}
+}
+
+func TestLaunchController_SetLayer_RejectsProjectCommitProvenance(t *testing.T) {
+	stateRoot := t.TempDir()
+	cwd := canonicalTempDir(t)
+	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" }, false)
+	_, err := c.SetLayer(context.Background(), appwire.LaunchConfigSetLayerParams{
+		CWD: cwd, Layer: "project",
+		Config: appwire.LaunchConfigLayer{CommitProvenance: "off"},
+	})
+	if !errors.Is(err, errCommitProvenanceScope) {
+		t.Fatalf("SetLayer error = %v, want scope rejection", err)
+	}
+}
+
+func TestLaunchController_SetLayer_RejectsInvalidCommitProvenance(t *testing.T) {
+	stateRoot := t.TempDir()
+	cwd := canonicalTempDir(t)
+	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" }, false)
+	_, err := c.SetLayer(context.Background(), appwire.LaunchConfigSetLayerParams{
+		CWD: cwd, Layer: "global",
+		Config: appwire.LaunchConfigLayer{CommitProvenance: "bogus"},
+	})
+	if err == nil {
+		t.Fatal("SetLayer accepted an invalid commit_provenance value")
 	}
 }
 

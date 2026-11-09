@@ -117,6 +117,7 @@ func buildLaunchOptionSchema() []LaunchOption {
 	evenerOnly := map[string]bool{"evener": true}
 	return []LaunchOption{
 		{Field: "agent", WireField: "agent", Label: "Agent", Description: "Name of the agent binary to run. Defaults to evener.", Group: LaunchGroupAgent, Kind: LaunchControlText, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly, BuiltinDefault: "default"},
+		{Field: "commit_provenance", WireField: "commitProvenance", Label: "Commit provenance", Description: "Record the Evener version, model, host and session ID in commit messages the model writes. Covers only commits whose message the model drafts. Default on.", Group: LaunchGroupAgent, Kind: LaunchControlSelect, DefaultableLayers: []LaunchLayerSupport{LaunchLayerGlobal}, PerLaunch: true, Choices: commitProvenanceChoices(), DriverSupport: evenerOnly, BuiltinDefault: "coauthor"},
 		{Field: "model", WireField: "model", Label: "Model", Description: "Primary model used for the main reasoning loop. Overrides " + envvars.EVENERModel.Name + " env var.", Group: LaunchGroupModel, Kind: LaunchControlModelPicker, DefaultableLayers: defaultLayers, PerLaunch: true, EnvFallback: &LaunchOptionEnvFallback{Name: envvars.EVENERModel.Name}, DriverSupport: evenerOnly},
 		{Field: "reasoning_effort", WireField: "reasoningEffort", Label: "Reasoning effort", Description: "Extended thinking budget for models that support it. Higher effort increases cost and latency.", Group: LaunchGroupModel, Kind: LaunchControlSelect, DefaultableLayers: defaultLayers, PerLaunch: true, EnvFallback: &LaunchOptionEnvFallback{Name: envvars.EVENERReasoningEffort.Name}, Choices: reasoningChoices(), DriverSupport: evenerOnly},
 		{Field: "fast_cheap_model", WireField: "fastCheapModel", Label: "Fast cheap model", Description: "Lightweight model for quick sub-tasks like file triage. Falls back to the primary model if unset.", Group: LaunchGroupModel, Kind: LaunchControlModelPicker, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly, BuiltinDefaultLabel: "primary model"},
@@ -160,6 +161,10 @@ func reasoningChoices() []LaunchOptionChoice {
 	// allows it, the field omitted otherwise). So both are kept and are
 	// genuinely distinct here.
 	return []LaunchOptionChoice{{Value: "", Label: "(default)"}, {Value: "minimal", Label: "minimal"}, {Value: "low", Label: "low"}, {Value: "medium", Label: "medium"}, {Value: "high", Label: "high"}, {Value: "xhigh", Label: "xhigh"}, {Value: "max", Label: "max"}, {Value: "none", Label: "none (off where supported)"}}
+}
+
+func commitProvenanceChoices() []LaunchOptionChoice {
+	return []LaunchOptionChoice{{Value: "", Label: "(inherit)"}, {Value: "coauthor", Label: "Record session details"}, {Value: "off", Label: "Off"}}
 }
 
 func contextChoices() []LaunchOptionChoice {

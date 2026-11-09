@@ -801,11 +801,14 @@ type RestoreSessionConfig struct {
 	ModelFallbacks              []string
 	OpenAIResponsesContinuation string
 	ProviderIdleTimeout         string
-	LLMRetryPolicy              *llm.RetryPolicy
-	LLMSleep                    llm.SleepFunc
-	spawn                       spawnConfig
-	resumeHistory               []schema.Turn
-	deferRestoreSideEffects     bool
+	// CommitProvenance replaces the persisted mode when non-empty. Empty keeps
+	// the session's saved value, which may itself be empty (default on).
+	CommitProvenance        string
+	LLMRetryPolicy          *llm.RetryPolicy
+	LLMSleep                llm.SleepFunc
+	spawn                   spawnConfig
+	resumeHistory           []schema.Turn
+	deferRestoreSideEffects bool
 	// sandboxProvisioned is set only by the stable-delegate restore path after it
 	// has re-resolved and enabled the descriptor's complete sandbox policy. That
 	// policy contains delegate-only axes (such as WriteBlocked) which the ordinary
@@ -970,6 +973,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	cfg.AgentsDocPath = strings.TrimSpace(restoreCfg.AgentsDocPath)
 	if strings.TrimSpace(restoreCfg.OpenAIResponsesContinuation) != "" {
 		cfg.OpenAIResponsesContinuation = strings.TrimSpace(restoreCfg.OpenAIResponsesContinuation)
+	}
+	if strings.TrimSpace(restoreCfg.CommitProvenance) != "" {
+		cfg.CommitProvenance = strings.TrimSpace(restoreCfg.CommitProvenance)
 	}
 	cfg.LLMRetryPolicy = restoreCfg.LLMRetryPolicy
 	cfg.LLMSleep = restoreCfg.LLMSleep

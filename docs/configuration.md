@@ -169,6 +169,12 @@ reasoning_effort = "high"
 
 The next hub launch uses `high`, keeps `workspace-write` and network off, and keeps `LANG`. A per-launch effort of `low` wins over both files. Leaving that field at its default inherits `high`; it does not erase the project setting. Network off limits tools, not the model connection; see [Sandboxing](sandboxing.md).
 
+### Commit provenance
+
+`commit_provenance` in the global launch layer controls whether the system prompt tells the model to end commit messages with an Evener `Co-authored-by` trailer naming the version, model, host and session ID. `coauthor` is the default; `off` omits the instruction. The New session form offers the same field as a per-launch override. It is not offered in project settings. The trailer covers only commits whose message the model writes; a scripted commit, `git merge --no-edit`, a rebase or a GitHub-created commit does not gain one.
+
+A direct `evener` invocation does not read `launch.toml`. Use `--commit-provenance=off` there, or pass the flag to `evener serve`. Hub-spawned sessions receive the resolved value.
+
 ### Review shared configuration before trusting it
 
 Open the project's menu in the sidebar, choose **Project settings**, then review **Repository settings**. Read the preview, especially commands, MCP servers, extension directories, environment, and prompt files. **Trust this file** approves the displayed content; approve only content you intend to execute. Edit **Local overrides** separately. Trust is stored against a canonical content hash in project metadata, not just a filename. Changed content can require a new decision; known hashes support switching between reviewed versions.

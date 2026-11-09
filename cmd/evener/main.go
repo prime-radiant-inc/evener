@@ -279,6 +279,7 @@ func mainWithDeps(deps mainDeps) {
 		providerIdleTimeout:         *flags.providerIdleTimeout,
 		sandboxMode:                 *flags.sandbox,
 		sandboxNet:                  *flags.sandboxNet,
+		commitProvenance:            *flags.commitProvenance,
 		apiLog:                      *flags.apiLog,
 		runTimeout:                  *flags.runTimeout,
 		askResponder:                *flags.askResponder,

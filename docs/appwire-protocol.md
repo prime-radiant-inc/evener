@@ -2375,6 +2375,7 @@ Underlying Go kind: `struct` (no struct fields).
 | `openAIResponsesContinuation` | string | yes |  |
 | `providerIdleTimeout` | string | yes |  |
 | `sandbox` | string | yes |  |
+| `commitProvenance` | string | yes |  |
 | `sandboxNet` | \*bool | yes |  |
 | `maxRounds` | \*int | yes |  |
 | `maxSubagentDepth` | \*int | yes |  |

@@ -21,7 +21,7 @@ func checkLaunchOptionSchema_FieldCoverage(t *testing.T) {
 		"system_prompt_append_mode", "system_prompt_append_file", "system_prompt_append_text",
 		"skills_dirs", "plugin_dirs", "mcp_configs", "mcps",
 		"model_fallbacks", "enabled_plugins", "env",
-		"sandbox", "sandbox_net",
+		"sandbox", "sandbox_net", "commit_provenance",
 		"verbose", "trace_file", "cpu_profile", "export_atif_path", "export_atif_provider_handles",
 		"api_log",
 	}
