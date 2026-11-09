@@ -278,10 +278,10 @@ jobs:
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
           make tools-gitleaks
 
-      - name: Lint repository structure, generated output, formatting, and secrets
+      - name: Lint repository structure, source audits, generated output, formatting, and secrets
         env:
           EVENER_GITLEAKS_REQUIRED: "1"
-        run: make lint-generated lint-naming lint-gofmt lint-internal lint-package-imports lint-js-toolchain-pins lint-tracked-file-size secret-scan
+        run: make lint-generated lint-naming lint-gofmt lint-internal lint-package-imports lint-js-toolchain-pins lint-tracked-file-size lint-repo-audit secret-scan
 
       - uses: ./.github/actions/go-cache-save
 

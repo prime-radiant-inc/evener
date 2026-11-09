@@ -1,4 +1,4 @@
-package evener_test
+package repoaudit
 
 import (
 	"fmt"
@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"testing"
 )
 
 // tempDirCommands are the command trees #4426 swept: every one of them had
@@ -57,12 +56,11 @@ func tempDirResolverFunc(fn *ast.FuncDecl) bool {
 	return mints && resolves
 }
 
-// TestNoCommandTestMintsItsOwnCanonicalTempDir keeps the canonical temp-dir
+// noCommandTestMintsItsOwnCanonicalTempDir keeps the canonical temp-dir
 // helper singular. Every command test that needs a resolved temp dir calls
 // internal/testfs.CanonicalTempDir; a local helper is the copy #4426 collapsed,
 // and a second one would drift the moment the rule changes.
-func TestNoCommandTestMintsItsOwnCanonicalTempDir(t *testing.T) {
-	t.Parallel()
+func noCommandTestMintsItsOwnCanonicalTempDir(a *audit) {
 	var offenders []string
 	for _, root := range tempDirCommands {
 		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -92,12 +90,12 @@ func TestNoCommandTestMintsItsOwnCanonicalTempDir(t *testing.T) {
 			return nil
 		})
 		if err != nil {
-			t.Fatalf("walk %s: %v", root, err)
+			a.Fatalf("walk %s: %v", root, err)
 		}
 	}
 	sort.Strings(offenders)
 	for _, offender := range offenders {
-		t.Errorf("%s mints a temp dir and resolves its symlinks in one function; "+
+		a.Errorf("%s mints a temp dir and resolves its symlinks in one function; "+
 			"call internal/testfs.CanonicalTempDir instead, so #2497's rule has one source", offender)
 	}
 }

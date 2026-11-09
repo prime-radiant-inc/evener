@@ -1,4 +1,4 @@
-package evener_test
+package repoaudit
 
 import (
 	"fmt"
@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"testing"
 )
 
 // e2eProvidersWriterDir is the only place an e2e harness may spell the
@@ -15,13 +14,12 @@ import (
 // harnesses call the built test/e2e/providers/cmd binary.
 const e2eProvidersWriterDir = "test/e2e/providers"
 
-// TestE2EProvidersTOMLHasOneWriter keeps the e2e harnesses' providers.toml
+// e2eProvidersTOMLHasOneWriter keeps the e2e harnesses' providers.toml
 // schema in one place (#4445). Three harnesses once hand-wrote the same block,
 // each in its own way, so a registry schema change could leave one behind with
 // no test noticing (#4411, #4437). A harness may point the writer at a fake
 // backend, but may not grow another copy of the schema.
-func TestE2EProvidersTOMLHasOneWriter(t *testing.T) {
-	t.Parallel()
+func e2eProvidersTOMLHasOneWriter(a *audit) {
 	var offenders []string
 	for _, root := range []string{"scripts/e2e", "test/e2e"} {
 		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -67,12 +65,12 @@ func TestE2EProvidersTOMLHasOneWriter(t *testing.T) {
 			return nil
 		})
 		if err != nil {
-			t.Fatalf("walk %s: %v", root, err)
+			a.Fatalf("walk %s: %v", root, err)
 		}
 	}
 	sort.Strings(offenders)
 	for _, offender := range offenders {
-		t.Errorf("%s writes the providers.toml schema by hand; call the one writer in %s "+
+		a.Errorf("%s writes the providers.toml schema by hand; call the one writer in %s "+
 			"(Render, or its cmd binary from a shell harness) so a schema change reaches every harness at once",
 			offender, e2eProvidersWriterDir)
 	}

@@ -93,8 +93,8 @@ Two audits enforce the rule against tests whose whole claim is that some copy
 exists. Each fails on a test whose name says it shows, renders or says
 something and whose every check compares output with production copy:
 
-- `copyonly_audit_test.go` (part of `go test`) runs `internal/devtool/copyonly`
-  over every tracked Go test. Its allowlist is
+- `make lint-repo-audit`'s `copy-only-tests` check (part of `make lint`) runs
+  `internal/devtool/copyonly` over every tracked Go test. Its allowlist is
   `internal/devtool/copyonly/allowlist.tsv`.
 - `cmd/evener-hub/frontend/src/dev/copyonly/copyonlyAudit.test.ts` (part of
   `make test-web`) reads every tracked TypeScript test in the frontend,
@@ -111,7 +111,8 @@ and the reason it is kept, tab-separated. Rows are keyed by file and test name,
 not line. Each audit also fails on a row whose test is no longer flagged, so
 remove the row when you convert, delete or rename the test.
 
-A third audit covers Go tests that are not named for wording. It counts the
+A third audit, `lint-repo-audit`'s `error-text-assertions` check, covers Go
+tests that are not named for wording. It counts the
 checks of an error's text against a phrase from production source
 (`strings.Contains(err.Error(), "not found")`) anywhere in a test file. Its
 allowlist, `internal/devtool/copyonly/errstring_allowlist.tsv`, has one row per
@@ -195,8 +196,9 @@ that keep scratch on failure or reclaim it across runs: the directory is named
 abandons nothing, and the next run reclaims leftovers whose pid suffix no longer
 answers `kill -0` (scripts/lib/covscratch-lib.sh). Every remaining variable-fed
 recursive delete in the repository's shell (scripts/ and the repo-root
-install.sh) lives on `TestNoScriptFeedsVariableToRecursiveDelete`'s count-pinned
-list with the reason it is allowed to exist. The list grows only with an
+install.sh) lives on the count-pinned list of `make lint-repo-audit`'s
+`script-recursive-delete` check (`recursiveDeleteAllowedLines` in
+internal/devtool/repoaudit) with the reason it is allowed to exist. The list grows only with an
 explicitly reviewed reason and shrinks as scripts convert or retire.
 
 Two parts of the rule the audit cannot hold. Its scan is textual, so `find -exec
