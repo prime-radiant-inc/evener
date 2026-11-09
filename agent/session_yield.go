@@ -100,12 +100,11 @@ func (s *Session) consumeQuietYieldRequest() bool {
 	return requested
 }
 
-// cancelPendingQuietYield drops the request and the fallback timer. A new turn
-// does this because it resumed the session itself; a turn that ends another way
-// (a communicate boundary, a failure, or a Stop) does it because the quiet wait
-// it was asked for is over. The generation bump is what makes an already-armed
-// timer firing a no-op.
-func (s *Session) cancelPendingQuietYield() {
+// cancelQuietYieldWait drops the request and the fallback timer but leaves a
+// due record for the notification turn that consumes it. processOneInput uses
+// this for an EntryNotification turn, whose accept must be able to take a due
+// fallback; every other turn ends the wait outright.
+func (s *Session) cancelQuietYieldWait() {
 	s.yieldMu.Lock()
 	defer s.yieldMu.Unlock()
 	if s.yieldRequest == nil && s.yieldArmed == nil {
@@ -114,6 +113,26 @@ func (s *Session) cancelPendingQuietYield() {
 	s.yieldSeq++
 	s.yieldRequest = nil
 	s.yieldArmed = nil
+}
+
+// cancelPendingQuietYield drops the request, the fallback timer, and any due
+// record. A turn that ends another way (a communicate boundary, a failure, or
+// a Stop) does this because the quiet wait it was asked for is over. The
+// generation bump is what makes an already-armed timer firing a no-op.
+func (s *Session) cancelPendingQuietYield() {
+	s.yieldMu.Lock()
+	defer s.yieldMu.Unlock()
+	if s.yieldRequest == nil && s.yieldArmed == nil && s.yieldDue == nil {
+		return
+	}
+	s.yieldSeq++
+	s.yieldRequest = nil
+	s.yieldArmed = nil
+	// A due record is the timer that already fired. An ordinary turn or a Stop
+	// that lands before its notification turn consumes it must cancel the wake
+	// too; the notification turn itself takes the record first, so this does
+	// not drop the wake it is running.
+	s.yieldDue = nil
 }
 
 // formatQuietYieldTimeoutReminder renders the bounded context a fallback wake

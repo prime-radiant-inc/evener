@@ -1443,11 +1443,23 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// that already moved. The successful yield path sets yielded and leaves
 	// its timer armed (issue #832).
 	yielded := false
-	s.cancelPendingQuietYield()
+	if kind == EntryNotification {
+		// A notification turn's accept takes the due record the timer left.
+		// Clear only the request and timer here; clearing the due record would
+		// drop the very wake this turn exists to deliver.
+		s.cancelQuietYieldWait()
+	} else {
+		s.cancelPendingQuietYield()
+	}
 	defer func() {
-		if !yielded {
-			s.cancelPendingQuietYield()
+		if yielded {
+			return
 		}
+		if kind == EntryNotification {
+			s.cancelQuietYieldWait()
+			return
+		}
+		s.cancelPendingQuietYield()
 	}()
 	communicatePreviewCalls := map[string]struct{}{}
 	defer func() {
@@ -2575,7 +2587,6 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 		s.finishNotificationNoop()
 		return false
 	}
-
 	s.repairOrphanedToolResults(context.Background(), "before accepting notification")
 
 	// A notification turn adopts the union of the provenance carried by the

@@ -116,9 +116,18 @@ func TestQuietYieldTimeoutWakesOnceWithBoundedContext(t *testing.T) {
 	}
 
 	// The daemon's response to notify() is an EntryNotification turn.
+	sess.yieldMu.Lock()
+	t.Logf("before notification: due=%v armed=%v request=%v", sess.yieldDue, sess.yieldArmed, sess.yieldRequest)
+	sess.yieldMu.Unlock()
 	if _, err := sess.ProcessInputKind(t.Context(), "", nil, EntryNotification); err != nil {
 		t.Fatalf("notification turn: %v", err)
 	}
+	sess.mu.Lock()
+	t.Logf("after notification: state=%v history=%d", sess.state, len(sess.history))
+	sess.mu.Unlock()
+	sess.yieldMu.Lock()
+	t.Logf("after notification: due=%v", sess.yieldDue)
+	sess.yieldMu.Unlock()
 	mu.Lock()
 	if len(requests) != 1 {
 		mu.Unlock()
@@ -168,6 +177,46 @@ func TestOrdinaryTurnCancelsTheQuietYieldFallback(t *testing.T) {
 	defer mu.Unlock()
 	if wakes != 0 {
 		t.Fatalf("the canceled fallback woke the session %d time(s)", wakes)
+	}
+}
+
+// A due fallback is canceled by the next ordinary turn: the timer already
+// fired, but the user's own turn resumed the session, so its stale notification
+// turn must not run a second model request. A Stop uses the same cancellation.
+func TestOrdinaryTurnCancelsADueQuietYieldFallback(t *testing.T) {
+	t.Parallel()
+	fake := agenttest.NewFakeClock()
+	var rounds atomic.Int32
+	var dueRan atomic.Bool
+	sess := newSession(t, withClock(fake), withSteps(
+		func(llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(quietYieldCall("yield-1", `{"timeout_seconds":30}`))
+		},
+		func(llm.Request) llm.Response {
+			rounds.Add(1)
+			return agenttest.FinalResponse("second turn")
+		},
+		func(llm.Request) llm.Response {
+			dueRan.Store(true)
+			return agenttest.FinalResponse("stale fallback")
+		},
+	))
+	if _, err := sess.ProcessInput(tripwireCtx(t), "start", nil); err != nil {
+		t.Fatalf("first input: %v", err)
+	}
+	fake.Advance(30 * time.Second)
+	fake.Drain()
+	if _, err := sess.ProcessInput(tripwireCtx(t), "next", nil); err != nil {
+		t.Fatalf("second input: %v", err)
+	}
+	if _, err := sess.ProcessInputKind(t.Context(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("notification turn: %v", err)
+	}
+	if dueRan.Load() {
+		t.Fatal("the stale due fallback ran a model turn after the user's own turn resumed the session")
+	}
+	if got := rounds.Load(); got != 1 {
+		t.Fatalf("ordinary turns = %d, want 1", got)
 	}
 }
 
