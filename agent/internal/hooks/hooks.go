@@ -168,14 +168,15 @@ func (r *Runner) Summary() map[plugin.HookEvent]int {
 // ACTUALLY run — i.e. their handler type is one runHook executes (command/prompt)
 // AND their matcher is a valid regex (MatchHooks does not skip it). Hooks with an
 // unsupported handler type or an invalid matcher are dispatch-time dead and are
-// excluded. Events with zero runnable hooks are omitted. This backs the AppWire
+// excluded. PostToolBatch is the exception: it has no matcher, so only its handler
+// type is consulted. Events with zero runnable hooks are omitted. This backs the AppWire
 // "active supported hooks" count; Summary (above) counts every registered hook.
 func (r *Runner) SupportedSummary() map[plugin.HookEvent]int {
 	out := make(map[plugin.HookEvent]int)
 	for event, hooks := range r.hooks {
 		n := 0
 		for _, hook := range hooks {
-			if hookCanRun(hook) {
+			if hookCanRun(event, hook) {
 				n++
 			}
 		}
@@ -198,9 +199,14 @@ var supportedHandlerTypes = map[string]bool{
 // type is supported and its matcher compiles. It mirrors the two places that
 // silently skip a hook — runHook (unsupported type) and MatchHooks (invalid
 // matcher) — so diagnostics do not advertise a hook that can never run.
-func hookCanRun(hook plugin.RegisteredHook) bool {
+// PostToolBatch has no matcher at all (RunPostToolBatch bypasses MatchHooks), so
+// its matcher is not probed: any value, valid regex or not, still fires.
+func hookCanRun(event plugin.HookEvent, hook plugin.RegisteredHook) bool {
 	if !supportedHandlerTypes[hook.Type] {
 		return false
+	}
+	if event == plugin.HookPostToolBatch {
+		return true
 	}
 	_, err := matchTarget(hook.Matcher, "")
 	return err == nil
@@ -231,6 +237,11 @@ func (r *Runner) Validate() []InvalidMatcherDiagnostic {
 	var diags []InvalidMatcherDiagnostic
 	for event, hooks := range r.hooks {
 		for _, hook := range hooks {
+			// PostToolBatch never consults its matcher, so an uncompilable one
+			// does not skip the hook and "will not fire" would be false.
+			if event == plugin.HookPostToolBatch {
+				continue
+			}
 			if _, err := matchTarget(hook.Matcher, ""); err != nil {
 				diags = append(diags, InvalidMatcherDiagnostic{
 					PluginName: hook.PluginName,
@@ -565,14 +576,21 @@ func firstLine(text string) string {
 	return ""
 }
 
-// runAll executes all matched hooks in parallel and returns their parsed outputs.
+// runAll matches the event's hooks against toolName and executes them.
 func (r *Runner) runAll(ctx context.Context, event plugin.HookEvent, toolName string, input Input) []parsedHookOutput {
 	claudeName := toolname.EvenerToClaude(toolName)
-	matched := r.MatchHooks(event, claudeName)
+	return r.runMatched(ctx, event, r.MatchHooks(event, claudeName), input)
+}
+
+// runMatched executes the given hooks in parallel and returns their parsed
+// outputs. Matching is the caller's job: runAll matches through MatchHooks, and
+// RunPostToolBatch passes the event's registered hooks directly because Claude
+// documents no matcher for that event. Both share the HOOK_START/HOOK_END
+// announcements, so they fire either way.
+func (r *Runner) runMatched(ctx context.Context, event plugin.HookEvent, matched []plugin.RegisteredHook, input Input) []parsedHookOutput {
 	if len(matched) == 0 {
 		return nil
 	}
-
 	results := make([]parsedHookOutput, len(matched))
 	var wg sync.WaitGroup
 	wg.Add(len(matched))
@@ -674,6 +692,14 @@ func mergeHookInputMaps(dst map[string]any, src map[string]any) map[string]any {
 func (r *Runner) RunPostToolUse(ctx context.Context, input Input) RunResult {
 	outputs := r.runAll(ctx, plugin.HookPostToolUse, input.ToolName, input)
 	return collectSystemMessages(plugin.HookPostToolUse, outputs)
+}
+
+// RunPostToolBatch dispatches PostToolBatch hooks. Claude documents no matcher
+// for this event, so a configured matcher never narrows it: the registered
+// hooks go straight to execution rather than through MatchHooks.
+func (r *Runner) RunPostToolBatch(ctx context.Context, input Input) RunResult {
+	outputs := r.runMatched(ctx, plugin.HookPostToolBatch, r.hooks[plugin.HookPostToolBatch], input)
+	return collectPostToolBatchMessages(outputs)
 }
 
 // RunPostToolUseFailure dispatches PostToolUseFailure hooks and aggregates
@@ -815,6 +841,42 @@ func collectSystemMessages(event plugin.HookEvent, outputs []parsedHookOutput) R
 			result.TerminalSequences = append(result.TerminalSequences, o.TerminalSequence)
 		}
 		routeOutput(event, o, &result.ModelContext, &result.UserMessages)
+	}
+	return result
+}
+
+// collectPostToolBatchMessages aggregates PostToolBatch output. It is
+// collectSystemMessages plus the event's block contract: exit 2 or a top-level
+// decision:"block" stops the round loop. The reason is the JSON reason, else the
+// exit-2 stderr, and it becomes StopReason. A blocking output's error stderr is
+// that reason rather than model context, so it is not routed twice; every other
+// field still routes normally.
+func collectPostToolBatchMessages(outputs []parsedHookOutput) RunResult {
+	blockOnExit2 := exitBehavior(plugin.HookPostToolBatch).BlockOnExit2
+	var result RunResult
+	for _, o := range outputs {
+		applyStopped(plugin.HookPostToolBatch, o, &result.Stopped, &result.StopReason)
+		blocked := o.Blocked || (blockOnExit2 && o.RawExitCode == 2)
+		if blocked {
+			result.Stopped = true
+			if result.StopReason == "" {
+				// A JSON block carries its reason; exit 2 carries its stderr,
+				// which parseHookOutput parked in SystemMessage.
+				if o.BlockReason != "" {
+					result.StopReason = o.BlockReason
+				} else if o.IsError {
+					// Exit-2 stderr is carried verbatim by parseHookOutput; a
+					// reason read by a human should not end in a newline.
+					result.StopReason = strings.TrimSpace(o.SystemMessage)
+				}
+			}
+		}
+		if o.TerminalSequence != "" {
+			result.TerminalSequences = append(result.TerminalSequences, o.TerminalSequence)
+		}
+		if !blocked || !o.IsError {
+			routeOutput(plugin.HookPostToolBatch, o, &result.ModelContext, &result.UserMessages)
+		}
 	}
 	return result
 }

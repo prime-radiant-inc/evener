@@ -13,7 +13,9 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
@@ -1899,6 +1901,30 @@ func delegateEntryRequiresReport(kind EntryKind) bool {
 	}
 }
 
+// batchToolCalls renders one PostToolBatch tool_calls entry per call in the
+// round. Each entry carries the shared per-tool hook fields (the Claude tool
+// name, the call id, and the parsed tool_input) plus tool_response, which is
+// res.Output — the serialized content the model receives, which is what makes
+// PostToolBatch differ from PostToolUse here. A call whose arguments do not
+// unmarshal contributes no tool_input rather than an erroring batch.
+func (s *Session) batchToolCalls(calls []llm.ToolCallData, results []tool.ExecResult) []hooks.BatchToolCall {
+	out := make([]hooks.BatchToolCall, len(calls))
+	for i, call := range calls {
+		hi := s.toolHookInput(plugin.HookPostToolBatch, call, false)
+		response := ""
+		if i < len(results) {
+			response = results[i].Output
+		}
+		out[i] = hooks.BatchToolCall{
+			ToolName:     hi.ToolName,
+			ToolInput:    hi.ToolInput,
+			ToolUseID:    hi.ToolUseID,
+			ToolResponse: response,
+		}
+	}
+	return out
+}
+
 func (s *Session) processOneInput(ctx context.Context, input string, images []ImageAttachment, kind EntryKind, inputProvenance *provenance.Causal) (out string, progressed bool, err error) {
 	communicatePreviewCalls := map[string]struct{}{}
 	defer func() {
@@ -2499,6 +2525,35 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 		timings.Persistence = time.Since(tPhaseStart)
 
+		// PostToolBatch hooks, fired before injectPostToolSteering so their
+		// additionalContext is queued when that function's injectDrainedSteering
+		// -- the last drain before the next request -- runs, and so reaches the
+		// SAME next request. Firing after it would deliver one request late.
+		//
+		// The block is recorded here and applied only after
+		// deliverIfCommunicated reports done == false: a round that also called
+		// communicate keeps its reply, and one that posted ask_user stays
+		// awaiting. A batch of nothing never fires (no tool_calls to describe).
+		batchBlocked := false
+		batchStop := ""
+		if s.hookRunner != nil && len(calls) > 0 {
+			hi := s.hookInput(plugin.HookPostToolBatch)
+			hi.ToolCalls = s.batchToolCalls(calls, results)
+			batchRes := s.hookRunner.RunPostToolBatch(s.apiLogContext(ctx), hi)
+			for _, m := range batchRes.ModelContext {
+				if err := s.deliverHookContext(m); err != nil {
+					return "", progressed, err
+				}
+			}
+			for _, m := range batchRes.UserMessages {
+				s.deliverHookUserMessage(m)
+			}
+			if batchRes.Stopped {
+				batchBlocked = true
+				batchStop = strings.TrimSpace(batchRes.StopReason)
+			}
+		}
+
 		// --- Phase: AfterAction ---
 		tPhaseStart = s.sclock().Now()
 
@@ -2535,6 +2590,21 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 		if done {
 			return text, progressed, nil
+		}
+		// The round did not produce a reply or a question, so the batch hook's
+		// recorded block owns the turn: deliver its reason, record it as
+		// steering, and end through the same failure boundary the other
+		// pre-request stops use. The tool results are already persisted.
+		if batchBlocked {
+			if batchStop == "" {
+				// A block with no stated reason still ends the turn with a
+				// legible line, rather than a silent stop.
+				batchStop = "PostToolBatch hook stopped this round"
+			}
+			s.deliverHookUserMessage(batchStop)
+			s.appendSteeringTurn(batchStop, events.SteeringKindHookContext)
+			s.finishProcessingAtFailureBoundary(ctx)
+			return "", progressed, nil
 		}
 		if yieldToObserverCallback || sessionLifecycleFault(ctx, "yield_observer") != nil {
 			s.finishProcessingAtFailureBoundary(ctx)

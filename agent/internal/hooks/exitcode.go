@@ -19,6 +19,7 @@ type eventExitPolicy struct {
 //   - PreToolUse: RunPreToolUse denies the tool call
 //   - Stop: runStopEvent prevents stopping
 //   - SubagentStop: runStopEvent prevents the subagent stopping
+//   - PostToolBatch: RunPostToolBatch stops the round loop
 //
 // In the Claude contract, exit 2 also blocks UserPromptSubmit (erase the prompt)
 // and PreCompact (block compaction); see the full Claude table in 07
@@ -30,7 +31,7 @@ type eventExitPolicy struct {
 // that consumes the flag (TestExitBehavior_BlockEntriesAreEnforced guards this).
 //
 // All other events (PostToolUse, SessionStart, SessionEnd, Notification,
-// SubagentStart, PostToolUseFailure, PostToolBatch, StopFailure, PostCompact,
+// SubagentStart, PostToolUseFailure, StopFailure, PostCompact,
 // and all reserved/unimplemented events) are non-blocking: exit 2 does not
 // block the action.
 //
@@ -45,7 +46,7 @@ type eventExitPolicy struct {
 // Tier: claude-compatible-subset.
 func exitBehavior(e plugin.HookEvent) eventExitPolicy {
 	switch e {
-	case plugin.HookPreToolUse, plugin.HookStop, plugin.HookSubagentStop:
+	case plugin.HookPreToolUse, plugin.HookStop, plugin.HookSubagentStop, plugin.HookPostToolBatch:
 		return eventExitPolicy{BlockOnExit2: true}
 	default: // every other event (all non-blocking)
 		return eventExitPolicy{BlockOnExit2: false}

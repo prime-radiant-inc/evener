@@ -3,12 +3,15 @@ package hooks
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/llm"
 )
 
@@ -1683,5 +1686,151 @@ func TestRunSubagentStop_ContinueFalseStops(t *testing.T) {
 	}
 	if out.StopReason != "stop" {
 		t.Fatalf("StopReason = %q, want %q", out.StopReason, "stop")
+	}
+}
+
+// TestRunPostToolBatch_IgnoresConfiguredMatcher proves Claude's "There is no
+// matcher for this event": a configured matcher naming one tool must not skip
+// a PostToolBatch hook, because the event describes a whole batch.
+func TestRunPostToolBatch_IgnoresConfiguredMatcher(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPostToolBatch, plugin.RegisteredHook{Matcher: "Bash", Type: "command", Timeout: 5,
+		Command: `echo '{"hookSpecificOutput":{"hookEventName":"PostToolBatch","additionalContext":"batch-note"}}'`})
+	got := r.RunPostToolBatch(context.Background(), Input{HookEventName: "PostToolBatch"})
+	if len(got.ModelContext) != 1 {
+		t.Fatalf("a matcher must not skip PostToolBatch; ModelContext = %v", got.ModelContext)
+	}
+}
+
+// TestRunPostToolBatch_ToolCallsMarshal pins the event's input: the batch's
+// tool_calls array carries each call's Claude tool name, id, and the
+// model-facing tool_response, and an exit-2 hook blocks the round.
+func TestRunPostToolBatch_ToolCallsMarshal(t *testing.T) {
+	dir := t.TempDir()
+	capture := filepath.Join(dir, "batch-input.json")
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPostToolBatch, plugin.RegisteredHook{Type: "command", Timeout: 5,
+		Command: `cat > ` + shellquote.Literal(capture) + `; printf 'stop the loop\n' >&2; exit 2`})
+
+	got := r.RunPostToolBatch(context.Background(), Input{
+		CWD:           dir,
+		HookEventName: "PostToolBatch",
+		ToolCalls: []BatchToolCall{{
+			ToolName:     "Read",
+			ToolInput:    map[string]any{"file_path": "/tmp/x"},
+			ToolUseID:    "call_1",
+			ToolResponse: "file text",
+		}},
+	})
+	if !got.Stopped {
+		t.Fatalf("exit 2 marks the batch blocked, got %+v", got)
+	}
+	if got.StopReason != "stop the loop" {
+		t.Fatalf("StopReason = %q, want the exit-2 stderr", got.StopReason)
+	}
+	for _, msg := range got.ModelContext {
+		if strings.Contains(msg, "stop the loop") {
+			t.Fatalf("the exit-2 stderr is the block reason, not model context: %v", got.ModelContext)
+		}
+	}
+
+	raw, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatalf("read captured hook input: %v", err)
+	}
+	var captured struct {
+		HookEventName string `json:"hook_event_name"`
+		ToolCalls     []struct {
+			ToolName     string         `json:"tool_name"`
+			ToolInput    map[string]any `json:"tool_input"`
+			ToolUseID    string         `json:"tool_use_id"`
+			ToolResponse string         `json:"tool_response"`
+		} `json:"tool_calls"`
+	}
+	if err := json.Unmarshal(raw, &captured); err != nil {
+		t.Fatalf("decode captured hook input: %v (raw: %s)", err, raw)
+	}
+	if captured.HookEventName != "PostToolBatch" {
+		t.Errorf("hook_event_name = %q, want PostToolBatch", captured.HookEventName)
+	}
+	if len(captured.ToolCalls) != 1 {
+		t.Fatalf("tool_calls = %+v, want one entry", captured.ToolCalls)
+	}
+	call := captured.ToolCalls[0]
+	if call.ToolName != "Read" || call.ToolUseID != "call_1" || call.ToolResponse != "file text" {
+		t.Errorf("tool_calls[0] = %+v, want Read/call_1/file text", call)
+	}
+	if got := call.ToolInput["file_path"]; got != "/tmp/x" {
+		t.Errorf("tool_calls[0].tool_input.file_path = %v, want /tmp/x", got)
+	}
+}
+
+// TestRunPostToolBatch_Exit2Blocks keeps the runner's exit-2 contract pinned at
+// the runner rather than only through the exitBehavior table.
+func TestRunPostToolBatch_Exit2Blocks(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPostToolBatch, plugin.RegisteredHook{Type: "command", Timeout: 5,
+		Command: `echo "stop the loop" >&2; exit 2`})
+	got := r.RunPostToolBatch(context.Background(), Input{HookEventName: "PostToolBatch"})
+	if !got.Stopped {
+		t.Fatalf("exit 2 must stop the loop, got %+v", got)
+	}
+}
+
+// TestRunPostToolBatch_DecisionBlockStops covers the JSON block form, whose
+// reason is the top-level reason field rather than exit-2 stderr.
+func TestRunPostToolBatch_DecisionBlockStops(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPostToolBatch, plugin.RegisteredHook{Type: "command", Timeout: 5,
+		Command: `echo '{"decision":"block","reason":"batch says stop"}'`})
+	got := r.RunPostToolBatch(context.Background(), Input{HookEventName: "PostToolBatch"})
+	if !got.Stopped || got.StopReason != "batch says stop" {
+		t.Fatalf("decision:block = %+v, want Stopped with the reason", got)
+	}
+}
+
+// TestSupportedSummary_PostToolBatchMatcherIsRunnable proves the runnable-hook
+// count does not probe a matcher that PostToolBatch never consults: a hook whose
+// matcher names no tool still fires, so it must be counted.
+func TestSupportedSummary_PostToolBatchMatcherIsRunnable(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPostToolBatch, plugin.RegisteredHook{Matcher: "Bash", Type: "command", Command: "echo batch"})
+	if got := r.SupportedSummary()[plugin.HookPostToolBatch]; got != 1 {
+		t.Fatalf("SupportedSummary[PostToolBatch] = %d, want 1: the matcher is not consulted", got)
+	}
+}
+
+// TestValidate_PostToolBatchMatcherIsNotDiagnosed proves the load-time warning
+// agrees with dispatch: a PostToolBatch matcher that is not a valid regex never
+// skips the hook, so it must not be reported as one that "will not fire".
+func TestValidate_PostToolBatchMatcherIsNotDiagnosed(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPostToolBatch, plugin.RegisteredHook{Matcher: "(", Type: "command", Command: "echo batch", PluginName: "batch-plugin"})
+	if diags := r.Validate(); len(diags) != 0 {
+		t.Fatalf("Validate() = %+v, want none: no matcher can skip PostToolBatch", diags)
+	}
+}
+
+// TestRunPostToolBatch_EmitsHookLifecycleEvents keeps the HOOK_START/HOOK_END
+// announcements on the bypass path; runMatched owns them for every event.
+func TestRunPostToolBatch_EmitsHookLifecycleEvents(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPostToolBatch, plugin.RegisteredHook{Type: "command", Timeout: 5, Command: "true"})
+	var starts, ends int
+	r.SetEventCallback(func(kind events.EventKind, data events.EventData) {
+		switch kind {
+		case events.EventHookStart:
+			if start, ok := data.(events.HookStartData); ok && start.Event == string(plugin.HookPostToolBatch) {
+				starts++
+			}
+		case events.EventHookEnd:
+			if end, ok := data.(events.HookEndData); ok && end.Event == string(plugin.HookPostToolBatch) {
+				ends++
+			}
+		}
+	})
+	r.RunPostToolBatch(context.Background(), Input{HookEventName: "PostToolBatch"})
+	if starts != 1 || ends != 1 {
+		t.Fatalf("hook lifecycle events = %d start / %d end, want 1/1", starts, ends)
 	}
 }

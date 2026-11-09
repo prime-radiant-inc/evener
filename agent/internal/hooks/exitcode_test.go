@@ -10,12 +10,12 @@ import (
 
 // TestExitBehavior_PerEvent verifies the central exit-code table classifies exit
 // 2 as blocking only for events whose RUNNER actually enforces the block.
-// PreToolUse/Stop/SubagentStop block and are enforced. UserPromptSubmit and
+// PreToolUse/Stop/SubagentStop/PostToolBatch block and are enforced. UserPromptSubmit and
 // PreCompact block in the Claude contract, but evener does not yet enforce the
 // block at their dispatch sites (a deferred parity item), so the table must not
 // claim a block nothing consumes (Fix 3).
 func TestExitBehavior_PerEvent(t *testing.T) {
-	for _, e := range []plugin.HookEvent{plugin.HookPreToolUse, plugin.HookStop, plugin.HookSubagentStop} {
+	for _, e := range []plugin.HookEvent{plugin.HookPreToolUse, plugin.HookStop, plugin.HookSubagentStop, plugin.HookPostToolBatch} {
 		if !exitBehavior(e).BlockOnExit2 {
 			t.Fatalf("%s should block on exit 2 (and is enforced)", e)
 		}
@@ -23,7 +23,7 @@ func TestExitBehavior_PerEvent(t *testing.T) {
 	for _, e := range []plugin.HookEvent{
 		plugin.HookUserPromptSubmit, plugin.HookPreCompact,
 		plugin.HookPostToolUse, plugin.HookSessionStart, plugin.HookSessionEnd, plugin.HookNotification,
-		plugin.HookSubagentStart, plugin.HookPostToolUseFailure, plugin.HookPostToolBatch,
+		plugin.HookSubagentStart, plugin.HookPostToolUseFailure,
 		plugin.HookStopFailure, plugin.HookPostCompact,
 	} {
 		if exitBehavior(e).BlockOnExit2 {
@@ -49,7 +49,7 @@ func TestExitBehavior_BlockEntriesAreEnforced(t *testing.T) {
 		return Input{CWD: "/tmp", HookEventName: string(event), ToolName: "Bash"}
 	}
 
-	for _, event := range []plugin.HookEvent{plugin.HookPreToolUse, plugin.HookStop, plugin.HookSubagentStop} {
+	for _, event := range []plugin.HookEvent{plugin.HookPreToolUse, plugin.HookStop, plugin.HookSubagentStop, plugin.HookPostToolBatch} {
 		if !exitBehavior(event).BlockOnExit2 {
 			continue
 		}
@@ -63,6 +63,8 @@ func TestExitBehavior_BlockEntriesAreEnforced(t *testing.T) {
 			blocked = r.RunStop(context.Background(), in(event)).Blocked
 		case plugin.HookSubagentStop:
 			blocked = r.RunSubagentStop(context.Background(), in(event)).Blocked
+		case plugin.HookPostToolBatch:
+			blocked = r.RunPostToolBatch(context.Background(), in(event)).Stopped
 		}
 		if !blocked {
 			t.Fatalf("%s claims BlockOnExit2 but its runner did not block/deny on exit 2", event)
