@@ -284,7 +284,7 @@ func rttRunInterruptedDrain(t *testing.T, sess *Session, adapter *agenttest.Scri
 	if err := sess.EnqueueWithImages(context.Background(), rttQueuedInput, rttImages(program.withImage)); err != nil {
 		t.Fatalf("EnqueueWithImages: %v", err)
 	}
-	if got := sess.QueueDepth(); got != 1 {
+	if got := sess.queueDepth(); got != 1 {
 		t.Fatalf("queue depth after enqueue = %d, want 1", got)
 	}
 	turnCtx, cancelTurn := context.WithCancel(context.Background())
@@ -296,8 +296,8 @@ func rttRunInterruptedDrain(t *testing.T, sess *Session, adapter *agenttest.Scri
 	if err != nil {
 		t.Fatalf("interrupted queued drain: %v", err)
 	}
-	if !strings.Contains(out, rttDone) || sess.QueueDepth() != 0 {
-		t.Fatalf("interrupted queued drain output=%q queue=%d, want completed queued turn", out, sess.QueueDepth())
+	if !strings.Contains(out, rttDone) || sess.queueDepth() != 0 {
+		t.Fatalf("interrupted queued drain output=%q queue=%d, want completed queued turn", out, sess.queueDepth())
 	}
 	requests := rttModelRequests(adapter.Requests())
 	if len(requests) != 1 {
@@ -322,7 +322,7 @@ func rttRunInterruptedRequeue(t *testing.T, sess *Session, adapter *agenttest.Sc
 	if _, err := sess.ProcessInput(marked, rttInterrupted, nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("non-drain interrupt error = %v, want context canceled", err)
 	}
-	if got := sess.QueueDepth(); got != 1 {
+	if got := sess.queueDepth(); got != 1 {
 		t.Fatalf("non-drain interrupt queue depth = %d, want requeued entry", got)
 	}
 	if got := sess.QueuePreview(); len(got) != 1 || got[0] != rttQueuedInput {
@@ -336,8 +336,8 @@ func rttRunInterruptedRequeue(t *testing.T, sess *Session, adapter *agenttest.Sc
 	if err != nil {
 		t.Fatalf("recovery ProcessInput: %v", err)
 	}
-	if strings.Count(out, rttDone) != 2 || sess.QueueDepth() != 0 {
-		t.Fatalf("recovery output=%q queue=%d, want recovery plus requeued completion", out, sess.QueueDepth())
+	if strings.Count(out, rttDone) != 2 || sess.queueDepth() != 0 {
+		t.Fatalf("recovery output=%q queue=%d, want recovery plus requeued completion", out, sess.queueDepth())
 	}
 	requests := rttModelRequests(adapter.Requests())
 	if len(requests) != 2 {

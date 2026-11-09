@@ -97,7 +97,7 @@ func TestResultToolAdvertisementHasNoUnwiredPlaceholder(t *testing.T) {
 			if body["accepted"] != true {
 				t.Fatalf("result tool %q was not accepted: %v", tc.wantResult, body)
 			}
-			if !sess.Communicated() {
+			if !sess.communicated() {
 				t.Fatalf("dispatching the configured result tool %q did not capture a result", tc.wantResult)
 			}
 

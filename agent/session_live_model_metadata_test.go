@@ -126,7 +126,7 @@ func TestNewSessionAppliesRegistryModelContextWindow(t *testing.T) {
 	if got := sess.profile.ContextWindowSize(); got != 1_000_000 {
 		t.Fatalf("profile ContextWindowSize() = %d, want the registry's 1000000", got)
 	}
-	if got := sess.ContextMetrics().Window; got != 1_000_000 {
+	if got := sess.contextMetrics().Window; got != 1_000_000 {
 		t.Fatalf("context manager window via ContextMetrics = %d, want 1000000", got)
 	}
 }
@@ -157,7 +157,7 @@ func TestSessionSetModelAppliesRegistryModelContextWindow(t *testing.T) {
 	if got := sess.profile.ContextWindowSize(); got != 1_000_000 {
 		t.Fatalf("profile ContextWindowSize() = %d, want the registry's 1000000", got)
 	}
-	if got := sess.ContextMetrics().Window; got != 1_000_000 {
+	if got := sess.contextMetrics().Window; got != 1_000_000 {
 		t.Fatalf("context manager window via ContextMetrics = %d, want 1000000", got)
 	}
 }

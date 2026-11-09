@@ -283,7 +283,7 @@ func TestRestoreSessionFromMetaWithConfig_InstallsResolveProfile(t *testing.T) {
 	if got := sess.Profile().ID(); got != "anthropic" {
 		t.Fatalf("profile ID = %q, want anthropic", got)
 	}
-	if got := sess.ContextMetrics().Window; got != 987654 {
+	if got := sess.contextMetrics().Window; got != 987654 {
 		t.Fatalf("ContextMetrics().Window = %d, want 987654", got)
 	}
 }

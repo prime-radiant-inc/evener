@@ -284,7 +284,7 @@ func TestFoldPublication_ClaimedNoteNotReinjectedByConcurrentFold(t *testing.T) 
 	if n := countSteering(currentHistory(t, s), noteHandoffPrefix); n != 1 {
 		t.Fatalf("note handoff appears %d time(s) in history; a note already handed off by a published fold must not be re-injected by a concurrent fold", n)
 	}
-	if got := s.PinnedNote(); got != "" {
+	if got := s.pinnedNote(); got != "" {
 		t.Fatalf("pinned note not consumed after both folds: %q", got)
 	}
 }
@@ -325,7 +325,7 @@ func TestFoldPublication_NoteRepinnedMidFoldSurvivesPublication(t *testing.T) {
 		t.Fatalf("Compact: %v", err)
 	}
 
-	if got := s.PinnedNote(); got != newNote {
+	if got := s.pinnedNote(); got != newNote {
 		t.Fatalf("pinned note = %q after the fold published; the fold captured %q and must not erase the newer note", got, oldNote)
 	}
 	if n := countSteering(currentHistory(t, s), oldNote); n != 1 {

@@ -15,7 +15,7 @@ import (
 func TestSteerKindReachesTheInjectedEvent(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
-	s.SteerKind("nudge", events.SteeringKindCompactNudge)
+	s.steerKind("nudge", events.SteeringKindCompactNudge)
 	msgs := s.drainSteeringForTurn()
 	if len(msgs) != 1 {
 		t.Fatalf("queued %d messages, want 1", len(msgs))

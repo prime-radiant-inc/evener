@@ -125,8 +125,8 @@ func TestCommunicate_ProfileOverridesPreservedByResultToolName(t *testing.T) {
 				if _, err := sess.ProcessInput(context.Background(), "input-sentinel", nil); err != nil {
 					t.Fatalf("ProcessInput: %v", err)
 				}
-				if !sess.Communicated() || !reflect.DeepEqual(sess.CommunicateStructured(), output) {
-					t.Fatalf("terminal structured output = %#v, want %#v", sess.CommunicateStructured(), output)
+				if !sess.communicated() || !reflect.DeepEqual(sess.communicateStructured(), output) {
+					t.Fatalf("terminal structured output = %#v, want %#v", sess.communicateStructured(), output)
 				}
 				requests := f.Requests()
 				if len(requests) != 1 {

@@ -111,7 +111,7 @@ func steeringKindConstName(kind string) string {
 // provenance rendered as a bare, unlabelled divider -- forever, not just on
 // old transcripts, because nothing checked producer -> kind the way this does.
 //
-// An empty SOURCE alone is legitimate (SteerKind's daemon-authored callers
+// An empty SOURCE alone is legitimate (steerKind's daemon-authored callers
 // have no source and a real kind; see steeringKindConstName's sibling test
 // above), so this only flags a call that carries NEITHER: no source AND no
 // kind, the shape that renders unlabelled with no way to tell live or on

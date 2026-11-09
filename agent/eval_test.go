@@ -368,7 +368,7 @@ func TestEvalCollector_ScriptedProviderBudgetTerminationNotCompleted(t *testing.
 		withConfig(SessionConfig{MaxToolRoundsPerInput: 1}),
 		withSteps(loop),
 	)
-	sess.RegisterTool("eval_loop_tool", "loops", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
+	sess.registerTool("eval_loop_tool", "loops", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
 		return "ok", nil
 	})
 	seen, stop := captureEvents(sess)

@@ -822,7 +822,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 	subCfg.spawn.subagentTask = task
 	subCfg.spawn.inheritedContext = inheritedContext
 	subCfg.spawn.depth = depth + 1
-	subCfg.spawn.parentSteer = s.SteerWithProvenance
+	subCfg.spawn.parentSteer = s.steerWithProvenance
 	subCfg.spawn.parentSystemNotification = s.routeSystemNotification
 	if subCfg.ShareTasksWithChildren {
 		ownerSessionID := parentCfg.spawn.sharedTaskStoreOwnerSessionID
@@ -1285,7 +1285,7 @@ func (s *Session) seedChildTasks(subSess *Session, agent *plugin.Agent, frozen *
 				return err
 			}
 		} else if current, ok := subStore.CurrentInProgress(); ok {
-			if err := subSess.SteerKind(formatCurrentTaskSteering(current, subSess.canInstructTool("task_list")), events.SteeringKindCurrentTask); err != nil {
+			if err := subSess.steerKind(formatCurrentTaskSteering(current, subSess.canInstructTool("task_list")), events.SteeringKindCurrentTask); err != nil {
 				return err
 			}
 		}
@@ -1682,7 +1682,7 @@ func delegateNudgeText(toolName string, updated bool) string {
 // it. If the session refuses the steer, the reminder is delivered directly so a
 // missing report is still addressed.
 func (a *subagent) deliverCommunicateNudge(ctx context.Context, inputProvenance *provenance.Causal) (string, error) {
-	updated := a.sess.CommunicateUpdate()
+	updated := a.sess.communicateUpdate()
 	if hook := a.sess.cfg.testOnly.subagentNudgeSelected; hook != nil {
 		hook(updated)
 	}
@@ -1746,7 +1746,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 				needsNudge = decision == delegateCompletionNeedsNudge
 			}
 		} else {
-			needsNudge = !a.sess.Communicated()
+			needsNudge = !a.sess.communicated()
 		}
 		shouldNudge := nudgeAvailable && !cancelRequested &&
 			!budgetExhausted &&
@@ -1906,7 +1906,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	a.sess.mu.Unlock()
 
 	runProvenance := a.followUpProvenance(inputProvenance)
-	runStructured := a.sess.CommunicateStructured()
+	runStructured := a.sess.communicateStructured()
 	finalizeTime := finish.endedAt
 	if finalizeTime.IsZero() {
 		finalizeTime = a.sess.sclock().Now()
@@ -2107,7 +2107,7 @@ func (a *subagent) drainForFinalization(ctx context.Context, result string) (str
 	// a foreign prune can release the lane mid-finalization.
 	stopEvidenceTicker := a.sess.startLaneEvidenceTicker(ctx)
 	defer stopEvidenceTicker()
-	drained, err := a.sess.DrainJobTreeKeepingReport(ctx)
+	drained, err := a.sess.drainJobTreeKeepingReport(ctx)
 	if err != nil {
 		return result, parentDriveNotify, err
 	}

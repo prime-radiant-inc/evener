@@ -97,8 +97,8 @@ func (s *Session) resultToolName() string {
 	return tool.DefaultResultToolName
 }
 
-// RegisterTool registers a custom tool at runtime.
-func (s *Session) RegisterTool(name, description string, params map[string]any, fn func(ctx context.Context, args any) (any, error)) {
+// registerTool registers a custom tool at runtime.
+func (s *Session) registerTool(name, description string, params map[string]any, fn func(ctx context.Context, args any) (any, error)) {
 	// s.reg self-synchronizes (see the Session.mu lock discipline comment), so
 	// Register itself can happen outside s.mu. But the cache rebuild below
 	// writes s.cachedToolDefs/s.cachedSystemPrompt and reads s.env/s.envInfo,

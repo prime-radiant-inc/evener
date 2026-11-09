@@ -25,10 +25,10 @@ func assertContextStatus(t *testing.T, s *Session, wantUsed, wantWindow int, wan
 	// Preservation check only: each wrapper takes a fresh sample of the
 	// unchanged session state, so it must report the same metrics and pressure
 	// the combined call just returned.
-	if got := s.ContextMetrics(); got != metrics {
+	if got := s.contextMetrics(); got != metrics {
 		t.Fatalf("ContextMetrics = %+v, want %+v", got, metrics)
 	}
-	if got := s.ContextPressure(); got != pressure {
+	if got := s.contextPressure(); got != pressure {
 		t.Fatalf("ContextPressure = %v, want %v", got, pressure)
 	}
 }

@@ -283,7 +283,7 @@ func TestSwapEnvAndRefresh_NoGitForkWhileLocked(t *testing.T) {
 }
 
 // TestSession_RegisterTool_NoRaceWithConcurrentEnvSwap is the carry-over
-// finding from Task 4: RegisterTool's cache rebuild (rebuildToolDefsCache +
+// finding from Task 4: registerTool's cache rebuild (rebuildToolDefsCache +
 // refreshSystemPromptCache) used to run unlocked, racing swapEnvAndRefresh's
 // locked cache rebuild on the same s.cachedToolDefs/s.cachedSystemPrompt
 // fields. Run under -race, this hammers both concurrently.
@@ -321,7 +321,7 @@ func TestSession_RegisterTool_NoRaceWithConcurrentEnvSwap(t *testing.T) {
 	wg.Go(func() {
 		for i := range registerIterations {
 			name := fmt.Sprintf("race_tool_%d", i)
-			sess.RegisterTool(name, "a race-test tool", map[string]any{"type": "object"},
+			sess.registerTool(name, "a race-test tool", map[string]any{"type": "object"},
 				func(ctx context.Context, args any) (any, error) { return "ok", nil })
 		}
 	})

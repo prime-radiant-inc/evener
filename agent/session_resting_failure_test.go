@@ -85,7 +85,7 @@ func TestRestingFailure_NoneForAFailureWithNoDiagnostic(t *testing.T) {
 	sess.mu.Lock()
 	sess.history = append(sess.history, schema.NewTurn(schema.TurnUserInput, llm.User("go")), schema.NewTurn(schema.TurnFailure, llm.System("it broke")))
 	sess.mu.Unlock()
-	if got := sess.RestingWireState(); got != appwire.ThreadStatusSystemError {
+	if got := sess.restingWireState(); got != appwire.ThreadStatusSystemError {
 		t.Fatalf("RestingWireState = %q, want %q", got, appwire.ThreadStatusSystemError)
 	}
 	if got := sess.RestingFailure(); got != nil {

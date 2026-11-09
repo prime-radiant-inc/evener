@@ -348,7 +348,7 @@ func wppPromptDataAndRender(t *testing.T, token string) {
 	if got := sess.cachedSystemPrompt; got != "test system prompt" {
 		t.Fatalf("minimal cached prompt = %q", got)
 	}
-	sess.RegisterTool("wpp_custom", "custom fixture", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
+	sess.registerTool("wpp_custom", "custom fixture", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
 		return "unused", nil
 	})
 	sess.mcpTools = []llm.ToolDefinition{{Name: "wpp_mcp", Description: "mcp fixture"}}

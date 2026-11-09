@@ -1250,7 +1250,7 @@ func TestSession_AbortDrainsQueuedInputWithFreshContext(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatalf("ProcessInput did not drain queued input after interrupt")
 	}
-	if depth := sess.QueueDepth(); depth != 0 {
+	if depth := sess.queueDepth(); depth != 0 {
 		t.Fatalf("QueueDepth after interrupted drain=%d, want 0", depth)
 	}
 	sess.Close()
@@ -1330,7 +1330,7 @@ func TestSession_AbortErrorDrainsQueuedInputWithFreshContext(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatalf("ProcessInput did not drain queued input after abort error")
 	}
-	if depth := sess.QueueDepth(); depth != 0 {
+	if depth := sess.queueDepth(); depth != 0 {
 		t.Fatalf("QueueDepth after abort-error drain=%d, want 0", depth)
 	}
 }
