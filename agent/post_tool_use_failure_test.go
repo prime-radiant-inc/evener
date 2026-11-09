@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -70,6 +71,11 @@ func failurePartitionSession(t *testing.T) (sess *Session, sentinel, capture str
 // session's repair step (PrevalOnly) catches an unknown name, and the registry's
 // breaker park (Rejected) catches a repeated identical failure. Each flag is a
 // live guard in this test: blanking either one adds a sentinel line.
+//
+// Coverage boundary: the registry's own unknown-tool gate is unreachable from
+// execTool (prepareToolCall refuses first), so its Rejected assignment is
+// covered only by TestRegistry_MarksPreExecutionRejections in
+// agent/internal/tool. This test's Rejected case is the breaker park.
 //
 // The failing call is read_file on a missing path, not `bash -c 'exit 3'`: a
 // nonzero shell exit is deliberately NOT an error in evener (a shell call that
@@ -191,11 +197,21 @@ func TestPostToolUseFailure_FiresForExecutedFailureOnly(t *testing.T) {
 	}
 }
 
-// TestPostToolUseFailure_ShellExitCodeIsSuccess pins the evener semantic the
-// partition rests on: a shell command that runs and exits nonzero is a
-// SUCCESS, so it fires PostToolUse and not PostToolUseFailure. If shell
-// failures ever start reporting IsError, this test names the change.
-func TestPostToolUseFailure_ShellExitCodeIsSuccess(t *testing.T) {
+// TestPostToolUseFailure_ShellNonzeroExitFiresPostToolUseNotFailure pins a
+// deliberate divergence from Claude, not an accident.
+//
+// Claude fires PostToolUseFailure when a Bash command exits nonzero. Evener
+// fires PostToolUse, because a shell call that ran and exited nonzero is a
+// SUCCESS here: "A SHELL call that ran and exited nonzero is NOT one of them
+// (Jesse, 2026-10-16). A nonzero exit is common and expected" — the rule in
+// agent/transcript/failures.go (FailedToolResult), which also drives the
+// transcript glyphs, the failure counts, and loop detection. Making a nonzero
+// exit an error just to fire PostToolUseFailure would change all three.
+//
+// Both halves are asserted for the SAME nonzero-exit call: the PostToolUse
+// hook fires and the PostToolUseFailure hook does not. If evener's shell
+// semantics ever change, this test names it.
+func TestPostToolUseFailure_ShellNonzeroExitFiresPostToolUseNotFailure(t *testing.T) {
 	sess, sentinel, capture := failurePartitionSession(t)
 
 	res := sess.execTool(context.Background(), llm.ToolCallData{
@@ -211,8 +227,12 @@ func TestPostToolUseFailure_ShellExitCodeIsSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read sentinel: %v", err)
 	}
-	if got := strings.Fields(string(raw)); len(got) != 1 || got[0] != "success" {
-		t.Fatalf("hook sentinels = %v, want [success]: a nonzero shell exit is not a tool failure", got)
+	got := strings.Fields(string(raw))
+	if len(got) != 1 || got[0] != "success" {
+		t.Fatalf("hook sentinels = %v, want exactly [success]: a nonzero shell exit must fire PostToolUse and not PostToolUseFailure (Claude does the opposite — see the test comment)", got)
+	}
+	if slices.Contains(got, "failure") {
+		t.Fatalf("hook sentinels = %v: PostToolUseFailure fired for a nonzero shell exit", got)
 	}
 	if _, err := os.Stat(capture); !os.IsNotExist(err) {
 		t.Fatalf("failure hook ran for a nonzero shell exit (capture exists): %v", err)

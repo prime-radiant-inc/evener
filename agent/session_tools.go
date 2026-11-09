@@ -1022,6 +1022,11 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	// above) fires neither. res.Output rather than FullOutput is the error
 	// text because it is the model-facing text Claude means by the failed
 	// tool's result.
+	// Deliberate divergence: Claude fires PostToolUseFailure for a Bash command
+	// that exits nonzero, while evener fires PostToolUse, because a nonzero
+	// shell exit is a SUCCESS here (agent/transcript/failures.go, Jesse's
+	// 2026-10-16 ruling — that rule also drives transcript glyphs, failure
+	// counts, and loop detection).
 	if s.hookRunner != nil {
 		var hookResult hooks.RunResult
 		switch {

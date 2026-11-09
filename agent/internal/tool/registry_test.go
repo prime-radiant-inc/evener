@@ -1583,6 +1583,13 @@ func TestToolRegistry_UseSkillHasNoDefaultTailLimit(t *testing.T) {
 // ValidateRawArguments, invalid arguments JSON, PreValidate, schema validation,
 // and a middleware refusal. A tool that RAN and returned an error is not a
 // rejection, so the hook partition can tell a refusal from a failure.
+//
+// This is the ONLY test covering the registry's unknown-tool gate. From a real
+// session execTool, an unknown name is refused one layer earlier by
+// prepareToolCall, so it arrives as PrevalOnly and ExecuteCall never sees it —
+// which is why the session-level partition test
+// (TestPostToolUseFailure_FiresForExecutedFailureOnly) exercises the breaker
+// park as its Rejected case instead, and does not claim unknown-tool coverage.
 func TestRegistry_MarksPreExecutionRejections(t *testing.T) {
 	registerProbe := func(t *testing.T, r *Registry, name string, preValidate func(map[string]any) error) *int {
 		t.Helper()
