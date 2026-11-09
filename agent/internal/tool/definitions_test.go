@@ -220,8 +220,9 @@ func TestDefDelegateParamsAndEnum(t *testing.T) {
 	}
 
 	effortEnum := props["reasoning_effort"].(map[string]any)["enum"].([]string)
-	if len(effortEnum) != 3 || effortEnum[0] != "low" || effortEnum[1] != "medium" || effortEnum[2] != "high" {
-		t.Errorf("reasoning_effort enum = %v, want [low medium high]", effortEnum)
+	wantEffortEnum := append(llm.ReasoningEffortVocabulary(), llm.ReasoningEffortNone)
+	if !reflect.DeepEqual(effortEnum, wantEffortEnum) {
+		t.Errorf("reasoning_effort enum = %v, want %v", effortEnum, wantEffortEnum)
 	}
 
 	if !strings.Contains(def.Description, "delegate_id") {
@@ -408,6 +409,31 @@ func TestDefTaskListEffortEnumIncludesInherit(t *testing.T) {
 		if !reflect.DeepEqual(enum, want) {
 			t.Fatalf("%s reasoning_effort enum = %v, want %v", arrayName, enum, want)
 		}
+	}
+}
+
+// The delegate tool must advertise every effort level its handler accepts.
+// A schema narrower than the handler rejected a spawn at "max" at argument
+// validation even though createDelegate validates against the full vocabulary.
+func TestDefDelegateEffortEnumMatchesHandlerVocabulary(t *testing.T) {
+	def := DefDelegate(nil)
+	props := def.Parameters["properties"].(map[string]any)
+	want := append(llm.ReasoningEffortVocabulary(), llm.ReasoningEffortNone)
+
+	enum := props["reasoning_effort"].(map[string]any)["enum"].([]string)
+	if !reflect.DeepEqual(enum, want) {
+		t.Fatalf("reasoning_effort enum = %v, want %v", enum, want)
+	}
+	for _, level := range enum {
+		if err := llm.ValidateReasoningEffort(level); err != nil {
+			t.Fatalf("schema advertises %q, which the delegate handler rejects: %v", level, err)
+		}
+	}
+
+	item := props["task_list"].(map[string]any)["items"].(map[string]any)
+	taskEnum := item["properties"].(map[string]any)["reasoning_effort"].(map[string]any)["enum"].([]string)
+	if !reflect.DeepEqual(taskEnum, want) {
+		t.Fatalf("task_list reasoning_effort enum = %v, want %v", taskEnum, want)
 	}
 }
 

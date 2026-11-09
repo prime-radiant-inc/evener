@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	taskpkg "primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/llm"
 )
 
 // The delegate brief parameter is `prompt`; `task_list` seeds the delegate's
@@ -39,6 +40,33 @@ func TestDecodeDelegateArgs_PromptAndTaskList(t *testing.T) {
 	}
 }
 
+// task_list reasoning_effort accepts every level the task handler accepts, and
+// stores it canonically so a padded or upper-case level reaches the request
+// path in the form the vocabulary defines.
+func TestDecodeDelegateArgs_TaskListEffortVocabulary(t *testing.T) {
+	t.Parallel()
+	a, err := decodeDelegateArgs(map[string]any{
+		"prompt": "do work",
+		"task_list": []any{
+			map[string]any{"title": "deep", "prompt": "think hard", "reasoning_effort": "MAX"},
+			map[string]any{"title": "off", "prompt": "think less", "reasoning_effort": "off"},
+			map[string]any{"title": "inherit", "prompt": "default"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	want := []string{"max", llm.ReasoningEffortNone, ""}
+	if len(a.TaskList) != len(want) {
+		t.Fatalf("task_list = %+v, want %d entries", a.TaskList, len(want))
+	}
+	for i, effort := range want {
+		if a.TaskList[i].ReasoningEffort != effort {
+			t.Errorf("task_list[%d].reasoning_effort = %q, want %q", i, a.TaskList[i].ReasoningEffort, effort)
+		}
+	}
+}
+
 func TestDecodeDelegateArgs_TaskListRejectsMalformed(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -50,7 +78,7 @@ func TestDecodeDelegateArgs_TaskListRejectsMalformed(t *testing.T) {
 		{"item not an object", map[string]any{"prompt": "p", "task_list": []any{"step one"}}, "task_list[0] must be an object"},
 		{"missing prompt", map[string]any{"prompt": "p", "task_list": []any{map[string]any{"title": "inspect"}}}, "task_list[0].prompt is required"},
 		{"missing title", map[string]any{"prompt": "p", "task_list": []any{map[string]any{"prompt": "read"}}}, "task_list[0].title is required"},
-		{"bad reasoning_effort", map[string]any{"prompt": "p", "task_list": []any{map[string]any{"title": "t", "prompt": "read", "reasoning_effort": "xhigh"}}}, "task_list[0].reasoning_effort must be one of low, medium, high"},
+		{"bad reasoning_effort", map[string]any{"prompt": "p", "task_list": []any{map[string]any{"title": "t", "prompt": "read", "reasoning_effort": "ultra"}}}, "task_list[0].reasoning_effort"},
 		{"bad type", map[string]any{"prompt": "p", "task_list": []any{map[string]any{"title": "t", "prompt": "read", "type": "bogus"}}}, "task_list[0].type must be one of research, implement, verify, fix"},
 	}
 	for _, tc := range cases {

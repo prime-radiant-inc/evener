@@ -110,7 +110,8 @@ type SessionConfig struct {
 	AgentName string `json:"agent_name,omitempty"`
 
 	// ReasoningEffort is passed through to the Unified LLM request when non-empty.
-	// Valid values are provider-dependent but typically include: low|medium|high.
+	// Valid values are the canonical vocabulary (minimal|low|medium|high|xhigh|max)
+	// or none; the request path clamps the level to the model's own ladder.
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 
 	// SkillsDirs are extra directories to scan for skills (each is treated

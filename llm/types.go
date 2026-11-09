@@ -354,7 +354,7 @@ type Request struct {
 	TopP                 *float64          `json:"top_p,omitempty"`
 	MaxTokens            *int              `json:"max_tokens,omitempty"`
 	StopSequences        []string          `json:"stop_sequences,omitempty"`
-	ReasoningEffort      *string           `json:"reasoning_effort,omitempty"` // low|medium|high|none
+	ReasoningEffort      *string           `json:"reasoning_effort,omitempty"` // minimal|low|medium|high|xhigh|max|none
 	Metadata             map[string]string `json:"metadata,omitempty"`
 	ClientMetadata       map[string]string `json:"client_metadata,omitempty"`
 	Include              []string          `json:"include,omitempty"`

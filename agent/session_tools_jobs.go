@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/internal/worktree"
 	"primeradiant.com/evener/agent/schema"
 	taskpkg "primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/llm"
 )
 
 const (
@@ -249,9 +250,13 @@ func delegateTaskListArg(args map[string]any) ([]taskpkg.TaskTemplate, error) {
 		if prompt == "" {
 			return nil, fmt.Errorf("invalid_request: task_list[%d].prompt is required", i)
 		}
-		effort := strings.TrimSpace(stringArg(fields, "reasoning_effort"))
-		if effort != "" && effort != "low" && effort != "medium" && effort != "high" {
-			return nil, fmt.Errorf("invalid_request: task_list[%d].reasoning_effort must be one of low, medium, high", i)
+		// A seeded task is a per-task override, so it accepts the same levels
+		// the task_list tool accepts: the canonical vocabulary plus explicit
+		// off, normalized first so a padded or upper-case level is stored in
+		// the form the request path reads. Empty means "inherit the session".
+		effort := llm.NormalizeReasoningEffort(stringArg(fields, "reasoning_effort"))
+		if err := llm.ValidateReasoningEffort(effort); err != nil {
+			return nil, fmt.Errorf("invalid_request: task_list[%d].reasoning_effort: %w", i, err)
 		}
 		kind := strings.TrimSpace(stringArg(fields, "type"))
 		switch taskpkg.TaskType(kind) {
