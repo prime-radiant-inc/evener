@@ -247,14 +247,19 @@ func pastThreadTurnsListOwned(
 		return appwire.ThreadTurnsListResponse{}, false, nil
 	}
 	if params.TurnWindow != nil {
-		page, err := pastEntryTurnWindowItems(ctx, entry, *params.TurnWindow, false)
+		loaded, _, err := resolveTranscriptWindowContinuation(ctx, params, itemLimit, func(ctx context.Context, selector *appwire.ThreadTurnWindow) (transcriptWindowLoadedRange, error) {
+			page, loadErr := pastEntryTurnWindowItems(ctx, entry, *selector, false)
+			if loadErr != nil {
+				return transcriptWindowLoadedRange{}, loadErr
+			}
+			result := page.candidateResult()
+			result.History = page.history()
+			return transcriptWindowLoadedRange{Result: result, Thread: transcriptWindowThreadFromResult(result)}, nil
+		})
 		if err != nil {
 			return appwire.ThreadTurnsListResponse{}, true, err
 		}
-		candidates, err := spendTranscriptWindowCursor(page.candidateResult(), params.ThreadWindowParams, itemLimit, params.Cursor)
-		if err != nil {
-			return appwire.ThreadTurnsListResponse{}, true, err
-		}
+		candidates := loaded.Result
 		base := appwire.Thread{ID: entry.Meta.ID, SessionID: entry.Meta.ID, CWD: entry.Meta.EnvInfo.WorkingDir}
 		options := transcriptWindowOptionsFor(
 			candidates, params.ThreadWindowParams, itemLimit,
@@ -275,7 +280,7 @@ func pastThreadTurnsListOwned(
 		if err != nil {
 			return appwire.ThreadTurnsListResponse{}, true, err
 		}
-		return page.history().StampPage(packed), true, nil
+		return candidates.History.StampPage(packed), true, nil
 	}
 	page, err := pastEntryPageItems(ctx, entry, params, itemLimit)
 	if err != nil {

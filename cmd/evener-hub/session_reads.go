@@ -156,49 +156,58 @@ func continueLiveTranscriptWindowOwned(
 	if err != nil {
 		return appwire.ThreadTurnsListResponse{}, err
 	}
-	windowCursor, _, cursorDirection, err := appitempaging.DecodeWindowCursorForRef(params.Cursor, params.Ref)
-	if err != nil {
-		return appwire.ThreadTurnsListResponse{}, err
-	}
-	windowParams := params.ThreadWindowParams
-	windowParams.TurnWindow = windowCursor.ResumeWindow
-	readParams := appwire.ThreadReadParams{
-		Ref: params.Ref, ThreadID: params.ThreadID, IncludeTurns: true, ItemLimit: itemLimit,
-		ThreadWindowParams: windowParams,
-	}
-	sourceParams := readParams
 	hubCompatibility := !advertised
+	var candidates transcriptItemCandidateResult
+	var read appwire.ThreadReadResponse
 	if hubCompatibility {
+		windowCursor, _, cursorDirection, decodeErr := appitempaging.DecodeWindowCursorForRef(params.Cursor, params.Ref)
+		if decodeErr != nil {
+			return appwire.ThreadTurnsListResponse{}, decodeErr
+		}
+		windowParams := params.ThreadWindowParams
+		windowParams.TurnWindow = windowCursor.ResumeWindow
+		readParams := appwire.ThreadReadParams{
+			Ref: params.Ref, ThreadID: params.ThreadID, IncludeTurns: true, ItemLimit: itemLimit,
+			ThreadWindowParams: windowParams,
+		}
+		sourceParams := readParams
 		sourceParams.ThreadWindowParams = appwire.ThreadWindowParams{}
 		sourceParams.ItemLimit = appwire.TranscriptItemPageLimit
-	}
-	read, err := source.ReadThread(ctx, sourceParams)
-	if err != nil {
-		return appwire.ThreadTurnsListResponse{}, err
-	}
-	var candidates transcriptItemCandidateResult
-	if hubCompatibility {
+		read, err = source.ReadThread(ctx, sourceParams)
+		if err != nil {
+			return appwire.ThreadTurnsListResponse{}, err
+		}
 		candidates, err = compatibilityItemCandidateResultForRead(ctx, source, readParams, read)
-	} else {
-		candidates, err = sourceItemCandidateResultForRead(ctx, source, readParams, read)
-	}
-	if err != nil {
-		return appwire.ThreadTurnsListResponse{}, err
-	}
-	if hubCompatibility {
+		if err != nil {
+			return appwire.ThreadTurnsListResponse{}, err
+		}
 		candidates, err = continueHubCompatibilityTranscriptWindow(ctx, source, params, readParams, itemLimit, read, candidates, windowCursor, cursorDirection)
 		if err != nil {
 			return appwire.ThreadTurnsListResponse{}, err
 		}
 	} else {
-		if cursorDirection == appitempaging.WindowCursorDirectionBackward {
-			candidates, err = validateBackwardTranscriptWindowCursor(ctx, source, params, readParams, itemLimit, candidates, windowCursor)
-		} else {
-			candidates, err = spendTranscriptWindowCursor(candidates, params.ThreadWindowParams, itemLimit, params.Cursor)
+		loaded, _, resolveErr := resolveTranscriptWindowContinuation(ctx, params, itemLimit, func(ctx context.Context, selector *appwire.ThreadTurnWindow) (transcriptWindowLoadedRange, error) {
+			windowParams := params.ThreadWindowParams
+			windowParams.TurnWindow = selector
+			readParams := appwire.ThreadReadParams{
+				Ref: params.Ref, ThreadID: params.ThreadID, IncludeTurns: true, ItemLimit: itemLimit,
+				ThreadWindowParams: windowParams,
+			}
+			loadedRead, loadErr := source.ReadThread(ctx, readParams)
+			if loadErr != nil {
+				return transcriptWindowLoadedRange{}, loadErr
+			}
+			result, loadErr := sourceItemCandidateResultForRead(ctx, source, readParams, loadedRead)
+			if loadErr != nil {
+				return transcriptWindowLoadedRange{}, loadErr
+			}
+			return transcriptWindowLoadedRange{Result: result, Thread: loadedRead.Thread}, nil
+		})
+		if resolveErr != nil {
+			return appwire.ThreadTurnsListResponse{}, resolveErr
 		}
-		if err != nil {
-			return appwire.ThreadTurnsListResponse{}, err
-		}
+		candidates = loaded.Result
+		read.Thread = loaded.Thread
 	}
 	fetchOrigin := appitempaging.FetchCursorOriginServingDaemon
 	appliedBy := transcriptWindowAppliedByServingDaemon
@@ -223,40 +232,6 @@ func continueLiveTranscriptWindowOwned(
 		return appwire.ThreadTurnsListResponse{}, err
 	}
 	return candidates.History.StampPage(packed), nil
-}
-
-func validateBackwardTranscriptWindowCursor(
-	ctx context.Context,
-	source appsource.Source,
-	params appwire.ThreadTurnsListParams,
-	readParams appwire.ThreadReadParams,
-	itemLimit int,
-	result transcriptItemCandidateResult,
-	cursor appitempaging.WindowCursor,
-) (transcriptItemCandidateResult, error) {
-	decoded, err := appitempaging.DecodeWindowCursor(
-		params.Cursor,
-		transcriptWindowCursorIdentity(result.Identity, params.ThreadWindowParams, itemLimit),
-		appitempaging.WindowCursorDirectionBackward,
-	)
-	if err != nil {
-		return transcriptItemCandidateResult{}, err
-	}
-	boundaryParams := readParams
-	boundaryParams.TurnWindow = &appwire.ThreadTurnWindow{Turn: cursor.ResumeWindow.Before.TurnID}
-	boundaryRead, err := source.ReadThread(ctx, boundaryParams)
-	if err != nil {
-		return transcriptItemCandidateResult{}, err
-	}
-	boundary, err := sourceItemCandidateResultForRead(ctx, source, boundaryParams, boundaryRead)
-	if err != nil {
-		return transcriptItemCandidateResult{}, err
-	}
-	if err := appitempaging.ValidateWindowCursorBoundary(boundary.Candidates.Candidates, decoded); err != nil {
-		return transcriptItemCandidateResult{}, err
-	}
-	result.Exhausted = true
-	return result, nil
 }
 
 // continueHubCompatibilityTranscriptWindow resolves a window cursor through

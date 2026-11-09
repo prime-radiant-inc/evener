@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/appitempaging"
+	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/transcriptindex"
 	"primeradiant.com/evener/llm"
 )
@@ -419,6 +420,114 @@ func TestDaemonlessThreadTurnsContinuesInsideWindowedTurn(t *testing.T) {
 	}
 	if wantSizes := []int{10, 10, 5}; !slices.Equal(pageSizes, wantSizes) {
 		t.Fatalf("saved window page sizes = %v, want omitted-limit default %v", pageSizes, wantSizes)
+	}
+}
+
+func TestDaemonlessLatestContinuationIgnoresLaterAppend(t *testing.T) {
+	entries := make([]schema.Turn, 0, 6)
+	for _, turnID := range []string{"turn-a", "turn-b", "turn-c"} {
+		entries = append(entries,
+			execution(turnID, schema.NewTurn(schema.TurnAssistant, llm.Assistant(strings.Repeat(turnID, 2_500)))),
+			completedExecution(turnID),
+		)
+	}
+	cfg, entry, path := seedIndexedPastSession(t, entries...)
+	sources := newExitedLocalRegistry()
+	server := appserver.NewServer(appserver.ServerConfig{})
+	operations := &sessionOperations{cfg: cfg, sources: sources, server: server, relays: newHubRelay(server, cfg, sources)}
+	ref := "local:" + entry.Meta.ID
+	params := appwire.ThreadTurnsListParams{
+		Ref: ref,
+		ThreadWindowParams: appwire.ThreadWindowParams{
+			TurnWindow:        &appwire.ThreadTurnWindow{Latest: 3},
+			WindowBudgetBytes: 1,
+		},
+	}
+
+	initial, err := operations.turns(t.Context(), params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initial.Window == nil || initial.Window.ContinuationCursor == "" {
+		t.Fatalf("initial saved latest window = %+v, want a continuation", initial)
+	}
+	appendTranscriptEntries(t, path,
+		execution("turn-d", schema.NewTurn(schema.TurnAssistant, llm.Assistant(strings.Repeat("turn-d", 2_500)))),
+		completedExecution("turn-d"),
+	)
+
+	got := turnIDsFromTurns(initial.Data)
+	cursor := initial.Window.ContinuationCursor
+	for range 10 {
+		if cursor == "" {
+			break
+		}
+		continuedParams := params
+		continuedParams.Cursor = cursor
+		page, err := operations.turns(t.Context(), continuedParams)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, turnIDsFromTurns(page.Data)...)
+		cursor = ""
+		if page.Window != nil {
+			cursor = page.Window.ContinuationCursor
+		}
+	}
+	if cursor != "" {
+		t.Fatal("saved latest continuation did not terminate")
+	}
+	if want := []string{"turn-c", "turn-b", "turn-a"}; !slices.Equal(got, want) {
+		t.Fatalf("saved latest continuation turns = %v, want original selection %v", got, want)
+	}
+}
+
+func TestSessionOperationsContinuesAcrossEmptyBoundarySaved(t *testing.T) {
+	checkpoint := schema.Turn{
+		Format: schema.TurnFormatIdentity, TurnID: "turn-b", TurnKind: schema.TurnSpanExecution, Kind: schema.TurnCheckpoint,
+	}
+	cfg, entry, _ := seedIndexedPastSession(t,
+		execution("turn-a", schema.NewTurn(schema.TurnAssistant, llm.Assistant(strings.Repeat("a", 9_000)))),
+		completedExecution("turn-a"),
+		checkpoint,
+		execution("turn-c", schema.NewTurn(schema.TurnAssistant, llm.Assistant(strings.Repeat("c", 9_000)))),
+		completedExecution("turn-c"),
+	)
+	sources := newExitedLocalRegistry()
+	server := appserver.NewServer(appserver.ServerConfig{})
+	operations := &sessionOperations{cfg: cfg, sources: sources, server: server, relays: newHubRelay(server, cfg, sources)}
+	params := appwire.ThreadTurnsListParams{
+		Ref: "local:" + entry.Meta.ID,
+		ThreadWindowParams: appwire.ThreadWindowParams{
+			TurnWindow:        &appwire.ThreadTurnWindow{Latest: 3},
+			WindowBudgetBytes: 1,
+		},
+	}
+	initial, err := operations.turns(t.Context(), params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initial.Window == nil || initial.Window.ContinuationCursor == "" {
+		t.Fatalf("initial saved empty-boundary window = %+v, want a continuation", initial)
+	}
+	if got := turnIDsFromTurns(initial.Data); !slices.Equal(got, []string{"turn-b", "turn-c"}) {
+		t.Fatalf("initial saved empty-boundary turns = %v, want [turn-b turn-c]", got)
+	}
+	cursor, _, direction, err := appitempaging.DecodeWindowCursorForRef(initial.Window.ContinuationCursor, params.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if direction != appitempaging.WindowCursorDirectionBackward || cursor.ResumeWindow == nil || cursor.ResumeWindow.Before == nil || cursor.ResumeWindow.Before.TurnID != "turn-b" || cursor.AnchorTurnID != "turn-c" {
+		t.Fatalf("saved empty-boundary cursor = direction %q proof %+v, want backward before turn-b anchored in turn-c", direction, cursor)
+	}
+
+	params.Cursor = initial.Window.ContinuationCursor
+	continued, err := operations.turns(t.Context(), params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := turnIDsFromTurns(continued.Data); !slices.Equal(got, []string{"turn-a"}) {
+		t.Fatalf("continued saved empty-boundary turns = %v, want [turn-a]", got)
 	}
 }
 
