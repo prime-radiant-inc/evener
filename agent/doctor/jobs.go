@@ -43,7 +43,7 @@ type DelegateView struct {
 	RequestedModel     string                        `json:"requested_model,omitempty"`
 	ResolvedProfileID  string                        `json:"resolved_profile_id,omitempty"`
 	ResolvedModel      string                        `json:"resolved_model,omitempty"`
-	ReasoningEffort    string                        `json:"reasoning_effort,omitempty"`
+	ReasoningEffort    string                        `json:"reasoning_effort,omitempty"` // requested level; the model's ladder clamps each request
 	Phase              string                        `json:"phase"`
 	Resumable          bool                          `json:"resumable"`
 	NotResumableReason string                        `json:"not_resumable_reason,omitempty"`

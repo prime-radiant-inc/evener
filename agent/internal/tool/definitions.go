@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 
@@ -227,14 +228,31 @@ func DelegateModelDescriptionAdditionBudget(maxBytes int) int {
 	return budget
 }
 
+// delegateReasoningEffortLevels is the portable effort vocabulary the delegate
+// tool advertises and its handler accepts: the session's canonical levels plus
+// the explicit off sentinel. Deriving it from llm keeps the tool schema from
+// being narrower than createDelegate's validation, which rejected a legitimate
+// level at argument validation before the handler ever saw it.
+func delegateReasoningEffortLevels() []string {
+	return llm.AcceptedReasoningEfforts()
+}
+
+// delegateReasoningEffortDescription names the levels the schema enumerates,
+// built from the same source so the prose and the enum cannot drift.
+func delegateReasoningEffortDescription() string {
+	return fmt.Sprintf("Reasoning effort for this delegate (%s, or %s to turn thinking off where the model supports it). Default inherits from parent.",
+		strings.Join(llm.ReasoningEffortVocabulary(), ", "), llm.ReasoningEffortNone)
+}
+
 // DefDelegate defines the delegate tool, which starts a NEW delegate
 // conversation (independent agentic work) and returns its durable stable identity.
 // agentTypes constrains the agent_type enum to the session's
 // available roles; pass nil to omit the enum (free-form). reasoning_effort uses
-// the delegate contract's portable low/medium/high enum; the handler resolves
-// provider-specific details. The legacy constructor exposes the full sandbox
-// surface; session-owned callers should use DefDelegateWithSandbox so the
-// advertised controls match the host and parent capabilities.
+// the delegate contract's portable vocabulary (delegateReasoningEffortLevels);
+// the handler clamps it to the child model's own ladder. The legacy constructor
+// exposes the full sandbox surface; session-owned callers should use
+// DefDelegateWithSandbox so the advertised controls match the host and parent
+// capabilities.
 func DefDelegate(agentTypes []string) llm.ToolDefinition {
 	return DefDelegateWithSandbox(agentTypes, DelegateSandboxSchema{
 		Available: true,
@@ -254,6 +272,7 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 // result tool is named resultTool.
 func DefDelegateWithResultTool(agentTypes []string, sandboxSchema DelegateSandboxSchema, resultTool string) llm.ToolDefinition {
 	strictFalse := false
+	effortLevels := delegateReasoningEffortLevels()
 	agentTypeSchema := map[string]any{
 		"type":        "string",
 		"description": "Role for the delegate. Choose from the enum; the roles are described in your agents section.",
@@ -291,7 +310,7 @@ func DefDelegateWithResultTool(agentTypes []string, sandboxSchema DelegateSandbo
 						"properties": map[string]any{
 							"title":            map[string]any{"type": "string", "description": shortTaskTitleDescription},
 							"prompt":           map[string]any{"type": "string", "description": "Full, self-contained instruction for this step."},
-							"reasoning_effort": map[string]any{"type": "string", "enum": []string{"low", "medium", "high"}, "description": "Reasoning effort while this task is in progress."},
+							"reasoning_effort": map[string]any{"type": "string", "enum": append(slices.Clone(effortLevels), "inherit"), "description": "Reasoning effort while this task is in progress; \"inherit\" uses the delegate's effort."},
 							"type":             map[string]any{"type": "string", "enum": []string{"research", "implement", "verify", "fix"}, "description": "Kind of work; defaults to implement."},
 						},
 						"required": []string{"title", "prompt"},
@@ -299,7 +318,7 @@ func DefDelegateWithResultTool(agentTypes []string, sandboxSchema DelegateSandbo
 				},
 				"agent_type":           agentTypeSchema,
 				"model":                map[string]any{"type": "string", "description": delegateModelOverrideDescription},
-				"reasoning_effort":     map[string]any{"type": "string", "description": "Reasoning effort for this delegate (low, medium, or high). Default inherits from parent.", "enum": []string{"low", "medium", "high"}},
+				"reasoning_effort":     map[string]any{"type": "string", "description": delegateReasoningEffortDescription(), "enum": effortLevels},
 				"delegation_allowance": map[string]any{"type": "integer", "description": "Absent (default): the delegate gets an allowance one below yours and may delegate in turn. 0: a leaf delegate that cannot itself delegate. >0: the delegate may delegate, granting onward allowances strictly smaller than this; must be strictly less than your own allowance. The allowance only takes effect if the chosen agent_type carries the `delegate` tool (the built-in `default` and `subagent` roles do; `explorer` does not)."},
 				"watch_parent":         map[string]any{"type": "boolean", "description": "Grant this child permission to observe your session with job_watch(source=\"parent\"). This does not grant delegation or any transitive watch permission."},
 				"fork_context": map[string]any{

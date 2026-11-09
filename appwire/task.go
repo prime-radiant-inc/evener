@@ -50,7 +50,8 @@ type Task struct {
 	// Notes accumulates free-form progress notes appended over the task's life.
 	Notes []string `json:"notes,omitempty"`
 	// ReasoningEffort overrides the reasoning effort for a subagent that runs
-	// this task (low|medium|high); empty uses the session default.
+	// this task (minimal|low|medium|high|xhigh|max|none); empty uses the
+	// session default.
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 	// Insert is a template-expansion marker (e.g. "parent_tasks") carried over
 	// from the task template it was created from; empty for ordinary tasks.
