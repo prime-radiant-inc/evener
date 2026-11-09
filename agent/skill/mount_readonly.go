@@ -2,11 +2,8 @@ package skill
 
 import (
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
-
-	"primeradiant.com/evener/identifier"
 )
 
 // readMountInfo is the /proc/self/mountinfo boundary. A platform without it
@@ -68,87 +65,23 @@ func parseMountPoints(text string) []mountPoint {
 	return points
 }
 
-// readOnlyMountAt reports whether dir lies on the mount path lookup actually
-// reaches. A mount that a later mount covers still has an entry in
-// /proc/self/mountinfo, so the longest mount-point prefix can name a hidden
-// mount; walking the mount tree instead follows the traversal the kernel
-// performs, crossing the first mount point on the way and, where mounts are
-// stacked on one point, the last one mounted. A mount stacked exactly on the
-// namespace root is not reached, because path lookup starts at the root dentry
-// without crossing a mount there. A path on a read-only mount cannot be written
-// through this namespace, but the mount only pins the root it was attached at;
-// ordinary directories beneath it can still be replaced through another,
-// writable mount of the same host filesystem. No matching mount is not evidence
-// of a read-only one, so it reports false and the ownership check decides.
-func readOnlyMountAt(mounts []mountPoint, dir string) bool {
-	reached, ok := mountReachedAt(mounts, dir)
-	return ok && reached.readOnly
-}
-
-// mountTree indexes a parsed table: the root of the mount tree and each mount's
-// children. A table without exactly one root (a filtered or malformed
-// mountinfo) is not a tree this check can resolve.
-func mountTree(mounts []mountPoint) (root mountPoint, children map[int][]mountPoint, ok bool) {
+// mountRoot returns the single root mount of a parsed table. A table without
+// exactly one root (a filtered or malformed mountinfo) is not a tree this check
+// can resolve.
+func mountRoot(mounts []mountPoint) (root mountPoint, ok bool) {
 	byID := make(map[int]mountPoint, len(mounts))
 	for _, mount := range mounts {
 		byID[mount.id] = mount
 	}
-	children = make(map[int][]mountPoint, len(mounts))
 	for _, mount := range mounts {
 		if _, present := byID[mount.parentID]; !present || mount.parentID == mount.id {
 			if ok {
-				return mountPoint{}, nil, false
+				return mountPoint{}, false
 			}
 			root, ok = mount, true
-			continue
 		}
-		children[mount.parentID] = append(children[mount.parentID], mount)
 	}
-	return root, children, ok
-}
-
-// mountReachedAt returns the mount path lookup reaches for dir by walking the
-// mount tree from its root. At each mount it crosses the first child mount point
-// on the way to dir (a shorter prefix), because a mount covers everything beneath
-// the point it was attached at; among mounts stacked on the same point the last
-// one mounted is on top. A table whose tree cannot be resolved (no root, or more
-// than one) proves nothing, so it reports no mount.
-func mountReachedAt(mounts []mountPoint, dir string) (mountPoint, bool) {
-	if len(mounts) == 0 {
-		return mountPoint{}, false
-	}
-	dir = filepath.Clean(dir)
-	root, children, ok := mountTree(mounts)
-	if !ok || !identifier.PathUnder(dir, root.path) {
-		return mountPoint{}, false
-	}
-	current := root
-	for {
-		next, found := mountPoint{}, false
-		for _, child := range children[current.id] {
-			if !identifier.PathUnder(dir, child.path) {
-				continue
-			}
-			// Path lookup starts at the root dentry without crossing a mount
-			// there, so a mount stacked exactly on the namespace root is never
-			// reached. Deeper stacks are followed as each component resolves.
-			if current.id == root.id && child.path == root.path {
-				continue
-			}
-			// A shorter prefix is attached higher in the tree, so path lookup
-			// reaches it before any deeper child of the same mount; an equal
-			// prefix is a stacked mount, and the later mount (higher ID) is the
-			// one on top.
-			if !found || len(child.path) < len(next.path) ||
-				(child.path == next.path && child.id > next.id) {
-				next, found = child, true
-			}
-		}
-		if !found {
-			return current, true
-		}
-		current = next
-	}
+	return root, ok
 }
 
 // unescapeMountInfo decodes the octal escapes mountinfo applies to path fields

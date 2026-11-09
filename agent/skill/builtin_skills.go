@@ -472,21 +472,20 @@ func ensureTrustedAncestors(root string) error {
 }
 
 // readOnlyFilesystemRoot reports whether dir is the root of the filesystem tree
-// this process sees, the namespace's root mount refuses writes, it is a mount of
-// a whole filesystem rather than a directory bound out of one, and the root's
+// this process sees, the namespace's root mount refuses writes, and the root's
 // mode keeps other users from replacing the names in it. Its owner check is
-// waived because host root can appear as the unmapped overflow uid, but the
-// mount pins the filesystem root inode, no directory holds its name, and the
-// mode still decides who else may rename a directory beneath it through a
-// writable host mount. A bound subdirectory's name is still held by its host
-// parent, so only the filesystem root itself is pinned.
+// waived because host root can appear as the unmapped overflow uid. The mount
+// pins the source dentry, so the pathname that names it on the host cannot be
+// swapped; the mountinfo fsRoot may be "/" or a subvolume path such as "/@"
+// (Btrfs), so it is deliberately not required to be "/". The mode still decides
+// who else may rename a directory beneath the root through a writable host
+// mount.
 func readOnlyFilesystemRoot(info fs.FileInfo, mounts []mountPoint, dir string) bool {
 	if filepath.Clean(dir) != string(filepath.Separator) {
 		return false
 	}
-	root, _, ok := mountTree(mounts)
-	if !ok || filepath.Clean(root.path) != string(filepath.Separator) ||
-		filepath.Clean(root.fsRoot) != string(filepath.Separator) || !root.readOnly {
+	root, ok := mountRoot(mounts)
+	if !ok || filepath.Clean(root.path) != string(filepath.Separator) || !root.readOnly {
 		return false
 	}
 	return info.Mode()&os.ModeSticky != 0 || info.Mode().Perm()&0o022 == 0

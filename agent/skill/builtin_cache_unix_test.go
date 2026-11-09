@@ -221,14 +221,20 @@ func TestReadOnlyFilesystemRoot_OnlyTheFilesystemRootIsExempt(t *testing.T) {
 	if readOnlyFilesystemRoot(unverifiableOwner, writableRoot, "/") {
 		t.Fatal("trusted a replaceable ancestor under a writable filesystem root")
 	}
-	// A read-only bind of a directory at / pins that directory's inode, but the
-	// directory's name still lives in its host parent: another user who owns the
-	// parent can rename the source and put another directory there, and path
-	// lookup here follows the replacement. Only a mount of a whole filesystem has
-	// a root that no directory holds.
+	// A read-only bind of a directory at / pins the source dentry: renaming the
+	// host source pathname does not change what the mount points at, so the
+	// namespace root is still stable and the mode check above is the remaining
+	// gate.
 	subdirectoryBind := parseMountPoints("1 0 252:0 /srv/shared/rootfs / ro - ext4 /dev/sda rw\n")
-	if readOnlyFilesystemRoot(unverifiableOwner, subdirectoryBind, "/") {
-		t.Fatal("trusted a read-only bind of a subdirectory as the filesystem root")
+	if !readOnlyFilesystemRoot(unverifiableOwner, subdirectoryBind, "/") {
+		t.Fatal("refused a read-only bind of a directory pinned at the namespace root")
+	}
+	// A Btrfs root subvolume reports its subvolume path as the mountinfo fsRoot;
+	// the mount still pins the namespace root, so the spelling "/@" must not
+	// defeat the exemption.
+	subvolumeRoot := parseMountPoints("1 0 0:32 /@ / ro - btrfs /dev/sda rw\n")
+	if !readOnlyFilesystemRoot(unverifiableOwner, subvolumeRoot, "/") {
+		t.Fatal("refused a read-only Btrfs root subvolume")
 	}
 }
 
