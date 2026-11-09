@@ -195,6 +195,18 @@ export function contentVectorForConfig(config: TranscriptDisplayConfigV1): Conte
   return config.content.kind === "preset" ? presetContent(config.content.level) : config.content;
 }
 
+/** The vector a Custom selection installs: the surface's remembered custom
+ * vector when it has one, else the vector the current selection shows. The
+ * surfaces differ only in whether they remember (web does, native seeds from
+ * the current preset), so memory is the parameter; the transition rule itself
+ * lives here (#3668). */
+export function customContentForSelection(
+  config: TranscriptDisplayConfigV1,
+  remembered?: ContentVector,
+): ContentVector {
+  return remembered ?? contentVectorForConfig(config);
+}
+
 /** The one rule both the transcript projector and this module's category
  * inventory answer from: informational notices (coded "no action needed"
  * warnings, and tool-repair notices - the repair already succeeded) show only

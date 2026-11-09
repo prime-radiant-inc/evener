@@ -31,6 +31,15 @@
   display: none;
 }
 
+/* On the Duo cover, an empty, unfocused composer gives its extra inset back
+ * to the transcript. Drafts, attachments and editing keep ordinary space. */
+@media (min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4) {
+  :global([data-composer]):not([data-composer-editing]) .card:has([role="textbox"][data-empty="true"]) {
+    gap: 0;
+    padding-block: 0;
+  }
+}
+
 /* squircle-proto: continuous (Apple-style) corner curvature where the engine
  * supports corner-shape; border-radius stays the fallback and supplies the
  * corner area this shapes. */

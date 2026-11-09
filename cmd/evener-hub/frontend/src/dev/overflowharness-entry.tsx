@@ -20,6 +20,8 @@ import { ActivitySidebar } from "../shell/activitybar/ActivitySidebar";
 import { activityContext, activitySummary } from "../stores/sessionActivityTestUtils";
 import { isElementVisible } from "./guardVisibility";
 import "../panes/session";
+import { askDockStore } from "../panes/session/composer/askDock/askDockStore";
+import { writeComposerDraft } from "../panes/session/composer/draft";
 import { refreshPendingTurnsProjection } from "../panes/session/composer/queue/pendingTurnsStore";
 import Session from "../panes/session/Session";
 import Settings from "../panes/settings/Settings";
@@ -56,6 +58,7 @@ window.addEventListener("unhandledrejection", (event) => {
   target.__panelGuardErrors = [...(target.__panelGuardErrors ?? []), event.reason?.stack ?? String(event.reason)];
 });
 const width = Number(params.get("w") ?? "1400");
+const height = Number(params.get("h") ?? "900");
 const theme = params.get("theme");
 const settingsMode = params.get("settings") === "1";
 const pagingMode = params.get("paging") === "1";
@@ -65,6 +68,12 @@ const intentTailMode = params.get("intenttail") === "1";
 const heldTailMode = params.get("heldtail") === "1";
 // The guard sweeps busy sessions with and without advertised Steer.
 const steerMode = params.get("steer") === "1";
+// ?ask=1: reconcile one live question into the ask dock after the fixture
+// settles, so the guard can measure the composer's pending-question state -
+// the chrome's standalone column mount. The static fixture carries no
+// ask_user call and no further thread event follows the boot, so the
+// injected batch persists for the measurement.
+const askMode = params.get("ask") === "1";
 
 // The width a container query or a flex line resolves against: the element's
 // content box, which clientWidth includes padding in.
@@ -251,6 +260,9 @@ ${RAW_UNBROKEN_PAYLOAD}
       },
     ],
   },
+  bootGeneration: "1",
+  epoch: 1,
+  snapshot: { incarnation: "inc-1", length: 0 },
 };
 
 // ?intenttail=1: the reload-shaped fixture for the top-level intent group's
@@ -419,6 +431,7 @@ fake.on("thread/turns/list", (request: ThreadTurnsListParams): ThreadTurnsListRe
 });
 fake.on("thread/unsubscribe", () => ({}));
 const composerRequests: { method: string; at: number; params: unknown }[] = [];
+fake.on("evener/sandbox/escalation/resolve", () => ({}));
 for (const method of ["turn/queue", "turn/interrupt"] as const) {
   fake.on(method, (request) => {
     composerRequests.push({ method, at: performance.now(), params: request });
@@ -496,7 +509,7 @@ if (heldTailMode) {
     await refreshPendingTurnsProjection(HELDTAIL_REF);
   })();
 }
-const locationKey = { kind: "location", ref: REF } as const;
+const locationKey = { kind: "location", ref: activeRef } as const;
 const location: NavigationSessionLocation = {
   generation_id: "overflow_generation",
   revision: 1,
@@ -505,7 +518,7 @@ const location: NavigationSessionLocation = {
   top_level: true,
   tier: "current",
   session: {
-    ref: REF,
+    ref: activeRef,
     host_id: "local",
     session_id: activeSnapshot.thread.sessionId,
     title: activeSnapshot.thread.name ?? activeRef,
@@ -513,6 +526,7 @@ const location: NavigationSessionLocation = {
     state: "active",
     kind: "session",
     live: true,
+    tasks: { total: 4, done: 1, cancelled: 0 },
     children: [],
   },
 };
@@ -564,7 +578,7 @@ document.body.style.background = "var(--surface-0)";
 if (settingsMode) {
   createRoot(rootEl).render(
     <ClientProvider client={fake}>
-      <div id="oh-pane" style={{ width, height: 900 }}>
+      <div id="oh-pane" style={{ width, height }}>
         <Settings params={{ section: "transcript" }} paneId="oh-settings" focused />
       </div>
     </ClientProvider>,
@@ -591,7 +605,7 @@ if (settingsMode) {
   });
   createRoot(rootEl).render(
     <ClientProvider client={fake}>
-      <div id="oh-pane" style={{ width, height: 900 }}>
+      <div id="oh-pane" style={{ width, height }}>
         <Session params={{ ref: activeRef }} paneId="oh" focused />
       </div>
     </ClientProvider>,
@@ -1588,7 +1602,7 @@ function measureComposerContentWidth(): number | null {
   );
 }
 
-function measure() {
+async function measure() {
   if (settingsMode) return measureSettings();
   const pane = document.getElementById("oh-pane");
   if (!pane) throw new Error("harness pane never mounted");
@@ -1671,6 +1685,21 @@ function measure() {
       const target = disclosureTargets.find((candidate) => candidate.kind === disclosure.kind);
       disclosure.restoredOpen = target?.details.open ?? false;
     }
+  }
+  // The phone has no footer strip: the status facts and the compose controls
+  // the probes below measure live in the composer's ENGAGED control row, so
+  // focus the editor first (the same engagement a tap on the input produces)
+  // and let the row carry them before anything reads them.
+  // Never while a dialog or menu is visibly open: the focus steal would close
+  // it and unmount the very editor these measurements exist to check. Closed
+  // overlays stay in the tree (hidden), so a bare role match would never
+  // engage at all - filter by the same visibility the footer probes use.
+  const openOverlay = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"], [role="menu"]')).find(
+    (element) => element.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }),
+  );
+  if (matchMedia("(max-width: 899px)").matches && !openOverlay) {
+    pane?.querySelector<HTMLElement>('[data-composer] [role="textbox"]')?.focus();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   }
   const status = pane.querySelector<HTMLElement>('[data-testid="status-row"]');
   const effort = pane.querySelector<HTMLElement>('[data-testid="status-row-effort"]');
@@ -1870,6 +1899,18 @@ const settled = new Promise<true>((resolve) => {
   requestAnimationFrame(() =>
     requestAnimationFrame(() =>
       setTimeout(() => {
+        if (askMode) {
+          askDockStore.reconcile(REF, [
+            {
+              key: "guard:0",
+              callId: "call_guard",
+              header: "Guard check",
+              question: "Clear the pending ask to continue?",
+              options: [{ label: "Yes, continue", detail: "" }],
+              multiSelect: false,
+            },
+          ]);
+        }
         // NotificationCard renders its body (and with it the raw-notification
         // overflow fixture) only when expanded. Expand it the way a user would
         // - through React's synthetic click - so the guard's two disclosure
@@ -1989,6 +2030,175 @@ async function measureMenuVerbs(): Promise<{ open: boolean; stop: boolean; steer
   };
 }
 
+function duoBox(element: Element | null | undefined) {
+  if (!element) return null;
+  const { width, height } = geometryOf(element);
+  return { width, height };
+}
+
+function measureDuoDraftState() {
+  const pane = document.getElementById("oh-pane");
+  const footer = pane?.querySelector('[data-testid="pane-footer"]');
+  const edge = pane?.querySelector('[data-testid="pane-edge-footer"]');
+  const footerBox = duoBox(footer);
+  const edgeBox = duoBox(edge);
+  return {
+    state: "draft",
+    totalFooterHeight: (footerBox?.height ?? 0) + (edgeBox?.height ?? 0),
+    editorMinLines: pane?.querySelector<HTMLElement>('[data-composer] [role="textbox"]')?.style.minHeight ?? null,
+    editing: pane?.querySelector("[data-composer]")?.hasAttribute("data-composer-editing") ?? false,
+    attachment: null,
+    counters: Array.from(pane?.querySelectorAll<HTMLElement>("[data-activity-tab]") ?? []).map((counter) => ({
+      ...duoBox(counter),
+      tab: counter.getAttribute("data-activity-tab"),
+      accessibleName: counter.getAttribute("aria-label"),
+    })),
+    controls: [],
+    horizontalOverflow: pane ? pane.scrollWidth - pane.clientWidth : 0,
+  };
+}
+
+async function measureDuoCompactStates(phase: "focus" | "rest") {
+  const pane = document.getElementById("oh-pane");
+  const editor = pane?.querySelector<HTMLElement>('[data-composer] [role="textbox"]');
+  if (!pane || !editor) throw new Error("Duo measurement requires the real Session composer");
+  const results: Record<string, unknown>[] = [];
+  const snapshot = (state: string) => {
+    const footer = pane.querySelector('[data-testid="pane-footer"]');
+    const edge = pane.querySelector('[data-testid="pane-edge-footer"]');
+    const question = pane.querySelector("[data-ask-question]");
+    const approval = pane.querySelector('[role="group"][aria-label="Sandbox approval"]');
+    const footerBox = duoBox(footer);
+    const edgeBox = duoBox(edge);
+    const card = pane.querySelector('[data-testid="composer-input-card"]');
+    results.push({
+      state,
+      totalFooterHeight: (footerBox?.height ?? 0) + (edgeBox?.height ?? 0),
+      cardGap: card ? getComputedStyle(card).rowGap : null,
+      cardPaddingBlock: card ? `${getComputedStyle(card).paddingTop} ${getComputedStyle(card).paddingBottom}` : null,
+      footerPaddingBottom: footer ? getComputedStyle(footer).paddingBottom : null,
+      editorMinLines: editor.style.minHeight,
+      editing: editor.closest("[data-composer]")?.hasAttribute("data-composer-editing") ?? false,
+      cardHidden: card instanceof HTMLElement && card.hidden,
+      question: duoBox(question),
+      questionInTranscript: question?.closest('[data-testid="transcript-virtual-list"]') !== null,
+      approval: duoBox(approval),
+      attachment: duoBox(pane.querySelector('[data-testid="attachment-tile"]')),
+      attachmentControls: Array.from(pane.querySelectorAll<HTMLElement>('[data-testid="attachment-tile"] button')).map(
+        (control) => duoBox(control),
+      ),
+      counters: Array.from(pane.querySelectorAll<HTMLElement>("[data-activity-tab]")).map((counter) => ({
+        ...duoBox(counter),
+        tab: counter.getAttribute("data-activity-tab"),
+        accessibleName: counter.getAttribute("aria-label"),
+      })),
+      controls: Array.from(
+        pane.querySelectorAll<HTMLElement>(
+          '[data-testid="composer-attach"], [data-testid="composer-stop"], [data-testid="composer-submit"], [data-sandbox-escalation-allow], [data-ask-question] input',
+        ),
+      ).map((control) => ({
+        ...duoBox(
+          control instanceof HTMLInputElement && (control.type === "radio" || control.type === "checkbox")
+            ? control.closest("label")
+            : control,
+        ),
+        touchTarget: !(
+          control instanceof HTMLInputElement &&
+          (control.type === "text" || control.getAttribute("aria-label") === "Something else…")
+        ),
+        name: control.getAttribute("aria-label") ?? control.getAttribute("data-testid") ?? control.getAttribute("type"),
+      })),
+      horizontalOverflow: pane.scrollWidth - pane.clientWidth,
+    });
+  };
+  const settle = async () => {
+    await twoPaintedFrames();
+    await document.fonts.ready;
+  };
+  // The typed Duo draft lives in this profile's storage and would rehydrate on
+  // every later harness page in the same guard run, so later resting-row
+  // measurements would read an expanded, draft-carrying composer. Every exit
+  // clears it through the composer's own blank-write cleanup.
+  const finish = (approvalResolved: boolean) => {
+    writeComposerDraft(REF, { text: "", skillNames: [] });
+    return { states: results, approvalResolved };
+  };
+  if (phase === "focus") {
+    snapshot("empty");
+    editor.focus();
+    await settle();
+    snapshot("focused");
+    return finish(false);
+  }
+  if (editor.textContent === "") throw new Error("trusted browser input did not enter a draft");
+  await settle();
+  editor.blur();
+  await settle();
+  if (!pane.querySelector('[data-testid="attachment-tile"]'))
+    throw new Error("real file upload did not stage an attachment");
+  await settle();
+  snapshot("attachment");
+  const questionSnapshot = structuredClone(activeSnapshot);
+  questionSnapshot.thread.evener.askPending = true;
+  questionSnapshot.thread.turns = [
+    {
+      id: "duo-question-turn",
+      status: "completed",
+      itemsView: "full",
+      items: [
+        {
+          type: "userMessage",
+          id: "duo-question-user",
+          turnId: "duo-question-turn",
+          text: "Which changes should ship?",
+        },
+        {
+          type: "commandExecution",
+          id: "duo-question-item",
+          turnId: "duo-question-turn",
+          toolName: "ask_user",
+          callId: "duo-question-call",
+          status: "completed",
+          argumentsJson: JSON.stringify({
+            questions: [
+              {
+                header: "Release scope",
+                question: "Which changes should ship?",
+                options: [
+                  { label: "Verified fixes", detail: "Only the checked changes.", recommended: true },
+                  { label: "Everything", detail: "Include the remaining work." },
+                ],
+              },
+            ],
+          }),
+        },
+      ],
+    },
+  ];
+  putThreadModel(activeRef, hydrateThread(questionSnapshot, activeRef, Date.now()));
+  await settle();
+  snapshot("question");
+  fake.emitNotification({
+    method: "evener/sandbox/escalation/requested",
+    params: {
+      ref: activeRef,
+      threadId: activeSnapshot.thread.id,
+      escalationId: "duo-approval",
+      mode: "workspace-write",
+      tool: "shell",
+      kind: "shell",
+      deniedPath: "/etc/hosts",
+    },
+  });
+  await settle();
+  snapshot("approval");
+  const allow = pane.querySelector<HTMLButtonElement>("[data-sandbox-escalation-allow]");
+  if (!allow) return finish(false);
+  allow.click();
+  await settle();
+  return finish(!pane.querySelector('[role="group"][aria-label="Sandbox approval"]'));
+}
+
 declare global {
   interface Window {
     composerRequests: typeof composerRequests;
@@ -2000,6 +2210,8 @@ declare global {
     inspectIntentColumn: typeof inspectIntentColumn;
     inspectHeldSteerColumn: typeof inspectHeldSteerColumn;
     measureMenuVerbs: typeof measureMenuVerbs;
+    measureDuoCompactStates: typeof measureDuoCompactStates;
+    measureDuoDraftState: typeof measureDuoDraftState;
     settled: Promise<true>;
     verifyItemPaging: typeof verifyItemPaging;
   }
@@ -2012,6 +2224,8 @@ window.inspectChatFocus = inspectChatFocus;
 window.inspectIntentColumn = inspectIntentColumn;
 window.inspectHeldSteerColumn = inspectHeldSteerColumn;
 window.measureMenuVerbs = measureMenuVerbs;
+window.measureDuoCompactStates = measureDuoCompactStates;
+window.measureDuoDraftState = measureDuoDraftState;
 window.settled = settled;
 window.verifyItemPaging = verifyItemPaging;
 

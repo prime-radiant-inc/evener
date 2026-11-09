@@ -405,7 +405,39 @@ async function clickVerbosityChoice(label, role = "radio") {
   await driver.clickAt(point.x, point.y);
 }
 
-const LATE_MEASUREMENT_DELAY_MS = 400;
+// A native smooth scroll has no known duration, so when a held measurement is
+// released has to come from the port's own geometry. Three consecutive stable
+// reads mean the reader has come to rest.
+async function waitForReaderAtRest(portExpr, label) {
+  await read("window.__cascadeRest = { top: null, frames: 0 }");
+  await wait(`(() => {
+    const port = ${portExpr};
+    if (!port) return null;
+    const state = window.__cascadeRest ?? { top: null, frames: 0 };
+    if (state.top !== port.scrollTop) {
+      state.top = port.scrollTop;
+      state.frames = 0;
+      return null;
+    }
+    state.frames += 1;
+    return state.frames >= 3 ? { scrollTop: port.scrollTop } : null;
+  })()`, label);
+  return read("window.__cascadeRest.top");
+}
+
+// Deliver the held measurements the way the browser does: one ResizeObserver
+// callback per frame, so each correction sees the committed geometry of the one
+// before it.
+async function releaseQueuedMeasurements() {
+  for (;;) {
+    const remaining = await read("window.__cascadeMeasurements.releaseOne()");
+    if (remaining === 0) {
+      await read("window.__cascadeMeasurements.port = null; window.__cascadeMeasurements.row = null");
+      return;
+    }
+    await read("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+  }
+}
 
 async function nativePositioningInterruption(input) {
   assert.ok(input === "wheel" || input === "pill" || input === "Shift-Space", "the native interruption uses a real reader input");
@@ -539,13 +571,21 @@ async function nativePositioningInterruption(input) {
     assert.ok(observation.newer.entry !== observation.prepared.point.entry || Math.abs(observation.newer.offset - observation.prepared.point.offset) >= 100,
       "the admitted input meaningfully moves the prepared reader");
     // Late measurements can land any time after the reader's input. Release
-    // them well past TanStack's 150ms isScrollingResetDelay, when the
-    // virtualizer no longer reports a backward scroll, so the reader's own
-    // movement record alone has to protect the newer reading point (#3871,
-    // #3880).
-    await new Promise(resolve => setTimeout(resolve, LATE_MEASUREMENT_DELAY_MS));
+    // them once the reader has actually come to rest, never after a fixed
+    // delay: the outcome must not depend on where TanStack's isScrolling reset
+    // falls relative to the release (#3871, #3880).
+    await waitForReaderAtRest(sourcePortExpr, `the reading port rests after admitted ${input}`);
+    // Streaming rows keep arriving while the hold is up, and each arrival may
+    // move the reader with the content. The release only has to preserve the
+    // reading point as it stands when the release begins.
+    observation.releasePoint = await settledReadingPoint(sourcePortExpr, `native interruption immediately before releasing ${input}`);
   } finally {
-    await read('window.__cascadeMeasurements.release()');
+    await releaseQueuedMeasurements();
+    await read(`(() => {
+      const writes = window.__cascadeWrites ?? [];
+      for (const write of writes.slice(-60)) console.log("CASCADE_WRITE", JSON.stringify(write));
+      window.__cascadeWrites = [];
+    })()`);
     observation.released = await read(`(() => {
       const state = window.__cascadeMeasurements;
       return { queued:state.queued.length, held:state.port !== null || state.row !== null };
@@ -553,10 +593,11 @@ async function nativePositioningInterruption(input) {
   }
   assert.deepEqual(observation.released, { queued:0, held:false }, "all genuine queued measurements are released");
   observation.after = await settledReadingPoint(sourcePortExpr, "native interruption after release");
-  const { newer, after } = observation;
+  const { after } = observation;
+  const releasePoint = observation.releasePoint;
   const oldOffset = wantedReadingOffset(before, after);
   const oldTarget = Math.max(0, Math.min(after.scrollTop + after.offset - oldOffset, Math.max(0, after.scrollHeight - after.viewport)));
-  const retainedNewer = after.entry === newer.entry && Math.abs(after.offset - newer.offset) <= 2;
+  const retainedNewer = after.entry === releasePoint.entry && Math.abs(after.offset - releasePoint.offset) <= 2;
   observation.staleReplay = !retainedNewer && after.entry === before.entry && Math.abs(after.scrollTop - oldTarget) <= 2;
   observation.oldTarget = oldTarget;
   await capture(`${input}-interruption-released`);
@@ -1678,6 +1719,13 @@ try {
     const Native = window.ResizeObserver;
     const state = window.__cascadeMeasurements = {
       Native, port: null, row: null, queued: [],
+      releaseOne() {
+        const pending = this.queued.shift();
+        if (!pending) { this.port = null; this.row = null; return 0; }
+        const connected = pending.entries.filter(entry => entry.target.isConnected);
+        if (connected.length) pending.callback(connected, pending.observer);
+        return this.queued.length;
+      },
       release() {
         this.port = null;
         this.row = null;

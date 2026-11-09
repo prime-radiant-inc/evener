@@ -32,6 +32,17 @@ yourself when necessary, not in a polling loop. A status read is not delivery of
 a delegate's result. Read retained shell bytes with `job:<job_id>` and delegate
 history with its session `transcript_ref`.
 
+Shell completion wakes the owning session through a runtime notification entry.
+Replay detection uses those steering entries, including older entries with no
+kind or source metadata. Notification-shaped text in assistant replies, user
+input, tool output, human or parent steering, or another known steering kind
+does not acknowledge a pending completion. Such text remains conversation
+content; the real completion still reaches the model. Only the runtime frame's
+opening attributes identify its job and event; output excerpts cannot acknowledge
+another job or change the event type. Watch and watch-send frames do not
+acknowledge shell completion. If delivery marking must retry after the runtime
+completion entry was recorded, that retry does not inject it again.
+
 ```mermaid
 flowchart LR
   Start[Launch managed work] --> ID[Retain typed identity]

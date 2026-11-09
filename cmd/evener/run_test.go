@@ -1320,6 +1320,65 @@ func TestLaunchChecksForLegacyDataBeforeResolvingPlugins(t *testing.T) {
 	}
 }
 
+// The legacy-data guard points the user at the migrate subcommand. Running it
+// through the evener binary's own dispatch must move each kind of stranded
+// data into the layout the guard accepts, so the next launch proceeds with
+// the data intact.
+func TestEvenerMigrateClearsTheLegacyDataRefusal(t *testing.T) {
+	// Paths are relative to HOME, which holds both XDG roots below.
+	tests := []struct {
+		name, stranded, migrated string
+	}{
+		{name: "XDG config root", stranded: ".config/serf/hub.toml", migrated: ".config/evener/hub.toml"},
+		{name: "XDG state root", stranded: ".local/state/serf/index.db", migrated: ".local/state/evener/index.db"},
+		{name: "legacy home root", stranded: ".serf/auth-token", migrated: ".local/state/evener/auth-token"},
+		{name: "interim home root", stranded: ".evener/launch.toml", migrated: ".config/evener/launch.toml"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+			t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
+			t.Setenv("EVENER_STATE_DIR", "")
+			t.Chdir(t.TempDir())
+			stranded := filepath.Join(home, filepath.FromSlash(tt.stranded))
+			migrated := filepath.Join(home, filepath.FromSlash(tt.migrated))
+			want := []byte("seeded " + tt.stranded)
+			if err := os.MkdirAll(filepath.Dir(stranded), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(stranded, want, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := cmdutil.EnsureUserConfigDirs(); err == nil {
+				t.Fatal("the guard let a launch proceed past unmigrated data")
+			}
+
+			var stdout, stderr bytes.Buffer
+			handled, _, err := dispatchCLICommand([]string{"migrate"}, strings.NewReader(""), &stdout, &stderr)
+			if !handled || err != nil {
+				t.Fatalf("evener migrate: handled=%v err=%v\nstdout: %s\nstderr: %s", handled, err, stdout.String(), stderr.String())
+			}
+
+			if err := cmdutil.EnsureUserConfigDirs(); err != nil {
+				t.Fatalf("the guard still refuses after evener migrate: %v", err)
+			}
+			if _, err := os.Stat(stranded); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("stranded data is still at %s: stat err = %v", stranded, err)
+			}
+			got, err := os.ReadFile(migrated)
+			if err != nil {
+				t.Fatalf("migrated data is not at %s: %v", migrated, err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Errorf("migrated data at %s = %q, want %q", migrated, got, want)
+			}
+		})
+	}
+}
+
 // Provisioning takes the session scratch and the flock lease under it, and
 // nothing releases either until a session owns the environment and its Close
 // does. A launch that ends before that hand-off owes them itself: a fresh

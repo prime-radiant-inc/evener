@@ -772,6 +772,14 @@ func (s *Session) AcceptClientMutationSteerAs(params appwire.TurnSteerParams, ac
 			rejectClientMutation(record, appwire.InvalidParams("input is required"))
 			return nil
 		}
+		// Steering is the user speaking again, so it re-engages a turn a Stop
+		// parked: both holds release (lifecycle ruling 2026-11-09, issue #191).
+		// Clearing SteeringHeld is what lets the carrier run the steer at all;
+		// clearing QueueHeld is what unparks the messages the Stop left behind.
+		// A second steer while held therefore releases the first too: new user
+		// activity re-engages the parked rail rather than inheriting its hold.
+		snapshot.QueueHeld = false
+		snapshot.SteeringHeld = false
 		reserveClientMutationTurnID(snapshot, record)
 		record.ExecutionState = "accepted"
 		return nil
@@ -787,6 +795,14 @@ func (s *Session) AcceptClientMutationSteerAs(params appwire.TurnSteerParams, ac
 	})
 	if err != nil {
 		return appwire.TurnSteerResponse{}, err
+	}
+	// Only a FRESH application unparks: replay re-runs no accept callback, so
+	// it releases no hold, and a Stop that landed after the original steer
+	// must keep the attention rail silent. A fresh steer is a re-engagement
+	// like turn/start, so the deferred root attention re-arms with it
+	// (lifecycle ruling 2026-11-09, issue #191).
+	if lookup.Disposition != clientMutationDispositionReplayed {
+		s.unparkRootDelegateAttention()
 	}
 	if lookup.Disposition == clientMutationDispositionReplayed {
 		var replayed appwire.TurnSteerResponse

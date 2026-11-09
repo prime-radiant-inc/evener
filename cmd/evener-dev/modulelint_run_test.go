@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/internal/testfs"
 )
 
 // echoCmd returns a builder whose children are real shell processes that
@@ -43,7 +45,7 @@ func newTestRun(t *testing.T, modules []string, parallel int, newCmd func(string
 // test builds from TMPDIR match what the runner prints.
 func setCanonicalTmpDir(t *testing.T) {
 	t.Helper()
-	t.Setenv("TMPDIR", canonicalTempDir(t))
+	t.Setenv("TMPDIR", testfs.CanonicalTempDir(t))
 }
 
 // scratchLeft lists evener-module-lint.* entries under the test's TMPDIR.

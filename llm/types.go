@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"primeradiant.com/evener/llm/effort"
 )
 
 // Role identifies the author of a message.
@@ -652,24 +654,11 @@ func ReasoningBudget(effort string) int {
 	}
 }
 
-// effortRank orders reasoning-effort levels from least to most. "xhigh" and
-// "max" are distinct ascending tiers: GPT-5.6 and Anthropic's
-// output_config.effort both place max above xhigh.
-var effortRank = map[string]int{
-	"minimal": 1,
-	"low":     2,
-	"medium":  3,
-	"high":    4,
-	"xhigh":   5,
-	"max":     6,
-}
-
 // ReasoningEffortVocabulary returns the six recognized reasoning-effort
-// levels in rank order (least to most), derived from effortRank so callers
-// that need to display or validate against the vocabulary cannot drift from
-// it.
+// levels in rank order (least to most), from llm/effort, the one definition
+// of the lattice.
 func ReasoningEffortVocabulary() []string {
-	return []string{"minimal", "low", "medium", "high", "xhigh", "max"}
+	return effort.Tiers()
 }
 
 // ValidateReasoningEffort reports whether effort is a value NewSession, a
@@ -682,21 +671,17 @@ func ReasoningEffortVocabulary() []string {
 // full vocabulary, so a typo or a stale/historical level (e.g. "ultra") fails
 // loudly at config load instead of silently reaching a provider on a
 // session's first turn.
-func ValidateReasoningEffort(effort string) error {
-	v := strings.ToLower(strings.TrimSpace(effort))
-	if v == "" || v == ReasoningEffortNone {
+func ValidateReasoningEffort(level string) error {
+	if effort.Valid(level) {
 		return nil
 	}
-	if _, ok := effortRank[v]; ok {
-		return nil
-	}
-	return fmt.Errorf("invalid reasoning_effort %q (expected one of: %s)", effort, strings.Join(ReasoningEffortVocabulary(), ", "))
+	return fmt.Errorf("invalid reasoning_effort %q (expected one of: %s)", level, strings.Join(ReasoningEffortVocabulary(), ", "))
 }
 
 // ReasoningEffortNone is the canonical configured value for "the user turned
 // thinking off". It is distinct from "" (nothing configured), which lets the
 // session apply a default effort without overriding an explicit off.
-const ReasoningEffortNone = "none"
+const ReasoningEffortNone = effort.None
 
 // NormalizeReasoningEffort lowercases and trims a reasoning-effort value and maps
 // the "disable" aliases (none/null/off/false/0) to ReasoningEffortNone. It does
@@ -717,8 +702,8 @@ func NormalizeReasoningEffort(s string) string {
 // (minimal=1 … max=6), or 0 for empty/unknown values. Use it instead of a
 // local hierarchy so effort comparisons (e.g. a "floor at high" side-channel)
 // honor the full vocabulary and cannot drift as levels are added.
-func ReasoningEffortRank(effort string) int {
-	return effortRank[strings.ToLower(strings.TrimSpace(effort))]
+func ReasoningEffortRank(level string) int {
+	return effort.Rank(level)
 }
 
 // ClampReasoningEffort clamps a requested effort to the levels a model supports.
@@ -738,16 +723,16 @@ func ClampReasoningEffort(requested string, supportedLevels []string) string {
 	if req == "" || req == ReasoningEffortNone || len(supportedLevels) == 0 {
 		return requested
 	}
-	reqRank, ok := effortRank[req]
-	if !ok {
+	reqRank := effort.Rank(req)
+	if reqRank == 0 {
 		return requested
 	}
 	ceil, ceilRank := "", 1<<30
 	highest, highestRank := "", -1
 	for _, lvl := range supportedLevels {
 		l := strings.ToLower(strings.TrimSpace(lvl))
-		r, ok := effortRank[l]
-		if !ok {
+		r := effort.Rank(l)
+		if r == 0 {
 			continue
 		}
 		if l == req {

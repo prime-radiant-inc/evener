@@ -16,7 +16,6 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/sandbox/sandboxtest"
-	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtestenv"
 	"primeradiant.com/evener/envvars"
@@ -833,16 +832,6 @@ func TestHubDefaultRootsStayInsideTheTestEnvironment(t *testing.T) {
 	if escaped := defaultRootsOutsideTestEnv(); len(escaped) > 0 {
 		t.Fatalf("default roots resolve outside the throwaway test root %q; a handler dispatched with empty params would read or write there for real:\n  %s", testEnv.Root, strings.Join(escaped, "\n  "))
 	}
-}
-
-func canonicalTempDir(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	resolved, err := fspaths.CanonicalizeDir(dir)
-	if err != nil {
-		t.Fatalf("canonicalize temp dir %s: %v", dir, err)
-	}
-	return resolved
 }
 
 func writeRendezvous(t testing.TB, dir string, e rendezvous.Entry) {

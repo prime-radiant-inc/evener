@@ -66,7 +66,7 @@ export type {
   MutationProjectionRefresh,
 } from "./projection";
 export { createMutationProjectionFence, replaceTargetRecords } from "./projection";
-export type { MutationProjectionWorkPorts, MutationProjectionWorkTracker } from "./projectionWork";
+export type { MutationProjectionWorkTracker } from "./projectionWork";
 export { createMutationProjectionWorkTracker } from "./projectionWork";
 export type {
   MutationRetryCapture,

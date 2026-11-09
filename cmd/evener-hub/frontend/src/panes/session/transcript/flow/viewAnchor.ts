@@ -114,6 +114,42 @@ export function topVisiblePosition(positions: readonly ViewAnchorPosition[]): Vi
   return positions.filter((position) => position.offset >= 0).sort((a, b) => a.offset - b.offset)[0];
 }
 
+/**
+ * The entry that holds the reader's reading point: the innermost rendered
+ * entry whose box crosses the viewport top, read from the anchors themselves
+ * rather than from the list's cached row geometry. A transcript row bundles
+ * many entries, so a row can grow under the reader without moving the entry
+ * they are reading.
+ */
+export function readingEntryPoint(
+  el: HTMLElement,
+):
+  | { row: number; id: string; offset: number; offsetInRow: number; height: number; width: number; viewport: number }
+  | undefined {
+  const viewport = el.getBoundingClientRect();
+  const visible = Array.from(el.querySelectorAll<HTMLElement>("[data-view-anchor-id]")).filter((node) => {
+    const rect = node.getBoundingClientRect();
+    if (node.getClientRects().length === 0 || rect.width <= 0 || rect.height <= 0) return false;
+    return rect.bottom > viewport.top && rect.top < viewport.bottom;
+  });
+  const crossing = visible.filter((node) => node.getBoundingClientRect().top <= viewport.top);
+  const candidates = crossing.length > 0 ? crossing : visible;
+  const entry = candidates.find((node) => !candidates.some((other) => other !== node && node.contains(other)));
+  const index = entry?.dataset.viewAnchorIndex;
+  if (entry === undefined || index === undefined) return undefined;
+  const rect = entry.getBoundingClientRect();
+  const rowElement = entry.closest<HTMLElement>("[data-row-id]");
+  return {
+    row: Number(index),
+    id: entry.dataset.viewAnchorId ?? "",
+    offset: rect.top - viewport.top,
+    offsetInRow: rect.top - (rowElement?.getBoundingClientRect().top ?? rect.top),
+    height: rect.height,
+    width: el.clientWidth,
+    viewport: el.clientHeight,
+  };
+}
+
 interface CapturedFocusMetadata {
   readonly anchorId: string;
   readonly sourceIdentity: string;

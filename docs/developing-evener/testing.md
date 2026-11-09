@@ -155,6 +155,12 @@ failures into timeout mysteries. The preference hierarchy:
    load-dependent work. Where pacing itself is under test, use the codebase's
    clock abstraction.
 
+For a helper process, the await is a pipe on `exec.Cmd.ExtraFiles`: the child
+writes a milestone line after its file barrier exists, and the parent blocks on
+the read. EOF means the child died before signaling, which is the failure to
+report. The file stays as an ordering witness for other assertions; the parent
+never polls it against a deadline.
+
 Every flake family root-caused here (a vite-cache digest, an auth stopwatch, a
 composer projection refresh) was an awaitable completion nobody was awaiting.
 

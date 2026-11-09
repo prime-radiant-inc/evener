@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
+	"primeradiant.com/evener/internal/testfs"
 )
 
 func TestApplyHubAPILogDefault(t *testing.T) {
@@ -281,7 +282,7 @@ func TestLoadConfig_APILog(t *testing.T) {
 // both directions.
 func TestLaunchResolveAppliesHubAPILogDefault(t *testing.T) {
 	stateRoot := t.TempDir()
-	cwd := canonicalTempDir(t)
+	cwd := testfs.CanonicalTempDir(t)
 	emptyEnv := func(string) string { return "" }
 
 	t.Run("hub default fills unset api_log", func(t *testing.T) {
@@ -321,7 +322,7 @@ func TestLaunchResolveAppliesHubAPILogDefault(t *testing.T) {
 
 	t.Run("hub default off reports the pinned hub false", func(t *testing.T) {
 		c := newHubLaunchControllerWithEnv(t.TempDir(), emptyEnv, false)
-		got, err := c.Resolve(context.Background(), appwire.LaunchConfigResolveParams{CWD: canonicalTempDir(t)})
+		got, err := c.Resolve(context.Background(), appwire.LaunchConfigResolveParams{CWD: testfs.CanonicalTempDir(t)})
 		if err != nil {
 			t.Fatalf("Resolve: %v", err)
 		}

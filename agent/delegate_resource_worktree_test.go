@@ -24,9 +24,9 @@ func TestDelegateWorktree_LiveGuardUsesDelegateState(t *testing.T) {
 	if !reflect.DeepEqual(handles, []string{wantHandle}) {
 		t.Fatalf("stable live-work handles = %v, want [%q] without a delegate JobRecord; aggregate=%#v", handles, wantHandle, aggregate)
 	}
-	ids, ok := r.s.retainedIdleDelegateIDs(handles)
-	if !ok || !reflect.DeepEqual(ids, []string{id}) {
-		t.Fatalf("stable retained-idle resolution = (%v, %t), want ([%s], true)", ids, ok, id)
+	plan, ok := r.s.retainedIdleDisposal(lanePath, handles)
+	if !ok || !reflect.DeepEqual(plan.StableDelegateIDs, []string{id}) || len(plan.SharedChildIDs) != 0 {
+		t.Fatalf("stable retained-idle resolution = (%+v, %t), want ([%s], true)", plan, ok, id)
 	}
 }
 

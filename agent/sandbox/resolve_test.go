@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -458,6 +459,152 @@ func TestCacheRootsFollowNpmAndCargoSettings(t *testing.T) {
 	rel := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: home, CargoHome: "relative/cargo", NpmConfigCache: "relative/npm"}, "/work/project")
 	if !slices.Equal(rel, plain) {
 		t.Errorf("a relative npm_config_cache or CARGO_HOME must add no cache root: %v, want %v", rel, plain)
+	}
+}
+
+// npm also resolves its cache from .npmrc files. The probe reads the user and
+// global ones; the project file lives in the worktree, so cacheRootsFor reads
+// it here (#4542).
+func TestCacheRootsFollowTheProjectNpmrc(t *testing.T) {
+	worktree := t.TempDir()
+	cacheDir, err := os.MkdirTemp("/var/tmp", "evener-npm-cache-")
+	if err != nil {
+		t.Skipf("needs a writable directory outside /tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(cacheDir) })
+	if err := os.WriteFile(filepath.Join(worktree, ".npmrc"), []byte("cache="+cacheDir+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: "/home/tester"}, worktree)
+	if !slices.Contains(roots, cacheDir) {
+		t.Errorf("cache roots %v must serve the project .npmrc cache", roots)
+	}
+	// An untrusted project file never makes resolution create a host directory.
+	missing := cacheDir + "-missing"
+	if err := os.WriteFile(filepath.Join(worktree, ".npmrc"), []byte("cache="+missing+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	roots = cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: "/home/tester"}, worktree)
+	if slices.Contains(roots, missing) {
+		t.Errorf("a project .npmrc cache that does not exist must not be served: %v", roots)
+	}
+	if _, err := os.Stat(missing); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("resolution created %q from worktree content: %v", missing, err)
+	}
+	// A relative project cache is workspace-relative and contributes nothing.
+	if err := os.WriteFile(filepath.Join(worktree, ".npmrc"), []byte("cache=./.npm\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plain := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: "/home/tester"}, worktree)
+	if slices.Contains(plain, "./.npm") || slices.Contains(plain, filepath.Join(worktree, ".npm")) {
+		t.Errorf("a relative project npmrc cache must add no root: %v", plain)
+	}
+}
+
+// npm uses the .npmrc of the nearest package root, not the repository root. A
+// session in an independent nested package must read that package's config
+// (#4542 review).
+func TestCacheRootsFollowANestedPackageNpmrc(t *testing.T) {
+	worktree := t.TempDir()
+	rootCache := filepath.Join(overlayFixtureDir(t), "root-npm")
+	packageCache := filepath.Join(overlayFixtureDir(t), "package-npm")
+	for _, dir := range []string{rootCache, packageCache} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(worktree, ".npmrc"), []byte("cache="+rootCache+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	packageDir := filepath.Join(worktree, "packages", "foo")
+	if err := os.MkdirAll(packageDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packageDir, "package.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packageDir, ".npmrc"), []byte("cache="+packageCache+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	roots := cacheRootsForSession(ModeWorkspaceWrite, HostFacts{Home: "/home/tester"}, worktree, packageDir)
+	if !slices.Contains(roots, packageCache) {
+		t.Errorf("cache roots %v must serve the nested package npmrc cache", roots)
+	}
+	if slices.Contains(roots, rootCache) {
+		t.Errorf("cache roots %v must not serve the repository-root npmrc cache for a nested package", roots)
+	}
+}
+
+// The same nested-package choice through the real Resolve path, where the Git
+// worktree is the repository root but the session started in the package.
+func TestResolveFollowsANestedPackageNpmrc(t *testing.T) {
+	repo := mainRepo(t)
+	rootCache := filepath.Join(overlayFixtureDir(t), "root-npm")
+	packageCache := filepath.Join(overlayFixtureDir(t), "package-npm")
+	for _, dir := range []string{rootCache, packageCache} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".npmrc"), []byte("cache="+rootCache+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	packageDir := filepath.Join(repo, "packages", "foo")
+	if err := os.MkdirAll(packageDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packageDir, "package.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packageDir, ".npmrc"), []byte("cache="+packageCache+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeWorkspaceWrite}, bwrapHost(), packageDir)
+	if !slices.Contains(rp.CacheRoots, packageCache) {
+		t.Errorf("resolved cache roots %v must serve the nested package npmrc cache", rp.CacheRoots)
+	}
+	if slices.Contains(rp.CacheRoots, rootCache) {
+		t.Errorf("resolved cache roots %v must not serve the repository-root npmrc cache", rp.CacheRoots)
+	}
+}
+
+// The probe's npmrc values are served alongside the environment value, since
+// npm's precedence decides which one is in effect but every candidate cache
+// directory must be writable where npm may write it.
+func TestCacheRootsFollowProbedNpmrcCaches(t *testing.T) {
+	roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{
+		Home:           "/home/tester",
+		NpmConfigCache: "/from/env/npm",
+		NpmrcCaches:    []string{"/from/user/npm", "/from/global/npm"},
+	}, "/work/project")
+	for _, want := range []string{"/from/env/npm", "/from/user/npm", "/from/global/npm"} {
+		if !slices.Contains(roots, want) {
+			t.Errorf("cache roots %v must include %q", roots, want)
+		}
+	}
+}
+
+// A cache root derived from worktree content must not escape the mask: the
+// overlay would sit on a credential directory and a missing root is created on
+// the host at wrapper creation (#4542 review).
+func TestResolvedCacheRootsExcludeMaskedPaths(t *testing.T) {
+	home := overlayFixtureDir(t)
+	maskedCache := filepath.Join(home, ".ssh", "npm-cache")
+	if err := os.MkdirAll(maskedCache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	worktree := mainRepo(t)
+	if err := os.WriteFile(filepath.Join(worktree, ".npmrc"), []byte("cache="+maskedCache+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	host := bwrapHost()
+	host.Home = home
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeWorkspaceWrite}, host, worktree)
+	for _, root := range rp.CacheRoots {
+		if identifier.PathUnder(root, filepath.Join(home, ".ssh")) {
+			t.Errorf("resolved cache root %q is under the masked .ssh directory", root)
+		}
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/worktree"
+	"primeradiant.com/evener/identifier"
 )
 
 // removeTarget is the worktree a remove call names, resolved before any step
@@ -59,7 +60,7 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 	if err != nil {
 		return WorktreeRemoveResult{}, err
 	}
-	forceCascadeDlgIDs, err := s.guardRemoveLiveWork(target, force)
+	forceCascade, err := s.guardRemoveLiveWork(target, force)
 	if err != nil {
 		return WorktreeRemoveResult{}, err
 	}
@@ -74,8 +75,12 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 	if err != nil {
 		return WorktreeRemoveResult{}, err
 	}
-	if len(forceCascadeDlgIDs) > 0 {
-		cascaded, finished, err := s.disposeRetainedIdleBeforeRemove(ctx, run, rt, branch, forceCascadeDlgIDs)
+	cascadeWarning := ""
+	if n := len(forceCascade.SharedChildIDs); n > 0 {
+		cascadeWarning = fmt.Sprintf("Retired %d retained shared-workspace subagent(s) so the lane could be removed.", n)
+	}
+	if forceCascade.count() > 0 {
+		cascaded, finished, err := s.disposeRetainedIdleBeforeRemove(ctx, run, rt, branch, forceCascade, cascadeWarning)
 		if err != nil {
 			return WorktreeRemoveResult{}, err
 		}
@@ -85,6 +90,12 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 	}
 	if err := removeWorktreeDir(run, target, forceDirty); err != nil {
 		return WorktreeRemoveResult{}, err
+	}
+	if cascadeWarning != "" {
+		if removeWarning != "" {
+			removeWarning += " "
+		}
+		removeWarning += cascadeWarning
 	}
 	result := WorktreeRemoveResult{Path: target, Branch: branch, Warning: removeWarning}
 	if err := deleteRemovedBranch(run, &result, branch, sc, force, deleteBranch); err != nil {
@@ -185,10 +196,10 @@ func (s *Session) guardRemoveLock(run worktree.GitRunner, target string, current
 	return porcelain, unlockAtRestore, nil
 }
 
-// guardRemoveLiveWork is step 4. It returns the retained-idle delegates a
-// force remove disposes through the sanctioned cascade, once the later
-// refusal gates have passed.
-func (s *Session) guardRemoveLiveWork(target string, force bool) ([]string, error) {
+// guardRemoveLiveWork is step 4. It returns the retained-idle children a force
+// remove retires through the sanctioned cascade, once the later refusal gates
+// have passed.
+func (s *Session) guardRemoveLiveWork(target string, force bool) (retainedIdleDisposal, error) {
 	// Live child/job guard (spec §5 remove step 4, "widened"). Best
 	// effort: liveWorkUnder scans running shell/delegate jobs and live
 	// subagent envs (see its doc comment); a shell command that `cd`s after
@@ -213,23 +224,23 @@ func (s *Session) guardRemoveLiveWork(target string, force bool) ([]string, erro
 	// retainedIdleDelegateIDs fail closed, so this block never records
 	// anything and the live-execution refusal below is unchanged (spec
 	// "Running jobs block removal, always").
-	var forceCascadeDlgIDs []string
+	var forceCascade retainedIdleDisposal
 	if live := s.liveWorkUnder(target); len(live) > 0 {
 		eligible := false
 		if force {
-			if dlgIDs, ok := s.retainedIdleDelegateIDs(live); ok {
-				forceCascadeDlgIDs = dlgIDs
+			if plan, ok := s.retainedIdleDisposal(target, live); ok {
+				forceCascade = plan
 				eligible = true
 			}
 		}
 		if !eligible {
-			if hint := s.disposeHintForRetainedIdle(live); hint != "" {
-				return nil, fmt.Errorf("manage_worktree remove: live work under %s: %s. %s", target, strings.Join(live, ", "), hint)
+			if hint := s.disposeHintForRetainedIdle(target, live); hint != "" {
+				return retainedIdleDisposal{}, fmt.Errorf("manage_worktree remove: live work under %s: %s. %s", target, strings.Join(live, ", "), hint)
 			}
-			return nil, fmt.Errorf("manage_worktree remove: live work under %s: %s", target, strings.Join(live, ", "))
+			return retainedIdleDisposal{}, fmt.Errorf("manage_worktree remove: live work under %s: %s", target, strings.Join(live, ", "))
 		}
 	}
-	return forceCascadeDlgIDs, nil
+	return forceCascade, nil
 }
 
 // readRemoveProvenance is step 5. It returns the lane's sidecar, whether one
@@ -325,7 +336,7 @@ func (s *Session) restoreFromRemovedWorktree(run worktree.GitRunner, rt removeTa
 // disposeRetainedIdleBeforeRemove runs the force cascade deferred from step 4.
 // finished reports that the cascade itself removed the target, so the caller
 // returns result as is.
-func (s *Session) disposeRetainedIdleBeforeRemove(ctx context.Context, run worktree.GitRunner, rt removeTarget, branch string, forceCascadeDlgIDs []string) (result WorktreeRemoveResult, finished bool, err error) {
+func (s *Session) disposeRetainedIdleBeforeRemove(ctx context.Context, run worktree.GitRunner, rt removeTarget, branch string, cascade retainedIdleDisposal, cascadeWarning string) (result WorktreeRemoveResult, finished bool, err error) {
 	name, target := rt.name, rt.path
 	// Force-cascade execution (deferred from step 4):
 	// steps 5-7 above are remove's OWN non-cascade refusal gates on target,
@@ -345,7 +356,7 @@ func (s *Session) disposeRetainedIdleBeforeRemove(ctx context.Context, run workt
 	// cascade removed this" from "this directory happened to already be
 	// gone for an unrelated reason" (e.g. deleted out of band while a
 	// stale blocker still pointed at it).
-	targetIsCascadeLane := slices.Contains(forceCascadeDlgIDs, name)
+	targetIsCascadeLane := slices.Contains(cascade.StableDelegateIDs, name)
 	// Hazard: step 7 above has already swapped s.env and unlocked target by
 	// the time a cascaded dispose can refuse, so a refusal here can leave
 	// the session out of a worktree it never removed. That is the accepted
@@ -361,7 +372,7 @@ func (s *Session) disposeRetainedIdleBeforeRemove(ctx context.Context, run workt
 	// NotifyPending (armPendingTerminalNotifications) — because
 	// delegateRecordQuiescent no longer counts a session's own undelivered
 	// render as work.
-	for _, dlg := range forceCascadeDlgIDs {
+	for _, dlg := range cascade.StableDelegateIDs {
 		if _, err := s.worktreeDispose(ctx, dlg, false, false); err != nil {
 			// Name dispose's own force, not remove's: remove's force runs
 			// the sanctioned cascade and never widens a cascaded dispose's
@@ -371,6 +382,11 @@ func (s *Session) disposeRetainedIdleBeforeRemove(ctx context.Context, run workt
 					"remove's force runs the sanctioned cascade only and never widens dispose's own gates; "+
 					"run `manage_worktree op=dispose id=%s force=true` yourself if you mean to discard that lane's work",
 				dlg, err, dlg)
+		}
+	}
+	for _, childID := range cascade.SharedChildIDs {
+		if err := s.retireRetainedSharedChild(ctx, target, childID); err != nil {
+			return WorktreeRemoveResult{}, false, err
 		}
 	}
 	if targetIsCascadeLane {
@@ -396,7 +412,7 @@ func (s *Session) disposeRetainedIdleBeforeRemove(ctx context.Context, run workt
 		// The branch is deleted iff it is really gone, never asserted
 		// from the fact that a dispose ran (a failed branch delete
 		// downgrades to a warning inside dispose, keeping the branch).
-		return WorktreeRemoveResult{Path: target, Branch: branch, BranchDeleted: !branchExists(run, branch)}, true, nil
+		return WorktreeRemoveResult{Path: target, Branch: branch, BranchDeleted: !branchExists(run, branch), Warning: cascadeWarning}, true, nil
 	}
 	// Belt and braces: a successful dispose always evicts its blocker's
 	// retained child (disposeExecute step 7) regardless of whether the
@@ -406,6 +422,62 @@ func (s *Session) disposeRetainedIdleBeforeRemove(ctx context.Context, run workt
 		return WorktreeRemoveResult{}, false, fmt.Errorf("manage_worktree remove: live work under %s: %s", target, strings.Join(live, ", "))
 	}
 	return WorktreeRemoveResult{}, false, nil
+}
+
+// retireRetainedSharedChild retires one retained-idle shared-workspace child
+// whose working directory is the lane being removed. It revalidates every
+// eligibility fact at the point of effect — the child still exists, is still
+// quiescent, still works under the lane, and still matches an owned delegate
+// record — so a child that became active after step 4 refuses with a retryable
+// error instead of being torn down. The durable resumability closure lands
+// before the process teardown, so a teardown failure leaves a retry path: the
+// next remove finds the closure already durable and retries the teardown.
+func (s *Session) retireRetainedSharedChild(ctx context.Context, lanePath, childID string) error {
+	if s.subagents == nil || s.delegateController == nil {
+		return fmt.Errorf("manage_worktree remove: retained shared-workspace subagent %s cannot be resolved; retry", childID)
+	}
+	sub := s.subagents.get(childID)
+	if sub == nil || sub.sess == nil {
+		return fmt.Errorf("manage_worktree remove: retained shared-workspace subagent %s is no longer tracked; retry", childID)
+	}
+	// Acquire the disposal gate BEFORE re-reading anything else: a competing
+	// notification drive or finalizer that starts after a plain quiescence
+	// check carries no delegate lease, so the controller's process-work checks
+	// cannot see it. The gate refuses those starts for the whole closure and
+	// teardown, and its check includes finalizing atomically.
+	if !sub.trySetDisposeGate() {
+		return fmt.Errorf("manage_worktree remove: retained shared-workspace subagent %s became active; retry once it is idle", childID)
+	}
+	gateHeld := true
+	defer func() {
+		if gateHeld {
+			sub.clearDisposeGate()
+		}
+	}()
+	recorded := canonicalOrClean(strings.TrimSpace(sub.sess.currentEnv().WorkingDirectory()))
+	if recorded == "" || !identifier.PathUnder(recorded, canonicalOrClean(lanePath)) {
+		return fmt.Errorf("manage_worktree remove: retained shared-workspace subagent %s no longer works under %s; retry", childID, lanePath)
+	}
+	// The receiver must not be closed while an armed or pending watch still
+	// targets it; the isolated-delegate disposal path refuses for the same
+	// reason. The registration lives in the parent's job manager and would
+	// otherwise outlive the child and fail its later deliveries.
+	if s.subtreeWatchesTargeting(sub.sess.owningDelegateID, childID) {
+		return fmt.Errorf("manage_worktree remove: retained shared-workspace subagent %s is the target of an armed or pending watch; clear the watch before removing the lane", childID)
+	}
+	plans, err := s.delegateController.closeSharedDelegateResumability(s, sub.sess.owningDelegateID, sharedWorkspaceLaneRemovalReason)
+	if err != nil {
+		return fmt.Errorf("manage_worktree remove: closing retained shared-workspace subagent %s: %w", childID, err)
+	}
+	s.delegateController.emitDelegateUpdates(plans)
+	if err := teardownChildSessionWithPolicy(ctx, sub.sess, releaseTerminal); err != nil {
+		return fmt.Errorf("manage_worktree remove: retiring retained shared-workspace subagent %s: %w", childID, err)
+	}
+	s.subagents.removeSession(childID, sub.sess)
+	// The child is gone; leave the gate set so any stale pointer to it cannot
+	// start a drive during the rest of the removal.
+	gateHeld = false
+	return nil
 }
 
 // removeWorktreeDir is step 8.

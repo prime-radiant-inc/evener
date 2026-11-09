@@ -130,7 +130,7 @@
 
   /* The type ramp itself is declared on <body> (see the font-size preference
    * gate below), not here, so the Settings → Theme font-size choice can scale
-   * the whole ramp. Only the theme-invariant line-heights stay at the root. */
+   * the whole ramp. Only the theme-invariant UI/title line-heights stay at the root. */
   --line-height-body: 1.6; /* 15px -> 24px, on the 4px grid */
   --line-height-title: 1.25;
   --line-height-ui: 1.4; /* dense chrome rows: rail, status row, tables */
@@ -337,7 +337,8 @@ body {
   --font-size-caption: calc(12px * var(--font-scale)); /* timestamps, meta */
   --font-size-ui: calc(13px * var(--font-scale)); /* dense chrome: rail rows, status row, tables, chips, controls */
   --font-size-body: calc(15px * var(--font-scale)); /* composer, forms, settings values */
-  --font-size-prose: calc(18px * var(--font-scale)); /* reading text in either viewport */
+  --font-size-prose: calc(16px * var(--font-scale)); /* compact reading text in either viewport */
+  --line-height-prose: calc(1.45 * var(--density-scale, 1));
   --font-size-pane-title: calc(20px * var(--font-scale)); /* pane/sheet/dialog titles: sentence case, semibold */
   --font-size-page-title: calc(26px * var(--font-scale)); /* section headings, the spawn heading */
   --font-size-display: calc(34px * var(--font-scale)); /* welcome hero only */
