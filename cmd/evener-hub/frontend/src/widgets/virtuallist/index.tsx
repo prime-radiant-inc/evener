@@ -327,6 +327,10 @@ export function VirtualList({
   // Upstream onChange runs before React commits the new sizer and row window.
   // Consumers restoring a measured position also need that committed geometry.
   useLayoutEffect(() => {
+    // A committed geometry change can resize the viewport without any upstream
+    // onChange (a composer resize that keeps the same rows). The reading-point
+    // snapshot names the viewport it was taken in, so it must follow that.
+    recordReadingPoint();
     onChange?.(virtualizer, false);
   });
 
