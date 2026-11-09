@@ -37,9 +37,10 @@
 #   the consumer graph selected; "module lookup disabled by GOPROXY=off" means
 #   the selected version is not in the module cache (often a pin that is stale
 #   against the workspace's selection); a replace, go.mod read or package
-#   enumeration failure means the scratch consumer was built wrong. Setup is
-#   reported ahead of a requirement gap because a cache or sum miss also makes
-#   the packages that need the missing module look absent.
+#   enumeration failure means the scratch consumer was built wrong, and a
+#   read-only cache or other filesystem error means the probe never ran.
+#   Setup is reported ahead of a requirement gap because a cache or sum miss
+#   also makes the packages that need the missing module look absent.
 #
 # Usage:
 #   scripts/gate/go-module-consumer-check.sh [module-dir...]
@@ -64,7 +65,14 @@ die() {
 	exit 2
 }
 
-workfile="$(cd "$repo_root" && go env GOWORK 2>/dev/null)" || workfile=""
+# An explicit GOWORK wins (the tests use one); otherwise the checkout's own
+# go.work is the workspace. Do not ask `go env`, which needs a usable module
+# cache before it can answer and would turn an environment failure into a
+# workspace error.
+workfile="${GOWORK:-}"
+if [ -z "$workfile" ] || [ "$workfile" = "off" ]; then
+	workfile="$repo_root/go.work"
+fi
 if [ ! -f "$workfile" ]; then
 	die "no go.work; run this from the workspace checkout (or set GOWORK)"
 fi
@@ -190,7 +198,11 @@ for i in "${!resolved_targets[@]}"; do
 	fi
 
 	gap_re='no required module provides package|is replaced but not required|cannot find module providing package'
-	if grep -Eq 'missing go.sum entry|updates to go.mod needed|module lookup disabled|replacement directory|outside module root' "$consumer/err"; then
+	# Any environment or cache failure means the probe could not judge the
+	# module: a gap-shaped line beside a read-only cache or a missing sum would
+	# otherwise blame the module's go.mod for the host's state.
+	setup_re='missing go.sum entry|updates to go.mod needed|module lookup disabled|replacement directory|outside module root|read-only file system|permission denied|no space left on device|disk quota exceeded|too many open files|not a directory|cannot open|input/output error'
+	if grep -Eq "$setup_re" "$consumer/err"; then
 		printf 'FAIL  %s (consumer setup, not a module requirement)\n' "$path" >&2
 		sed 's/^/      /' "$consumer/err" >&2
 		if grep -Eq "$gap_re" "$consumer/err"; then

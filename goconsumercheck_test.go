@@ -153,6 +153,29 @@ func TestGoModuleConsumerCheck(t *testing.T) {
 		}
 	})
 
+	t.Run("setup beside a gap is still setup", func(t *testing.T) {
+		root := t.TempDir()
+		work := writeConsumerCheckWork(t, root, "libboth", "dep")
+		writeConsumerCheckTree(t, root, map[string]string{
+			"libboth/go.mod": "module example.com/libboth\n\ngo 1.21.0\n\nrequire gopkg.in/yaml.v3 v3.0.1\n",
+			"libboth/lib.go": "package libboth\n\nimport (\n\t_ \"example.com/dep/pkg\"\n\t_ \"gopkg.in/yaml.v3\"\n)\n",
+			"dep/go.mod":     "module example.com/dep\n\ngo 1.21.0\n",
+			"dep/pkg/pkg.go": "package pkg\n",
+		})
+		out, status := runConsumerCheck(t, work, filepath.Join(root, "libboth"), filepath.Join(root, "dep"))
+		if status != 2 {
+			t.Fatalf("status = %d, want 2 (setup wins over the gap)\n%s", status, out)
+		}
+		for _, want := range []string{"consumer setup", "some packages also looked absent"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("output lacks %q:\n%s", want, out)
+			}
+		}
+		if strings.Contains(out, "(missing module requirement)") {
+			t.Errorf("setup run was reported as a missing requirement:\n%s", out)
+		}
+	})
+
 	t.Run("nested module is not part of the parent module's packages", func(t *testing.T) {
 		root := t.TempDir()
 		work := writeConsumerCheckWork(t, root, "prefix", "prefix/sub")

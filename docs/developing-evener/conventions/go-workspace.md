@@ -104,6 +104,10 @@ Two details decide whether the probe answers the right question:
   masquerade as a requirement gap; it adds no require and runs no `-mod=mod`
   on the tree.
 
+The probe follows the packages a consumer builds, not a dependency's test-only
+imports: a module's own `_test.go` files can need a require a consumer never
+compiles. The module's own test gate covers that.
+
 The script separates the two answers. Exit 1 and "missing module requirement"
 means the module's own `go.mod` is incomplete; the message names the package
 and module to add at the version the workspace selects. Exit 2 and "consumer
