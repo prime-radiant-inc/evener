@@ -384,6 +384,216 @@ func TestValidateNavigationResourceSnapshotRejectsChildrenOnLists(t *testing.T) 
 
 }
 
+// validateNavigationResourceSnapshot keeps only the graph rules that
+// hubapi.NavigationSnapshot.Validate does not apply. Each additive case is
+// refused by the hub walk while Validate accepts the same snapshot. The cases
+// marked validateAccepts:false are the ones Validate already refuses: a child
+// with two parents and a container owner that names no entity, the two checks
+// this walk no longer repeats, plus a dangling child and a cycle that only
+// Validate ever checked.
+func TestValidateNavigationResourceSnapshotKeepsOnlyAdditiveGraphRules(t *testing.T) {
+	fixtures := navigationSchemaFixtures(t)
+	tests := []struct {
+		name            string
+		resource        string
+		category        string
+		validateAccepts bool
+		mutate          func(*hubapi.NavigationSnapshot, navigationSchemaFixture)
+	}{
+		{
+			name: "wrong root slot", resource: "live", category: "graph", validateAccepts: true,
+			mutate: func(snapshot *hubapi.NavigationSnapshot, fixture navigationSchemaFixture) {
+				snapshot.Containers[0].Owner.Slot = "projects"
+				snapshot.Containers[0].Key = navigationRootContainerKey(fixture.key, "projects")
+			},
+		},
+		{
+			name: "extra root", resource: "manifest", category: "graph", validateAccepts: true,
+			mutate: func(snapshot *hubapi.NavigationSnapshot, fixture navigationSchemaFixture) {
+				snapshot.Containers = append(snapshot.Containers, hubapi.NavigationOrderContainer{Key: navigationRootContainerKey(fixture.key, "sessions"), Owner: hubapi.NavigationContainerOwner{Kind: "resource_root", Slot: "sessions"}, Children: []string{}})
+			},
+		},
+		{
+			name: "owned slot not allowed for the entity kind", resource: "live", category: "graph", validateAccepts: true,
+			mutate: func(snapshot *hubapi.NavigationSnapshot, _ navigationSchemaFixture) {
+				for index := range snapshot.Containers {
+					if snapshot.Containers[index].Owner.Kind == "entity" {
+						snapshot.Containers[index].Owner.Slot = "recent"
+						snapshot.Containers[index].Key = navigationOwnedContainerKey(snapshot.Containers[index].Owner.EntityKey, "recent")
+						return
+					}
+				}
+			},
+		},
+		{
+			name: "anchor tier slot removed", resource: "project", category: "graph", validateAccepts: true,
+			mutate: func(snapshot *hubapi.NavigationSnapshot, _ navigationSchemaFixture) {
+				current, recent := navigationSchemaTierContainer(t, snapshot, "current"), navigationSchemaTierContainer(t, snapshot, "recent")
+				snapshot.Containers[recent].Children = append(snapshot.Containers[recent].Children, snapshot.Containers[current].Children...)
+				snapshot.Containers = append(snapshot.Containers[:current], snapshot.Containers[current+1:]...)
+			},
+		},
+		{
+			name: "session children slot removed", resource: "live", category: "graph", validateAccepts: true,
+			mutate: func(snapshot *hubapi.NavigationSnapshot, _ navigationSchemaFixture) {
+				for index := range snapshot.Containers {
+					if snapshot.Containers[index].Owner.Kind == "entity" {
+						snapshot.Containers = append(snapshot.Containers[:index], snapshot.Containers[index+1:]...)
+						return
+					}
+				}
+			},
+		},
+		{
+			name: "root container on the project detail", resource: "project", category: "graph", validateAccepts: true,
+			mutate: func(snapshot *hubapi.NavigationSnapshot, fixture navigationSchemaFixture) {
+				snapshot.Containers = append(snapshot.Containers, hubapi.NavigationOrderContainer{Key: navigationRootContainerKey(fixture.key, "sessions"), Owner: hubapi.NavigationContainerOwner{Kind: "resource_root", Slot: "sessions"}, Children: []string{}})
+			},
+		},
+		{
+			name: "project detail without its anchor", resource: "project", category: "graph", validateAccepts: true,
+			mutate: func(snapshot *hubapi.NavigationSnapshot, _ navigationSchemaFixture) {
+				snapshot.Entities, snapshot.Containers = nil, nil
+			},
+		},
+		{
+			name: "orphan represented entity", resource: "live", category: "graph", validateAccepts: true,
+			mutate: func(snapshot *hubapi.NavigationSnapshot, _ navigationSchemaFixture) {
+				for index := range snapshot.Containers {
+					if snapshot.Containers[index].Owner.Kind == "resource_root" {
+						snapshot.Containers[index].Children = []string{}
+						return
+					}
+				}
+			},
+		},
+		{
+			name: "duplicate logical identity", resource: "live", category: "identity", validateAccepts: true,
+			mutate: func(snapshot *hubapi.NavigationSnapshot, fixture navigationSchemaFixture) {
+				duplicate := snapshot.Entities[0]
+				duplicate.Key = navigationEntityKey(fixture.key, "session", "second-key")
+				snapshot.Entities = append(snapshot.Entities, duplicate)
+				for index := range snapshot.Containers {
+					if snapshot.Containers[index].Owner.Kind == "resource_root" {
+						snapshot.Containers[index].Children = append(snapshot.Containers[index].Children, duplicate.Key)
+					}
+				}
+				snapshot.Containers = append(snapshot.Containers, hubapi.NavigationOrderContainer{Key: navigationOwnedContainerKey(duplicate.Key, "children"), Owner: hubapi.NavigationContainerOwner{Kind: "entity", EntityKey: duplicate.Key, Slot: "children"}, Children: []string{}})
+			},
+		},
+		{
+			name: "wrong view scope", resource: "live", category: "scope", validateAccepts: true,
+			mutate: func(snapshot *hubapi.NavigationSnapshot, fixture navigationSchemaFixture) {
+				other := fixture.key
+				other.Offset++
+				renameNavigationSchemaEntity(snapshot, snapshot.Entities[0].Key, navigationEntityKey(other, "session", "local:schema-session"))
+			},
+		},
+		{
+			name: "entity key outside its identity", resource: "live", category: "scope", validateAccepts: true,
+			mutate: func(snapshot *hubapi.NavigationSnapshot, fixture navigationSchemaFixture) {
+				renameNavigationSchemaEntity(snapshot, snapshot.Entities[0].Key, navigationViewScope(fixture.key)+"/entity/"+strings.Repeat("0", 64))
+			},
+		},
+		{
+			name: "children on a list", resource: "live", category: "graph", validateAccepts: true,
+			mutate: func(snapshot *hubapi.NavigationSnapshot, fixture navigationSchemaFixture) {
+				*snapshot = navigationSchemaChainSnapshot(t, navigationSchemaFixture{key: fixture.key, snapshot: *snapshot}, 2)
+			},
+		},
+		{
+			name: "child with two parents", resource: "project", category: "graph", validateAccepts: false,
+			mutate: func(snapshot *hubapi.NavigationSnapshot, _ navigationSchemaFixture) {
+				current, recent := navigationSchemaTierContainer(t, snapshot, "current"), navigationSchemaTierContainer(t, snapshot, "recent")
+				snapshot.Containers[recent].Children = append(snapshot.Containers[recent].Children, snapshot.Containers[current].Children...)
+			},
+		},
+		{
+			name: "dangling child", resource: "live", category: "graph", validateAccepts: false,
+			mutate: func(snapshot *hubapi.NavigationSnapshot, fixture navigationSchemaFixture) {
+				for index := range snapshot.Containers {
+					if snapshot.Containers[index].Owner.Kind == "resource_root" {
+						snapshot.Containers[index].Children = append(snapshot.Containers[index].Children, navigationEntityKey(fixture.key, "session", "missing"))
+						return
+					}
+				}
+			},
+		},
+		{
+			name: "container owner names no entity", resource: "live", category: "graph", validateAccepts: false,
+			mutate: func(snapshot *hubapi.NavigationSnapshot, fixture navigationSchemaFixture) {
+				missing := navigationEntityKey(fixture.key, "session", "missing")
+				for index := range snapshot.Containers {
+					if snapshot.Containers[index].Owner.Kind == "entity" {
+						snapshot.Containers[index].Owner.EntityKey = missing
+						snapshot.Containers[index].Key = navigationOwnedContainerKey(missing, "children")
+						return
+					}
+				}
+			},
+		},
+		{
+			name: "cyclic graph", resource: "live", category: "graph", validateAccepts: false,
+			mutate: func(snapshot *hubapi.NavigationSnapshot, _ navigationSchemaFixture) {
+				for index := range snapshot.Containers {
+					switch snapshot.Containers[index].Owner.Kind {
+					case "resource_root":
+						snapshot.Containers[index].Children = []string{}
+					case "entity":
+						snapshot.Containers[index].Children = []string{snapshot.Containers[index].Owner.EntityKey}
+					}
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := fixtures[test.resource]
+			snapshot := cloneNavigationSnapshot(fixture.snapshot)
+			test.mutate(&snapshot, fixture)
+			graphErr := snapshot.Validate(string(fixture.key.View().Kind))
+			if got := graphErr == nil; got != test.validateAccepts {
+				t.Fatalf("snapshot.Validate accepted = %v, want %v (error %v)", got, test.validateAccepts, graphErr)
+			}
+			err := validateNavigationResourceSnapshot(fixture.key, navigationSchemaGeneration, navigationSchemaRevision, snapshot)
+			if violation, ok := errors.AsType[navigationSchemaViolationError](err); !ok || violation.category != test.category {
+				t.Fatalf("error = %v, want category %q", err, test.category)
+			}
+		})
+	}
+}
+
+// navigationSchemaTierContainer returns the index of a project anchor's tier
+// container, failing the test when the fixture lacks one.
+func navigationSchemaTierContainer(t *testing.T, snapshot *hubapi.NavigationSnapshot, slot string) int {
+	t.Helper()
+	for index := range snapshot.Containers {
+		if snapshot.Containers[index].Owner.Kind == "entity" && snapshot.Containers[index].Owner.Slot == slot {
+			return index
+		}
+	}
+	t.Fatalf("project fixture lacks the %q tier container", slot)
+	return -1
+}
+
+// renameNavigationSchemaEntity moves one entity key through every container
+// that names it, so the snapshot stays internally consistent and only the rule
+// under test refuses it.
+func renameNavigationSchemaEntity(snapshot *hubapi.NavigationSnapshot, oldKey, newKey string) {
+	snapshot.Entities[0].Key = newKey
+	for index := range snapshot.Containers {
+		for child := range snapshot.Containers[index].Children {
+			if snapshot.Containers[index].Children[child] == oldKey {
+				snapshot.Containers[index].Children[child] = newKey
+			}
+		}
+		if snapshot.Containers[index].Owner.EntityKey == oldKey {
+			snapshot.Containers[index].Owner.EntityKey = newKey
+			snapshot.Containers[index].Key = navigationOwnedContainerKey(newKey, snapshot.Containers[index].Owner.Slot)
+		}
+	}
+}
+
 func TestNavigationTimestampParityFixturesMatchGoTime(t *testing.T) {
 	raw, err := os.ReadFile("testdata/navigation/timestamps.json")
 	if err != nil {
