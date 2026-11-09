@@ -1630,6 +1630,67 @@ func TestRunStop_ContinueFalseStops(t *testing.T) {
 	}
 }
 
+// TestRunStopFailureFor_MatchesErrorName proves the event's matcher target is
+// the error name: a hook matched on "rate_limit" fires for a rate limit and not
+// for another name.
+func TestRunStopFailureFor_MatchesErrorName(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "failure-ran")
+	r := newRunner(nil, "")
+	r.Add(plugin.HookStopFailure, plugin.RegisteredHook{
+		Matcher: "rate_limit", Type: "command", Timeout: 5,
+		Command: "cat >> " + shellquote.Literal(marker),
+	})
+
+	if got := r.RunStopFailureFor(context.Background(), Input{HookEventName: "StopFailure"}, "server_error"); !zeroRunResult(got) {
+		t.Fatalf("RunStopFailureFor(server_error) = %+v, want a zero result", got)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("a rate_limit matcher must not fire for server_error; stat err = %v", err)
+	}
+
+	_ = r.RunStopFailureFor(context.Background(), Input{HookEventName: "StopFailure"}, "rate_limit")
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("rate_limit matcher did not fire: %v", err)
+	}
+	if !strings.Contains(string(data), `"hook_event_name":"StopFailure"`) {
+		t.Fatalf("hook input = %s, want the StopFailure event name", data)
+	}
+}
+
+// TestRunStopFailureFor_DiscardsOutputAndNeverStops proves the event is
+// fire-and-discard: a hook's continue:false, systemMessage, additionalContext,
+// and exit 2 all leave the run result free of stops, model context, and user
+// messages. Only terminalSequence is carried, parsed for a delivery site it
+// does not yet have.
+func TestRunStopFailureFor_DiscardsOutputAndNeverStops(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookStopFailure, plugin.RegisteredHook{
+		Matcher: "*", Type: "command", Timeout: 5,
+		Command: `printf '%s' '{"continue":false,"stopReason":"stop","systemMessage":"user","hookSpecificOutput":{"additionalContext":"model"},"terminalSequence":"done"}'`,
+	})
+	r.Add(plugin.HookStopFailure, plugin.RegisteredHook{
+		Matcher: "*", Type: "command", Timeout: 5,
+		Command: `echo "failure-hook-stderr" >&2; exit 2`,
+	})
+
+	got := r.RunStopFailureFor(context.Background(), Input{HookEventName: "StopFailure"}, "rate_limit")
+	if got.Stopped || got.StopReason != "" {
+		t.Fatalf("Stopped = %v (%q), want no stop: continue:false and exit 2 are discarded", got.Stopped, got.StopReason)
+	}
+	if len(got.ModelContext) != 0 || len(got.UserMessages) != 0 {
+		t.Fatalf("ModelContext = %q, UserMessages = %q, want all output discarded", got.ModelContext, got.UserMessages)
+	}
+	if len(got.TerminalSequences) != 1 || got.TerminalSequences[0] != "done" {
+		t.Fatalf("TerminalSequences = %q, want the parsed terminal sequence", got.TerminalSequences)
+	}
+}
+
+func zeroRunResult(r RunResult) bool {
+	return !r.Stopped && r.StopReason == "" && len(r.TerminalSequences) == 0 &&
+		len(r.ModelContext) == 0 && len(r.UserMessages) == 0
+}
+
 // TestRunPostToolUseFailure_DispatchesAndRoutes proves the failure event has a
 // runner that dispatches its own hooks (never PostToolUse's), matches the
 // Bash-style name, and routes additionalContext to the model and a JSON

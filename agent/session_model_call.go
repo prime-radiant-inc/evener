@@ -12,6 +12,8 @@ import (
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/contextmgr"
+	"primeradiant.com/evener/agent/internal/hooks"
+	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
@@ -905,6 +907,22 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 	errData.Cause = providerCauseFromError(err, req.Model)
 	s.emitTurnFailure(errData)
 
+	// StopFailure, the event an operator uses to log a failed turn and send an
+	// alert. It fires here rather than instead of Stop: a failed turn never
+	// reaches deliverIfCommunicated, so Stop already does not fire. Hooks run
+	// outside s.mu, and every output they produce is discarded — the turn is
+	// already over, so nothing can steer or stop it.
+	if s.hookRunner != nil {
+		hi := s.hookInput(plugin.HookStopFailure)
+		hi.Error = hooks.ClaudeErrorName(err)
+		hi.ErrorDetails = hookErrorDetails(err)
+		// last_assistant_message is the failure text the conversation records,
+		// not err.Error(): the recorded string can be enriched and trimmed, and
+		// a hook must see what the reader sees.
+		hi.LastAssistantMessage = errData.Error
+		_ = s.hookRunner.RunStopFailureFor(s.apiLogContext(ctx), hi, hi.Error)
+	}
+
 	// The lifecycle emits the context-disagreement recovery warning before its
 	// bounded compaction. Retain this compatibility warning for any terminal
 	// context path that reaches this handler without that lifecycle emission.
@@ -914,6 +932,24 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 	s.terminateGoalOnError(ctx, err)
 	s.finishProcessingAtFailureBoundary(ctx)
 	return false, fmt.Errorf("provider error: %w", err)
+}
+
+// hookErrorDetails renders a failed model call as the StopFailure
+// error_details value: the HTTP status and provider error code, whichever are
+// known, never a value the error does not carry. It is empty when neither is.
+func hookErrorDetails(err error) string {
+	var providerErr llm.Error
+	if !errors.As(err, &providerErr) {
+		return ""
+	}
+	var parts []string
+	if status := providerErr.StatusCode(); status != 0 {
+		parts = append(parts, fmt.Sprintf("status=%d", status))
+	}
+	if code := strings.TrimSpace(providerErr.ErrorCode()); code != "" {
+		parts = append(parts, "code="+code)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // isProviderTerminalError identifies the wrapper returned by handleModelError

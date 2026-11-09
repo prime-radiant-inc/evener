@@ -791,6 +791,23 @@ func (r *Runner) RunNotification(ctx context.Context, input Input) RunResult {
 	return collectSystemMessages(plugin.HookNotification, outputs)
 }
 
+// RunStopFailureFor dispatches StopFailure hooks and matches them on the Claude
+// error name (rate_limit, server_error, unknown, ...). The event is
+// observability only: each hook's output, its exit code, and continue:false are
+// discarded, so the result never reports a stop and carries no model context or
+// user messages. terminalSequence is still parsed by the shared output parser;
+// it is carried for a delivery site StopFailure does not yet have.
+func (r *Runner) RunStopFailureFor(ctx context.Context, input Input, errorName string) RunResult {
+	outputs := r.runAll(ctx, plugin.HookStopFailure, errorName, input)
+	var result RunResult
+	for _, o := range outputs {
+		if o.TerminalSequence != "" {
+			result.TerminalSequences = append(result.TerminalSequences, o.TerminalSequence)
+		}
+	}
+	return result
+}
+
 // routeOutput places one parsed hook output into the model/user buckets for the
 // given event (07 §"Hook output contract"; design spec §Routing). It does NOT
 // handle the PreToolUse deny reason or the Stop/SubagentStop block reason — the

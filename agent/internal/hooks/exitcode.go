@@ -48,6 +48,10 @@ func exitBehavior(e plugin.HookEvent) eventExitPolicy {
 	switch e {
 	case plugin.HookPreToolUse, plugin.HookStop, plugin.HookSubagentStop, plugin.HookPostToolBatch:
 		return eventExitPolicy{BlockOnExit2: true}
+	case plugin.HookStopFailure:
+		// Exit ignored: the turn already failed, and RunStopFailureFor drops the
+		// exit code entirely along with all other output.
+		return eventExitPolicy{BlockOnExit2: false}
 	default: // every other event (all non-blocking)
 		return eventExitPolicy{BlockOnExit2: false}
 	}
