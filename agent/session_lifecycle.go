@@ -493,6 +493,14 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		s.mu.Unlock()
 		return "", nil
 	}
+	// The same refusal while the provider's usage limit holds the session
+	// (session_quota_wait.go): a notification or goal turn would only meet the
+	// same quota failure. The notification queues and the goal keep their
+	// work, and the wait's end asks for the wake this one was.
+	if s.quotaWait != nil && (kind == EntryNotification || kind == EntryContinuation) {
+		s.mu.Unlock()
+		return "", nil
+	}
 	s.rearmSessionEndLocked()
 	// Mark the session as in-turn for the duration of this input. SetGoal/ClearGoal
 	// read this under s.mu to coordinate the idle kick against the drain-loop gate
@@ -1551,6 +1559,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// turn away — never reaches here, so coverage always means
 		// "presented in a settled call of this turn".
 		s.promoteStagedAttentionCoverage(req)
+		// The provider answered, so any quota wait is over; this turn's own
+		// drain delivers what the wait held.
+		s.endQuotaWait()
 
 		if abortErr := errors.Join(s.abortResponseProcessing(ctx), sessionLifecycleFault(ctx, "abort_after_log")); abortErr != nil {
 			return "", progressed, abortErr

@@ -947,6 +947,10 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 	errData := errorDataFromError(err)
 	errData.Cause = providerCauseFromError(err, req.Model)
 	s.emitTurnFailure(errData)
+	// A quota failure holds the session's autonomous turns until the quota
+	// returns. It begins before the goal decision below, which keeps a goal
+	// active through a wait with a known end.
+	s.beginQuotaWait(err)
 
 	// The lifecycle emits the context-disagreement recovery warning before its
 	// bounded compaction. Retain this compatibility warning for any terminal

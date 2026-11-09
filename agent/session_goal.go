@@ -432,6 +432,9 @@ func (s *Session) terminateGoalOnError(ctx context.Context, err error) {
 	if _, isUserInterrupt := interruptDrainConfig(ctx, err); isUserInterrupt {
 		return // genuine user interrupt: leave the goal active
 	}
+	if s.quotaWaitKeepsGoal(err) {
+		return // waiting for quota: the goal continues when the wait ends
+	}
 	if goalRootShutdown(ctx, err) {
 		// The root/daemon context is shutting down (e.g. a restart or deploy), not a
 		// genuine turn failure: leave the goal active so it resumes on the next load

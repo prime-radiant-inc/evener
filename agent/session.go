@@ -745,6 +745,10 @@ type Session struct {
 	// Guarded by mu.
 	terminalCommunicateAccepted bool
 
+	// quotaWait is set while the provider's usage limit holds the session's
+	// autonomous turns (session_quota_wait.go); nil otherwise. Guarded by mu.
+	quotaWait *quotaWait
+
 	// askPending is the per-turn pending set of questions posted by ask_user
 	// calls this turn (spec §5.1): its length lets a round-boundary check tell
 	// whether the round just posted question(s). The transcript remains the
@@ -2105,7 +2109,8 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 	// boundary doesn't leave on-disk model stale. Kata wnfz. maybeAutoSave
 	// re-acquires s.mu via s.Meta(), so the lock must be released first.
 	s.maybeAutoSave()
-	s.resumeRootAttentionAfterModelSwitch()
+	s.resumePausedRootAttention()
+	s.endQuotaWaitForModelSwitch()
 	return nil
 }
 

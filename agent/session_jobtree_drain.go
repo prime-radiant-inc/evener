@@ -1174,6 +1174,12 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		return true
 	}
 	for {
+		// A quota wait refuses the notification turns this loop runs, so a pass
+		// would spin on work it cannot deliver. End the drain with the quota
+		// failure, as a drain turn that met it would.
+		if err := s.quotaWaitError(); err != nil {
+			return lastResult, err
+		}
 		// Take this pass's wake edge before it reads any state. treeHasOutstandingWork
 		// consults eight independent signals in sequence, so it is not a snapshot, and
 		// a completion that hands work UP the tree moves two of them in turn:

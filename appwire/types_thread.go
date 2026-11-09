@@ -333,9 +333,15 @@ type SubagentTally struct {
 // error" or "Usage limit reached", cut to one line of MaxFailureTitleRunes)
 // and its structured cause. It never carries the failure's message, which can
 // quote a provider's error body; the transcript's error row has that.
+//
+// ResumesAt is set while the session waits out a provider usage limit that
+// named its reset time: the Unix millisecond instant the session resumes its
+// held work by itself. It is absent for any other failure, for a usage limit
+// with no known reset, and once the wait ends.
 type ThreadFailure struct {
-	Title string           `json:"title,omitempty"`
-	Cause *DiagnosticCause `json:"cause,omitempty"`
+	Title     string           `json:"title,omitempty"`
+	Cause     *DiagnosticCause `json:"cause,omitempty"`
+	ResumesAt int64            `json:"resumesAt,omitempty"`
 }
 
 // PendingQuestion is the first question of a session's pending ask (S1b): what
