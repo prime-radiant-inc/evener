@@ -751,6 +751,7 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 				le.Protocol == appwire.ProtocolVersion {
 				response, readErr := hubResumedThreadResponse(ctx, cfg, sources, le.SessionID, le.ThreadID)
 				if readErr == nil {
+					completeSupersededRetirement(ctx, cfg, sources, sessionID, nil)
 					cfg.ResumeLocks.ClearReplacementFailure(sessionID)
 					return response, nil
 				}
@@ -831,6 +832,13 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 		}
 		return appwire.ThreadResumeResponse{}, appwire.HubLaunchError(launchErr.Error())
 	}
+	if supersededOwner != nil && cfg.ResumeLocks != nil {
+		// The replacement reached rendezvous, but its post-launch confirmation
+		// may still fail. Keep the exact superseded identity until the
+		// replacement is confirmed, so a later request can finish the
+		// retirement this one cannot.
+		cfg.ResumeLocks.NotePendingRetirement(sessionID, *supersededOwner)
+	}
 	replacementConfirmed := false
 	if cfg.Roster != nil {
 		refreshDone := trace.stage(ctx, "post_launch_discovery")
@@ -851,7 +859,7 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 			}
 			read.Thread = annotateThreadProject(read.Thread)
 			read.Thread = applyHubCapabilities(cfg, read.Thread)
-			retireSupersededOwner(ctx, cfg, sources, supersededOwner)
+			completeSupersededRetirement(ctx, cfg, sources, sessionID, supersededOwner)
 			cfg.ResumeLocks.ClearReplacementFailure(sessionID)
 			return appwire.ThreadResumeResponse{Thread: read.Thread}, nil
 		}
@@ -860,10 +868,31 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 		}
 	}
 	if replacementConfirmed {
-		retireSupersededOwner(ctx, cfg, sources, supersededOwner)
+		completeSupersededRetirement(ctx, cfg, sources, sessionID, supersededOwner)
 		cfg.ResumeLocks.ClearReplacementFailure(sessionID)
 	}
 	return hubResumedThreadResponse(ctx, cfg, sources, entry.SessionID, entry.ThreadID)
+}
+
+// completeSupersededRetirement retires the owner a replacement superseded,
+// including one recorded by an earlier request whose post-launch confirmation
+// failed. A retry that reuses the now-confirmed replacement has no superseded
+// entry of its own, so the exact identity survives in ResumeLocks until the
+// retirement finishes.
+func completeSupersededRetirement(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, sessionID string, fallback *rendezvous.Entry) {
+	entry := fallback
+	if cfg.ResumeLocks != nil {
+		if pending, ok := cfg.ResumeLocks.PendingRetirement(sessionID); ok {
+			entry = &pending
+		}
+	}
+	if entry == nil {
+		return
+	}
+	retireSupersededOwner(ctx, cfg, sources, entry)
+	if cfg.ResumeLocks != nil {
+		cfg.ResumeLocks.ClearPendingRetirement(sessionID)
+	}
 }
 
 // launchRefusalIsOwnership reports whether a refused launch failed because the

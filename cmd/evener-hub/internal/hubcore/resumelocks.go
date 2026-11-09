@@ -13,6 +13,7 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
+	"primeradiant.com/evener/rendezvous"
 )
 
 // ResumeLocks hands out one mutex per session id so concurrent resume attempts
@@ -35,6 +36,12 @@ type ResumeLocks struct {
 	// failure instead of launching another child for a daemon still holding the
 	// session.
 	replacementFailures map[string]replacementFailure
+	// pendingRetirements remembers the exact owner a launched replacement
+	// superseded when that replacement could not be confirmed in the launching
+	// request. A later request that confirms or reuses the replacement finishes
+	// the retirement; without it the old record and relay would outlive the
+	// resume.
+	pendingRetirements map[string]rendezvous.Entry
 }
 
 // replacementFailure is one recorded failed replacement attempt.
@@ -85,6 +92,41 @@ func (r *ResumeLocks) ClearReplacementFailure(sessionID string) {
 	}
 	r.mu.Lock()
 	delete(r.replacementFailures, sessionID)
+	r.mu.Unlock()
+}
+
+// NotePendingRetirement records the owner a launched replacement superseded but
+// could not yet confirm.
+func (r *ResumeLocks) NotePendingRetirement(sessionID string, entry rendezvous.Entry) {
+	if r == nil || sessionID == "" {
+		return
+	}
+	r.mu.Lock()
+	if r.pendingRetirements == nil {
+		r.pendingRetirements = map[string]rendezvous.Entry{}
+	}
+	r.pendingRetirements[sessionID] = entry
+	r.mu.Unlock()
+}
+
+// PendingRetirement returns the recorded superseded owner awaiting retirement.
+func (r *ResumeLocks) PendingRetirement(sessionID string) (rendezvous.Entry, bool) {
+	if r == nil || sessionID == "" {
+		return rendezvous.Entry{}, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry, ok := r.pendingRetirements[sessionID]
+	return entry, ok
+}
+
+// ClearPendingRetirement forgets a completed retirement.
+func (r *ResumeLocks) ClearPendingRetirement(sessionID string) {
+	if r == nil || sessionID == "" {
+		return
+	}
+	r.mu.Lock()
+	delete(r.pendingRetirements, sessionID)
 	r.mu.Unlock()
 }
 

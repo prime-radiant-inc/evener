@@ -26,12 +26,13 @@ import (
 // roster: the process is alive, so a failed probe preserves the last confirmed
 // entry instead of dropping it (#5530).
 type flippableReadProber struct {
-	sessionID string
-	failPID   atomic.Int64
+	sessionID          string
+	failPID            atomic.Int64
+	failReplacementPID atomic.Int64
 }
 
 func (p *flippableReadProber) Probe(entry rendezvous.Entry) hubcore.ProbeResult {
-	if int(p.failPID.Load()) == entry.PID {
+	if int(p.failPID.Load()) == entry.PID || int(p.failReplacementPID.Load()) == entry.PID {
 		return hubcore.ProbeResult{}
 	}
 	return hubcore.ProbeResult{SessionID: p.sessionID, Status: appwire.ThreadStatusIdle, OK: true}
@@ -377,5 +378,154 @@ func TestResumeReplacementTemporaryFailureIsRetried(t *testing.T) {
 	}
 	if response.Thread.ID != sessionID {
 		t.Fatalf("resumed thread=%+v, want %s", response.Thread, sessionID)
+	}
+}
+
+// TestResumeFailedConfirmationCompletesRetirementOnRetry reproduces the
+// confirmation-failure gap: the first request launches a replacement but its
+// post-launch confirmation fails, losing the superseded owner. The retry
+// reuses the now-confirmed replacement, which must still retire the old
+// rendezvous record and invalidate the relay that reaches the old daemon.
+func TestResumeFailedConfirmationCompletesRetirementOnRetry(t *testing.T) {
+	readSentinel := "read-sentinel-" + t.Name()
+	confirmationSentinel := "confirmation-sentinel-" + t.Name()
+	root := t.TempDir()
+	workingDir := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-5530-confirmation-retry-0000000000")
+	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
+
+	var oldUnreadable atomic.Bool
+	oldDaemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: appwire.LocalSourceID})
+	appserver.HandleTyped(oldDaemon.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		if oldUnreadable.Load() {
+			return appwire.ThreadReadResponse{}, appwire.SessionUnavailable(readSentinel)
+		}
+		return appwire.ThreadReadResponse{Thread: liveProjectThread(sessionID, workingDir)}, nil
+	})
+	oldHTTP := httptest.NewServer(http.HandlerFunc(oldDaemon.ServeWebSocket))
+	t.Cleanup(oldHTTP.Close)
+
+	var replacementReads atomic.Int32
+	replacementDaemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: appwire.LocalSourceID})
+	appserver.HandleTyped(replacementDaemon.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		if replacementReads.Add(1) == 1 {
+			return appwire.ThreadReadResponse{}, appwire.SessionUnavailable(confirmationSentinel)
+		}
+		return appwire.ThreadReadResponse{Thread: liveProjectThread(sessionID, workingDir)}, nil
+	})
+	replacementHTTP := httptest.NewServer(http.HandlerFunc(replacementDaemon.ServeWebSocket))
+	t.Cleanup(replacementHTTP.Close)
+
+	started := time.Now().UTC().Add(-time.Minute)
+	oldEntry := rendezvous.Entry{
+		PID:          108084,
+		Protocol:     appwire.ProtocolVersion,
+		Endpoint:     "ws" + strings.TrimPrefix(oldHTTP.URL, "http"),
+		SourceID:     appwire.LocalSourceID,
+		ThreadID:     sessionID,
+		SessionID:    sessionID,
+		WorkspaceRef: appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: sessionID}.String(),
+		WorkingDir:   workingDir,
+		StartedAt:    started,
+	}
+	replacementEntry := rendezvous.Entry{
+		PID:          108085,
+		Protocol:     appwire.ProtocolVersion,
+		Endpoint:     "ws" + strings.TrimPrefix(replacementHTTP.URL, "http"),
+		SourceID:     appwire.LocalSourceID,
+		ThreadID:     sessionID,
+		SessionID:    sessionID,
+		WorkspaceRef: appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: sessionID}.String(),
+		WorkingDir:   workingDir,
+		StartedAt:    started.Add(30 * time.Second),
+	}
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, oldEntry)
+	prober := &flippableReadProber{sessionID: sessionID}
+	roster := hubcore.NewRoster(runDir, prober)
+	roster.SetProcessAlive(func(int) bool { return true })
+	roster.Refresh()
+	prober.failPID.Store(int64(oldEntry.PID))
+
+	spawnCalls := 0
+	spawner := &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+		spawnCalls++
+		writeRendezvous(t, runDir, replacementEntry)
+		return replacementEntry, nil
+	}}
+	cfg := hubcore.WebConfig{
+		RunDir:      runDir,
+		Roster:      roster,
+		Spawner:     spawner,
+		Past:        past,
+		ResumeLocks: hubcore.NewResumeLocks(),
+	}
+	sources := newHubSourceRegistry(cfg)
+
+	relaySource, ok := sources.Source(appwire.LocalSourceID)
+	if !ok {
+		t.Fatal("persistent registry has no local source")
+	}
+	relaySessions, ok := relaySource.(appsource.RelaySessionSource)
+	if !ok {
+		t.Fatal("local source has no relay session API")
+	}
+	canonicalRef := appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: sessionID}
+	lease, err := relaySessions.AcquireRelaySession(canonicalRef)
+	if err != nil {
+		t.Fatalf("acquire canonical relay: %v", err)
+	}
+	defer lease.Close()
+	first, err := lease.Read(t.Context(), appwire.ThreadReadParams{Ref: canonicalRef.String(), Subscribe: true})
+	if err != nil {
+		t.Fatalf("establish canonical relay: %v", err)
+	}
+	if first.Handoff == nil || !first.Handoff.Commit() {
+		t.Fatal("establish canonical relay: handoff did not commit")
+	}
+
+	// The old owner stops serving, and the replacement cannot be confirmed yet.
+	oldUnreadable.Store(true)
+	prober.failReplacementPID.Store(int64(replacementEntry.PID))
+	if _, err := resumeThreadLocked(context.Background(), cfg, sources, appwire.ThreadResumeParams{Session: sessionID}); err == nil {
+		t.Fatal("resume unexpectedly confirmed the replacement")
+	}
+	if spawnCalls != 1 {
+		t.Fatalf("first resume spawns=%d, want 1", spawnCalls)
+	}
+
+	// Discovery can confirm the replacement now; the retry reuses it.
+	prober.failReplacementPID.Store(0)
+	response, err := resumeThreadLocked(context.Background(), cfg, sources, appwire.ThreadResumeParams{Session: sessionID})
+	if err != nil {
+		t.Fatalf("retry after failed confirmation: %v", err)
+	}
+	if spawnCalls != 1 {
+		t.Fatalf("retry spawned again: spawns=%d, want 1", spawnCalls)
+	}
+	if response.Thread.ID != sessionID {
+		t.Fatalf("resumed thread=%+v, want %s", response.Thread, sessionID)
+	}
+
+	// The retry must finish the retirement the failed request could not.
+	entries, err := rendezvous.ListStrict(runDir)
+	if err != nil {
+		t.Fatalf("list rendezvous: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.PID == oldEntry.PID {
+			t.Fatalf("retry left the superseded owner's rendezvous record behind: %+v", entry)
+		}
+	}
+	relayed, err := lease.Read(t.Context(), appwire.ThreadReadParams{Ref: canonicalRef.String(), Subscribe: true})
+	if err != nil {
+		t.Fatalf("relay still reaches the superseded daemon: %v", err)
+	}
+	if relayed.Handoff != nil {
+		relayed.Handoff.Commit()
+	}
+	if relayed.Response.Thread.ID != sessionID {
+		t.Fatalf("relayed thread=%+v, want %s", relayed.Response.Thread, sessionID)
 	}
 }
