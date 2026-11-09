@@ -534,6 +534,93 @@ func TestTranscriptWindowContinuationKeepsInterleavedCapWithinLogicalTurn(t *tes
 	}
 }
 
+func TestTranscriptWindowBackwardContinuationKeepsInterleavedLogicalTurn(t *testing.T) {
+	candidates := testInterleavedLogicalTurnCandidates()
+	result := testWindowCandidateResult(candidates)
+	result.TurnIDs = []string{"turn-a", "turn-b"}
+	params := appwire.ThreadWindowParams{
+		TurnWindow: &appwire.ThreadTurnWindow{Latest: 2}, WindowBudgetBytes: 1,
+	}
+	options := transcriptWindowOptionsFor(
+		result, params, transcriptWindowDefaultItemLimit, transcriptWindowAppliedByServingDaemon,
+		appitempaging.FetchCursorOriginServingDaemon,
+	)
+
+	initial, err := packThreadTurnsWindowItemCandidates(result, nil, options)
+	if err != nil {
+		t.Fatalf("pack interleaved budget window: %v", err)
+	}
+	if got, want := testItemIDs(flattenTestItems(initial.Data)), []string{"b-1"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("initial item ids = %v, want %v", got, want)
+	}
+	if initial.Window == nil || initial.Window.ContinuationCursor == "" {
+		t.Fatalf("initial window = %+v, want backward continuation", initial.Window)
+	}
+	continued, err := spendTranscriptWindowCursor(result, params, transcriptWindowDefaultItemLimit, initial.Window.ContinuationCursor)
+	if err != nil {
+		t.Fatalf("spend interleaved budget continuation: %v", err)
+	}
+	continuedIDs := testCandidateIDs(continued.Candidates.Candidates)
+	if want := []string{"a-1", "a-2"}; !reflect.DeepEqual(continuedIDs, want) {
+		t.Fatalf("continued item ids = %v, want complete logical turn %v", continuedIDs, want)
+	}
+	if !reflect.DeepEqual(continued.TurnIDs, []string{"turn-a"}) {
+		t.Fatalf("continued turn ids = %v, want turn-a", continued.TurnIDs)
+	}
+}
+
+func TestTranscriptWindowForwardContinuationExcludesInterleavedServedTurn(t *testing.T) {
+	candidates := testInterleavedLogicalTurnCandidates()
+	result := testWindowCandidateResult(candidates)
+	result.TurnIDs = []string{"turn-a", "turn-b"}
+	params := appwire.ThreadWindowParams{
+		TurnWindow: &appwire.ThreadTurnWindow{Since: "turn-before-a", Limit: 2}, WindowBudgetBytes: 1,
+	}
+	options := transcriptWindowOptionsFor(
+		result, params, transcriptWindowDefaultItemLimit, transcriptWindowAppliedByServingDaemon,
+		appitempaging.FetchCursorOriginServingDaemon,
+	)
+
+	initial, err := packThreadTurnsWindowItemCandidates(result, nil, options)
+	if err != nil {
+		t.Fatalf("pack interleaved forward budget window: %v", err)
+	}
+	if got, want := testItemIDs(flattenTestItems(initial.Data)), []string{"a-1", "a-2"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("initial item ids = %v, want %v", got, want)
+	}
+	if initial.Window == nil || initial.Window.ContinuationCursor == "" {
+		t.Fatalf("initial window = %+v, want forward continuation", initial.Window)
+	}
+	continued, err := spendTranscriptWindowCursor(result, params, transcriptWindowDefaultItemLimit, initial.Window.ContinuationCursor)
+	if err != nil {
+		t.Fatalf("spend interleaved forward continuation: %v", err)
+	}
+	continuedIDs := testCandidateIDs(continued.Candidates.Candidates)
+	if want := []string{"b-1"}; !reflect.DeepEqual(continuedIDs, want) {
+		t.Fatalf("continued item ids = %v, want withheld logical turn %v", continuedIDs, want)
+	}
+	if !reflect.DeepEqual(continued.TurnIDs, []string{"turn-b"}) {
+		t.Fatalf("continued turn ids = %v, want turn-b", continued.TurnIDs)
+	}
+}
+
+func testInterleavedLogicalTurnCandidates() []appitempaging.TranscriptItemCandidate {
+	turnA := testWindowTurnCandidates("turn-a", []appwire.ThreadItem{
+		{Type: "reasoning", ID: "a-1", Text: strings.Repeat("a", 6_000), Version: 1},
+		{Type: "reasoning", ID: "a-2", Text: strings.Repeat("b", 6_000), Version: 1},
+	})
+	turnB := testWindowTurnCandidates("turn-b", []appwire.ThreadItem{
+		{Type: "reasoning", ID: "b-1", Text: strings.Repeat("c", 10_000), Version: 1},
+	})
+	candidates := []appitempaging.TranscriptItemCandidate{turnA[0], turnB[0], turnA[1]}
+	for i := range candidates {
+		position := appwire.ThreadItemPosition{Entry: uint64(i)}
+		candidates[i].Position = position
+		candidates[i].Item.Position = &position
+	}
+	return candidates
+}
+
 func TestPackTranscriptItemWindowRequiresTurnWindow(t *testing.T) {
 	_, err := packThreadTurnsWindowItemCandidates(
 		testWindowCandidateResult(testWindowTurnCandidates("turn-1", []appwire.ThreadItem{{Type: "agentMessage", ID: "item-1", Text: "x", Version: 1}})),
@@ -885,6 +972,7 @@ func TestSpendTranscriptWindowCursorKeepsTheRequestedViewAndDirection(t *testing
 
 	forward, err := appitempaging.EncodeWindowCursor(identity, appitempaging.WindowCursorDirectionForward, appitempaging.WindowCursor{
 		Position: candidates[2].Position, ItemVersion: candidates[2].Item.Version,
+		ResumeWindow: &appwire.ThreadTurnWindow{Turn: "turn-forward"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -899,6 +987,7 @@ func TestSpendTranscriptWindowCursorKeepsTheRequestedViewAndDirection(t *testing
 
 	backward, err := appitempaging.EncodeWindowCursor(identity, appitempaging.WindowCursorDirectionBackward, appitempaging.WindowCursor{
 		Position: candidates[3].Position, ItemVersion: candidates[3].Item.Version,
+		ResumeWindow: &appwire.ThreadTurnWindow{Before: &appwire.ThreadTurnBoundary{TurnID: "turn-boundary", Limit: 3}},
 	})
 	if err != nil {
 		t.Fatal(err)

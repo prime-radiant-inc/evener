@@ -933,6 +933,71 @@ func TestRelaySessionRecoveryKeepsConsumerSubscriptionAfterRetentionRead(t *test
 	recoveryCall.transport.recv <- appwire.ResponseMessage(recoveryCall.request.ID, relaySnapshot("thread-1", "recovered"))
 }
 
+func TestRelaySessionRecoveryNormalizesFetchReadForSubscriber(t *testing.T) {
+	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
+	consumerParams := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
+	consumer, err := source.acquireRelaySession(consumerParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer consumer.Close()
+	deliveries, err := consumer.Listen(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for delivery := range deliveries {
+			if delivery.Acknowledge != nil {
+				delivery.Acknowledge()
+			}
+		}
+	}()
+
+	read := readRelayAsync(context.Background(), consumer, consumerParams)
+	call := <-daemon.reads
+	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-1", "snapshot"))
+	result := <-read
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if !result.result.Handoff.Commit() {
+		t.Fatal("consumer handoff commit lost")
+	}
+
+	fetchParams := appwire.ThreadReadParams{Ref: "local:thread-1", FetchCursor: "opaque"}
+	fetch, err := source.acquireRelaySession(fetchParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fetch.Close()
+	fetchRead := readRelayAsync(context.Background(), fetch, fetchParams)
+	fetchCall := <-daemon.reads
+	fetchCall.transport.recv <- appwire.ResponseMessage(fetchCall.request.ID, relaySnapshot("thread-1", "fetch"))
+	fetchResult := <-fetchRead
+	if fetchResult.err != nil {
+		t.Fatal(fetchResult.err)
+	}
+	if !fetchResult.result.Handoff.Commit() {
+		t.Fatal("fetch handoff commit lost")
+	}
+
+	if err := call.transport.Close(); err != nil {
+		t.Fatal(err)
+	}
+	recoveryCall := <-daemon.reads
+	var recoveryParams appwire.ThreadReadParams
+	if err := json.Unmarshal(recoveryCall.request.Params, &recoveryParams); err != nil {
+		t.Fatal(err)
+	}
+	if recoveryParams.FetchCursor != "" || !recoveryParams.Subscribe {
+		t.Fatalf("fetch recovery params = %+v, want ordinary subscribed feed", recoveryParams)
+	}
+	if err := appwire.ValidateThreadReadParams(recoveryParams); err != nil {
+		t.Fatalf("fetch recovery params rejected: %v", err)
+	}
+	recoveryCall.transport.recv <- appwire.ResponseMessage(recoveryCall.request.ID, relaySnapshot("thread-1", "recovered"))
+}
+
 // TestRelaySessionRecoveryRestoresSubscriptionOverwrittenByDescendantSnapshot
 // pins the multi-ref half of recovery's demand rule. A Manager snapshot read
 // of a descendant overwrites the stored read params with the descendant's

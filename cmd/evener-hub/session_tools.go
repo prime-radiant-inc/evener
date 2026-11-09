@@ -902,7 +902,11 @@ func compatibilityItemCandidateResultForRead(
 		if err != nil {
 			return transcriptItemCandidateResult{}, err
 		}
-		return transcriptItemCandidateResultFromSource(result), nil
+		converted := transcriptItemCandidateResultFromSource(result)
+		if params.TurnWindow == nil {
+			return converted, nil
+		}
+		return appendReadOverlayCandidates(converted, response)
 	}
 	return sourceItemCandidateResultForRead(ctx, source, params, response)
 }
@@ -1206,6 +1210,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		if pastPage != nil {
 			resp.Thread.Turns = pastPage.Thread.Turns
 			resp.OlderCursor = pastPage.OlderCursor
+			resp.Window = pastPage.Window
 			resp.LatestExecutionTurnID = pastPage.LatestExecutionTurnID
 			resp = withReadHistoryIdentity(resp, fallbackHistoryIdentity(read.response, *pastPage))
 			if params.TurnWindow == nil {

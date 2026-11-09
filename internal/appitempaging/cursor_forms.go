@@ -173,8 +173,9 @@ const (
 // WindowCursor fences one continuation boundary to the item version observed
 // when the window was packed.
 type WindowCursor struct {
-	Position    appwire.ThreadItemPosition
-	ItemVersion uint64
+	Position     appwire.ThreadItemPosition
+	ItemVersion  uint64
+	ResumeWindow *appwire.ThreadTurnWindow
 }
 
 type windowCursorWire struct {
@@ -186,6 +187,7 @@ type windowCursorWire struct {
 	Direction         WindowCursorDirection      `json:"direction"`
 	Position          appwire.ThreadItemPosition `json:"position"`
 	ItemVersion       uint64                     `json:"item_version"`
+	ResumeWindow      *appwire.ThreadTurnWindow  `json:"resume_window"`
 }
 
 type windowCursorDecodeWire struct {
@@ -197,12 +199,13 @@ type windowCursorDecodeWire struct {
 	Direction         *WindowCursorDirection    `json:"direction"`
 	Position          *cursorPositionDecodeWire `json:"position"`
 	ItemVersion       *uint64                   `json:"item_version"`
+	ResumeWindow      *appwire.ThreadTurnWindow `json:"resume_window"`
 }
 
 // EncodeWindowCursor creates a continuation with an explicit exclusive-bound
 // direction. It is a separate form from the legacy before-only paging cursor.
 func EncodeWindowCursor(identity CursorIdentity, direction WindowCursorDirection, cursor WindowCursor) (string, error) {
-	if !validIdentity(identity) || !validWindowCursorDirection(direction) {
+	if !validIdentity(identity) || !validWindowCursorDirection(direction) || !validWindowCursorResume(direction, cursor.ResumeWindow) {
 		return "", appwire.TranscriptItemCursorStale()
 	}
 	return encodeCursorForm(windowCursorWire{
@@ -214,6 +217,7 @@ func EncodeWindowCursor(identity CursorIdentity, direction WindowCursorDirection
 		Direction:         direction,
 		Position:          cursor.Position,
 		ItemVersion:       cursor.ItemVersion,
+		ResumeWindow:      cursor.ResumeWindow,
 	})
 }
 
@@ -225,7 +229,26 @@ func DecodeWindowCursor(encoded string, want CursorIdentity, wantDirection Windo
 	if err := decodeCursorForm(encoded, &wire); err != nil || !validIdentity(want) || !validWindowCursorDirection(wantDirection) || !validWindowCursorWire(wire, want, wantDirection) {
 		return WindowCursor{}, appwire.TranscriptItemCursorStale()
 	}
-	return WindowCursor{Position: wire.Position.position(), ItemVersion: *wire.ItemVersion}, nil
+	return windowCursorFromWire(wire), nil
+}
+
+// DecodeWindowCursorForRef validates the self-contained continuation shape
+// before the caller resolves its stable resume selector. The full view and
+// direction fences remain mandatory when DecodeWindowCursor spends it.
+func DecodeWindowCursorForRef(encoded, threadRef string) (WindowCursor, CursorIdentity, WindowCursorDirection, error) {
+	var wire windowCursorDecodeWire
+	if err := decodeCursorForm(encoded, &wire); err != nil || !validWindowCursorShape(wire) {
+		return WindowCursor{}, CursorIdentity{}, "", appwire.TranscriptItemCursorStale()
+	}
+	identity := CursorIdentity{
+		ThreadRef:         *wire.ThreadRef,
+		Incarnation:       *wire.Incarnation,
+		ProjectionVersion: *wire.ProjectionVersion,
+	}
+	if identity.ThreadRef != threadRef {
+		return WindowCursor{}, CursorIdentity{}, "", appwire.TranscriptItemCursorStale()
+	}
+	return windowCursorFromWire(wire), identity, *wire.Direction, nil
 }
 
 // TranslateWindowCursorRef replaces one hub's thread namespace with another's
@@ -233,16 +256,19 @@ func DecodeWindowCursor(encoded string, want CursorIdentity, wantDirection Windo
 // prevents a remote peer from smuggling an unknown cursor form through the
 // controller under its namespace.
 func TranslateWindowCursorRef(encoded, fromThreadRef, toThreadRef string) (string, error) {
-	var wire windowCursorDecodeWire
-	if err := decodeCursorForm(encoded, &wire); err != nil || !validWindowCursorShape(wire) || *wire.ThreadRef != fromThreadRef || toThreadRef == "" {
+	cursor, identity, direction, err := DecodeWindowCursorForRef(encoded, fromThreadRef)
+	if err != nil || toThreadRef == "" {
 		return "", appwire.TranscriptItemCursorStale()
 	}
-	identity := CursorIdentity{
-		ThreadRef:         toThreadRef,
-		Incarnation:       *wire.Incarnation,
-		ProjectionVersion: *wire.ProjectionVersion,
+	identity.ThreadRef = toThreadRef
+	return EncodeWindowCursor(identity, direction, cursor)
+}
+
+func windowCursorFromWire(wire windowCursorDecodeWire) WindowCursor {
+	return WindowCursor{
+		Position: wire.Position.position(), ItemVersion: *wire.ItemVersion,
+		ResumeWindow: wire.ResumeWindow,
 	}
-	return EncodeWindowCursor(identity, *wire.Direction, WindowCursor{Position: wire.Position.position(), ItemVersion: *wire.ItemVersion})
 }
 
 func validWindowCursorWire(wire windowCursorDecodeWire, want CursorIdentity, wantDirection WindowCursorDirection) bool {
@@ -266,7 +292,18 @@ func validWindowCursorShape(wire windowCursorDecodeWire) bool {
 		validIdentity(CursorIdentity{ThreadRef: *wire.ThreadRef, Incarnation: *wire.Incarnation, ProjectionVersion: *wire.ProjectionVersion}) &&
 		wire.Direction != nil && validWindowCursorDirection(*wire.Direction) &&
 		validCursorPosition(wire.Position) &&
-		wire.ItemVersion != nil
+		wire.ItemVersion != nil &&
+		validWindowCursorResume(*wire.Direction, wire.ResumeWindow)
+}
+
+func validWindowCursorResume(direction WindowCursorDirection, window *appwire.ThreadTurnWindow) bool {
+	if window == nil || window.Latest != 0 || appwire.ValidateThreadWindowParams(appwire.ThreadWindowParams{TurnWindow: window}, 0) != nil {
+		return false
+	}
+	if direction == WindowCursorDirectionBackward {
+		return window.Before != nil
+	}
+	return direction == WindowCursorDirectionForward && (window.Since != "" || window.Turn != "")
 }
 
 func validWindowCursorDirection(direction WindowCursorDirection) bool {

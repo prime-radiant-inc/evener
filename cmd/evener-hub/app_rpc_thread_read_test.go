@@ -35,6 +35,83 @@ type windowReadFlipProber struct {
 	probes     atomic.Int64
 }
 
+type movingWindowManagerSource struct {
+	*managerReadSource
+	turns []appwire.Turn
+}
+
+type movingLegacyManagerSource struct {
+	*movingWindowManagerSource
+}
+
+func (*movingLegacyManagerSource) CachedThreadCapabilities(string, string) (appwire.ThreadCapabilities, bool) {
+	return appwire.ThreadCapabilities{}, true
+}
+
+func (*movingWindowManagerSource) CachedThreadCapabilities(string, string) (appwire.ThreadCapabilities, bool) {
+	return appwire.ThreadCapabilities{WindowRead: true}, true
+}
+
+func (s *movingWindowManagerSource) ReadThread(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	turns := s.turns
+	if params.TurnWindow != nil {
+		turns = testResolveTurnWindow(turns, *params.TurnWindow)
+	}
+	return appwire.ThreadReadResponse{
+		Thread:   appwire.Thread{ID: "moving", SessionID: "moving", Evener: appwire.EvenerThread{Ref: params.Ref}, Turns: turns},
+		Snapshot: &appwire.SnapshotIdentity{Incarnation: "fixture", Length: int64(len(s.turns))},
+	}, nil
+}
+
+func movingWindowTestTurns() []appwire.Turn {
+	turns := make([]appwire.Turn, 0, 4)
+	for i, id := range []string{"turn-a", "turn-b", "turn-c", "turn-d"} {
+		position := appwire.ThreadItemPosition{Entry: uint64(i + 1)}
+		turns = append(turns, appwire.Turn{
+			ID: id, Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFull,
+			Items: []appwire.ThreadItem{{
+				ID: id + "-reasoning", Type: "reasoning", TurnID: id, TranscriptKey: id + "-reasoning",
+				Text: strings.Repeat(id, 2_500), Position: &position, Version: 1,
+			}},
+		})
+	}
+	return turns
+}
+
+func requireMovingWindowPage(t *testing.T, page appwire.ThreadTurnsListResponse, withheld int, turnID string) {
+	t.Helper()
+	if page.Window == nil {
+		t.Fatal("moving window page has no window metadata")
+	}
+	if page.Window.WithheldTurns != withheld || page.Window.ContinuationCursor == "" || len(page.Data) != 1 || page.Data[0].ID != turnID {
+		gotTurnID := ""
+		if len(page.Data) > 0 {
+			gotTurnID = page.Data[0].ID
+		}
+		t.Fatalf("moving window page = withheld %d, continuation %t, turns %d, first turn %q; want %d, true, 1, %q",
+			page.Window.WithheldTurns, page.Window.ContinuationCursor != "", len(page.Data), gotTurnID, withheld, turnID)
+	}
+}
+
+func testResolveTurnWindow(turns []appwire.Turn, window appwire.ThreadTurnWindow) []appwire.Turn {
+	if window.Latest > 0 {
+		return turns[max(0, len(turns)-window.Latest):]
+	}
+	index := slices.IndexFunc(turns, func(turn appwire.Turn) bool {
+		return turn.ID == window.Turn || turn.ID == window.Since || window.Before != nil && turn.ID == window.Before.TurnID
+	})
+	if index < 0 {
+		return nil
+	}
+	if window.Turn != "" {
+		return turns[index : index+1]
+	}
+	if window.Since != "" {
+		return turns[index+1 : min(len(turns), index+1+window.Limit)]
+	}
+	return turns[max(0, index-window.Before.Limit):index]
+}
+
 func (p *windowReadFlipProber) Probe(rendezvous.Entry) hubcore.ProbeResult {
 	p.probes.Add(1)
 	result := p.result
@@ -379,7 +456,7 @@ func TestContinueLiveTranscriptWindowBudgetsCanonicalImages(t *testing.T) {
 	}
 	identity := transcriptWindowCursorIdentity(candidates.Identity, windowParams, appwire.ThreadWindowItemLimitDefault)
 	cursor, err := appitempaging.EncodeWindowCursor(identity, appitempaging.WindowCursorDirectionForward, appitempaging.WindowCursor{
-		Position: position, ItemVersion: 1,
+		Position: position, ItemVersion: 1, ResumeWindow: &appwire.ThreadTurnWindow{Turn: "turn_1"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -400,6 +477,88 @@ func TestContinueLiveTranscriptWindowBudgetsCanonicalImages(t *testing.T) {
 	}
 }
 
+func TestContinueLiveTranscriptWindowPreservesResolvedLatestRangeAfterAppend(t *testing.T) {
+	turns := movingWindowTestTurns()
+	base := &managerReadSource{scriptedAppSource: &scriptedAppSource{
+		id: "local", thread: appwire.Thread{ID: "moving", SessionID: "moving", Evener: appwire.EvenerThread{Ref: "local:moving"}},
+	}}
+	source := &movingWindowManagerSource{managerReadSource: base, turns: turns[:3]}
+	params := appwire.ThreadWindowParams{
+		TurnWindow: &appwire.ThreadTurnWindow{Latest: 3}, WindowBudgetBytes: 1,
+	}
+	itemLimit, err := normalizeTranscriptWindowItemLimit(params.TurnWindow, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readParams := appwire.ThreadReadParams{Ref: "local:moving", IncludeTurns: true, ItemLimit: itemLimit, ThreadWindowParams: params}
+	read, err := source.ReadThread(t.Context(), readParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidates, err := sourceItemCandidateResultForRead(t.Context(), source, readParams, read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, err := packThreadTurnsWindowItemCandidates(candidates, func(response appwire.ThreadTurnsListResponse) (appwire.ThreadTurnsListResponse, error) {
+		return response, nil
+	}, transcriptWindowOptionsFor(candidates, params, itemLimit, transcriptWindowAppliedByServingDaemon, appitempaging.FetchCursorOriginServingDaemon))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireMovingWindowPage(t, initial, 2, "turn-c")
+
+	source.turns = turns
+	continued, err := continueLiveTranscriptWindow(t.Context(), source, appwire.ThreadTurnsListParams{
+		Ref: "local:moving", Cursor: initial.Window.ContinuationCursor, ThreadWindowParams: params,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireMovingWindowPage(t, continued, 1, "turn-b")
+}
+
+func TestContinueHubCompatibilityWindowPreservesResolvedLatestRangeAfterAppend(t *testing.T) {
+	turns := movingWindowTestTurns()
+	base := &managerReadSource{scriptedAppSource: &scriptedAppSource{
+		id: "local", thread: appwire.Thread{ID: "moving", SessionID: "moving", Evener: appwire.EvenerThread{Ref: "local:moving"}},
+	}}
+	moving := &movingWindowManagerSource{managerReadSource: base, turns: turns[:3]}
+	source := &movingLegacyManagerSource{movingWindowManagerSource: moving}
+	params := appwire.ThreadWindowParams{
+		TurnWindow: &appwire.ThreadTurnWindow{Latest: 3}, WindowBudgetBytes: 1,
+	}
+	itemLimit, err := normalizeTranscriptWindowItemLimit(params.TurnWindow, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readParams := appwire.ThreadReadParams{Ref: "local:moving", IncludeTurns: true, ItemLimit: itemLimit, ThreadWindowParams: params}
+	read, err := source.ReadThread(t.Context(), appwire.ThreadReadParams{Ref: "local:moving", IncludeTurns: true, ItemLimit: appwire.TranscriptItemPageLimit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	read.Thread.Turns = compatibilityLatestTurns(read.Thread.Turns, params.TurnWindow.Latest)
+	candidates, err := compatibilityItemCandidateResultForRead(t.Context(), source, readParams, read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, err := packThreadTurnsWindowItemCandidates(candidates, func(response appwire.ThreadTurnsListResponse) (appwire.ThreadTurnsListResponse, error) {
+		return response, nil
+	}, transcriptWindowOptionsFor(candidates, params, itemLimit, transcriptWindowAppliedByHubCompat, appitempaging.FetchCursorOriginHubCompat))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireMovingWindowPage(t, initial, 2, "turn-c")
+
+	moving.turns = turns
+	continued, err := continueLiveTranscriptWindow(t.Context(), source, appwire.ThreadTurnsListParams{
+		Ref: "local:moving", Cursor: initial.Window.ContinuationCursor, ThreadWindowParams: params,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireMovingWindowPage(t, continued, 1, "turn-b")
+}
+
 func TestSessionOperationsUsesVisibleHubCompatibilityForOlderDaemon(t *testing.T) {
 	turns := make([]appwire.Turn, 0, 3)
 	for i, id := range []string{"turn_1", "turn_2", "turn_3"} {
@@ -411,6 +570,9 @@ func TestSessionOperationsUsesVisibleHubCompatibilityForOlderDaemon(t *testing.T
 				Text: id, Position: &position, Version: 1,
 			}},
 		})
+	}
+	liveItem := appwire.ThreadItem{
+		ID: "turn_3-live-message", Type: "agentMessage", TurnID: "turn_3", Text: strings.Repeat("still streaming", 20_000),
 	}
 
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "old-daemon", SourceID: "local"})
@@ -426,6 +588,7 @@ func TestSessionOperationsUsesVisibleHubCompatibilityForOlderDaemon(t *testing.T
 				Evener: appwire.EvenerThread{Ref: params.Ref}, Turns: turns,
 			},
 			Snapshot: &appwire.SnapshotIdentity{Incarnation: "legacy-window-snapshot", Length: 3},
+			Overlay:  []appwire.OverlayItem{{Key: "stream:legacy:agentMessage", Kind: appwire.OverlayStream, TurnID: "turn_3", Item: liveItem}},
 		}, nil
 	})
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
@@ -465,6 +628,10 @@ func TestSessionOperationsUsesVisibleHubCompatibilityForOlderDaemon(t *testing.T
 	}
 	if got := []string{response.Turns.Data[0].ID, response.Turns.Data[1].ID}; !slices.Equal(got, []string{"turn_2", "turn_3"}) {
 		t.Fatalf("compatibility turn IDs = %v, want newest two in transcript order", got)
+	}
+	gotLive := response.Turns.Data[1].Items[len(response.Turns.Data[1].Items)-1]
+	if gotLive.ID != liveItem.ID || !gotLive.InFlight || gotLive.FetchCursor != "" {
+		t.Fatalf("compatibility live item = %+v, want selected in-flight item without fetch cursor", gotLive)
 	}
 }
 

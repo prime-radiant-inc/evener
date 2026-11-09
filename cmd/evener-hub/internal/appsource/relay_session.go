@@ -703,6 +703,9 @@ func (s *relaySession) recoverCanonicalFeed() {
 // re-read. Guarded by s.mu.
 func (s *relaySession) recoveryReadPlanLocked() []appwire.ThreadReadParams {
 	params := s.readParams
+	// Fetch is a one-shot byte read, not a feed shape. A disconnect recovers
+	// the live subscription demand without replaying that cursor.
+	params.FetchCursor = ""
 	params.Subscribe = s.refDemandedLocked(params.Ref)
 	plan := []appwire.ThreadReadParams{params}
 

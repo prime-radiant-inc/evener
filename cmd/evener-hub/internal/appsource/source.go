@@ -208,6 +208,25 @@ func (s *LocalDaemonSource) ItemCandidatesFromRead(
 	if err := appitempaging.ValidateCandidates(candidates); err != nil {
 		return ItemCandidateResult{}, err
 	}
+	if params.TurnWindow != nil {
+		cursorIncarnation := localDaemonItemDaemonIdentity(resolved.entry)
+		if response.Snapshot != nil && response.Snapshot.Incarnation != "" {
+			cursorIncarnation = response.Snapshot.Incarnation
+		}
+		if sourceIncarnation, ok := params.SourceIncarnation(cursorIncarnation, params.ItemLimit); ok {
+			cursorIncarnation = sourceIncarnation
+		}
+		return ItemCandidateResult{
+			Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates},
+			Identity: appitempaging.CursorIdentity{
+				ThreadRef:         resolved.pagingRef,
+				Incarnation:       cursorIncarnation,
+				ProjectionVersion: localDaemonItemCursorProjectionVersion,
+			},
+			Exhausted: response.OlderCursor == "",
+			History:   ReadHistoryIdentity(response),
+		}, nil
+	}
 	unlock := s.itemPagingLocks.lock(resolved.pagingRef)
 	defer unlock()
 	if err := ctx.Err(); err != nil {
@@ -271,21 +290,13 @@ func (s *LocalDaemonSource) ItemCandidatesFromRead(
 	if err := s.itemSnapshots.putContext(ctx, resolved.pagingRef, next); err != nil {
 		return ItemCandidateResult{}, err
 	}
-	cursorIncarnation := incarnation
-	if params.TurnWindow != nil && response.Snapshot != nil && response.Snapshot.Incarnation != "" {
-		if sourceIncarnation, ok := params.SourceIncarnation(response.Snapshot.Incarnation, params.ItemLimit); ok {
-			cursorIncarnation = sourceIncarnation
-		} else {
-			cursorIncarnation = response.Snapshot.Incarnation
-		}
-	}
 	return ItemCandidateResult{
 		// The daemon cursor has its own identity. Exhausted retains its truth, but
 		// the hub mints a source-owned cursor from Identity below.
 		Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates},
 		Identity: appitempaging.CursorIdentity{
 			ThreadRef:         resolved.pagingRef,
-			Incarnation:       cursorIncarnation,
+			Incarnation:       incarnation,
 			ProjectionVersion: localDaemonItemCursorProjectionVersion,
 		},
 		Exhausted: response.OlderCursor == "",
