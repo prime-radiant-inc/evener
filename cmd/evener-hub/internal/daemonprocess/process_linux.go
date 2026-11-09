@@ -102,7 +102,11 @@ func (p *linuxProcess) inspect(t Target) (identity, error) {
 	if err != nil {
 		return identity{}, err
 	}
-	base, err := linuxBootEpoch()
+	tick, err := linuxTicksDuration(1, hz)
+	if err != nil {
+		return identity{}, err
+	}
+	base, err := linuxBootEpoch(unix.ClockGettime, tick)
 	if err != nil {
 		return identity{}, err
 	}
@@ -137,43 +141,67 @@ func (p *linuxProcess) inspect(t Target) (identity, error) {
 // before giving up on a quiet one.
 const linuxClockReadAttempts = 8
 
-// linuxClockGettime reads a system clock. Tests replace it to stage a
-// preempted read.
-var linuxClockGettime = unix.ClockGettime
+// linuxClockReadBudgetTicks bounds the boot time linuxBootEpoch spends
+// retrying a preempted pair. A preempted pair is exactly what the retry
+// exists for, so a bound on attempts alone can stack those gaps on the
+// roster path; four ticks covers an ordinary scheduler hiccup and refuses
+// the rest.
+const linuxClockReadBudgetTicks = 4
+
+// linuxBootEpochGapTicks is the largest gap between linuxBootEpoch's two
+// CLOCK_BOOTTIME reads it accepts into a start estimate. One tick is the
+// start's own resolution; linuxStartSettle uses the same band so a fixture
+// published after it cannot drift from this guarantee.
+const linuxBootEpochGapTicks = 1
 
 // linuxBootEpoch is the wall-clock instant CLOCK_BOOTTIME counts from,
-// estimated from one CLOCK_BOOTTIME read and one CLOCK_REALTIME read. The
-// reads are sequential, so a preempted pair over-estimates the epoch by the
-// gap between them; that inflates the process start estimate and can report
-// a live daemon as possibly newer than its rendezvous (#5746). Retry until
-// the pair is read within one clock tick - the start's own resolution - and
-// refuse rather than vouch with a bound the read cannot justify.
-func linuxBootEpoch() (time.Time, error) {
-	hz, err := linuxClockHZ()
+// estimated from two CLOCK_BOOTTIME reads framing one CLOCK_REALTIME read.
+// The reads are sequential, so a preempted pair over-estimates the epoch by
+// the gap between them; that inflates the process start estimate and can
+// report a live daemon as possibly newer than its rendezvous (#5746). Retry
+// until the pair is read within linuxBootEpochGapTicks - the start's own
+// resolution - and refuse rather than vouch with a bound the read cannot
+// justify. A tick the caller already derived is passed in rather than
+// recomputed.
+func linuxBootEpoch(get func(int32, *unix.Timespec) error, tick time.Duration) (time.Time, error) {
+	var start time.Duration
+	for attempt := range linuxClockReadAttempts {
+		var before, wall, after unix.Timespec
+		if err := get(unix.CLOCK_BOOTTIME, &before); err != nil {
+			return time.Time{}, err
+		}
+		if err := get(unix.CLOCK_REALTIME, &wall); err != nil {
+			return time.Time{}, err
+		}
+		if err := get(unix.CLOCK_BOOTTIME, &after); err != nil {
+			return time.Time{}, err
+		}
+		if attempt == 0 {
+			start = time.Duration(before.Nano())
+		}
+		if time.Duration(after.Nano()-before.Nano()) <= linuxBootEpochGapTicks*tick {
+			return time.Unix(wall.Sec, wall.Nsec).Add(-time.Duration(before.Nano())), nil
+		}
+		if time.Duration(after.Nano())-start > linuxClockReadBudgetTicks*tick {
+			break
+		}
+	}
+	return time.Time{}, errors.New("daemon process start clock read interrupted")
+}
+
+// linuxStartSettle is the boot-time instant after which a rendezvous for a
+// process started at ticks cannot be read as older than the process: the end
+// of the start tick plus the largest read gap linuxBootEpoch accepts.
+func linuxStartSettle(ticks, hz uint64) (time.Duration, error) {
+	_, upper, err := linuxStartOffsetBounds(ticks, hz)
 	if err != nil {
-		return time.Time{}, err
+		return 0, err
 	}
 	tick, err := linuxTicksDuration(1, hz)
 	if err != nil {
-		return time.Time{}, err
+		return 0, err
 	}
-	for range linuxClockReadAttempts {
-		var before, wall, after unix.Timespec
-		if err := linuxClockGettime(unix.CLOCK_BOOTTIME, &before); err != nil {
-			return time.Time{}, err
-		}
-		if err := linuxClockGettime(unix.CLOCK_REALTIME, &wall); err != nil {
-			return time.Time{}, err
-		}
-		if err := linuxClockGettime(unix.CLOCK_BOOTTIME, &after); err != nil {
-			return time.Time{}, err
-		}
-		if time.Duration(after.Nano()-before.Nano()) > tick {
-			continue
-		}
-		return time.Unix(wall.Sec, wall.Nsec).Add(-time.Duration(before.Nano())), nil
-	}
-	return time.Time{}, errors.New("daemon process start clock read interrupted")
+	return upper + linuxBootEpochGapTicks*tick, nil
 }
 
 // linuxPFExiting is the kernel's PF_EXITING task flag: set when a process
