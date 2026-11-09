@@ -1023,6 +1023,10 @@ memoryOutbox
   // decision that it stays internal; an entry a specifier starts to re-export,
   // or one the build stops shipping, fails below so the list cannot go stale.
   const internalModules = [
+    // The generated ladder is an implementation detail: surfaces consume the
+    // rank table and FALLBACK_EFFORT_LEVELS through reasoningEffort's
+    // re-exports, never the generated arrays directly.
+    "reasoningEffort.gen",
     "state/extensions/keyedRevision",
     "state/extensions/listRevision",
     "state/extensions/storeLifecycle",

@@ -14,6 +14,7 @@
 // only when no anchor parses or the clock is not a finite number.
 import { type ActivityDelegate, isActivityFailure, isFailedDelegateOutcome } from "./activityData";
 import { firstLine } from "./displayFormat";
+import { RUNNING_QUIET_AFTER_MS } from "./quiet";
 import { nonblank } from "./toolCallText";
 
 export type DelegateTimingFields = Pick<
@@ -47,9 +48,9 @@ export type DelegateDotFields = Pick<ActivityDelegate, "outcome" | "status" | "p
 export type DelegateDotState = "fresh" | "quiet" | "attention" | "failed" | "idle";
 
 /** How long a running row may stay silent before its dot dims - the same
- * threshold the why-line's quiet words used. One constant, because every
- * surface must flip at the same instant. */
-export const DELEGATE_QUIET_AFTER_MS = 20_000;
+ * threshold the why-line's quiet words used. This is the shared quiet rule's
+ * name for delegate rows; every surface flips on RUNNING_QUIET_AFTER_MS. */
+export const DELEGATE_QUIET_AFTER_MS = RUNNING_QUIET_AFTER_MS;
 
 // The phases that owe a person something, in the wire's own vocabulary.
 const ATTENTION_PHASES = new Set(["awaiting_approval", "awaiting_input", "needs-you"]);
