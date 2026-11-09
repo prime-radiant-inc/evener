@@ -1,18 +1,23 @@
 // PluginDetailSheet: the plugin's own editor for the Segmented Workspace
-// redesign. Opens from an InstalledSection row tap; owns every per-plugin
-// ACTION (enable/disable, auto-upgrade, upgrade, remove) so the list rows
-// stay single-target. A right side Sheet on desktop, a bottom Sheet on
-// mobile (same content, geometry follows useIsMobile). The catalog
-// description is lazily pulled from the browse cache (browseMarketplace
-// no-ops when the marketplace is already cached, so re-opens are free).
+// redesign. Opens from an InstalledSection row tap (installed mode) or a
+// BrowseSection catalog row tap (catalog mode); owns every per-plugin
+// ACTION (enable/disable, auto-upgrade, upgrade, remove; install in catalog
+// mode) so the list rows stay single-target. A right side Sheet on desktop,
+// a bottom Sheet on mobile (same content, geometry follows useIsMobile).
+// The catalog description is lazily pulled from the browse cache
+// (browseMarketplace no-ops when the marketplace is already cached, so
+// re-opens are free); installed mode's Contents block is lazily pulled from
+// the components cache the same way (fetchPluginComponents no-ops for keys
+// the cache already holds).
 
 import { errorText, marketplaceSourceLabel } from "@evener/appwire-client";
-import { HUB_WRITE_BUSY, isHubWriteBusy } from "@evener/appwire-client/state/extensions";
+import { HUB_WRITE_BUSY, isHubWriteBusy, pluginComponentsKey } from "@evener/appwire-client/state/extensions";
 import { useEffect, useRef, useState } from "react";
 import { useIsMobile } from "../../../../shell/useIsMobile";
 import {
   Button,
   ConfirmDialog,
+  InlineNotice,
   PropertyList,
   type PropertyListRow,
   Sheet,
@@ -21,6 +26,7 @@ import {
   useToasts,
 } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { PluginContents } from "../../../plugins/PluginContents";
 import { pluginStatusChips } from "../../../plugins/pluginStatusChips";
 import { useExtensionsHostState, useExtensionsHostStore } from "./hostStore";
 import styles from "./marketplacesPlugins.module.css";
@@ -33,8 +39,16 @@ const CLASS = {
   focusRoot: requireClass(styles.focusRoot, "marketplacesPlugins.module.css", "focusRoot"),
 };
 
+/** What the sheet is editing, decided by whoever opened it: the installed
+ * entry's editor, or the not-yet-installed catalog plugin's sheet. The
+ * plugin/marketplace pair is the wire address in both modes; `mode` is a
+ * UI-only discriminator, so the pair alone reaches every RPC. */
+export type PluginDetailTarget =
+  | { mode: "installed"; plugin: string; marketplace: string }
+  | { mode: "catalog"; plugin: string; marketplace: string };
+
 export interface PluginDetailSheetProps {
-  target: { plugin: string; marketplace: string } | null;
+  target: PluginDetailTarget | null;
   onClose: () => void;
 }
 
@@ -43,6 +57,7 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
   const plugins = useExtensionsHostState((s) => s.plugins);
   const marketplaces = useExtensionsHostState((s) => s.marketplaces) ?? [];
   const browseCatalogs = useExtensionsHostState((s) => s.browseCatalogs);
+  const pluginComponents = useExtensionsHostState((s) => s.pluginComponents);
   const hubWriteBusy = useExtensionsHostState((s) => s.hubWriteBusy);
   const pluginsUnavailable = useExtensionsHostState(
     (s) => s.plugins === null || s.pluginsError !== null || s.pluginsLoading,
@@ -52,6 +67,7 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
   const toasts = useToasts();
 
   const [pendingRemove, setPendingRemove] = useState(false);
+  const [pendingInstall, setPendingInstall] = useState(false);
   // Any commit that takes away the control holding the keyboard - the
   // Upgrade button a successful upgrade unmounts, or the remove confirm's
   // buttons disabled while the remove runs - would drop focus to <body>; the
@@ -60,18 +76,21 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
   const focusRoot = useRef<HTMLDivElement>(null);
   useFocusRehome(focusRoot);
 
+  const pair = target === null ? undefined : { plugin: target.plugin, marketplace: target.marketplace };
+
   const entry =
-    target === null || plugins === null
+    pair === undefined || plugins === null
       ? undefined
-      : plugins.find((p) => p.plugin === target.plugin && p.marketplace === target.marketplace);
-  const chips = entry === undefined ? [] : pluginStatusChips(entry);
+      : plugins.find((p) => p.plugin === pair.plugin && p.marketplace === pair.marketplace);
+  const chips = target !== null && target.mode === "installed" && entry !== undefined ? pluginStatusChips(entry) : [];
 
   // The entry can vanish under an open sheet - a remove completing (this
   // sheet's own or another client's), or a refetch after external change.
   // An editor for a thing that no longer exists closes itself rather than
-  // rendering stale actions.
+  // rendering stale actions. A catalog sheet has no entry to vanish - its
+  // plugin not being installed is what opened it - so it stays open.
   useEffect(() => {
-    if (target !== null && plugins !== null && entry === undefined) onClose();
+    if (target !== null && target.mode === "installed" && plugins !== null && entry === undefined) onClose();
   }, [target, plugins, entry, onClose]);
 
   // Lazy catalog browse for the description. browseMarketplace no-ops when
@@ -84,6 +103,46 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
       void store.getState().browseMarketplace(target.marketplace);
     }
   }, [target, store]);
+
+  // Lazy components read for the Contents block: installed mode only (a
+  // catalog sheet shows no Contents - spec decision 2). fetchPluginComponents
+  // no-ops for keys the cache already holds - loading keys are awaited, and
+  // settled keys send nothing - so this costs one request per target, ever.
+  useEffect(() => {
+    if (target === null || target.mode !== "installed") return;
+    void store.getState().fetchPluginComponents([{ plugin: target.plugin, marketplace: target.marketplace }]);
+  }, [target, store]);
+
+  const componentsEntry = pair === undefined ? undefined : pluginComponents.get(pluginComponentsKey(pair));
+
+  function handleRetryComponents(): void {
+    if (pair === undefined) return;
+    // The reload is the store's own drop-and-reread: fetchPluginComponents
+    // never re-requests a key the cache already holds - a settled error
+    // entry included - so only the store dropping the entry makes a fresh
+    // read go out.
+    void store.getState().reloadPluginComponents([pair]);
+  }
+
+  async function handleConfirmInstall(): Promise<void> {
+    if (pair === undefined || pluginsUnavailable) return;
+    // Installed since the sheet opened - here or from another client: the
+    // confirm's work is already done, and a second install call is not.
+    if (entry !== undefined) {
+      setPendingInstall(false);
+      return;
+    }
+    try {
+      await store.getState().installPlugin(pair.plugin, pair.marketplace);
+      toasts.push("success", `Installed ${pair.plugin}`);
+      setPendingInstall(false);
+      // The catalog sheet's whole purpose is fulfilled; the browse list it
+      // returns to now shows the installed row.
+      onClose();
+    } catch (err) {
+      toasts.push("error", isHubWriteBusy(err) ? HUB_WRITE_BUSY : `Install failed: ${errorText(err)}`);
+    }
+  }
 
   async function handleToggleEnable(currentlyEnabled: boolean) {
     if (target === null || mutationDisabled) return;
@@ -127,71 +186,113 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
     }
   }
 
-  const open = target !== null && entry !== undefined;
+  const open = target !== null && (target.mode === "catalog" || entry !== undefined);
 
-  const cache = target === null ? undefined : browseCatalogs.get(target.marketplace);
-  const description =
-    cache?.status === "loaded" && entry !== undefined
-      ? cache.plugins.find((p) => p.name === entry.plugin)?.description
-      : undefined;
-  const marketplaceEntry = entry === undefined ? undefined : marketplaces.find((m) => m.name === entry.marketplace);
+  const cache = pair === undefined ? undefined : browseCatalogs.get(pair.marketplace);
+  const catalogEntry =
+    pair === undefined || cache?.status !== "loaded" ? undefined : cache.plugins.find((p) => p.name === pair.plugin);
+  const description = catalogEntry?.description;
+  const marketplaceEntry = pair === undefined ? undefined : marketplaces.find((m) => m.name === pair.marketplace);
+
+  const metaRows: PropertyListRow[] = [
+    ...(target !== null && target.mode === "installed" && entry !== undefined
+      ? [{ label: "Version", value: `v${entry.version || "unknown"}`, mono: true }]
+      : []),
+    { label: "Marketplace", value: pair?.marketplace ?? "" },
+    ...(marketplaceEntry !== undefined
+      ? [{ label: "Source", value: marketplaceSourceLabel(marketplaceEntry.source), mono: true }]
+      : []),
+    // Catalog metadata carries the author the browse catalog knows; an
+    // installed entry's metadata stays today's rows.
+    ...(target?.mode === "catalog" && catalogEntry?.author !== undefined
+      ? [{ label: "Author", value: catalogEntry.author }]
+      : []),
+  ];
+
+  // Where the Contents block goes, between the description and the metadata.
+  // Only a settled inventory renders - the block appears when the answer
+  // lands, and a broken plugin's load failure or an unreadable inventory
+  // takes its place, never "Manifest only" (that reading is reserved for a
+  // loadable plugin that ships nothing).
+  const contentsBlock =
+    target?.mode !== "installed" ||
+    componentsEntry === undefined ||
+    componentsEntry.status === "loading" ? null : componentsEntry.status === "loaded" ? (
+      <PluginContents components={componentsEntry.components} />
+    ) : entry?.broken ? (
+      <InlineNotice tone="danger" data-reason="plugin-broken">
+        {componentsEntry.error}
+      </InlineNotice>
+    ) : (
+      <InlineNotice
+        tone="neutral"
+        data-reason="components-degraded"
+        action={
+          <Button size="sm" onClick={handleRetryComponents}>
+            Retry
+          </Button>
+        }
+      >
+        {componentsEntry.error}
+      </InlineNotice>
+    );
 
   return (
     <div ref={focusRoot} className={CLASS.focusRoot}>
       <Sheet
         open={open}
         onClose={onClose}
-        title={entry?.plugin ?? ""}
+        title={pair?.plugin ?? ""}
         side={isMobile ? "bottom" : "right"}
         footer={
-          entry !== undefined && (
-            <>
-              {/* Offered only when the hub's update check found one; an older hub
-                  without the check offers none. */}
-              {entry.updateAvailable && (
-                <Button variant="primary" onClick={() => void handleUpgrade()} aria-disabled={mutationDisabled}>
-                  Upgrade
+          target !== null &&
+          (target.mode === "catalog" ? (
+            <Button variant="primary" disabled={mutationDisabled} onClick={() => setPendingInstall(true)}>
+              Install
+            </Button>
+          ) : (
+            entry !== undefined && (
+              <>
+                {/* Offered only when the hub's update check found one; an older hub
+                    without the check offers none. */}
+                {entry.updateAvailable && (
+                  <Button variant="primary" onClick={() => void handleUpgrade()} aria-disabled={mutationDisabled}>
+                    Upgrade
+                  </Button>
+                )}
+                <Button variant="danger" disabled={mutationDisabled} onClick={() => setPendingRemove(true)}>
+                  Remove
                 </Button>
-              )}
-              <Button variant="danger" disabled={mutationDisabled} onClick={() => setPendingRemove(true)}>
-                Remove
-              </Button>
-            </>
-          )
+              </>
+            )
+          ))
         }
       >
-        {entry !== undefined && (
+        {open && (
           <>
             {chips.length > 0 && <div className={CLASS.chipRow}>{chips}</div>}
             {description !== undefined && <p className={CLASS.sheetDesc}>{description}</p>}
+            {contentsBlock}
             <div className={CLASS.metaList}>
-              <PropertyList
-                rows={
-                  [
-                    { label: "Version", value: `v${entry.version || "unknown"}`, mono: true },
-                    { label: "Marketplace", value: entry.marketplace },
-                    ...(marketplaceEntry !== undefined
-                      ? [{ label: "Source", value: marketplaceSourceLabel(marketplaceEntry.source), mono: true }]
-                      : []),
-                  ] satisfies PropertyListRow[]
-                }
-              />
+              <PropertyList rows={metaRows} />
             </div>
-            <div className={CLASS.switchRows}>
-              <Switch
-                checked={entry.enabled}
-                onChange={() => void handleToggleEnable(entry.enabled)}
-                pending={mutationDisabled}
-                label="Enabled by default"
-                description="Used by new sessions with the default plugin selection. Custom launches and existing sessions keep their own selections."
-              />
-              <Switch
-                checked={entry.autoUpgrade}
-                onChange={() => void handleToggleAutoUpgrade(entry.autoUpgrade)}
-                pending={mutationDisabled}
-                label="Auto-upgrade"
-              />
-            </div>
+            {target?.mode === "installed" && entry !== undefined && (
+              <div className={CLASS.switchRows}>
+                <Switch
+                  checked={entry.enabled}
+                  onChange={() => void handleToggleEnable(entry.enabled)}
+                  pending={mutationDisabled}
+                  label="Enabled by default"
+                  description="Used by new sessions with the default plugin selection. Custom launches and existing sessions keep their own selections."
+                />
+                <Switch
+                  checked={entry.autoUpgrade}
+                  onChange={() => void handleToggleAutoUpgrade(entry.autoUpgrade)}
+                  pending={mutationDisabled}
+                  label="Auto-upgrade"
+                />
+              </div>
+            )}
           </>
         )}
       </Sheet>
@@ -204,6 +305,19 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
         onCancel={() => setPendingRemove(false)}
       >
         {target !== null ? `Remove plugin "${target.plugin}"?` : ""}
+      </ConfirmDialog>
+      <ConfirmDialog
+        open={pendingInstall && target !== null && target.mode === "catalog"}
+        title="Install plugin"
+        confirmLabel="Install"
+        destructive={false}
+        busy={mutationDisabled}
+        onConfirm={() => void handleConfirmInstall()}
+        onCancel={() => setPendingInstall(false)}
+      >
+        {target !== null
+          ? `Install "${target.plugin}" from ${target.marketplace}? This makes it available on this host.`
+          : ""}
       </ConfirmDialog>
     </div>
   );

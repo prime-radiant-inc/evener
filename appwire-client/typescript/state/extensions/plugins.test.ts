@@ -420,6 +420,38 @@ describe("pluginComponents cache", () => {
     expect(store.getState().pluginComponents.get("formatter@acme")).toEqual({ status: "error", error });
   });
 
+  test("reloadPluginComponents drops a settled entry - error or loaded - so a retry re-reads it", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(COMPONENTS, failing("method not found"));
+    await store.getState().fetchPluginComponents([{ plugin: "linter", marketplace: "acme" }]);
+    const error = friendlyErrorMessage(new Error("method not found"));
+    expect(store.getState().pluginComponents.get("linter@acme")).toEqual({ status: "error", error });
+    // A plain fetch after the failure re-requests nothing: the settled entry
+    // is the store's word on the key.
+    await store.getState().fetchPluginComponents([{ plugin: "linter", marketplace: "acme" }]);
+    expect(fake.calls.filter((call) => call.method === COMPONENTS)).toHaveLength(1);
+
+    fake.on(COMPONENTS, () => ({ results: [componentRow("linter")] }));
+    await store.getState().reloadPluginComponents([{ plugin: "linter", marketplace: "acme" }]);
+    expect(fake.calls.filter((call) => call.method === COMPONENTS)).toHaveLength(2);
+    expect(store.getState().pluginComponents.get("linter@acme")).toEqual({
+      status: "loaded",
+      components: { skills: ["linter:run"] },
+    });
+
+    // A reload also replaces a settled loaded entry, not only an error one.
+    fake.on(COMPONENTS, () => ({ results: [componentRow("formatter")] }));
+    await store.getState().reloadPluginComponents([
+      { plugin: "linter", marketplace: "acme" },
+      { plugin: "formatter", marketplace: "acme" },
+    ]);
+    expect(fake.calls.filter((call) => call.method === COMPONENTS)).toHaveLength(3);
+    expect(store.getState().pluginComponents.get("linter@acme")).toEqual({
+      status: "loaded",
+      components: { skills: ["formatter:run"] },
+    });
+  });
+
   test("an answer that carries no rows lands an error entry for every requested key", async () => {
     const { fake, store } = storeWithFake();
     fake.on(COMPONENTS, () => ({ results: [] }));

@@ -83,6 +83,12 @@ export interface PluginsState {
    * settled keys send nothing - so concurrent calls for the same missing keys
    * coalesce into the first request. Never throws; state tracks it. */
   fetchPluginComponents(targets: ReadonlyArray<PluginComponentsReadTarget>): Promise<void>;
+  /** Drops these targets' cached entries, whatever their status, and reads
+   * them again: the retry after a failed read (an older hub's method error)
+   * - fetchPluginComponents never re-requests a key the cache already holds,
+   * so only dropping the entry makes a fresh read go out. Never throws;
+   * state tracks it. */
+  reloadPluginComponents(targets: ReadonlyArray<PluginComponentsReadTarget>): Promise<void>;
   fetchPlugins(): Promise<void>;
   /** Asks the hub whether each plugin has a newer version: a git-backed one's
    * remote, or a marketplace-relative one's refreshed marketplace clone
@@ -156,7 +162,9 @@ export function createPluginsStore(client: PluginsClient, gate: HubWriteGate): P
    * returning the next pluginComponents map. Called only once a mutation has
    * landed (or a notification says one landed elsewhere): a bump ahead of a
    * request that then fails would fence out the in-flight batch and strand
-   * the "loading" entries it had already written. */
+   * the "loading" entries it had already written. Also called by
+   * reloadPluginComponents, whose re-read immediately re-registers for the
+   * same keys, so a read it fences cannot strand its marker behind it. */
   function retirePluginComponents(
     cached: Map<string, PluginComponentsEntry>,
     keys: (string | undefined)[],
@@ -334,6 +342,12 @@ export function createPluginsStore(client: PluginsClient, gate: HubWriteGate): P
         }
         if (missing.length) waits.push(readPluginComponents(missing));
         await Promise.all(waits);
+      },
+
+      async reloadPluginComponents(targets) {
+        const keys = targets.map((target) => pluginComponentsKey(target));
+        set((s) => ({ pluginComponents: retirePluginComponents(s.pluginComponents, keys) }));
+        await get().fetchPluginComponents(targets);
       },
 
       fetchPlugins() {

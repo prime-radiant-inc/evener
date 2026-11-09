@@ -45,9 +45,19 @@ export interface BrowseSectionProps {
   expandedMarketplaces: Set<string>;
   setExpandedMarketplaces: Dispatch<SetStateAction<Set<string>>>;
   onSources?: () => void;
+  /** Opens the plugin detail sheet when a catalog row's main area is
+   * selected. The section's parent owns the sheet and resolves the target
+   * (an already-installed row opens its installed entry); absent for a
+   * standalone render, whose rows then carry no open action. */
+  onOpen?: (plugin: string, marketplace: string) => void;
 }
 
-export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces, onSources }: BrowseSectionProps) {
+export function BrowseSection({
+  expandedMarketplaces,
+  setExpandedMarketplaces,
+  onSources,
+  onOpen,
+}: BrowseSectionProps) {
   const store = useExtensionsHostStore();
   const marketplaces = useExtensionsHostState((s) => s.marketplaces) ?? [];
   const plugins = useExtensionsHostState((s) => s.plugins) ?? [];
@@ -61,6 +71,7 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces, o
   const [filterQuery, setFilterQuery] = useState("");
   const [filterLoading, setFilterLoading] = useState(false);
   const [pendingInstall, setPendingInstall] = useState<{ plugin: string; marketplace: string } | null>(null);
+  const openPlugin = onOpen ?? (() => {});
 
   const trimmedQuery = filterQuery.trim();
 
@@ -220,6 +231,7 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces, o
               isInstalled={isInstalled}
               installDisabled={hubWriteBusy || pluginsUnavailable}
               onToggle={() => toggleExpanded(m.name)}
+              onOpen={openPlugin}
               onInstall={(plugin, marketplace) => setPendingInstall({ plugin, marketplace })}
             />
           ))
@@ -256,6 +268,7 @@ function MarketplaceNode({
   isInstalled,
   installDisabled,
   onToggle,
+  onOpen,
   onInstall,
 }: {
   marketplace: MarketplaceEntry;
@@ -265,6 +278,7 @@ function MarketplaceNode({
   isInstalled: (plugin: string, marketplace: string) => boolean;
   installDisabled: boolean;
   onToggle: () => void;
+  onOpen: (plugin: string, marketplace: string) => void;
   onInstall: (plugin: string, marketplace: string) => void;
 }) {
   const store = useExtensionsHostStore();
@@ -318,12 +332,9 @@ function MarketplaceNode({
                   plugin={p}
                   installed={isInstalled(p.name, marketplace.name)}
                   installDisabled={installDisabled}
-                  // The main area's open target is the plugin detail sheet,
-                  // which this surface does not own: the section's parent
-                  // wires it once the sheet can open a catalog row. Until
-                  // then the main area holds the shared row's shape and only
-                  // the trailing Install acts.
-                  onOpen={() => {}}
+                  // The main area opens the plugin detail sheet; the
+                  // section's parent resolves installed-vs-catalog.
+                  onOpen={() => onOpen(p.name, marketplace.name)}
                   onInstall={() => onInstall(p.name, marketplace.name)}
                 />
               </li>
