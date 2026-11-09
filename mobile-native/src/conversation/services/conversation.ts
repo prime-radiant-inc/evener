@@ -279,6 +279,16 @@ function extractCapabilities(raw: unknown): ThreadCapabilities {
 		}
 		caps.pageBefore = pageBefore;
 	}
+	// voiceArm is the hub's per-session answer, stamped on reads and on the status
+	// frames it relays. A hub that predates it omits the field; dropping a pushed
+	// value would replace a read's true with the default and hide voice.
+	const voiceArm = obj.voiceArm;
+	if (voiceArm !== undefined) {
+		if (typeof voiceArm !== "boolean") {
+			throw new Error(`ConversationService: capability "voiceArm" is not a boolean`);
+		}
+		caps.voiceArm = voiceArm;
+	}
 	return caps;
 }
 

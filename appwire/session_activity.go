@@ -142,12 +142,16 @@ type SessionDelegate struct {
 	Error                  string `json:"error,omitempty"`
 	Terminal               bool   `json:"terminal"`
 	Resumable              bool   `json:"resumable"`
-	NotResumableReason     string `json:"notResumableReason,omitempty"`
-	Model                  string `json:"model,omitempty"`
-	ReasoningEffort        string `json:"reasoningEffort,omitempty"`
-	RunStartedAt           string `json:"runStartedAt,omitempty"`
-	RunEndedAt             string `json:"runEndedAt,omitempty"`
-	LatestActivityAt       string `json:"latestActivityAt,omitempty"`
+	// NeedsAttention means the delegate has delivered input it has not consumed
+	// yet, such as a question, a descendant report or a job completion. The
+	// delegate processes it autonomously; it is not by itself a human question.
+	NeedsAttention     bool   `json:"needsAttention,omitempty"`
+	NotResumableReason string `json:"notResumableReason,omitempty"`
+	Model              string `json:"model,omitempty"`
+	ReasoningEffort    string `json:"reasoningEffort,omitempty"`
+	RunStartedAt       string `json:"runStartedAt,omitempty"`
+	RunEndedAt         string `json:"runEndedAt,omitempty"`
+	LatestActivityAt   string `json:"latestActivityAt,omitempty"`
 	// LatestIntent is the open generation's newest stated tool-call intent
 	// ("Reading the board's row tests."), one line of at most MaxIntentRunes:
 	// the controller's live value when non-empty, else the folded journal

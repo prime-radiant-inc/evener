@@ -1,6 +1,8 @@
 import type { AnyNotification } from "@evener/appwire-client";
 import {
   ConnectionClosedError,
+  configFingerprint,
+  encodeLocalConfig,
   friendlyErrorMessage,
   makeTranscriptDisplayConfig,
   RequestTimeoutError,
@@ -12,7 +14,7 @@ import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { connectionStore } from "../../../stores/connection";
 import {
@@ -20,6 +22,7 @@ import {
   resetTranscriptDisplayStoreForTests,
   transcriptDisplayStore,
 } from "../../../stores/transcriptDisplay";
+import { makeSourceId } from "../../../stores/transcriptDisplay/crossTabSync";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { toastKinds } from "../../../widgets/toast/toastTestUtils";
@@ -27,6 +30,24 @@ import { TranscriptSection } from "./transcript";
 
 const originalPatchHubDefault = transcriptDisplayStore.getState().patchHubDefault;
 const activeObservers = new Set<MutationObserver>();
+
+// Node's BroadcastChannel is one channel per process, not one per jsdom
+// document: every parallel test file shares the name, so a concurrently
+// running file's store writes arrive here as if from another browser tab and
+// overwrite this file's local layouts mid-test (issue 5837). Give this file's
+// channel its own name so sibling test files can neither write into this
+// store nor hear this file's writes, while channels created inside this file
+// still reach each other exactly as two tabs do.
+const unscopedBroadcastChannel = globalThis.BroadcastChannel;
+const transcriptChannelFileScope = makeSourceId();
+const fileScopedBroadcastChannel =
+  typeof unscopedBroadcastChannel === "function"
+    ? class FileScopedBroadcastChannel extends unscopedBroadcastChannel {
+        constructor(name: string) {
+          super(`${name}::${transcriptChannelFileScope}`);
+        }
+      }
+    : undefined;
 
 class FailingStorage extends MemoryStorage {
   setItem(): void {
@@ -36,6 +57,11 @@ class FailingStorage extends MemoryStorage {
 
 beforeAll(() => {
   installLocalStorage(new MemoryStorage());
+  if (fileScopedBroadcastChannel !== undefined) globalThis.BroadcastChannel = fileScopedBroadcastChannel;
+});
+
+afterAll(() => {
+  if (typeof unscopedBroadcastChannel === "function") globalThis.BroadcastChannel = unscopedBroadcastChannel;
 });
 
 beforeEach(() => {
@@ -172,6 +198,58 @@ test("scope and its clear action precede editing, while shared changes preserve 
     transcriptDisplayStore.getState().hub.desktop?.config,
   );
   expect(client.calls.filter((call) => call.method === "evener/settings/transcriptDisplay/patch")).toHaveLength(1);
+});
+
+// A sibling test file driving the same store is another jsdom document, not
+// another tab of this one: its local writes must not land here. The file-scoped
+// channel above renames this file's channel, which is what keeps the two apart
+// (issue 5837). This test publishes only on that private name, never on the
+// suite-wide one, so it cannot itself pollute a sibling file's store.
+test("keeps this file's cross-tab channel apart from a sibling file's", async () => {
+  if (typeof unscopedBroadcastChannel !== "function") return;
+  const name = "evener.transcript-display.v1";
+  const privateName = `${name}::${transcriptChannelFileScope}`;
+  // What the store in this file subscribes on, created through the global the
+  // file installed above.
+  const ours = new globalThis.BroadcastChannel(name);
+  // A channel on the bare production name: what an unwrapped sibling file's
+  // store listens on.
+  const sibling = new unscopedBroadcastChannel(name);
+  // A channel on this file's private name proves the message really went
+  // through the event loop, so a slow machine cannot make this pass early.
+  const witness = new unscopedBroadcastChannel(privateName);
+  try {
+    const config = makeTranscriptDisplayConfig({ kind: "preset", level: "full" });
+    const delivered = new Promise<void>((resolve) => {
+      witness.onmessage = () => resolve();
+    });
+    // Only this test's own frame counts: the bare name also carries any other
+    // parallel file's writes, and those are not this test's business.
+    const sourceId = makeSourceId();
+    let siblingHeard = 0;
+    sibling.onmessage = (event) => {
+      const data = event.data as { sourceId?: string };
+      if (data?.sourceId === sourceId) siblingHeard += 1;
+    };
+    ours.postMessage({
+      version: 1,
+      sourceId,
+      layout: "desktop",
+      config: encodeLocalConfig(config),
+      fingerprint: configFingerprint(config),
+    });
+    await act(async () => {
+      await delivered;
+    });
+    // The sibling on the bare name heard nothing, while a tab of this file
+    // still reaches this store.
+    expect(siblingHeard).toBe(0);
+    expect(Object.keys(transcriptDisplayStore.getState().local)).toEqual(["desktop"]);
+  } finally {
+    ours.close();
+    sibling.close();
+    witness.close();
+  }
 });
 
 test("shows an accessible status for an unknown or older hub", () => {

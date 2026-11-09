@@ -3,6 +3,8 @@
 package hub
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,11 +17,13 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/sandbox/sandboxtest"
+	"primeradiant.com/evener/execsupport/syncio"
 )
 
 // cleanupBarrierProofBudget bounds the graceful-shutdown proof in the tests
@@ -36,10 +40,19 @@ const managerCleanupFailureChildEnv = "EVENER_MANAGER_CLEANUP_FAILURE_CHILD"
 const managerCleanupFailureRootReportEnv = "EVENER_MANAGER_CLEANUP_FAILURE_ROOT_REPORT"
 const managerCleanupCompositionChildEnv = "EVENER_MANAGER_CLEANUP_COMPOSITION_CHILD"
 const managerCleanupCompositionReportEnv = "EVENER_MANAGER_CLEANUP_COMPOSITION_REPORT"
+const managerCleanupClosedDelayEnv = "EVENER_MANAGER_CLEANUP_CLOSED_DELAY"
+const managerCleanupClosedExitEnv = "EVENER_MANAGER_CLEANUP_CLOSED_EXIT_WITHOUT_SIGNAL"
 const hostCleanupBoundaryEnv = "EVENER_HOST_CLEANUP_BOUNDARY"
 const hostCleanupBoundaryReportEnv = "EVENER_HOST_CLEANUP_BOUNDARY_REPORT"
 const hostCleanupBoundaryMarkEnv = "EVENER_HOST_CLEANUP_BOUNDARY_MARK"
 const hostCleanupBoundaryFailEnv = "EVENER_HOST_CLEANUP_BOUNDARY_FAIL"
+
+// cleanupBarrierPipeFd is where a fixture helper finds the milestone pipe its
+// parent passed through exec.Cmd.ExtraFiles.
+const cleanupBarrierPipeFd = 3
+
+const cleanupBarrierReady = "ready"
+const cleanupBarrierClosed = "closed"
 
 var managerCleanupConfigFlag = flag.String("manager-cleanup-process-config", "", "config path marker for the listener cleanup process test")
 
@@ -50,6 +63,7 @@ type managerCleanupCompositionResult struct {
 	HubSignal       string `json:"hub_signal"`
 	DaemonExited    bool   `json:"daemon_exited"`
 	CleanupReturned bool   `json:"cleanup_returned"`
+	Stage           string `json:"stage"`
 }
 
 type managerCleanupFailureResult struct {
@@ -59,10 +73,48 @@ type managerCleanupFailureResult struct {
 	Retained      bool   `json:"retained"`
 }
 
+var (
+	cleanupBarrierOnce sync.Once
+	cleanupBarrierFile *os.File
+	errCleanupBarrier  error
+)
+
+// signalCleanupBarrier writes one milestone to the pipe the parent handed this
+// process as fd 3. The helper calls it only after the matching file barrier
+// exists, so a parent that reads the milestone can rely on the file.
+func signalCleanupBarrier(milestone string) error {
+	cleanupBarrierOnce.Do(func() {
+		cleanupBarrierFile = os.NewFile(cleanupBarrierPipeFd, "cleanup-barrier")
+		if cleanupBarrierFile == nil {
+			errCleanupBarrier = fmt.Errorf("cleanup barrier pipe is not open on fd %d", cleanupBarrierPipeFd)
+			return
+		}
+		info, err := cleanupBarrierFile.Stat()
+		if err != nil {
+			errCleanupBarrier = fmt.Errorf("stat cleanup barrier fd %d: %w", cleanupBarrierPipeFd, err)
+			return
+		}
+		if info.Mode()&os.ModeNamedPipe == 0 {
+			// Writing milestones into an inherited regular file or socket would
+			// corrupt it silently; only the parent's pipe may receive them.
+			errCleanupBarrier = fmt.Errorf("cleanup barrier fd %d is %v, want a pipe", cleanupBarrierPipeFd, info.Mode())
+		}
+	})
+	if errCleanupBarrier != nil {
+		return errCleanupBarrier
+	}
+	_, err := fmt.Fprintln(cleanupBarrierFile, milestone)
+	return err
+}
+
 func runManagerCleanupServeHelper() {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGTERM, syscall.SIGUSR1)
 	if err := os.WriteFile(os.Getenv(managerCleanupServeReadyEnv), []byte("ready"), 0o600); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	if err := signalCleanupBarrier(cleanupBarrierReady); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
@@ -90,6 +142,9 @@ func TestManagerReadinessCleanupProcessHelper(t *testing.T) {
 	if err := os.WriteFile(os.Getenv(managerCleanupReadyEnv), []byte(listener.Addr().String()), 0o600); err != nil {
 		t.Fatalf("write readiness: %v", err)
 	}
+	if err := signalCleanupBarrier(cleanupBarrierReady); err != nil {
+		t.Fatalf("signal readiness barrier: %v", err)
+	}
 	listenerClosed := false
 	for sig := range signals {
 		switch sig {
@@ -98,8 +153,21 @@ func TestManagerReadinessCleanupProcessHelper(t *testing.T) {
 				if err := listener.Close(); err != nil {
 					t.Fatalf("close listener: %v", err)
 				}
+				if delay := os.Getenv(managerCleanupClosedDelayEnv); delay != "" {
+					parsed, err := time.ParseDuration(delay)
+					if err != nil {
+						t.Fatalf("parse %s %q: %v", managerCleanupClosedDelayEnv, delay, err)
+					}
+					time.Sleep(parsed)
+				}
+				if os.Getenv(managerCleanupClosedExitEnv) == "1" {
+					t.Fatalf("helper exits without signaling the cleanup barrier")
+				}
 				if err := os.WriteFile(os.Getenv(managerCleanupClosedEnv), []byte("closed"), 0o600); err != nil {
 					t.Fatalf("write listener-closed barrier: %v", err)
+				}
+				if err := signalCleanupBarrier(cleanupBarrierClosed); err != nil {
+					t.Fatalf("signal listener-closed barrier: %v", err)
 				}
 				listenerClosed = true
 			}
@@ -126,13 +194,13 @@ func TestManagerAcceptanceCleanupReapsDaemonAfterHubProofFailure(t *testing.T) {
 		var result managerCleanupCompositionResult
 		data, err := os.ReadFile(reportPath)
 		if err != nil {
-			t.Fatalf("read child process report: %v\n%s", err, output)
+			t.Fatalf("composition child did not write its report: %v\nchild output:\n%s", err, output)
 		}
 		if err := json.Unmarshal(data, &result); err != nil {
-			t.Fatalf("decode child process report: %v: %s", err, data)
+			t.Fatalf("decode composition child report: %v: %s\nchild output:\n%s", err, data, output)
 		}
 		if !result.CleanupReturned || !result.Retained || !result.HubExited || result.HubSignal != "killed" || !result.DaemonExited {
-			t.Fatalf("cleanup result = %+v; output:\n%s", result, output)
+			t.Fatalf("composition result = %+v (child failed at stage %q); child output:\n%s", result, result.Stage, output)
 		}
 		if _, err := os.Stat(filepath.Join(result.Root, retainHostCleanupRootMarker)); err != nil {
 			t.Fatalf("child cleanup root was not retained: %v", err)
@@ -144,6 +212,19 @@ func TestManagerAcceptanceCleanupReapsDaemonAfterHubProofFailure(t *testing.T) {
 	}
 
 	root := t.TempDir()
+	// The child's report is its only durable hand-off, so it must exist even
+	// when the child fails: the parent then reads the partial result and names
+	// the child's stage instead of an unrelated missing-file error.
+	result := managerCleanupCompositionResult{Root: os.Getenv(sandboxtest.RootVar)}
+	t.Cleanup(func() {
+		data, marshalErr := json.Marshal(result)
+		if marshalErr == nil {
+			marshalErr = os.WriteFile(os.Getenv(managerCleanupCompositionReportEnv), data, 0o600)
+		}
+		if marshalErr != nil {
+			t.Errorf("write composition result: %v", marshalErr)
+		}
+	})
 	hostDir := filepath.Join(root, "fixture")
 	binDir := filepath.Join(hostDir, "bin")
 	if err := os.MkdirAll(binDir, 0o700); err != nil {
@@ -163,11 +244,10 @@ func TestManagerAcceptanceCleanupReapsDaemonAfterHubProofFailure(t *testing.T) {
 	}
 	readyPath := filepath.Join(root, "hub-ready")
 	closedPath := filepath.Join(root, "hub-closed")
+	result.Stage = "start hub helper"
 	hub := exec.Command(fixtureBin, "-test.run=^TestManagerReadinessCleanupProcessHelper$", "-manager-cleanup-process-config="+config)
 	hub.Env = append(os.Environ(), managerCleanupHelperEnv+"=1", managerCleanupListenEnv+"=127.0.0.1:0", managerCleanupReadyEnv+"="+readyPath, managerCleanupClosedEnv+"="+closedPath)
-	if err := hub.Start(); err != nil {
-		t.Fatal(err)
-	}
+	hubBarrier := startCleanupBarrierProcess(t, hub)
 	hubWaited := false
 	defer func() {
 		if !hubWaited {
@@ -175,17 +255,17 @@ func TestManagerAcceptanceCleanupReapsDaemonAfterHubProofFailure(t *testing.T) {
 			_ = hub.Wait()
 		}
 	}()
-	waitForCleanupFile(t, readyPath)
+	result.Stage = "await hub helper readiness"
+	hubBarrier.await(cleanupBarrierReady)
 	addrBytes, err := os.ReadFile(readyPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	daemonReady := filepath.Join(root, "daemon-ready")
+	result.Stage = "start daemon helper"
 	daemon := exec.Command(fixtureBin, "serve", "--dir="+hostDir, "--state-dir="+hostDir)
 	daemon.Env = append(os.Environ(), managerCleanupServeHelperEnv+"=1", managerCleanupServeReadyEnv+"="+daemonReady)
-	if err := daemon.Start(); err != nil {
-		t.Fatal(err)
-	}
+	daemonBarrier := startCleanupBarrierProcess(t, daemon)
 	daemonWaited := false
 	defer func() {
 		if !daemonWaited {
@@ -193,13 +273,18 @@ func TestManagerAcceptanceCleanupReapsDaemonAfterHubProofFailure(t *testing.T) {
 			_ = daemon.Wait()
 		}
 	}()
-	waitForCleanupFile(t, daemonReady)
+	result.Stage = "await daemon helper readiness"
+	daemonBarrier.await(cleanupBarrierReady)
 	host := &hostSSH{t: t, target: "local-process-fixture", execCommand: func(ctx context.Context, script string) *exec.Cmd {
 		return exec.CommandContext(ctx, "/bin/bash", "-c", script)
 	}}
-	awaitListenerClosedAndProcessHeld(t, host, strings.TrimSpace(string(addrBytes)), config, fixtureBin, closedPath)
+	result.Stage = "await listener closed and process held"
+	awaitListenerClosedAndProcessHeld(t, host, strings.TrimSpace(string(addrBytes)), config, fixtureBin, hubBarrier)
+	result.Stage = "cleanup acceptance fixture"
 	cleanupManagerAcceptanceFixture(t, host, strings.TrimSpace(string(addrBytes)), config, fixtureBin, hostDir, cleanupBarrierProofBudget, true)
-	result := managerCleanupCompositionResult{Root: os.Getenv(sandboxtest.RootVar), Retained: hostCleanupRootMustBeRetained(os.Getenv(sandboxtest.RootVar)), CleanupReturned: true}
+	result.CleanupReturned = true
+	result.Retained = hostCleanupRootMustBeRetained(result.Root)
+	result.Stage = "await hub exit"
 	hubWait := make(chan error, 1)
 	go func() { hubWait <- hub.Wait() }()
 	select {
@@ -216,6 +301,7 @@ func TestManagerAcceptanceCleanupReapsDaemonAfterHubProofFailure(t *testing.T) {
 		<-hubWait
 		hubWaited = true
 	}
+	result.Stage = "await daemon exit"
 	daemonWait := make(chan error, 1)
 	go func() { daemonWait <- daemon.Wait() }()
 	select {
@@ -227,16 +313,113 @@ func TestManagerAcceptanceCleanupReapsDaemonAfterHubProofFailure(t *testing.T) {
 		<-daemonWait
 		daemonWaited = true
 	}
-	data, marshalErr := json.Marshal(result)
-	if marshalErr == nil {
-		marshalErr = os.WriteFile(os.Getenv(managerCleanupCompositionReportEnv), data, 0o600)
-	}
-	if marshalErr != nil {
-		t.Errorf("write composition result: %v", marshalErr)
-	}
+	result.Stage = "assert reaped state"
 	if !result.HubExited || !result.DaemonExited || !result.Retained {
 		t.Errorf("composition did not reap and retain all owned state: %+v", result)
 	}
+}
+
+// TestManagerCleanupClosedBarrierWaitsForTheHelperNotTheWallClock holds the
+// helper's closed barrier past the old five-second wall deadline on purpose. A
+// parent that decides by wall time fails this case; a parent that awaits the
+// helper's own signal waits as long as the helper actually takes.
+func TestManagerCleanupClosedBarrierWaitsForTheHelperNotTheWallClock(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	readyPath := filepath.Join(root, "ready")
+	closedPath := filepath.Join(root, "closed")
+	cmd := exec.Command(exe,
+		"-test.run=^TestManagerReadinessCleanupProcessHelper$",
+		"-manager-cleanup-process-config="+filepath.Join(root, "hub.toml"),
+	)
+	cmd.Env = append(os.Environ(),
+		managerCleanupHelperEnv+"=1",
+		managerCleanupListenEnv+"=127.0.0.1:0",
+		managerCleanupReadyEnv+"="+readyPath,
+		managerCleanupClosedEnv+"="+closedPath,
+		managerCleanupClosedDelayEnv+"=5300ms",
+	)
+	barrier := startCleanupBarrierProcess(t, cmd)
+	waited := false
+	defer func() {
+		if !waited {
+			_ = cmd.Process.Signal(syscall.SIGUSR1)
+			_ = cmd.Wait()
+		}
+	}()
+	barrier.await(cleanupBarrierReady)
+	// Signal directly so the helper's hold starts when the await starts. A
+	// kill-command round trip in between would eat into the margin over the old
+	// five-second deadline this case exists to outlast.
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("signal the fixture hub: %v", err)
+	}
+	barrier.await(cleanupBarrierClosed)
+	if _, err := os.Stat(closedPath); err != nil {
+		t.Fatalf("fixture hub signaled closed without writing its file barrier: %v", err)
+	}
+	if err := cmd.Process.Signal(syscall.SIGUSR1); err != nil {
+		t.Fatalf("release listener-close/exit barrier: %v", err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("wait for fixture hub process: %v", err)
+	}
+	waited = true
+}
+
+// TestManagerCleanupClosedBarrierReportsHelperExitWithoutSignal pins the
+// failure side of the milestone pipe: a helper that dies before signaling must
+// fail with that exit and its output, never with a wall-clock timeout.
+func TestManagerCleanupClosedBarrierReportsHelperExitWithoutSignal(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	readyPath := filepath.Join(root, "ready")
+	closedPath := filepath.Join(root, "closed")
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(exe,
+		"-test.run=^TestManagerReadinessCleanupProcessHelper$",
+		"-manager-cleanup-process-config="+filepath.Join(root, "hub.toml"),
+	)
+	cmd.Env = append(os.Environ(),
+		managerCleanupHelperEnv+"=1",
+		managerCleanupListenEnv+"=127.0.0.1:0",
+		managerCleanupReadyEnv+"="+readyPath,
+		managerCleanupClosedEnv+"="+closedPath,
+		managerCleanupClosedExitEnv+"=1",
+	)
+	barrier := startCleanupBarrierProcess(t, cmd)
+	waited := false
+	defer func() {
+		if !waited {
+			_ = cmd.Process.Signal(syscall.SIGUSR1)
+			_ = cmd.Wait()
+		}
+	}()
+	barrier.await(cleanupBarrierReady)
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("signal the fixture hub: %v", err)
+	}
+	waitErr := barrier.wait(cleanupBarrierClosed)
+	if waitErr == nil {
+		t.Fatal("closed barrier succeeded although the helper exited without signaling it")
+	}
+	if !strings.Contains(waitErr.Error(), "helper exited before signaling") {
+		t.Fatalf("closed barrier failure = %v, want the helper's exit, not a timeout", waitErr)
+	}
+	if !strings.Contains(waitErr.Error(), "helper exits without signaling the cleanup barrier") {
+		t.Fatalf("closed barrier failure does not carry the helper's failure: %v", waitErr)
+	}
+	if _, err := os.Stat(closedPath); !os.IsNotExist(err) {
+		t.Fatalf("helper wrote the closed barrier before exiting, stat err = %v", err)
+	}
+	waited = true
 }
 
 // TestStopHostListenerWaitsForTheOwnedHubProcess uses a real listener process
@@ -274,9 +457,7 @@ func TestStopHostListenerWaitsForTheOwnedHubProcess(t *testing.T) {
 		managerCleanupReadyEnv+"="+readyPath,
 		managerCleanupClosedEnv+"="+closedPath,
 	)
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
+	barrier := startCleanupBarrierProcess(t, cmd)
 	waited := false
 	defer func() {
 		if !waited {
@@ -284,7 +465,7 @@ func TestStopHostListenerWaitsForTheOwnedHubProcess(t *testing.T) {
 			_ = cmd.Wait()
 		}
 	}()
-	waitForCleanupFile(t, readyPath)
+	barrier.await(cleanupBarrierReady)
 	addrBytes, err := os.ReadFile(readyPath)
 	if err != nil {
 		t.Fatal(err)
@@ -297,7 +478,7 @@ func TestStopHostListenerWaitsForTheOwnedHubProcess(t *testing.T) {
 	host := &hostSSH{t: t, target: "local-process-fixture", execCommand: func(ctx context.Context, script string) *exec.Cmd {
 		return exec.CommandContext(ctx, "/bin/bash", "-c", script)
 	}}
-	awaitListenerClosedAndProcessHeld(t, host, addr, config, fixtureBin, closedPath)
+	awaitListenerClosedAndProcessHeld(t, host, addr, config, fixtureBin, barrier)
 	stopErr := proveHostListenerGone(host, addr, config, fixtureBin, cleanupBarrierProofBudget)
 	if stopErr == nil {
 		t.Fatalf("stopHostListener returned success after the listener closed while its owned PID %d was still held at the exit barrier", cmd.Process.Pid)
@@ -373,9 +554,7 @@ func TestStopHostListenerReapsOwnedProcessAfterProofFailure(t *testing.T) {
 	closedPath := filepath.Join(root, "closed")
 	cmd := exec.Command(fixtureBin, "-test.run=^TestManagerReadinessCleanupProcessHelper$", "-manager-cleanup-process-config="+config)
 	cmd.Env = append(os.Environ(), managerCleanupHelperEnv+"=1", managerCleanupListenEnv+"=127.0.0.1:0", managerCleanupReadyEnv+"="+readyPath, managerCleanupClosedEnv+"="+closedPath)
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
+	barrier := startCleanupBarrierProcess(t, cmd)
 	waited := false
 	defer func() {
 		if !waited {
@@ -383,7 +562,7 @@ func TestStopHostListenerReapsOwnedProcessAfterProofFailure(t *testing.T) {
 			_ = cmd.Wait()
 		}
 	}()
-	waitForCleanupFile(t, readyPath)
+	barrier.await(cleanupBarrierReady)
 	addrBytes, err := os.ReadFile(readyPath)
 	if err != nil {
 		t.Fatal(err)
@@ -391,7 +570,7 @@ func TestStopHostListenerReapsOwnedProcessAfterProofFailure(t *testing.T) {
 	host := &hostSSH{t: t, target: "local-process-fixture", execCommand: func(ctx context.Context, script string) *exec.Cmd {
 		return exec.CommandContext(ctx, "/bin/bash", "-c", script)
 	}}
-	awaitListenerClosedAndProcessHeld(t, host, strings.TrimSpace(string(addrBytes)), config, fixtureBin, closedPath)
+	awaitListenerClosedAndProcessHeld(t, host, strings.TrimSpace(string(addrBytes)), config, fixtureBin, barrier)
 	proofSucceeded := stopHostListenerAlreadySignaled(t, host, strings.TrimSpace(string(addrBytes)), config, fixtureBin, cleanupBarrierProofBudget)
 	cleanupFailed := t.Failed()
 	if proofSucceeded {
@@ -538,9 +717,7 @@ func TestHostHubKillTargetsEvenerFixtureBinary(t *testing.T) {
 		managerCleanupReadyEnv+"="+readyPath,
 		managerCleanupClosedEnv+"="+closedPath,
 	)
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
+	barrier := startCleanupBarrierProcess(t, cmd)
 	waited := false
 	defer func() {
 		if !waited {
@@ -548,7 +725,7 @@ func TestHostHubKillTargetsEvenerFixtureBinary(t *testing.T) {
 			_ = cmd.Wait()
 		}
 	}()
-	waitForCleanupFile(t, readyPath)
+	barrier.await(cleanupBarrierReady)
 	addrBytes, err := os.ReadFile(readyPath)
 	if err != nil {
 		t.Fatal(err)
@@ -571,7 +748,7 @@ func TestHostHubKillTargetsEvenerFixtureBinary(t *testing.T) {
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("run fixture hub kill command: %v\n%s", err, output)
 	}
-	waitForCleanupFile(t, closedPath)
+	barrier.await(cleanupBarrierClosed)
 	if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
 		t.Fatalf("listener-close barrier did not retain the fixture PID %d: %v", cmd.Process.Pid, err)
 	}
@@ -604,9 +781,7 @@ func TestHostHubKillPreservesProcessWithDifferentConfig(t *testing.T) {
 	closedPath := filepath.Join(root, "closed")
 	cmd := exec.Command(fixtureBin, "-test.run=^TestManagerReadinessCleanupProcessHelper$", "-manager-cleanup-process-config="+actualConfig)
 	cmd.Env = append(os.Environ(), managerCleanupHelperEnv+"=1", managerCleanupListenEnv+"=127.0.0.1:0", managerCleanupReadyEnv+"="+readyPath, managerCleanupClosedEnv+"="+closedPath)
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
+	barrier := startCleanupBarrierProcess(t, cmd)
 	waited := false
 	defer func() {
 		if !waited {
@@ -614,7 +789,7 @@ func TestHostHubKillPreservesProcessWithDifferentConfig(t *testing.T) {
 			_ = cmd.Wait()
 		}
 	}()
-	waitForCleanupFile(t, readyPath)
+	barrier.await(cleanupBarrierReady)
 	addrBytes, err := os.ReadFile(readyPath)
 	if err != nil {
 		t.Fatal(err)
@@ -690,9 +865,7 @@ func TestHostHubReapPreservesProcessWithDifferentConfig(t *testing.T) {
 	closedPath := filepath.Join(root, "closed")
 	cmd := exec.Command(fixtureBin, "-test.run=^TestManagerReadinessCleanupProcessHelper$", "-manager-cleanup-process-config="+actualConfig)
 	cmd.Env = append(os.Environ(), managerCleanupHelperEnv+"=1", managerCleanupListenEnv+"=127.0.0.1:0", managerCleanupReadyEnv+"="+readyPath, managerCleanupClosedEnv+"="+closedPath)
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
+	barrier := startCleanupBarrierProcess(t, cmd)
 	waited := false
 	defer func() {
 		if !waited {
@@ -700,7 +873,7 @@ func TestHostHubReapPreservesProcessWithDifferentConfig(t *testing.T) {
 			_ = cmd.Wait()
 		}
 	}()
-	waitForCleanupFile(t, readyPath)
+	barrier.await(cleanupBarrierReady)
 	host := &hostSSH{t: t, target: "local-process-fixture", execCommand: func(ctx context.Context, script string) *exec.Cmd {
 		return exec.CommandContext(ctx, "/bin/bash", "-c", script)
 	}}
@@ -752,12 +925,10 @@ func TestHostHubReapPreservesConfigPathPrefixCollision(t *testing.T) {
 		closedPath := filepath.Join(root, fmt.Sprintf("closed-%d", i))
 		cmd := exec.Command(fixtureBin, "-test.run=^TestManagerReadinessCleanupProcessHelper$", "-manager-cleanup-process-config="+config)
 		cmd.Env = append(os.Environ(), managerCleanupHelperEnv+"=1", managerCleanupListenEnv+"=127.0.0.1:0", managerCleanupReadyEnv+"="+readyPath, managerCleanupClosedEnv+"="+closedPath)
-		if err := cmd.Start(); err != nil {
-			t.Fatal(err)
-		}
+		barrier := startCleanupBarrierProcess(t, cmd)
 		commands = append(commands, cmd)
 		closeds = append(closeds, closedPath)
-		waitForCleanupFile(t, readyPath)
+		barrier.await(cleanupBarrierReady)
 	}
 	host := &hostSSH{t: t, target: "local-process-fixture", execCommand: func(ctx context.Context, script string) *exec.Cmd {
 		return exec.CommandContext(ctx, "/bin/bash", "-c", script)
@@ -935,18 +1106,85 @@ func withoutEnv(env []string, names ...string) []string {
 	return filtered
 }
 
+// cleanupBarrier is the parent's read side of the milestone pipe a fixture
+// process inherits as fd 3. The helper writes one line per milestone after its
+// file barrier exists, so the parent blocks on the helper's own completion
+// instead of polling wall time. EOF means the helper exited without reaching
+// the milestone: a precise failure, never a timeout.
+type cleanupBarrier struct {
+	t      *testing.T
+	cmd    *exec.Cmd
+	file   *os.File
+	reader *bufio.Reader
+	output *bytes.Buffer
+}
+
+// startCleanupBarrierProcess starts a fixture helper with the write end of a
+// milestone pipe on fd 3 and returns the read end. The parent closes its own
+// writer copy before returning, so the pipe reaches EOF when the helper exits.
+func startCleanupBarrierProcess(t *testing.T, cmd *exec.Cmd) *cleanupBarrier {
+	t.Helper()
+	readEnd, writeEnd, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create cleanup barrier pipe: %v", err)
+	}
+	cmd.ExtraFiles = append(cmd.ExtraFiles, writeEnd)
+	// The helper's stdout and stderr are drained by separate goroutines;
+	// syncio serializes them, and cmd.Wait joins the drains before output is read.
+	output := &bytes.Buffer{}
+	sink := syncio.NewWriter(output)
+	cmd.Stdout = sink
+	cmd.Stderr = sink
+	if err := cmd.Start(); err != nil {
+		_ = readEnd.Close()
+		_ = writeEnd.Close()
+		t.Fatalf("start fixture helper: %v", err)
+	}
+	if err := writeEnd.Close(); err != nil {
+		_ = readEnd.Close()
+		t.Fatalf("close parent cleanup barrier writer: %v", err)
+	}
+	barrier := &cleanupBarrier{t: t, cmd: cmd, file: readEnd, reader: bufio.NewReader(readEnd), output: output}
+	t.Cleanup(func() { _ = barrier.file.Close() })
+	return barrier
+}
+
+// await blocks until the helper signals milestone and fails the test when the
+// helper exits first.
+func (b *cleanupBarrier) await(milestone string) {
+	b.t.Helper()
+	if err := b.wait(milestone); err != nil {
+		b.t.Fatal(err)
+	}
+}
+
+// wait returns the helper's milestone or, on EOF, the helper's exit cause and
+// captured output.
+func (b *cleanupBarrier) wait(milestone string) error {
+	b.t.Helper()
+	line, err := b.reader.ReadString('\n')
+	if err != nil {
+		waitErr := b.cmd.Wait()
+		return fmt.Errorf("await cleanup barrier %q: helper exited before signaling: read error %w, helper exit %w; helper output:\n%s", milestone, err, waitErr, b.output.String())
+	}
+	if got := strings.TrimSpace(line); got != milestone {
+		return fmt.Errorf("cleanup barrier = %q, want %q", got, milestone)
+	}
+	return nil
+}
+
 // awaitListenerClosedAndProcessHeld drives the fixture to the state the
 // exit-barrier tests exist for: the hub kill command has run, the helper has
-// closed its listener (its closed barrier is present), and the owned PID is
+// closed its listener (it signaled the closed milestone), and the owned PID is
 // still alive. The graceful-shutdown proof can then only refuse, so its budget
 // can be short; asserting the state first is what stops a fast proof from
 // silently timing out before the fixture reached the case it decides.
-func awaitListenerClosedAndProcessHeld(t *testing.T, host *hostSSH, addr, configPath, binaryPath, closedPath string) {
+func awaitListenerClosedAndProcessHeld(t *testing.T, host *hostSSH, addr, configPath, binaryPath string, closedBarrier *cleanupBarrier) {
 	t.Helper()
 	if err := host.tryRun(hostHubKillCommand(addr, configPath, binaryPath)); err != nil {
 		t.Fatalf("signal the fixture hub: %v", err)
 	}
-	waitForCleanupFile(t, closedPath)
+	closedBarrier.await(cleanupBarrierClosed)
 	port := addr[strings.LastIndex(addr, ":")+1:]
 	out, err := host.runStdout(hostListenerProbeScript(port))
 	if err != nil || !hostListenerProbeAbsent(out) {
@@ -956,18 +1194,4 @@ func awaitListenerClosedAndProcessHeld(t *testing.T, host *hostSSH, addr, config
 	if err != nil || hostHubProcessesAbsent(processes) {
 		t.Fatalf("the owned fixture process is not proven present: err=%v out=%q", err, processes)
 	}
-}
-
-func waitForCleanupFile(t *testing.T, path string) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(path); err == nil {
-			return
-		} else if !os.IsNotExist(err) {
-			t.Fatalf("stat barrier %s: %v", path, err)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for cleanup barrier %s (%s)", path, fmt.Sprint(deadline))
 }

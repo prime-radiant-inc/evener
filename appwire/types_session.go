@@ -197,11 +197,16 @@ type ArchiveParams struct {
 	Source string `json:"source,omitempty"`
 }
 
-// ArchiveResponse confirms the durable decision and returns the navigation
-// receipt committed by the same refresh that publishes its invalidation.
+// ArchiveResponse confirms the durable decision and returns its navigation
+// receipt. When NavigationDeferred is set the receipt was not built before the
+// refresh deadline: Navigation carries the live generation with no targets, and
+// the change arrives later as an invalidation.
 type ArchiveResponse struct {
 	OK         bool               `json:"ok"`
 	Navigation NavigationMutation `json:"navigation"`
+	// NavigationDeferred reports that the archive decision is durable but its
+	// receipt was deferred; do not retry the decision as failed.
+	NavigationDeferred bool `json:"navigationDeferred,omitempty"`
 }
 
 // ProjectDeleteParams identifies the exact local project to delete. WorkingDir
@@ -621,21 +626,25 @@ type ServerInfo struct {
 
 type FeatureSet struct {
 	VoicePresentationContextV1 bool `json:"voicePresentationContextV1,omitempty"`
-	ConversationProvenance     bool `json:"conversationProvenance,omitempty"`
-	Voice                      bool `json:"voice,omitempty"`
-	SessionTools               bool `json:"sessionTools,omitempty"`
-	ThreadList                 bool `json:"threadList"`
-	ThreadTurnsList            bool `json:"threadTurnsList"`
-	TurnStart                  bool `json:"turnStart"`
-	TurnSteer                  bool `json:"turnSteer"`
-	ThreadClear                bool `json:"threadClear"`
-	ThreadShutdown             bool `json:"threadShutdown"`
-	ForkFromTurn               bool `json:"forkFromTurn"`
-	Tasks                      bool `json:"tasks"`
-	TranscriptList             bool `json:"transcriptList"`
-	ModelList                  bool `json:"modelList"`
-	DirectoryComplete          bool `json:"directoryComplete"`
-	Auth                       bool `json:"auth"`
-	TranscriptDisplaySettings  bool `json:"transcriptDisplaySettings,omitempty"`
-	KeybindingsSettings        bool `json:"keybindingsSettings,omitempty"`
+	// VoiceArmV1 marks a hub that stamps ThreadCapabilities.VoiceArm, its
+	// per-session answer to whether the iPhone may offer voice now. A client
+	// reads the thread bit only when this feature is present.
+	VoiceArmV1                bool `json:"voiceArmV1,omitempty"`
+	ConversationProvenance    bool `json:"conversationProvenance,omitempty"`
+	Voice                     bool `json:"voice,omitempty"`
+	SessionTools              bool `json:"sessionTools,omitempty"`
+	ThreadList                bool `json:"threadList"`
+	ThreadTurnsList           bool `json:"threadTurnsList"`
+	TurnStart                 bool `json:"turnStart"`
+	TurnSteer                 bool `json:"turnSteer"`
+	ThreadClear               bool `json:"threadClear"`
+	ThreadShutdown            bool `json:"threadShutdown"`
+	ForkFromTurn              bool `json:"forkFromTurn"`
+	Tasks                     bool `json:"tasks"`
+	TranscriptList            bool `json:"transcriptList"`
+	ModelList                 bool `json:"modelList"`
+	DirectoryComplete         bool `json:"directoryComplete"`
+	Auth                      bool `json:"auth"`
+	TranscriptDisplaySettings bool `json:"transcriptDisplaySettings,omitempty"`
+	KeybindingsSettings       bool `json:"keybindingsSettings,omitempty"`
 }

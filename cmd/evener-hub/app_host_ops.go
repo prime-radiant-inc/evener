@@ -701,7 +701,7 @@ func operationsQuery(params appwire.HostOperationsParams) (hostops.OperationsQue
 		Cursor:            params.Cursor,
 	}
 	if params.State != "" {
-		state, err := hostopsState(params.State)
+		state, err := validOperationState(params.State)
 		if err != nil {
 			return hostops.OperationsQuery{}, appwire.InvalidParams(fmt.Sprintf("evener/host/operations: %v", err))
 		}
@@ -714,23 +714,13 @@ func operationsQuery(params appwire.HostOperationsParams) (hostops.OperationsQue
 	return query, nil
 }
 
-// hostopsState maps the wire's closed operation-state set onto the store's.
-func hostopsState(state appwire.OperationState) (hostops.State, error) {
-	switch state {
-	case appwire.OperationStatePending:
-		return hostops.StatePending, nil
-	case appwire.OperationStateRunning:
-		return hostops.StateRunning, nil
-	case appwire.OperationStateComplete:
-		return hostops.StateComplete, nil
-	case appwire.OperationStateFailed:
-		return hostops.StateFailed, nil
-	case appwire.OperationStateInterrupted:
-		return hostops.StateInterrupted, nil
-	case appwire.OperationStateOrphanUnverified:
-		return hostops.StateOrphanUnverified, nil
+// validOperationState checks an operation state against the closed set. The
+// store and wire types are aliases, so the work is the check, not a mapping.
+func validOperationState(state appwire.OperationState) (appwire.OperationState, error) {
+	if !state.Valid() {
+		return "", fmt.Errorf("operation state %q is outside the closed set", state)
 	}
-	return "", fmt.Errorf("operation state %q is outside the wire's set", state)
+	return state, nil
 }
 
 // operationsRefusal maps the store's read refusals onto §11's envelopes:
@@ -809,7 +799,7 @@ func operationsResponse(page hostops.OperationsPage) (appwire.HostOperationsResp
 // `compacted` marker is set exactly on a read-only replay rebuilt from a dedup
 // tombstone.
 func operationRecordWire(record hostops.Record) (appwire.OperationRecord, error) {
-	state, err := operationWireState(record.State)
+	state, err := validOperationState(record.State)
 	if err != nil {
 		return appwire.OperationRecord{}, err
 	}

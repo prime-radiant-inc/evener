@@ -32,6 +32,7 @@ import {
   memo,
   type FocusEvent as ReactFocusEvent,
   type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -80,7 +81,7 @@ import styles from "./composer.module.css";
 import { consumeComposerFocus, requestComposerFocus, useComposerFocusRequest } from "./composerFocus";
 import { STEER_RECOVERY_FENCED_REASON, steerTooltipLabel, submitTooltipLabel } from "./controlTooltips";
 import { readDraftRevision } from "./draft";
-import { useNarrowComposer } from "./narrowComposer";
+import { useDuoCoverLayout, useNarrowComposer } from "./narrowComposer";
 import { QueueStrip } from "./queue";
 import { useBlockedMutationEntries } from "./queue/pendingTurnsStore";
 import { consumeQuoteInsert, useQuoteInsertRequest } from "./quoteInsert";
@@ -188,6 +189,9 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   // Torn down by the next press or unmount, so a press whose click never
   // arrives cannot accumulate document listeners.
   const composerPressReleaseRef = useRef<(() => void) | null>(null);
+  // Identifies the press that owns the hold, so a stale release's deferred
+  // clear cannot clear a later press's hold.
+  const composerPressSeqRef = useRef(0);
   const submitButtonRef = useRef<HTMLButtonElement>(null);
   const tasksPanelRef = useRef<TasksPanelHandle>(null);
   // Set by scheduleCursorRestore below; consumed (and cleared) by the
@@ -256,6 +260,7 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   // Steer moves into the menu below the phone-width boundary.
   // narrowComposer.ts measures the pane, not the viewport.
   const [narrow, attachNarrowRef] = useNarrowComposer();
+  const duoCoverLayout = useDuoCoverLayout();
   const composerRootRef = useRef<HTMLDivElement | null>(null);
   const attachComposerRoot = useCallback(
     (element: HTMLDivElement | null) => {
@@ -295,8 +300,14 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     if (active && (root.contains(active) || active.closest('[role="menu"], [role="listbox"], [role="dialog"]'))) return;
     setEditorEngaged(false);
   };
-  const holdComposerPress = (): void => {
+  const holdComposerPress = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    // Only the primary press can hold editing: a right or middle press fires
+    // pointerdown but no click, so a hold armed here could never be released.
+    if (event.button !== 0) return;
+    // Drop the previous press's listeners without its deferred clear: the new
+    // press owns the hold from this moment.
     composerPressReleaseRef.current?.();
+    const press = ++composerPressSeqRef.current;
     composerPointerRef.current = true;
     const doc = composerRootRef.current?.ownerDocument;
     if (!doc) return;
@@ -308,6 +319,7 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
       // task so the blur that follows still sees the hold, then reconcile
       // the resting row now that the transfer has settled.
       setTimeout(() => {
+        if (composerPressSeqRef.current !== press) return;
         composerPointerRef.current = false;
         reconcileEditorEngagement();
       }, 0);
@@ -341,8 +353,10 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
       )
         return;
       const active = doc.activeElement;
-      if (active && (root.contains(active) || active.closest('[role="menu"], [role="listbox"], [role="dialog"]')))
-        return;
+      // Only the editor itself holds editing through an outside press. Focus on
+      // a composer button (a menu trigger FocusScope restored, Attach after the
+      // file picker) is leaving the composer too, keyboard down or not.
+      if (active && root.contains(active) && active.closest('[role="textbox"]')) return;
       anchor.removeAttribute("data-composer-editing");
     };
     doc.addEventListener("pointerdown", onPointerDown, true);
@@ -707,6 +721,9 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   // available without typing. Drafts, attachments and recovery keep enough
   // writing space after blur.
   const followUpEngaged = fence.fencedLocal || fence.sendDriven || followUpFocused || hasContent;
+  let minLines = 2;
+  if (ended) minLines = followUpEngaged ? 3 : 1;
+  else if (duoCoverLayout && !followUpEngaged) minLines = 1;
 
   // The phone layout's one bottom surface is this card's own control row,
   // and a resting card sheds what an empty editor does not need: no attach,
@@ -1107,7 +1124,7 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
                     onPaste={handlePaste}
                     aria-controls={slashActiveId ? slashListboxId : undefined}
                     aria-activedescendant={slashActiveId ?? undefined}
-                    minLines={ended ? (followUpEngaged ? 3 : 1) : undefined}
+                    minLines={minLines}
                     onBlur={handleEditorBlur}
                     placeholder={ended ? "Send a follow-up…" : "Message the agent…"}
                     aria-label="Message"

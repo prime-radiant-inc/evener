@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/activitybound"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/appwire"
 )
 
 func jobListTool(s *Session, args map[string]any, maxChars int) (any, error) {
@@ -558,11 +559,7 @@ func jobListFilterFromArgs(args map[string]any) (listFilter, error) {
 func jobStatusArrayArg(args map[string]any, key string) ([]jobstore.Status, error) {
 	return stringListArg(args, key, func(s string) (jobstore.Status, error) {
 		status := jobstore.Status(s)
-		switch status {
-		case jobstore.StatusRunning,
-			jobstore.Status("idle"), jobstore.Status("settling"), jobstore.Status("stopping"), jobstore.Status("closed"),
-			jobstore.StatusCompleted, jobstore.StatusCommandExitedNonzero, jobstore.StatusCommandKilled,
-			jobstore.StatusFailed, jobstore.StatusExhausted, jobstore.StatusCancelled, jobstore.StatusStopped:
+		if appwire.JobListStatusFilterValid(s) {
 			return status, nil
 		}
 		return "", fmt.Errorf("invalid job status %q", status)

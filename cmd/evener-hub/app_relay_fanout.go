@@ -136,6 +136,7 @@ func (r *hubRelay) startAcknowledgedFanout(
 					notification = stampClosedThreadCapabilities(notification, ownsFork)
 					notification = stampForkCapability(notification, ownsFork)
 					notification = stampPageBeforeCapability(notification, hubPagesBefore(r.cfg, target.thread.Evener.Ref))
+					notification = stampVoiceArmCapability(notification, hubVoiceArm(r.cfg, target.thread))
 				}
 			}
 			if r.cfg.RelayHooks.BeforeCanonicalPublish != nil {

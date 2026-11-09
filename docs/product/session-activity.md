@@ -366,6 +366,8 @@ dot alone speaks, its failed xmark and done checkmark retired beside the band
 headers that already carry those states. Shell-job rows keep their own marks
 and status words everywhere; the timeline, tray and board keep their own
 quiet-word contracts.
+The delegate, job and turn states those marks read, and which of them are
+terminal, are catalogued in [lifecycles](lifecycles.md).
 
 Both the delegate list and transcript roster carry the authoritative
 `runGeneration`. The phone joins a report only when owner, delegate identity and

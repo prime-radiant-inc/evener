@@ -32,6 +32,17 @@ yourself when necessary, not in a polling loop. A status read is not delivery of
 a delegate's result. Read retained shell bytes with `job:<job_id>` and delegate
 history with its session `transcript_ref`.
 
+Shell completion wakes the owning session through a runtime notification entry.
+Replay detection uses those steering entries, including older entries with no
+kind or source metadata. Notification-shaped text in assistant replies, user
+input, tool output, human or parent steering, or another known steering kind
+does not acknowledge a pending completion. Such text remains conversation
+content; the real completion still reaches the model. Only the runtime frame's
+opening attributes identify its job and event; output excerpts cannot acknowledge
+another job or change the event type. Watch and watch-send frames do not
+acknowledge shell completion. If delivery marking must retry after the runtime
+completion entry was recorded, that retry does not inject it again.
+
 ```mermaid
 flowchart LR
   Start[Launch managed work] --> ID[Retain typed identity]
@@ -81,7 +92,11 @@ completed work across a daemon restart, but never skip later unfinished work
 to accept an older done. The serving generation scopes the subscription, not
 the original historical execution.
 Questions, waits, rejected terminal calls, and idle state do not complete it.
-The watch removes itself before delivering a completion wake.
+For a completed watch, the terminal send and the watch's clear are persisted
+together, then the completion wake token is queued, and only then does the live
+watch read ended. A Manager that sees it ended therefore finds the completion
+frame already pending, and the separate terminal flush entry keeps the wake
+resolvable until it is delivered.
 
 An accepted answer records the question execution it resolves. Completion also
 follows those recorded links across successive questions, whether the answer

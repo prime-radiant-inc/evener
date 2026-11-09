@@ -38,6 +38,28 @@ func TestSessionActivityDelegateReadProjectsTheBoundedFoldedIntent(t *testing.T)
 	}
 }
 
+// TestSessionActivityDelegateReadCarriesNeedsAttention pins the producer half
+// of the shared dot's attention input: the aggregate's NeedsAttention reaches
+// the SessionDelegate row the read and the pushed frame both use.
+func TestSessionActivityDelegateReadCarriesNeedsAttention(t *testing.T) {
+	t.Parallel()
+	aggregate := &delegatestore.Aggregate{
+		DelegateID:     "dlg",
+		Phase:          delegatestore.PhaseRunning,
+		CurrentRunOpen: true,
+		NeedsAttention: true,
+	}
+	row := captureSessionActivityDelegate("root", delegatestore.State{"dlg": aggregate}, aggregate, time.Unix(100, 0)).project()
+	if !row.NeedsAttention {
+		t.Fatal("SessionDelegate lost the aggregate's NeedsAttention")
+	}
+	aggregate.NeedsAttention = false
+	row = captureSessionActivityDelegate("root", delegatestore.State{"dlg": aggregate}, aggregate, time.Unix(100, 0)).project()
+	if row.NeedsAttention {
+		t.Fatal("SessionDelegate invented NeedsAttention")
+	}
+}
+
 // TestSessionActivityDelegateReadJoinsLiveOverFolded pins the read's join at
 // the real capture site: the controller's live value wins while non-empty, and
 // the folded journal value serves in the restored window (live state empty),

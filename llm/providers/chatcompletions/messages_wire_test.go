@@ -51,6 +51,39 @@ func TestToChatMessages_AssistantTextWithToolCall(t *testing.T) {
 	}
 }
 
+// TestToChatMessages_ToolCallThoughtSignature preserves Gemini's opaque
+// continuation token in the OpenAI-compatible escape hatch used by shisa.
+func TestToChatMessages_ToolCallThoughtSignature(t *testing.T) {
+	turn := []llm.Message{{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+			ID: "call_gemini", Name: "read_file", Arguments: json.RawMessage(`{"path":"x"}`), ThoughtSignature: "sig-1",
+		}},
+	}}}
+	out, err := toChatMessages(turn, registry.Caps{Fields: registry.Baseline(registry.ProtocolOpenAIChat)}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := out[0]["tool_calls"].([]map[string]any)
+	if len(calls) != 1 {
+		t.Fatalf("tool_calls = %#v", calls)
+	}
+	extra := calls[0]["extra_content"].(map[string]any)
+	google := extra["google"].(map[string]any)
+	if google["thought_signature"] != "sig-1" {
+		t.Fatalf("extra_content = %#v, want the Gemini thought signature", extra)
+	}
+
+	turn[0].Content[0].ToolCall.ThoughtSignature = ""
+	out, err = toChatMessages(turn, registry.Caps{Fields: registry.Baseline(registry.ProtocolOpenAIChat)}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls = out[0]["tool_calls"].([]map[string]any)
+	if _, ok := calls[0]["extra_content"]; ok {
+		t.Fatalf("unsigned tool call must not emit provider metadata: %#v", calls[0])
+	}
+}
+
 // TestToChatMessages_ToolResultNonStringContent pins the non-string arm of
 // the tool-result content switch: any non-string value reaches the wire as
 // its JSON encoding.

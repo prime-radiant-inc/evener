@@ -15,14 +15,15 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// SessionState represents the current lifecycle state of a session.
-type SessionState string
+// SessionState represents the current lifecycle state of a session. It is the
+// declared session machine in appwire, which also owns the legal edges.
+type SessionState = appwire.SessionState
 
 const (
 	// SessionIdle indicates the session is not currently processing.
-	SessionIdle SessionState = "idle"
+	SessionIdle = appwire.SessionStateIdle
 	// SessionProcessing indicates the session is actively processing.
-	SessionProcessing SessionState = "active"
+	SessionProcessing = appwire.SessionStateActive
 	// SessionAwaiting indicates the session is idle with the ball in its
 	// human partner's court: a question is pending, or the last completed
 	// turn ended on a communicate that said needs_response and no autonomous
@@ -35,9 +36,9 @@ const (
 	// defaults unrecognized strings to idle, so changing this string would
 	// silently downgrade an awaiting session to idle across AppWire, the roster,
 	// and the NeedsYou tier.
-	SessionAwaiting SessionState = "awaiting"
+	SessionAwaiting = appwire.SessionStateAwaiting
 	// SessionClosed indicates the session has been closed.
-	SessionClosed SessionState = "closed"
+	SessionClosed = appwire.SessionStateClosed
 )
 
 // State returns the current session state.
@@ -799,7 +800,9 @@ func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
 	// Runnable user steering is queued input for this purpose: a carrier that
 	// returned its steer undelivered leaves it for the next wake, and a
 	// session that will move on its own is not waiting on the user.
-	moves := s.QueueDepth() > 0 || s.hasRunnableUserSteering()
+	// A queue parked by a Stop is not work either: nothing runs it until the
+	// person acts, and WireState already reads it that way (issue #4142).
+	moves := s.pendingQueueDepth() > 0 || s.hasRunnableUserSteering()
 	if settleTerminalState(hadOutput, goalKicked, moves, s.autonomyInFlight()) != SessionAwaiting {
 		return
 	}
@@ -857,9 +860,10 @@ func (s *Session) restStillPendingLocked(generation uint64) bool {
 // neither starts a turn the moment it arrives.
 func (s *Session) restAwaiting(generation uint64) bool {
 	steeringHeld := s.userSteeringHeld()
+	queueHeld := s.clientMutations != nil && s.clientMutations.queueHeld()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.restStillPendingLocked(generation) || len(s.inputQueue) > 0 || s.runnableUserSteeringLocked(steeringHeld) {
+	if !s.restStillPendingLocked(generation) || (!queueHeld && len(s.inputQueue) > 0) || s.runnableUserSteeringLocked(steeringHeld) {
 		return false
 	}
 	s.state = SessionAwaiting

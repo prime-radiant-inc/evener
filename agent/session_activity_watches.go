@@ -83,10 +83,7 @@ func (read *sessionActivityRead) watchesPage(ctx context.Context, params appwire
 			for _, cfg := range jm.watches {
 				if cfg != nil && cfg.watchID == key.ID {
 					row.Watch = watchInfoFromStatus(watchStatusInfoFromConfig(cfg))
-					row.State = appwire.SessionWatchStateArmed
-					if !row.Watch.Active {
-						row.State = appwire.SessionWatchStateEnded
-					}
+					row.State = appwire.WatchState(row.Watch.Active)
 					break
 				}
 			}

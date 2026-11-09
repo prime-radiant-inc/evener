@@ -322,6 +322,9 @@ api_key  = "fakellm-not-a-secret"
 			if instance == "" {
 				t.Fatal("manager thread has no instance")
 			}
+			if read.Thread.Evener.Capabilities.VoiceArm != test.supported {
+				t.Fatalf("read advertised voiceArm=%t, want %t", read.Thread.Evener.Capabilities.VoiceArm, test.supported)
+			}
 			code, raw := voiceTestPost(ctx, t, stack, "/api/voice/status", stack.token, map[string]any{
 				"ref": ref, "expectedInstanceId": instance,
 			})

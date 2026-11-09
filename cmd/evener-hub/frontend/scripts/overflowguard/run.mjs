@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { writeFileSync } from "node:fs";
 // overflowguard - asserts the transcript pane never scrolls sideways, at any
 // pane width, with the real React tree rendered in a real browser.
 //
@@ -462,6 +463,9 @@ async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported)
               paneBottom: pane?.getBoundingClientRect().bottom ?? null,
               cards: cards.length, footerBottom,
               lastBottom, gap: lastBottom === null || footerBottom === null ? null : footerBottom - lastBottom,
+              totalFooterHeight: (footer?.getBoundingClientRect().height ?? 0) + (edgeFooter?.getBoundingClientRect().height ?? 0),
+              editorMinLines: textbox?.style.minHeight ?? null,
+              coverLayout: matchMedia('(min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4)').matches,
               paddingBottom: footer ? Number.parseFloat(getComputedStyle(footer).paddingBottom) : null,
               edgeFooterCount: pane?.querySelectorAll('[data-testid="pane-edge-footer"]').length ?? 0,
               edgeFooterBottom: edgeFooter?.getBoundingClientRect().bottom ?? null,
@@ -561,6 +565,131 @@ function assertComposerFooter(measurement, width) {
     failures.push(
       `desktop bottom padding/gap=${measurement.paddingBottom}/${measurement.gap}px, expected unchanged 12px`,
     );
+  }
+  return failures;
+}
+
+async function measureDuoCompactStates(cdpEndpoint, url, profileDir) {
+  const page = await connectOnlyPage(cdpEndpoint);
+  const { send } = page;
+  let phase = "viewport";
+  try {
+    await applyViewport(send, { width: 466, height: 678, mobile: true, deviceScaleFactor: 3 });
+    await send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+    await send("Emulation.setFocusEmulationEnabled", { enabled: true });
+    phase = "navigate";
+    await navigateTo(page, url, BOOT);
+    await assertGuardOrigin(send, new URL(url).host);
+    phase = "settled";
+    await evaluate(send, "window.settled");
+    phase = "fonts";
+    await waitForFonts(send);
+    const viewport = diagnoseRealizedViewport({ width: 466, height: 678 }, await realizedViewport(send));
+    if (viewport) throw new Error(viewport);
+    phase = "focus";
+    const focused = JSON.parse(
+      await evaluate(send, "(async () => JSON.stringify(await window.measureDuoCompactStates('focus')))()"),
+    );
+    await typeComposerDraft(send, "A saved Duo draft");
+    await evaluate(send, "document.activeElement?.blur()");
+    phase = "draft";
+    const draft = JSON.parse(await evaluate(send, "JSON.stringify(window.measureDuoDraftState())"));
+    phase = "file-input";
+    const tree = await send("DOM.getDocument");
+    const input = await send("DOM.querySelector", {
+      nodeId: tree.result.root.nodeId,
+      selector: '#oh-pane input[type="file"]',
+    });
+    if (!input.result.nodeId) throw new Error("real composer file input is missing");
+    const upload = path.join(profileDir, "duo-pixel.png");
+    writeFileSync(
+      upload,
+      Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+        "base64",
+      ),
+    );
+    await send("DOM.setFileInputFiles", { nodeId: input.result.nodeId, files: [upload] });
+    phase = "rest-states";
+    const rest = JSON.parse(
+      await evaluate(send, "(async () => JSON.stringify(await window.measureDuoCompactStates('rest')))()"),
+    );
+    return { states: [...focused.states, draft, ...rest.states], approvalResolved: rest.approvalResolved };
+  } catch (error) {
+    const pageErrors = await evaluate(send, "JSON.stringify(window.__panelGuardErrors ?? [])").catch(() => "[]");
+    throw new Error(`Duo ${phase}: ${error?.stack ?? error}\npage errors: ${pageErrors}`);
+  } finally {
+    await send("Emulation.setTouchEmulationEnabled", { enabled: false }).catch(() => {});
+    await clearViewportOverride(send);
+    page.close();
+  }
+}
+
+function assertDuoCompactStates(result) {
+  const failures = [];
+  const states = new Map(result.states.map((state) => [state.state, state]));
+  for (const name of ["empty", "focused", "draft", "attachment", "question", "approval"]) {
+    if (!states.has(name)) failures.push(`missing real ${name} state`);
+  }
+  const empty = states.get("empty");
+  const focused = states.get("focused");
+  const draft = states.get("draft");
+  const attachment = states.get("attachment");
+  const question = states.get("question");
+  const approval = states.get("approval");
+  if (empty?.editorMinLines !== "1lh") failures.push(`empty editor=${empty?.editorMinLines}, expected one line`);
+  if (empty && (empty.cardGap !== "0px" || empty.cardPaddingBlock !== "0px 0px")) {
+    failures.push(`empty card retains gap/padding ${empty.cardGap}/${empty.cardPaddingBlock}`);
+  }
+  if (focused && focused.footerPaddingBottom !== "0px") {
+    failures.push(
+      `focused footer clearance=${focused.footerPaddingBottom}, expected keyboard-adjusted safe-area clearance`,
+    );
+  }
+  if (empty && empty.totalFooterHeight > 258.94) {
+    failures.push(
+      `empty/live footer=${empty.totalFooterHeight}px, exceeds the 258.94px budget (306.94px baseline minus 48px)`,
+    );
+  }
+  if (!focused?.editing || focused.editorMinLines !== "2lh") failures.push("focus did not engage the two-line editor");
+  if (focused && (focused.cardGap !== "4px" || focused.cardPaddingBlock !== "4px 4px")) {
+    failures.push(`focused card did not restore ordinary spacing: ${focused.cardGap}/${focused.cardPaddingBlock}`);
+  }
+  if (draft?.editorMinLines !== "2lh" || draft.editing)
+    failures.push("a blurred draft did not retain its two-line resting state");
+  if (
+    !attachment?.attachment ||
+    attachment.attachment.height < 80 ||
+    attachment.totalFooterHeight <= empty.totalFooterHeight
+  )
+    failures.push("the real staged attachment did not retain its tile and footer space");
+  if (attachment?.attachmentControls.some((control) => control.width < 44 || control.height < 44))
+    failures.push("an attachment control fell below the touch floor");
+  if (!question?.question || !question.questionInTranscript || !question.cardHidden)
+    failures.push("the real question dock did not take over the transcript's answering surface");
+  if (!approval?.approval || approval.approval.height <= 0) failures.push("the real approval card did not mount");
+  if (!result.approvalResolved) failures.push("Allow did not resolve the real approval card");
+  for (const state of result.states) {
+    // The phone's resting row sheds the activity chips (the collapsed-row
+    // contract): only the empty, unfocused card mounts none. Every other
+    // state - engaged, drafting, attached, ask-pending, approval - keeps
+    // its four counters, the ask states inside their hidden card.
+    const expectedCount = state.state === "empty" ? 0 : 4;
+    if (state.counters.length !== expectedCount)
+      failures.push(`${state.state}: expected ${expectedCount} mounted activity counters`);
+    for (const counter of state.counters) {
+      const hidden = state.editing || state.cardHidden;
+      if (!hidden && (counter.width < 44 || counter.height < 44))
+        failures.push(`${state.state}: activity target fell below 44px for ${counter.tab}`);
+      if (!counter.accessibleName?.includes(" of "))
+        failures.push(`${state.state}: activity target or full accessible fraction missing for ${counter.tab}`);
+    }
+    for (const control of state.controls) {
+      if (control.touchTarget && control.height > 0 && (control.width < 44 || control.height < 44))
+        failures.push(`${state.state}: control ${control.name} fell below 44px`);
+    }
+    if (state.horizontalOverflow > 0.5)
+      failures.push(`${state.state}: horizontal overflow=${state.horizontalOverflow}px`);
   }
   return failures;
 }
@@ -1379,11 +1508,31 @@ function assertSettings(result, width) {
   return failures;
 }
 
+async function runDuoCompactGuard(cdpEndpoint, vitePort, profileDir, verbose = false) {
+  const result = await measureDuoCompactStates(
+    cdpEndpoint,
+    `http://127.0.0.1:${vitePort}/overflowharness.html?w=466&h=678`,
+    profileDir,
+  );
+  const failures = assertDuoCompactStates(result);
+  if (verbose) console.log(JSON.stringify(result, null, 2));
+  if (failures.length > 0) {
+    console.log(`466px Duo compact states ... FAIL - ${failures.join("; ")}`);
+    return false;
+  }
+  const empty = result.states.find((state) => state.state === "empty");
+  console.log(
+    `466px Duo compact states ... PASS - empty footer=${empty.totalFooterHeight}px, real state transitions preserved`,
+  );
+  return true;
+}
+
 async function main() {
   const footerOnly = process.argv.includes("--footer-only");
   const composerOnly = process.argv.includes("--composer-only");
   const composerDelayOnly = process.argv.includes("--composer-delay-only");
-  if ([footerOnly, composerOnly, composerDelayOnly].filter(Boolean).length > 1)
+  const duoOnly = process.argv.includes("--duo-only");
+  if ([footerOnly, composerOnly, composerDelayOnly, duoOnly].filter(Boolean).length > 1)
     throw new Error("choose one focused mode");
   const widths = process.argv.slice(2).map(Number).filter(Boolean);
   const sweep = widths.length > 0 ? widths : DEFAULT_WIDTHS;
@@ -1423,6 +1572,8 @@ async function main() {
     }
     cdpEndpoint = await waitForBrowserReady(guard);
 
+    if (duoOnly) return (await runDuoCompactGuard(cdpEndpoint, vitePort, guard.profileDir, true)) ? 0 : 1;
+
     const delayedComposer = async () => {
       // One adversarial transport case per input type, not another theme matrix.
       for (const width of [390, 1400]) {
@@ -1448,6 +1599,7 @@ async function main() {
     }
 
     if (!composerOnly) {
+      if (!(await runDuoCompactGuard(cdpEndpoint, vitePort, guard.profileDir))) failed++;
       const protocolResponse = await fetch(devtoolsHttpURL(cdpEndpoint, "/json/protocol"));
       if (!protocolResponse.ok) throw new Error(`browser protocol HTTP ${protocolResponse.status}`);
       const protocol = await protocolResponse.json();
@@ -1474,7 +1626,7 @@ async function main() {
             console.log(`${label} ... FAIL - ${failures.join("; ")}; ${JSON.stringify(measurement)}`);
           } else {
             console.log(
-              `${label} ... PASS - gap=${measurement.gap}px, metadata visible=${measurement.metadataVisible}`,
+              `${label} ... PASS - gap=${measurement.gap}px, total footer=${measurement.totalFooterHeight}px, editor=${measurement.editorMinLines}, metadata visible=${measurement.metadataVisible}`,
             );
           }
         }

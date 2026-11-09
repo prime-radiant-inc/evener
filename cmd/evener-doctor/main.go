@@ -76,6 +76,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdAudit(rest, stdout, stderr)
 	case "plugins":
 		return cmdPlugins(rest, stdout, stderr)
+	case "lifecycle":
+		return cmdLifecycle(rest, stdout, stderr)
 	case "-h", "--help", "help":
 		return usage(stdout)
 	default:
@@ -108,6 +110,7 @@ SUBCOMMANDS:
   sessions    enumerate every session (or one --bucket's), sorted by last activity, for batch forensic studies (no selector)
   audit       run a runbook's mechanical checks across a session set, emitting deduped, contract-valid Findings (no selector — see "evener doctor audit -h")
   plugins     plugin-store health check: registry/disk drift, marketplace health, component validity, auto-upgrade sanity (no selector — see "evener doctor plugins -h")
+  lifecycle   the declared state machines: states, classes, terminality and legal transitions (no selector)
 
 SELECTOR:
   "" | current  (rejected — name a session)   local:<id>   proj:<project-id>:<id>   <id> (searched across buckets)
@@ -592,4 +595,26 @@ func cmdPlugins(args []string, stdout, stderr io.Writer) int {
 		return emitJSON(stdout, findings)
 	}
 	return writeText(stdout, plugins.RenderDoctorFindings(findings))
+}
+
+// cmdLifecycle prints the compiled lifecycle registry. It takes no selector and
+// reads no state root: the machines are declarations, not session evidence.
+func cmdLifecycle(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("lifecycle", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "emit JSON instead of the human table")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() > 0 {
+		if code := writef(stderr, "evener doctor lifecycle: takes no selector (got %q)\n", fs.Arg(0)); code != 0 {
+			return code
+		}
+		return 2
+	}
+	machines := doctor.Lifecycle()
+	if *asJSON {
+		return emitJSON(stdout, machines)
+	}
+	return writeText(stdout, doctor.RenderLifecycle(machines))
 }

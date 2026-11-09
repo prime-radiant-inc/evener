@@ -258,7 +258,7 @@ no router (reserved).
 | `evener/devicePairing/cancel` | hub | [DevicePairingParams](#devicepairingparams) | [DevicePairingStatus](#devicepairingstatus) | Revokes a device pairing invitation. |
 | `evener/navigation/read` | hub | [NavigationReadParams](#navigationreadparams) | [NavigationReadResponse](#navigationreadresponse) | Reads one bounded, revisioned hub navigation resource as a normalized v3 snapshot or delta, optionally conditional on its exact base. |
 | `evener/favorite/set` | hub | [FavoriteSetParams](#favoritesetparams) | [FavoriteSetResponse](#favoritesetresponse) | Sets or clears a project favorite and returns the committed navigation invalidation targets. |
-| `evener/archive/set` | hub | [ArchiveParams](#archiveparams) | [ArchiveResponse](#archiveresponse) | Sets or clears an explicit project or session archive decision and returns its committed navigation receipt. |
+| `evener/archive/set` | hub | [ArchiveParams](#archiveparams) | [ArchiveResponse](#archiveresponse) | Sets or clears an explicit project or session archive decision and returns its committed navigation receipt, or marks that receipt deferred when the decision persisted but its refresh deadline expired. |
 | `evener/project/delete` | hub | [ProjectDeleteParams](#projectdeleteparams) | [ProjectDeleteResponse](#projectdeleteresponse) | Deletes every removable session in one path-validated local project and returns detailed outcomes plus its committed navigation receipt. |
 | `evener/session/delete` | hub | [SessionDeleteParams](#sessiondeleteparams) | [SessionDeleteResponse](#sessiondeleteresponse) | Deletes one ended or confirmed-crashed local session; live or concurrently reserved targets are returned in skipped, and successful cleanup includes its committed navigation receipt. |
 | `evener/pin-section/rename` | hub | [PinSectionRenameParams](#pinsectionrenameparams) | [PinSectionRenameResponse](#pinsectionrenameresponse) | Renames a named pin section and returns its canonical summary and committed navigation receipt. |
@@ -499,6 +499,7 @@ without that tag. These tables describe fields, not every validation constraint.
 |-------|---------|-----------|----------|
 | `ok` | bool |  |  |
 | `navigation` | [appwire.NavigationMutation](#navigationmutation) |  |  |
+| `navigationDeferred` | bool | yes |  |
 
 
 ### `ArchiveTargetKind`
@@ -1415,6 +1416,7 @@ Underlying Go kind: `string` (no struct fields).
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `voicePresentationContextV1` | bool | yes |  |
+| `voiceArmV1` | bool | yes |  |
 | `conversationProvenance` | bool | yes |  |
 | `voice` | bool | yes |  |
 | `sessionTools` | bool | yes |  |
@@ -2233,6 +2235,7 @@ Underlying Go kind: `struct` (no struct fields).
 | `error` | string | yes |  |
 | `terminal` | bool | yes |  |
 | `resumable` | bool | yes |  |
+| `needsAttention` | bool | yes |  |
 | `notResumableReason` | string | yes |  |
 | `mandate` | string | yes |  |
 | `task` | string | yes |  |
@@ -3736,6 +3739,7 @@ Underlying Go kind: `string` (no struct fields).
 | `error` | string | yes |  |
 | `terminal` | bool |  |  |
 | `resumable` | bool |  |  |
+| `needsAttention` | bool | yes |  |
 | `notResumableReason` | string | yes |  |
 | `model` | string | yes |  |
 | `reasoningEffort` | string | yes |  |
@@ -4445,6 +4449,7 @@ Underlying Go kind: `string` (no struct fields).
 | `commandInput` | bool | yes |  |
 | `stopSubagent` | bool | yes |  |
 | `pageBefore` | bool | yes |  |
+| `voiceArm` | bool | yes |  |
 
 
 ### `ThreadClearParams`

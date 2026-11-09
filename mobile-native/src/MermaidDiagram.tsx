@@ -64,7 +64,7 @@ type PostedRender = RenderPost & { id: number };
 // a post while one is in flight queues at most one pending message, re-posted
 // only after the page's reply. Both WebViews share it so the discipline is
 // written once.
-function useSerializedRenderPosts(webView: RefObject<WebView | null>) {
+function useSerializedRenderPosts(webView: RefObject<WebView<unknown> | null>) {
 	const pageReady = useRef(false);
 	const renderInFlight = useRef(false);
 	const renderQueued = useRef(false);
@@ -167,7 +167,7 @@ function mermaidTheme(colors: ReturnType<typeof useColors>): Record<string, stri
 // the diagram to the taller viewport instead of measuring a fit height.
 function ZoomWebView({ source }: { source: string }) {
 	const colors = useColors();
-	const webView = useRef<WebView>(null);
+	const webView = useRef<WebView<unknown>>(null);
 	const renderPosts = useSerializedRenderPosts(webView);
 
 	function handleMessage(event: WebViewMessageEvent) {
@@ -189,7 +189,7 @@ function ZoomWebView({ source }: { source: string }) {
 	}, [colors.palette, source]);
 
 	return (
-		<WebView
+		<WebView<unknown>
 			ref={webView}
 			{...MERMAID_WEBVIEW_PROPS}
 			scrollEnabled={true}
@@ -209,7 +209,7 @@ export const MermaidDiagram = memo(function MermaidDiagram({
 	onAccessibilityAction?: (event: AccessibilityActionEvent) => void;
 }) {
 	const colors = useColors();
-	const webView = useRef<WebView>(null);
+	const webView = useRef<WebView<unknown>>(null);
 	const [height, setHeight] = useState<number | null>(heightCache.get(source) ?? null);
 	const [failed, setFailed] = useState(false);
 	const [open, setOpen] = useState(false);
@@ -311,7 +311,7 @@ export const MermaidDiagram = memo(function MermaidDiagram({
 					style={{ height: height ?? PLACEHOLDER_HEIGHT }}
 				>
 					<View pointerEvents="none" style={styles.fill}>
-						<WebView
+						<WebView<unknown>
 							ref={webView}
 							{...MERMAID_WEBVIEW_PROPS}
 							scrollEnabled={false}

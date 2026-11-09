@@ -1811,3 +1811,28 @@ func TestTrimActivityTreeToFit_CountsWhatAReplacedTokenGivesBack(t *testing.T) {
 		t.Fatalf("kept %d of 40 entries, want 39: one drop replaces the 5,000-byte token and the page fits", len(got.Root.Entries))
 	}
 }
+
+// TestProjectStableActivityDelegateCarriesNeedsAttention pins the second
+// producer of the shared dot's attention input: the activity tree's delegate
+// row carries the open run's NeedsAttention fact.
+func TestProjectStableActivityDelegateCarriesNeedsAttention(t *testing.T) {
+	t.Parallel()
+	row := delegateSnapshot{
+		id:             "dlg_attention",
+		descriptor:     delegatestore.Descriptor{ChildSessionID: "child", Task: "wait for the answer"},
+		phase:          delegatestore.PhaseRunning,
+		currentRunOpen: true,
+		needsAttention: true,
+	}
+	snap := activitySessionSnapshot{
+		SessionID: "root",
+		Ref:       "local:root",
+		RootID:    "root",
+		Delegates: map[string]delegateSnapshot{row.id: row},
+		Children:  map[string]*activitySessionSnapshot{"child": {SessionID: "child", Ref: "local:child"}},
+	}
+	delegate := projectStableActivityDelegate(snap, row, newActivityBudget(), 0, nil, 0)
+	if !delegate.NeedsAttention {
+		t.Fatal("JobActivityDelegate lost the delegate's NeedsAttention")
+	}
+}

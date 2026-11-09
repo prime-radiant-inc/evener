@@ -35,6 +35,7 @@ func allRemoteThreadCapabilities() appwire.ThreadCapabilities {
 		CommandInput:               true,
 		StopSubagent:               true,
 		PageBefore:                 true,
+		VoiceArm:                   true,
 	}
 }
 
@@ -261,6 +262,10 @@ func TestRemoteHubCapabilitiesMatchForwardedMethods(t *testing.T) {
 				return err
 			},
 		}},
+		// VoiceArm is the hub's own per-session answer, never a remote daemon's
+		// claim: the masked set leaves it to applyHubCapabilities, which stamps it
+		// on every projection of the remote thread this hub serves.
+		{"VoiceArm", nil},
 	}
 
 	masked := maskRemoteThreadCapabilities(allRemoteThreadCapabilities(), forwardedThreadCapabilitiesForTests())

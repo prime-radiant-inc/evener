@@ -279,9 +279,10 @@ func (m *delegateLifecycleModel) noActionEligible(fallbackRetained bool) bool {
 // legalPhaseTransition reports whether from → to is a path in the model's
 // transition table (I2). The table mirrors delegatestore's fold: idle →
 // running (run started), running → settling (terminal prepared), running |
-// settling | stopping → idle (run finished, resumable), any open phase →
-// stopping (stop request), stopping → idle (stop completed), idle → closed
-// (resumability closed), and closed is terminal.
+// settling | stopping → idle or closed (run finished, resumable or not), any
+// open phase → stopping (stop request), stopping → stopping (repeated stop),
+// stopping → idle or closed (stop completed), idle → closed (resumability
+// closed), and closed is terminal.
 func legalDelegateLifecyclePhaseTransition(from, to delegatestore.Phase) bool {
 	switch from {
 	case delegatestore.PhaseIdle:
@@ -289,11 +290,14 @@ func legalDelegateLifecyclePhaseTransition(from, to delegatestore.Phase) bool {
 		// (applySubtreeStopRequested), so idle → stopping is legal too.
 		return to == delegatestore.PhaseRunning || to == delegatestore.PhaseClosed || to == delegatestore.PhaseStopping
 	case delegatestore.PhaseRunning:
-		return to == delegatestore.PhaseSettling || to == delegatestore.PhaseStopping || to == delegatestore.PhaseIdle
+		return to == delegatestore.PhaseSettling || to == delegatestore.PhaseStopping ||
+			to == delegatestore.PhaseIdle || to == delegatestore.PhaseClosed
 	case delegatestore.PhaseSettling:
-		return to == delegatestore.PhaseIdle || to == delegatestore.PhaseStopping
+		return to == delegatestore.PhaseIdle || to == delegatestore.PhaseStopping ||
+			to == delegatestore.PhaseClosed
 	case delegatestore.PhaseStopping:
-		return to == delegatestore.PhaseIdle || to == delegatestore.PhaseClosed
+		return to == delegatestore.PhaseIdle || to == delegatestore.PhaseClosed ||
+			to == delegatestore.PhaseStopping
 	case delegatestore.PhaseClosed:
 		return false
 	default:

@@ -35,6 +35,7 @@ import { requireClass } from "../../widgets/internal/requireClass";
 import { activitySidebarStore } from "../activitybar/activitySidebarStore";
 import { useClient } from "../clientContext";
 import { closePanesForDeletedSessions } from "../deletedSessionPanes";
+import { useDismissNavigationChrome } from "../navigationChrome";
 import { navigate } from "../routing";
 import { openSessionByRef } from "../sessionPlacement";
 import { useIsMobile } from "../useIsMobile";
@@ -89,6 +90,7 @@ import {
   resourceState,
   withArchivedLists,
 } from "./railResources";
+import { isTopLevelSession } from "./sessionKind";
 import { usePinSectionDialogs } from "./usePinSectionDialogs";
 import { useProjectRootLoads } from "./useProjectRootLoads";
 import { useRailReveal } from "./useRailReveal";
@@ -490,6 +492,7 @@ function NavigationRail({
   // host row returns undefined, leaving it without a selected state rather
   // than asserting it is a non-selection.
   const selectedSessionRef = useWorkspaceStore(currentSessionRef);
+  const dismissNavigationChrome = useDismissNavigationChrome();
   const isRowSelected = (node: RailNode): boolean | undefined =>
     node.kind === "session" ? node.session.ref === selectedSessionRef : undefined;
   const [deleteTarget, setDeleteTarget] = useState<RailProject | null>(null);
@@ -593,7 +596,10 @@ function NavigationRail({
     setRowExpanded(key, !isExpanded(key, defaultOpen));
   }
   function openSession(session: RailSession) {
-    openSessionByRef(session.ref);
+    // Dismiss first: selecting a session is the tap's own intent, whether or
+    // not the placement changes focus, and the list must not cover the result.
+    dismissNavigationChrome?.();
+    openSessionByRef(session.ref, { topLevel: isTopLevelSession(session) });
   }
   function handleActivate(node: RailNode) {
     if (isPassiveRailNode(node)) return;

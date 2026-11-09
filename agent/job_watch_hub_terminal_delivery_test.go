@@ -195,6 +195,111 @@ func TestHubWatchTerminalDeliverySurvivesPriorLastNoticeSettlement(t *testing.T)
 	}
 }
 
+// A consumer that observes a completed watch ended must find its completion
+// wake already queued. That ended row is the gate a directly driven Manager
+// waits on before running the one notification turn that drains the completion
+// receipt; publishing ended first let that turn drain only the preceding
+// communicate token, so the receipt waited for a later turn only a serving loop
+// would run.
+func TestHubWatchCompletionWakeQueuedBeforeEndedPublished(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
+	jm := root.jobManager
+	tokens := make(chan jobNotification, 4)
+	jm.enqueue = func(n jobNotification) { tokens <- n }
+	watch, err := jm.configureHubWatch("local:worker", "worker-instance", "7@worker", "local:manager", []string{"communicate"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation := func(entry string) appwire.SessionWatchUpdate {
+		return appwire.SessionWatchUpdate{Event: "communicate", Metadata: appwire.SessionObservationMetadata{Ref: "local:worker", InstanceID: "worker-instance", GenerationID: "7@worker", EntryID: entry, TurnID: "turn-A", CausalKnown: true}}
+	}
+	if err := jm.onHubObservation(watch.WatchID, observation("prior")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case prior := <-tokens:
+		if prior.WatchSend == nil || prior.WatchSend.Key.WatchID != watch.WatchID {
+			t.Fatalf("prior communicate wake = %#v", prior)
+		}
+	default:
+		t.Fatal("prior communicate queued no wake")
+	}
+
+	atEnded := make(chan struct{})
+	release := make(chan struct{})
+	var atEndedOnce sync.Once
+	var releaseOnce sync.Once
+	releaseBoundary := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseBoundary()
+	jm.testOnlyAfterHubWatchDetach = func() {
+		atEndedOnce.Do(func() { close(atEnded) })
+		<-release
+	}
+	defer func() { jm.testOnlyAfterHubWatchDetach = nil }()
+	finished := make(chan error, 1)
+	accepted := true
+	terminal := observation("terminal")
+	terminal.Metadata.EndTurn = true
+	terminal.Metadata.EndReason = "done"
+	terminal.Metadata.TerminalAccepted = &accepted
+	go func() { finished <- jm.onHubObservation(watch.WatchID, terminal) }()
+	// TRIPWIRE: local detachment is sub-second work; this only catches a deadlock.
+	awaitWithin(t, 10*time.Second, "completion ending its watch", func() { <-atEnded })
+
+	page, err := root.ListActivityWatches(t.Context(), appwire.SessionActivityListParams{Ref: encodeRef("", root.ID())})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ended := false
+	for _, row := range page.Watches {
+		if row.Watch.ID == watch.WatchID {
+			ended = row.State == appwire.SessionWatchStateEnded && !row.Watch.Active && row.Watch.EndReason == "completed"
+		}
+	}
+	if !ended {
+		t.Fatalf("watch was not published ended at the detach boundary: %+v", page.Watches)
+	}
+	var completion jobNotification
+	select {
+	case completion = <-tokens:
+	default:
+		t.Fatal("completed watch was published ended before its completion wake was queued")
+	}
+	if completion.WatchSend == nil || completion.WatchSend.Key.WatchID != watch.WatchID {
+		t.Fatalf("completion wake = %#v", completion)
+	}
+	releaseBoundary()
+	awaitWithin(t, hubWatchTestHangGuard, "completion watch end", func() {
+		if err := <-finished; err != nil {
+			t.Errorf("onHubObservation: %v", err)
+		}
+	})
+
+	owner, cfg, state, ok := root.resolveWatchSendToken(completion.WatchSend)
+	if !ok {
+		t.Fatal("queued completion token did not resolve after the watch ended")
+	}
+	// The terminal observation's own identity, not the model-facing reason
+	// copy, is what the token must carry.
+	identity := hubObservationIdentity(terminal.Metadata) + ":communicate:completed"
+	if state.TriggerIdentity != identity {
+		t.Fatalf("completion token identity = %q, want %q", state.TriggerIdentity, identity)
+	}
+	if err := owner.settleWatchSendDelivered(cfg, state); err != nil {
+		t.Fatalf("settle completion wake: %v", err)
+	}
+	receipts := 0
+	for _, event := range loadJobStoreEvents(t, jm) {
+		if event.Kind == jobstore.EventWatchSendDelivered && event.WatchSend != nil && event.WatchSend.DeliveryID == state.DeliveryID {
+			receipts++
+		}
+	}
+	if receipts != 1 {
+		t.Fatalf("completion receipts = %d, want 1", receipts)
+	}
+}
+
 func TestHubWatchTerminalDeliverySurvivesSettlementBeforeTerminalPersistence(t *testing.T) {
 	t.Parallel()
 	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })

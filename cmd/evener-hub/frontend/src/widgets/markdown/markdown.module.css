@@ -9,7 +9,7 @@
  * the root now COMPOSES with its host: the fallback is 1em, so a host's own
  * font-size applies and dense chrome never needs a pin. A true reading
  * surface (agent messages, the doc pane) pins
- * --prose-font-size: var(--font-size-prose) on an ancestor to keep the 18px
+ * --prose-font-size: var(--font-size-prose) on an ancestor to keep the compact
  * reading step. Body text composes with the host; h1/h2 and GFM tables use
  * the fixed document ramp below, while h3 follows the composed prose size.
  *
@@ -25,7 +25,7 @@
   overflow-wrap: anywhere;
   font-family: var(--markdown-font, var(--font-prose));
   font-size: var(--prose-font-size, 1em);
-  line-height: var(--line-height-body);
+  line-height: var(--line-height-prose);
 }
 
 /* headings: h1-h3 read as "display" text per Direction (semibold, -1%

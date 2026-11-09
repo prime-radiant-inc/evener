@@ -120,6 +120,19 @@ regexTarget = "match"
 paths = ['''^mobile-native/src/generated/mermaidPage\.ts$''']
 regexes = ['''^p\.keyCount,v=p\.atlasCount;$''']
 
+# The committed pod lock's SPEC CHECKSUMS section records a SHA-1 digest of
+# each local podspec. The generic-api-key rule sees the pod name
+# "React-cxxstableapi" followed by a high-entropy hex digest and mistakes the
+# checksum line for a key (observed when the Expo 58 lock landed). Allowlist
+# the checksum-line shape only, in the lock only: any other match in the lock,
+# including a real credential, still fails the scan.
+[[rules.allowlists]]
+description = "committed pod lock podspec checksum lines"
+condition = "AND"
+regexTarget = "match"
+paths = ['''^mobile-native/Podfile\.lock$''']
+regexes = ['''^[A-Za-z][A-Za-z0-9+_-]*[Aa]pi: [0-9a-f]{40}$''']
+
 # Wake-trial UserDefaults key, not a credential. Preserve its persisted identity.
 [[rules.allowlists]]
 description = "wake-trial UserDefaults storage key"
