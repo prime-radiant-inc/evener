@@ -187,6 +187,7 @@ func TestPostToolBatch_BlockDoesNotSwallowCommunicateReply(t *testing.T) {
 		return toolCallResponse(batchShellCall("shell-0"), communicateCall("c1", reply))
 	})
 
+	// TRIPWIRE: a scripted in-process adapter, so only a genuine hang reaches 30s.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	out, err := f.sess.ProcessInput(ctx, "do it", nil)
@@ -216,6 +217,7 @@ func TestPostToolBatch_BlockDoesNotStrandPendingAsk(t *testing.T) {
 		return toolCallResponse(askUserCall("ask1", askUserArgsValid()))
 	})
 
+	// TRIPWIRE: a scripted in-process adapter, so only a genuine hang reaches 30s.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := f.sess.ProcessInput(ctx, "which db?", nil); err != nil {
@@ -255,6 +257,7 @@ func TestPostToolBatch_BlockEndsTheLoopWhenNothingElseDoes(t *testing.T) {
 		}
 	}()
 
+	// TRIPWIRE: a scripted in-process adapter, so only a genuine hang reaches 30s.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := f.sess.ProcessInput(ctx, "run a tool", nil); err != nil {
@@ -309,6 +312,7 @@ func TestPostToolBatch_NoCallsMeansNoHook(t *testing.T) {
 		return textResponse("bare text, no tool call")
 	})
 
+	// TRIPWIRE: a scripted in-process adapter, so only a genuine hang reaches 30s.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	// The bare-text rounds exhaust their retry budget, so the turn ends in an
