@@ -1,6 +1,8 @@
 // Strict client-side parser and disclosure-state helpers for recursive
 // evener/jobs/list activity trees. Wire truth: appwire-client/typescript/types.gen.ts's
 // JobActivity* interfaces and docs/appwire-protocol.md's json field catalog.
+
+import { lifecycleStateClass, lifecycleStateIsFailed } from "./lifecycle";
 import { isPlainObject } from "./plainObject";
 
 export interface ActivityCounts {
@@ -25,18 +27,20 @@ export function isFailedJobOutcome(outcome: string | undefined): boolean {
 }
 
 export function isFailedDelegateOutcome(outcome: string | undefined): boolean {
-  return outcome === "failed" || outcome === "exhausted";
+  return outcome !== undefined && lifecycleStateIsFailed("delegateOutcome", outcome);
 }
 
 export function isActivityFailure(outcome: string | undefined, status: string | undefined): boolean {
   if (isFailedJobOutcome(outcome) || isFailedDelegateOutcome(outcome)) return true;
   const normalized = status?.trim().toLowerCase();
+  if (!normalized) return false;
+  // "error" belongs to the transcript's failure vocabulary, not a lifecycle
+  // machine; the rest come from the declared job and delegate-run machines so
+  // this list cannot drift from the daemon's.
   return (
-    normalized === "failed" ||
-    normalized === "exhausted" ||
     normalized === "error" ||
-    normalized === "command_exited_nonzero" ||
-    normalized === "command_killed"
+    lifecycleStateClass("job", normalized) === "failed" ||
+    lifecycleStateClass("delegateRun", normalized) === "failed"
   );
 }
 
@@ -141,6 +145,7 @@ export interface ActivityDelegate {
   error?: string;
   terminal?: boolean;
   resumable?: boolean;
+  needsAttention?: boolean;
   notResumableReason?: string;
   mandate?: string;
   task?: string;
@@ -181,7 +186,7 @@ export interface ActivityDelegate {
 }
 
 // The one place that decides which shape a delegate is. `type` is optional on
-// the wire (appwire/types.go gives it `json:"type,omitempty"`, and the
+// the wire (appwire/types_thread.go gives it `json:"type,omitempty"`, and the
 // generated types.gen.ts declares `type?: string`), so an empty value arrives
 // as no field at all - and the daemon's only delegate construction site sets
 // "delegate" (agent/jobs_activity.go:988). A turn container is therefore a
@@ -543,6 +548,7 @@ function parseDelegate(raw: unknown, depth: number): ParseResult<ActivityDelegat
     "reportPreviewTruncated",
     "terminal",
     "resumable",
+    "needsAttention",
     "structuredResultValid",
     "exhaustionResumable",
     "parentWatchGranted",

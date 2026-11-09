@@ -360,7 +360,7 @@ func cmgpCheckSummarizerBehavior(t *testing.T, ctx context.Context, token string
 		schema.NewTurn(schema.TurnUserInput, llm.User("tail user "+token)),
 	}
 	cm := NewManager(profile, client, cheapmodel.New(client))
-	result, err := cm.summarizeWithLLMSteered(ctx, input, 2, "retain "+token)
+	result, err := cm.summarizeFold(ctx, input, 2, "retain "+token, nil)
 	if err != nil || len(result) != 3 || result[0].Kind != schema.TurnSummary || result[1].Message.Text() != input[len(input)-2].Message.Text() || result[2].Message.Text() != input[len(input)-1].Message.Text() {
 		t.Fatalf("scripted summary result = %#v, err=%v", cmgpKinds(result), err)
 	}
@@ -375,11 +375,11 @@ func cmgpCheckSummarizerBehavior(t *testing.T, ctx context.Context, token string
 		schema.NewTurn(schema.TurnUserInput, llm.User("unsafe")),
 		schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("unsafe", "shell", "output", false)),
 	}
-	unchanged, err := cm.summarizeWithLLMSteered(ctx, unsafe, 1, "")
+	unchanged, err := cm.summarizeFold(ctx, unsafe, 1, "", nil)
 	if err != nil || len(unchanged) != len(unsafe) || unchanged[0].Kind != schema.TurnUserInput {
 		t.Fatalf("unsafe summary cutoff = %#v, err=%v", cmgpKinds(unchanged), err)
 	}
-	if _, err := NewManager(&provider.Profile{}, client, cheapmodel.New(client)).summarizeWithLLMSteered(ctx, input, 2, ""); err == nil {
+	if _, err := NewManager(&provider.Profile{}, client, cheapmodel.New(client)).summarizeFold(ctx, input, 2, "", nil); err == nil {
 		t.Fatal("summary without a model unexpectedly succeeded")
 	}
 
@@ -390,7 +390,7 @@ func cmgpCheckSummarizerBehavior(t *testing.T, ctx context.Context, token string
 		return llm.Response{Message: llm.Assistant("## Progress\nfallback " + token)}, nil
 	}}
 	fallbackCM := NewManager(profile, cmgpClient(fallbackActive, fallbackCheap), cheapmodel.New(cmgpClient(fallbackActive, fallbackCheap)))
-	if got, err := fallbackCM.summarizeWithLLMSteered(ctx, input, 2, ""); err != nil || len(got) == 0 || got[0].Kind != schema.TurnSummary || len(fallbackCheap.requests) != 1 || len(fallbackActive.requests) != 1 {
+	if got, err := fallbackCM.summarizeFold(ctx, input, 2, "", nil); err != nil || len(got) == 0 || got[0].Kind != schema.TurnSummary || len(fallbackCheap.requests) != 1 || len(fallbackActive.requests) != 1 {
 		t.Fatalf("summary fallback = head:%v cheap:%d active:%d err:%v", cmgpHeadKind(got), len(fallbackCheap.requests), len(fallbackActive.requests), err)
 	}
 	stopCheap := &cmgpAdapter{name: "anthropic", respond: func(llm.Request) (llm.Response, error) {
@@ -399,7 +399,7 @@ func cmgpCheckSummarizerBehavior(t *testing.T, ctx context.Context, token string
 	stopActive := &cmgpAdapter{name: "openai", respond: func(llm.Request) (llm.Response, error) {
 		return llm.Response{Message: llm.Assistant("should not run")}, nil
 	}}
-	if _, err := NewManager(profile, cmgpClient(stopActive, stopCheap), cheapmodel.New(cmgpClient(stopActive, stopCheap))).summarizeWithLLMSteered(ctx, input, 2, ""); err == nil || len(stopActive.requests) != 0 {
+	if _, err := NewManager(profile, cmgpClient(stopActive, stopCheap), cheapmodel.New(cmgpClient(stopActive, stopCheap))).summarizeFold(ctx, input, 2, "", nil); err == nil || len(stopActive.requests) != 0 {
 		t.Fatalf("non-fallback summary error used active route: err=%v active=%d", err, len(stopActive.requests))
 	}
 }

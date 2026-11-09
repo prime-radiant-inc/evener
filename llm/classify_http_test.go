@@ -84,6 +84,30 @@ func TestClassifyHTTPErrorTable(t *testing.T) {
 			res:  responsesRes, kind: KindInvalidRequest, code: "unknown_parameter", hint: "generic",
 		},
 		{
+			// A gateway whose /responses backend rejects the content-part array
+			// names the part type as the offending parameter. No fields key can
+			// fix that; the remedy is pinning the row to the chat protocol.
+			name: "responses content-part rejection names the protocol pin", status: 400,
+			body: `{"error":{"message":"DeepSeek V4.1 supports text and image content only; got 'input_text'","type":"invalid_request_error","param":"input_text","code":"unknown_parameter"}}`,
+			res:  responsesRes, kind: KindInvalidRequest, code: "unknown_parameter",
+			hint: `set protocol = "openai-chat" on groq-responses/openai/gpt-oss-120b`,
+		},
+		{
+			// The same rejection arriving as prose only, with no structured
+			// param: the part-type token still names the protocol pin.
+			name: "responses content-part rejection in prose only", status: 400,
+			body: `{"error":{"message":"DeepSeek V4.1 supports text and image content only; got 'input_image'","type":"invalid_request_error"}}`,
+			res:  responsesRes, kind: KindInvalidRequest, code: "invalid_request_error",
+			hint: `set protocol = "openai-chat" on groq-responses/openai/gpt-oss-120b`,
+		},
+		{
+			// A rejection code with neither a structured param nor a message
+			// shape that names one: the hint must still render, naming nothing.
+			name: "unknown parameter code that names no parameter", status: 400,
+			body: `{"error":{"message":"The request was rejected.","type":"invalid_request_error","param":null,"code":"unknown_parameter"}}`,
+			res:  responsesRes, kind: KindInvalidRequest, code: "unknown_parameter", hint: "generic",
+		},
+		{
 			name: "responses unknown parameter regex without a structured param", status: 400,
 			body: `{"error":{"message":"Unknown parameter: 'metadata'.","type":"invalid_request_error","param":null,"code":null}}`,
 			res:  responsesRes, kind: KindInvalidRequest, code: "invalid_request_error",

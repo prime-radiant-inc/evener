@@ -59,6 +59,8 @@ func cloneThreadItems(items []ThreadItem) []ThreadItem {
 // CloneThreadItem returns a copy of item that shares no mutable state with
 // it.
 func CloneThreadItem(item ThreadItem) ThreadItem {
+	item.ConversationProvenance = ClonePointer(item.ConversationProvenance)
+	item.Authorship = ClonePointer(item.Authorship)
 	item.Images = cloneInputItems(item.Images)
 	item.OutputImages = CloneOutputImages(item.OutputImages)
 	item.Position = ClonePointer(item.Position)
@@ -105,6 +107,7 @@ func cloneTurnError(e *TurnError) *TurnError {
 }
 
 func cloneEvenerThread(e EvenerThread) EvenerThread {
+	e.ConversationProvenance = CloneConversationProvenance(e.ConversationProvenance)
 	e.Diagnostics = CloneEvenerDiagnostics(e.Diagnostics)
 	e.Queue = CloneQueueState(e.Queue)
 	e.PendingMutations = clonePendingMutations(e.PendingMutations)
@@ -118,6 +121,7 @@ func cloneEvenerThread(e EvenerThread) EvenerThread {
 	e.Activity = CloneThreadActivity(e.Activity)
 	e.Subagents = ClonePointer(e.Subagents)
 	e.PendingQuestion = ClonePendingQuestion(e.PendingQuestion)
+	e.PendingAsk = ClonePendingAsk(e.PendingAsk)
 	e.Failure = CloneThreadFailure(e.Failure)
 	e.Access = ClonePointer(e.Access)
 	// Capabilities is all bools (value type) — no copy needed.
@@ -153,7 +157,16 @@ func ClonePendingQuestion(value *PendingQuestion) *PendingQuestion {
 	}
 	clone := *value
 	clone.Options = append([]string(nil), value.Options...)
+	clone.Complete = ClonePointer(value.Complete)
+	clone.Truncated = ClonePointer(value.Truncated)
 	return &clone
+}
+
+// CloneAttentionEntry keeps roster snapshots independent across subscribers.
+func CloneAttentionEntry(value AttentionEntry) AttentionEntry {
+	value.PendingQuestion = ClonePendingQuestion(value.PendingQuestion)
+	value.CompositeList = append([]PendingAskCall(nil), value.CompositeList...)
+	return value
 }
 
 // CloneThreadFailure returns a copy of value whose cause is its own; nil stays

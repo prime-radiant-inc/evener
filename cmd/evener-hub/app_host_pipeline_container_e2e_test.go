@@ -67,7 +67,6 @@ import (
 	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/internal/e2ecap"
-	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
 const (
@@ -171,12 +170,7 @@ func runHostPipelineEndpointCase(t *testing.T, endpointCase hostPipelineEndpoint
 	staged := stageDeployArtifact(t, repoRoot, goos, goarch)
 	t.Logf("controller build: %s (version %q); host target %s/%s", hubBin, version, goos, goarch)
 
-	provider, err := fakellm.New()
-	if err != nil {
-		t.Fatalf("start fake provider: %v", err)
-	}
-	t.Cleanup(provider.Close)
-
+	provider := newFakeLLMProvider(t)
 	runID := hostDeployRunID()
 	hostName := "e2e-pipeline-" + runID
 	dirName := hostPipelineDirPrefix + "-" + runID
@@ -218,22 +212,23 @@ func runHostPipelineEndpointCase(t *testing.T, endpointCase hostPipelineEndpoint
 	}
 	installPath := home + "/.local/bin/evener"
 	installHash := host.sha256IfFile(installPath)
+	hubMayHaveStarted := false
+	shutdownProved := true
 	t.Cleanup(func() {
 		// Container removal owns all processes, including wildcard/ephemeral
 		// listeners and the retired-port holder. Never kill by a port number.
-		if !disposableContainer && stopHostListener(t, host, addr, configPath) {
-			if err := host.tryRun("rm -rf " + shellquote.RemoteWord(hostDir)); err != nil {
-				t.Errorf("remove the test-owned directory %s on host %s: %v", hostDir, host.target, err)
-			}
+		if !disposableContainer && hubMayHaveStarted {
+			shutdownProved = stopHostListener(t, host, addr, configPath, runTarget)
 		}
 		if installHash == "" {
 			if got := host.sha256IfFile(installPath); got != "" {
 				t.Errorf("the pipeline created %s on host %s (sha256 %s); it must write only to the test-owned %s", installPath, host.target, got, runTarget)
 			}
-			return
-		}
-		if got := host.sha256IfFile(installPath); got != installHash {
+		} else if got := host.sha256IfFile(installPath); got != installHash {
 			t.Errorf("the host's own install %s changed during the pipeline case (sha256 %s -> %s); it must write only to the test-owned %s", installPath, installHash, got, runTarget)
+		}
+		if !disposableContainer {
+			removeHostFixtureAfterProof(t, host, hostDir, shutdownProved)
 		}
 	})
 
@@ -291,6 +286,7 @@ func runHostPipelineEndpointCase(t *testing.T, endpointCase hostPipelineEndpoint
 	// Step 1: the attach that provisions the bare host (the deploy path) and
 	// leaves it attached. This is the sibling check's provisioning path; every
 	// later step runs against the attached channel.
+	hubMayHaveStarted = true
 	attached := awaitHostAttachedWithin(ctx, t, client, hostName, hostDeployAttachTimeout)
 	t.Logf("attached %s: os=%s arch=%s hubVersion=%s evenerPath=%s", hostName, attached.OS, attached.Arch, attached.HubVersion, attached.EvenerPath)
 	if attached.OS != goos || attached.Arch != goarch {

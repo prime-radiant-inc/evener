@@ -17,7 +17,7 @@ import {
 	type MobileTimelineItem,
 	truncateText,
 } from "./projectedRows";
-import { truncateItem as storeTruncateItem } from "../../mobile/src/state/conversation";
+import { truncateItem as storeTruncateItem } from "./conversation/state/conversation";
 import {
 	composeQuestionAnswers,
 	pendingQuestions,
@@ -185,7 +185,7 @@ it("offers the model's answerable asks", () => {
 
 // pendingQuestions must answer from the canonical refs (liveAsksFor), never
 // from a display-bound copy: a store that wires the row module's truncateItem
-// into its own cap-and-truncate pass (mobile/src/state/conversation.ts) can
+// into its own cap-and-truncate pass (mobile-native/src/conversation/state/conversation.ts) can
 // bound a "question" row's option labels for display, and two options that
 // share a prefix past that bound collide once cut — composeQuestionAnswers
 // must validate a selection against the full label, or a cut label could

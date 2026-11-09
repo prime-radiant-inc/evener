@@ -13,10 +13,13 @@
 
 /* The card is the prompt surface's one visible box, so it carries the focus
  * affordance for the seamless textarea inside it (which draws no ring of its
- * own) - the same 2px accent outline every interactive control here uses. */
+ * own) - the same 2px accent outline every interactive control here uses.
+ * The ring sits on the card's own edge and the hairline takes the accent too,
+ * so the two read as one line instead of a card outline inside a focus ring. */
 .card:focus-within {
   outline: var(--focus-ring);
-  outline-offset: 2px;
+  outline-offset: 0;
+  border-color: var(--accent);
 }
 
 /* The author-level .card display:flex above outranks the UA stylesheet's
@@ -26,6 +29,15 @@
  * instead of replacing it). */
 .card[hidden] {
   display: none;
+}
+
+/* On the Duo cover, an empty, unfocused composer gives its extra inset back
+ * to the transcript. Drafts, attachments and editing keep ordinary space. */
+@media (min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4) {
+  :global([data-composer]):not([data-composer-editing]) .card:has([role="textbox"][data-empty="true"]) {
+    gap: 0;
+    padding-block: 0;
+  }
 }
 
 /* squircle-proto: continuous (Apple-style) corner curvature where the engine

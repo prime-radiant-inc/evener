@@ -5,7 +5,7 @@ import {
 	navigationParamsToResourceKey,
 	requiredRevision,
 } from "@evener/appwire-client/state/navigation";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 
 function resourceFor(target: NavigationInvalidationTarget): NavigationReadParams | null {
 	const base = { representationVersion: 3, resource: target.kind };
@@ -73,9 +73,9 @@ export async function navigationReadback(
 		for (const target of receipt.targets) {
 			const params = resourceFor(target);
 			if (!params) continue;
-			const result = await read(params);
-			if (result.version.revision < (target.revision ?? 0))
-				throw Error("Navigation is older than the acknowledged change. Try again.");
+			// read() enforces this target's revision through requiredRevision
+			// over the same receipt.
+			await read(params);
 		}
 	}
 	return {

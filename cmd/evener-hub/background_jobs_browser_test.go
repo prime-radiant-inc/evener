@@ -30,6 +30,16 @@ const backgroundJobsBrowserCount = 151
 // Capture the supplied evidence destination before that environment redirect.
 var backgroundJobsArtifactRoot = os.Getenv("EVENER_SCRATCH_DIR")
 
+// backgroundJobsEvidenceRoot is where the guards keep evidence that must outlive
+// the test: the supplied destination, else the kept temp dir (the redirected
+// test temp root is removed when the test ends).
+func backgroundJobsEvidenceRoot() string {
+	if backgroundJobsArtifactRoot != "" {
+		return backgroundJobsArtifactRoot
+	}
+	return sandboxtest.KeptTempDir()
+}
+
 // The only scripted boundary is the provider. Jobs, journal eligibility, paging,
 // subscriptions, output and browser state all belong to the real stack.
 func TestBackgroundJobsBrowser(t *testing.T) {
@@ -46,11 +56,7 @@ func TestBackgroundJobsBrowser(t *testing.T) {
 	t.Cleanup(provider.Close)
 	stack := startHubStack(t, provider)
 	client := stack.dialRPC(ctx, t)
-	artifactRoot := backgroundJobsArtifactRoot
-	if artifactRoot == "" {
-		artifactRoot = sandboxtest.KeptTempDir()
-	}
-	artifacts, err := os.MkdirTemp(artifactRoot, "backgroundjobsguard-")
+	artifacts, err := os.MkdirTemp(backgroundJobsEvidenceRoot(), "backgroundjobsguard-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,9 +112,28 @@ func TestBackgroundJobsBrowser(t *testing.T) {
 		t.Fatal("first actual provider request does not advertise shell")
 	}
 	barrier := func(name string) string { return filepath.Join(stack.workDir, name) }
+	var barrierNames []string
 	waitFor := func(name string) string {
-		return fmt.Sprintf("while ! test -e %q; do sleep 0.02; done; ", barrier(name))
+		barrierNames = append(barrierNames, name)
+		// The loop also has a deadline: cleanup writes every barrier, but
+		// t.TempDir removes the workspace immediately afterwards, so a loop that
+		// misses that window must not poll a vanished path forever (#4078).
+		// deadline is shared across a command's successive waits, so 5 minutes
+		// bounds the whole producer, longer than this test's 4-minute context.
+		return fmt.Sprintf("deadline=${deadline:-$((SECONDS+300))}; while ! test -e %q && [ \"$SECONDS\" -lt \"$deadline\" ]; do sleep 0.02; done; ", barrier(name))
 	}
+	// Several producers park on barrier files until the browser driver, or a
+	// later step, writes them. On an early failure nothing writes those files,
+	// and the producers' bash loops would poll a temp workspace that cleanup
+	// removes, outliving the test process as orphans (#4078). Release every
+	// barrier the producers actually wait on here too; t.Cleanup is LIFO, so
+	// this runs before startHubStack reaps the daemons and before t.TempDir
+	// removes workDir. waitFor registers each name as it builds the commands.
+	t.Cleanup(func() {
+		for _, name := range barrierNames {
+			_ = os.WriteFile(barrier(name), nil, 0o600)
+		}
+	})
 	for index := range backgroundJobsBrowserCount {
 		command := fmt.Sprintf("printf 'BACKGROUND_JOB_%03d\\n'", index)
 		switch index {

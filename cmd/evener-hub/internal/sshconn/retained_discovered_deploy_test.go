@@ -130,7 +130,7 @@ func TestRetainedDiscoveredSymlinkDeployment(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, _, err := m.DeployForOperation(t.Context(), host, facts, restart, guard); err == nil || writes != 1 {
+			if _, _, err := m.DeployForOperation(t.Context(), host, facts, restart, guard, nil); err == nil || writes != 1 {
 				t.Fatalf("first push did not fail at its write: err=%v writes=%d", err, writes)
 			}
 			retained := m.pendingRestart(host.Name)
@@ -185,7 +185,7 @@ func TestRetainedDiscoveredSymlinkDeployment(t *testing.T) {
 				facts.ExecutableMissing = true
 			}
 			discoveredBeforeRetry := discoveries
-			launch, after, err := m.DeployForOperation(t.Context(), host, facts, restart, guard)
+			launch, after, err := m.DeployForOperation(t.Context(), host, facts, restart, guard, nil)
 			if mode == "changed-registration" || refuseDangling {
 				if err == nil || writes != 1 || !reflect.DeepEqual(retained, m.pendingRestart(host.Name)) {
 					t.Fatalf("changed registration replayed write or lost intent: err=%v writes=%d pending=%+v", err, writes, m.pendingRestart(host.Name))

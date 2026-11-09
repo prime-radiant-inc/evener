@@ -16,7 +16,7 @@
 // path of its own - the same contract the Spawn pane's branch chip has always
 // had (floor §1.7).
 import type { AppwireClientLike } from "@evener/appwire-client";
-import { hostRequest } from "../stores/hostRouting";
+import { hostRequest } from "@evener/appwire-client";
 
 export interface GitLocation {
   // Branch name, or a detached-HEAD short SHA, or "" when unknown.

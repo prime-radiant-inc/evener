@@ -68,9 +68,7 @@ func cacheContains(t *testing.T, root, needle string) bool {
 }
 
 func TestInstallRejectsGitMetadataSourceSelections(t *testing.T) {
-	if !gitAvailable() {
-		t.Skip("git not available")
-	}
+	skipWithoutGit(t)
 	root := t.TempDir()
 	pluginRepo := filepath.Join(root, "plugin-repo")
 	makeGitRepo(t, pluginRepo, "README.md", "plugin")
@@ -145,8 +143,7 @@ func installDirectorySource(t *testing.T, sourcePath string) (InstallEntry, erro
 	t.Helper()
 	marketRepo := filepath.Join(t.TempDir(), "market")
 	writeSourceCatalog(t, marketRepo, "widget", `{"source":"directory","path":"`+sourcePath+`"}`)
-	m := NewManager(t.TempDir())
-	ctx := context.Background()
+	m, ctx := newManagerCtx(t)
 	if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceURL, URL: marketRepo}); err != nil {
 		t.Fatal(err)
 	}
@@ -154,9 +151,7 @@ func installDirectorySource(t *testing.T, sourcePath string) (InstallEntry, erro
 }
 
 func TestInstallAllowsWorkingTreeDirectorySource(t *testing.T) {
-	if !gitAvailable() {
-		t.Skip("git not available")
-	}
+	skipWithoutGit(t)
 	pluginRepo := filepath.Join(t.TempDir(), "plugin-worktree")
 	makeGitRepo(t, pluginRepo, "README.md", "plugin")
 	writePlugin(t, pluginRepo, "widget", map[string]string{"resources/companion.txt": "companion"})
@@ -176,9 +171,7 @@ func TestInstallAllowsWorkingTreeDirectorySource(t *testing.T) {
 }
 
 func TestInstallAllowsPluginTreeThatLooksLikeGitAdministration(t *testing.T) {
-	if !gitAvailable() {
-		t.Skip("git not available")
-	}
+	skipWithoutGit(t)
 	pluginDir := filepath.Join(t.TempDir(), "plugin-with-git-like-names")
 	writePlugin(t, pluginDir, "widget", map[string]string{
 		"HEAD":            "ordinary plugin file",
@@ -200,8 +193,7 @@ func TestInstallWithoutGitRefusesUnverifiableAdministration(t *testing.T) {
 	addAdminMarker(t, admin)
 	marketRepo := filepath.Join(root, "market")
 	writeSourceCatalog(t, marketRepo, "widget", `{"source":"directory","path":"`+admin+`"}`)
-	m := NewManager(t.TempDir())
-	ctx := context.Background()
+	m, ctx := newManagerCtx(t)
 	if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceURL, URL: marketRepo}); err != nil {
 		t.Fatal(err)
 	}
@@ -217,9 +209,7 @@ func TestInstallWithoutGitRefusesUnverifiableAdministration(t *testing.T) {
 }
 
 func TestInstallRejectsGitMetadataSelectionWithGitTrace(t *testing.T) {
-	if !gitAvailable() {
-		t.Skip("git not available")
-	}
+	skipWithoutGit(t)
 	for _, tc := range []struct {
 		name  string
 		trace bool
@@ -270,9 +260,7 @@ func TestInstallRejectsGitMetadataSelectionWithGitTrace(t *testing.T) {
 }
 
 func TestInstallAllowsGitLikeTreeInsideAWorktree(t *testing.T) {
-	if !gitAvailable() {
-		t.Skip("git not available")
-	}
+	skipWithoutGit(t)
 	outer := filepath.Join(t.TempDir(), "outer")
 	makeGitRepo(t, outer, "README.md", "outer")
 	pluginDir := filepath.Join(outer, "plugin-with-git-like-names")
@@ -315,9 +303,7 @@ func setAmbientRepositorySelection(t *testing.T, unrelated string) {
 }
 
 func TestAmbientRepositorySelectionCannotAuthorizeMetadata(t *testing.T) {
-	if !gitAvailable() {
-		t.Skip("git not available")
-	}
+	skipWithoutGit(t)
 	root := t.TempDir()
 	pluginRepo := filepath.Join(root, "plugin")
 	makeGitRepo(t, pluginRepo, "README.md", "plugin")
@@ -326,8 +312,7 @@ func TestAmbientRepositorySelectionCannotAuthorizeMetadata(t *testing.T) {
 	makeGitRepo(t, unrelated, "README.md", "unrelated")
 	marketRepo := filepath.Join(root, "market")
 	writeSourceCatalog(t, marketRepo, "widget", `{"source":"directory","path":"`+filepath.Join(pluginRepo, ".git")+`"}`)
-	m := NewManager(t.TempDir())
-	ctx := context.Background()
+	m, ctx := newManagerCtx(t)
 	if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceURL, URL: marketRepo}); err != nil {
 		t.Fatal(err)
 	}
@@ -341,9 +326,7 @@ func TestAmbientRepositorySelectionCannotAuthorizeMetadata(t *testing.T) {
 }
 
 func TestAmbientRepositorySelectionDoesNotBreakNormalInstall(t *testing.T) {
-	if !gitAvailable() {
-		t.Skip("git not available")
-	}
+	skipWithoutGit(t)
 	root := t.TempDir()
 	pluginRepo := filepath.Join(root, "plugin")
 	makeGitRepo(t, pluginRepo, "README.md", "plugin")
@@ -355,8 +338,7 @@ func TestAmbientRepositorySelectionDoesNotBreakNormalInstall(t *testing.T) {
 	makeGitRepo(t, marketRepo, "README.md", "market")
 	unrelated := filepath.Join(root, "unrelated")
 	makeGitRepo(t, unrelated, "README.md", "unrelated")
-	m := NewManager(t.TempDir())
-	ctx := context.Background()
+	m, ctx := newManagerCtx(t)
 	if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceURL, URL: marketRepo}); err != nil {
 		t.Fatal(err)
 	}

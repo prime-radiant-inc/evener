@@ -246,8 +246,8 @@ cannot follow.
 ## Generated index
 
 A scope's `MEMORY.md` is not a file. Evener renders it from the scope's pages
-whenever it is needed, in [`memory_index_render.go`](../../agent/memory_index_render.go)
-and [`memory_page.go`](../../agent/memory_page.go). A hand-written root index
+whenever it is needed, in [`memory_index_render.go`](../../agent/memorypages/memory_index_render.go)
+and [`memory_page.go`](../../agent/memorypages/memory_page.go). A hand-written root index
 from earlier builds stays on disk until migrated (see **Migration**). Every
 rule here about a root `MEMORY.md` ignores letter case, since `memory.md` names
 the same file on macOS's default filesystem.
@@ -499,10 +499,27 @@ session notes remain available; `gardening-memory` is not among them, because a
 disabled session cannot save memory and so neither sees it in its catalog nor
 loads it, exactly like a delegate or a root whose profile denies a save tool.
 
+The same opt-out is the launch layers' `memory_enabled` option: settable per
+launch and savable as the global and project launch defaults. The launch
+layers, the wire and both clients spell it positively; the launch renderer
+turns a false into the `--disable-memory` flag, which the daemon and session
+config keep. The web sets it from Launch settings and the spawn pane's Advanced
+options; the native app from Launch defaults and the new-session More options
+row. Both clients gate the control on the chosen host's launch schema, so a
+host that never offered the field shows no toggle that silently does nothing.
+An explicit Off kept from a host that offered it survives a host change
+anyway: it stays visible, and Start is held until the chosen host's schema
+confirms it honors the choice — clearing it, or choosing a host that does,
+is the way through — so no session silently launches with memory on. The
+pre-session skill catalog a composer reads derives `gardening-memory` from the
+resolved launch too, so the composer never offers a skill the started session
+cannot load.
+
 The choice is sticky across resume and compaction. Omitting the flag on resume
 preserves it; passing the flag can additionally disable an enabled session.
-Disabled parents dominate fresh and restored children. There is no live toggle
-or new screen.
+Disabled parents dominate fresh and restored children. There is no live
+toggle: the option shapes new sessions, and a resumed session keeps the
+state it was created with.
 
 Opt-out does not remove stored files, prior conversation or other sessions'
 access. It does not revoke general filesystem permissions: unrestricted file

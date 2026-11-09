@@ -3,6 +3,7 @@
 package execenv
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"os"
@@ -254,7 +255,7 @@ func TestListVisibleDirectoryPrunesDotDirectories(t *testing.T) {
 	}
 }
 
-// EditFileWith writes what finish makes of the edited bytes, in both the
+// EditFileWithCtx writes what finish makes of the edited bytes, in both the
 // unconfined and the confined layer, and a failed match calls no finish.
 func TestEditFileWithWritesTheFinishedBytes(t *testing.T) {
 	root := t.TempDir()
@@ -269,14 +270,14 @@ func TestEditFileWithWritesTheFinishedBytes(t *testing.T) {
 			t.Fatalf("%s: WriteFile: %v", name, err)
 		}
 		finish := func(edited []byte) []byte { return append([]byte("stamp\n"), edited...) }
-		if _, err := env.EditFileWith(path, "world", "WORLD", false, finish); err != nil {
-			t.Fatalf("%s: EditFileWith: %v", name, err)
+		if _, err := env.EditFileWithCtx(context.Background(), path, "world", "WORLD", false, finish); err != nil {
+			t.Fatalf("%s: EditFileWithCtx: %v", name, err)
 		}
 		if b, _ := os.ReadFile(path); string(b) != "stamp\nhello WORLD\n" {
 			t.Fatalf("%s: got %q", name, b)
 		}
 		called := false
-		if _, err := env.EditFileWith(path, "absent", "x", false, func(b []byte) []byte { called = true; return b }); err == nil || called {
+		if _, err := env.EditFileWithCtx(context.Background(), path, "absent", "x", false, func(b []byte) []byte { called = true; return b }); err == nil || called {
 			t.Fatalf("%s: failed match err=%v, finish called=%t", name, err, called)
 		}
 	}

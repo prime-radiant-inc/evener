@@ -54,7 +54,7 @@ func failNthPorcelainRead(n int, stderr string) func(args []string) (string, err
 	}
 }
 
-// worktreePruneSweep3's own registry-hygiene listing failing.
+// pruneGitRegistry's own registry-hygiene listing failing.
 //
 // Sweep 3 only issues a fresh read when an earlier sweep changed the registry —
 // the runner memoizes the listing otherwise — so this seeds a collectible lane

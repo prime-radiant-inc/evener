@@ -31,7 +31,7 @@ func TestCovAvailableEventKindNames(t *testing.T) {
 	}
 }
 
-// TestCovQuietWatchdogMessage covers quietWatchdogMessage and formatQuietWindow.
+// TestCovQuietWatchdogMessage covers quietWatchdogMessage.
 func TestCovQuietWatchdogMessage(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC)
@@ -40,16 +40,42 @@ func TestCovQuietWatchdogMessage(t *testing.T) {
 		t.Fatalf("quietWatchdogMessage = %q", got)
 	}
 
-	// Sub-minute window — uses default duration string.
+	// Sub-minute silence — uses default duration string.
 	got = quietWatchdogMessage(50*time.Millisecond, now)
 	if !strings.Contains(got, "50ms") {
 		t.Fatalf("sub-minute: %q", got)
 	}
 
-	// Non-whole-minute window.
+	// A measured silence lands floored to whole minutes.
 	got = quietWatchdogMessage(90*time.Second, now)
-	if !strings.Contains(got, "1m30s") {
-		t.Fatalf("non-whole-minute: %q", got)
+	if !strings.Contains(got, "quiet for 1m;") {
+		t.Fatalf("floored silence: %q", got)
+	}
+}
+
+// TestCovFormatQuietDuration covers formatQuietDuration.
+func TestCovFormatQuietDuration(t *testing.T) {
+	t.Parallel()
+	if got := formatQuietDuration(10 * time.Minute); got != "10m" {
+		t.Fatalf("10m = %q", got)
+	}
+	if got := formatQuietDuration(10*time.Minute + 29*time.Second); got != "10m" {
+		t.Fatalf("floored = %q", got)
+	}
+	if got := formatQuietDuration(63 * time.Minute); got != "1h3m" {
+		t.Fatalf("1h3m = %q", got)
+	}
+	if got := formatQuietDuration(time.Hour); got != "1h" {
+		t.Fatalf("1h = %q", got)
+	}
+	if got := formatQuietDuration(3*time.Hour + 5*time.Minute); got != "3h5m" {
+		t.Fatalf("3h5m = %q", got)
+	}
+	if got := formatQuietDuration(2 * time.Hour); got != "2h" {
+		t.Fatalf("2h = %q", got)
+	}
+	if got := formatQuietDuration(50 * time.Millisecond); got != "50ms" {
+		t.Fatalf("50ms = %q", got)
 	}
 }
 
@@ -634,25 +660,6 @@ func TestCovWatchEventFilterMatches(t *testing.T) {
 
 // ---- jobs.go pure functions ----
 
-// TestCovCloneJobRecord covers cloneJobRecord.
-func TestCovCloneJobRecord(t *testing.T) {
-	t.Parallel()
-	// Nil → nil.
-	if got := cloneJobRecord(nil); got != nil {
-		t.Fatal("nil should return nil")
-	}
-
-	orig := &jobstore.JobRecord{JobID: "job_1", Status: jobstore.StatusRunning}
-	clone := cloneJobRecord(orig)
-	if clone.JobID != "job_1" || clone.Status != jobstore.StatusRunning {
-		t.Fatalf("clone = %+v", clone)
-	}
-	clone.Status = jobstore.StatusCompleted
-	if orig.Status == jobstore.StatusCompleted {
-		t.Fatal("clone should be independent")
-	}
-}
-
 // TestCovStringOutputResult covers stringOutputResult.
 func TestCovStringOutputResult(t *testing.T) {
 	t.Parallel()
@@ -813,7 +820,7 @@ func TestCovDelegateQuietAttentionContent(t *testing.T) {
 	t.Parallel()
 	lease := delegateLease{delegateID: "dlg_1", generation: 1}
 	now := time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC)
-	got := delegateQuietAttentionContent(lease, now)
+	got := delegateQuietAttentionContent(lease, delegateQuietWindow, now)
 	if !strings.Contains(got, "dlg_1") || !strings.Contains(got, "delegate-notification") {
 		t.Fatalf("content = %q", got)
 	}

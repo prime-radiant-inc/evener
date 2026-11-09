@@ -11,6 +11,7 @@ import {
 	isActiveItem,
 	isInProgressStatus,
 	isStuck,
+	parseTimestampMs,
 	pendingTextJoined,
 	toolFamily,
 	toolStepProgress,
@@ -161,7 +162,7 @@ function stepFor(item: ItemModel, cwd: string | undefined): Step | null {
 	const namesCommand = toolFamily(item.toolName ?? "") === "shell" && progress !== RUNNING_A_COMMAND;
 	return {
 		text: namesCommand ? progress : intent || progress,
-		startedAt: timeOf(item.startedAt),
+		startedAt: parseTimestampMs(item.startedAt),
 		waitsOnSubagents: WAITING_TOOLS.has(item.toolName ?? ""),
 	};
 }
@@ -181,12 +182,6 @@ function thinkingTokens(item: ItemModel): number {
 
 function runningSubagents(session: TraySource): number {
 	return runningSubagentCount(session.delegates ?? []);
-}
-
-function timeOf(value: string | undefined): number | undefined {
-	if (!value) return undefined;
-	const time = Date.parse(value);
-	return Number.isFinite(time) ? time : undefined;
 }
 
 /** The frames this phone saw each minute while the session was open: the

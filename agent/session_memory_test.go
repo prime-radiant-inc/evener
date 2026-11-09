@@ -23,7 +23,9 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/artifactstore"
+	"primeradiant.com/evener/agent/internal/frontmatter"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/memorypages"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
@@ -828,7 +830,7 @@ func TestMemoryContextTrustAndBounds(t *testing.T) {
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		page := []byte("---\n" + memoryYAMLField("description", raw) + "---\n")
+		page := []byte("---\n" + frontmatter.YAMLField("description", raw) + "---\n")
 		if err := os.WriteFile(path, page, 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -1014,7 +1016,7 @@ func TestMemoryContextForkInvalidation(t *testing.T) {
 			default:
 				t.Fatal("forked child did not reach the model request")
 			}
-			data, err := readTranscriptFull(transcriptPath(child.sess.stateDir, child.sess.id), "")
+			data, err := readTranscriptFull(context.Background(), transcriptPath(child.sess.stateDir, child.sess.id), "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1355,20 +1357,20 @@ func memorySeedPage(t *testing.T, root, dir, name, description string, opts ...m
 // from disk.
 func memoryExpectedIndex(t *testing.T, root, dir string) string {
 	t.Helper()
-	content, _, _ := projectMemoryIndex(memoryListedPages(t, root, dir), memoryProjectionCap)
+	content, _, _ := memorypages.ProjectIndex(memoryListedPages(t, root, dir), memorypages.ProjectionCap)
 	return content
 }
 
 // memoryListedPages lists the pages of the scope directory dir, relative to
 // the state root, straight from disk.
-func memoryListedPages(t *testing.T, root, dir string) []memoryPage {
+func memoryListedPages(t *testing.T, root, dir string) []memorypages.Page {
 	t.Helper()
 	env, err := execenv.NewConfinedFileEnvironment(root, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer env.Cleanup()
-	pages, err := listMemoryPages(env)
+	pages, err := memorypages.ListPagesCtx(context.Background(), env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1748,7 +1750,7 @@ func TestMemoryDelegatesReadButNeverSave(t *testing.T) {
 
 // A stable delegate's persisted tool ceiling never names a save tool, so its
 // descriptor and job status report only what the delegate can call.
-func TestStableDelegateToolNameCeilingOmitsSaveTools(t *testing.T) {
+func TestDelegateToolNameCeilingOmitsSaveTools(t *testing.T) {
 	t.Parallel()
 	s := newSession(t, withDir(t.TempDir()), withConfig(SessionConfig{MemoryStateRoot: t.TempDir()}))
 	for _, policy := range []struct {
@@ -1756,7 +1758,7 @@ func TestStableDelegateToolNameCeilingOmitsSaveTools(t *testing.T) {
 		allTools bool
 		allowed  []string
 	}{{"all-tools", true, nil}, {"listed", false, nativeMemoryToolNames}} {
-		ceiling := stableDelegateToolNameCeiling(s.reg, s.resultToolName(), policy.allTools, policy.allowed, nil, false, "")
+		ceiling := delegateToolNameCeiling(s.reg, s.resultToolName(), policy.allTools, policy.allowed, nil, false, "")
 		for _, name := range memorySaveToolNames {
 			if slices.Contains(ceiling, name) {
 				t.Errorf("%s ceiling names %s: %v", policy.name, name, ceiling)
@@ -2259,7 +2261,7 @@ func TestMemoryScopesLiveInTheirStateDirectories(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pages, err := listMemoryPages(env)
+		pages, err := memorypages.ListPagesCtx(context.Background(), env)
 		release()
 		if err != nil {
 			t.Fatal(err)
@@ -2896,7 +2898,7 @@ func TestMemoryOutputRecovery(t *testing.T) {
 
 // This corpus uses the existing toolwire envelope. Every call/result comes
 // from ProcessInput, including retention and read_transcript recovery. Only
-// random capability IDs and runtime timestamps are normalized for recording.
+// random capability/session IDs and runtime timestamps are normalized for recording.
 func TestMemoryGenericDelivery(t *testing.T) {
 	t.Parallel()
 	var items []appwire.ThreadItem
@@ -2979,6 +2981,12 @@ func TestMemoryGenericDelivery(t *testing.T) {
 			projected := apptranscript.ProjectTurn("turn_1", index+arm*4, turn, reg, nil, nil)
 			for i := range projected {
 				projected[i].DurationMS = nil
+				if authorship := projected[i].Authorship; authorship != nil {
+					if authorship.Author.SessionRef != "local:"+s.ID() {
+						t.Fatalf("memory tool author=%+v, want session %s", authorship.Author, s.ID())
+					}
+					authorship.Author.SessionRef = fmt.Sprintf("local:memoryFixture%d", arm+1)
+				}
 			}
 			items = append(items, toolWireRelocated(t, projected, func(text string) string {
 				return strings.ReplaceAll(text, ref, fmt.Sprintf("artifact:memoryFixture%d", arm+1))
@@ -3399,7 +3407,7 @@ const memoryGuidanceHeading = "\n\n## Memory\n\n"
 func refreshModelFacingCaches(s *Session) {
 	s.mu.Lock()
 	s.rebuildToolDefsCache()
-	warning := s.refreshSystemPromptCache(s.env)
+	warning, _ := s.refreshSystemPromptCache(s.env)
 	s.mu.Unlock()
 	s.reportPromptRenderFailure(warning)
 }

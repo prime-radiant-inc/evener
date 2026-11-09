@@ -1,4 +1,4 @@
-import type { ItemModel, Thread, ThreadCapabilities, TurnModel } from "@evener/appwire-client";
+import type { ItemModel, Thread, TurnModel } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -7,9 +7,10 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { registerPaneForTests } from "../../../../shell/paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../../../storageTestUtils";
-import { connectionStore } from "../../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../../stores/threads";
 import { readModuleCss } from "../../../../styles/cssBlock";
+import { ALL_CAPABILITIES as FORK_CAPABILITIES } from "../../../../threadTestUtils";
 import { Toast } from "../../../../widgets";
 import { hoverForTooltip } from "../../../../widgets/tooltip/tooltipTestUtils";
 import { readDraft } from "../../composer/draft";
@@ -187,15 +188,16 @@ test("the body renders as a bubble wrapping the text and attachments", () => {
   expect(bubble.querySelector('[data-testid="image-gallery-thumb"]')).toBeTruthy();
 });
 
-// Option B restores the 2026-07-30 chat bubble for the user's own words:
-// an --accent-bg wash hugging the content (corners uniformly 4px under the
-// editorial scale, so no distinct tail renders). Serif prose stays; only
-// the containment returns.
-test("the user reading surface is an accent bubble hugging its content column", () => {
+// The user's own words sit on a paper slip (inset surface + one hairline)
+// hugging the content. Corners are uniformly 4px under the editorial scale,
+// so no distinct tail renders. Serif prose stays; only the containment
+// returns.
+test("the user reading surface is a paper slip hugging its content column", () => {
   const css = readModuleCss(import.meta.url, "usermessageitem.module.css");
   const body = /\.body\s*\{([^}]*)\}/.exec(css);
   expect(body).not.toBeNull();
-  expect(body![1]).toMatch(/background:\s*var\(--accent-bg\)/);
+  expect(body![1]).toMatch(/background:\s*var\(--surface-inset\)/);
+  expect(body![1]).toMatch(/border:\s*1px solid var\(--edge\)/);
   expect(body![1]).toMatch(
     /border-radius:\s*var\(--radius-control\)\s*var\(--radius-pane\)\s*var\(--radius-pane\)\s*var\(--radius-pane\)/,
   );
@@ -265,22 +267,6 @@ test("UserMessageView is exported standalone for reuse by user-sourced steering"
 // dialog first. openChildPane's success path is mirrored: open the new ref as
 // its own pane, no toast.
 
-const FORK_CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
-
 // A minimal, test-only "session" pane registration - real registerPane/
 // openPane machinery without pulling in the actual panes/session module
 // (mirrors SessionActionsMenu.test.tsx's identical setup for the same reason:
@@ -320,7 +306,7 @@ function connectForkClient(): FakeClient {
 
 describe("per-message fork affordance", () => {
   beforeEach(() => {
-    connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+    resetConnectionStoreForTests();
     resetThreadsStoreForTests();
     resetWorkspaceStoreForTests();
     localStorage.clear();

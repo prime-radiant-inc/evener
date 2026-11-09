@@ -45,10 +45,7 @@ func TestHubRPCTurnStartAfterSuccessfulResumeStaysCorrelated(t *testing.T) {
 	workingDir := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
 	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	ref := "local:" + sessionID
 
 	// The retry's send is refused by the just-resumed session, exactly as a
@@ -2074,10 +2071,7 @@ func TestHubRPCTurnStartDirectRefusalKeepsPaddedCallerID(t *testing.T) {
 	workingDir := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
 	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	ref := "local:" + sessionID
 
 	startCalls := 0
@@ -2232,10 +2226,7 @@ func TestHubRPCTurnStartResumedSuccessCarriesVerbatimPaddedCallerID(t *testing.T
 	workingDir := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
 	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	ref := "local:" + sessionID
 
 	startCalls := 0

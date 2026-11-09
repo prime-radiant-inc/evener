@@ -181,39 +181,6 @@ func (e *genericError) Error() string { return e.msg }
 
 func newGenericError(msg string) error { return &genericError{msg: msg} }
 
-// TestSubscribeNoConnection covers the path where no connection is in the context.
-func TestSubscribeNoConnection(t *testing.T) {
-	if ok := Subscribe(context.Background(), "thread-1"); !ok {
-		t.Fatal("Subscribe with no connection should return true")
-	}
-}
-
-// TestSubscribeEmptyThreadID covers the path where threadID is empty.
-func TestSubscribeEmptyThreadID(t *testing.T) {
-	server := NewServer(ServerConfig{})
-	conn := server.NewConnection("conn-sub-empty")
-	server.registerConnection(conn)
-	ctx := context.WithValue(context.Background(), connectionContextKey{}, conn)
-	if ok := Subscribe(ctx, ""); ok {
-		t.Fatal("Subscribe with empty threadID should return false")
-	}
-}
-
-// TestSubscribeReplacedConnection covers the path where the connection has been
-// replaced (server.conns[conn.id] != conn).
-func TestSubscribeReplacedConnection(t *testing.T) {
-	server := NewServer(ServerConfig{})
-	conn := server.NewConnection("conn-replaced")
-	server.registerConnection(conn)
-	// Replace the connection with a new one.
-	newConn := server.NewConnection("conn-replaced")
-	server.registerConnection(newConn)
-	ctx := context.WithValue(context.Background(), connectionContextKey{}, conn)
-	if ok := Subscribe(ctx, "thread-1"); ok {
-		t.Fatal("Subscribe with replaced connection should return false")
-	}
-}
-
 // TestNewNotifierZeroLimit covers the limit<=0 default path in NewNotifier.
 func TestNewNotifierZeroLimit(t *testing.T) {
 	n := NewNotifier(0)

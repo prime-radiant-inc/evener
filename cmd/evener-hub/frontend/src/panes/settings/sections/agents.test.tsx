@@ -2,7 +2,7 @@ import { friendlyErrorMessage, type SettingsOverviewResponse, WireError } from "
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { connectionStore } from "../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { resetSettingsOverviewStoreForTests, type SettingsOverviewStoreState } from "../../../stores/settingsOverview";
 import { AgentsSection } from "./agents";
 
@@ -12,7 +12,7 @@ afterEach(() => {
   // unwrapped state update (React's act warning).
   cleanup();
   resetSettingsOverviewStoreForTests();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
 });
 
 function fixture(overrides: Partial<SettingsOverviewStoreState> = {}): () => SettingsOverviewStoreState {

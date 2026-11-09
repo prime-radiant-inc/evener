@@ -43,6 +43,16 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 		Data:       d.eventData,
 		Provenance: provenance.Clone(d.triggerProvenance),
 	}, d.triggerProvenance)
+	if d.rosterPayload != "" {
+		d.frame += d.rosterPayload
+	} else {
+		if d.rosterInitial {
+			d.frame += "roster_initial: true\n"
+		}
+		if d.rosterResync {
+			d.frame += rosterRecoveryFrame
+		}
+	}
 	if notice := selfInfluenceNotice(d.selfInfluence, d.gradientDepth, d.truncated); notice != "" {
 		d.frame = notice + "\n" + d.frame
 	}
@@ -55,7 +65,7 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 // returns ok=true with the persisted state, so the journal and the runtime
 // map can be reconciled against it instead of a ghost ok=false.
 // Pure observation: no delivery, no Session calls (spec §3).
-func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.WatchSendState, cfg *watchConfig, ok bool, err error) {
+func (jm *jobManager) recordWatchSend(d watchSendDelivery, terminalEvents ...[]jobstore.Event) (state jobstore.WatchSendState, cfg *watchConfig, ok bool, err error) {
 	if d.cfg == nil || d.send == nil || !jm.isCurrentWatchSendDelivery(d) {
 		return jobstore.WatchSendState{}, nil, false, nil
 	}
@@ -74,7 +84,7 @@ func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.Watch
 	// can cross the runaway threshold only together. Everything downstream
 	// (the fuse decision and any drop event) uses the PERSISTED coalesced
 	// state so the recorded evidence carries the ancestry that tripped it.
-	persistedState, persisted, perr := jm.persistPendingWatchSend(state, d)
+	persistedState, persisted, perr := jm.persistPendingWatchSend(state, d, terminalEvents...)
 	if perr != nil {
 		if d.allowAfterTerminalExpiry && !persisted {
 			jm.rememberUnpersistedTerminalPendingWatchSend(d.cfg, state)
@@ -93,10 +103,10 @@ func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.Watch
 	}
 	state = persistedState
 	if terr != nil {
-		return jobstore.WatchSendState{}, nil, false, jm.dropWatchSend(state, d.cfg, terr.Error())
+		return state, d.cfg, false, jm.dropWatchSend(state, d.cfg, terr.Error())
 	}
 	if state.SelfInfluenceDepth >= runawaySelfInfluenceDepth {
-		return jobstore.WatchSendState{}, nil, false, jm.dropWatchSend(state, d.cfg, "runaway")
+		return state, d.cfg, false, jm.dropWatchSend(state, d.cfg, "runaway")
 	}
 	return state, d.cfg, true, nil
 }
@@ -106,12 +116,17 @@ func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.Watch
 // never delivers (spec §3); the owner's loop drains and delivers on wake. With
 // nothing recorded there is nothing to drain, so the owner is left undisturbed.
 func (jm *jobManager) recordWatchSendsAndKick(deliveries []watchSendDelivery) {
-	tokens, recorded := jm.recordWatchSends(deliveries)
+	_ = jm.recordWatchSendsAndKickErr(deliveries)
+}
+
+func (jm *jobManager) recordWatchSendsAndKickErr(deliveries []watchSendDelivery) error {
+	tokens, recorded, err := jm.recordWatchSends(deliveries)
 	// A queued token wakes the owner by itself; a kick is what covers a
 	// recorded send that queued nothing.
 	if queued := jm.enqueueNotifications(tokens); recorded && !queued {
 		jm.kick()
 	}
+	return err
 }
 
 // recordWatchSends is the durable half of recordWatchSendsAndKick: it persists
@@ -119,13 +134,17 @@ func (jm *jobManager) recordWatchSendsAndKick(deliveries []watchSendDelivery) {
 // them, so a caller with more to say about the same event can wake the owner
 // once for all of it. recorded reports whether anything was persisted at all —
 // with tokens empty, that is what still owes the owner a kick.
-func (jm *jobManager) recordWatchSends(deliveries []watchSendDelivery) (tokens []jobNotification, recorded bool) {
+// The first error is returned after every send has been attempted.
+func (jm *jobManager) recordWatchSends(deliveries []watchSendDelivery) (tokens []jobNotification, recorded bool, err error) {
 	if len(deliveries) == 0 {
-		return nil, false
+		return nil, false, nil
 	}
 	deliveries = jm.snapshotWatchSendFrames(deliveries)
 	for _, d := range deliveries {
-		state, _, ok, _ := jm.recordWatchSend(d)
+		state, _, ok, recordErr := jm.recordWatchSend(d)
+		if err == nil {
+			err = recordErr
+		}
 		if !ok {
 			continue // recordWatchSend already produced diagnostics/drops
 		}
@@ -140,7 +159,7 @@ func (jm *jobManager) recordWatchSends(deliveries []watchSendDelivery) (tokens [
 			tokens = append(tokens, watchSendTokenNotification("", state))
 		}
 	}
-	return tokens, recorded
+	return tokens, recorded, err
 }
 
 func (jm *jobManager) watchSendState(d watchSendDelivery, resolvedSendTo string) jobstore.WatchSendState {
@@ -408,14 +427,15 @@ func (jm *jobManager) isCurrentPendingWatchSend(cfg *watchConfig, state jobstore
 }
 
 func (jm *jobManager) isCurrentPendingWatchSendLocked(cfg *watchConfig, state jobstore.WatchSendState) bool {
-	if cfg == nil || cfg.rejectingDelivery || jm.closing {
+	terminalFlush := cfg != nil && jm.terminalFlush != nil && jm.terminalFlush[cfg]
+	if cfg == nil || jm.closing || (cfg.rejectingDelivery && !terminalFlush) {
 		return false
 	}
 	pending := cfg.pending[state.Key]
 	if pending == nil || pending.UpdateSeq != state.UpdateSeq || pending.DeliveryID != state.DeliveryID {
 		return false
 	}
-	if jm.terminalFlush != nil && jm.terminalFlush[cfg] {
+	if terminalFlush {
 		return true
 	}
 	key := watchKey{VisibleSessionID: state.Key.VisibleSessionID, Target: state.Key.WatchTarget, SendTo: cfg.sendTo(), ReceiverSessionID: cfg.receiverSessionID, ReceiverDelegateID: cfg.receiverDelegateID}
@@ -458,7 +478,7 @@ func (jm *jobManager) isCurrentWatchSendDelivery(d watchSendDelivery) bool {
 }
 
 func (jm *jobManager) isCurrentWatchSendDeliveryLocked(d watchSendDelivery) bool {
-	if d.cfg == nil || d.cfg.generation != d.generation || d.cfg.rejectingDelivery || jm.closing {
+	if d.cfg == nil || d.cfg.generation != d.generation || (d.cfg.rejectingDelivery && !d.allowAfterTerminalExpiry) || jm.closing {
 		return false
 	}
 	if d.allowAfterTerminalExpiry {
@@ -467,13 +487,17 @@ func (jm *jobManager) isCurrentWatchSendDeliveryLocked(d watchSendDelivery) bool
 	return jm.watches[d.key] == d.cfg
 }
 
-func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d watchSendDelivery) (jobstore.WatchSendState, bool, error) {
+func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d watchSendDelivery, terminalEvents ...[]jobstore.Event) (jobstore.WatchSendState, bool, error) {
 	releasePersistence := jm.beginWatchPersistence()
 	defer releasePersistence()
 
 	record := jm.planWatchSendPending(state, d)
 	if len(record.pendingEvents) == 0 {
 		return state, false, nil
+	}
+	var teardownEvents []jobstore.Event
+	if len(terminalEvents) != 0 {
+		teardownEvents = terminalEvents[0]
 	}
 	enqueueReceipt, err := jm.beginStableWatchEnqueue(record.persisted)
 	if err != nil {
@@ -496,7 +520,7 @@ func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d w
 	// durable — persisted=true with each durable prefix committed to the
 	// runtime map — instead of leaving a durable prefix behind an ok=false
 	// return that never commits it.
-	if len(record.evictions) != 0 && jm.appendEvents == nil {
+	if len(record.evictions) != 0 && jm.appendEvents == nil && len(teardownEvents) == 0 {
 		if err := jm.appendWatchSendEvents(record.pendingEvents); err != nil {
 			jm.enqueueWatchNotifications([]jobNotification{
 				watchSendDiagnosticNotification(state.Key.WatchID, state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
@@ -527,6 +551,7 @@ func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d w
 		return record.persisted, true, verr
 	}
 	group := append([]jobstore.Event(nil), record.pendingEvents...)
+	group = append(group, teardownEvents...)
 	var evictionSnapshots []watchSendTerminalSnapshot
 	for _, eviction := range record.evictions {
 		evictionSnapshots = append(evictionSnapshots, eviction.terminal)
@@ -676,6 +701,9 @@ func (jm *jobManager) planWatchSendPending(state jobstore.WatchSendState, d watc
 		}
 		previous := *existing
 		record.previous = &previous
+		if d.watchTarget == hubRosterWatchKey {
+			state.Frame = mergeHubRosterFrames(existing.Frame, state.Frame)
+		}
 		state.CoalescedCount = existing.CoalescedCount + 1
 		state.CreatedAt = existing.CreatedAt
 		// The coalesced frame stands in for both the superseded delivery and this
@@ -850,7 +878,7 @@ func settleWatchSendLocked(cfg *watchConfig, key jobstore.WatchSendKey, updateSe
 }
 
 func (jm *jobManager) forgetTerminalFlushIfEmptyLocked(cfg *watchConfig) {
-	if cfg == nil || len(cfg.pending) != 0 || jm.terminalFlush == nil {
+	if cfg == nil || cfg.terminalDeliveryPending || len(cfg.pending) != 0 || jm.terminalFlush == nil {
 		return
 	}
 	delete(jm.terminalFlush, cfg)
@@ -909,6 +937,35 @@ func rollbackWatchConfigSnapshotsRejectingLocked(jm *jobManager, targets []watch
 			target.cfg.rejectingDelivery = false
 		}
 	}
+}
+
+// watchTeardown is the set of configs a teardown freezes while its end is
+// persisted: the live watches being ended and the detached configs whose
+// pending frames are being dropped. Each site keeps its own persist call and
+// failure policy; the mark and the rollback are what they share.
+type watchTeardown struct {
+	targets      []watchConfigTerminalSnapshot
+	detachedCfgs []*watchConfig
+}
+
+// markRejectingLocked freezes delivery on every config in the teardown. The
+// caller holds jm.mu.
+func (t watchTeardown) markRejectingLocked() {
+	markWatchConfigSnapshotsRejectingLocked(t.targets)
+	markWatchConfigsRejectingLocked(t.detachedCfgs)
+}
+
+// rollbackLocked re-enables delivery on the configs that are still where the
+// teardown found them. The caller holds jm.mu.
+func (t watchTeardown) rollbackLocked(jm *jobManager) {
+	rollbackWatchConfigSnapshotsRejectingLocked(jm, t.targets)
+	rollbackWatchConfigsRejectingLocked(jm, t.detachedCfgs)
+}
+
+func (t watchTeardown) rollback(jm *jobManager) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	t.rollbackLocked(jm)
 }
 
 func (jm *jobManager) closeWatchConfigSnapshots(targets []watchConfigTerminalSnapshot) {

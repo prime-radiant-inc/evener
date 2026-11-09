@@ -70,10 +70,7 @@ func seedPastSessionWithUsage(t testing.TB, divergenceTurn int, usages []llm.Usa
 		t.Fatal(err)
 	}
 	indexPastTranscriptForTest(t, stateDir, sessionID)
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	idx := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	entry, ok := idx.Find(sessionID)
 	if !ok {
 		t.Fatalf("past index did not find seeded session %s", sessionID)

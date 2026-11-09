@@ -10,7 +10,7 @@ import { installNeedsYouPage, needsYouRow, updateNeedsYouPage } from "../../shel
 import { closePalette, openPalette } from "../../shell/palette/paletteController";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
-import { NextNeedsYou } from "./NextNeedsYou";
+import { NextNeedsYou, useNextNeedsYouMount } from "./NextNeedsYou";
 import "./index";
 
 const row = needsYouRow;
@@ -584,4 +584,41 @@ test("the next action button names the full next session even when its display t
   render(controlTree());
   const next = nextTrigger();
   expect(next.getAttribute("aria-label")).toContain("A long next-session title that truncates in the control");
+});
+
+// The mount hook exists so a ConversationBody-scale pane subscribes to one
+// boolean, not to the controller's whole queue snapshot.
+test("the mount boolean isolates queue churn from its subscribing pane", async () => {
+  installRows();
+  seedSource();
+  const renders = { count: 0 };
+  function MountProbe() {
+    renders.count += 1;
+    const mounts = useNextNeedsYouMount(false);
+    return <div data-testid="mount-probe">{String(mounts)}</div>;
+  }
+  render(
+    <NeedsYouProvider>
+      <MountProbe />
+    </NeedsYouProvider>,
+  );
+
+  await waitFor(() => expect(screen.getByTestId("mount-probe").textContent).toBe("true"));
+  const settled = renders.count;
+
+  // Churn: the next session's title changes, so the controller's snapshot
+  // changes while the mount decision - the queue still offers local:b - is
+  // the same boolean.
+  await act(async () => {
+    installRows([row("local:a"), needsYouRow("local:b", "renamed")]);
+  });
+  expect(screen.getByTestId("mount-probe").textContent).toBe("true");
+  expect(renders.count).toBe(settled);
+
+  // The subscription stays live: a decision flip re-renders the pane.
+  await act(async () => {
+    installRows([]);
+  });
+  await waitFor(() => expect(screen.getByTestId("mount-probe").textContent).toBe("false"));
+  expect(renders.count).toBe(settled + 1);
 });

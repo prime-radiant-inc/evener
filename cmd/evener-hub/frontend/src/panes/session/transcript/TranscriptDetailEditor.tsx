@@ -184,6 +184,12 @@ export function TranscriptDetailEditor({
                   disabled={disabled}
                   onChange={(checked) => updateContent("expandByDefault", checked)}
                 />
+                <Switch
+                  label="Thinking open by default"
+                  checked={vector.thinkingOpenByDefault}
+                  disabled={disabled}
+                  onChange={(checked) => updateContent("thinkingOpenByDefault", checked)}
+                />
               </div>
             </fieldset>
 

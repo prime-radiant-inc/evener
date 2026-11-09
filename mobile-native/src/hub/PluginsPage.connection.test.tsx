@@ -14,7 +14,7 @@ import { expect, it, vi } from "vitest";
 import type { ConnectionState, MarketplaceEntry, PluginEntry } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { createHubWriteGate, createMarketplacesStore } from "@evener/appwire-client/state/extensions";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { MarketplaceBrowser } from "../MarketplaceBrowser";
 import { PluginsPage } from "./PluginsPage";
@@ -27,7 +27,10 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 	Switch: "Switch",
 }));
-vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
+vi.mock("react-native-safe-area-context", () => ({
+	SafeAreaView: "SafeAreaView",
+	useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => harness.connection }));
 // Shown once, as a page that stays in front.
 vi.mock("@react-navigation/native", async () => {

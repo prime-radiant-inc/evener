@@ -108,3 +108,43 @@ paths = [
   '''(^|/)mobile-native/ios/Pods/React-Core-prebuilt/React\.xcframework/_CodeSignature/CodeResources$''',
   '''(^|/)mobile-native/ios/Pods/ReactNativeDependencies/framework/packages/react-native/ReactNativeDependencies\.xcframework/_CodeSignature/CodeResources$''',
 ]
+
+[[rules]]
+id = "generic-api-key"
+
+# Cytoscape's atlas debug counters are property reads, not a credential.
+[[rules.allowlists]]
+description = "generated Mermaid vendor atlas counters"
+condition = "AND"
+regexTarget = "match"
+paths = ['''^mobile-native/src/generated/mermaidPage\.ts$''']
+regexes = ['''^p\.keyCount,v=p\.atlasCount;$''']
+
+# The committed pod lock's SPEC CHECKSUMS section records a SHA-1 digest of
+# each local podspec. The generic-api-key rule sees the pod name
+# "React-cxxstableapi" followed by a high-entropy hex digest and mistakes the
+# checksum line for a key (observed when the Expo 58 lock landed). Allowlist
+# the checksum-line shape only, in the lock only: any other match in the lock,
+# including a real credential, still fails the scan.
+[[rules.allowlists]]
+description = "committed pod lock podspec checksum lines"
+condition = "AND"
+regexTarget = "match"
+paths = ['''^mobile-native/Podfile\.lock$''']
+regexes = ['''^[A-Za-z][A-Za-z0-9+_-]*[Aa]pi: [0-9a-f]{40}$''']
+
+# Wake-trial UserDefaults key, not a credential. Preserve its persisted identity.
+[[rules.allowlists]]
+description = "wake-trial UserDefaults storage key"
+condition = "AND"
+regexTarget = "secret"
+paths = ['''^mobile-native/modules/evener-voice/core/WakeTrialLedger\.swift$''']
+regexes = ['''^evener\.voice\.wakeTrials\.v1$''']
+
+# The migration regression seeds the wake-trial UserDefaults key independently.
+[[rules.allowlists]]
+description = "wake-trial UserDefaults storage key fixture"
+condition = "AND"
+regexTarget = "secret"
+paths = ['''^mobile-native/modules/evener-voice/tests/WakeTrialLedgerTests\.swift$''']
+regexes = ['''^evener\.voice\.wakeTrials\.v1$''']

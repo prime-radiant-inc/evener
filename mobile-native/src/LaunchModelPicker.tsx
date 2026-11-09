@@ -2,7 +2,7 @@ import { type ReactNode, type Ref, useEffect, useMemo, useState, useSyncExternal
 import { FlatList, Platform, Pressable, TextInput, View } from "react-native";
 import { SymbolView } from "expo-symbols";
 import { buildPickerRows, type PickerRow } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { HubModels } from "./hubModels";
 import { Copy, ErrorMessage, styles, useColors, useTextScale } from "./ui";
 import { Spinner } from "./sheet/Spinner";
@@ -69,7 +69,7 @@ export function LaunchModelPicker({
 			ListEmptyComponent={
 				client && !state.loading && !state.error ? (
 					<Copy muted>{query.trim() ? "No models match your search." : "No models are available from this hub."}</Copy>
-				) : null
+				) : undefined
 			}
 			renderItem={({ item }) => {
 				if (item.kind === "group")

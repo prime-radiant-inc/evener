@@ -18,8 +18,8 @@ import { afterEach, expect, test, vi } from "vitest";
 import { WireError } from "@evener/appwire-client";
 import type { AppwireClientLike, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { createConversationService } from "../../mobile/src/services/conversation";
-import { createConversationStore, type ConversationPendingSubmission } from "../../mobile/src/state/conversation";
+import { createConversationService } from "./conversation/services/conversation";
+import { createConversationStore, type ConversationPendingSubmission } from "./conversation/state/conversation";
 import { DraftDocument } from "./draftDocument";
 import { DraftRepository } from "./draftRepository";
 import { createDurableSubmitter, createNativeMutationHost } from "./nativeMutationHost";
@@ -33,11 +33,6 @@ import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.te
 
 const expoSQLite = vi.hoisted(() => ({ openDatabaseSync: vi.fn() }));
 vi.mock("expo-sqlite", () => expoSQLite);
-vi.mock("expo-crypto", () => ({
-	randomUUID: () => "test-uuid",
-	getRandomValues: (array: Uint8Array) => array,
-}));
-
 const ALL_TRUE_CAPS: ThreadCapabilities = {
 	send: true,
 	steer: true,

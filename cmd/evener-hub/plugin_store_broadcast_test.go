@@ -234,12 +234,7 @@ func TestNewHubAppServer_NilPluginManagerFallbackBroadcasts(t *testing.T) {
 	server := newHubAppServer(hubcore.WebConfig{PluginRoot: t.TempDir()}, appsource.NewRegistry())
 	hub := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 	if _, err := appwiretest.MarketplaceAdd(context.Background(), client, appwire.MarketplaceAddParams{
 		Source: appwire.MarketplaceSourceInput{Kind: "directory", Path: dir},
 	}); err != nil {
@@ -272,12 +267,7 @@ func TestNewWebServer_WiresPluginStoreBroadcastToItsOwnServer(t *testing.T) {
 		PluginRoot: t.TempDir(),
 	})
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 	if _, err := appwiretest.MarketplaceAdd(context.Background(), client, appwire.MarketplaceAddParams{
 		Source: appwire.MarketplaceSourceInput{Kind: "directory", Path: dir},
 	}); err != nil {

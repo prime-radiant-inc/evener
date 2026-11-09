@@ -1,10 +1,8 @@
 package agent
 
 import (
-	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
 	toolpkg "primeradiant.com/evener/agent/internal/tool"
@@ -31,8 +29,7 @@ func TestCommunicatePointsToDelegateSendOnlyWhereOffered(t *testing.T) {
 	)
 	root := newMessagingRoot(t, adapter, nil)
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := root.ProcessInput(ctx, "start", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}

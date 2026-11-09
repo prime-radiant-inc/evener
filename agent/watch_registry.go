@@ -24,6 +24,11 @@ func watchConfigSnapshot(cfg *watchConfig) *jobstore.WatchConfigSnapshot {
 		SourceDelegateGeneration: cfg.sourceGeneration,
 		StableReceiver:           cfg.stableReceiver,
 		Note:                     cfg.note,
+		HubRef:                   cfg.hubRef,
+		HubInstance:              cfg.hubInstance,
+		HubGeneration:            cfg.hubGeneration,
+		HubCaller:                cfg.hubCaller,
+		HubCompletion:            cfg.hubCompletion,
 	}
 	// A timer keeps only the seconds it derived and which mode derived them, so
 	// the snapshot rebuilds the field the model actually named: inspect and
@@ -167,7 +172,7 @@ func (jm *jobManager) recordWatchEndedLocked(key watchKey, cfg *watchConfig, rea
 		sendTo = ""
 	}
 	jm.watchHistory = append(jm.watchHistory, watchHistoryEntry{
-		id:                 cfg.id,
+		id:                 cfg.watchID,
 		source:             cfg.sourcePublic,
 		target:             cfg.target,
 		condition:          watchConditionSummary(cfg),

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/frontmatter"
 )
 
 func memoryWritesSession(t *testing.T) (*Session, string) {
@@ -26,7 +27,7 @@ const memoryWhenBlock = "---\nwhen: w\n---\n\n"
 // memoryOwnStamps is the frontmatter a session's own write of a page sets:
 // today's updated date and the session's id.
 func memoryOwnStamps(s *Session) string {
-	return "updated: " + s.sclock().Now().UTC().Format(time.DateOnly) + "\n" + memoryYAMLField("by", s.ID())
+	return "updated: " + s.sclock().Now().UTC().Format(time.DateOnly) + "\n" + frontmatter.YAMLField("by", s.ID())
 }
 
 // Writing, editing or deleting the root MEMORY.md, in any letter case, is

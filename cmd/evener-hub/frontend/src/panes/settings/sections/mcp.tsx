@@ -13,10 +13,9 @@
 // files typeahead-only, an asymmetry with no principled reason.
 
 import type { MCPServerSpec, SettingsOverviewResponse } from "@evener/appwire-client";
-import { friendlyErrorMessage } from "@evener/appwire-client";
+import { friendlyErrorMessage, isLocalHost, LOCAL_HOST } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
 import { extensionsStoreForHost, useExtensionsStoreForHost } from "../../../stores/extensions";
-import { isLocalHost, LOCAL_HOST } from "../../../stores/hostRouting";
 import {
   Chip,
   type CollectionAddResult,

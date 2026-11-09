@@ -72,11 +72,11 @@ nested shell output and does not imply observer grants or delegate
   shell job. The step-2 listing adds exactly one more row: the nested
   job with `type` `"shell"` and `status` `"running"` — that is ALL the
   model-facing line carries. `job_list`'s text output is `formatJobList`
-  (`agent/session_tools_jobs.go#formatJobList`): one line per row of
+  (`agent/session_tools_job_list.go#formatJobList`): one line per row of
   `id  type  status`, a `depth=N` token only when non-zero, a label, and
   a `[started · reason · exit · bytes]` tail. `parent_delegate_id`,
   `parent_job_id` and `owner_session_id` live only on the structured
-  state (`agent/session_tools_jobs.go#jobListEntry`), which the model
+  state (`agent/session_tools_job_list.go#jobListEntry`), which the model
   never sees — asking the runner to report them from the listing invites
   invented values, so the lineage/ownership assertions below are judged
   from `jobs.jsonl` (step 4), never from the model's step-2 report. Do
@@ -129,7 +129,7 @@ nested shell output and does not imply observer grants or delegate
   `parent_delegate_id` = the delegate's `delegate_id`, an EMPTY
   `parent_job_id` — a delegate-owned shell is bound with `parentJobID`
   cleared and `parentDelegateID` set to the delegate's lease
-  (`agent/jobs.go#jobManager.bindStableDelegateParent`), and
+  (`agent/jobs.go#jobManager.bindDelegateParent`), and
   "`parent_job_id` never encodes delegate lineage" ("Vocabulary");
   `parent_job_id` is shell-to-shell only — and `owner_session_id` = the
   child session, NOT `$SID` (the child session owns the runtime —

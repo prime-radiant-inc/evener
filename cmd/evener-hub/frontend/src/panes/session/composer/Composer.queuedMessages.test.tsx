@@ -5,9 +5,10 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { appliedReceipt } from "../../../mutationReceiptTestUtils";
 import { ClientProvider } from "../../../shell/clientContext";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
-import { connectionStore } from "../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { holdNextTransaction, holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
 import {
@@ -27,12 +28,15 @@ import { createAttachmentOperations } from "./attachments/useAttachments";
 import { Composer } from "./Composer";
 import { readComposerDraftRevisionId, readDraft, writeComposerDraft } from "./draft";
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
-import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
+import {
+  flushPendingTurnsProjectionForTests,
+  outlastEmptyFlushRoundForTests,
+} from "./queue/testing/flushPendingTurnsProjection";
 
 beforeEach(() => {
   installLocalStorage(new MemoryStorage());
   globalThis.indexedDB = new IDBFactory();
-  connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
 });
@@ -347,12 +351,7 @@ test("image encoding survives a literal-marker recovery merge while storage is p
       deliveredInputs.push(params.input ?? []);
       return {
         turn: { id: "image-merge", status: "inProgress", itemsView: "full", items: [] },
-        receipt: {
-          clientMutationId: params.clientMutationId,
-          disposition: "applied",
-          threadId: "thread-a",
-          projectionState: "reflected",
-        },
+        receipt: appliedReceipt(params.clientMutationId, "thread-a"),
       };
     });
     await user.click(screen.getByRole("button", { name: "Send" }));
@@ -681,21 +680,11 @@ test.each([false, true])("queuedEditsPreserveDraftAndSendOnce, Stop=%s", async (
     deliveredInputs.push(params.input ?? []);
     return {
       turn: { id: "revision", status: "inProgress", itemsView: "full", items: [] },
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thread-a",
-        projectionState: "reflected",
-      },
+      receipt: appliedReceipt(params.clientMutationId, "thread-a"),
     };
   });
   fake.on("turn/interrupt", (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: "thread-a",
-      projectionState: "reflected",
-    },
+    receipt: appliedReceipt(params.clientMutationId, "thread-a"),
   }));
   fake.on("thread/resume", () => ({ thread }));
   await act(async () => {
@@ -783,7 +772,7 @@ test("two offline edits consolidate one durable owner and preserve typing during
   await user.click(screen.getAllByRole("button", { name: "Edit message" })[0] as HTMLElement);
   await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(first.clientMutationId));
   await flushPendingTurnsProjectionForTests();
-  const hold = holdNextWriteTransaction(["recovery"]);
+  const hold = holdNextWriteTransaction(["recovery", "outbox"]);
   try {
     await user.click(screen.getByRole("button", { name: "Edit message" }));
     // The press's own continuation is fire-and-forget (QueueStrip's handler),
@@ -809,12 +798,7 @@ test("two offline edits consolidate one durable owner and preserve typing during
       deliveredInputs.push(params.input ?? []);
       return {
         turn: { id: "combined", status: "inProgress", itemsView: "full", items: [] },
-        receipt: {
-          clientMutationId: params.clientMutationId,
-          disposition: "applied",
-          threadId: "thread-a",
-          projectionState: "reflected",
-        },
+        receipt: appliedReceipt(params.clientMutationId, "thread-a"),
       };
     });
     await act(async () => {
@@ -829,6 +813,16 @@ test("two offline edits consolidate one durable owner and preserve typing during
   } finally {
     hold.release();
   }
+  // The Send's settlement completes durable writes whose queued completion
+  // notifications start the pending-turns projection's final refresh. Under
+  // load such a notification can still be queued when the last await above
+  // returns, and the refresh it starts then publishes its snapshot outside
+  // act at teardown - the five QueueStrip plus three Composer not-wrapped-in-
+  // act warnings this test flaked on in whole-suite runs. Hop the macrotask
+  // queue empty so every queued notification has started its refresh, then
+  // flush the projection inside act.
+  await outlastEmptyFlushRoundForTests();
+  await flushPendingTurnsProjectionForTests();
 });
 
 test.each(["edit", "remove"] as const)(
@@ -868,10 +862,11 @@ test.each(["remove", "retry", "dispatch", "stop"] as const)(
     try {
       const editing = editQueuedMutation(original.clientMutationId, "root");
       await hold.reached;
-      const { record, stopEpoch } = await sibling.getOutboxWithStopEpoch(original.clientMutationId);
+      const siblingCapture = await sibling.getOutboxWithStopEpoch(original.clientMutationId);
+      const record = siblingCapture.record;
       if (!record) throw new Error("missing race fixture");
-      if (winner === "remove") await sibling.removeQueuedMessage(record, { stopEpoch });
-      else if (winner === "retry") await sibling.releaseCanceled(record.clientMutationId, { stopEpoch });
+      if (winner === "remove") await sibling.removeQueuedMessage(record, { stopEpoch: siblingCapture.stopEpoch });
+      else if (winner === "retry") await sibling.mintRetryFromRow(record.clientMutationId, siblingCapture);
       else if (winner === "stop") await sibling.cancelUnattempted("root");
       else await sibling.markAttempted(record.clientMutationId);
       hold.release();
@@ -924,12 +919,7 @@ test("recorded literal survives Edit beside a current image and Send", async () 
     expect(params.clientMutationId).not.toBe(record.clientMutationId);
     return {
       turn: { id: "literal-revision", status: "inProgress", itemsView: "full", items: [] },
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thread-a",
-        projectionState: "reflected",
-      },
+      receipt: appliedReceipt(params.clientMutationId, "thread-a"),
     };
   });
   await act(async () => {
@@ -1041,7 +1031,7 @@ test("a Stop during recovery persistence holds the new Send identity without dis
     fake.emitReady();
   });
   await flushPendingTurnsProjectionForTests();
-  const hold = holdNextWriteTransaction(["recovery"]);
+  const hold = holdNextWriteTransaction(["recovery", "outbox"]);
   try {
     await user.click(screen.getByRole("button", { name: "Send" }));
     await hold.reached;
@@ -1063,14 +1053,18 @@ test("a Stop during recovery persistence holds the new Send identity without dis
 test("recovery activation during a paused resend preserves the secondary image recovery", async () => {
   const barrier = deferred<{ stopEpoch: number }>();
   const barrierReached = deferred<void>();
-  class PausedBarrierStorage extends MutationOutboxIndexedDB {
-    override async readStopEpoch(ref: string): Promise<number> {
+  // The press's whole capture pair now reads one readonly snapshot
+  // (getRecoveryWithStopEpoch), so the pause holds that capture.
+  class PausedCaptureStorage extends MutationOutboxIndexedDB {
+    override async getRecoveryWithStopEpoch(
+      ...args: Parameters<MutationOutboxIndexedDB["getRecoveryWithStopEpoch"]>
+    ): ReturnType<MutationOutboxIndexedDB["getRecoveryWithStopEpoch"]> {
       barrierReached.resolve();
       await barrier.promise;
-      return super.readStopEpoch(ref);
+      return super.getRecoveryWithStopEpoch(...args);
     }
   }
-  const storage = new PausedBarrierStorage();
+  const storage = new PausedCaptureStorage();
   const { fake } = await setup(false, storage);
   const first = await queued(storage, "first recovery");
   const second = await queued(storage, "image recovery");
@@ -1348,7 +1342,7 @@ test("Send cannot race an unobserved secondary recovery consolidation", async ()
     fake.emitReady();
   });
   await flushPendingTurnsProjectionForTests();
-  const hold = holdNextWriteTransaction(["recovery"]);
+  const hold = holdNextWriteTransaction(["recovery", "outbox"]);
   try {
     await user.click(screen.getByRole("button", { name: "Edit message" }));
     await hold.reached;
@@ -1763,7 +1757,7 @@ test("an ordinary send cannot start while a recovery Edit claim is settling", as
   await flushPendingTurnsProjectionForTests();
   // The user has a draft in the composer while claiming the queued edit.
   act(() => source.editText("A"));
-  const hold = holdNextWriteTransaction(["recovery"]);
+  const hold = holdNextWriteTransaction(["recovery", "outbox"]);
   try {
     // A local queue row's Edit first claims the row (outbox -> recovery); the
     // activation has not started yet, so only the shared lease stops Send.
@@ -1795,4 +1789,35 @@ test("an ordinary send cannot start while a recovery Edit claim is settling", as
   } finally {
     hold.release();
   }
+});
+
+// The stuck-uncertain-message complaint: an uncertain row in the queue strip
+// looks and acts like any other local message, so the user can clear it.
+test("an uncertain queued message offers Remove like any other row", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const { fake } = await setup(false, storage);
+  const record = await storage.enqueueIntent({
+    targetRef: "root",
+    threadId: "thread-a",
+    method: "turn/start",
+    attachments: [],
+    payload: { input: [{ type: "text", text: "uncertain message" }] },
+    optimisticDisplay: { input: [{ type: "text", text: "uncertain message" }] },
+  });
+  await storage.markAttempted(record.clientMutationId);
+  await storage.markUnknown(record.clientMutationId, "blockedUnknown");
+  mount(fake);
+  await flushPendingTurnsProjectionForTests();
+  // By slot, not by copy: a wording change must not break the behaviour test.
+  const row = await waitFor(() => {
+    const found = document.querySelector('li[data-kind="blocked"]');
+    expect(found).toBeTruthy();
+    return found as HTMLElement;
+  });
+  const remove = await within(row).findByRole("button", { name: "Remove from queue" });
+  await act(async () => {
+    fireEvent.click(remove);
+  });
+  await waitFor(async () => expect(await storage.getOutbox(record.clientMutationId)).toBeUndefined());
 });

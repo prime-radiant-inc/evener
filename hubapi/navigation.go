@@ -277,10 +277,14 @@ type NavigationSessionSummary struct {
 	// appwire.SearchResult.Archived reports for a live hit). It sits BESIDE Live
 	// rather than replacing it: a session archived while it is still running
 	// stays reachable through a pin, and this flag lets a client suppress the
-	// row's unread dot for it (#4199). Absent when it is not, and from an
+	// row's unread dot for it. Absent when it is not, and from an
 	// older hub.
-	Archived      bool       `json:"archived,omitempty"`
-	UpdatedAt     *time.Time `json:"updated_at,omitempty"`
+	Archived  bool       `json:"archived,omitempty"`
+	UpdatedAt *time.Time `json:"updated_at,omitempty"`
+	// CreatedAt is when the session started. A project's rows are ordered by
+	// it, newest first, so a client that joins the Current and Recent tiers
+	// can keep that order across the tier boundary.
+	CreatedAt     *time.Time `json:"created_at,omitempty"`
 	MoreSubagents int        `json:"more_subagents,omitempty"`
 	// Subagents is a live root's whole-tree subagent tally, counted by its
 	// daemon (S3). Present only on a live root row whose tree has a subagent;

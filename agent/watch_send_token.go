@@ -281,7 +281,6 @@ func (jm *jobManager) restoreWatchSendPendingFrom(load watchSendLoader) error {
 				sourcePublic = "parent"
 			}
 			cfg = &watchConfig{
-				id:                 key.WatchID,
 				watchID:            key.WatchID,
 				sourcePublic:       sourcePublic,
 				receiverSessionID:  cfgKey.receiverSessionID,

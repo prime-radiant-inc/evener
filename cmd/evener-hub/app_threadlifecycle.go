@@ -66,7 +66,7 @@ func startRefused(err error) (appwire.ThreadStartResponse, error) {
 	return appwire.ThreadStartResponse{}, causedWireError{wire: appserver.WireError(err).NotAccepted(""), cause: err}
 }
 
-func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
+func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadStartParams) (response appwire.ThreadStartResponse, startErr error) {
 	remote, forward, err := routeThreadStart(ctx, sources, params)
 	if err != nil {
 		return startRefused(err)
@@ -96,10 +96,25 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		PluginRoot:    cfg.PluginRoot,
 		AgentsDocPath: hubAgentsDocPath(cfg),
 		Provider:      plan.modelRef.Provider,
+		Manager:       params.Manager,
 	})
 	if err != nil {
 		return appwire.ThreadStartResponse{}, appwire.HubLaunchError(err.Error())
 	}
+	createdInstanceID := ""
+	// Only a successful Spawn establishes ownership. Keep this evidence in the
+	// error itself: the router drops responses returned alongside errors.
+	defer func() {
+		if startErr == nil || (entry.ThreadID == "" && entry.SessionID == "") {
+			return
+		}
+		if createdInstanceID == "" {
+			createdInstanceID = localSpawnInstanceID(entry, appwire.Thread{})
+		}
+		wire := appserver.WireError(startErr).WithThreadStartPartial(
+			localSpawnWorkspaceRef(entry), createdInstanceID)
+		startErr = causedWireError{wire: wire, cause: startErr}
+	}()
 	canUseSpawnEntry := entry.Protocol == appwire.ProtocolVersion && entry.Endpoint != "" && entry.ThreadID != ""
 	if cfg.Roster != nil {
 		if err := hubRosterRefresh(ctx, cfg.Roster); err != nil {
@@ -108,7 +123,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 			}
 			// Spawning already established this daemon's identity. An unrelated
 			// discovery failure must not hide its identity or discard initial input.
-			fmt.Fprintf(os.Stderr, "[hub] spawned session %s; roster refresh failed: %v\n", entry.ThreadID, err)
+			_, _ = fmt.Fprintf(hubDiagnosticOutput(), "[hub] spawned session %s; roster refresh failed: %v\n", entry.ThreadID, err)
 		}
 		if entry.ThreadID == "" || entry.SessionID == "" {
 			for _, live := range hubRosterList(cfg.Roster) {
@@ -147,7 +162,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 			Evener:        appwire.EvenerThread{Ref: ref, InstanceID: localSpawnInstanceID(entry, appwire.Thread{})},
 		}
 		thread = applyHubCapabilities(cfg, thread)
-		annotateThreadProjects([]appwire.Thread{thread})
+		thread = annotateThreadProject(thread)
 		return appwire.ThreadStartResponse{Thread: thread}, nil
 	}
 	startEpoch := sessionRecoveryState(cfg, ref, "").Epoch
@@ -180,8 +195,9 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		}
 	}
 	expectedInstanceID := localSpawnInstanceID(entry, threadResp.Thread)
+	createdInstanceID = expectedInstanceID
 	threadResp.Thread = applyHubCapabilities(cfg, threadResp.Thread)
-	annotateThreadProjects([]appwire.Thread{threadResp.Thread})
+	threadResp.Thread = annotateThreadProject(threadResp.Thread)
 	turn := appwire.Turn{}
 	if len(params.Input) > 0 {
 		// Gate the initial input on the capability the spawned session's own read
@@ -377,14 +393,11 @@ func prepareLocalSpawn(ctx context.Context, cfg hubcore.WebConfig, params appwir
 }
 
 func localSpawnWorkspaceRef(entry rendezvous.Entry) string {
-	if ref, err := appwire.ParseRef(strings.TrimSpace(entry.WorkspaceRef)); err == nil && ref.SourceID == appwire.LocalSourceID {
-		return ref.String()
-	}
 	threadID := strings.TrimSpace(entry.ThreadID)
 	if threadID == "" {
 		threadID = strings.TrimSpace(entry.SessionID)
 	}
-	return appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: threadID}.String()
+	return appsource.LocalDaemonWorkspaceRef(appwire.LocalSourceID, entry, threadID)
 }
 
 func localSpawnInstanceID(entry rendezvous.Entry, thread appwire.Thread) string {
@@ -793,7 +806,7 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 			if err != nil {
 				return appwire.ThreadResumeResponse{}, appwire.Unavailable(errors.Join(refreshErr, err).Error())
 			}
-			annotateThreadProjects([]appwire.Thread{read.Thread})
+			read.Thread = annotateThreadProject(read.Thread)
 			read.Thread = applyHubCapabilities(cfg, read.Thread)
 			return appwire.ThreadResumeResponse{Thread: read.Thread}, nil
 		}
@@ -1025,7 +1038,7 @@ func hubResumedThreadResponse(ctx context.Context, cfg hubcore.WebConfig, source
 	if err != nil {
 		return appwire.ThreadResumeResponse{}, err
 	}
-	annotateThreadProjects([]appwire.Thread{threadResp.Thread})
+	threadResp.Thread = annotateThreadProject(threadResp.Thread)
 	threadResp.Thread = applyHubCapabilities(cfg, threadResp.Thread)
 	return appwire.ThreadResumeResponse{Thread: threadResp.Thread}, nil
 }

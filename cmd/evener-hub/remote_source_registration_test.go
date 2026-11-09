@@ -162,15 +162,15 @@ func TestHostRegistryEntriesCarryEveryHostField(t *testing.T) {
 		Roots:      want.Roots,
 	}}}
 
-	entries := hostRegistryEntries(cfg)
+	entries := hostRegistryEntries(loadedConfig{Config: cfg})
 	if len(entries) != 1 || !reflect.DeepEqual(entries[0], want) {
 		t.Fatalf("hostRegistryEntries() = %+v, want [%+v]", entries, want)
 	}
 
 	// The registry main.go hands to sshconn.New must store the same values.
-	registry, err := hostreg.New(hostRegistryEntries(cfg))
+	registry, err := hostreg.New(hostRegistryEntries(loadedConfig{Config: cfg}))
 	if err != nil {
-		t.Fatalf("hostreg.New(hostRegistryEntries(cfg)): %v", err)
+		t.Fatalf("hostreg.New(hostRegistryEntries(loadedConfig{Config: cfg})): %v", err)
 	}
 	registered, ok := registry.Get("alpha")
 	if !ok {

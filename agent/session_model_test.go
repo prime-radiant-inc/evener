@@ -278,10 +278,7 @@ func TestSession_StreamErrorFlushesMetaJSON_AfterPauseTurnGap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
@@ -391,10 +388,7 @@ func TestSession_StreamErrorFlushesMetaJSON_FirstTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
@@ -471,10 +465,7 @@ func TestSession_StreamErrorFlushesMetaJSON_AfterHappyTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
@@ -539,10 +530,7 @@ func TestSession_EmptyResponseExhaustedFlushesMeta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
@@ -589,10 +577,7 @@ func TestSession_BareTextWithoutResultToolFlushesMeta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
@@ -656,10 +641,7 @@ func TestSession_MaxToolRoundsExitFlushesMeta(t *testing.T) {
 	sess.RegisterTool("my_loop_tool", "loops forever", map[string]any{"type": "object"}, func(ctx context.Context, args any) (any, error) {
 		return "ok", nil
 	})
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
@@ -705,10 +687,7 @@ func TestSession_CtxCancellationFlushesMeta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	// Happy turn 1.
 	ctx1, cancel1 := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
@@ -788,10 +767,7 @@ func TestSession_PanicFlushesMeta(t *testing.T) {
 	sess.RegisterTool("boom_tool", "panics on call", map[string]any{"type": "object"}, func(ctx context.Context, args any) (any, error) {
 		panic("ztne kata test panic")
 	})
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	sessID := sess.ID()
 	// Delete the initial meta.json so we can detect the panic-path flush.
@@ -859,13 +835,9 @@ func TestSession_ProviderAbortKeepsSessionIdle(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
-	_, err = sess.ProcessInput(context.Background(), "cancel", nil)
+	_, err := sess.ProcessInput(context.Background(), "cancel", nil)
 	if err == nil {
 		t.Fatal("expected abort error")
 	}
@@ -898,15 +870,11 @@ func TestSession_WebSearch_FlagSetOnRequest(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "hello", nil)
+	_, err := sess.ProcessInput(ctx, "hello", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -1027,11 +995,7 @@ func TestSession_PauseTurn_ContinuesLoop(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
@@ -1118,6 +1082,165 @@ func TestSession_PauseTurn_DoesNotCountAsToolRound(t *testing.T) {
 	reqs := f.Requests()
 	if len(reqs) != 4 {
 		t.Fatalf("expected 4 LLM calls (3 pause_turns + 1 stop), got %d", len(reqs))
+	}
+}
+
+// A provider that answers pause_turn every time must not keep one input turn
+// alive forever. Pauses still refund their tool round, but a consecutive chain
+// is bounded by its own budget and surfaces as resumable exhaustion. The script
+// outlasts the budget, so the budget is what ends the turn.
+func TestSession_PauseTurn_ConsecutiveBudget(t *testing.T) {
+	t.Parallel()
+	var calls int
+	responder := func(llm.Request) llm.Response {
+		calls++
+		if calls > 2*maxServerContinuations {
+			return agenttest.CommunicateResponse(true, "done")
+		}
+		return llm.Response{
+			Model:   "gpt-5.2",
+			Message: llm.Assistant("still searching..."),
+			Finish:  llm.FinishReason{Reason: llm.FinishReasonPauseTurn, Raw: "pause_turn"},
+		}
+	}
+	sess, adapter, _ := newBudgetSession(t, SessionConfig{MaxToolRoundsPerInput: 2}, responder)
+
+	_, err := sess.processInputKindWithProvenance(context.Background(), "search for something", nil, EntryUserInput, nil)
+	requireBudgetExhaustion(t, err, exhaustedBudgetServerContinuations, maxServerContinuations, true)
+	if got := len(adapter.Requests()); got != maxServerContinuations {
+		t.Fatalf("model requests = %d, want the %d-call consecutive-pause budget", got, maxServerContinuations)
+	}
+}
+
+// Pause-budget exhaustion is a terminal turn failure a returning client can see,
+// so it must be persisted as a TURN_FAILURE whose structured cause carries the
+// typed exhaustion reason, not only returned to the in-process caller.
+func TestSession_PauseTurn_ExhaustionPersistsTurnFailure(t *testing.T) {
+	t.Parallel()
+	var calls int
+	responder := func(llm.Request) llm.Response {
+		calls++
+		if calls > 2*maxServerContinuations {
+			return agenttest.CommunicateResponse(true, "done")
+		}
+		return llm.Response{
+			Model:   "gpt-5.2",
+			Message: llm.Assistant("searching..."),
+			Finish:  llm.FinishReason{Reason: llm.FinishReasonPauseTurn, Raw: "pause_turn"},
+		}
+	}
+	sess, _, _ := newBudgetSession(t, SessionConfig{MaxToolRoundsPerInput: 2}, responder)
+
+	_, err := sess.processInputKindWithProvenance(context.Background(), "search for something", nil, EntryUserInput, nil)
+	exhausted := requireBudgetExhaustion(t, err, exhaustedBudgetServerContinuations, maxServerContinuations, true)
+
+	for _, turn := range budgetHistory(sess) {
+		if turn.Kind == schema.TurnFailure && turn.Error != nil &&
+			turn.Error.Cause != nil && turn.Error.Cause.Kind == exhausted.reason() {
+			return
+		}
+	}
+	t.Fatalf("pause-budget exhaustion persisted no %s carrying cause kind %q", schema.TurnFailure, exhausted.reason())
+}
+
+// A pause_turn response can carry only server-side tool blocks (a web search in
+// progress) and no text or client tool calls. That response is the provider's
+// partial state, so it must stay in history for the continuation to see; the
+// generic no-content classification would otherwise drop it.
+func TestSession_PauseTurn_KeepsServerToolStateInHistory(t *testing.T) {
+	t.Parallel()
+	var calls int
+	responder := func(llm.Request) llm.Response {
+		calls++
+		if calls == 1 {
+			return llm.Response{
+				Model: "gpt-5.2",
+				Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+					Kind:      llm.ContentWebSearch,
+					WebSearch: &llm.WebSearchData{Query: "searching"},
+				}}},
+				Finish: llm.FinishReason{Reason: llm.FinishReasonPauseTurn, Raw: "pause_turn"},
+			}
+		}
+		return agenttest.CommunicateResponse(true, "done")
+	}
+	sess, _, _ := newBudgetSession(t, SessionConfig{MaxToolRoundsPerInput: 2}, responder)
+
+	if _, err := sess.processInputKindWithProvenance(context.Background(), "search for something", nil, EntryUserInput, nil); err != nil {
+		t.Fatalf("process input: %v", err)
+	}
+	for _, turn := range budgetHistory(sess) {
+		for _, part := range turn.Message.Content {
+			if part.Kind == llm.ContentWebSearch {
+				return
+			}
+		}
+	}
+	t.Fatal("the pause_turn response's server-tool state was dropped from history")
+}
+
+// The issue requires cancellation during a pause chain to end the turn as a
+// cancellation, not as the server-continuation budget.
+func TestSession_PauseTurn_CancellationDuringChain(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var calls int
+	responder := func(llm.Request) llm.Response {
+		calls++
+		if calls == 3 {
+			cancel()
+		}
+		return llm.Response{
+			Model:   "gpt-5.2",
+			Message: llm.Assistant("searching..."),
+			Finish:  llm.FinishReason{Reason: llm.FinishReasonPauseTurn, Raw: "pause_turn"},
+		}
+	}
+	sess, adapter, _ := newBudgetSession(t, SessionConfig{MaxToolRoundsPerInput: 2}, responder)
+
+	_, err := sess.processInputKindWithProvenance(ctx, "search for something", nil, EntryUserInput, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("pause-chain cancellation error = %v, want context.Canceled", err)
+	}
+	if _, exhausted := budgetExhaustionFromError(err); exhausted {
+		t.Fatal("cancellation during a pause chain was reported as budget exhaustion")
+	}
+	if got := len(adapter.Requests()); got >= maxServerContinuations {
+		t.Fatalf("cancellation made %d requests, want it to stop the chain before the budget", got)
+	}
+}
+
+// A non-pause round breaks the consecutive chain: two short pause chains whose
+// total exceeds the budget must not exhaust it.
+func TestSession_PauseTurn_NonPauseRoundResetsBudget(t *testing.T) {
+	t.Parallel()
+	pause := func() llm.Response {
+		return llm.Response{
+			Model:   "gpt-5.2",
+			Message: llm.Assistant("searching..."),
+			Finish:  llm.FinishReason{Reason: llm.FinishReasonPauseTurn, Raw: "pause_turn"},
+		}
+	}
+	var calls int
+	responder := func(llm.Request) llm.Response {
+		calls++
+		switch {
+		case calls <= 6, calls >= 8 && calls <= 13:
+			return pause()
+		case calls == 7:
+			return agenttest.CommunicateResponse(false, "still working")
+		default:
+			return agenttest.CommunicateResponse(true, "done")
+		}
+	}
+	sess, adapter, _ := newBudgetSession(t, SessionConfig{MaxToolRoundsPerInput: 2}, responder)
+
+	if _, err := sess.processInputKindWithProvenance(context.Background(), "search for something", nil, EntryUserInput, nil); err != nil {
+		t.Fatalf("two short pause chains: %v", err)
+	}
+	if got := len(adapter.Requests()); got != 14 {
+		t.Fatalf("model requests = %d, want 14 (12 pauses in two chains plus two rounds)", got)
 	}
 }
 
@@ -1327,10 +1450,7 @@ func TestSession_ContentFilterRecovery_FailsOnSecondFilterHit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
@@ -2225,10 +2345,7 @@ func TestSession_ProvideErrorReturnsErrorToCaller(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
@@ -2365,15 +2482,8 @@ func TestSession_AgentQuiescenceReturnsNilError(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
+	drainSessionEvents(sess)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
@@ -2407,10 +2517,7 @@ func TestSession_ProviderErrorDoesNotRecordAssistantTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
@@ -2424,7 +2531,7 @@ func TestSession_ProviderErrorDoesNotRecordAssistantTurn(t *testing.T) {
 		t.Fatal("TranscriptPath is empty; session lacks state dir")
 	}
 
-	data, rerr := readTranscriptFull(tpath, "")
+	data, rerr := readTranscriptFull(context.Background(), tpath, "")
 	if rerr != nil {
 		t.Fatalf("readTranscriptFull: %v", rerr)
 	}
@@ -2457,10 +2564,7 @@ func TestSession_SingleAttemptMetadataRecorded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 	if _, err := sess.ProcessInput(context.Background(), "hi", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -2469,7 +2573,7 @@ func TestSession_SingleAttemptMetadataRecorded(t *testing.T) {
 	if tpath == "" {
 		t.Fatal("TranscriptPath is empty")
 	}
-	data, err := readTranscriptFull(tpath, "")
+	data, err := readTranscriptFull(context.Background(), tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
@@ -2558,7 +2662,7 @@ func TestSession_SanitizesCustomAdapterEndpointMetadata(t *testing.T) {
 			transcriptPath := sess.TranscriptPath()
 			sess.Close()
 
-			data, err := readTranscriptFull(transcriptPath, "")
+			data, err := readTranscriptFull(context.Background(), transcriptPath, "")
 			if err != nil {
 				t.Fatalf("readTranscriptFull: %v", err)
 			}
@@ -2686,10 +2790,7 @@ func TestProviderErrorTranscriptRemainsSemanticOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
@@ -2702,7 +2803,7 @@ func TestProviderErrorTranscriptRemainsSemanticOnly(t *testing.T) {
 		t.Fatal("TranscriptPath is empty; session lacks state dir")
 	}
 
-	data, rerr := readTranscriptFull(tpath, "")
+	data, rerr := readTranscriptFull(context.Background(), tpath, "")
 	if rerr != nil {
 		t.Fatalf("readTranscriptFull: %v", rerr)
 	}

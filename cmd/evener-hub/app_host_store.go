@@ -53,26 +53,43 @@ type hostPersistChange struct {
 	// is a write that carries no marker for its host, and the derivation must
 	// drop the stored one rather than preserve it.
 	dropMarker string
-	// storeSync, when set, is the cross-file commit intent this write carries
-	// (deploy-pipeline 08b §9): a removal's staged write stages the exact store
-	// rows it is about to purge. dropStoreSync names a host whose intent this
-	// write removes — the follow-up write that clears it once the purge landed,
-	// and the compensation that drops it with the restored hub.toml.
-	storeSync     *pendingHostStoreSync
+	// dropTombstone names a host whose removal tombstone this write removes:
+	// the rollback of a removal that never reached hub.toml, which leaves the
+	// host live.
+	dropTombstone string
+	// recordsOnly commits the machine records without rewriting the host list in
+	// hub.toml: boot recovery that settles records must not write the registry's
+	// idea of the hosts over what the file holds now.
+	recordsOnly bool
+	// hostFileFirst writes the host list before the records. Every un-commit
+	// wants it: the host change being taken back already reached hub.toml, so
+	// the file is restored first and the staged records go second; a crash
+	// between leaves the host where it belongs with a staged marker boot rolls
+	// back, instead of a missing host with no marker to say why.
+	hostFileFirst bool
+	// leaveReturningNames keeps the tombstone of a removed name that is live
+	// again, with its history, for the boot collision rule to settle; the
+	// re-add purge that would consume it is skipped.
+	leaveReturningNames bool
+	// restore puts back the history a re-add's staging write purged, when the
+	// re-add is rolled back.
+	restore *HostConsumedRecords
+	// restoreSpent is the generation and presence epoch the rolled-back re-add
+	// spent; the name's high-water mark keeps them above the restored tombstone.
+	restoreSpent HostGeneration
+	// restoreName is the name those counters belong to.
+	restoreName string
+	// dropStoreSync names a host whose cross-file commit intent this write
+	// removes: the boot write that clears an intent an earlier build left once
+	// its purge has landed.
 	dropStoreSync string
 	// highWaterRaises carries the boot mirror pass's raised marks: the
 	// discarded generations §4 preserves as the names' high-water marks. The
 	// derivation merges them after the tombstone stage so a raise wins over the
-	// file's older mark, and a tombstoned name's tombstone is raised with its
-	// [generations] twin (validateHostTombstones requires the pair to agree).
+	// file's older mark; a tombstoned name's tombstone keeps the identity of its
+	// removal (validateHostTombstones asks only that the mark is the same
+	// incarnation at or above it).
 	highWaterRaises map[string]HostGeneration
-}
-
-// pendingHostStoreSync is one cross-file intent a hub.toml write carries,
-// keyed by the host name the intent is keyed by.
-type pendingHostStoreSync struct {
-	Name   string
-	Intent HostStoreSyncIntent
 }
 
 // pendingHostMarker is the staged-receipt marker one hub.toml write carries,
@@ -115,13 +132,6 @@ type hostStore struct {
 	// boot load seeds it from the file, so a removal that lands before the next
 	// start keeps its high-water record.
 	highWater map[string]HostGeneration
-	// loadErr records why the durable host set cannot be treated as fully
-	// loaded: a legacy sidecar failed to parse or validate, or its one-time
-	// migration failed. While it is set the in-memory snapshot is known
-	// incomplete, so writes refuse — rewriting hub.toml would clobber the
-	// entries that never made it into memory — and add/remove fail loudly
-	// instead of silently losing them.
-	loadErr error
 	// receipts is the durable mutation-receipt set the file carries, keyed by
 	// the five-part scoped key (spec 08 §5/§6; app_host_receipts.go). Boot
 	// loads it from the file's [mutation_receipts] tables, a committed
@@ -314,24 +324,6 @@ func (s *hostStore) installRecords(records hostTOMLRecords) {
 	if records.receipts != nil {
 		s.receipts = records.receipts
 	}
-}
-
-// poison records err as the reason the durable host set is not fully loaded.
-// The first reason wins; later ones only add log lines at the call site.
-func (s *hostStore) poison(err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.loadErr == nil {
-		s.loadErr = err
-	}
-}
-
-// poisoned reports why the durable host set cannot be trusted as fully loaded,
-// or nil when every entry is loaded (or there is nothing to migrate).
-func (s *hostStore) poisoned() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.loadErr
 }
 
 // add inserts entry at the end. Callers hold hostManagerConfig.mu.

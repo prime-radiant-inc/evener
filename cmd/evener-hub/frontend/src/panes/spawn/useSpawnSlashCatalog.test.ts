@@ -1,9 +1,9 @@
 import type { SpawnSlashCatalogResponse } from "@evener/appwire-client";
+import { SCOPED_HOST_READ_DEBOUNCE_MS } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, renderHook } from "@testing-library/react";
 import { useLayoutEffect } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { SCOPED_HOST_READ_DEBOUNCE_MS } from "./useScopedHostRead";
 import {
   type SpawnSlashCatalogLoadState,
   type UseSpawnSlashCatalogArgs,

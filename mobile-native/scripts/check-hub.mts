@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import WebSocket from "ws";
 import { createHubClient } from "../src/connection";
-import { createConversationService } from "../../mobile/src/services/conversation";
+import { createConversationService } from "../src/conversation/services/conversation";
 import type { WebSocketLike } from "@evener/appwire-client";
 const [origin, tokenFile] = process.argv.slice(2);
 if (!origin || !tokenFile)

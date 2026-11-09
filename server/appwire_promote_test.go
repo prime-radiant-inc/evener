@@ -30,7 +30,7 @@ func newPromoteTestServer(t *testing.T, processing bool) (*Server, *int) {
 	if processing {
 		state = "active"
 	}
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: state})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: state})
 	called := 0
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
 		Promote: func(appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
@@ -52,7 +52,7 @@ func TestServerAppWireTurnPromoteQueuedAsSteerDispatchesIndex(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(true)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "active"})
 	gotIndex := -1
 	var gotExpectedID string
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
@@ -107,7 +107,7 @@ func TestServerAppWireTurnPromoteQueuedAsSteerUnavailableWithoutFunc(t *testing.
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(true)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "active"})
 	conn := srv.AppServer().NewConnection("test")
 	resp := promoteRPC(conn, 2, appwire.TurnPromoteQueuedAsSteerParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "th_1", ExpectedEntryID: "test-entry", Ref: "local:th_1", Index: 0})
 	if resp.Kind() != appwire.MessageError {
@@ -126,7 +126,7 @@ func TestServerAppWireTurnPromoteQueuedAsSteerPropagatesSessionError(t *testing.
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(true)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "active"})
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
 		Promote: func(appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
 			return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.Conflict("promote: queue index 3 out of range (depth 1)")
@@ -194,7 +194,7 @@ func TestServerAppWireTurnPromoteQueuedAsSteerThroughSession(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", sess.ID())
 	srv.SetProcessing(true)
-	srv.SetStatus(StatusInfo{SessionID: sess.ID(), State: "active"})
+	seedStatus(srv, StatusInfo{SessionID: sess.ID(), State: "active"})
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
 		Promote: sess.AcceptClientMutationPromoteQueuedAsSteer,
 	})
@@ -257,7 +257,7 @@ func TestServerAppWireTurnPromoteQueuedAsSteerThroughSession(t *testing.T) {
 	if preview := queuePreview(sess); len(preview) != 2 {
 		t.Fatalf("QueuePreview after mismatch: got %#v, want both entries intact", preview)
 	}
-	if steering := sess.SteeringQueueSnapshot(); len(steering) != 0 {
+	if steering := steeringInputs(sess); len(steering) != 0 {
 		t.Fatalf("steering queue after mismatch: got %+v, want empty", steering)
 	}
 
@@ -268,8 +268,8 @@ func TestServerAppWireTurnPromoteQueuedAsSteerThroughSession(t *testing.T) {
 	if preview := queuePreview(sess); len(preview) != 1 || preview[0] != "bravo" {
 		t.Fatalf("QueuePreview after promote: got %#v, want [bravo]", preview)
 	}
-	steering := sess.SteeringQueueSnapshot()
-	if len(steering) != 1 || steering[0].Text != "alpha" {
+	steering := steeringInputs(sess)
+	if len(steering) != 1 || len(steering[0]) != 1 || steering[0][0].Text != "alpha" {
 		t.Fatalf("steering queue after promote: got %+v, want [alpha]", steering)
 	}
 	cancel()

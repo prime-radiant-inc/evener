@@ -38,22 +38,20 @@ func TestSubagentSeesFailingInputExcerpt(t *testing.T) {
 	var factoryCalls atomic.Int64
 	factory := func() *llm.Client {
 		factoryCalls.Add(1)
-		childAdapter = &agenttest.FakeAdapter{
-			Provider: "openai",
-			Steps: []func(llm.Request) llm.Response{
-				func(llm.Request) llm.Response {
-					return agenttest.ToolCallResponse(llm.ToolCallData{
-						ID:        "call_truncated",
-						Name:      "write_file",
-						Arguments: []byte(truncatedArgs),
-						Type:      "function",
-					})
-				},
-				func(llm.Request) llm.Response {
-					return agenttest.FinalResponse("child recovered and done")
-				},
+		childAdapter = &agenttest.FakeAdapter{Provider: "openai"}
+		childAdapter.SetSteps([]func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(llm.ToolCallData{
+					ID:        "call_truncated",
+					Name:      "write_file",
+					Arguments: []byte(truncatedArgs),
+					Type:      "function",
+				})
 			},
-		}
+			func(llm.Request) llm.Response {
+				return agenttest.FinalResponse("child recovered and done")
+			},
+		})
 		c := llm.NewClient()
 		c.Register(childAdapter)
 		registerTestSessionNamer(c)
@@ -87,8 +85,7 @@ func TestSubagentSeesFailingInputExcerpt(t *testing.T) {
 	// TRIPWIRE: parent and child adapters are scripted in-process calls with no
 	// real I/O; this normally completes in well under a second. 30s only fires
 	// on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	res := sess.createDelegate(ctx, delegateArgs{Task: "write the report", DelegationAllowance: new(0)})
 	if res.Err != nil {
 		t.Fatalf("createDelegate: %v (status=%s reason=%s)", res.Err, res.Status, res.Reason)
@@ -136,7 +133,7 @@ func TestSubagentSeesFailingInputExcerpt(t *testing.T) {
 			t.Fatalf("subagent recovery request missing %q\nrequest: %s", want, got)
 		}
 	}
-	packet := loadStableDelegateTerminalPacket(t, sess, res.DelegateID)
+	packet := loadDelegateTerminalPacket(t, sess, res.DelegateID)
 	var output string
 	if err := json.Unmarshal(packet.Message, &output); err != nil {
 		t.Fatalf("decode stable terminal message: %v", err)
@@ -151,7 +148,7 @@ func TestSubagentSeesFailingInputExcerpt(t *testing.T) {
 	childTranscriptPath := schema.SessionTranscriptPath(stateDir, childID)
 	childLines := readTranscriptLines(t, childTranscriptPath)
 	requireTranscriptRawArguments(t, childLines, truncatedArgs)
-	_, childEntries, _, err := readTranscript(childTranscriptPath, "")
+	_, childEntries, _, err := readTranscript(context.Background(), childTranscriptPath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -189,22 +186,20 @@ func TestSubagentUnquotedKeyToolCallRecoversAndExecutes(t *testing.T) {
 	const unquotedArgs = `{add: [{"type": "implement", "description": "child task", "prompt": "do the work"}]}`
 	var childAdapter *agenttest.FakeAdapter
 	factory := func() *llm.Client {
-		childAdapter = &agenttest.FakeAdapter{
-			Provider: "openai",
-			Steps: []func(llm.Request) llm.Response{
-				func(llm.Request) llm.Response {
-					return agenttest.ToolCallResponse(llm.ToolCallData{
-						ID:        "call_unq",
-						Name:      "task_list",
-						Arguments: []byte(unquotedArgs),
-						Type:      "function",
-					})
-				},
-				func(llm.Request) llm.Response {
-					return agenttest.FinalResponse("child recovered and done")
-				},
+		childAdapter = &agenttest.FakeAdapter{Provider: "openai"}
+		childAdapter.SetSteps([]func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(llm.ToolCallData{
+					ID:        "call_unq",
+					Name:      "task_list",
+					Arguments: []byte(unquotedArgs),
+					Type:      "function",
+				})
 			},
-		}
+			func(llm.Request) llm.Response {
+				return agenttest.FinalResponse("child recovered and done")
+			},
+		})
 		c := llm.NewClient()
 		c.Register(childAdapter)
 		registerTestSessionNamer(c)
@@ -238,8 +233,7 @@ func TestSubagentUnquotedKeyToolCallRecoversAndExecutes(t *testing.T) {
 	// TRIPWIRE: parent and child adapters are scripted in-process calls with no
 	// real I/O; this normally completes in well under a second. 30s only fires
 	// on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	res := sess.createDelegate(ctx, delegateArgs{Task: "track the child task", DelegationAllowance: new(0)})
 	if res.Err != nil {
 		t.Fatalf("createDelegate: %v (status=%s reason=%s)", res.Err, res.Status, res.Reason)
@@ -291,7 +285,7 @@ func TestSubagentUnquotedKeyToolCallRecoversAndExecutes(t *testing.T) {
 		t.Fatalf("recovery request has no task_list tool result:\n%s", got)
 	}
 
-	packet := loadStableDelegateTerminalPacket(t, sess, res.DelegateID)
+	packet := loadDelegateTerminalPacket(t, sess, res.DelegateID)
 	var output string
 	if err := json.Unmarshal(packet.Message, &output); err != nil {
 		t.Fatalf("decode stable terminal message: %v", err)
@@ -304,7 +298,7 @@ func TestSubagentUnquotedKeyToolCallRecoversAndExecutes(t *testing.T) {
 	childTranscriptPath := schema.SessionTranscriptPath(stateDir, childID)
 	childLines := readTranscriptLines(t, childTranscriptPath)
 	requireTranscriptRawArguments(t, childLines, unquotedArgs)
-	_, childEntries, _, err := readTranscript(childTranscriptPath, "")
+	_, childEntries, _, err := readTranscript(context.Background(), childTranscriptPath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}

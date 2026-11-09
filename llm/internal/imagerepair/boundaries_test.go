@@ -250,6 +250,11 @@ func FuzzICC(f *testing.F) {
 func FuzzOrientation(f *testing.F) {
 	f.Add(exif(8, binary.LittleEndian)[10:])
 	f.Add(exif(7, binary.BigEndian)[10:])
+	// An IFD0 whose only entry is an unrelated tag: the walk must skip it and
+	// default to identity rather than rejecting the metadata.
+	unrelated := exif(8, binary.LittleEndian)[10:]
+	binary.LittleEndian.PutUint16(unrelated[10:], 0x010f)
+	f.Add(unrelated)
 	f.Add([]byte{})
 	f.Fuzz(func(t *testing.T, b []byte) {
 		o, ok := parseOrientation(b)

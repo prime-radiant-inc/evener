@@ -19,6 +19,16 @@
   border-bottom: 1px solid var(--edge);
 }
 
+/* Single-column panes centre their content on --session-measure; the header
+ * must use the same measure or the page title floats off the column it names.
+ * The marker comes from PaneScaffold's existing scaffoldMarker, so the header
+ * opts in without a new layout prop. Settings keeps the default inset because
+ * its title belongs to the nav column, not the content column. */
+.pane:has(> .body[data-pane-scaffold^="session:"]) > .header,
+.pane:has(> .body[data-pane-scaffold="spawn"]) > .header {
+  padding-inline: max(var(--space-5), calc((100% - var(--session-measure)) / 2));
+}
+
 /* Editorial page heading; controls and metadata keep the sans face. */
 .title {
   flex: 1 1 auto;
@@ -151,6 +161,33 @@
   .footer {
     padding: var(--space-3) var(--space-4);
     padding-bottom: max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px));
+  }
+
+  /* The flush edge footer below this dock is the pane's bottom edge and owns
+   * the home-indicator band (the session status bar), so reserving the inset
+   * here too would leave a dead strip between the composer and that bar. */
+  .footerBeforeEdge {
+    padding-bottom: var(--space-3);
+  }
+
+  /* While the composer is editing the status bar hides (it would sit between
+   * the input and the keyboard), so the dock is the bottom edge again and
+   * takes the home-indicator band back for the case where focus outlives the
+   * keyboard. The editing attribute also holds while a composer control or
+   * menu owns focus. */
+  :global(body):has([data-composer-editing]) .footerBeforeEdge {
+    padding-bottom: max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px));
+  }
+}
+
+@media (min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4) {
+  .pane:has(> .body[data-pane-scaffold^="session:"]) > .footer {
+    padding: var(--space-1) var(--space-2);
+    padding-bottom: max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px));
+  }
+
+  .pane:has(> .body[data-pane-scaffold^="session:"]):not(:has([data-composer-editing])) > .footerBeforeEdge {
+    padding-bottom: var(--space-1);
   }
 }
 

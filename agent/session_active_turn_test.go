@@ -21,6 +21,16 @@ func serveSession(t *testing.T, s *Session) {
 	s.ConsumeEventsLossless(func(events.SessionEvent) {}, func() {})
 }
 
+// serveSessionWithMutationStore marks the session served and ensures its
+// client-mutation store, the shared preamble of the client-mutation tests.
+func serveSessionWithMutationStore(t *testing.T, s *Session) {
+	t.Helper()
+	serveSession(t, s)
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+}
+
 // TestGoalContinuationTurnCarriesItsNameOnTheOpeningEvent is the wiring test:
 // minting a name is useless unless the event that opens the turn carries it,
 // because that event is the only thing the AppWire projection reads. Without
@@ -156,10 +166,7 @@ func TestReleaseRunningTurnIDLeavesAnotherOwnersTurnAlone(t *testing.T) {
 func TestMintRunningTurnIDRefusesWhenATurnIsAlreadyNamed(t *testing.T) {
 	t.Parallel()
 	s := newTestSessionForEnvctx(t)
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
+	serveSessionWithMutationStore(t, s)
 	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		snapshot.NextTurnSequence++
 		snapshot.ActiveTurnID = appwire.ClientMutationTurnID(snapshot.NextTurnSequence)
@@ -191,10 +198,7 @@ func TestMintRunningTurnIDRefusesWhenATurnIsAlreadyNamed(t *testing.T) {
 func TestMintRunningTurnIDRefusesUnderAnInterruptFence(t *testing.T) {
 	t.Parallel()
 	s := newTestSessionForEnvctx(t)
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
+	serveSessionWithMutationStore(t, s)
 	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		snapshot.InterruptFence = &clientMutationInterruptFence{
 			ClientMutationID: "cm-1", ExpectedTurnID: "turn_m1",

@@ -2,11 +2,14 @@ package contextmgr
 
 import (
 	"context"
+	"path/filepath"
 	"sync"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/internal/sessionlog"
 	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -40,6 +43,44 @@ func testProfile(instance, model string, contextWindow int) *provider.Profile {
 // given context window.
 func testOpenAIProfileWithContextWindow(contextWindow int) *provider.Profile {
 	return testProfile("openai", "test", contextWindow)
+}
+
+// newCompactionManager builds a Manager over an OpenAI test profile with the
+// given context window and the four compaction thresholds, named here in
+// call order: observation mask, thinking clear, checkpoint, summarize. A
+// test names exactly which layers can fire; PreserveRecentTurns is 2.
+func newCompactionManager(client *llm.Client, contextWindow int, observationMask, thinkingClear, checkpoint, summarize float64) *Manager {
+	cm := NewManager(testOpenAIProfileWithContextWindow(contextWindow), client, cheapmodel.New(client))
+	cm.ObservationMaskThreshold = observationMask
+	cm.ThinkingClearThreshold = thinkingClear
+	cm.CheckpointThreshold = checkpoint
+	cm.SummarizeThreshold = summarize
+	cm.PreserveRecentTurns = 2
+	return cm
+}
+
+// newTestSessionLogStrategy pairs cm with a session log in a fresh temp dir
+// and returns both, so a test can append entries before driving the strategy.
+func newTestSessionLogStrategy(t *testing.T, cm *Manager) (*SessionLogStrategy, *sessionlog.SessionLog) {
+	t.Helper()
+	log := mustNewSessionLog(t, filepath.Join(t.TempDir(), "test.log.jsonl"))
+	return &SessionLogStrategy{cm: cm, log: log}, log
+}
+
+// pingPongHistory builds an alternating user/assistant history from messages:
+// even indexes are user turns, odd indexes assistant turns.
+func pingPongHistory(messages ...string) []schema.Turn {
+	turns := make([]schema.Turn, len(messages))
+	for i, text := range messages {
+		kind := schema.TurnUserInput
+		msg := llm.User(text)
+		if i%2 == 1 {
+			kind = schema.TurnAssistant
+			msg = llm.Assistant(text)
+		}
+		turns[i] = schema.Turn{Kind: kind, Message: msg}
+	}
+	return turns
 }
 
 // stubSummarizeAdapter is a minimal llm provider adapter stub for summarization

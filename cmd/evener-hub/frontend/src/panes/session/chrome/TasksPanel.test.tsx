@@ -1,4 +1,4 @@
-import type { Task, TaskListResponse, ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
+import type { Task, TaskListResponse, ThreadModel } from "@evener/appwire-client";
 import { absoluteTime, WireError } from "@evener/appwire-client";
 import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
@@ -8,6 +8,7 @@ import { resetConnectionStoreForTests } from "../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { readModuleCss, topRuleBlock } from "../../../styles/cssBlock";
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
+import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
 import { Toast } from "../../../widgets";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { emptyStateReasons } from "../../../widgets/emptystate/emptyStateTestUtils";
@@ -16,22 +17,6 @@ import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store
 import visuallyHiddenStyles from "../../../widgets/visuallyhidden/visuallyhidden.module.css";
 import { STATUS_TOUCH } from "../transcript/tools/taskCheck";
 import { TasksPanel, TasksPanelBody } from "./TasksPanel";
-
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
 
 function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
   const { jobsTreeRevision = null, ...rest } = overrides;
@@ -395,6 +380,44 @@ test("every row carries a visually hidden status word beside its aria-hidden gly
   await expectWord("Transition to implementation plan", "cancelled");
   await expectWord("Extend transcript API", "started");
   await expectWord("Prepare release notes", "pending");
+});
+
+test("a task with an unrecognized status stays in the list, with a neutral glyph and its raw status word", async () => {
+  // A newer daemon can mint a status this client has no glyph or word for.
+  // The aggregate counts it as remaining, so dropping it made the list
+  // shorter than its own footer (issue #2256). It renders as remaining work,
+  // in the neutral unfilled box, with the wire word as written.
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  const futureStatus = {
+    id: 4,
+    type: "implement",
+    description: "Wait on the review",
+    prompt: "",
+    status: "blocked",
+  } as unknown as Task;
+  fake.on("evener/tasks/list", () => ({ data: [...TASKS_DATA, futureStatus] }));
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+
+  const description = await screen.findByText("Wait on the review");
+  const row = description.closest("[data-testid='task-row']");
+  expect(row).not.toBeNull();
+  const group = row?.closest("[data-testid='task-group-live']");
+  // Remaining work: the unknown row joins the open group, whose count it
+  // raises, and the settled history group does not grow.
+  expect(group?.getAttribute("data-status")).toBe("open");
+  expect(group?.querySelectorAll("[data-testid='task-row']")).toHaveLength(2);
+  // The settled disclosure still starts collapsed and renders none of these
+  // rows, so the unknown task is in the live list, not the history.
+  expect(screen.getByTestId("task-settled-group").querySelectorAll("[data-testid='task-row']")).toHaveLength(0);
+  expect(row?.querySelector('[data-testid="task-check"]')?.getAttribute("data-touch")).toBe("pending");
+  expect(row?.querySelector('[data-testid="task-status-word"]')?.textContent).toBe("blocked");
+  // The visible caption is itself announced, so the row does not also repeat
+  // the word in the visually-hidden slot: one announcement, one derivation.
+  expect(row?.querySelectorAll(`.${VISUALLY_HIDDEN_CLASS}`)).toHaveLength(0);
+  expect(row?.textContent?.match(/blocked/g)).toHaveLength(1);
 });
 
 test("a live row shows a relative updated time", async () => {

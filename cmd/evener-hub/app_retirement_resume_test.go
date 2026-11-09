@@ -159,7 +159,7 @@ func newRetirementResumeFixture(t *testing.T, opts retirementResumeOptions) *ret
 		return appwire.ThreadListResponse{Data: []appwire.Thread{thread}}, nil
 	})
 	appserver.HandleTyped(peerApp.Router(), appwire.MethodThreadRead, func(ctx context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		appserver.Subscribe(ctx, peerSessionID)
+		appserver.SubscribeWithAdmission(ctx, peerSessionID, false)
 		return appwire.ThreadReadResponse{Thread: thread}, nil
 	})
 	appserver.HandleTyped(peerApp.Router(), appwire.MethodEvenerDaemonStatus, func(context.Context, appwire.DaemonStatusParams) (appwire.DaemonStatusResponse, error) {
@@ -1118,9 +1118,10 @@ func captureHubStderr(t *testing.T, fn func()) string {
 // triggered by daemon retirement carries the same correlated lifecycle trace as
 // an explicit resume: an operation=resume stream whose records carry the
 // requested identity in session_id and, for every stage at or after ownership
-// resolution, the resolved target in resolved_session_id. The log destination
-// is the hub's own stderr, not a configurable seam, so capture it around the
-// call.
+// resolution, the resolved target in resolved_session_id. Production resolves
+// the log destination to the hub's own stderr, so this test captures stderr
+// around the call; a fixture that installs hubDiagnosticSink reads the same
+// records directly.
 func TestResumeAfterConfirmedRetirementRecordsLifecycle(t *testing.T) {
 	requested := hubtest.SessionID(t)
 	root := t.TempDir()
@@ -1160,10 +1161,7 @@ func TestResumeAfterConfirmedRetirementRecordsLifecycle(t *testing.T) {
 		writeRendezvous(t, runDir, entry)
 		return entry, nil
 	}}
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 
 	locks := hubcore.NewResumeLocks()
 	if err := locks.PersistForceStop([]string{requested, target}, target); err != nil {

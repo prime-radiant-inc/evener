@@ -126,6 +126,7 @@ var entryKindTurnOpening = map[EntryKind]turnOpening{
 	EntryContinuation:      opensOnItsContentEvent,
 	EntryNotification:      opensOnTurnStarted,
 	EntryDelegateAttention: unservedSoUnaddressable,
+	EntryRuntime:           unservedSoUnaddressable,
 }
 
 func TestEveryEntryKindDeclaresHowItsTurnOpens(t *testing.T) {

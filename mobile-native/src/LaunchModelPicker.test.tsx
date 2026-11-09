@@ -4,7 +4,7 @@
 import { createElement } from "react";
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { LaunchModelPicker } from "./LaunchModelPicker";
 import { render } from "./renderNative.testkit";
 

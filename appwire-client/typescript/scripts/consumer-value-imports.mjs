@@ -3,12 +3,9 @@
 // from this list and runs it against the installed tarball, so the names the
 // apps import are proved to resolve from the packed package.
 //
-// All three app trees count, not just the native two. Metro's resolveRequest
-// treats cmd/evener-hub/frontend/src as shared headless source and bundles it
-// into the native app, so a value only the web tree imports -- errorText, by
-// way of panes/spawn/usePluginPreview.ts -- is still a value the tarball has
-// to provide. Over-inclusion only strengthens the check: every name here is
-// something some consumer imports.
+// All three app trees count, not just the native two: a value only the web
+// tree imports is still a value the tarball has to provide. Over-inclusion only
+// strengthens the check: every name here is something some consumer imports.
 import { readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";

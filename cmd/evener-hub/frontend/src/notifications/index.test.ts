@@ -12,12 +12,14 @@ import { capability, manifest } from "@evener/appwire-client/testing/navigation"
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { connectionStore } from "../stores/connection";
+import { bindNavigationConnection } from "../stores/navigation/binding";
 import { initNavigation, navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
 import { prefsStore, resetPrefsStoreForTests } from "../stores/prefs";
 import { initNotifications, resetNotificationsForTests } from "./index";
 import { resetLeaderForTests, setLeaderForTests } from "./leader";
 
 const navigationCapability = capability;
+let unbindNavigation: (() => void) | undefined;
 const navigationManifest = (generationId = "generation_test") => manifest({ generation_id: generationId });
 const navigationInitialize = (generationId = "generation_test"): InitializeResponse => ({
   serverInfo: { name: "fake", version: "1" },
@@ -152,11 +154,16 @@ function setFocused(value: boolean): void {
   vi.spyOn(document, "hasFocus").mockReturnValue(value);
 }
 
+function resetAndBindNavigation(): void {
+  resetNavigationStoreForTests();
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  unbindNavigation = bindNavigationConnection();
+}
+
 beforeEach(() => {
   resetNotificationsForTests();
-  resetNavigationStoreForTests();
+  resetAndBindNavigation();
   resetLeaderForTests();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   localStorage.clear();
   resetPrefsStoreForTests();
   FakeNotification.instances = [];
@@ -171,6 +178,7 @@ beforeEach(() => {
   vi.stubGlobal("AudioContext", FakeAudioContext);
 });
 afterEach(() => {
+  unbindNavigation?.();
   resetNotificationsForTests();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -232,7 +240,27 @@ async function boot(baseline: {
   return client;
 }
 
-describe("initNotifications lifecycle", () => {
+describe("notifications with shared navigation connection", () => {
+  test("reset does not adopt a ready client left by the preceding test", async () => {
+    const stale = new FakeClient("ready");
+    scriptNavigationManifest(stale);
+    stale.scriptConnect(() => navigationInitialize());
+    connectionStore.getState().connect(stale);
+    await stale.connect();
+    await vi.waitFor(() => expect(navigationStore.getState().mode).toBe("v3"));
+
+    // Recreate the next test's setup in this test, rather than depending on
+    // test ordering to leave a real ready connection behind.
+    unbindNavigation?.();
+    resetNotificationsForTests();
+    resetAndBindNavigation();
+    await flushMicrotasks();
+
+    expect(connectionStore.getState().client).toBeNull();
+    expect(navigationStore.getState().mode).toBe("unknown");
+    expect(stale.calls.filter((call) => call.method === "evener/navigation/read")).toHaveLength(1);
+  });
+
   test("supported v2 boots navigation through the typed AppWire read", async () => {
     const client = new FakeClient("ready");
     scriptNavigationManifest(client);
@@ -288,14 +316,8 @@ describe("initNotifications lifecycle", () => {
     expect(() => initNotifications()).not.toThrow();
   });
 
-  // The navigation manifest is this engine's whole data source, and nothing
-  // else guarantees a read: the rail is the app's only other mount-time
-  // fetcher and it does not mount at all on a mobile boot (it lives inside the
-  // tree drawer's sheet, which renders null while closed). AppShell calls
-  // initNotifications() at module evaluation, so this baseline fetch is what
-  // makes the manifest arrive on every host. Kata bbsv mis-read its absence as
-  // the cause of mobile deep links being discarded; it is present, and the
-  // shell relies on it.
+  // The shared connection binding reads navigation on every surface, even
+  // without notification election or a mounted workspace rail.
   test("reads the manifest after the handshake selects v2 mode", async () => {
     const client = await boot(attentionFromNodes([]));
 

@@ -15,7 +15,7 @@ import (
 // appserver.Server's connection registry plus its Subscriptions index, which is
 // how the live hub multiplexes many sessions (threads) over many clients
 // (connections). The hub's relay machinery (cmd/evener-hub/app_rpc.go) drives this
-// exact fabric: startRelay calls appserver.Subscribe / server.Broadcast /
+// exact fabric: startRelay calls appserver.SubscribeWithAdmission / server.Broadcast /
 // server.SubscriberCount, and the websocket lifecycle calls registerConnection /
 // unregisterConnection. So driving those seams directly exercises the real
 // multi-session routing state — no LLM, no daemon, no network, fully offline.

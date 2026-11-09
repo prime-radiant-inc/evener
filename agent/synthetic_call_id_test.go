@@ -1,10 +1,8 @@
 package agent
 
 import (
-	"context"
 	"encoding/json"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
@@ -51,8 +49,7 @@ func TestSynthesizedCallID_IsUniqueAcrossTurnsAndSurvivesRecording(t *testing.T)
 	)
 	// TRIPWIRE: every answer is scripted in process with no real I/O; only a
 	// genuine hang reaches this ceiling.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := s.ProcessInput(ctx, "go", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}

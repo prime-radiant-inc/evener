@@ -13,7 +13,7 @@ import {
 	type ThreadCapabilities,
 } from "@evener/appwire-client";
 import { reconcilePendingEntries } from "@evener/appwire-client/state/mutation";
-import { type ConversationClientLike, READ_ITEM_LIMIT } from "../../../mobile/src/services/conversation";
+import { type ConversationClientLike, READ_ITEM_LIMIT } from "../conversation/services/conversation";
 import { type NativeMutationRuntime, nativeMutationTargetKey } from "../nativeMutationRuntime";
 import { type SendAction, sendAction } from "./sendAction";
 
@@ -138,7 +138,7 @@ export interface SessionTarget {
 /** What the composer's one Send (spec 8.5) does with a message written on a
  * screen above the session, such as the Reader's review: phase 3's
  * sendAction, fed what the session's own store feeds it
- * (mobile/src/state/conversation.ts, reconcilePendingMutations). The read has
+ * (mobile-native/src/conversation/state/conversation.ts, reconcilePendingMutations). The read has
  * the window the session's own read uses, so a send of this client's that the
  * session already shows stops counting as in flight. Every record in this
  * phone's durable outbox is this client's own

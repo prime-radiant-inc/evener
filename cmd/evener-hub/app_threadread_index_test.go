@@ -62,10 +62,7 @@ func seedIndexedPastSession(t *testing.T, entries ...schema.Turn) (hubcore.WebCo
 	if _, err := os.Stat(filepath.Join(transcriptindex.DirFor(path), "CURRENT")); err != nil {
 		t.Fatal("seeded session's sidecar did not build")
 	}
-	index := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := index.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	index := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	entry, ok := index.Find(sessionID)
 	if !ok {
 		t.Fatal("seeded past session not found")
@@ -184,6 +181,9 @@ func TestDaemonlessThreadReadIsTheIndexLatestWindow(t *testing.T) {
 	}
 	if response.Snapshot == nil || *response.Snapshot != (appwire.SnapshotIdentity{Incarnation: window.Incarnation, Length: window.Length}) {
 		t.Fatalf("daemonless snapshot = %+v, want the index's {%s %d}", response.Snapshot, window.Incarnation, window.Length)
+	}
+	if response.LatestExecutionTurnID != window.LatestExecutionTurnID || response.LatestExecutionTurnID != "turn_m2" {
+		t.Fatalf("daemonless latest execution = %q, want index cut %q (turn_m2)", response.LatestExecutionTurnID, window.LatestExecutionTurnID)
 	}
 	if response.RequestGeneration != 7 {
 		t.Fatalf("requestGeneration = %d, want the request's 7 echoed", response.RequestGeneration)

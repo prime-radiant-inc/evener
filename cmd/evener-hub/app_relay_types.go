@@ -185,7 +185,7 @@ func subscribeRelayRecovery(ctx context.Context, source appsource.Source, params
 //
 // Every other thread/status/changed already carries the action set that goes
 // with the status it announces, stamped by the daemon at its own notification
-// egress (server/appwire_runtime.go's stampCapabilitiesOnStatusChange). The
+// egress (server/appwire_status_stamps.go's stampCapabilitiesOnStatusChange). The
 // close frame deliberately carries none, and rightly so: what a thread can
 // still be asked to do once its daemon is gone is not the daemon's to say. It
 // is this hub's — the next read is answered from the past index and a send
@@ -256,6 +256,7 @@ func relayGaveUpCapabilities(cfg hubcore.WebConfig, relayKey string, thread appw
 	}
 	set := pastThreadCapabilities()
 	set.ForkFromTurn = applyHubForkCapability(cfg, thread).Evener.Capabilities.ForkFromTurn
+	set.VoiceArm = false
 	return &set
 }
 
@@ -318,6 +319,17 @@ func stampPageBeforeCapability(notification appwire.Notification, pageBefore boo
 	})
 }
 
+// stampVoiceArmCapability answers ThreadCapabilities.VoiceArm for the session
+// whose status the daemon is publishing. The daemon cannot know this hub's voice
+// instance, and a status frame replaces the capability set the client holds, so
+// the frame carries the hub's answer or the client would fall back to its
+// older-hub behavior.
+func stampVoiceArmCapability(notification appwire.Notification, voiceArm bool) appwire.Notification {
+	return patchStatusCapabilities(notification, func(_ appwire.ThreadStatus, capabilities map[string]json.RawMessage) {
+		capabilities["voiceArm"] = json.RawMessage(strconv.FormatBool(voiceArm))
+	})
+}
+
 // patchStatusCapabilities edits a thread/status/changed frame's capability
 // update in place, keeping every other field as the daemon sent it. Any other
 // frame, or one with no capability update, passes through unchanged.
@@ -351,7 +363,24 @@ func patchStatusCapabilities(notification appwire.Notification, patch func(appwi
 }
 
 var observeHubRelay func(*hubRelay)
-var observeHubRelayWait func()
+
+// observeHubRelayWait is read by the relay's background goroutines. Tests
+// swap it while a fan-out may still be running, so the read and the restore
+// must not be a plain variable's unsynchronized access.
+var observeHubRelayWait atomic.Pointer[func()]
+
+// fireObserveHubRelayWait reports a relay wait. Production never installs an
+// observation, so this is a no-op there.
+func fireObserveHubRelayWait() {
+	if observe := observeHubRelayWait.Load(); observe != nil {
+		(*observe)()
+	}
+}
+
+// observeHubRelayDaemonGoneRetention runs after a daemon-gone delivery's
+// target pass and before its retention is decided, so a test can release a
+// joining read at that boundary. Production leaves it nil.
+var observeHubRelayDaemonGoneRetention atomic.Pointer[func()]
 
 // Test-only observations for the bounded pending-delivery queue, its delivery
 // input, and authoritative route publication. Production never stores them;

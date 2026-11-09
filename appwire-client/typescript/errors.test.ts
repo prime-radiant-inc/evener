@@ -2,7 +2,6 @@
 
 import { describe, expect, test } from "vitest";
 import appwireErrorsGo from "../../appwire/errors.go?raw";
-import appwireTypesGo from "../../appwire/types.go?raw";
 import {
   ClientNotReadyError,
   CODE_INVALID_REQUEST,
@@ -37,6 +36,16 @@ import {
   wireRejectionPayload,
 } from "./errors";
 import { goConstantValue, goIntConstantValue } from "./testing/goConstants";
+
+// The wire types live across several appwire/*.go files; the json tags are
+// matched against all of them so a type may move between files.
+const appwireGoSources = Object.values(
+  import.meta.glob<string>(["../../appwire/*.go", "!../../appwire/*_test.go"], {
+    eager: true,
+    query: "?raw",
+    import: "default",
+  }),
+).join("\n");
 
 function decodeUpper(value: unknown): string | undefined {
   return typeof value === "string" ? value.toUpperCase() : undefined;
@@ -89,7 +98,7 @@ test("the host entry's wire spellings are the ones refusals and inputs share", (
   // by the "address" tag. "name" is the field hostEntryField blames for an
   // invalid or reserved host name, so it belongs in the pinned set too.
   for (const name of ["name", "address", "user", "keyPath", "evenerPath", "configPath", "addr", "roots"]) {
-    expect(appwireTypesGo).toMatch(new RegExp(`json:"${name}("|,)`));
+    expect(appwireGoSources).toMatch(new RegExp(`json:"${name}("|,)`));
   }
 });
 
@@ -472,7 +481,7 @@ test("friendlyLaunchErrorMessage masks only the no-diagnosis subset with the gui
 });
 
 test("friendlyLaunchErrorMessage preserves the daemon's own stderr (the hub propagates it on purpose)", () => {
-  // Mirrors cmd/evener-hub/app_rpc_test.go's stderr-propagation fixture: a
+  // Mirrors cmd/evener-hub/app_rpc_thread_start_test.go's stderr-propagation fixture: a
   // daemon that SPAWNED and crashed carries its diagnosis in the message,
   // and 'run evener in the repo' would reproduce the same crash silently.
   const stderr =

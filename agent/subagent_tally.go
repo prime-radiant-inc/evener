@@ -10,7 +10,18 @@ import (
 // that needs the answer calls this instead of restating the check, so they
 // cannot disagree.
 func delegateRunTerminal(outcome *delegatestore.Outcome, currentRunOpen bool) bool {
-	return outcome != nil && !currentRunOpen
+	return appwire.DelegateRunTerminal(outcome != nil, currentRunOpen)
+}
+
+// delegateOutcomeStopGated is the sticky deliberate-stop gate over one settled
+// run: the finish a stop asked for outlives the stop plan that requested it,
+// so the stopped-by-parent outcome keeps gating the delegate until a newer
+// generation runs. The drain's row verdict (delegateRowStopGated) and the
+// attention reopen guard read this one statement so they cannot disagree.
+func delegateOutcomeStopGated(outcome *delegatestore.Outcome, currentRunOpen bool) bool {
+	return delegateRunTerminal(outcome, currentRunOpen) &&
+		outcome.Status == delegatestore.OutcomeStopped &&
+		outcome.Reason == delegatestore.ReasonStoppedByParent
 }
 
 // tally counts every delegate the controller has folded, at every depth and

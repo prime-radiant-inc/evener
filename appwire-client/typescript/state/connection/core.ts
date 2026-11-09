@@ -39,6 +39,10 @@ export interface ConnectionStore extends FrameworkFreeStore<ConnectionStoreState
   connect(client: AppwireClientLike): void;
 }
 
+// Observers can miss an intermediate client during synchronous publication.
+// Read the owner's generation without exposing it as mutable store state.
+const connectionGenerations = new WeakMap<ConnectionStore, () => number>();
+
 function readyMetadata(client: AppwireClientLike): Pick<ConnectionStoreState, "serverInfo" | "features"> {
   const initialize = client.initializeResult;
   return initialize ? { serverInfo: initialize.serverInfo, features: initialize.features } : {};
@@ -96,6 +100,7 @@ export function createConnectionStore(): ConnectionStore {
     features: undefined,
     client: null,
   })) as ConnectionStore;
+  connectionGenerations.set(store, () => connectGeneration);
 
   // The triple's own setState, captured once before the override below
   // replaces `store.setState` - every write inside that override goes
@@ -191,21 +196,43 @@ export function createConnectionStore(): ConnectionStore {
 // client is detached so it does not keep a live subscription for the rest of
 // the store's life. Returns the disposer for both halves.
 export function onConnectionNotification(store: ConnectionStore, handler: (n: AnyNotification) => void): () => void {
+  const readOwnerGeneration = connectionGenerations.get(store);
   let wired: AppwireClientLike | null = null;
+  let wiredOwnerGeneration: number | undefined;
   let unwire: (() => void) | undefined;
+  let generation = 0;
+  let disposed = false;
   const attach = (client: AppwireClientLike | null): void => {
-    if (client === wired) return; // already wired to this exact client, including both null
+    const ownerGeneration = readOwnerGeneration?.();
+    if (disposed || (client === wired && ownerGeneration === wiredOwnerGeneration)) return;
+    const attachment = ++generation;
     unwire?.();
     wired = client;
+    wiredOwnerGeneration = ownerGeneration;
     // A cleared client (the store's `client` set to null - a disconnect, a
     // test reset) has no listener to attach; detaching the previous one
     // above is this call's whole job then, not a no-op skipped by the null
     // check that used to sit ahead of it.
-    unwire = client ? client.onNotification(handler) : undefined;
+    unwire = client
+      ? client.onNotification((notification) => {
+          // Unsubscribing cannot retract a callback already in dispatch.
+          // Identity alone cannot distinguish a retired A -> B -> A attachment.
+          if (
+            disposed ||
+            generation !== attachment ||
+            readOwnerGeneration?.() !== ownerGeneration ||
+            store.getState().client !== client
+          )
+            return;
+          handler(notification);
+        })
+      : undefined;
   };
   const unsubscribe = store.subscribe((state) => attach(state.client));
   attach(store.getState().client);
   return () => {
+    if (disposed) return;
+    disposed = true;
     unsubscribe();
     unwire?.();
   };

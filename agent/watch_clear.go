@@ -33,13 +33,12 @@ func (jm *jobManager) clearWatch(key watchKey) (watchResult, error) {
 			}
 		}
 	}
-	markWatchConfigSnapshotsRejectingLocked(targets)
-	markWatchConfigsRejectingLocked(detachedCfgs)
+	teardown := watchTeardown{targets: targets, detachedCfgs: detachedCfgs}
+	teardown.markRejectingLocked()
 	jm.mu.Unlock()
 	dropped := append(terminalSnapshots(targets), detached...)
 	if err := jm.appendWatchTeardownBatch(dropped, targets); err != nil {
-		jm.rollbackWatchConfigSnapshotsRejecting(targets)
-		jm.rollbackWatchConfigsRejecting(detachedCfgs)
+		teardown.rollback(jm)
 		return watchResult{}, err
 	}
 	jm.detachWatchConfigSnapshots(targets)
@@ -119,13 +118,13 @@ func (jm *jobManager) clearWatchByIDMatchingWithReason(watchID string, allow fun
 		terminal:  watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "watch cleared", jm.now()),
 		endReason: endReason,
 	}}
-	markWatchConfigSnapshotsRejectingLocked(targets)
+	teardown := watchTeardown{targets: targets, detachedCfgs: detachedCfgs}
+	teardown.markRejectingLocked()
 	jm.mu.Unlock()
 
 	dropped := append(terminalSnapshots(targets), detached...)
 	if err := jm.appendWatchTeardownBatch(dropped, targets); err != nil {
-		jm.rollbackWatchConfigSnapshotsRejecting(targets)
-		jm.rollbackWatchConfigsRejecting(detachedCfgs)
+		teardown.rollback(jm)
 		return watchResult{}, err
 	}
 	jm.detachWatchConfigSnapshots(targets)
@@ -527,6 +526,28 @@ func (jm *jobManager) liveTimerCountLocked() int {
 		}
 	}
 	return n
+}
+
+// hasArmedWatch reports whether any watch on this manager could still deliver
+// a wake. The count is receiver-agnostic on purpose: the caller asks "could
+// anything here deliver a wake to a session it holds," so overcounting is safe
+// and undercounting is the only error.
+func (jm *jobManager) hasArmedWatch() bool {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	return jm.hasArmedWatchLocked()
+}
+
+// hasArmedWatchLocked reports whether any registered watch is still armed. A
+// spent one-shot no longer fires, so only the not-yet-fired ones count. Caller
+// holds jm.mu.
+func (jm *jobManager) hasArmedWatchLocked() bool {
+	for _, cfg := range jm.watches {
+		if !watchOneShotHasFired(cfg) {
+			return true
+		}
+	}
+	return false
 }
 
 func (jm *jobManager) watchConfigByIDLocked(watchID string) (watchKey, *watchConfig, bool) {

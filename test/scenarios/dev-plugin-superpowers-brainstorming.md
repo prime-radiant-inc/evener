@@ -34,7 +34,7 @@ heavy and worth its own scenario.
    ls "$tmpdir/superpowers/skills/brainstorming/SKILL.md"
    ```
 3. Spawn a evener session with the plugin dir in `launch_overrides`.
-   The wire key is `pluginDirs` (camelCase, `appwire/types.go:1715`):
+   The wire key is `pluginDirs` (camelCase, `appwire/types_auth_commands.go#LaunchConfigLayer`):
    ```bash
    TOKEN=$(cat "$HOME/.evener/auth-token")
    curl -s -X POST -H "Content-Type: application/json" \

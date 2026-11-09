@@ -4,7 +4,6 @@ import (
 	"context"
 	"sync"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
@@ -93,9 +92,7 @@ func TestSession_ContextStrategy_SpyHooks(t *testing.T) {
 	}
 	defer sess.Close()
 
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 
 	out, err := sess.ProcessInput(ctx, "hi", nil)
 	if err != nil {

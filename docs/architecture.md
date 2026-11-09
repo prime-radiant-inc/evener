@@ -139,7 +139,9 @@ lower layer imports a higher one.
   `SessionMeta` / `ConfigSnapshot` / `EnvironmentInfo`), `events`, `execenv`. No
   intra-`agent` dependencies.
 - **Subsystems** — `agent/internal/tool` (tool registry + builtins), `provider` (model
-  profiles), `transcript` (JSONL writer/reader), `mcpconfig`, `skill`, `task`.
+  profiles), `transcript` (JSONL writer/reader), `mcpconfig`, `skill`, `task`,
+  `hostresources` (cgroup-aware CPU and memory caps for the environment snapshot),
+  `memorypages` (memory page parsing, generated index rendering, legacy index migration).
 - **Engine internals** (`agent/internal/…`, off the public surface) — `contextmgr`
   (context-pressure management: compaction + the pluggable strategies + recall),
   `sessionlog` (the shared session-action-log substrate), `hooks` (the plugin/hook
@@ -237,7 +239,10 @@ branch never applies to a delegate.
 On the roots that get `ask_user`, `communicate` also takes `end_reason`, read only when
 `end_turn=true`: `done` (the default), `needs_response`, or `waiting_on_work`. It is recorded
 with the message (`CommunicateData`, the transcript's `CommunicateInfo`). A turn that ends on
-`done` or `waiting_on_work` rests idle. One that ends on `needs_response` rests awaiting, unless
+`done` or `waiting_on_work` rests idle. A turn-ending `waiting_on_work` call is refused when
+nothing can wake the session: use `done` if finished, `needs_response` if the partner must act,
+or start the work or arm a watch before ending the turn.
+One that ends on `needs_response` rests awaiting, unless
 autonomous work (a working child, a pending delegate report, a pending notification, queued
 input, a goal kick) will move the session first; a finished child's warm runtime does not
 count. The settle reads the first turn-ending call the input accepted, and restore derives the
@@ -272,8 +277,10 @@ so a call that changes only those is the same failing operation; the tool's own
 removes before dispatch fingerprints as the omitted call — while arguments
 that are not a single well-formed JSON value fall back to the raw bytes. Its second
 failure appends a nudge to the result, and the third is **not executed at
-all** — the tool is resolved to compute the key, and the call is refused before
-any validation or execution. The **repetition trigger**
+all** for a tool that can change state — the tool is resolved to compute the key,
+and the call is refused before any validation or execution. A tool registered
+`ReadOnly` is never refused this way: the state it reads may have changed, so
+its repeat dispatches and only receives the nudge. The **repetition trigger**
 counts consecutive byte-identical result bodies regardless of error status, keyed on
 tool name + a hash of the raw argument bytes, and only ever nudges, from the second
 onward; a tool observing mutable state may yet return
@@ -357,6 +364,14 @@ accept is otherwise a no-op that still calls
 `finishProcessingAtBoundary` → `drainPendingWatchSends` (`agent/session_lifecycle.go`),
 so a wake carrying only already-settled shell/watch bookkeeping can finish with
 zero model turns; model-bound transcript attention always runs the owner turn.
+
+**Session lock contract.** `Session.mu` guards the session's mutable state; the full
+list and the ordered lock pairs live in the `Session` struct comment
+(`agent/session.go`). Ordered pairs, outermost first: `responseSideEffectsMu > mu`,
+`restMu > delegateDeliveryMu > mu`, `metaSaveMu > mu`, `goalUpdateMu > mu`,
+`notesUpdateMu > mu`. `drainAbandonedMu` and `childCommittedSendMu` are leaves. `restMu` serializes a rest
+transition with its `STATUS_SETTLED` emit; the rest-generation fields themselves are
+guarded by `mu`.
 
 **The forbidden re-entry.** `responseSideEffectsMu` is held across event emits
 (`emitAssistantResponse`, the tool-call-end emit). Observation paths and the `jobManager`'s

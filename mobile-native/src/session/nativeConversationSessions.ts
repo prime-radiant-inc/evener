@@ -11,12 +11,12 @@
 // Retry's owners stay the store's canonical read validity and the durable
 // pending projection.
 import type { AppwireClientLike, TranscriptDisplayConfigV1 } from "@evener/appwire-client";
-import { createConversationStore } from "../../../mobile/src/state/conversation";
+import { createConversationStore } from "../conversation/state/conversation";
 import {
 	createConversationMutationPendingPort,
 	type ConversationMutationSubmitter,
-} from "../../../mobile/src/state/conversationMutation";
-import { createConversationService } from "../../../mobile/src/services/conversation";
+} from "../conversation/state/conversationMutation";
+import { createConversationService } from "../conversation/services/conversation";
 import { createDurableSubmitter, createNativeMutationHost, type NativeMutationHost } from "../nativeMutationHost";
 import {
 	getNativeMutationRuntime,

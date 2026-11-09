@@ -2,25 +2,20 @@ import type { AgentsDocResponse, AnyNotification } from "@evener/appwire-client"
 import { friendlyErrorMessage, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { beforeEach, describe, expect, test } from "vitest";
+import { connectReadyFakeClient } from "../testing/connectionTestUtils";
 import { agentsDocStore, resetAgentsDocStoreForTests } from "./agentsDoc";
-import { connectionStore } from "./connection";
+import { connectionStore, resetConnectionStoreForTests } from "./connection";
 
 const DOC: AgentsDocResponse = { path: "/home/u/.config/evener/AGENTS.md", exists: true, content: "# hi\n" };
 
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
-
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetAgentsDocStoreForTests();
 });
 
 describe("fetch", () => {
   test("loads the document from evener/settings/agentsDoc/get", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/settings/agentsDoc/get", () => DOC);
     await agentsDocStore.getState().fetch();
     expect(agentsDocStore.getState().doc).toEqual(DOC);
@@ -32,7 +27,7 @@ describe("fetch", () => {
   // observable while a request is outstanding - a handler that never resolves
   // is the only way to stand in that window.
   test("loading is true while the request is in flight", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let land: ((doc: AgentsDocResponse) => void) | undefined;
     const pending = new Promise<AgentsDocResponse>((resolve) => {
       land = resolve;
@@ -50,7 +45,7 @@ describe("fetch", () => {
   });
 
   test("records a failed fetch's friendly form and keeps doc null", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/settings/agentsDoc/get", () => {
       throw new Error("disk on fire");
     });
@@ -66,7 +61,7 @@ describe("fetch", () => {
   // starts (a plain failed-then-retried sequence would clear at the retry's
   // own start instead), so only the success branch itself can take it away.
   test("a successful retry clears a stale fetch error", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let land!: (doc: AgentsDocResponse) => void;
     fake.on(
       "evener/settings/agentsDoc/get",
@@ -95,7 +90,7 @@ describe("fetch", () => {
   // carries a view of the file that is already out of date, and the section
   // syncs its draft off whatever `doc` holds.
   test("an older fetch that resolves last does not overwrite the newer one", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let finishOlder!: (doc: AgentsDocResponse) => void;
     fake.on(
       "evener/settings/agentsDoc/get",
@@ -116,7 +111,7 @@ describe("fetch", () => {
   });
 
   test("a late response from a replaced client is dropped", async () => {
-    const first = connectFakeClient();
+    const first = connectReadyFakeClient();
     let finishFirst!: (doc: AgentsDocResponse) => void;
     first.on(
       "evener/settings/agentsDoc/get",
@@ -148,7 +143,7 @@ describe("fetch", () => {
 // while it was down are gone, so the store has to re-read the file itself.
 describe("reconnect", () => {
   test("a reconnect on the same client refetches", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const away: AgentsDocResponse = { ...DOC, content: "# while we were away\n" };
     let calls = 0;
     fake.on("evener/settings/agentsDoc/get", () => {
@@ -170,7 +165,7 @@ describe("reconnect", () => {
   // left to turn `loading` off - and a drop that never recovers would leave
   // the section drawing its Skeleton over a document it will never get.
   test("a drop mid-fetch clears loading", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let land!: (doc: AgentsDocResponse) => void;
     fake.on(
       "evener/settings/agentsDoc/get",
@@ -193,7 +188,7 @@ describe("reconnect", () => {
   });
 
   test("a reconnect before anything was requested fetches nothing", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/settings/agentsDoc/get", () => DOC);
 
     fake.emitStateChange("reconnecting");
@@ -207,7 +202,7 @@ describe("reconnect", () => {
 
 describe("save", () => {
   test("sends the content to evener/settings/agentsDoc/set and adopts the response", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/settings/agentsDoc/set", (params) => ({ ...DOC, content: params.content }));
     const saved = await agentsDocStore.getState().save("# new\n");
     expect(saved.content).toBe("# new\n");
@@ -217,7 +212,7 @@ describe("save", () => {
   });
 
   test("a rejected save propagates and leaves doc untouched", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/settings/agentsDoc/get", () => DOC);
     await agentsDocStore.getState().fetch();
     fake.on("evener/settings/agentsDoc/set", () => {
@@ -231,7 +226,7 @@ describe("save", () => {
   // that ("saving would overwrite anything changed on disk since") is false
   // the moment a write lands, so a save has to take the error with it.
   test("a successful save clears a stale fetch error", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/settings/agentsDoc/get", () => {
       throw new WireError("hub unreachable", -1);
     });
@@ -249,7 +244,7 @@ describe("save", () => {
   // newer read does. A read that bumps the version after the save runs the
   // other way round: it fences the save's own response out instead.
   test("a save invalidates an older in-flight fetch", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let finishReading!: (doc: AgentsDocResponse) => void;
     fake.on(
       "evener/settings/agentsDoc/get",
@@ -274,7 +269,7 @@ describe("save", () => {
   // the save has to clear it itself - otherwise the section keeps drawing a
   // load it will never see land.
   test("a save clears the loading left behind by the fetch it fenced out", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let finishReading!: (doc: AgentsDocResponse) => void;
     fake.on(
       "evener/settings/agentsDoc/get",
@@ -299,7 +294,7 @@ describe("save", () => {
   // The write did reach the hub, so the caller still gets its result - what
   // it may not do is speak for a socket the store has already replaced.
   test("a save response from a replaced client is not committed", async () => {
-    const first = connectFakeClient();
+    const first = connectReadyFakeClient();
     first.on("evener/settings/agentsDoc/get", () => DOC);
     await agentsDocStore.getState().fetch();
 
@@ -333,7 +328,7 @@ describe("save", () => {
   // arrives: committing it would put the older content back under the editor,
   // and the next Save would then push it over what is actually on disk.
   test("a save response older than a broadcast is not committed and the broadcast's document is returned", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let finishWriting!: (doc: AgentsDocResponse) => void;
     fake.on(
       "evener/settings/agentsDoc/set",
@@ -359,7 +354,7 @@ describe("save", () => {
 
 describe("changed notification", () => {
   test("replaces doc with the broadcast payload", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/settings/agentsDoc/get", () => DOC);
     await agentsDocStore.getState().fetch();
     const pushed: AgentsDocResponse = { ...DOC, content: "# elsewhere\n" };
@@ -370,7 +365,7 @@ describe("changed notification", () => {
   // A broadcast is the hub's own view of the file, so a read that started
   // before it can only land holding an older one.
   test("a changed broadcast invalidates an older in-flight fetch", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let finishReading!: (doc: AgentsDocResponse) => void;
     fake.on(
       "evener/settings/agentsDoc/get",
@@ -399,7 +394,7 @@ describe("changed notification", () => {
   // disk since") is false the moment the hub pushes the current file, exactly
   // as it is when a save lands.
   test("a changed broadcast clears a stale fetch error", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/settings/agentsDoc/get", () => {
       throw new WireError("hub unreachable", -1);
     });
@@ -413,8 +408,8 @@ describe("changed notification", () => {
   });
 
   test("a replaced client is re-wired: the old client's notifications stop landing", async () => {
-    const first = connectFakeClient();
-    const second = connectFakeClient();
+    const first = connectReadyFakeClient();
+    const second = connectReadyFakeClient();
     second.on("evener/settings/agentsDoc/get", () => DOC);
     await agentsDocStore.getState().fetch();
     first.emitNotification({

@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import type { PluginPreviewResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { createNewSessionService } from "../../mobile/src/services/newSession";
+import { createNewSessionService } from "./conversation/services/newSession";
 import { createNewSessionStore } from "./newSession";
 
 async function setup(names: string[]) {

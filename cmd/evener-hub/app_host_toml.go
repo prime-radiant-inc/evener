@@ -2,16 +2,12 @@ package hub
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/BurntSushi/toml"
@@ -19,138 +15,6 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/execsupport/fsatomic"
 )
-
-// legacyHostSidecarFileName is the retired sidecar beside the selected
-// hub.toml. It is read once by the boot migration — never written — and set
-// aside under legacyHostSidecarAsideSuffix on success.
-const legacyHostSidecarFileName = "hub.hosts.json"
-
-// legacyHostSidecarAsideSuffix names the retired sidecar once its entries are
-// folded into hub.toml: the file is renamed aside, never deleted, so its bytes
-// survive for recovery while a later removal of a name it carried can never
-// resurrect through it.
-const legacyHostSidecarAsideSuffix = ".migrated"
-
-// legacySidecarMigratedKey is the machine-managed key a successful migration
-// records in hub.toml. It is what makes the retirement authoritative rather
-// than only the rename's durability: on a filesystem whose directories cannot
-// be synced (the tolerance hubTOMLSyncDir shares with the hub's other stores), a
-// power loss can bring hub.hosts.json back after the UI has removed a host it
-// carried — and a later boot that finds the marker in hub.toml knows the sidecar
-// has already been folded in, so it ignores the stale file instead of
-// re-merging names the UI removed. The marker rides the same atomic write as the
-// merged host set, so any mutation that survives proves it survived too.
-const legacySidecarMigratedKey = "legacy_sidecar_migrated"
-
-// legacyHostSidecarFile is the on-disk shape of the retired sidecar: entries in
-// add order. It is a migration input only; nothing writes it any more.
-type legacyHostSidecarFile struct {
-	// Hosts is a pointer so the shape gate is one decode: absent and null both
-	// leave it nil, while a present array — empty included — sets it.
-	Hosts *[]legacyHostSidecarFileEntry `json:"hosts"`
-}
-
-// legacyHostSidecarFileEntry is one persisted sidecar entry: the seven
-// HostConfig fields in snake_case (hub.toml's spelling for the same fields)
-// plus the key path. The retired sidecar never crossed the wire, so it follows
-// the repo's snake_case json default; the appwire package's camelCase HostRow
-// is what clients see.
-type legacyHostSidecarFileEntry struct {
-	Name       string   `json:"name"`
-	SSH        string   `json:"ssh"`
-	User       string   `json:"user,omitempty"`
-	EvenerPath string   `json:"evener_path,omitempty"`
-	ConfigPath string   `json:"config_path,omitempty"`
-	Addr       string   `json:"addr,omitempty"`
-	Roots      []string `json:"roots,omitempty"`
-	KeyPath    string   `json:"key_path,omitempty"`
-}
-
-// legacySidecarPathFor returns the retired sidecar's path beside the selected
-// hub.toml: the one-time migration's input. An empty config path (tests,
-// embedders without a file) disables persistence: the store stays memory-only
-// and every method still works.
-func legacySidecarPathFor(configPath string) string {
-	if strings.TrimSpace(configPath) == "" {
-		return ""
-	}
-	return filepath.Join(filepath.Dir(configPath), legacyHostSidecarFileName)
-}
-
-// loadLegacyHostSidecar reads path into entries in file order. A missing file
-// is no sidecar, not an error: a hub that never added a host has no file.
-func loadLegacyHostSidecar(path string) ([]hostreg.Host, error) {
-	if path == "" {
-		return nil, nil
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read legacy host sidecar: %w", err)
-	}
-	return parseLegacyHostSidecar(data)
-}
-
-// parseLegacyHostSidecar decodes the retired sidecar's bytes in file order: the
-// one-time migration's parse. A present document must
-// carry a "hosts" array: an absent or null field is a load error, not an empty
-// sidecar — a present empty array is the legitimate one. `hosts` is also the
-// only record a sidecar may carry: any other top-level record is a shape this
-// series never shipped, and the migration refuses it (keys named) rather than
-// folding the hosts and silently stripping records the operator may need.
-func parseLegacyHostSidecar(data []byte) ([]hostreg.Host, error) {
-	// The shape gate rides the typed decode: `hosts` must be present and
-	// non-null, which is exactly "the pointer is non-nil" — absent and null
-	// both leave it nil, while a present array (empty included) sets it. A
-	// JSON-valid document without a usable array — {} or {"hosts":null} —
-	// must be a load error, not an empty sidecar: loading it as "no entries"
-	// would let the migration rewrite hub.toml from an empty snapshot,
-	// silently discarding whatever the broken document carried. Loud, file
-	// preserved, the corrupt-file contract.
-	var file legacyHostSidecarFile
-	if err := json.Unmarshal(data, &file); err != nil {
-		return nil, fmt.Errorf("parse legacy host sidecar: %w", err)
-	}
-	if file.Hosts == nil {
-		return nil, errors.New(`parse legacy host sidecar: missing or null "hosts" array`)
-	}
-	// Only `hosts` is a recognized record: a document carrying anything else
-	// fails the migration loudly, with the unrecognized keys named — nothing
-	// merges, both files stay untouched, and the operator archives or repairs
-	// the file. The pre-decision revision sketched a records-bearing sidecar
-	// (tombstones, generations, receipts, remnants, markers); folding its
-	// hosts while ignoring the rest would strip exactly those records.
-	var records map[string]json.RawMessage
-	if err := json.Unmarshal(data, &records); err != nil {
-		return nil, fmt.Errorf("parse legacy host sidecar: %w", err)
-	}
-	var unknown []string
-	for key := range records {
-		if key != "hosts" {
-			unknown = append(unknown, key)
-		}
-	}
-	if len(unknown) > 0 {
-		slices.Sort(unknown)
-		return nil, fmt.Errorf("parse legacy host sidecar: unrecognized records %s — only \"hosts\" is migrated; archive or repair the file (nothing was migrated)", strings.Join(unknown, ", "))
-	}
-	entries := make([]hostreg.Host, 0, len(*file.Hosts))
-	for _, h := range *file.Hosts {
-		entries = append(entries, hostreg.Host{
-			Name:       h.Name,
-			SSH:        h.SSH,
-			User:       h.User,
-			EvenerPath: h.EvenerPath,
-			ConfigPath: h.ConfigPath,
-			Addr:       h.Addr,
-			Roots:      h.Roots,
-			KeyPath:    h.KeyPath,
-		})
-	}
-	return entries, nil
-}
 
 // writeHubTOMLHostsRecords is the one hub.toml writer. It rewrites path in place
 // with the machine-managed banner at its top and entries as its [[hosts]]
@@ -186,9 +50,7 @@ func parseLegacyHostSidecar(data []byte) ([]hostreg.Host, error) {
 // removed-host tombstones, and the pruned markers. The manager's persist path
 // builds the set with deriveHostTOMLRecords (which has already applied
 // retention, capacity, and compaction) and installs the same set on success.
-// migrated records legacySidecarMigratedKey in the same atomic write, so the
-// rewritten file itself says the retired sidecar has been folded in.
-func writeHubTOMLHostsRecords(path string, entries, known []hostreg.Host, records hostTOMLRecords, migrated bool) error {
+func writeHubTOMLHostsRecords(path string, entries, known []hostreg.Host, records hostTOMLRecords) error {
 	if strings.TrimSpace(path) == "" {
 		return nil
 	}
@@ -204,8 +66,9 @@ func writeHubTOMLHostsRecords(path string, entries, known []hostreg.Host, record
 	// exact-write sentinel (no snapshot: preserve nothing); an empty known is a
 	// real empty snapshot, and preservation still applies.
 	var fileCfg Config
+	var fileRecords hostRecordSet
 	if known != nil || records.highWater != nil {
-		fileCfg, err = decodeHubTOMLForRewrite(path, raw)
+		fileCfg, fileRecords, err = decodeHubTOMLForRewrite(path, raw)
 		if err != nil {
 			return err
 		}
@@ -234,7 +97,7 @@ func writeHubTOMLHostsRecords(path string, entries, known []hostreg.Host, record
 		maps.Copy(preserved, records.droppedTombstones)
 		maps.Copy(preserved, records.raisedHighWater)
 	}
-	hostRecords, generations := hubTOMLRecordTables(fileCfg, entries, known, records.highWater, preserved)
+	hostRecords, generations := hubTOMLRecordTables(fileRecords, entries, known, records.highWater, preserved)
 	if len(hostRecords) == 0 {
 		delete(doc, "host_records")
 	} else {
@@ -245,74 +108,148 @@ func writeHubTOMLHostsRecords(path string, entries, known []hostreg.Host, record
 	} else {
 		doc["generations"] = generations
 	}
-	receiptTables := hubTOMLReceiptTables(fileCfg, entries, known, records.receipts, records.droppedReceipts)
+	receiptTables := hubTOMLReceiptTables(fileRecords, entries, known, records.receipts, records.droppedReceipts)
 	if len(receiptTables) == 0 {
 		delete(doc, "mutation_receipts")
 	} else {
 		doc["mutation_receipts"] = receiptTables
 	}
-	tombstoneTables := hubTOMLTombstoneTables(fileCfg, entries, known, records.tombstones, preserved)
+	tombstoneTables := hubTOMLTombstoneTables(fileRecords, entries, known, records.tombstones, preserved)
 	if len(tombstoneTables) == 0 {
 		delete(doc, "tombstones")
 	} else {
 		doc["tombstones"] = tombstoneTables
 	}
-	prunedTables := hubTOMLPrunedReceiptTables(fileCfg, entries, known, records.prunedReceipts, records.droppedMarkers)
+	prunedTables := hubTOMLPrunedReceiptTables(fileRecords, entries, known, records.prunedReceipts, records.droppedMarkers)
 	if len(prunedTables) == 0 {
 		delete(doc, "pruned_receipts")
 	} else {
 		doc["pruned_receipts"] = prunedTables
 	}
-	stagedTables := hubTOMLStagedReceiptTables(fileCfg, entries, known, records.stagedReceipts, records.droppedStaged)
+	stagedTables := hubTOMLStagedReceiptTables(fileRecords, entries, known, records.stagedReceipts, records.droppedStaged)
 	if len(stagedTables) == 0 {
 		delete(doc, "staged_receipts")
 	} else {
 		doc["staged_receipts"] = stagedTables
 	}
-	storeSyncTables := hubTOMLStoreSyncTables(fileCfg, entries, known, records.storeSync, records.droppedStoreSync)
+	storeSyncTables := hubTOMLStoreSyncTables(fileRecords, entries, known, records.storeSync, records.droppedStoreSync)
 	if len(storeSyncTables) == 0 {
 		delete(doc, "pending_store_sync")
 	} else {
 		doc["pending_store_sync"] = storeSyncTables
 	}
-	mirrorTables := hubTOMLMirrorCommitTables(fileCfg, entries, known, generations)
+	mirrorTables := hubTOMLMirrorCommitTables(fileRecords, entries, known, generations)
 	if len(mirrorTables) == 0 {
 		delete(doc, "mirror_commits")
 	} else {
 		doc["mirror_commits"] = mirrorTables
 	}
-	remnantTables := hubTOMLTeardownRemnantTables(fileCfg, entries, known, records.remnants, records.droppedRemnants)
+	remnantTables := hubTOMLTeardownRemnantTables(fileRecords, entries, known, records.remnants, records.droppedRemnants)
 	if len(remnantTables) == 0 {
 		delete(doc, "teardown_remnants")
 	} else {
 		doc["teardown_remnants"] = remnantTables
 	}
-	attemptTables := hubTOMLTeardownAttemptTables(fileCfg, entries, known, records.attempts, records.remnants, records.droppedAttempts)
+	attemptTables := hubTOMLTeardownAttemptTables(fileRecords, entries, known, records.attempts, records.remnants, records.droppedAttempts)
 	if len(attemptTables) == 0 {
 		delete(doc, "teardown_attempts")
 	} else {
 		doc["teardown_attempts"] = attemptTables
 	}
-	if migrated {
-		doc[legacySidecarMigratedKey] = true
+	data, err := renderHubTOMLDocument(path, doc)
+	if err != nil {
+		return err
 	}
+	return replaceHubTOML(path, data)
+}
+
+// reservedRecordSections are the hub.toml sections that held the machine
+// records before the operation store took them over. A rewrite that does not
+// carry records drops them.
+var reservedRecordSections = []string{
+	"host_records", "generations", "mutation_receipts", "tombstones", "pruned_receipts",
+	"staged_receipts", "teardown_remnants", "teardown_attempts", "pending_store_sync", "mirror_commits",
+}
+
+// legacyRecordSections names the reserved record sections doc still carries, in
+// the order reservedRecordSections lists them.
+func legacyRecordSections(doc map[string]any) []string {
+	var present []string
+	for _, key := range reservedRecordSections {
+		if _, ok := doc[key]; ok {
+			present = append(present, key)
+		}
+	}
+	return present
+}
+
+// writeHubTOMLHostsOnly rewrites path with entries as its [[hosts]] tables and
+// no machine records: the operator's other keys are preserved exactly as
+// writeHubTOMLHostsRecords preserves them, hand-added entries survive by the
+// same known-snapshot rule, and any reserved record section the file still
+// carries is dropped. A write whose bytes equal the file's changes nothing and
+// touches nothing.
+func writeHubTOMLHostsOnly(path string, entries, known []hostreg.Host) error {
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	doc, raw, err := readHubTOMLDocument(path)
+	if err != nil {
+		return err
+	}
+	var extra []HostConfig
+	if known != nil {
+		fileCfg, _, err := decodeHubTOMLForRewrite(path, raw)
+		if err != nil {
+			return err
+		}
+		extra = fileOnlyHostEntries(fileCfg, known, entries)
+	}
+	tables := append(hubTOMLHostTables(entries), extra...)
+	if len(tables) == 0 {
+		delete(doc, "hosts")
+	} else {
+		doc["hosts"] = tables
+	}
+	for _, key := range reservedRecordSections {
+		delete(doc, key)
+	}
+	data, err := renderHubTOMLDocument(path, doc)
+	if err != nil {
+		return err
+	}
+	if bytes.Equal(data, raw) {
+		return nil
+	}
+	return replaceHubTOML(path, data)
+}
+
+// renderHubTOMLDocument encodes doc with the machine-managed banner and runs
+// the bytes through the loader's own decode, record sections included: a
+// rewrite is only as good as its round trip, so a file the hub would refuse at
+// boot can never be written by a mutation.
+func renderHubTOMLDocument(path string, doc map[string]any) ([]byte, error) {
 	var buf bytes.Buffer
 	buf.WriteString(hostTOMLBanner)
 	if err := toml.NewEncoder(&buf).Encode(doc); err != nil {
-		return fmt.Errorf("marshal hub.toml: %w", err)
+		return nil, fmt.Errorf("marshal hub.toml: %w", err)
 	}
 	data := buf.Bytes()
-	// The rewrite is only as good as its round trip: run the bytes through the
-	// loader's own decode before anything lands, so a file the hub would refuse
-	// at boot can never be written by a mutation.
 	if _, err := decodeConfig(path, string(data)); err != nil {
-		return fmt.Errorf("hub.toml rewrite refused: %w", err)
+		return nil, fmt.Errorf("hub.toml rewrite refused: %w", err)
 	}
-	// The replace's rename is the save's commit point: the target file already
-	// holds the new entries once fsatomic reports ErrPublished, so that failure
-	// cannot be returned as though nothing was written. It is wrapped in
-	// hubTOMLPostRenameError, and the callers compensate the live state
-	// (rollbackHubTOML) before reporting the failure.
+	if _, err := decodeLegacyRecords(path, string(data)); err != nil {
+		return nil, fmt.Errorf("hub.toml rewrite refused: %w", err)
+	}
+	return data, nil
+}
+
+// replaceHubTOML atomically replaces path with data. The replace's rename is
+// the save's commit point: the target file already holds the new entries once
+// fsatomic reports ErrPublished, so that failure cannot be returned as though
+// nothing was written. It is wrapped in hubTOMLPostRenameError, and the callers
+// compensate the live state (rollbackHubTOML) before reporting the failure.
+func replaceHubTOML(path string, data []byte) error {
 	if err := hubTOMLReplaceWithBytes(path, data, hubTOMLSyncDir); err != nil {
 		if errors.Is(err, fsatomic.ErrPublished) {
 			return &hubTOMLPostRenameError{err: err}
@@ -373,12 +310,6 @@ func hubTOMLHostTables(entries []hostreg.Host) []HostConfig {
 // the target file.
 var hubTOMLSyncDir = fsatomic.SyncDir
 
-// hubTOMLStashSyncDir is the stash write's own directory-sync seam. It starts
-// as the hub.toml seam's value at process start and is separate so a test that
-// swaps hubTOMLSyncDir to drive hub.toml's post-rename failure path leaves the
-// stash write (which runs before the staged write) unaffected.
-var hubTOMLStashSyncDir = hubTOMLSyncDir
-
 // hubTOMLPostRenameError marks a write failure that followed the rename
 // that replaced hub.toml: the new entries are already the file's
 // contents — only the directory sync that makes the rename durable failed. A
@@ -401,20 +332,10 @@ func hubTOMLRenameCommitted(err error) bool {
 	return errors.As(err, &post)
 }
 
-// persistHosts rewrites hub.toml durably, refusing while the store is known
-// incomplete (a legacy sidecar that failed to load or migrate): rewriting the
-// file then would clobber the entries that never made it into memory. Callers
-// treat the refusal as fatal (add/remove report it; the entry stays un-exposed
-// or the host stays intact), so the operator hears about the broken file
-// instead of losing it. A failure the rename already committed
-// (hubTOMLPostRenameError) is not a plain refusal — the file holds the new
-// entries — so the callers compensate the live state before reporting it.
-func (m *hubHostManager) persistHosts(entries, known []hostreg.Host, change hostPersistChange) error {
-	return m.persistHostsMarked(entries, known, change, false)
-}
-
-// persistHostsMarked is persistHosts with the migration's marker; only the
-// migration passes true. known is the store's pre-mutation snapshot.
+// persistHosts rewrites hub.toml durably. A failure the rename already
+// committed (hubTOMLPostRenameError) is not a plain refusal — the file holds the
+// new entries — so the callers compensate the live state before reporting it.
+// known is the store's pre-mutation snapshot.
 //
 // The write is derive-then-install: the machine-record set is derived once
 // (deriveHostTOMLRecords applies every retention, capacity, and compaction
@@ -424,109 +345,75 @@ func (m *hubHostManager) persistHosts(entries, known []hostreg.Host, change host
 // bookkeeping. A capacity refusal (spec §15's `tombstone-capacity`) is mapped
 // onto its wire envelope here, the one choke point every mutation path runs
 // through.
-func (m *hubHostManager) persistHostsMarked(entries, known []hostreg.Host, change hostPersistChange, migrated bool) error {
-	if err := m.cfg.store.poisoned(); err != nil {
-		return fmt.Errorf("hub.toml %s not rewritten: %w (fix the legacy host sidecar or remove its unloaded entries first)", m.cfg.configPath, err)
+func (m *hubHostManager) persistHosts(entries, known []hostreg.Host, change hostPersistChange) error {
+	if m.hostFileSyncOwed.Load() {
+		if err := hubTOMLSyncDir(filepath.Dir(m.cfg.configPath)); err != nil {
+			return fmt.Errorf("the restored host file is not yet durable: %w", err)
+		}
+		m.hostFileSyncOwed.Store(false)
 	}
 	records, err := m.deriveHostTOMLRecords(entries, known, change)
 	if err != nil {
 		return tombstoneCapacityRefusal(err)
 	}
-	if err := writeHubTOMLHostsRecords(m.cfg.configPath, entries, known, records, migrated); err != nil {
+	if store, ok := m.recordStore().(hostOpsRecordStore); ok && change.recordsOnly {
+		err = store.commitRecords(entries, records)
+	} else if ok && change.hostFileFirst {
+		err = store.commitHostFileFirst(entries, known, records, change.dropMarker)
+	} else {
+		err = m.recordStore().commit(entries, known, records)
+	}
+	if err != nil {
+		if change.hostFileFirst && hubTOMLRenameCommitted(err) {
+			// The compensation's rename landed: the file holds the restored
+			// hosts and only its durability is uncertain, so the manager settles
+			// the failed commit's records all the same.
+			m.cfg.store.installRecords(records)
+			m.hostFileSyncOwed.Store(true)
+		}
+		if store, ok := m.recordStore().(hostOpsRecordStore); ok && !change.hostFileFirst && !change.recordsOnly {
+			m.adoptSpentCounters(store)
+		}
 		return err
 	}
 	m.cfg.store.installRecords(records)
-	// The mirror rides behind the hub.toml commit: hub.toml is the authority
-	// and the two files cannot be one write, so the mirror is written last and
-	// a failure here leaves it behind the file rather than unwinding the
-	// commit. See mirrorBoundaries.
-	m.mirrorBoundaries(entries, known, records)
 	return nil
 }
 
-// mirrorBoundaries records the triples the hub.toml write just committed in the
-// operation store's per-host boundary records (registry spec 08 §7: "one record
-// per host name — {generation, incarnationId, presenceEpoch} — written in the
-// same atomic store writes that mirror the generation"). Every live entry's
-// triple and every retained high-water record for a name with no live entry is
-// carried, names whose entry holds no complete identity (a direct writer
-// fixture) are skipped, and the whole set lands in one atomic store write
-// together with the removal markers §4's removed-host ordering reads: every
-// name carrying a removal tombstone is dated, every live name clears any
-// marker it held.
-//
-// A mirror failure is logged, not returned: the hub.toml commit already landed
-// and cannot be unwound, and the state it leaves — the file ahead of the
-// mirror — is exactly what the deploy-pipeline spec §4 boot pass pushes
-// forward. That pass, and the cursor validation that reads the mirror, belong
-// to later slices; until they land the mirror trails the file and nothing
-// reads it.
-func (m *hubHostManager) mirrorBoundaries(entries, known []hostreg.Host, records hostTOMLRecords) {
-	if m.cfg.ops == nil || strings.TrimSpace(m.cfg.configPath) == "" {
+// persistChange writes change against the live set as the store holds it now,
+// for the callers whose entries are neither edited nor staged. The caller holds
+// the mutation lock.
+func (m *hubHostManager) persistChange(change hostPersistChange) error {
+	entries := m.cfg.store.snapshot()
+	return m.persistHosts(entries, entries, change)
+}
+
+// adoptSpentCounters raises the manager's marks for names with no live record to what the
+// store holds after a refused commit restored its prior family: the counters the
+// refused attempt spent stay spent in the store (keepSpentCounters), and the next
+// write must carry them rather than the lower ones the manager last installed.
+func (m *hubHostManager) adoptSpentCounters(store hostOpsRecordStore) {
+	set, err := store.records()
+	if err != nil {
 		return
 	}
-	// The mirrored triples are the same derivation the file's records come from
-	// (hostFileRecordSet), so the mirror and the file cannot be projected by two
-	// rules that drift apart.
-	_, generations := hostFileRecordSet(entries, records.highWater)
-	boundaries := make(map[string]hostops.Boundary, len(generations))
-	for name, mark := range generations {
-		boundaries[name] = hostops.Boundary{
-			Generation:    mark.Generation,
-			IncarnationID: mark.IncarnationID,
-			PresenceEpoch: mark.PresenceEpoch,
-		}
-	}
-	// The write owns the records of the names it carries and its pre-mutation
-	// snapshot names — the same ownership rule the record tables use. A boundary
-	// under an owned name this write carries no record for (a compensated add,
-	// a name the live registry dropped while the write ran) is pruned in the
-	// same atomic write, so the mirror never keeps a boundary for a host
-	// hub.toml no longer records.
-	owned := make(map[string]struct{}, len(known)+len(entries))
-	for _, e := range known {
-		owned[e.Name] = struct{}{}
-	}
-	for _, e := range entries {
-		owned[e.Name] = struct{}{}
-	}
-	var remove []string
-	for name := range owned {
-		if _, carried := boundaries[name]; !carried {
-			remove = append(remove, name)
-		}
-	}
-	slices.Sort(remove)
-	// The removal markers ride the same write: a tombstoned name is dated from
-	// its own removed_at, a live name clears any marker, and a name the write
-	// cannot classify (a pruned-tombstone high-water record) keeps whatever
-	// marker it had — a removal the store cannot date is never invented, and
-	// one it already knew is never forgotten (deploy pipeline 08b §4's
-	// removed-host horizon).
-	mirror := hostops.HostMirror{Boundaries: boundaries, Remove: remove}
-	for _, entry := range entries {
-		mirror.Live = append(mirror.Live, entry.Name)
-	}
-	for name, tombstone := range records.tombstones {
-		removedAt, err := time.Parse(time.RFC3339, tombstone.RemovedAt)
-		if err != nil {
+	marks := m.cfg.store.highWaterSnapshot()
+	for name, stored := range set.Generations {
+		if _, live := set.HostRecords[name]; live {
 			continue
 		}
-		if mirror.Removed == nil {
-			mirror.Removed = map[string]hostops.RemovedHost{}
+		held := marks[name]
+		if stored.Generation <= held.Generation && stored.PresenceEpoch <= held.PresenceEpoch {
+			continue
 		}
-		mirror.Removed[name] = hostops.RemovedHost{
-			RemovedAt:     removedAt,
-			Generation:    tombstone.Generation,
-			IncarnationID: tombstone.IncarnationID,
+		if held.IncarnationID == "" {
+			held.IncarnationID = stored.IncarnationID
 		}
+		held.Generation = max(held.Generation, stored.Generation)
+		held.PresenceEpoch = max(held.PresenceEpoch, stored.PresenceEpoch)
+		marks[name] = held
 	}
-	if len(mirror.Boundaries) == 0 && len(mirror.Remove) == 0 && len(mirror.Live) == 0 && len(mirror.Removed) == 0 {
-		return
-	}
-	if err := m.cfg.ops.MirrorHostState(mirror); err != nil {
-		m.logf("host boundary records not mirrored: %v", err)
-	}
+	m.cfg.store.setHighWaterMap(marks)
 }
 
 // ---------------------------------------------------------------------------
@@ -629,10 +516,10 @@ func validateHostMirrorCommits(commits map[string]HostMirrorCommit) error {
 // this write does not own, preserved verbatim — the same ownership rule the
 // other record tables apply, so an intent a mutation does not own is not
 // silently dropped by its rewrite. A nil known is the exact-write sentinel.
-func hubTOMLStoreSyncTables(cfg Config, entries, known []hostreg.Host, intents map[string]HostStoreSyncIntent, dropped map[string]struct{}) map[string]HostStoreSyncIntent {
-	out := make(map[string]HostStoreSyncIntent, len(intents)+len(cfg.PendingStoreSync))
+func hubTOMLStoreSyncTables(file hostRecordSet, entries, known []hostreg.Host, intents map[string]HostStoreSyncIntent, dropped map[string]struct{}) map[string]HostStoreSyncIntent {
+	out := make(map[string]HostStoreSyncIntent, len(intents)+len(file.PendingStoreSync))
 	maps.Copy(out, intents)
-	preserveUnowned(out, cfg.PendingStoreSync, ownedRecordNames(entries, known), keyIsHost, dropped)
+	preserveUnowned(out, file.PendingStoreSync, ownedRecordNames(entries, known), keyIsHost, dropped)
 	return out
 }
 
@@ -642,8 +529,8 @@ func hubTOMLStoreSyncTables(cfg Config, entries, known []hostreg.Host, intents m
 // follows this one is about to land — while every file marker for a name the
 // write does not own is preserved verbatim. A name with no generation record
 // (a purged name) gets none: the marker goes with the records it authorizes.
-func hubTOMLMirrorCommitTables(cfg Config, entries, known []hostreg.Host, generations map[string]HostGeneration) map[string]HostMirrorCommit {
-	out := make(map[string]HostMirrorCommit, len(generations)+len(cfg.MirrorCommits))
+func hubTOMLMirrorCommitTables(file hostRecordSet, entries, known []hostreg.Host, generations map[string]HostGeneration) map[string]HostMirrorCommit {
+	out := make(map[string]HostMirrorCommit, len(generations)+len(file.MirrorCommits))
 	owned := ownedRecordNames(entries, known)
 	for name, mark := range generations {
 		if owned != nil {
@@ -659,7 +546,7 @@ func hubTOMLMirrorCommitTables(cfg Config, entries, known []hostreg.Host, genera
 	if owned == nil {
 		return out
 	}
-	for name, commit := range cfg.MirrorCommits {
+	for name, commit := range file.MirrorCommits {
 		if _, carried := out[name]; carried {
 			continue
 		}
@@ -671,20 +558,8 @@ func hubTOMLMirrorCommitTables(cfg Config, entries, known []hostreg.Host, genera
 	return out
 }
 
-// hubTOMLStashPath names one commit's stash: a per-commit file beside hub.toml
-// (registry spec 08 §6: "stashing a durable copy of the prior `hub.toml`
-// bytes"), keyed by the commit's scoped receipt key. A shared name would let a
-// later removal of another host overwrite the restore source an open
-// compensation still names, so the next boot would restore the wrong bytes as
-// that record's pre-mutation state. The compensation record carries the exact
-// path; only a record naming it keeps it from the boot prune.
-func hubTOMLStashPath(configPath, receiptKey string) string {
-	sum := sha256.Sum256([]byte(receiptKey))
-	return fmt.Sprintf("%s.stash.%x", configPath, sum[:8])
-}
-
-// stashKeyHexChars is the fixed width of the per-commit suffix
-// hubTOMLStashPath emits (the first 8 bytes of a SHA-256 digest).
+// stashKeyHexChars is the fixed width of the per-commit suffix an older build's
+// stash names carry (the first 8 bytes of a SHA-256 digest of the receipt key).
 const stashKeyHexChars = 16
 
 // isStashKeyHex reports whether suffix is a per-commit stash name's hex half.
@@ -738,38 +613,10 @@ func validateHostOpsStashReferences(store *hostops.Store, configPath string) err
 	return nil
 }
 
-// writeHubTOMLStash captures the selected hub.toml's current bytes into the
-// stash before a removal's staged write replaces them, so the commit is
-// compensable. It returns the stash reference the compensation record must
-// carry. A hub with no config file has no cross-file commit to compensate and
-// stashes nothing.
-func (m *hubHostManager) writeHubTOMLStash(receiptKey string) (string, error) {
-	path := strings.TrimSpace(m.cfg.configPath)
-	if path == "" {
-		return "", nil
-	}
-	prior, err := configReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		// No file yet: the hub is authoritative in memory and there is no
-		// committed hub.toml bytes a restore would apply.
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("stash hub.toml %s: %w", path, err)
-	}
-	stash := hubTOMLStashPath(path, receiptKey)
-	if err := hubTOMLReplaceWithBytes(stash, prior, hubTOMLStashSyncDir); err != nil {
-		return "", fmt.Errorf("stash hub.toml %s: %w", path, err)
-	}
-	return stash, nil
-}
-
 // hubTOMLReplaceWithBytes atomically replaces path with data: a 0600 temp file
 // in the same directory, fsynced, renamed over the target, then the directory
 // synced — the same posture every hub.toml write keeps. sync is the caller's
-// directory-sync seam: the stash keeps its own (hubTOMLStashSyncDir), so a
-// test injecting a hub.toml sync failure drives the writes it names and not the
-// stash beside them.
+// directory-sync seam.
 func hubTOMLReplaceWithBytes(path string, data []byte, sync func(string) error) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
@@ -797,6 +644,9 @@ func (m *hubHostManager) restoreHubTOMLFromStash(stash string) error {
 		return fmt.Errorf("read hub.toml stash %s: %w", stash, err)
 	}
 	if _, err := decodeConfig(path, string(data)); err != nil {
+		return fmt.Errorf("hub.toml stash %s is not a readable document: %w", stash, err)
+	}
+	if _, err := decodeLegacyRecords(path, string(data)); err != nil {
 		return fmt.Errorf("hub.toml stash %s is not a readable document: %w", stash, err)
 	}
 	return hubTOMLReplaceWithBytes(path, data, hubTOMLSyncDir)

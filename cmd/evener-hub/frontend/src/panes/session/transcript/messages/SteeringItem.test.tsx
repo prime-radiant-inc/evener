@@ -226,10 +226,10 @@ test("claims nothing when the wire carries no kind", () => {
 // through to the divider path instead of a card. Absent and unmapped must
 // both render bare; only one of the two was pinned before this test.
 test("claims nothing when the wire kind is unmapped, not just when it's absent", () => {
-  render(<SteeringItem item={item({ text: "x", steeringKind: "some-future-kind" })} turn={turn} live={false} />);
+  render(<SteeringItem item={item({ text: "x", steeringKind: "agent-message" })} turn={turn} live={false} />);
   const divider = screen.getByTestId("steering-item");
   expect(steeringKind(divider)).toBeUndefined();
-  expect(divider.querySelector("summary")?.textContent).not.toContain("some-future-kind");
+  expect(divider.querySelector("summary")?.textContent).not.toContain("agent-message");
 });
 
 // The prose that used to drive classification must no longer do so.

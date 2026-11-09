@@ -65,7 +65,7 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 	args := map[string]any{}
 	var pendingJSONChanges []repair.Change
 	if len(res.Call.Arguments) > 0 { // raw len, mirroring ExecuteCall (no TrimSpace)
-		if err := json.Unmarshal(res.Call.Arguments, &args); err != nil {
+		if err := t.UnmarshalArguments(res.Call.Arguments, &args); err != nil {
 			// A length-stopped turn cut the argument stream mid-JSON. Never
 			// repair that: closing the open string would execute a silently
 			// truncated call (e.g. write half a file). Fail with the real
@@ -76,7 +76,7 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 			}
 			repaired, c := repair.RepairJSON(res.Call.Arguments)
 			args = map[string]any{}
-			if err2 := json.Unmarshal(repaired, &args); err2 != nil {
+			if err2 := t.UnmarshalArguments(repaired, &args); err2 != nil {
 				// Show the model's own bytes and the original parse error
 				// (its offset refers to them, not the repaired form).
 				res.PrevalErr = repair.ExplainJSONError(requestedVisible, t.Definition.Parameters, err, res.Call.Arguments)

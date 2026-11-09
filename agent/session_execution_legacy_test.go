@@ -71,7 +71,7 @@ func TestALegacyTranscriptResumesUnchanged(t *testing.T) {
 	if got := projectTranscriptFile(t, path)[:len(legacyTurns)]; !reflect.DeepEqual(got, legacyTurns) {
 		t.Fatal("the projection of the legacy turns changed")
 	}
-	_, entries, _, err := readTranscript(path, "")
+	_, entries, _, err := readTranscript(context.Background(), path, "")
 	if err != nil {
 		t.Fatal(err)
 	}

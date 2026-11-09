@@ -68,10 +68,7 @@ func TestSession_AutoSave_WritesMetaAfterProcessInput(t *testing.T) {
 	}
 
 	// Drain events to prevent channel blocking.
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
@@ -100,7 +97,7 @@ func TestSession_AutoSave_WritesMetaAfterProcessInput(t *testing.T) {
 
 	// History should be in the transcript, not the meta.
 	tpath := schema.SessionTranscriptPath(dir, sess.ID())
-	_, entries, _, err := readTranscript(tpath, "")
+	_, entries, _, err := readTranscript(context.Background(), tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -140,10 +137,7 @@ func TestSession_AutoSave_PersistsToolResults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
@@ -168,7 +162,7 @@ func TestSession_AutoSave_PersistsToolResults(t *testing.T) {
 
 	// Tool results should be in the transcript.
 	tpath := schema.SessionTranscriptPath(dir, sess.ID())
-	_, entries, _, err := readTranscript(tpath, "")
+	_, entries, _, err := readTranscript(context.Background(), tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -244,10 +238,7 @@ func TestSession_AutoSave_DoesNotPersistMidToolRound(t *testing.T) {
 		return "ok", nil
 	})
 
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
@@ -290,7 +281,7 @@ func TestSession_AutoSave_DoesNotPersistMidToolRound(t *testing.T) {
 
 	// Verify tool results are complete in the transcript.
 	tpath := schema.SessionTranscriptPath(dir, sess.ID())
-	_, entries, _, err := readTranscript(tpath, "")
+	_, entries, _, err := readTranscript(context.Background(), tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -330,10 +321,7 @@ func TestRestoreSession_AutoSaveContinues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	ctx := context.Background()
 	if _, err := sess.ProcessInput(ctx, "first task", nil); err != nil {
@@ -353,7 +341,7 @@ func TestRestoreSession_AutoSaveContinues(t *testing.T) {
 
 	// Verify transcript has the initial history.
 	tpath := schema.SessionTranscriptPath(dir, sess.ID())
-	_, entries, _, err := readTranscript(tpath, "")
+	_, entries, _, err := readTranscript(context.Background(), tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscript after phase 1: %v", err)
 	}
@@ -368,10 +356,7 @@ func TestRestoreSession_AutoSaveContinues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}
-	go func() {
-		for range sess2.Events() {
-		}
-	}()
+	drainSessionEvents(sess2)
 
 	if _, err := sess2.ProcessInput(ctx, "second task", nil); err != nil {
 		t.Fatalf("ProcessInput #2: %v", err)
@@ -391,7 +376,7 @@ func TestRestoreSession_AutoSaveContinues(t *testing.T) {
 	}
 
 	// Verify the transcript grew with new entries.
-	_, entries2, _, err := readTranscript(tpath, "")
+	_, entries2, _, err := readTranscript(context.Background(), tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscript after phase 2: %v", err)
 	}
@@ -432,10 +417,7 @@ func TestRestoreSession_RestoresCheapModelRouting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 	meta := sess.Meta()
 	sess.Close()
 	if meta.CheapModel != "anthropic/claude-haiku-4-5-20251001" {
@@ -448,10 +430,7 @@ func TestRestoreSession_RestoresCheapModelRouting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}
-	go func() {
-		for range sess2.Events() {
-		}
-	}()
+	drainSessionEvents(sess2)
 	defer sess2.Close()
 
 	prov, model := sess2.profile.CheapModelRef()
@@ -526,10 +505,7 @@ func TestMetaTurnCount_CountsModelResponses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	// One user input, but three model responses (2 tool rounds + 1 final text).
 	if _, err := sess.ProcessInput(context.Background(), "do stuff", nil); err != nil {

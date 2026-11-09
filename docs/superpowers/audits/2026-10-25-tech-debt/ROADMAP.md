@@ -372,6 +372,7 @@ Each consolidation names one canonical home, migrates callers, deletes the copie
 - Risk: medium (durability change on hot state files). Gate: answered (DECISIONS.md, Q4: `execsupport`, durable default; G7: `afero` phased out). Before migrating a caller, trace its call frequency; a hot path that writes rebuildable state uses the explicitly named no-sync variant, and the PR says why (GAPS.md section 3, item 1). The `afero` question is decided (DECISIONS.md, G7): no FS interface. Deps: none; precedes W1-02, W1-03.
 
 ### W1-02 Migrate the hub CreateTemp writers to the shared writer
+- Decision 2026-10-27 ([DECISIONS.md](DECISIONS.md), "W1-02. Hub store writers"): keep afero in the hub stores and their fault-injection tests; closed as done.
 - Findings: hub-app-host-9, hub-hostops-appsource-10, hub-internal-small-1 (hub half), x-go-duplicate-functions-1.
 - Files: `cmd/evener-hub/app_host_manage.go` (`writeHubTOMLHostsRecords` tail at ~:911-955 and `hubTOMLReplaceWithBytes` at ~:2907: same MkdirAll/CreateTemp/Chmod/Write/Sync/Close/Rename/dir-sync sequence), `hubcore/state_file.go:35` (`writeStateFileAtomic`), `hostops` `saveFS` and `writeQuarantineFile`, `fsdurability`, `hubcore/state_file.go:127` predicate, `app_host_manage.go:1054` predicate.
 - Steps: replace each sequence with the W1-01 call; keep `recoveryStore` behavior per hub-hostops-appsource-10 (move `writeStateFileAtomic`'s renamed/err contract into the shared package so hostops callers can distinguish "rename happened"); delete the local predicates. Each migrated file drops its `afero` use and its tests move to `t.TempDir()` (G7).
@@ -695,6 +696,7 @@ Each consolidation names one canonical home, migrates callers, deletes the copie
 ### Theme E: shared TypeScript client (SYNTHESIS T5)
 
 ### W1-37 One duration formatter family
+- Decision 2026-10-27 ([DECISIONS.md](DECISIONS.md), "W1-37. Thought duration"): `formatThoughtDuration` switches to `formatDurationMs` (0 ms shows 1ms, 9,999 ms shows 10s).
 - Findings: x-client-duplication-3, appwire-ts-core-4, web-panes-a-7, native-session-board-5, native-rest-18.
 - Files: `appwire-client/typescript/src/displayFormat.ts` (home), `watchRows.ts:41-80`, `steeringNotifications.ts:840-870` (identical ladders differing only in prefix; stale comment at :831-834), `selectors.ts:30 relativeAge` (floors) vs `taskListTime.ts:11-16 relativeTime` (rounds), `activityFormat.ts:50 formatQuietAge`, native `format.ts:16 durationIn`, `compactDuration`, `spokenDuration`, `durationLabel` hack.
 - Steps: add `durationParts(ms)` (move native `durationIn`), rebuild the formatters on it; keep existing test tables unchanged; decide floor vs round for relative time and record the decision in the package README (this is user-visible; call it out in the PR). Delete web and native copies.
@@ -731,6 +733,7 @@ Each consolidation names one canonical home, migrates callers, deletes the copie
 - Risk: medium-high (message recovery). Gate: answered (DECISIONS.md, Q1; (c) is simplification only). Deps: none. Split into W1-40a, W1-40b.
 
 ### W1-41 Move shared web/native code into the package
+- Decision 2026-10-27 ([DECISIONS.md](DECISIONS.md), "W1-41b. Scoped host read"): the debounced scoped host read becomes a framework-free store in the package with a thin hook in each app (the 41b part).
 - Findings: native-rest-2 (high), x-client-duplication-11, native-rest-17, x-client-duplication-8, x-client-duplication-12.
 - Files: `ansi.ts` (579 lines) + test and `forbidTags.ts` (29) from the web frontend into `appwire-client/typescript` with package exports; `usePluginPreview` (110 lines, takes the host request as an injected port; `hostRequest` stays in web); native imports at `ansiOutputStyles.ts:6`, `AnsiOutputList.tsx:6`, `AnsiOutputLine.tsx:2`, `session/StepEvidence.tsx:8`, `newSession/sheetPlugins.ts:19`, `newSessionContext.tsx:11`, `scripts/build-mermaid-page.mts:18`, `metro.config.js:27` whitelist; `canWriteSharedNotes` beside `canReadSharedNotes` (copies in `humanNoteDrafts.ts:370`, `sessionNotes.ts:59-65`); markdown fence helpers and mermaid regexes (`markdownSegments.ts:10-12`, web `segments.ts:18`; keep differing bodies local); composer verb to wire-method map (seven places) and host constants.
 - Steps: PR per move (ansi + forbidTags; usePluginPreview; notes gate + fence helpers; verb map). Drop the Metro whitelist entry; extend `lint-package-imports` to forbid native imports from `cmd/evener-hub/frontend` paths.
@@ -888,6 +891,7 @@ Each consolidation names one canonical home, migrates callers, deletes the copie
 - Risk: low. Gate: none. Deps: after W1-49 and W1-53 (they edit the same sections).
 
 ### W1-58 Plan and spec corpus
+- Decision 2026-10-27 ([DECISIONS.md](DECISIONS.md), "W1-58. Plan corpus"): delete all the kept plans older than 30 days.
 - Findings: x-docs-1 (481 plans/402,756 lines, 441 specs/117,976 lines; 161 non-docs files cite `docs/superpowers`, 92 distinct paths).
 - Files: `docs/superpowers/plans/**`, `docs/superpowers/specs/**`.
 - Steps: Q19 is answered (DECISIONS.md): delete plans whose PR has merged to main (check with `gh pr list --search`, not by citation count) and that nobody has touched in the last 30 days. Keep all specs. Repoint any code cite to an evergreen doc in the same PR (exact `git grep` of each basename); drop front-matter noise. Going forward a plan is deleted in the PR that completes it.
@@ -910,6 +914,7 @@ Their gates (Q1, Q8, Q9, Q15) are answered in [DECISIONS.md](DECISIONS.md). Each
 - Risk: none. Gate: answered (DECISIONS.md, Q1). Deps: none; precedes W1-60..W1-64 and W1-40 part (c).
 
 ### W1-60 Drop never-shipped host-record spellings and simplify sidecar handling
+- Decision 2026-10-27 ([DECISIONS.md](DECISIONS.md), "W1-60. Host store sidecar"): delete the `hub.hosts.json` sidecar migration and its write-poisoning; a corrupt main store still refuses writes.
 - Findings: hub-app-host-6, hub-app-host-7 (bare `.stash` arm in `stashPathOwnedBy`, `manage.go:2842-2851`, and its test `pipeline_test.go:1525`; ask before touching `Retired*` fields at `records.go:43-66` or `remote-lease`), x-compat-legacy-6 (sidecar introduced `d66d970556` 2026-09-20, retired `3ffeccc893` 2026-09-26; no tag contains the introduction without the retirement), hub-hostops-appsource-9.
 - Files: `cmd/evener-hub/app_host_manage.go:2804-2808` (".stash name never shipped"), `store.poison` (`:599-611,1625-1628`), `poison/poisoned/loadErr` and three guard sites, compensating-sidecar alias (`intent.go:166 compensationSidecarLegacy`), hostops retired fields (`custody.go`, `recordFile` OrphanBoundary/OrphanResolved/Attestation/PendingSpawns), `StateOrphanUnverified` and the appwire enum value.
 - Steps: delete the never-shipped `.stash` spelling and the compensating alias (no producer in any direction, so T1 dead code; tag check first). Q1 says on-disk state migrations stay, so the retired record fields and sidecar handling that read persisted host records are simplification only: keep every read path and its behavior test. Replace write-poisoning with recovery per the product guide.
@@ -937,6 +942,7 @@ Their gates (Q1, Q8, Q9, Q15) are answered in [DECISIONS.md](DECISIONS.md). Each
 - Risk: low to medium. Gate: answered (DECISIONS.md, Q1). Deps: W1-59. The false-comment fix can ship now as a tiny PR (W1-62a).
 
 ### W1-63 Simplify legacy transcript projection and checkpoint formats (keep every format readable)
+- Decision 2026-10-27 ([DECISIONS.md](DECISIONS.md), "W1-63. Transcript display settings"): drop the dual write of transcript display settings to the legacy prefs keys.
 - Findings: internal-app-layer-1 (high), x-compat-legacy-12, agent-internal-state-10, x-compat-legacy-3 (rest), x-compat-legacy-9.
 - Files: `internal/apptranscript/apptranscript.go:445` (`Format != TurnFormatIdentity` routes to `ProjectTurnParts`), `agent/transcript/placement.go:81` (stamps Format on every written entry, introduced `1268e1282e` 2026-09-26), `internal/transcriptindex/build.go` (`applyLegacy`:195, 31 "communicate" mentions), `flush_communicate.go` (102 lines), `agent/internal/contextmgr/checkpoint_format.go:299-321,669-677` (three legacy readers), `strategy_session_log.go:243`, `toolIntent` "purpose" fallbacks (`transcript_render.go:1746`, `doctor/transcript.go:324`, `apptranscript.go:217`).
 - Steps: Q1 answered (DECISIONS.md): persisted state stays readable. Do not rewrite users' transcripts in place and do not delete the legacy projection or the three checkpoint readers. Allowed: simplification that keeps every migration path and its behavior coverage, for example normalizing legacy entries into identity-shaped entries in memory at the read boundary so one projection path remains (only with golden output identical for every legacy shape; bump index `projectionID`; update the transcript-read-model row), and sharing code between the legacy readers. Tool intent: add `schema.ToolIntent(args)` and call it from the three sites; the "purpose" fallback stays because it reads persisted data.

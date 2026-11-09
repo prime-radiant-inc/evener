@@ -14,8 +14,8 @@ import (
 	"time"
 )
 
-// lockedDriver wraps the real "sqlite" driver and injects "database is locked"
-// errors into specific operations inside transactions for a configurable
+// lockedDriver wraps the real "sqlite" driver and injects a real SQLITE_BUSY
+// error into specific operations inside transactions for a configurable
 // number of calls, then delegates to the real driver. This exercises the
 // retryable-error continue branches in every PinSectionStore method's retry
 // loop.
@@ -31,6 +31,7 @@ var (
 	lockedTxQueryFails  atomic.Int64 // number of Query calls INSIDE a tx to fail
 	lockedTxCommitFails atomic.Int64 // number of Commit calls to fail
 	lockedTxActive      atomic.Bool  // true while a tx is active on the conn
+	errInjectedLock     error        // the real driver error injected as the lock failure
 )
 
 type lockedDriver struct {
@@ -74,7 +75,7 @@ func (c *lockedConn) Close() error { return c.real.Close() }
 
 func (c *lockedConn) Begin() (driver.Tx, error) {
 	if n := lockedBeginFailures.Add(-1); n >= 0 {
-		return nil, errors.New("database is locked")
+		return nil, errInjectedLock
 	}
 	lockedBeginFailures.Add(1)
 	tx, err := c.real.Begin() //nolint:staticcheck // deprecated driver.Conn.Begin used for test coverage
@@ -88,7 +89,7 @@ func (c *lockedConn) Begin() (driver.Tx, error) {
 func (c *lockedConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
 	if beginTx, ok := c.real.(driver.ConnBeginTx); ok {
 		if n := lockedBeginFailures.Add(-1); n >= 0 {
-			return nil, errors.New("database is locked")
+			return nil, errInjectedLock
 		}
 		lockedBeginFailures.Add(1)
 		tx, err := beginTx.BeginTx(ctx, opts)
@@ -104,7 +105,7 @@ func (c *lockedConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver
 func (c *lockedConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
 	if lockedTxActive.Load() {
 		if n := lockedTxExecFails.Add(-1); n >= 0 {
-			return nil, errors.New("database is locked")
+			return nil, errInjectedLock
 		}
 		lockedTxExecFails.Add(1)
 	}
@@ -124,7 +125,7 @@ func (c *lockedConn) ExecContext(ctx context.Context, query string, args []drive
 func (c *lockedConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	if lockedTxActive.Load() {
 		if n := lockedTxQueryFails.Add(-1); n >= 0 {
-			return nil, errors.New("database is locked")
+			return nil, errInjectedLock
 		}
 		lockedTxQueryFails.Add(1)
 	}
@@ -144,7 +145,7 @@ func (c *lockedConn) QueryContext(ctx context.Context, query string, args []driv
 func (t *lockedTx) Commit() error {
 	lockedTxActive.Store(false)
 	if n := lockedTxCommitFails.Add(-1); n >= 0 {
-		return errors.New("database is locked")
+		return errInjectedLock
 	}
 	lockedTxCommitFails.Add(1)
 	return t.real.Commit()
@@ -163,6 +164,7 @@ func setupLockedStore(t *testing.T) *PinSectionStore {
 	resetLockedCounters()
 	t.Cleanup(resetLockedCounters)
 	initLockedDriver()
+	errInjectedLock = realBusyError(t)
 	dbPath := filepath.Join(t.TempDir(), "index.db")
 	seed := NewPinSectionStore(dbPath)
 	if _, _, err := seed.CreateOrReuseAndAssign("Seed", "", "seed-session", time.Unix(1, 0)); err != nil {

@@ -24,12 +24,12 @@ func sessionVisibleHistory(jm *jobManager) func(watchHistoryEntry) bool {
 // sources.
 func seedWatchProjectionState(jm *jobManager) {
 	live := &watchConfig{
-		id: "watch-one", watchID: "watch-one", sourcePublic: "self", target: "job_one",
+		watchID: "watch-one", sourcePublic: "self", target: "job_one",
 		createdAt: frozenTestTime, deliveries: 3,
 		deliveryTimes: []time.Time{frozenTestTime, frozenTestTime.Add(time.Second)},
 	}
 	detached := &watchConfig{
-		id: "watch-two", watchID: "watch-two", sourcePublic: "self", target: "job_two",
+		watchID: "watch-two", sourcePublic: "self", target: "job_two",
 		createdAt: frozenTestTime, deliveries: 1,
 		deliveryTimes: []time.Time{frozenTestTime},
 	}
@@ -100,7 +100,7 @@ func TestWatchInspectSnapshotsPreserveRowsAndOrder(t *testing.T) {
 	seedWatchProjectionState(jm)
 	jm.mu.Lock()
 	jm.watches[watchKey{Target: "job_recv", ReceiverSessionID: "RS", ReceiverDelegateID: "RD"}] = &watchConfig{
-		id: "watch-recv", watchID: "watch-recv", sourcePublic: "self", target: "job_recv",
+		watchID: "watch-recv", sourcePublic: "self", target: "job_recv",
 		receiverSessionID: "RS", receiverDelegateID: "RD", createdAt: frozenTestTime,
 	}
 	jm.mu.Unlock()
@@ -189,7 +189,7 @@ func TestWatchConfigSnapshotsWhereCollectsUnderTheLock(t *testing.T) {
 	seedWatchProjectionState(jm)
 	jm.mu.Lock()
 	jm.watches[watchKey{Target: "job_recv", ReceiverSessionID: "RS", ReceiverDelegateID: "RD"}] = &watchConfig{
-		id: "watch-recv", watchID: "watch-recv", sourcePublic: "self", target: "job_recv",
+		watchID: "watch-recv", sourcePublic: "self", target: "job_recv",
 		receiverSessionID: "RS", receiverDelegateID: "RD", createdAt: frozenTestTime,
 	}
 	jm.mu.Unlock()
@@ -197,7 +197,7 @@ func TestWatchConfigSnapshotsWhereCollectsUnderTheLock(t *testing.T) {
 	cfgs := jm.watchConfigSnapshotsWhere(func(cfg *watchConfig) bool {
 		return watchConfigMatchesReceiver(cfg, "RS", "RD")
 	})
-	if len(cfgs) != 1 || cfgs[0].id != "watch-recv" {
+	if len(cfgs) != 1 || cfgs[0].watchID != "watch-recv" {
 		t.Fatalf("watchConfigSnapshotsWhere = %+v, want just the receiver-matching config", cfgs)
 	}
 	if !jm.mu.TryLock() {

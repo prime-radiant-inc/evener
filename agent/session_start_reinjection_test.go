@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -52,10 +53,7 @@ func TestSessionStartDispatchOnFreshSessionIsNotFlaggedAsReinjection(t *testing.
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 	defer sess.Close()
 
 	entry := sessionStartHookDispatchEntry(t, dir, sess.ID())
@@ -111,10 +109,7 @@ func TestSessionStartDispatchIntoRestoredHistoryIsFlaggedAsReinjection(t *testin
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 	defer sess.Close()
 
 	// Resume SessionStart hooks are deferred until the first user turn.
@@ -163,16 +158,13 @@ func TestSessionStartDispatchAfterEmptyRestoreIsNotFlaggedAsReinjection(t *testi
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 	defer sess.Close()
 
 	if _, err := sess.ProcessInput(t.Context(), "first user task", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
-	data, err := readTranscriptFull(sess.TranscriptPath(), "")
+	data, err := readTranscriptFull(context.Background(), sess.TranscriptPath(), "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
@@ -238,10 +230,7 @@ func TestSessionStartDispatchOnNotesContextOnlyHistoryIsNotFlaggedAsReinjection(
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 	defer sess.Close()
 
 	// Resume SessionStart hooks are deferred until the first user turn.

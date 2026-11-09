@@ -254,7 +254,7 @@ func TestServerAppWireAbandonedCarrierUsesStatusIdentityBeforeAppIdentity(t *tes
 		t.Run(tc.name, func(t *testing.T) {
 			const threadID = "status-only-abandoned"
 			srv := NewServer(ServerConfig{})
-			srv.SetStatus(StatusInfo{SessionID: threadID, State: "active"})
+			seedStatus(srv, StatusInfo{SessionID: threadID, State: "active"})
 			client := dialServerAppWire(t, srv)
 			if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + threadID, Subscribe: true}); err != nil {
 				t.Fatalf("subscribe: %v", err)

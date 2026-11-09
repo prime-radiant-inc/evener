@@ -17,13 +17,9 @@ const (
 )
 
 // AllTaskStatuses is every TaskStatus value, in lifecycle order. The TypeScript
-// generator emits it as TASK_STATUSES.
-var AllTaskStatuses = []string{
-	string(TaskOpen),
-	string(TaskInProgress),
-	string(TaskDone),
-	string(TaskCancelled),
-}
+// generator emits it as TASK_STATUSES. It comes from the task machine, so the
+// generated union and the declared transitions cannot list different states.
+var AllTaskStatuses = taskMachine.stateNames()
 
 // TaskType classifies what kind of work a task represents.
 type TaskType string

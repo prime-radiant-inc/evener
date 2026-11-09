@@ -1,5 +1,5 @@
-import type { Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import type { Thread, ThreadReadResponse } from "@evener/appwire-client";
+import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -12,9 +12,11 @@ import {
   resetWorkspaceStoreForTests,
   workspaceStore,
 } from "../../shell/workspace";
-import { connectionStore } from "../../stores/connection";
+import { resetConnectionStoreForTests } from "../../stores/connection";
 import { answerActivityRead } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests } from "../../stores/threads";
+import { connectReadyFakeClient } from "../../testing/connectionTestUtils";
+import { ALL_CAPABILITIES as CAPABILITIES } from "../../threadTestUtils";
 import virtualStyles from "../../widgets/virtuallist/virtuallist.module.css";
 import { resetSubagentModuleStoreForTests } from "../session/transcript/tools/subagentModuleStore";
 import { resetTranscriptPagingForTests } from "../session/transcript/useTranscript";
@@ -36,21 +38,6 @@ afterAll(
 // Full capability set: the read-only pane must ignore all of it (no composer/
 // controls), so the fixture is deliberately permissive - a read-only render
 // that leaked a control would still have every capability enabled to leak.
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
 
 function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
   return {
@@ -75,16 +62,15 @@ function readResponse(ref: string, overrides: Partial<Thread> = {}): ThreadReadR
 }
 
 function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  fake.on("evener/thread/activity/read", answerActivityRead);
-  connectionStore.getState().connect(fake);
-  return fake;
+  return connectReadyFakeClient((fake) => {
+    fake.on("evener/thread/activity/read", answerActivityRead);
+  });
 }
 
 let restoreGeometry: () => void;
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetTranscriptPagingForTests();
   resetSubagentModuleStoreForTests();

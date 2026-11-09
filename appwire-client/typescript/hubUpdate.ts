@@ -1,7 +1,8 @@
 // The hub's own update, shared by the web's Settings -> Hub -> Updates and the
 // phone's Hub. Install writes a verified artifact; restart execs the binary
 // already on disk. They are separate actions: install never restarts, and
-// restart works on a dev build that was rebuilt locally.
+// a locally built hub may install the selected channel's published build when
+// it reports that it can update itself.
 //
 // A restart is confirmed by process incarnation, not build version: a rebuild
 // at the same commit changes no version string. Hubs that predate

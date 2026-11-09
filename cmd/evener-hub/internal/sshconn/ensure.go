@@ -746,7 +746,10 @@ func (a *ensureAttempt) runDeployLeg() error {
 	if !intent.deployment {
 		intent = m.deploymentIntent(a.restart, a.running)
 	}
-	resolvedTarget, err := m.deploySelectedWithAuthority(deployCtx, host, a.facts, a.liveIncompatible || (intent.deployment && intent.selected != nil), m.deploymentRecorder(host.Name, intent))
+	resolvedTarget, err := m.deploySelected(deployCtx, host, a.facts, deployOpts{
+		realEndpointAuthority: a.liveIncompatible || (intent.deployment && intent.selected != nil),
+		record:                m.deploymentRecorder(host.Name, intent),
+	})
 	cancelDeploy()
 	if err != nil {
 		return err
@@ -1169,6 +1172,15 @@ func (m *Manager) attach(ctx context.Context, host hostreg.Host, facts Preflight
 	// Publish the handshake before the channel is handed to any caller, so the
 	// attached-only HandshakeIfAttached never races the attach it reports on.
 	ch.handshake = handshake
+	if handshake.Features.SessionTools && m.opts.SessionToolsHubID != "" {
+		if _, err := client.IdentifySessionToolsPeer(initCtx, appwire.SessionToolsPeerParams{HubID: m.opts.SessionToolsHubID}); err != nil {
+			_ = reapBridge(transport, stdio)
+			if m.baseCtx.Err() != nil {
+				return nil, ErrManagerClosed
+			}
+			return nil, fmt.Errorf("host %q session tools peer identification: %w", host.Name, err)
+		}
+	}
 
 	if m.baseCtx.Err() != nil {
 		_ = reapBridge(transport, stdio)

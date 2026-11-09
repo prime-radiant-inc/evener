@@ -13,7 +13,6 @@ import (
 	"regexp"
 	"slices"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -80,8 +79,15 @@ type jobManager struct {
 	transcriptRef    string
 	store            *jobstore.Store
 	running          map[string]*runningJob
-	watches          map[watchKey]*watchConfig
-	terminalFlush    map[*watchConfig]bool
+	// noticesInFlight spans job finalization start or watch retirement through
+	// notification enqueue.
+	// Guarded by jm.mu, like running, which includes runs still finalizing.
+	noticesInFlight int
+	watches         map[watchKey]*watchConfig
+	terminalFlush   map[*watchConfig]bool
+	// hubRosterReplacement serializes roster setup through failure cleanup.
+	// Initialized under jm.mu, acquired without holding jm.mu or Session.mu.
+	hubRosterReplacement chan struct{}
 	// watchHistory is a bounded, latest-trimmed ring of watches that have left
 	// the active set, surfaced by job_list so a fired-then-removed watch stays
 	// legible. Guarded by jm.mu.
@@ -187,6 +193,17 @@ type jobManager struct {
 	// stopReceiptsAfterCapture observes the subtree-stop boundary after exact
 	// live receipts are captured and before they are consumed. Nil in production.
 	stopReceiptsAfterCapture func()
+	// testOnlyAfterHubWatchDetach pauses after endHubWatch detaches its config
+	// and before the final terminal send is recorded. Nil in production.
+	testOnlyAfterHubWatchDetach func()
+	// testOnlyBeforeTerminalWatchSend runs inside endHubWatch's window between
+	// releasing the config lock and persisting the terminal send, where a
+	// concurrent prior-notice settlement must not strip the terminal
+	// delivery's eligibility. Nil in production.
+	testOnlyBeforeTerminalWatchSend func()
+	// testOnlyTerminalSendRetryDelay overrides the completion send's retry
+	// cadence in tests. Zero in production keeps the production delay.
+	testOnlyTerminalSendRetryDelay time.Duration
 	// watchReceiptBoundary observes entry into the delegate controller for a
 	// stable-watch receipt. Nil in production; lock-order tests use it to prove
 	// the job manager released its local persistence lock first.
@@ -289,7 +306,7 @@ func SetLaneClosePassBudget(d time.Duration) (restore func()) {
 	})
 }
 
-func (jm *jobManager) bindStableDelegateParent(controller *delegateTreeController, lease delegateLease, forward func(jobstore.Event) error, owner *Session) {
+func (jm *jobManager) bindDelegateParent(controller *delegateTreeController, lease delegateLease, forward func(jobstore.Event) error, owner *Session) {
 	jm.mu.Lock()
 	jm.parentJobID = ""
 	jm.parentDelegateID = lease.delegateID
@@ -384,7 +401,7 @@ type runningJob struct {
 	completion atomic.Uint32
 	// delegateShell is the exact process receipt for a shell owned by a stable
 	// delegate generation. It remains nil for root-owned shells.
-	delegateShell *stableDelegateShellReceipt
+	delegateShell *delegateShellReceipt
 }
 
 // treeReservation is a single tree-counter slot held by a running delegate turn.
@@ -506,7 +523,7 @@ type jobRuntimeHandle struct {
 	done      chan struct{}
 	closeDone func()
 	output    *jobstore.OutputStore
-	shell     *stableDelegateShellReceipt
+	shell     *delegateShellReceipt
 }
 
 type jobNotificationKind uint8
@@ -595,12 +612,11 @@ type listFilter struct {
 	IncludeDescendants bool
 }
 
-// jobsDir returns the per-session job directory: <stateDir>/sessions/<id>.
+// jobsDir is the session work dir the job stores, delegate journal, and
+// worktrees live under; it exists so the agent package's many call sites keep
+// one short name for schema.SessionWorkDir.
 func jobsDir(stateDir, sessionID string) string {
-	if strings.TrimSpace(stateDir) == "" {
-		return filepath.Join(os.TempDir(), "evener-jobs", sessionID)
-	}
-	return filepath.Join(schema.SessionsDir(stateDir), sessionID)
+	return schema.SessionWorkDir(stateDir, sessionID)
 }
 
 type jobStoreOpener func(string) (*jobstore.Store, error)
@@ -909,7 +925,7 @@ func (jm *jobManager) liveJobRecords() map[string]*jobstore.JobRecord {
 		if !run.durableStarted {
 			continue
 		}
-		rec := cloneJobRecord(run.rec)
+		rec := run.rec.Clone()
 		// OutputBytes on the live record is only stamped at terminal; a running
 		// job's listing reports the live lifetime output count instead of 0.
 		if rec.Status == jobstore.StatusRunning && run.output != nil {
@@ -933,7 +949,7 @@ func (jm *jobManager) listWithError(filter listFilter) ([]*jobstore.JobRecord, i
 		if !keepListedJobRow(rec, filter, jm.sessionID) {
 			continue
 		}
-		jobs = append(jobs, cloneJobRecord(rec))
+		jobs = append(jobs, rec.Clone())
 	}
 	sort.Slice(jobs, func(i, j int) bool {
 		if jobs[i].StartedAt.Equal(jobs[j].StartedAt) {
@@ -1175,7 +1191,7 @@ func (jm *jobManager) recordForRead(jobID string) (run *runningJob, rec *jobstor
 	run = jm.running[jobID]
 	var snapshot *jobstore.JobRecord
 	if run != nil {
-		snapshot = cloneJobRecord(run.rec)
+		snapshot = run.rec.Clone()
 	}
 	jm.mu.Unlock()
 	if run != nil {
@@ -1384,7 +1400,7 @@ func (jm *jobManager) stop(jobID string) (*jobstore.JobRecord, error) {
 }
 
 func (jm *jobManager) stopRunningJobLocked(jobID string, run *runningJob) (*jobstore.JobRecord, *jobStopReceipt, func(), error) {
-	rec := cloneJobRecord(run.rec)
+	rec := run.rec.Clone()
 	receipt := &jobStopReceipt{manager: jm, jobID: jobID, run: run}
 	if run.finalize != nil || run.terminal != nil || run.rec.Status.IsTerminal() {
 		return rec, receipt, nil, nil
@@ -1459,7 +1475,7 @@ func (jm *jobManager) stopWithReceipt(jobID string) (*jobstore.JobRecord, *jobSt
 	if rec == nil {
 		return nil, nil, errJobNotFound(jobID)
 	}
-	return cloneJobRecord(rec), nil, nil
+	return rec.Clone(), nil, nil
 }
 
 func (jm *jobManager) finalize(jobID string, status jobstore.Status, reason string, exitCode *int) error {
@@ -1507,10 +1523,16 @@ func (jm *jobManager) finalizeKeptSync(run *runningJob, status jobstore.Status, 
 	// jobs completed before the tool returned (spec §6.4d).
 
 	jm.mu.Lock()
+	leavingRunning := false
 	if jm.running[run.rec.JobID] == run && run.terminal == terminal {
 		delete(jm.running, run.rec.JobID)
+		leavingRunning = true
 	}
+	owner := jm.stableOwner
 	jm.mu.Unlock()
+	if leavingRunning && owner != nil {
+		owner.managedJobFinished()
+	}
 	_ = run.output.Close()
 	run.delegateShell.finish()
 	run.closeDoneDurable()
@@ -1760,6 +1782,24 @@ func validateStructuredResultWithAddResource(value any, resultSchema any, addRes
 	return compiled.Validate(value)
 }
 
+func (jm *jobManager) hasLiveRuns() bool {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	return len(jm.running) > 0
+}
+
+func (jm *jobManager) hasNoticeEmissionInFlight() bool {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	return jm.noticesInFlight > 0
+}
+
+func (jm *jobManager) noteNoticeEmission(delta int) {
+	jm.mu.Lock()
+	jm.noticesInFlight += delta
+	jm.mu.Unlock()
+}
+
 // enqueueNotifications queues a group of notifications onto the owner's rail
 // and wakes it ONCE, reporting whether anything was queued (a manager with no
 // rail wired queues nothing, and its owner still owes a kick). Every notice
@@ -1784,6 +1824,8 @@ func (jm *jobManager) enqueueNotifications(notifs []jobNotification) bool {
 
 func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) error {
 	defer jm.publishWatchActivity()
+	jm.noteNoticeEmission(1)
+	defer jm.noteNoticeEmission(-1)
 	jm.mu.Lock()
 	if jm.running[run.rec.JobID] != run || run.terminal != terminal {
 		jm.mu.Unlock()
@@ -1824,7 +1866,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		jm.mu.Unlock()
 		ownNotices = jm.routeWatchNotifications(watchNotifications)
 		var tokens []jobNotification
-		tokens, watchSendRecorded = jm.recordWatchSends(watchDeliveries)
+		tokens, watchSendRecorded, _ = jm.recordWatchSends(watchDeliveries)
 		ownNotices = append(ownNotices, tokens...)
 	} else {
 		jm.mu.Unlock()
@@ -1872,7 +1914,11 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		flushNotices()
 		return nil
 	}
+	owner := jm.stableOwner
 	jm.mu.Unlock()
+	if owner != nil {
+		owner.managedJobFinished()
+	}
 
 	_ = run.output.Close()
 
@@ -2087,12 +2133,4 @@ func grepOutputFile(path string, re *regexp.Regexp, limitBytes int, rec *jobstor
 			return checkOutputTotalForRecord(rec, total)
 		})
 	})
-}
-
-func cloneJobRecord(rec *jobstore.JobRecord) *jobstore.JobRecord {
-	if rec == nil {
-		return nil
-	}
-	clone := *rec
-	return &clone
 }

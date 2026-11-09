@@ -3,7 +3,7 @@
 // (ruling 5). The hub keeps an offline host's last rows, so an offline host's
 // count is what "3 live, out of reach" reports.
 import type { NavigationSessionSummary } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { NavigationPages } from "../navigationPages";
 
 export function liveCountsByHost(

@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import type { LaunchOption } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { addLaunchPath } from "./launchPaths";
 
 const option: LaunchOption = {

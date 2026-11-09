@@ -30,8 +30,7 @@ func TestWorkMillis_CompletedTurnCounts(t *testing.T) {
 
 	// TRIPWIRE: scripted in-process adapter with a fake clock, no real I/O;
 	// only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -108,8 +107,7 @@ func TestWorkMillis_FailedTurnCounts(t *testing.T) {
 
 	// TRIPWIRE: scripted in-process adapter with a fake clock, no real I/O;
 	// only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err == nil {
 		t.Fatal("ProcessInput: want error, got nil")
 	}
@@ -147,8 +145,7 @@ func TestWorkMillis_MultiTurnDrainEachCounts(t *testing.T) {
 
 	// TRIPWIRE: scripted in-process adapter with a fake clock, no real I/O;
 	// only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "do first", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -347,8 +344,7 @@ func TestRestoreThenTurnAutosaveKeepsPriorTotals(t *testing.T) {
 
 	// TRIPWIRE: scripted in-process adapter with a fake clock, no real I/O;
 	// only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}

@@ -3,7 +3,6 @@ package appsource
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -264,10 +263,7 @@ func TestRemoteHubSubscribeThreadRefusesSecondRelayForSameThread(t *testing.T) {
 	if second != nil {
 		t.Fatal("the refused attach returned a notification channel")
 	}
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
-		t.Fatalf("refusal = %T %v, want an appwire.WireError with conflict code", err, err)
-	}
+	wire := requireWireError(t, err, appwire.CodeConflict)
 	if !strings.Contains(wire.Message, "host:S") {
 		t.Fatalf("refusal = %q, want it to name the identity serving the thread", wire.Message)
 	}

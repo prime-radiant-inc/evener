@@ -6,8 +6,10 @@ import type {
   ThreadTurnsListResponse,
 } from "@evener/appwire-client";
 import { encodeTranscriptItem } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, it, vi } from "vitest";
+import { ALL_CAPABILITIES } from "../threadTestUtils";
 import { EntryWriteAdmission } from "./entryWriteAdmission";
 import {
   ENTRY_ITEM_STORE,
@@ -32,22 +34,6 @@ const identity: TranscriptResolvedIdentity = {
 const ref = "ref-a";
 const threadId = "thread-a";
 const historyKey = entryHistoryKey(identity);
-const CAPABILITIES = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
-
 function item(label: string, entry: number, version = entry): ThreadItem {
   return {
     type: "agentMessage",
@@ -75,7 +61,7 @@ function read(label: string, length = 1): ThreadReadResponse {
       cliVersion: "test",
       source: "evener",
       turns: [{ id: "turn_1", itemsView: "full", status: "completed", version: length, items: [item(label, length)] }],
-      evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+      evener: { ref, capabilities: ALL_CAPABILITIES, queue: { revision: 0 } },
     },
     bootGeneration: "1",
     epoch: 0,
@@ -154,16 +140,6 @@ function capturingScheduler() {
     };
   };
   return { scheduled, scheduler, cancelledCount: () => cancelCount };
-}
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
 }
 
 async function keysInCache(cache: ReturnType<typeof createEntryCacheFixture>["cache"]): Promise<string[]> {
@@ -1142,6 +1118,198 @@ it("preserves replacement deletions inherited from a delayed read preflight", as
     }
   } finally {
     gate.resolve();
+    reader.dispose();
+    owner.dispose();
+  }
+});
+
+it("does not inherit a superseded replacement over a newer committed item (#4651)", async () => {
+  const { owner: unused, makeCache, offer } = capacityFixture(100_000);
+  unused.dispose();
+  const cache = makeCache(6_500);
+  const owner = repository(cache, 1, undefined, capturingScheduler().scheduler, new EntryWriteAdmission(100_000));
+  const reader = owner.attachReader();
+  const gate = deferred<void>();
+  const reached = deferred<void>();
+  try {
+    // Establish the intrinsic capacity refusal that routes the later reads
+    // through the held preflight path.
+    await offer(owner);
+    expect(
+      owner.acceptRead(
+        { ...readItems("base", 3, [item("target", 1, 1), item("keep", 2, 2)]), requestGeneration: 2 },
+        { lifetime: 1, readId: "base", boundary: "base" },
+      ),
+    ).toBe(true);
+    await owner.settled();
+
+    // A: a replacement preflight held in its capacity lookup. Its payload
+    // carries the stale version of item-target.
+    const realPlan = cache.planCapacity.bind(cache);
+    vi.spyOn(cache, "planCapacity").mockImplementationOnce(async (batch) => {
+      expect(batch.coverage?.readId).toBe("a");
+      const plan = await realPlan(batch);
+      reached.resolve();
+      await gate.promise;
+      return plan;
+    });
+    expect(
+      owner.acceptRead(
+        {
+          ...readItems("a", 6, [item("target", 1, 1), item("a-payload", 5, 5)]),
+          authoritative: true,
+          requestGeneration: 3,
+        },
+        { lifetime: 1, readId: "a", boundary: "a" },
+      ),
+    ).toBe(true);
+    await reached.promise;
+
+    // B: a plain merge read (no replacement of its own) updates item-target
+    // and inherits A's replacement scope into its write, committing it
+    // durably. A's preflight stays held.
+    const commits = vi.spyOn(cache, "commitBatch");
+    expect(
+      owner.acceptRead(
+        {
+          ...readItems("b", 7, [{ ...item("target", 1, 2), text: "newer durable" }, item("b", 6, 6)]),
+          requestGeneration: 4,
+        },
+        { lifetime: 1, readId: "b", boundary: "b" },
+      ),
+    ).toBe(true);
+    await vi.waitFor(() => expect(commits).toHaveBeenCalledTimes(1));
+    expect(await commits.mock.results[0]!.value).toMatchObject({ outcome: "committed" });
+
+    // C: an ordinary merge read that omits item-target. It may inherit A's
+    // payloads below the committed replacement, but A's replacement scope and
+    // its stale item-target must not travel with C's newer authority.
+    expect(
+      owner.acceptRead(
+        { ...readItems("c", 8, [item("c", 7, 7)]), requestGeneration: 5 },
+        { lifetime: 1, readId: "c", boundary: "c" },
+      ),
+    ).toBe(true);
+    await vi.waitFor(() => expect(commits).toHaveBeenCalledTimes(2));
+    expect(await commits.mock.results[1]!.value).toMatchObject({ outcome: "committed" });
+    gate.resolve();
+    await owner.settled();
+
+    const durable = await cache.getLatest(historyKey, 40);
+    expect(durable.find((row) => row.transcriptKey === "item-target")).toMatchObject({
+      version: 2,
+      item: { text: "newer durable" },
+    });
+    // Prune and reopen: the accepted newer version is what a restored pane
+    // sees, with no stale version written.
+    reader.dispose();
+    const reopened = owner.attachReader();
+    try {
+      const opened = await reopened.openLocal(40);
+      expect(
+        opened.model?.turns.flatMap((turn) => turn.items).find((entry) => entry.transcriptKey === "item-target"),
+      ).toMatchObject({ version: 2, text: "newer durable" });
+    } finally {
+      reopened.dispose();
+    }
+  } finally {
+    gate.resolve();
+    await owner.settled().catch(() => {});
+    reader.dispose();
+    owner.dispose();
+  }
+});
+
+it("keeps an inherited authoritative preflight's rows after an earlier committed replacement (#4651)", async () => {
+  const { owner: unused, makeCache, offer } = capacityFixture(100_000);
+  unused.dispose();
+  const cache = makeCache(6_500);
+  const owner = repository(cache, 1, undefined, capturingScheduler().scheduler, new EntryWriteAdmission(100_000));
+  const reader = owner.attachReader();
+  const gate = deferred<void>();
+  const reached = deferred<void>();
+  try {
+    await offer(owner);
+    expect(
+      owner.acceptRead(
+        {
+          ...readItems("base", 4, [item("a", 1, 1), item("b", 2, 2), item("c", 3, 3)]),
+          requestGeneration: 2,
+        },
+        { lifetime: 1, readId: "base", boundary: "base" },
+      ),
+    ).toBe(true);
+    await owner.settled();
+    // R1 commits a replacement at X1 = entry 1.
+    expect(
+      owner.acceptRead(
+        {
+          ...readItems("r1", 5, [item("r1a", 1, 1), item("r1b", 2, 2)]),
+          authoritative: true,
+          requestGeneration: 3,
+        },
+        { lifetime: 1, readId: "r1", boundary: "r1" },
+      ),
+    ).toBe(true);
+    await owner.settled();
+    expect((await cache.getLatest(historyKey, 40)).map((row) => row.transcriptKey).sort()).toEqual([
+      "item-r1a",
+      "item-r1b",
+    ]);
+
+    // A2: authoritative replacement from X2 = entry 2, held in its capacity
+    // preflight. Its rows sit at or above the earlier committed floor.
+    const realPlan = cache.planCapacity.bind(cache);
+    vi.spyOn(cache, "planCapacity").mockImplementationOnce(async (batch) => {
+      expect(batch.coverage?.readId).toBe("a2");
+      const plan = await realPlan(batch);
+      reached.resolve();
+      await gate.promise;
+      return plan;
+    });
+    expect(
+      owner.acceptRead(
+        {
+          ...readItems("a2", 6, [item("a2b", 2, 2), item("a2c", 3, 3)]),
+          authoritative: true,
+          requestGeneration: 4,
+        },
+        { lifetime: 1, readId: "a2", boundary: "a2" },
+      ),
+    ).toBe(true);
+    await reached.promise;
+
+    // Q: a plain merge read whose window starts above X2. It omits A2's rows,
+    // inherits A2's replacement, and must rewrite them: a position filter
+    // anchored on R1's earlier floor would drop them, and Q's commit would
+    // delete [X2, Q's window start) without rewriting it.
+    const commits = vi.spyOn(cache, "commitBatch");
+    expect(
+      owner.acceptRead(
+        { ...readItems("q", 7, [item("q", 4, 4)]), requestGeneration: 5 },
+        { lifetime: 1, readId: "q", boundary: "q" },
+      ),
+    ).toBe(true);
+    await vi.waitFor(() => expect(commits).toHaveBeenCalledTimes(1));
+    expect(await commits.mock.results[0]!.value).toMatchObject({ outcome: "committed" });
+    gate.resolve();
+    await owner.settled();
+
+    const durable = await cache.getLatest(historyKey, 40);
+    expect(durable.map((row) => row.transcriptKey)).toEqual(expect.arrayContaining(["item-a2b", "item-a2c", "item-q"]));
+    reader.dispose();
+    const reopened = owner.attachReader();
+    try {
+      const opened = await reopened.openLocal(40);
+      expect(opened.model?.turns.flatMap((turn) => turn.items).map((entry) => entry.transcriptKey)).toEqual(
+        expect.arrayContaining(["item-a2b", "item-a2c"]),
+      );
+    } finally {
+      reopened.dispose();
+    }
+  } finally {
+    gate.resolve();
+    await owner.settled().catch(() => {});
     reader.dispose();
     owner.dispose();
   }

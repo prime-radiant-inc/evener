@@ -292,6 +292,21 @@ export class SessionActivityStore {
     ).then(() => {});
   };
 
+  /** Joins the resource's registered read span — the read in flight now and
+   * any follow-up read its completion queues — without adding demand. A paced
+   * refresh walk registers as one span, so a suite that drives an
+   * invalidation-driven walk can await its actual completion instead of
+   * watching a wall-clock condition ceiling the walk's real-clock pacing can
+   * outlast under load. Call it from the same synchronous window that emitted
+   * the invalidation, so the walk is already registered when the join starts. */
+  async settleForTests(resource: SessionActivityResource): Promise<void> {
+    let inFlight = this.reads[resource].inFlight;
+    while (inFlight) {
+      await inFlight;
+      inFlight = this.reads[resource].inFlight;
+    }
+  }
+
   private listen(): void {
     if (this.disposed || this.stopListening.length > 0) return;
     this.stopListening = [
@@ -1293,6 +1308,7 @@ function delegateRowFromFrame(row: SessionDelegate, frame: EvenerDelegateInfo): 
     error: frame.error,
     terminal: frame.terminal ?? false,
     resumable: frame.resumable,
+    needsAttention: frame.needsAttention === true ? true : undefined,
     notResumableReason: frame.notResumableReason,
     model: frame.model,
     reasoningEffort: frame.reasoningEffort,
@@ -1369,6 +1385,7 @@ const delegateRowFields: Record<keyof SessionDelegate, true> = {
   error: true,
   terminal: true,
   resumable: true,
+  needsAttention: true,
   notResumableReason: true,
   model: true,
   reasoningEffort: true,

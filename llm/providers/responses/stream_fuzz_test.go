@@ -127,6 +127,67 @@ func FuzzResponsesStreamMetamorphic(f *testing.F) {
 		// A gateway's wrapped upstream rejection: an error object on a frame
 		// with no event type at all.
 		`data: {"error":{"message":"upstream returned status 400","type":"server_error"}}` + "\n\n",
+		// An event frame with no data at all must be tolerated.
+		"event: response.created\n\n",
+		// A delta that maps to no tool call at all passes through raw.
+		`data: {"type":"response.function_call_arguments.delta","delta":"x"}` + "\n\n",
+		// A delta addressed only by its payload "id" (no call_id/item_id).
+		`data: {"type":"response.function_call_arguments.delta","id":"call_by_id","delta":"{\"x\":"}` + "\n\n" +
+			`data: {"type":"response.function_call_arguments.delta","id":"call_by_id","delta":"1}"}` + "\n\n",
+		// A delta keyed by an item_id that was never announced resolves by
+		// falling back to the item id itself.
+		`data: {"type":"response.function_call_arguments.delta","item_id":"fc_ghost","delta":"{\"g\":1}"}` + "\n\n",
+		// A done event with no resolvable id passes through raw.
+		`data: {"type":"response.function_call_arguments.done","arguments":"{}"}` + "\n\n",
+		// A done event keyed by an unknown item_id alone still maps.
+		`data: {"type":"response.function_call_arguments.done","item_id":"fc_ghost2","arguments":"{\"g2\":1}"}` + "\n\n",
+		// An added function_call with neither call_id nor id is ignored.
+		`data: {"type":"response.output_item.added","item":{"type":"function_call"}}` + "\n\n",
+		// A done function_call carrying only a known item id resolves through
+		// the item→call map filled by output_item.added.
+		`data: {"type":"response.output_item.added","item":{"type":"function_call","call_id":"call_m","id":"fc_m"}}` + "\n\n" +
+			`data: {"type":"response.output_item.done","item":{"type":"function_call","id":"fc_m","arguments":"{\"m\":1}"}}` + "\n\n",
+		// A done function_call with no resolvable id passes through raw.
+		`data: {"type":"response.output_item.done","item":{"type":"function_call","id":"fc_unknown","name":"f"}}` + "\n\n",
+		// A delta naming a different call_id than its item's mapping falls
+		// back to the state filed under the item id.
+		`data: {"type":"response.output_item.added","item":{"type":"function_call","call_id":"call_n","id":"fc_n","name":"orig"}}` + "\n\n" +
+			`data: {"type":"response.function_call_arguments.delta","call_id":"call_other","item_id":"fc_n","delta":"{\"x\":"}` + "\n\n" +
+			`data: {"type":"response.function_call_arguments.delta","call_id":"call_other","item_id":"fc_n","delta":"1}"}` + "\n\n" +
+			`data: {"type":"response.completed","response":{"id":"resp_n","status":"completed","output":[]}}` + "\n\n",
+		// A name arriving on a delta after the state exists without one.
+		`data: {"type":"response.function_call_arguments.delta","call_id":"call_c","delta":"{}"}` + "\n\n" +
+			`data: {"type":"response.function_call_arguments.delta","call_id":"call_c","name":"named_late","delta":"{}"}` + "\n\n",
+		// A done item carrying the name for an existing nameless state, and a
+		// done without arguments settling on the accumulated deltas.
+		`data: {"type":"response.function_call_arguments.delta","call_id":"call_q","delta":"{\"a\":"}` + "\n\n" +
+			`data: {"type":"response.function_call_arguments.delta","call_id":"call_q","delta":"1}"}` + "\n\n" +
+			`data: {"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_q","name":"done_name"}}` + "\n\n",
+		// An error frame whose data carries a valid error value followed by
+		// trailing junk: OnEvent's one-value decode accepts it, the in-band
+		// decoder's whole-buffer unmarshal rejects it, and the frame stays a
+		// raw passthrough.
+		"event: error\ndata: {\"type\":\"error\",\"message\":\"m\"} junk\n\n",
+		// An error event with an empty envelope carries nothing to decode.
+		"event: error\ndata: {}\n\n",
+		// An error envelope holding a bare string must not fail the stream.
+		"event: error\ndata: {\"error\":\"plain string\"}\n\n",
+		// A failure frame whose nested error has no message falls back to the
+		// generic in-band error text.
+		`data: {"type":"response.failed","response":{"error":{"code":429}}}` + "\n\n",
+		// Terminal payloads with malformed output entries skip them, not fail.
+		`data: {"type":"response.completed","response":{"status":"completed","output":["bare",{"type":"message","content":["bare",{"type":"output_text","text":"ok"}]}]}}` + "\n\n",
+		// A web_search_call output item decodes to a web-search content part.
+		`data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"web_search_call","action":{"query":"fuzz q"}}]}}` + "\n\n",
+		// A reasoning item with non-array content and mixed summary entries.
+		`data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"reasoning","content":"plain","summary":["str",{"text":"   "},{"text":"fuzz sum"}]}]}}` + "\n\n",
+		// Accumulated message items with an empty terminal output settle as a
+		// plain stop, not a tool-call finish.
+		`data: {"type":"response.output_item.done","item":{"type":"message","content":[{"type":"output_text","text":"hi"}]}}` + "\n\n" +
+			`data: {"type":"response.completed","response":{"id":"resp_settle","status":"completed","output":[]}}` + "\n\n",
+		// Incomplete terminals with the mapped and the unknown detail reason.
+		`data: {"type":"response.completed","response":{"status":"incomplete","incomplete_details":{"reason":"content_filter"}}}` + "\n\n",
+		`data: {"type":"response.completed","response":{"status":"incomplete","incomplete_details":{"reason":"fuzz_reason"}}}` + "\n\n",
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s))

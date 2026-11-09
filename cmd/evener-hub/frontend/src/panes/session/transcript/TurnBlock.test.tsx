@@ -15,7 +15,7 @@ import { accessibleName } from "../../../accessibleNameTestUtils";
 import { readModuleCss } from "../../../styles/cssBlock";
 import { TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
-import { isItemLive, TurnBlock } from "./TurnBlock";
+import { isItemLive, ProjectedIntentGroup, TurnBlock } from "./TurnBlock";
 import { type ItemRenderProps, ignoringTurn, itemRendererFor, registerItemRenderer } from "./types";
 import "./tools";
 
@@ -156,9 +156,131 @@ test("redacts a critical reasoning row on a terminal turn", () => {
   render(withConfig(config, <TurnBlock turn={projected} />));
   expect(screen.getByTestId("think-block").getAttribute("data-redacted")).toBe("true");
   expect(screen.getByTestId("think-block-redacted").textContent).not.toBe("");
+  // The neutral label is the collapsed summary; the thought sits behind the
+  // unfold and renders nothing while closed.
+  const details = screen.getByRole("group") as HTMLDetailsElement;
+  expect(details.open).toBe(false);
   expect(screen.queryByText("abcdefghijklmnop")).toBeNull();
   expect(screen.queryByTestId("think-block-live-body")).toBeNull();
-  expect(document.querySelector("details")).toBeNull();
+  fireEvent.click(details.querySelector("summary")!);
+  expect(screen.getByText("abcdefghijklmnop")).toBeTruthy();
+});
+
+test("a thought whose visible successor is filtered out keeps the projector's settled state", () => {
+  // The projector decides liveness on the SOURCE turn: this thought is
+  // superseded by the described command (the turn's tail) and carries
+  // live:false. The command is hidden at this level, so a renderer deriving
+  // liveness from the FILTERED turn would wrongly see the thought as the tail
+  // and pulse it.
+  const quiet = makeTranscriptDisplayConfig({
+    kind: "custom",
+    toolIntent: false,
+    toolCalls: false,
+    reasoning: false,
+    expandByDefault: false,
+    thinkingOpenByDefault: false,
+  });
+  const items = [
+    item({ id: "think", type: "reasoning", status: "inProgress", reasoningSummaries: [["ongoing"]] }),
+    item({ id: "cmd", type: "commandExecution", description: "Inspect the tree", status: "completed" }),
+  ];
+  render(withConfig(quiet, <TurnBlock turn={turn(items, { status: "inProgress" }, quiet)} />));
+
+  const block = screen.getByTestId("think-block");
+  expect(block.dataset.live).toBe("false");
+  expect(block.querySelector("details")).not.toBeNull();
+});
+
+test("the trace journey: every thought stays readable on demand at tools, the switch opens them, chat stays conversation-only", () => {
+  const tools = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  const openThinking = makeTranscriptDisplayConfig({
+    kind: "custom",
+    toolIntent: true,
+    toolCalls: true,
+    reasoning: false,
+    expandByDefault: false,
+    thinkingOpenByDefault: true,
+  });
+  const chat = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" });
+  const items = () => [
+    item({ id: "settled", type: "reasoning", status: "completed", reasoningSummaries: [["the settled trace body"]] }),
+    item({ id: "failed", type: "reasoning", status: "failed", reasoningSummaries: [["the failed trace body"]] }),
+  ];
+  // Each phase renders in its own disclosure scope: the store keeps explicit
+  // choices per scope, and a choice made in one phase must not answer for
+  // another (the very precedence under test).
+  const inScope = (scope: string, config: TranscriptDisplayConfigV1, node: ReactNode) => (
+    <TranscriptRenderProvider config={config} surface="live" disclosureScope={`turnblock:${scope}`}>
+      {node}
+    </TranscriptRenderProvider>
+  );
+
+  // Tools: one collapsed trace row per thought, each unfolding to its own text.
+  const { unmount: unmountTools } = render(
+    inScope("journey-tools", tools, <TurnBlock turn={turn(items(), { status: "completed" }, tools)} />),
+  );
+  let details = screen.getAllByRole("group") as HTMLDetailsElement[];
+  expect(details).toHaveLength(2);
+  expect(details.every((row) => !row.open)).toBe(true);
+  expect(screen.queryByText("the settled trace body")).toBeNull();
+  expect(screen.queryByText("the failed trace body")).toBeNull();
+  for (const row of details) fireEvent.click(row.querySelector("summary")!);
+  expect(screen.getByText("the settled trace body")).toBeTruthy();
+  expect(screen.getByText("the failed trace body")).toBeTruthy();
+  unmountTools();
+
+  // The switch: every thinking trace starts open, the failure row's neutral
+  // label staying its summary; the reader can still fold it.
+  const { unmount: unmountOpen } = render(
+    inScope("journey-open", openThinking, <TurnBlock turn={turn(items(), { status: "completed" }, openThinking)} />),
+  );
+  details = screen.getAllByRole("group") as HTMLDetailsElement[];
+  expect(details.filter((row) => row.open)).toHaveLength(2);
+  expect(screen.getByText("the settled trace body")).toBeTruthy();
+  expect(screen.getByText("the failed trace body")).toBeTruthy();
+  const failedRow = details.find((row) =>
+    row.querySelector('[data-testid="think-block-redacted"]'),
+  ) as HTMLDetailsElement;
+  expect(failedRow.querySelector('[data-testid="think-block-redacted"]')?.textContent).not.toBe("");
+  fireEvent.click(failedRow.querySelector("summary")!);
+  expect((failedRow as HTMLDetailsElement).open).toBe(false);
+  unmountOpen();
+
+  // Chat: conversation-only - the settled trace is gone, the broken turn's
+  // explanation stays, and the live placeholder carries no text and no
+  // disclosure to unfold.
+  const { unmount: unmountChat } = render(
+    inScope(
+      "journey-chat",
+      chat,
+      <TurnBlock
+        turn={turn(
+          [
+            ...items(),
+            item({
+              id: "live",
+              type: "reasoning",
+              status: "inProgress",
+              reasoningSummaries: [["the live trace body"]],
+            }),
+          ],
+          { status: "inProgress" },
+          chat,
+        )}
+      />,
+    ),
+  );
+  details = screen.getAllByRole("group") as HTMLDetailsElement[];
+  expect(details).toHaveLength(1);
+  expect(details[0]?.open).toBe(false);
+  expect(screen.queryByText("the settled trace body")).toBeNull();
+  expect(screen.queryByText("the live trace body")).toBeNull();
+  fireEvent.click(details[0]!.querySelector("summary")!);
+  expect(screen.getByText("the failed trace body")).toBeTruthy();
+  const liveBlock = screen.getAllByTestId("think-block").find((block) => block.dataset.contentFree === "true");
+  expect(liveBlock?.querySelector("details")).toBeNull();
+  expect(liveBlock?.textContent).not.toContain("the live trace body");
+  unmountChat();
 });
 
 test("the turn root remains a centered, shrinkable reading column", () => {
@@ -552,6 +674,7 @@ test("a growing Chat group keeps its first-action identity and manually opened s
     toolCalls: false,
     reasoning: false,
     expandByDefault: false,
+    thinkingOpenByDefault: false,
   });
   const first = item({
     id: "stream-first",
@@ -586,6 +709,7 @@ test("a growing Intent group keeps its first-action identity and manually closed
     toolCalls: false,
     reasoning: false,
     expandByDefault: true,
+    thinkingOpenByDefault: true,
   });
   const first = item({
     id: "stream-first",
@@ -1007,4 +1131,47 @@ test("a streamed reply keeps its DOM node when history records its round", () =>
 
   rerender(withConfig(config, <TurnBlock turn={recorded} />));
   expect(container.querySelector('[data-testid="agent-message-item"]')).toBe(before);
+});
+
+const NO_ROUND_TIMINGS = makeTranscriptDisplayConfig(
+  { kind: "preset", level: "activity" },
+  { roundTimings: false, systemEvents: true, promptEvents: true },
+);
+
+test("the completion cap waits for the turn's last fragment", () => {
+  const projected = turn(
+    [item({ type: "userMessage", text: "go" }), item({ id: "answer", type: "agentMessage", text: "done" })],
+    { status: "completed", durationMs: 134_000 },
+    NO_ROUND_TIMINGS,
+  );
+  const { rerender } = render(withConfig(NO_ROUND_TIMINGS, <TurnBlock turn={projected} showTurnSeparator={false} />));
+  expect(screen.queryByTestId("turn-done")).toBeNull();
+  rerender(withConfig(NO_ROUND_TIMINGS, <TurnBlock turn={projected} />));
+  expect(screen.getByTestId("turn-done")).toBeTruthy();
+});
+
+test("a completed intent group closes after its trailing tool calls", () => {
+  const source: TurnModel = {
+    id: "turn_1",
+    status: "completed",
+    durationMs: 134_000,
+    items: [item({ id: "tool", type: "commandExecution", toolName: "shell" })],
+  };
+  const entry = {
+    kind: "intent" as const,
+    id: "intent:tool" as const,
+    turnId: "turn_1",
+    sourceIndex: 0,
+    sourceItemId: "tool",
+    rationale: "",
+    failed: false,
+    item: source.items[0]!,
+  };
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }, { roundTimings: true });
+  render(
+    withConfig(config, <ProjectedIntentGroup rowId="intent-group-row" entries={[entry]} separatorTurn={source} />),
+  );
+  expect(screen.getByTestId("turn-done")).toBeTruthy();
+  const group = document.querySelector('[data-transcript-row-id="intent-group-row"]');
+  expect(group?.contains(screen.getByTestId("turn-separator"))).toBe(true);
 });

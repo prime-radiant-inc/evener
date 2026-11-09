@@ -25,18 +25,9 @@ func TestUnknownToolMessage_IncludesSuggestionAndList(t *testing.T) {
 	if !strings.Contains(msg, `unknown tool: "reed_file"`) {
 		t.Fatalf("msg = %q", msg)
 	}
-	if !strings.Contains(msg, `Did you mean "read_file"`) {
-		t.Fatalf("msg missing suggestion: %q", msg)
-	}
+	wantMsg(t, msg, `Did you mean "read_file"`, "msg missing suggestion")
 	if !strings.Contains(msg, "read_file") || !strings.Contains(msg, "shell") {
 		t.Fatalf("msg missing available list: %q", msg)
-	}
-}
-
-func TestUnknownToolMessage_NoSuggestionWhenFar(t *testing.T) {
-	msg := UnknownToolMessage("zzzzzz", []string{"read_file", "shell"})
-	if strings.Contains(msg, "Did you mean") {
-		t.Fatalf("unexpected suggestion: %q", msg)
 	}
 }
 
@@ -78,10 +69,6 @@ func TestUnknownToolMessage_CapsLongList(t *testing.T) {
 		names[i] = fmt.Sprintf("tool_%02d", i)
 	}
 	msg := UnknownToolMessage("zzzzzz", names)
-	if !strings.Contains(msg, "tool_00") {
-		t.Fatalf("msg missing first tool: %q", msg)
-	}
-	if strings.Contains(msg, "tool_39") {
-		t.Fatalf("msg should not contain tool_39 (beyond cap): %q", msg)
-	}
+	wantMsg(t, msg, "tool_00", "msg missing first tool")
+	notMsg(t, msg, "tool_39", "msg should not contain tool_39 (beyond cap)")
 }

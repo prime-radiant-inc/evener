@@ -21,10 +21,7 @@ import (
 func TestQueuedInputRunsWhileAQuestionIsPending(t *testing.T) {
 	t.Parallel()
 	s := newTestSessionForEnvctx(t)
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
+	serveSessionWithMutationStore(t, s)
 	queueOneMutation(t, s, "cm-queued-under-ask", "never mind that, do this instead")
 
 	s.mu.Lock()
@@ -54,10 +51,7 @@ func TestQueuedInputRunsWhileAQuestionIsPending(t *testing.T) {
 func TestProcessPendingUserInputIsANoOpWithAnEmptyQueue(t *testing.T) {
 	t.Parallel()
 	s := newTestSessionForEnvctx(t)
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
+	serveSessionWithMutationStore(t, s)
 
 	_, ran, err := s.ProcessPendingUserInput(context.Background(), nil)
 	if err != nil {
@@ -75,10 +69,7 @@ func TestProcessPendingUserInputIsANoOpWithAnEmptyQueue(t *testing.T) {
 func TestProcessPendingUserInputReportsTheTurnItClaims(t *testing.T) {
 	t.Parallel()
 	s := newTestSessionForEnvctx(t)
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
+	serveSessionWithMutationStore(t, s)
 	queueOneMutation(t, s, "cm-queued-reported", "run me")
 
 	var reported string
@@ -98,10 +89,7 @@ func TestProcessPendingUserInputReportsTheTurnItClaims(t *testing.T) {
 func TestQueuedInputWakeReachesTheDaemon(t *testing.T) {
 	t.Parallel()
 	s := newTestSessionForEnvctx(t)
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
+	serveSessionWithMutationStore(t, s)
 
 	wakes := 0
 	s.SetPendingUserInputWakeFunc(func() { wakes++ })
@@ -124,10 +112,7 @@ func TestQueuedInputWakeReachesTheDaemon(t *testing.T) {
 func TestSteeringIsDeliveredWhileAQuestionIsPending(t *testing.T) {
 	t.Parallel()
 	s := newTestSessionForEnvctx(t)
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
+	serveSessionWithMutationStore(t, s)
 	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
 		ClientMutationID: "cm-steer-under-ask",
 		Input:            []appwire.InputItem{{Type: "text", Text: "take this into account"}},
@@ -152,10 +137,7 @@ func TestSteeringIsDeliveredWhileAQuestionIsPending(t *testing.T) {
 func TestSteeringWakeReachesTheDaemon(t *testing.T) {
 	t.Parallel()
 	s := newTestSessionForEnvctx(t)
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
+	serveSessionWithMutationStore(t, s)
 
 	wakes := 0
 	s.SetPendingUserInputWakeFunc(func() { wakes++ })

@@ -17,7 +17,7 @@ import {
 	type InstanceListResponse,
 } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { ProviderSignIn } from "../providerSignIn";
 import { recordClientReadyHub } from "../connectionIdentity";
 import { RECONNECTING_AFTER_MS } from "../board/connectionStatus";
@@ -48,8 +48,10 @@ vi.mock("react-native", async () => ({
 		addEventListener: () => ({ remove: () => {} }),
 	},
 }));
-vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
-vi.mock("expo-crypto", () => ({ randomUUID: () => "fixture-uuid" }));
+vi.mock("react-native-safe-area-context", () => ({
+	SafeAreaView: "SafeAreaView",
+	useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
 vi.mock("expo-clipboard", () => ({ setStringAsync: async () => {} }));
 vi.mock("expo-web-browser", () => ({
 	openBrowserAsync: async () => ({ type: "dismiss" }),
@@ -75,6 +77,19 @@ vi.mock("@react-navigation/native", async () => {
 });
 function refocus() {
 	for (const effect of [...focus.effects]) effect();
+}
+
+/** Mounts the providers screen against a scripted hub: the standard hub-1
+ * route props, the harness connection, and one settle. Tests that re-render
+ * with tree.update(<ProvidersPage {...props} />) keep the literal mount. */
+async function mountProviders(hub: { client: unknown }): Promise<ReturnType<typeof render>> {
+	harness.connection = screenConnection(hub.client, "ready");
+	const props = {
+		route: { params: { hubId: "hub-1" } },
+	} as unknown as ComponentProps<typeof ProvidersPage>;
+	const tree = render(<ProvidersPage {...props} />);
+	await act(async () => {});
+	return tree;
 }
 
 const rows: InstanceListResponse = {
@@ -435,12 +450,7 @@ it("reconciles an applied removal and warns instead of reporting a failure", asy
 		],
 		"evener/instance/list": [rows, emptied],
 	});
-	harness.connection = screenConnection(hub.client, "ready");
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof ProvidersPage>;
-	const tree = render(<ProvidersPage {...props} />);
-	await act(async () => {});
+	const tree = await mountProviders(hub);
 
 	await openRemoveConfirmation(tree);
 
@@ -471,12 +481,7 @@ it("keeps the generic failure path for an ordinary removal refusal", async () =>
 			}),
 		],
 	});
-	harness.connection = screenConnection(hub.client, "ready");
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof ProvidersPage>;
-	const tree = render(<ProvidersPage {...props} />);
-	await act(async () => {});
+	const tree = await mountProviders(hub);
 
 	await openRemoveConfirmation(tree);
 
@@ -569,12 +574,7 @@ it("asserts the row's endpoint on an edit and reconciles the conflict", async ()
 		],
 		"evener/instance/list": [rows, rows],
 	});
-	harness.connection = screenConnection(hub.client, "ready");
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof ProvidersPage>;
-	const tree = render(<ProvidersPage {...props} />);
-	await act(async () => {});
+	const tree = await mountProviders(hub);
 
 	press(tree, (label) => label.startsWith("work"));
 	await act(async () => {});
@@ -615,12 +615,7 @@ it("reconciles an endpoint-conflict removal: clears, refreshes, and warns", asyn
 		],
 		"evener/instance/list": [rows, rows],
 	});
-	harness.connection = screenConnection(hub.client, "ready");
-	const props = {
-		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof ProvidersPage>;
-	const tree = render(<ProvidersPage {...props} />);
-	await act(async () => {});
+	const tree = await mountProviders(hub);
 
 	await openRemoveConfirmation(tree);
 

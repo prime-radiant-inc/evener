@@ -8,7 +8,9 @@ phone Board draws its
 [pulse meter](../../mobile-native/DESIGN.md#state-marks-and-the-pulse-meter)
 and its `Quiet` and `May be stuck` lines from it. On a hub that tracks seen
 marks, the web reads it for an open, visible session pane whose row carries a
-`seen_through` mark, supplying the session's `lastMovedAt` to that mark.
+`seen_through` mark, supplying the session's `lastMovedAt` to that mark. The
+web rail's title card also reads it while open on a working session, to word
+that row's status.
 
 This is not [session activity](session-activity.md), the scoped
 `evener/thread/*` delegate, job and watch reads. It carries no resource rows
@@ -98,6 +100,21 @@ newest minute instead of ticking toward a false `stuck`. A method-not-found
 answer means the hub predates the read: polling stops for good and the existing
 fallback stays.
 
+On the web, the rail's title card reads one session's entry while the card is
+open. It asks with `refs: [ref]` immediately on open, then every ten seconds
+while the tab is visible; the timer pauses while the tab is hidden, and the
+next visible moment reads at once. A read older than two poll intervals is
+treated as no read, and the card withholds its read while the connection is not
+ready or after the row stops working, so a resumed card asks afresh. A
+method-not-found answer stops the poll for good. The working status names
+running subagents first, then `Quiet` or `May be stuck`, then `latestIntent`,
+then the row's running job command, then the state word; without a read it
+keeps the state word or the running job command. The
+[rail activity hook](../../cmd/evener-hub/frontend/src/shell/rail/railActivity.ts)
+owns this read and the status precedence; [session
+activity](session-activity.md#navigation-session-status) records the
+navigation-side behavior and fallbacks.
+
 The Board draws seven bars on one fixed log scale, full at 64 events per
 minute, with a baseline that always shows, older bars fading, and gray while the
 connection is down. A working session reads `Quiet` after three minutes without
@@ -115,7 +132,7 @@ fallbacks belong to [session activity](session-activity.md).
 
 ## Contracts
 
-- [AppWire types](../../appwire/types.go): `ActivityReadParams`,
+- [AppWire types](../../appwire/types_session.go): `ActivityReadParams`,
   `ActivityReadResponse`, `SessionActivity`. The
   [generated catalog](../appwire-protocol.md#activityreadresponse) carries the
   fields, with [`SessionActivity`](../appwire-protocol.md#sessionactivity) as
@@ -130,6 +147,8 @@ fallbacks belong to [session activity](session-activity.md).
   validation and the shared `Quiet` / `May be stuck` thresholds.
 - [Phone poll](../../mobile-native/src/board/activityPoll.ts) and
   [meter geometry](../../mobile-native/src/board/pulse.ts).
+- [Web rail card](../../cmd/evener-hub/frontend/src/shell/rail/railActivity.ts):
+  the open card's one-ref poll and working-status precedence.
 - [Native design](../../mobile-native/DESIGN.md#state-marks-and-the-pulse-meter):
   the Board's presentation.
 - [Web seen mark](../../cmd/evener-hub/frontend/src/panes/session/markSeen.ts).

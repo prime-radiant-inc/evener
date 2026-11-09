@@ -71,14 +71,14 @@ func expandNode(stateBase string, node TreeNode, paths Paths, opts TreeOpts, dep
 		node.Note = strings.Join(diagnostics, "; ")
 	}
 
-	node.Children = append(node.Children, stableDelegateChildren(stateBase, paths.SessionID, stable, opts, depthRemaining, visited, delegates)...)
+	node.Children = append(node.Children, delegateChildren(stateBase, paths.SessionID, stable, opts, depthRemaining, visited, delegates)...)
 	if opts.Observers {
 		node.Children = append(node.Children, observerChildren(stateBase, paths)...)
 	}
 	return node
 }
 
-func stableDelegateChildren(stateBase, ownerSessionID string, state delegatestore.State, opts TreeOpts, depthRemaining int, visited map[string]bool, delegates delegateCache) []TreeNode {
+func delegateChildren(stateBase, ownerSessionID string, state delegatestore.State, opts TreeOpts, depthRemaining int, visited map[string]bool, delegates delegateCache) []TreeNode {
 	rows := projectDoctorDelegates(ownerSessionID, state)
 	children := make([]TreeNode, 0, len(rows))
 	for _, row := range rows {

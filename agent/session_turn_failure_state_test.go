@@ -106,9 +106,7 @@ func TestWireState_FailedTurnReadsFailedUntilTheNextTurn(t *testing.T) {
 	t.Parallel()
 	sess := failingThenRecoveringSession(t, t.TempDir())
 	defer sess.Close()
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "first", nil); err == nil {
 		t.Fatal("first turn succeeded, want the scripted provider failure")
 	}
@@ -173,9 +171,7 @@ func TestRestore_FailedTurnResumesFailed(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	sess := failingThenRecoveringSession(t, dir)
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "first", nil); err == nil {
 		t.Fatal("first turn succeeded, want the scripted provider failure")
 	}
@@ -199,9 +195,7 @@ func TestRestore_FailedTurnWithQueuedInputResumesActive(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	sess := failingThenRecoveringSession(t, dir)
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "first", nil); err == nil {
 		t.Fatal("first turn succeeded, want the scripted provider failure")
 	}
@@ -246,9 +240,7 @@ func TestSession_FailedTurnWithQueuedInputEndsActiveAndOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventsPtr, mu, doneCh := collectEvents(sess)
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "first", nil); err == nil {
 		t.Fatal("first turn succeeded, want the scripted provider failure")
 	}

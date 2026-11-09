@@ -1,5 +1,6 @@
 import type { HostForwardedResult, HostRequestParams, HostRow, InstanceEntry } from "@evener/appwire-client";
 import { friendlyErrorMessage, WireError } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { deferRequest, FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -130,14 +131,6 @@ function codexHostRequest(poll: () => { state: string }): (params: HostRequestPa
 
 // A read whose answer this test releases itself, so the state under test is the
 // one while that answer is still out.
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
-}
-
 // A device flow polls at its own interval, never faster than once a second
 // (oauthDialogs.tsx). Fake timers own that clock, and the stubbed `jest` global
 // lets Testing Library's findBy/waitFor polls advance it, so a flow's ticks cost

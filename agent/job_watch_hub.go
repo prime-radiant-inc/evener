@@ -1,0 +1,1579 @@
+package agent
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"maps"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/appwire"
+)
+
+const (
+	// hubWatchRetryDelay bounds how long a suspended watch waits before trying
+	// its binding again. The cost of an unnecessary retry is one state read
+	// against a healthy connection; the cost of waiting only for a rebind is an
+	// observation that never resumes.
+	hubWatchRetryDelay = 2 * time.Second
+	// hubWatchStateFailureLimit bounds the consecutive failed continuation
+	// reads a suspended watch retries before that recovery is exhausted, so a
+	// genuinely broken read path produces a notice instead of an indefinite
+	// retry loop.
+	hubWatchStateFailureLimit = 5
+	// hubWatchStateOutageBudget bounds how long the rebind loop keeps a watch
+	// armed through failed state reads or retryable rebind attempts, before
+	// connection recovery counts as exhausted and the watch ends durably with
+	// re-registration guidance. A connection restored and rebound inside the
+	// budget retains the watch (job-control.md).
+	hubWatchStateOutageBudget = 2 * time.Minute
+	// hubWatchStateRetryCeiling caps the backoff between failed state reads.
+	hubWatchStateRetryCeiling = 30 * time.Second
+)
+
+var hubObservationEvents = [...]string{"status", "question", "approval", "communicate"}
+
+const hubRosterWatchKey = "hub:roster"
+
+const rosterRecoveryFrame = "roster_resync: true\nrecovery: re-register the same roster watch — job_watch with hub={\"scope\":\"top_level\"} and the same note — for a fresh snapshot\n"
+
+// Roster JSON is a separate segment from the ordinary 4096-rune watch body.
+// Drop whole entries, never JSON fragments, and leave a bounded recovery trail.
+const hubRosterSegmentRunes = 57344
+const hubRosterDroppedRefs = 64
+
+type hubRosterDropped struct {
+	count int
+	refs  []string
+}
+
+func hubRosterEntryRef(entry json.RawMessage) string {
+	var identity struct {
+		Ref string `json:"ref"`
+	}
+	_ = json.Unmarshal(entry, &identity)
+	return identity.Ref
+}
+
+func hubRosterDroppedFields(dropped hubRosterDropped) string {
+	if dropped.count == 0 {
+		return ""
+	}
+	refs, _ := json.Marshal(dropped.refs)
+	recovery, _ := json.Marshal(struct {
+		PerRef     []string `json:"perRef"`     //nolint:tagliatelle // Model-visible roster recovery field.
+		SmallFleet string   `json:"smallFleet"` //nolint:tagliatelle // Model-visible roster recovery field.
+		Unlisted   int      `json:"unlisted"`
+	}{[]string{"job_status", "read_transcript"}, "job_list", dropped.count - len(dropped.refs)})
+	return fmt.Sprintf("roster_dropped: %d\nroster_dropped_refs: %s\nroster_recovery: %s\n", dropped.count, refs, recovery)
+}
+
+func boundHubRosterSegment(entries []json.RawMessage, inherited hubRosterDropped, markers string) string {
+	const envelope = "roster_events: []\n"
+	prefix := make([]int, len(entries)+1)
+	for i, entry := range entries {
+		prefix[i+1] = prefix[i] + utf8.RuneCount(entry)
+		if i > 0 {
+			prefix[i+1]++ // JSON array comma.
+		}
+	}
+	base := utf8.RuneCountInString(markers + envelope)
+	keep := len(entries)
+	for base+prefix[keep] > hubRosterSegmentRunes {
+		keep--
+	}
+	for {
+		dropped := hubRosterDropped{count: inherited.count + len(entries) - keep, refs: make([]string, 0, hubRosterDroppedRefs)}
+		dropped.refs = append(dropped.refs, inherited.refs[:min(len(inherited.refs), hubRosterDroppedRefs)]...)
+		for _, entry := range entries[keep:] {
+			if len(dropped.refs) == hubRosterDroppedRefs {
+				break
+			}
+			dropped.refs = append(dropped.refs, hubRosterEntryRef(entry))
+		}
+		fields := hubRosterDroppedFields(dropped)
+		// An oversized ref is untrusted data too. Omit whole named refs rather
+		// than clipping their JSON, and account for them through unlisted.
+		for base+utf8.RuneCountInString(fields) > hubRosterSegmentRunes && len(dropped.refs) > 0 {
+			dropped.refs = dropped.refs[:len(dropped.refs)-1]
+			fields = hubRosterDroppedFields(dropped)
+		}
+		if base+prefix[keep]+utf8.RuneCountInString(fields) <= hubRosterSegmentRunes {
+			var out strings.Builder
+			out.WriteString(markers)
+			out.WriteString("roster_events: [")
+			for i, entry := range entries[:keep] {
+				if i > 0 {
+					out.WriteByte(',')
+				}
+				out.Write(entry)
+			}
+			out.WriteString("]\n")
+			out.WriteString(fields)
+			return out.String()
+		}
+		keep--
+	}
+}
+
+func hubRosterFrameDropped(frame string) hubRosterDropped {
+	count, _ := strconv.Atoi(rosterFrameField(frame, "roster_dropped: "))
+	var refs []string
+	_ = json.Unmarshal([]byte(rosterFrameField(frame, "roster_dropped_refs: ")), &refs)
+	return hubRosterDropped{count: count, refs: refs}
+}
+
+// The pending send rail replaces earlier frames for the same watch key.
+// Merge only roster frames there, after it finds the actual undelivered state.
+// Resync and authoritative initials replace earlier pending entries. Deltas,
+// including ordinary rebind changes, retain pending entries and initial markers.
+func mergeHubRosterFrames(previous, current string) string {
+	if strings.Contains(current, "\nroster_resync: true\n") ||
+		strings.Contains(current, "\nroster_initial: true\n") {
+		return current
+	}
+	var old, next []json.RawMessage
+	oldPayload := rosterFrameField(previous, "roster_events: ")
+	if oldPayload != "" && json.Unmarshal([]byte(oldPayload), &old) != nil {
+		return current
+	}
+	if json.Unmarshal([]byte(rosterFrameField(current, "roster_events: ")), &next) != nil {
+		return current
+	}
+	positions := make(map[string]int, len(old))
+	merged := make([]json.RawMessage, 0, len(old)+len(next))
+	for _, entry := range append(old, next...) {
+		ref := hubRosterEntryRef(entry)
+		if ref == "" {
+			continue
+		}
+		if at, found := positions[ref]; found {
+			merged[at] = entry
+		} else {
+			positions[ref] = len(merged)
+			merged = append(merged, entry)
+		}
+	}
+	dropped, newDropped := hubRosterFrameDropped(previous), hubRosterFrameDropped(current)
+	dropped.count += newDropped.count
+	dropped.refs = append(dropped.refs, newDropped.refs...)
+	markers := ""
+	if strings.Contains(previous, "\nroster_resync: true\n") {
+		markers = rosterRecoveryFrame
+	} else if strings.Contains(previous, "\nroster_initial: true\n") {
+		markers = "roster_initial: true\n"
+	}
+	var out strings.Builder
+	for line := range strings.SplitAfterSeq(current, "\n") {
+		if !strings.HasPrefix(line, "roster_") {
+			out.WriteString(line)
+		}
+	}
+	out.WriteString(boundHubRosterSegment(merged, dropped, markers))
+	return out.String()
+}
+
+func rosterFrameField(frame, field string) string {
+	for line := range strings.SplitSeq(frame, "\n") {
+		if value, found := strings.CutPrefix(line, field); found {
+			return value
+		}
+	}
+	return ""
+}
+
+// A roster occupies one ordinary live-watch slot and journal identity. Its
+// source is top_level, while the reserved target keys its registration.
+// note rides its frames like any watch's payload.
+func (jm *jobManager) configureHubRosterWatch(ctx context.Context, caller, note string) (watchResult, error) {
+	a := watchArgs{Target: hubRosterWatchKey, Source: hubRosterWatchKey, Send: &watchSendArgs{To: runtimeMessageAliasCaller}, ReceiverSendInternal: true, Note: note}
+	cfg, err := newWatchConfig(a, jm.now(), "")
+	if err != nil {
+		return watchResult{}, err
+	}
+	cfg.sourcePublic = "top_level"
+	cfg.hubRef, cfg.hubCaller = hubRosterWatchKey, caller
+	cfg.configHash += ":top_level:" + caller
+	key := watchKey{VisibleSessionID: jm.sessionID, Target: hubRosterWatchKey, SendTo: runtimeMessageAliasCaller}
+	jm.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		jm.mu.Unlock()
+		return watchResult{}, err
+	}
+	existing := jm.watches[key]
+	if existing == nil && len(jm.watches) >= maxLiveWatches {
+		jm.mu.Unlock()
+		return watchResult{}, errors.New("invalid_request: too many live watches")
+	}
+	equal, detached, dropped, err := jm.persistWatchReplacementLocked(key, cfg)
+	if err != nil {
+		jm.mu.Unlock()
+		return watchResult{}, err
+	}
+	if equal {
+		cfg = existing
+	} else {
+		if existing != nil {
+			jm.recordWatchEndedLocked(key, existing, "replaced")
+			closeWatchConfig(existing)
+		}
+		jm.watches[key] = cfg
+	}
+	result := watchResultFromConfig(cfg, existing != nil && !equal)
+	jm.mu.Unlock()
+	jm.removeWatchSendTerminalSnapshots(dropped)
+	jm.forgetDetachedWatchSendConfigsIfEmpty(detached)
+	return result, nil
+}
+
+// A transport rebind restarts hub revisions, but keeps the old baseline until
+// its replacement snapshot arrives so unchanged entries do not wake the Manager.
+func (jm *jobManager) resetHubRosterRevision(id string) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	if _, cfg, ok := jm.watchConfigByIDLocked(id); ok && cfg.hubRef == hubRosterWatchKey {
+		cfg.rosterBound = false
+	}
+}
+
+func (jm *jobManager) onHubRoster(id string, update appwire.SessionWatchUpdate) error {
+	if update.Roster == nil {
+		return nil
+	}
+	r := update.Roster
+	jm.mu.Lock()
+	_, cfg, ok := jm.watchConfigByIDLocked(id)
+	if !ok || cfg.hubRef != hubRosterWatchKey || cfg.rejectingDelivery || (cfg.rosterBound && r.Revision <= cfg.rosterRevision) {
+		jm.mu.Unlock()
+		return nil
+	}
+	cfg.rosterRevision, cfg.rosterBound = r.Revision, true
+	var changed []appwire.RosterEvent
+	deliverInitial := r.Initial && (cfg.rosterBaseline == nil || cfg.rosterNeedsResync)
+	switch {
+	case r.Resync:
+		alreadyResync := cfg.rosterNeedsResync
+		cfg.rosterBaseline = nil
+		cfg.rosterNeedsResync = true
+		if alreadyResync {
+			jm.mu.Unlock()
+			return nil
+		}
+	case r.Initial:
+		cfg.rosterNeedsResync = false
+		next := make(map[string]appwire.AttentionEntry, len(r.Events))
+		for _, event := range r.Events {
+			if event.Ref == "" {
+				continue
+			}
+			next[event.Ref] = appwire.CloneAttentionEntry(event.AttentionEntry)
+			old, known := cfg.rosterBaseline[event.Ref]
+			// Fresh observation time alone is not a new roster fact on rebind.
+			old.PublishedAt = event.PublishedAt
+			if !known || !appwire.EqualAttentionEntry(old, event.AttentionEntry) {
+				if !deliverInitial && (!known || old.ID != event.ID || old.RosterInstanceID != event.RosterInstanceID) {
+					event.Kind = "new"
+				}
+				changed = append(changed, event)
+			}
+		}
+		for ref, old := range cfg.rosterBaseline {
+			if _, present := next[ref]; !present {
+				changed = append(changed, appwire.RosterEvent{AttentionEntry: old, Kind: "disappeared"})
+			}
+		}
+		cfg.rosterBaseline = next
+	default:
+		if cfg.rosterBaseline == nil {
+			if !cfg.rosterNeedsResync {
+				cfg.rosterBaseline = make(map[string]appwire.AttentionEntry)
+			}
+		}
+		for _, event := range r.Events {
+			if event.Ref == "" {
+				continue
+			}
+			if !cfg.rosterNeedsResync {
+				if event.Kind == "disappeared" {
+					delete(cfg.rosterBaseline, event.Ref)
+				} else {
+					cfg.rosterBaseline[event.Ref] = appwire.CloneAttentionEntry(event.AttentionEntry)
+				}
+			}
+			changed = append(changed, event)
+		}
+	}
+	if !r.Resync && !deliverInitial && len(changed) == 0 {
+		jm.mu.Unlock()
+		return nil
+	}
+	trigger := "roster resync: re-register the same roster watch — job_watch with hub={scope:top_level} and the same note — for a fresh snapshot"
+	var payload string
+	if !r.Resync {
+		type rosterChange struct {
+			appwire.AttentionEntry
+			Kind            string `json:"kind"`
+			AskPending      bool   `json:"askPending"`              //nolint:tagliatelle // The model-visible roster contract uses askPending.
+			ApprovalPending bool   `json:"approvalPending"`         //nolint:tagliatelle // The model-visible roster contract uses approvalPending.
+			NeedsResponse   bool   `json:"needsResponse"`           //nolint:tagliatelle // The model-visible roster contract uses needsResponse.
+			TruncatedList   bool   `json:"truncatedList,omitempty"` //nolint:tagliatelle // Model-visible roster field.
+			ListReason      string `json:"listReason,omitempty"`    //nolint:tagliatelle // Model-visible roster field.
+		}
+		refs := make([]json.RawMessage, 0, len(changed))
+		for _, event := range changed {
+			entry := appwire.CloneAttentionEntry(event.AttentionEntry)
+			entry.CompositeTotal = max(entry.CompositeTotal, len(entry.CompositeList))
+			entry.CompositeList = entry.CompositeList[:min(len(entry.CompositeList), appwire.MaxPendingAskComposites)]
+			truncated := entry.CompositeTotal > len(entry.CompositeList)
+			reason := ""
+			if truncated {
+				reason = "unavailable"
+				if entry.AskPageable {
+					reason = "pageable"
+				}
+			}
+			encoded, err := json.Marshal(rosterChange{AttentionEntry: entry, Kind: event.Kind, AskPending: event.AskPending, ApprovalPending: event.ApprovalPending, NeedsResponse: event.NeedsResponse, TruncatedList: truncated, ListReason: reason})
+			if err != nil {
+				jm.mu.Unlock()
+				return err
+			}
+			refs = append(refs, encoded)
+		}
+		markers := ""
+		if deliverInitial {
+			markers = "roster_initial: true\n"
+		}
+		payload = boundHubRosterSegment(refs, hubRosterDropped{}, markers)
+		trigger = fmt.Sprintf("roster revision %d, %d changes", r.Revision, len(changed))
+	}
+	delivery := jm.watchSendSnapshot(cfg, hubRosterWatchKey, trigger, events.SessionEvent{SessionID: jm.sessionID})
+	delivery.rosterPayload = payload
+	delivery.rosterInitial, delivery.rosterResync = deliverInitial, r.Resync
+	jm.mu.Unlock()
+	if err := jm.recordWatchSendsAndKickErr([]watchSendDelivery{delivery}); err != nil {
+		jm.mu.Lock()
+		// The baseline advanced before persistence. A fresh snapshot must now
+		// replace it authoritatively, even if the hub restarts its revisions.
+		if _, current, ok := jm.watchConfigByIDLocked(id); ok && current.hubRef == hubRosterWatchKey {
+			current.rosterBaseline = nil
+			current.rosterNeedsResync = true
+			current.rosterRevision, current.rosterBound = 0, false
+		}
+		jm.mu.Unlock()
+		return err
+	}
+	return nil
+}
+
+func hubObservationSelector(event string) bool {
+	return slices.Contains(hubObservationEvents[:], event)
+}
+
+func validateHubWatchSelectors(selectors []string, completion bool, every int) error {
+	// every counts observations of one selected kind, the ordinary path's
+	// single-kind rule applied to the hub vocabulary; it is checked first so
+	// a watch that names neither events nor completion is refused for the
+	// argument it got wrong.
+	if every > 0 && len(selectors) != 1 {
+		return errors.New(`invalid_request: every requires the hub object's events to name exactly one kind (e.g. hub={"ref":"local:...","events":["communicate"]} with every 3)`)
+	}
+	if len(selectors) == 0 && !completion {
+		return errors.New("invalid_request: watch needs events or completion")
+	}
+	for _, event := range selectors {
+		if !hubObservationSelector(event) {
+			return fmt.Errorf("invalid_request: unsupported hub observation %q", event)
+		}
+	}
+	return nil
+}
+
+// Hub watches use the same journal, pending-send rail and watch ID as ordinary
+// watches. Their source is a canonical ref, not a local job or event stream.
+// caller names the Manager whose binding admitted the watch; the durable
+// identity keys on the target triple plus that caller, so two Managers
+// watching the same target keep distinct watches. note is the ordinary
+// payload and rides every delivery; every > 0 throttles observation fires of
+// the single selected kind, the ordinary every-Nth semantics applied to hub
+// observations.
+func (jm *jobManager) configureHubWatchContext(ctx context.Context, ref, instance, generation, caller string, selectors []string, completion bool, note string, every int) (watchResult, error) {
+	if ref == "" || instance == "" || generation == "" || caller == "" {
+		return watchResult{}, errors.New("source_not_watchable: authoritative hub target generation and Manager caller are required")
+	}
+	if err := validateHubWatchSelectors(selectors, completion, every); err != nil {
+		return watchResult{}, err
+	}
+	a := watchArgs{Target: ref, Source: ref, Send: &watchSendArgs{To: runtimeMessageAliasCaller}, ReceiverSendInternal: true, Note: note}
+	cfg, err := newWatchConfig(a, jm.now(), "")
+	if err != nil {
+		return watchResult{}, err
+	}
+	cfg.events = canonicalWatchEvents(selectors)
+	// The every-Nth count for hub observations shares the ordinary path's
+	// counter: the ordinary evaluator never advances it for a hub config,
+	// because its target (a session ref) is never an active watch target and
+	// its triggerKind stays unset.
+	cfg.triggerEvery = every
+	cfg.hubRef, cfg.hubInstance, cfg.hubGeneration, cfg.hubCaller, cfg.hubCompletion = ref, instance, generation, caller, completion
+	cfg.configHash = fmt.Sprintf("%s:%s:%s:%s:%s:%v:%v:%d", cfg.configHash, ref, instance, generation, caller, cfg.events, completion, every)
+	key := watchKey{VisibleSessionID: jm.sessionID, Target: ref, SendTo: runtimeMessageAliasCaller}
+	jm.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		jm.mu.Unlock()
+		return watchResult{}, err
+	}
+	existing := jm.watches[key]
+	if existing == nil && len(jm.watches) >= maxLiveWatches {
+		jm.mu.Unlock()
+		return watchResult{}, errors.New("invalid_request: too many live watches")
+	}
+	equal, detachedCfgs, dropped, err := jm.persistWatchReplacementLocked(key, cfg)
+	if err != nil {
+		jm.mu.Unlock()
+		return watchResult{}, err
+	}
+	if equal {
+		cfg = existing
+	} else {
+		if existing != nil {
+			jm.recordWatchEndedLocked(key, existing, "replaced")
+			closeWatchConfig(existing)
+		}
+		jm.watches[key] = cfg
+	}
+	result := watchResultFromConfig(cfg, existing != nil && !equal)
+	jm.mu.Unlock()
+	jm.removeWatchSendTerminalSnapshots(dropped)
+	jm.forgetDetachedWatchSendConfigsIfEmpty(detachedCfgs)
+	return result, nil
+}
+
+func hubObservationIdentity(m appwire.SessionObservationMetadata) string {
+	if m.EntryID == "" {
+		return ""
+	}
+	return m.InstanceID + "/" + m.GenerationID + "/" + m.EntryID
+}
+
+// onHubObservation accepts evidence from the bound serving generation. Turn
+// identity, not the serving boot, selects recorded completion evidence. The
+// terminal send is persisted with the watch's clear, then its wake token is
+// queued, and only then does the live ended row appear.
+func (jm *jobManager) onHubObservation(watchID string, update appwire.SessionWatchUpdate) error {
+	return jm.onHubObservationEvidence(watchID, update, false)
+}
+
+// recorded means the evidence came from an already validated snapshot. Its
+// execution provenance need not name the current serving boot, so do not fill
+// missing provenance with the subscription's identity.
+func (jm *jobManager) onHubObservationEvidence(watchID string, update appwire.SessionWatchUpdate, recorded bool) error {
+	return jm.onHubObservationLookup(watchID, update, recorded, nil)
+}
+
+type hubAnswerLookup func(ref, instance, generation, ancestor, candidate string) (bool, error)
+
+func (jm *jobManager) onHubObservationLookup(watchID string, update appwire.SessionWatchUpdate, recorded bool, lookup hubAnswerLookup) error {
+	jm.mu.Lock()
+	_, cfg, ok := jm.watchConfigByIDLocked(watchID)
+	if !ok || cfg.hubRef == "" {
+		jm.mu.Unlock()
+		return nil
+	}
+	if update.Notification != nil && update.Notification.Method == appwire.NotifyEvenerThreadResync {
+		jm.mu.Unlock()
+		// A resync re-reads authoritative state while the notification drain
+		// continues: the hub runtime refreshes right after forwarding the
+		// notification, and the snapshot from that re-read resumes the watch
+		// and replays recorded evidence (deduplicated by hubSeen). It is not
+		// an observation loss, so it owes no interruption notice.
+		return nil
+	}
+	if update.Snapshot != nil {
+		read := update.Snapshot
+		if read.Thread.Evener.Ref != cfg.hubRef || read.Thread.Evener.InstanceID != cfg.hubInstance || read.BootGeneration != cfg.hubGeneration {
+			jm.mu.Unlock()
+			return nil
+		}
+		if !cfg.hubTurnBound {
+			cfg.hubTurnID = read.Thread.Evener.ActiveTurnID
+			if cfg.hubTurnID == "" {
+				// The indexed read classifies execution spans independently of the
+				// item window, which may end with non-execution history turns.
+				cfg.hubTurnID = read.LatestExecutionTurnID
+			}
+			cfg.hubTurnBound = cfg.hubTurnID != ""
+		}
+		cfg.hubSuspended = false
+		jm.mu.Unlock()
+		if update.Snapshot.Thread.Evener.AskPending {
+			question := update.Metadata
+			question.EntryID = "question:" + update.Snapshot.Thread.Evener.ActiveTurnID
+			if pending := update.Snapshot.Thread.Evener.PendingQuestion; pending != nil {
+				identity := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d", pending.Question, pending.Count)))
+				question.EntryID += ":" + hex.EncodeToString(identity[:])
+			}
+			question.CausalKnown = true
+			if err := jm.onHubObservation(watchID, appwire.SessionWatchUpdate{Metadata: question, Event: "question"}); err != nil {
+				return err
+			}
+		}
+		for _, escalation := range update.Snapshot.Thread.Evener.PendingEscalations {
+			approval := update.Metadata
+			approval.EntryID = "approval:" + escalation.EscalationID
+			approval.CausalKnown = true
+			if err := jm.onHubObservation(watchID, appwire.SessionWatchUpdate{Metadata: approval, Event: "approval"}); err != nil {
+				return err
+			}
+		}
+		for _, turn := range update.Snapshot.Thread.Turns {
+			for _, item := range turn.Items {
+				if item.Observation == nil {
+					continue
+				}
+				meta := *item.Observation
+				if meta.EntryID == "" {
+					meta.EntryID = item.TranscriptKey
+					if meta.EntryID == "" {
+						meta.EntryID = item.ID
+					}
+				}
+				if meta.TurnID == "" {
+					meta.TurnID = turn.ID
+				}
+				u := appwire.SessionWatchUpdate{Metadata: meta, Event: "communicate"}
+				if err := jm.onHubObservationLookup(watchID, u, true, lookup); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	m := update.Metadata
+	if len(m.AnswerToTurnIDs) != 0 {
+		jm.mu.Unlock()
+		return nil // Answer input is history evidence, not a communicate event.
+	}
+	if !recorded && (m.Ref != cfg.hubRef || m.InstanceID != cfg.hubInstance || m.GenerationID != cfg.hubGeneration) {
+		jm.mu.Unlock()
+		return nil
+	}
+	switch update.Event {
+	case "", "status", "question", "approval", "communicate":
+	default:
+		jm.mu.Unlock()
+		return fmt.Errorf("unsupported hub observation %q; re-register", update.Event)
+	}
+	// Delivery identity belongs to this subscription, not the historical boot.
+	identityMetadata := m
+	identityMetadata.InstanceID, identityMetadata.GenerationID = cfg.hubInstance, cfg.hubGeneration
+	entryIdentity := hubObservationIdentity(identityMetadata)
+	if entryIdentity == "" {
+		jm.mu.Unlock()
+		return nil
+	}
+	if !cfg.hubTurnBound && m.TurnID != "" {
+		cfg.hubTurnID, cfg.hubTurnBound = m.TurnID, true
+	}
+	matchingTurn := !cfg.hubTurnBound || m.TurnID == cfg.hubTurnID
+	terminal := cfg.hubCompletion && m.CausalKnown && m.TerminalAccepted != nil && *m.TerminalAccepted && m.EndTurn && (m.EndReason == "done" || m.EndReason == "")
+	if terminal && !matchingTurn && m.TurnID != "" && lookup != nil {
+		bound := cfg.hubTurnID
+		ref, instance, generation := cfg.hubRef, cfg.hubInstance, cfg.hubGeneration
+		jm.mu.Unlock()
+		matches, err := lookup(ref, instance, generation, bound, m.TurnID)
+		jm.mu.Lock()
+		_, current, present := jm.watchConfigByIDLocked(watchID)
+		if !present || current != cfg || cfg.rejectingDelivery || cfg.hubTurnID != bound || cfg.hubRef != ref || cfg.hubInstance != instance || cfg.hubGeneration != generation {
+			jm.mu.Unlock()
+			return nil
+		}
+		if err != nil {
+			jm.mu.Unlock()
+			return err
+		}
+		matchingTurn = matches
+	}
+	complete := terminal && matchingTurn
+	identity := entryIdentity + ":" + update.Event
+	if complete {
+		// One recorded entry can first arrive without an acceptance verdict.
+		// Its later terminal verdict must not inherit the earlier event's dedup.
+		identity += ":completed"
+	}
+	if cfg.hubSeen == nil {
+		cfg.hubSeen = map[string]bool{}
+	}
+	if cfg.hubSeen[identity] {
+		jm.mu.Unlock()
+		return nil
+	}
+	event := update.Event
+	if event == "" && len(cfg.events) == 1 {
+		event = cfg.events[0]
+	}
+	selected := slices.Contains(cfg.events, event)
+	if !m.CausalKnown {
+		complete = false
+		event = "replay gap: unknown causality"
+		selected = true
+	}
+	if !selected && !complete {
+		jm.mu.Unlock()
+		return nil
+	}
+	// every throttles matching observations the way the ordinary path's
+	// every-Nth trigger does: each Nth selected observation delivers, the rest
+	// count silently and stay clear of the condition-fire breaker, which on
+	// the ordinary path never sees a throttled event either. A suppressed
+	// observation commits its dedup marker so a replay of the same entry is
+	// not a new occurrence. Completion is the watch's terminal condition and
+	// replay-gap evidence is recovery information, so neither is throttled.
+	// The counter is the ordinary path's own cfg.eventCount, which the
+	// ordinary evaluator never advances for a hub config (see
+	// configureHubWatchContext).
+	if m.CausalKnown && !complete && cfg.triggerEvery > 0 {
+		cfg.eventCount++
+		if cfg.eventCount%cfg.triggerEvery != 0 {
+			cfg.hubSeen[identity] = true
+			jm.mu.Unlock()
+			return nil
+		}
+	}
+	crossedBudget := false
+	if m.CausalKnown && !complete {
+		var accepted bool
+		accepted, crossedBudget = noteConditionFireLocked(cfg)
+		if !accepted {
+			jm.mu.Unlock()
+			return nil
+		}
+	}
+	// The completion's dedup marker commits only after its terminal send
+	// persists (in the end retry below): a failed end leaves the watch
+	// registered — and reusable by an identical re-registration — where a
+	// committed marker would suppress the replay that re-delivers the
+	// completion once journal writes return.
+	if !complete {
+		cfg.hubSeen[identity] = true
+	}
+	trigger := event
+	if complete {
+		trigger = "completed: accepted terminal done"
+	}
+	root := events.SessionEvent{SessionID: jm.sessionID, Kind: events.EventCommunicate, Provenance: m.Causal}
+	delivery := jm.watchSendSnapshot(cfg, identity, trigger, root).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, m.Causal))
+	jm.mu.Unlock()
+	if complete {
+		if err := jm.endHubWatchUntilPersisted(watchID, "completed", &delivery); err != nil {
+			return err
+		}
+		jm.mu.Lock()
+		if _, current, ok := jm.watchConfigByIDLocked(watchID); ok && current == cfg {
+			if cfg.hubSeen == nil {
+				cfg.hubSeen = map[string]bool{}
+			}
+			cfg.hubSeen[identity] = true
+		}
+		jm.mu.Unlock()
+		return nil
+	}
+	jm.recordWatchSendsAndKick([]watchSendDelivery{delivery})
+	if crossedBudget {
+		jm.autoClearWatchOverBudget(cfg)
+	}
+	return nil
+}
+
+// suspendHubWatch reports a single observation-loss episode without ending the
+// durable watch or discarding a pending delivery.
+func (jm *jobManager) suspendHubWatch(watchID string) error {
+	jm.mu.Lock()
+	_, cfg, ok := jm.watchConfigByIDLocked(watchID)
+	if !ok || cfg.hubRef == "" || cfg.hubSuspended {
+		jm.mu.Unlock()
+		return nil
+	}
+	cfg.hubSuspended = true
+	delivery := jm.watchSendSnapshot(cfg, cfg.hubRef+"#interruption", "observation interrupted: waiting for recovery", events.SessionEvent{SessionID: jm.sessionID})
+	jm.mu.Unlock()
+	jm.recordWatchSendsAndKick([]watchSendDelivery{delivery})
+	return nil
+}
+
+// suspendHubWatchQuiet marks the episode that suspendHubWatch notices,
+// without delivering the interruption frame: the stream-end arm defers the
+// loss notice until the rebind outcome is known, so a rebind that succeeds
+// inside the outage budget owes no frame, while every recovery that fails
+// still ends the watch durably with re-registration guidance (job-control.md).
+func (jm *jobManager) suspendHubWatchQuiet(watchID string) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	if _, cfg, ok := jm.watchConfigByIDLocked(watchID); ok && cfg.hubRef != "" {
+		cfg.hubSuspended = true
+	}
+}
+
+func (jm *jobManager) resumeHubWatch(watchID string) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	if _, cfg, ok := jm.watchConfigByIDLocked(watchID); ok {
+		cfg.hubSuspended = false
+	}
+}
+
+func (jm *jobManager) endHubWatch(watchID, reason string, completion *watchSendDelivery) error {
+	jm.mu.Lock()
+	key, cfg, ok := jm.watchConfigByIDLocked(watchID)
+	if !ok || cfg.hubRef == "" {
+		jm.mu.Unlock()
+		return nil
+	}
+	cfg.rejectingDelivery = true
+	// The terminal delivery's eligibility must survive settlement of the
+	// last prior pending send inside the unlock-to-record window below:
+	// terminalDeliveryPending keeps forgetTerminalFlushIfEmptyLocked from
+	// dropping the flush entry the terminal send needs to still count as
+	// current. Cleared again on every completion and rollback path.
+	cfg.terminalDeliveryPending = true
+	jm.rememberDetachedPendingLocked(cfg)
+	var delivery watchSendDelivery
+	if completion != nil {
+		delivery = *completion
+	} else {
+		delivery = jm.watchSendSnapshot(cfg, cfg.hubRef+"#ended", "watch ended: "+strings.TrimSpace(reason)+"; re-register if observation is still needed", events.SessionEvent{SessionID: jm.sessionID})
+		delivery.endNotice = true
+	}
+	delivery.allowAfterTerminalExpiry = true
+	jm.mu.Unlock()
+	if jm.testOnlyBeforeTerminalWatchSend != nil {
+		jm.testOnlyBeforeTerminalWatchSend()
+	}
+	delivery = jm.snapshotWatchSendFrame(delivery)
+	state, _, recorded, err := jm.recordWatchSend(delivery, []jobstore.Event{watchClearedEvent(jm, cfg, reason)})
+	committed := state.DeliveryID != ""
+	if !committed {
+		jm.mu.Lock()
+		cfg.rejectingDelivery = false
+		cfg.terminalDeliveryPending = false
+		delete(jm.terminalFlush, cfg)
+		jm.mu.Unlock()
+		if err == nil {
+			err = errors.New("terminal watch send was not persisted")
+		}
+		return err
+	}
+	// Queue the terminal wake BEFORE the ended state is published. A consumer
+	// that observes the watch ended and then runs the one notification turn its
+	// wake asked for must find the completion frame already pending to drain;
+	// if the ended row came first, that turn could drain only the preceding
+	// communicate token, leaving the completion receipt to a later turn that a
+	// directly-driven Manager never runs. The token resolves against the live
+	// watch until the config moves below, and against the terminal flush entry
+	// after, so it is never orphaned by the detach.
+	if recorded {
+		if state.Key.ResolvedSendTo == runtimeMessageAliasCaller {
+			if !jm.enqueueNotifications([]jobNotification{watchSendTokenNotification("", state)}) {
+				jm.kick()
+			}
+		} else {
+			jm.kick()
+		}
+	}
+	jm.mu.Lock()
+	if jm.watches[key] != cfg {
+		cfg.terminalDeliveryPending = false
+		jm.forgetTerminalFlushIfEmptyLocked(cfg)
+		jm.mu.Unlock()
+		return nil
+	}
+	delete(jm.watches, key)
+	jm.recordWatchEndedLocked(key, cfg, reason)
+	cfg.rejectingDelivery = false
+	jm.rememberDetachedPendingLocked(cfg)
+	jm.mu.Unlock()
+	if jm.testOnlyAfterHubWatchDetach != nil {
+		jm.testOnlyAfterHubWatchDetach()
+	}
+	jm.mu.Lock()
+	cfg.terminalDeliveryPending = false
+	jm.forgetTerminalFlushIfEmptyLocked(cfg)
+	jm.mu.Unlock()
+	jm.publishWatchActivity()
+	return err
+}
+
+// endHubWatchUntilPersisted keeps ownership of an end the way the completion
+// path does: a failed journal write is not an observation failure, and the
+// pending-send retention is disabled for terminal sends while the config
+// rejects deliveries, so no other path can finish this end. The caller —
+// completion or a consumer that is already exiting — retries the same end
+// until it persists, the manager closes, or the watch is ended or replaced by
+// another path. Abandoning the end after a bounded window would strand the
+// registered watch with no consumer and no re-registration notice.
+func (jm *jobManager) endHubWatchUntilPersisted(watchID, reason string, completion *watchSendDelivery) error {
+	for {
+		err := jm.endHubWatch(watchID, reason, completion)
+		if err == nil {
+			return nil
+		}
+		if jm.isClosing() || !managerHubWatchPresent(jm, watchID) {
+			return err
+		}
+		delay := hubWatchRetryDelay
+		if jm.testOnlyTerminalSendRetryDelay > 0 {
+			delay = jm.testOnlyTerminalSendRetryDelay
+		}
+		time.Sleep(delay)
+	}
+}
+
+// restore uses the existing restart end-notice rail, including generations
+// that spoke before the runtime died; no continuing hub watch is restored.
+func hubWatchLostAtRestart(w *jobstore.WatchRecord) bool { return w != nil && w.HubRef != "" }
+
+// The roster's durable ID is reused across registrations. One setup owns the
+// entire join/open/install transaction, including cleanup, so neither an old
+// failure nor an uninstalled initial snapshot can affect a later registration.
+func (jm *jobManager) lockHubRosterReplacement(ctx context.Context) (func(), error) {
+	jm.mu.Lock()
+	if jm.hubRosterReplacement == nil {
+		jm.hubRosterReplacement = make(chan struct{}, 1)
+	}
+	gate := jm.hubRosterReplacement
+	jm.mu.Unlock()
+	select {
+	case gate <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			<-gate
+			return nil, err
+		}
+		return func() { <-gate }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// hubWatchOrdinaryArgs parses the ordinary job_watch arguments that apply to a
+// hub watch and refuses each one that cannot apply, naming it.
+//
+// note is the watch's prose payload and every throttles observation fires, so
+// both behave exactly as on the ordinary path: the same parse helpers, the same
+// normalizeWatchArgs bounds, and — once the watch is configured — the same
+// cfg.note and cfg.triggerEvery storage the ordinary rails read. The remaining
+// ordinary arguments select triggers a session watch cannot express (a concrete
+// job's output or progress, a self timer, an assistant.tool filter, or the
+// ordinary source spelling), and a refusal naming the argument tells the
+// caller which of the two vocabularies it reached for. Every trigger argument
+// is parsed into the watchArgs so present-but-neutral values are judged by the
+// same watchTriggerArgumentIsNeutral the ordinary path uses, and the per-key
+// refusals run before normalizeWatchArgs, so a well-formed value of an
+// inapplicable argument is answered with the reason it cannot apply rather
+// than the bounds of a trigger it can never arm; a type-malformed value is
+// answered by its parse error, which still names the field. Keys are visited
+// in sorted order so a call with several inapplicable arguments always
+// reports the same one first.
+func hubWatchOrdinaryArgs(args map[string]any) (watchArgs, error) {
+	a := watchArgs{Note: stringArg(args, "note")}
+	for _, field := range []struct {
+		key string
+		dst *int
+	}{
+		{"every", &a.Every},
+		{"progress_interval_ms", &a.ProgressIntervalMS},
+		{"after_seconds", &a.AfterSeconds},
+		{"repeat_seconds", &a.RepeatSeconds},
+	} {
+		n, ok, err := watchIntArg(args, field.key)
+		if err != nil {
+			return watchArgs{}, err
+		}
+		if ok {
+			*field.dst = n
+		}
+	}
+	a.OutputMatch = stringArg(args, "output_match")
+	events, err := stringArrayArg(args, "events")
+	if err != nil {
+		return watchArgs{}, err
+	}
+	a.Events = events
+	a.EventFilter, err = watchEventFilterArg(args)
+	if err != nil {
+		return watchArgs{}, err
+	}
+	for _, key := range slices.Sorted(maps.Keys(args)) {
+		value := args[key]
+		switch key {
+		case "operation", "hub", "intent", "note", "every":
+			// Parsed above or owned by the hub branch below.
+		case "events", "output_match", "progress_interval_ms", "after_seconds", "repeat_seconds", "event_filter":
+			if !watchTriggerArgumentIsNeutral(key, value, a) {
+				return watchArgs{}, inapplicableHubWatchArgumentError(key)
+			}
+		case "source":
+			if !emptyStringArgument(value) {
+				return watchArgs{}, errors.New("invalid_request: a hub watch names its target in the hub object's ref, not in source")
+			}
+		case "watch_id":
+			if !emptyStringArgument(value) {
+				return watchArgs{}, errors.New("invalid_request: a hub watch create mints its own watch_id; list, inspect and clear take watch_id without the hub argument")
+			}
+		case "target":
+			if !emptyStringArgument(value) {
+				return watchArgs{}, errors.New("invalid_request: a hub watch names its target in the hub object's ref, not in target")
+			}
+		case "send":
+			if value != nil {
+				return watchArgs{}, errors.New("invalid_request: job_watch delivers to the watcher automatically; send is not a public argument")
+			}
+		case "receiver_session_id", "receiver_delegate_id":
+			if !emptyStringArgument(value) {
+				return watchArgs{}, fmt.Errorf("invalid_request: %s is derived from the watcher session and cannot be set on a hub watch", key)
+			}
+		default:
+			return watchArgs{}, fmt.Errorf("invalid_request: %q is not a job_watch argument", key)
+		}
+	}
+	if err := normalizeWatchArgs(&a); err != nil {
+		return watchArgs{}, err
+	}
+	return a, nil
+}
+
+// inapplicableHubWatchArgumentError names one ordinary trigger argument that
+// has no meaning for a watch whose subject is a session, with the reason it
+// cannot apply.
+func inapplicableHubWatchArgumentError(key string) error {
+	switch key {
+	case "events":
+		return errors.New(`invalid_request: a hub watch selects its event kinds inside the hub object (hub={"ref":...,"events":["status","question","approval","communicate"]}), not in the top-level events argument`)
+	case "output_match":
+		return errors.New("invalid_request: output_match scans a concrete job's retained output, and a hub watch observes a session, which has no output stream; select events or completion inside the hub object")
+	case "progress_interval_ms":
+		return errors.New("invalid_request: progress_interval_ms paces periodic progress on a concrete job's output, and a hub watch observes a session, which has no output stream")
+	case "after_seconds", "repeat_seconds":
+		return fmt.Errorf("invalid_request: %s arms a timer on source self, and a hub watch's source is the watched session named by the hub object's ref", key)
+	case "event_filter":
+		return errors.New("invalid_request: event_filter narrows assistant.tool events by tool_name and ok/error status, and hub observations are status, question, approval and communicate events, which carry neither")
+	}
+	return fmt.Errorf("invalid_request: %s cannot apply to a hub watch", key)
+}
+
+// emptyStringArgument reports a value that reads as omitted: null or the empty
+// string.
+func emptyStringArgument(value any) bool {
+	if value == nil {
+		return true
+	}
+	s, ok := value.(string)
+	return ok && s == ""
+}
+
+func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]any) (any, error) {
+	ordinary, err := hubWatchOrdinaryArgs(args)
+	if err != nil {
+		return nil, appwire.InvalidParams(err.Error())
+	}
+	if args["operation"] != "create" {
+		return nil, appwire.InvalidParams("hub watches require operation=create")
+	}
+	encoded, err := json.Marshal(args["hub"])
+	if err != nil {
+		return nil, err
+	}
+	var request appwire.SessionWatchRequest
+	decoded, err := decodeManagerArguments[appwire.SessionWatchRequest](encoded)
+	if err != nil {
+		return nil, err
+	}
+	request = *decoded
+	if request.Scope == "top_level" {
+		var supplied map[string]json.RawMessage
+		if err := json.Unmarshal(encoded, &supplied); err != nil {
+			return nil, appwire.InvalidParams(err.Error())
+		}
+		_, refPresent := supplied["ref"]
+		_, completionPresent := supplied["completion"]
+		_, eventsPresent := supplied["events"]
+		if refPresent || completionPresent || eventsPresent {
+			return nil, appwire.InvalidParams("scope cannot combine ref, completion or events")
+		}
+	} else {
+		if request.Scope != "" {
+			return nil, appwire.InvalidParams("unsupported watch scope")
+		}
+		if _, err := appwire.ParseRef(request.Ref); err != nil {
+			return nil, appwire.InvalidParams(err.Error())
+		}
+	}
+	// The roster's events are fixed and not selectable, so every has no kind
+	// to count there; the single-kind rule for target watches lives in
+	// validateHubWatchSelectors, which configureHubWatchContext re-checks for
+	// the seam it owns.
+	if ordinary.Every > 0 && request.Scope == "top_level" {
+		return nil, appwire.InvalidParams("invalid_request: every counts one selected event kind, and the top-level roster watch's events are fixed: new, needs_you, error, disappeared")
+	}
+	// Request-shape validation runs before the client is touched, so a
+	// malformed watch fails fast without a round trip.
+	if request.Scope == "" {
+		if err := validateHubWatchSelectors(request.Events, request.Completion, ordinary.Every); err != nil {
+			return nil, appwire.InvalidParams(err.Error())
+		}
+	}
+	s.mu.Lock()
+	client, enabled, closing := s.hubClient, s.hubEnabled, s.closing
+	s.mu.Unlock()
+	if client == nil {
+		client = s.waitForHubClient(ctx, hubClientBindingWait)
+	}
+	if client == nil || !enabled || closing {
+		return nil, appwire.InvalidRequest("Manager tool unavailable")
+	}
+	state, err := client.State(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !state.Manager {
+		return nil, appwire.InvalidRequest("session is not a Manager")
+	}
+	var rosterManager *jobManager
+	if request.Scope == "top_level" {
+		rosterManager, err = sessionJobManager(s)
+		if err != nil {
+			return nil, err
+		}
+		unlock, err := rosterManager.lockHubRosterReplacement(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer unlock()
+	}
+	var rosterHandoffID string
+	var rosterHandoffDone <-chan struct{}
+	defer func() {
+		if rosterHandoffID != "" {
+			rosterManager.mu.Lock()
+			_, cfg, ok := rosterManager.watchConfigByIDLocked(rosterHandoffID)
+			owns := ok && cfg.rosterConsumerDone == rosterHandoffDone
+			rosterManager.mu.Unlock()
+			if owns {
+				_ = rosterManager.endHubWatchUntilPersisted(rosterHandoffID, "roster replacement subscription failed", nil)
+			}
+		}
+	}()
+	if rosterManager != nil {
+		jm := rosterManager
+		jm.mu.Lock()
+		cfg := jm.watches[watchKey{VisibleSessionID: jm.sessionID, Target: hubRosterWatchKey, SendTo: runtimeMessageAliasCaller}]
+		var id string
+		var done <-chan struct{}
+		if cfg != nil {
+			id, done = cfg.watchID, cfg.rosterConsumerDone
+		}
+		jm.mu.Unlock()
+		if done != nil {
+			rosterHandoffID, rosterHandoffDone = id, done
+			s.cancelHubWatch(id)
+			select {
+			case <-done:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+	}
+	watchCtx, cancel := context.WithCancel(context.Background())
+	stopSetupCancellation := context.AfterFunc(ctx, cancel)
+	defer stopSetupCancellation()
+	// Pair the transport with the binding it is opened against: a handoff or
+	// binding change during setup must not leave it carrying an older signal.
+	s.mu.Lock()
+	client, enabled, closing = s.hubClient, s.hubEnabled, s.closing
+	boundSignal := s.hubWatchSignal
+	s.mu.Unlock()
+	if client == nil || !enabled || closing {
+		cancel()
+		return nil, appwire.InvalidRequest("Manager tool unavailable")
+	}
+	updates, err := client.Watch(watchCtx, request)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	var first appwire.SessionWatchUpdate
+	select {
+	case first = <-updates:
+	case <-ctx.Done():
+		cancel()
+		return nil, ctx.Err()
+	}
+	if (request.Scope == "top_level" && (first.Roster == nil || !first.Roster.Initial)) || (request.Scope == "" && (first.Snapshot == nil || first.Metadata.Ref != request.Ref || first.Metadata.InstanceID == "" || first.Metadata.GenerationID == "")) {
+		cancel()
+		return nil, appwire.Unavailable("observation has no authoritative target generation")
+	}
+	jm, err := sessionJobManager(s)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	var result watchResult
+	if request.Scope == "top_level" {
+		result, err = jm.configureHubRosterWatch(ctx, state.Ref, ordinary.Note)
+	} else {
+		result, err = jm.configureHubWatchContext(ctx, request.Ref, first.Metadata.InstanceID, first.Metadata.GenerationID, state.Ref, request.Events, request.Completion, ordinary.Note, ordinary.Every)
+	}
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	// Stop the setup-context bridge before installing the subscription. This
+	// resolves the handoff: cancellation that already won must clear the durable
+	// registration, while cancellation after this point no longer owns the
+	// established watch.
+	stopSetupCancellation()
+	if err := ctx.Err(); err != nil {
+		cancel()
+		if endErr := jm.endHubWatchUntilPersisted(result.WatchID, "setup canceled after registration", nil); endErr != nil {
+			return nil, errors.Join(err, endErr)
+		}
+		return nil, err
+	}
+	if err := watchCtx.Err(); err != nil {
+		if endErr := jm.endHubWatchUntilPersisted(result.WatchID, "setup canceled after registration", nil); endErr != nil {
+			return nil, errors.Join(err, endErr)
+		}
+		return nil, err
+	}
+	var done chan struct{}
+	if request.Scope == "top_level" {
+		done = make(chan struct{})
+	}
+	installed := s.installHubWatchSubscription(jm, result.WatchID, cancel, done)
+	// A rejected install means another registration already installed a consumer
+	// or the durable watch ended; do not end the winner in the deferred cleanup.
+	rosterHandoffID = ""
+	if installed {
+		if request.Scope == "top_level" {
+			// Only the installed transport may reset revisions or apply its initial.
+			// The replacement gate keeps another setup out until this is complete.
+			rosterHandoffID, rosterHandoffDone = result.WatchID, done
+			jm.resetHubRosterRevision(result.WatchID)
+			if err := jm.onHubRoster(result.WatchID, first); err != nil {
+				s.cancelHubWatch(result.WatchID)
+				close(done)
+				return nil, err
+			}
+			rosterHandoffID = ""
+		}
+		go s.consumeHubWatch(watchCtx, result.WatchID, request, state.Ref, state.InstanceID, boundSignal, updates, first, done)
+	}
+	return marshalWatchResult(result, jobToolResultDefaultMaxChar)
+}
+
+func (s *Session) installHubWatchSubscription(jm *jobManager, id string, cancel context.CancelFunc, done ...chan struct{}) bool {
+	s.mu.Lock()
+	if s.hubWatchCancels == nil {
+		s.hubWatchCancels = map[string]context.CancelFunc{}
+	}
+	// A concurrent create can replace this registration before its transport
+	// is installed. Never resurrect that transport or cancel the winner's.
+	if !managerHubWatchPresent(jm, id) || s.hubWatchCancels[id] != nil {
+		s.mu.Unlock()
+		cancel()
+		return false
+	}
+	var retired []context.CancelFunc
+	for id, stop := range s.hubWatchCancels {
+		if !managerHubWatchPresent(jm, id) {
+			delete(s.hubWatchCancels, id)
+			retired = append(retired, stop)
+		}
+	}
+	s.hubWatchCancels[id] = cancel
+	if len(done) != 0 && done[0] != nil {
+		jm.mu.Lock()
+		if _, cfg, ok := jm.watchConfigByIDLocked(id); ok {
+			cfg.rosterConsumerDone = done[0]
+		}
+		jm.mu.Unlock()
+	}
+	s.mu.Unlock()
+	for _, stop := range retired {
+		stop()
+	}
+	return true
+}
+
+func (s *Session) cancelHubWatch(id string) {
+	s.mu.Lock()
+	cancel := s.hubWatchCancels[id]
+	delete(s.hubWatchCancels, id)
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// hubWatchReadBudget bounds one observation-side operation, not the watch's
+// lifetime. State checks and continuation queries share this existing budget.
+const hubWatchReadBudget = 2 * time.Second
+
+// consumeHubWatch owns just a transport subscription. The job manager owns
+// durable watch state, delivery identities, provenance and restart teardown.
+// callerRef and callerInstance name the Manager whose binding admitted the
+// watch: a recheck ends the watch if the binding no longer serves that same
+// Manager session. boundSignal identifies the hub binding the consumed
+// transport was opened against: a change since then means a replacement
+// transport exists, so a closed stream is a rebind rather than a stream
+// that ended on a healthy connection. It is passed in because the consumer
+// goroutine can start after that replacement is installed.
+func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwire.SessionWatchRequest, callerRef, callerInstance string, boundSignal <-chan struct{}, updates <-chan appwire.SessionWatchUpdate, initial appwire.SessionWatchUpdate, done ...chan struct{}) {
+	if len(done) != 0 && done[0] != nil {
+		defer close(done[0])
+	}
+	defer s.cancelHubWatch(id)
+	jm := s.jobManager
+	if jm == nil {
+		return
+	}
+	// A canceled consumer has been superseded: a re-registration (or
+	// shutdown) canceled this transport and owns the durable watch now. Its
+	// cancellation or a closed subscription it left behind is not evidence
+	// that the target is gone, and ending the watch here would discard the
+	// baseline the replacement is about to compare its snapshot against.
+	endWatch := func(reason string) {
+		if ctx.Err() == nil {
+			_ = jm.endHubWatchUntilPersisted(id, reason, nil)
+		}
+	}
+	stateFailures := 0
+	var outageStart time.Time
+	var held *appwire.SnapshotIdentity
+	var epoch uint64
+	observe := func(update appwire.SessionWatchUpdate) error {
+		if request.Scope == "top_level" {
+			return jm.onHubRoster(id, update)
+		}
+		if read := update.Snapshot; read != nil && read.Snapshot != nil {
+			sameHistory := held != nil && held.Incarnation == read.Snapshot.Incarnation && epoch == read.Epoch
+			if sameHistory && read.Snapshot.Length < held.Length {
+				return errors.New("answer continuation history identity changed")
+			}
+			// A same-target history rebuild replaces the window the held
+			// cut sampled. The snapshot branch below replays the fresh
+			// recorded window under the watch's own delivery dedup, so the
+			// held cut re-anchors on it instead of ending the watch
+			// (job-control.md: index contention or rebuilding recovers
+			// without re-registration).
+			cut := *read.Snapshot
+			held, epoch = &cut, read.Epoch
+		}
+		return jm.onHubObservationLookup(id, update, false, func(ref, instance, generation, ancestor, candidate string) (bool, error) {
+			if held == nil {
+				return false, errors.New("answer continuation has no history identity")
+			}
+			s.mu.Lock()
+			client := s.hubClient
+			s.mu.Unlock()
+			if client == nil {
+				return false, errors.New("answer continuation transport unavailable")
+			}
+			query := &appwire.AnswerContinuationQuery{AncestorTurnID: ancestor, CandidateTurnID: candidate}
+			var result appwire.SessionOperationResponse
+			for failures := 1; ; failures++ {
+				readCtx, cancel := context.WithTimeout(ctx, hubWatchReadBudget)
+				var err error
+				result, err = client.Invoke(readCtx, appwire.SessionOperationRequest{Read: &appwire.ThreadReadParams{Ref: ref, HeldSnapshot: held, AnswerContinuation: query}})
+				if err == nil {
+					err = readCtx.Err()
+				}
+				cancel()
+				if ctx.Err() != nil {
+					return false, ctx.Err()
+				}
+				if err == nil {
+					break
+				}
+				if !retryableHubContinuationRead(err) || failures >= hubWatchStateFailureLimit {
+					return false, err
+				}
+				if err := jm.suspendHubWatch(id); err != nil {
+					return false, err
+				}
+				// Retain this exact query and held cut, not a newer snapshot that
+				// may no longer contain the failed terminal candidate. Only call
+				// failures retry, never missing or incompatible evidence below.
+				select {
+				case <-ctx.Done():
+					return false, ctx.Err()
+				case <-time.After(hubWatchRetryDelay):
+				}
+				if !managerHubWatchPresent(jm, id) {
+					return false, context.Canceled
+				}
+			}
+			read := result.Read
+			if read == nil {
+				return false, errors.New("answer continuation response missing")
+			}
+			if read.Thread.Evener.Ref != ref || read.Thread.Evener.InstanceID != instance || read.BootGeneration != generation || read.Epoch != epoch || read.Snapshot == nil || read.Snapshot.Incarnation != held.Incarnation || read.Snapshot.Length < held.Length {
+				return false, fmt.Errorf("answer continuation response identity mismatch: ref=%t instance=%t boot=%t epoch=%d/%d snapshot=%+v held=%+v", read.Thread.Evener.Ref == ref, read.Thread.Evener.InstanceID == instance, read.BootGeneration == generation, read.Epoch, epoch, read.Snapshot, held)
+			}
+			verdict := read.AnswerContinuation
+			if verdict == nil || verdict.AncestorTurnID != ancestor || verdict.CandidateTurnID != candidate {
+				return false, errors.New("answer continuation response omitted requested verdict")
+			}
+			jm.resumeHubWatch(id)
+			return verdict.Matches, nil
+		})
+	}
+	for {
+		if err := observe(initial); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			endWatch("observation snapshot failed: " + err.Error())
+			return
+		}
+		if !managerHubWatchPresent(jm, id) {
+			return
+		}
+		jm.resumeHubWatch(id)
+	stream:
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case update, ok := <-updates:
+				if !ok {
+					break stream
+				}
+				if request.Scope == "" && update.Snapshot != nil && (update.Metadata.Ref != initial.Metadata.Ref || update.Metadata.InstanceID != initial.Metadata.InstanceID || update.Metadata.GenerationID != initial.Metadata.GenerationID) {
+					endWatch("target replaced; re-register")
+					return
+				}
+				if err := observe(update); err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					endWatch("observation failed: " + err.Error())
+					return
+				}
+				if !managerHubWatchPresent(jm, id) {
+					return
+				}
+			}
+		}
+		if ctx.Err() != nil || !managerHubWatchPresent(jm, id) {
+			return
+		}
+		// Quiet: the rebind loop's outcome decides whether this loss is
+		// noticed at all (job-control.md).
+		jm.suspendHubWatchQuiet(id)
+		for ctx.Err() == nil && managerHubWatchPresent(jm, id) {
+			s.mu.Lock()
+			client, signal := s.hubClient, s.hubWatchSignal
+			s.mu.Unlock()
+			if client == nil {
+				return
+			}
+			// A failed state read leaves it undetermined whether the stream died
+			// with the connection or ended on a healthy one. Resolve that with a
+			// bounded retry: a healthy connection then reaches the same
+			// "ended unexpectedly" arm a successful read would have reached,
+			// instead of parking on a signal that only fires on a rebind.
+			var recoveryErr error
+			stateCtx, cancel := context.WithTimeout(ctx, hubWatchReadBudget)
+			state, err := client.State(stateCtx)
+			cancel()
+			if err == nil {
+				if !state.Manager || state.Ref != callerRef || state.InstanceID != callerInstance {
+					endWatch("Manager binding no longer serves this session; re-register")
+					return
+				}
+				// State answers for the binding installed now, not the one
+				// sampled above. A reconnect that landed during the read must
+				// be resolved against the new binding instead of being
+				// mistaken for a stream that ended on a healthy connection. A
+				// reconnect landing after this check still reaches the end
+				// below; that residual window is the branch width, not the
+				// state read.
+				s.mu.Lock()
+				currentSignal := s.hubWatchSignal
+				s.mu.Unlock()
+				if currentSignal != signal {
+					// The binding moved under the read. Count the retry
+					// against the outage budget so a binding that keeps moving
+					// is still bounded by one recovery episode.
+					stateFailures++
+					if outageStart.IsZero() {
+						outageStart = time.Now()
+					}
+					if time.Since(outageStart) >= s.hubWatchStateOutageBudget() {
+						endWatch("observation unreachable: binding changed during recovery; re-register")
+						return
+					}
+					continue
+				}
+				if signal == boundSignal {
+					endWatch("observation subscription ended unexpectedly; re-register")
+					return
+				}
+				rebound, watchErr := client.Watch(ctx, request)
+				if watchErr == nil {
+					var snapshot appwire.SessionWatchUpdate
+					select {
+					case snapshot = <-rebound:
+					case <-ctx.Done():
+						return
+					}
+					// A canceled consumer has been superseded: a re-registration
+					// (or shutdown) canceled this transport and owns the durable
+					// watch now. Its closed rebind subscription can win the select
+					// above, but an empty update is not evidence that the target is
+					// unavailable. Ending the watch here would discard the baseline
+					// the replacement is about to compare its snapshot against.
+					if ctx.Err() != nil {
+						return
+					}
+					if (request.Scope == "top_level" && (snapshot.Roster == nil || !snapshot.Roster.Initial)) || (request.Scope == "" && (snapshot.Snapshot == nil || snapshot.Metadata.InstanceID != initial.Metadata.InstanceID || snapshot.Metadata.GenerationID != initial.Metadata.GenerationID || snapshot.Metadata.Ref != initial.Metadata.Ref)) {
+						endWatch("target replaced or observation unavailable; re-register")
+						return
+					}
+					if request.Scope == "top_level" {
+						jm.resetHubRosterRevision(id)
+					}
+					updates, initial, boundSignal = rebound, snapshot, signal
+					stateFailures = 0
+					outageStart = time.Time{}
+					break
+				}
+				if permanentHubWatchError(watchErr) {
+					endWatch("observation subscription rejected: " + watchErr.Error())
+					return
+				}
+				recoveryErr = watchErr
+			} else {
+				recoveryErr = err
+			}
+			stateFailures++
+			if outageStart.IsZero() {
+				outageStart = time.Now()
+			}
+			// Exhausted recovery is decided on this fresh failure, so the
+			// durable end always follows evidence from inside the outage
+			// window: a recovery that answers again and rebinds within the
+			// budget is observed before recovery counts as exhausted. The
+			// budget bounds the whole episode, so a binding whose rebind
+			// attempts keep failing retryably accrues the same window and no
+			// loss retries forever unheard (job-control.md).
+			if time.Since(outageStart) >= s.hubWatchStateOutageBudget() {
+				endWatch("observation unreachable: " + recoveryErr.Error() + "; re-register")
+				return
+			}
+			// A rebind resolves the ambiguity immediately; otherwise retry after
+			// a bounded backoff that never sleeps past the outage budget's
+			// deadline. An episode that outlasts the budget ends the watch
+			// durably rather than retrying a broken recovery forever: the
+			// Manager gets a notice it can
+			// act on instead of an observation that silently stopped.
+			next := s.hubWatchStateRetryDelay(stateFailures)
+			if remaining := s.hubWatchStateOutageBudget() - time.Since(outageStart); remaining < next {
+				next = remaining
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-signal:
+			case <-time.After(next):
+			}
+		}
+		if ctx.Err() != nil || !managerHubWatchPresent(jm, id) {
+			return
+		}
+	}
+}
+
+// hubWatchStateRetryDelay paces consecutive failed recovery attempts in the
+// rebind loop: the base delay at the first failure, doubling per failure after that
+// and capped at hubWatchStateRetryCeiling. The testOnly seam shrinks the base
+// for deterministic tests; zero keeps the production base.
+func (s *Session) hubWatchStateRetryDelay(failures int) time.Duration {
+	base := hubWatchRetryDelay
+	if s.cfg.testOnly.hubWatchRetryDelay > 0 {
+		base = s.cfg.testOnly.hubWatchRetryDelay
+	}
+	return backoffDelay(max(failures-1, 0), min(base, hubWatchStateRetryCeiling), hubWatchStateRetryCeiling)
+}
+
+// hubWatchStateOutageBudget bounds how long the rebind loop keeps a watch
+// armed through failed state reads or retryable rebind attempts before
+// connection recovery ends the watch durably. The testOnly seam shrinks the
+// budget for deterministic tests; zero keeps the production budget.
+func (s *Session) hubWatchStateOutageBudget() time.Duration {
+	if s.cfg.testOnly.hubWatchStateOutageBudget > 0 {
+		return s.cfg.testOnly.hubWatchStateOutageBudget
+	}
+	return hubWatchStateOutageBudget
+}
+
+// The daemon maps an untyped index-lock error to InternalError. Retry that
+// ambiguous read failure finitely, but do not retry typed permanent history or
+// request errors. Response evidence is validated outside this retry boundary.
+func retryableHubContinuationRead(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) || appwire.IsTransportFailure(err) {
+		return true
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		return false
+	}
+	data, _ := appwire.DecodedErrorData(wire.Data)
+	switch data.EvenerErrorInfo {
+	case appwire.ErrorTranscriptIndexLocked, appwire.ErrorTranscriptIndexRebuilding:
+		return true
+	case "", appwire.ErrorInternal, appwire.ErrorSessionUnavailable, appwire.ErrorActionUnavailable:
+		return wire.Code == appwire.CodeInternalError || wire.Code == appwire.CodeUnavailable
+	default:
+		return false
+	}
+}
+
+// A server refusing the request or its selector cannot be repaired by another
+// transport rebind. Unavailability and transport failures may be transient.
+func permanentHubWatchError(err error) bool {
+	if appwire.IsTransportFailure(err) {
+		return false
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		return false
+	}
+	switch wire.Code {
+	case appwire.CodeInvalidParams, appwire.CodeInvalidRequest, appwire.CodeMethodNotFound:
+		return true
+	default:
+		return false
+	}
+}
+
+func managerHubWatchPresent(jm *jobManager, id string) bool {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	_, cfg, ok := jm.watchConfigByIDLocked(id)
+	return ok && cfg.hubRef != ""
+}
+
+func (jm *jobManager) isClosing() bool {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	return jm.closing
+}

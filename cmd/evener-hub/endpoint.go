@@ -39,14 +39,9 @@ func runEndpoint(args []string, stdout, stderr io.Writer, deps mainDeps) error {
 	if fs.NArg() != 0 || !*jsonOutput {
 		return errors.New("endpoint requires --json and no positional arguments")
 	}
-	fs.Visit(func(f *flag.Flag) {
-		switch f.Name {
-		case "config":
-			opts.configExplicit = true
-		case "addr":
-			opts.addrPresent = true
-		}
-	})
+	set := setFlagNames(fs)
+	opts.configExplicit = set["config"]
+	opts.addrPresent = set["addr"]
 	report, err := resolveHubEndpoint(context.Background(), opts, deps)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] endpoint: %v\n", err)

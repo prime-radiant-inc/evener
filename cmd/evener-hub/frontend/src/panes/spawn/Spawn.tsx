@@ -13,6 +13,8 @@ import {
   friendlyLaunchErrorMessage,
   harnessSupportsPluginSelection,
   harnessUsesEvenerModels,
+  hostRequest,
+  isLocalHost,
   matchBuiltinInvocation,
   mergeSlashCommands,
   type PathValidation,
@@ -32,11 +34,12 @@ import { useStore } from "zustand";
 import { useClient } from "../../shell/clientContext";
 import { resolveHeadBranch } from "../../shell/gitLocation";
 import { splitModelId } from "../../shell/palette/commands";
+import { CHORD_HINTS } from "../../shell/palette/helpRows";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL } from "../../shell/routing";
 import { useMountAutofocus } from "../../shell/useMountAutofocus";
+import { useHasSessionPane } from "../../shell/workspace";
 import { useExtensionsStore } from "../../stores/extensions";
-import { hostRequest, isLocalHost } from "../../stores/hostRouting";
 import { withLaunchConfig } from "../../stores/launchConfig";
 import { selectDisplaySources, selectSources } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
@@ -61,6 +64,8 @@ import {
   PromptCard,
   Select,
   SendIcon,
+  ShortcutList,
+  Switch,
   Tooltip,
   useToasts,
   VisuallyHidden,
@@ -185,6 +190,8 @@ export const CONNECT_ATTACH_TIMEOUT_MS = 35 * 60_000;
 
 const CLASS = {
   form: requireClass(styles.form, "spawn.module.css", "form"),
+  startReason: requireClass(styles.startReason, "spawn.module.css", "startReason"),
+  chordHints: requireClass(styles.chordHints, "spawn.module.css", "chordHints"),
   cfgDir: requireClass(styles.cfgDir, "spawn.module.css", "cfgDir"),
   branch: requireClass(styles.branch, "spawn.module.css", "branch"),
   directoryButton: requireClass(styles.directoryButton, "spawn.module.css", "directoryButton"),
@@ -269,6 +276,7 @@ function SpawnForm({
   const toasts = useToasts();
   const advancedOwnerRef = useRef<HTMLDivElement>(null);
   const [source, setSource] = useDraftField(draft, "source");
+  const [manager, setManager] = useDraftField(draft, "manager");
   // The manifest carries every configured launch source (Component 06a). It is
   // empty until it loads, and in the common single-host case holds only
   // "local" - either way no picker renders, so the existing form is unchanged.
@@ -1595,15 +1603,31 @@ function SpawnForm({
     // them.
     if (schemaHostSettled !== submittedSource) return;
     const offered = new Set(schemaOptions.map((option) => option.wireField));
+    // An explicit Memory choice is consent, not preference: silently dropping
+    // it on a host that never heard of the field would re-enable what the
+    // person turned off, so it survives the switch and Start is held over it
+    // instead (the memory hold by the submit button).
+    const keeps = (field: string) => offered.has(field) || field === "memoryEnabled";
     const overrides = draft.fields.getState().advancedOverrides;
-    const keptOverrides = Object.fromEntries(Object.entries(overrides).filter(([field]) => offered.has(field)));
+    const keptOverrides = Object.fromEntries(Object.entries(overrides).filter(([field]) => keeps(field)));
     if (Object.keys(keptOverrides).length !== Object.keys(overrides).length) {
       setAdvancedOverrides(keptOverrides);
     }
     const values = draft.fields.getState().advancedValues;
-    const keptValues = Object.fromEntries(Object.entries(values).filter(([field]) => offered.has(field)));
+    const keptValues = Object.fromEntries(Object.entries(values).filter(([field]) => keeps(field)));
     if (Object.keys(keptValues).length !== Object.keys(values).length) {
       setAdvancedValues(keptValues);
+    }
+    // A choice kept in the values across an unoffering host (the filters above
+    // preserve it) must ride submissions again once a host that offers the
+    // field answers: the panel re-collects overrides only on edit, so without
+    // this the toggle would show Off while the submission silently drops it.
+    if (offered.has("memoryEnabled")) {
+      const keptChoice = draft.fields.getState().advancedValues.memoryEnabled?.value;
+      const currentOverrides = draft.fields.getState().advancedOverrides;
+      if ((keptChoice === "true" || keptChoice === "false") && currentOverrides.memoryEnabled === undefined) {
+        setAdvancedOverrides({ ...currentOverrides, memoryEnabled: keptChoice === "true" });
+      }
     }
     // An error is state about a FIELD, not about the host: the error of a kept
     // field survives (it explains a validation the user still has to fix), while
@@ -2197,13 +2221,13 @@ function SpawnForm({
     //
     // /goal applies post-start via runSpawnBuiltinAfterStart (goal/set has no
     // processing gate - it queues behind the running turn). /model and
-    // /reasoning-effort ride thread/start as launch scalars instead: the
-    // daemon refuses thread/model/set while the first input's turn is active
-    // (Conflict "session is processing"), and the effort source reads the new
-    // thread from threadsStore, which is empty until the session pane
-    // hydrates - so neither follow-up mutation can work. Their values are
-    // pre-start validated here (there is no cheaper moment to refuse), then
-    // folded into the start call under the chips, which keeps floor §1.11
+    // /reasoning-effort ride thread/start as launch scalars instead: a
+    // post-start thread/model/set now queues behind the first turn rather
+    // than refusing, but the effort source reads the new thread from
+    // threadsStore, which is empty until the session pane hydrates - so
+    // neither follow-up mutation can work. Their values are pre-start
+    // validated here (there is no cheaper moment to refuse), then folded
+    // into the start call under the chips, which keeps floor §1.11
     // precedence (explicit slash value wins over ambient form state).
     const builtinMatch =
       pluginSelectionSupported && attachments.items.length === 0 && skillNames.length === 0 && commandNames.length === 0
@@ -2276,6 +2300,8 @@ function SpawnForm({
       // from the wire), so the single-host request stays identical to before
       // the host picker existed.
       source: submittedSource,
+      // Start-time role: an ordinary launch omits it entirely.
+      manager,
     });
     if (builtinMatch && builtinMatch.command.id === "goal") {
       // Post-start application runs AFTER navigation below: awaiting goal/set
@@ -2351,6 +2377,11 @@ function SpawnForm({
     // The model list is the same question asked of the same host, and it is the
     // field the harness/schema answer cannot vouch for, so it gates here too.
     if (hostCatalogPending || modelHostPending) return;
+    // A Memory Off the chosen host hasn't confirmed it can honor must never
+    // ride a submission - the older host would silently drop the field and
+    // start the session with memory on. Same reasoning as the disabled Start
+    // button; this catches the ⌘/Ctrl+Enter chord.
+    if (memoryOffHeld) return;
     if (attachments.hasPending) {
       toasts.push("error", "Image attachment is still processing.");
       return;
@@ -2450,8 +2481,47 @@ function SpawnForm({
     harnesses.length > 0
       ? harnesses.map((h) => ({ value: h.id, label: h.label }))
       : [{ value: "evener", label: "evener" }];
+  const hasSession = useHasSessionPane();
+  const memoryChoiceOff = advancedOverrides.memoryEnabled === false || advancedValues.memoryEnabled?.value === "false";
+  const memoryOfferConfirmed =
+    schemaHostSettled === submittedSource && schemaOptions.some((option) => option.wireField === "memoryEnabled");
+  // A Memory Off is consent the chosen host must be able to honor: an older
+  // host silently drops the unknown field and starts the session with memory
+  // on, so Start waits for the host's schema to confirm the field rather than
+  // trusting silence - a pending or failed answer holds, and an answer that
+  // does not name the field holds until the choice is cleared. The values half
+  // keeps the choice live after a later edit re-collects overrides against the
+  // unoffering host's schema.
+  const memoryOffHeld = memoryChoiceOff && !memoryOfferConfirmed;
+  const memoryOffUnoffered = memoryOffHeld && schemaHostSettled === submittedSource;
+  const startBlocked =
+    busy ||
+    (modelRequired && slashModelBootstrap === null) ||
+    providerRequired ||
+    pluginSelectionBlocked ||
+    hostCatalogPending ||
+    modelHostPending ||
+    memoryOffHeld;
+  const startBlockedReason =
+    !startBlocked || busy
+      ? undefined
+      : providerRequired
+        ? "Connect a provider to start."
+        : modelRequired && slashModelBootstrap === null
+          ? "Choose a model to start."
+          : explicitSelectionLoading
+            ? "Waiting for the host to answer; Start is available when it does."
+            : pluginSelectionBlocked
+              ? "Resolve the plugin selection to start."
+              : memoryOffHeld
+                ? memoryOffUnoffered
+                  ? "The chosen host can't turn memory off for this session. Clear the Memory choice to start."
+                  : "Waiting for the host to answer; Start is available when it does."
+                : hostCatalogPending || modelHostPending
+                  ? "Waiting for the host to answer; Start is available when it does."
+                  : undefined;
   return (
-    <PaneScaffold title="New session" mobileTitle="New session">
+    <PaneScaffold title="New session" mobileTitle="New session" scaffoldMarker="spawn">
       <div className={CLASS.form}>
         {staleNotice !== null && (
           <InlineNotice
@@ -2466,6 +2536,36 @@ function SpawnForm({
             }
           >
             Discarded last-used model {staleNotice} — no longer offered by this hub.
+          </InlineNotice>
+        )}
+        {memoryOffUnoffered && (
+          <InlineNotice
+            action={
+              <Button
+                variant="quiet"
+                size="sm"
+                type="button"
+                data-testid="spawn-memory-clear"
+                onClick={() => {
+                  setAdvancedValues((prev) => {
+                    if (prev.memoryEnabled === undefined) return prev;
+                    const next = { ...prev };
+                    delete next.memoryEnabled;
+                    return next;
+                  });
+                  setAdvancedOverrides((prev) => {
+                    if (prev.memoryEnabled === undefined) return prev;
+                    const next = { ...prev };
+                    delete next.memoryEnabled;
+                    return next;
+                  });
+                }}
+              >
+                Clear the Memory choice
+              </Button>
+            }
+          >
+            The chosen host can't turn memory off for this session.
           </InlineNotice>
         )}
 
@@ -2584,7 +2684,11 @@ function SpawnForm({
             data-testid="spawn-provider-prerequisite"
             action={
               <>
-                {providerSetupIsLocal && <Button onClick={openProviderSetup}>Connect provider</Button>}
+                {providerSetupIsLocal && (
+                  <Button variant="secondary" onClick={openProviderSetup}>
+                    Connect provider
+                  </Button>
+                )}
                 <Button variant="quiet" onClick={() => void providerSetup.retry()}>
                   Retry provider check
                 </Button>
@@ -2781,7 +2885,7 @@ function SpawnForm({
                 </div>
               }
               actions={
-                <Tooltip label={`Start the agent · ${chordLabel(["Mod", "Enter"])}`}>
+                <Tooltip label={startBlockedReason ?? `Start the agent · ${chordLabel(["Mod", "Enter"])}`}>
                   <Button
                     variant="primary"
                     size="xs"
@@ -2789,14 +2893,7 @@ function SpawnForm({
                     aria-label="Start"
                     icon={busy ? undefined : <SendIcon />}
                     onClick={() => void handleSpawn()}
-                    disabled={
-                      busy ||
-                      (modelRequired && slashModelBootstrap === null) ||
-                      providerRequired ||
-                      pluginSelectionBlocked ||
-                      hostCatalogPending ||
-                      modelHostPending
-                    }
+                    disabled={startBlocked}
                   >
                     {busy ? (
                       <StartingLoader startedAt={busyStartedAt ?? Date.now()} />
@@ -2809,6 +2906,11 @@ function SpawnForm({
             />
           </Dropzone>
         </div>
+        {startBlockedReason !== undefined && (
+          <p className={CLASS.startReason} data-testid="spawn-start-reason">
+            {startBlockedReason}
+          </p>
+        )}
         <InlineNotice
           data-testid="spawn-effective-access"
           data-state={resolveStatus}
@@ -3008,8 +3110,19 @@ function SpawnForm({
                 options={accessOptions}
               />
             </FormRow>
+            <Switch
+              label="Start as Manager"
+              description="The session can manage any session its hub can reach. This is a start-time property: it lasts until the session ends."
+              checked={manager}
+              onChange={setManager}
+            />
           </AdvancedOptions>
         </div>
+        {!hasSession && (
+          <div className={CLASS.chordHints} data-testid="spawn-chord-hints">
+            <ShortcutList items={CHORD_HINTS} />
+          </div>
+        )}
       </div>
 
       <ConfirmDialog

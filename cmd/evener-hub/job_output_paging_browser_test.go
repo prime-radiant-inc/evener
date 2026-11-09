@@ -171,7 +171,7 @@ func pagingAwaitFile(ctx context.Context, watcher *fsnotify.Watcher, name string
 
 func runJobOutputPagingJourney(ctx context.Context, t *testing.T, stack *hubStack, provider *fakellm.Server) {
 	t.Helper()
-	artifacts, err := os.MkdirTemp(backgroundJobsArtifactRoot, "joboutputpagingguard-")
+	artifacts, err := os.MkdirTemp(backgroundJobsEvidenceRoot(), "joboutputpagingguard-")
 	if err != nil {
 		t.Fatal(err)
 	}

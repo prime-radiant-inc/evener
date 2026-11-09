@@ -31,7 +31,7 @@ func TestBoundedFinishTextKeepsWholeRunes(t *testing.T) {
 // metadata carries it, so crash replay (delegatePreparedFinish) restores it.
 func TestFailedRunCarriesItsErrorThroughReplay(t *testing.T) {
 	t.Parallel()
-	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{runErr: errors.New("provider returned 500\nretry-after: 30")})
+	finish := delegateFinishFromRun(delegateTerminalRunInputs{runErr: errors.New("provider returned 500\nretry-after: 30")})
 	if finish.outcome != delegatestore.OutcomeFailed || finish.errorText != "provider returned 500" {
 		t.Fatalf("finish outcome=%q error=%q", finish.outcome, finish.errorText)
 	}
@@ -43,10 +43,10 @@ func TestFailedRunCarriesItsErrorThroughReplay(t *testing.T) {
 		t.Fatalf("replayed error=%q", replayed.errorText)
 	}
 	// A leading newline is not an empty first line.
-	if leading := stableDelegateFinishFromRun(delegateTerminalRunInputs{runErr: errors.New("\n  provider returned 500\nmore")}); leading.errorText != "provider returned 500" {
+	if leading := delegateFinishFromRun(delegateTerminalRunInputs{runErr: errors.New("\n  provider returned 500\nmore")}); leading.errorText != "provider returned 500" {
 		t.Fatalf("leading-newline error=%q", leading.errorText)
 	}
-	reported := stableDelegateFinishFromRun(delegateTerminalRunInputs{result: "done", communicated: true})
+	reported := delegateFinishFromRun(delegateTerminalRunInputs{result: "done", communicated: true})
 	if reported.errorText != "" {
 		t.Fatalf("a reported run has no error, got %q", reported.errorText)
 	}
@@ -80,11 +80,11 @@ func TestFinishEventsCarryAFailedRunsError(t *testing.T) {
 // which the outcome already says.
 func TestFailedRunReasonNamesTheFailure(t *testing.T) {
 	t.Parallel()
-	errored := stableDelegateFinishFromRun(delegateTerminalRunInputs{runErr: errors.New("provider returned 500")})
+	errored := delegateFinishFromRun(delegateTerminalRunInputs{runErr: errors.New("provider returned 500")})
 	if errored.outcome != delegatestore.OutcomeFailed || errored.reason != "run_error" {
 		t.Fatalf("errored run outcome=%q reason=%q, want failed/run_error", errored.outcome, errored.reason)
 	}
-	silent := stableDelegateFinishFromRun(delegateTerminalRunInputs{result: "I looked around."})
+	silent := delegateFinishFromRun(delegateTerminalRunInputs{result: "I looked around."})
 	if silent.outcome != delegatestore.OutcomeFailed || silent.reason != "ended_without_report" || silent.errorText != "" {
 		t.Fatalf("silent run outcome=%q reason=%q error=%q, want failed/ended_without_report and no error", silent.outcome, silent.reason, silent.errorText)
 	}

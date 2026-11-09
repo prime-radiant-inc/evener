@@ -79,9 +79,7 @@ func TestSeedDefaultMarketplaces_SaveFailureNamesNoPath(t *testing.T) {
 }
 
 func TestBrowse_LazyFetchesSeededPointer(t *testing.T) {
-	if !gitAvailable() {
-		t.Skip("git not available")
-	}
+	skipWithoutGit(t)
 	// a real local git marketplace, registered as an unfetched pointer
 	mktRepo := makeMarketplaceRepo(t, "acme") // helper in marketplaces_test.go: builds a git repo with marketplace.json name "acme"
 	m := NewManager(t.TempDir())

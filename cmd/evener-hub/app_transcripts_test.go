@@ -37,18 +37,11 @@ func TestHubRPCTranscriptTargetsUseEvenerParentRefs(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 
 	resp, err := appwiretest.ThreadTranscriptList(context.Background(), client, appwire.ThreadTranscriptListParams{
 		Ref: appwire.Ref{SourceID: "local", ThreadID: parentID}.String(),
@@ -70,10 +63,7 @@ func TestHubRPCTranscriptTargetsUseEvenerParentRefs(t *testing.T) {
 func TestHubTranscriptTargetsIncludeRestartRequiredChildOfStableWorkspace(t *testing.T) {
 	root := t.TempDir()
 	stableID := buildRPCParentSession(t, filepath.Join(root, "projects", "project-repo-0000000000"))
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	entry := rendezvous.Entry{Protocol: "evener-appwire-v4", Endpoint: "ws://unused.test/rpc", ThreadID: stableID, SessionID: "current", WorkspaceRef: "local:" + stableID}
 	sources := appsource.NewRegistry()
 	sources.Add(appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {

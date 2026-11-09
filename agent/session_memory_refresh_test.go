@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/memorypages"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
@@ -350,7 +351,7 @@ func TestMemoryRefreshNoPagesAfterCompactionThenPageDeliversFullIndex(t *testing
 // memorySeedManyPages writes count pages into the scope directory dir, each
 // stamped updated and with a description long enough that the rendered index
 // outgrows the projection budget, and returns them as listed.
-func memorySeedManyPages(t *testing.T, root, dir string, count int, updated string) []memoryPage {
+func memorySeedManyPages(t *testing.T, root, dir string, count int, updated string) []memorypages.Page {
 	t.Helper()
 	for i := range count {
 		memorySeedPage(t, root, dir, fmt.Sprintf("p%03d.md", i), fmt.Sprintf("opaque-filler-%03d-%s", i, strings.Repeat("x", 40)), memorySeedUpdated(updated))
@@ -371,8 +372,8 @@ func TestMemoryRefreshBaselineIsTheFullRenderedIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	baseline, known := s.memoryBaselineFor("personal")
-	if want := renderMemoryIndex(pages); !known || baseline.index != want || len(want) <= memoryProjectionCap {
-		t.Fatalf("baseline known=%t holds %d bytes, want the whole %d-byte rendering past the %d-byte budget", known, len(baseline.index), len(want), memoryProjectionCap)
+	if want := memorypages.RenderIndex(pages); !known || baseline.index != want || len(want) <= memorypages.ProjectionCap {
+		t.Fatalf("baseline known=%t holds %d bytes, want the whole %d-byte rendering past the %d-byte budget", known, len(baseline.index), len(want), memorypages.ProjectionCap)
 	}
 }
 
@@ -1354,7 +1355,7 @@ func TestMemoryProjectionMigratesAHandWrittenIndex(t *testing.T) {
 	if !ok || !strings.Contains(display.Content, "- [cents.md](cents.md) — opaque-migrated-description") {
 		t.Fatalf("projection=%+v ok=%t", display, ok)
 	}
-	if _, err := os.Stat(filepath.Join(scope, memoryLegacyIndexBackup)); err != nil {
+	if _, err := os.Stat(filepath.Join(scope, memorypages.LegacyIndexBackup)); err != nil {
 		t.Fatal(err)
 	}
 }

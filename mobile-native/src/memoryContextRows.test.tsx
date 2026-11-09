@@ -27,8 +27,8 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireThread } from "@evener/appwire-client/testing/notifications";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createConversationService } from "../../mobile/src/services/conversation";
-import { createConversationStore } from "../../mobile/src/state/conversation";
+import { createConversationService } from "./conversation/services/conversation";
+import { createConversationStore } from "./conversation/state/conversation";
 import { markers } from "./markerTestUtils";
 import { nativeDisclosureStore } from "./nativeDisclosure";
 import { MAX_ITEM_BYTES, projectConversation } from "./projectedRows";
@@ -63,10 +63,6 @@ vi.mock("expo-secure-store", () => ({
 	getItemAsync: async () => null,
 	setItemAsync: async () => undefined,
 	deleteItemAsync: async () => undefined,
-}));
-vi.mock("expo-crypto", () => ({
-	randomUUID: () => "test-uuid",
-	getRandomValues: (array: Uint8Array) => array,
 }));
 vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
 vi.mock("expo-sqlite/kv-store", () => {

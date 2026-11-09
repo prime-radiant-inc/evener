@@ -85,7 +85,7 @@ func TestRecoverDeploymentForRestartRequiresOwnGateAndRegistration(t *testing.T)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, _, err := m.DeployForOperation(t.Context(), registeredTestHost(t, m, host), facts, false, nil); err == nil || writes != 1 {
+			if _, _, err := m.DeployForOperation(t.Context(), registeredTestHost(t, m, host), facts, false, nil, nil); err == nil || writes != 1 {
 				t.Fatalf("expected failed acknowledged deployment: writes=%d err=%v", writes, err)
 			}
 			holder := attachUnderGateCaller()
@@ -173,7 +173,7 @@ func TestOperationRestartReconcilesFreshDeploymentDrift(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if _, _, err := m.DeployForOperation(t.Context(), registeredTestHost(t, m, host), facts, restart, nil); err == nil {
+					if _, _, err := m.DeployForOperation(t.Context(), registeredTestHost(t, m, host), facts, restart, nil, nil); err == nil {
 						t.Fatal("initial deployment unexpectedly verified")
 					}
 					pending := m.pendingRestart(host.Name)
@@ -292,7 +292,7 @@ func TestOperationRestartReconcilesDeployment(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, after, err := m.DeployForOperation(t.Context(), registeredTestHost(t, m, host), facts, scenario != "uncertain-deploy-only", nil)
+			_, after, err := m.DeployForOperation(t.Context(), registeredTestHost(t, m, host), facts, scenario != "uncertain-deploy-only", nil, nil)
 			if (err != nil) != (scenario != "predecessor-probe") {
 				t.Fatalf("deploy: err=%v writes=%d", err, writes)
 			}

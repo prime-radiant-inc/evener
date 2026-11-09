@@ -21,6 +21,12 @@
 # test that legitimately names the path) add it to the exact-path exemptions
 # below.
 #
+# The same sweep also keeps the native app out of the web tree: a relative
+# literal into cmd/evener-hub/frontend/src from mobile-native (the web app is
+# not part of the native bundle, so Metro does not resolve it; code both apps
+# need lives in the package). Test and script harnesses under
+# cmd/evener-hub/frontend/scripts are not swept.
+#
 # --root points the sweep at a fixture tree instead of this checkout; only the
 # gate's own Go test passes it.
 set -euo pipefail
@@ -132,6 +138,17 @@ if found="$(grep "${sources[@]}" -rnE "${relative}[^\"'\`]*(${seam}|${package})"
 	fi
 elif [ "$?" -ne 1 ]; then
 	printf 'package-import-paths-check.sh: the sweep over %s failed\n' "${trees[*]}" >&2
+	exit 2
+fi
+
+web_tree=cmd/evener-hub/frontend/src
+if native_web="$(grep "${sources[@]}" -rnE "${relative}[^\"'\`]*${web_tree}" mobile-native)"; then
+	native_web="$(printf '%s\n' "$native_web" | grep -vE "^(${exempt_pattern}):" | grep -vF "${web_tree}/protocol/" || true)"
+	if [ -n "$native_web" ]; then
+		report "$native_web" "these native imports reach into the web app's source tree; move what both apps need into the package (@evener/appwire-client) and import it by name:"
+	fi
+elif [ "$?" -ne 1 ]; then
+	printf 'package-import-paths-check.sh: the sweep over mobile-native failed\n' >&2
 	exit 2
 fi
 

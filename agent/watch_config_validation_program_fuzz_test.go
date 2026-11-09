@@ -125,7 +125,7 @@ func wcvpAssertPureContracts(t *testing.T, r *wcvpReader) {
 		{"parent", watchSourceParentSession, true},
 		{"job_wcvp", watchSourceConcreteJob, true},
 		{"", 0, false},
-		{"dlg_wcvp", watchSourceStableDelegate, true},
+		{"dlg_wcvp", watchSourceDelegate, true},
 	} {
 		got, err := normalizeWatchSource(tc.input)
 		if (err == nil) != tc.ok || (tc.ok && got.Kind != tc.kind) {
@@ -275,9 +275,8 @@ func wcvpAssertSendTargetValidation(t *testing.T, r *wcvpReader) {
 		{"dlg_missing", "target_not_found:"},
 	}
 	for _, tc := range cases {
-		args := watchArgs{Source: r.text()}
-		first := wcvpErrorString(validateWatchSendDeliveryTarget(tc.target, args))
-		second := wcvpErrorString(validateWatchSendDeliveryTarget(tc.target, args))
+		first := wcvpErrorString(validateWatchSendDeliveryTarget(tc.target))
+		second := wcvpErrorString(validateWatchSendDeliveryTarget(tc.target))
 		if first != second {
 			t.Fatalf("send validation is not deterministic for %q: %q then %q", tc.target, first, second)
 		}

@@ -24,7 +24,7 @@ func BenchmarkLiveWatchRowsForSessions(b *testing.B) {
 		for slot := range benchWatchesPerManager {
 			target := fmt.Sprintf("job_page_%02d_%02d", index, slot)
 			child.jobManager.watches[watchKey{VisibleSessionID: child.ID(), Target: target}] = &watchConfig{
-				id: target, watchID: target, sourcePublic: "self", target: target, createdAt: frozenTestTime,
+				watchID: target, sourcePublic: "self", target: target, createdAt: frozenTestTime,
 			}
 		}
 		child.jobManager.mu.Unlock()

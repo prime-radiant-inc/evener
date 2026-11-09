@@ -190,6 +190,9 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 	// launch paths (resume's resolved is a historical reconstruction — the
 	// timeout must reflect the Hub's CURRENT config, not the past launch's).
 	req.Resolved.DaemonIdleTimeout = h.Cfg.DaemonIdleTimeout
+	// A start-time property, assigned here rather than read from launch config:
+	// only a start request can grant it, and the daemon persists it itself.
+	req.Resolved.Manager = req.Manager
 	applyHubAPILogDefault(&req.Resolved, h.Cfg.APILog)
 	req.RunDir = h.RunDir
 	if req.Resolved.Effective.AppReplaySize != nil {
@@ -223,10 +226,9 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
 	ctx, trace := withThreadLifecycleLog(ctx, "resume", req.SessionID, nil)
 	prepareDone := trace.stage(ctx, "launch_preparation")
-	timeout := h.Cfg.SpawnTimeout
-	if timeout == 0 {
-		timeout = 30 * time.Second
-	}
+	// The rendezvous wait must cover the daemon's whole state restore, not
+	// just process startup; resumeRendezvousTimeout carries the rationale.
+	timeout := resumeRendezvousTimeout
 	if req.StateDir == "" {
 		var err error
 		if req.Project.ID != "" {
@@ -422,6 +424,11 @@ func buildResumeArgs(req hubcore.ResumeRequest) []string {
 	resumeResolved.Effective.Model = ""
 	resumeResolved.Effective.FastCheapModel = ""
 	resumeResolved.Effective.ModelFallbacks = nil
+	// Manager must never be passed on resume. The resumed daemon restores it from
+	// the session's own persisted meta, which is the authority for a session that
+	// already exists; rendering it here would let a resume re-decide a start-time
+	// property the session already owns.
+	resumeResolved.Manager = false
 	args = append(args, launchconfig.ToArgs(resumeResolved)...)
 	return args
 }
@@ -512,11 +519,13 @@ type waitConfig struct {
 	startedAfter time.Time
 }
 
-// completionOwnedResumeTimeout is the hub-side bound on a completion-owned
-// resume's rendezvous wait, mirroring the client's own RESUME_REQUEST_TIMEOUT_MS
-// (10m): no client waits longer, so the bound only fires for callers with no
-// deadline of their own. A var so tests can shrink it.
-var completionOwnedResumeTimeout = 10 * time.Minute
+// resumeRendezvousTimeout is the hub-side bound on a resume's rendezvous
+// wait. A resumed daemon restores its session's durable state before it can
+// listen and register, so the wait must cover the whole restore, not just
+// process startup; it mirrors the web client's own RESUME_REQUEST_TIMEOUT_MS
+// (10m), and bounds callers with no deadline of their own. A var so tests can
+// shrink it.
+var resumeRendezvousTimeout = 10 * time.Minute
 
 // withRendezvousTimeout applies the production startup budget when it is
 // positive. A non-positive timeout leaves the caller's context as the only
@@ -684,7 +693,7 @@ func resumeDaemonWithProviderConfig(ctx context.Context, evenerBinary, runDir st
 		// own wait at RESUME_REQUEST_TIMEOUT_MS (10m), and a client without a
 		// deadline must not hold the session's ownership aliases forever while
 		// each relay/isLive/workspace read degrades against the lock.
-		timeout = completionOwnedResumeTimeout
+		timeout = resumeRendezvousTimeout
 	}
 	waitCtx, cancel := withRendezvousTimeout(ctx, timeout)
 	defer cancel()
@@ -1122,28 +1131,41 @@ const requiredLaunchFlag = "api-log"
 // advertise requiredLaunchFlag.
 var errLaunchFlagUnadvertised = errors.New("evener launch-check did not advertise the --" + requiredLaunchFlag + " flag")
 
-func validateEvenerLaunchContract(ctx context.Context, evenerBinary, model string, env []string) error {
+// runEvenerLaunchCheck runs `evener launch-check` under the launch-check
+// budget and returns its output. Any way the check ends without answering is
+// already a hub launch refusal: stopped by the budget or the caller, or exited
+// non-zero with its output (secrets redacted) as the diagnostic.
+func runEvenerLaunchCheck(ctx context.Context, evenerBinary string, env []string, extraArgs ...string) ([]byte, error) {
 	if evenerBinary == "" {
 		evenerBinary = "evener"
 	}
-	args := []string{"launch-check", "--protocol", appwire.ProtocolVersion, "--json"}
-	if strings.TrimSpace(model) != "" {
-		args = append(args, "--model", model)
-	}
 	checkCtx, cancel := context.WithTimeout(ctx, evenerLaunchCheckTimeout)
 	defer cancel()
+	args := append([]string{"launch-check", "--protocol", appwire.ProtocolVersion, "--json"}, extraArgs...)
 	cmd := exec.CommandContext(checkCtx, evenerBinary, args...)
 	cmd.Env = env
 	out, err := runLaunchCheck(cmd)
 	if checkCtx.Err() != nil {
-		return launchCheckWaitError(checkCtx)
+		return nil, launchCheckWaitError(checkCtx)
 	}
 	if err != nil {
 		msg := strings.TrimSpace(redactEnvSecrets(string(out), env))
 		if msg == "" {
 			msg = err.Error()
 		}
-		return launchRefusal(fmt.Errorf("%w: %s", errLaunchCheckFailed, msg))
+		return nil, launchRefusal(fmt.Errorf("%w: %s", errLaunchCheckFailed, msg))
+	}
+	return out, nil
+}
+
+func validateEvenerLaunchContract(ctx context.Context, evenerBinary, model string, env []string) error {
+	var extraArgs []string
+	if strings.TrimSpace(model) != "" {
+		extraArgs = []string{"--model", model}
+	}
+	out, err := runEvenerLaunchCheck(ctx, evenerBinary, env, extraArgs...)
+	if err != nil {
+		return err
 	}
 	var resp struct {
 		Protocol    string   `json:"protocol"`
@@ -1162,23 +1184,9 @@ func validateEvenerLaunchContract(ctx context.Context, evenerBinary, model strin
 }
 
 func listEvenerLaunchModelContract(ctx context.Context, evenerBinary string, env []string) (appwire.ModelListResponse, error) {
-	if evenerBinary == "" {
-		evenerBinary = "evener"
-	}
-	checkCtx, cancel := context.WithTimeout(ctx, evenerLaunchCheckTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(checkCtx, evenerBinary, "launch-check", "--protocol", appwire.ProtocolVersion, "--json", "--models")
-	cmd.Env = env
-	out, err := runLaunchCheck(cmd)
-	if checkCtx.Err() != nil {
-		return appwire.ModelListResponse{}, launchCheckWaitError(checkCtx)
-	}
+	out, err := runEvenerLaunchCheck(ctx, evenerBinary, env, "--models")
 	if err != nil {
-		msg := strings.TrimSpace(redactEnvSecrets(string(out), env))
-		if msg == "" {
-			msg = err.Error()
-		}
-		return appwire.ModelListResponse{}, launchRefusal(fmt.Errorf("%w: %s", errLaunchCheckFailed, msg))
+		return appwire.ModelListResponse{}, err
 	}
 	var resp struct {
 		Protocol    string                        `json:"protocol"`
@@ -1198,11 +1206,15 @@ func listEvenerLaunchModelContract(ctx context.Context, evenerBinary string, env
 		if provider == "" || name == "" {
 			continue
 		}
-		models = append(models, appwire.ModelDescriptor{
-			Provider: provider, Model: name,
-			Warnings:        append([]string(nil), model.Warnings...),
-			InstanceDefault: model.InstanceDefault,
-		})
+		// The row is carried wholesale: the contract's model rows are
+		// appwire.ModelDescriptor, additive and omitempty, so a capability the
+		// child's contract states reaches the composer with no synchronized
+		// field-by-field rebuild here (the drift behind 52315a95de). The
+		// normalization this loop still owns is the trim and the empty-identity
+		// skip; the decoded slices are the result's alone once resp goes away.
+		model.Provider = provider
+		model.Model = name
+		models = append(models, model)
 	}
 	diagnostics := make([]appwire.ModelListDiagnostic, 0, len(resp.Diagnostics))
 	for _, diag := range resp.Diagnostics {

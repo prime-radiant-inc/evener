@@ -5,9 +5,8 @@
 // permanent failure message (parity-m7-settings.md §9).
 
 import type { LaunchConfigDiagnostic, LaunchConfigLayer, LaunchOption } from "@evener/appwire-client";
-import { friendlyErrorMessage } from "@evener/appwire-client";
+import { friendlyErrorMessage, LOCAL_HOST } from "@evener/appwire-client";
 import { useState } from "react";
-import { LOCAL_HOST } from "../../../stores/hostRouting";
 import { launchConfigStoreForHost } from "../../../stores/launchConfig";
 import { Button, InlineNotice, Loader } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";

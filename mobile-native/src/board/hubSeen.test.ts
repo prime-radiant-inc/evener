@@ -4,7 +4,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 // against a fake client that records every call and answers when told.
 import { type NavigationSessionSummary, type SessionSeenMark, WireError } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { SeenMarkers } from "./boardMemory";
 import { BoardSeen, forgetHubSeenMarks, HubSeenMarks, hubSeenMarks } from "./hubSeen";
 

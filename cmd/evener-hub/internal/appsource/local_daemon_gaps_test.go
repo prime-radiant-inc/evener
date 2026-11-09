@@ -21,104 +21,71 @@ func TestLocalDaemonDialErrorNil(t *testing.T) {
 // TestLocalDaemonDialErrorConnRefused covers the ECONNREFUSED path.
 func TestLocalDaemonDialErrorConnRefused(t *testing.T) {
 	err := localDaemonDialError(syscall.ECONNREFUSED)
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
-		t.Fatalf("ECONNREFUSED should map to SessionUnavailable, got %v", err)
-	}
+	requireWireError(t, err, appwire.CodeUnavailable)
 }
 
 // TestLocalDaemonDialErrorConnReset covers the ECONNRESET path.
 func TestLocalDaemonDialErrorConnReset(t *testing.T) {
 	err := localDaemonDialError(syscall.ECONNRESET)
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
-		t.Fatalf("ECONNRESET should map to SessionUnavailable, got %v", err)
-	}
+	requireWireError(t, err, appwire.CodeUnavailable)
 }
 
 // TestLocalDaemonDialErrorEPIPE covers the EPIPE path.
 func TestLocalDaemonDialErrorEPIPE(t *testing.T) {
 	err := localDaemonDialError(syscall.EPIPE)
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
-		t.Fatalf("EPIPE should map to SessionUnavailable, got %v", err)
-	}
+	requireWireError(t, err, appwire.CodeUnavailable)
 }
 
 // TestLocalDaemonDialErrorEOF covers the io.EOF path.
 func TestLocalDaemonDialErrorEOF(t *testing.T) {
 	err := localDaemonDialError(io.EOF)
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
-		t.Fatalf("EOF should map to SessionUnavailable, got %v", err)
-	}
+	requireWireError(t, err, appwire.CodeUnavailable)
 }
 
 // TestLocalDaemonDialErrorUnexpectedEOF covers the io.ErrUnexpectedEOF path.
 func TestLocalDaemonDialErrorUnexpectedEOF(t *testing.T) {
 	err := localDaemonDialError(io.ErrUnexpectedEOF)
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
-		t.Fatalf("ErrUnexpectedEOF should map to SessionUnavailable, got %v", err)
-	}
+	requireWireError(t, err, appwire.CodeUnavailable)
 }
 
 // TestLocalDaemonDialErrorDeadlineExceeded covers the context.DeadlineExceeded path.
 func TestLocalDaemonDialErrorDeadlineExceeded(t *testing.T) {
 	err := localDaemonDialError(context.DeadlineExceeded)
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
-		t.Fatalf("DeadlineExceeded should map to SessionUnavailable, got %v", err)
-	}
+	requireWireError(t, err, appwire.CodeUnavailable)
 }
 
 // TestLocalDaemonDialErrorNetTimeout covers the net.Error.Timeout() path.
 func TestLocalDaemonDialErrorNetTimeout(t *testing.T) {
 	err := localDaemonDialError(fakeTimeoutError{msg: "i/o timeout"})
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
-		t.Fatalf("net timeout should map to SessionUnavailable, got %v", err)
-	}
+	requireWireError(t, err, appwire.CodeUnavailable)
 }
 
 // TestLocalDaemonDialErrorStringMatchConnectionReset covers the string match
 // fallback for "connection reset".
 func TestLocalDaemonDialErrorStringMatchConnectionReset(t *testing.T) {
 	err := localDaemonDialError(errors.New("connection reset by peer"))
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
-		t.Fatalf("string 'connection reset' should map to SessionUnavailable, got %v", err)
-	}
+	requireWireError(t, err, appwire.CodeUnavailable)
 }
 
 // TestLocalDaemonDialErrorStringMatchBrokenPipe covers the string match for
 // "broken pipe".
 func TestLocalDaemonDialErrorStringMatchBrokenPipe(t *testing.T) {
 	err := localDaemonDialError(errors.New("broken pipe"))
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
-		t.Fatalf("string 'broken pipe' should map to SessionUnavailable, got %v", err)
-	}
+	requireWireError(t, err, appwire.CodeUnavailable)
 }
 
 // TestLocalDaemonDialErrorStringMatchClosedNetwork covers the string match
 // for "use of closed network connection".
 func TestLocalDaemonDialErrorStringMatchClosedNetwork(t *testing.T) {
 	err := localDaemonDialError(errors.New("use of closed network connection"))
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
-		t.Fatalf("string 'use of closed network connection' should map to SessionUnavailable, got %v", err)
-	}
+	requireWireError(t, err, appwire.CodeUnavailable)
 }
 
 // TestLocalDaemonDialErrorStringMatchIOTimeout covers the string match for
 // "i/o timeout".
 func TestLocalDaemonDialErrorStringMatchIOTimeout(t *testing.T) {
 	err := localDaemonDialError(errors.New("i/o timeout"))
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
-		t.Fatalf("string 'i/o timeout' should map to SessionUnavailable, got %v", err)
-	}
+	requireWireError(t, err, appwire.CodeUnavailable)
 }
 
 // TestLocalDaemonDialErrorPassThrough covers the fallback path where the
@@ -163,10 +130,7 @@ func TestLocalDaemonCallErrorContextDeadlineExceeded(t *testing.T) {
 // non-context error falls through to localDaemonDialError (line 691).
 func TestLocalDaemonCallErrorNonWireNonContext(t *testing.T) {
 	err := localDaemonCallError(syscall.ECONNREFUSED)
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
-		t.Fatalf("ECONNREFUSED should be mapped to SessionUnavailable via localDaemonDialError, got %v", err)
-	}
+	requireWireError(t, err, appwire.CodeUnavailable)
 }
 
 // TestLocalDaemonCallErrorWireInternalFailedToGetReader covers a
@@ -175,10 +139,7 @@ func TestLocalDaemonCallErrorNonWireNonContext(t *testing.T) {
 func TestLocalDaemonCallErrorWireInternalFailedToGetReader(t *testing.T) {
 	original := internalTransportFailure("failed to get reader: connection closed")
 	err := localDaemonCallError(original)
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
-		t.Fatalf("synthesized transport failure should map to SessionUnavailable, got %v", err)
-	}
+	requireWireError(t, err, appwire.CodeUnavailable)
 }
 
 // TestLocalDaemonCallErrorWireInternalWebsocket covers a synthesized transport
@@ -186,10 +147,7 @@ func TestLocalDaemonCallErrorWireInternalFailedToGetReader(t *testing.T) {
 func TestLocalDaemonCallErrorWireInternalWebsocket(t *testing.T) {
 	original := internalTransportFailure("websocket: connection closed")
 	err := localDaemonCallError(original)
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
-		t.Fatalf("synthesized transport failure should map to SessionUnavailable, got %v", err)
-	}
+	requireWireError(t, err, appwire.CodeUnavailable)
 }
 
 // TestLocalDaemonCallErrorWireInternalEOF covers a synthesized transport
@@ -197,10 +155,7 @@ func TestLocalDaemonCallErrorWireInternalWebsocket(t *testing.T) {
 func TestLocalDaemonCallErrorWireInternalEOF(t *testing.T) {
 	original := internalTransportFailure("unexpected eof during read")
 	err := localDaemonCallError(original)
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
-		t.Fatalf("synthesized transport failure should map to SessionUnavailable, got %v", err)
-	}
+	requireWireError(t, err, appwire.CodeUnavailable)
 }
 
 // TestLocalDaemonCallErrorWireInternalConnectionReset covers a synthesized
@@ -208,10 +163,7 @@ func TestLocalDaemonCallErrorWireInternalEOF(t *testing.T) {
 func TestLocalDaemonCallErrorWireInternalConnectionReset(t *testing.T) {
 	original := internalTransportFailure("connection reset by peer")
 	err := localDaemonCallError(original)
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
-		t.Fatalf("synthesized transport failure should map to SessionUnavailable, got %v", err)
-	}
+	requireWireError(t, err, appwire.CodeUnavailable)
 }
 
 // TestLocalDaemonCallErrorWireInternalBrokenPipe covers a synthesized transport
@@ -219,10 +171,7 @@ func TestLocalDaemonCallErrorWireInternalConnectionReset(t *testing.T) {
 func TestLocalDaemonCallErrorWireInternalBrokenPipe(t *testing.T) {
 	original := internalTransportFailure("broken pipe")
 	err := localDaemonCallError(original)
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
-		t.Fatalf("synthesized transport failure should map to SessionUnavailable, got %v", err)
-	}
+	requireWireError(t, err, appwire.CodeUnavailable)
 }
 
 // TestLocalDaemonCallErrorWireInternalClosedNetwork covers a synthesized
@@ -230,10 +179,7 @@ func TestLocalDaemonCallErrorWireInternalBrokenPipe(t *testing.T) {
 func TestLocalDaemonCallErrorWireInternalClosedNetwork(t *testing.T) {
 	original := internalTransportFailure("use of closed network connection")
 	err := localDaemonCallError(original)
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
-		t.Fatalf("synthesized transport failure should map to SessionUnavailable, got %v", err)
-	}
+	requireWireError(t, err, appwire.CodeUnavailable)
 }
 
 // TestLocalDaemonCallErrorWireInternalIOTimeout covers a synthesized transport
@@ -241,10 +187,7 @@ func TestLocalDaemonCallErrorWireInternalClosedNetwork(t *testing.T) {
 func TestLocalDaemonCallErrorWireInternalIOTimeout(t *testing.T) {
 	original := internalTransportFailure("i/o timeout")
 	err := localDaemonCallError(original)
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
-		t.Fatalf("synthesized transport failure should map to SessionUnavailable, got %v", err)
-	}
+	requireWireError(t, err, appwire.CodeUnavailable)
 }
 
 // TestLocalDaemonCallErrorWireInternalNoMatch covers an intact InternalError
@@ -274,10 +217,7 @@ func TestLocalDaemonInitializeErrorWireNonInternal(t *testing.T) {
 // error is not a WireError, falling through to localDaemonDialError (line 734).
 func TestLocalDaemonInitializeErrorNonWire(t *testing.T) {
 	err := localDaemonInitializeError(syscall.ECONNREFUSED)
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
-		t.Fatalf("non-wire error should be mapped via localDaemonDialError, got %v", err)
-	}
+	requireWireError(t, err, appwire.CodeUnavailable)
 }
 
 // TestLocalDaemonSubscribeReadErrorWireNonInternal covers the path where the
@@ -294,10 +234,7 @@ func TestLocalDaemonSubscribeReadErrorWireNonInternal(t *testing.T) {
 // error is not a WireError, falling through to localDaemonDialError (line 743).
 func TestLocalDaemonSubscribeReadErrorNonWire(t *testing.T) {
 	err := localDaemonSubscribeReadError(syscall.ECONNREFUSED)
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
-		t.Fatalf("non-wire error should be mapped via localDaemonDialError, got %v", err)
-	}
+	requireWireError(t, err, appwire.CodeUnavailable)
 }
 
 // TestLocalThreadLessUpdatedAtDifferent covers the updatedAt comparison

@@ -13,7 +13,6 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/internal/e2ecap"
-	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
 // hostE2EName is the registry name the live check adds the environment's host
@@ -88,12 +87,7 @@ func TestHostAddAttachForwardedDiscoveryE2E(t *testing.T) {
 		evenerPath = "~/.local/bin/evener"
 	}
 
-	provider, err := fakellm.New()
-	if err != nil {
-		t.Fatalf("start fake provider: %v", err)
-	}
-	t.Cleanup(provider.Close)
-
+	provider := newFakeLLMProvider(t)
 	stack := startHubStack(t, provider)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)

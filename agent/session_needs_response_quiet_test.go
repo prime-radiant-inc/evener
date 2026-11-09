@@ -64,9 +64,7 @@ func TestNeedsResponseRestsAwaitingAfterTheQuietPeriod(t *testing.T) {
 	t.Parallel()
 	sess, fake := newQuietPeriodSession(t, func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") })
 	evs, mu, done := collectEvents(sess)
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -98,9 +96,7 @@ func TestNeedsResponseRestartInsideTheQuietPeriodNeverArms(t *testing.T) {
 		func(llm.Request) llm.Response { return endReasonResponse("got it", "") },
 	)
 	evs, mu, done := collectEvents(sess)
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -126,9 +122,7 @@ func TestAskRestsAwaitingWithoutAQuietPeriod(t *testing.T) {
 		return agenttest.ToolCallResponse(askUserCall("ask1", askUserArgsValid()))
 	})
 	evs, mu, done := collectEvents(sess)
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -148,9 +142,7 @@ func TestNeedsResponseStoppedTurnInsideTheQuietPeriodNeverArms(t *testing.T) {
 		func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") },
 		func(llm.Request) llm.Response { return llm.Response{} },
 	)
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -174,9 +166,7 @@ func TestNeedsResponseWorkArrivingInsideTheQuietPeriodNeverArms(t *testing.T) {
 	t.Parallel()
 	sess, fake := newQuietPeriodSession(t, func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") })
 	evs, mu, done := collectEvents(sess)
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -197,9 +187,7 @@ func TestNeedsResponseWorkArrivingInsideTheQuietPeriodNeverArms(t *testing.T) {
 func TestNeedsResponseCloseInsideTheQuietPeriodNeverArms(t *testing.T) {
 	t.Parallel()
 	sess, fake := newQuietPeriodSession(t, func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") })
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -219,9 +207,7 @@ func TestPendingQuestionRestsAwaitingWithInputQueued(t *testing.T) {
 	sess, _ := newQuietPeriodSession(t, func(llm.Request) llm.Response {
 		return agenttest.ToolCallResponse(askUserCall("ask1", askUserArgsValid()))
 	})
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -246,9 +232,7 @@ func TestPendingQuestionUpgradesOnlyAnOpenIdleSession(t *testing.T) {
 	sess, _ := newQuietPeriodSession(t, func(llm.Request) llm.Response {
 		return agenttest.ToolCallResponse(askUserCall("ask1", askUserArgsValid()))
 	})
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -277,9 +261,7 @@ func TestPendingQuestionUpgradesOnlyAnOpenIdleSession(t *testing.T) {
 func TestNeedsResponseRestArmsBesideParkedSteering(t *testing.T) {
 	t.Parallel()
 	sess, fake := newQuietPeriodSession(t, func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") })
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -299,15 +281,43 @@ func TestNeedsResponseRestArmsBesideParkedSteering(t *testing.T) {
 	}
 }
 
+// A queue parked by a Stop is not work either: nothing will run it until the
+// person acts, so a turn that ends on needs_response still rests awaiting.
+// WireState and pendingQueueDepth already read the parked queue this way; the
+// settle and the quiet-period timer must agree (issue #4142).
+func TestNeedsResponseRestArmsBesideAParkedQueue(t *testing.T) {
+	t.Parallel()
+	sess, fake := newQuietPeriodSession(t, func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") })
+	ctx := tripwireCtx(t)
+	// The Stop parked a real message: the queue strip must keep showing it,
+	// and the raw depth still counts it.
+	queueOneMutation(t, sess, "queue-parked", "later")
+	if err := sess.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		snapshot.QueueHeld = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !sess.clientMutations.queueHeld() || sess.QueueDepth() == 0 {
+		t.Fatal("precondition: the queue is not parked with a message in it")
+	}
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	fake.Advance(needsResponseQuietPeriodDefault)
+	fake.Drain()
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state = %q, want awaiting: a queue parked by a Stop is not work", got)
+	}
+}
+
 // Runnable user steering that arrives during the quiet period will start the
 // next turn, so the rest stays idle and announces nothing.
 func TestNeedsResponseSteeringArrivingInsideTheQuietPeriodNeverArms(t *testing.T) {
 	t.Parallel()
 	sess, fake := newQuietPeriodSession(t, func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") })
 	evs, mu, done := collectEvents(sess)
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -340,9 +350,7 @@ func TestNeedsResponseRestAnnouncesBeforeATurnThatStartsWhileItArms(t *testing.T
 		<-release
 	}
 	evs, mu, done := collectEvents(sess)
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -450,9 +458,7 @@ func TestFilteredWakeKeepsANeedsResponseRest(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t, withImmediateRest(), withSteps(func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") }))
 	evs, mu, done := collectEvents(sess)
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -492,9 +498,7 @@ func TestFilteredWakeKeepsANeedsResponseRest(t *testing.T) {
 func TestFilteredWakeKeepsAnIdleRest(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t, withImmediateRest(), withSteps(func(llm.Request) llm.Response { return endReasonResponse("done", "done") }))
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -513,9 +517,7 @@ func TestFilteredWakeInsideTheQuietPeriodStillRestsAwaiting(t *testing.T) {
 	t.Parallel()
 	sess, fake := newQuietPeriodSession(t, func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") })
 	evs, mu, done := collectEvents(sess)
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -538,9 +540,7 @@ func TestTurnAfterAFilteredWakeInsideTheQuietPeriodNeverArms(t *testing.T) {
 		func(llm.Request) llm.Response { return endReasonResponse("got it", "") },
 	)
 	evs, mu, done := collectEvents(sess)
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -568,9 +568,7 @@ func TestFilteredWakeAfterTheQuietPeriodStaysAwaiting(t *testing.T) {
 	t.Parallel()
 	sess, fake := newQuietPeriodSession(t, func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") })
 	evs, mu, done := collectEvents(sess)
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -595,9 +593,7 @@ func TestFilteredWakeOnAFreshSessionStaysIdle(t *testing.T) {
 	t.Parallel()
 	sess, fake := newQuietPeriodSession(t)
 	evs, mu, done := collectEvents(sess)
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
 		t.Fatalf("filtered wake: %v", err)
 	}
@@ -622,9 +618,7 @@ func TestFilteredWakeInsideTheNeedsResponseInputStillRestsAwaiting(t *testing.T)
 		return endReasonResponse("which?", "needs_response")
 	})
 	evs, mu, done := collectEvents(sess)
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -647,9 +641,7 @@ func TestFilteredWakeAfterATurnThatMovedOnStaysIdle(t *testing.T) {
 		func(llm.Request) llm.Response { return endReasonResponse("got it", "done") },
 	)
 	evs, mu, done := collectEvents(sess)
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -679,9 +671,7 @@ func TestFilteredWakeThatRequeuesWorkInsideTheQuietPeriodStaysIdle(t *testing.T)
 	fake := agenttest.NewFakeClock()
 	sess := newSession(t, withDir(dir), withClock(fake), withSteps(func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") }))
 	evs, mu, done := collectEvents(sess)
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -721,9 +711,7 @@ func TestFilteredWakeAfterWorkInFlightEndsRestsAwaiting(t *testing.T) {
 	working := &subagent{id: child.ID(), sess: child, running: true}
 	sess.subagents.track(working)
 	evs, mu, done := collectEvents(sess)
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}

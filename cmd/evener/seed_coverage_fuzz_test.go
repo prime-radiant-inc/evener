@@ -40,7 +40,6 @@ func FuzzRootCommandSeedCoverage(f *testing.F) {
 			{"sandbox restricted", TestSandboxFlagRestrictedEnforces},
 			{"sandbox reprovision", TestSandboxReprovisionAfterCleanup},
 			{"sandbox clear", TestReconcileClearSandbox},
-			{"sandbox net", TestParseSandboxNet},
 			{"profile config", TestBuildInitialProfile_ConfigPath},
 			{"profile schema", TestBuildInitialProfile_ConfigPathInvalidOutputSchema},
 			{"profile unknown", TestBuildInitialProfile_UnknownInstanceError},

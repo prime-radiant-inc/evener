@@ -71,6 +71,7 @@ vi.mock("react-native", async () => ({
 	},
 }));
 vi.mock("react-native-safe-area-context", () => ({
+	SafeAreaView: "SafeAreaView",
 	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
 }));
 vi.mock("react-native-enriched-markdown", () => ({ EnrichedMarkdownText: "EnrichedMarkdownText" }));
@@ -99,7 +100,6 @@ vi.mock("expo-secure-store", () => ({
 }));
 // SessionLink's module also holds the durable outbox, which opens sqlite.
 vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
-vi.mock("expo-crypto", () => ({ randomUUID: () => "test-uuid", getRandomValues: (array: Uint8Array) => array }));
 vi.mock("../alerts/alertsContext", () => ({
 	useHoldAlerts: (active: boolean, kind: string) => alerts.holds.push([active, kind]),
 	useHeldAlertCount: () => alerts.held,

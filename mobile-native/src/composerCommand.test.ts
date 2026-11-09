@@ -2,7 +2,7 @@ import { expect, it, vi } from "vitest";
 import { parseSlashToken, spliceSlashCommand } from "@evener/appwire-client";
 import type { InputItem } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import type { ConversationMutationContext } from "../../mobile/src/state/conversationMutation";
+import type { ConversationMutationContext } from "./conversation/state/conversationMutation";
 import type { MobileConversation } from "./projectedRows";
 import { builtinComposerItems, composerCommand, submitComposerCommand } from "./composerCommand";
 import { DraftDocument } from "./draftDocument";

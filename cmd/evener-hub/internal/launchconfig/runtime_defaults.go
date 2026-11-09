@@ -110,9 +110,10 @@ var (
 		"appReplaySize":              func(l *Layer) **int { return &l.AppReplaySize },
 	}
 	boolFields = map[string]func(*Layer) **bool{
-		"sandboxNet": func(l *Layer) **bool { return &l.SandboxNet },
-		"verbose":    func(l *Layer) **bool { return &l.Verbose },
-		"apiLog":     func(l *Layer) **bool { return &l.APILog },
+		"sandboxNet":    func(l *Layer) **bool { return &l.SandboxNet },
+		"memoryEnabled": func(l *Layer) **bool { return &l.MemoryEnabled },
+		"verbose":       func(l *Layer) **bool { return &l.Verbose },
+		"apiLog":        func(l *Layer) **bool { return &l.APILog },
 	}
 )
 

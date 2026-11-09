@@ -281,6 +281,29 @@ func TestCommunicate_SingleCallSemanticsPreserved(t *testing.T) {
 	}
 }
 
+func TestCommunicateRenamedResultPersistsTypedAcceptance(t *testing.T) {
+	t.Parallel()
+	profile := provider.NewOpenAIProfile("gpt-5.2")
+	sess, err := newResultToolSession(t, profile, SessionConfig{ResultToolName: "deliver_result"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID: "renamed-call", Name: "deliver_result",
+		Arguments: mustMarshalJSON(t, communicateArgsFor(nil, "done", communicateDefaultEnvelope("", nil))), Type: "function",
+	})
+	if res.IsError {
+		t.Fatalf("renamed result tool error: %s", res.Output)
+	}
+	var state communicateEndState
+	if err := json.Unmarshal(res.ToolState, &state); err != nil {
+		t.Fatalf("decode ToolState %q: %v", res.ToolState, err)
+	}
+	if state.Accepted == nil || !*state.Accepted || state.EndTurn == nil || !*state.EndTurn {
+		t.Fatalf("typed result verdict = %+v, want accepted terminal completion", state)
+	}
+}
+
 // TestCommunicate_CrossShapeCompetingCallsNeverMix drives the two shapes that
 // are otherwise indistinguishable in a same-shape pair — explicit null and an
 // object value — against each other in BOTH orderings, asserting the winner's

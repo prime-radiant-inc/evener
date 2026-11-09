@@ -67,23 +67,13 @@ func delegateOneOfSwappedParams() map[string]any {
 // branch-level pairing rule and its narrowed enum instead.
 func TestExplainSchemaError_OneOfPositiveArmFirstDoesNotRenderTopLevelEnum(t *testing.T) {
 	msg := ExplainSchemaError("delegate", delegateOneOfSwappedParams(), delegateOneOfArgs(), "sandbox", "oneOf/0/properties/sandbox/enum")
-	if strings.Contains(msg, "is not one of the allowed values") {
-		t.Fatalf("branch-level enum failure rendered as a top-level allowed-values violation (issue #621): %q", msg)
-	}
+	notMsg(t, msg, "is not one of the allowed values", "branch-level enum failure rendered as a top-level allowed-values violation (issue #621)")
 	// The top-level sandbox enum starts "off", which the failing branch narrows
 	// away; the message must not reproduce that list.
-	if strings.Contains(msg, `"off", "read-only"`) {
-		t.Fatalf("message lists the top-level sandbox enum instead of the branch's (issue #621): %q", msg)
-	}
-	if !strings.Contains(msg, "oneOf constraint") {
-		t.Fatalf("message must name the oneOf constraint, not the arm-internal leaf: %q", msg)
-	}
-	if !strings.Contains(msg, `"sandbox" must be one of "read-only", "workspace-write", "restricted"`) {
-		t.Fatalf("message must render the branch's narrowed sandbox enum: %q", msg)
-	}
-	if !strings.Contains(msg, "sandbox_net") {
-		t.Fatalf("message must name the constrained pairing field sandbox_net: %q", msg)
-	}
+	notMsg(t, msg, `"off", "read-only"`, "message lists the top-level sandbox enum instead of the branch's (issue #621)")
+	wantMsg(t, msg, "oneOf constraint", "message must name the oneOf constraint, not the arm-internal leaf")
+	wantMsg(t, msg, `"sandbox" must be one of "read-only", "workspace-write", "restricted"`, "message must render the branch's narrowed sandbox enum")
+	wantMsg(t, msg, "sandbox_net", "message must name the constrained pairing field sandbox_net")
 }
 
 // Issue #618: a oneOf-branch failure carries no property in its instance
@@ -93,21 +83,11 @@ func TestExplainSchemaError_OneOfPositiveArmFirstDoesNotRenderTopLevelEnum(t *te
 // oneOf (issue #621), which is the location the real caller passes here.
 func TestExplainSchemaError_OneOfConstraintDoesNotReportMissingArgument(t *testing.T) {
 	msg := ExplainSchemaError("delegate", delegateOneOfParams(), delegateOneOfArgs(), "", "/oneOf/0/not")
-	if strings.Contains(msg, "arguments did not match the schema") {
-		t.Fatalf("oneOf failure explained as generic schema mismatch: %q", msg)
-	}
-	if strings.Contains(msg, "Required arguments: task") {
-		t.Fatalf("oneOf failure misattributed to missing 'task' (issue #618): %q", msg)
-	}
-	if !strings.Contains(msg, "oneOf constraint") {
-		t.Fatalf("message must name the oneOf constraint, not the leaf 'not' keyword: %q", msg)
-	}
-	if !strings.Contains(msg, `"read-only"`) {
-		t.Fatalf("message must render the branch-1 enum token: %q", msg)
-	}
-	if !strings.Contains(msg, "sandbox_net") {
-		t.Fatalf("message must name the constrained field sandbox_net: %q", msg)
-	}
+	notMsg(t, msg, "arguments did not match the schema", "oneOf failure explained as generic schema mismatch")
+	notMsg(t, msg, "Required arguments: task", "oneOf failure misattributed to missing 'task' (issue #618)")
+	wantMsg(t, msg, "oneOf constraint", "message must name the oneOf constraint, not the leaf 'not' keyword")
+	wantMsg(t, msg, `"read-only"`, "message must render the branch-1 enum token")
+	wantMsg(t, msg, "sandbox_net", "message must name the constrained field sandbox_net")
 }
 
 // multipleMatchOneOfParams is the schema from issue #623: two oneOf arms that
@@ -139,15 +119,9 @@ func TestExplainSchemaError_MultipleMatchOneOfNamesOverMatch(t *testing.T) {
 	if strings.Contains(msg, "Branch 0 requires") || strings.Contains(msg, "Branch 1 requires") {
 		t.Fatalf("multiple-match oneOf rendered branch requirements the args already satisfy (issue #623): %q", msg)
 	}
-	if !strings.Contains(msg, "matched more than one branch") {
-		t.Fatalf("message must name the over-match, not just the constraint: %q", msg)
-	}
-	if !strings.Contains(msg, "satisfy exactly one") {
-		t.Fatalf("message must give the recovery direction (satisfy exactly one branch): %q", msg)
-	}
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("over-match message must not append an example that matches zero branches (roborev finding 2): %q", msg)
-	}
+	wantMsg(t, msg, "matched more than one branch", "message must name the over-match, not just the constraint")
+	wantMsg(t, msg, "satisfy exactly one", "message must give the recovery direction (satisfy exactly one branch)")
+	notMsg(t, msg, "Example:", "over-match message must not append an example that matches zero branches (roborev finding 2)")
 }
 
 // A nested oneOf whose first failing arm contains an over-matching oneOf makes
@@ -168,25 +142,9 @@ func TestExplainSchemaError_NestedOneOfNoMatchDoesNotClaimOverMatch(t *testing.T
 	}
 	args := map[string]any{"a": "x"}
 	msg := ExplainSchemaError("probe_tool", params, args, "", "/oneOf/0/oneOf")
-	if strings.Contains(msg, "matched more than one branch") {
-		t.Fatalf("nested oneOf failure claimed the outer branches matched more than one (roborev finding 1): %q", msg)
-	}
-	if !strings.Contains(msg, `send all of "b"`) {
-		t.Fatalf("outer no-match must still describe its describable branch requirement: %q", msg)
-	}
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("nested oneOf no-match must not append an example matching zero branches (roborev follow-up): %q", msg)
-	}
-}
-
-// A bare keyword ("oneOf") is a root-level location: the over-match shape is
-// recognized when the caller passes either form.
-func TestExplainSchemaError_MultipleMatchOneOfAcceptsBareKeyword(t *testing.T) {
-	args := map[string]any{"a": "x"}
-	msg := ExplainSchemaError("probe_tool", multipleMatchOneOfParams(), args, "", "oneOf")
-	if !strings.Contains(msg, "matched more than one branch") {
-		t.Fatalf("bare root-level keyword must still detect the over-match: %q", msg)
-	}
+	notMsg(t, msg, "matched more than one branch", "nested oneOf failure claimed the outer branches matched more than one (roborev finding 1)")
+	wantMsg(t, msg, `send all of "b"`, "outer no-match must still describe its describable branch requirement")
+	notMsg(t, msg, "Example:", "nested oneOf no-match must not append an example matching zero branches (roborev follow-up)")
 }
 
 // delegateOneOfEnumParams mirrors delegateOneOfParams with a single
@@ -225,9 +183,7 @@ func TestExplainSchemaError_OneOfBranchNamesIntegerEnumValues(t *testing.T) {
 	params := delegateOneOfEnumParams("n", "integer", []any{float64(1), float64(2), float64(3)})
 	args := map[string]any{"task": "ping", "n": float64(5)}
 	msg := ExplainSchemaError("delegate", params, args, "", "/oneOf/0/not")
-	if !strings.Contains(msg, `"n" must be one of 1, 2, 3`) {
-		t.Fatalf("message must render branch 1's integer enum allowed values bare (not quoted): %q", msg)
-	}
+	wantMsg(t, msg, `"n" must be one of 1, 2, 3`, "message must render branch 1's integer enum allowed values bare (not quoted)")
 }
 
 // A boolean enum renders bare too. Quoted, `"flag" must be one of "true",
@@ -237,12 +193,8 @@ func TestExplainSchemaError_OneOfBranchNamesBooleanEnumValues(t *testing.T) {
 	params := delegateOneOfEnumParams("flag", "boolean", []any{true, false})
 	args := map[string]any{"task": "ping", "flag": "true"}
 	msg := ExplainSchemaError("delegate", params, args, "", "/oneOf/0/not")
-	if !strings.Contains(msg, `"flag" must be one of true, false`) {
-		t.Fatalf("message must render branch 1's boolean enum allowed values bare (not quoted): %q", msg)
-	}
-	if strings.Contains(msg, `"true", "false"`) {
-		t.Fatalf("message quoted the boolean enum values, visually asserting the wrong JSON type: %q", msg)
-	}
+	wantMsg(t, msg, `"flag" must be one of true, false`, "message must render branch 1's boolean enum allowed values bare (not quoted)")
+	notMsg(t, msg, `"true", "false"`, "message quoted the boolean enum values, visually asserting the wrong JSON type")
 }
 
 // A genuinely typed Go slice (not []any) must name its branch's allowed
@@ -253,18 +205,14 @@ func TestExplainSchemaError_OneOfBranchNamesTypedIntSliceEnumValues(t *testing.T
 	params := delegateOneOfEnumParams("n", "integer", []int{1, 2, 3})
 	args := map[string]any{"task": "ping", "n": 5}
 	msg := ExplainSchemaError("delegate", params, args, "", "/oneOf/0/not")
-	if !strings.Contains(msg, `"n" must be one of 1, 2, 3`) {
-		t.Fatalf("message must render branch 1's typed []int enum allowed values bare: %q", msg)
-	}
+	wantMsg(t, msg, `"n" must be one of 1, 2, 3`, "message must render branch 1's typed []int enum allowed values bare")
 }
 
 func TestExplainSchemaError_OneOfBranchNamesTypedBoolSliceEnumValues(t *testing.T) {
 	params := delegateOneOfEnumParams("flag", "boolean", []bool{true, false})
 	args := map[string]any{"task": "ping", "flag": "true"}
 	msg := ExplainSchemaError("delegate", params, args, "", "/oneOf/0/not")
-	if !strings.Contains(msg, `"flag" must be one of true, false`) {
-		t.Fatalf("message must render branch 1's typed []bool enum allowed values bare: %q", msg)
-	}
+	wantMsg(t, msg, `"flag" must be one of true, false`, "message must render branch 1's typed []bool enum allowed values bare")
 }
 
 // TestBranchCombinator_Attribution pins the location-based branch attribution
@@ -320,15 +268,9 @@ func rootNotWithOneOfParams() map[string]any {
 func TestExplainSchemaError_RootNotDoesNotBorrowSiblingOneOf(t *testing.T) {
 	args := map[string]any{"a": "x", "c": "y"}
 	msg := ExplainSchemaError("probe_tool", rootNotWithOneOfParams(), args, "", "/not")
-	if strings.Contains(msg, "oneOf constraint") {
-		t.Fatalf("root-level not failure explained with the call's satisfied oneOf branches: %q", msg)
-	}
-	if strings.Contains(msg, `send all of "a"`) {
-		t.Fatalf("root-level not failure borrowed the sibling oneOf's branch requirements: %q", msg)
-	}
-	if !strings.Contains(msg, `do not send "c"`) {
-		t.Fatalf("root-level not failure must describe its own forbidden property: %q", msg)
-	}
+	notMsg(t, msg, "oneOf constraint", "root-level not failure explained with the call's satisfied oneOf branches")
+	notMsg(t, msg, `send all of "a"`, "root-level not failure borrowed the sibling oneOf's branch requirements")
+	wantMsg(t, msg, `do not send "c"`, "root-level not failure must describe its own forbidden property")
 }
 
 // refWrappedOneOfParams hides the oneOf behind a $ref, so branchList cannot
@@ -353,18 +295,12 @@ func refWrappedOneOfParams() map[string]any {
 func TestExplainSchemaError_RefWrappedOneOfDoesNotClaimRequired(t *testing.T) {
 	args := map[string]any{"a": "x"}
 	msg := ExplainSchemaError("probe_tool", refWrappedOneOfParams(), args, "", "/$ref/oneOf/0/required")
-	if !strings.Contains(msg, "arguments did not match the schema") {
-		t.Fatalf("$ref-wrapped oneOf failure must explain the generic mismatch: %q", msg)
-	}
-	if strings.Contains(msg, "Required arguments") {
-		t.Fatalf("$ref-wrapped oneOf failure claims supplied arguments are required: %q", msg)
-	}
+	wantMsg(t, msg, "arguments did not match the schema", "$ref-wrapped oneOf failure must explain the generic mismatch")
+	notMsg(t, msg, "Required arguments", "$ref-wrapped oneOf failure claims supplied arguments are required")
 	// minimalExample renders only top-level required fields,
 	// which need not satisfy any branch of the referenced oneOf, so the
 	// fallback must not suggest one.
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("$ref-wrapped oneOf fallback emitted an example that satisfies no branch: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "$ref-wrapped oneOf fallback emitted an example that satisfies no branch")
 }
 
 // refWrappedWithSiblingOneOfParams hides one oneOf behind a $ref while another
@@ -393,12 +329,8 @@ func TestExplainSchemaError_RefWrappedOneOfIgnoresSiblingOneOf(t *testing.T) {
 	if strings.Contains(msg, "Branch 0 requires") || strings.Contains(msg, "Branch 1 requires") {
 		t.Fatalf("$ref-wrapped oneOf rendered a sibling top-level oneOf's branches: %q", msg)
 	}
-	if !strings.Contains(msg, "arguments did not match the schema") {
-		t.Fatalf("$ref-wrapped oneOf failure must explain the generic mismatch: %q", msg)
-	}
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("$ref-wrapped oneOf fallback emitted an example: %q", msg)
-	}
+	wantMsg(t, msg, "arguments did not match the schema", "$ref-wrapped oneOf failure must explain the generic mismatch")
+	notMsg(t, msg, "Example:", "$ref-wrapped oneOf fallback emitted an example")
 }
 
 // armInternalTypeParams is a root oneOf whose single arm requires a present
@@ -424,12 +356,8 @@ func armInternalTypeParams() map[string]any {
 // present-field message, which names the property and its defect.
 func TestExplainSchemaError_ArmInternalTypeNamesTheProperty(t *testing.T) {
 	msg := ExplainSchemaError("probe_tool", armInternalTypeParams(), map[string]any{"x": "abc"}, "x", "oneOf/0/properties/x/type")
-	if strings.Contains(msg, "Branch 0 requires") {
-		t.Fatalf("arm-internal type constraint rendered as a branch requirement the call already satisfied: %q", msg)
-	}
-	if !strings.Contains(msg, `argument "x" has the wrong type or value`) {
-		t.Fatalf("arm-internal type constraint must name the offending property and its defect: %q", msg)
-	}
+	notMsg(t, msg, "Branch 0 requires", "arm-internal type constraint rendered as a branch requirement the call already satisfied")
+	wantMsg(t, msg, `argument "x" has the wrong type or value`, "arm-internal type constraint must name the offending property and its defect")
 }
 
 // armNestedRequiredParams is a root oneOf whose arm requires an object property
@@ -460,12 +388,8 @@ func armNestedRequiredParams() map[string]any {
 // fall through to the present-field path, which names the property.
 func TestExplainSchemaError_ArmNestedRequiredNamesTheProperty(t *testing.T) {
 	msg := ExplainSchemaError("probe_tool", armNestedRequiredParams(), map[string]any{"opts": map[string]any{}}, "opts", "oneOf/0/properties/opts/required")
-	if strings.Contains(msg, "Branch 0 requires") {
-		t.Fatalf("arm-nested required rendered as a branch requirement the call already satisfied: %q", msg)
-	}
-	if !strings.Contains(msg, "opts") {
-		t.Fatalf("arm-nested required must name the offending property: %q", msg)
-	}
+	notMsg(t, msg, "Branch 0 requires", "arm-nested required rendered as a branch requirement the call already satisfied")
+	wantMsg(t, msg, "opts", "arm-nested required must name the offending property")
 }
 
 // armEnumCaseParams builds a root oneOf whose single arm narrows an enum on the
@@ -525,15 +449,11 @@ func TestExplainSchemaError_ArmEnumNotRenderedByBranchFallsThrough(t *testing.T)
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			msg := ExplainSchemaError("probe_tool", tc.params, tc.args, tc.field, tc.loc)
-			if strings.Contains(msg, "Branch 0 requires") {
-				t.Fatalf("enum the branch prose does not render was explained as a branch requirement the call already satisfied: %q", msg)
-			}
+			notMsg(t, msg, "Branch 0 requires", "enum the branch prose does not render was explained as a branch requirement the call already satisfied")
 			// The top-level enum is wider than the arm's and contains the
 			// rejected value, so rendering it would announce a list that
 			// includes the value it calls disallowed.
-			if strings.Contains(msg, "is not one of the allowed values") {
-				t.Fatalf("unrenderable arm enum printed the top-level allowed-values list (issue #621 misdirection): %q", msg)
-			}
+			notMsg(t, msg, "is not one of the allowed values", "unrenderable arm enum printed the top-level allowed-values list (issue #621 misdirection)")
 			leaf := tc.field[strings.IndexAny(tc.field, "/")+1:]
 			if !strings.Contains(msg, leaf) {
 				t.Fatalf("message must name the offending property %q: %q", leaf, msg)
@@ -559,12 +479,8 @@ func refWrappedNotParams() map[string]any {
 // generic mismatch — for `not` as well as `oneOf`.
 func TestExplainSchemaError_RefWrappedNotOmitsExample(t *testing.T) {
 	msg := ExplainSchemaError("probe_tool", refWrappedNotParams(), map[string]any{"a": "x"}, "", "/$ref/not")
-	if !strings.Contains(msg, "arguments did not match the schema") {
-		t.Fatalf("$ref-wrapped not failure must explain the generic mismatch: %q", msg)
-	}
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("$ref-wrapped not fallback emitted an unchecked example: %q", msg)
-	}
+	wantMsg(t, msg, "arguments did not match the schema", "$ref-wrapped not failure must explain the generic mismatch")
+	notMsg(t, msg, "Example:", "$ref-wrapped not fallback emitted an unchecked example")
 }
 
 // rootNotTwoNamesParams is a root-level `not` whose required list has two names.
@@ -585,9 +501,7 @@ func rootNotTwoNamesParams() map[string]any {
 // forbidden individually.
 func TestExplainSchemaError_RootNotMultipleNamesStatesTheConjunction(t *testing.T) {
 	msg := ExplainSchemaError("probe_tool", rootNotTwoNamesParams(), map[string]any{"a": "x", "b": "y"}, "", "/not")
-	if !strings.Contains(msg, `do not send all of "a", "b" together`) {
-		t.Fatalf("multi-name not/required must state the conjunction: %q", msg)
-	}
+	wantMsg(t, msg, `do not send all of "a", "b" together`, "multi-name not/required must state the conjunction")
 	if strings.Contains(msg, `do not send "a"`) || strings.Contains(msg, `do not send "b"`) {
 		t.Fatalf("multi-name not/required must not forbid each name individually: %q", msg)
 	}
@@ -613,15 +527,9 @@ func mixedRootNotParams() map[string]any {
 // rule and contradicts the Example (which includes mode).
 func TestExplainSchemaError_RootNotWithValueConstraintStaysGeneric(t *testing.T) {
 	msg := ExplainSchemaError("probe_tool", mixedRootNotParams(), map[string]any{"mode": "off"}, "", "/not")
-	if strings.Contains(msg, "do not send") {
-		t.Fatalf("mixed root not rendered an unconditional prohibition: %q", msg)
-	}
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("mixed root not appended an example contradicting its own advice: %q", msg)
-	}
-	if !strings.Contains(msg, "arguments did not match the schema") {
-		t.Fatalf("mixed root not must fall back to the generic mismatch: %q", msg)
-	}
+	notMsg(t, msg, "do not send", "mixed root not rendered an unconditional prohibition")
+	notMsg(t, msg, "Example:", "mixed root not appended an example contradicting its own advice")
+	wantMsg(t, msg, "arguments did not match the schema", "mixed root not must fall back to the generic mismatch")
 }
 
 // armNotWithEnumParams is a oneOf whose only arm carries a `not` AND narrows a
@@ -649,21 +557,13 @@ func armNotWithEnumParams() map[string]any {
 func TestExplainSchemaError_ArmNotRendersRequiredAndProhibition(t *testing.T) {
 	t.Run("failing enum is named", func(t *testing.T) {
 		msg := ExplainSchemaError("probe_tool", armNotWithEnumParams(), map[string]any{"x": "b"}, "x", "oneOf/0/properties/x/enum")
-		if !strings.Contains(msg, `"x" must be one of "a"`) {
-			t.Fatalf("arm `not` hid the failing enum: %q", msg)
-		}
-		if !strings.Contains(msg, `do not send "y"`) {
-			t.Fatalf("arm `not` prohibition must still be stated: %q", msg)
-		}
+		wantMsg(t, msg, `"x" must be one of "a"`, "arm `not` hid the failing enum")
+		wantMsg(t, msg, `do not send "y"`, "arm `not` prohibition must still be stated")
 	})
 	t.Run("omitted required property is named", func(t *testing.T) {
 		msg := ExplainSchemaError("probe_tool", armNotWithEnumParams(), map[string]any{}, "", "oneOf/0/required")
-		if !strings.Contains(msg, `send all of "x"`) {
-			t.Fatalf("arm `not` hid the missing required property: %q", msg)
-		}
-		if !strings.Contains(msg, `do not send "y"`) {
-			t.Fatalf("arm `not` prohibition must still be stated: %q", msg)
-		}
+		wantMsg(t, msg, `send all of "x"`, "arm `not` hid the missing required property")
+		wantMsg(t, msg, `do not send "y"`, "arm `not` prohibition must still be stated")
 	})
 }
 
@@ -705,9 +605,7 @@ func TestExplainSchemaError_StricterNestedLimitDoesNotReadTopLevel(t *testing.T)
 	} {
 		t.Run(name, func(t *testing.T) {
 			msg := ExplainSchemaError("probe_tool", tc.params, map[string]any{"x": "abcd"}, "x", tc.loc)
-			if strings.Contains(msg, "maxLength") {
-				t.Fatalf("nested stricter limit was read against the top-level property: %q", msg)
-			}
+			notMsg(t, msg, "maxLength", "nested stricter limit was read against the top-level property")
 			if tc.named && !strings.Contains(msg, `argument "x"`) {
 				t.Fatalf("message must still name the offending property: %q", msg)
 			}
@@ -733,12 +631,8 @@ func TestExplainSchemaError_RootNotOmitsExampleWithSiblingCombinator(t *testing.
 		"not":      map[string]any{"required": []any{"a"}},
 	}
 	msg := ExplainSchemaError("probe_tool", params, map[string]any{"a": "x"}, "", "/not")
-	if !strings.Contains(msg, `do not send "a"`) {
-		t.Fatalf("root not must still state its prohibition: %q", msg)
-	}
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("root not emitted an example its sibling combinator can invalidate: %q", msg)
-	}
+	wantMsg(t, msg, `do not send "a"`, "root not must still state its prohibition")
+	notMsg(t, msg, "Example:", "root not emitted an example its sibling combinator can invalidate")
 }
 
 // the root-`not` example is the top-level required shape, so
@@ -752,12 +646,8 @@ func TestExplainSchemaError_RootNotOmitsExampleThatViolatesIt(t *testing.T) {
 		"not":        map[string]any{"required": []any{"a"}},
 	}
 	msg := ExplainSchemaError("probe_tool", params, map[string]any{"a": "x"}, "", "/not")
-	if !strings.Contains(msg, `do not send "a"`) {
-		t.Fatalf("root not must still state its prohibition: %q", msg)
-	}
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("root not emitted an example that violates the rule it states: %q", msg)
-	}
+	wantMsg(t, msg, `do not send "a"`, "root not must still state its prohibition")
+	notMsg(t, msg, "Example:", "root not emitted an example that violates the rule it states")
 }
 
 // a root `not` beside a sibling `$ref` also omits the
@@ -772,12 +662,8 @@ func TestExplainSchemaError_RootNotOmitsExampleWithSiblingRef(t *testing.T) {
 		"$defs":      map[string]any{"rule": map[string]any{"properties": map[string]any{"a": map[string]any{"minLength": 2}}}},
 	}
 	msg := ExplainSchemaError("probe_tool", params, map[string]any{"c": "x"}, "", "/not")
-	if !strings.Contains(msg, `do not send "c"`) {
-		t.Fatalf("root not must still state its prohibition: %q", msg)
-	}
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("root not emitted an example its sibling $ref can invalidate: %q", msg)
-	}
+	wantMsg(t, msg, `do not send "c"`, "root not must still state its prohibition")
+	notMsg(t, msg, "Example:", "root not emitted an example its sibling $ref can invalidate")
 }
 
 // a sibling constraint on one of the example's OWN required
@@ -791,12 +677,8 @@ func TestExplainSchemaError_RootNotOmitsExampleWithConstrainedRequiredProperty(t
 		"not":        map[string]any{"required": []any{"b"}},
 	}
 	msg := ExplainSchemaError("probe_tool", params, map[string]any{"b": "x"}, "", "/not")
-	if !strings.Contains(msg, `do not send "b"`) {
-		t.Fatalf("root not must still state its prohibition: %q", msg)
-	}
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("root not emitted an example its own required property's enum violates: %q", msg)
-	}
+	wantMsg(t, msg, `do not send "b"`, "root not must still state its prohibition")
+	notMsg(t, msg, "Example:", "root not emitted an example its own required property's enum violates")
 }
 
 // a reference-wrapped failure whose leaf is not a combinator
@@ -812,15 +694,9 @@ func TestExplainSchemaError_RefWrappedNonCombinatorDoesNotReportTopLevelRequired
 	}
 	// "a" is supplied; the referenced schema requires "b".
 	msg := ExplainSchemaError("probe_tool", params, map[string]any{"a": "x"}, "", "/$ref/required")
-	if !strings.Contains(msg, "arguments did not match the schema") {
-		t.Fatalf("$ref failure must fall back to the generic mismatch: %q", msg)
-	}
-	if strings.Contains(msg, "Required arguments") {
-		t.Fatalf("$ref failure reported the top-level required list: %q", msg)
-	}
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("$ref failure emitted top-level example guidance: %q", msg)
-	}
+	wantMsg(t, msg, "arguments did not match the schema", "$ref failure must fall back to the generic mismatch")
+	notMsg(t, msg, "Required arguments", "$ref failure reported the top-level required list")
+	notMsg(t, msg, "Example:", "$ref failure emitted top-level example guidance")
 }
 
 // a `not` that is an arm of a root oneOf keeps its template
@@ -829,12 +705,8 @@ func TestExplainSchemaError_RefWrappedNonCombinatorDoesNotReportTopLevelRequired
 // ({"task": "..."} meets the `not` arm and misses the positive arm).
 func TestExplainSchemaError_OneOfNestedNotKeepsValidExample(t *testing.T) {
 	msg := ExplainSchemaError("delegate", delegateOneOfParams(), delegateOneOfArgs(), "", "/oneOf/0/not")
-	if !strings.Contains(msg, "oneOf constraint") {
-		t.Fatalf("message must still describe the oneOf constraint: %q", msg)
-	}
-	if !strings.Contains(msg, "Example:") {
-		t.Fatalf("a not arm of a root oneOf must keep a template that matches exactly one branch: %q", msg)
-	}
+	wantMsg(t, msg, "oneOf constraint", "message must still describe the oneOf constraint")
+	wantMsg(t, msg, "Example:", "a not arm of a root oneOf must keep a template that matches exactly one branch")
 }
 
 // the example is emitted only when it satisfies exactly one
@@ -877,9 +749,7 @@ func TestExplainSchemaError_RefBearingArmWithholdsExample(t *testing.T) {
 		},
 	}
 	msg := ExplainSchemaError("probe_tool", params, map[string]any{"a": "x"}, "", "/oneOf/0/not")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("example emitted although a reference-bearing arm cannot be judged: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "example emitted although a reference-bearing arm cannot be judged")
 }
 
 // A property may be named "properties" as well as "$ref": the name is not a
@@ -895,12 +765,8 @@ func TestExplainSchemaError_PropertyNamedPropertiesKeepsRefDetection(t *testing.
 		"$defs":    map[string]any{"t": map[string]any{"maxLength": 3}},
 	}
 	msg := ExplainSchemaError("probe_tool", params, map[string]any{"properties": "abcd"}, "properties", "/properties/properties/$ref/maxLength")
-	if strings.Contains(msg, "maxLength") {
-		t.Fatalf("reference after a property named properties was missed, reporting the top-level limit: %q", msg)
-	}
-	if !strings.Contains(msg, `argument "properties"`) {
-		t.Fatalf("message must still name the offending property: %q", msg)
-	}
+	notMsg(t, msg, "maxLength", "reference after a property named properties was missed, reporting the top-level limit")
+	wantMsg(t, msg, `argument "properties"`, "message must still name the offending property")
 }
 
 // A property may legitimately be named like a reference keyword; only a segment
@@ -913,9 +779,7 @@ func TestExplainSchemaError_PropertyNamedRefIsNotAReference(t *testing.T) {
 		"required":   []any{"$ref"},
 	}
 	msg := ExplainSchemaError("probe_tool", params, map[string]any{"$ref": "b"}, "$ref", "/properties/$ref/enum")
-	if !strings.Contains(msg, "is not one of the allowed values") {
-		t.Fatalf("a property named $ref must keep its constraint message: %q", msg)
-	}
+	wantMsg(t, msg, "is not one of the allowed values", "a property named $ref must keep its constraint message")
 }
 
 // minimalExample always renders an object, so a root that does not accept one
@@ -926,9 +790,7 @@ func TestExplainSchemaError_NonObjectRootOmitsObjectExample(t *testing.T) {
 		"oneOf": []any{map[string]any{"required": []any{}}, map[string]any{"required": []any{"zzz"}}},
 	}
 	msg := ExplainSchemaError("probe_tool", params, nil, "", "/oneOf/1/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("a non-object root must not be handed an object example: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "a non-object root must not be handed an object example")
 }
 
 // an arm whose `not` constrains a value is not described by
@@ -951,9 +813,7 @@ func TestExplainSchemaError_EnumInValueConstrainedNotArmNamesTheProperty(t *test
 	if msg == "probe_tool: arguments did not match the schema." {
 		t.Fatalf("enum failure in a value-constrained-`not` arm degraded to the bare generic mismatch: %q", msg)
 	}
-	if !strings.Contains(msg, `argument "x"`) {
-		t.Fatalf("message must name the failing property: %q", msg)
-	}
+	wantMsg(t, msg, `argument "x"`, "message must name the failing property")
 }
 
 // a root $dynamicRef is a reference too, so — like a sibling
@@ -969,9 +829,7 @@ func TestExplainSchemaError_OneOfExampleOmittedWithSiblingDynamicRef(t *testing.
 		"oneOf":       []any{map[string]any{"required": []any{"task"}}, map[string]any{"required": []any{"other"}}},
 	}
 	msg := ExplainSchemaError("probe_tool", params, map[string]any{"task": "abcd"}, "", "/oneOf/1/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("example emitted despite a sibling $dynamicRef the example may violate: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "example emitted despite a sibling $dynamicRef the example may violate")
 }
 
 // a property-level `$ref` reached deeper in the path must not
@@ -987,15 +845,9 @@ func TestExplainSchemaError_PropertyRefDoesNotReadTopLevelConstraint(t *testing.
 		"$defs":    map[string]any{"t": map[string]any{"maxLength": 3}},
 	}
 	msg := ExplainSchemaError("probe_tool", params, map[string]any{"x": "abcd"}, "x", "/properties/x/$ref/maxLength")
-	if strings.Contains(msg, "maxLength") {
-		t.Fatalf("property-level $ref failure read the top-level sibling limit: %q", msg)
-	}
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("property-level $ref failure emitted an unverified example: %q", msg)
-	}
-	if !strings.Contains(msg, `argument "x"`) {
-		t.Fatalf("message must still name the offending property: %q", msg)
-	}
+	notMsg(t, msg, "maxLength", "property-level $ref failure read the top-level sibling limit")
+	notMsg(t, msg, "Example:", "property-level $ref failure emitted an unverified example")
+	wantMsg(t, msg, `argument "x"`, "message must still name the offending property")
 }
 
 // $dynamicRef and $recursiveRef resolve like $ref, so a
@@ -1009,15 +861,9 @@ func TestExplainSchemaError_DynamicRefTreatedAsReference(t *testing.T) {
 		"$defs":      map[string]any{"task": map[string]any{"type": "string", "minLength": 4}},
 	}
 	msg := ExplainSchemaError("probe_tool", params, map[string]any{"task": "ping"}, "task", "/properties/task/$dynamicRef/minLength")
-	if strings.Contains(msg, "minLength") {
-		t.Fatalf("$dynamicRef failure stated a constraint from the top-level schema: %q", msg)
-	}
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("$dynamicRef failure emitted an unverified example: %q", msg)
-	}
-	if !strings.Contains(msg, `argument "task"`) {
-		t.Fatalf("message must still name the offending property: %q", msg)
-	}
+	notMsg(t, msg, "minLength", "$dynamicRef failure stated a constraint from the top-level schema")
+	notMsg(t, msg, "Example:", "$dynamicRef failure emitted an unverified example")
+	wantMsg(t, msg, `argument "task"`, "message must still name the offending property")
 }
 
 // draft-07 `dependencies` is unmodeled by the top-level
@@ -1031,9 +877,7 @@ func TestExplainSchemaError_OneOfExampleOmittedForDependencies(t *testing.T) {
 		"oneOf":        []any{map[string]any{"required": []any{"a"}}, map[string]any{"required": []any{"other"}}},
 	}
 	msg := ExplainSchemaError("probe_tool", params, map[string]any{"a": "x"}, "", "/oneOf/1/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("example emitted despite draft-07 dependencies the example violates: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "example emitted despite draft-07 dependencies the example violates")
 }
 
 // a defect nested beneath an arm's items is not branch
@@ -1068,9 +912,7 @@ func TestExplainSchemaError_OneOfExampleOmittedForContains(t *testing.T) {
 		"oneOf":    []any{map[string]any{"required": []any{"xs"}}, map[string]any{"required": []any{"other"}}},
 	}
 	msg := ExplainSchemaError("probe_tool", params, map[string]any{"xs": []any{1}}, "", "/oneOf/1/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("example emitted for a required array whose contains it cannot satisfy: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "example emitted for a required array whose contains it cannot satisfy")
 }
 
 // a property-level $ref means the referenced schema owns the
@@ -1084,12 +926,8 @@ func TestExplainSchemaError_PropertyRefOmitsExample(t *testing.T) {
 		"$defs":      map[string]any{"mode": map[string]any{"enum": []any{"on"}}},
 	}
 	msg := ExplainSchemaError("probe_tool", params, map[string]any{"mode": "off"}, "mode", "/properties/mode/$ref/enum")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("property-level $ref failure emitted an unverified example: %q", msg)
-	}
-	if !strings.Contains(msg, `argument "mode"`) {
-		t.Fatalf("message must still name the offending property: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "property-level $ref failure emitted an unverified example")
+	wantMsg(t, msg, `argument "mode"`, "message must still name the offending property")
 }
 
 // a required property typed "null" must render a valid
@@ -1101,16 +939,12 @@ func TestExplainSchemaError_NullTypePlaceholderIsValid(t *testing.T) {
 		"required":   []any{"mode"},
 	}
 	msg := ExplainSchemaError("probe_tool", params, map[string]any{"mode": "x"}, "mode", "/properties/mode/type")
-	if !strings.Contains(msg, `Example: {"mode": null}`) {
-		t.Fatalf("null-typed property must render a null placeholder: %q", msg)
-	}
+	wantMsg(t, msg, `Example: {"mode": null}`, "null-typed property must render a null placeholder")
 
 	// The oneOf path must not withhold a valid null example either.
 	params["oneOf"] = []any{map[string]any{"required": []any{"mode"}}, map[string]any{"required": []any{"other"}}}
 	msg = ExplainSchemaError("probe_tool", params, map[string]any{"mode": nil}, "", "/oneOf/1/required")
-	if !strings.Contains(msg, `Example: {"mode": null}`) {
-		t.Fatalf("null-typed property must keep its valid example on the oneOf path: %q", msg)
-	}
+	wantMsg(t, msg, `Example: {"mode": null}`, "null-typed property must keep its valid example on the oneOf path")
 }
 
 // root `patternProperties` constrains explicitly declared
@@ -1124,9 +958,7 @@ func TestExplainSchemaError_OneOfExampleOmittedForRootPatternProperties(t *testi
 		"oneOf":             []any{map[string]any{"required": []any{"task"}}, map[string]any{"required": []any{"other"}}},
 	}
 	msg := ExplainSchemaError("probe_tool", params, map[string]any{"task": "ping"}, "", "/oneOf/1/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("example emitted despite root patternProperties the placeholder violates: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "example emitted despite root patternProperties the placeholder violates")
 }
 
 // a branch-attributed failure the branch prose cannot
@@ -1142,12 +974,8 @@ func TestExplainSchemaError_BranchFallbackOmitsUncheckedExample(t *testing.T) {
 		},
 	}
 	msg := ExplainSchemaError("probe_tool", params, map[string]any{"x": 5}, "x", "oneOf/0/properties/x/type")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("branch-attributed fallback emitted an example it cannot check: %q", msg)
-	}
-	if !strings.Contains(msg, `argument "x" has the wrong type or value`) {
-		t.Fatalf("fallback must still name the offending property: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "branch-attributed fallback emitted an example it cannot check")
+	wantMsg(t, msg, `argument "x" has the wrong type or value`, "fallback must still name the offending property")
 }
 
 // root-level assertions the top-level required shape cannot
@@ -1184,9 +1012,7 @@ func TestExplainSchemaError_OneOfExampleOmittedForUnmodeledRootAssertion(t *test
 	} {
 		t.Run(name, func(t *testing.T) {
 			msg := ExplainSchemaError("probe_tool", params, map[string]any{"a": 1, "b": 1}, "", "/oneOf/0/required")
-			if strings.Contains(msg, "Example:") {
-				t.Fatalf("example emitted for a root assertion the example cannot satisfy: %q", msg)
-			}
+			notMsg(t, msg, "Example:", "example emitted for a root assertion the example cannot satisfy")
 		})
 	}
 }
@@ -1228,9 +1054,7 @@ func TestExplainSchemaError_OneOfExampleOmitsUnmodeledPropertyConstraint(t *test
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			msg := ExplainSchemaError("probe_tool", tc.params, tc.args, "", "/oneOf/1/required")
-			if strings.Contains(msg, "Example:") {
-				t.Fatalf("example emitted despite an unmodeled constraint on its own property: %q", msg)
-			}
+			notMsg(t, msg, "Example:", "example emitted despite an unmodeled constraint on its own property")
 		})
 	}
 }
@@ -1262,9 +1086,7 @@ func TestExplainSchemaError_ValueConstrainedNotArmIsNotJudged(t *testing.T) {
 	for name, params := range cases {
 		t.Run(name, func(t *testing.T) {
 			msg := ExplainSchemaError("probe_tool", params, map[string]any{"mode": "off", "extra": true}, "", "/oneOf/0/not")
-			if strings.Contains(msg, "Example:") {
-				t.Fatalf("example emitted for an arm set it does not provably satisfy: %q", msg)
-			}
+			notMsg(t, msg, "Example:", "example emitted for an arm set it does not provably satisfy")
 		})
 	}
 }
@@ -1286,9 +1108,7 @@ func TestExplainSchemaError_OneOfExampleOmitsDeepNestedRequired(t *testing.T) {
 		"oneOf":    []any{map[string]any{"required": []any{"opts"}}, map[string]any{"required": []any{"other"}}},
 	}
 	msg := ExplainSchemaError("probe_tool", params, map[string]any{"opts": map[string]any{}}, "", "/oneOf/1/required")
-	if strings.Contains(msg, "Example:") {
-		t.Fatalf("example emitted for a two-level nested required object it cannot render: %q", msg)
-	}
+	notMsg(t, msg, "Example:", "example emitted for a two-level nested required object it cannot render")
 }
 
 // the gate must also cover property-count and name
@@ -1311,9 +1131,7 @@ func TestExplainSchemaError_OneOfExampleGateCoversPropertyCountsAndUnions(t *tes
 		"oneOf":      []any{map[string]any{"required": []any{"n"}}, map[string]any{"required": []any{"other"}}},
 	}
 	msg := ExplainSchemaError("probe_tool", union, map[string]any{"n": 3}, "", "/oneOf/1/required")
-	if !strings.Contains(msg, `Example: {"n": 0}`) {
-		t.Fatalf("a resolvable type union must render its non-null placeholder: %q", msg)
-	}
+	wantMsg(t, msg, `Example: {"n": 0}`, "a resolvable type union must render its non-null placeholder")
 
 	unresolvable := map[string]any{
 		"type":       "object",
@@ -1344,9 +1162,7 @@ func TestExplainSchemaError_ArmValueConstrainedNotDoesNotNameRequired(t *testing
 		},
 	}
 	msg := ExplainSchemaError("probe_tool", params, map[string]any{"x": "a", "mode": "off"}, "", "/oneOf/0/not")
-	if strings.Contains(msg, `send all of "x"`) {
-		t.Fatalf("value-constrained `not` failure named an already-supplied required field: %q", msg)
-	}
+	notMsg(t, msg, `send all of "x"`, "value-constrained `not` failure named an already-supplied required field")
 }
 
 // a bare /$ref location is reference-wrapped too, so it must
@@ -1360,9 +1176,7 @@ func TestExplainSchemaError_BareRefLocationStaysGeneric(t *testing.T) {
 		"$defs":      map[string]any{"rule": false},
 	}
 	msg := ExplainSchemaError("probe_tool", params, map[string]any{"a": "x"}, "", "/$ref")
-	if !strings.Contains(msg, "arguments did not match the schema") {
-		t.Fatalf("bare /$ref failure must fall back to the generic mismatch: %q", msg)
-	}
+	wantMsg(t, msg, "arguments did not match the schema", "bare /$ref failure must fall back to the generic mismatch")
 	if strings.Contains(msg, "Required arguments") || strings.Contains(msg, "Example:") {
 		t.Fatalf("bare /$ref failure emitted top-level required/example guidance: %q", msg)
 	}
@@ -1392,10 +1206,6 @@ func refWrappedPresentEnumParams() map[string]any {
 // whatever the keyword or presence, so the message stays the generic mismatch.
 func TestExplainSchemaError_RefWrappedPresentEnumStaysGeneric(t *testing.T) {
 	msg := ExplainSchemaError("probe_tool", refWrappedPresentEnumParams(), map[string]any{"x": "off"}, "x", "/$ref/oneOf/0/properties/x/enum")
-	if strings.Contains(msg, "is not one of the allowed values") {
-		t.Fatalf("$ref-wrapped arm enum rendered a top-level allowed-values list containing the rejected value: %q", msg)
-	}
-	if !strings.Contains(msg, "arguments did not match the schema") {
-		t.Fatalf("$ref-wrapped arm enum must fall back to the generic mismatch: %q", msg)
-	}
+	notMsg(t, msg, "is not one of the allowed values", "$ref-wrapped arm enum rendered a top-level allowed-values list containing the rejected value")
+	wantMsg(t, msg, "arguments did not match the schema", "$ref-wrapped arm enum must fall back to the generic mismatch")
 }

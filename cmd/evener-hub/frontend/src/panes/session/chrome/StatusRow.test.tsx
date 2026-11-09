@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
+import type { ThreadModel } from "@evener/appwire-client";
 import { effortLabel, hydrateThread } from "@evener/appwire-client";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -9,6 +9,7 @@ import { beforeEach, expect, test } from "vitest";
 import { resetConnectionStoreForTests } from "../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
+import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
 import { Toast } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import rawMeterStyles from "../../../widgets/meter/meter.module.css";
@@ -32,22 +33,6 @@ test("phone status CSS reserves a visible model label without dropping fixed fac
   expect(phoneBlock).toContain("padding-inline: 0");
   expect(phoneBlock).toContain("min-width: 1rem");
 });
-
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
 
 function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
   const { jobsTreeRevision = null, ...rest } = overrides;
@@ -466,6 +451,39 @@ test("a reasoning model with a current effort but no named ladder gets the defau
   const select = screen.getByRole("combobox", { name: /reasoning effort/i }) as HTMLSelectElement;
   expect(select.value).toBe("high");
   expect(Array.from(select.options).map((o) => o.value)).toEqual(["", "minimal", "low", "medium", "high"]);
+});
+
+// A cold (not-loaded, daemonless) session reads its reasoning trio from the
+// hub's past-entry projection — current effort from the saved Config, ladder
+// and supportsReasoning from the registry row — so the effort control renders
+// beside the model picker without a live daemon, and a pick sends the same
+// wire call the hub resumes the session behind.
+test("a not-loaded session with the hub-stamped trio renders the effort control and a pick sends the wire call", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  let called: unknown;
+  fake.on("thread/reasoning-effort/set", (params) => {
+    called = params;
+    return {};
+  });
+
+  render(
+    <StatusRow
+      sessionRef="ref_a"
+      model={testModel({
+        status: { type: "notLoaded" },
+        reasoningEffort: "high",
+        reasoningEffortLevels: ["low", "medium", "high", "xhigh"],
+        supportsReasoning: true,
+      })}
+      now={1000}
+    />,
+  );
+  const select = screen.getByRole("combobox", { name: /reasoning effort/i }) as HTMLSelectElement;
+  expect(select.value).toBe("high");
+  await user.selectOptions(select, "medium");
+
+  await waitFor(() => expect(called).toEqual({ ref: "ref_a", reasoningEffort: "medium" }));
 });
 
 // --- work-time clock --------------------------------------------------------

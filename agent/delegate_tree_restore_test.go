@@ -59,6 +59,94 @@ func TestDelegateControllerCloseExecutesColdAttentionCleanup(t *testing.T) {
 	}
 }
 
+// A restart between a busy-class refusal and the retry that would present the
+// reopened row must not read the transcript as one delegate owing two
+// generations: the consume markers the failed starts left behind claim the
+// same unjournaled generation — the source's claim and the reopened row's own
+// claim, one reopen identity deeper per refusal — and both are superseded by
+// the pending row their reopens re-delivered. The restore read skips any
+// claim whose reopen row exists as pending content: the reopened row presents
+// through the ordinary pending path, so admitting the superseded source would
+// double-present the report, and the chain's second claim would read as a
+// second owed generation — an error that recurs on every restart, because
+// nothing rewrites the transcript.
+func TestDelegateAttentionRestoreSkipsSupersededResumeClaims(t *testing.T) {
+	t.Parallel()
+	c, _ := newDelegateControllerTestHarness(t, 8, 8)
+	const chainedID = "dlg_reopen_chain"
+	const singleID = "dlg_reopen_single"
+	seedDelegateControllerIdle(t, c, chainedID, "")
+	seedDelegateControllerIdle(t, c, singleID, "")
+
+	const report = "the retained child's report"
+	chainedPath := filepath.Join(c.stateDir, schema.SessionsSubdir, "child-"+chainedID+".transcript.jsonl")
+	const source = "delegate:chain-source"
+	firstReopen := delegateAttentionReopenID(source, 1)
+	secondReopen := delegateAttentionReopenID(firstReopen, 1)
+	appendColdAttentionRow(t, chainedPath, "child-"+chainedID, source, report)
+	appendColdAttentionRow(t, chainedPath, "child-"+chainedID, firstReopen, report)
+	appendColdAttentionRow(t, chainedPath, "child-"+chainedID, secondReopen, report)
+	appendColdConsumedClaim(t, chainedPath, "child-"+chainedID, source, 1)
+	appendColdConsumedClaim(t, chainedPath, "child-"+chainedID, firstReopen, 1)
+
+	singlePath := filepath.Join(c.stateDir, schema.SessionsSubdir, "child-"+singleID+".transcript.jsonl")
+	const singleSource = "delegate:single-source"
+	singleReopen := delegateAttentionReopenID(singleSource, 1)
+	appendColdAttentionRow(t, singlePath, "child-"+singleID, singleSource, report)
+	appendColdAttentionRow(t, singlePath, "child-"+singleID, singleReopen, report)
+	appendColdConsumedClaim(t, singlePath, "child-"+singleID, singleSource, 1)
+
+	owed, err := c.owedAttentionStartsFromTranscripts()
+	if err != nil {
+		t.Fatalf("restore read of a reopen-chain transcript: %v", err)
+	}
+	for _, start := range owed {
+		if start.delegateID == chainedID || start.delegateID == singleID {
+			t.Fatalf("restore admitted generation %d for superseded attention %q on %s; the pending reopened row owns the presentation",
+				start.generation, start.attentionID, start.delegateID)
+		}
+	}
+	// The reopened rows are what the restart presents: one pending row per
+	// delegate, the deepest chain member, and the superseded sources resolved.
+	chainedFold, foldErr := readDelegateAttentionFold(chainedPath, "child-"+chainedID)
+	if foldErr != nil {
+		t.Fatalf("read the chained delegate's fold: %v", foldErr)
+	}
+	if pending := chainedFold.pendingIDs(); len(pending) != 1 || pending[0] != secondReopen {
+		t.Fatalf("the chained delegate's pending attention = %#v, want only the twice-reopened row %q", pending, secondReopen)
+	}
+	singleFold, foldErr := readDelegateAttentionFold(singlePath, "child-"+singleID)
+	if foldErr != nil {
+		t.Fatalf("read the single-reopen delegate's fold: %v", foldErr)
+	}
+	if pending := singleFold.pendingIDs(); len(pending) != 1 || pending[0] != singleReopen {
+		t.Fatalf("the single-reopen delegate's pending attention = %#v, want only the reopened row %q", pending, singleReopen)
+	}
+}
+
+func appendColdAttentionRow(t *testing.T, path, sessionID, attentionID, content string) {
+	t.Helper()
+	if _, statErr := os.Stat(path); statErr != nil {
+		writer, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID})
+		if err != nil {
+			t.Fatalf("create attention transcript: %v", err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatalf("close created attention transcript: %v", err)
+		}
+	}
+	if _, err := appendColdDelegateNotificationDurablyWithOpen(path, sessionID, attentionID, content, time.Unix(100, 0).UTC(), transcript.OpenWriterForSession); err != nil {
+		t.Fatalf("append cold attention row %q: %v", attentionID, err)
+	}
+}
+
+func appendColdConsumedClaim(t *testing.T, path, sessionID, attentionID string, generation uint64) {
+	t.Helper()
+	if err := appendColdAttentionResolutionForGenerationWithOpen(path, sessionID, []string{attentionID}, delegateAttentionConsumed, generation, transcript.OpenWriterForSession); err != nil {
+		t.Fatalf("append cold consumed claim %q: %v", attentionID, err)
+	}
+}
+
 func TestDelegateColdAttentionResolutionIsDurableAndIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "attention.transcript.jsonl")
 	writeDelegateAttentionTranscript(t, path, "child-attention", "attention-idempotent")
@@ -666,7 +754,7 @@ func TestDelegateControllerRestartRepairsPreparedTerminalOnce(t *testing.T) {
 func TestDelegateControllerRestartRepairKeepsAFailedRunsError(t *testing.T) {
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
-	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{runErr: errors.New("provider returned 500\nretry-after: 30")})
+	finish := delegateFinishFromRun(delegateTerminalRunInputs{runErr: errors.New("provider returned 500\nretry-after: 30")})
 	if _, _, err := c.prepareSettlementForTest(delegateLease{delegateID: "dlg_target", generation: 1}, finish.packet); err != nil {
 		t.Fatalf("BeginSettlement: %v", err)
 	}

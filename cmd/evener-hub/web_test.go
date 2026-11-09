@@ -170,10 +170,7 @@ func TestWeb_SessionImage_ServesShaReferencedInputImage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	idx := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Roster:  hubcore.NewRoster(t.TempDir(), nil),
@@ -236,10 +233,7 @@ func TestWeb_SessionImage_ServesShaReferencedToolResultImage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	idx := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Roster:  hubcore.NewRoster(t.TempDir(), nil),
@@ -303,10 +297,7 @@ func TestWeb_SessionImage_UnknownSha(t *testing.T) {
 	if err := tw.Close(); err != nil {
 		t.Fatal(err)
 	}
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	idx := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: hubcore.NewRoster(t.TempDir(), nil), Past: idx})
 
 	allZeros := strings.Repeat("0", 64)

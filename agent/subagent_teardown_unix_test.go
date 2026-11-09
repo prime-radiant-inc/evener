@@ -432,7 +432,7 @@ type restoredCloneRuntime struct {
 // drains a still-committed stop for its whole budget.
 func restoreDelegateRuntimeOnAClone(t *testing.T) restoredCloneRuntime {
 	t.Helper()
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 	if err != nil {
 		t.Fatalf("restore root: %v", err)

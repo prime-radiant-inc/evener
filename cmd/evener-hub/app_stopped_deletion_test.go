@@ -60,10 +60,7 @@ func markStoppedTargetDeleted(t *testing.T, cfg hubcore.WebConfig, id string, st
 
 func assertStoppedTargetDeletedError(t *testing.T, err error) {
 	t.Helper()
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
-		t.Fatalf("deleted stopped target error = %v, want CodeUnavailable", err)
-	}
+	wire := requireWireError(t, err, appwire.CodeUnavailable)
 	dataJSON, marshalErr := json.Marshal(wire.Data)
 	if marshalErr != nil {
 		t.Fatal(marshalErr)

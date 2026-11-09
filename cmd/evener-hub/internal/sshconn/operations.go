@@ -86,7 +86,7 @@ func (m *Manager) renewRestartBinding(host hostreg.Host, validate func() error) 
 // DeploymentJournal identifies an explicit deployment's existing progress
 // journal. Supersede must durably correlate the prior operation before the
 // validated new intent replaces it at the write boundary. Ordinary callers
-// omit this optional journal and keep the existing recovery behavior.
+// pass a nil journal and keep the existing recovery behavior.
 type DeploymentJournal struct {
 	OperationID string
 	Supersede   func(priorOperationID string) error
@@ -110,11 +110,10 @@ type DeploymentJournal struct {
 //
 // The phase is bounded by the deploy limit, and the caller's context (the
 // operation worker's controller-lifetime context) cancels it.
-func (m *Manager) DeployForOperation(ctx context.Context, host hostreg.Host, facts Preflight, restart bool, beforeMutation func() error, journals ...DeploymentJournal) (string, Preflight, error) {
+func (m *Manager) DeployForOperation(ctx context.Context, host hostreg.Host, facts Preflight, restart bool, beforeMutation func() error, journal *DeploymentJournal) (string, Preflight, error) {
 	intent := m.deploymentIntent(restart, hubIdentity{})
 	intent.binding = newEffectBinding(host, beforeMutation)
-	if len(journals) != 0 && intent.binding != nil {
-		journal := journals[0]
+	if journal != nil && intent.binding != nil {
 		intent.binding.operationID = journal.OperationID
 		prior := m.pendingRestart(host.Name)
 		if prior.active() && prior.binding != nil && prior.binding.operationID != "" && prior.binding.operationID != journal.OperationID && journal.Supersede != nil {
@@ -127,7 +126,7 @@ func (m *Manager) DeployForOperation(ctx context.Context, host hostreg.Host, fac
 			if facts.ExecutableMissing {
 				return "", facts, endpointMigration(host)
 			}
-			return m.deployForOperationWithSupersession(ctx, host, facts, intent, func() error {
+			return m.deployForOperation(ctx, host, facts, intent, func() error {
 				if err := m.checkEffectBinding(intent.binding); err != nil {
 					return err
 				}
@@ -135,14 +134,10 @@ func (m *Manager) DeployForOperation(ctx context.Context, host hostreg.Host, fac
 			})
 		}
 	}
-	return m.deployForOperation(ctx, host, facts, intent)
+	return m.deployForOperation(ctx, host, facts, intent, nil)
 }
 
-func (m *Manager) deployForOperation(ctx context.Context, host hostreg.Host, facts Preflight, intent pendingRestartState) (string, Preflight, error) {
-	return m.deployForOperationWithSupersession(ctx, host, facts, intent, nil)
-}
-
-func (m *Manager) deployForOperationWithSupersession(ctx context.Context, host hostreg.Host, facts Preflight, intent pendingRestartState, supersede func() error) (string, Preflight, error) {
+func (m *Manager) deployForOperation(ctx context.Context, host hostreg.Host, facts Preflight, intent pendingRestartState, supersede func() error) (string, Preflight, error) {
 	deployCtx, cancel := context.WithTimeout(ctx, m.opts.deployLimit())
 	defer cancel()
 	beforeWrite := func(target string) error {
@@ -158,7 +153,11 @@ func (m *Manager) deployForOperationWithSupersession(ctx context.Context, host h
 		return m.deploymentRecorder(host.Name, intent)(target)
 	}
 	retained := m.pendingRestart(host.Name)
-	target, err := m.deploySelectedWithSupersession(deployCtx, host, facts, supersede == nil && retained.deployment && retained.selected != nil, supersede, beforeWrite)
+	target, err := m.deploySelected(deployCtx, host, facts, deployOpts{
+		realEndpointAuthority: supersede == nil && retained.deployment && retained.selected != nil,
+		supersede:             supersede,
+		record:                beforeWrite,
+	})
 	if err != nil {
 		return "", facts, err
 	}
@@ -284,7 +283,7 @@ func (m *Manager) restartForOperation(ctx context.Context, host hostreg.Host, fa
 		// An unusable contract must not block this already-authorized repair;
 		// deployForOperation validates both the installed contract and exact build.
 		cancel()
-		_, facts, err = m.deployForOperation(ctx, host, facts, pending)
+		_, facts, err = m.deployForOperation(ctx, host, facts, pending, nil)
 		m.applyResolvedTarget(&host)
 		// Deployment and the ensuing restart retain their separate phase budgets.
 		restartCtx, cancel = context.WithTimeout(ctx, m.opts.deployLimit())

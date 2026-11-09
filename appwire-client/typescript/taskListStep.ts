@@ -29,10 +29,8 @@ import { capitalized, parseArgs, str } from "./toolCallText";
 export type TaskListStep = Pick<ItemModel, "argumentsJSON" | "raw">;
 
 // The label an update row shows for a task: its description when the
-// authoritative state names one (mirrors the legacy card's
-// buildTaskRowLine, which preferred task.description over a bare id -
-// cmd/evener-hub/assets/renderer-format.js), falling back to "#<id>" when
-// state is absent or the id isn't found there.
+// authoritative state names one (preferred over a bare id), falling back to
+// "#<id>" when state is absent or the id isn't found there.
 export function taskLabel(tasks: TaskRow[] | null, id: number | undefined): string {
   if (id === undefined) return "(task)";
   const description = tasks?.find((t) => t.id === id)?.description;
@@ -98,10 +96,14 @@ function asObjectArray(value: unknown): Record<string, unknown>[] {
 // a note cannot be erased into suppression. The fallback agrees with
 // freshNotes for every note riding an ID's status word - the raw path also
 // carries a notes-only touch for an ID whose batch has no status word at
-// all, hung on the window's state-derived slot; the argument-only fallback
-// has no such slot and no row to hang it on, so that one shape renders only
-// on the raw path, the same degradation as a fresh note on an appended
-// task. Whether a status is RENDERABLE stays updateRows' own filter.
+// all, hung on the window's state-derived slot. The argument-only fallback
+// has no such slot, so the WEB CARD gives that note its own row instead
+// (taskCard.tsx's statuslessNoteRows, Jesse's ruling on #2257) rather than
+// losing it - the same treatment a fresh note on an appended task still
+// lacks, since an appended task has no client-visible id to key it. These
+// mutationRows-derived rows are unchanged, so a mutationRows-only consumer
+// (the phone's step lines) still does not render a status-less note.
+// Whether a status is RENDERABLE stays updateRows' own filter.
 // Ordering by each ID's final occurrence keeps distinct IDs in the order the
 // batch ends.
 function finalUpdates(updates: Record<string, unknown>[]): Record<string, unknown>[] {
@@ -192,9 +194,9 @@ function appendRows(tasks: Record<string, unknown>[], legacy: boolean): TouchedR
 }
 
 function updateRows(item: TaskListStep, updates: Record<string, unknown>[]): TouchedRow[] {
-  // Only a real status change earns a row - matching the legacy card, which
-  // flags exactly done/cancelled/in_progress updates (renderer.js:5010) and
-  // renders a note-only or reopened update as no per-row change at all.
+  // Only a real status change earns a row: exactly done/cancelled/in_progress
+  // updates are flagged, and a note-only or reopened update renders as no
+  // per-row change at all.
   const state = parseTaskListData(item.raw);
   const rows: TouchedRow[] = [];
   const touchedIds = new Set<number>();
@@ -236,8 +238,7 @@ function updateRows(item: TaskListStep, updates: Record<string, unknown>[]): Tou
   return rows;
 }
 
-// touchKind's status-to-flag mapping for the three statuses the card renders as
-// a row (renderer-format.js:525-533's touchKind, gated by renderer.js:5010).
+// The status-to-flag mapping for the three statuses the card renders as a row.
 const TOUCH_BY_STATUS: Record<string, MutationTouch> = {
   done: "done",
   cancelled: "cancelled",

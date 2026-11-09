@@ -4,7 +4,7 @@
 // whole ConversationScreen (which needs a working connection, mutation
 // runtime and sqlite double - see ConversationScreen.recovery.test.tsx).
 import { useRef } from "react";
-import type { TextInput } from "react-native";
+import type { TextInputInstance } from "react-native";
 import { expect, it, vi } from "vitest";
 import { renderHook } from "./renderNative.testkit";
 import { useFocusAfterModal } from "./screens";
@@ -61,10 +61,6 @@ vi.mock("expo-clipboard", () => ({
 	setStringAsync: vi.fn(async () => {}),
 	getStringAsync: vi.fn(async () => ""),
 }));
-vi.mock("expo-crypto", () => ({
-	randomUUID: () => "test-uuid",
-	getRandomValues: (array: Uint8Array) => array,
-}));
 vi.mock("expo-sqlite", async () => {
 	const { openSqliteSyncDouble } = await import("./sqliteSync.testkit");
 	return { openDatabaseSync: () => openSqliteSyncDouble().port };
@@ -104,7 +100,7 @@ vi.mock("./NativePreferencesProvider", () => ({
 function mountHook(navigation: { isFocused: () => boolean }) {
 	return renderHook(() => {
 		const focusAfterModal = useRef(false);
-		const composerInput = useRef<TextInput>(null);
+		const composerInput = useRef<TextInputInstance>(null);
 		useFocusAfterModal(navigation, focusAfterModal, composerInput);
 	});
 }

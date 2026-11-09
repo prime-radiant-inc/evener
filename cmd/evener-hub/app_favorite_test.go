@@ -120,10 +120,7 @@ func TestHubFavoriteSetRequiresFavoriteStore(t *testing.T) {
 	if err == nil {
 		t.Fatal("favorite set succeeded without a favorite store")
 	}
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeInternalError {
-		t.Fatalf("error=%T %v, want internal favorite-store error", err, err)
-	}
+	requireWireError(t, err, appwire.CodeInternalError)
 }
 
 // A non-local favorite source must name a configured host; an unknown source

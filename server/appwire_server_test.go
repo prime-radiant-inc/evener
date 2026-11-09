@@ -1381,7 +1381,7 @@ func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {
 	exitCode := 7
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetStatus(StatusInfo{
+	seedStatus(srv, StatusInfo{
 		SessionID:  "sess_1",
 		State:      "idle",
 		Model:      "gpt-5",
@@ -1454,7 +1454,7 @@ func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {
 func TestServerAppWireThreadReadCarriesTurnCountWithoutTurns(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "idle", Turns: 37})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "idle", Turns: 37})
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -1561,7 +1561,7 @@ func TestServerAppWireThreadReadIncludesCostTotal(t *testing.T) {
 			return &registry.Cost{Input: 5, Output: 25}
 		})
 		srv.SetAppIdentity("local", "th_1")
-		srv.SetStatus(StatusInfo{SessionID: "th_1", Model: model, Profile: profile})
+		seedStatus(srv, StatusInfo{SessionID: "th_1", Model: model, Profile: profile})
 		setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
 			e.workMillis = 4200
 			e.usage = &appwire.EvenerUsage{InputTokens: 100_000, OutputTokens: 20_000, TotalTokens: 120_000}
@@ -1597,7 +1597,7 @@ func TestServerAppWireThreadReadIncludesCostTotal(t *testing.T) {
 func TestServerAppWireThreadReadOmitsCostWithoutLookup(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetStatus(StatusInfo{SessionID: "th_1", Model: "claude-opus-4-5", Profile: "anthropic"})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", Model: "claude-opus-4-5", Profile: "anthropic"})
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
 		e.usage = &appwire.EvenerUsage{InputTokens: 100_000, OutputTokens: 20_000, TotalTokens: 120_000}
 	})
@@ -2031,14 +2031,14 @@ func TestServerAppWireQueueCapabilityAdvertisesHarnessSupport(t *testing.T) {
 	// steer and interrupt are. The harness supports queuing; nothing is in
 	// flight.
 	srv.SetProcessing(false)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "idle"})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "idle"})
 	if caps := srv.appCapabilities("idle", false); !caps.Queue {
 		t.Fatalf("Queue should be true when idle: it advertises harness support, not a turn in flight")
 	}
 
 	// Processing: still true.
 	srv.SetProcessing(true)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "active"})
 	if caps := srv.appCapabilities("active", true); !caps.Queue {
 		t.Fatalf("Queue should be true mid-turn")
 	}
@@ -2064,7 +2064,7 @@ func TestServerAppWireTurnQueueAcceptsMidTurnMessage(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(true)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "active"})
 	var got []string
 	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{
 		Queue: func(params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
@@ -2090,7 +2090,7 @@ func TestServerAppWireTurnQueueAcceptsMidTurnMessage(t *testing.T) {
 func TestServerAppWireTurnStartRejectsRunningTurn(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "idle"})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "idle"})
 	srv.SetProcessingTurn("turn_running")
 	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{})
 
@@ -2145,7 +2145,7 @@ func TestServerAppWireTurnQueueRejectsStaleProjectedActiveTurn(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(false)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "idle"})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "idle"})
 	srv.appActiveTurnID = "turn_stale"
 	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{
 		Queue: func(appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
@@ -2169,7 +2169,7 @@ func TestServerAppWireTurnQueueRejectsWhenIdle(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(false)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "idle"})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "idle"})
 	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{
 		Queue: func(appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
 			return appwire.TurnQueueResponse{}, nil
@@ -2195,7 +2195,7 @@ func TestServerAppWireTurnDrainAsSteerRequiresQueuedMessages(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(true)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "active"})
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.queue.Depth = 0 })
 	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{
 		Drain: func(appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
@@ -2219,7 +2219,7 @@ func TestServerAppWireTurnDrainAsSteerRequiresQueuedMessages(t *testing.T) {
 func TestServerAppWireTurnDrainAsSteerRejectsIdleThread(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "idle"})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "idle"})
 	called := 0
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.queue.Depth = 1 })
 	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{
@@ -2251,7 +2251,7 @@ func TestServerAppWireTurnDrainAsSteerDispatchesWhenQueued(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(true)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "active"})
 	called := 0
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.queue.Depth = 2 })
 	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{
@@ -2278,7 +2278,7 @@ func TestServerAppWireTurnDrainAsSteerDispatchesInputAtomically(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(true)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
+	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "active"})
 	var gotText string
 	var gotImages []ImageAttachment
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.queue.Depth = 0 })

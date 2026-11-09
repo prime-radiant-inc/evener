@@ -349,9 +349,7 @@ func TestCredentialRejection_TestRPCBroadcastsAuthUpdated(t *testing.T) {
 	client := dialHubRPC(t, httpServer)
 	t.Cleanup(func() { client.Close() })
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	mustInitializeHubClient(t, client)
 	var resp appwire.AuthTestResponse
 	if err := client.Request(context.Background(), appwire.MethodEvenerAuthTest, appwire.AuthTestParams{Provider: "gateway"}, &resp); err != nil {
 		t.Fatalf("auth/test: %v", err)

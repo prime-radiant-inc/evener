@@ -93,3 +93,95 @@
     padding-inline: 1px;
   }
 }
+
+/* Every chip is a thumb target on a phone or any coarse pointer. */
+@media (max-width: 899px), (any-pointer: coarse) {
+  .chip {
+    min-height: var(--tap-min);
+    min-width: var(--tap-min);
+  }
+}
+
+/* The phone keeps the footer on the pane's bottom edge as one row: the
+ * working directory flexes beside the chips, which stay at the touch floor at
+ * the end. A bar narrower than 600px already drops the names (the container
+ * rule above), and the phone shows a single count per chip (StatusBar.tsx), so
+ * the four counts leave the path real width. The path takes only the width the
+ * chips leave; if even 48px of path plus the chips is too wide, the chip row
+ * scrolls sideways rather than shrinking a target or wrapping to a second row.
+ * The bar owns the
+ * home-indicator band because nothing docks below it; PaneScaffold drops the
+ * composer footer's own inset when this bar follows it. The inset yields while
+ * the on-screen keyboard covers that band, as the composer dock's does. */
+@media (max-width: 899px) {
+  .bar {
+    flex-wrap: nowrap;
+    gap: var(--space-2);
+    padding: 0 var(--space-2) max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px));
+  }
+
+  .leading {
+    /* Basis 0: the path takes only the width the chips leave, so the path
+     * truncates before a chip shrinks. */
+    flex: 1 1 0;
+    min-width: 48px;
+  }
+
+  .chips {
+    display: flex;
+    flex: 0 1 auto;
+    min-width: 0;
+    /* The bar's margin-left: auto right-aligns the row; flex-start keeps any
+     * overflow at the scrollable end. */
+    justify-content: flex-start;
+    gap: var(--space-1);
+    overflow-x: auto;
+    /* A cut-off chip is the overflow cue; a scrollbar in the pane's bottom
+     * edge would cost the bar height for a control a thumb already has. */
+    scrollbar-width: none;
+  }
+
+  .chips::-webkit-scrollbar {
+    display: none;
+  }
+
+  .chip {
+    gap: 4px;
+    padding: 0 var(--space-1);
+  }
+
+  /* One line keeps the category glyph at every phone width; the 320px
+   * container rule above compacts narrow desktop panes instead. */
+  .chipGlyph {
+    display: inline-flex;
+  }
+
+  /* An editing composer means the on-screen keyboard is up on a phone: the
+   * glance strip would sit between the input and the keyboard, spending its
+   * height from the remaining transcript. The composer sets this attribute
+   * from its editor's focus, and keeps it while focus stays in the composer
+   * or one of its menus, so pressing Send or another composer control does
+   * not move the dock under the pointer. It clears when the editor is no
+   * longer the editing surface. */
+  :global(body):has([data-composer-editing]) .bar {
+    display: none;
+  }
+}
+
+/* At the Duo's 466pt cover width the existing one-row status bar keeps its
+ * four activity links and their 44px targets. Compact framing, not smaller
+ * controls or a second activity model, recovers the transcript's space. */
+@media (min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4) {
+  .bar {
+    gap: var(--space-1);
+    padding-inline: var(--space-1);
+  }
+
+  .leading {
+    min-width: 32px;
+  }
+
+  .chips {
+    gap: 0;
+  }
+}

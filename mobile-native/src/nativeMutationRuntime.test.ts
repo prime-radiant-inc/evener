@@ -20,12 +20,10 @@ import {
 	NativeMutationRuntime,
 	type NativeMutationRequest,
 } from "./nativeMutationRuntime";
-import { MutationNotSentError } from "../../mobile/src/state/conversationMutation";
+import { MutationNotSentError } from "./conversation/state/conversationMutation";
 
 const expoSQLite = vi.hoisted(() => ({ openDatabaseSync: vi.fn() }));
 vi.mock("expo-sqlite", () => expoSQLite);
-vi.mock("expo-crypto", () => ({ randomUUID: () => "test-uuid", getRandomValues: (array: Uint8Array) => array }));
-
 let database: SqliteDoubleDatabase | undefined;
 
 function openDatabase(): SqliteSync {

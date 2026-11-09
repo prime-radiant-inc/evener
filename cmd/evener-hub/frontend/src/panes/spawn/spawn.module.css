@@ -16,6 +16,25 @@
   container-type: inline-size;
 }
 
+/* The disabled Start's reason sits beside the prompt card, in caption ink
+ * rather than another notice, so the form gains a reason without gaining a
+ * second status surface. */
+.startReason {
+  margin: 0;
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-ui);
+}
+
+/* First-run chord hints: the Welcome pane's vocabulary, carried onto the
+ * spawn pane the no-provider redirect opens. Quiet, below the form. */
+.chordHints {
+  display: flex;
+  justify-content: center;
+  margin-top: var(--space-4);
+}
+
 /* The Start button's word. It rides beside the paper-plane glyph while the
  * pane has room; at the compact boundary (the same 559px the composer's
  * SessionChrome chips swap at) the word drops and the glyph carries the
@@ -96,14 +115,14 @@
 }
 
 /* Touch target floor (2026-07-30-mobile-session-layout-design.md, decision
- * 4): the effort trigger is the only way to open the effort picker, so the
- * phone needs the platform's 44px tap floor - min-height, not height, so the
- * desktop row's own sizing stays untouched and this only ever grows it. A
- * width breakpoint like iconbutton.module.css's own phone block, not
- * (any-pointer: coarse): the guard measures this floor in a headless browser
- * with no coarse pointer to match on. */
-@media (max-width: 899px) {
+ * 4): the effort trigger is the only way to open the effort picker, so phones
+ * and coarse pointers need the platform's 44px target in both axes -
+ * min-height/min-width, not height/width, so the desktop row's own sizing
+ * stays untouched and this only ever grows it. */
+@media (max-width: 899px), (any-pointer: coarse) {
   .effortTrigger {
+    justify-content: center;
+    min-width: var(--tap-min);
     min-height: var(--tap-min);
   }
 }

@@ -11,6 +11,12 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+// testHeader builds the transcript.Header the ATIF conversion tests carry:
+// the given session id, model, build version and profile id.
+func testHeader(session, model, build, profile string) transcript.Header {
+	return transcript.Header{SessionID: session, Model: model, BuildVersion: build, ProfileID: profile}
+}
+
 func TestConvertToATIF_SimpleConversation(t *testing.T) {
 	ts := time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
 
@@ -166,12 +172,7 @@ func TestConvertToATIF_SimpleConversation(t *testing.T) {
 func TestConvertToATIF_ToolUse(t *testing.T) {
 	ts := time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
 
-	header := transcript.Header{
-		SessionID:    "sess-tool",
-		Model:        "gpt-5.3-codex",
-		BuildVersion: "v0.2.0",
-		ProfileID:    "openai",
-	}
+	header := testHeader("sess-tool", "gpt-5.3-codex", "v0.2.0", "openai")
 
 	entries := []transcript.Entry{
 		{
@@ -392,12 +393,7 @@ func TestConvertToATIF_AttentionResolutionIsTransparentToToolRound(t *testing.T)
 func TestConvertToATIF_ToolError(t *testing.T) {
 	ts := time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
 
-	header := transcript.Header{
-		SessionID:    "sess-err",
-		Model:        "gpt-5.3-codex",
-		BuildVersion: "v0.2.0",
-		ProfileID:    "openai",
-	}
+	header := testHeader("sess-err", "gpt-5.3-codex", "v0.2.0", "openai")
 
 	entries := []transcript.Entry{
 		{
@@ -527,12 +523,7 @@ func TestConvertToATIF_ToolError(t *testing.T) {
 func TestConvertToATIF_ThinkingContent(t *testing.T) {
 	ts := time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
 
-	header := transcript.Header{
-		SessionID:    "sess-think",
-		Model:        "claude-sonnet-4-20250514",
-		BuildVersion: "v0.3.0",
-		ProfileID:    "anthropic",
-	}
+	header := testHeader("sess-think", "claude-sonnet-4-20250514", "v0.3.0", "anthropic")
 
 	entries := []transcript.Entry{
 		{
@@ -633,12 +624,7 @@ func TestConvertToATIF_ThinkingContent(t *testing.T) {
 func TestConvertToATIF_CheckpointAndSummary(t *testing.T) {
 	ts := time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
 
-	header := transcript.Header{
-		SessionID:    "sess-compact",
-		Model:        "gpt-5.3-codex",
-		BuildVersion: "v0.3.0",
-		ProfileID:    "openai",
-	}
+	header := testHeader("sess-compact", "gpt-5.3-codex", "v0.3.0", "openai")
 
 	entries := []transcript.Entry{
 		{
@@ -701,12 +687,7 @@ func TestConvertToATIF_CheckpointAndSummary(t *testing.T) {
 func TestConvertToATIF_ModelSwitch(t *testing.T) {
 	ts := time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
 
-	header := transcript.Header{
-		SessionID:    "sess-switch",
-		Model:        "gpt-5.5",
-		BuildVersion: "v0.3.0",
-		ProfileID:    "openai",
-	}
+	header := testHeader("sess-switch", "gpt-5.5", "v0.3.0", "openai")
 
 	entries := []transcript.Entry{
 		{
@@ -742,12 +723,7 @@ func TestConvertToATIF_ModelSwitch(t *testing.T) {
 }
 
 func TestConvertToATIF_EmptyTranscript(t *testing.T) {
-	header := transcript.Header{
-		SessionID:    "sess-empty",
-		Model:        "gpt-5.3-codex",
-		BuildVersion: "v0.1.0",
-		ProfileID:    "openai",
-	}
+	header := testHeader("sess-empty", "gpt-5.3-codex", "v0.1.0", "openai")
 
 	traj := Convert(header, nil, Options{})
 
@@ -806,12 +782,7 @@ func TestConvertToATIF_MissingBuildVersion(t *testing.T) {
 func TestConvertToATIF_SteeringTurn(t *testing.T) {
 	ts := time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
 
-	header := transcript.Header{
-		SessionID:    "sess-steer",
-		Model:        "gpt-5.3-codex",
-		BuildVersion: "v0.3.0",
-		ProfileID:    "openai",
-	}
+	header := testHeader("sess-steer", "gpt-5.3-codex", "v0.3.0", "openai")
 
 	entries := []transcript.Entry{
 		{
@@ -850,12 +821,7 @@ func TestConvertToATIF_SteeringTurn(t *testing.T) {
 func TestConvertToATIF_OrphanedToolResults(t *testing.T) {
 	ts := time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
 
-	header := transcript.Header{
-		SessionID:    "sess-orphan",
-		Model:        "gpt-5.3-codex",
-		BuildVersion: "v0.3.0",
-		ProfileID:    "openai",
-	}
+	header := testHeader("sess-orphan", "gpt-5.3-codex", "v0.3.0", "openai")
 
 	// TOOL_RESULTS without a preceding ASSISTANT turn
 	entries := []transcript.Entry{
@@ -936,12 +902,7 @@ func TestConvertToATIF_OrphanedToolResults(t *testing.T) {
 func TestConvertToATIF_WebSearch(t *testing.T) {
 	ts := time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
 
-	header := transcript.Header{
-		SessionID:    "sess-web",
-		Model:        "gpt-5.3-codex",
-		BuildVersion: "v0.3.0",
-		ProfileID:    "openai",
-	}
+	header := testHeader("sess-web", "gpt-5.3-codex", "v0.3.0", "openai")
 
 	entries := []transcript.Entry{
 		{
@@ -1009,12 +970,7 @@ func TestConvertToATIF_MultiRound(t *testing.T) {
 	ts := time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
 	cacheRead := 20
 
-	header := transcript.Header{
-		SessionID:    "sess-multi",
-		Model:        "gpt-5.3-codex",
-		BuildVersion: "v0.3.0",
-		ProfileID:    "openai",
-	}
+	header := testHeader("sess-multi", "gpt-5.3-codex", "v0.3.0", "openai")
 
 	entries := []transcript.Entry{
 		// Round 1: USER

@@ -186,10 +186,10 @@ test("describeAppImports flags a reach into the app's tooling, not only its src"
 
 test("describeAppImports flags a relative import into the mobile trees, not only the app", () => {
   const files = [path.join(dir, "a.test.ts")];
-  const sources = { [files[0]]: 'import { x } from "../../mobile/src/state";\n' };
+  const sources = { [files[0]]: 'import { x } from "../../mobile-native/src/conversation/state/conversation";\n' };
   const message = describeAppImports(files, (file) => sources[file], dir);
   assert.match(message, /must not import from the app or the mobile trees/);
-  assert.match(message, /a\.test\.ts: imports .*mobile\/src\/state/);
+  assert.match(message, /a\.test\.ts: imports .*mobile-native\/src\/conversation\/state\/conversation/);
 });
 
 test("describeAppImports catches a side-effect import, a require and a dynamic import", () => {

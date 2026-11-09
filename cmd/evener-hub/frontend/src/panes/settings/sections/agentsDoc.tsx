@@ -13,10 +13,9 @@
 // this client's own save lands with content equal to the draft, so it never
 // reads as stale.
 
-import { friendlyErrorMessage } from "@evener/appwire-client";
+import { friendlyErrorMessage, LOCAL_HOST } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
 import { agentsDocStoreForHost, useAgentsDocStoreForHost } from "../../../stores/agentsDoc";
-import { LOCAL_HOST } from "../../../stores/hostRouting";
 import { Button, InlineNotice, Skeleton, Textarea, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./agentsDoc.module.css";

@@ -365,15 +365,15 @@ func (p *Profile) AcceptsImageInput() bool {
 }
 
 // AcceptsDocumentInput reports whether the model's own row declares document
-// ("pdf") input and its adapter represents a user-message document on the
+// ("pdf") input and its adapter represents this user-message document on the
 // wire. Unlike an image — the one user-message shape every protocol vouches
 // for — a document needs the protocol check too: the Responses builder writes
-// input_file and the Anthropic builder writes a document content block, while
-// Google writes inlineData/fileData and chat strips it
-// (llm.DeliversUserMessageDocuments). Renamed profiles do not count, for the
-// same reason as AcceptsImageInput.
-func (p *Profile) AcceptsDocumentInput() bool {
-	return !p.rowFactsInherited && p.res.Caps.AcceptsModality("pdf") && llm.DeliversUserMessageDocuments(p.res)
+// input_file, the Anthropic builder writes a document content block, Google
+// writes inlineData/fileData, and the Chat builder writes a file part for
+// inline bytes (llm.DeliversUserMessageDocuments). Renamed profiles do not
+// count, for the same reason as AcceptsImageInput.
+func (p *Profile) AcceptsDocumentInput(doc *llm.DocumentData) bool {
+	return !p.rowFactsInherited && p.res.Caps.AcceptsModality("pdf") && llm.DeliversUserMessageDocuments(p.res, doc)
 }
 
 // SeesToolResultMedia reports whether the session model receives tool-result

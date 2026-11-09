@@ -30,9 +30,10 @@ and `…/2026-06-20-evener-doctor-apilog-design.md`.
 
 Every session-scoped subcommand takes a session selector first: `local:<id>`,
 `proj:<project-id>:<id>`, or a bare `<id>` (searched across buckets). The
-state-root sweeps (`turnids`) take no selector. Common flags: `--state-dir <path>`
-(state root; default `EVENER_STATE_DIR` → `XDG_STATE_HOME` → `~/.local/state`) and
-`--json`. Run `evener doctor <subcommand> -h` for the full flag list.
+state-root sweeps (`turnids`) and the compiled `lifecycle` table take no
+selector. Common flags: `--state-dir <path>` (state root; default
+`EVENER_STATE_DIR` → `XDG_STATE_HOME` → `~/.local/state`) and `--json`. Run
+`evener doctor <subcommand> -h` for the full flag list.
 
 | Tool | What it does | Key flags |
 |---|---|---|
@@ -44,6 +45,7 @@ state-root sweeps (`turnids`) take no selector. Common flags: `--state-dir <path
 | `watches <sel>` | Watch/delivery inspector: distinct deliveries (collapsing coalescing), provenance, lifecycle, the self-loop verdict, and the **target job's state** joined from the same `jobs.jsonl` (a target that died with no output could never match its condition). | `--watch <id>`, `--self-loops` |
 | `tree <sel>` | Parent ↔ delegate/observer session tree across buckets. | `--depth N`, `--observers` |
 | `turnids` | State-root sweep (no selector): which sessions persisted a reserved turn id inside the transcript's entry-index namespace (`turn_<digits>` rather than `turn_m<digits>`), so a reseed publishes one id for two turns. Names each session, the offending ids, the entries under them, and the turn kinds; a transcript it cannot decode is listed separately as unanswered rather than counted clean. | — |
+| `lifecycle` | The product's declared state machines (no selector, no state root): every state with its class, terminality and resting polarity, the initial state, and the legal transitions. Reads the same declaration the daemon and the generated client catalog use, so an agent can ask what state means and what may follow it without guessing from a transcript. | `--json` |
 
 ## Examples
 
@@ -60,4 +62,5 @@ evener doctor mutations <id>                              # did the user's messa
 evener doctor watches <id> --self-loops
 evener doctor turnids                                     # which sessions carry a reserved turn id that collides with an entry's position
 evener doctor tree <id> --observers
+evener doctor lifecycle --json                            # states, classes, terminality and legal transitions for every machine
 ```

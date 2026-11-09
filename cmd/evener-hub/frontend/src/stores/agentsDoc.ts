@@ -23,7 +23,7 @@
 // "no client connected" is a programmer error, not a state to degrade into.
 
 import type { AgentsDocResponse, AnyNotification, AppwireClientLike } from "@evener/appwire-client";
-import { friendlyErrorMessage } from "@evener/appwire-client";
+import { friendlyErrorMessage, hostRequest, isLocalHost } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import {
@@ -32,7 +32,6 @@ import {
   onConnectionNotification,
   readyConnectionTransition,
 } from "./connection";
-import { hostRequest, isLocalHost } from "./hostRouting";
 import { remoteHostStoreClient } from "./hostStoreClient";
 import {
   currentHostRegistration,

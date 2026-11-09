@@ -1,18 +1,13 @@
-import type {
-  ConnectionState,
-  InputItem,
-  Thread,
-  ThreadCapabilities,
-  ThreadReadResponse,
-} from "@evener/appwire-client";
-import { NO_ACTIVE_TURN } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import type { InputItem, Thread, ThreadReadResponse } from "@evener/appwire-client";
+import { NO_ACTIVE_TURN, WireError } from "@evener/appwire-client";
+import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, onTestFinished, test, vi } from "vitest";
-import { connectionStore } from "../../../../stores/connection";
+import { appliedReceipt } from "../../../../mutationReceiptTestUtils";
+import { resetConnectionStoreForTests } from "../../../../stores/connection";
 import type {
   MutationOutboxRecord,
   MutationRecoveryKind,
@@ -20,6 +15,8 @@ import type {
 } from "../../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../../stores/threads";
+import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
+import { ALL_CAPABILITIES as CAPABILITIES } from "../../../../threadTestUtils";
 import { Toast } from "../../../../widgets";
 import { SHOW_DELAY_MS } from "../../../../widgets/hovercard/useFloatingLabel";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
@@ -36,22 +33,6 @@ import { QueueStrip } from "./QueueStrip";
 import { flushPendingTurnsProjectionForTests } from "./testing/flushPendingTurnsProjection";
 
 const originalClipboard = navigator.clipboard;
-
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
 
 function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
   return {
@@ -113,12 +94,6 @@ async function findRow(kind: string): Promise<HTMLElement> {
     if (!row) throw new Error(`missing ${kind} row`);
     return row;
   });
-}
-
-function connectFakeClient(state: ConnectionState = "ready"): FakeClient {
-  const fake = new FakeClient(state);
-  connectionStore.getState().connect(fake);
-  return fake;
 }
 
 async function hydrate(fake: FakeClient, ref: string, overrides: Partial<Thread> = {}): Promise<void> {
@@ -202,12 +177,7 @@ async function seedCanceled(text: string, input?: InputItem[]): Promise<void> {
 // applied receipt, the response every accepted control mutation carries.
 function applied(fake: FakeClient, method: "turn/drainAsSteer" | "turn/promoteQueuedAsSteer"): void {
   fake.on(method, (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: "thread_a",
-      projectionState: "reflected",
-    },
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
   }));
 }
 
@@ -275,7 +245,7 @@ class SettleAfterRetryLookup extends MutationOutboxIndexedDB {
 
   override async getOutboxWithStopEpoch(
     clientMutationId: string,
-  ): Promise<{ record: MutationOutboxRecord | undefined; stopEpoch: number }> {
+  ): Promise<{ record: MutationOutboxRecord | undefined; stopEpoch: number; displayedStopEpoch: number }> {
     const capture = await super.getOutboxWithStopEpoch(clientMutationId);
     // The retry's first read of a still-blocked record is the click-time
     // capture (§4's release barrier), so it takes the first blocked-lookup
@@ -344,7 +314,7 @@ class RetryPersistenceReadCounter extends MutationOutboxIndexedDB {
 
   override async getOutboxWithStopEpoch(
     clientMutationId: string,
-  ): Promise<{ record: MutationOutboxRecord | undefined; stopEpoch: number }> {
+  ): Promise<{ record: MutationOutboxRecord | undefined; stopEpoch: number; displayedStopEpoch: number }> {
     const capture = await super.getOutboxWithStopEpoch(clientMutationId);
     this.#noteLookup(capture.record);
     return capture;
@@ -373,7 +343,7 @@ function DrainBusyHarness(overrides: Partial<Parameters<typeof QueueStrip>[0]> =
 
 beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
   resetToastStoreForTests();
@@ -390,7 +360,7 @@ describe("visibility", () => {
   test.each(["rejected", "blockedUnknown"])(
     "notes %s recovery never offers composer message editing",
     async (state) => {
-      const fake = connectFakeClient();
+      const fake = connectReadyFakeClient();
       await hydrate(fake, "ref_a");
       const storage = new MutationOutboxIndexedDB();
       const note = await storage.enqueueIntent({
@@ -420,7 +390,7 @@ describe("visibility", () => {
   });
 
   test("renders nothing when the queue is empty and no pending entries exist", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0, depth: 0 } },
     });
@@ -429,7 +399,7 @@ describe("visibility", () => {
   });
 
   test("renders the strip once the queue has entries", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       evener: {
         ref: "ref_a",
@@ -448,7 +418,7 @@ describe("durable recovery rows", () => {
   // promote must still render its words in the durable row (roborev #2140
   // round 6), never a blank one.
   test("a rejected promote renders its composed content, not a blank row", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a");
     const storage = new MutationOutboxIndexedDB();
     const outbox = await storage.enqueueIntent({
@@ -473,7 +443,7 @@ describe("durable recovery rows", () => {
 
   test("a rejected record renders as an ordinary editable queued row", async () => {
     const user = userEvent.setup();
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a");
     await seedRecovery("rejected", "not sent");
     const onEditRecovery = vi.fn();
@@ -495,7 +465,7 @@ describe("durable recovery rows", () => {
   // indistinguishable from a real queued message -- the header counts those as
   // queued. The reason is the whole point of the row.
   test("a rejected control shows the daemon's reason", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a");
     await seedRecovery("rejected", "also check the tests", {
       method: "turn/steer",
@@ -511,7 +481,7 @@ describe("durable recovery rows", () => {
   // offer to resend it as whatever the user then types -- turning a Stop into a
   // message. It is not a draft to recover.
   test("a rejected Stop says what failed and offers no edit", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a");
     await seedRecovery("rejected", "", {
       method: "turn/interrupt",
@@ -527,7 +497,7 @@ describe("durable recovery rows", () => {
   });
 
   test.each(["restartRequired", "notLoaded"] as const)("Retry stays blocked for %s sessions", async (type) => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", { status: { type } });
     await seedBlockedUnknown("uncertain");
     renderStrip(defaultProps());
@@ -558,7 +528,7 @@ describe("durable recovery rows", () => {
   // still cannot be checked". Retry must stay disabled until the session is
   // resumed, exactly as it is for a non-local notLoaded snapshot.
   test("Retry stays blocked for a recovery-fenced local notLoaded session", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const ref = "local:fenced-retry";
     await hydrate(fake, ref, {
       status: { type: "notLoaded" },
@@ -583,7 +553,7 @@ describe("durable recovery rows", () => {
   // same way it mirrors the snapshot refusals, and re-enables the moment
   // discovery's reconcile retry clears the state.
   test("Retry stays blocked while the ref's reconciliation is storage-blocked", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", { status: { type: "idle" } });
     await seedBlockedUnknown("uncertain");
     act(() => threadsStore.setState({ mutationReconciliationStorageBlocked: new Set(["ref_a"]) }));
@@ -600,7 +570,7 @@ describe("durable recovery rows", () => {
   // obligation. An idle fenced session therefore offered an enabled Retry that
   // always failed with the inline "Delivery still cannot be checked" error.
   test("Retry stays blocked for an idle session with a restart-blocking obligation", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", { status: { type: "idle" } });
     await seedBlockedUnknown("uncertain input");
     act(() => {
@@ -613,9 +583,171 @@ describe("durable recovery rows", () => {
     expect(isDisabled(retry)).toBe(true);
   });
 
-  test("blocked unknown has Retry but no sendable action", async () => {
+  // RoboRev round-1 M5: the canceled strip surfaces a retargeted resend's
+  // born-canceled row under the displayed ref (its durable destination is the
+  // resumed session). The controls that row exposes must operate through the
+  // row's OWN destination identity - the sending pane's ref is the displayed
+  // one, and identity checks keyed on it would leave the surfaced row inert.
+  async function seedRetargetedCanceled(text: string): Promise<MutationOutboxRecord> {
+    const storage = new MutationOutboxIndexedDB();
+    const input = [{ type: "text", text }];
+    const original = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/start",
+      payload: { ref: "ref_a", input },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input },
+    });
+    await storage.transferToRecovery(original.clientMutationId, "rejected");
+    await storage.retargetOutbox("ref_a", "ref_b", { threadId: "thr_ref_b" });
+    const sent = await storage.resendRecoveryResult(
+      original.clientMutationId,
+      {
+        targetRef: "ref_b",
+        threadId: "thr_ref_b",
+        method: "turn/start",
+        payload: { ref: "ref_b", input },
+        attachments: [],
+        optimisticDisplay: { method: "turn/start", input },
+      },
+      undefined,
+      undefined,
+      undefined,
+      { stopEpoch: 0, displayedRef: "ref_a" },
+    );
+    if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
+    // The Stop lands on the still-displayed session and cancels the
+    // unattempted resend - the finding's born-canceled shape.
+    await storage.enqueueInterruptAndCancel({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/interrupt",
+      payload: { ref: "ref_a" },
+      attachments: [],
+      optimisticDisplay: { method: "turn/interrupt" },
+    });
+    const row = await storage.getOutbox(sent.record.clientMutationId);
+    storage.close();
+    if (!row) throw new Error("missing retargeted row");
+    if (row.state !== "canceled") throw new Error("retargeted row did not cancel");
+    await refreshPendingTurnsProjection("ref_a");
+    return row;
+  }
+
+  test("a retargeted canceled row surfaced in the sending pane edits and removes under its own destination", async () => {
     const user = userEvent.setup();
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
+    await hydrate(fake, "ref_a");
+    await hydrate(fake, "ref_b");
+    const row = await seedRetargetedCanceled("retargeted then stopped");
+    const onEditRecovery = vi.fn();
+    renderStrip(defaultProps({ onEditRecovery }));
+    await flushPendingTurnsProjectionForTests();
+    const canceledRow = await findRow("canceled");
+    expect(within(canceledRow).getByText("retargeted then stopped")).toBeTruthy();
+
+    await user.click(within(canceledRow).getByRole("button", { name: "Edit message" }));
+    // The edit moves the row to recovery through the row's own destination
+    // identity - the sending pane's ref would strand the surfaced row inert.
+    // The action is fire-and-forget (it claims the row in storage before the
+    // callback fires), so wait for it rather than racing the microtask queue
+    // under full-battery fan-out.
+    await waitFor(() => expect(onEditRecovery).toHaveBeenCalledTimes(1));
+    expect(onEditRecovery.mock.calls[0]?.[0]).toMatchObject({
+      clientMutationId: row.clientMutationId,
+      targetRef: "ref_b",
+    });
+    expect(getToasts()).toEqual([]);
+
+    let fresh: MutationOutboxRecord | undefined;
+    await act(async () => {
+      fresh = await seedRetargetedCanceled("retargeted again");
+    });
+    expect(fresh?.state).toBe("canceled");
+    await flushPendingTurnsProjectionForTests();
+    const recanceledRow = await findRow("canceled");
+    await user.click(within(recanceledRow).getByRole("button", { name: "Remove from queue" }));
+    await flushPendingTurnsProjectionForTests();
+    expect(queryRow("canceled")).toBeNull();
+    expect(getToasts()).toEqual([]);
+  });
+
+  // RoboRev round-2 M5 corner: the retargeted row's EDIT recovery - durable
+  // destination ref_b, displayed ref_a - must survive the displayed
+  // session's own reload. The persistence read and the tray's recovery
+  // selection both have to match by displayedRef, or the composition the
+  // user edited vanishes from the tray the Edit press opened it from the
+  // moment the strip's projection re-reads.
+  test("a retargeted row's edit recovery stays in the displayed pane's tray across a reload", async () => {
+    const fake = connectReadyFakeClient();
+    await hydrate(fake, "ref_a");
+    await hydrate(fake, "ref_b");
+    const row = await seedRetargetedCanceled("edited while retargeted");
+    const user = userEvent.setup();
+    renderStrip(defaultProps({}));
+    await flushPendingTurnsProjectionForTests();
+    const canceledRow = await findRow("canceled");
+    await user.click(within(canceledRow).getByRole("button", { name: "Edit message" }));
+    await flushPendingTurnsProjectionForTests();
+    // The edit moved the row to recovery under its own destination identity.
+    const storage = new MutationOutboxIndexedDB();
+    const recovery = (await storage.listRecovery()).find((record) => record.clientMutationId === row.clientMutationId);
+    storage.close();
+    if (!recovery) throw new Error("edit did not move the row to recovery");
+    expect(recovery).toMatchObject({ targetRef: "ref_b", displayedRef: "ref_a" });
+    // The displayed session reloads its own durable projection: the edited
+    // composition must still be in the tray the strip surfaces.
+    await act(async () => {
+      await refreshPendingTurnsProjection("ref_a");
+    });
+    // The tray surfaces the editing recovery in its composer-edit slot
+    // (data-kind "editing" - the active-composition row, not a bare
+    // recovery row): the composition the user edited is still here.
+    const recoveryRow = await findRow("editing");
+    expect(within(recoveryRow).getByText("edited while retargeted")).toBeTruthy();
+  });
+
+  // RoboRev round-4 M3: Retry eligibility is ROW-scoped, not pane-scoped.
+  // The button's disabled term read the DISPLAYED session's snapshot flags,
+  // so a retargeted canceled row targeting healthy ref_b inherited fenced
+  // ref_a's refusal - and an inherited-wire row has no Edit and no Remove,
+  // making Retry its only recovery control, disabled in exactly the pane the
+  // displayedRef projection surfaced it in. Each row's Retry derives from its
+  // own target ref's flags, the same inputs retryBlockedMutation presses with.
+  test("a retargeted canceled row keeps Retry enabled when only the displayed session is fenced", async () => {
+    const fake = connectReadyFakeClient();
+    await hydrate(fake, "ref_a", { status: { type: "notLoaded" } });
+    await hydrate(fake, "ref_b");
+    const row = await seedRetargetedCanceled("retry under a fenced display");
+    expect(row.targetRef).toBe("ref_b");
+    renderStrip(defaultProps());
+    await flushPendingTurnsProjectionForTests();
+    const canceledRow = await findRow("canceled");
+    const retry = within(canceledRow).getByRole("button", { name: "Retry" });
+    expect(isDisabled(retry)).toBe(false);
+  });
+
+  // The honest degenerate case, the same finding's other edge: a row whose
+  // own target is notLoaded keeps Retry disabled - the press would refuse on
+  // that target's snapshot, and a fence on the row's real destination is a
+  // real fence. Before the row-scoped fix this rendered an ENABLED Retry
+  // that always failed.
+  test("a retargeted row keeps Retry disabled while its own target is notLoaded", async () => {
+    const fake = connectReadyFakeClient();
+    await hydrate(fake, "ref_a");
+    await hydrate(fake, "ref_b", { status: { type: "notLoaded" } });
+    await seedRetargetedCanceled("retry toward a fenced target");
+    renderStrip(defaultProps());
+    await flushPendingTurnsProjectionForTests();
+    const canceledRow = await findRow("canceled");
+    const retry = within(canceledRow).getByRole("button", { name: "Retry" });
+    expect(isDisabled(retry)).toBe(true);
+  });
+
+  test("a delivery-uncertain row carries the same actions as any local message", async () => {
+    const user = userEvent.setup();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a");
     fake.on("turn/start", () => new Promise<never>(() => undefined));
     await seedBlockedUnknown("uncertain");
@@ -624,12 +756,24 @@ describe("durable recovery rows", () => {
     const row = await findRow("blocked");
     expect(within(row).getByText("uncertain")).toBeTruthy();
     const retry = within(row).getByRole("button", { name: "Retry" });
-    expect(within(row).queryByRole("button", { name: /edit|send|steer|remove/i })).toBeNull();
+    // Uncertain delivery is a subtitle, not a species: the row is editable and
+    // removable like any other local message - editing it is sending it again.
+    expect(within(row).getByRole("button", { name: "Edit message" })).toBeTruthy();
+    expect(within(row).getByRole("button", { name: "Remove from queue" })).toBeTruthy();
 
     await user.click(retry);
     const storage = new MutationOutboxIndexedDB();
     await flushPendingTurnsProjectionForTests();
-    expect((await storage.listOutbox("ref_a"))[0]?.state).toBe("submitting");
+    // The press mints: the blocked predecessor settles terminal "superseded"
+    // (kept for the receipt its real in-flight attempt can still bring) and a
+    // FRESH row carries the send, re-submitting under the inherited wire id -
+    // stuck in flight here, since the scripted transport never answers.
+    const rows = await storage.listOutbox("ref_a");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ state: "superseded" });
+    expect(rows[1]).toMatchObject({ state: "submitting" });
+    expect(rows[1]?.clientMutationId).not.toBe(rows[0]?.clientMutationId);
+    expect(rows[1]?.payload.clientMutationId).toBe(rows[0]?.clientMutationId);
     storage.close();
   });
 
@@ -637,7 +781,7 @@ describe("durable recovery rows", () => {
     "visible Retry treats an other-tab %s row as a benign no-op",
     async (outcome) => {
       vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-      const fake = connectFakeClient();
+      const fake = connectReadyFakeClient();
       await hydrate(fake, "ref_a");
       await seedBlockedUnknown("other-tab uncertain input");
       render(
@@ -655,6 +799,11 @@ describe("durable recovery rows", () => {
       if (!original) throw new Error("missing seeded blocked mutation");
       // Commit from another handle without notifying this tab's projection:
       // the visible Retry is stale, but its real lookup must see the new state.
+      // The other tab's re-queue is a MINT: the old row settles terminal
+      // "superseded" and a fresh row carries the send. Keep the fresh row in
+      // flight (a transport that never answers) so the strip keeps showing
+      // its preview and no dispatch-side noise enters the no-op assertions.
+      fake.on("turn/start", () => new Promise<never>(() => undefined));
       if (outcome === "settled") await otherTab.settleApplied(original.clientMutationId);
       else await otherTab.restoreProvenAbsent("ref_a", new Set());
       const afterOtherTab = await otherTab.getOutbox(original.clientMutationId);
@@ -669,8 +818,13 @@ describe("durable recovery rows", () => {
         expect(afterOtherTab).toMatchObject({
           clientMutationId: original.clientMutationId,
           payload: original.payload,
-          state: "submitting",
+          state: "superseded",
         });
+        const rows = await otherTab.listOutbox("ref_a");
+        expect(rows).toHaveLength(2);
+        expect(rows[1]).toMatchObject({ state: "submitting" });
+        expect(rows[1]?.clientMutationId).not.toBe(original.clientMutationId);
+        expect(rows[1]?.payload.clientMutationId).toBe(original.clientMutationId);
         expect(screen.getByText("other-tab uncertain input")).toBeTruthy();
       }
       expect(fake.calls.filter(({ method }) => method === "thread/resume" || method === "turn/start")).toEqual([]);
@@ -679,88 +833,129 @@ describe("durable recovery rows", () => {
 
   // Regression for the review finding on the reduced branch: handleRetry used to
   // read the record BEFORE refreshing the projection and decide on that
-  // pre-refresh snapshot, so a settle from another tab landing between the two
-  // reported "Delivery still cannot be checked" for a row the retry had already
-  // made moot. The decision must be made on the post-refresh state.
-  test("a settle landing in Retry's read/refresh window leaves no error for the row", async ({ onTestFinished }) => {
+  // pre-refresh snapshot, so a re-queue from another tab landing between the
+  // two reported "Delivery still cannot be checked" for a row the retry had
+  // already made moot. The decision must be made on the post-refresh state.
+  // The window's re-queue is a MINT now: the old row settles terminal
+  // "superseded" and the fresh row carries the send, so the row that returns
+  // is the FRESH one - and a lingering error from the window must not land on
+  // it either.
+  test("a re-queue landing in Retry's read/refresh window leaves no error for the row", async ({ onTestFinished }) => {
     const ref = "ref_a";
     const storage = new SettleAfterRetryLookup();
     setMutationStorageForTests(storage);
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, ref);
     await seedBlockedUnknown("uncertain input");
     renderStrip(defaultProps());
     await flushPendingTurnsProjectionForTests();
     // Keep the record blocked through the retry's own reconciliation - the same
     // fixture the genuinely-blocked case uses - so the decision read still sees
-    // it blocked whenever the settle has not landed.
+    // it blocked whenever the re-queue has not landed.
     fake.on("thread/read", () =>
       readResponse(ref, {
         evener: { ref, capabilities: CAPABILITIES, mutationStateAuthoritative: false, queue: { revision: 0 } },
       }),
     );
+    // The fresh row's dispatch fails with an uncertain outcome, so the
+    // re-queued send re-parks blocked - the row that must return with no
+    // error on it.
+    fake.on("turn/start", (params) => {
+      throw new WireError("journal unavailable", -32014, {
+        evenerErrorInfo: "mutationOutcomeUnknown",
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "unknown",
+        retryDisposition: "blocked",
+        cause: "persistenceUnavailable",
+      });
+    });
     const otherTab = new MutationOutboxIndexedDB();
     onTestFinished(() => otherTab.close());
     const original = (await otherTab.listOutbox(ref))[0];
     if (!original) throw new Error("missing seeded blocked mutation");
-    // The other tab reopens the record inside the retry window (the barrier
+    // The other tab re-queues the record inside the retry window (the barrier
     // class above arms on the retry flow's own reads, so persistence-read
-    // shifts elsewhere in the flow cannot misplace the settle - issue #1723).
+    // shifts elsewhere in the flow cannot misplace the re-queue - issue #1723).
     storage.settleOnRetryRefresh(async () => {
       await otherTab.restoreProvenAbsent(ref, new Set());
     });
     await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
     await flushPendingTurnsProjectionForTests();
-    // Block the same record again so the row returns: a lingering error state
-    // from the window would now be visible on it.
     await act(async () => {
-      await otherTab.markUnknown(original.clientMutationId, "blockedUnknown");
       await refreshPendingTurnsProjection(ref);
     });
     await flushPendingTurnsProjectionForTests();
+    // The old row is terminal "superseded" - dropped from every pending
+    // surface - and the fresh row carries the send, re-parked blocked by its
+    // own uncertain dispatch. No error, no toast: the press was a benign
+    // no-op for a row the other tab had already re-queued.
+    expect(await otherTab.getOutbox(original.clientMutationId)).toMatchObject({ state: "superseded" });
     const row = (await screen.findByText("uncertain input")).closest("li");
-    if (!row) throw new Error("missing blocked row after the settle window");
+    if (!row) throw new Error("missing re-queued row after the settle window");
     await within(row).findByRole("button", { name: "Retry" });
     expect(within(row).queryAllByRole("alert")).toEqual([]);
     expect(getToasts()).toEqual([]);
   });
 
-  // Issue #1722: handleRetry awaited refreshPendingTurnsProjection(sessionRef)
-  // even though retryBlockedPendingTurn's own mutateThenRefresh had already
-  // awaited that same refresh before its promise resolved, so every Retry paid a
-  // second, unread IndexedDB round trip. The decision read that follows it uses
-  // readMutationPersistence directly, so the dropped refresh fed nothing.
-  test("a retry that stays blocked refreshes the pending-turns projection once", async () => {
+  // Issue #1722's surviving shape under the mint: handleRetry's own redundant
+  // second refresh stays gone (it re-read the same durable rows and fed
+  // neither the projection nor the decision). What the retry pays now: the
+  // refresh retryBlockedPendingTurn's mutateThenRefresh awaits, the decision
+  // read, and the ONE refresh the mint's own commit notification lands - the
+  // refresh that publishes the tail re-queue the press just made, so it feeds
+  // the projection rather than nothing.
+  test("a retry that re-queues refreshes the pending-turns projection exactly for what feeds it", async () => {
     const ref = "ref_a";
     const storage = new RetryPersistenceReadCounter();
     setMutationStorageForTests(storage);
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, ref);
     await seedBlockedUnknown("uncertain input");
     renderStrip(defaultProps());
     await flushPendingTurnsProjectionForTests();
     // Keep the record blocked through the retry's own reconciliation, the
-    // fixture the genuinely-blocked case above uses: the retry then reports the
-    // row still cannot be checked and reaches its decision read -
-    // the path the redundant refresh lived on.
+    // same fixture the re-queued case above uses, and give the fresh row's
+    // dispatch an uncertain outcome so it re-parks blocked - the shape where
+    // the retry's reads end.
     fake.on("thread/read", () =>
       readResponse(ref, {
         evener: { ref, capabilities: CAPABILITIES, mutationStateAuthoritative: false, queue: { revision: 0 } },
       }),
     );
+    fake.on("turn/start", (params) => {
+      throw new WireError("journal unavailable", -32014, {
+        evenerErrorInfo: "mutationOutcomeUnknown",
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "unknown",
+        retryDisposition: "blocked",
+        cause: "persistenceUnavailable",
+      });
+    });
     const retry = screen.getByRole("button", { name: "Retry" });
     await userEvent.setup().click(retry);
     await flushPendingTurnsProjectionForTests();
-    // Two target-scoped reads: the refresh retryBlockedPendingTurn's own
-    // mutateThenRefresh awaits, then the retry's decision read. A third is the
-    // redundant second refresh #1722 removed - it re-read the same durable rows
-    // and fed neither the projection nor the decision.
-    expect(storage.readRefs()).toEqual(["ref_a", "ref_a"]);
+    // Four target-scoped reads: the mutateThenRefresh refresh, the decision
+    // read, the mint's own commit-notification refresh (which publishes the
+    // tail re-queue), and the re-parked fresh row's notification refresh
+    // (which publishes its blockedUnknown verdict). The #1722 redundant
+    // refresh - a second read that fed neither the projection nor the
+    // decision - is still gone: each of these four lands a row state the
+    // press needs to see.
+    expect(storage.readRefs()).toEqual(["ref_a", "ref_a", "ref_a", "ref_a"]);
   });
 
-  test("a genuinely blocked Retry reports one inline error without a duplicate toast", async ({ onTestFinished }) => {
+  // The endpoint's honest shape for this fixture: a user Retry of a blocked
+  // row is never refused as "still cannot be checked" - the refusal was the
+  // in-place reauthorization's innocent precondition, deleted with it. The
+  // press MINTS a fresh row that carries the send under the predecessor's
+  // wire id; when that re-queued send's own dispatch fails with an uncertain
+  // outcome, the FRESH row parks blockedUnknown with its Retry affordance -
+  // the row's own state is the surface, one row, no error, no toast.
+  test("a Retry that re-queues an uncertain send parks the fresh row blocked once, with no duplicate toast", async ({
+    onTestFinished,
+  }) => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a");
     await seedBlockedUnknown("still uncertain input");
     renderStrip(defaultProps());
@@ -773,19 +968,41 @@ describe("durable recovery rows", () => {
         evener: { ref: "ref_a", capabilities: CAPABILITIES, mutationStateAuthoritative: false, queue: { revision: 0 } },
       }),
     );
+    fake.on("turn/start", (params) => {
+      throw new WireError("journal unavailable", -32014, {
+        evenerErrorInfo: "mutationOutcomeUnknown",
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "unknown",
+        retryDisposition: "blocked",
+        cause: "persistenceUnavailable",
+      });
+    });
     await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
     await flushPendingTurnsProjectionForTests();
+    // The press re-queued: the old row settled terminal and the fresh row -
+    // dispatched exactly once, under the inherited wire id - parked blocked.
+    const rows = await storage.listOutbox("ref_a");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ state: "superseded", clientMutationId: before[0]?.clientMutationId });
+    expect(rows[1]).toMatchObject({ state: "blockedUnknown" });
+    expect(rows[1]?.clientMutationId).not.toBe(before[0]?.clientMutationId);
+    expect(rows[1]?.payload.clientMutationId).toBe(before[0]?.clientMutationId);
+    const starts = fake.calls.filter(({ method }) => method === "turn/start");
+    expect(starts).toHaveLength(1);
+    const start = starts[0];
+    if (!start) throw new Error("missing the fresh row's dispatch");
+    expect((start.params as { clientMutationId?: string }).clientMutationId).toBe(before[0]?.clientMutationId);
+    // One blocked row - the fresh one, by the strip's own kind - with its
+    // Retry affordance and no inline error, and no duplicate toast.
     const row = await findRow("blocked");
+    expect(within(row).getByText("still uncertain input")).toBeTruthy();
     await within(row).findByRole("button", { name: "Retry" });
-    expect(within(row).getAllByRole("alert")).toHaveLength(1);
-    expect(within(row).getByRole("alert").textContent).not.toBe("");
+    expect(within(row).queryAllByRole("alert")).toEqual([]);
     expect(getToasts()).toEqual([]);
-    expect(await storage.listOutbox("ref_a")).toEqual(before);
-    expect(fake.calls.filter(({ method }) => method === "turn/start")).toEqual([]);
   });
 
   test("active recovery is omitted while later and orphaned records retain order", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a");
     const first = await seedRecovery("rejected", "active");
     await seedRecovery("rejected", "later");
@@ -804,7 +1021,7 @@ describe("durable recovery rows", () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     const user = userEvent.setup();
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a");
     await seedRecovery("orphaned", "first line\n  second line");
     renderStrip(defaultProps());
@@ -822,7 +1039,7 @@ describe("durable recovery rows", () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     const user = userEvent.setup();
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a");
     await seedRecovery("orphaned", "", { input: [{ type: "skill", name: "pkg:probe" }] });
     renderStrip(defaultProps());
@@ -837,7 +1054,7 @@ describe("durable recovery rows", () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     const user = userEvent.setup();
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a");
     await seedRecovery("orphaned", "", {
       input: [
@@ -853,7 +1070,7 @@ describe("durable recovery rows", () => {
   });
 
   test("a blocked skill-bearing row previews text and selection together", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a");
     await seedBlockedUnknown("", [
       { type: "text", text: "uncertain with skills" },
@@ -875,7 +1092,7 @@ describe("durable recovery rows", () => {
 // (canceled).
 describe("canceled rows", () => {
   test("a canceled row keeps Retry and offers local editing and removal without a send action", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a");
     await seedCanceled("stopped by user");
     renderStrip(defaultProps());
@@ -892,7 +1109,7 @@ describe("canceled rows", () => {
 
   test("clicking Retry releases the canceled row and dispatches it", async () => {
     const user = userEvent.setup();
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a");
     fake.on("turn/start", () => new Promise<never>(() => undefined));
     await seedCanceled("stopped send");
@@ -907,7 +1124,7 @@ describe("canceled rows", () => {
   });
 
   test.each(["restartRequired", "notLoaded"] as const)("canceled Retry stays blocked for %s sessions", async (type) => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", { status: { type } });
     await seedCanceled("stopped input");
     renderStrip(defaultProps());
@@ -919,7 +1136,7 @@ describe("canceled rows", () => {
   // note editor owns a canceled note save (humanNoteDrafts reports "Note save
   // was canceled by Stop"), so it must not also surface here as a message row.
   test("a canceled note save stays out of the strip", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a");
     const storage = new MutationOutboxIndexedDB();
     await storage.enqueueIntent({
@@ -941,7 +1158,7 @@ describe("canceled rows", () => {
   // surface, not only the send chips — a hub-refused turn/queue row in the
   // strip marks itself busy with the paced retry the store armed.
   test("a hub-refused pending queue row marks itself busy", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a");
     const storage = new MutationOutboxIndexedDB();
     const row = await storage.enqueueIntent({
@@ -978,7 +1195,7 @@ describe("canceled rows", () => {
   // storage - the row simply leaves the canceled slot.
   test("a visible Retry on a row another tab already released is a benign no-op", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a");
     await seedCanceled("other-tab stopped input");
     render(
@@ -994,9 +1211,13 @@ describe("canceled rows", () => {
     onTestFinished(() => otherTab.close());
     const original = (await otherTab.listOutbox("ref_a"))[0];
     if (!original) throw new Error("missing seeded canceled mutation");
-    // Another tab's explicit user Retry: the same durable release this tab's
-    // button would have performed.
-    expect(await otherTab.releaseCanceled(original.clientMutationId)).toBe(true);
+    // Another tab's explicit user Retry: the same durable mint this tab's
+    // button would have performed - the old canceled row leaves, and a fresh
+    // submitting row takes its place at the tail.
+    const otherTabCapture = await otherTab.getOutboxWithStopEpoch(original.clientMutationId);
+    expect(await otherTab.mintRetryFromRow(original.clientMutationId, otherTabCapture)).toMatchObject({
+      state: "submitting",
+    });
     const afterOtherTab = await otherTab.getOutbox(original.clientMutationId);
     expect(screen.getByRole("button", { name: "Retry" })).toBe(retry);
     await userEvent.setup().click(retry);
@@ -1019,7 +1240,7 @@ describe("canceled rows", () => {
   // rule - a refused control has to say so).
   test("a Retry refused while a hydration is pending reports one inline error, keeping the row canceled", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a");
     await seedCanceled("refused retry input");
     renderStrip(defaultProps());
@@ -1066,7 +1287,7 @@ describe("canceled rows", () => {
 // (kata fs0e).
 describe("dismiss a rejected Stop", () => {
   async function renderRejectedStop(): Promise<{ record: MutationRecoveryRecord; row: HTMLElement }> {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a");
     const record = await seedRecovery("rejected", "", { method: "turn/interrupt", reason: "turn is not active" });
     renderStrip(defaultProps());
@@ -1177,7 +1398,7 @@ describe("dismiss a rejected Stop", () => {
 });
 
 test("stale recovery Drain refuses without reporting success or resending", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrate(fake, "ref_a", {
     evener: {
       ref: "ref_a",
@@ -1226,7 +1447,7 @@ test("stale recovery Drain refuses without reporting success or resending", asyn
 });
 
 test("recovery Drain waits for pending autosaves and uses the committed revision", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   await hydrate(fake, "ref_a", {
     evener: {
       ref: "ref_a",
@@ -1276,7 +1497,7 @@ describe("row rendering", () => {
   }
 
   test("renders one row per queue entry, with its preview text", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrateWithTwoRows(fake);
     renderStrip(defaultProps());
 
@@ -1287,7 +1508,7 @@ describe("row rendering", () => {
   });
 
   test("truncates a preview row over 140 chars with a trailing ellipsis", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const long = "x".repeat(150);
     await hydrate(fake, "ref_a", {
       evener: {
@@ -1308,7 +1529,7 @@ describe("row rendering", () => {
   // row's own canonical queue.skillNames the marker the user watched appear on
   // the pending row vanishes the moment the authoritative row replaces it.
   test("an authoritative row appends its skill markers to the daemon's preview text", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       evener: {
         ref: "ref_a",
@@ -1330,7 +1551,7 @@ describe("row rendering", () => {
   });
 
   test("a skill-only authoritative row shows its named marker rather than staying generic", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       evener: {
         ref: "ref_a",
@@ -1356,7 +1577,7 @@ describe("row rendering", () => {
   // The looser "[skill: pkg:probe] is present" assertion above cannot see the
   // difference, which is how "[skill] [skill: pkg:probe]" slipped through.
   test("a skill-only authoritative row drops the daemon's generic placeholder instead of doubling it", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       evener: {
         ref: "ref_a",
@@ -1382,7 +1603,7 @@ describe("row rendering", () => {
     { preview: "[command]", commandNames: ["probe"], display: "[command: probe]" },
     { preview: "[2 commands]", commandNames: ["a", "b"], display: "[command: a] [command: b]" },
   ])("a command-only authoritative row replaces $preview with named markers", async (entry) => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       evener: {
         ref: "ref_a",
@@ -1409,7 +1630,7 @@ describe("row rendering", () => {
     { text: "[command]", commandNames: [], display: "[command]" },
     { text: "[skill]", commandNames: ["probe"], display: "[skill] [command: probe]" },
   ])("an authoritative row preserves literal $text prose with $commandNames", async (entry) => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       evener: {
         ref: "ref_a",
@@ -1434,7 +1655,7 @@ describe("row rendering", () => {
   // An entry that also holds an image must keep its image placeholder: dropping
   // every preview for a no-prose entry would silently hide the attachment.
   test("a no-prose row with an image and a skill keeps both the image placeholder and the named marker", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       evener: {
         ref: "ref_a",
@@ -1460,7 +1681,7 @@ describe("row rendering", () => {
   // preview is not a skill placeholder, so it must survive with the markers
   // appended after it.
   test("a row whose prose arrives only in the preview keeps that prose alongside its named marker", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       evener: {
         ref: "ref_a",
@@ -1482,7 +1703,7 @@ describe("row rendering", () => {
   });
 
   test("each row exposes steer-now, edit, and remove actions", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrateWithTwoRows(fake);
     renderStrip(defaultProps());
 
@@ -1497,7 +1718,7 @@ describe("row rendering", () => {
 
 describe("promote", () => {
   test("clicking steer-now calls promoteQueuedAsSteer with the row's index and entry id", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       evener: {
         ref: "ref_a",
@@ -1506,12 +1727,7 @@ describe("promote", () => {
       },
     });
     fake.on("turn/promoteQueuedAsSteer", (params) => ({
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thread_a",
-        projectionState: "reflected",
-      },
+      receipt: appliedReceipt(params.clientMutationId, "thread_a"),
     }));
     renderStrip(defaultProps());
 
@@ -1526,7 +1742,7 @@ describe("promote", () => {
   });
 
   test("promote passes the row's text (or the row's stripped preview) into the optimistic display", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       evener: {
         ref: "ref_a",
@@ -1542,12 +1758,7 @@ describe("promote", () => {
       },
     });
     fake.on("turn/promoteQueuedAsSteer", (params) => ({
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thread_a",
-        projectionState: "pending",
-      },
+      receipt: appliedReceipt(params.clientMutationId, "thread_a", { projectionState: "pending" }),
     }));
     renderStrip(defaultProps());
 
@@ -1602,7 +1813,7 @@ describe("press-time controls", () => {
   }
 
   test("drain pressed after an awaiting frame folded in the same task is refused on the live status", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", { evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: QUEUED } });
     applied(fake, "turn/drainAsSteer");
     renderStrip(defaultProps());
@@ -1618,7 +1829,7 @@ describe("press-time controls", () => {
   });
 
   test("promote pressed after an awaiting frame folded in the same task is refused on the live status", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", { evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: QUEUED } });
     applied(fake, "turn/promoteQueuedAsSteer");
     renderStrip(defaultProps());
@@ -1662,7 +1873,7 @@ describe("recovery-fenced press gates", () => {
   }
 
   test("steer-now is refused while the fence stands and mints no intent", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const ref = "local:fenced-promote";
     await hydrateFenced(fake, ref);
     applied(fake, "turn/promoteQueuedAsSteer");
@@ -1675,7 +1886,7 @@ describe("recovery-fenced press gates", () => {
   });
 
   test("steer queue now is refused while the fence stands and churns no busy state", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const ref = "local:fenced-drain";
     await hydrateFenced(fake, ref);
     applied(fake, "turn/drainAsSteer");
@@ -1689,7 +1900,7 @@ describe("recovery-fenced press gates", () => {
   });
 
   test("remove from queue is refused while the fence stands and mints no intent", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const ref = "local:fenced-cancel";
     await hydrateFenced(fake, ref);
     renderStrip(defaultProps({ ref }));
@@ -1704,7 +1915,7 @@ describe("recovery-fenced press gates", () => {
   // whole: restoring the text without the cancel half would leave the row and
   // the composer carrying the same message.
   test("edit is refused while the fence stands without restoring to the composer", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const ref = "local:fenced-edit";
     await hydrateFenced(fake, ref);
     const onRestoreToComposer = vi.fn();
@@ -1720,7 +1931,7 @@ describe("recovery-fenced press gates", () => {
 
 describe("cancel", () => {
   test("clicking remove calls cancelQueued with the row's index and entry id", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       evener: {
         ref: "ref_a",
@@ -1729,12 +1940,7 @@ describe("cancel", () => {
       },
     });
     fake.on("turn/cancelQueued", (params) => ({
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thread_a",
-        projectionState: "reflected",
-      },
+      receipt: appliedReceipt(params.clientMutationId, "thread_a"),
       removedText: "hello",
     }));
     renderStrip(defaultProps());
@@ -1752,7 +1958,7 @@ describe("cancel", () => {
 
 describe("edit", () => {
   test("restores the FULL text to the composer BEFORE calling cancelQueued (loser-safe order)", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       evener: {
         ref: "ref_a",
@@ -1764,12 +1970,7 @@ describe("edit", () => {
     fake.on("turn/cancelQueued", (params) => {
       calls.push("cancelQueued");
       return {
-        receipt: {
-          clientMutationId: params.clientMutationId,
-          disposition: "applied",
-          threadId: "thread_a",
-          projectionState: "reflected",
-        },
+        receipt: appliedReceipt(params.clientMutationId, "thread_a"),
         removedText: "the full untruncated message",
       };
     });
@@ -1786,7 +1987,7 @@ describe("edit", () => {
   });
 
   test("editing a queued entry restores its skill selections as chips alongside the text", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       evener: {
         ref: "ref_a",
@@ -1802,12 +2003,7 @@ describe("edit", () => {
       },
     });
     fake.on("turn/cancelQueued", (params) => ({
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thread_a",
-        projectionState: "reflected",
-      },
+      receipt: appliedReceipt(params.clientMutationId, "thread_a"),
       removedText: "queued text",
     }));
     const onRestoreToComposer = vi.fn();
@@ -1824,7 +2020,7 @@ describe("edit", () => {
   });
 
   test("a skill-only queued entry (blank text) stays editable so its chips can be restored", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       evener: {
         ref: "ref_a",
@@ -1840,12 +2036,7 @@ describe("edit", () => {
       },
     });
     fake.on("turn/cancelQueued", (params) => ({
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thread_a",
-        projectionState: "reflected",
-      },
+      receipt: appliedReceipt(params.clientMutationId, "thread_a"),
       removedText: "",
     }));
     const onRestoreToComposer = vi.fn();
@@ -1871,7 +2062,7 @@ describe("edit", () => {
   // cancel's message: nothing was moved, so "Moved to the composer, but..."
   // would describe an outcome the user did not get.
   test("a restore that fails unlocks the row, says so, and cancels nothing", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       evener: {
         ref: "ref_a",
@@ -1897,7 +2088,7 @@ describe("edit", () => {
   });
 
   test("edit is disabled for an image-only queued entry (blank text)", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       evener: {
         ref: "ref_a",
@@ -1914,7 +2105,7 @@ describe("edit", () => {
 
   test("a refused edit stays focusable and explains itself to a keyboard user", async () => {
     const user = userEvent.setup();
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       evener: {
         ref: "ref_a",
@@ -1945,7 +2136,7 @@ describe("edit", () => {
   });
 
   test("edit is disabled entirely when the daemon reports no texts array at all", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       evener: {
         ref: "ref_a",
@@ -1971,7 +2162,7 @@ describe("edit", () => {
 // never a stale id carried over from an earlier snapshot."
 describe("re-rendering after the queue shifts", () => {
   test("after the daemon confirms the head entry is consumed, the surviving row promotes with its NEW index", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       evener: {
         ref: "ref_a",
@@ -1986,12 +2177,7 @@ describe("re-rendering after the queue shifts", () => {
       },
     });
     fake.on("turn/promoteQueuedAsSteer", (params) => ({
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thread_a",
-        projectionState: "reflected",
-      },
+      receipt: appliedReceipt(params.clientMutationId, "thread_a"),
     }));
     renderStrip(defaultProps());
 
@@ -2027,7 +2213,7 @@ describe("re-rendering after the queue shifts", () => {
   });
 
   test("after the daemon confirms the head entry is consumed, the surviving row cancels with its NEW index", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       evener: {
         ref: "ref_a",
@@ -2042,12 +2228,7 @@ describe("re-rendering after the queue shifts", () => {
       },
     });
     fake.on("turn/cancelQueued", (params) => ({
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thread_a",
-        projectionState: "reflected",
-      },
+      receipt: appliedReceipt(params.clientMutationId, "thread_a"),
       removedText: "second queued message",
     }));
     renderStrip(defaultProps());
@@ -2082,7 +2263,7 @@ describe("re-rendering after the queue shifts", () => {
 
 describe("degraded daemon: no entry ids", () => {
   test("every row action is disabled when the daemon reports no ids array at all", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       evener: {
         ref: "ref_a",
@@ -2101,7 +2282,7 @@ describe("degraded daemon: no entry ids", () => {
 
 describe("in-flight row locking", () => {
   test("while a cancel is in flight, that row's own steer-now/edit/remove are all disabled", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       evener: {
         ref: "ref_a",
@@ -2116,12 +2297,7 @@ describe("in-flight row locking", () => {
         new Promise((resolve) => {
           resolveCancel = () =>
             resolve({
-              receipt: {
-                clientMutationId: params.clientMutationId,
-                disposition: "applied",
-                threadId: "thread_a",
-                projectionState: "reflected",
-              },
+              receipt: appliedReceipt(params.clientMutationId, "thread_a"),
               removedText: "hello",
             });
         }),
@@ -2143,7 +2319,7 @@ describe("in-flight row locking", () => {
   });
 
   test("an in-flight action on one row does not disable a different row", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       evener: {
         ref: "ref_a",
@@ -2172,7 +2348,7 @@ describe("in-flight row locking", () => {
 
 describe("optimistic pending queue rows", () => {
   test("an unattempted local queue-method entry renders once with Edit and Remove", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a");
     // Seed the durable local entry the submit path commits, rather than racing
     // its dispatcher. A click-armed dispatch is what advances this row out of
@@ -2204,7 +2380,7 @@ describe("optimistic pending queue rows", () => {
   // row must show the same [skill: …] marker a durable queue row already shows -
   // without it the row renders blank until the daemon's own queue data arrives.
   test("a skill-only pending queue row renders its skill marker instead of staying blank", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       evener: {
         ref: "ref_a",
@@ -2213,12 +2389,7 @@ describe("optimistic pending queue rows", () => {
       },
     });
     fake.on("turn/queue", (params) => ({
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thread_a",
-        projectionState: "reflected",
-      },
+      receipt: appliedReceipt(params.clientMutationId, "thread_a"),
     }));
     renderStrip(defaultProps());
 
@@ -2236,7 +2407,7 @@ describe("optimistic pending queue rows", () => {
 
 describe("drain-as-steer affordance", () => {
   test("the drain button is absent when there is nothing queued", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0, depth: 0 } },
     });
@@ -2251,7 +2422,7 @@ describe("drain-as-steer affordance", () => {
   // turn in flight and wake a steering carrier). The hub advertises steer as
   // harness support, so the strip offers both for a parked queue.
   test("a parked queue on a harness that can steer offers Steer queue now and Steer now, and they dispatch", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       status: { type: "idle" },
       evener: {
@@ -2289,7 +2460,7 @@ describe("drain-as-steer affordance", () => {
   // boundary; that queue runs next on its own), the strip names the status,
   // not the capability: sessionControls' reason for drain is the status floor.
   test("an awaiting session with a queue disables Steer now for the status, not the capability", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       status: { type: "awaiting" },
       evener: {
@@ -2312,7 +2483,7 @@ describe("drain-as-steer affordance", () => {
   // Availability flips under a focused control when the turn ends or starts.
   // The row's buttons must stay the same nodes so keyboard focus survives.
   test("a focused Steer now keeps focus as steering availability flips both ways", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       evener: {
         ref: "ref_a",
@@ -2347,7 +2518,7 @@ describe("drain-as-steer affordance", () => {
   });
 
   test("clicking the drain button drains the composer's current text into the queue as steering", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       evener: {
         ref: "ref_a",
@@ -2356,12 +2527,7 @@ describe("drain-as-steer affordance", () => {
       },
     });
     fake.on("turn/drainAsSteer", (params) => ({
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thread_a",
-        projectionState: "reflected",
-      },
+      receipt: appliedReceipt(params.clientMutationId, "thread_a"),
     }));
     const onDrainSuccess = vi.fn();
     renderStrip(
@@ -2390,7 +2556,7 @@ describe("drain-as-steer affordance", () => {
   test.each(["active", "idle"])(
     "a %s session whose harness advertises no steer offers no steering affordance",
     async (statusType) => {
-      const fake = connectFakeClient();
+      const fake = connectReadyFakeClient();
       await hydrate(fake, "ref_a", {
         status: { type: statusType },
         evener: {
@@ -2412,7 +2578,7 @@ describe("drain-as-steer affordance", () => {
   );
 
   test("a lost drain response never produces a timeout warning or reload instruction", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       evener: {
         ref: "ref_a",
@@ -2444,7 +2610,7 @@ describe("drain-as-steer affordance", () => {
   // drained payload rather than refusing the whole request like every
   // other submit path does.
   test("a mid-encode attachment (hasPending) blocks the drain with a toast, never calling drainAsSteer", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       evener: {
         ref: "ref_a",
@@ -2453,12 +2619,7 @@ describe("drain-as-steer affordance", () => {
       },
     });
     fake.on("turn/drainAsSteer", (params) => ({
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thread_a",
-        projectionState: "reflected",
-      },
+      receipt: appliedReceipt(params.clientMutationId, "thread_a"),
     }));
     renderStrip(defaultProps({ getComposerText: () => ({ text: "my current draft", hasPending: true }) }));
 
@@ -2475,7 +2636,7 @@ describe("drain-as-steer affordance", () => {
   });
 
   test("the drain button disables itself while its own request is in flight", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       evener: {
         ref: "ref_a",
@@ -2490,12 +2651,7 @@ describe("drain-as-steer affordance", () => {
         new Promise((resolve) => {
           resolveDrain = () =>
             resolve({
-              receipt: {
-                clientMutationId: params.clientMutationId,
-                disposition: "applied",
-                threadId: "thread_a",
-                projectionState: "reflected",
-              },
+              receipt: appliedReceipt(params.clientMutationId, "thread_a"),
             });
         }),
     );
@@ -2514,7 +2670,7 @@ describe("drain-as-steer affordance", () => {
   });
 
   test("the shared busy prop (a different in-flight action elsewhere) also disables the drain button", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     await hydrate(fake, "ref_a", {
       evener: {
         ref: "ref_a",
@@ -2523,12 +2679,7 @@ describe("drain-as-steer affordance", () => {
       },
     });
     fake.on("turn/drainAsSteer", (params) => ({
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thread_a",
-        projectionState: "reflected",
-      },
+      receipt: appliedReceipt(params.clientMutationId, "thread_a"),
     }));
     renderStrip(defaultProps({ busy: true }));
 
@@ -2541,7 +2692,7 @@ describe("drain-as-steer affordance", () => {
 });
 
 test.each(["active", "idle"])("Retry stays disabled for saved %s delegate data", async (type) => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   const thread = testThread("ref_a", { status: { type } });
   thread.evener.mutationStateAuthoritative = false;
   await hydrate(fake, "ref_a", thread);

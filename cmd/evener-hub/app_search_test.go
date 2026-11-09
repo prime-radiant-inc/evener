@@ -134,10 +134,7 @@ func TestHubSearchEmptyPastIsAnArray(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	past := hubcore.NewPastIndex(filepath.Join(projectsRoot, "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(projectsRoot, "*"))
 	resp, err := hubSearch(context.Background(), hubcore.WebConfig{Past: past}, appwire.SearchParams{Query: "frobnitz"}, now)
 	if err != nil {
 		t.Fatal(err)
@@ -205,10 +202,7 @@ func TestHubSearchIncludesMatchingPastSession(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	idx := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 
 	resp, err := hubSearch(context.Background(), hubcore.WebConfig{Past: idx}, appwire.SearchParams{Query: "generated"}, time.Now())
 	if err != nil {
@@ -320,18 +314,10 @@ func TestHubRPCSearchRoundTrip(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 	resp, err := client.Search(context.Background(), appwire.SearchParams{Query: "frobnitz"})
 	if err != nil {
 		t.Fatalf("Search: %v", err)

@@ -6,17 +6,18 @@
 import type { LaunchConfigLayer } from "@evener/appwire-client";
 import { View } from "react-native";
 import { useStore } from "zustand";
-import { GroupedPage, GroupFooter, GroupLabel, Segmented } from "../sheet/Grouped";
+import { GroupedPage, GroupFooter, GroupLabel, Segmented, SwitchRow } from "../sheet/Grouped";
 import { SheetStatus } from "../sheet/SheetStatus";
+import { memoryRowShows, schemaOffersMemory } from "./launchSetup";
 import { useNewSession } from "./newSessionContext";
 
-type Field = "contextStrategy" | "maxSubagentDepth" | "maxRounds";
+type Field = "contextStrategy" | "maxSubagentDepth" | "maxRounds" | "memoryEnabled";
 
 interface Setting {
 	field: Field;
 	label: string;
 	/** The values offered after Default, as the launch schema spells them. */
-	values: readonly (string | number)[];
+	values: readonly (string | number | boolean)[];
 }
 
 const SETTINGS: readonly Setting[] = [
@@ -24,18 +25,25 @@ const SETTINGS: readonly Setting[] = [
 	{ field: "maxSubagentDepth", label: "Max subagent depth", values: [1, 2, 3, 5] },
 	// Spec 11's word; the schema calls it "Max rounds". -1 is no limit.
 	{ field: "maxRounds", label: "Max turns", values: [100, 500, -1] },
+	{ field: "memoryEnabled", label: "Memory", values: [true, false] },
 ];
 
 /** The segment that leaves the setting to the hub. */
 const DEFAULT = "default";
 
 /** How a value reads, on a segment and in a sentence. */
-function spoken(value: string | number, sentence = false): string {
+function spoken(value: string | number | boolean, sentence = false): string {
+	if (value === true) return sentence ? "on" : "On";
+	if (value === false) return sentence ? "off" : "Off";
 	if (value === -1) return sentence ? "no limit" : "No limit";
 	return String(value);
 }
 
-function footer(value: string | number | undefined, hubDefault: string | number | undefined, offered: boolean) {
+function footer(
+	value: string | number | boolean | undefined,
+	hubDefault: string | number | boolean | undefined,
+	offered: boolean,
+) {
 	const uses = value !== undefined && !offered ? `This session uses ${spoken(value, true)}.` : null;
 	const hub =
 		hubDefault !== undefined
@@ -47,18 +55,34 @@ function footer(value: string | number | undefined, hubDefault: string | number 
 }
 
 export function MoreOptions() {
-	const { store, launchDefaults: defaults } = useNewSession();
-	const { launchOverrides, submitting, setLaunchOverrides } = useStore(store);
-	const set = (field: Field, value: string | number | null) => {
+	const { store, launchDefaults: defaults, launchSchema } = useNewSession();
+	const { launchOverrides, submitting, setLaunchOverrides, manager, setManager } = useStore(store);
+	const set = (field: Field, value: string | number | boolean | null) => {
 		const next: LaunchConfigLayer = { ...launchOverrides };
 		if (value === null) delete next[field];
 		else Object.assign(next, { [field]: value });
 		setLaunchOverrides(next);
 	};
+	// Memory rides a launch-config field this hub build may not know, so it
+	// shows when the hub's schema names it: against an older hub the row would
+	// be a toggle that silently did nothing. A kept choice stays visible even
+	// so, so the choice Start is held over can be seen and cleared.
+	const offersMemory = schemaOffersMemory(launchSchema);
+	const settings = memoryRowShows(offersMemory, launchOverrides.memoryEnabled)
+		? SETTINGS
+		: SETTINGS.filter((setting) => setting.field !== "memoryEnabled");
 	return (
 		<GroupedPage>
 			<SheetStatus />
-			{SETTINGS.map((setting) => {
+			<GroupLabel>Session</GroupLabel>
+			<SwitchRow
+				label="Start as Manager"
+				sub="Lets this session manage other sessions on the hub"
+				value={manager}
+				onChange={setManager}
+				disabled={submitting}
+			/>
+			{settings.map((setting) => {
 				const value = launchOverrides[setting.field];
 				const offered = value === undefined || setting.values.includes(value);
 				return (

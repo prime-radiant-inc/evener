@@ -320,7 +320,7 @@ var ErrDeployUnstamped = errors.New("sshconn: deployed build is not stamped by t
 // run target. Both are non-empty on success, so the restart, health re-probe, and
 // attach paths address the binary that was actually installed instead of a bare
 // `evener` a fresh host's non-interactive PATH may not carry.
-func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight, beforeWrite func(string) error, retainedTarget ...string) (string, error) {
+func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight, beforeWrite func(string) error, retainedTarget *string) (string, error) {
 	// Deploying turned off wins over every deploy source: a hub started with
 	// -no-deploy installs nothing on a host, not even through the installer
 	// fallback a release or snapshot controller would otherwise use. The attach
@@ -384,12 +384,12 @@ func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight
 		return nil
 	}
 	if m.canBuild() && !m.ownExecutableCannotServe(facts) {
-		return m.deployPush(ctx, host, facts, guardedWrite, retainedTarget...)
+		return m.deployPush(ctx, host, facts, guardedWrite, retainedTarget)
 	}
-	if len(retainedTarget) != 0 {
+	if retainedTarget != nil {
 		// The installer writes a share directory and replaces the launch path
 		// with a symlink, so its run target cannot pin the retained write.
-		return "", fmt.Errorf("%w: host %q: installer layout cannot preserve recorded install target %q; %s", errRetainedInstaller, host.Name, retainedTarget[0], m.installerRemedy())
+		return "", fmt.Errorf("%w: host %q: installer layout cannot preserve recorded install target %q; %s", errRetainedInstaller, host.Name, *retainedTarget, m.installerRemedy())
 	}
 	if m.ownExecutableCannotServe(facts) {
 		// The only source is the own executable, the host runs another target, and
@@ -467,13 +467,13 @@ func (m *Manager) ownExecutableCannotServe(facts Preflight) bool {
 // on a fresh host that target is the installer default ~/.local/bin/evener, and
 // discarding it left the manager probing the literal `evener`, which the
 // non-interactive PATH cannot resolve.
-func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Preflight, beforeWrite func(string) error, retainedTarget ...string) (string, error) {
+func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Preflight, beforeWrite func(string) error, retainedTarget *string) (string, error) {
 	var target string
 	var err error
-	if len(retainedTarget) != 0 {
+	if retainedTarget != nil {
 		// Retained recovery has already resolved and checked this destination.
 		// Its beforeWrite callback repeats that proof after staging the binary.
-		target, err = m.resolveDeployOrCreateTarget(ctx, host, retainedTarget[0])
+		target, err = m.resolveDeployOrCreateTarget(ctx, host, *retainedTarget)
 	} else {
 		target, err = m.deployTarget(ctx, host, facts)
 	}
@@ -520,7 +520,7 @@ func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Prefl
 	// Staging can take long enough for either launch intent or the recorded
 	// destination to be retargeted. Do not authorize a write with pre-build paths.
 	var launchTarget string
-	if len(retainedTarget) != 0 && facts.ExecutableMissing {
+	if retainedTarget != nil && facts.ExecutableMissing {
 		out, readErr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, resolveRetainedDeployCommand(host.EvenerPath)), nil)
 		if readErr != nil {
 			return "", errOwnerSelectionMismatch
@@ -535,12 +535,12 @@ func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Prefl
 	if launchTarget != target {
 		return "", errOwnerSelectionMismatch
 	}
-	if len(retainedTarget) != 0 {
-		currentTarget, err := m.resolveDeployOrCreateTarget(ctx, host, retainedTarget[0])
+	if retainedTarget != nil {
+		currentTarget, err := m.resolveDeployOrCreateTarget(ctx, host, *retainedTarget)
 		if err != nil {
 			return "", err
 		}
-		if currentTarget != retainedTarget[0] || currentTarget != target {
+		if currentTarget != *retainedTarget || currentTarget != target {
 			return "", errOwnerSelectionMismatch
 		}
 	}
@@ -1057,30 +1057,39 @@ func (m *Manager) existingInstallableEvener(ctx context.Context, host hostreg.Ho
 	return p
 }
 
-func (m *Manager) deploySelectedWithAuthority(ctx context.Context, host hostreg.Host, facts Preflight, realEndpointAuthority bool, recorders ...func(string) error) (string, error) {
-	return m.deploySelectedWithSupersession(ctx, host, facts, realEndpointAuthority, nil, recorders...)
+// deployOpts carries the caller's authority and write-boundary hooks into
+// deploySelected.
+type deployOpts struct {
+	// realEndpointAuthority reads the live endpoint instead of the resolved one,
+	// which retained-deployment recovery needs.
+	realEndpointAuthority bool
+	// supersede, when set, replaces the prior operation's retained intent at the
+	// write boundary.
+	supersede func() error
+	// record runs at the write boundary with the install target.
+	record func(target string) error
 }
 
-func (m *Manager) deploySelectedWithSupersession(ctx context.Context, host hostreg.Host, facts Preflight, realEndpointAuthority bool, supersede func() error, recorders ...func(string) error) (string, error) {
+func (m *Manager) deploySelected(ctx context.Context, host hostreg.Host, facts Preflight, opts deployOpts) (string, error) {
 	m.applyResolvedTarget(&host)
 	if m.opts.DeployDisabled || (isDirtyVersion(m.opts.controllerVersion()) && !m.ownExecutableIsStagingPath()) {
-		return m.deploy(ctx, host, facts, nil)
+		return m.deploy(ctx, host, facts, nil, nil)
 	}
 	retained := m.pendingRestart(host.Name)
-	retainedDeployment := realEndpointAuthority && retained.deployment && retained.selected != nil
+	retainedDeployment := opts.realEndpointAuthority && retained.deployment && retained.selected != nil
 	if retainedDeployment && (facts.ExecutableMissing || facts.HubEndpointSchema != 1) {
 		// A failed executable probe, not unreadable metadata, authorizes only the
 		// retained operation's original write. The post-write contract stays strict.
 		unusable, probeErr := m.recordedTargetUnusable(ctx, host)
 		if unusable {
-			return m.reinstallRetainedTarget(ctx, host, facts, retained, recorders...)
+			return m.reinstallRetainedTarget(ctx, host, facts, retained, opts.record)
 		}
 		if probeErr != nil {
 			return "", probeErr
 		}
 	}
 	readEndpoint := m.resolveHostEndpoint
-	if realEndpointAuthority {
+	if opts.realEndpointAuthority {
 		readEndpoint = m.readHostEndpoint
 	}
 	var owner selectedOwner
@@ -1165,7 +1174,7 @@ func (m *Manager) deploySelectedWithSupersession(ctx context.Context, host hostr
 			if err := checkRetained(current); err != nil {
 				return err
 			}
-			if supersede != nil {
+			if opts.supersede != nil {
 				fresh, err = m.selectedRestartIntentUsing(ctx, host, facts, owner, m.opts.controllerVersion(), snapshotPinGitSHA(), readEndpoint)
 				if err != nil {
 					return err
@@ -1176,19 +1185,19 @@ func (m *Manager) deploySelectedWithSupersession(ctx context.Context, host hostr
 				}
 			}
 		}
-		if supersede != nil {
-			if err := supersede(); err != nil {
+		if opts.supersede != nil {
+			if err := opts.supersede(); err != nil {
 				return err
 			}
 			m.storePendingRestart(host.Name, fresh)
 		}
-		for _, record := range recorders {
-			if err := record(target); err != nil {
+		if opts.record != nil {
+			if err := opts.record(target); err != nil {
 				m.storePendingRestart(host.Name, previous)
 				return err
 			}
 		}
-		if supersede == nil && previous.command == "" {
+		if opts.supersede == nil && previous.command == "" {
 			m.mu.Lock()
 			pending := m.pendingRestarts[host.Name]
 			pending.command = ""
@@ -1197,11 +1206,11 @@ func (m *Manager) deploySelectedWithSupersession(ctx context.Context, host hostr
 		}
 		return nil
 	}
-	var retainedTarget []string
+	var retainedTarget *string
 	if retainedDeployment {
-		retainedTarget = []string{retained.installTarget}
+		retainedTarget = &retained.installTarget
 	}
-	target, err := m.deploy(ctx, host, facts, beforeWrite, retainedTarget...)
+	target, err := m.deploy(ctx, host, facts, beforeWrite, retainedTarget)
 	if err != nil {
 		return "", err
 	}
@@ -1223,7 +1232,7 @@ func (m *Manager) recordedTargetUnusable(ctx context.Context, host hostreg.Host)
 // reinstallRetainedTarget has no discovery or fresh-operation authority. It
 // writes only the already-recorded target after checking the retained binding
 // and owner context again at the write boundary.
-func (m *Manager) reinstallRetainedTarget(ctx context.Context, host hostreg.Host, facts Preflight, pending pendingRestartState, recorders ...func(string) error) (string, error) {
+func (m *Manager) reinstallRetainedTarget(ctx context.Context, host hostreg.Host, facts Preflight, pending pendingRestartState, record func(string) error) (string, error) {
 	prior := *pending.selected
 	check := func(target string) error {
 		if pending.installTarget == "" || target != pending.installTarget || host.EvenerPath != prior.host.EvenerPath || pending.expectedVersion != m.opts.controllerVersion() || !hostreg.SameRegistrationAndPresence(host, prior.host) {
@@ -1344,13 +1353,11 @@ func (m *Manager) reinstallRetainedTarget(ctx context.Context, host hostreg.Host
 		if err := check(target); err != nil {
 			return err
 		}
-		for _, record := range recorders {
-			if err := record(target); err != nil {
-				return err
-			}
+		if record != nil {
+			return record(target)
 		}
 		return nil
-	}, pending.installTarget)
+	}, &pending.installTarget)
 	if err != nil {
 		return "", err
 	}

@@ -18,6 +18,15 @@
 // one DOM location, one tab order (2026-08-10-composer-controls-inline-design.md).
 
 import { useLayoutEffect, useState } from "react";
+import { useMediaQuery } from "../../../shell/useIsMobile";
+
+// The 466pt Duo cover is a viewport layout, not a narrow docked pane. Keep the
+// lower edge above ordinary portrait phones so their composer stays unchanged.
+const DUO_COVER_QUERY = "(min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4)";
+
+export function useDuoCoverLayout(): boolean {
+  return useMediaQuery(DUO_COVER_QUERY);
+}
 
 /** The composer content width at and below which the narrow layout answers:
  * the boundary the retired three-verb wrap rule was measured against

@@ -25,7 +25,6 @@ export type LabelledSteeringKind = Exclude<SteeringKind, SuppressedSteeringKind 
 export const STEERING_KIND_LABELS: Readonly<Record<LabelledSteeringKind, string>> = {
   interrupted: "Interrupted",
   "interrupted-salvage": "Interrupted draft",
-  "agent-message": "Message sent",
   "hook-context": "Hook context",
   // Context a hook added just before the history was compacted.
   "precompact-hook": "Hook context before compacting",
@@ -41,6 +40,8 @@ export const STEERING_KIND_LABELS: Readonly<Record<LabelledSteeringKind, string>
   "note-handoff": "Note to self",
   "goal-objective": "Goal objective",
   "human-note": "Human note",
+  // An automatic reminder to a delegate that ended its turn without a result.
+  "delegate-nudge": "Reminded to report",
   // Tells the agent how to read the transcript from before a compaction.
   "transcript-pointer": "Where to find the full transcript",
   "provider-failure": "Provider failed",

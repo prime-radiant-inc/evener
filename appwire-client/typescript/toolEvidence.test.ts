@@ -2,7 +2,6 @@
 
 import { expect, test } from "vitest";
 import memoryCalls from "../../agent/testdata/toolwire/memory.json?raw";
-import { hydrateThread } from "./reducer";
 import { wireThread } from "./testing/notifications";
 import { toolWireStep } from "./testing/toolWireFixtures";
 import {
@@ -14,6 +13,7 @@ import {
   skillContext,
   webFetchResult,
 } from "./toolEvidence";
+import { hydrateThread } from "./transcriptHistory";
 import type { ThreadItem } from "./types.gen";
 
 // Every case reads what the daemon actually sends (agent/testdata/toolwire).

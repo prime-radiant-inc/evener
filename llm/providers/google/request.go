@@ -356,8 +356,9 @@ func geminiImagePart(p llm.ContentPart) (map[string]any, error) {
 				mt = llm.InferMimeTypeFromPath(path)
 			}
 		}
-		if mt == "" {
-			mt = "image/png"
+		b, mt, err = googleInlineImageBytes(b, mt)
+		if err != nil {
+			return nil, err
 		}
 		return map[string]any{
 			"inlineData": map[string]any{
@@ -378,6 +379,40 @@ func geminiImagePart(p llm.ContentPart) (map[string]any, error) {
 		}, nil
 	}
 	return nil, nil
+}
+
+// googleInlineImageMediaType returns the canonical media type Gemini accepts
+// for an inline image, or "" when v is outside that set. Gemini accepts
+// png/jpeg/webp/heic/heif inline; unlike the Anthropic and OpenAI image blocks,
+// it does not accept gif.
+func googleInlineImageMediaType(v string) string {
+	switch mt := llm.ImageBlockMediaType(v); mt {
+	case "image/png", "image/jpeg", "image/webp":
+		return mt
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "heic", "image/heic":
+		return "image/heic"
+	case "heif", "image/heif":
+		return "image/heif"
+	default:
+		return ""
+	}
+}
+
+// googleInlineImageBytes returns bytes and a media type Gemini accepts in
+// inlineData. A claimed type already in the set keeps its bytes: Gemini
+// validates them, and the local decoder cannot read every raster the wire
+// accepts. Any other type is decoded and re-encoded as PNG (BMP and TIFF reads,
+// and GIF attachments, would otherwise be rejected and fail the whole turn,
+// #4584); bytes that are not a decodable raster are refused loudly.
+func googleInlineImageBytes(data []byte, claimedMediaType string) ([]byte, string, error) {
+	return llm.NormalizeImageForWire(
+		data,
+		claimedMediaType,
+		googleInlineImageMediaType,
+		fmt.Sprintf("google inline image %q is not a decodable raster", claimedMediaType),
+	)
 }
 
 // geminiDocumentPart represents user document input without fetching or
@@ -559,16 +594,16 @@ func toGeminiContents(model string, msgs []llm.Message, multimodalToolResults bo
 						if !multimodalToolResults {
 							return "", nil, &llm.ConfigurationError{Message: fmt.Sprintf("google model %q does not support tool-result images: multimodal function responses require a Gemini 3 series model", model)}
 						}
-						mt := p.ToolResult.ImageMediaType
-						if mediaType == "" {
-							mt = "image/png"
+						imageBytes, imageType, err := googleInlineImageBytes(p.ToolResult.ImageData, p.ToolResult.ImageMediaType)
+						if err != nil {
+							return "", nil, err
 						}
 						// Media belongs inside the functionResponse it came from; a sibling
 						// content part would leave the image unassociated with the tool call.
 						funcResp["parts"] = []map[string]any{{
 							"inlineData": map[string]any{
-								"mimeType": mt,
-								"data":     base64.StdEncoding.EncodeToString(p.ToolResult.ImageData),
+								"mimeType": imageType,
+								"data":     base64.StdEncoding.EncodeToString(imageBytes),
 							},
 						}}
 					}

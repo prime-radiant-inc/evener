@@ -889,9 +889,9 @@ func (c *countingThreadEnvelopeSource) DetailedStatus() DetailedStatus {
 	return DetailedStatus{}
 }
 func (c *countingThreadEnvelopeSource) TaskAggregate() *appwire.TaskAggregate { c.hit(); return nil }
-func (c *countingThreadEnvelopeSource) PendingQuestion() *appwire.PendingQuestion {
+func (c *countingThreadEnvelopeSource) PendingAskSnapshot() (*appwire.PendingQuestion, *appwire.PendingAskState) {
 	c.hit()
-	return nil
+	return nil, nil
 }
 
 func (c *countingThreadEnvelopeSource) RestingFailure() *appwire.ThreadFailure {

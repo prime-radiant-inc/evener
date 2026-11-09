@@ -349,7 +349,7 @@ func TestHubRPCRealLocalItemReadUsesOneReadAndPreservesHandoff(t *testing.T) {
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		readCalls.Add(1)
-		appserver.Subscribe(ctx, sessionID)
+		appserver.SubscribeWithAdmission(ctx, sessionID, false)
 		position := appwire.ThreadItemPosition{Entry: 1}
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{
 			ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{Ref: params.Ref},
@@ -376,9 +376,7 @@ func TestHubRPCRealLocalItemReadUsesOneReadAndPreservesHandoff(t *testing.T) {
 	t.Cleanup(hub.Close)
 	client := dialHubRPC(t, hub)
 	t.Cleanup(func() { _ = client.Close() })
-	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("initialize: %v", err)
-	}
+	mustInitializeHubClient(t, client)
 	response, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{
 		Ref: "local:" + sessionID, IncludeTurns: true, Subscribe: true, ItemLimit: 40,
 	})
@@ -443,9 +441,7 @@ func TestHubRPCRealLocalBoundedItemReadContinuesNativeCursor(t *testing.T) {
 	t.Cleanup(hub.Close)
 	client := dialHubRPC(t, hub)
 	t.Cleanup(func() { _ = client.Close() })
-	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("initialize: %v", err)
-	}
+	mustInitializeHubClient(t, client)
 
 	initial, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{
 		Ref: ref, IncludeTurns: true, Subscribe: true, ItemLimit: 40,
@@ -509,9 +505,7 @@ func TestHubRPCRealLocalFreshReadRecoversHiddenNativeReset(t *testing.T) {
 	t.Cleanup(hub.Close)
 	client := dialHubRPC(t, hub)
 	t.Cleanup(func() { _ = client.Close() })
-	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("initialize: %v", err)
-	}
+	mustInitializeHubClient(t, client)
 	read := func(replace bool) appwire.ThreadReadResponse {
 		response, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{
 			Ref: ref, IncludeTurns: true, Subscribe: true, ReplaceSubscription: replace, ItemLimit: 40,
@@ -577,9 +571,7 @@ func TestHubRPCRealLocalBoundedItemReadRebasesByteFitBoundary(t *testing.T) {
 	t.Cleanup(hub.Close)
 	client := dialHubRPC(t, hub)
 	t.Cleanup(func() { _ = client.Close() })
-	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("initialize: %v", err)
-	}
+	mustInitializeHubClient(t, client)
 	initial, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{
 		Ref: ref, IncludeTurns: true, Subscribe: true, ItemLimit: 40,
 	})
@@ -640,9 +632,7 @@ func TestHubRPCRealLocalExhaustedNativePageSplitsByteFit(t *testing.T) {
 	t.Cleanup(hub.Close)
 	client := dialHubRPC(t, hub)
 	t.Cleanup(func() { _ = client.Close() })
-	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("initialize: %v", err)
-	}
+	mustInitializeHubClient(t, client)
 	initial, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{
 		Ref: ref, IncludeTurns: true, Subscribe: true, ItemLimit: 40,
 	})
@@ -1378,9 +1368,7 @@ func realDaemonBehindHub(t *testing.T, sessionID string, n int) (*appwire.Client
 	t.Cleanup(hub.Close)
 	client := dialHubRPC(t, hub)
 	t.Cleanup(func() { _ = client.Close() })
-	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("initialize: %v", err)
-	}
+	mustInitializeHubClient(t, client)
 	return client, ref
 }
 

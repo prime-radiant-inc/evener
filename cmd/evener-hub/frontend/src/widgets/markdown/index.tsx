@@ -169,7 +169,9 @@ const SANITIZE_CONFIG = {
   // raw source HTML through in some form, that safety stops being
   // automatic - re-check whether "class"/"align" should stay this
   // permissive at that point.
-  ALLOWED_ATTR: ["href", "title", "target", "rel", "class", "align"],
+  // `start` is the numeric first-item marker emitted for ordered lists.
+  // Authored HTML remains escaped by html(), not passed through here.
+  ALLOWED_ATTR: ["href", "title", "target", "rel", "class", "align", "start"],
   // DOMPurify's default scheme allowlist plus `file`. A file:// link is how an
   // agent names a report it filed beside the session, and dropping the href
   // leaves a bare anchor that looks like a link and goes nowhere. Keeping the

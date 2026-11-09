@@ -7,7 +7,7 @@ import { chromeStore, resetChromeStoreForTests } from "../../shell/chromeStore";
 import { urlToPane } from "../../shell/routing";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { resetCredentialsStoreForTests } from "../../stores/credentials";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import { resetSettingsOverviewStoreForTests } from "../../stores/settingsOverview";
@@ -87,7 +87,7 @@ afterEach(() => {
   resetPrefsStoreForTests();
   resetWorkspaceStoreForTests();
   resetChromeStoreForTests();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetCredentialsStoreForTests();
   resetSettingsOverviewStoreForTests();
 });

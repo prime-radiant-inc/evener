@@ -37,6 +37,7 @@ native:.:./cmd/evener-migrate:FuzzConvertProvidersConfig
 native:agent:.:FuzzToolArgsValidate:./internal/tool,.
 native:agent:./activitybound:FuzzReportPreview
 native:agent:./schema:FuzzSessionMetaRoundTrip
+native:agent:./memorypages:FuzzParsePage
 native:agent:./schema:FuzzSessionDisplayName
 native:agent:./schema:FuzzHookAnnouncement
 native:agent:./internal/jobstore:FuzzJobEventLogReplay
@@ -52,7 +53,7 @@ native:agent:.:FuzzDelegateConversationTransitions
 native:agent:.:FuzzDelegateRestartEquivalence
 native:agent:.:FuzzDelegateReclaimStopRestart
 native:agent:.:FuzzDelegateAttentionFold
-native:agent:.:FuzzStableDelegateWatchDelivery
+native:agent:.:FuzzDelegateWatchDelivery
 native:agent:.:FuzzTranscriptReplay
 native:agent:.:FuzzTranscriptReplayStructured
 native:agent:.:FuzzTranscriptReadersAgree
@@ -95,6 +96,7 @@ native:.:./cmd/evener-hub/internal/launchconfig:FuzzLaunchConfigResolve
 native:.:./cmd/evener-fuzzregistry:FuzzParseRegistry
 native:.:./cmd/evener-fuzzregistry:FuzzRegistryProgram
 native:.:./cmd/evener-dev:FuzzParseGoTestJSON
+native:.:./scripts/native/ios/qualification:FuzzSimulatorSelection
 native:agent:./plugin:FuzzPluginManifestParse
 native:agent:./plugin:FuzzPluginLoaderProgram
 native:agent:./plugin:FuzzDiscoverEvenerwideFrontmatter

@@ -1,8 +1,8 @@
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { expect, it } from "vitest";
 import type { ModelListResponse, Thread, ThreadClearResponse } from "@evener/appwire-client";
-import { type ConversationClientLike, createConversationService } from "../../mobile/src/services/conversation";
-import { createConversationStore } from "../../mobile/src/state/conversation";
+import { type ConversationClientLike, createConversationService } from "./conversation/services/conversation";
+import { createConversationStore } from "./conversation/state/conversation";
 import { CommandNotSentError, submitComposerCommand } from "./composerCommand";
 import { DraftDocument } from "./draftDocument";
 import { DraftRepository } from "./draftRepository";

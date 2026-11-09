@@ -162,6 +162,61 @@ It was a one-off experiment. Delete it from the tree (history keeps it), about -
 
 The engineering items in [GAPS.md](GAPS.md) run after Wave 2, with the same autonomy: fuzz corpus (G3), the committed bundle (G4), npm version skew (G5), `go.mod` (G6), logging (M1), concurrency and cancellation hygiene (M2), config sprawl (M3), dependencies (M4), and the test-orchestration overlap (M5).
 
+## Wave 1 follow-ups (2026-10-27)
+
+Jesse's answers to six open Wave 1 questions. Each applies to the named roadmap entry.
+
+### W1-60. Host store sidecar
+Delete the legacy `hub.hosts.json` sidecar migration and its write-poisoning. No tagged release ever wrote that sidecar. A corrupt main store still refuses writes.
+
+### W1-63. Transcript display settings
+Drop the dual write of transcript display settings to the legacy prefs keys.
+
+### W1-41b. Scoped host read
+Rewrite the debounced scoped host read behind `usePluginPreview` and `useScopedHostRead` as a framework-free store in the `appwire-client` package, with a thin hook in each app. The package stays React-free.
+
+### W1-58. Plan corpus
+Delete all of the roughly 225 superpowers plans older than 30 days that were kept.
+
+### W1-02. Hub store writers
+Keep afero in the hub stores (`hubcore` `writeStateFileAtomic` and its stores, `hostops` `saveFS` and `writeQuarantineFile`) along with their fault-injection tests. W1-02 is closed as done.
+
+### W1-37. Thought duration
+`formatThoughtDuration` switches to the shared `formatDurationMs`. Visible changes: 0 ms shows `1ms` instead of `0ms`, and 9,999 ms shows `10s` instead of `10.0s`.
+
+### W1-37. Plugin age wording (2026-10-28)
+`mobile-native/src/hub/PluginsPage.tsx` drops `agoText` and uses the shared `timeAgo`. Visible change: a plugin installed or updated under a minute ago reads "just now" instead of "30s ago".
+
+### W1-31 step 2. Local daemons match remote hosts (2026-10-28)
+The local daemon source treats `io.ErrClosedPipe`, `os.ErrClosed` (also inside `*fs.PathError`), `net.ErrClosed` and `appwire.ErrStreamClosed` as transport loss, exactly as the remote hub source does. Reads report session unavailable; mutations become outcome-unknown with automatic replay. Both sources share one shape list (`isTransportLoss`). `context.Canceled` stays raw.
+
+## Wave 2 follow-ups (2026-10-28)
+
+### Jesse
+- W2-18 Q3: the two mobile `confirmShutDown` prompts become one. The title is optional and the body is the info-sheet body.
+
+### Bot rulings under Wave 2 autonomy
+- W2-07 step 12: only `prepareModelRequestWithError` and `stageCompactionEffects` are in scope.
+- W2-06: do the `stableDelegate` rename. Keep the lenient shell and `model_list` clamps. Remove the mirror DTOs only if no consumer remains.
+- W2-04 Q1: no shared journal rollback helper.
+- W2-04 Q3: a session-log strategy that is missing its checkpointed carry is a bug and gets a bug fix.
+- W2-02 Q5: verify the behavior first and fix only if it is broken.
+- W2-12 Q1: the local resolver returns Invalid for an undecodable `thread/read` body, like the hub.
+- W2-12 Q2: `urls/remove` becomes retry-safe if and only if the server dedupes by mutation id.
+- W1-20: keep `Server.SetBeforeSubscriptionGate` as a legitimate test seam.
+- W2-14 Q1 and Q2, and W2-08 Q1 and Q4: take the design records' recommendations.
+
+## Wave 2 close and Wave 3 (2026-10-28)
+
+Bot rulings under Jesse's Wave 2 autonomy grant.
+
+- W1-29b: dropped. W2-13 Part B introduces the store record types fresh, and `hostStore` keeps its maps until Part B deletes them.
+- W2-15: stops at the current boundary. Steps 5, 6 and the `hydration.ts` half of step 8 are not done: the 106 functions in `threads.ts` form one strongly connected component, and splitting them needs wide injected hosts. Revisit only with a design that breaks the cycle.
+- W2-11 question 3: cheap step only. Delete the back-fill blocks and add no new interface. Question 4 is moot after W1-60.
+- hub-app-host-15: share the `RemovedRow` field set behind one converter, proven by identical rows.
+- W2-08 questions 1 and 4: no `scratchState` type, and no folding of the `Ctx` and budgeted forms.
+- Docs PRs may land once CI is green.
+
 ## Still open
 
 Nothing.

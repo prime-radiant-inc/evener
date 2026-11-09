@@ -26,7 +26,7 @@ The registry does not preserve the exact pre-limit model-facing result in a dist
 Job output and generic tool output have different retention contracts:
 
 - A `job:` log persists across restarts but retains at most the existing 8 MiB tail. Earlier bytes may be gone.
-- An `artifact:` result retains every byte but expires when its root session tree closes.
+- An `artifact:` result retains every admitted byte, subject to the root tree's retention budget, and expires when its root session tree closes.
 
 The reader must state this difference plainly.
 
@@ -66,7 +66,9 @@ type ArtifactStore interface {
 
 The concrete store may use narrower internal methods, but it must not grow a metadata database, retention scheduler, or per-tool adapter. The file length supplies `total_bytes`. The ref contains an opaque, unguessable identifier and no path or tool argument.
 
-The store has no size cap. This is an explicit product decision: generic tool output remains complete until root-tree cleanup. A later disk policy requires a separate design because any cap weakens the invariant.
+The store admits artifacts against a per-root-tree byte and artifact-count budget (512 MiB and 4096 artifacts by default). A full store refuses the `Put` with a budget error instead of evicting anything, so every issued reference stays readable for the tree's lifetime; the caller marks that result `retention_failed`. Admission control bounds the tree without weakening the completeness of an artifact that was accepted.
+
+Each store directory is named `evener-artifacts-pid-<pid>-<random>`. Creating a store reclaims directories in the same base that this user owns and whose marked owner pid is definitely dead, which covers an abnormal root exit. It leaves alone a directory without the marker (including pre-lease stores), one owned by another user, and one whose pid still answers: a pid reused by a live process can retain an abandoned directory, and that leak is the safe direction.
 
 ## Capture point
 
@@ -304,7 +306,8 @@ The change is complete when all these statements hold:
 ## Out of scope
 
 - Persisting artifacts after the root session tree closes.
-- Limiting artifact disk use or pruning artifacts before root-tree cleanup.
+- Evicting an issued artifact ref to stay within the retention budget; admission refuses new artifacts instead.
+- Reclaiming an artifact directory whose owner cannot be proven dead or that another user owns.
 - Searching semantic session transcripts.
 - Changing the 8 MiB job-retention cap.
 - Adding head/tail line-range syntax.

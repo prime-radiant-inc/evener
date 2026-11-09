@@ -7,6 +7,8 @@ Where a row here and `envvars/envvars.go` disagree, `envvars/envvars.go` is righ
 For user setup, scope, and precedence, see the public
 [environment variable reference](../environment-variables.md). This contributor
 reference also includes internal processes and test controls.
+[Configuration knobs](config-knobs.md) is the generated cross-check of every
+variable and `hub.toml` key against its doc row and consumer.
 
 ## Evener Commands
 
@@ -123,8 +125,6 @@ process environments.
 | `GOMODCACHE` | Inherited by core-only command environments; under the session-private cache strategy the sandbox environment floor redirects it into the session scratch directory, and under the overlay strategy it overlays a served value and redirects one the overlay does not serve (or every Go setting, when the go env file was unreadable) (see [docs/sandboxing.md](../sandboxing.md#cache-isolation-and-writable-root-exceptions)). |
 | `GOPATH` | Inherited by core-only command environments; under the session-private cache strategy the sandbox environment floor puts the session scratch directory first, keeping the ambient value after it where the spawned layer can read it (see [docs/sandboxing.md](../sandboxing.md#cache-isolation-and-writable-root-exceptions)). |
 | `HOME` | Home directory fallback for state/config paths and path expansion. |
-| `HOMEDRIVE` | Windows home drive fallback. |
-| `HOMEPATH` | Windows home path fallback. |
 | `LANG` | Inherited by core-only command environments. |
 | `NVM_DIR` | Inherited by core-only command environments. |
 | `PATH` | Executable search path for local commands and child processes; a session/daemon env overrides it with the resolved login-shell PATH when available, else the inherited process PATH. |
@@ -150,4 +150,3 @@ process environments.
 | `EVENER_FUZZ_RECORD` | Master switch enabling the AppWire and hub HTTP fuzz-corpus recorders by default when set to `1`, `true`, `yes`, or `on`. A per-recorder variable (`EVENER_RECORD_APPWIRE`/`EVENER_RECORD_HTTP`) overrides it. Intended for local development; unset everywhere else. Provider attempts are recorded independently in each attached session API log. |
 | `EVENER_FUZZ_CAPTURE_ENV` | Marks a dedicated capture box so `evener fuzz-harvest --keep-values` is permitted (real, unscrubbed values; local-only, never committed). Ignored for a personal evener state root source. |
 | `EVENER_NO_USER_SKILLS` | Set to `1` to omit the operator's user-global sources: their home skills (`~/.agents/skills`), the user config skills directory, installed plugins' skills, the global MCP config (`~/.config/evener/mcp.json`), and evener-wide commands (`~/.config/evener/commands`). Bundled, project, and explicitly added sources remain. The tool-fluency harness sets it so an eval round depends only on the revision under test, not on who runs it. |
-| `OPENAI_CHATGPT_CLIENT_ID` | OpenAI OAuth client id override for tests and development. |
