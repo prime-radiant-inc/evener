@@ -42,6 +42,7 @@ import { DockHost } from "./DockHost";
 import { paletteStore } from "./palette/paletteController";
 import { conversationPaneLifetime } from "./paneLifetime";
 import { navigate, refParam } from "./routing";
+import { openSessionByRef } from "./sessionPlacement";
 import {
   conversationOpenParentRef,
   documentPaneState,
@@ -1394,6 +1395,76 @@ test("a deferred deep link preserves a restored cascade main and its neighbors",
   // sessionTasks pane, last focused before the save) is part of the work the
   // deferred route placement preserves.
   expect(workspaceStore.getState().focusedPaneId).toBe(secondaryId);
+});
+
+test("a rail link to a session its cascade covers refocuses the cascade", async () => {
+  installLocationForRoute("local:session-a");
+  window.history.pushState({}, "", "/s/local:session-a");
+  render(<AppShell client={navClient()} />);
+  await screen.findByText(/loading transcript/i);
+  act(() => {
+    retypeMainToCascade("local:session-a", "local:leaf");
+    const secondary = workspaceStore
+      .getState()
+      .openPane("sessionDetails", { ref: "local:session-a" }, { slot: "secondary" });
+    workspaceStore.getState().focusPane(secondary);
+  });
+
+  act(() => openSessionByRef("local:session-a"));
+
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(workspaceStore.getState().mainPane()?.id));
+});
+
+test("a user navigation focuses the routed conversation over a focused companion", async () => {
+  installLocationForRoute("local:root");
+  installLocationForRoute("local:child");
+  window.history.pushState({}, "", "/s/local:root");
+  render(<AppShell client={navClient()} />);
+  await screen.findByText(/loading transcript/i);
+  act(() => {
+    workspaceStore.getState().openPane("sessionDetails", { ref: "local:root" }, { slot: "secondary" });
+  });
+
+  act(() => openSessionByRef("local:child"));
+
+  await waitFor(() =>
+    expect(
+      workspaceStore
+        .getState()
+        .panes.some((pane) => pane.type === "session" && refParam(pane.params) === "local:child"),
+    ).toBe(true),
+  );
+  const child = workspaceStore
+    .getState()
+    .panes.find((pane) => pane.type === "session" && refParam(pane.params) === "local:child");
+  expect(workspaceStore.getState().focusedPaneId).toBe(child?.id);
+});
+
+test("Back to a session route focuses the routed conversation", async () => {
+  installLocationForRoute("local:root");
+  installLocationForRoute("local:child");
+  window.history.pushState({}, "", "/s/local:root");
+  render(<AppShell client={navClient()} />);
+  await screen.findByText(/loading transcript/i);
+  act(() => openSessionByRef("local:child"));
+  await waitFor(() =>
+    expect(
+      workspaceStore
+        .getState()
+        .panes.some((pane) => pane.type === "session" && refParam(pane.params) === "local:child"),
+    ).toBe(true),
+  );
+  act(() => {
+    workspaceStore.getState().openPane("sessionDetails", { ref: "local:child" }, { slot: "secondary" });
+  });
+
+  act(() => {
+    window.history.pushState({}, "", "/s/local:root");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+
+  await waitFor(() => expect(refParam(workspaceStore.getState().mainPane()?.params)).toBe("local:root"));
+  expect(workspaceStore.getState().focusedPaneId).toBe(workspaceStore.getState().mainPane()?.id);
 });
 
 test("deferred location preserves a restored secondary inspector and its real center", async () => {

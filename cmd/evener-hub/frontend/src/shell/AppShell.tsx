@@ -5,7 +5,7 @@
 import type { AppwireClientLike, NavigationSessionLocation } from "@evener/appwire-client";
 import { ACTIONS } from "@evener/appwire-client";
 import { isNavigationUnavailable, isSettledGone } from "@evener/appwire-client/state/navigation";
-import { useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
+import { type MutableRefObject, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 import { keybindingsRegistry } from "../keybindings/appRegistry";
 import { isEditableTarget } from "../keybindings/dispatcher";
 import { MotionProvider } from "../motion";
@@ -45,9 +45,15 @@ import { NotFound } from "./NotFound";
 import { CommandPalette } from "./palette/CommandPalette";
 import { openPalette, paletteStore } from "./palette/paletteController";
 import { RailHost } from "./rail";
-import { navigate, observeRouteHistory, openSessionRoute, refParam, urlToPane } from "./routing";
+import { isAppDrivenNavigation, navigate, observeRouteHistory, openSessionRoute, refParam, urlToPane } from "./routing";
 import { cycleSessionPane } from "./sessionCycle";
-import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacement";
+import {
+  consumeRoutedSessionFocus,
+  focusRoutedSession,
+  openNestedSessionWithOwner,
+  openTopLevelSession,
+  requestRoutedSessionFocus,
+} from "./sessionPlacement";
 import { isSinglePaneRoute } from "./singlePane";
 import { useBrowserConnection } from "./useBrowserConnection";
 import { isMobileViewport } from "./useIsMobile";
@@ -139,11 +145,11 @@ function readPathname(): string {
   return window.location.pathname;
 }
 
-function usePathname(): readonly [string, number] {
+function usePathname(interactiveNavigation: MutableRefObject<string | null>): readonly [string, number] {
   const [pathname, setPathname] = useState(readPathname);
   const [historyRevision, bumpHistoryRevision] = useReducer((revision: number) => revision + 1, 0);
   useEffect(() => {
-    const onPopState = () => {
+    const readRouteState = () => {
       const nextPathname = readPathname();
       // Synchronize the settings selection with the route the window just moved
       // to, in THIS tick and before React re-renders. A Back/Forward into a
@@ -156,11 +162,18 @@ function usePathname(): readonly [string, number] {
       setPathname(nextPathname);
       bumpHistoryRevision();
     };
+    const onPopState = () => {
+      // Every route reached through history - an app navigation, the rail, a
+      // link, or the browser's Back/Forward - is an interactive placement. The
+      // mount catch-up below is boot restoration, not one.
+      if (!isAppDrivenNavigation()) interactiveNavigation.current = readPathname();
+      readRouteState();
+    };
     window.addEventListener("popstate", onPopState);
     const unobserve = observeRouteHistory(() => bumpHistoryRevision());
     // A child mount effect may already have canonicalized the focused pane's
     // URL. Subscribe before catching up so that first navigation is not lost.
-    onPopState();
+    readRouteState();
     return () => {
       window.removeEventListener("popstate", onPopState);
       unobserve();
@@ -497,7 +510,8 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
   }, [controller]);
 
   const connectionState = useConnectionStore((s) => s.state);
-  const [pathname, historyRevision] = usePathname();
+  const interactiveNavigationRef = useRef<string | null>(null);
+  const [pathname, historyRevision] = usePathname(interactiveNavigationRef);
   const route = urlToPane(pathname);
   const sessionRouteRef = route?.type === "session" ? refParam(route.params) : null;
   const restoredSessionRef = route?.type === "welcome" ? refParam(workspaceStore.getState().mainPane()?.params) : null;
@@ -589,9 +603,7 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
       if (main === null || main.type !== "session" || refParam(main.params) !== ref) {
         openTopLevelSession(ref);
       }
-      const placed = workspaceStore.getState().mainPane();
-      // focusPane already no-ops for a pane that is focused or absent.
-      if (placed !== null) workspaceStore.getState().focusPane(placed.id);
+      focusRoutedSession(ref);
     };
     const liveSessions = createLiveSessionController({
       generation: () => navigationStore.getState().clientGenerationID,
@@ -765,6 +777,34 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
     // placement before the route branch decides what to place. A stale
     // location read must not rebuild a retained secondary as main either.
     const attentionToken = currentAttentionEntryToken();
+    const settleNavigationFocus = () => {
+      if (interactiveNavigationRef.current !== pathname) return;
+      if (route?.type !== "session") {
+        interactiveNavigationRef.current = null;
+        return;
+      }
+      const ref = refParam(route.params);
+      if (ref === null || pendingSessionRef.current !== null) return;
+      interactiveNavigationRef.current = null;
+      focusRoutedSession(ref);
+    };
+    const settleRequestedFocus = () => {
+      const requested = consumeRoutedSessionFocus();
+      if (requested === null) return;
+      if (route?.type !== "session" || refParam(route.params) !== requested || pendingSessionRef.current !== null) {
+        // The request belongs to a route that is still waiting for its location
+        // read; keep it for the placement that can finally focus it.
+        if (route?.type === "session" && refParam(route.params) === requested) {
+          requestRoutedSessionFocus(requested);
+        }
+        return;
+      }
+      focusRoutedSession(requested);
+    };
+    const settlePlacementFocus = () => {
+      settleNavigationFocus();
+      settleRequestedFocus();
+    };
     if (attentionToken === null) {
       if (restoredAttentionTokenRef.current !== null) {
         restoredAttentionTokenRef.current = null;
@@ -794,6 +834,7 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
         routePlacementPathnameRef.current = null;
         if (armedPathname === pathname) {
           placedPathnameRef.current = pathname;
+          settlePlacementFocus();
           return;
         }
       }
@@ -838,6 +879,7 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
       ) {
         pendingSessionRef.current = null;
         placedPathnameRef.current = pathname;
+        settlePlacementFocus();
         return;
       }
       openedForPathnameRef.current = pathname;
@@ -852,12 +894,15 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
           routePlacementPathnameRef.current = null;
         }
       }
+      settlePlacementFocus();
       return;
     }
     if (route?.type === "welcome") reconcileWelcomeRouteWithLocation(location);
+    settlePlacementFocus();
     if (openedForPathnameRef.current === pathname && pendingSessionRef.current === null) return; // already opened above, this render
     openedForPathnameRef.current = pathname;
     openRouteAsPane(pathname, location, locationTerminal, locationGone, pendingSessionRef);
+    settlePlacementFocus();
   }, [pathname, historyRevision, route?.type, location, locationTerminal, locationGone, workspacePanesVersion]);
 
   return (
