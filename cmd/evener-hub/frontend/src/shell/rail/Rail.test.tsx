@@ -25,7 +25,7 @@ import { navigationInvalidatedNotification } from "@evener/appwire-client/testin
 import { act, cleanup, fireEvent, render as renderUI, screen, waitFor, within } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { lazy } from "react";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { installMobileViewport } from "../../panes/session/testing/mobileViewport";
 import {
   archivedListKey,
@@ -336,6 +336,22 @@ function stubScrollIntoView(): () => void {
     else delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
   };
 }
+
+// Session activation places the session pane in the press's own tick (the
+// rail's row kind carries its top-level placement), so the suite needs the
+// pane type the app's import graph registers. Individual tests that inspect a
+// pane's own behavior still install their own descriptor and restore it.
+let restoreSessionPane: () => void;
+beforeAll(() => {
+  restoreSessionPane = registerPaneForTests({
+    id: "session",
+    title: () => "Session",
+    component: lazy(() => Promise.resolve({ default: () => null })),
+  });
+});
+afterAll(() => {
+  restoreSessionPane();
+});
 
 beforeEach(() => {
   // The store reads expansion from the browser port when it resets; clear

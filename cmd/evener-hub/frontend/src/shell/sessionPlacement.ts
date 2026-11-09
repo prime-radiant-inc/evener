@@ -14,6 +14,15 @@ function isSessionPaneFor(pane: OpenPaneRecord, ref: string): boolean {
   return pane.type === "session" && refParam(pane.params) === ref;
 }
 
+/** Placement facts the caller already holds about a session link. */
+export interface SessionOpenOptions {
+  /** The caller's own row says this ref names a top-level session (the rail's
+   * navigation summary carries the session kind). Placement then happens in
+   * the press's own tick. The URL route still reconciles a stale hint through
+   * the ordinary location read, which runs in the background. */
+  readonly topLevel?: boolean;
+}
+
 // openSessionByRef is how anything in the app follows a link to a session.
 // Existing live session panes retain their identity and regain focus.
 // Read-only transcript context belongs to its contextual callers.
@@ -22,11 +31,20 @@ function isSessionPaneFor(pane: OpenPaneRecord, ref: string): boolean {
 // its top-level owner instead of landing in main next to an unrelated root
 // (see openRouteAsPane). Callers that already know the placement they want
 // use the two helpers below directly.
-export function openSessionByRef(ref: string): void {
+//
+// A caller that also knows the link is top-level (the rail row's kind) says so
+// through `topLevel`: the session is then placed here, without waiting for the
+// route's location read. That read is a hub round trip, and leaving placement
+// behind it made a press look ignored while the read was in flight. The route
+// effect still confirms the placement when the read answers, and a stale hint
+// is corrected through the ordinary nested-owner path.
+export function openSessionByRef(ref: string, options: SessionOpenOptions = {}): void {
   const workspace = workspaceStore.getState();
   const existing = presentedPanes(workspace.panes).find((pane) => isSessionPaneFor(pane, ref));
   if (existing) {
     workspace.focusPane(existing.id);
+  } else if (options.topLevel === true) {
+    openTopLevelSession(ref);
   }
   const url = paneToURL("session", { ref });
   // The rail, scope crumbs and every session link land here: a press that
