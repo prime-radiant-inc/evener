@@ -131,9 +131,10 @@ func TestHubRPCThreadReadKeepsTargetDeletedResolutionTerminal(t *testing.T) {
 	checks := 0
 	deletionTargetState = func(*hubcore.DeletionStore, string, string) (hubcore.DeletionState, bool) {
 		checks++
-		// The read's own entry check passes; the deletion publishes before the
-		// resolution fences the target under the ownership alias.
-		return hubcore.DeletionStateDeleting, checks > 1
+		// The subscription admission and the read's own entry check pass; the
+		// deletion publishes before the resolution fences the target under the
+		// ownership alias.
+		return hubcore.DeletionStateDeleting, checks > 2
 	}
 	t.Cleanup(func() { deletionTargetState = original })
 
@@ -141,11 +142,12 @@ func TestHubRPCThreadReadKeepsTargetDeletedResolutionTerminal(t *testing.T) {
 	if !isTargetDeletedError(err) {
 		t.Fatalf("deleting resolution error = %T %v, want targetDeleted", err, err)
 	}
-	// The first check is the read's own entry fence; the second is the one
+	// The first check is the subscription admission resolver, the second is the
+	// read's own entry fence, and the third is the one
 	// sourceForThreadWithDeletionFence runs. Pinning the count keeps this test
 	// exercising the resolution branch instead of an earlier check.
-	if checks != 2 {
-		t.Fatalf("deletion checks = %d, want the entry check and the resolution fence", checks)
+	if checks != 3 {
+		t.Fatalf("deletion checks = %d, want admission, entry, and the resolution fence", checks)
 	}
 	if got := fixture.refreshes.Load(); got != 0 {
 		t.Fatalf("roster refreshes = %d, want none for a target-deleted fence", got)
