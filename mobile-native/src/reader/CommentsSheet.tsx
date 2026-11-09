@@ -66,7 +66,7 @@ export function CommentsSheet({ route, navigation }: NativeStackScreenProps<Rout
 								Send review
 							</Text>
 						</Pressable>
-					) : null
+					) : undefined
 				}
 				renderItem={({ item: comment }: { item: DocumentComment }) => {
 					const anchored = host?.anchor(comment) ?? null;

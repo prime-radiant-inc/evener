@@ -713,6 +713,36 @@ test("mount restore picks the newest rejected row the seat owns", async () => {
   expect(textarea().textContent).toBe("newer attempt");
 });
 
+test("an empty rejected drain is a notice, not a restored draft", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const seat = "seat-a";
+  const outbox = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thread_a",
+    method: "turn/drainAsSteer",
+    payload: { ref: "ref_a", input: [] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/drainAsSteer", input: [] },
+  });
+  const rejected = await storage.transferToRecovery(outbox.clientMutationId, "rejected", "queue revision changed");
+  if (!rejected) throw new Error("failed to seed the empty drain recovery");
+  await stampRecoveryOwner(storage, rejected, seat);
+
+  const source = createTestComposerSource("ref_a", seat);
+  const persistence = vi.spyOn(source, "queueRecoveryPersistence");
+  await mountComposerWithHandle("ref_a", { status: { type: "idle" } }, { source });
+  await flushPendingTurnsProjectionForTests();
+
+  // Activating it would load an empty composer only to discard it again. The
+  // ruling makes the refusal a notice instead: the strip keeps the row and
+  // its reason, and nothing is restored or re-persisted.
+  expect(source.getSnapshot().activeRecoveryId).toBeNull();
+  expect(textarea().textContent).toBe("");
+  expect(persistence).not.toHaveBeenCalled();
+  expect(screen.getByText(/queue revision changed/)).toBeDefined();
+});
+
 test("mount restore leaves an ownerless legacy row to the queue strip", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);

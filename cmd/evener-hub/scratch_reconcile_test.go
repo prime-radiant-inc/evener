@@ -11,12 +11,13 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/testfs"
 )
 
 // A cancelled pass must not remove an eligible archived tree; the next live
 // pass must still discover and remove that same tree.
 func TestReconcileArchivedScratchKeepsCancelledWorkForLaterPass(t *testing.T) {
-	t.Setenv("TMPDIR", canonicalTempDir(t))
+	t.Setenv("TMPDIR", testfs.CanonicalTempDir(t))
 	id := hubtest.SessionID(t)
 	projects := t.TempDir()
 	project, err := identifier.ResolveProject(t.TempDir())
@@ -62,7 +63,7 @@ func testScratchReconcilerRunCancellation(t *testing.T, cancelAtEntry bool) {
 	// Keep both implicit scratch bases disposable, not the machine's caches.
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	t.Setenv("TMPDIR", canonicalTempDir(t))
+	t.Setenv("TMPDIR", testfs.CanonicalTempDir(t))
 	id := hubtest.SessionID(t)
 	projects := t.TempDir()
 	project, err := identifier.ResolveProject(t.TempDir())

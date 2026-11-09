@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { writeFileSync } from "node:fs";
 // overflowguard - asserts the transcript pane never scrolls sideways, at any
 // pane width, with the real React tree rendered in a real browser.
 //
@@ -139,7 +140,7 @@ async function measureAt(cdpEndpoint, url, width) {
 
     const exceptionSafety = await evaluate(
       send,
-      `(() => {
+      `(async () => {
         const systemPrompt = [...document.querySelectorAll('[data-testid="system-notice-scaffold"]')].find((details) =>
           details.querySelector(':scope > summary')?.textContent?.startsWith('System prompt'),
         );
@@ -155,7 +156,7 @@ async function measureAt(cdpEndpoint, url, width) {
           return originalGetBoundingClientRect.call(this);
         };
         try {
-          window.measure();
+          await window.measure();
         } catch {
           threw = true;
         } finally {
@@ -178,7 +179,9 @@ async function measureAt(cdpEndpoint, url, width) {
       } catch (error) {
         // Request the new named measurements before allowing an unchanged
         // harness fixture failure to obscure the intended RED boundary.
-        const legacyMeasurement = JSON.parse(await evaluate(send, "JSON.stringify(window.measure())"));
+        const legacyMeasurement = JSON.parse(
+          await evaluate(send, "window.measure().then((result) => JSON.stringify(result))"),
+        );
         if (!Array.isArray(legacyMeasurement.editors)) {
           return {
             ...legacyMeasurement,
@@ -194,7 +197,44 @@ async function measureAt(cdpEndpoint, url, width) {
     const finalMeasurement =
       url.includes("settings=1") && width < 900
         ? await measureSettingsSelect(send)
-        : JSON.parse(await evaluate(send, "JSON.stringify(window.measure())"));
+        : JSON.parse(await evaluate(send, "window.measure().then((result) => JSON.stringify(result))"));
+    // The footer and compose-controls probes describe the phone's one bottom
+    // surface, the composer's ENGAGED control row: a phone mounts no status
+    // bar, and the resting row's menu carries the status surface, so those
+    // probes must not read the resting row. The measurement above kept the
+    // Verbosity dialog open (the editor probes need it open), and measure()'s
+    // own engagement declines to run under an open overlay - so on a phone,
+    // close the dialog with a trusted Escape, wait out the close animation,
+    // and take the footer/controls fields from a second, engaged
+    // measurement. Desktop keeps the fields above: its status bar is the
+    // footer the probes read, dialog or no dialog.
+    let engagedFooter = null;
+    let engagedCurrentWork = null;
+    if (detail && realizedLayout.mobile) {
+      await send("Input.dispatchKeyEvent", {
+        type: "keyDown",
+        key: "Escape",
+        code: "Escape",
+        windowsVirtualKeyCode: 27,
+      });
+      await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      const closed = await evaluate(
+        send,
+        `(async () => {
+          for (let i = 0; i < 20; i++) {
+            const open = [...document.querySelectorAll('[role="dialog"], [role="menu"]')].some((element) =>
+              element.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }));
+            if (!open) return true;
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          }
+          return false;
+        })()`,
+      );
+      if (!closed) throw new Error("the Verbosity dialog did not close after Escape");
+      const engaged = JSON.parse(await evaluate(send, "window.measure().then((result) => JSON.stringify(result))"));
+      engagedFooter = engaged.footer;
+      engagedCurrentWork = engaged.currentWork;
+    }
     let settingsLayouts = null;
     if (url.includes("settings=1")) {
       const initialLayout = realizedLayout.mobile ? "mobile" : "desktop";
@@ -218,12 +258,14 @@ async function measureAt(cdpEndpoint, url, width) {
           measurement:
             width < 900
               ? await measureSettingsSelect(send)
-              : JSON.parse(await evaluate(send, "JSON.stringify(window.measure())")),
+              : JSON.parse(await evaluate(send, "window.measure().then((result) => JSON.stringify(result))")),
         },
       ];
     }
     return {
       ...finalMeasurement,
+      footer: engagedFooter ?? finalMeasurement.footer,
+      currentWork: engagedCurrentWork ?? finalMeasurement.currentWork,
       settingsLayouts,
       exceptionSafety,
       detail,
@@ -243,8 +285,8 @@ async function measureSettingsSelect(send) {
   return JSON.parse(
     await evaluate(
       send,
-      `JSON.stringify((() => {
-    const measurement = window.measure();
+      `(async () => {
+    const measurement = await window.measure();
     const statusReason = document.querySelector('[role="status"][data-reason]')?.dataset.reason ?? null;
     for (const editor of measurement.editors) {
       const owner = document.querySelector('[data-testid="' + editor.ownerTestId + '"]');
@@ -278,8 +320,8 @@ async function measureSettingsSelect(send) {
         })),
       });
     }
-    return measurement;
-  })())`,
+    return JSON.stringify(measurement);
+  })()`,
     ),
   );
 }
@@ -385,22 +427,31 @@ async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported)
           const measure = async (focus) => {
             if (focus === "editor") textbox?.focus();
             else if (focus === "button") {
-              // Start from a non-editing composer, then focus a control. The
-              // editing state must not turn on for a button alone.
+              // Start from a non-editing composer, then focus a control the
+              // resting row keeps. The editing state must not turn on for a
+              // button alone, and the resting row must not expand for it.
+              // The harness session runs a turn, so Stop takes Send's slot.
               textbox?.blur();
               await frame();
-              pane?.querySelector('[data-testid="composer-attach"]')?.focus();
+              pane?.querySelector('[data-testid="composer-stop"], [data-testid="composer-submit"]')?.focus();
             }
             else textbox?.blur();
             await frame();
+            const form = pane?.querySelector('[data-testid="composer-form"]');
+            const attach = form?.querySelector('[data-testid="composer-attach"]');
+            const submit = form?.querySelector('[data-testid="composer-submit"]');
+            const stop = form?.querySelector('[data-testid="composer-stop"]');
+            const rowChips = form ? [...form.querySelectorAll('[data-activity-tab]')] : [];
             const cards = [...(footer?.querySelectorAll('[data-testid="composer-input-card"]') ?? [])]
               .filter((card) => card.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }));
             const lastBottom = cards.length ? Math.max(...cards.map((card) => card.getBoundingClientRect().bottom)) : null;
             const metadata = pane?.querySelector('[data-testid="composer-repo-location"]');
             const path = metadata?.querySelector('[data-testid="composer-repo-path"]');
+            const modelTrigger = form?.querySelector('[data-testid="model-switch-trigger"]');
             const edgeFooter = pane?.querySelector('[data-testid="pane-edge-footer"]');
             const statusbar = pane?.querySelector('[data-testid="statusbar"]');
             const footerBottom = footer?.getBoundingClientRect().bottom ?? null;
+            const visible = (element) => Boolean(element?.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }));
             const rect = (element) => {
               if (!element) return null;
               const box = element.getBoundingClientRect();
@@ -415,19 +466,34 @@ async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported)
               paneBottom: pane?.getBoundingClientRect().bottom ?? null,
               cards: cards.length, footerBottom,
               lastBottom, gap: lastBottom === null || footerBottom === null ? null : footerBottom - lastBottom,
+              totalFooterHeight: (footer?.getBoundingClientRect().height ?? 0) + (edgeFooter?.getBoundingClientRect().height ?? 0),
+              editorMinLines: textbox?.style.minHeight ?? null,
+              coverLayout: matchMedia('(min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4)').matches,
               paddingBottom: footer ? Number.parseFloat(getComputedStyle(footer).paddingBottom) : null,
+              edgeFooterCount: pane?.querySelectorAll('[data-testid="pane-edge-footer"]').length ?? 0,
               edgeFooterBottom: edgeFooter?.getBoundingClientRect().bottom ?? null,
               statusbarDisplay: statusbar ? getComputedStyle(statusbar).display : null,
               statusPaddingBottom: statusbar ? Number.parseFloat(getComputedStyle(statusbar).paddingBottom) : null,
               tapMin: statusbar ? Number.parseFloat(getComputedStyle(statusbar).getPropertyValue('--tap-min')) || 44 : null,
               statusbar: rect(statusbar),
+              attachVisible: visible(attach),
+              submitVisible: visible(submit),
+              stopVisible: visible(stop),
+              rowChipCount: rowChips.filter((chip) => visible(chip)).length,
+              modelTrigger: modelTrigger
+                ? {
+                    visible: visible(modelTrigger),
+                    clientWidth: modelTrigger.clientWidth,
+                    scrollWidth: modelTrigger.scrollWidth,
+                  }
+                : null,
               pathBox: rect(path),
               statusChips: statusbar
                 ? [...statusbar.querySelectorAll('[data-activity-tab]')].map((element) => rect(element))
                 : [],
               metadataCount: pane?.querySelectorAll('[data-testid="composer-repo-location"]').length ?? 0,
-              metadataVisible: metadata?.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) ?? false,
-              pathVisible: path?.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) ?? false,
+              metadataVisible: visible(metadata),
+              pathVisible: visible(path),
               path: path?.getAttribute('title') ?? null,
               metadataInEdgeFooter: Boolean(metadata?.closest('[data-testid="pane-edge-footer"]')),
             };
@@ -459,23 +525,50 @@ function assertComposerFooter(measurement, width) {
     failures.push(`safe-area emulation=${measurement.actualSafeArea}px, expected ${measurement.safeArea}px`);
   }
   if (measurement.cards !== 1) failures.push(`visible composer cards=${measurement.cards}, expected 1`);
-  // While the composer is editing the phone status bar hides, so the dock is
-  // the pane's bottom edge again and carries the safe-area clearance itself.
-  if (mobile && measurement.focus === "editor") {
-    if (measurement.statusbarDisplay !== "none")
-      failures.push(`phone status bar is still visible with the composer focused (${measurement.statusbarDisplay})`);
+  // The phone pane keeps one bottom surface: no edge footer at all, so the
+  // composer's own dock is the pane's bottom edge and owns the safe-area
+  // band in every focus state - resting, editing, or a control focused.
+  if (mobile) {
+    if (measurement.edgeFooterCount !== 0) failures.push("phone pane still renders an edge footer");
+    if (measurement.statusbar !== null) failures.push("phone pane still renders a status bar");
+    if (measurement.metadataCount !== 0 || measurement.metadataVisible)
+      failures.push("phone renders working-path metadata; it belongs to the desktop footer");
     if (
       measurement.paneBottom === null ||
       measurement.footerBottom === null ||
       !nearlyEqual(measurement.footerBottom, measurement.paneBottom)
     ) {
-      failures.push(
-        `focused composer dock bottom=${measurement.footerBottom}px, pane bottom=${measurement.paneBottom}px`,
-      );
+      failures.push(`composer dock bottom=${measurement.footerBottom}px, pane bottom=${measurement.paneBottom}px`);
     }
     if (measurement.paddingBottom === null || !nearlyEqual(measurement.paddingBottom, requiredClearance)) {
       failures.push(
-        `focused composer dock padding=${measurement.paddingBottom}px, expected safe-area clearance=${requiredClearance}px`,
+        `composer dock padding=${measurement.paddingBottom}px, expected safe-area clearance=${requiredClearance}px`,
+      );
+    }
+    // The resting row sheds attach and the activity chips but never its
+    // actions control - Send, or Stop while the harness session runs a turn;
+    // editor engagement brings the full row back, and a composer button's
+    // own focus must not expand the row out from under it.
+    if (!measurement.submitVisible && !measurement.stopVisible)
+      failures.push("phone resting row lost its Send/Stop actions control");
+    if (measurement.focus === "editor") {
+      if (!measurement.attachVisible) failures.push("focused editor did not bring the full row back (attach hidden)");
+      if (measurement.rowChipCount === 0) failures.push("focused editor did not bring the activity chips back");
+      // The model picker must stay a real control in the engaged row at
+      // every width: the status chrome's basis (its compact rung) keeps the
+      // row honest beside the chips, so the trigger never renders clipped
+      // or collapsed to nothing.
+      const model = measurement.modelTrigger;
+      if (model === null || !model.visible || model.clientWidth <= 1) {
+        failures.push(`engaged row lost its model picker (${JSON.stringify(model)})`);
+      } else if (model.clientWidth + 1 < model.scrollWidth) {
+        failures.push(
+          `model picker clipped to ${model.clientWidth}px of ${model.scrollWidth}px beside the row's other content`,
+        );
+      }
+    } else if (measurement.attachVisible || measurement.rowChipCount > 0) {
+      failures.push(
+        `phone row must shed attach and chips while resting (${measurement.focus} focus, attach=${measurement.attachVisible}, chips=${measurement.rowChipCount})`,
       );
     }
     return failures;
@@ -488,58 +581,189 @@ function assertComposerFooter(measurement, width) {
     !measurement.metadataInEdgeFooter ||
     measurement.path !== "/Users/jesse/prime-radiant/toil-suite/evener"
   ) {
-    failures.push(`${mobile ? "phone" : "desktop"} working-path metadata missing from the visible edge footer`);
+    failures.push("desktop working-path metadata missing from the visible edge footer");
   }
-  if (mobile) {
-    // Focus on a composer control is not editing: pressing Attach without a
-    // focused editor must not hide the bar and move the dock under the click.
-    if (measurement.focus === "button" && measurement.statusbarDisplay === "none")
-      failures.push("phone status bar hid for a composer button focus without editing");
-    // The phone keeps the working-directory line and the activity chips in
-    // the pane's flush edge footer now, so the composer dock no longer owns
-    // the pane's bottom edge or its safe-area band. The dock keeps its normal
-    // 12px padding; the status bar below it carries the inset.
-    if (
-      measurement.paneBottom === null ||
-      measurement.edgeFooterBottom === null ||
-      !nearlyEqual(measurement.edgeFooterBottom, measurement.paneBottom)
-    ) {
-      failures.push(`edge footer bottom=${measurement.edgeFooterBottom}px, pane bottom=${measurement.paneBottom}px`);
+  if (!nearlyEqual(measurement.paddingBottom, 12) || measurement.gap === null || !nearlyEqual(measurement.gap, 12)) {
+    failures.push(
+      `desktop bottom padding/gap=${measurement.paddingBottom}/${measurement.gap}px, expected unchanged 12px`,
+    );
+  }
+  return failures;
+}
+
+async function measureComposerAsk(cdpEndpoint, url, width) {
+  const page = await connectOnlyPage(cdpEndpoint);
+  const { send } = page;
+  const mobile = width < 900;
+  try {
+    await applyViewport(send, { width, height: 900, mobile });
+    await navigateTo(page, url, BOOT);
+    await assertGuardOrigin(send, new URL(url).host);
+    await evaluate(send, "window.settled");
+    await waitForFonts(send);
+    return JSON.parse(
+      await evaluate(
+        send,
+        `(() => {
+          const pane = document.getElementById('oh-pane');
+          const chrome = pane?.querySelector('[data-testid="session-chrome-inline"]');
+          const model = pane?.querySelector('[data-testid="model-switch-trigger"]');
+          const askCount = pane?.querySelector('[data-testid="ask-dock-count"]');
+          return JSON.stringify({
+            mobile: matchMedia('(max-width: 899px)').matches,
+            askRendered: Boolean(askCount),
+            chromeHeight: chrome ? chrome.getBoundingClientRect().height : null,
+            chromeVisible: chrome ? chrome.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) : false,
+            modelVisible: model ? model.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) : false,
+          });
+        })()`,
+      ),
+    );
+  } finally {
+    await clearViewportOverride(send);
+    page.close();
+  }
+}
+
+function assertComposerAsk(measurement, width) {
+  const failures = [];
+  const mobile = width < 900;
+  if (measurement.mobile !== mobile) failures.push("realized ask viewport mismatch");
+  if (!measurement.askRendered) failures.push("pending ask never rendered its dock");
+  if (!measurement.chromeVisible || !measurement.modelVisible) {
+    failures.push(`pending-ask state lost its chrome (${JSON.stringify(measurement)})`);
+  }
+  // The pending-question mount stands alone in the composer's vertical
+  // column, so its chrome must keep an automatic basis: a width-oriented
+  // rung there supplies a height basis instead and inflates the chrome far
+  // past its natural control height, spending the transcript's space.
+  if (measurement.chromeHeight === null || measurement.chromeHeight > 60) {
+    failures.push(`pending-ask chrome height=${measurement.chromeHeight}px, expected the control row's own height`);
+  }
+  return failures;
+}
+
+async function measureDuoCompactStates(cdpEndpoint, url, profileDir) {
+  const page = await connectOnlyPage(cdpEndpoint);
+  const { send } = page;
+  let phase = "viewport";
+  try {
+    await applyViewport(send, { width: 466, height: 678, mobile: true, deviceScaleFactor: 3 });
+    await send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+    await send("Emulation.setFocusEmulationEnabled", { enabled: true });
+    phase = "navigate";
+    await navigateTo(page, url, BOOT);
+    await assertGuardOrigin(send, new URL(url).host);
+    phase = "settled";
+    await evaluate(send, "window.settled");
+    phase = "fonts";
+    await waitForFonts(send);
+    const viewport = diagnoseRealizedViewport({ width: 466, height: 678 }, await realizedViewport(send));
+    if (viewport) throw new Error(viewport);
+    phase = "focus";
+    const focused = JSON.parse(
+      await evaluate(send, "(async () => JSON.stringify(await window.measureDuoCompactStates('focus')))()"),
+    );
+    await typeComposerDraft(send, "A saved Duo draft");
+    await evaluate(send, "document.activeElement?.blur()");
+    phase = "draft";
+    const draft = JSON.parse(await evaluate(send, "JSON.stringify(window.measureDuoDraftState())"));
+    phase = "file-input";
+    const tree = await send("DOM.getDocument");
+    const input = await send("DOM.querySelector", {
+      nodeId: tree.result.root.nodeId,
+      selector: '#oh-pane input[type="file"]',
+    });
+    if (!input.result.nodeId) throw new Error("real composer file input is missing");
+    const upload = path.join(profileDir, "duo-pixel.png");
+    writeFileSync(
+      upload,
+      Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+        "base64",
+      ),
+    );
+    await send("DOM.setFileInputFiles", { nodeId: input.result.nodeId, files: [upload] });
+    phase = "rest-states";
+    const rest = JSON.parse(
+      await evaluate(send, "(async () => JSON.stringify(await window.measureDuoCompactStates('rest')))()"),
+    );
+    return { states: [...focused.states, draft, ...rest.states], approvalResolved: rest.approvalResolved };
+  } catch (error) {
+    const pageErrors = await evaluate(send, "JSON.stringify(window.__panelGuardErrors ?? [])").catch(() => "[]");
+    throw new Error(`Duo ${phase}: ${error?.stack ?? error}\npage errors: ${pageErrors}`);
+  } finally {
+    await send("Emulation.setTouchEmulationEnabled", { enabled: false }).catch(() => {});
+    await clearViewportOverride(send);
+    page.close();
+  }
+}
+
+function assertDuoCompactStates(result) {
+  const failures = [];
+  const states = new Map(result.states.map((state) => [state.state, state]));
+  for (const name of ["empty", "focused", "draft", "attachment", "question", "approval"]) {
+    if (!states.has(name)) failures.push(`missing real ${name} state`);
+  }
+  const empty = states.get("empty");
+  const focused = states.get("focused");
+  const draft = states.get("draft");
+  const attachment = states.get("attachment");
+  const question = states.get("question");
+  const approval = states.get("approval");
+  if (empty?.editorMinLines !== "1lh") failures.push(`empty editor=${empty?.editorMinLines}, expected one line`);
+  if (empty && (empty.cardGap !== "0px" || empty.cardPaddingBlock !== "0px 0px")) {
+    failures.push(`empty card retains gap/padding ${empty.cardGap}/${empty.cardPaddingBlock}`);
+  }
+  if (focused && focused.footerPaddingBottom !== "0px") {
+    failures.push(
+      `focused footer clearance=${focused.footerPaddingBottom}, expected keyboard-adjusted safe-area clearance`,
+    );
+  }
+  if (empty && empty.totalFooterHeight > 258.94) {
+    failures.push(
+      `empty/live footer=${empty.totalFooterHeight}px, exceeds the 258.94px budget (306.94px baseline minus 48px)`,
+    );
+  }
+  if (!focused?.editing || focused.editorMinLines !== "2lh") failures.push("focus did not engage the two-line editor");
+  if (focused && (focused.cardGap !== "4px" || focused.cardPaddingBlock !== "4px 4px")) {
+    failures.push(`focused card did not restore ordinary spacing: ${focused.cardGap}/${focused.cardPaddingBlock}`);
+  }
+  if (draft?.editorMinLines !== "2lh" || draft.editing)
+    failures.push("a blurred draft did not retain its two-line resting state");
+  if (
+    !attachment?.attachment ||
+    attachment.attachment.height < 80 ||
+    attachment.totalFooterHeight <= empty.totalFooterHeight
+  )
+    failures.push("the real staged attachment did not retain its tile and footer space");
+  if (attachment?.attachmentControls.some((control) => control.width < 44 || control.height < 44))
+    failures.push("an attachment control fell below the touch floor");
+  if (!question?.question || !question.questionInTranscript || !question.cardHidden)
+    failures.push("the real question dock did not take over the transcript's answering surface");
+  if (!approval?.approval || approval.approval.height <= 0) failures.push("the real approval card did not mount");
+  if (!result.approvalResolved) failures.push("Allow did not resolve the real approval card");
+  for (const state of result.states) {
+    // The phone's resting row sheds the activity chips (the collapsed-row
+    // contract): only the empty, unfocused card mounts none. Every other
+    // state - engaged, drafting, attached, ask-pending, approval - keeps
+    // its four counters, the ask states inside their hidden card.
+    const expectedCount = state.state === "empty" ? 0 : 4;
+    if (state.counters.length !== expectedCount)
+      failures.push(`${state.state}: expected ${expectedCount} mounted activity counters`);
+    for (const counter of state.counters) {
+      const hidden = state.editing || state.cardHidden;
+      if (!hidden && (counter.width < 44 || counter.height < 44))
+        failures.push(`${state.state}: activity target fell below 44px for ${counter.tab}`);
+      if (!counter.accessibleName?.includes(" of "))
+        failures.push(`${state.state}: activity target or full accessible fraction missing for ${counter.tab}`);
     }
-    if (measurement.gap === null || !nearlyEqual(measurement.gap, 12)) {
-      failures.push(`card-to-footer gap=${measurement.gap}px, expected 12px above the edge footer`);
+    for (const control of state.controls) {
+      if (control.touchTarget && control.height > 0 && (control.width < 44 || control.height < 44))
+        failures.push(`${state.state}: control ${control.name} fell below 44px`);
     }
-    if (measurement.statusPaddingBottom === null || !nearlyEqual(measurement.statusPaddingBottom, requiredClearance)) {
-      failures.push(
-        `status bar bottom padding=${measurement.statusPaddingBottom}px, expected safe-area clearance=${requiredClearance}px`,
-      );
-    }
-    // One row: the path sits beside the chips, not above them, and the bar is
-    // no taller than a single touch-floor row plus the safe-area band.
-    if (measurement.statusbar === null || measurement.tapMin === null || measurement.pathBox === null) {
-      failures.push("phone status bar layout is missing");
-    } else {
-      if (measurement.statusbar.height > measurement.tapMin + requiredClearance + 3) {
-        failures.push(
-          `phone status bar height=${measurement.statusbar.height}px, expected one ${measurement.tapMin}px row plus ${requiredClearance}px clearance`,
-        );
-      }
-      const firstChip = measurement.statusChips[0];
-      if (
-        firstChip &&
-        !(measurement.pathBox.bottom > firstChip.top + 1 && measurement.pathBox.top < firstChip.bottom - 1)
-      ) {
-        failures.push(
-          `phone status bar path and counts do not share a row (path ${measurement.pathBox.top}..${measurement.pathBox.bottom}, chip ${firstChip.top}..${firstChip.bottom})`,
-        );
-      }
-    }
-  } else {
-    if (!nearlyEqual(measurement.paddingBottom, 12) || measurement.gap === null || !nearlyEqual(measurement.gap, 12)) {
-      failures.push(
-        `desktop bottom padding/gap=${measurement.paddingBottom}/${measurement.gap}px, expected unchanged 12px`,
-      );
-    }
+    if (state.horizontalOverflow > 0.5)
+      failures.push(`${state.state}: horizontal overflow=${state.horizontalOverflow}px`);
   }
   return failures;
 }
@@ -1358,11 +1582,31 @@ function assertSettings(result, width) {
   return failures;
 }
 
+async function runDuoCompactGuard(cdpEndpoint, vitePort, profileDir, verbose = false) {
+  const result = await measureDuoCompactStates(
+    cdpEndpoint,
+    `http://127.0.0.1:${vitePort}/overflowharness.html?w=466&h=678`,
+    profileDir,
+  );
+  const failures = assertDuoCompactStates(result);
+  if (verbose) console.log(JSON.stringify(result, null, 2));
+  if (failures.length > 0) {
+    console.log(`466px Duo compact states ... FAIL - ${failures.join("; ")}`);
+    return false;
+  }
+  const empty = result.states.find((state) => state.state === "empty");
+  console.log(
+    `466px Duo compact states ... PASS - empty footer=${empty.totalFooterHeight}px, real state transitions preserved`,
+  );
+  return true;
+}
+
 async function main() {
   const footerOnly = process.argv.includes("--footer-only");
   const composerOnly = process.argv.includes("--composer-only");
   const composerDelayOnly = process.argv.includes("--composer-delay-only");
-  if ([footerOnly, composerOnly, composerDelayOnly].filter(Boolean).length > 1)
+  const duoOnly = process.argv.includes("--duo-only");
+  if ([footerOnly, composerOnly, composerDelayOnly, duoOnly].filter(Boolean).length > 1)
     throw new Error("choose one focused mode");
   const widths = process.argv.slice(2).map(Number).filter(Boolean);
   const sweep = widths.length > 0 ? widths : DEFAULT_WIDTHS;
@@ -1402,6 +1646,8 @@ async function main() {
     }
     cdpEndpoint = await waitForBrowserReady(guard);
 
+    if (duoOnly) return (await runDuoCompactGuard(cdpEndpoint, vitePort, guard.profileDir, true)) ? 0 : 1;
+
     const delayedComposer = async () => {
       // One adversarial transport case per input type, not another theme matrix.
       for (const width of [390, 1400]) {
@@ -1427,6 +1673,7 @@ async function main() {
     }
 
     if (!composerOnly) {
+      if (!(await runDuoCompactGuard(cdpEndpoint, vitePort, guard.profileDir))) failed++;
       const protocolResponse = await fetch(devtoolsHttpURL(cdpEndpoint, "/json/protocol"));
       if (!protocolResponse.ok) throw new Error(`browser protocol HTTP ${protocolResponse.status}`);
       const protocol = await protocolResponse.json();
@@ -1438,7 +1685,7 @@ async function main() {
         console.log(
           "composer footer ... LIMITATION - Chrome has no real safe-area override, nonzero safe-area cases skipped",
         );
-      for (const width of [...new Set([320, 390, 430, 899, 900, 1400, ...sweep])]) {
+      for (const width of [...new Set([320, 390, 430, 460, 540, 760, 899, 900, 1400, ...sweep])]) {
         const measurements = await measureComposerFooter(
           cdpEndpoint,
           `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}`,
@@ -1453,9 +1700,25 @@ async function main() {
             console.log(`${label} ... FAIL - ${failures.join("; ")}; ${JSON.stringify(measurement)}`);
           } else {
             console.log(
-              `${label} ... PASS - gap=${measurement.gap}px, metadata visible=${measurement.metadataVisible}`,
+              `${label} ... PASS - gap=${measurement.gap}px, total footer=${measurement.totalFooterHeight}px, editor=${measurement.editorMinLines}, metadata visible=${measurement.metadataVisible}`,
             );
           }
+        }
+      }
+      for (const width of [390, 700]) {
+        const askMeasurement = await measureComposerAsk(
+          cdpEndpoint,
+          `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}&ask=1`,
+          width,
+        );
+        const askFailures = assertComposerAsk(askMeasurement, width);
+        if (askFailures.length > 0) {
+          failed++;
+          console.log(`${width}px pending-ask composer ... FAIL - ${askFailures.join("; ")}`);
+        } else {
+          console.log(
+            `${width}px pending-ask composer ... PASS - ask dock rendered, standalone chrome ${askMeasurement.chromeHeight}px tall`,
+          );
         }
       }
       if (footerOnly) return failed > 0 ? 1 : 0;
@@ -1764,7 +2027,8 @@ async function main() {
         widthFailed = true;
         console.log(
           `${width}px ... FAIL - footer status facts are internally clipped: ` +
-            `${result.footer.statusScrollWidth}px in ${result.footer.statusClientWidth}px`,
+            `${result.footer.statusScrollWidth}px in ${result.footer.statusClientWidth}px: ` +
+            JSON.stringify(result.footer.geometry),
         );
       }
       if (result.footer.modelClientWidth <= 0) {

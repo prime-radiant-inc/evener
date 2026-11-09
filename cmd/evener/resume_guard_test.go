@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/testfs"
 	"primeradiant.com/evener/llm"
 )
 
@@ -48,7 +49,7 @@ func TestServeResumeOfDelegateIsRefused(t *testing.T) {
 	deps.seedMarketplaces = func(context.Context) error { return nil }
 	deps.restoreSession = failRestore(t)
 
-	stateDir := resolvedTempDir(t)
+	stateDir := testfs.CanonicalTempDir(t)
 	id := identifier.MustNewSessionID()
 	saveMeta(t, stateDir, schema.SessionMeta{
 		ID: id, ProfileID: "openai", Model: "gpt-test",
@@ -73,7 +74,7 @@ func TestServeResumeOfNestedDelegateIsRefused(t *testing.T) {
 	deps.seedMarketplaces = func(context.Context) error { return nil }
 	deps.restoreSession = failRestore(t)
 
-	stateDir := resolvedTempDir(t)
+	stateDir := testfs.CanonicalTempDir(t)
 	root, mid, leaf := identifier.MustNewSessionID(), identifier.MustNewSessionID(), identifier.MustNewSessionID()
 	saveMeta(t, stateDir, schema.SessionMeta{ID: root, ProfileID: "openai", Model: "gpt-test"})
 	saveMeta(t, stateDir, schema.SessionMeta{ID: mid, ProfileID: "openai", Model: "gpt-test", IsSubagent: true, ParentSessionID: root})
@@ -92,14 +93,14 @@ func TestServeResumeOfNestedDelegateIsRefused(t *testing.T) {
 // `evener --resume <delegate-id>` restores through the same path and must fail
 // the same way, before the restore is reached.
 func TestRunResumeOfDelegateIsRefused(t *testing.T) {
-	t.Setenv("TMPDIR", resolvedTempDir(t))
+	t.Setenv("TMPDIR", testfs.CanonicalTempDir(t))
 	installRunScriptedProvider(t, &scriptedProvider{name: "openai"})
 	oldEnsure, oldRestore := runEnsureUserConfigDirs, runRestoreSession
 	t.Cleanup(func() { runEnsureUserConfigDirs, runRestoreSession = oldEnsure, oldRestore })
 	runEnsureUserConfigDirs = func() error { return nil }
 	runRestoreSession = failRestore(t)
 
-	stateDir := resolvedTempDir(t)
+	stateDir := testfs.CanonicalTempDir(t)
 	id := identifier.MustNewSessionID()
 	saveMeta(t, stateDir, schema.SessionMeta{
 		ID: id, ProfileID: "openai", Model: "gpt-test",
@@ -151,7 +152,7 @@ func TestServeResumeLastResolvesToResumableRoot(t *testing.T) {
 		return nil, errRestoreReached
 	}
 
-	stateDir := resolvedTempDir(t)
+	stateDir := testfs.CanonicalTempDir(t)
 	root, _ := seedNewerDelegateAndOlderRoot(t, stateDir)
 
 	err := runServeWithDeps([]string{
@@ -169,7 +170,7 @@ func TestServeResumeLastResolvesToResumableRoot(t *testing.T) {
 // TestRunResumeLastResolvesToResumableRoot is the same pin on the default
 // command.
 func TestRunResumeLastResolvesToResumableRoot(t *testing.T) {
-	t.Setenv("TMPDIR", resolvedTempDir(t))
+	t.Setenv("TMPDIR", testfs.CanonicalTempDir(t))
 	installRunScriptedProvider(t, &scriptedProvider{name: "openai"})
 	oldEnsure, oldRestore := runEnsureUserConfigDirs, runRestoreSession
 	t.Cleanup(func() { runEnsureUserConfigDirs, runRestoreSession = oldEnsure, oldRestore })
@@ -180,7 +181,7 @@ func TestRunResumeLastResolvesToResumableRoot(t *testing.T) {
 		return nil, errRestoreReached
 	}
 
-	stateDir := resolvedTempDir(t)
+	stateDir := testfs.CanonicalTempDir(t)
 	root, _ := seedNewerDelegateAndOlderRoot(t, stateDir)
 
 	err := run(context.Background(), runConfig{
@@ -213,7 +214,7 @@ func TestRefuseBareDelegateResumeAllowsRootAndFork(t *testing.T) {
 // TestDelegateRootOwner pins the structured walk: it returns the session id a
 // reader should resume, one hop or many, and "" when it cannot vouch for one.
 func TestDelegateRootOwner(t *testing.T) {
-	stateDir := resolvedTempDir(t)
+	stateDir := testfs.CanonicalTempDir(t)
 	root, mid, leaf := identifier.MustNewSessionID(), identifier.MustNewSessionID(), identifier.MustNewSessionID()
 	saveMeta(t, stateDir, schema.SessionMeta{ID: root})
 	saveMeta(t, stateDir, schema.SessionMeta{ID: mid, IsSubagent: true, ParentSessionID: root})
@@ -247,7 +248,7 @@ func TestDelegateRootOwner(t *testing.T) {
 // ParentSessionID is lineage, not ownership, so the fork itself is the session
 // to resume and walking past it would name the fork's source.
 func TestDelegateRootOwnerStopsAtFork(t *testing.T) {
-	stateDir := resolvedTempDir(t)
+	stateDir := testfs.CanonicalTempDir(t)
 	source, fork, child := identifier.MustNewSessionID(), identifier.MustNewSessionID(), identifier.MustNewSessionID()
 	saveMeta(t, stateDir, schema.SessionMeta{ID: source})
 	saveMeta(t, stateDir, schema.SessionMeta{ID: fork, ParentSessionID: source}) // a fork: ParentSessionID set, IsSubagent false

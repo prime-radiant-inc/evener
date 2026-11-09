@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import type { TextInput } from "react-native";
+import type { TextInputInstance } from "react-native";
 import type { HubProfile, HubUpdate } from "./connection";
 import {
 	FormError,
@@ -34,7 +34,7 @@ export function HubEditor({
 	const [saving, setSaving] = useState(false);
 	const pending = useRef(false);
 	const [error, setError] = useFormError();
-	const tokenInput = useRef<TextInput>(null);
+	const tokenInput = useRef<TextInputInstance>(null);
 	const page = useErrorInView(error);
 	async function submit() {
 		// The return key reaches here too, so it holds a blank name as Save does.

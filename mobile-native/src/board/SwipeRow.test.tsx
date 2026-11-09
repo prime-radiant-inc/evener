@@ -92,6 +92,20 @@ it("a drag right past half the row that came back short before release closes wi
 	expect(swipeableCalls.closes).toBe(1);
 });
 
+it("reads the release position when the last update stopped short of a full swipe", () => {
+	const { leading, tracker, touchStart, open } = mount();
+	touchStart(200);
+	expect(tracker?.handlers.onDeactivate).toBeTypeOf("function");
+	act(() => {
+		tracker?.handlers.onBegin?.();
+		tracker?.handlers.onUpdate?.({ translationX: 150 });
+		tracker?.handlers.onDeactivate?.({ translationX: 250, velocityX: 0, canceled: false });
+	});
+	open("right");
+	expect(leading.run).toHaveBeenCalledOnce();
+	expect(swipeableCalls.closes).toBe(1);
+});
+
 it("tracks the finger with a pan that activates as the row's own does and recognizes alongside it", () => {
 	const { swipeable, tracker } = mount();
 	expect(tracker?.config).toMatchObject({
@@ -100,9 +114,9 @@ it("tracks the finger with a pan that activates as the row's own does and recogn
 		hitSlop: { left: -24 },
 		enabled: true,
 	});
-	expect(swipeable.props).toMatchObject({ dragOffsetFromLeftEdge: 10, dragOffsetFromRightEdge: 10 });
+	expect(swipeable.props).toMatchObject({ dragOffsetFromLeft: 10, dragOffsetFromRight: -10 });
 	expect(tracker?.config).not.toHaveProperty("activeOffsetY");
-	expect(swipeable.props.simultaneousWithExternalGesture).toBe(tracker);
+	expect(swipeable.props.simultaneousWith).toBe(tracker);
 });
 
 it("keeps a full swipe decided at release when a new touch lands while the row springs open", () => {
@@ -138,7 +152,7 @@ it("decides at will-open, so a release the tracker reports later never undoes a 
 		tracker?.handlers.onUpdate?.({ translationX: 250 });
 	});
 	act(() => swipeable.props.onSwipeableWillOpen("right"));
-	act(() => tracker?.handlers.onEnd?.({ translationX: 150, velocityX: 0 }, true));
+	act(() => tracker?.handlers.onDeactivate?.({ translationX: 150, velocityX: 0, canceled: false }));
 	act(() => swipeable.props.onSwipeableOpen("right"));
 	expect(leading.run).toHaveBeenCalledOnce();
 	expect(swipeableCalls.closes).toBe(1);
@@ -185,8 +199,7 @@ it("rebuilds the release tracker when the row's inset changes", () => {
 		</SwipeRow>,
 	);
 	expect(
-		(tree.root.findByType("ReanimatedSwipeable" as never).props.simultaneousWithExternalGesture as PanGestureMock)
-			.config.hitSlop,
+		(tree.root.findByType("ReanimatedSwipeable" as never).props.simultaneousWith as PanGestureMock).config.hitSlop,
 	).toEqual({ left: -8 });
 	act(() =>
 		tree.update(
@@ -197,7 +210,7 @@ it("rebuilds the release tracker when the row's inset changes", () => {
 	);
 	const swipeable = tree.root.findByType("ReanimatedSwipeable" as never);
 	expect(swipeable.props.hitSlop).toBeUndefined();
-	expect((swipeable.props.simultaneousWithExternalGesture as PanGestureMock).config.hitSlop).toBeUndefined();
+	expect((swipeable.props.simultaneousWith as PanGestureMock).config.hitSlop).toBeUndefined();
 });
 
 it("a revealed action acts and closes the row", () => {
@@ -286,7 +299,7 @@ describe("a destructive swipe (spec 8.5, 8.8)", () => {
 	it("passes its finger tracker to the swipeable to recognize alongside it", () => {
 		const { swipeable, tracker } = mountDestructive();
 		expect(tracker).toBeDefined();
-		expect(swipeable.props.simultaneousWithExternalGesture).toBe(tracker);
+		expect(swipeable.props.simultaneousWith).toBe(tracker);
 	});
 
 	it("never acts on a swipe that began in the left edge band", () => {

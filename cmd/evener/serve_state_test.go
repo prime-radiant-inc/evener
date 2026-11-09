@@ -22,6 +22,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener/internal/rvreg"
+	"primeradiant.com/evener/internal/testfs"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/server"
 )
@@ -856,9 +857,9 @@ func newClearServeDeps(t *testing.T) (serveDeps, *clearTestState, []string) {
 	args := []string{
 		"--model", "openai/gpt-test",
 		"--addr", "127.0.0.1:0",
-		"--dir", resolvedTempDir(t),
-		"--state-dir", resolvedTempDir(t),
-		"--run-dir", resolvedTempDir(t),
+		"--dir", testfs.CanonicalTempDir(t),
+		"--state-dir", testfs.CanonicalTempDir(t),
+		"--run-dir", testfs.CanonicalTempDir(t),
 	}
 	return deps, state, args
 }

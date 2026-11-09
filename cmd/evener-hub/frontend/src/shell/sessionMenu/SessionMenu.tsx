@@ -14,9 +14,11 @@
 // Turn verbs (Stop/Steer) are the one composer-owned exception: Stop is
 // available here at every width, including while a draft occupies its inline
 // slot. Steer moves here below the composer's phone-width boundary rather
-// than wrapping below the status row. Only the composer's chrome mount passes
-// them (SessionChrome gates them to its composer placement), so rail rows
-// and menu-only mounts never see them. They lead the menu in their own
+// than wrapping below the status row. Only the composer's row mounts pass
+// them (the engaged inline chrome and the phone's collapsed-row menu, which
+// is the phone's only session menu while the composer rests; SessionChrome
+// gates the footer and rail mounts out), so rail rows and the notLoaded
+// menu mount never see them. They lead the menu in their own
 // group - a turn running away on a phone is the most time-critical thing
 // this menu can act on.
 

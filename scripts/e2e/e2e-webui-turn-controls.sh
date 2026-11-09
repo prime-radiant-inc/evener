@@ -131,6 +131,7 @@ fi
 cd "$repo_root"
 e2e_build_binary fakellm "$run/fakellm" "$repo_root/test/e2e/fakellm/cmd"
 e2e_build_binary evener "$run/evener" "$repo_root/cmd/evener"
+e2e_build_binary providers-toml "$run/providers-toml" "$repo_root/test/e2e/providers/cmd"
 
 e2e_isolate_home "$run"
 
@@ -156,19 +157,15 @@ echo "$fakellm_pid" >"$run/fakellm.pid"
 e2e_wait_for_port "$run/fakellm.log" "$fakellm_pid" fakellm
 fakellm_port="$e2e_port"
 
-# Current registry schema (§14.1 of docs/superpowers/specs/2026-08-28-provider-registry-design.md):
-# `base` inherits the curated openai-compatible row, and session_affinity_headers
-# is the registry spelling of the key fakellm reads to name each round's session.
-cat >"$HOME/.config/evener/providers.toml" <<EOF
-schema = 2
-default = "fake"
-
-[providers.fake]
-base = "openai-compatible"
-base_url = "http://127.0.0.1:$fakellm_port/v1"
-api_key = "fakellm-not-a-secret"
-session_affinity_headers = true
-EOF
+# One writer spells the registry schema (#4445). `base` inherits the curated
+# openai-compatible row, and session_affinity_headers is the registry spelling
+# of the key fakellm reads to name each round's session.
+"$run/providers-toml" \
+	--out "$HOME/.config/evener/providers.toml" \
+	--default fake \
+	--base-url "http://127.0.0.1:$fakellm_port/v1" \
+	--api-key fakellm-not-a-secret \
+	--session-affinity-headers
 
 # e2e_isolate_home unsets the operator's provider paths; name the isolated
 # file so the hub cannot fall back to anything else.

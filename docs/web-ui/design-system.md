@@ -110,24 +110,34 @@ losing the conversation that made the evidence relevant.
   but separates reading from scanning. Shared size and width preferences remain available.
   Phones reflow speaker rows, controls and evidence rather than shrinking a desktop page;
   wide evidence scrolls within its surface instead of widening the page or shrinking targets.
-- **Keep session status inside its pane.** Every visible session pane ends with its own
+- **Keep session status inside its pane.** Every visible desktop session pane ends
+  with its own
   flush status footer, never one strip spanning sibling panes. The footer leads with that
   session's working directory and repository/branch, then its Agents, Jobs, Watches and Tasks
   counts. A count click focuses the owning pane before opening the matching Overview category.
   The shared sidebar retains its scope breadcrumb and an accessible, visually hidden
   “Overview kind” label. About is the fifth category and has no footer counter.
-  Phones keep the same footer at the pane's bottom edge, where it is the touch surface,
-  and keep it on one line: the working-directory line takes the flexible width and the
-  chips sit at its end at the 44px tap floor. A phone chip shows its glyph, its name when
-  the width can carry it, and a single active count (settled for Tasks); the full
-  active/total fraction stays in its accessible name, tooltip and the Overview. The path
-  truncates before a target shrinks, and the bar never wraps to a second row. The
-  caption-height path shows the branch unlinked, below the touch floor. The bar
-  owns the home-indicator band, so the composer dock above it gives that inset up; the
-  inset yields when the on-screen keyboard covers that area. The bar hides while the
-  composer is editing and returns when focus or a press leaves the composer; the composer
-  dock is then the pane's bottom edge and takes the band back, including when focus
-  outlives the keyboard.
+  Phones keep one bottom surface: the pane renders no separate footer strip below the
+  composer, so the composer's own control row carries the session's activity: Attach,
+  the model and reasoning chrome line, the activity chips, and Send or Stop. The
+  composer dock owns the home-indicator band; the inset yields when the on-screen
+  keyboard covers that area. The working-directory strip stays desktop-only: a phone
+  reads the session's working directory and branch through the session menu's Overview
+  (About) and never stacks a second strip below the composer. A phone chip shows its
+  glyph, its name when the width can carry it, and a single active count (settled for
+  Tasks); the full active/total fraction stays in its accessible name, tooltip and the
+  Overview. While the card rests, an empty unfocused editor with no send in flight,
+  the row sheds Attach and the chips and keeps the session menu and Send, so session
+  actions stay reachable without focusing first; focus, a draft or a send brings the
+  full row back, and a running turn keeps its Stop through the actions that never
+  shed. The exited follow-up keeps its full row at rest: it is the one place on a
+  phone the model picker is directly reachable without engaging the editor. At the
+  466px Duo cover width, the same control row uses tighter framing, and the existing
+  composer shrinks only its empty, unfocused field to one line; focus, drafts,
+  attachments, and question/approval docks keep their ordinary writing and response
+  space. The four activity counters stay in the app with their existing Overview
+  links. The OS-owned Duo system rail is not a public customization surface, so no
+  counters move there.
 - **Keep session inspection together.** Both session action menus offer Overview, retaining
   the intended session's category choice. `/status` selects About without toggling a
   standalone Details pane. About reuses the shared Details renderer and its accounting.
@@ -397,11 +407,12 @@ uses the package's actual exported normal CSS and `wght-italic.css` for real ita
 are served locally by Vite/the built frontend, with package Unicode-range subsetting.
 
 The `--font-size-caption/ui/body/pane-title/page-title/display` ramp is
-12/13/15/20/26/34px. **`--font-size-prose: calc(18px * var(--font-scale))` is new**, declared on
+12/13/15/20/26/34px. **`--font-size-prose: calc(16px * var(--font-scale))`**, declared on
 `body` alongside that ramp so S/M/L/XL (0.9/1/1.1/1.25) scale reading text too. Phone body remains
 16px; editable phone controls use `max(16px, var(--font-size-body))`, even under S. The serif
-reading step is 18px at M in both viewports. Weights are 400/500/600; leading body/ui/title is
-1.6/1.4/1.25; display tracking remains −0.02em.
+reading step is 16px at M in both viewports. Weights are 400/500/600; leading body/ui/title is
+1.6/1.4/1.25. Reading surfaces use `--line-height-prose`, declared on `body` beside the size ramp so the
+comfortable-density preference scales its default 1.45 leading, independently of editor and general UI geometry. Display tracking remains −0.02em.
 
 Markdown keeps the prose face but composes with its host's size (the root falls back to `1em`);
 reading surfaces pin `--prose-font-size: var(--font-size-prose)` on the host that owns their
@@ -1112,7 +1123,9 @@ whole height. Measured before this, agent prose got 260px of a 375px screen,
 
 The sessions drawer renders the Rail flush inside the Sheet body (Sheet's
 `bodyClassName`, §3): no inner surface box, no inner radius, because the sheet
-already frames it.
+already frames it. Selecting a session closes the drawer, including the
+session already being read: the tap chose a reader, and the list must not stay
+over it.
 
 
 ## Source Serif 4 license notice

@@ -1,7 +1,7 @@
 export default function assert(measurements) {
   const failures = [];
   for (const m of measurements) {
-    const id = `${m.theme}/${m.scale}/${m.width}`;
+    const id = `${m.theme}/${m.scale}/${m.density}/${m.width}`;
     if (m.outside.length || m.overflow > 1)
       failures.push(`${id}: overflow ${m.overflow}, outside ${JSON.stringify(m.outside)}`);
     if (m.toolCount < 8 || m.openControls.length !== 6) failures.push(`${id}: incomplete real fixture`);
@@ -16,8 +16,13 @@ export default function assert(measurements) {
     if (!m.collapsedStatusVisible) failures.push(`${id}: collapsed status hidden`);
     if (![m.userFont, m.agentFont, m.quoteFont].every((f) => f?.includes("Source Serif 4")))
       failures.push(`${id}: prose not serif ${JSON.stringify(m)}`);
-    if (m.userSize !== (m.scale === "xl" ? "22.5px" : "18px"))
+    if (m.userSize !== (m.scale === "xl" ? "20px" : "16px"))
       failures.push(`${id}: reading preference did not scale: ${m.userSize}`);
+    const expectedLineHeight = (m.scale === "xl" ? 29 : 23.2) * (m.density === "comfortable" ? 1.25 : 1);
+    for (const [surface, actual] of [["settled", m.userLineHeight], ["live", m.agentLineHeight]]) {
+      if (Math.abs(Number.parseFloat(actual) - expectedLineHeight) > 0.01)
+        failures.push(`${id}: ${surface} prose leading ${actual}, expected ${expectedLineHeight}px`);
+    }
     if (m.cardBackground !== "rgba(0, 0, 0, 0)") failures.push(`${id}: enclosing collaborator fill`);
   }
   return {

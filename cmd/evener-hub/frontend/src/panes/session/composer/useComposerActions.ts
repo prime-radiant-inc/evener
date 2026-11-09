@@ -21,7 +21,11 @@ import {
   useComposerSubmitting,
   useRecoveryEntries,
 } from "./queue/pendingTurnsStore";
-import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
+import {
+  mergeRecoveryComposerDraft,
+  recoveredCompositionIsEmpty,
+  recoveryComposerDraft,
+} from "./recovery/recoveryDraft";
 import {
   materializeSelectionReferences,
   parseSkillDocument,
@@ -240,6 +244,12 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
       if (entry.recoveryKind !== "rejected") continue;
       if (entry.method === "turn/interrupt" || entry.preserveComposer) continue;
       if (entry.compositionOwnerId !== source.compositionOwnerId) continue;
+      // An empty rejected drain is a notice, not a draft: activating it loads
+      // an empty composer that the persistence effect immediately discards,
+      // so the click only flashes recovery state. The queue strip already
+      // shows the refusal and its reason (lifecycle ruling 2026-11-09, issue
+      // #1436).
+      if (recoveredCompositionIsEmpty(recoveryComposerDraft(entry))) continue;
       if (record === undefined || (entry.intentSequence ?? 0) > (record.intentSequence ?? 0)) record = entry;
     }
     if (!record) return;

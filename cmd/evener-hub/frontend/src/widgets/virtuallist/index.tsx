@@ -117,6 +117,24 @@ export interface VirtualListProps {
    * are keyed) - both transcript consumers already pass one.
    */
   anchorToEnd?: boolean;
+  /**
+   * The entry holding the reader's reading point, as of the last scroll: its
+   * row, identity, place within that row, its own height, and the viewport it
+   * was read in. Content arriving below that entry grows the row without
+   * moving the reader, so compensating it as content above them pushes them
+   * past what they were reading.
+   */
+  readingPoint?: () =>
+    | {
+        row: number;
+        id: string;
+        offset: number;
+        offsetInRow: number;
+        height: number;
+        width: number;
+        viewport: number;
+      }
+    | undefined;
   ref?: Ref<VirtualListHandle>;
 }
 
@@ -194,6 +212,7 @@ export function VirtualList({
   onChange,
   onLayout,
   anchorToEnd,
+  readingPoint,
   ref,
 }: VirtualListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -202,6 +221,25 @@ export function VirtualList({
   const measuredHeightsRef = useRef(new WeakMap<Element, number>());
   const publishOffsetRef = useRef<((offset: number, isScrolling: boolean) => void) | null>(null);
   const backwardMovementRef = useRef(false);
+  const readingPointRef = useRef<
+    | { row: number; id: string; offset: number; offsetInRow: number; height: number; width: number; viewport: number }
+    | undefined
+  >(undefined);
+  const recordedReadingTopRef = useRef<number | null>(null);
+
+  // The reading point is the one the reader had when they last moved. A
+  // measurement that does not move the port leaves it alone, so a late growth
+  // cannot redefine the reader's point by filling the viewport top itself.
+  const recordReadingPoint = (force = false) => {
+    const port = scrollRef.current;
+    if (!port) return;
+    const recorded = readingPointRef.current;
+    const viewportChanged =
+      recorded === undefined || recorded.width !== port.clientWidth || recorded.viewport !== port.clientHeight;
+    if (!force && !viewportChanged && recordedReadingTopRef.current === port.scrollTop) return;
+    recordedReadingTopRef.current = port.scrollTop;
+    readingPointRef.current = readingPoint?.();
+  };
   const pendingMeasurementsRef = useRef<Set<HTMLDivElement> | null>(null);
 
   // Equal-estimate measurements and same-range rectangles do not notify the
@@ -261,7 +299,10 @@ export function VirtualList({
     estimateSize,
     overscan: DEFAULT_OVERSCAN,
     getItemKey,
-    onChange,
+    onChange: (instance, sync) => {
+      recordReadingPoint();
+      onChange?.(instance, sync);
+    },
     ...geometryOptions,
     ...(anchorToEnd
       ? { anchorTo: "end" as const, followOnAppend: true, scrollEndThreshold: END_ANCHOR_THRESHOLD_PX }
@@ -286,6 +327,11 @@ export function VirtualList({
   // Upstream onChange runs before React commits the new sizer and row window.
   // Consumers restoring a measured position also need that committed geometry.
   useLayoutEffect(() => {
+    // Row translations and the viewport commit here, after any upstream
+    // onChange already ran with the pre-commit geometry. A snapshot taken
+    // mid-compensation names a position the reader never held, so replace it
+    // with the committed one.
+    if (hasCommittedGeometry(virtualizer, measuredHeightsRef.current)) recordReadingPoint(true);
     onChange?.(virtualizer, false);
   });
 
@@ -338,6 +384,34 @@ export function VirtualList({
     }
   });
 
+  // Growth that left the reader's own entry exactly where it was inside its row
+  // arrived below their reading line. A reflow (different width or viewport)
+  // has its own rule for where the reading point belongs, and a reader at the
+  // end is following new content, so neither is held here.
+  const keepsReadingEntry = (
+    item: { index: number },
+    instance: Virtualizer<HTMLDivElement, HTMLDivElement>,
+    offset: number,
+  ) => {
+    const port = instance.scrollElement;
+    const recorded = readingPointRef.current;
+    if (!port || !recorded) return false;
+    if (recorded.row !== item.index) return false;
+    if (port.clientWidth !== recorded.width || port.clientHeight !== recorded.viewport) return false;
+    const entry = Array.from(port.querySelectorAll<HTMLElement>("[data-view-anchor-id]")).find(
+      (node) => node.dataset.viewAnchorId === recorded.id,
+    );
+    if (!entry) return false;
+    const viewportTop = port.getBoundingClientRect().top;
+    const rect = entry.getBoundingClientRect();
+    if (Math.abs(rect.top - viewportTop - recorded.offset) > 1) return false;
+    // Growth inside the entry (a diagram above the visible paragraph) keeps the
+    // entry's top and moves the text under the reading line, so only an entry
+    // that kept its own height grew after the reader.
+    if (Math.abs(rect.height - recorded.height) > 1) return false;
+    return offset + recorded.viewport < instance.getTotalSize() - 4;
+  };
+
   // Width changes can remeasure cached rows during a backward gesture.
   // Anchor rows fully above the viewport while retaining the upstream
   // protection against adjustment within a partially visible backward row.
@@ -347,6 +421,7 @@ export function VirtualList({
         // even before the DOM sizer grows enough to accept those writes.
         const offset = instance.scrollOffset ?? instance.scrollElement?.scrollTop ?? 0;
         const backward = instance.scrollDirection === "backward" || backwardMovementRef.current;
+        if (_delta > 0 && keepsReadingEntry(item, instance, offset)) return false;
         return item.start < offset && (!instance.itemSizeCache.has(item.key) || !backward || item.end <= offset);
       }
     : undefined;
