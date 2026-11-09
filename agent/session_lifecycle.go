@@ -1460,10 +1460,12 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		default:
 		}
 
-		// Notifications that arrived during the previous round join this round's
-		// request. Placed after every check that can end the turn before a
-		// request, so an exit on that path leaves them pending for the next wake.
-		if kind == EntryNotification && round > 0 && s.peekNotifications() > 0 {
+		// Notifications that arrived since the opener's drain or the previous
+		// request join this request, including a pause_turn continuation, which
+		// does not advance the round. Placed after every check that can end the
+		// turn before a request, so an exit on that path leaves them pending for
+		// the next wake.
+		if kind == EntryNotification && s.peekNotifications() > 0 {
 			s.injectLaterJobNotifications(ctx)
 		}
 

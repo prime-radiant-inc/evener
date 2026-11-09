@@ -1461,3 +1461,53 @@ func TestNotificationTurnStoppedDuringRoundEndCompactionLeavesLateArrivalPending
 		t.Errorf("job B appears in the transcript %d times, want 1", n)
 	}
 }
+
+// TestNotificationTurnDeliversCompletionDuringPauseTurnContinuation pins that a
+// job finishing during a notification turn's first request, which the provider
+// answers with pause_turn, reaches the continuation request: a pause does not
+// count as a round, so the continuation is still round zero.
+func TestNotificationTurnDeliversCompletionDuringPauseTurnContinuation(t *testing.T) {
+	t.Parallel()
+	const jobA, jobB = "job_opens_paused_turn", "job_finishes_during_pause"
+	var sess *Session
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				enqueueCompletedJobNotification(t, sess, jobB)
+				return llm.Response{
+					Message: llm.Message{
+						Role:    llm.RoleAssistant,
+						Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "searching"}},
+					},
+					Finish: llm.FinishReason{Reason: llm.FinishReasonPauseTurn, Raw: "pause_turn"},
+				}
+			},
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("handled both") },
+		},
+	}
+	sess = newSession(t, withAdapter(adapter), withConfig(SessionConfig{}))
+	enqueueCompletedJobNotification(t, sess, jobA)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	defer cancel()
+	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
+	}
+
+	requests := adapter.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("model requests = %d, want 2 (pause, then its continuation)", len(requests))
+	}
+	if !requestsContain(requests[1:], "<job-notification", fmt.Sprintf(`job_id=%q`, jobB)) {
+		t.Fatal("the continuation request did not carry job B")
+	}
+	for _, id := range []string{jobA, jobB} {
+		if n := notificationDeliveredCount(t, sess.jobManager, id); n != 1 {
+			t.Errorf("job %s recorded delivered %d times, want 1", id, n)
+		}
+		if n := countHistoryNeedle(sess, fmt.Sprintf(`job_id=%q`, id)); n != 1 {
+			t.Errorf("job %s appears in the transcript %d times, want 1", id, n)
+		}
+	}
+}
