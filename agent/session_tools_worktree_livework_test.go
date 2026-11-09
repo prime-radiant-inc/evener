@@ -412,6 +412,105 @@ func TestWorktreeRemove_RunningBlocker_NoDisposeHint(t *testing.T) {
 	}
 }
 
+// TestWorktreeRemove_RetainedIdleSharedDelegate_ForceRetiresIt covers #1610: a
+// lane that hosted the caller's own shared-workspace delegates (the default
+// isolation, no lane of their own) could never be removed. The retained-idle
+// children were reported honestly as blockers, but neither the dispose hint nor
+// remove's force cascade could resolve them, because resolution only knew
+// worktree-isolated delegates. Force now retires exactly those children —
+// owned, retained-idle, shared-workspace, recorded working directory under the
+// lane — and closes their durable resumability before tearing the process down.
+func TestWorktreeRemove_RetainedIdleSharedDelegate_ForceRetiresIt(t *testing.T) {
+	t.Parallel()
+	r := newScriptedLaneRepo(t).wt()
+	res, err := r.create(t, map[string]any{"name": "lane"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	path := res["path"].(string)
+	nested := filepath.Join(path, "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	if _, err := r.exitOp(t); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+
+	child := newSession(t, withDir(nested), withConfig(worktreeTestSessionConfig()))
+	delegateID := seedRetainedSharedDelegateAtPath(t, r.s, child, nested)
+
+	_, err = r.removeOp(t, map[string]any{"name": "lane", "force": false})
+	if err == nil {
+		t.Fatal("expected remove to be refused by the retained idle shared delegate")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, child.id) {
+		t.Errorf("refusal should name the blocker %q, got: %v", child.id, msg)
+	}
+	if !strings.Contains(msg, "force") {
+		t.Errorf("refusal should point at the force cascade, got: %v", msg)
+	}
+	if strings.Contains(msg, "op=dispose") {
+		t.Errorf("a shared-workspace child has no lane to dispose; got: %v", msg)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("lane should remain after refusal: %v", err)
+	}
+
+	res, err = r.removeOp(t, map[string]any{"name": "lane", "force": true})
+	if err != nil {
+		t.Fatalf("force remove of a lane with a retained idle shared delegate: %v", err)
+	}
+	if r.s.subagents.get(child.id) != nil {
+		t.Fatal("retained shared-workspace subagent stayed tracked after the force cascade")
+	}
+	aggregate := delegateAggregateSnapshot(t, r.s.delegateController, delegateID)
+	if aggregate.Resumable || aggregate.NotResumableReason == "" {
+		t.Fatalf("shared delegate after lane removal = %#v, want permanently closed with %q", aggregate, sharedWorkspaceLaneRemovalReason)
+	}
+	if _, err := os.Stat(path); err == nil {
+		t.Fatal("lane still present after the force cascade")
+	}
+	if warning, _ := res["warning"].(string); !strings.Contains(warning, "shared-workspace subagent") {
+		t.Fatalf("remove result warning = %q, want the retired-child report", warning)
+	}
+}
+
+// seedRetainedSharedDelegateAtPath seeds a durable shared-workspace delegate
+// descriptor for child and tracks the child as its resident retained subagent,
+// the production shape liveWorkUnder reports: a child whose recorded working
+// directory is under the lane, with no isolation lane of its own.
+func seedRetainedSharedDelegateAtPath(t *testing.T, s *Session, child *Session, path string) (delegateID string) {
+	t.Helper()
+	c := s.delegateController
+	delegateID = c.newDelegateID()
+	descriptor := delegatestore.Descriptor{
+		ChildSessionID:   child.id,
+		TranscriptRef:    encodeRef("", child.id),
+		OwnerSessionID:   s.id,
+		VisibleSessionID: s.id,
+		Task:             "shared retained fixture",
+		AgentType:        "default",
+		ToolNameCeiling:  []string{"communicate"},
+		WorkingDir:       path,
+		LocalEnvPolicy:   "default",
+		Resumable:        true,
+	}
+	c.mu.Lock()
+	_, err := c.appendLocked(delegatestore.Event{
+		Kind:       delegatestore.EventDelegateCreated,
+		DelegateID: delegateID,
+		Created:    &delegatestore.DelegateCreated{Descriptor: descriptor},
+	})
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("append shared delegate: %v", err)
+	}
+	child.owningDelegateID = delegateID
+	s.subagents.track(&subagent{id: child.id, sess: child, stableDescriptor: &descriptor})
+	return delegateID
+}
+
 // --- real prune plumbing (not the stub) ---
 
 // TestWorktreePrune_Sweep1_SkipsLiveRealBackgroundShellJob mirrors
