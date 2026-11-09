@@ -3,6 +3,7 @@ import { openAttentionSession } from "./attentionHistory";
 import { captureAttentionPlacement, presentAttentionTarget } from "./attentionPlacement";
 import { openNestedSessionWithOwner, openSessionByRef, openTopLevelSession } from "./sessionPlacement";
 import {
+  carryComposerSeatForPlacement,
   conversationOpenParentRef,
   recordConversationOpenParent,
   resetWorkspaceStoreForTests,
@@ -183,6 +184,20 @@ describe("openNestedSessionWithOwner", () => {
     expect(workspaceStore.getState().panes).not.toBe(before);
     const child = workspaceStore.getState().panes.find((pane) => pane.id === childId);
     expect(child && conversationOpenParentRef(child)).toBe("local:owner");
+  });
+
+  test("retaining an open nested child cancels a pending carried seat", () => {
+    openTopLevelSession("local:owner");
+    const childId = workspaceStore.getState().openPane("session", { ref: "local:child" }, { slot: "secondary" });
+    const authorSeat = "author-seat";
+    carryComposerSeatForPlacement("local:child", authorSeat);
+
+    openNestedSessionWithOwner("local:child", "local:owner");
+    workspaceStore.getState().closePane(childId);
+    const reopenedId = workspaceStore.getState().openPane("session", { ref: "local:child" });
+
+    const reopened = workspaceStore.getState().panes.find((pane) => pane.id === reopenedId);
+    expect(reopened?.composerSeatId).not.toBe(authorSeat);
   });
 
   test("keeps a matching cascade and child when a duplicate owner sits secondary", () => {

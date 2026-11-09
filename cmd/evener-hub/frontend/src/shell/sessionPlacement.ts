@@ -104,6 +104,7 @@ export function openNestedSessionWithOwner(ref: string, ownerRef: string): void 
   const workspace = workspaceStore.getState();
   const child = presentedPanes(workspace.panes).find((pane) => isSessionPaneFor(pane, ref));
   if (child !== undefined) {
+    cancelCarriedComposerSeat(ref);
     // Ownership is now confirmed nested, so keep the child - and its per-mount
     // composer work, including staged images - and move the owner in beside it
     // instead of replacing the workspace and remounting the child.
