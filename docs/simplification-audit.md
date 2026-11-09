@@ -159,12 +159,14 @@ boundary. **Risk:** low — the `default:` fallbacks already handle doubles.
 
 ### Tier 3 — dead and test-only code
 
-**F10. 500 lines of test harness ship in the `evener` binary.**
+**F10. 500 lines of test harness live in a production package.**
 `agent/sandbox/contract.go` has no build tag, exports `ContractCases`,
 `AssertResolve`, `MaterializeWorkspace`, `ReRootCases`, `AssertReRoot` and five
 more, and has **no non-test consumer anywhere** (`TestingT` is referenced only
 inside the file). `agent/sandbox` is a dependency of `cmd/evener`, so it is
-compiled into the product. **Change:** move it to `agent/sandbox/sandboxcontract`
+compiled into the product. Go's linker discards the unreachable functions, so
+this costs build and vet time rather than bytes in the shipped executable.
+**Change:** move it to `agent/sandbox/sandboxcontract`
 alongside the existing `sandboxtest`, or to `contract_test.go` plus a small
 support package for the four cross-package callers. **Risk:** medium (import-path
 updates only). **Delta:** −500 production lines, −9 exported symbols.
@@ -502,7 +504,7 @@ Two findings changed shape when tested against real code:
   `cmd/evener/serve_bridge.go:222`, so it correctly stayed exported.
   `GoalStatus` is on the exported `EnvelopeSampling` interface and also stayed.
 
-`F10` is Tier 3 and was outside the tier 1 and tier 2 batch, so it has no PR.
+`F10` is Tier 3, outside the tier 1 and tier 2 batch, so it has no PR.
 Its partial work sits uncommitted at
 `/Users/jesse/git/prime-radiant/evener-f10`: the harness moved to
 `agent/sandbox/sandboxcontract` with a `TestingT`-shaped interface,
