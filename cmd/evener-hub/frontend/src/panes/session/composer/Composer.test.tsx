@@ -8,11 +8,11 @@ import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../../motion";
-import { ActivitySidebar } from "../../../shell/activitybar/ActivitySidebar";
 import {
   activitySidebarStore,
   resetActivitySidebarStoreForTests,
 } from "../../../shell/activitybar/activitySidebarStore";
+import { ActivitySidebar } from "../../../shell/activitybar/activitySidebarTestUtils";
 import { ClientProvider } from "../../../shell/clientContext";
 import { paletteStore } from "../../../shell/palette/paletteController";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";

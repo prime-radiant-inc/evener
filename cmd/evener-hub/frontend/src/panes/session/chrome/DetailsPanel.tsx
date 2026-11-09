@@ -21,6 +21,10 @@
 //
 // Every value comes off the live ThreadModel the status row already reads - no
 // fetch for accounting. Manager is the session's own start-time property.
+// The branch row is the one caller-supplied exception: nothing populates the
+// wire's thread.gitInfo on the hub's local read paths, so the About tab passes
+// a branch resolved from the session's cwd at view time (resolvedBranch) - a
+// display lookup the caller owns, never a fetch this panel makes.
 //
 // Cost is EvenerThread.Cost: the "~$X.XX" string appwire.EstimateCost derives
 // server-side from the thread's cumulative usage at the model's catalog price.
@@ -51,6 +55,11 @@ export interface DetailsPanelProps {
 export interface DetailsPanelBodyProps {
   model: ThreadModel;
   now: number;
+  /** Branch resolved at view time from the session's cwd on this hub - the
+   * About tab's fallback for local sessions, whose read paths never populated
+   * the wire's gitInfo. The model's own gitBranch wins when present; empty
+   * means "looked, nothing to show" and renders no row. */
+  resolvedBranch?: string;
 }
 
 /** Opens the standalone Details Sheet while keeping its open state local. */
@@ -114,7 +123,7 @@ function Section({ title, rows }: { title: string; rows: (StackedPropertyListRow
 }
 
 /** Shared details body used by the mobile Sheet and desktop pane. */
-export function DetailsPanelBody({ model, now }: DetailsPanelBodyProps) {
+export function DetailsPanelBody({ model, now, resolvedBranch = "" }: DetailsPanelBodyProps) {
   const showContext = model.contextWindow > 0 && !isEndedStatus(model.status.type);
   // Remaining is the context window minus what is used, floored at zero - the
   // daemon's own definition of the figure (agent/schema/context_metrics.go's
@@ -135,6 +144,10 @@ export function DetailsPanelBody({ model, now }: DetailsPanelBodyProps) {
   // A project path identical to the cwd is the common case (a session in its
   // own project root); repeating it under a second label says nothing.
   const projectPath = model.projectPath && model.projectPath !== model.cwd ? model.projectPath : undefined;
+  // The branch row's value: the wire's gitBranch when the thread carries one,
+  // else the caller's view-time resolution. Both absent renders no row, like
+  // every absent fact in this panel.
+  const branch = model.gitBranch || resolvedBranch;
 
   return (
     <>
@@ -194,7 +207,7 @@ export function DetailsPanelBody({ model, now }: DetailsPanelBodyProps) {
         rows={[
           !!model.cwd && detailRow("working dir", "session-details-cwd", model.cwd, true),
           !!projectPath && detailRow("project", "session-details-project", projectPath, true),
-          !!model.gitBranch && detailRow("branch", "session-details-branch", model.gitBranch, true),
+          !!branch && detailRow("branch", "session-details-branch", branch, true),
           !!createdAt && detailRow("started", "session-details-created", createdAt),
           !!updatedAt && detailRow("last activity", "session-details-updated", updatedAt),
         ]}

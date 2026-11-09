@@ -31,6 +31,7 @@ import { installFocusedScope } from "../statusbar/scopeTestUtils";
 import { currentSessionRef, type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { ActivitySidebar } from "./ActivitySidebar";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitySidebarStore";
+import { ActivitySidebar as ActivitySidebarUnderTest } from "./activitySidebarTestUtils";
 
 beforeAll(async () => {
   await import("../../panes/transcript");
@@ -67,7 +68,7 @@ function JourneyPane({ Session }: { Session: typeof import("../../panes/session/
 const mount = (mobile = false) =>
   render(
     <MotionProvider>
-      <ActivitySidebar mobile={mobile} />
+      <ActivitySidebarUnderTest mobile={mobile} />
     </MotionProvider>,
   );
 afterEach(() => {
