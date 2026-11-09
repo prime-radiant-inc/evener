@@ -739,7 +739,16 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 		if cfg.Roster != nil {
 			if le, ok := liveDaemonForThread(cfg.Roster, sessionID); ok &&
 				le.Protocol == appwire.ProtocolVersion {
-				return hubResumedThreadResponse(ctx, cfg, sources, le.SessionID, le.ThreadID)
+				if response, readErr := hubResumedThreadResponse(ctx, cfg, sources, le.SessionID, le.ThreadID); readErr == nil {
+					return response, nil
+				} else if ctx.Err() != nil {
+					return appwire.ThreadResumeResponse{}, readErr
+				}
+				// The entry is live enough for discovery but cannot serve this
+				// read, so reusing it again is the fail-loop from #5530. Fall
+				// through to one replacement spawn instead. A daemon that still
+				// owns the session refuses the child at its API-log reservation,
+				// so the attempt cannot take the session from a healthy owner.
 			}
 		}
 		if state := cfg.ResumeLocks.RecoveryState(sessionID); state.ResumeRequired && !state.ExitConfirmed {
