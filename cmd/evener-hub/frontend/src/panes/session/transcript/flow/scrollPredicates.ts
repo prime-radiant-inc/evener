@@ -1,4 +1,4 @@
-import type { ThreadModel, TurnModel } from "@evener/appwire-client";
+import { attentionNeedsYou, attentionState, type ThreadModel, type TurnModel } from "@evener/appwire-client";
 import { isAtBottom, type ScrollMetrics } from "./scrollMetrics";
 
 export function totalItemCount(model: ThreadModel | undefined): number {
@@ -8,16 +8,15 @@ export function totalItemCount(model: ThreadModel | undefined): number {
   return total;
 }
 
-// Attention follows liveness.ts's raw-status mapping to needs-you.
-// shell/sessionStatus.ts maps normalized navigation summaries.
-// askPending is independent because it need not coincide with status.type.
+// Attention follows the shared actionable classification: a finished turn is
+// idle, while a question, approval, warning or restart need still needs you.
 export function isAttentionWorthy(model: ThreadModel | undefined): boolean {
   if (!model) return false;
-  return (
-    model.askPending ||
-    model.status.type === "awaiting" ||
-    model.status.type === "warning" ||
-    model.status.type === "restartRequired"
+  return attentionNeedsYou(
+    attentionState(model.status.type, {
+      askPending: model.askPending,
+      approvalPending: (model.pendingEscalations?.length ?? 0) > 0,
+    }),
   );
 }
 

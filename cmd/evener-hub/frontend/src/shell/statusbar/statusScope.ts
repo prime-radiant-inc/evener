@@ -57,12 +57,16 @@ export function deriveScope(
   subagents: SessionActivitySummary["delegates"] | null,
 ): ActivityScope {
   const row = selectSessionSummary(ref, navigation);
+  const rowMatches = row?.ref === ref;
+  const runtime = activity?.runtime;
   const leaf = {
     ref,
-    title: row?.ref === ref ? row.title : ref,
-    ...(row?.ref === ref && row.tasks ? { tasks: row.tasks } : {}),
-    ...(row?.ref === ref && row.ask_pending === true ? { ask_pending: true } : {}),
-    ...(row?.ref === ref && row.approval_pending === true ? { approval_pending: true } : {}),
+    title: rowMatches ? row.title : ref,
+    ...(rowMatches && row.tasks ? { tasks: row.tasks } : {}),
+    ...((rowMatches ? row.ask_pending === true : runtime?.askPending === true) ? { ask_pending: true } : {}),
+    ...((rowMatches ? row.approval_pending === true : runtime?.approvalPending === true)
+      ? { approval_pending: true }
+      : {}),
   };
   const context = activity?.context;
   const ancestryKnown = context?.ancestryKnown === true;

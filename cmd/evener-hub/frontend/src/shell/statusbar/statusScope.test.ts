@@ -1,4 +1,4 @@
-import { SessionActivityStore } from "@evener/appwire-client";
+import { type SessionActivitySnapshot, SessionActivityStore } from "@evener/appwire-client";
 import { createNavigationStore } from "@evener/appwire-client/state/navigation";
 import { memoryNavigationPersistence } from "@evener/appwire-client/testing/navigationPersistence";
 import { describe, expect, it } from "vitest";
@@ -18,6 +18,23 @@ describe("typed activity scope", () => {
       delegatesTotal: null,
       jobsTotal: null,
       watchesTotal: null,
+    });
+  });
+  it("carries pending facts from the runtime when the navigation row is not loaded", () => {
+    const snapshot = {
+      runtime: {
+        threadId: "wire-deep",
+        sessionId: "deep",
+        status: { type: "awaiting" },
+        askPending: true,
+        approvalPending: true,
+      },
+    } as SessionActivitySnapshot;
+    const scope = deriveScope(navigation(), "remote:deep", snapshot, null);
+    expect(scope.leaf).toMatchObject({
+      ref: "remote:deep",
+      ask_pending: true,
+      approval_pending: true,
     });
   });
   it("takes ancestry and authoritative counts from context and summary, not loaded rows", async () => {

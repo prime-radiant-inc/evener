@@ -10,6 +10,10 @@ export interface ThreadSubscriptionMetadata {
   readonly threadId: string;
   readonly sessionId: string;
   readonly status: ThreadStatus;
+  /** A pending question is actionable attention even while the status rests. */
+  readonly askPending?: boolean;
+  /** A pending sandbox escalation is actionable attention. */
+  readonly approvalPending?: boolean;
 }
 export interface ThreadSubscriptionLease {
   ensure(): Promise<void>;
@@ -90,19 +94,29 @@ class ThreadSubscriptions {
   }
 
   private admitStatus(notification: Extract<AnyNotification, { method: "thread/status/changed" }>): void {
-    const { ref, threadId, status } = notification.params;
+    const { ref, threadId, status, askPending } = notification.params;
     const direct = this.members.get(ref);
-    if (direct?.metadata) this.admitMemberStatus(direct, threadId, status);
+    if (direct?.metadata) this.admitMemberStatus(direct, threadId, status, askPending);
     for (const member of this.members.values()) {
-      if (member !== direct && member.metadata?.threadId === threadId) this.admitMemberStatus(member, threadId, status);
+      if (member !== direct && member.metadata?.threadId === threadId)
+        this.admitMemberStatus(member, threadId, status, askPending);
     }
   }
 
-  private admitMemberStatus(member: Membership, threadId: string, status: ThreadStatus): void {
+  private admitMemberStatus(
+    member: Membership,
+    threadId: string,
+    status: ThreadStatus,
+    askPending: boolean | undefined,
+  ): void {
     if (!member.metadata) return;
     member.statusRevision += 1;
     member.statusThreadId = threadId;
-    member.metadata = { ...member.metadata, status: copyStatus(status) };
+    member.metadata = {
+      ...member.metadata,
+      status: copyStatus(status),
+      ...(askPending === undefined ? {} : { askPending }),
+    };
   }
 
   acquire(ref: string): ThreadSubscriptionLease {
@@ -249,6 +263,8 @@ class ThreadSubscriptions {
       threadId: thread.id,
       sessionId: thread.sessionId ?? thread.id,
       status: copyStatus((newer ? member.metadata?.status : undefined) ?? thread.status),
+      ...(thread.evener.askPending === true ? { askPending: true } : {}),
+      ...((thread.evener.pendingEscalations?.length ?? 0) > 0 ? { approvalPending: true } : {}),
     };
   }
 

@@ -276,7 +276,6 @@ export interface WhyLine {
 const REASONS: Partial<Record<BoardState, { hue: Hue; text: string }>> = {
 	failed: { hue: "danger", text: "open the session to see what went wrong" },
 	question: { hue: "attention", text: "waiting for your answer" },
-	needsYou: { hue: "attention", text: "waiting for your reply" },
 	approval: { hue: "attention", text: "waiting for your permission" },
 	warning: { hue: "attention", text: "open the session to see it" },
 	restartNeeded: { hue: "attention", text: "restart this session to pick up the hub's update" },

@@ -24,7 +24,9 @@ const DRAFT_KEPT_LINE = "Your draft is kept.";
 const MARK_STATE: Record<Exclude<Alert["kind"], "notice">, BoardState> = {
 	failed: "failed",
 	question: "question",
-	needsYou: "needsYou",
+	// Legacy alert kind: no BoardState produces it since a finished turn
+	// became idle (#2629). It renders as idle rather than inventing attention.
+	needsYou: "idle",
 	approval: "approval",
 	warning: "warning",
 	restartNeeded: "restartNeeded",
