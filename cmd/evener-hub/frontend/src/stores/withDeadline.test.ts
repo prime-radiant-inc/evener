@@ -11,8 +11,6 @@ test("resolves with a read that answers before the deadline and clears its timer
 
   await expect(withDeadline(Promise.resolve("read"), 250, onTimeout)).resolves.toBe("read");
   expect(vi.getTimerCount()).toBe(0);
-
-  await vi.advanceTimersByTimeAsync(250);
   expect(onTimeout).not.toHaveBeenCalled();
 });
 
