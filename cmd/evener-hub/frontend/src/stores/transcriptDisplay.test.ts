@@ -1,9 +1,9 @@
 import type { TranscriptDisplayPatchResponse } from "@evener/appwire-client";
 import {
+  contentVectorForConfig,
   encodeLocalConfig,
   friendlyErrorMessage,
   makeTranscriptDisplayConfig,
-  presetContent,
   shippedDesktopConfig,
   shippedMobileConfig,
   type TranscriptDisplayConfigV1,
@@ -658,7 +658,10 @@ test("local values survive store reinitialization", () => {
 });
 
 test("preserves an explicit Tools-equivalent Custom through local and hub persistence", async () => {
-  const custom = makeTranscriptDisplayConfig({ kind: "custom", ...presetContent("tools") });
+  const custom = makeTranscriptDisplayConfig({
+    kind: "custom",
+    ...contentVectorForConfig(makeTranscriptDisplayConfig({ kind: "preset", level: "tools" })),
+  });
   transcriptDisplayStore.getState().setLocal("desktop", custom);
   expect(transcriptDisplayStore.getState().local.desktop?.content.kind).toBe("custom");
   expect(transcriptDisplayStore.getState().effective("desktop").content.kind).toBe("custom");
