@@ -491,8 +491,13 @@ func readProjectNpmrcCacheRoots(path string, lookup func(string) string, home st
 }
 
 // readProjectNpmrcCacheValue returns the last cache value from the project
-// file, whether or not that directory exists.
-func readProjectNpmrcCacheValue(path string, lookup func(string) string, home string) (string, bool) {
+// file, whether or not that directory exists. A file a mask replaces is
+// unknown, not absent: bubblewrap shows the spawn an empty file there, so npm
+// falls through to defaults the floor may not serve.
+func readProjectNpmrcCacheValue(path string, lookup func(string) string, home string, policy ResolvedPolicy) (string, bool) {
+	if fileMaskedAlongPath(policy, path) {
+		return "", false
+	}
 	values, ok := readProjectNpmrc(path, lookup, home)
 	if !ok {
 		return "", false

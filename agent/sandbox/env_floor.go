@@ -370,7 +370,7 @@ func npmConfigCacheFor(env []string, policy ResolvedPolicy, workingDir, home str
 	// there is no project file to consult.
 	if workingDir != "" {
 		if projectDir := npmProjectDir(workingDir, policy.Git.WorktreeRoot); projectDir != "" {
-			value, ok := readProjectNpmrcCacheValue(filepath.Join(projectDir, ".npmrc"), lookup, home)
+			value, ok := readProjectNpmrcCacheValue(filepath.Join(projectDir, ".npmrc"), lookup, home, policy)
 			if !ok {
 				return "", false
 			}
@@ -442,7 +442,7 @@ func spawnGoEnvFileRefused(env []string, policy ResolvedPolicy) bool {
 	// One merely under /tmp or /dev is still probed, since bwrap may rebind
 	// the worktree holding it; a host file the private /tmp hides then turns
 	// GOENV off needlessly, which costs that spawn only `go env -w`.
-	if goEnvFileMasked(policy, file) {
+	if fileMaskedAlongPath(policy, file) {
 		return false
 	}
 	_, err := readGoEnvFileSettings(hostProbeSystem{}, file)
@@ -501,15 +501,14 @@ func goEnvFileHidden(policy ResolvedPolicy, path string) bool {
 	if policy.Backend != BackendSeatbelt && (inPrivateMount(path) || linksThroughPrivateMount(path)) {
 		return true
 	}
-	return goEnvFileMasked(policy, path)
+	return fileMaskedAlongPath(policy, path)
 }
 
-// goEnvFileMasked reports whether the go env file at path is under a mask at
-// any step of resolving it: every link and directory walkPhysical visits. A
-// carve-out inside a mask (the plugin store, the skills directory) counts as
-// masked too: no one keeps a go env file there, and treating one as hidden
-// costs only its GOPATH.
-func goEnvFileMasked(policy ResolvedPolicy, path string) bool {
+// fileMaskedAlongPath reports whether path is under a mask at any step of
+// resolving it: every link and directory walkPhysical visits. A carve-out
+// inside a mask (the plugin store, the skills directory) counts as masked too:
+// a config there is not one the sandboxed process sees.
+func fileMaskedAlongPath(policy ResolvedPolicy, path string) bool {
 	masked := underAMask(policy, path)
 	walkPhysical(path, func(p string, _, _ bool) bool {
 		masked = masked || underAMask(policy, p)
@@ -527,7 +526,7 @@ func npmConfigFileHidden(policy ResolvedPolicy, path string) bool {
 	if policy.Backend != BackendSeatbelt && (inPrivateMount(path) || linksThroughPrivateMount(path)) {
 		return true
 	}
-	return goEnvFileMasked(policy, path)
+	return fileMaskedAlongPath(policy, path)
 }
 
 // underAMask reports whether p lies at or under a masked path, by its spelling

@@ -332,6 +332,34 @@ func TestEnvFloorRedirectsAHiddenUserNpmrcCache(t *testing.T) {
 	assertNpmCacheRedirectedInDir(t, policy, env, worktree, scratch)
 }
 
+// A project .npmrc replaced by a DenylistAdd mask is not host truth: bubblewrap
+// shows the spawn an empty file, so npm falls through to its default ~/.npm,
+// which this overlay does not serve. The floor must redirect to the session
+// scratch rather than trust the masked host value.
+func TestEnvFloorRedirectsAMaskedProjectNpmrcCache(t *testing.T) {
+	scratch := "/tmp/evener-session-xyz"
+	home := servedHome(t)
+	served := filepath.Join(overlayFixtureDir(t), "served-npm")
+	if err := os.MkdirAll(served, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	worktree := overlayFixtureDir(t)
+	projectConfig := filepath.Join(worktree, ".npmrc")
+	if err := os.WriteFile(projectConfig, []byte("cache="+served+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	policy := ResolvedPolicy{
+		Mode:          ModeWorkspaceWrite,
+		CacheStrategy: CacheOverlay,
+		CacheRoots:    []string{served},
+		MaskedPaths:   []string{projectConfig},
+		resolveHost:   HostFacts{Home: home},
+		Git:           GitLayout{WorktreeRoot: worktree},
+		SessionDir:    worktree,
+	}
+	assertNpmCacheRedirectedInDir(t, policy, []string{"HOME=" + home}, worktree, scratch)
+}
+
 // npm expands ${NAME} and a leading ~ in a configured user/global config
 // filename before reading it. The floor must follow the same path: a literal
 // ~/.npmrc naming a served cache is not unknown, and an absolute filename whose
