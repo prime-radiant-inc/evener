@@ -663,6 +663,35 @@ test("a resting phone composer sheds chips and attach until focus engages the fu
   expect(screen.queryByTestId("session-chrome-menu")).toBeNull();
 });
 
+// A cascade column's chrome renders the conversation's activity controls
+// below the footer (CascadeColumn's ScopeActivityControls), so its seat
+// declares that ownership and the phone composer row keeps no second set of
+// chips beside the status chrome, even engaged.
+test("a composer whose seat owns the activity counts never mounts chips", async ({ onTestFinished }) => {
+  onTestFinished(installMobileViewport());
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_owned_counts"));
+  await threadsStore.getState().ensureThread("ref_owned_counts");
+  render(
+    <ClientProvider client={fake}>
+      <Composer
+        ref="ref_owned_counts"
+        source={createTestComposerSource("ref_owned_counts")}
+        focused={false}
+        ownsActivityCounts
+      />
+    </ClientProvider>,
+  );
+  await screen.findByRole("textbox", { name: "Message" });
+  await flushPendingTurnsProjectionForTests();
+
+  // The engaged row keeps the status chrome and attach, but no chips.
+  fireEvent.focus(screen.getByRole("textbox", { name: "Message" }));
+  await waitFor(() => expect(screen.getByTestId("session-chrome-inline")).toBeTruthy());
+  expect(screen.getByTestId("composer-attach")).toBeTruthy();
+  expect(document.querySelector('[data-testid="composer-form"] [data-activity-tab]')).toBeNull();
+});
+
 // A turn in flight keeps its Stop control even while the editor rests
 // collapsed: stopping a runaway turn must never depend on focusing first.
 test("a collapsed mobile composer still offers Stop while a turn is running", async ({ onTestFinished }) => {

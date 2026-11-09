@@ -74,6 +74,10 @@ export interface ConversationSeat {
   focused: boolean;
   // Seat-level policy for mount autofocus, independent of the shared editor.
   mountAutofocus?: boolean;
+  // The seat's own chrome already renders this conversation's activity
+  // counts (a cascade column's ScopeActivityControls), so the composer's
+  // phone row must not duplicate them.
+  ownsActivityCounts?: boolean;
   // A resumed conversation continues under a new ref. A pane replaces its
   // route; a cascade column lets its own reconciliation replace the scope in
   // place. The draft always carries to the resumed identity first. The
@@ -503,6 +507,7 @@ function StandardConversationBody({
             source={seat.composerSource}
             focused={seat.focused}
             mountAutofocus={seat.mountAutofocus}
+            ownsActivityCounts={seat.ownsActivityCounts}
             onEditingChange={handleEditingChange}
           />
         )}

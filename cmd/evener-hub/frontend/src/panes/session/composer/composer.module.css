@@ -34,12 +34,14 @@
   display: flex;
   align-items: center;
   gap: var(--space-1);
-  /* The engaged row's chips take their own full line when the row crowds
-     (statusbar.module.css hands the wrapped strip a 100% basis below the
-     width where attach + the status chrome + the counts stop fitting one
-     line): a line break is the only distribution that keeps both the model
-     picker at a real width and every count at the tap floor. When everything
-     fits, no line breaks and this behaves exactly like the single-line row. */
+  /* The engaged row's line break is decided by honest flex bases: the status
+     chrome carries its measured compact rung as its basis
+     (sessionchrome.module.css, because its container-contained .body cannot
+     report one), so the chrome plus the wrapped strip no longer fit on one
+     line exactly when one line cannot hold both - and the strip takes the
+     next line, keeping the model picker at a real width and every count at
+     the tap floor. When everything fits, no line breaks and this behaves
+     exactly like the single-line row. */
   flex-wrap: wrap;
   flex: 1 1 auto;
   min-width: 0;

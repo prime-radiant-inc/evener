@@ -103,6 +103,10 @@ export interface ComposerProps {
   focused: boolean;
   // The seat may suppress mount autofocus for a navigation or restore intent.
   mountAutofocus?: boolean;
+  // The seat's own chrome already renders this conversation's activity counts
+  // (a cascade column below its conversation footer), so the phone row must
+  // not mount a second set of chips beside the status chrome.
+  ownsActivityCounts?: boolean;
   source: ComposerSourceState;
   // An in-progress IME composition, reported for the floating attention
   // control's visibility. Focus alone never counts: a session open autofocuses
@@ -134,7 +138,15 @@ const MemoizedSessionChrome = memo(function MemoizedSessionChrome(props: Session
 // shallow-equality bailout for a value that carries no information.
 const NO_TURN_VERBS: SessionMenuTurnVerbs = Object.freeze({});
 
-export function Composer({ ref, paneId, focused, mountAutofocus = true, source, onEditingChange }: ComposerProps) {
+export function Composer({
+  ref,
+  paneId,
+  focused,
+  mountAutofocus = true,
+  ownsActivityCounts = false,
+  source,
+  onEditingChange,
+}: ComposerProps) {
   const model = useThreadsStore((s) => s.threads.get(ref));
   const recoveryRequired = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
   // Delivery-uncertain rows do NOT fence Send here: they clear the resume-only
@@ -979,7 +991,7 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
           {!askPending && sessionChrome}
           {/* The phone pane has no footer strip (Session.tsx's edgeFooter), so
               this row is where the activity counts live on a phone. */}
-          {isMobile && <ActivityChips sessionRef={ref} paneId={paneId} wrap />}
+          {isMobile && !ownsActivityCounts && <ActivityChips sessionRef={ref} paneId={paneId} wrap />}
         </>
       )}
     </div>

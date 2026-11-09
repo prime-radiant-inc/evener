@@ -34,7 +34,15 @@
   align-items: center;
   flex-wrap: nowrap;
   gap: var(--space-2);
-  flex: 1 1 auto;
+  /* The .body's container containment hides the status content's width from
+   * the flex algorithm, so an auto basis reports only the menu trigger and
+   * the row starves the model picker beside whatever else shares the line.
+   * This basis is the chrome's measured compact rung - the menu trigger, the
+   * model picker at its real trigger width, and the effort control - so the
+   * composer leading's flex-wrap breaks the line (the activity strip takes
+   * its own line) exactly when one line cannot hold both the rung and the
+   * strip, and grows freely into leftover space when it can. */
+  flex: 1 1 200px;
   min-width: 0;
   overflow: hidden;
 }

@@ -106,24 +106,6 @@
   }
 }
 
-/* The composer's engaged leading below this width cannot hold attach, the
- * status chrome and the counts on one line: the status chrome's own basis
- * is silently near-zero (its .body container containment makes the flex
- * algorithm blind to the status content it must protect), so beside the
- * counts it starves to its menu trigger and the model picker collapses to
- * its 16px floor. The wrapped strip instead claims a full line of its own -
- * the same "second line, not crowding" the strip itself applies between
- * chips, applied one level up where the space actually exists. The
- * boundary sits just above the leading width where the chrome's compact
- * status rung (~170px beside attach and the row's gaps) stops fitting
- * beside the counts; above it the single-line row is unchanged. The
- * status bar never uses .chipsWrap, so this is the composer row's rule. */
-@container statusbar (max-width: 360px) {
-  .chipsWrap {
-    flex: 0 0 100%;
-  }
-}
-
 /* Every chip is a thumb target on a phone or any coarse pointer. */
 @media (max-width: 899px), (any-pointer: coarse) {
   .chip {
@@ -151,6 +133,18 @@
   .chip {
     gap: 4px;
     padding: 0 var(--space-1);
+  }
+
+  /* The phone's strip never shows the category names, at any leading width:
+   * its row shares the line with attach, the status chrome's compact rung and
+   * Send, and the named strip (~387px) cannot fit beside them even at the
+   * phone composer's widest leading (~636px, after the narrower Stop replaces
+   * Send mid-press). A name threshold inside that range would flip the strip
+   * into its wide variant during the swap and reflow the row out from under
+   * the thumb still holding the pressed Send point. The count and the chip's
+   * accessible name keep every tab identifiable without the visible label. */
+  .chipName {
+    display: none;
   }
 
   /* The phone keeps the category glyph at every width; the 320px container

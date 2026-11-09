@@ -235,15 +235,20 @@ test("the phone composer's activity chips yield to the row and wrap at the tap f
     css.replace(/\/\*[\s\S]*?\*\//g, " "),
   );
   expect(chipsWrap, "statusbar.module.css must keep the wrapped chips strip yielding and wrapping").not.toBeNull();
-  // Below the width where attach + the status chrome + the counts fit one
-  // line, the strip claims a full line of the leading instead of starving
-  // the chrome (whose container-contained .body reports a near-zero basis
-  // to the flex algorithm no matter what its status content needs).
-  const ownLine = /@container statusbar \(max-width: 360px\)\s*\{[^}]*\.chipsWrap\s*\{[^}]*flex:\s*0 0 100%/.exec(
-    css.replace(/\/\*[\s\S]*?\*\//g, " "),
+  // The line break itself is decided by honest bases, not a threshold query:
+  // the chrome's .body container containment hides its status content from
+  // the flex algorithm, so the composer placement's .inline must carry its
+  // measured compact rung as the basis. With the rung honest, the leading's
+  // flex-wrap breaks the line - the strip takes its own line - exactly when
+  // one line cannot hold both the rung and the strip, and no band of widths
+  // starves the model picker beside the counts.
+  const chromeCss = readFileSync(join(srcRoot, "panes/session/chrome/sessionchrome.module.css"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    " ",
   );
+  const inline = /\.inline\s*\{[^}]*flex:\s*1 1 200px[^}]*min-width:\s*0/.exec(chromeCss);
   expect(
-    ownLine,
-    "statusbar.module.css must give the wrapped chips their own line below 360px of leading",
+    inline,
+    "sessionchrome.module.css must give the composer chrome its compact-rung flex basis so the row wraps instead of starving it",
   ).not.toBeNull();
 });

@@ -447,6 +447,7 @@ async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported)
             const lastBottom = cards.length ? Math.max(...cards.map((card) => card.getBoundingClientRect().bottom)) : null;
             const metadata = pane?.querySelector('[data-testid="composer-repo-location"]');
             const path = metadata?.querySelector('[data-testid="composer-repo-path"]');
+            const modelTrigger = form?.querySelector('[data-testid="model-switch-trigger"]');
             const edgeFooter = pane?.querySelector('[data-testid="pane-edge-footer"]');
             const statusbar = pane?.querySelector('[data-testid="statusbar"]');
             const footerBottom = footer?.getBoundingClientRect().bottom ?? null;
@@ -479,6 +480,13 @@ async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported)
               submitVisible: visible(submit),
               stopVisible: visible(stop),
               rowChipCount: rowChips.filter((chip) => visible(chip)).length,
+              modelTrigger: modelTrigger
+                ? {
+                    visible: visible(modelTrigger),
+                    clientWidth: modelTrigger.clientWidth,
+                    scrollWidth: modelTrigger.scrollWidth,
+                  }
+                : null,
               pathBox: rect(path),
               statusChips: statusbar
                 ? [...statusbar.querySelectorAll('[data-activity-tab]')].map((element) => rect(element))
@@ -546,6 +554,18 @@ function assertComposerFooter(measurement, width) {
     if (measurement.focus === "editor") {
       if (!measurement.attachVisible) failures.push("focused editor did not bring the full row back (attach hidden)");
       if (measurement.rowChipCount === 0) failures.push("focused editor did not bring the activity chips back");
+      // The model picker must stay a real control in the engaged row at
+      // every width: the status chrome's basis (its compact rung) keeps the
+      // row honest beside the chips, so the trigger never renders clipped
+      // or collapsed to nothing.
+      const model = measurement.modelTrigger;
+      if (model === null || !model.visible || model.clientWidth <= 1) {
+        failures.push(`engaged row lost its model picker (${JSON.stringify(model)})`);
+      } else if (model.clientWidth + 1 < model.scrollWidth) {
+        failures.push(
+          `model picker clipped to ${model.clientWidth}px of ${model.scrollWidth}px beside the row's other content`,
+        );
+      }
     } else if (measurement.attachVisible || measurement.rowChipCount > 0) {
       failures.push(
         `phone row must shed attach and chips while resting (${measurement.focus} focus, attach=${measurement.attachVisible}, chips=${measurement.rowChipCount})`,
@@ -1613,7 +1633,7 @@ async function main() {
         console.log(
           "composer footer ... LIMITATION - Chrome has no real safe-area override, nonzero safe-area cases skipped",
         );
-      for (const width of [...new Set([320, 390, 430, 899, 900, 1400, ...sweep])]) {
+      for (const width of [...new Set([320, 390, 430, 460, 540, 760, 899, 900, 1400, ...sweep])]) {
         const measurements = await measureComposerFooter(
           cdpEndpoint,
           `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}`,
