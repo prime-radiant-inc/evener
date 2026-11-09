@@ -3,7 +3,9 @@
 package valueexpr
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -100,11 +102,7 @@ func TestCommandTimeoutHardBoundDespiteEscapedDescendant(t *testing.T) {
 	// The escapee held the captured stdout until the drain closed it, and
 	// its ten seconds still run: it must exist and have outlived the run's
 	// group kill, or the scenario above never materialized.
-	// The deadline bounds the timed run, not the escaped child's startup: the
-	// outer shell can spawn the setsid descendant inside the budget while that
-	// descendant is scheduled only after evaluate returns. Wait for its pid
-	// report before deciding the scenario never ran; the survival assertion
-	// below still requires the escaped child itself.
+	// The escapee may be scheduled after evaluate returns, so wait for its report.
 	pid, err := waitForPIDReport(marker, 5*time.Second)
 	if err != nil {
 		t.Fatalf("the escaped descendant never reported its pid (%v); the scenario did not run", err)
@@ -124,11 +122,11 @@ func waitForPIDReport(path string, timeout time.Duration) ([]byte, error) {
 		data, err := os.ReadFile(path)
 		// The shell creates the marker with its redirection before it writes
 		// the pid, so an empty read is not the report: keep waiting for one.
-		if err == nil && strings.TrimSpace(string(data)) != "" {
+		if err == nil && len(bytes.TrimSpace(data)) != 0 {
 			return data, nil
 		}
 		if time.Now().After(deadline) {
-			return nil, err
+			return nil, fmt.Errorf("no non-empty pid report in %s within %v", path, timeout)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -155,7 +153,7 @@ func TestWaitForPIDReportTimesOutWithoutAReport(t *testing.T) {
 	if _, err := waitForPIDReport(filepath.Join(t.TempDir(), "missing.pid"), 100*time.Millisecond); err == nil {
 		t.Fatal("waitForPIDReport returned nil for a marker that never appeared")
 	}
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
 		t.Fatalf("waitForPIDReport blocked %v past its deadline", elapsed)
 	}
 }
