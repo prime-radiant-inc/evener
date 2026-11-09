@@ -66,7 +66,6 @@ vi.mock("expo-file-system", () => ({
 		}
 	},
 }));
-vi.mock("expo-crypto", () => ({ randomUUID: () => "id" }));
 vi.mock("expo-image-picker", () => ({
 	launchImageLibraryAsync: async () => ({
 		canceled: false,

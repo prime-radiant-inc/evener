@@ -2,6 +2,8 @@ package llm
 
 import (
 	"bytes"
+	"encoding/base64"
+	"errors"
 	"image"
 	pngenc "image/png"
 	"testing"
@@ -33,6 +35,31 @@ func TestRasterMediaTypeDecodesFullyAndRejectsTruncatedImages(t *testing.T) {
 		if got, err := RasterMediaType(data); err == nil {
 			t.Errorf("RasterMediaType(%s) = (%q, nil), want an error", name, got)
 		}
+	}
+}
+
+// DataURI builds the data:<mime>;base64, prefix and streams the payload into
+// one growing buffer. The previous EncodeToString + Sprintf path allocated
+// four payload-sized buffers, so a 12 MB document made ~64 MB of transient
+// garbage (#5488). Pin both the encoded output and the allocation count.
+func TestDataURISinglePayloadAllocation(t *testing.T) {
+	payload := bytes.Repeat([]byte{0xAB}, 1<<20)
+	got := DataURI("application/pdf", payload)
+	want := "data:application/pdf;base64," + base64.StdEncoding.EncodeToString(payload)
+	if got != want {
+		t.Fatalf("DataURI output differs from base64.StdEncoding over the same payload")
+	}
+	if allocs := testing.AllocsPerRun(20, func() { _ = DataURI("application/pdf", payload) }); allocs > 3 {
+		t.Fatalf("DataURI allocates %.0f times for a 1 MiB payload, want <= 3", allocs)
+	}
+}
+
+func BenchmarkDataURI(b *testing.B) {
+	payload := bytes.Repeat([]byte{0xAB}, 1<<20)
+	b.SetBytes(int64(len(payload)))
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = DataURI("application/pdf", payload)
 	}
 }
 
@@ -98,6 +125,61 @@ func TestNormalizeImageBlock(t *testing.T) {
 	} {
 		if _, _, err := NormalizeImageBlock(data); err == nil {
 			t.Errorf("NormalizeImageBlock(%s) accepted non-raster bytes", name)
+		}
+	}
+}
+
+func grayPNG(t *testing.T, width, height int) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := pngenc.Encode(&buf, image.NewGray(image.Rect(0, 0, width, height))); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// TestNormalizeImageDecodedPixelBudget bounds the pixels image.Decode may
+// allocate while normalizing an image the wire does not accept. Encoded bytes
+// alone do not bound the decoded canvas: a small, highly compressed PNG can
+// name a huge image and exhaust process memory. 16 MP matches
+// llm/internal/imagerepair's existing JPEG budget.
+func TestNormalizeImageDecodedPixelBudget(t *testing.T) {
+	atBudget := grayPNG(t, 4000, 4000) // exactly 16,000,000 pixels
+	got, mt, err := NormalizeImage(atBudget, ImageBlockMediaType)
+	if err != nil || mt != "image/png" || !bytes.Equal(got, atBudget) {
+		t.Fatalf("NormalizeImage(16 MP png) = (%d bytes, %q, %v), want the png unchanged", len(got), mt, err)
+	}
+
+	overBudget := grayPNG(t, 4001, 4001)
+	_, _, err = NormalizeImageForWire(overBudget, "", ImageBlockMediaType, "oversized image refused")
+	if _, ok := errors.AsType[*ConfigurationError](err); !ok {
+		t.Fatalf("oversized image error = %T %v, want *ConfigurationError", err, err)
+	}
+}
+
+// TestDocumentFileData pins the payload rule the document builders share:
+// bytes ride as an application/pdf data URI (the blank media type defaults
+// to pdf), and bytes win when both are set so a caller that supplies both
+// never silently switches sources. A document without bytes carries no
+// shared payload — whether its URL rides the wire is per protocol.
+func TestDocumentFileData(t *testing.T) {
+	const pdfDataURI = "data:application/pdf;base64,JVBERi0xLjcgc3R1Yg=="
+	cases := []struct {
+		name string
+		doc  *DocumentData
+		want string
+	}{
+		{"nil document", nil, ""},
+		{"bytes", &DocumentData{Data: []byte("%PDF-1.7 stub"), MediaType: "application/pdf"}, pdfDataURI},
+		{"bytes with a blank media type default to pdf", &DocumentData{Data: []byte("%PDF-1.7 stub")}, pdfDataURI},
+		{"bytes with a padded media type", &DocumentData{Data: []byte("%PDF-1.7 stub"), MediaType: " application/pdf "}, pdfDataURI},
+		{"url only", &DocumentData{URL: "https://example.com/doc.pdf"}, ""},
+		{"bytes win over a url", &DocumentData{Data: []byte("%PDF-1.7 stub"), MediaType: "application/pdf", URL: "https://example.com/doc.pdf"}, pdfDataURI},
+		{"neither payload", &DocumentData{MediaType: "application/pdf"}, ""},
+	}
+	for _, tc := range cases {
+		if got := DocumentFileData(tc.doc); got != tc.want {
+			t.Errorf("%s: DocumentFileData = %q, want %q", tc.name, got, tc.want)
 		}
 	}
 }

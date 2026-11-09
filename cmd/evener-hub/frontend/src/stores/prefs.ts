@@ -394,7 +394,21 @@ function applyTheme(value: ThemePref): void {
   } else {
     document.documentElement.setAttribute("data-theme", value);
   }
+  syncThemeColor();
   ensureSystemSchemeListener();
+}
+
+// The static <meta name="theme-color"> names the dark page ground so a cold
+// load paints the right chrome before tokens apply. Once a theme is on the
+// document, the browser chrome follows the page instead of staying dark over
+// light paper. getComputedStyle resolves the custom property against the
+// theme attribute just set; a DOM without the token sheet (tests) leaves the
+// meta's default untouched.
+export function syncThemeColor(): void {
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta === null) return;
+  const surface = getComputedStyle(document.documentElement).getPropertyValue("--surface-0").trim();
+  if (surface !== "") meta.setAttribute("content", surface);
 }
 
 // While theme==="system", re-applies whenever the OS's own color-scheme

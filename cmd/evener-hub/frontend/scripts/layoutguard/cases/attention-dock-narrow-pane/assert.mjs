@@ -18,16 +18,23 @@ export default function assert(measurement) {
       `the dock sits ${spill.toFixed(1)}px outside the ${pane.width.toFixed(0)}px pane (dock ${dock.left.toFixed(1)}..${dock.right.toFixed(1)}, Next ${next.left.toFixed(1)}..${next.right.toFixed(1)}, pane ${pane.left.toFixed(1)}..${pane.right.toFixed(1)}) - session.module.css's .attentionDock needs both inline anchors so the control's ceiling is the pane, not the viewport`,
     );
   }
-  if (label.scrollWidth <= label.clientWidth + TOLERANCE) {
+  const truncated =
+    label.scrollWidth > label.clientWidth + TOLERANCE || label.scrollHeight > label.clientHeight + TOLERANCE;
+  if (!truncated) {
     failures.push(
-      `the fixture's title fits its ${label.clientWidth}px slot, so this case proves nothing about a long target title`,
+      `the fixture's title fits its ${label.clientWidth}x${label.clientHeight}px slot, so this case proves nothing about a long target title`,
+    );
+  }
+  if (label.clientHeight < 2 * label.lineHeight - TOLERANCE) {
+    failures.push(
+      `the title clamps to ${(label.clientHeight / label.lineHeight).toFixed(1)} lines; the control must keep two`,
     );
   }
 
   return failures.length === 0
     ? {
         pass: true,
-        reason: `the control stays inside the ${pane.width.toFixed(0)}px pane (Next ${next.width.toFixed(1)}px wide) and the title truncates in its ${label.clientWidth}px slot (${label.scrollWidth}px of text)`,
+        reason: `the control stays inside the ${pane.width.toFixed(0)}px pane (Next ${next.width.toFixed(1)}px wide) and the title truncates in its ${label.clientWidth}x${label.clientHeight}px slot (${label.scrollWidth}x${label.scrollHeight}px of text)`,
       }
     : { pass: false, reason: failures.join("; ") };
 }

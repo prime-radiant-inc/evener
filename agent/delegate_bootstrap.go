@@ -30,7 +30,7 @@ func (s *Session) bootstrapDelegateResources() error {
 	if warning, ok := legacyDelegateStateWarning(s.stateDir, s.id); ok {
 		s.pendingHookWarnings = append(s.pendingHookWarnings, warning)
 	}
-	path := filepath.Join(jobsDir(s.stateDir, s.id), "delegates.jsonl")
+	path := schema.SessionDelegateJournalPath(s.stateDir, s.id)
 	store, err := delegatestore.Open(path)
 	if err != nil {
 		return fmt.Errorf("open delegate store: %w", err)
@@ -89,12 +89,12 @@ func (s *Session) bootstrapDelegateResources() error {
 	s.delegateController = controller
 	s.delegateRootSessionID = s.id
 	s.ownsDelegateController = true
-	controller.emitUpdate = s.emitStableDelegateUpdate
+	controller.emitUpdate = s.emitDelegateUpdate
 	s.pendingDelegateDeliveries = append(s.pendingDelegateDeliveries, pendingDeliveries...)
 	return nil
 }
 
-func (s *Session) emitStableDelegateUpdate(plan delegateUpdatePlan) {
+func (s *Session) emitDelegateUpdate(plan delegateUpdatePlan) {
 	if s == nil || s.delegateController == nil {
 		return
 	}

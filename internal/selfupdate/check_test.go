@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -221,5 +222,115 @@ func TestCheckShortPrefixIsStale(t *testing.T) {
 	}
 	if !got.UpdateAvailable {
 		t.Fatal("UpdateAvailable = false for a 4-char prefix of the latest commit, want true (too short to prove currency)")
+	}
+}
+
+func TestCheckRejectsUnusableRepoURL(t *testing.T) {
+	t.Parallel()
+	if _, err := Check(t.Context(), CheckOptions{Channel: "snapshot", RepoURL: "https://github.com/onlyowner"}); err == nil {
+		t.Fatal("a repo URL without owner/repo was accepted")
+	}
+	if _, _, err := repoOwnerName("://"); err == nil {
+		t.Fatal("an unparseable repo URL was accepted")
+	}
+	if _, _, err := repoOwnerName("https://github.com/owner/repo/extra"); err == nil {
+		t.Fatal("a repo URL with extra path elements was accepted")
+	}
+}
+
+// errCommitLookupGone is the sentinel commitLookupGoneTransport returns for
+// the commit-lookup request and nothing else: Check must carry it to the
+// caller, so errors.Is proves the failed lookup propagated rather than being
+// flattened into some other failure.
+var errCommitLookupGone = errors.New("commit lookup failed at the transport")
+
+// commitLookupGoneTransport answers the release-tag lookup with a usable tag
+// and fails the commit lookup itself at the transport, so the only failure
+// Check has to report is the commit lookup's own.
+type commitLookupGoneTransport struct{}
+
+func (commitLookupGoneTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if strings.HasSuffix(req.URL.Path, "/releases/latest") {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"tag_name":"v0.2.0"}`)),
+			Header:     http.Header{},
+		}, nil
+	}
+	return nil, errCommitLookupGone
+}
+
+// TestCheckReleaseRefusesBrokenCommitLookups pins both ways a release
+// channel's commit lookup can break: a lookup that fails outright must
+// surface its own error, and a lookup that answers with no SHA must fail
+// rather than report the channel current.
+func TestCheckReleaseRefusesBrokenCommitLookups(t *testing.T) {
+	t.Parallel()
+	// The tag resolves, but the commit lookup dies at the transport. The
+	// sentinel must reach the caller: no other error distinguishes a failed
+	// check from an up-to-date one.
+	client := &http.Client{Transport: commitLookupGoneTransport{}}
+	_, err := Check(t.Context(), CheckOptions{Channel: "release", CurrentSHA: "0123456", APIURL: "http://updates.example", HTTPClient: client})
+	if !errors.Is(err, errCommitLookupGone) {
+		t.Fatalf("a commit lookup that failed at the transport did not propagate its error: %v", err)
+	}
+	// The lookup answers 200 but carries no SHA: an empty commit cannot
+	// prove the channel points anywhere, so Check must refuse it.
+	sha, _ := json.Marshal(map[string]string{"sha": ""})
+	tag, _ := json.Marshal(map[string]string{"tag_name": "v0.2.0"})
+	paths := map[string]string{
+		"/repos/prime-radiant-inc/evener/releases/latest": string(tag),
+		"/repos/prime-radiant-inc/evener/commits/v0.2.0":  string(sha),
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if body, ok := paths[r.URL.Path]; ok {
+			_, _ = w.Write([]byte(body))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+	if _, err := Check(t.Context(), CheckOptions{Channel: "release", CurrentSHA: "0123456", APIURL: server.URL}); err == nil {
+		t.Fatal("a tag that resolves to no commit succeeded")
+	}
+}
+
+func TestCheckReleaseRefusesUndecodableBodies(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("not json"))
+	}))
+	t.Cleanup(server.Close)
+	if _, err := Check(t.Context(), CheckOptions{Channel: "release", CurrentSHA: "0123456", APIURL: server.URL}); err == nil {
+		t.Fatal("a latest-release body that does not decode succeeded")
+	}
+}
+
+// errBody fails every read, standing in for a connection that dies mid-body.
+type errBody struct{}
+
+func (errBody) Read([]byte) (int, error) { return 0, errors.New("body went away") }
+func (errBody) Close() error             { return nil }
+
+// failingTransport answers one 200 whose body cannot be read.
+type failingTransport struct{}
+
+func (failingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: http.StatusOK, Body: errBody{}, Header: http.Header{}}, nil
+}
+
+func TestHTTPGetSurfacesTransportFailures(t *testing.T) {
+	t.Parallel()
+	if _, err := httpGet(t.Context(), http.DefaultClient, "://missing-scheme", "text/plain"); err == nil {
+		t.Fatal("a request that cannot be built succeeded")
+	}
+	closed := httptest.NewServer(http.NotFoundHandler())
+	closed.Close()
+	if _, err := httpGet(t.Context(), http.DefaultClient, closed.URL, "text/plain"); err == nil {
+		t.Fatal("a request to a dead server succeeded")
+	}
+	client := &http.Client{Transport: failingTransport{}}
+	if _, err := httpGet(t.Context(), client, "http://updates.example/version.txt", "text/plain"); err == nil {
+		t.Fatal("a body that cannot be read succeeded")
 	}
 }

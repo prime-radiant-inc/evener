@@ -1,6 +1,8 @@
 import type { AnyNotification } from "@evener/appwire-client";
 import {
   ConnectionClosedError,
+  configFingerprint,
+  encodeLocalConfig,
   friendlyErrorMessage,
   makeTranscriptDisplayConfig,
   RequestTimeoutError,
@@ -8,10 +10,11 @@ import {
   toWireConfig,
   WireError,
 } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { connectionStore } from "../../../stores/connection";
 import {
@@ -19,6 +22,7 @@ import {
   resetTranscriptDisplayStoreForTests,
   transcriptDisplayStore,
 } from "../../../stores/transcriptDisplay";
+import { makeSourceId } from "../../../stores/transcriptDisplay/crossTabSync";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { toastKinds } from "../../../widgets/toast/toastTestUtils";
@@ -26,6 +30,24 @@ import { TranscriptSection } from "./transcript";
 
 const originalPatchHubDefault = transcriptDisplayStore.getState().patchHubDefault;
 const activeObservers = new Set<MutationObserver>();
+
+// Node's BroadcastChannel is one channel per process, not one per jsdom
+// document: every parallel test file shares the name, so a concurrently
+// running file's store writes arrive here as if from another browser tab and
+// overwrite this file's local layouts mid-test (issue 5837). Give this file's
+// channel its own name so sibling test files can neither write into this
+// store nor hear this file's writes, while channels created inside this file
+// still reach each other exactly as two tabs do.
+const unscopedBroadcastChannel = globalThis.BroadcastChannel;
+const transcriptChannelFileScope = makeSourceId();
+const fileScopedBroadcastChannel =
+  typeof unscopedBroadcastChannel === "function"
+    ? class FileScopedBroadcastChannel extends unscopedBroadcastChannel {
+        constructor(name: string) {
+          super(`${name}::${transcriptChannelFileScope}`);
+        }
+      }
+    : undefined;
 
 class FailingStorage extends MemoryStorage {
   setItem(): void {
@@ -35,6 +57,11 @@ class FailingStorage extends MemoryStorage {
 
 beforeAll(() => {
   installLocalStorage(new MemoryStorage());
+  if (fileScopedBroadcastChannel !== undefined) globalThis.BroadcastChannel = fileScopedBroadcastChannel;
+});
+
+afterAll(() => {
+  if (typeof unscopedBroadcastChannel === "function") globalThis.BroadcastChannel = unscopedBroadcastChannel;
 });
 
 beforeEach(() => {
@@ -93,16 +120,6 @@ function renderWithToasts() {
       <Toast />
     </>,
   );
-}
-
-function deferred<T>(): { promise: Promise<T>; resolve(value: T): void; reject(error: unknown): void } {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((next, fail) => {
-    resolve = next;
-    reject = fail;
-  });
-  return { promise, resolve, reject };
 }
 
 async function mountReadySection(
@@ -181,6 +198,58 @@ test("scope and its clear action precede editing, while shared changes preserve 
     transcriptDisplayStore.getState().hub.desktop?.config,
   );
   expect(client.calls.filter((call) => call.method === "evener/settings/transcriptDisplay/patch")).toHaveLength(1);
+});
+
+// A sibling test file driving the same store is another jsdom document, not
+// another tab of this one: its local writes must not land here. The file-scoped
+// channel above renames this file's channel, which is what keeps the two apart
+// (issue 5837). This test publishes only on that private name, never on the
+// suite-wide one, so it cannot itself pollute a sibling file's store.
+test("keeps this file's cross-tab channel apart from a sibling file's", async () => {
+  if (typeof unscopedBroadcastChannel !== "function") return;
+  const name = "evener.transcript-display.v1";
+  const privateName = `${name}::${transcriptChannelFileScope}`;
+  // What the store in this file subscribes on, created through the global the
+  // file installed above.
+  const ours = new globalThis.BroadcastChannel(name);
+  // A channel on the bare production name: what an unwrapped sibling file's
+  // store listens on.
+  const sibling = new unscopedBroadcastChannel(name);
+  // A channel on this file's private name proves the message really went
+  // through the event loop, so a slow machine cannot make this pass early.
+  const witness = new unscopedBroadcastChannel(privateName);
+  try {
+    const config = makeTranscriptDisplayConfig({ kind: "preset", level: "full" });
+    const delivered = new Promise<void>((resolve) => {
+      witness.onmessage = () => resolve();
+    });
+    // Only this test's own frame counts: the bare name also carries any other
+    // parallel file's writes, and those are not this test's business.
+    const sourceId = makeSourceId();
+    let siblingHeard = 0;
+    sibling.onmessage = (event) => {
+      const data = event.data as { sourceId?: string };
+      if (data?.sourceId === sourceId) siblingHeard += 1;
+    };
+    ours.postMessage({
+      version: 1,
+      sourceId,
+      layout: "desktop",
+      config: encodeLocalConfig(config),
+      fingerprint: configFingerprint(config),
+    });
+    await act(async () => {
+      await delivered;
+    });
+    // The sibling on the bare name heard nothing, while a tab of this file
+    // still reaches this store.
+    expect(siblingHeard).toBe(0);
+    expect(Object.keys(transcriptDisplayStore.getState().local)).toEqual(["desktop"]);
+  } finally {
+    ours.close();
+    sibling.close();
+    witness.close();
+  }
 });
 
 test("shows an accessible status for an unknown or older hub", () => {
@@ -356,6 +425,130 @@ test("acknowledges an ordinary same-config response after the store clears its d
   await userEvent.setup().click(screen.getAllByRole("radio", { name: "Activity" })[0]!);
   await savedOnce();
   expect(transcriptDisplayStore.getState().drafts.desktop).toBeUndefined();
+});
+
+test("acknowledges an older hub's four-field resolution of a custom save", async () => {
+  const client = new FakeClient("ready");
+  const confirmed = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  client.on("evener/settings/transcriptDisplay/get", () => ({
+    desktop: { revision: 1, config: toWireConfig(confirmed) },
+    mobile: { revision: 1, config: toWireConfig(shippedDefault("mobile").config) },
+  }));
+  connectionStore.getState().connect(client);
+  connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
+  // The old hub stored the four-field reading: the presentation field resolves
+  // from expandByDefault. The caller must accept that acknowledgment of the
+  // divergent request it made.
+  const acknowledged = makeTranscriptDisplayConfig({
+    kind: "custom",
+    toolIntent: true,
+    toolCalls: true,
+    reasoning: false,
+    expandByDefault: false,
+    thinkingOpenByDefault: false,
+  });
+  const patched = vi
+    .spyOn(transcriptDisplayStore.getState(), "patchHubDefault")
+    .mockResolvedValue({ revision: 2, config: acknowledged });
+  renderWithToasts();
+  await waitFor(() => expect(transcriptDisplayStore.getState().hub.desktop?.revision).toBe(1));
+  await waitFor(() => expect(transcriptDisplayStore.getState().hubLoading).toBe(false));
+
+  const user = userEvent.setup();
+  await user.click(screen.getByText(/Customize & advanced/));
+  await user.click(screen.getByRole("switch", { name: "Thinking open by default" }));
+
+  await savedOnce();
+  expect(patched).toHaveBeenCalledWith(
+    "desktop",
+    expect.objectContaining({
+      content: expect.objectContaining({ kind: "custom", thinkingOpenByDefault: true, expandByDefault: false }),
+    }),
+  );
+  // The hub kept the four-field reading; the preference survives in this
+  // browser's local view instead of silently resetting.
+  expect(transcriptDisplayStore.getState().local.desktop).toMatchObject({
+    content: {
+      kind: "custom",
+      toolIntent: true,
+      toolCalls: true,
+      reasoning: false,
+      expandByDefault: false,
+      thinkingOpenByDefault: true,
+    },
+  });
+  expect(successToasts()).toHaveLength(1);
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+test("keeps an existing browser-local choice through a downgraded hub save", async () => {
+  const client = new FakeClient("ready");
+  const confirmed = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  client.on("evener/settings/transcriptDisplay/get", () => ({
+    desktop: { revision: 1, config: toWireConfig(confirmed) },
+    mobile: { revision: 1, config: toWireConfig(shippedDefault("mobile").config) },
+  }));
+  connectionStore.getState().connect(client);
+  connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
+  const acknowledged = makeTranscriptDisplayConfig({
+    kind: "custom",
+    toolIntent: true,
+    toolCalls: true,
+    reasoning: false,
+    expandByDefault: false,
+    thinkingOpenByDefault: false,
+  });
+  vi.spyOn(transcriptDisplayStore.getState(), "patchHubDefault").mockResolvedValue({
+    revision: 2,
+    config: acknowledged,
+  });
+  renderWithToasts();
+  await waitFor(() => expect(transcriptDisplayStore.getState().hub.desktop?.revision).toBe(1));
+  await waitFor(() => expect(transcriptDisplayStore.getState().hubLoading).toBe(false));
+  // The reader already keeps their own desktop view.
+  const localChoice = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts: true });
+  act(() => transcriptDisplayStore.getState().setLocal("desktop", localChoice));
+
+  const user = userEvent.setup();
+  await user.click(screen.getByText(/Customize & advanced/));
+  await user.click(screen.getByRole("switch", { name: "Thinking open by default" }));
+
+  await savedOnce();
+  // The downgraded hub save must not replace the reader's local choice.
+  expect(transcriptDisplayStore.getState().local.desktop).toEqual(localChoice);
+});
+
+test("does not add a local override when the hub acknowledges the request exactly", async () => {
+  const client = new FakeClient("ready");
+  const confirmed = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  client.on("evener/settings/transcriptDisplay/get", () => ({
+    desktop: { revision: 1, config: toWireConfig(confirmed) },
+    mobile: { revision: 1, config: toWireConfig(shippedDefault("mobile").config) },
+  }));
+  connectionStore.getState().connect(client);
+  connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
+  const divergent = makeTranscriptDisplayConfig({
+    kind: "custom",
+    toolIntent: true,
+    toolCalls: true,
+    reasoning: false,
+    expandByDefault: false,
+    thinkingOpenByDefault: true,
+  });
+  vi.spyOn(transcriptDisplayStore.getState(), "patchHubDefault").mockResolvedValue({
+    revision: 2,
+    config: divergent,
+  });
+  renderWithToasts();
+  await waitFor(() => expect(transcriptDisplayStore.getState().hub.desktop?.revision).toBe(1));
+  await waitFor(() => expect(transcriptDisplayStore.getState().hubLoading).toBe(false));
+
+  const user = userEvent.setup();
+  await user.click(screen.getByText(/Customize & advanced/));
+  await user.click(screen.getByRole("switch", { name: "Thinking open by default" }));
+
+  await savedOnce();
+  expect(transcriptDisplayStore.getState().local.desktop).toBeUndefined();
 });
 
 test("allows the winner-first concurrent save to toast exactly once", async () => {

@@ -13,6 +13,8 @@ const ready: StartInput = {
 	pluginIssues: [],
 	unconfirmedModel: null,
 	startMayRepeat: false,
+	memoryOff: false,
+	hostOffersMemory: null,
 };
 const row = (over: Partial<HostRow>): HostRow => hostRow("paradise-park", over);
 
@@ -86,6 +88,45 @@ describe("a chosen model the host couldn't list", () => {
 			field: "project",
 			message: null,
 		});
+	});
+});
+
+describe("a Memory choice the chosen host can't honor", () => {
+	it("holds Start over a kept Memory off, saying where to clear it", () => {
+		expect(startBlock({ ...ready, memoryOff: true, hostOffersMemory: false })).toEqual({
+			field: "moreOptions",
+			message: expect.any(String),
+		});
+	});
+
+	it("lets a Memory off through once the host offers the field", () => {
+		expect(startBlock({ ...ready, memoryOff: true, hostOffersMemory: true })).toBeNull();
+	});
+
+	it("holds Start until the hub confirms the host can honor a Memory off", () => {
+		expect(startBlock({ ...ready, memoryOff: true, hostOffersMemory: null })).toEqual({
+			field: "moreOptions",
+			message: expect.any(String),
+		});
+	});
+
+	it("never holds Start over a Memory on, which an older hub already runs anyway", () => {
+		expect(startBlock({ ...ready, memoryOff: false, hostOffersMemory: false })).toBeNull();
+	});
+
+	it("comes after the project and the plugins", () => {
+		expect(startBlock({ ...ready, cwd: "", memoryOff: true, hostOffersMemory: false })).toEqual({
+			field: "project",
+			message: null,
+		});
+		expect(
+			startBlock({
+				...ready,
+				memoryOff: true,
+				hostOffersMemory: false,
+				pluginIssues: [{ name: "gone", reason: "not present in current preview" }],
+			}),
+		).toEqual({ field: "plugins", message: "gone: not present in current preview" });
 	});
 });
 

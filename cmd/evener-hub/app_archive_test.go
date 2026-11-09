@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/testfs"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -55,6 +57,78 @@ func TestHubArchiveSetAppWirePersistsSessionDecision(t *testing.T) {
 	if !decisions[hubcore.ArchiveKey{Kind: "session", ID: "session-1"}] {
 		t.Fatalf("session archive decision not persisted: %v", decisions)
 	}
+}
+
+// An archive decision is durable before its navigation receipt is built. When
+// the forced refresh exhausts its deadline, the mutation must report the
+// committed decision and defer the receipt instead of failing: a 503 would
+// invite a retry of a mutation that already applied.
+func TestArchiveSetDefersNavigationReceiptWhenRefreshTimesOut(t *testing.T) {
+	store := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+	var attentionPokes int
+	cfg := hubcore.WebConfig{
+		Archive:       store,
+		HubStateRoot:  t.TempDir(),
+		Past:          hubcore.NewPastIndex(""),
+		PokeAttention: func() { attentionPokes++ },
+	}
+	source := &churningNavigationSource{testNavigationSource: newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())}
+	navigation := newTestNavigationService(t, source.testNavigationSource, func(cfg *navigationServiceConfig) {
+		cfg.Source = source
+		cfg.BuildTimeout = 20 * time.Millisecond
+	})
+
+	response, err := archiveSet(context.Background(), cfg, nil, navigation, appwire.ArchiveParams{
+		Kind:     appwire.ArchiveTargetSession,
+		ID:       "session-1",
+		Archived: true,
+	})
+	if err != nil {
+		t.Fatalf("archive of a persisted decision failed: %v", err)
+	}
+	if !response.OK {
+		t.Fatalf("response = %+v, want OK for a persisted decision", response)
+	}
+	if !response.NavigationDeferred {
+		t.Fatalf("response = %+v, want NavigationDeferred for a timed-out receipt", response)
+	}
+	if got, want := response.Navigation.GenerationID, navigation.Capability().GenerationID; got != want {
+		t.Fatalf("deferred navigation generation = %q, want the live %q", got, want)
+	}
+	if len(response.Navigation.Targets) != 0 {
+		t.Fatalf("deferred navigation targets = %+v, want none", response.Navigation.Targets)
+	}
+	wire, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(wire), `"navigationDeferred":true`) || strings.Contains(string(wire), `"generation_id":""`) {
+		t.Fatalf("deferred response wire shape = %s, want the live generation and navigationDeferred", wire)
+	}
+	if attentionPokes != 1 {
+		t.Fatalf("attention pokes = %d, want 1 for an applied decision", attentionPokes)
+	}
+	decisions, err := store.Decisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decisions[hubcore.ArchiveKey{Kind: "session", ID: "session-1"}] {
+		t.Fatalf("session archive decision not persisted: %v", decisions)
+	}
+}
+
+// churningNavigationSource moves its revision on every capture, so a build
+// restarts until its deadline. It reproduces a fleet whose source changes
+// faster than a navigation build can commit.
+type churningNavigationSource struct {
+	*testNavigationSource
+	passes int
+}
+
+func (s *churningNavigationSource) Capture(ctx context.Context, generation string, now time.Time) (navigationSourceSnapshot, error) {
+	s.passes++
+	s.changeTitle(fmt.Sprintf("churn %d", s.passes))
+	return s.testNavigationSource.Capture(ctx, generation, now)
 }
 
 func TestHubArchiveSetAppWireValidatesAndUnarchivesProject(t *testing.T) {
@@ -329,7 +403,7 @@ func TestArchiveSetWithoutResidentDaemonPersistsDecision(t *testing.T) {
 // Archiving a session removes its scratch tree, through the reconcile the
 // archive kicks; unarchiving removes nothing.
 func TestArchiveSetRemovesTheSessionsScratchTree(t *testing.T) {
-	tmp := canonicalTempDir(t)
+	tmp := testfs.CanonicalTempDir(t)
 	t.Setenv("TMPDIR", tmp)
 	archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
 	sessionID := hubtest.SessionID(t)
@@ -341,7 +415,7 @@ func TestArchiveSetRemovesTheSessionsScratchTree(t *testing.T) {
 	writeSessionUpdatedAt(t, filepath.Join(projects, project.ID), sessionID, project.CanonicalPath, time.Now())
 	past := newRebuiltPastIndex(t, filepath.Join(projects, "*"))
 	cfg := hubcore.WebConfig{Archive: archive, HubStateRoot: t.TempDir(), Past: past}
-	cfg.ScratchReconcile = func() { reconcileArchivedScratch(cfg.Past, cfg.Archive, cfg.Roster, time.Now()) }
+	cfg.ScratchReconcile = func() { reconcileArchivedScratch(t.Context(), cfg.Past, cfg.Archive, cfg.Roster, time.Now()) }
 	web := NewWebServer(cfg)
 
 	tree := mintEndedScratchTree(t, sessionID, "CHILD1")
@@ -369,7 +443,7 @@ func TestArchiveSetRemovesTheSessionsScratchTree(t *testing.T) {
 // A recent session, an explicitly unarchived old one, and a live archived one
 // keep theirs.
 func TestReconcileArchivedScratchFollowsEveryArchiveRule(t *testing.T) {
-	tmp := canonicalTempDir(t)
+	tmp := testfs.CanonicalTempDir(t)
 	t.Setenv("TMPDIR", tmp)
 	root := t.TempDir()
 	projectDir := filepath.Join(root, "project")
@@ -434,7 +508,7 @@ func TestReconcileArchivedScratchFollowsEveryArchiveRule(t *testing.T) {
 		t.Fatal("the live session was not confirmed into the roster")
 	}
 
-	reconcileArchivedScratch(past, archive, roster, now)
+	reconcileArchivedScratch(t.Context(), past, archive, roster, now)
 
 	for name, s := range sessions {
 		_, err := os.Lstat(trees[name])
@@ -484,8 +558,8 @@ func TestArchiveSetKicksTheScratchReconcile(t *testing.T) {
 // A daemon started with its own TMPDIR keeps its scratch where the hub's temp
 // dir does not reach; the meta records that dir, and the reconcile looks there.
 func TestReconcileFindsAnArchivedTreeInTheDaemonsTempDir(t *testing.T) {
-	hubTmp := canonicalTempDir(t)
-	daemonTmp := canonicalTempDir(t)
+	hubTmp := testfs.CanonicalTempDir(t)
+	daemonTmp := testfs.CanonicalTempDir(t)
 	sessionID := hubtest.SessionID(t)
 	projects := t.TempDir()
 	project, err := identifier.ResolveProject(t.TempDir())
@@ -506,7 +580,7 @@ func TestReconcileFindsAnArchivedTreeInTheDaemonsTempDir(t *testing.T) {
 	tree := mintEndedScratchTree(t, sessionID)
 	t.Setenv("TMPDIR", hubTmp)
 
-	reconcileArchivedScratch(past, archive, nil, time.Now())
+	reconcileArchivedScratch(t.Context(), past, archive, nil, time.Now())
 
 	if _, err := os.Lstat(tree); !os.IsNotExist(err) {
 		t.Errorf("the reconcile left the archived tree %s in the daemon's temp dir: %v", tree, err)
@@ -516,7 +590,7 @@ func TestReconcileFindsAnArchivedTreeInTheDaemonsTempDir(t *testing.T) {
 // The reconciler's own goroutine serves a kick: an archived session's tree
 // goes once Run picks the kick up.
 func TestScratchReconcilerRunServesAKick(t *testing.T) {
-	tmp := canonicalTempDir(t)
+	tmp := testfs.CanonicalTempDir(t)
 	t.Setenv("TMPDIR", tmp)
 	sessionID := hubtest.SessionID(t)
 	projects := t.TempDir()
@@ -550,7 +624,7 @@ func TestScratchReconcilerRunServesAKick(t *testing.T) {
 func TestDaemonExitRemovesOnlyAnArchivedSessionsScratchTree(t *testing.T) {
 	for _, archived := range []bool{true, false} {
 		t.Run(fmt.Sprintf("archived=%t", archived), func(t *testing.T) {
-			tmp := canonicalTempDir(t)
+			tmp := testfs.CanonicalTempDir(t)
 			t.Setenv("TMPDIR", tmp)
 			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 			defer cancel()
@@ -578,7 +652,7 @@ func TestDaemonExitRemovesOnlyAnArchivedSessionsScratchTree(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg := hubcore.WebConfig{Roster: roster, Archive: archive, Past: past}
-			cfg.ScratchReconcile = func() { reconcileArchivedScratch(cfg.Past, cfg.Archive, cfg.Roster, time.Now()) }
+			cfg.ScratchReconcile = func() { reconcileArchivedScratch(t.Context(), cfg.Past, cfg.Archive, cfg.Roster, time.Now()) }
 			newHubSourceRegistry(cfg)
 			tree := mintEndedScratchTree(t, sessionID, "CHILD1")
 

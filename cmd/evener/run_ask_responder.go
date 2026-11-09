@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/execsupport/orphanpipe"
 	"primeradiant.com/evener/execsupport/procgroup"
 )
@@ -108,7 +109,7 @@ var errPendingAskArgumentsUnrecorded = errors.New("a question is pending but its
 // state, not the best-effort event stream), parsed into their full
 // questions (options and details included).
 func askResponderPayload(pendingCallArgs [][]byte) ([]byte, error) {
-	var questions []agent.AskUserQuestion
+	var questions []schema.AskUserQuestion
 	for _, raw := range pendingCallArgs {
 		parsed, err := agent.ParseAskUserCallArguments(raw)
 		if err != nil {
@@ -123,7 +124,7 @@ func askResponderPayload(pendingCallArgs [][]byte) ([]byte, error) {
 		return nil, errPendingAskArgumentsUnrecorded
 	}
 	return json.Marshal(struct {
-		Questions []agent.AskUserQuestion `json:"questions"`
+		Questions []schema.AskUserQuestion `json:"questions"`
 	}{Questions: questions})
 }
 

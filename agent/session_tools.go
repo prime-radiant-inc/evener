@@ -118,7 +118,7 @@ func (s *Session) RegisterTool(name, description string, params map[string]any, 
 	// Rebuild caches so the new tool appears in tool defs and system prompt.
 	s.mu.Lock()
 	s.rebuildToolDefsCache()
-	promptWarning := s.refreshSystemPromptCache(s.env) // already holding s.mu; currentEnv() would deadlock
+	promptWarning, _ := s.refreshSystemPromptCache(s.env) // already holding s.mu; currentEnv() would deadlock
 	s.mu.Unlock()
 	s.reportPromptRenderFailure(promptWarning)
 }
@@ -460,8 +460,15 @@ func (s *Session) runPreToolHooks(ctx context.Context, call *llm.ToolCallData, p
 	hi := s.hookInput(plugin.HookPreToolUse)
 	hi.ToolName = toolname.EvenerToClaude(call.Name)
 	hi.ToolUseID = call.ID
+	registered := s.reg.Get(call.Name)
+	if registered == nil {
+		registered = &tool.RegisteredTool{}
+	}
+	if !prep.RawArgumentsRejected && registered.UnmarshalArgs != nil {
+		hi.UnmarshalToolArguments = registered.UnmarshalArguments
+	}
 	if !prep.RawArgumentsRejected && len(call.Arguments) > 0 {
-		_ = json.Unmarshal(call.Arguments, &hi.ToolInput)
+		_ = registered.UnmarshalArguments(call.Arguments, &hi.ToolInput)
 	}
 
 	preResult := s.hookRunner.RunPreToolUse(s.apiLogContext(ctx), hi)
@@ -483,7 +490,7 @@ func (s *Session) runPreToolHooks(ctx context.Context, call *llm.ToolCallData, p
 		return &res, false
 	}
 	if !prep.RawArgumentsRejected && len(preResult.UpdatedInput) > 0 {
-		if err := applyUpdatedToolInput(call, preResult.UpdatedInput); err != nil {
+		if err := applyUpdatedToolInput(call, *registered, preResult.UpdatedInput); err != nil {
 			res := errorResult(*call, "invalid hook updatedInput: "+err.Error())
 			return &res, false
 		}
@@ -559,13 +566,13 @@ func toolStartDescription(args map[string]any) string {
 	return ""
 }
 
-func applyUpdatedToolInput(call *llm.ToolCallData, updated map[string]any) error {
+func applyUpdatedToolInput(call *llm.ToolCallData, registered tool.RegisteredTool, updated map[string]any) error {
 	if call == nil || len(updated) == 0 {
 		return nil
 	}
 	args := map[string]any{}
 	if len(call.Arguments) > 0 {
-		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+		if err := registered.UnmarshalArguments(call.Arguments, &args); err != nil {
 			return err
 		}
 	}

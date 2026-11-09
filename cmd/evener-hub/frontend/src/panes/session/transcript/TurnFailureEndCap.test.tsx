@@ -4,11 +4,11 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { beforeEach, expect, test, vi } from "vitest";
 import { accessibleName } from "../../../accessibleNameTestUtils";
-import { connectionStore } from "../../../stores/connection";
+import { settleProjectionWorkForTests } from "../../../panes/session/composer/queue/testing/flushPendingTurnsProjection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { setMutationClientIdentityForTests } from "../../../stores/mutationClientIdentity";
 import type { MutationOutboxRecord } from "../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
-import { settleProjectionWorkForTests } from "../../../stores/projectionWork";
 import { holdIndexedDBEvent, holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../stores/threads";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
@@ -662,7 +662,7 @@ test.each([
     expect(getToasts()).toEqual([]);
   } finally {
     cleanup();
-    connectionStore.setState({ client: null, state: "idle" });
+    resetConnectionStoreForTests();
     resetThreadsStoreForTests();
     storage.close();
   }

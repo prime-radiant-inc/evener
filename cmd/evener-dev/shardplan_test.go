@@ -13,7 +13,7 @@ func TestParseSurveyReadsTopLevelPassAndSkipLines(t *testing.T) {
 	survey := strings.Join([]string{
 		"=== RUN   TestAlpha",
 		"--- PASS: TestAlpha (1.50s)",
-		"    --- PASS: TestAlpha/subtest (1.00s)", // subtest: excluded
+		"    --- PASS: TestAlpha/subtest (1.00s)", // subtest: absorbed by the parent's larger duration
 		"--- SKIP: TestBeta (0.00s)",
 		"--- FAIL: TestGamma (0.25s)", // failed: not a weight
 		"--- PASS: ExampleDelta (0.10s)",
@@ -27,6 +27,86 @@ func TestParseSurveyReadsTopLevelPassAndSkipLines(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("parseSurvey = %v, want %v", got, want)
+	}
+}
+
+// TestParseSurveyPricesSubtestsIntoTheirTopLevelTest covers the subtest shapes
+// a survey can print. The parent's own line is the price unless a child
+// outlives it; parseSurvey's doc says why the max is right and the sum is not.
+func TestParseSurveyPricesSubtestsIntoTheirTopLevelTest(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		survey string
+		want   []testCost
+	}{
+		{
+			name: "parallel parent is priced at its slowest child",
+			survey: strings.Join([]string{
+				"=== RUN   TestParallelParent",
+				"=== RUN   TestParallelParent/slow",
+				"=== PAUSE TestParallelParent/slow",
+				"=== RUN   TestParallelParent/fast",
+				"=== PAUSE TestParallelParent/fast",
+				"=== CONT  TestParallelParent/slow",
+				"=== CONT  TestParallelParent/fast",
+				"--- PASS: TestParallelParent (0.00s)",
+				"    --- PASS: TestParallelParent/slow (2.40s)",
+				"    --- PASS: TestParallelParent/fast (0.30s)",
+				// The shared prefix must not let this test's child raise
+				// TestParallelParent.
+				"--- PASS: TestParallelParentExtra (0.40s)",
+				"    --- PASS: TestParallelParentExtra/case (0.20s)",
+			}, "\n"),
+			want: []testCost{
+				{"TestParallelParent", 2.4},
+				{"TestParallelParentExtra", 0.4},
+			},
+		},
+		{
+			name: "serial parent keeps its own duration",
+			survey: strings.Join([]string{
+				"=== RUN   TestSerialParent",
+				"=== RUN   TestSerialParent/first",
+				"=== RUN   TestSerialParent/second",
+				"--- PASS: TestSerialParent (2.00s)",
+				"    --- PASS: TestSerialParent/first (0.60s)",
+				"    --- PASS: TestSerialParent/second (0.70s)",
+			}, "\n"),
+			want: []testCost{{"TestSerialParent", 2.0}},
+		},
+		{
+			name: "nested subtests fold into the top-level test",
+			survey: strings.Join([]string{
+				"=== RUN   TestNestedParent",
+				"=== RUN   TestNestedParent/outer",
+				"=== PAUSE TestNestedParent/outer",
+				"=== CONT  TestNestedParent/outer",
+				"--- PASS: TestNestedParent (0.00s)",
+				"    --- PASS: TestNestedParent/outer (0.00s)",
+				"        --- PASS: TestNestedParent/outer/slow (1.75s)",
+				"        --- PASS: TestNestedParent/outer/fast (0.25s)",
+			}, "\n"),
+			want: []testCost{{"TestNestedParent", 1.75}},
+		},
+		{
+			name: "a skipped subtest draws no entry of its own",
+			survey: strings.Join([]string{
+				"--- PASS: TestParent (0.50s)",
+				"    --- SKIP: TestParent/skipped (0.20s)",
+			}, "\n"),
+			want: []testCost{{"TestParent", 0.5}},
+		},
+		{
+			name:   "a subtest with no top-level line draws nothing",
+			survey: "    --- PASS: TestGhost/child (9.00s)\n",
+			want:   nil,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseSurvey(tc.survey); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("parseSurvey = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -523,6 +603,20 @@ func TestTestSetKeyIsOrderInsensitiveAndStable(t *testing.T) {
 	skipped := testSetKey("TestA\nTestB\n", parsedFlags{}, "", "^TestA$")
 	if skipped == a || skipped == goflags {
 		t.Fatalf("a survey under a skip shares another key: %q", skipped)
+	}
+}
+
+// TestTestSetKeyChangesWithTheSurveyParserVersion pins the parser's version in
+// the cache key: a reading change has to change the key, or the cache keeps
+// naming an identity it no longer matches and no gate re-surveys.
+func TestTestSetKeyChangesWithTheSurveyParserVersion(t *testing.T) {
+	got := testSetKey("TestA\n", parsedFlags{}, "", "")
+	if same := testSetKeyForParserVersion("TestA\n", parsedFlags{}, "", "", surveyParserVersion); same != got {
+		t.Fatalf("testSetKey = %q, want the key built from surveyParserVersion (%q)", got, same)
+	}
+	next := testSetKeyForParserVersion("TestA\n", parsedFlags{}, "", "", surveyParserVersion+"-next")
+	if next == got {
+		t.Fatalf("a different survey parser version shares the cache key %q; the key does not name the reading", got)
 	}
 }
 

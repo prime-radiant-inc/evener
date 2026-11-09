@@ -4,14 +4,16 @@ import (
 	"errors"
 	"fmt"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 )
 
 type exhaustedBudget string
 
 const (
-	exhaustedBudgetTurns      exhaustedBudget = "max_turns"
-	exhaustedBudgetToolRounds exhaustedBudget = "max_tool_rounds_per_input"
+	exhaustedBudgetTurns               exhaustedBudget = "max_turns"
+	exhaustedBudgetToolRounds          exhaustedBudget = "max_tool_rounds_per_input"
+	exhaustedBudgetServerContinuations exhaustedBudget = "max_server_continuations"
 )
 
 const childTurnBudgetWarning = "You have 5 turns remaining in this session. Report your current status and evidence to your parent soon, and ask for direction if the task cannot be completed safely within the remaining budget."
@@ -29,10 +31,14 @@ func (e *budgetExhaustionError) Error() string {
 }
 
 func (e *budgetExhaustionError) reason() string {
-	if e.Budget == exhaustedBudgetTurns {
+	switch e.Budget {
+	case exhaustedBudgetTurns:
 		return "turn_budget_exhausted"
+	case exhaustedBudgetServerContinuations:
+		return "server_continuation_budget_exhausted"
+	default:
+		return "tool_round_budget_exhausted"
 	}
-	return "tool_round_budget_exhausted"
 }
 
 func budgetExhaustionFromError(err error) (*budgetExhaustionError, bool) {
@@ -41,6 +47,16 @@ func budgetExhaustionFromError(err error) (*budgetExhaustionError, bool) {
 		return nil, false
 	}
 	return exhausted, true
+}
+
+// emitBudgetExhaustionFailure persists and emits a mid-turn budget exhaustion as
+// a terminal TurnFailure, so a returning client sees why the turn ended and can
+// offer retry instead of only learning it from a daemon log. Cause.Kind carries
+// the typed reason so consumers can branch on it rather than the message.
+func (s *Session) emitBudgetExhaustionFailure(exhausted *budgetExhaustionError) {
+	data := errorDataFromError(exhausted)
+	data.Cause = &events.ErrorCause{Kind: exhausted.reason()}
+	s.emitTurnFailure(data)
 }
 
 func turnBudgetWarningInHistory(history []schema.Turn) bool {

@@ -28,8 +28,8 @@ export function AnsiOutputList({
 			// the list (a tree update that leaves the text alone) leaves them be.
 			strictMode
 			renderItem={renderLine}
-			ListHeaderComponent={header}
-			ListFooterComponent={footer}
+			ListHeaderComponent={header ?? undefined}
+			ListFooterComponent={footer ?? undefined}
 			contentContainerStyle={contentContainerStyle}
 		/>
 	);

@@ -9,9 +9,9 @@
  * the root now COMPOSES with its host: the fallback is 1em, so a host's own
  * font-size applies and dense chrome never needs a pin. A true reading
  * surface (agent messages, the doc pane) pins
- * --prose-font-size: var(--font-size-prose) on an ancestor to keep the 18px
- * reading step. Body text composes with the host; headings and GFM tables
- * stay on the fixed document ramp below regardless - the known boundary.
+ * --prose-font-size: var(--font-size-prose) on an ancestor to keep the compact
+ * reading step. Body text composes with the host; h1/h2 and GFM tables use
+ * the fixed document ramp below, while h3 follows the composed prose size.
  *
  * --markdown-font is the family the --markdown-ink pattern already set:
  * serif is the conversation's reading voice, and report bubbles take the sans
@@ -25,7 +25,7 @@
   overflow-wrap: anywhere;
   font-family: var(--markdown-font, var(--font-prose));
   font-size: var(--prose-font-size, 1em);
-  line-height: var(--line-height-body);
+  line-height: var(--line-height-prose);
 }
 
 /* headings: h1-h3 read as "display" text per Direction (semibold, -1%
@@ -52,7 +52,9 @@
 }
 
 .root h3 {
-  font-size: var(--font-size-body);
+  /* Never smaller than the prose it heads or the h4 step below it: a host
+   * that renders markdown at caption size must not invert the headings. */
+  font-size: max(1em, var(--font-size-body));
   letter-spacing: var(--tracking-display);
 }
 

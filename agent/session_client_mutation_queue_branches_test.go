@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 )
 
@@ -172,6 +173,10 @@ func TestRejectClientMutationWithNonWireError(t *testing.T) {
 
 // A refusal whose data wraps the standard data still records the mark, and
 // keeps its category: the rejection stores the ErrorData the wrapper embeds.
+// Round-14 disclosed rewrite: every journaled rejection positively carries
+// the journaledRejection cause (the stamp the client's certainty split reads),
+// so the want gains it - the old assertion pinned the pre-stamp premise that
+// a rejection's data carries no cause.
 func TestRejectClientMutationKeepsTheMarkOfWrappedData(t *testing.T) {
 	t.Parallel()
 	record := &clientMutationRecord{ClientMutationID: "cm_wrapped"}
@@ -181,6 +186,7 @@ func TestRejectClientMutationKeepsTheMarkOfWrappedData(t *testing.T) {
 		ClientMutationID: "cm_wrapped",
 		MutationOutcome:  appwire.MutationOutcomeNotAccepted,
 		RetryDisposition: appwire.RetryDispositionNone,
+		Cause:            appwire.JournaledRejectionCause,
 	}
 	if record.Rejection == nil || record.Rejection.Data != want {
 		t.Fatalf("rejection = %+v, want data %+v", record.Rejection, want)
@@ -933,6 +939,44 @@ func TestClientSteeringFromSnapshot(t *testing.T) {
 	})
 }
 
+func TestRestoredManagerSteeringKeepsAuthor(t *testing.T) {
+	t.Parallel()
+	// A Manager-authored steer is pending when the process restarts. The
+	// pending-execution codec must round-trip its author, and the restored
+	// steering delivery must carry it: an actor-less restore would deliver the
+	// Manager's message as unattributed input.
+	manager := appwire.SessionActor{Kind: "manager", ManagerRef: "local:manager"}
+	pending := clientMutationPendingExecutions{
+		"cm_steer": {
+			Actor:            manager,
+			ClientMutationID: "cm_steer",
+			Method:           clientMutationMethodSteer,
+			ExecutionState:   "accepted",
+			TurnID:           "turn_1",
+			Input:            []appwire.InputItem{{Type: "text", Text: "manager steer"}},
+		},
+	}
+	encoded, err := json.Marshal(pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored clientMutationPendingExecutions
+	if err := json.Unmarshal(encoded, &restored); err != nil {
+		t.Fatal(err)
+	}
+	snap := &clientMutationSnapshot{
+		SteeringOrder:     []string{"cm_steer"},
+		PendingExecutions: restored,
+	}
+	steering := clientSteeringFromSnapshot(*snap)
+	if len(steering) != 1 {
+		t.Fatalf("expected 1 steering message, got %d", len(steering))
+	}
+	if got, want := steering[0].Actor, (schema.SessionActor{Kind: manager.Kind, ManagerRef: manager.ManagerRef}); got != want {
+		t.Fatalf("restored steering actor = %#v, want %#v", got, want)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // combineClientMutationInputs
 // ---------------------------------------------------------------------------
@@ -1092,6 +1136,30 @@ func TestReturnClaimedQueuedMutation(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "has 2 queue entry IDs") {
 			t.Fatalf("expected error about 2 queue entry IDs, got %v", err)
+		}
+	})
+	t.Run("returned entry keeps the manager author", func(t *testing.T) {
+		snap := &clientMutationSnapshot{
+			BudgetReservations: map[string]clientMutationBudgetReservation{},
+			PendingExecutions: map[string]appwire.PendingMutation{
+				"cm_1": {
+					QueueEntryIDs: []string{"q_1"},
+					TurnID:        "turn_1",
+					Input:         []appwire.InputItem{{Type: "text", Text: "steer"}},
+					Method:        clientMutationMethodQueue,
+				},
+			},
+		}
+		manager := schema.SessionActor{Kind: "manager", ManagerRef: "local:manager"}
+		record := &clientMutationRecord{Method: clientMutationMethodQueue, Actor: manager}
+		if err := returnClaimedQueuedMutation(snap, "cm_1", snap.PendingExecutions["cm_1"], record); err != nil {
+			t.Fatal(err)
+		}
+		if len(snap.InputQueue) != 1 {
+			t.Fatalf("expected 1 queue entry, got %d", len(snap.InputQueue))
+		}
+		if got := snap.InputQueue[0].Actor; got != manager {
+			t.Fatalf("requeued entry actor = %#v, want the manager author %#v", got, manager)
 		}
 	})
 	t.Run("zero accepted turns stays zero", func(t *testing.T) {

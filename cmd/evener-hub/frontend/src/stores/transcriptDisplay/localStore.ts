@@ -8,10 +8,14 @@ export const LOCAL_KEYS: Record<ViewportClass, string> = {
 export type StorageWarningSetter = (message: string | null) => void;
 
 export function writeLocal(layout: ViewportClass, encoded: string): boolean {
+  return writeVerified(LOCAL_KEYS[layout], encoded);
+}
+
+function writeVerified(key: string, encoded: string): boolean {
   try {
     if (typeof localStorage === "undefined") throw new Error("localStorage is unavailable");
-    localStorage.setItem(LOCAL_KEYS[layout], encoded);
-    if (localStorage.getItem(LOCAL_KEYS[layout]) !== encoded) throw new Error("localStorage did not retain the value");
+    localStorage.setItem(key, encoded);
+    if (localStorage.getItem(key) !== encoded) throw new Error("localStorage did not retain the value");
     return true;
   } catch {
     return false;

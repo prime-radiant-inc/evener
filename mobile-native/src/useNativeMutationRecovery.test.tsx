@@ -18,11 +18,6 @@ import { type NativeMutationRecoveryProjection, useNativeMutationRecovery } from
 
 const expoSQLite = vi.hoisted(() => ({ openDatabaseSync: vi.fn() }));
 vi.mock("expo-sqlite", () => expoSQLite);
-vi.mock("expo-crypto", () => ({
-	randomUUID: () => "test-uuid",
-	getRandomValues: (array: Uint8Array) => array,
-}));
-
 const TARGET = nativeMutationTargetKey("hub-1", "ref-1");
 const OTHER_TARGET = nativeMutationTargetKey("hub-2", "ref-2");
 

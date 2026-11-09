@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -114,8 +115,25 @@ type HostFacts struct {
 	// config and hook writes stay denied — and loses to the credential denylist,
 	// so a credential.helper line becomes readable while ~/.git-credentials stays
 	// masked. A path that does not exist contributes nothing and never fails
-	// session start.
+	// session start. A non-empty $GIT_CONFIG_GLOBAL replaces both FILES; a
+	// set-but-empty or unreadable value names no config git reads (git ignores
+	// it and the developer's settings are silently absent), so nothing is
+	// granted for it.
 	GitGlobalConfigPaths []string
+
+	// GitSystemConfigPaths are the SYSTEM-WIDE git config FILES git reads on
+	// this host. The built-in location lives under /etc, which restricted mode
+	// already grants as a system read root, so this names only an override:
+	// $GIT_CONFIG_SYSTEM when it is a non-empty absolute path to an existing
+	// non-directory FILE and $GIT_CONFIG_NOSYSTEM does not disable the system
+	// config. That override sits anywhere the environment says, typically under
+	// $HOME, which restricted mode otherwise grants no read of; an unreadable
+	// $GIT_CONFIG_SYSTEM is fatal to git rather than ignored (verified on git
+	// 2.43), so without the grant the environment variable could make every git
+	// command in a restricted session fail. Like GitGlobalConfigPaths it is
+	// READ-ONLY, FILE-EXACT, changes no write surface, and loses to the
+	// credential denylist.
+	GitSystemConfigPaths []string
 
 	// EvenerContentRoots are the installed plugin files in Evener's plugin store
 	// and the user's skills directory at their configured locations.
@@ -151,11 +169,15 @@ type HostFacts struct {
 	XDGCacheHome string
 
 	// NpmConfigCache and CargoHome are $npm_config_cache and $CARGO_HOME, which
-	// move npm's and cargo's cache directories; empty when unset. They are read
-	// from the environment alone: cargo keeps no file for CARGO_HOME, and npm's
-	// .npmrc `cache=` is not consulted (a cache moved only there stays unserved).
+	// move npm's and cargo's cache directories; empty when unset. Cargo keeps no
+	// file for CARGO_HOME. npm also reads a `cache=` setting from its .npmrc
+	// files; NpmrcCaches holds every absolute value this host's user and global
+	// files set. The project file is read at resolution and per spawn, where the
+	// session's package directory and the spawn environment are known, so an
+	// overlay serves a cache moved only there (#4542).
 	NpmConfigCache string
 	CargoHome      string
+	NpmrcCaches    []string
 
 	// OverlayLowerOK reports whether bwrap can mount an unprivileged overlay
 	// with a given directory as its lower on this host. Whether overlay is
@@ -343,6 +365,7 @@ func probeHost(system probeSystem) HostFacts {
 		facts.LoginHome = login
 	}
 	facts.GitGlobalConfigPaths = probeGitGlobalConfigPaths(system)
+	facts.GitSystemConfigPaths = probeGitSystemConfigPaths(system)
 	facts.EvenerConfigRoot = probeEvenerConfigRoot(system)
 	facts.EvenerContentRoots = evenerContentRoots(facts.EvenerConfigRoot, system.getenv(envvars.EVENERNoUserSkills.Name) == "1")
 	storeRoot := userdirs.PluginStore(facts.EvenerConfigRoot)
@@ -355,6 +378,7 @@ func probeHost(system probeSystem) HostFacts {
 	facts.XDGCacheHome = system.getenv(envvars.XDGCacheHome.Name)
 	facts.NpmConfigCache = envValueFold(system.environ(), npmConfigCacheEnv)
 	facts.CargoHome = system.getenv(envvars.CargoHome.Name)
+	facts.NpmrcCaches = probeNpmrcCaches(system, facts.Home)
 
 	if path, err := system.lookPath("bwrap"); err == nil {
 		facts.BwrapPath = path
@@ -391,10 +415,327 @@ func envValueFold(environ []string, key string) string {
 	return value
 }
 
+// gitConfigGlobalEnv, gitConfigSystemEnv and gitConfigNoSystemEnv are git's own
+// environment controls over which configuration files git reads
+// (git-config(1), ENVIRONMENT). They are not Evener variables, so they live
+// here rather than in envvars.
+const (
+	gitConfigGlobalEnv   = "GIT_CONFIG_GLOBAL"
+	gitConfigSystemEnv   = "GIT_CONFIG_SYSTEM"
+	gitConfigNoSystemEnv = "GIT_CONFIG_NOSYSTEM"
+)
+
+// probeNpmrcCaches returns the absolute `cache=` values npm resolves from the
+// .npmrc files whose locations do not depend on a project: the user config
+// ($npm_config_userconfig, else ~/.npmrc) and the global config
+// ($npm_config_globalconfig, else $npm_config_prefix/etc/npmrc). npm reads a
+// `cache=` setting in either, so a
+// host that moves its cache only there would otherwise leave it outside every
+// overlay root, read-only (#4542).
+//
+// npm's default global config lives beside its Node installation, which the
+// probe cannot locate without running npm, so it is consulted only when the
+// environment names it. An absent file contributes nothing; a relative
+// filename cannot be located as npm will (it resolves against npm's own
+// working directory), so it contributes nothing here and the spawn floor
+// treats it as unknown. The cache value is judged absolute later.
+func probeNpmrcCaches(system probeSystem, home string) []string {
+	environ := system.environ()
+	user := envValueFold(environ, npmConfigUserConfigEnv)
+	if user == "" && home != "" {
+		user = filepath.Join(home, ".npmrc")
+	}
+	global := envValueFold(environ, npmConfigGlobalConfigEnv)
+	if global == "" {
+		if prefix := envValueFold(environ, npmConfigPrefixEnv); prefix != "" {
+			global = filepath.Join(prefix, "etc", "npmrc")
+		}
+	}
+	var roots []string
+	for _, path := range []string{user, global} {
+		roots = append(roots, readNpmrcCacheRoots(system, path, home)...)
+	}
+	return roots
+}
+
+// readNpmrcCacheRoots reads the absolute `cache=` values in the .npmrc at
+// path. The probe's bounded, non-blocking read refuses a FIFO, a device or an
+// oversized file, so a hostile file costs only its setting (#4542).
+func readNpmrcCacheRoots(system probeSystem, path, home string) []string {
+	lookup := npmrcEnvLookup(system.environ())
+	resolved, readable, _ := npmConfigFilePath(path, lookup, home)
+	if !readable {
+		return nil
+	}
+	data, err := system.readFile(resolved)
+	if err != nil {
+		return nil
+	}
+	roots, _ := parseNpmrcCacheRoots(data, lookup, home)
+	return roots
+}
+
+// readProjectNpmrcCacheRoots reads the worktree's .npmrc. It is untrusted
+// repository content, so a final-component symlink is refused (O_NOFOLLOW) and
+// a cache it names is served only where it is already a directory: resolution
+// must never create a host directory on repository say-so.
+func readProjectNpmrcCacheRoots(path string, lookup func(string) string, home string) []string {
+	var roots []string
+	values, _ := readProjectNpmrc(path, lookup, home)
+	for _, root := range values {
+		if fi, err := os.Stat(root); err == nil && fi.IsDir() {
+			roots = append(roots, root)
+		}
+	}
+	return roots
+}
+
+// readProjectNpmrcCacheValue returns the last cache value from the project
+// file, whether or not that directory exists. A file a mask replaces is
+// unknown, not absent: bubblewrap shows the spawn an empty file there, so npm
+// falls through to defaults the floor may not serve.
+func readProjectNpmrcCacheValue(path string, lookup func(string) string, home string, policy ResolvedPolicy) (string, bool) {
+	if fileMaskedAlongPath(policy, path) {
+		return "", false
+	}
+	values, ok := readProjectNpmrc(path, lookup, home)
+	if !ok {
+		return "", false
+	}
+	if len(values) == 0 {
+		return "", true
+	}
+	return values[len(values)-1], true
+}
+
+// readProjectNpmrc parses the cache values of the project .npmrc at path. An
+// absent file is (nil, true): npm falls through to its user/global config. A
+// file that exists but cannot be read safely — a final-component symlink, a
+// device, an unreadable or oversized file — or whose path cannot be located as
+// npm will is (nil, false): npm may still read a cache from it, so the caller
+// must not treat it as absent.
+func readProjectNpmrc(path string, lookup func(string) string, home string) ([]string, bool) {
+	readable, absent := projectNpmrcFileState(path)
+	if !readable {
+		return nil, absent
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|openNonblock|openNoFollow, 0)
+	if err != nil {
+		return nil, os.IsNotExist(err)
+	}
+	defer func() { _ = f.Close() }()
+	data, err := readGoEnvFile(f, path)
+	if err != nil {
+		return nil, false
+	}
+	return parseNpmrcCacheRoots(data, lookup, home)
+}
+
+// npmrcHostLookup expands a project .npmrc value from host facts, for
+// resolution, which reads no process environment.
+func npmrcHostLookup(host HostFacts) func(string) string {
+	return func(name string) string {
+		switch name {
+		case envvars.Home.Name:
+			return host.Home
+		case envvars.XDGCacheHome.Name:
+			return host.XDGCacheHome
+		}
+		return ""
+	}
+}
+
+// readNpmrcCacheRootsEnv reads a user or global .npmrc for a spawn, expanding
+// ${NAME} from the spawn's own environment and ~ from home. Unlike a project
+// file it is host configuration, so symlinks are followed and the bounded
+// non-blocking reader still refuses a FIFO, device, or oversized file. ok is
+// false when the effective cache cannot be resolved safely: a refusal, a
+// nonempty relative filename (npm resolves it against its own working
+// directory), an unresolvable ~, or a file the spawn cannot see (a mask, or
+// bwrap's private /tmp and /dev). npm may still read a cache from the file, so
+// it is unknown, not absent.
+func readNpmrcCacheRootsEnv(path string, lookup func(string) string, home string, policy ResolvedPolicy) ([]string, bool) {
+	resolved, readable, absent := npmConfigFilePath(path, lookup, home)
+	if !readable {
+		return nil, absent
+	}
+	if npmConfigFileHidden(policy, resolved) {
+		return nil, false
+	}
+	f, err := openGoEnvFile(resolved)
+	if err != nil {
+		return nil, os.IsNotExist(err)
+	}
+	defer func() { _ = f.Close() }()
+	data, err := readGoEnvFile(f, resolved)
+	if err != nil {
+		return nil, false
+	}
+	return parseNpmrcCacheRoots(data, lookup, home)
+}
+
+// npmConfigFilePath resolves a configured npm config filename the way npm
+// does: ${NAME} from lookup and a leading ~ from home. Empty is absent; a
+// nonempty path that remains relative after expansion, or a ~ it cannot
+// resolve, is unknown.
+func npmConfigFilePath(path string, lookup func(string) string, home string) (resolved string, readable, absent bool) {
+	if path == "" {
+		return "", false, true
+	}
+	path = expandNpmrcVars(path, lookup)
+	path, ok := expandNpmCacheHome(path, home)
+	if !ok || !filepath.IsAbs(path) {
+		return "", false, false
+	}
+	return path, true, false
+}
+
+// projectNpmrcFileState classifies the project config path, which the floor
+// constructs from the working directory rather than reading from npm's
+// configuration. Empty is absent; a nonempty relative name is unknown.
+func projectNpmrcFileState(path string) (readable, absent bool) {
+	switch {
+	case path == "":
+		return false, true
+	case !filepath.IsAbs(path):
+		return false, false
+	default:
+		return true, false
+	}
+}
+
+// npmrcEnvLookup expands npm's ${NAME} references from the probe's environment.
+func npmrcEnvLookup(environ []string) func(string) string {
+	return func(name string) string { return envValueFold(environ, name) }
+}
+
+// parseNpmrcCacheRoots returns the absolute values of `cache=` lines in an npm
+// config file, with npm's ${NAME} references expanded by lookup and a leading ~
+// expanded from home (falling back to lookup's HOME). npm's file format is
+// INI-like: blank lines, `#`/`;` comments and `[section]` headers carry no
+// setting, and a quoted value is unquoted. Only an absolute value names a
+// stable directory; a relative one resolves against npm's own working
+// directory, which is not the overlay's. ok is false when the last value is
+// relative or a ~ value cannot be resolved to an absolute home: npm may still
+// write the cache it names, so the effective cache is unknown.
+func parseNpmrcCacheRoots(data []byte, lookup func(string) string, home string) ([]string, bool) {
+	var roots []string
+	known := true
+	for line := range strings.SplitSeq(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "[") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok || !strings.EqualFold(strings.TrimSpace(key), "cache") {
+			continue
+		}
+		value = expandNpmrcVars(stripNpmrcComment(value), lookup)
+		if len(value) >= 2 && (value[0] == '"' || value[0] == '\'') && value[len(value)-1] == value[0] {
+			value = value[1 : len(value)-1]
+		}
+		// npm expands a leading ~ from its own home; a value it would resolve to
+		// an absolute cache must be judged there, not dropped as relative. Only
+		// the last value in the file is effective, so knownness rides that line.
+		tildeHome := home
+		if tildeHome == "" {
+			tildeHome = lookup(envvars.Home.Name)
+		}
+		expanded, resolvable := expandNpmCacheHome(value, tildeHome)
+		if !resolvable {
+			known = false
+			continue
+		}
+		value = expanded
+		known = filepath.IsAbs(value)
+		if known {
+			roots = append(roots, value)
+		}
+	}
+	return roots, known
+}
+
+// expandNpmCacheHome expands npm's leading ~ in a cache value from home. ok is
+// false when the value is ~-rooted and home is not absolute: npm resolves it
+// from a home the floor cannot locate, so the effective cache is unknown.
+func expandNpmCacheHome(value, home string) (string, bool) {
+	if value != "~" && !strings.HasPrefix(value, "~/") {
+		return value, true
+	}
+	if !filepath.IsAbs(home) {
+		return "", false
+	}
+	if value == "~" {
+		return home, true
+	}
+	return filepath.Join(home, strings.TrimPrefix(value, "~/")), true
+}
+
+// stripNpmrcComment removes npm's INI inline comment from value: an unquoted
+// '#' or ';' at the start or after whitespace ends the value. A quoted value
+// runs to its closing quote, so a '#' inside it is data.
+func stripNpmrcComment(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return value
+	}
+	if quote := value[0]; quote == '"' || quote == '\'' {
+		for i := 1; i < len(value); i++ {
+			if value[i] == '\\' {
+				i++
+				continue
+			}
+			if value[i] == quote {
+				return value[:i+1]
+			}
+		}
+		return value
+	}
+	for i := 0; i < len(value); i++ {
+		if (value[i] == '#' || value[i] == ';') && (i == 0 || value[i-1] == ' ' || value[i-1] == '\t') {
+			return strings.TrimSpace(value[:i])
+		}
+	}
+	return value
+}
+
+// expandNpmrcVars replaces npm's ${NAME} references with lookup(NAME). An
+// unknown name expands to nothing, so the value is then relative or empty and
+// contributes no root.
+func expandNpmrcVars(value string, lookup func(string) string) string {
+	if !strings.Contains(value, "${") {
+		return value
+	}
+	var out strings.Builder
+	for {
+		start := strings.Index(value, "${")
+		if start < 0 {
+			out.WriteString(value)
+			return out.String()
+		}
+		out.WriteString(value[:start])
+		rest := value[start+2:]
+		name, after, ok := strings.Cut(rest, "}")
+		if !ok {
+			out.WriteString(value[start:])
+			return out.String()
+		}
+		out.WriteString(lookup(name))
+		value = after
+	}
+}
+
 // probeGitGlobalConfigPaths returns the user's global git config files that
 // exist on this host, in git's own precedence order (git-config(1), FILES):
 // $XDG_CONFIG_HOME/git/config first, then ~/.gitconfig. git reads BOTH when both
 // exist, so both are probed rather than the first hit.
+//
+// A $GIT_CONFIG_GLOBAL that is SET replaces both FILES, matching git's own
+// precedence. Only an absolute path to an existing non-directory file is
+// admitted; an empty value, a relative path, or a path that names nothing git
+// can read names no config git reads (git resolves a relative value against the
+// process's working directory and ignores an unreadable global file), so
+// granting the default files instead would over-grant files git never opens.
 //
 // $XDG_CONFIG_HOME defaults to the home directory's .config when unset or empty. A NON-ABSOLUTE
 // XDG_CONFIG_HOME is ignored entirely: git would resolve it against the process's
@@ -410,6 +751,9 @@ func envValueFold(environ []string, key string) string {
 // backends grant a root under both its literal and its canonical name, and the
 // literal one is the name git actually opens.
 func probeGitGlobalConfigPaths(system probeSystem) []string {
+	if override, set := environValue(system.environ(), gitConfigGlobalEnv); set {
+		return gitConfigFileOverride(override, system)
+	}
 	home, err := system.userHomeDir()
 	if err != nil || strings.TrimSpace(home) == "" {
 		return nil
@@ -431,6 +775,76 @@ func probeGitGlobalConfigPaths(system probeSystem) []string {
 		}
 	}
 	return out
+}
+
+// probeGitSystemConfigPaths returns the system git config file git reads when
+// $GIT_CONFIG_SYSTEM overrides the built-in /etc/gitconfig location. The
+// built-in location already lies under /etc, a restricted-mode system read
+// root, so only an override needs a grant. $GIT_CONFIG_NOSYSTEM disables the
+// system config entirely; see gitConfigNoSystem for its spellings.
+func probeGitSystemConfigPaths(system probeSystem) []string {
+	files := gitConfigFileOverride(system.getenv(gitConfigSystemEnv), system)
+	if len(files) == 0 || gitConfigNoSystem(system.getenv(gitConfigNoSystemEnv)) {
+		return nil
+	}
+	return files
+}
+
+// gitConfigFileOverride returns the one config file an environment override
+// names, or nil when the value names nothing git reads as a config file. The
+// file admitted is the file granted: the value must be absolute, free of ".."
+// components (a ".." after a symlink resolves to a different object than
+// filepath.Clean reports, and the cleaned spelling is the grant), and name an
+// existing non-directory file.
+func gitConfigFileOverride(value string, system probeSystem) []string {
+	if value == "" {
+		return nil
+	}
+	cleaned := filepath.Clean(value)
+	if !filepath.IsAbs(cleaned) || hasParentComponent(value) || !system.nonDirectoryFile(cleaned) {
+		return nil
+	}
+	return []string{cleaned}
+}
+
+// hasParentComponent reports whether p has a ".." path component.
+func hasParentComponent(p string) bool {
+	for part := range strings.SplitSeq(filepath.ToSlash(p), "/") {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+// environValue returns the last value assigned to name and whether it is present
+// at all, so an explicitly empty variable is distinguishable from an unset one.
+func environValue(environ []string, name string) (string, bool) {
+	value, set := "", false
+	for _, kv := range environ {
+		if k, v, ok := strings.Cut(kv, "="); ok && k == name {
+			value, set = v, true
+		}
+	}
+	return value, set
+}
+
+// gitConfigNoSystem reports whether $GIT_CONFIG_NOSYSTEM tells git to skip the
+// system config. It follows git's boolean spelling: true/yes/on in any case and
+// a base-prefixed integer (0 and the empty value are false). A value git
+// rejects as a boolean is treated as true here because git refuses to run and
+// never reads the system file, so a grant for it would be dead weight.
+func gitConfigNoSystem(v string) bool {
+	switch strings.ToLower(v) {
+	case "true", "yes", "on":
+		return true
+	case "false", "no", "off", "":
+		return false
+	}
+	if n, err := strconv.ParseInt(strings.TrimLeft(v, " \t\r\n"), 0, 64); err == nil {
+		return n != 0
+	}
+	return true
 }
 
 // evenerContentRoots returns the plugin store's installed plugin files and the

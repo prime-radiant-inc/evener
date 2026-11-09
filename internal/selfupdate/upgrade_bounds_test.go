@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -164,5 +165,35 @@ func TestExtractCountsIgnoredEntries(t *testing.T) {
 	}
 	if err := extractReleaseArchive(t.Context(), archivePath, "evener_linux_amd64", t.TempDir()); !errors.Is(err, errDecompressionBomb) {
 		t.Fatalf("err = %v, want a decompression-bomb refusal covering ignored entries", err)
+	}
+}
+
+func TestExtractHonorsCancellationBeforeTheFirstEntry(t *testing.T) {
+	t.Parallel()
+	archivePath := filepath.Join(t.TempDir(), "empty.tar.gz")
+	if err := os.WriteFile(archivePath, tarGz(t, nil, nil), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := extractReleaseArchive(ctx, archivePath, "evener_linux_amd64", t.TempDir()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want the caller's cancellation", err)
+	}
+}
+
+// Not parallel: swaps the package's copyStream seam.
+func TestExtractDrainFailurePropagates(t *testing.T) {
+	copyErr := errors.New("injected drain failure")
+	previous := copyStream
+	t.Cleanup(func() { copyStream = previous })
+	copyStream = func(io.Writer, io.Reader) (int64, error) { return 0, copyErr }
+
+	archivePath := filepath.Join(t.TempDir(), "skipped.tar.gz")
+	entries := map[string][]byte{"evener_linux_amd64/ignored-blob": []byte("ignored")}
+	if err := os.WriteFile(archivePath, tarGz(t, entries, nil), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := extractReleaseArchive(t.Context(), archivePath, "evener_linux_amd64", t.TempDir()); !errors.Is(err, copyErr) {
+		t.Fatalf("err = %v, want the injected drain failure to propagate", err)
 	}
 }

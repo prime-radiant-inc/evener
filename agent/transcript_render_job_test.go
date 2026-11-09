@@ -54,13 +54,13 @@ func delegateSendToolResult(t *testing.T, callID string, res sendMessageResult, 
 
 // TestRenderMarkdown_JobDelegateResult is the headline lifecycle case: a
 // delegate create result — the real stable-delegate wire shape produced by
-// marshalStableDelegateCreateResult (issue #194) — renders as the condensed
+// marshalDelegateCreateResult (issue #194) — renders as the condensed
 // status line (job identity via the delegate_id fallback, status, and
 // transcript_ref), not a raw JSON dump.
 func TestRenderMarkdown_JobDelegateResult(t *testing.T) {
 	t.Parallel()
 	childRef := "local:01CHILDJOB000000000000"
-	body, err := marshalStableDelegateCreateResult(stableDelegateCreateResult{
+	body, err := marshalDelegateCreateResult(delegateCreateResult{
 		DelegateID:    "dlg_delegate_1",
 		Type:          "delegate",
 		Status:        "completed",
@@ -68,7 +68,7 @@ func TestRenderMarkdown_JobDelegateResult(t *testing.T) {
 		Resumable:     new(true),
 	}, 0)
 	if err != nil {
-		t.Fatalf("marshalStableDelegateCreateResult: %v", err)
+		t.Fatalf("marshalDelegateCreateResult: %v", err)
 	}
 
 	out := renderToolCardForResult("delegate", "call_delegate", body)
@@ -469,14 +469,14 @@ func TestDecodeJobResult(t *testing.T) {
 func TestRenderOutline_JobLifecycleBrackets(t *testing.T) {
 	t.Parallel()
 	childRef := "local:01OUTLINEJOB000000000"
-	body, err := marshalStableDelegateCreateResult(stableDelegateCreateResult{
+	body, err := marshalDelegateCreateResult(delegateCreateResult{
 		DelegateID:    "dlg_outline",
 		Type:          "delegate",
 		Status:        "completed",
 		TranscriptRef: childRef,
 	}, 0)
 	if err != nil {
-		t.Fatalf("marshalStableDelegateCreateResult: %v", err)
+		t.Fatalf("marshalDelegateCreateResult: %v", err)
 	}
 	entries := []transcript.Entry{
 		toolCallEntry(call("call_delegate", "delegate", `{}`)),
@@ -566,7 +566,7 @@ func TestPrettyJSON_NoHTMLEscaping(t *testing.T) {
 // TestJobResultKnownKeysCoversLiveDelegateShapes is the schema-drift guard
 // (issue #194 RCA fix plan item 3): it walks the REAL marshaled output of the
 // two live result marshalers that feed jobResultBody/extractJobResult —
-// marshalStableDelegateCreateResult (the "delegate" create tool) and
+// marshalDelegateCreateResult (the "delegate" create tool) and
 // marshalDelegateSendResult (the "delegate_send" tool, via the same
 // tool.StateResult path session_tool_round.go actually persists) — and asserts
 // every top-level key either marshaler ever emits is present in
@@ -578,16 +578,16 @@ func TestPrettyJSON_NoHTMLEscaping(t *testing.T) {
 func TestJobResultKnownKeysCoversLiveDelegateShapes(t *testing.T) {
 	t.Parallel()
 
-	t.Run("stableDelegateCreateResult via marshalStableDelegateCreateResult", func(t *testing.T) {
-		var out stableDelegateCreateResult
-		reflectfill.Fill(t, reflect.ValueOf(&out).Elem(), "stableDelegateCreateResult")
+	t.Run("delegateCreateResult via marshalDelegateCreateResult", func(t *testing.T) {
+		var out delegateCreateResult
+		reflectfill.Fill(t, reflect.ValueOf(&out).Elem(), "delegateCreateResult")
 		// maxChars<=0 is unbounded (marshalBoundedJSON), so the fit-downgrade
 		// path never drops a field out of the fully-populated fixture.
-		wire, err := marshalStableDelegateCreateResult(out, 0)
+		wire, err := marshalDelegateCreateResult(out, 0)
 		if err != nil {
-			t.Fatalf("marshalStableDelegateCreateResult: %v", err)
+			t.Fatalf("marshalDelegateCreateResult: %v", err)
 		}
-		assertKeysKnownToJobResult(t, wire, "stableDelegateCreateResult")
+		assertKeysKnownToJobResult(t, wire, "delegateCreateResult")
 	})
 
 	t.Run("delegate_send result via marshalDelegateSendResult", func(t *testing.T) {
@@ -620,7 +620,7 @@ func TestJobResultKnownKeysCoversLiveDelegateShapes(t *testing.T) {
 func TestJobResultToolsSurviveTranscriptProjections(t *testing.T) {
 	t.Parallel()
 
-	createWire, err := marshalStableDelegateCreateResult(stableDelegateCreateResult{
+	createWire, err := marshalDelegateCreateResult(delegateCreateResult{
 		DelegateID:    "dlg_tools_create",
 		Type:          "delegate",
 		Status:        "completed",
@@ -628,7 +628,7 @@ func TestJobResultToolsSurviveTranscriptProjections(t *testing.T) {
 		TranscriptRef: "local:tools-create",
 	}, 0)
 	if err != nil {
-		t.Fatalf("marshalStableDelegateCreateResult: %v", err)
+		t.Fatalf("marshalDelegateCreateResult: %v", err)
 	}
 
 	sendResult := delegateSendToolResult(t, "call_tools_send", sendMessageResult{
@@ -738,14 +738,14 @@ func TestJobResult_EffectiveJobIDDelegateIDFallback(t *testing.T) {
 // dump-with-full-evidence fallback no longer fires for it.
 func TestRenderMarkdown_DelegateCreateErrorSurfaces(t *testing.T) {
 	t.Parallel()
-	body, err := marshalStableDelegateCreateResult(stableDelegateCreateResult{
+	body, err := marshalDelegateCreateResult(delegateCreateResult{
 		DelegateID: "dlg_partial_fail",
 		Type:       "delegate",
 		Status:     "failed",
 		StartError: "sandbox denied: escalation beyond parent floor",
 	}, 0)
 	if err != nil {
-		t.Fatalf("marshalStableDelegateCreateResult: %v", err)
+		t.Fatalf("marshalDelegateCreateResult: %v", err)
 	}
 
 	out := renderToolCardForResult("delegate", "call_delegate", body)
@@ -763,14 +763,14 @@ func TestRenderMarkdown_DelegateCreateErrorSurfaces(t *testing.T) {
 // known-but-invisible key the moment the raw-JSON fallback stops firing.
 func TestRenderMarkdown_DelegateCreateArtifactsDirSurfaces(t *testing.T) {
 	t.Parallel()
-	body, err := marshalStableDelegateCreateResult(stableDelegateCreateResult{
+	body, err := marshalDelegateCreateResult(delegateCreateResult{
 		DelegateID:   "dlg_artifacts",
 		Type:         "delegate",
 		Status:       "created",
 		ArtifactsDir: "/state/sessions/sess_child/artifacts",
 	}, 0)
 	if err != nil {
-		t.Fatalf("marshalStableDelegateCreateResult: %v", err)
+		t.Fatalf("marshalDelegateCreateResult: %v", err)
 	}
 
 	out := renderToolCardForResult("delegate", "call_artifacts", body)

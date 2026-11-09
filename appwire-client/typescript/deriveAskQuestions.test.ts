@@ -289,6 +289,32 @@ test("an ask_user item with unparseable argumentsJSON contributes no questions",
   expect(liveAskQuestions(m)).toEqual([]);
 });
 
+// The single-question shorthand form (see askShared.ts for the form): the
+// dock must derive its question exactly like a batch-form call's, or the
+// session sits awaiting an answer no surface can show.
+test("a live shorthand-form ask_user call contributes its question to the dock set", () => {
+  const shorthand = JSON.stringify({
+    question: "What should one load cost?",
+    options: [
+      { label: "Materialize", detail: "rebuild off-request" },
+      { label: "Compute on read", detail: "fewer queries" },
+    ],
+  });
+  const m = model([turn("t1", [askItem("i1", "t1", "call_1", { argumentsJSON: shorthand })])]);
+  expect(liveAskQuestions(m)).toEqual([
+    expect.objectContaining({
+      key: "call_1:0",
+      callId: "call_1",
+      header: "Question 1",
+      question: "What should one load cost?",
+      options: [
+        { label: "Materialize", detail: "rebuild off-request", recommended: false },
+        { label: "Compute on read", detail: "fewer queries", recommended: false },
+      ],
+    }),
+  ]);
+});
+
 test("an ask_user item with no callId falls back to its item id for the key", () => {
   const m = model([turn("t1", [askItem("i1", "t1", "call_1", { callId: undefined })])]);
   expect(liveAskQuestions(m)[0]?.key).toBe("i1:0");

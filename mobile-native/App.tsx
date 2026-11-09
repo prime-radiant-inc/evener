@@ -5,10 +5,10 @@ import {
 	NavigationContainer,
 	type NavigationState,
 } from "@react-navigation/native";
-import { createNativeStackNavigator } from "@react-navigation/native-stack";
+import { createNativeStackNavigator, type NativeStackScreenProps } from "@react-navigation/native-stack";
 import { StatusBar } from "expo-status-bar";
-import { useEffect, useState } from "react";
-import { ActivityIndicator, useColorScheme, View } from "react-native";
+import { useCallback, useEffect, useState } from "react";
+import { ActivityIndicator, useColorScheme, useWindowDimensions, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -20,12 +20,15 @@ import { RowMenuSheet } from "./src/board/RowMenu";
 import { ConnectionProvider, useConnection } from "./src/ConnectionProvider";
 import { DisplayProvider } from "./src/display/displayContext";
 import { displayPreferences, followAppearanceChoice } from "./src/display/nativeDisplay";
+import { isDuoInner } from "./src/duo/duoLayout";
+import { DuoSplit } from "./src/duo/DuoSplit";
 import { HubSheet } from "./src/hub/HubSheet";
 import { FirstRunScreen } from "./src/hubs/FirstRunScreen";
 import { ForkScreen } from "./src/ForkScreen";
 import { locationForRoute, restoredStack, routeToSave } from "./src/location";
 import { NativePreferencesProvider } from "./src/NativePreferencesProvider";
 import { locations } from "./src/nativeLocation";
+import { stackRoutes } from "./src/navigationRoutes";
 import { NewSessionSheet } from "./src/newSession/NewSessionSheet";
 import { outboxFlush } from "./src/outbox/nativeOutboxFlush";
 import { PinAssignmentScreen } from "./src/PinAssignmentScreen";
@@ -61,15 +64,11 @@ import { ReaderScreen } from "./src/reader/ReaderScreen";
 import { replaceAnimation } from "./src/session/titleSwipe";
 import { TasksSheet } from "./src/TasksSheet";
 import { ErrorMessage, useColors } from "./src/ui";
+import { VoiceProvider } from "./src/voice/VoiceProvider";
 
 const Stack = createNativeStackNavigator<Routes>();
 const navigationRef = createNavigationContainerRef<Routes>();
 const sharePort = appGroupSharePort();
-
-/** The root stack's routes up to the focused one, as alerts read them. */
-function stackRoutes(state: NavigationState) {
-	return state.routes.slice(0, state.index + 1).map((route) => ({ name: route.name, params: route.params }));
-}
 
 // Runs before the first render, so the first frame already has the
 // appearance chosen in Display (spec 12), native chrome included.
@@ -85,13 +84,15 @@ export default function App() {
 				<SafeAreaProvider>
 					<DisplayProvider value={displayPreferences}>
 						<ConnectionProvider>
-							<NativePreferencesProvider>
-								<NativeConversationSessionsProvider>
-									<AlertsProvider>
-										<Navigation />
-									</AlertsProvider>
-								</NativeConversationSessionsProvider>
-							</NativePreferencesProvider>
+							<VoiceProvider>
+								<NativePreferencesProvider>
+									<NativeConversationSessionsProvider>
+										<AlertsProvider>
+											<Navigation />
+										</AlertsProvider>
+									</NativeConversationSessionsProvider>
+								</NativePreferencesProvider>
+							</VoiceProvider>
 						</ConnectionProvider>
 					</DisplayProvider>
 				</SafeAreaProvider>
@@ -138,6 +139,8 @@ function Navigation() {
 		}
 	}, [state, activeProfile?.id, loading]);
 	const colors = useColors();
+	const { width, height } = useWindowDimensions();
+	const duoWide = isDuoInner(width, height);
 	const rootStackOptions = useRootStackOptions();
 	const dark = useColorScheme() === "dark";
 	if (loading)
@@ -172,7 +175,7 @@ function Navigation() {
 				<StatusBar style={dark ? "light" : "dark"} />
 				<Stack.Navigator screenOptions={rootStackOptions}>
 					<Stack.Screen name="Hubs" component={FirstRunScreen} options={{ headerShown: false }} />
-					<Stack.Screen name="Sessions" component={BoardScreen} />
+					<Stack.Screen name="Sessions" component={SessionsScreen} options={{ headerShown: !duoWide }} />
 					<Stack.Screen
 						name="SessionDeletion"
 						component={SessionDeletionScreen}
@@ -276,4 +279,15 @@ function Navigation() {
 			</NavigationContainer>
 		</View>
 	);
+}
+
+/** The Board alone on the outer display and the Board beside a conversation
+ * on the Duo's inner display. */
+function SessionsScreen(props: NativeStackScreenProps<Routes, "Sessions">) {
+	const { width, height } = useWindowDimensions();
+	const openOnRoot = useCallback(
+		(params: Routes["Conversation"]) => props.navigation.navigate("Conversation", params),
+		[props.navigation],
+	);
+	return isDuoInner(width, height) ? <DuoSplit {...props} onFold={openOnRoot} /> : <BoardScreen {...props} />;
 }

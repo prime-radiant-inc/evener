@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"math/big"
 	"reflect"
@@ -952,8 +953,10 @@ func isBareOneOfLocation(location string) bool {
 // jsonschema reports a combinator behind a reference as /$ref/oneOf/.... A
 // combinator nested under properties/items is not attributed (the explainer
 // reads branch lists off the top-level schema; nested combinators go through
-// nestedOneOfMessage), and a root anyOf/allOf keeps its leaf keyword until its
-// branches can be rendered.
+// nestedOneOfMessage), and a root anyOf is attributed only at the branch-
+// structural locations the prose can render (the combinator, an arm, an arm's
+// required list or its `not`); an arm-internal leaf keeps its leaf keyword, so
+// its value constraint still renders instead of being blanked by attribution.
 func branchCombinator(keywordLocation string) string {
 	segs := strings.Split(strings.Trim(keywordLocation, "/"), "/")
 	i := 0
@@ -966,6 +969,10 @@ func branchCombinator(keywordLocation string) string {
 	switch segs[i] {
 	case "oneOf", "not":
 		return segs[i]
+	case "anyOf":
+		if branchLocationIsStructural(keywordLocation) {
+			return "anyOf"
+		}
 	}
 	return ""
 }
@@ -1006,6 +1013,9 @@ func oneOfConstraintMessage(toolName string, params map[string]any, keyword, key
 	}
 	rendered := false
 	for i, br := range branches {
+		if armCarriesSiblingCombinator(br) {
+			continue
+		}
 		desc := branchRequirement(br)
 		if desc == "" {
 			continue
@@ -1021,12 +1031,17 @@ func oneOfConstraintMessage(toolName string, params map[string]any, keyword, key
 	// constraints and the example's shape agree that it is valid.
 	showExample := !hasUnmodeledConstraint(params, keyword) &&
 		!examplePropertyConstrained(params) && rootAcceptsObject(params)
-	if keyword == "oneOf" {
+	switch keyword {
+	case "oneOf":
 		// A oneOf needs the example to match exactly one branch; a `not` arm of
 		// a root oneOf keeps its template when that holds, so the shape does not
 		// lose it.
 		showExample = showExample && oneOfExampleMatchesExactlyOneBranch(params)
-	} else {
+	case "anyOf":
+		// An anyOf needs the example to match at least one branch; a template
+		// satisfying none coaches a retry that fails the same way.
+		showExample = showExample && anyOfExampleMatchesABranch(params)
+	default:
 		showExample = showExample && rootNotExampleIsValid(params)
 	}
 	if showExample {
@@ -1035,38 +1050,53 @@ func oneOfConstraintMessage(toolName string, params map[string]any, keyword, key
 	return b.String()
 }
 
-// oneOfExampleMatchesExactlyOneBranch reports whether minimalExample(params) —
-// the top-level required properties — satisfies exactly one branch of the root
-// oneOf, making it a usable template rather than one that would match zero or
-// several. It answers only when every branch it has to judge constrains nothing
-// but presence, where the answer is exact; a branch that constrains values
-// returns false rather than guess.
-func oneOfExampleMatchesExactlyOneBranch(params map[string]any) bool {
-	arms, _ := params["oneOf"].([]any)
+// exampleBranchMatchCount reports how many arms of the root combinator an
+// object carrying exactly the top-level required properties satisfies. ok is
+// false when any arm it has to judge constrains a value (presence cannot
+// decide it) or when no usable arm list exists, so the caller must not emit an
+// example rather than guess.
+func exampleBranchMatchCount(params map[string]any, keyword string) (matched int, ok bool) {
+	arms, _ := params[keyword].([]any)
 	if len(arms) == 0 {
-		return false
+		return 0, false
 	}
 	keys := map[string]bool{}
 	for _, name := range requiredNames(params) {
 		keys[name] = true
 	}
-	satisfiedCount := 0
 	for _, raw := range arms {
 		arm, _ := raw.(map[string]any)
 		if arm == nil {
-			return false
+			return 0, false
 		}
 		satisfied, known := armOutcome(arm, keys)
 		if !known {
 			// Whether the branch matches cannot be decided from presence, so
-			// the example cannot be shown to match exactly one.
-			return false
+			// the example cannot be shown to match any arm.
+			return 0, false
 		}
 		if satisfied {
-			satisfiedCount++
+			matched++
 		}
 	}
-	return satisfiedCount == 1
+	return matched, true
+}
+
+// oneOfExampleMatchesExactlyOneBranch reports whether minimalExample(params) —
+// the top-level required properties — satisfies exactly one branch of the root
+// oneOf, making it a usable template rather than one that would match zero or
+// several.
+func oneOfExampleMatchesExactlyOneBranch(params map[string]any) bool {
+	matched, ok := exampleBranchMatchCount(params, "oneOf")
+	return ok && matched == 1
+}
+
+// anyOfExampleMatchesABranch reports whether minimalExample(params) satisfies
+// at least one branch of the root anyOf, making it a usable template: anyOf
+// needs one match, not exactly one.
+func anyOfExampleMatchesABranch(params map[string]any) bool {
+	matched, ok := exampleBranchMatchCount(params, "anyOf")
+	return ok && matched > 0
 }
 
 // armOutcome reports whether an object carrying exactly keys satisfies a
@@ -1093,7 +1123,7 @@ func armOutcome(arm map[string]any, keys map[string]bool) (satisfied, known bool
 		}
 	}
 	if forbidden := schemaMap(arm, "not"); forbidden != nil {
-		if !isPresenceOnlySchema(forbidden) || len(requiredNames(forbidden)) == 0 {
+		if !isPresenceOnlySchema(forbidden, armTypedObject(arm)) || len(requiredNames(forbidden)) == 0 {
 			return false, false
 		}
 		all := true
@@ -1124,7 +1154,7 @@ func isPresenceConstraint(arm map[string]any) bool {
 		case "required", "description", "title", "$comment":
 		case "not":
 			forbidden := schemaMap(arm, "not")
-			if !isPresenceOnlySchema(forbidden) || len(requiredNames(forbidden)) == 0 {
+			if !isPresenceOnlySchema(forbidden, armTypedObject(arm)) || len(requiredNames(forbidden)) == 0 {
 				return false
 			}
 		default:
@@ -1437,7 +1467,7 @@ func branchRendersArmEnum(params map[string]any, keywordLocation string) bool {
 	// arm's enums are never rendered. Claiming coverage would drop the failing
 	// property behind a bare generic message instead of letting the
 	// present-field path name it.
-	if forbidden := schemaMap(branch, "not"); forbidden != nil && notProhibition(forbidden) == "" {
+	if forbidden := schemaMap(branch, "not"); forbidden != nil && armNotProhibition(branch, forbidden) == "" {
 		return false
 	}
 	// The location is a JSON Pointer, so a property name containing "/" or "~"
@@ -1458,16 +1488,21 @@ func refWrappedKeywordLocation(keywordLocation string) bool {
 	return len(segs) > 0 && isRefSegment(segs[0])
 }
 
-// notProhibition renders a negated schema as a "do not send ..." prohibition,
-// or "" when that wording would be false. not/required rejects only when EVERY
-// listed property is present, so the presence phrasing is accurate only for a
-// schema that constrains nothing but presence — a negated schema that also
-// constrains values ({"required": ["mode"], "properties": {"mode": {"enum":
-// ["off"]}}} accepts mode="on", so "do not send mode" is wrong). Returning ""
-// lets the caller fall back to the generic mismatch rather than coach a retry
-// with the very value the example would include.
-func notProhibition(forbidden map[string]any) string {
-	if !isPresenceOnlySchema(forbidden) {
+// armNotProhibition renders a branch arm's `not` as a "do not send ..."
+// prohibition, or "" when that wording would be false. not/required rejects
+// only when EVERY listed property is present, so the presence phrasing is
+// accurate only for a schema that constrains nothing but presence — a
+// negated schema that also constrains values ({"required": ["mode"],
+// "properties": {"mode": {"enum": ["off"]}}} accepts mode="on", so "do not
+// send mode" is wrong). The arm is the context the `not` only ever judges
+// against alongside its own keywords, so when the arm's own type gate is
+// "object" a bare "type":"object" on the negated schema cannot discriminate
+// there and the presence wording stays true; any other arm context keeps the
+// strict rule. Returning "" lets the caller fall back to the generic
+// mismatch rather than coach a retry with the very value the example would
+// include.
+func armNotProhibition(arm, forbidden map[string]any) string {
+	if !isPresenceOnlySchema(forbidden, armTypedObject(arm)) {
 		return ""
 	}
 	names := requiredNames(forbidden)
@@ -1486,10 +1521,20 @@ func notProhibition(forbidden map[string]any) string {
 // isPresenceOnlySchema reports whether a schema's only validation keyword is
 // "required". Annotations (description, title, $comment) do not constrain, so
 // they are ignored.
-func isPresenceOnlySchema(schema map[string]any) bool {
+// objectTypedOK reports whether a bare "type":"object" may count as a
+// non-constraining annotation: that is true only when the caller knows the
+// schema is only ever judged against an object instance, such as a `not`
+// inside an arm the arm's own type gate has already typed as object —
+// anywhere else a type genuinely discriminates.
+func isPresenceOnlySchema(schema map[string]any, objectTypedOK bool) bool {
 	for key := range schema {
 		switch key {
 		case "required", "description", "title", "$comment":
+		case "type":
+			typ, _ := schema["type"].(string)
+			if !objectTypedOK || typ != "object" {
+				return false
+			}
 		default:
 			return false
 		}
@@ -1497,9 +1542,41 @@ func isPresenceOnlySchema(schema map[string]any) bool {
 	return true
 }
 
+// armTypedObject reports whether an arm's own type gate guarantees its `not`
+// only ever judges an object instance.
+func armTypedObject(arm map[string]any) bool {
+	typ, _ := arm["type"].(string)
+	return typ == "object"
+}
+
+// armCarriesSiblingCombinator reports whether a branch arm declares its own
+// oneOf/allOf/anyOf beside the clauses branchRequirement renders. The root
+// branch message's only content is that prose, so such an arm would enumerate
+// requirements the call may already satisfy while its unrendered sibling
+// constraint — possibly the one actually failing — stays unnamed; the root
+// message skips the arm and, when no other arm renders, falls back to the
+// honest generic mismatch. Describable arms still render beside a skipped
+// one: a caller that can satisfy a describable branch is told what that
+// takes, so withholding them would trade real guidance for uniformity. The
+// nested property message still renders these arms too: its example
+// machinery already declines on unevaluated applicators, and its intro
+// names the argument the conditional rule constrains.
+func armCarriesSiblingCombinator(branch any) bool {
+	arm, _ := branch.(map[string]any)
+	if arm == nil {
+		return false
+	}
+	for _, key := range []string{"oneOf", "allOf", "anyOf"} {
+		if _, carries := arm[key]; carries {
+			return true
+		}
+	}
+	return false
+}
+
 // branchRequirement renders one branch's requirement in prose: the
-// properties it requires, and for a "not" branch, the properties it forbids
-// being present.
+// properties it requires, the only arguments an additionalProperties:false arm
+// accepts, and for a "not" branch, the properties it forbids being present.
 func branchRequirement(branch any) string {
 	schema, _ := branch.(map[string]any)
 	if schema == nil {
@@ -1517,8 +1594,18 @@ func branchRequirement(branch any) string {
 	// prohibition alone would hide the missing (or ill-typed) required property
 	// the caller has to fix, leaving nothing actionable in the message.
 	described := describeRequired(schema)
+	// A closed arm names the only arguments that branch accepts, so a caller
+	// that sent one outside the set can see which one the branch rejects —
+	// the arm's own list, not the top level's wider property set.
+	if accepted := armAcceptedArgumentNames(schema); len(accepted) > 0 {
+		if described == "" {
+			described = "send nothing beyond " + joinQuoted(accepted)
+		} else {
+			described = described + "; send nothing beyond " + joinQuoted(accepted)
+		}
+	}
 	if forbidden := schemaMap(schema, "not"); forbidden != nil {
-		prohibition := notProhibition(forbidden)
+		prohibition := armNotProhibition(schema, forbidden)
 		if prohibition == "" {
 			// The negated schema constrains values, so the arm's failure is not
 			// a presence matter and the required summary would name fields the
@@ -1537,6 +1624,23 @@ func branchRequirement(branch any) string {
 		return scalarRequirement(schema)
 	}
 	return described
+}
+
+// armAcceptedArgumentNames returns the closed set of argument names an arm
+// with additionalProperties:false accepts, sorted for deterministic
+// rendering, or nil when the arm declares no closed set. An absent or
+// schema-typed additionalProperties leaves the arm open, and an empty
+// properties map on a closed arm accepts nothing, which no production arm
+// does.
+func armAcceptedArgumentNames(schema map[string]any) []string {
+	if schema["additionalProperties"] != false {
+		return nil
+	}
+	props := schemaProps(schema)
+	if len(props) == 0 {
+		return nil
+	}
+	return slices.Sorted(maps.Keys(props))
 }
 
 // scalarRequirement renders a branch that names no required properties — a

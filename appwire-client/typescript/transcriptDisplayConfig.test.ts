@@ -63,30 +63,35 @@ describe("transcript display config", () => {
       toolCalls: false,
       reasoning: false,
       expandByDefault: false,
+      thinkingOpenByDefault: false,
     });
     expect(presetContent("intent")).toEqual({
       toolIntent: true,
       toolCalls: false,
       reasoning: false,
       expandByDefault: false,
+      thinkingOpenByDefault: false,
     });
     expect(presetContent("tools")).toEqual({
       toolIntent: true,
       toolCalls: true,
       reasoning: false,
       expandByDefault: false,
+      thinkingOpenByDefault: false,
     });
     expect(presetContent("activity")).toEqual({
       toolIntent: true,
       toolCalls: true,
       reasoning: false,
       expandByDefault: true,
+      thinkingOpenByDefault: false,
     });
     expect(presetContent("full")).toEqual({
       toolIntent: true,
       toolCalls: true,
       reasoning: true,
       expandByDefault: true,
+      thinkingOpenByDefault: true,
     });
   });
 
@@ -114,16 +119,18 @@ describe("transcript display config", () => {
       toolCalls: true,
       reasoning: false,
       expandByDefault: true,
+      thinkingOpenByDefault: true,
     });
     expect(contentVectorForConfig(config)).toMatchObject({
       toolIntent: false,
       toolCalls: true,
       reasoning: false,
       expandByDefault: true,
+      thinkingOpenByDefault: true,
     });
   });
 
-  test("normalizes named presets and retains non-preset Custom vectors", () => {
+  test("normalizes named presets, retains non-preset Custom vectors, and canonicalizes the older 4-field custom", () => {
     expect(normalizeContent({ kind: "preset", level: "intent" })).toEqual({ kind: "preset", level: "intent" });
     expect(
       normalizeContent({
@@ -132,6 +139,7 @@ describe("transcript display config", () => {
         toolCalls: true,
         reasoning: false,
         expandByDefault: true,
+        thinkingOpenByDefault: true,
       }),
     ).toEqual({
       kind: "custom",
@@ -139,6 +147,25 @@ describe("transcript display config", () => {
       toolCalls: true,
       reasoning: false,
       expandByDefault: true,
+      thinkingOpenByDefault: true,
+    });
+    // A custom that already carries the field keeps its explicit value.
+    expect(
+      normalizeContent({
+        kind: "custom",
+        toolIntent: false,
+        toolCalls: true,
+        reasoning: true,
+        expandByDefault: true,
+        thinkingOpenByDefault: false,
+      }),
+    ).toEqual({
+      kind: "custom",
+      toolIntent: false,
+      toolCalls: true,
+      reasoning: true,
+      expandByDefault: true,
+      thinkingOpenByDefault: false,
     });
   });
 
@@ -163,13 +190,55 @@ describe("transcript display config", () => {
 
   test("encodes local data with a stable property order", () => {
     const config = makeTranscriptDisplayConfig(
-      { kind: "custom", toolIntent: true, toolCalls: false, reasoning: true, expandByDefault: false },
+      {
+        kind: "custom",
+        toolIntent: true,
+        toolCalls: false,
+        reasoning: true,
+        expandByDefault: false,
+        thinkingOpenByDefault: true,
+      },
       { roundTimings: true, estimatedCost: true, hookExits: "successful" },
     );
     expect(encodeLocalConfig(config)).toBe(
-      '{"version":1,"content":{"kind":"custom","custom":{"toolIntent":true,"toolCalls":false,"reasoning":true,"expandByDefault":false}},"advanced":{"roundTimings":true,"tokenCounts":false,"estimatedCost":true,"systemEvents":false,"promptEvents":false,"hookExits":"successful"}}',
+      '{"version":1,"content":{"kind":"custom","custom":{"toolIntent":true,"toolCalls":false,"reasoning":true,"expandByDefault":false,"thinkingOpenByDefault":true}},"advanced":{"roundTimings":true,"tokenCounts":false,"estimatedCost":true,"systemEvents":false,"promptEvents":false,"hookExits":"successful"}}',
     );
     expect(configFingerprint(config)).toBe(encodeLocalConfig(config));
+  });
+
+  test("decodes the older 4-field custom vector everywhere, fixing the new field up from expandByDefault", () => {
+    const advanced = {
+      roundTimings: false,
+      tokenCounts: false,
+      estimatedCost: false,
+      systemEvents: false,
+      promptEvents: false,
+      hookExits: "none",
+    } as const;
+    for (const [expandByDefault, fixedUp] of [
+      [true, true],
+      [false, false],
+    ] as const) {
+      const olderWire = `{"version":1,"content":{"kind":"custom","custom":{"toolIntent":true,"toolCalls":false,"reasoning":true,"expandByDefault":${expandByDefault}}},"advanced":${JSON.stringify(advanced)}}`;
+      const decoded = fromWireConfig(JSON.parse(olderWire));
+      expect(decoded?.content).toEqual({
+        kind: "custom",
+        toolIntent: true,
+        toolCalls: false,
+        reasoning: true,
+        expandByDefault,
+        thinkingOpenByDefault: fixedUp,
+      });
+      expect(decoded?.advanced).toEqual(advanced);
+      expect(decodeLocalConfig(olderWire)?.content).toEqual({
+        kind: "custom",
+        toolIntent: true,
+        toolCalls: false,
+        reasoning: true,
+        expandByDefault,
+        thinkingOpenByDefault: fixedUp,
+      });
+    }
   });
 
   test.each([
@@ -181,6 +250,8 @@ describe("transcript display config", () => {
     '{"version":1,"content":{"kind":"preset","level":"unknown"},"advanced":{"roundTimings":false,"tokenCounts":false,"estimatedCost":false,"systemEvents":false,"promptEvents":false,"hookExits":"none"}}',
     '{"version":1,"content":{"kind":"custom","custom":{"toolIntent":true}},"advanced":{"roundTimings":false,"tokenCounts":false,"estimatedCost":false,"systemEvents":false,"promptEvents":false,"hookExits":"none"}}',
     '{"version":1,"content":{"kind":"custom","custom":{"toolIntent":true,"toolCalls":true,"reasoning":false,"expandByDefault":false,"extra":false}},"advanced":{"roundTimings":false,"tokenCounts":false,"estimatedCost":false,"systemEvents":false,"promptEvents":false,"hookExits":"none"}}',
+    '{"version":1,"content":{"kind":"custom","custom":{"toolIntent":true,"toolCalls":true,"reasoning":false,"expandByDefault":false,"thinkingOpenByDefault":"true"}},"advanced":{"roundTimings":false,"tokenCounts":false,"estimatedCost":false,"systemEvents":false,"promptEvents":false,"hookExits":"none"}}',
+    '{"version":1,"content":{"kind":"custom","custom":{"toolIntent":true,"toolCalls":true,"reasoning":false,"expandByDefault":false,"thinkingOpenByDefault":true,"extra":false}},"advanced":{"roundTimings":false,"tokenCounts":false,"estimatedCost":false,"systemEvents":false,"promptEvents":false,"hookExits":"none"}}',
     '{"version":1,"content":{"kind":"custom","custom":{"toolIntent":"true","toolCalls":true,"reasoning":false,"expandByDefault":false}},"advanced":{"roundTimings":false,"tokenCounts":false,"estimatedCost":false,"systemEvents":false,"promptEvents":false,"hookExits":"none"}}',
     '{"version":1,"content":{"kind":"preset","level":"chat","custom":{"toolIntent":false,"toolCalls":false,"reasoning":false,"expandByDefault":false}},"advanced":{"roundTimings":false,"tokenCounts":false,"estimatedCost":false,"systemEvents":false,"promptEvents":false,"hookExits":"none"}}',
   ])("treats malformed or unsupported local data as absent (%j)", (raw) => {
@@ -277,6 +348,7 @@ describe("transcript display config", () => {
       hidden: [
         "reasoning",
         "expandedDetails",
+        "openThinking",
         "informationalNotices",
         "sharedNotes",
         "estimatedCost",
@@ -313,6 +385,7 @@ describe("transcript display config", () => {
           toolCalls: true,
           reasoning: true,
           expandByDefault: true,
+          thinkingOpenByDefault: true,
         }),
       ).visible,
     ).toContain("informationalNotices");
@@ -324,8 +397,40 @@ describe("transcript display config", () => {
           toolCalls: false,
           reasoning: true,
           expandByDefault: false,
+          thinkingOpenByDefault: false,
         }),
       ).hidden,
+    ).toContain("informationalNotices");
+  });
+
+  test("informational notices stay governed by the content-visibility fields, never the thinking-open presentation default", () => {
+    // PAR spec finding: the switch takes over exactly one job (thinking
+    // disclosures). A custom vector that matches full on every
+    // content-visibility field keeps informational notices even when the
+    // reader asks for thinking to start collapsed.
+    expect(
+      visibleCategoryInventory(
+        makeTranscriptDisplayConfig({
+          kind: "custom",
+          toolIntent: true,
+          toolCalls: true,
+          reasoning: true,
+          expandByDefault: true,
+          thinkingOpenByDefault: false,
+        }),
+      ).visible,
+    ).toContain("informationalNotices");
+    expect(
+      visibleCategoryInventory(
+        makeTranscriptDisplayConfig({
+          kind: "custom",
+          toolIntent: true,
+          toolCalls: true,
+          reasoning: true,
+          expandByDefault: true,
+          thinkingOpenByDefault: true,
+        }),
+      ).visible,
     ).toContain("informationalNotices");
   });
 
@@ -346,6 +451,7 @@ describe("transcript display config", () => {
           toolCalls: false,
           reasoning: false,
           expandByDefault: false,
+          thinkingOpenByDefault: false,
         }),
       ).visible,
     ).toContain("daemonSteering");

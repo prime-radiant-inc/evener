@@ -89,6 +89,7 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 		mergePtr(&m, &eff.MaxConcurrentDelegateTurns, l.MaxConcurrentDelegateTurns, "max_concurrent_delegate_turns")
 		mergePtr(&m, &eff.MaxRetainedTerminal, l.MaxRetainedTerminal, "max_retained_terminal")
 		mergePtr(&m, &eff.NonInteractive, l.NonInteractive, "non_interactive")
+		mergePtr(&m, &eff.MemoryEnabled, l.MemoryEnabled, "memory_enabled")
 		if l.AppReplaySize != nil {
 			if name != LayerGlobal {
 				diags = append(diags, Diagnostic{

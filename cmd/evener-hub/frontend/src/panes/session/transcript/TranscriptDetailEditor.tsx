@@ -3,6 +3,7 @@ import {
   type ContentLevel,
   type ContentVector,
   contentVectorForConfig,
+  customContentForSelection,
   type HookExitDetail,
   normalizeConfig,
   type TranscriptDisplayAdvancedV1,
@@ -87,7 +88,7 @@ export function TranscriptDetailEditor({
 
   function selectContent(choice: ContentChoice) {
     if (choice === "custom") {
-      const customVector = lastCustom.current ?? contentVectorForConfig(config);
+      const customVector = customContentForSelection(config, lastCustom.current);
       const next = { kind: "custom" as const, ...customVector };
       lastCustom.current = customVector;
       emit({ ...config, content: next });
@@ -183,6 +184,12 @@ export function TranscriptDetailEditor({
                   checked={vector.expandByDefault}
                   disabled={disabled}
                   onChange={(checked) => updateContent("expandByDefault", checked)}
+                />
+                <Switch
+                  label="Thinking open by default"
+                  checked={vector.thinkingOpenByDefault}
+                  disabled={disabled}
+                  onChange={(checked) => updateContent("thinkingOpenByDefault", checked)}
                 />
               </div>
             </fieldset>

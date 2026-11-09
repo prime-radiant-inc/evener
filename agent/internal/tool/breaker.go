@@ -289,18 +289,20 @@ func isIntegerLiteral(s string) bool {
 
 // breakerThreshold is how many times a signature may produce the same answer
 // before the breaker intervenes. The second such result carries a nudge. For
-// repeated failures the call that would be the third is not executed at all;
-// repeated identical successes only ever draw the nudge, since the next one
-// may be the call that finally sees a changed world.
+// repeated failures by a tool that can change state, the call that would be
+// the third is not executed at all. Repeated identical successes only ever
+// draw the nudge, since the next one may be the call that finally sees a
+// changed world. Read-only failures follow the same rule as successes: the
+// state they read may have changed, so their repeats always dispatch.
 const breakerThreshold = 2
 
 // The intervention texts. Parked results all begin with parkPrefix, which is
 // the stable marker other layers count them by.
 //
-// The failure nudge stays a fixed string: the park check runs before every
-// dispatch and refuses a call once its failure streak reaches
-// breakerThreshold, so record() can never observe a failure streak above
-// that threshold and the nudge only ever fires at exactly two failures.
+// The failure nudge stays a fixed string: the park check refuses a mutating
+// call once its failure streak reaches breakerThreshold, so record() only
+// observes a streak above that threshold for read-only calls, which are never
+// parked and keep receiving the fixed nudge.
 const (
 	parkPrefix       = "evener did not execute this call: "
 	failureNudgeText = "You just ran the same tool twice with the same arguments and got the same failure. Consider an alternate approach"

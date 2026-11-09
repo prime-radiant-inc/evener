@@ -9,7 +9,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { hubInstance, hubInstanceEntries } from "@evener/appwire-client/testing/hubWireFixtures";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { connectionStore } from "../../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { InstanceSheet } from "./InstanceSheet";
 
@@ -35,7 +35,7 @@ function renderHubInstance(name: string) {
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetCredentialsStoreForTests();
   connectionStore.getState().connect(new FakeClient("ready"));
 });

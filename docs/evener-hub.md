@@ -290,7 +290,6 @@ field is absent.
 | `host_probe_timeout` | `"10s"` | Deadline for one remote-host health probe; also bounds how long a hung remote holds a deploy gate. |
 | `host_min_free_space_bytes` | 512 MiB | Free space each state root needs before the hub reports itself healthy. |
 | `host_tombstone_retention` | `"168h"` | How long a removed host's tombstone is retained before pruning. |
-| `status_poll_interval` | `"2s"` | How often the hub polls session state. |
 | `public_url` | unset | HTTP(S) origin advertised for pairing and browser login; otherwise use the observed browser origin for pairing and the bound listener for startup login. |
 
 Write every duration as a TOML string, such as `"30s"` or `"1h"`. A bare integer
@@ -304,9 +303,9 @@ value rather than trusting a silent load.
 
 Every other host-record bound (tombstone and receipt counts, sizes and ages,
 operation-store limits, teardown-repair timing) is a built-in default and is not
-configurable. A `hub.toml` that still sets one of the retired `host_*` retention
-or pruning keys starts normally, ignores the value, and logs a warning naming
-the key on every boot while it is present.
+configurable. A `hub.toml` that still sets a retired key (one of the `host_*`
+retention or pruning keys, or `status_poll_interval`) starts normally, ignores
+the value, and logs a warning naming the key on every boot while it is present.
 
 ## Launch configuration
 
@@ -472,14 +471,22 @@ unsigned, so this stops corruption and asset-swaps but not a compromise
 that rewrites both files the way a signature would.
 
 The channel selector has no stored setting. It defaults to the channel the
-running binary was built for, and after an update the installed binary's
-channel becomes the new default.
+running binary was built for (Release for a local build), and after an update
+the installed binary's channel becomes the new default.
 
-Dev builds (a worktree `make build-hub`, channel `dev`) hide Install, because
-a worktree build must never be silently replaced by a release binary. Restart
-is available so the rebuilt binary can be run without a download.
-`evener/update/apply` is refused on a dev build. Use `make build-hub` or
-`scripts/ops/deploy-hub.sh` for the build.
+A locally built hub (a worktree `make build-hub`, channel `dev`) offers the
+same channel check and Install action as a published build. Install writes the
+selected channel's published build into the managed installation the hub was
+launched from; the running process keeps its current binary until Restart. A
+launch path outside a managed installation reports that the install target
+does not match the launch path, so a worktree binary started in place is not
+replaced. A local build at the channel's current commit still offers Install,
+because the local binary is not the channel's published build, unless a
+rebuilt binary is already waiting for a restart.
+
+Install is offered only on platforms with a published archive (linux/amd64 and
+darwin/arm64), so a hub on another platform reports no installable update
+instead of failing after the download starts.
 
 Running session daemons keep the binary they were spawned from (see the
 [upgrade procedure](#upgrading-and-migrating-safely) below). Shut down the

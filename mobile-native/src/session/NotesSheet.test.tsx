@@ -512,7 +512,7 @@ describe("links", () => {
 		const swipeables = tree.root.findAllByType("ReanimatedSwipeable" as never);
 		expect(swipeables).toHaveLength(2);
 		for (const swipeable of swipeables) {
-			const tracker = swipeable.props.simultaneousWithExternalGesture as PanGestureMock | undefined;
+			const tracker = swipeable.props.simultaneousWith as PanGestureMock | undefined;
 			expect(swipeable.props.hitSlop).toEqual({ left: -4 });
 			expect(tracker?.config.hitSlop).toEqual({ left: -4 });
 		}

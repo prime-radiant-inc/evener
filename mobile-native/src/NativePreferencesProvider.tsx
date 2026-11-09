@@ -7,6 +7,7 @@ import {
 	DRAFT_RESTORE_FAILED_MESSAGE,
 	errorText,
 	isReadableKeybindingDraft,
+	resolveEffectiveConfig,
 } from "@evener/appwire-client";
 import type { AppwireClient, DiscardStoredDraftResult, TranscriptDisplayConfigV1 } from "@evener/appwire-client";
 import { bindNativePreferences } from "./bindNativePreferences";
@@ -15,6 +16,7 @@ import {
 	draftUnreadableAfterDiscard,
 	nativeKeybindingDrafts,
 	nativeTranscriptDrafts,
+	nativeTranscriptLocal,
 	rawStringDraftBackend,
 	readDraftOutcome,
 	readDraftOutcomeWithValue,
@@ -339,13 +341,22 @@ export function NativePreferencesProvider({ children }: { children: ReactNode })
 						config:
 							snapshot.transcriptMobile.support === "unsupported"
 								? null
-								: (snapshot.transcriptMobile.confirmed?.config ?? (previous?.hubId === hubId ? previous.config : null)),
+								: (snapshot.transcriptMobile.local ?? null) !== null || snapshot.transcriptMobile.confirmed !== null
+									? resolveEffectiveConfig({
+											local: snapshot.transcriptMobile.local ?? null,
+											hub: snapshot.transcriptMobile.confirmed,
+											layout: "mobile",
+										})
+									: previous?.hubId === hubId
+										? previous.config
+										: null,
 					}));
 				};
 				unsubscribe = model.subscribe(update);
 				update();
 			},
 			nativeKeybindingDrafts(hubId, backend),
+			nativeTranscriptLocal(hubId, backend),
 		);
 		return () => {
 			unsubscribe();

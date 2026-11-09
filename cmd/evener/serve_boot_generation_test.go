@@ -9,8 +9,12 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
 )
 
 // runServeResumeCountingBoots drives one --resume and returns the session's
@@ -21,6 +25,13 @@ func runServeResumeCountingBoots(t *testing.T, stateDir, sessionID string) strin
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
 	deps.seedMarketplaces = func(context.Context) error { return nil }
+	var restored *agent.Session
+	restore := deps.restoreSession
+	deps.restoreSession = func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, meta schema.SessionMeta, cfg agent.RestoreSessionConfig) (*agent.Session, error) {
+		var err error
+		restored, err = restore(client, profile, env, meta, cfg)
+		return restored, err
+	}
 	var cancel context.CancelFunc
 	deps.notifyContext = func(ctx context.Context, _ ...os.Signal) (context.Context, context.CancelFunc) {
 		next, stop := context.WithCancel(ctx)
@@ -35,6 +46,9 @@ func runServeResumeCountingBoots(t *testing.T, stateDir, sessionID string) strin
 			t.Errorf("boot counter at listen: %v", err)
 		}
 		atListen = strings.TrimSpace(string(data))
+		if restored == nil || restored.BootGeneration() != atListen {
+			t.Errorf("restored session generation differs from durable counter %q", atListen)
+		}
 		return listen(ctx, network, addr)
 	}
 	deps.serveHTTP = func(*http.Server, net.Listener) error {

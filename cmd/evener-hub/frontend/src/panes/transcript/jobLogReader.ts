@@ -176,6 +176,20 @@ export class JobLogReader {
     this.listeners.clear();
   }
 
+  /** Joins the output read in flight and any follow-up the same pump queues,
+   * without adding demand: a suite that opens a job log converges on the
+   * read's real completion instead of a DOM deadline the machinery can
+   * outlast under load. Resolves immediately when no output read is in flight
+   * (the reader is not mounted, or its last read already settled); callers
+   * still assert on the rendered log. */
+  async settleForTests(): Promise<void> {
+    let inFlight = this.outputInFlight;
+    while (inFlight) {
+      await inFlight;
+      inFlight = this.outputInFlight;
+    }
+  }
+
   private stopTimeout() {
     if (this.timeout === undefined) return;
     clearTimeout(this.timeout);

@@ -11,8 +11,6 @@ import type { BoardOrganization } from "./useBoardOrganization";
 
 // boardStops, which boardReplay imports, reaches the mutation runtime's native modules.
 vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
-vi.mock("expo-crypto", () => ({ randomUUID: () => "test-uuid", getRandomValues: (array: Uint8Array) => array }));
-
 function memory(): SyncStringStorage {
 	const values = new Map<string, string>();
 	return {

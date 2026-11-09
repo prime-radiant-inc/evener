@@ -77,10 +77,10 @@ func prepareWithDelegateSandbox(t *testing.T, s *Session, lane string, pol *sand
 	return prepareStableChildOnLane(t, s, delegateArgs{Task: "child task", DelegationAllowance: new(0)}, committedDelegateLane{dir: lane, sandbox: pol})
 }
 
-// TestStableDelegate_PerDelegateSandboxEnforced verifies that a delegate under
+// TestDelegate_PerDelegateSandboxEnforced verifies that a delegate under
 // an OFF parent that requests its own restricted box gets an environment enforced
 // at its lane.
-func TestStableDelegate_PerDelegateSandboxEnforced(t *testing.T) {
+func TestDelegate_PerDelegateSandboxEnforced(t *testing.T) {
 	t.Parallel()
 	lane, home := sbxLane(t)
 	facts := sbxBwrapFacts(home)
@@ -113,11 +113,11 @@ func TestStableDelegate_PerDelegateSandboxEnforced(t *testing.T) {
 
 }
 
-// TestStableDelegate_TerminalFinishCapturesScratchPath proves kata tpb0's
-// scratch-path wiring against a real sandboxed env: stableDelegateFinish reads
+// TestDelegate_TerminalFinishCapturesScratchPath proves kata tpb0's
+// scratch-path wiring against a real sandboxed env: buildDelegateFinish reads
 // the delegate's own SessionScratchDir into the terminal packet metadata, the
 // same absolute path the sandboxed child actually has as $EVENER_SCRATCH_DIR.
-func TestStableDelegate_TerminalFinishCapturesScratchPath(t *testing.T) {
+func TestDelegate_TerminalFinishCapturesScratchPath(t *testing.T) {
 	t.Parallel()
 	lane, home := sbxLane(t)
 	facts := sbxBwrapFacts(home)
@@ -134,18 +134,18 @@ func TestStableDelegate_TerminalFinishCapturesScratchPath(t *testing.T) {
 		t.Fatal("sandboxed child env reports no scratch dir")
 	}
 
-	metadata := decodeDelegatePacketMetadata(t, *prepared.sub.stableDelegateFinish("", context.Canceled).packet)
+	metadata := decodeDelegatePacketMetadata(t, *prepared.sub.buildDelegateFinish("", context.Canceled).packet)
 	if got := metadata["scratch_path"]; got != wantScratch {
 		t.Fatalf("terminal metadata[scratch_path] = %#v, want %q", got, wantScratch)
 	}
 }
 
-// TestStableDelegate_PerDelegateSandboxOverridesSandboxedParent: a tighter
+// TestDelegate_PerDelegateSandboxOverridesSandboxedParent: a tighter
 // per-delegate box (restricted) OVERRIDES a looser sandboxed parent (workspace-write
 // + an out-of-lane extra writable root). The child is restricted and the parent's
 // extra writable root does NOT leak onto it — the delegate's box is a pure function
 // of ITS OWN policy.
-func TestStableDelegate_PerDelegateSandboxOverridesSandboxedParent(t *testing.T) {
+func TestDelegate_PerDelegateSandboxOverridesSandboxedParent(t *testing.T) {
 	t.Parallel()
 	lane, home := sbxLane(t)
 	facts := sbxBwrapFacts(home)
@@ -191,12 +191,12 @@ func TestCreateDelegate_SandboxFloorRefusedEarly(t *testing.T) {
 	}
 }
 
-// TestStableDelegate_PerDelegateSandboxCleansScratchOnSpawnFailure: when a
+// TestDelegate_PerDelegateSandboxCleansScratchOnSpawnFailure: when a
 // per-delegate sandbox EnableSandbox's a fresh env and the spawn then fails at
 // NewSession, the provisioned scratch dir must release its lease, not leak it. A nil child
 // client (via childClientFactory) forces NewSession to fail AFTER EnableSandbox. Not
 // parallel: it isolates TMPDIR to observe the sandbox scratch base.
-func TestStableDelegate_PerDelegateSandboxCleansScratchOnSpawnFailure(t *testing.T) {
+func TestDelegate_PerDelegateSandboxCleansScratchOnSpawnFailure(t *testing.T) {
 	isolated := t.TempDir()
 	t.Setenv("TMPDIR", isolated)
 
@@ -531,7 +531,7 @@ func TestCreateDelegate_ResultEchoesSandboxBox(t *testing.T) {
 		t.Fatalf("result must echo the enforced box {restricted, net off}, got %+v", res.Sandbox)
 	}
 
-	out, err := marshalStableDelegateCreateResult(stableDelegateCreateResult{
+	out, err := marshalDelegateCreateResult(delegateCreateResult{
 		DelegateID:     res.DelegateID,
 		ChildSessionID: res.ChildSessionID,
 		Type:           res.Type,
@@ -539,7 +539,7 @@ func TestCreateDelegate_ResultEchoesSandboxBox(t *testing.T) {
 		Reason:         res.Reason,
 		Resumable:      res.Resumable,
 		TranscriptRef:  res.TranscriptRef,
-		Sandbox:        delegateSandboxToolResultFrom(res.Sandbox),
+		Sandbox:        res.Sandbox,
 	}, 30000)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -549,7 +549,7 @@ func TestCreateDelegate_ResultEchoesSandboxBox(t *testing.T) {
 	}
 
 	// An unsandboxed result omits the key entirely.
-	out, err = marshalStableDelegateCreateResult(stableDelegateCreateResult{
+	out, err = marshalDelegateCreateResult(delegateCreateResult{
 		DelegateID:     res.DelegateID,
 		ChildSessionID: res.ChildSessionID,
 		Type:           res.Type,
@@ -566,13 +566,13 @@ func TestCreateDelegate_ResultEchoesSandboxBox(t *testing.T) {
 	}
 }
 
-// TestStableDelegate_PerDelegateSandboxWithoutIsolationDoesNotMutateParent: a
+// TestDelegate_PerDelegateSandboxWithoutIsolationDoesNotMutateParent: a
 // delegate may request its own box WITHOUT isolation="worktree" (empty workingDir),
 // which shares the parent's working dir. The per-delegate EnableSandbox mutates its
 // env IN PLACE, so the clone-before-mutate guard is containment-critical: without it
 // EnableSandbox would sandbox (or re-box) the SHARED parent env mid-session. Assert
 // the child gets the requested box AND the parent env is untouched.
-func TestStableDelegate_PerDelegateSandboxWithoutIsolationDoesNotMutateParent(t *testing.T) {
+func TestDelegate_PerDelegateSandboxWithoutIsolationDoesNotMutateParent(t *testing.T) {
 	t.Parallel()
 	lane, home := sbxLane(t)
 	facts := sbxBwrapFacts(home)

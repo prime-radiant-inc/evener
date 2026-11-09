@@ -129,6 +129,10 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 			if err := deps.abort(ctx); err != nil {
 				return nil, err
 			}
+			if endTurn && endReason == tool.CommunicateEndReasonWaitingOnWork &&
+				deps.wakeableWork != nil && !deps.wakeableWork() {
+				return nil, errors.New("end_reason waiting_on_work requires work that will wake this session; none is pending: end with done if the work is finished, needs_response if your partner must act, or start the work or arm a watch before ending the turn")
+			}
 
 			if err := deps.deliverCommunicate(events.CommunicateData{
 				CallID:    callIDFromContext(ctx),
@@ -212,13 +216,12 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 				}
 			}
 			b, _ := json.Marshal(resp)
-			if accepted && endReason != "" {
-				// The accepted end reason rides the result's tool state, which
-				// restore reads (endedOnNeedsResponse): the result text can be
-				// truncated or carry a repeated-call nudge.
-				return tool.StateResult{Output: string(b), State: communicateEndState{EndReason: endReason}}, nil
-			}
-			return string(b), nil
+			// Durable acceptance evidence belongs in typed state, not display
+			// output: the registry may truncate the latter before transcript
+			// persistence. The result remains linked to this call by ToolCallID.
+			return tool.StateResult{Output: string(b), State: communicateEndState{
+				Accepted: &accepted, EndTurn: &endTurn, EndReason: endReason,
+			}}, nil
 		},
 	}); err != nil {
 		if resultToolName != tool.DefaultResultToolName {
@@ -236,9 +239,11 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 	return nil
 }
 
-// communicateEndState is the tool state of the turn-ending communicate call
-// the input accepted.
+// communicateEndState records communicate's terminal verdict and optional end
+// reason independently of the display output.
 type communicateEndState struct {
+	Accepted *bool `json:"communicate_accepted,omitempty"`
+	EndTurn  *bool `json:"communicate_end_turn,omitempty"`
 	// The key is communicate's own, so no other tool's state can match it.
 	EndReason string `json:"communicate_end_reason"`
 }

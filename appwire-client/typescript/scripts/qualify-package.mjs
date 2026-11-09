@@ -258,7 +258,7 @@ assert.deepEqual(pickerRows.map((row) => row.kind), ["group", "model"]);
 assert.equal(client.pickableModelRows(pickerRows).length, 1);
 assert.deepEqual(client.buildPickerRows(null, ""), []);
 assert.equal(client.effortLabel("none", ["none", "high"]), "none (off)");
-assert.deepEqual(client.effortOptionLevels(["low", "high"], "medium"), ["", "low", "high", "medium"]);
+assert.deepEqual(client.effortOptionLevels(["low", "high"], "medium"), ["", "low", "medium", "high"]);
 assert.deepEqual(client.sessionEffortLevels(undefined, true), ["minimal", "low", "medium", "high"]);
 const envInstance = {
   name: "openai", providerId: "openai", protocol: "openai-chat", auth: "bearer", implicit: true, isDefault: false,
@@ -321,7 +321,10 @@ const displayConfig = client.makeTranscriptDisplayConfig({ kind: "preset", level
 assert.equal(client.advancedEnabledCount(displayConfig), 1);
 assert.equal(client.accessibleConfigSummary(client.shippedMobileConfig), "Intent");
 assert.equal(client.accessibleConfigSummary(displayConfig), "Tools · 1 advanced");
-assert.deepEqual(client.presetContent("chat"), { toolIntent: true, toolCalls: false, reasoning: false, expandByDefault: false });
+assert.deepEqual(
+  client.contentVectorForConfig(client.makeTranscriptDisplayConfig({ kind: "preset", level: "chat" })),
+  { toolIntent: true, toolCalls: false, reasoning: false, expandByDefault: false, thinkingOpenByDefault: false },
+);
 assert.deepEqual(client.decodeLocalConfig(client.encodeLocalConfig(displayConfig)), displayConfig);
 assert.equal(client.resolveEffectiveConfig({ local: null, hub: client.shippedDefault("desktop") }).content.level, "tools");
 assert.equal(client.visibleCategoryInventory(displayConfig).visible.includes("tokenCounts"), true);
@@ -343,7 +346,7 @@ assert.equal(client.harnessUsesEvenerModels("external", [{ id: "external", label
 const archivedLists = client.createArchivedListStore({ request: async () => ({ sessions: [], total: 0 }) });
 archivedLists.refresh("projects", "p").then(() => { const { rows, loaded, error } = archivedLists.getState().lists[client.archivedListKey("projects", "p")]; assert.deepEqual({ rows, loaded, error }, { rows: [], loaded: true, error: null }); });
 const hubOverview = client.createHubOverviewStore({ request: async () => ({ hub: { pastIndex: { path: "/index" } }, mcpDiscovered: {} }) });
-hubOverview.getState().fetch().then(() => assert.deepEqual(hubOverview.getState().data, { hub: { pastIndex: { path: "/index", count: 0, perPage: 0 } }, mcpDiscovered: { servers: [] }, agents: [] }));
+hubOverview.getState().fetch().then(() => assert.deepEqual(hubOverview.getState().data, { hub: { pastIndex: { path: "/index" } }, mcpDiscovered: {} }));
 // The keybinding group parses through a host-supplied KeybindingParser (tinykeys' parseKeybinding in both apps); this consumer supplies a plain-press one of the port's shape.
 const keybindingParser = (keybinding) => keybinding.split(" ").map((press) => { const parts = press.split("+"); return [parts.slice(0, -1), [], parts[parts.length - 1]]; });
 assert.equal(client.ACTIONS.paletteOpen, "palette.open");
@@ -461,7 +464,7 @@ transcriptStore.getState().refreshHubDefaults().then(() => {
   unmarkAttempted: () => Promise.resolve(false),
   markUnknown: () => Promise.resolve(false),
   settleReceipt: () => Promise.resolve(false),
-  settleApplied: () => Promise.resolve(false),
+  settleApplied: () => Promise.resolve(undefined),
   restoreProvenAbsent: () => Promise.resolve([]),
   transferToRecovery: () => Promise.resolve(undefined),`;
   // The qualification manifest: every specifier package.json publishes, with
@@ -705,9 +708,7 @@ const marketplaces: MarketplacesStore = createMarketplacesStore(marketplacesClie
 const entry: MarketplaceCatalogEntry = { status: "loading" }; void marketplaces; void entry;
 const pluginsClient: PluginsClient = marketplacesClient;
 const plugins: PluginsStore = createPluginsStore(pluginsClient, createHubWriteGate());
-const revision: ListRevision = createListRevision(); void plugins; void revision;
-const keyed: KeyedRevision = createKeyedRevision(); void keyed.issue("acme");
-const lifecycle: StoreLifecycle<PluginsState> = createStoreLifecycle(pluginsClient, { method: "evener/plugin/updated", debounceMs: 250, store: () => plugins, refetch: (state) => state.fetchPlugins(), wantsList: (state) => state.plugins !== null }); void lifecycle;
+void plugins;
 const layerClient: LaunchLayerClient = marketplacesClient;
 const layer: LaunchLayerStore = createLaunchLayerStore(layerClient); void layer;`,
       cjsTypeUses: `const marketplacesState: client.MarketplacesState = client.createMarketplacesStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }, client.createHubWriteGate()).getState(); void marketplacesState;
@@ -721,26 +722,12 @@ const layerState: client.LaunchLayerState = client.createLaunchLayerStore({ requ
       // top-level await, and a failure inside exits the consumer non-zero.
       smoke: `const offline = { request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined };
 const marketplacesStore = client.createMarketplacesStore(offline, client.createHubWriteGate());
-assert.equal(client.MARKETPLACE_REFETCH_DEBOUNCE_MS, 250);
+assert.equal(client.REFETCH_DEBOUNCE_MS, 250);
 const pluginsStore = client.createPluginsStore(offline, client.createHubWriteGate());
-assert.equal(client.PLUGIN_REFETCH_DEBOUNCE_MS, 250);
 assert.equal(pluginsStore.getState().pluginRevision, 0);
 pluginsStore.connectionChanged(offline, "ready");
-const keyed = client.createKeyedRevision();
-const keyedRevision = keyed.issue("acme");
-keyed.retire("acme");
-assert.equal(keyed.current("acme", keyedRevision), false);
 const layerStore = client.createLaunchLayerStore(offline);
-assert.equal(client.LAUNCH_LAYER_REFETCH_DEBOUNCE_MS, 250);
 assert.equal(layerStore.getState().launchLayer, null);
-const listRevision = client.createListRevision();
-const first = listRevision.next();
-listRevision.fence();
-let fencedAnswerPublished = false;
-listRevision.publish(first, () => {
-  fencedAnswerPublished = true;
-});
-assert.equal(fencedAnswerPublished, false);
 marketplacesStore
   .getState()
   .fetchMarketplaces()
@@ -1031,8 +1018,28 @@ memoryOutbox
   // it (declaration-reachability.mjs). A module no published specifier reaches
   // fails right here.
   const reachable = reachableModules(entryDeclarations, installedDist);
+  // The state stores are built over these modules, so tsc must ship them, but
+  // they are not part of any published surface. Listing one here is the
+  // decision that it stays internal; an entry a specifier starts to re-export,
+  // or one the build stops shipping, fails below so the list cannot go stale.
+  const internalModules = [
+    // The generated ladder is an implementation detail: surfaces consume the
+    // rank table and FALLBACK_EFFORT_LEVELS through reasoningEffort's
+    // re-exports, never the generated arrays directly.
+    "reasoningEffort.gen",
+    "state/extensions/keyedRevision",
+    "state/extensions/listRevision",
+    "state/extensions/storeLifecycle",
+  ];
+  for (const module of internalModules) {
+    assert(shippedModules.includes(module), `internal module is not shipped: ${module}`);
+    assert(!reachable.has(module), `internal module is re-exported by a published specifier: ${module}`);
+  }
   for (const module of shippedModules)
-    assert(reachable.has(module), `shipped module unreachable from every published specifier: ${module}`);
+    assert(
+      reachable.has(module) || internalModules.includes(module),
+      `shipped module unreachable from every published specifier: ${module}`,
+    );
   // One ESM declaration consumer, one CommonJS declaration consumer and one
   // runtime presence check in each module form, per published specifier. Each
   // type is named only as an `import type` specifier, the one position that

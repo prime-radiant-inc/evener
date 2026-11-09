@@ -60,6 +60,12 @@ const (
 	maxEmptyRetries        = 3
 	maxTotalEmptyResponses = 8 // prevent repeated burst-and-recover spirals
 	maxBareTextRetries     = 3
+	// maxServerContinuations bounds one input turn's run of consecutive
+	// pause_turn responses. A pause is a legitimate protocol continuation, so it
+	// still refunds its tool round (see TestSession_PauseTurn_*), but a provider
+	// that returns them forever must not keep a single turn alive indefinitely:
+	// the chain is a distinct budget from the tool-round cap.
+	maxServerContinuations = 8
 )
 
 // retryTracker counts the degenerate (empty / bare-text) model responses seen so
@@ -434,6 +440,11 @@ const (
 	// EntryDelegateAttention is a controller-owned stable delegate generation
 	// whose exact model-bound input is already durable in the receiver transcript.
 	EntryDelegateAttention
+	// EntryRuntime is a daemon-authored recovery turn. It records no user turn:
+	// the steering queued for it (a delegate's missing-report reminder) is the
+	// model's whole prompt, so recovery cannot masquerade as caller instruction
+	// in history, events, hooks, or compaction (#3734).
+	EntryRuntime
 	// entryKindCount is the number of EntryKind values. Keep it last: the
 	// turn-opening audit (entrykind_audit_test.go) iterates up to it, so a kind
 	// added above this line must declare how its turn acquires an identity
@@ -617,7 +628,17 @@ func (s *Session) ProcessInputKind(ctx context.Context, input string, images []I
 }
 
 func (s *Session) processInputWithProvenance(ctx context.Context, input string, images []ImageAttachment, p *provenance.Causal) (string, error) {
+	// This internal entry is used for harness nudges and stop-hook input, not
+	// a client's message. Keep that evidence distinct from session placement.
+	ctx = context.WithValue(ctx, internalTranscriptInputKey{}, true)
 	return s.processInputKindWithProvenance(ctx, input, images, EntryUserInput, p)
+}
+
+// processRuntimeInput runs a daemon-authored recovery turn. It records no user
+// input of its own: the steering queued for it is the model's whole prompt, so
+// the turn cannot be mistaken for the caller speaking (#3734).
+func (s *Session) processRuntimeInput(ctx context.Context, p *provenance.Causal) (string, error) {
+	return s.processInputKindWithProvenance(ctx, "", nil, EntryRuntime, p)
 }
 
 func (s *Session) processInputKindWithProvenance(ctx context.Context, input string, images []ImageAttachment, kind EntryKind, inputProvenance *provenance.Causal) (string, error) {
@@ -626,6 +647,12 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		return "", admissionErr
 	}
 	defer release()
+	// A delegate child's turn keeps the marker parent's activity evidence
+	// fresh for its whole life, silent stretches included; see
+	// startLaneEvidenceTicker. Stopped before the retirement release, so no
+	// tick outlives the turn.
+	stopEvidenceTicker := s.startLaneEvidenceTicker(ctx)
+	defer stopEvidenceTicker()
 	// Stamp the session id for the whole turn so LLM side calls made from tools
 	// (web fetch summaries, naming, in-turn compaction) attribute to this
 	// session in the per-session API log. callModelWithFallback layers its
@@ -687,6 +714,13 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		s.mu.Lock()
 		s.goalInTurn = false
 		s.mu.Unlock()
+		// The last act before going idle: a switch queued while this input ran
+		// whose moment already passed (the pick landed after the final turn
+		// returned, so no further turn of this input applies it) would
+		// otherwise wait for a turn that nothing schedules. The session is idle
+		// here, so the switch applies now and its marker is persisted before
+		// the process can retire. Between-turn picks are the loop site above's.
+		s.applyPendingModelSwitch()
 	}()
 
 	// A test-only seam: fail the turn before its user entry is recorded, the
@@ -759,6 +793,14 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// does not — /par #4).
 		ranKind := nextKind
 		ranClientMutation := queuedClientMutationFromContext(processCtx)
+		// A model switch queued during the previous turn - or picked in the
+		// window after that turn settled but before this one starts - applies
+		// here, and only here: the previous processOneInput has returned, so
+		// its deferred settlement (attention finalizers included) already ran
+		// and cannot clobber the switch's own recovery, and this turn has not
+		// been admitted yet, so it opens on the picked model with the switch
+		// marker between the two turns.
+		s.applyPendingModelSwitch()
 		out, progressed, err := s.processOneInput(processCtx, next, nextImages, nextKind, nextProvenance)
 		// The durable name of the turn that just ran, read before this turn's
 		// completion below releases it. An interrupt's marker is that turn's
@@ -1386,7 +1428,7 @@ func (s *Session) transcriptRefusalForWrite(writeErr error) error {
 
 func delegateEntryRequiresReport(kind EntryKind) bool {
 	switch kind {
-	case EntryUserInput, EntryContinuation:
+	case EntryUserInput, EntryContinuation, EntryRuntime:
 		return true
 	default:
 		return false
@@ -1509,6 +1551,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// since it reads the client-mutation journal, not session state.
 	queuedIdentity := queuedClientMutationFromContext(ctx)
 	carrierAnswersAsk := s.steeringCarrierClaimAnswersAsk(queuedIdentity)
+	carrierAskResolution := s.clientMutationAskResolution(queuedIdentity.ClientMutationID)
 
 	// restMu: a needs_response rest arming right now announces first.
 	if hook := s.cfg.testOnly.turnStartBeforeRestMu; hook != nil {
@@ -1539,7 +1582,17 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	s.restGeneration++
 	s.restMu.Unlock()
 	s.turnStartedAt = s.sclock().Now()
+	// A housekeeping input — a job notification, a goal continuation, or the
+	// runtime recovery — runs inside the same delegate generation as the
+	// non-terminal update it follows. Preserve that evidence so a later
+	// missing-report reminder still knows the delegate reached its parent; a new
+	// caller input or attention generation starts fresh.
+	preserveUpdate := kind != EntryUserInput && kind != EntryDelegateAttention
+	updated := s.comm.updated
 	s.comm = communicateResult{}
+	if preserveUpdate {
+		s.comm.updated = updated
+	}
 	// A claimed answering steering carrier has already crossed its durable
 	// admission boundary before this carrier turn runs, so preserve its
 	// established entry-clear behavior. Ordinary user input clears only after
@@ -1547,7 +1600,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// failed MaxTurns, environment, or transcript admission must leave the
 	// pending ask available for the next real reply and for restore.
 	if carrierAnswersAsk && queuedIdentity.SteeringCarrier {
-		s.setAskPendingLocked(nil)
+		s.clearAskPendingResolutionLocked(carrierAskResolution)
 	}
 	s.mu.Unlock()
 	s.delegateDeliveryMu.Unlock()
@@ -1695,6 +1748,8 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		rootAttentionAccepted = true
 	} else if kind == EntryDelegateAttention {
 		s.acceptDelegateAttentionInput()
+	} else if kind == EntryRuntime {
+		s.acceptRuntimeInput(inputProvenance)
 	} else if err := s.acceptUserInputWithSkillSelection(ctx, input, images, inputProvenance, kind == EntryUserInput, skillSelection); err != nil {
 		if errors.Is(err, errSteeringCarrierStoodDown) {
 			// A carrier that stood down ran no model turn. Record it so the
@@ -1735,6 +1790,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	localAdmissionCompacted := false
 	providerContextRecovered := false
 	var tracker retryTracker
+	serverContinuations := 0
 
 	// Continuation (goal) turns clamp the per-input round cap to GoalTurnMaxRounds
 	// (spec §2b/C13); a config of <0 is "unbounded", so a bare min would be wrong.
@@ -1895,6 +1951,13 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		rc := classifyRoundContent(txt, len(calls), resp.Message.Content)
 		noContent := rc.NoContent
 		skipHistory := rc.SkipHistory
+		// A pause_turn response is the provider's partial state. Even when it
+		// carries only server-side tool blocks (a web search still running) and
+		// no text or client tool calls, the continuation must see it again, so
+		// keep it in history instead of dropping it as a no-content round.
+		if resp.Finish.Reason == llm.FinishReasonPauseTurn && len(resp.Message.Content) > 0 {
+			skipHistory = false
+		}
 
 		if abortErr := errors.Join(s.emitAssistantResponse(ctx, resp, modelResp, txt, skipHistory, attempt), sessionLifecycleFault(ctx, "emit_assistant")); abortErr != nil {
 			return "", progressed, abortErr
@@ -1902,22 +1965,29 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// pause_turn: model needs another turn (e.g. server-side web search still running).
 		if resp.Finish.Reason == llm.FinishReasonPauseTurn {
 			round-- // Don't count pause_turn as a tool round.
+			serverContinuations++
 			timings.TotalRound = time.Since(roundStart)
 			timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall
 			s.emit(timings)
+			if serverContinuations >= maxServerContinuations {
+				// Stop the chain on its own budget; the pause responses
+				// already emitted stay in history, so the turn is resumable.
+				exhausted := &budgetExhaustionError{
+					Budget:    exhaustedBudgetServerContinuations,
+					Limit:     maxServerContinuations,
+					Resumable: true,
+				}
+				s.emitBudgetExhaustionFailure(exhausted)
+				return lastText, progressed, exhausted
+			}
 			continue
 		}
+		serverContinuations = 0
 
 		// Reverse-map provider-specific tool names to canonical names for registry lookup.
 		for i := range calls {
 			calls[i].Name = s.canonicalToolName(calls[i].Name)
 		}
-
-		// Progress signal for the goal engine: a turn "progressed" iff it made a
-		// real mutating tool call — !ReadOnly AND not the result/communicate tool
-		// AND not task_list (plan-spam and "I'm done" messages must not count).
-		// Accumulated as a turn-level OR across the turn's rounds (spec §2).
-		progressed = progressed || s.callsMadeProgress(calls)
 
 		if len(calls) == 0 {
 			// A bare-text (non-empty) response to a notification turn
@@ -1981,6 +2051,15 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		if execErr != nil {
 			return "", progressed, execErr
 		}
+
+		// Progress signal for the goal engine: a turn "progressed" iff it
+		// executed a real mutating tool call — !ReadOnly, not the
+		// result/communicate tool, not task_list (plan-spam and "I'm done"
+		// messages must not count), and not a failed or prevalidation-only
+		// result. Credited from the executed results, not the proposed calls,
+		// so an unknown name or a rejected write never resets the no-progress
+		// streak. Accumulated as a turn-level OR across the turn's rounds.
+		progressed = progressed || s.toolResultsMadeProgress(results)
 
 		timings.ToolExec = time.Since(tPhaseStart)
 
@@ -2127,6 +2206,7 @@ func (s *Session) returnAcceptedUserTurn(queuedIdentity queuedClientMutationIden
 // failed once still accepts the next record, and whether that is right for
 // every producer is the audit in #1181, not this path's rule to settle.
 func (s *Session) appendUserInputTurnRefusingPoison(turn schema.Turn) error {
+	turn.AnswerToTurnIDs = s.pendingAskTurnIDs()
 	err := s.appendTurnAfterTranscriptWrite(
 		turn,
 		func() error { return s.writeTranscriptSyncedLocked(turn) },
@@ -2193,7 +2273,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 	if queuedIdentity.ClientMutationID != "" &&
 		s.clientMutationUserTranscriptIncorporated(queuedIdentity.ClientMutationID, queuedIdentity.StableTurnID) {
 		s.injectDrainedSteering()
-		s.clearAskPending()
+		s.clearAskPendingResolution(s.clientMutationAskResolution(queuedIdentity.ClientMutationID))
 		return nil
 	}
 
@@ -2242,6 +2322,10 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 	if queuedIdentity.ClientMutationID == "" {
 		if !preseededInput {
 			turn := schema.NewTurn(schema.TurnUserInput, buildSelectedUserInputMessage(input, images, skillInputNames(skillInput)))
+			turn.ConversationInputIDs = s.conversationInputIDs("")
+			if internal, _ := ctx.Value(internalTranscriptInputKey{}).(bool); !internal {
+				turn.Authorship = humanTranscriptAuthorship()
+			}
 			if selected := durableSkillSelectionFromContext(ctx); selected != nil {
 				turn.CommandInput = selected.CommandInput
 				turn.Message = appendSelectedCommands(turn.Message, selected.CommandInput, selected.CommandBodies)
@@ -2258,12 +2342,16 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 		}
 	} else {
 		turn := schema.NewTurn(schema.TurnUserInput, buildSelectedUserInputMessage(input, images, skillInputNames(skillInput)))
+		turn.ConversationInputIDs = s.conversationInputIDs(queuedIdentity.ClientMutationID)
+		turn.Authorship = humanTranscriptAuthorship()
 		if selected := durableSkillSelectionFromContext(ctx); selected != nil {
 			turn.CommandInput = selected.CommandInput
 			turn.Message = appendSelectedCommands(turn.Message, selected.CommandInput, selected.CommandBodies)
 		}
 		turn.ClientMutationID = queuedIdentity.ClientMutationID
+		attachVoicePresentation(&turn, queuedIdentity.VoicePresentation, queuedIdentity.ClientMutationID)
 		turn.StableTurnID = queuedIdentity.StableTurnID
+		turn.Actor = s.clientMutationActor(queuedIdentity.ClientMutationID)
 		if skillInput != nil {
 			turn.SkillState = &schema.SkillTurnState{Input: skillInput}
 		}
@@ -2276,7 +2364,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 				recoveryErr := s.recoverClientMutationFailures(true)
 				userRecorded := s.clientMutationTranscriptItems(queuedIdentity.ClientMutationID, queuedIdentity.StableTurnID).User
 				if userRecorded {
-					s.clearAskPending()
+					s.clearAskPendingResolution(s.clientMutationAskResolution(queuedIdentity.ClientMutationID))
 				}
 				if recoveryErr != nil {
 					return errors.Join(failure, fmt.Errorf("record client start failure: %w", recoveryErr))
@@ -2295,6 +2383,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 				return failure
 			}
 		}
+		s.setClientMutationAskEvidence(&turn, queuedIdentity.ClientMutationID, "")
 		if err := s.appendTurnAfterTranscriptWrite(
 			turn,
 			func() error { return s.appendClientMutationTranscriptLocked(turn) },
@@ -2307,7 +2396,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 		}
 		// The claimed user turn is now durable. Resolve the pending ask only
 		// after this admission point; failures before it must preserve the ask.
-		s.clearAskPending()
+		s.clearAskPendingResolution(turn.AskResolution)
 		if err := s.markClaimedUserTranscriptIncorporated(queuedIdentity.ClientMutationID); err != nil {
 			return fmt.Errorf("incorporate claimed user input: %w", err)
 		}
@@ -2397,6 +2486,15 @@ func (s *Session) acceptDelegateAttentionInput() {
 	s.repairOrphanedToolResults(context.Background(), "before accepting delegate attention")
 }
 
+// acceptRuntimeInput starts a daemon-authored recovery turn. It records no
+// turn of its own: the steering already queued for this turn carries the
+// runtime reminder, and draining it is what gives the model its prompt.
+func (s *Session) acceptRuntimeInput(p *provenance.Causal) {
+	s.replaceActiveProvenance(p)
+	s.repairOrphanedToolResults(context.Background(), "before accepting runtime input")
+	s.injectDrainedSteering()
+}
+
 // acceptNotificationInput records a job-completion notification turn at the
 // start of an input turn. It mirrors acceptContinuationInput's framing — the
 // drained queue is delivered to the model as a schema.TurnSteering reminder (a
@@ -2415,7 +2513,7 @@ func (s *Session) acceptDelegateAttentionInput() {
 // stands down before reaching here when a served session could not be named, so
 // every wake that gets this far can address its own turn.
 func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (proceed bool) {
-	s.drivePendingStableDelegateAttention()
+	s.drivePendingDelegateAttention()
 	// Drive signal (b) (spec §3): a child driven on its pending caller-targeted
 	// watch sends may have no token queued yet (the drive was launched on the
 	// hasPendingWatchSends signal, not a token enqueue). Enqueue the OWN session's
@@ -2589,7 +2687,7 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, identity queue
 		// askPending set, so its failure must not be a resolution boundary
 		// either, or restore would diverge from live.
 		if s.steeringCarrierClaimAnswersAsk(identity) {
-			s.emitSteeringCarrierTurnFailure(errorDataFromError(err))
+			s.emitSteeringCarrierTurnFailure(errorDataFromError(err), identity.ClientMutationID)
 		} else {
 			s.emitTurnFailure(errorDataFromError(err))
 		}
@@ -2769,6 +2867,12 @@ func (s *Session) jobNotificationAlreadyInjected(jobID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, turn := range s.history {
+		// Only runtime notification steering can acknowledge delivery. Untyped
+		// runtime steering remains eligible for replay recovery.
+		if turn.Kind != schema.TurnSteering || turn.SteeringSource != "" ||
+			(turn.SteeringKind != "" && turn.SteeringKind != events.SteeringKindNotification) {
+			continue
+		}
 		if durableJobNotificationAlreadyInjected(turn.Message.Text(), needle) {
 			return true
 		}
@@ -2783,16 +2887,20 @@ func durableJobNotificationAlreadyInjected(text, needle string) bool {
 			return false
 		}
 		text = text[start:]
-		end := strings.Index(text, "</job-notification>")
-		block := text
-		if end >= 0 {
-			block = text[:end]
+		headerEnd := strings.IndexByte(text, '>')
+		if headerEnd < 0 {
+			return false
 		}
-		if strings.Contains(block, needle) &&
-			!strings.Contains(block, `event="watch"`) &&
-			!strings.Contains(block, `status="watch"`) {
+		// The formatter escapes attribute delimiters. Only the header carries
+		// delivery identity; output excerpts can contain arbitrary job IDs.
+		header := text[:headerEnd]
+		if strings.Contains(header, needle) &&
+			!strings.Contains(header, `event="watch"`) &&
+			!strings.Contains(header, `event="watch_send"`) &&
+			!strings.Contains(header, `status="watch"`) {
 			return true
 		}
+		end := strings.Index(text, "</job-notification>")
 		if end < 0 {
 			return false
 		}

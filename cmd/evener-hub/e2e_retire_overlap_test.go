@@ -30,8 +30,9 @@ func TestE2E_RetireOverlappedByAnotherOwnershipAction(t *testing.T) {
 	// wins the session's alias lock, and two connections cannot order that.
 	// TestDaemonRetireCheckedBeforeAnOverlappingArchive pins it deterministically
 	// by gating the daemon's answer, so the retire is provably past its check.
+	var cases []concurrentCase
 	for _, overlap := range []string{"force stop", "delete", "resume"} {
-		t.Run(overlap, func(t *testing.T) {
+		cases = append(cases, concurrentCase{name: overlap, run: func(t *testing.T) {
 			provider, err := fakellm.New()
 			if err != nil {
 				t.Fatalf("start fake provider: %v", err)
@@ -126,8 +127,9 @@ func TestE2E_RetireOverlappedByAnotherOwnershipAction(t *testing.T) {
 			if _, found := residentIdentityForRef(list, ref); !found {
 				t.Fatalf("no resident daemon for %s after the resume: %+v", ref, list.Daemons)
 			}
-		})
+		}})
 	}
+	runCasesConcurrently(t, cases)
 }
 
 type overlappedRetire struct {

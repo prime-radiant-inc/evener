@@ -13,12 +13,12 @@ beforeEach(() => {
 // match) is what pins "both themes render" - the point of the route.
 const THEMES = 2;
 
-const RAMP_LABELS = ["caption 12", "ui 13", "body 15", "pane-title 18", "page-title 22", "display 28"];
+const RAMP_LABELS = ["caption 12", "ui 13", "body 15", "prose 16", "pane-title 20", "page-title 26", "display 34"];
 const RHYTHM_LABELS = ["rhythm-line 4", "rhythm-item 8", "rhythm-group 16", "rhythm-exchange 24"];
-const LEADING_LABELS = ["line-height-ui", "line-height-body", "line-height-title"];
+const LEADING_LABELS = ["line-height-ui", "line-height-body", "line-height-prose", "line-height-title"];
 const MEASURE_LABELS = ["44rem", "64rem"];
 
-test.each(["Inter Variable", "Source Serif 4 Variable", "JetBrains Mono Variable"])(
+test.each(["Schibsted Grotesk Variable", "Source Serif 4 Variable", "JetBrains Mono Variable"])(
   "demonstrates the face %s in both themes",
   (face) => {
     expect(screen.getAllByText(face)).toHaveLength(THEMES);
@@ -26,7 +26,7 @@ test.each(["Inter Variable", "Source Serif 4 Variable", "JetBrains Mono Variable
 );
 
 test("shows the prose step in both themes", () => {
-  expect(screen.getAllByText("prose 18")).toHaveLength(THEMES);
+  expect(screen.getAllByText("prose 16")).toHaveLength(THEMES);
 });
 
 test("renders without throwing, with the intro note", () => {

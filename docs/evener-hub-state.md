@@ -68,7 +68,7 @@ and data intact, even if it happens to be inside the old root. `run_dir`,
 project/session state selected by `state_glob`, config, providers, credentials
 and OAuth stores resolve independently of `hub_state_root`. Changing the hub
 root does not move them. Keep HOME, XDG and config selection unchanged, and
-preserve the whole TOML plus private sibling `hub.toml.stash*` recovery files.
+preserve the whole TOML plus its private sibling recovery files: `hub.toml.pre-records`, and any `hub.toml.stash*` an older build left.
 Do not apply a blanket old-path-to-new-path replacement.
 
 ## Offline same-host procedure
@@ -90,8 +90,8 @@ First settle recovery while the original owner still has its original paths.
 Then copy offline, edit only the intended root and completed custody field, and
 verify the new owner before retiring the old selection. Never serve both copies.
 
-1. Finish or reconcile host mutations, pending cross-file compensation and
-   quarantine under the original owner. In particular, a pending
+1. Finish or reconcile host mutations, any compensation an older build left
+   open, and quarantine under the original owner. In particular, a pending
    `hostops/operations.json.quarantine-intent.json` must settle before copying.
    Do not migrate its intent or bypass validation. Unsettled config recovery
    can otherwise undo the root edit.

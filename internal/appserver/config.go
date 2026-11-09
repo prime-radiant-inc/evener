@@ -84,9 +84,12 @@ type SubscriptionAdmissionResolution struct {
 
 // requestQueueCap bounds each connection's inbound request queue. It must
 // hold any legitimate pipelined burst from one client (observed bursts are a
-// handful of requests) while keeping the queue's worst-case memory boring; a
-// full queue applies blocking backpressure to the receive loop, never a wire
-// error. Deliberately not appwire.NotificationBufferCap: that constant sizes
+// handful of requests) while keeping the queue's worst-case memory boring.
+// At high-water depth retry-safe mutations are refused in band, and at
+// capacity every further request is refused in band with a hard-cap error
+// that does not promise an identical retry is safe; a frame carrying no
+// request on a full queue cancels the connection. Deliberately not
+// appwire.NotificationBufferCap: that constant sizes
 // the outbound notification firehose, where overflow means eviction; this one
 // sizes inbound pipelining, where overflow means flow control. Coupling them
 // would let the wrong contract resize this one.

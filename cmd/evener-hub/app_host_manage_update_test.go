@@ -757,7 +757,7 @@ func TestHostManageUpdateVanishedEntryKeepsTheCommit(t *testing.T) {
 	if stored := m.cfg.store.snapshot(); len(stored) != 1 || stored[0].SSH != "edited.example" {
 		t.Fatalf("store rows = %+v, want the committed edit", stored)
 	}
-	cfg, err := LoadConfig(configPath)
+	cfg, err := loadWithRecords(configPath)
 	if err != nil {
 		t.Fatalf("load hub.toml: %v", err)
 	}

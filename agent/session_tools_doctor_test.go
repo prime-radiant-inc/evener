@@ -285,7 +285,7 @@ func TestDoctorEvener_RejectsStraySelectorOnSelectorlessCommands(t *testing.T) {
 	writeDoctorFixtureSession(t, bucket)
 
 	rt := doctorToolForTest(t, stateHome)
-	for _, command := range []string{"turnids", "sessions", "audit", "plugins"} {
+	for _, command := range []string{"turnids", "sessions", "audit", "plugins", "lifecycle"} {
 		args := map[string]any{"command": command, "selector": "034DOESNOTMATTER0000000"}
 		if command == "audit" {
 			args["runbook"] = "error-loop"
@@ -345,6 +345,7 @@ func TestDoctorEvener_HandlerDoesNotMutateState(t *testing.T) {
 		{"command": "turnids"},
 		{"command": "sessions"},
 		{"command": "audit", "runbook": "error-loop", "sessions": sid},
+		{"command": "lifecycle"},
 	}
 	for _, args := range commands {
 		if _, err := rt.Exec(context.Background(), nil, args); err != nil {
@@ -448,7 +449,7 @@ func TestDoctorEvener_EveryCommandDispatches(t *testing.T) {
 		// fixtures won't trip every code path — this only needs each command
 		// to reach its handler, not to return data.
 		switch command {
-		case "turnids", "sessions", "audit", "plugins":
+		case "turnids", "sessions", "audit", "plugins", "lifecycle":
 		default:
 			args["selector"] = sid
 		}

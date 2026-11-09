@@ -105,7 +105,10 @@ export const MarkdownResponse = memo(function MarkdownResponse({
 					: {
 							...segment,
 							fileRender: fileContext
-								? renderMarkdownFileReferences(segment.source, fileContext.cwd, fileContext.artifactsDir)
+								? renderMarkdownFileReferences(segment.source, fileContext.cwd, {
+										artifactsDir: fileContext.artifactsDir,
+										scratchDir: fileContext.scratchDir,
+									})
 								: undefined,
 						},
 			),
@@ -142,6 +145,7 @@ export const MarkdownResponse = memo(function MarkdownResponse({
 				) : (
 					<EnrichedMarkdownText
 						key={index}
+						testID="native-markdown"
 						markdown={segment.fileRender?.markdown ?? segment.source}
 						markdownStyle={style}
 						flavor="github"

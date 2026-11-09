@@ -11,7 +11,9 @@ function item(overrides: Partial<ItemModel> = {}): ItemModel {
 // Ground truth: agent/internal/tool/definitions.go's DefAskUser - exact
 // argumentsJson shape: {questions:[{header, question,
 // options:[{label,detail,recommended?}], multi_select?, why?,
-// if_unanswered?}]}, 1-4 questions. ask_user's own Output is always the
+// if_unanswered?}]}, 1-4 questions, or the single-question shorthand
+// {question, options} at the top level (see the shorthand tests below).
+// ask_user's own Output is always the
 // SAME fixed string on success (agent/session_tools_ask.go's
 // askUserAckText) - not useful for rendering, so this descriptor reads
 // entirely from argumentsJSON directly (the model preserves it through
@@ -205,6 +207,26 @@ test("body renders the absent-data fallback (not malformed) when argumentsJSON i
   const Body = d.body!;
   render(<Body item={item({ toolName: "ask_user" })} live={false} />);
   expect(screen.getByTestId("ask-user-fallback").dataset.reason).toBe("unavailable");
+});
+
+// --- the single-question shorthand form (see askShared.ts for the form) ---
+
+test("body renders a shorthand-form call's question card, not the unavailable fallback", () => {
+  const d = toolRendererFor("ask_user");
+  const Body = d.body!;
+  const shorthand = JSON.stringify({
+    question: "Should I deploy this to production now?",
+    options: [
+      { label: "Yes", detail: "Ship it", recommended: true },
+      { label: "No", detail: "Wait" },
+    ],
+  });
+  render(<Body item={item({ toolName: "ask_user", argumentsJSON: shorthand })} live={false} />);
+  expect(screen.queryByTestId("ask-user-fallback")).toBeNull();
+  expect(screen.getByText("Should I deploy this to production now?")).toBeTruthy();
+  expect(screen.getByText("Ship it")).toBeTruthy();
+  const options = screen.getAllByRole("listitem");
+  expect(options.map((option) => option.dataset.recommended)).toEqual(["true", undefined]);
 });
 
 test("body skips a malformed individual question (missing required fields) rather than crashing the whole card", () => {

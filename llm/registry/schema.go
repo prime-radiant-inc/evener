@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+
+	"primeradiant.com/evener/llm/effort"
 )
 
 // Layer tags (spec §5), used in Resolved.Provenance values and warnings.
@@ -60,14 +62,28 @@ var (
 	imageDetails          = map[string]bool{"original": true, "high": true, "low": true, "omit": true}
 	reasoningControlNames = map[string]bool{"effort": true, "budget_tokens": true, "toggle": true}
 	// effortLevels is what a row may state as its default_effort: evener's six
-	// tiers plus the off level. It restates llm.ReasoningEffortVocabulary and
-	// llm.ReasoningEffortNone because llm imports registry and not the other
-	// way round; the duplication buys a typo caught at parse time instead of
-	// one that rides a request to the provider, since an unrankable level
-	// passes the clamp through untouched. llm's own registry_shape_test pins
-	// the two lists against each other.
-	effortLevels = map[string]bool{"none": true, "minimal": true, "low": true, "medium": true, "high": true, "xhigh": true, "max": true}
+	// tiers plus the off level, derived from llm/effort, the one definition of
+	// the session vocabulary. Deriving it keeps a typo caught at parse time
+	// without this package restating the list.
+	effortLevels = effortLevelVocabulary()
 )
+
+// effortLevelVocabulary derives the default_effort validation set — the six
+// ranked tiers plus the off level — from the shared ladder.
+func effortLevelVocabulary() map[string]bool {
+	levels := map[string]bool{effort.None: true}
+	for _, level := range effort.Tiers() {
+		levels[level] = true
+	}
+	return levels
+}
+
+// effortLevelRank returns the ordinal rank of an effort level (minimal=1 …
+// max=6), or 0 for the off level and any level outside the vocabulary, from
+// the shared ladder.
+func effortLevelRank(level string) int {
+	return effort.Rank(level)
+}
 
 var providerNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
 

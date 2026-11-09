@@ -364,7 +364,7 @@ describe("swiping a ghost left (spec 8.5)", () => {
 	it("starts its edge band at the transcript's padded left edge, not the row's", () => {
 		const { tree } = mount([queued]);
 		const swipeable = swipeables(tree)[0];
-		const tracker = swipeable?.props.simultaneousWithExternalGesture as PanGestureMock | undefined;
+		const tracker = swipeable?.props.simultaneousWith as PanGestureMock | undefined;
 		expect(swipeable?.props.hitSlop).toEqual({ left: -8 });
 		expect(tracker?.config.hitSlop).toEqual({ left: -8 });
 	});

@@ -29,9 +29,10 @@ import {
 	type NativeSyntheticEvent,
 	Platform,
 	Pressable,
-	ScrollView,
+	type ScrollViewInstance,
 	Text,
 	TextInput,
+	type TextInputInstance,
 	useWindowDimensions,
 	View,
 } from "react-native";
@@ -65,7 +66,7 @@ import {
 import { type BoardItem, groupItems, liveItems, pinnedItems, projectItems } from "./boardItems";
 import type { OrganizeBy, SeenMarkers } from "./boardMemory";
 import { ROW_MOVE } from "./boardMotion";
-import { createSearchController, projectResults, type SearchScope } from "./boardSearch";
+import { projectResults } from "./boardSearch";
 import { documentMemory } from "../reader/nativeDocumentMemory";
 import { openDocumentInSession } from "../reader/openDocument";
 import { BoardNotices, NoticeRow } from "./BoardNotices";
@@ -92,14 +93,7 @@ import { BoardReplay } from "./boardReplay";
 import { BoardStops, stopToast } from "./boardStops";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { type HubSeenMarks, hubSeenMarks } from "./hubSeen";
-import {
-	boardHold,
-	foldedSections,
-	organizeByPreference,
-	recentSearches,
-	seenMarkers,
-	useBoardSeen,
-} from "./nativeBoardMemory";
+import { boardHold, foldedSections, organizeByPreference, seenMarkers, useBoardSeen } from "./nativeBoardMemory";
 import { notices } from "./notices";
 import { PinnedEmptyHint, PinnedSection, useBoardFolds, useCategoryFolds } from "./PinnedSections";
 import { journalHoldsProject, PROJECT_MENU_LABELS, type ProjectMenuAction, projectMenuActions } from "./projectMenu";
@@ -136,13 +130,23 @@ import { SearchResults } from "./SearchResults";
 import { listScrollHandlers } from "./settledList";
 import { journalOperation, organizationOpen } from "./organizationCheck";
 import { type BoardOrganization, useBoardOrganization } from "./useBoardOrganization";
+import { useBoardSearch } from "./useBoardSearch";
 import { PROJECT_SECTIONS, showExpanded, useProjectSections } from "./useProjectSections";
 import { useSettledList } from "./useSettledList";
 import { FLOAT_GAP, underBar } from "../design/underBar";
 import { destructiveButton } from "../haptics";
+import { confirmShutDown } from "../session/confirmShutDown";
 import { Button } from "../sheet/Grouped";
+import { CATEGORY_NAME_MAX_CODE_POINTS } from "../navigationActionRepository";
 
-type Props = NativeStackScreenProps<Routes, "Sessions">;
+type Props = NativeStackScreenProps<Routes, "Sessions"> & {
+	/** The Board is the left pane of the Duo split: it draws its own header and
+	 * reports an opened conversation to the split instead of the root stack. */
+	duoEmbedded?: boolean;
+	/** The split pane's width, for the inline header's hub button. */
+	duoWidth?: number;
+	onOpenConversation?: (params: Routes["Conversation"]) => void;
+};
 type Navigation = Props["navigation"];
 
 const MINUTE = 60_000;
@@ -158,7 +162,7 @@ type MoreItem = Extract<ProjectTreeItem, { kind: "more" | "moreProjects" }>;
 
 /** Home (spec 7.1): every live session ordered by who needs you, then the
  * user's pinned categories, projects and archive. */
-export function BoardScreen({ navigation, route }: Props) {
+export function BoardScreen({ navigation, route, duoEmbedded, duoWidth, onOpenConversation }: Props) {
 	const { activeProfile } = useConnection();
 	const { palette } = useColors();
 	if (!activeProfile) return <View style={{ flex: 1, backgroundColor: palette.page }} />;
@@ -169,6 +173,9 @@ export function BoardScreen({ navigation, route }: Props) {
 			hubName={activeProfile.name}
 			navigation={navigation}
 			routeKey={route.key}
+			duoEmbedded={duoEmbedded}
+			duoWidth={duoWidth}
+			onOpenConversation={onOpenConversation}
 		/>
 	);
 }
@@ -178,11 +185,17 @@ function Board({
 	hubName,
 	navigation,
 	routeKey,
+	duoEmbedded,
+	duoWidth,
+	onOpenConversation,
 }: {
 	hubId: string;
 	hubName: string;
 	navigation: Navigation;
 	routeKey: string;
+	duoEmbedded?: boolean;
+	duoWidth?: number;
+	onOpenConversation?: (params: Routes["Conversation"]) => void;
 }) {
 	const { client, state, fatal, error, activeProfile } = useConnection();
 	const { palette } = useColors();
@@ -212,9 +225,12 @@ function Board({
 	// The floating compose button's room over the Board's end, from the home
 	// indicator it clears. The Board is inset and padded by it, and the toast
 	// floats above it.
-	const { bottom: bottomInset } = useSafeAreaInsets();
+	const { bottom: bottomInset, left: leftInset, right: rightInset } = useSafeAreaInsets();
 	const composeRoom = composeButtonRoom(bottomInset);
 	const boardUnderBar = underBar(composeRoom);
+	// The split's left pane ends at the divider, not the screen's right safe
+	// area, so only a full-screen Board insets against that edge.
+	const paneRightInset = duoEmbedded ? 0 : rightInset;
 
 	// Declared before the client binding so a first focus resumes an unbound
 	// controller rather than one whose reads just went out.
@@ -310,12 +326,18 @@ function Board({
 	const held = useSyncExternalStore(hold.subscribe, hold.getSnapshot);
 	const holdAction = (action: HeldAction) => hold.hold(action, Date.now());
 	// A press answered later (an alert, a sheet) asks what's true then.
+	// The refs are written after the commit that made them current, not during
+	// render, and before any effect below reads them.
 	const liveNow = useRef(actionsConnected);
-	liveNow.current = actionsConnected;
 	const clientNow = useRef(actionsClient);
-	clientNow.current = actionsClient;
 	const toastNow = useRef(toast);
-	toastNow.current = toast;
+	const organizationNow = useRef(organization);
+	useEffect(() => {
+		liveNow.current = actionsConnected;
+		clientNow.current = actionsClient;
+		toastNow.current = toast;
+		organizationNow.current = organization;
+	});
 	const [replay] = useState(
 		() =>
 			new BoardReplay(hold, {
@@ -331,8 +353,6 @@ function Board({
 	useEffect(() => {
 		if (actionsClient && held.length) void replay.sendImmediate(actionsClient, liveOn(actionsClient));
 	}, [replay, actionsClient, held]);
-	const organizationNow = useRef(organization);
-	organizationNow.current = organization;
 	useEffect(() => {
 		if (focused && organization.ready && held.length)
 			void replay.organize(organizationNow.current, liveOn(clientNow.current));
@@ -372,39 +392,36 @@ function Board({
 		setIdleFolded(folded);
 	};
 
-	const scroller = useRef<ScrollView>(null);
+	const scroller = useRef<ScrollViewInstance>(null);
 	// Where the device has Liquid Glass, one glass spans the nav bar and the
 	// chips under it (spec 16.3), and the Board scrolls under both: its
 	// content is inset by them (underGlass), and every scroll it makes itself
 	// lands clear of them. Until the glass has measured, that's the bar alone.
 	const headerHeight = useHeaderHeight();
-	const navGlass = useSystemGlass();
+	const navGlass = useSystemGlass() && !duoEmbedded;
 	const [headerPanel, setHeaderPanel] = useState({ height: 0, onGlass: false });
 	const underGlass = navGlass ? reservedUnderGlass(headerHeight, headerPanel, true) : 0;
 	// Search is bound only while the Board is in view (the plugin poll's
 	// rule): a reconnect while a pushed screen covers the Board must not send
 	// one `evener/search` for the query the field still holds. A sheet over
 	// the Board is still the Board (ruling 28), so it stays bound then.
-	const search = useSearch(connected && inFront ? client : null);
-	const searchInput = useRef<TextInput>(null);
-	const [searchText, setSearchText] = useState("");
-	// Searching from the moment the field takes focus until Cancel.
-	const [searching, setSearching] = useState(false);
-	const [scope, setScope] = useState<SearchScope>("all");
+	const {
+		search,
+		searchInput,
+		searchText,
+		searching,
+		setSearching,
+		scope,
+		setScope,
+		recentList,
+		typeSearch,
+		leaveSearch,
+		clearRecent,
+		rememberSearch,
+	} = useBoardSearch(hubId, connected && inFront ? client : null);
 	const searchFieldHeight = searchFieldHeightAt(useTextScale());
 	const reduceMotion = useReduceMotion();
-	const { height: windowHeight } = useWindowDimensions();
-	const recent = recentSearches(hubId);
-	const [recentList, setRecentList] = useState(() => recent.list());
-	const typeSearch = (text: string) => {
-		setSearchText(text);
-		search.controller.setQuery(text);
-	};
-	const leaveSearch = () => {
-		typeSearch("");
-		setSearching(false);
-		searchInput.current?.blur?.();
-	};
+	const { width: windowWidth, height: windowHeight } = useWindowDimensions();
 	const cancelSearch = () => {
 		leaveSearch();
 		// Tuck the field back out of view, where the Board keeps it.
@@ -412,9 +429,13 @@ function Board({
 	};
 
 	const newSession = () => navigation.navigate("NewSession", { hubId, hubName });
+	const openConversationRoute = (params: Routes["Conversation"]) => {
+		if (onOpenConversation) onOpenConversation(params);
+		else navigation.navigate("Conversation", params);
+	};
 	const openSession = (row: NavigationSessionSummary) => {
 		seen.markRead(actionsClient, [row], lastMovedAt);
-		navigation.navigate("Conversation", { hubId, ref: row.ref, title: row.title });
+		openConversationRoute({ hubId, ref: row.ref, title: row.title });
 	};
 	// A search result the Board has loaded opens like its row, so it's
 	// marked seen the same way. Any other session marks itself seen when its
@@ -423,15 +444,7 @@ function Board({
 		rememberSearch();
 		const row = loadedRows.find((loaded) => loaded.ref === result.ref);
 		if (row) openSession(row);
-		else navigation.navigate("Conversation", { hubId, ref: result.ref, title: result.title });
-	};
-	const clearRecent = () => {
-		recent.clear();
-		setRecentList(recent.list());
-	};
-	const rememberSearch = () => {
-		recent.add(search.snapshot.query);
-		setRecentList(recent.list());
+		else openConversationRoute({ hubId, ref: result.ref, title: result.title });
 	};
 
 	// Where each section starts in the scroller, for the chips and the
@@ -458,12 +471,14 @@ function Board({
 	// waits until Live and the band have, then scrolls.
 	const pendingJump = useRef<Band | null>(null);
 	const jumpWhenLaidOut = useRef(() => {});
-	jumpWhenLaidOut.current = () => {
-		const band = pendingJump.current;
-		if (band === null || offsets.current.live === undefined || offsets.current[band] === undefined) return;
-		pendingJump.current = null;
-		jumpToBand(band);
-	};
+	useEffect(() => {
+		jumpWhenLaidOut.current = () => {
+			const band = pendingJump.current;
+			if (band === null || offsets.current.live === undefined || offsets.current[band] === undefined) return;
+			pendingJump.current = null;
+			jumpToBand(band);
+		};
+	});
 	useEffect(
 		() =>
 			onBoardJump((section) => {
@@ -639,7 +654,7 @@ function Board({
 	const actOnRow = (item: ClassifiedRow, action: RowAction) => {
 		const { row } = item;
 		if (action === "shutDown")
-			confirmShutDown(row, () => {
+			confirmShutDown(() => {
 				const on = holdsChange(waitsFor(row.ref, "shutDown"), false) ? null : clientNow.current;
 				if (!on) holdAction({ kind: "shutDown", ref: row.ref, title: row.title, seen: turnSeen(row) });
 				else
@@ -647,7 +662,7 @@ function Board({
 						() => toast.show(SHUT_DOWN_DONE),
 						(error: unknown) => toast.show(shutDownFailed(row.title, error)),
 					);
-			});
+			}, row.title);
 		else if (action === "rename")
 			promptRename(row, (name) => {
 				const on = holdsChange(waitsFor(row.ref, "rename"), false) ? null : clientNow.current;
@@ -797,7 +812,7 @@ function Board({
 		scrollBoardTo(0);
 		searchInput.current?.focus?.();
 	}, [scrollBoardTo]);
-	useHeader(navigation, hubId, hubName, revealSearch, navGlass, palette.page);
+	useHeader(navigation, hubId, hubName, revealSearch, navGlass, palette.page, !duoEmbedded);
 	// Leaving lets go (ruling 22): a screen pushed over the Board (its own
 	// sheets are part of it, ruling 28), or the app leaving the foreground.
 	useEffect(() => {
@@ -1140,6 +1155,14 @@ function Board({
 
 	return (
 		<View style={{ flex: 1, backgroundColor: palette.page }}>
+			{duoEmbedded ? (
+				<DuoBoardHeader
+					hubName={hubName}
+					width={duoWidth ?? windowWidth}
+					onOpenHub={() => navigation.navigate("Hub", { screen: "HubHome", params: { hubId } })}
+					onSearch={revealSearch}
+				/>
+			) : null}
 			{/* Fixed under the header; their sections aren't there while
 			    search results are. On the glass the Board runs under them, and
 			    the panel's zIndex raises it over the scroller. */}
@@ -1149,7 +1172,11 @@ function Board({
 				glassTop={navGlass ? headerHeight : undefined}
 				onLayout={(event) => setHeaderPanel({ height: event.nativeEvent.layout.height, onGlass: navGlass })}
 			>
-				{chips.length && !searching ? <Chips chips={chips} onGlass={navGlass} /> : null}
+				{chips.length && !searching ? (
+					<View testID="board-chips" style={{ paddingLeft: leftInset, paddingRight: paneRightInset }}>
+						<Chips chips={chips} onGlass={navGlass} />
+					</View>
+				) : null}
 			</GlassHeaderPanel>
 			<View style={{ flex: 1 }}>
 				<Animated.ScrollView
@@ -1165,6 +1192,8 @@ function Board({
 					// is tall enough to keep the field hidden.
 					contentContainerStyle={{
 						paddingBottom: 24 + boardUnderBar.endPadding,
+						paddingLeft: leftInset,
+						paddingRight: paneRightInset,
 						minHeight: windowHeight + searchFieldHeight,
 					}}
 					// The Board runs under its compose button, its end and its
@@ -1250,22 +1279,22 @@ function Board({
 				<View
 					testID="board-toast"
 					pointerEvents="box-none"
-					style={{ position: "absolute", left: 0, right: 0, bottom: composeRoom + FLOAT_GAP }}
+					style={{ position: "absolute", left: leftInset, right: paneRightInset, bottom: composeRoom + FLOAT_GAP }}
 				>
 					<Toast toast={toast.toast} dismiss={toast.dismiss} />
 				</View>
 			</View>
 			{/* The compose button floats over the Board's end, so the Board runs
 			    under it; the toast slot sits above it. */}
-			<ComposeButton disabled={!connected} onPress={newSession} />
+			<ComposeButton disabled={!connected} onPress={newSession} rightInset={paneRightInset} />
 		</View>
 	);
 }
 
 /** A category's name is at most 80 characters, the journal's own bound. */
-const CATEGORY_NAME_TOO_LONG = "Category names can be up to 80 characters.";
+const CATEGORY_NAME_TOO_LONG = `Category names can be up to ${CATEGORY_NAME_MAX_CODE_POINTS} characters.`;
 function categoryNameTooLong(name: string): boolean {
-	return Array.from(name).length > 80;
+	return Array.from(name).length > CATEGORY_NAME_MAX_CODE_POINTS;
 }
 
 /** Rename and Delete for the pinned categories (spec 7.1), through the
@@ -1345,8 +1374,8 @@ function pinnedCategoryMenu(organization: BoardOrganization, catalog: () => read
 type PinTarget = { sectionId: string } | { sectionName: string };
 
 /** A row's Pin (ruling 18): the pin catalog's categories, then a new one, as
- * an action sheet. A new category's name is 1-80 characters, the journal's
- * own bound. */
+ * an action sheet. A new category's name must fit the journal's own
+ * bound. */
 function chooseCategory(
 	categories: readonly NavigationPinSectionDescriptor[],
 	toast: Pick<ToastController, "show">,
@@ -1392,15 +1421,6 @@ function chooseCategory(
 function menuActionsHere(item: ClassifiedRow, context: RowActionContext): RowAction[] {
 	const actions = rowMenuActions(item, context);
 	return Platform.OS === "ios" ? actions : actions.filter((action) => action !== "rename");
-}
-
-/** Shut down from the row menu: asked first, online or offline, then
- * `shutDown` runs (the Session's own request, or a hold). */
-function confirmShutDown(row: NavigationSessionSummary, shutDown: () => void) {
-	Alert.alert(`Shut down “${row.title}”?`, "The agent stops. Send it a message to resume it.", [
-		{ text: "Cancel", style: "cancel" },
-		destructiveButton("Shut down", shutDown),
-	]);
 }
 
 /** Rename from the row menu (iOS only: Alert.prompt), starting from the
@@ -1449,15 +1469,6 @@ function openProjectMenu(
 	]);
 }
 
-/** The Board's search controller, bound to the ready client or none. */
-function useSearch(client: ConversationClientLike | null) {
-	const [controller] = useState(createSearchController);
-	useEffect(() => () => controller.dispose(), [controller]);
-	useEffect(() => controller.setClient(client), [controller, client]);
-	const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
-	return { controller, snapshot };
-}
-
 /** The chips' panel on the glass: over the Board's top, which runs under it. */
 const GLASS_PANEL = { position: "absolute", top: 0, left: 0, right: 0, zIndex: 1 } as const;
 
@@ -1476,7 +1487,7 @@ function SearchField({
 	onChangeText,
 	onCancel,
 }: {
-	inputRef: RefObject<TextInput | null>;
+	inputRef: RefObject<TextInputInstance | null>;
 	height: number;
 	text: string;
 	searching: boolean;
@@ -1579,8 +1590,11 @@ function useShownRows(rows: readonly ShownRow[]): ReadonlyMap<string, ShownRow> 
 		if (!byKey.has(key)) byKey.set(key, shown);
 	}
 	const kept = useRef(byKey);
-	if (!sameShownRows(kept.current, byKey)) kept.current = byKey;
-	return kept.current;
+	const shown = sameShownRows(kept.current, byKey) ? kept.current : byKey;
+	useEffect(() => {
+		kept.current = shown;
+	});
+	return shown;
 }
 
 function sameShownRows(before: ReadonlyMap<string, ShownRow>, after: ReadonlyMap<string, ShownRow>): boolean {
@@ -1661,9 +1675,11 @@ function useHeader(
 	revealSearch: () => void,
 	glass: boolean,
 	page: string,
+	enabled = true,
 ) {
 	const { fontScale } = useWindowDimensions();
 	useEffect(() => {
+		if (!enabled) return;
 		const hubButton = (
 			<HubButton
 				hubName={hubName}
@@ -1693,5 +1709,53 @@ function useHeader(
 				/>
 			),
 		});
-	}, [navigation, hubId, hubName, revealSearch, fontScale, glass, page]);
+	}, [navigation, hubId, hubName, revealSearch, fontScale, glass, page, enabled]);
+}
+
+/** The Board's header on the Duo's inner display: the root stack header is
+ * hidden there, so the hub and search controls live in the pane. */
+function DuoBoardHeader({
+	hubName,
+	width,
+	onOpenHub,
+	onSearch,
+}: {
+	hubName: string;
+	width: number;
+	onOpenHub: () => void;
+	onSearch: () => void;
+}) {
+	const { palette } = useColors();
+	const { top, left } = useSafeAreaInsets();
+	const scale = useTextScale();
+	return (
+		<View
+			testID="duo-board-header"
+			style={{
+				paddingTop: top,
+				paddingLeft: left,
+				minHeight: top + 44,
+				flexDirection: "row",
+				alignItems: "center",
+				justifyContent: "space-between",
+				backgroundColor: palette.page,
+			}}
+		>
+			<HubButton hubName={hubName} onOpen={onOpenHub} maxWidth={Math.max(80, width - left - 72)} />
+			<Pressable
+				accessibilityRole="button"
+				accessibilityLabel="Search sessions"
+				onPress={onSearch}
+				style={({ pressed }) => ({
+					width: 44,
+					height: 44,
+					alignItems: "center",
+					justifyContent: "center",
+					opacity: pressed ? 0.6 : 1,
+				})}
+			>
+				<SymbolView name="magnifyingglass" size={19 * scale} tintColor={palette.accentInk} />
+			</Pressable>
+		</View>
+	);
 }

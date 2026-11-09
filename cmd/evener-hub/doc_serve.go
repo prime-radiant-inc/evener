@@ -53,12 +53,14 @@ var errSessionFileNotFound = errors.New("session file not found")
 // (a deletion refusal, an unresolvable session folder).
 //
 // A relative path resolves against the session's cwd only. An absolute path
-// may also name a file inside the session's retained artifacts directory:
-// agents file reports there and name them by file:// URL, and the transcript
-// turns those into document-pane links, so the routes have to serve them.
-// The artifacts root is one more boundary beside cwd, never a widening of it:
-// both are resolved by fspaths.ResolveInRoot, and the root that accepted the
-// path is returned so the read opens through that same root.
+// may also name a file inside the session's retained artifacts directory or
+// its named scratch directory: agents file reports into artifacts and name
+// them by file:// URL, and tools write screenshots and other session-local
+// output into scratch and name those files by absolute path, so the transcript
+// turns both into document-pane links the routes have to serve. Each retained
+// root is one more boundary beside cwd, never a widening of it: all are
+// resolved by fspaths.ResolveInRoot, and the root that accepted the path is
+// returned so the read opens through that same root.
 func resolveSessionFile(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, session, rel string) (root, abs string, err error) {
 	cwd, cwdErr := sessionCWD(ctx, cfg, sources, session)
 	absolute := filepath.IsAbs(strings.TrimSpace(rel))
@@ -75,20 +77,33 @@ func resolveSessionFile(ctx context.Context, cfg hubcore.WebConfig, sources *app
 		}
 		cwdResolveErr = resolveErr
 	}
-	// A retained artifact lives under the session's state directory, which
-	// outlives the working directory: that is why it is tried for an absolute
-	// path even when the cwd itself cannot be resolved at all (a removed
-	// worktree, or a session whose live source is momentarily unavailable).
+	// A retained artifact lives under the session's state directory, and a
+	// scratch under the tree its meta records; both outlive the working
+	// directory, which is why either is tried for an absolute path even when
+	// the cwd itself cannot be resolved at all (a removed worktree, or a
+	// session whose live source is momentarily unavailable).
 	// A deletion refusal is not one of those cases: it says this session's
 	// files must not be served, so it stands before anything is tried.
+	// A contained miss settles the answer only once both retained roots have
+	// been tried, so a path one root contains but cannot serve is still served
+	// when the other root holds it.
+	containedMiss := false
 	if absolute && !isTargetDeletedError(cwdErr) {
-		if root, resolved, contained, ok := artifactsDocTarget(ctx, cfg, session, rel); ok {
+		root, resolved, contained, ok := artifactsDocTarget(ctx, cfg, session, rel)
+		if ok {
 			return root, resolved, nil
-		} else if contained {
-			// The path belongs to the artifacts root but names no readable
-			// file there. That is a miss, not the cwd's escape refusal.
-			return "", "", errSessionFileNotFound
 		}
+		containedMiss = contained
+		root, resolved, contained, ok = scratchDocTarget(ctx, cfg, session, rel)
+		if ok {
+			return root, resolved, nil
+		}
+		containedMiss = containedMiss || contained
+	}
+	if containedMiss {
+		// The path belongs to a retained root but names no readable file
+		// there. That is a miss, not the cwd's escape refusal.
+		return "", "", errSessionFileNotFound
 	}
 	if cwdErr != nil {
 		return "", "", cwdErr
@@ -141,30 +156,51 @@ func (s *WebServer) resolveArtifactsDocTarget(ctx context.Context, session, rel 
 	return root, abs, ok
 }
 
-// artifactsDocTarget answers the containment question resolveArtifactsDocTarget
-// cannot: whether a refused path was inside the artifacts root.
-func artifactsDocTarget(ctx context.Context, cfg hubcore.WebConfig, session, rel string) (root, abs string, contained, ok bool) {
-	if !filepath.IsAbs(strings.TrimSpace(rel)) {
-		return "", "", false, false
-	}
-	// A session fenced for deletion must not serve retained files through this
-	// root either. The cwd path gets this from sessionCWD's deletion check;
-	// artifacts resolve from the roster or the past index, which do not.
-	//
-	// A stable workspace ref can resolve to a different current session, so
-	// the fence covers both identities: a deletion recorded against the session
-	// the ref now names must not be bypassed by asking through the ref.
-	_, resolvedSession, resolved := artifactsSessionScope(ctx, cfg, session)
+// deletionFencedIdentities answers whether a session's files must not be
+// served, covering both identities a stable workspace ref can name: the
+// requested session and, when the ref resolves to a different current one,
+// that session. A deletion recorded against the session the ref now names
+// must not be bypassed by asking through the ref. Retained roots resolve from
+// the roster or the past index, which do not carry the deletion check the cwd
+// path gets from sessionCWD, so every retained root asks this.
+func deletionFencedIdentities(ctx context.Context, cfg hubcore.WebConfig, session string) bool {
+	_, resolvedSession, resolved := docSessionScope(ctx, cfg, session)
 	fenced := []string{canonicalRouteID(session)}
 	if resolved && resolvedSession != "" && resolvedSession != fenced[0] {
 		fenced = append(fenced, resolvedSession)
 	}
 	for _, identity := range fenced {
 		if err := deletionFenceError(cfg, appRefFromRouteID(identity), identity, ""); err != nil {
-			return "", "", false, false
+			return true
 		}
 	}
-	root = sessionArtifactsRoot(ctx, cfg, session)
+	return false
+}
+
+// retainedDocTarget resolves an absolute request path against one retained
+// root (artifacts, scratch) — the one rule both share: a relative path never
+// reaches a second root (only an absolute one can name a file outside the
+// working directory, and letting a relative path fall through would silently
+// retarget it), the deletion fence covers both identities a stable ref can
+// name, a root that does not exist contains nothing, and ResolveInRoot splits
+// an escaping path from a contained miss. rootOf answers the root this hub
+// serves for the session, "" when it serves none. retainedDocTarget reports
+// whether the path was contained by that root but named no readable file
+// there, so the caller answers a contained miss with not-found instead of the
+// cwd's escape refusal, which would call a missing report forbidden.
+func retainedDocTarget(
+	ctx context.Context,
+	cfg hubcore.WebConfig,
+	session, rel string,
+	rootOf func(context.Context, hubcore.WebConfig, string) string,
+) (root, abs string, contained, ok bool) {
+	if !filepath.IsAbs(strings.TrimSpace(rel)) {
+		return "", "", false, false
+	}
+	if deletionFencedIdentities(ctx, cfg, session) {
+		return "", "", false, false
+	}
+	root = rootOf(ctx, cfg, session)
 	if root == "" {
 		return "", "", false, false
 	}
@@ -185,6 +221,12 @@ func artifactsDocTarget(ctx context.Context, cfg hubcore.WebConfig, session, rel
 	return root, abs, true, true
 }
 
+// artifactsDocTarget answers the containment question resolveArtifactsDocTarget
+// cannot: whether a refused path was inside the artifacts root.
+func artifactsDocTarget(ctx context.Context, cfg hubcore.WebConfig, session, rel string) (root, abs string, contained, ok bool) {
+	return retainedDocTarget(ctx, cfg, session, rel, sessionArtifactsRoot)
+}
+
 // sessionArtifactsRoot is the local session's retained artifacts directory, or
 // "" when this hub serves none for it. This is the one answer both the doc
 // routes and the thread snapshot use, so a link the wire advertises is exactly
@@ -197,7 +239,7 @@ func artifactsDocTarget(ctx context.Context, cfg hubcore.WebConfig, session, rel
 // child id resolves through the live entry that reports it. A remote session
 // names no local path.
 func sessionArtifactsRoot(ctx context.Context, cfg hubcore.WebConfig, ref string) string {
-	stateDir, session, ok := artifactsSessionScope(ctx, cfg, ref)
+	stateDir, session, ok := docSessionScope(ctx, cfg, ref)
 	if !ok {
 		return ""
 	}
@@ -209,11 +251,11 @@ func sessionArtifactsRoot(ctx context.Context, cfg hubcore.WebConfig, ref string
 	return root
 }
 
-// artifactsSessionScope resolves the state directory and the current session id
-// an artifacts path belongs to. A stable workspace ref follows to the live
+// docSessionScope resolves the state directory and the current session id a
+// retained-root path belongs to (artifacts, scratch). A stable workspace ref follows to the live
 // session that owns it, because the roster keys entries by the current id. The
 // document fence needs that resolved identity as well as the requested one.
-func artifactsSessionScope(ctx context.Context, cfg hubcore.WebConfig, ref string) (stateDir, sessionID string, ok bool) {
+func docSessionScope(ctx context.Context, cfg hubcore.WebConfig, ref string) (stateDir, sessionID string, ok bool) {
 	ref = canonicalRouteID(ref)
 	if !isLocalRouteID(ref) {
 		return "", "", false

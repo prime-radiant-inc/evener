@@ -177,7 +177,7 @@ func (m *hubHostManager) hostTOMLFingerprint(name string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	for _, entry := range hostRegistryEntries(cfg) {
+	for _, entry := range hostEntriesWithIdentity(cfg.Hosts, hostRecordSet{}) {
 		if entry.Name == name {
 			fingerprint := hostEntryFingerprint(entry)
 			return fingerprint, fingerprint != ""
@@ -275,8 +275,8 @@ func (m *hubHostManager) Plan(ctx context.Context, params appwire.HostPlanParams
 	// compared against is read before the ungated refresh, so an operation that
 	// finishes while the plan is being built is seen.
 	sequenceBefore := uint64(0)
-	if m.cfg.ops != nil {
-		sequenceBefore = m.cfg.ops.Sequence()
+	if m.opsStore() != nil {
+		sequenceBefore = m.opsStore().Sequence()
 	}
 
 	// §6 step 1: refresh the facts with no gate held, on the attached channel.
@@ -443,13 +443,13 @@ func hostBusyWireError(err error) error {
 // one, so it refuses — the honest answer, because a probe without a durable
 // epoch is exactly the unfenced write the spec forbids.
 func (m *hubHostManager) persistProbeEpoch(entry hostreg.Host) (hostops.ProbeEpoch, error) {
-	if m.cfg.ops == nil {
+	if m.opsStore() == nil {
 		return hostops.ProbeEpoch{}, errors.New("the host operation store is not configured")
 	}
 	if strings.TrimSpace(m.cfg.bootID) == "" {
 		return hostops.ProbeEpoch{}, errors.New("this hub carries no boot id, so no probe epoch can be bound")
 	}
-	return m.cfg.ops.PersistProbeEpoch(hostops.ProbeEpochRequest{
+	return m.opsStore().PersistProbeEpoch(hostops.ProbeEpochRequest{
 		Host:          entry.Name,
 		BootID:        m.cfg.bootID,
 		Generation:    entry.Generation,
@@ -463,10 +463,10 @@ func (m *hubHostManager) persistProbeEpoch(entry hostreg.Host) (hostops.ProbeEpo
 // cannot write is logged, not returned: the row left behind is inert and the
 // next boot's reap deletes it.
 func (m *hubHostManager) dropProbeEpoch(name string, epoch hostops.ProbeEpoch) {
-	if m.cfg.ops == nil || epoch.BootID == "" {
+	if m.opsStore() == nil || epoch.BootID == "" {
 		return
 	}
-	if err := m.cfg.ops.DropProbeEpoch(name, epoch.BootID, epoch.OpSeq); err != nil {
+	if err := m.opsStore().DropProbeEpoch(name, epoch.BootID, epoch.OpSeq); err != nil {
 		m.logf("host %q: the probe epoch %s/%d could not be dropped after a refused operation: %v",
 			name, epoch.BootID, epoch.OpSeq, err)
 	}
@@ -517,7 +517,7 @@ func (m *hubHostManager) mintPlannedToken(name string, in planMintInputs) (appwi
 			"host %q's hub.toml entry could not be fingerprinted: the selected hub.toml (%s) does not validate, so nothing about the host's on-disk entry can be bound; fix the file before planning",
 			name, m.cfg.configPath))
 	}
-	if m.cfg.ops == nil {
+	if m.opsStore() == nil {
 		return appwire.HostPlanResult{}, appwire.InternalError("the host operation store is not configured, so no confirmation token can be minted")
 	}
 
@@ -525,7 +525,7 @@ func (m *hubHostManager) mintPlannedToken(name string, in planMintInputs) (appwi
 	// The terminal-operation guard rides the mint's own locked read
 	// (MintTokenIfQuiescent): a scan run here could not see a terminal transition
 	// landing between it and the mint, while the store's guard cannot miss one.
-	token, err := m.cfg.ops.MintTokenIfQuiescent(hostops.MintRequest{
+	token, err := m.opsStore().MintTokenIfQuiescent(hostops.MintRequest{
 		Host:               name,
 		Generation:         in.entry.Generation,
 		IncarnationID:      in.entry.IncarnationID,
@@ -669,14 +669,14 @@ func (m *hubHostManager) Operations(ctx context.Context, params appwire.HostOper
 	if err := guardControllerLocalHosts(ctx); err != nil {
 		return appwire.HostOperationsResponse{}, err
 	}
-	if m.cfg.ops == nil {
+	if m.opsStore() == nil {
 		return appwire.HostOperationsResponse{}, appwire.InternalError("the host operation store is not configured, so no operations can be read")
 	}
 	query, err := operationsQuery(params)
 	if err != nil {
 		return appwire.HostOperationsResponse{}, err
 	}
-	page, err := m.cfg.ops.ReadOperations(query)
+	page, err := m.opsStore().ReadOperations(query)
 	if err != nil {
 		return appwire.HostOperationsResponse{}, operationsRefusal(err)
 	}
@@ -701,7 +701,7 @@ func operationsQuery(params appwire.HostOperationsParams) (hostops.OperationsQue
 		Cursor:            params.Cursor,
 	}
 	if params.State != "" {
-		state, err := hostopsState(params.State)
+		state, err := validOperationState(params.State)
 		if err != nil {
 			return hostops.OperationsQuery{}, appwire.InvalidParams(fmt.Sprintf("evener/host/operations: %v", err))
 		}
@@ -714,23 +714,13 @@ func operationsQuery(params appwire.HostOperationsParams) (hostops.OperationsQue
 	return query, nil
 }
 
-// hostopsState maps the wire's closed operation-state set onto the store's.
-func hostopsState(state appwire.OperationState) (hostops.State, error) {
-	switch state {
-	case appwire.OperationStatePending:
-		return hostops.StatePending, nil
-	case appwire.OperationStateRunning:
-		return hostops.StateRunning, nil
-	case appwire.OperationStateComplete:
-		return hostops.StateComplete, nil
-	case appwire.OperationStateFailed:
-		return hostops.StateFailed, nil
-	case appwire.OperationStateInterrupted:
-		return hostops.StateInterrupted, nil
-	case appwire.OperationStateOrphanUnverified:
-		return hostops.StateOrphanUnverified, nil
+// validOperationState checks an operation state against the closed set. The
+// store and wire types are aliases, so the work is the check, not a mapping.
+func validOperationState(state appwire.OperationState) (appwire.OperationState, error) {
+	if !state.Valid() {
+		return "", fmt.Errorf("operation state %q is outside the closed set", state)
 	}
-	return "", fmt.Errorf("operation state %q is outside the wire's set", state)
+	return state, nil
 }
 
 // operationsRefusal maps the store's read refusals onto §11's envelopes:
@@ -809,7 +799,7 @@ func operationsResponse(page hostops.OperationsPage) (appwire.HostOperationsResp
 // `compacted` marker is set exactly on a read-only replay rebuilt from a dedup
 // tombstone.
 func operationRecordWire(record hostops.Record) (appwire.OperationRecord, error) {
-	state, err := operationWireState(record.State)
+	state, err := validOperationState(record.State)
 	if err != nil {
 		return appwire.OperationRecord{}, err
 	}

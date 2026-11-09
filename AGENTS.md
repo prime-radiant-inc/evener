@@ -73,9 +73,9 @@ is the canonical pre/post-merge sequence. Tool versions are pinned in
 The full suite runs faster in CI than on this workstation, the race, fuzz, and
 frontend lanes included. Do not block a push on a long local full-suite run:
 run the fast, targeted tests for what you changed, push, and let CI run the
-full suite as the source of truth. Reserve a local full run (`make test`,
-`make merge-approval-gate`) for when you need it, such as reproducing a CI
-failure.
+full suite as the source of truth. Reserve a local full run
+(`make merge-approval-gate`, which includes `make test-hub-integration`) for
+when you need it, such as reproducing a CI failure.
 
 Run the heavy local gates one at a time — `make test-web`, `make vet` and
 `make lint` — not as parallel background jobs: they compete for the same CPU,
@@ -107,6 +107,9 @@ asking Jesse first.
 
 Run `make hooks` once per clone: the pre-commit hook formats staged TypeScript
 with each tree's own Biome and re-stages it (`docs/developing-evener/README.md`).
+The hook skips formatting while a merge is in progress (it prints `merge in
+progress; not formatting`), so run Biome on the touched files yourself before
+committing a merge.
 
 Biome's enforced scope is `cmd/evener-hub/frontend/src` and
 `appwire-client/typescript` (the gate runs `biome ci src
@@ -174,6 +177,17 @@ say — and never runs `npm ci` itself; it fails loudly and names the command
 instead). Never run `npm ci` through a
 symlinked `node_modules` in any of the three.
 
+## Pinning the JavaScript toolchain
+
+Biome, Vitest (and `@vitest/coverage-v8`), TypeScript, `@types/react` and
+`@types/react-dom` are pinned to exact versions, and every npm tree that
+declares one uses the same version, because the trees compile, format and test
+the same shared client sources. Bump such a package in all trees in one change,
+and keep each `biome.jsonc` `$schema` URL on its tree's Biome version. React
+and `react-dom` are exact in every tree but may differ between trees:
+mobile-native stays on the one version `react-native` ships its renderer for.
+`make lint-js-toolchain-pins` enforces this.
+
 ## Importing the AppWire TypeScript package
 
 The shared client lives at `appwire-client/typescript` and every consumer in
@@ -230,12 +244,22 @@ loading them, since each opens a socket the moment its body runs.
   no check is outstanding, and roborev's combined review names your exact
   head. Run it as its own background job: a `&` inside a job orphans it, and
   an orphaned job once killed both the comment post and the detector silently.
+- **A push that produced no CI run.** GitHub has dropped `pull_request`
+  events outright for some PRs. After a push you expect to trigger a workflow,
+  run `scripts/ops/pr-ci-watchdog.sh --pr <N>`: it verifies the expected run
+  appeared on the pushed head (its default, ios-qualification.yml, only fires
+  on native-path pushes) and dispatches the workflow itself when GitHub
+  dropped the event, without double-dispatching when GitHub behaved.
 - **Green is not clean.** `roborev_check=SUCCESS` says the review *ran*, not
   that it found nothing — the combined comment's body carries the findings.
-  Read it every round, plus the per-commit surface: `roborev list --open` in
-  the checkout; findings against your own commits can sit there unseen. Close
-  a per-commit review only when its findings are genuinely resolved; never
-  blanket-close, and leave other lanes' reviews alone.
+  Read it every round, plus the per-commit surface: `roborev list --open` in the
+  checkout; findings against your own commits can sit there unseen. Close a
+  per-commit review only when its findings are genuinely resolved; never
+  blanket-close, and leave other lanes' reviews alone. RoboRev **edits its
+  combined-review comment in place** — a new verdict is a new body on the same
+  comment id — so a custom watcher dedupes on the comment body (and the reviewed
+  head), never on comment identity or a coarse CI-state string; a verdict on a
+  new head rides the same comment id with an unchanged CI reason.
 - **Triage each finding by evidence, not reflex.** Fix at the root
   red-test-first: watch the reviewer's scenario fail, then pass, and post both
   runs in a PR comment — the repo's convention is one evidence comment per
@@ -247,6 +271,14 @@ loading them, since each opens a socket the moment its body runs.
   `make test-web` before "fixing" it). When two reviewers conflict, the
   reconciliation usually is that both are right about different cases; pin
   both cases.
+- **Keep fixes in proportion, and file what you do not fix.** Do not design
+  for rare or future cases nobody reported. Fix a low finding in the same
+  round when the change is small and local. Before enqueuing, file every other
+  real finding you are leaving unfixed as a GitHub issue in this repo, after
+  searching for an existing one: location, trigger, impact, why it was not
+  fixed, and a link to the PR. Refuted findings get the refutation and no
+  issue. This repo is public, so never file the details of an exploitable
+  security problem; raise those with the developer directly.
 - **Merge through the merge queue.** Main requires one approving review, and
   RoboRev supplies it: a few minutes after its combined review names the PR's
   head, the roborev-primeradiant app approves when nothing is medium or above
@@ -260,14 +292,26 @@ loading them, since each opens a socket the moment its body runs.
   on top of main and the PRs ahead of it and merges it when the required
   checks pass there, so do not merge `origin/main` into the branch just to
   catch up. Pushing to a queued PR removes it from the queue. `MERGEQ
-  dropped` means a check failed on the queue's candidate: read it, fix the
-  cause (or, for an unrelated known flake, note it on the PR), and enqueue
-  again. Handle 'low' findings immediately in a fast-follow PR.
+  dropped` means a check failed on the queue's candidate, which is not
+  always your PR: a flaky shared check can drop every PR in the group.
+  Inspect the failed merge-group run to see which candidate failed: when
+  it is another PR's candidate or an unrelated flake, note it on the PR
+  and enqueue again; when it is your candidate, read the failing check,
+  fix the cause, and enqueue again.
 - **Refuted findings.** RoboRev never reads rebuttals, so a PR whose
   remaining medium-or-above findings you have conclusively refuted on the PR
   keeps its requested changes. That case alone is an admin merge: merge
   `origin/main` if behind, wait for every check to be green on that head, then
   `gh pr merge <N> --repo prime-radiant-inc/evener --squash --admin`.
+
+- **Branch follow-ups start from main's squash commit.** After a squash merge,
+  the feature branch's commits still exist locally and on origin, but main's
+  squash commit has no ancestry link to them. Branch follow-ups from
+  `origin/main`, never from the merged branch's tip (a PR opened from that tip
+  re-opens the already-landed change and conflicts with its own squash commit).
+  A follow-up branch already cut from the old tip is repaired with
+  `git rebase --onto origin/main <old-tip> <branch>`; confirm with
+  `git diff --stat origin/main...HEAD` that only the new work appears.
 
 - **Gates run from the repo root.** `make test-web`'s target lives in the root
   Makefile; running it from `cmd/evener-hub/frontend` dies with "No rule to

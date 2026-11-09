@@ -188,6 +188,14 @@ func releaseAsset(goos, goarch string) (asset, root string, err error) {
 	}
 }
 
+// SupportsPlatform reports whether a release archive exists for goos/goarch.
+// The hub's update check uses it so a build on an unpublished platform does
+// not offer an install that Upgrade would reject.
+func SupportsPlatform(goos, goarch string) bool {
+	_, _, err := releaseAsset(goos, goarch)
+	return err == nil
+}
+
 func installPrefix(prefix string) (string, error) {
 	if strings.TrimSpace(prefix) != "" {
 		return prefix, nil

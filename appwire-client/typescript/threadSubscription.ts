@@ -1,7 +1,10 @@
 import type { AppwireClientLike } from "./clientLike";
-import type { ThreadReadParams, ThreadReadResponse, ThreadStatus } from "./types.gen";
+import type { AnyNotification, ThreadReadParams, ThreadReadResponse, ThreadStatus } from "./types.gen";
 
-export type ThreadSubscriptionClient = Pick<AppwireClientLike, "request" | "onStateChange" | "state">;
+export type ThreadSubscriptionClient = Pick<
+  AppwireClientLike,
+  "request" | "onNotification" | "onStateChange" | "state"
+>;
 export type ThreadSubscriptionReadParams = Omit<ThreadReadParams, "ref" | "subscribe" | "replaceSubscription">;
 export interface ThreadSubscriptionMetadata {
   readonly threadId: string;
@@ -13,6 +16,10 @@ export interface ThreadSubscriptionLease {
   read(params: ThreadSubscriptionReadParams): Promise<ThreadReadResponse>;
   metadata(): ThreadSubscriptionMetadata | null;
   release(): void;
+}
+
+function copyStatus(status: ThreadStatus): ThreadStatus {
+  return { type: status.type, ...(status.activeFlags ? { activeFlags: [...status.activeFlags] } : {}) };
 }
 
 interface Membership {
@@ -35,6 +42,11 @@ interface Membership {
   // and the next empty release must unsubscribe it.
   orphanedSubscribe: boolean;
   metadata: ThreadSubscriptionMetadata | null;
+  // The newest thread/status/changed admitted for this membership and the
+  // thread it named. A read issued before that revision carries an older
+  // snapshot and must not revert the shared status (issue #4878 PAR).
+  statusRevision: number;
+  statusThreadId: string;
 }
 
 // All owners of a connection join this membership table. Transcript hydration
@@ -44,8 +56,17 @@ class ThreadSubscriptions {
   private members = new Map<string, Membership>();
   private generation = 0;
   private stopState: () => void;
+  private stopNotifications: () => void;
 
-  constructor(private readonly client: ThreadSubscriptionClient) {
+  constructor(
+    private readonly client: ThreadSubscriptionClient,
+    // A registry wired by the connection owner lives for that connection: it
+    // keeps its listeners while its last member departs, so a later store
+    // action does not re-register them (the lazy per-action wiring the
+    // threads store's wiring test forbids). A registry created by a bare
+    // acquisition retires with its last member.
+    private readonly connectionOwned = false,
+  ) {
     this.stopState = client.onStateChange((state) => {
       if (state === "ready") return;
       this.generation += 1;
@@ -53,10 +74,35 @@ class ThreadSubscriptions {
         member.subscribed = false;
         member.transition = null;
         member.metadata = null;
+        member.statusRevision = 0;
+        member.statusThreadId = "";
         member.orphanedSubscribe = false;
         this.releaseEmpty(member);
       }
     });
+    // The shared status is the one view a re-acquired store has before its
+    // first read: a released turn's idle frame must land here too, or a
+    // reopened viewer falls back to the status the original read admitted
+    // (issue #4878).
+    this.stopNotifications = client.onNotification((notification) => {
+      if (notification.method === "thread/status/changed") this.admitStatus(notification);
+    });
+  }
+
+  private admitStatus(notification: Extract<AnyNotification, { method: "thread/status/changed" }>): void {
+    const { ref, threadId, status } = notification.params;
+    const direct = this.members.get(ref);
+    if (direct?.metadata) this.admitMemberStatus(direct, threadId, status);
+    for (const member of this.members.values()) {
+      if (member !== direct && member.metadata?.threadId === threadId) this.admitMemberStatus(member, threadId, status);
+    }
+  }
+
+  private admitMemberStatus(member: Membership, threadId: string, status: ThreadStatus): void {
+    if (!member.metadata) return;
+    member.statusRevision += 1;
+    member.statusThreadId = threadId;
+    member.metadata = { ...member.metadata, status: copyStatus(status) };
   }
 
   acquire(ref: string): ThreadSubscriptionLease {
@@ -72,6 +118,8 @@ class ThreadSubscriptions {
         outstandingAcquisitions: 0,
         orphanedSubscribe: false,
         metadata: null,
+        statusRevision: 0,
+        statusThreadId: "",
       };
       this.members.set(ref, member);
     }
@@ -94,13 +142,14 @@ class ThreadSubscriptions {
       }
       if (!held.subscribed) return this.acquireWire(held, params);
       const generation = this.generation;
+      const statusRevision = held.statusRevision;
       const response = await this.client.request("thread/read", {
         ...params,
         ref,
         subscribe: false,
         replaceSubscription: false,
       });
-      if (!released) this.admitMetadata(held, response, generation);
+      if (!released) this.admitMetadata(held, response, generation, statusRevision);
       return response;
     };
     return {
@@ -144,6 +193,7 @@ class ThreadSubscriptions {
   private acquireWire(member: Membership, params: ThreadSubscriptionReadParams): Promise<ThreadReadResponse> {
     const generation = this.generation;
     const epoch = ++member.transitionEpoch;
+    const statusRevision = member.statusRevision;
     member.outstandingAcquisitions += 1;
     const response = this.client.request("thread/read", {
       ...params,
@@ -160,7 +210,7 @@ class ThreadSubscriptions {
       // A failure propagates: reads joined on this transition must see it.
       if (generation === this.generation && epoch === member.transitionEpoch) {
         member.subscribed = true;
-        this.admitMetadata(member, result, generation);
+        this.admitMetadata(member, result, generation, statusRevision);
         return;
       }
       if (generation !== this.generation || member.subscribed) return;
@@ -184,15 +234,21 @@ class ThreadSubscriptions {
     return response;
   }
 
-  private admitMetadata(member: Membership, { thread }: ThreadReadResponse, generation: number): void {
+  private admitMetadata(
+    member: Membership,
+    { thread }: ThreadReadResponse,
+    generation: number,
+    readStatusRevision: number,
+  ): void {
     if (generation !== this.generation || this.client.state !== "ready" || member.holders === 0) return;
+    // A status frame that landed after this read was issued is newer than the
+    // read's snapshot: keep it rather than letting the late read revert the
+    // status a re-acquired store would see.
+    const newer = member.statusRevision > readStatusRevision && member.statusThreadId === thread.id;
     member.metadata = {
       threadId: thread.id,
       sessionId: thread.sessionId ?? thread.id,
-      status: {
-        type: thread.status.type,
-        ...(thread.status.activeFlags ? { activeFlags: [...thread.status.activeFlags] } : {}),
-      },
+      status: copyStatus((newer ? member.metadata?.status : undefined) ?? thread.status),
     };
   }
 
@@ -221,14 +277,36 @@ class ThreadSubscriptions {
       return;
     }
     if (this.members.get(member.ref) === member) this.members.delete(member.ref);
-    if (this.members.size === 0) {
-      this.stopState();
-      registries.delete(this.client);
-    }
+    if (!this.connectionOwned && this.members.size === 0) this.retire();
+  }
+
+  /** The connection owner is letting go of the client: every member goes with
+   * it, and its handlers stop. The status feed goes first and the connection
+   * listener last, so a caller observing the connection listener's release
+   * sees the retired registry's final handler leave with it. */
+  retire(): void {
+    this.members.clear();
+    this.stopNotifications();
+    this.stopState();
+    registries.delete(this.client);
   }
 }
 
 const registries = new WeakMap<ThreadSubscriptionClient, ThreadSubscriptions>();
+
+/** Wire a connection's shared subscription registry at connect time, before
+ * any thread is acquired: the registry's state/notification handlers belong
+ * to the connection, not to whichever store action happens to subscribe
+ * first. Idempotent for one client. */
+export function wireThreadSubscriptions(client: ThreadSubscriptionClient): void {
+  if (registries.has(client)) return;
+  registries.set(client, new ThreadSubscriptions(client, true));
+}
+
+/** Retire a connection's registry when its owner lets go of the client. */
+export function retireThreadSubscriptions(client: ThreadSubscriptionClient): void {
+  registries.get(client)?.retire();
+}
 
 /** Acquire one additive thread subscription lifetime. Every transcript and
  * activity owner of this connection must join, rather than unsubscribe or

@@ -1,16 +1,14 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { expect, test } from "vitest";
+import { blockBody, readModuleCss } from "../../styles/cssBlock";
 import { Textarea } from "../textarea";
 import { PromptCard } from "./index";
 import promptCardStyles from "./promptcard.module.css";
 
 function moduleCss(): string {
-  return readFileSync(join(dirname(fileURLToPath(import.meta.url)), "promptcard.module.css"), "utf8");
+  return readModuleCss(import.meta.url, "promptcard.module.css");
 }
 
 /** A live card wrapping a controlled seamless field, the shape both real
@@ -132,6 +130,12 @@ test("the card owns the focus ring for the seamless field inside it", () => {
   expect(moduleCss()).toMatch(/\.card:focus-within\s*\{[^}]*outline: var\(--focus-ring\)/);
 });
 
+test("the focus ring sits on the card edge, so the field shows one line instead of two", () => {
+  const rule = /\.card:focus-within\s*\{([^}]*)\}/.exec(moduleCss())?.[1] ?? "";
+  expect(rule).toMatch(/outline-offset:\s*0;/);
+  expect(rule).toMatch(/border-color:\s*var\(--accent\);/);
+});
+
 // Queried only after focusing: jsdom's selector engine caches a :focus-within
 // result per element, so an earlier "not yet focused" call on the same node
 // would keep answering false afterwards.
@@ -144,4 +148,14 @@ test("focusing the field puts the card in :focus-within", () => {
 test("the card draws exactly one hairline border, so a seamless field inside is not a box in a box", () => {
   const rule = /\.card\s*\{([^}]*)\}/.exec(moduleCss())?.[1] ?? "";
   expect(rule).toMatch(/border:\s*1px solid var\(--edge\)/);
+});
+
+test("the card owns compact spacing for an empty, unfocused Duo composer", () => {
+  const css = moduleCss();
+  const mediaStart = css.indexOf("@media (min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4)");
+  expect(mediaStart).toBeGreaterThanOrEqual(0);
+  const compact = blockBody(css, css.indexOf("{", mediaStart));
+  expect(compact).toMatch(
+    /:global\(\[data-composer\]\):not\(\[data-composer-editing\]\) \.card:has\(\[role="textbox"\]\[data-empty="true"\]\)\s*\{[^}]*gap:\s*0;[^}]*padding-block:\s*0;/,
+  );
 });

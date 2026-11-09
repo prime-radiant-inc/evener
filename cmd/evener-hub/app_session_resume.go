@@ -18,12 +18,19 @@ import (
 // source or a thread in the local past index) and the failure is a
 // session-unavailable error — a live in-flight error or an unknown ref is
 // returned unchanged so we never resurrect a session to mask a real fault.
+//
+// afterResume, when non-nil, runs between the resume and the retry. A mutation
+// whose change is published only as a live notification needs it: the
+// auto-resume starts a daemon but no relay, so without re-attaching one the
+// retry's thread/*/changed frame is emitted into nothing and a subscribed
+// client keeps its pre-resume value until some other read or reconnect.
 func withSessionResume[R any](
 	ctx context.Context,
 	cfg hubcore.WebConfig,
 	sources *appsource.Registry,
 	ref string,
 	clientMutationID string,
+	afterResume func(appwire.ThreadResumeResponse) error,
 	once func() (R, error),
 ) (R, error) {
 	attempt := func() (R, error) {
@@ -42,7 +49,8 @@ func withSessionResume[R any](
 	if ref != "" && !hubKnowsRef(cfg, ref) {
 		return resp, err
 	}
-	if _, resumeErr := hubThreadAutoResume(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: ref}); resumeErr != nil {
+	resumed, resumeErr := hubThreadAutoResume(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: ref})
+	if resumeErr != nil {
 		var zero R
 		if clientMutationID != "" {
 			// A resume that failed because THIS CALLER'S target was deleted keeps
@@ -52,6 +60,12 @@ func withSessionResume[R any](
 			return zero, mutationResumeFailureError(cfg, ref, "", clientMutationID, resumeErr)
 		}
 		return zero, resumeErr
+	}
+	if afterResume != nil {
+		if err := afterResume(resumed); err != nil {
+			var zero R
+			return zero, err
+		}
 	}
 	// The retry runs because this request's resume made it possible, so its
 	// failure is judged the same way turn/start's retry is: a failure that
@@ -229,7 +243,22 @@ func removeURLWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *ap
 // thread action, and runs call — the shared shape behind the notes/urls
 // resume relays above.
 func relayWithResume[R any](ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, ref, clientMutationID, action string, call func(appsource.Source) (R, error)) (R, error) {
-	return withSessionResume(ctx, cfg, sources, ref, clientMutationID, func() (R, error) {
+	return relayWithResumeAfter(ctx, cfg, sources, nil, ref, clientMutationID, action, call)
+}
+
+// relayWithResumeAfter is relayWithResume with an optional relay re-attach
+// between a cold resume and the retry. A mutation whose result reaches clients
+// as a live notification needs it: the model setter's thread/model/changed is
+// what carries the new model's reasoning profile, and without a relay on the
+// resumed daemon a subscribed pane keeps the old profile.
+func relayWithResumeAfter[R any](ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, relays *hubRelay, ref, clientMutationID, action string, call func(appsource.Source) (R, error)) (R, error) {
+	afterResume := func(resumed appwire.ThreadResumeResponse) error {
+		if relays == nil {
+			return nil
+		}
+		return relays.startRelayForThread(ctx, resumed.Thread)
+	}
+	return withSessionResume(ctx, cfg, sources, ref, clientMutationID, afterResume, func() (R, error) {
 		source, err := sourceForThread(sources, ref, "")
 		if err != nil {
 			var zero R

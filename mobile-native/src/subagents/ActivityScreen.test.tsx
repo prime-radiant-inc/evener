@@ -36,6 +36,8 @@ import { ActivityScreen } from "./ActivityScreen";
 import type { ActivityKind } from "./activityList";
 import { paletteFor } from "../design/tokens";
 import { stopOffer } from "./stopOffer";
+import { DetailPaneWidthContext } from "../duo/paneWidth";
+import { SubagentStrip } from "./SubagentStrip";
 
 const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown>, kv: new Map<string, string>() }));
 
@@ -166,10 +168,13 @@ async function treeUpdatedAndRead(hubClient: FakeClient) {
 	await settle();
 }
 
-async function mount(flush = true, kind: ActivityKind = "agents") {
+async function mount(flush = true, kind: ActivityKind = "agents", paneWidth?: number) {
 	const params = { hubId: "hub-1", ...COORDINATOR, kind };
+	const screen = (
+		<ActivityScreen route={{ key: kind, name: "Activity", params } as never} navigation={navigation as never} />
+	);
 	const tree = render(
-		<ActivityScreen route={{ key: kind, name: "Activity", params } as never} navigation={navigation as never} />,
+		<DetailPaneWidthContext.Provider value={paneWidth ?? null}>{screen}</DetailPaneWidthContext.Provider>,
 	);
 	if (flush) await settle();
 	return tree;
@@ -194,6 +199,11 @@ const dotTint = (tree: ReactTestRenderer, id: string) =>
 it("titles itself with the count over the coordinator's title", async () => {
 	await mount();
 	expect(headerTitle()).toBe("Agents · 55 Get PR 2138 Test Clean");
+});
+
+it("sizes its summary strip to the split's detail pane, not the window", async () => {
+	const tree = await mount(true, "agents", 388);
+	expect(tree.root.findByType(SubagentStrip).props.width).toBe(356);
 });
 
 it("folds every terminal delegate below live work with terminal-inclusive counts", async () => {

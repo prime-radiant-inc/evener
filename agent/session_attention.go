@@ -13,11 +13,13 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/foldcache"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -270,17 +272,38 @@ func extendDelegateAttention(prior delegateAttentionFold, entries []transcript.E
 			}
 			continue
 		}
-		if resolution.ResumeGeneration != 0 {
-			for previousID, generation := range fold.resumeGenerations {
-				if generation == resolution.ResumeGeneration && previousID != resolution.AttentionID {
-					return delegateAttentionFold{}, fmt.Errorf("resume generation %d claims attention %q and %q", resolution.ResumeGeneration, previousID, resolution.AttentionID)
-				}
-			}
+		if previousID, conflict := delegateAttentionResumeClaimConflict(fold, resolution.AttentionID, resolution.ResumeGeneration); conflict {
+			return delegateAttentionFold{}, fmt.Errorf("resume generation %d claims attention %q and %q", resolution.ResumeGeneration, previousID, resolution.AttentionID)
 		}
 		fold.resolutions[resolution.AttentionID] = disposition
 		fold.resumeGenerations[resolution.AttentionID] = resolution.ResumeGeneration
 	}
 	return fold, nil
+}
+
+// delegateAttentionResumeClaimConflict scans the fold's resume claims for a
+// live claim on the same generation by an id other than attentionID. One
+// generation presents one report, so two ids cannot both claim it. A claim
+// is live until its own reopen row exists: the failed start re-delivered
+// the same report under the fresh identity, so the claim it left binds
+// nothing and any pending row may take the generation over — the same
+// liveness the restore read applies to owed starts, so the two cannot
+// disagree about which claims still bind. Map order cannot change the
+// verdict: the scan visits every claim and conflicts on the first live one.
+func delegateAttentionResumeClaimConflict(fold delegateAttentionFold, attentionID string, generation uint64) (string, bool) {
+	if generation == 0 {
+		return "", false
+	}
+	for previousID, claimed := range fold.resumeGenerations {
+		if claimed != generation || previousID == attentionID {
+			continue
+		}
+		if _, superseded := fold.content[delegateAttentionReopenID(previousID, claimed)]; superseded {
+			continue
+		}
+		return previousID, true
+	}
+	return "", false
 }
 
 func foldDelegateDeliveryCommits(fold *delegateAttentionFold, turn schema.Turn) error {
@@ -646,7 +669,24 @@ func (s *Session) armDelegateAttention(attentionID string) error {
 	if s == nil || attentionID == "" {
 		return errors.New("delegate attention wake identity is incomplete")
 	}
-	err := s.armDelegateAttentionOnce(attentionID)
+	// The seam is runtime-mutable through updateSessionTestConfig, so its
+	// read shares the setter's session mutex — the convention every
+	// mid-run-mutable test seam follows.
+	s.mu.Lock()
+	armFault := s.cfg.testOnly.delegateAttentionArmFault
+	s.mu.Unlock()
+	var err error
+	if armFault != nil {
+		// The fault stands in for an arm the controller refused, so its
+		// error flows through the same retention below: a faulted arm is
+		// recorded for the paced retry exactly as a real refusal is, and
+		// the retry re-arms through armDelegateAttentionOnce, past the
+		// fault.
+		err = armFault()
+	}
+	if err == nil {
+		err = s.armDelegateAttentionOnce(attentionID)
+	}
 	s.attentionMu.Lock()
 	if err != nil {
 		if s.delegateAttentionArmIDs == nil {
@@ -702,6 +742,13 @@ func (s *Session) armDelegateAttentionOnce(attentionID string) error {
 		if emit {
 			s.delegateController.emitDelegateUpdate(plan)
 		}
+		// The wake below drives synchronously through the session's notify
+		// func, and the drive it starts reads the automatic list in that same
+		// call: the holds a user's stop left must end before it fires, or the
+		// generation the wake starts presents the armed row alone and the
+		// stopped report waits a later generation. A failed arm never reaches
+		// this point; the holds stand.
+		s.releaseAutomaticDriveHolds(delegateHoldReleaseArm)
 		s.notify()
 		return nil
 	}
@@ -726,12 +773,448 @@ func (s *Session) pendingDelegateAttentionIDs() ([]string, error) {
 	return s.pendingDelegateAttentionIDsLocked()
 }
 
+// reopenConsumedDelegateAttention restores an attention item a presentation
+// start consumed but will never present: the start failed after the consume
+// marker landed. The marker is irreversible by design — it fences concurrent
+// double presentation — so the recovery re-delivers the same content under a
+// fresh identity keyed by the failed start's generation. Replaying the same
+// failed generation is idempotent (the same identity and content is a no-op),
+// and a later failed generation keys a fresh identity, so however many starts
+// fail, the report reads as pending instead of silently being lost. Which
+// drive presents it depends on the failure: a refused commit never replaced
+// the controller's wake, so the paced retry re-drives it in-process; a start
+// that committed and then lost its launch to a refused lane revalidation
+// leaves the child stamped drain-abandoned, and that stamp deliberately quiets
+// every drive loop instead of churning against the foreign-held lane — the row
+// is presented when a later attention row for the delegate re-arms a wake,
+// when a restart reconciles the wake from the transcript, or when an explicit
+// send revives the lane. An item that survived its failed start needs nothing:
+// the ordinary retry still presents it, and re-delivering it would present
+// the same report twice. A stop or close admitted between the caller's
+// teardown guards and the append is re-checked after it, and the row that
+// teardown now owns is resolved as discarded instead of surviving it.
+// The reopened row's identity is returned, empty when nothing was
+// re-delivered.
+func (s *Session) reopenConsumedDelegateAttention(attentionID string) (string, error) {
+	if s == nil {
+		return "", errors.New("delegate attention session is nil")
+	}
+	if attentionID == "" {
+		return "", errors.New("delegate attention reopen identity is incomplete")
+	}
+	s.attentionMu.Lock()
+	fold, err := s.delegateAttentionFoldLocked()
+	if err != nil {
+		s.attentionMu.Unlock()
+		return "", err
+	}
+	disposition, consumed := fold.resolutions[attentionID]
+	message, hasContent := fold.content[attentionID]
+	generation := fold.resumeGenerations[attentionID]
+	s.attentionMu.Unlock()
+	if !consumed || disposition != delegateAttentionConsumed {
+		return "", nil
+	}
+	if !hasContent {
+		return "", fmt.Errorf("attention %q was consumed without content to reopen", attentionID)
+	}
+	reopenID := delegateAttentionReopenID(attentionID, generation)
+	if _, resolved := fold.resolutions[reopenID]; resolved {
+		// This failed generation already reopened and the reopened row was
+		// consumed again; its own failed start reopens under its own key.
+		return "", nil
+	}
+	// The seam is runtime-mutable through updateSessionTestConfig, so its
+	// read shares the setter's session mutex.
+	s.mu.Lock()
+	observer := s.cfg.testOnly.delegateAttentionBeforeReopenAppend
+	s.mu.Unlock()
+	if observer != nil {
+		// A test seam, nil in production: the teardown guards have all run by
+		// here, so a test can admit a stop into exactly the window between
+		// them and the durable append below.
+		observer()
+	}
+	_, err = s.appendDelegateAttentionMessageDurably(reopenID, message)
+	if err == nil {
+		s.attentionMu.Lock()
+		if s.attentionAcceptedID == attentionID {
+			// The reopened row supersedes the latched trigger — same content,
+			// fresh identity — and the fold keeps the latched trigger's turn
+			// alongside every pending row, so an unleased turn in this window
+			// would render the identical report twice in one request. The
+			// latch is consumed-and-superseded; the next accept re-latches on
+			// the row it presents.
+			s.attentionAcceptedID = ""
+		}
+		s.attentionMu.Unlock()
+		// The teardown guards ran before the append, but a stop or close can
+		// admit while it was in flight, and the fresh id is invisible to that
+		// stop's plan-time enumeration (no wake notes it), so the row would
+		// survive as pending on a deliberately stopped delegate. Re-check the
+		// same predicates and hand the row to the teardown that now owns it:
+		// the discard resolves it durably, the same resolution the stop's own
+		// machinery would have written had the row existed at plan time.
+		s.mu.Lock()
+		receiverClosed := s.closingOrClosedLocked()
+		s.mu.Unlock()
+		if receiverClosed {
+			// A closed writer treats the append as a successful no-op, so the
+			// row never landed: the receiver's own teardown owns everything
+			// its transcript still held, and there is nothing to resolve.
+			return "", nil
+		}
+		// The superseded source's resident copy never reached a request —
+		// every reopen fires only after a start that failed before presenting
+		// — and the reopened row that just landed carries the same content to
+		// the next one, so the resident copy would only duplicate the report
+		// in every later request. Drop it from the resident history; the
+		// transcript row stays, because the fold, not the history, is the
+		// delivery ledger.
+		s.attentionMu.Lock()
+		s.dropResidentDelegateAttentionTurnLocked(attentionID)
+		s.attentionMu.Unlock()
+		if s.delegateController.attentionReopenRefused(s.owningDelegateID) {
+			if resolveErr := s.resolveAttentionDurably([]string{reopenID}, delegateAttentionDiscarded); resolveErr != nil {
+				return "", resolveErr
+			}
+		}
+		return reopenID, nil
+	}
+	return "", err
+}
+
+// reopenLatchedDelegateAttention reopens the accepted trigger a failed
+// attention-triggered run latched but never presented: the presentation turn
+// died before its request could carry the report. A settled full-history
+// request presented the report and cleared the latch, so it reopens nothing;
+// a responses-continuation delta carries no attention and clears no latch,
+// so a delta-settled round still leaves the reopen owed. A receiver whose own
+// teardown is discarding its pending attention, and a receiver a deliberate
+// stop or the tree's close owns, are left to that teardown — re-delivering
+// into either would race the discard and strand a fresh row the teardown's
+// plan-time enumeration never knew, the same policy reopenFailedDelegateAttention
+// enforces for the drive arms. The reopened identity is returned, empty when
+// nothing was reopened.
+func (s *Session) reopenLatchedDelegateAttention() (string, error) {
+	if s == nil {
+		return "", errors.New("delegate attention session is nil")
+	}
+	s.mu.Lock()
+	closed := s.closingOrClosedLocked()
+	s.mu.Unlock()
+	if closed {
+		return "", nil
+	}
+	if s.delegateController.attentionReopenRefused(s.owningDelegateID) {
+		return "", nil
+	}
+	s.attentionMu.Lock()
+	latched := s.attentionAcceptedID
+	s.attentionMu.Unlock()
+	if latched == "" {
+		return "", nil
+	}
+	return s.reopenConsumedDelegateAttention(latched)
+}
+
+// delegateAttentionReopenID is the fresh identity a failed presentation start
+// re-delivers its consumed report under: keyed by the failed start's generation
+// so a replay of the same failure is idempotent and a later failure keys a
+// fresh row. The validator recognizes the format so a reopened row can take
+// over the resume claim its source left on the generation that never ran.
+func delegateAttentionReopenID(sourceID string, generation uint64) string {
+	return sourceID + delegateAttentionReopenSuffix(generation)
+}
+
+// delegateAttentionReopenMarker prefixes the generation in every reopen
+// segment: the one definition of the segment's constant part, shared by the
+// builder and the id stripper so the two cannot drift apart.
+const delegateAttentionReopenMarker = "/reopened/"
+
+// delegateAttentionReopenSuffix is the wire format of one reopen segment,
+// keyed by the failed start's generation.
+func delegateAttentionReopenSuffix(generation uint64) string {
+	return fmt.Sprintf("%s%d", delegateAttentionReopenMarker, generation)
+}
+
+// stripDelegateAttentionReopenSegments reduces id to the identity its reopen
+// chain was minted from: reopen segments are only ever appended, so trimming
+// every trailing marker+generation segment leaves the original row's id. An
+// id that does not end in a well-formed segment is returned unchanged.
+func stripDelegateAttentionReopenSegments(id string) string {
+	for {
+		source, _, ok := cutDelegateAttentionReopenSegment(id)
+		if !ok {
+			return id
+		}
+		id = source
+	}
+}
+
+// cutDelegateAttentionReopenSegment trims one trailing reopen segment off id,
+// reporting the source identity the segment was minted from and the failed
+// start's generation it keyed. An id that does not end in a well-formed
+// segment reports itself whole with ok false — the one definition of the
+// segment's shape, shared by the id stripper, which loops cuts down to the
+// base, and the cold restore's derived hold, which keys the immediate
+// source's resume claim.
+func cutDelegateAttentionReopenSegment(id string) (source string, generation uint64, ok bool) {
+	at := strings.LastIndex(id, delegateAttentionReopenMarker)
+	if at < 0 {
+		return id, 0, false
+	}
+	generation, err := strconv.ParseUint(id[at+len(delegateAttentionReopenMarker):], 10, 64)
+	if err != nil {
+		return id, 0, false
+	}
+	return id[:at], generation, true
+}
+
 func (s *Session) pendingDelegateAttentionIDsLocked() ([]string, error) {
 	fold, err := s.delegateAttentionFoldLocked()
 	if err != nil {
 		return nil, err
 	}
 	return fold.pendingIDs(), nil
+}
+
+// delegateAttentionHeldFromAutomaticDriveLocked reports whether a user's
+// stop quieted the row from automatic drives. The settle tail's hold write
+// and the drive-side reads share this one predicate. Callers must hold
+// attentionMu.
+func (s *Session) delegateAttentionHeldFromAutomaticDriveLocked(attentionID string) bool {
+	_, held := s.attentionAutomaticDriveHolds[attentionID]
+	return held
+}
+
+// holdDelegateAttentionFromAutomaticDrive quiets a reopened row a user's
+// stop owns: the stopped generation's commit replaced the controller's wake
+// with the pending rows it excluded, so the stale armed wake still drives
+// for them once the announce releases — the tail's skipped re-arm disarms
+// nothing — and without the hold the reopened report would ride the next
+// generation that wake starts, the immediate restart the stop exists to
+// prevent.
+func (s *Session) holdDelegateAttentionFromAutomaticDrive(attentionID string) {
+	if s == nil || attentionID == "" {
+		return
+	}
+	s.attentionMu.Lock()
+	if s.attentionAutomaticDriveHolds == nil {
+		s.attentionAutomaticDriveHolds = make(map[string]struct{})
+	}
+	s.attentionAutomaticDriveHolds[attentionID] = struct{}{}
+	s.attentionMu.Unlock()
+}
+
+// delegateHoldReleaseSite names the wake a hold release serves.
+type delegateHoldReleaseSite string
+
+const (
+	// delegateHoldReleaseDelivery tags the release a committed child
+	// delivery fires.
+	delegateHoldReleaseDelivery delegateHoldReleaseSite = "delivery"
+	// delegateHoldReleaseArm tags the release a successful arm fires.
+	delegateHoldReleaseArm delegateHoldReleaseSite = "arm"
+)
+
+// releaseAutomaticDriveHolds ends every user-stop hold a new event's wake
+// supersedes: a committed child delivery or a successful arm may present a
+// row the stop held out of the automatic drives, so the holds end with the
+// event that arrived — the site names which wake. The rows the stop never
+// touched keep their presentation either way, and a failed arm or an
+// uncommitted delivery woke nothing, so the holds stand.
+func (s *Session) releaseAutomaticDriveHolds(site delegateHoldReleaseSite) {
+	// The seam is runtime-mutable through updateSessionTestConfig, so its
+	// read shares the setter's session mutex — the convention every
+	// mid-run-mutable test seam follows.
+	s.mu.Lock()
+	hook := s.cfg.testOnly.delegateAttentionHoldReleased
+	s.mu.Unlock()
+	var released []string
+	s.attentionMu.Lock()
+	if len(s.attentionAutomaticDriveHolds) != 0 {
+		s.moveHeldDelegateAttentionTurnsToTail()
+		released = make([]string, 0, len(s.attentionAutomaticDriveHolds))
+		for id := range s.attentionAutomaticDriveHolds {
+			released = append(released, id)
+		}
+	}
+	s.attentionAutomaticDriveHolds = nil
+	s.attentionMu.Unlock()
+	if hook != nil && released != nil {
+		sort.Strings(released)
+		hook(site, released)
+	}
+}
+
+// moveHeldDelegateAttentionTurnsToTail moves each still-pending held row's
+// steering turn to the resident history's tail. The reopen appended the turn
+// where the settle left it, and the exchanges of any generation that ran while
+// the hold stood append after it, so the generation that later presents the
+// row would end its request on those later exchanges — a trailing assistant
+// message the model treats as a prefill to continue instead of the report it
+// owes. The move puts the report back at the end, so the presenting request
+// ends on it. Resolved rows keep their presented positions. The moves follow
+// the fold's arrival order, so rows held by back-to-back stops re-append
+// deterministically and the presenting request shows them in the order they
+// arrived. The caller holds attentionMu.
+func (s *Session) moveHeldDelegateAttentionTurnsToTail() {
+	fold, err := s.delegateAttentionFoldLocked()
+	if err != nil {
+		// Best-effort: the rows keep their positions, and the release still
+		// ends the quiet.
+		return
+	}
+	for _, attentionID := range fold.pendingIDs() {
+		if _, held := s.attentionAutomaticDriveHolds[attentionID]; !held {
+			continue
+		}
+		var held schema.Turn
+		s.mu.Lock()
+		for index := range s.history {
+			if s.history[index].AttentionID == attentionID && s.history[index].Kind == schema.TurnSteering {
+				held = s.history[index]
+				break
+			}
+		}
+		s.mu.Unlock()
+		if held.AttentionID == "" {
+			continue
+		}
+		s.dropResidentDelegateAttentionTurnLocked(attentionID)
+		if err := s.retainDelegateAttentionTurn(held); err != nil {
+			s.emit(warningDataFromError("move held delegate attention turn to the history tail", err))
+		}
+	}
+}
+
+// deriveHeldDelegateAttentionFromOutcome rebuilds, on a session reconstructed
+// after an idle release, the user-stop quiet the released runtime held only in
+// memory. The idle release is transparent reclaim, not a wake from a new
+// event, so the restored session must mirror the resident quiet: the durable
+// outcome of the stopped run and the reopened rows the settle left pending are
+// enough to find the rows the stop owns. A pending row is held when it is a
+// well-formed reopen whose immediate source's resume claim sits at the
+// delegate's current durable generation — the generation the user-stopped run
+// settled — and that generation's last run was attention-triggered and settled
+// cancelled, and the controller does not already note the row's wake: the
+// resident quiet holds an attention run's report alone, and a send that
+// commits a recycled generation settles the same cancelled outcome without
+// owing that quiet. A noted wake is a new event's arm (a restart reconcile or
+// a fresh delivery), which presents the row exactly as it would have
+// presented it against the resident hold. Every other reopen stays
+// presentable on the restore: a busy reopen whose send settled the recycled
+// generation matches the outcome and generation exactly, so the run's trigger
+// — not a generation mismatch — is what leaves it presentable; refused-launch
+// reopens key to a generation the journal never reached, and a subtree stop's
+// rows keep their own sticky quiet. The derived hold writes the same map the
+// settle tail wrote, so the arm that presents any remaining pending row
+// releases it exactly as it releases the resident one.
+func (s *Session) deriveHeldDelegateAttentionFromOutcome() {
+	if s == nil || s.delegateController == nil || s.owningDelegateID == "" {
+		return
+	}
+	controller := s.delegateController
+	controller.mu.Lock()
+	generation := uint64(0)
+	stopped := false
+	if aggregate := controller.durable[s.owningDelegateID]; aggregate != nil {
+		generation = aggregate.Generation
+		stopped = !aggregate.CurrentRunOpen &&
+			aggregate.Trigger == delegatestore.TriggerAttention &&
+			aggregate.LatestOutcome != nil &&
+			aggregate.LatestOutcome.Status == delegatestore.OutcomeCancelled
+	}
+	var noted map[string]struct{}
+	if state := controller.attention[s.owningDelegateID]; state != nil {
+		noted = maps.Clone(state.wakeIDs)
+	}
+	controller.mu.Unlock()
+	if !stopped {
+		return
+	}
+	s.attentionMu.Lock()
+	fold, err := s.delegateAttentionFoldLocked()
+	s.attentionMu.Unlock()
+	if err != nil {
+		return
+	}
+	var held []string
+	for _, id := range fold.pendingIDs() {
+		source, _, ok := cutDelegateAttentionReopenSegment(id)
+		if !ok {
+			continue
+		}
+		if fold.resumeGenerations[source] != generation {
+			continue
+		}
+		if _, wakeNoted := noted[id]; wakeNoted {
+			continue
+		}
+		held = append(held, id)
+	}
+	for _, id := range held {
+		s.holdDelegateAttentionFromAutomaticDrive(id)
+	}
+}
+
+// automaticDelegateAttentionIDs lists the pending rows an automatic drive may
+// present: every pending row except those a user's stop holds. The drive's
+// selection and the accept's rider capture both read this list, so a held row
+// neither claims a generation nor rides another row's, while every other
+// pending row still presents on the same wake.
+func (s *Session) automaticDelegateAttentionIDs() ([]string, error) {
+	pending, err := s.pendingDelegateAttentionIDs()
+	if err != nil {
+		return nil, err
+	}
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	if len(s.attentionAutomaticDriveHolds) == 0 {
+		return pending, nil
+	}
+	kept := make([]string, 0, len(pending))
+	for _, id := range pending {
+		if !s.delegateAttentionHeldFromAutomaticDriveLocked(id) {
+			kept = append(kept, id)
+		}
+	}
+	return kept, nil
+}
+
+// dropHeldDelegateAttentionTurns keeps a user-stopped run's held rows out of
+// the history an automatic attention drive projects: the reopen retained each
+// held row's turn in the resident history, so without this filter the drive
+// would present the stopped report through it — the immediate restart the
+// stop exists to prevent. The resident history keeps the turn: an explicit
+// send presents it, and so does the fresh arm that releases the hold. Turns
+// without an attention identity, and turns whose row is not held, project
+// unchanged. The positions of the dropped turns are returned in the input's
+// coordinates: a drop shifts every later turn one position left, so the
+// caller's in-flight boundary — an index into the projection — moves with
+// each drop strictly before it.
+func (s *Session) dropHeldDelegateAttentionTurns(turns []schema.Turn) (kept []schema.Turn, droppedAt []int) {
+	s.attentionMu.Lock()
+	// The holds map can be written on a live runtime while this projection
+	// iterates outside the lock, so the iteration walks a clone taken under
+	// the lock: the snapshot is race-free by construction.
+	holds := maps.Clone(s.attentionAutomaticDriveHolds)
+	s.attentionMu.Unlock()
+	if len(holds) == 0 {
+		return turns, nil
+	}
+	kept = make([]schema.Turn, 0, len(turns))
+	for i, turn := range turns {
+		if turn.AttentionID != "" {
+			if _, held := holds[turn.AttentionID]; held {
+				droppedAt = append(droppedAt, i)
+				continue
+			}
+		}
+		kept = append(kept, turn)
+	}
+	return kept, droppedAt
 }
 
 // delegateAttentionFoldLocked folds the session's own transcript; the zero fold
@@ -848,7 +1331,7 @@ func (s *Session) acceptDelegateAttention(reservation *delegateStartReservation)
 	if err := s.resolveAttentionDurablyForGeneration([]string{attentionID}, delegateAttentionConsumed, generation); err != nil {
 		return err
 	}
-	pendingIDs, err := s.pendingDelegateAttentionIDs()
+	pendingIDs, err := s.automaticDelegateAttentionIDs()
 	if err != nil {
 		return err
 	}
@@ -1174,11 +1657,13 @@ func (s *Session) stagePresentedAttentionCoverage(ctx context.Context, presented
 // call settled as settled, the request that actually answered. Called by the
 // round loop on the success path only.
 //
-// A responses-continuation delta carries only new items; any older steering
-// turn lives in server-side state this session cannot verify, so a round that
-// settled as a delta credits nothing and the items keep their wake for a
-// full-history turn. A delta whose call fell back to a full-history request
-// settled as that request, which carried every staged turn.
+// A responses-continuation delta never carries an attention delivery: every
+// one is a steering turn, and the eligibility rules reject any delta whose
+// suffix holds a steering turn. A round that settled as a delta therefore
+// presented no attention at all — it credits no coverage and clears no latch,
+// so a latched trigger's reopen stays owed. A delta whose call fell back to a
+// full-history request settled as that request, which carried every staged
+// turn.
 func (s *Session) promoteStagedAttentionCoverage(settled llm.Request) {
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
@@ -1419,7 +1904,7 @@ func (s *Session) resetDelegateAttentionArmRetryLocked() {
 	s.delegateAttentionArmRetry.reset()
 }
 
-func (s *Session) scheduleStableDelegateAttentionRetry() {
+func (s *Session) scheduleDelegateAttentionRetry() {
 	if s == nil {
 		return
 	}
@@ -1454,12 +1939,12 @@ func (s *Session) scheduleStableDelegateAttentionRetry() {
 		s.stableAttentionRetry.settle(pending || runnable, s.stableAttentionRetry.delay, jobNotificationRetryMaxDelay)
 		s.attentionMu.Unlock()
 		if pending {
-			s.scheduleStableDelegateAttentionRetry()
+			s.scheduleDelegateAttentionRetry()
 		}
 	})
 }
 
-func (s *Session) resetStableDelegateAttentionRetry() {
+func (s *Session) resetDelegateAttentionRetry() {
 	if s == nil {
 		return
 	}
@@ -1468,12 +1953,12 @@ func (s *Session) resetStableDelegateAttentionRetry() {
 	s.attentionMu.Unlock()
 }
 
-// resetStableDelegateAttentionRetryDelay ends a backoff episode whose work
+// resetDelegateAttentionRetryDelay ends a backoff episode whose work
 // succeeded, so the next failure retries from the initial delay. It leaves an
 // armed retry in place, since other delegates' work may still need it; that
 // retry fires at the delay it was armed with and backs off from the reset
 // delay.
-func (s *Session) resetStableDelegateAttentionRetryDelay() {
+func (s *Session) resetDelegateAttentionRetryDelay() {
 	s.attentionMu.Lock()
 	s.stableAttentionRetry.delay = jobNotificationRetryInitialDelay
 	s.attentionMu.Unlock()
@@ -1621,6 +2106,27 @@ func (s *Session) removeUnverifiedDelegateAttentionTurn(turn schema.Turn) {
 			s.bumpHistoryRevisionLocked()
 			return
 		}
+	}
+}
+
+// dropResidentDelegateAttentionTurnLocked removes attentionID's steering turn
+// from the resident history only — the transcript row stays, so the fold still
+// reads the row's content and resolution. The caller holds attentionMu. The
+// turnHistoryBaseline shift mirrors removeUnverifiedDelegateAttentionTurn: a
+// deletion strictly before the boundary moves the boundary with it.
+func (s *Session) dropResidentDelegateAttentionTurnLocked(attentionID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for index := range s.history {
+		if s.history[index].AttentionID != attentionID || s.history[index].Kind != schema.TurnSteering {
+			continue
+		}
+		s.history = append(s.history[:index], s.history[index+1:]...)
+		if index < s.turnHistoryBaseline {
+			s.turnHistoryBaseline--
+		}
+		s.bumpHistoryRevisionLocked()
+		return
 	}
 }
 
@@ -1963,12 +2469,8 @@ func validateDelegateAttentionResolutions(fold delegateAttentionFold, ids []stri
 		if _, pending := fold.content[attentionID]; !pending {
 			return fmt.Errorf("attention %q is not pending", attentionID)
 		}
-		if resumeGeneration != 0 {
-			for previousID, generation := range fold.resumeGenerations {
-				if generation == resumeGeneration && previousID != attentionID {
-					return fmt.Errorf("resume generation %d already claims attention %q", resumeGeneration, previousID)
-				}
-			}
+		if previousID, conflict := delegateAttentionResumeClaimConflict(fold, attentionID, resumeGeneration); conflict {
+			return fmt.Errorf("resume generation %d already claims attention %q", resumeGeneration, previousID)
 		}
 	}
 	return nil

@@ -139,7 +139,7 @@ func TestOneShotDrainAnnouncementStopResolves(t *testing.T) {
 	stopTurnReturned := make(chan struct{})
 	allowStopTurn := make(chan struct{})
 	var finalWarningSeen atomic.Bool
-	adapter.steps = []func(llm.Request) llm.Response{
+	adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			return agenttest.ToolCallResponse(llm.ToolCallData{
 				ID: "stop-it", Name: "job_stop", Type: "function",
@@ -162,7 +162,7 @@ func TestOneShotDrainAnnouncementStopResolves(t *testing.T) {
 			return agenttest.FinalResponse("all wrapped up")
 		},
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("all wrapped up") },
-	}
+	})
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
 		TurnEndsProcess: true,
 	}))
@@ -427,7 +427,7 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 	kickRelease := make(chan struct{})
 	var kickReadyOnce sync.Once
 	adapter := &fakeAdapter{name: "openai"}
-	adapter.steps = []func(llm.Request) llm.Response{
+	adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			return agenttest.ToolCallResponse(llm.ToolCallData{
 				ID: "watch-it", Name: "job_watch", Type: "function",
@@ -442,7 +442,7 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("the watch was cleared; reconsidering") },
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("still waiting for the job") },
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("exiting") },
-	}
+	})
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
 		TurnEndsProcess: true,
 	}))

@@ -631,58 +631,63 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				msg.WriteString(formatMutationAck(len(adds), updates))
 				msg.WriteString(" ")
 				finalTasks := mutation.After
+				summary := taskpkg.Summarize(finalTasks)
 
 				if completedAny {
-					// Auto-advance unless the agent already picked what to do next.
-					if manuallyStartedID == 0 {
+					// Auto-advance unless the agent already picked what to do
+					// next, or another task is still the current one. Starting
+					// a second in_progress task would be refused by the store,
+					// and the completed update already succeeded, so leave the
+					// active task alone instead of attempting it.
+					if manuallyStartedID == 0 && summary.Current == nil {
 						eligible := store.NextEligible()
 						if len(eligible) > 0 {
 							next := eligible[0]
+							if hook := deps.taskGuard.beforeAutoAdvance; hook != nil {
+								hook()
+							}
 							auto, err := store.UpdateWithSnapshot([]taskpkg.TaskUpdate{{ID: next.ID, Status: taskpkg.TaskInProgress}})
 							if err != nil {
 								postCommitErr = fmt.Errorf("post-commit auto-advance failed: %w", err)
 								postCommitAdvice = "The terminal update was committed, but the next-task update failed; inspect the committed task state and resolve the reported cause before choosing the next task update."
 							} else {
 								finalTasks = auto.After
+								summary = taskpkg.Summarize(finalTasks)
 								started[next.ID] = true
 								if err := deps.steer(formatCurrentTaskSteering(next, true), events.SteeringKindCurrentTask); err != nil {
 									postCommitErr = fmt.Errorf("post-commit auto-advance steering failed: %w", err)
 									postCommitAdvice = "The terminal update and auto-advance were committed, but the current-task reminder was not delivered; inspect the committed task state before choosing the next update."
 								}
 							}
-						} else {
-							// No eligible task. If nothing remains open or in_progress,
+						} else if summary.NoActionableTasks() && summary.Total > 0 {
+							// No eligible task and nothing remains open or in_progress:
 							// signal the agent that the list is exhausted.
-							summary := taskpkg.Summarize(finalTasks)
-							if summary.NoActionableTasks() && summary.Total > 0 {
-								var blockingDelegateIDs []string
-								if deps.blockingDelegateIDs != nil {
-									blockingDelegateIDs = deps.blockingDelegateIDs()
-								}
-								if err := deps.sendTaskCompletionSteering(taskReminderTerminalWhileDelegatesRun(deps.resultToolName(), blockingDelegateIDs, summary.AllDone()), blockingDelegateIDs); err != nil {
-									postCommitErr = fmt.Errorf("post-commit task-completion steering failed: %w", err)
-									postCommitAdvice = "The terminal update was committed, but the completion reminder was not delivered; inspect the committed task state before choosing the next update."
-								} else if len(blockingDelegateIDs) == 0 {
-									if summary.AllDone() {
-										msg.WriteString("All tasks complete. ")
-									} else {
-										msg.WriteString("No actionable tasks remain. ")
-									}
+							var blockingDelegateIDs []string
+							if deps.blockingDelegateIDs != nil {
+								blockingDelegateIDs = deps.blockingDelegateIDs()
+							}
+							if err := deps.sendTaskCompletionSteering(taskReminderTerminalWhileDelegatesRun(deps.resultToolName(), blockingDelegateIDs, summary.AllDone()), blockingDelegateIDs); err != nil {
+								postCommitErr = fmt.Errorf("post-commit task-completion steering failed: %w", err)
+								postCommitAdvice = "The terminal update was committed, but the completion reminder was not delivered; inspect the committed task state before choosing the next update."
+							} else if len(blockingDelegateIDs) == 0 {
+								if summary.AllDone() {
+									msg.WriteString("All tasks complete. ")
 								} else {
-									if summary.AllDone() {
-										msg.WriteString("All tasks complete; waiting for delegate(s) ")
-									} else {
-										msg.WriteString("No actionable tasks remain; waiting for delegate(s) ")
-									}
-									msg.WriteString(strings.Join(blockingDelegateIDs, ", "))
-									msg.WriteString(". ")
+									msg.WriteString("No actionable tasks remain. ")
 								}
+							} else {
+								if summary.AllDone() {
+									msg.WriteString("All tasks complete; waiting for delegate(s) ")
+								} else {
+									msg.WriteString("No actionable tasks remain; waiting for delegate(s) ")
+								}
+								msg.WriteString(strings.Join(blockingDelegateIDs, ", "))
+								msg.WriteString(". ")
 							}
 						}
 					}
 				}
 
-				summary := taskpkg.Summarize(finalTasks)
 				taskUpdate := taskUpdatedData(summary, "", epoch, revision)
 				deps.emit(taskUpdate)
 				if postCommitErr != nil {

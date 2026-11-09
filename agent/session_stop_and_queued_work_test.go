@@ -637,6 +637,17 @@ func TestSendingAgainReleasesTheParkedQueue(t *testing.T) {
 		{"turn/queue", func(t *testing.T, sess *Session) {
 			queueOneMutation(t, sess, "one-more", "and this too")
 		}},
+		// A steer is the user speaking again too (lifecycle ruling 2026-11-09,
+		// issue #191): it re-engages the held turn, so the parked message must
+		// not stay parked behind the Stop.
+		{"turn/steer", func(t *testing.T, sess *Session) {
+			if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
+				ClientMutationID: "steer-after-stop",
+				Input:            []appwire.InputItem{{Type: "text", Text: "do this instead"}},
+			}); err != nil {
+				t.Fatalf("turn/steer: %v", err)
+			}
+		}},
 		// Draining and promoting are the queue-strip's own "run this now"
 		// gestures. Each gets its own table entry because each clear is an
 		// independent edit an implementer can forget: without these two cases,

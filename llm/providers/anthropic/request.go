@@ -306,17 +306,7 @@ func anthropicImageBlock(p llm.ContentPart) (map[string]any, error) {
 // otherwise be rejected and fail the whole turn, #4464); bytes that are not a
 // decodable raster are refused loudly through anthropicImageRefusalMessage.
 func anthropicImageBytes(data []byte, claimedMediaType string) ([]byte, string, error) {
-	if mt := llm.ImageBlockMediaType(claimedMediaType); mt != "" {
-		return data, mt, nil
-	}
-	normalized, normalizedType, err := llm.NormalizeImageBlock(data)
-	if err != nil {
-		return nil, "", &llm.ConfigurationError{
-			Message: anthropicImageRefusalMessage(claimedMediaType),
-			Cause:   err,
-		}
-	}
-	return normalized, normalizedType, nil
+	return llm.NormalizeImageForWire(data, claimedMediaType, llm.ImageBlockMediaType, anthropicImageRefusalMessage(claimedMediaType))
 }
 
 // anthropicImageRefusalMessage renders the loud configuration error the builder

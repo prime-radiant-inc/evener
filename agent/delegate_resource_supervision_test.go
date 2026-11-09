@@ -24,6 +24,7 @@ import (
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	toolpkg "primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/internal/worktree"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/execsupport/shellquote"
@@ -89,11 +90,11 @@ func TestDelegateTerminalCommunicateMarksGenerationEvidence(t *testing.T) {
 }
 
 func TestDelegateResourceSupervision_AttentionBareTextRecordsExplicitNoAction(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("nothing to do")} },
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	snapshots := make(chan delegateCompletionSnapshot, 1)
@@ -112,12 +113,12 @@ func TestDelegateResourceSupervision_AttentionBareTextRecordsExplicitNoAction(t 
 }
 
 func TestDelegateResourceSupervision_AttentionFollowUpRequiresReport(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	bare := func(llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant("bare without communicate")}
 	}
 	var root *Session
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response {
 			if err := root.subagents.get(fixture.childID).sess.Enqueue(context.Background(), "queued follow-up work"); err != nil {
@@ -127,7 +128,7 @@ func TestDelegateResourceSupervision_AttentionFollowUpRequiresReport(t *testing.
 		},
 		bare, bare, bare, bare,
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("follow-up report") },
-	}
+	})
 	root = restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	snapshots := make(chan delegateCompletionSnapshot, 1)
@@ -168,12 +169,12 @@ func TestDelegateResourceSupervision_AttentionFollowUpRequiresReport(t *testing.
 //
 //	attention follow-up evidence = {requirement:0x0 outcome:0x1 terminalSeen:false}
 func TestDelegateResourceSupervision_CommittedAttentionStartRefusesASecondTurn(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	bare := func(llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant("bare without communicate")}
 	}
 	var root *Session
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response {
 			if err := root.subagents.get(fixture.childID).sess.Enqueue(context.Background(), "queued follow-up work"); err != nil {
@@ -183,7 +184,7 @@ func TestDelegateResourceSupervision_CommittedAttentionStartRefusesASecondTurn(t
 		},
 		bare, bare, bare, bare,
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("follow-up report") },
-	}
+	})
 	root = restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	snapshots := make(chan delegateCompletionSnapshot, 1)
@@ -238,11 +239,11 @@ func TestDelegateResourceSupervision_CommittedAttentionStartRefusesASecondTurn(t
 // must take the drive claim atomically with its drivability check and hold it
 // across the whole window, so the child refuses the drive-down.
 func TestDelegateResourceSupervision_CommittedSendStartRefusesASecondTurn(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("send result") },
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	warmStableSupervisionDelegate(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
@@ -288,11 +289,11 @@ func TestDelegateResourceSupervision_CommittedSendStartRefusesASecondTurn(t *tes
 // the drive: the retained idle child never reads drivable and no second,
 // unleased EntryNotification turn launches on it.
 func TestDelegateResourceSupervision_EarlyCommittedSendStartRefusesASecondTurn(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("send result") },
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	warmStableSupervisionDelegate(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
@@ -362,11 +363,11 @@ func TestDelegateResourceSupervision_EarlyCommittedSendStartRefusesASecondTurn(t
 // the notification enqueued while the claim was held is never drained and the
 // child never runs a second turn.
 func TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesDroppedWake(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("drained notification") },
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
@@ -395,7 +396,7 @@ func TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesDroppedWa
 			mu.Unlock()
 			// Fail the send after the claim: abort the in-flight reservation so
 			// the commit below cannot hand a run over.
-			abortStableDelegateStartReservation(root, fixture.delegateID)
+			abortDelegateStartReservation(root, fixture.delegateID)
 		}
 	})
 
@@ -435,7 +436,7 @@ func TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesDroppedWa
 // pins the stable-delegate-attention half of the deferred-wake regression the
 // id-keyed committed-send-start claim introduced (#940). Attention wakes do not
 // travel the notification path: an armed attention reaches
-// driveStableDelegateAttention through the child's notify, and the claim makes
+// driveDelegateAttention through the child's notify, and the claim makes
 // that return early. So attention armed while the claim is held is dropped
 // exactly like a queued notification, and driveChildrenWithUndeliveredAttention
 // does not see it. When the send FAILS after taking the claim -- here its start
@@ -447,13 +448,13 @@ func TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesDroppedWa
 // removed, the attention armed while the claim was held is never driven and the
 // child never runs a second turn.
 func TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesDroppedAttention(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response {
 			return llm.Response{Message: llm.Assistant("attention requires no action")}
 		},
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
@@ -467,7 +468,7 @@ func TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesDroppedAt
 				return
 			}
 			// A stable attention is armed with the claim held: arming notifies,
-			// the child's notify runs driveStableDelegateAttention, and the claim
+			// the child's notify runs driveDelegateAttention, and the claim
 			// refuses it, leaving the attention pending and undriven.
 			armStableSupervisionAttention(t, candidate, "attention:redrive-dropped-wake", "inspect before the drive is admitted")
 			pending, err := candidate.sess.pendingDelegateAttentionIDs()
@@ -480,7 +481,7 @@ func TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesDroppedAt
 			mu.Unlock()
 			// Fail the send after the claim: abort the in-flight reservation so
 			// the commit below cannot hand a run over.
-			abortStableDelegateStartReservation(root, fixture.delegateID)
+			abortDelegateStartReservation(root, fixture.delegateID)
 		}
 	})
 
@@ -527,7 +528,7 @@ func TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesDroppedAt
 // window, the rollback's re-drive must not strand one of them. The previous
 // inline order drove the notification turn first; driveSubagentNotificationTurn
 // sets sub.driving synchronously before it returns, so the immediate
-// driveStableDelegateAttention refused on that flag, and nothing retried it --
+// driveDelegateAttention refused on that flag, and nothing retried it --
 // the notification turn's own re-drive check looks only at notifications, not
 // armed attention. The rollback now shares the wake edge's order
 // (driveChildIfNotStopGated: stable attention FIRST, whose run drains the
@@ -536,14 +537,14 @@ func TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesDroppedAt
 // With the pre-fix order this test's final wait never sees the attention drain
 // and times out: that is the load-bearing falsification.
 func TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesBoth(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response {
 			return llm.Response{Message: llm.Assistant("attention requires no action")}
 		},
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("drained notification") },
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
@@ -577,7 +578,7 @@ func TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesBoth(t *t
 			mu.Unlock()
 			// Fail the send after the claim so the non-handoff rollback owns the
 			// re-drive.
-			abortStableDelegateStartReservation(root, fixture.delegateID)
+			abortDelegateStartReservation(root, fixture.delegateID)
 		}
 	})
 
@@ -615,7 +616,7 @@ func TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesBoth(t *t
 // TestDelegateResourceSupervision_SendRefusedWhileChildFinalizing pins the
 // delegate send admission guard (#940 review): a send must refuse busy while
 // the target child's finalizer is still live, exactly as the sibling drive
-// guard in driveStableDelegateAttention already does. `running` goes false at
+// guard in driveDelegateAttention already does. `running` goes false at
 // the top of the run's finalize block, before FinishGeneration moves the
 // aggregate back to idle and before finalizing is cleared, so a send landing in
 // that window would otherwise pass a guard that checks only running/driving,
@@ -629,11 +630,11 @@ func TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesBoth(t *t
 // exactly this flag under sub.mu, so the state is faithful to the race window
 // even though it is installed rather than raced.
 func TestDelegateResourceSupervision_SendRefusedWhileChildFinalizing(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("must not have started") },
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
@@ -660,10 +661,10 @@ func TestDelegateResourceSupervision_SendRefusedWhileChildFinalizing(t *testing.
 	waitForStableSupervisionRun(t, root, fixture.childID)
 }
 
-// abortStableDelegateStartReservation aborts the delegate's outstanding start
+// abortDelegateStartReservation aborts the delegate's outstanding start
 // reservation from inside a test seam, forcing the in-flight send down a
 // non-handoff exit after it has taken the committed-send-start claim.
-func abortStableDelegateStartReservation(root *Session, delegateID string) {
+func abortDelegateStartReservation(root *Session, delegateID string) {
 	c := root.delegateController
 	c.mu.Lock()
 	var receipt *delegateStartReservation
@@ -701,11 +702,11 @@ func abortStableDelegateStartReservation(root *Session, delegateID string) {
 // reservation guard, not by the claim branch. The claim branch is still correct
 // as defence in depth, but it cannot be driven from the public API.
 func TestDelegateResourceSupervision_CommittedSendStartContentionRefusesSecondSend(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("contended send result") },
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	warmStableSupervisionDelegate(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
@@ -754,12 +755,12 @@ func TestDelegateResourceSupervision_CommittedSendStartContentionRefusesSecondSe
 }
 
 func TestDelegateResourceSupervision_AttentionGoalContinuationRequiresReport(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	bare := func(llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant("bare without communicate")}
 	}
 	var root *Session
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response {
 			started, err := root.subagents.get(fixture.childID).sess.SetGoal(context.Background(), "finish continuation work")
@@ -770,7 +771,7 @@ func TestDelegateResourceSupervision_AttentionGoalContinuationRequiresReport(t *
 		},
 		bare, bare, bare, bare,
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("continuation report") },
-	}
+	})
 	root = restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	snapshots := make(chan delegateCompletionSnapshot, 1)
@@ -795,9 +796,9 @@ func TestDelegateResourceSupervision_AttentionGoalContinuationRequiresReport(t *
 }
 
 func TestDelegateResourceSupervision_AttentionNotificationRemainsNoAction(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	var root *Session
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response {
 			root.subagents.get(fixture.childID).sess.enqueueJobNotification(jobNotification{
@@ -810,7 +811,7 @@ func TestDelegateResourceSupervision_AttentionNotificationRemainsNoAction(t *tes
 		func(llm.Request) llm.Response {
 			return llm.Response{Message: llm.Assistant("notification acknowledged")}
 		},
-	}
+	})
 	root = restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	snapshots := make(chan delegateCompletionSnapshot, 1)
@@ -834,16 +835,16 @@ func TestDelegateResourceSupervision_AttentionNotificationRemainsNoAction(t *tes
 }
 
 func TestDelegateResourceSupervision_BareShellAttentionCompletesNoActionWithoutSecondReport(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("nothing to do")} },
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 
-	shell := createStableDelegateShell(t, sub.sess.jobManager, "bare attention incident")
-	finishStableDelegateShell(t, sub.sess.jobManager, shell.JobID)
+	shell := createDelegateShell(t, sub.sess.jobManager, "bare attention incident")
+	finishDelegateShell(t, sub.sess.jobManager, shell.JobID)
 	waitForStableSupervisionRun(t, root, fixture.childID)
 
 	if got := supervisionRequestCount(fixture.adapter); got != 2 {
@@ -876,11 +877,11 @@ func TestDelegateResourceSupervision_BareShellAttentionCompletesNoActionWithoutS
 }
 
 func TestDelegateResourceSupervision_ExplicitAttentionCommunicateRemainsReported(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("attention report") },
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	snapshots := make(chan delegateCompletionSnapshot, 1)
@@ -899,18 +900,18 @@ func TestDelegateResourceSupervision_ExplicitAttentionCommunicateRemainsReported
 }
 
 func TestDelegateResourceSupervision_UserRunWithoutCommunicateRemainsMissingTerminal(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	bare := func(llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant("bare without communicate")}
 	}
 	for range 8 {
-		fixture.adapter.steps = append(fixture.adapter.steps, bare)
+		fixture.adapter.appendSteps(bare)
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)
 	snapshots := make(chan delegateCompletionSnapshot, 1)
 	root.cfg.testOnly.subagentBeforeSettlement = captureStableCompletionSnapshot(snapshots)
 	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "inspect", 60_000)
-	abortUnpersistedStableDelegateOutcome(t, outcome)
+	abortUnpersistedDelegateOutcome(t, outcome)
 	snapshot := <-snapshots
 	if snapshot.requirement != delegateCompletionReportRequired || snapshot.outcome != delegateCompletionOutcomeNone || snapshot.terminalSeen {
 		t.Fatalf("user-run evidence = %#v, want report-required missing terminal", snapshot)
@@ -920,20 +921,20 @@ func TestDelegateResourceSupervision_UserRunWithoutCommunicateRemainsMissingTerm
 
 func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *testing.T) {
 	t.Run("no-tool response cannot return cleanly without one bounded recovery nudge", func(t *testing.T) {
-		fixture := newColdStableDelegateFixture(t, "")
+		fixture := newColdDelegateFixture(t, "")
 		bare := func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("bare response")} }
-		fixture.adapter.steps = []func(llm.Request) llm.Response{bare, bare, bare, bare,
-			func(llm.Request) llm.Response { return agenttest.FinalResponse("recovered") }}
+		fixture.adapter.setSteps([]func(llm.Request) llm.Response{bare, bare, bare, bare,
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("recovered") }})
 		root := restoreSupervisionRoot(t, fixture, nil)
 		outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "inspect", 60_000)
-		abortUnpersistedStableDelegateOutcome(t, outcome)
+		abortUnpersistedDelegateOutcome(t, outcome)
 		assertSingleRecoveryNudge(t, fixture.adapter)
 	})
 
 	t.Run("tool-bearing observer handoff cannot return cleanly without one bounded recovery nudge", func(t *testing.T) {
-		fixture := newColdStableDelegateFixture(t, "")
+		fixture := newColdDelegateFixture(t, "")
 		var root *Session
-		fixture.adapter.steps = []func(llm.Request) llm.Response{
+		fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 			func(llm.Request) llm.Response {
 				sub := root.subagents.get(fixture.childID)
 				jm := sub.sess.jobManager
@@ -965,19 +966,23 @@ func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *tes
 				return agenttest.CommunicateResponse(false, "handoff")
 			},
 			func(llm.Request) llm.Response { return agenttest.FinalResponse("recovered") },
-		}
+		})
 		root = restoreSupervisionRoot(t, fixture, nil)
 		outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "inspect", 60_000)
-		abortUnpersistedStableDelegateOutcome(t, outcome)
+		abortUnpersistedDelegateOutcome(t, outcome)
 		assertSingleRecoveryNudge(t, fixture.adapter)
 	})
 
 	t.Run("notification yield cannot return cleanly without one bounded recovery nudge", func(t *testing.T) {
-		fixture := newColdStableDelegateFixture(t, "")
+		fixture := newColdDelegateFixture(t, "")
 		var root *Session
-		fixture.adapter.steps = []func(llm.Request) llm.Response{
+		nudgeUpdate := make(chan bool, 1)
+		fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 			func(llm.Request) llm.Response {
 				sub := root.subagents.get(fixture.childID)
+				updateSessionTestConfig(sub.sess, func(cfg *testConfig) {
+					cfg.subagentNudgeSelected = func(updated bool) { nudgeUpdate <- updated }
+				})
 				sub.sess.enqueueJobNotification(jobNotification{Kind: jobNotificationKindWatch, JobID: "watch-test", Status: jobNotificationEventWatch})
 				return agenttest.CommunicateResponse(false, "work before notification")
 			},
@@ -985,15 +990,23 @@ func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *tes
 				return llm.Response{Message: llm.Assistant("notification acknowledged")}
 			},
 			func(llm.Request) llm.Response { return agenttest.FinalResponse("recovered") },
-		}
+		})
 		root = restoreSupervisionRoot(t, fixture, nil)
 		outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "inspect", 60_000)
-		abortUnpersistedStableDelegateOutcome(t, outcome)
+		abortUnpersistedDelegateOutcome(t, outcome)
 		assertSingleRecoveryNudge(t, fixture.adapter)
+		select {
+		case updated := <-nudgeUpdate:
+			if !updated {
+				t.Fatal("the reminder ignored the non-terminal update across the notification turn")
+			}
+		default:
+			t.Fatal("the recovery nudge selected no reminder")
+		}
 	})
 
 	t.Run("goal-controlled cap cannot return cleanly without one bounded recovery nudge", func(t *testing.T) {
-		fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+		fixture := newColdDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 			descriptor.Config.MaxToolRoundsPerInput = goal.GoalTurnMaxRounds
 		})
 		enteredFinalBare := make(chan struct{})
@@ -1001,20 +1014,20 @@ func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *tes
 		bare := func(llm.Request) llm.Response {
 			return llm.Response{Message: llm.Assistant("bare before continuation")}
 		}
-		fixture.adapter.steps = []func(llm.Request) llm.Response{
+		fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 			bare, bare, bare,
 			func(llm.Request) llm.Response {
 				close(enteredFinalBare)
 				<-releaseFinalBare
 				return bare(llm.Request{})
 			},
-		}
+		})
 		for range goal.GoalTurnMaxRounds {
-			fixture.adapter.steps = append(fixture.adapter.steps, func(llm.Request) llm.Response {
+			fixture.adapter.appendSteps(func(llm.Request) llm.Response {
 				return agenttest.CommunicateResponse(false, "goal partial")
 			})
 		}
-		fixture.adapter.steps = append(fixture.adapter.steps, func(llm.Request) llm.Response { return agenttest.FinalResponse("recovered") })
+		fixture.adapter.appendSteps(func(llm.Request) llm.Response { return agenttest.FinalResponse("recovered") })
 		root := restoreSupervisionRoot(t, fixture, nil)
 		snapshots := make(chan delegateCompletionSnapshot, 1)
 		root.cfg.testOnly.subagentBeforeSettlement = captureStableCompletionSnapshot(snapshots)
@@ -1036,16 +1049,16 @@ func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *tes
 	})
 
 	t.Run("blocked hook continuation cannot return cleanly without one bounded recovery nudge", func(t *testing.T) {
-		fixture := newColdStableDelegateFixture(t, "")
+		fixture := newColdDelegateFixture(t, "")
 		bare := func(llm.Request) llm.Response {
 			return llm.Response{Message: llm.Assistant("hook continuation without report")}
 		}
-		fixture.adapter.steps = []func(llm.Request) llm.Response{
+		fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 			func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 			func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("attention no action")} },
 			bare, bare, bare, bare,
 			func(llm.Request) llm.Response { return agenttest.FinalResponse("recovered after hook") },
-		}
+		})
 		root := restoreSupervisionRoot(t, fixture, nil)
 		sub := warmStableSupervisionDelegate(t, root, fixture)
 		sub.sess.hookRunner = stableSupervisionStopHook(`{"decision":"block","reason":"address hook feedback"}`)
@@ -1055,12 +1068,12 @@ func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *tes
 	})
 
 	t.Run("unblocked hook model context cannot return cleanly without one bounded recovery nudge", func(t *testing.T) {
-		fixture := newColdStableDelegateFixture(t, "")
-		fixture.adapter.steps = []func(llm.Request) llm.Response{
+		fixture := newColdDelegateFixture(t, "")
+		fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 			func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 			func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("attention no action")} },
 			func(llm.Request) llm.Response { return agenttest.FinalResponse("recovered after context") },
-		}
+		})
 		root := restoreSupervisionRoot(t, fixture, nil)
 		sub := warmStableSupervisionDelegate(t, root, fixture)
 		sub.sess.hookRunner = stableSupervisionStopHook(`{"hookSpecificOutput":{"additionalContext":"hook model context"}}`)
@@ -1074,9 +1087,9 @@ func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *tes
 	})
 
 	t.Run("post-drain owner steering cannot return cleanly without one bounded recovery nudge", func(t *testing.T) {
-		fixture := newColdStableDelegateFixture(t, "")
+		fixture := newColdDelegateFixture(t, "")
 		var root *Session
-		fixture.adapter.steps = []func(llm.Request) llm.Response{
+		fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 			func(llm.Request) llm.Response {
 				sub := root.subagents.get(fixture.childID)
 				sub.sess.enqueueJobNotification(jobNotification{Kind: jobNotificationKindWatch, JobID: "post-drain", Status: jobNotificationEventWatch})
@@ -1087,7 +1100,7 @@ func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *tes
 			},
 			func(llm.Request) llm.Response { return agenttest.FinalResponse("recovered") },
 			func(llm.Request) llm.Response { return agenttest.FinalResponse("steering handled") },
-		}
+		})
 		root = restoreSupervisionRoot(t, fixture, nil)
 		steered := false
 		root.cfg.testOnly.subagentBeforeSettlement = func(sub *subagent) {
@@ -1105,7 +1118,7 @@ func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *tes
 			}
 		}
 		outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "inspect", 60_000)
-		abortUnpersistedStableDelegateOutcome(t, outcome)
+		abortUnpersistedDelegateOutcome(t, outcome)
 		assertSingleRecoveryNudge(t, fixture.adapter)
 		requests := fixture.adapter.Requests()
 		if !requestMessagesContainText(requests[len(requests)-1].Messages, "post-drain steering") {
@@ -1130,17 +1143,17 @@ func TestDelegateResourceSupervision_PostAcknowledgementAttentionBeforeRelease(t
 		{"unblocked_hook_context", "attention:postack-hook-context", `{"hookSpecificOutput":{"additionalContext":"hook model context"}}`, 0, 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fixture := newColdStableDelegateFixture(t, "")
-			fixture.adapter.steps = []func(llm.Request) llm.Response{
+			fixture := newColdDelegateFixture(t, "")
+			fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 				func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 				func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("attention no action")} },
-			}
+			})
 			for range tc.bareContinuations {
-				fixture.adapter.steps = append(fixture.adapter.steps, func(llm.Request) llm.Response {
+				fixture.adapter.appendSteps(func(llm.Request) llm.Response {
 					return llm.Response{Message: llm.Assistant("hook continuation without report")}
 				})
 			}
-			fixture.adapter.steps = append(fixture.adapter.steps, func(llm.Request) llm.Response { return agenttest.FinalResponse("recovered after hook") })
+			fixture.adapter.appendSteps(func(llm.Request) llm.Response { return agenttest.FinalResponse("recovered after hook") })
 			root := restoreSupervisionRoot(t, fixture, nil)
 			entered := make(chan delegateLease, 1)
 			release := make(chan struct{})
@@ -1200,7 +1213,7 @@ func TestDelegateResourceSupervision_PostAcknowledgementAttentionBeforeRelease(t
 			assertWarmFence()
 			sub.sess.hookRunner = stableSupervisionStopHook(tc.hookOutput)
 			armStableSupervisionAttention(t, sub, tc.attentionID, "postack-attention-sentinel")
-			if !root.driveStableDelegateAttention(sub) {
+			if !root.driveDelegateAttention(sub) {
 				t.Fatal("real post-ack drive did not handle pending attention")
 			}
 			assertWarmFence()
@@ -1231,17 +1244,17 @@ func TestDelegateResourceSupervision_PostAcknowledgementAttentionBeforeRelease(t
 }
 
 func TestDelegateResourceSupervision_AutoNudgeOccursOnceForEligibleBuiltin(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.EmptyResponse() },
 		func(llm.Request) llm.Response { return agenttest.EmptyResponse() },
 		func(llm.Request) llm.Response { return agenttest.EmptyResponse() },
 		func(llm.Request) llm.Response { return agenttest.EmptyResponse() },
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("recovered after the one nudge") },
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "inspect", 60_000)
-	abortUnpersistedStableDelegateOutcome(t, outcome)
+	abortUnpersistedDelegateOutcome(t, outcome)
 	if outcome.result.Err != nil || outcome.result.Status != jobstore.StatusCompleted || !strings.Contains(outcome.result.Output, "recovered after the one nudge") {
 		t.Fatalf("nudged stable delegate = %#v", outcome.result)
 	}
@@ -1254,15 +1267,15 @@ func TestDelegateResourceSupervision_AutoNudgeSuppressedBySteerCancellationAndEx
 	t.Run("steer", func(t *testing.T) {
 		entered := make(chan struct{})
 		release := make(chan struct{})
-		fixture := newColdStableDelegateFixture(t, "")
-		fixture.adapter.steps = []func(llm.Request) llm.Response{
+		fixture := newColdDelegateFixture(t, "")
+		fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 			func(llm.Request) llm.Response {
 				close(entered)
 				<-release
 				return agenttest.FinalResponse("first result")
 			},
 			func(llm.Request) llm.Response { return agenttest.FinalResponse("continued after steer") },
-		}
+		})
 		root := restoreSupervisionRoot(t, fixture, nil)
 		started := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "start", 0)
 		if started.result.Err != nil {
@@ -1283,12 +1296,12 @@ func TestDelegateResourceSupervision_AutoNudgeSuppressedBySteerCancellationAndEx
 	t.Run("cancellation", func(t *testing.T) {
 		entered := make(chan struct{})
 		release := make(chan struct{})
-		fixture := newColdStableDelegateFixture(t, "")
-		fixture.adapter.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response {
+		fixture := newColdDelegateFixture(t, "")
+		fixture.adapter.setSteps([]func(llm.Request) llm.Response{func(llm.Request) llm.Response {
 			close(entered)
 			<-release
 			return agenttest.FinalResponse("cancelled result")
-		}}
+		}})
 		root := restoreSupervisionRoot(t, fixture, nil)
 		started := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "start", 0)
 		if started.result.Err != nil {
@@ -1315,15 +1328,15 @@ func TestDelegateResourceSupervision_AutoNudgeSuppressedBySteerCancellationAndEx
 	})
 
 	t.Run("exhaustion", func(t *testing.T) {
-		fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+		fixture := newColdDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 			descriptor.Config.MaxToolRoundsPerInput = 1
 		})
-		fixture.adapter.steps = []func(llm.Request) llm.Response{
+		fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 			func(llm.Request) llm.Response { return agenttest.CommunicateResponse(false, "continue") },
-		}
+		})
 		root := restoreSupervisionRoot(t, fixture, nil)
 		outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "exhaust", 60_000)
-		abortUnpersistedStableDelegateOutcome(t, outcome)
+		abortUnpersistedDelegateOutcome(t, outcome)
 		if outcome.result.Err != nil || outcome.result.Status != jobstore.StatusExhausted {
 			t.Fatalf("exhausted stable delegate = %#v", outcome.result)
 		}
@@ -1350,7 +1363,7 @@ func TestDelegateResourceSupervision_FatalFailureBeatsPendingSteer(t *testing.T)
 			},
 		},
 	}
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	client := llm.NewClient()
 	client.Register(adapter)
 	fixture.client = client
@@ -1392,10 +1405,10 @@ func TestDelegateResourceSupervision_FatalFailureBeatsPendingSteer(t *testing.T)
 func TestDelegateResourceSupervision_ExhaustionBeatsPendingSteer(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+	fixture := newColdDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.Config.MaxToolRoundsPerInput = 1
 	})
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			close(entered)
 			<-release
@@ -1404,7 +1417,7 @@ func TestDelegateResourceSupervision_ExhaustionBeatsPendingSteer(t *testing.T) {
 		func(llm.Request) llm.Response {
 			return agenttest.FinalResponse("unexpected continuation after exhaustion")
 		},
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	started := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "start", 0)
 	if started.result.Err != nil {
@@ -1428,12 +1441,12 @@ func TestDelegateResourceSupervision_CancellationBeatsPendingSteer(t *testing.T)
 	release := make(chan struct{})
 	continued := make(chan struct{})
 	var continuedOnce sync.Once
-	fixture := newColdStableDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response {
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{func(llm.Request) llm.Response {
 		close(entered)
 		<-release
 		return agenttest.FinalResponse("cancelled result")
-	}}
+	}})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	root.cfg.testOnly.subagentRunIteration = func(_ *subagent, iteration int) {
 		if iteration > 1 {
@@ -1491,8 +1504,8 @@ func assertStableSupervisionOutcome(t *testing.T, root *Session, delegateID stri
 func TestDelegateResourceSupervision_PendingSteerPrecedesAutoNudge(t *testing.T) {
 	enteredFinalEmpty := make(chan struct{})
 	releaseFinalEmpty := make(chan struct{})
-	fixture := newColdStableDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.EmptyResponse() },
 		func(llm.Request) llm.Response { return agenttest.EmptyResponse() },
 		func(llm.Request) llm.Response { return agenttest.EmptyResponse() },
@@ -1502,7 +1515,7 @@ func TestDelegateResourceSupervision_PendingSteerPrecedesAutoNudge(t *testing.T)
 			return agenttest.EmptyResponse()
 		},
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("continued after steering") },
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	started := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "start", 0)
 	if started.result.Err != nil {
@@ -1539,8 +1552,8 @@ func TestDelegateResourceSupervision_LateOrdinarySteerPreservesOwnedWorkForConti
 	bare := func(llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant("bare text without communicate")}
 	}
-	fixture := newColdStableDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			close(enteredInitialRequest)
 			<-releaseInitialRequest
@@ -1563,7 +1576,7 @@ func TestDelegateResourceSupervision_LateOrdinarySteerPreservesOwnedWorkForConti
 			<-releaseContinuation
 			return agenttest.FinalResponse("continued after late nudge steering")
 		},
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	started := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "start", 0)
 	if started.result.Err != nil {
@@ -1639,8 +1652,8 @@ func TestDelegateResourceSupervision_LateCancellationBeatsSettlementSteer(t *tes
 	release := make(chan struct{})
 	continued := make(chan struct{})
 	lateCancel := make(chan sendMessageResult, 1)
-	fixture := newColdStableDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			close(entered)
 			<-release
@@ -1649,7 +1662,7 @@ func TestDelegateResourceSupervision_LateCancellationBeatsSettlementSteer(t *tes
 		func(llm.Request) llm.Response {
 			return agenttest.FinalResponse("unexpected continuation after late cancellation")
 		},
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	started := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "start", 0)
 	if started.result.Err != nil {
@@ -1764,10 +1777,15 @@ func TestDelegateResourceSupervision_FatalNudgeRunStopsOwnedShell(t *testing.T) 
 			},
 		},
 	}
-	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+	fixture := newColdDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.Isolation = "worktree"
 		descriptor.WorkingDir = lane
 	})
+	// The lane above was cut under a stand-in delegate id; the delegate this
+	// fixture revives owns the lane under its own id and root, the shape a real
+	// spawn leaves (revive revalidates the marker before handing it back).
+	wtGit(t, worktreeRepo.mainRoot, "worktree", "unlock", lane)
+	wtGit(t, worktreeRepo.mainRoot, "worktree", "lock", "--reason", worktree.FormatDelegateMarker(fixture.delegateID, fixture.meta.ID), lane)
 	client := llm.NewClient()
 	client.Register(adapter)
 	fixture.client = client
@@ -1801,7 +1819,7 @@ func TestDelegateResourceSupervision_FatalNudgeRunStopsOwnedShell(t *testing.T) 
 	root.delegateController.mu.Lock()
 	descriptor := cloneDelegateStartDescriptor(root.delegateController.durable[fixture.delegateID].Descriptor)
 	root.delegateController.mu.Unlock()
-	if report := root.stableDelegateWorktreeReport(descriptor); report == nil || report.Dirty {
+	if report := root.descriptorWorktreeReport(descriptor); report == nil || report.Dirty {
 		t.Fatalf("initial fatal-evidence worktree report = %#v, want clean", report)
 	}
 	cleanupMarker := filepath.Join(lane, "fatal-shell-cleanup.txt")
@@ -1833,7 +1851,7 @@ func TestDelegateResourceSupervision_FatalNudgeRunStopsOwnedShell(t *testing.T) 
 	}
 	<-finalStatePublished
 	<-executor.waitReturned
-	if report := root.stableDelegateWorktreeReport(descriptor); report == nil || !report.Dirty {
+	if report := root.descriptorWorktreeReport(descriptor); report == nil || !report.Dirty {
 		t.Fatalf("post-cleanup worktree report = %#v, want dirty", report)
 	}
 	events, err := root.delegateController.store.Load()
@@ -1871,7 +1889,7 @@ func TestDelegateResourceSupervision_FatalCleanupFailureIsObservable(t *testing.
 			return llm.Response{}, fatalErr
 		}},
 	}
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	client := llm.NewClient()
 	client.Register(adapter)
 	fixture.client = client
@@ -1943,7 +1961,7 @@ func TestDelegateResourceSupervision_RootCloseBeforeReceiptCaptureIsCleanupFailu
 			return llm.Response{}, fatalErr
 		}},
 	}
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	client := llm.NewClient()
 	client.Register(adapter)
 	fixture.client = client
@@ -2029,8 +2047,8 @@ func TestDelegateResourceSupervision_OrdinaryCleanupFailureIsObservable(t *testi
 	bare := func(llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant("partial ordinary result")}
 	}
-	fixture := newColdStableDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			close(entered)
 			<-release
@@ -2043,7 +2061,7 @@ func TestDelegateResourceSupervision_OrdinaryCleanupFailureIsObservable(t *testi
 		bare,
 		bare,
 		bare,
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	started := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "start ordinary cleanup-failure run", 0)
 	if started.result.Err != nil {
@@ -2104,11 +2122,16 @@ func TestDelegateResourceSupervision_OrdinaryMissingTerminalCleanupPrecedesPacke
 	bare := func(llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant("bare text without communicate")}
 	}
-	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+	fixture := newColdDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.Isolation = "worktree"
 		descriptor.WorkingDir = lane
 	})
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	// The lane above was cut under a stand-in delegate id; the delegate this
+	// fixture revives owns the lane under its own id and root, the shape a real
+	// spawn leaves (revive revalidates the marker before handing it back).
+	wtGit(t, worktreeRepo.mainRoot, "worktree", "unlock", lane)
+	wtGit(t, worktreeRepo.mainRoot, "worktree", "lock", "--reason", worktree.FormatDelegateMarker(fixture.delegateID, fixture.meta.ID), lane)
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			close(enteredInitialRequest)
 			<-releaseInitialRequest
@@ -2121,7 +2144,7 @@ func TestDelegateResourceSupervision_OrdinaryMissingTerminalCleanupPrecedesPacke
 		bare,
 		bare,
 		bare,
-	}
+	})
 	finalStatePublished := make(chan struct{})
 	restore := RestoreSessionConfig{
 		StateDir:    fixture.stateDir,
@@ -2152,7 +2175,7 @@ func TestDelegateResourceSupervision_OrdinaryMissingTerminalCleanupPrecedesPacke
 	root.delegateController.mu.Lock()
 	descriptor := cloneDelegateStartDescriptor(root.delegateController.durable[fixture.delegateID].Descriptor)
 	root.delegateController.mu.Unlock()
-	if report := root.stableDelegateWorktreeReport(descriptor); report == nil || report.Dirty {
+	if report := root.descriptorWorktreeReport(descriptor); report == nil || report.Dirty {
 		t.Fatalf("initial ordinary-evidence worktree report = %#v, want clean", report)
 	}
 	cleanupMarker := filepath.Join(lane, "ordinary-shell-cleanup.txt")
@@ -2190,7 +2213,7 @@ func TestDelegateResourceSupervision_OrdinaryMissingTerminalCleanupPrecedesPacke
 	}
 	<-finalStatePublished
 	<-executor.waitReturned
-	if report := root.stableDelegateWorktreeReport(descriptor); report == nil || !report.Dirty {
+	if report := root.descriptorWorktreeReport(descriptor); report == nil || !report.Dirty {
 		t.Fatalf("post-cleanup ordinary worktree report = %#v, want dirty", report)
 	}
 	events, err := root.delegateController.store.Load()
@@ -2240,17 +2263,17 @@ func TestDelegateResourceSupervision_SubagentStopNonblockingStartsNoContinuation
 func TestDelegateResourceSupervision_SubtreeStopSuppressesSubagentStop(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "subagent-stop-runs")
 	pluginDir := writeStableSubagentStopPlugin(t, marker, `{}`)
-	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+	fixture := newColdDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.Config.PluginDirs = []string{pluginDir}
 		descriptor.ToolNameCeiling = append(descriptor.ToolNameCeiling, "write_file")
 	})
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	fixture.adapter.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response {
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{func(llm.Request) llm.Response {
 		close(entered)
 		<-release
 		return agenttest.FinalResponse("would normally run the hook")
-	}}
+	}})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	started := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "start", 0)
 	if started.result.Err != nil {
@@ -2272,14 +2295,14 @@ func TestDelegateResourceSupervision_SubtreeStopSuppressesSubagentStop(t *testin
 func TestDelegateResourceSupervision_BlockingSubagentStopContinuesOnlyOnceWithPendingSteer(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "subagent-stop-runs")
 	pluginDir := writeStableSubagentStopPlugin(t, marker, `{"decision":"block","reason":"address hook feedback"}`)
-	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+	fixture := newColdDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.Config.PluginDirs = []string{pluginDir}
 		// This fixture's SubagentStop hook persistently writes the marker.
 		descriptor.ToolNameCeiling = append(descriptor.ToolNameCeiling, "write_file")
 	})
 	enteredHookContinuation := make(chan struct{})
 	releaseHookContinuation := make(chan struct{})
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("initial result") },
 		func(llm.Request) llm.Response {
 			close(enteredHookContinuation)
@@ -2288,7 +2311,7 @@ func TestDelegateResourceSupervision_BlockingSubagentStopContinuesOnlyOnceWithPe
 		},
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("steering continuation result") },
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("unexpected second hook continuation") },
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	started := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "start", 0)
 	if started.result.Err != nil {
@@ -2321,7 +2344,7 @@ func TestDelegateResourceSupervision_FinalRoundFailedSalvageAddsResumeHint(t *te
 		t.Fatalf("persist final salvage: %v", err)
 	}
 	sub := &subagent{sess: child}
-	packet := sub.stableDelegateFinish("", errors.New("provider failed after partial stream")).packet
+	packet := sub.buildDelegateFinish("", errors.New("provider failed after partial stream")).packet
 	if packet == nil || !containsDelegateSalvageWarning(packet.Warnings) {
 		t.Fatalf("failed final-round warnings = %#v", packetWarnings(packet))
 	}
@@ -2356,7 +2379,7 @@ func TestDelegateResourceSupervision_SuccessExhaustionCancellationStopAndStaleSa
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			packet := tc.sub.stableDelegateFinish("done", tc.err).packet
+			packet := tc.sub.buildDelegateFinish("done", tc.err).packet
 			if packet != nil && containsDelegateSalvageWarning(packet.Warnings) {
 				t.Fatalf("unexpected salvage hint for %s: %#v", tc.name, packet.Warnings)
 			}
@@ -2463,6 +2486,104 @@ func TestDelegateResourceSupervision_QuietWatchdogRepeatsEachWindowWhileSilent(t
 	}
 	if want := delegateQuietAttentionIDForStretch(lease, 5); got[len(got)-1] != want {
 		t.Fatalf("post-activity attention id = %q, want %q", got[len(got)-1], want)
+	}
+}
+
+// quietFrameSilence extracts the duration token a quiet frame carries — the
+// same token the shared client parses out of the sentence
+// ("quiet for <token>; last activity: <RFC 3339>").
+func quietFrameSilence(t *testing.T, frame string) string {
+	t.Helper()
+	const prefix, suffix = "quiet for ", "; last activity: "
+	start := strings.Index(frame, prefix)
+	end := strings.Index(frame, suffix)
+	if start < 0 || end < 0 || end <= start+len(prefix) {
+		t.Fatalf("quiet frame %q carries no silence token", frame)
+	}
+	return frame[start+len(prefix) : end]
+}
+
+// A repeat of one silent stretch must name the silence measured at its due
+// boundary — the first wake names the window, each later wake the ongoing
+// total — instead of re-stating the window byte-identically, which read in
+// the field as stale re-feeds of one stored frame.
+func TestDelegateResourceSupervision_QuietWatchdogRepeatFramesNameTheMeasuredSilence(t *testing.T) {
+	root, _, lease, clock := newStableQuietSupervisionHarness(t)
+	for i := 1; i <= 3; i++ {
+		// Window 3's tick lands two minutes past its due boundary: the frame
+		// must still name the silence at the boundary ("30m"), not at the
+		// admitted tick ("32m"), which is what keeps a deferred or re-admitted
+		// claim re-minting identical content under one stretch identity.
+		if i == 3 {
+			clock.Advance(delegateQuietWindow + 2*time.Minute)
+		} else {
+			clock.Advance(delegateQuietWindow)
+		}
+		if err := root.runDelegateQuietWatchdogTick(lease, clock.Now()); err != nil {
+			t.Fatalf("window %d tick: %v", i, err)
+		}
+		fold := rootAttentionFold(t, root)
+		if len(fold.order) != i {
+			t.Fatalf("after %d quiet window(s) attention = %#v, want %d", i, fold.order, i)
+		}
+		attentionID := fold.order[len(fold.order)-1]
+		if want := delegateQuietAttentionIDForStretch(lease, uint64(i)); attentionID != want {
+			t.Fatalf("window %d attention id = %q, want %q", i, attentionID, want)
+		}
+		frame := fold.content[attentionID].Text()
+		want := fmt.Sprintf("%dm", i*int(delegateQuietWindow/time.Minute))
+		if got := quietFrameSilence(t, frame); got != want {
+			t.Fatalf("window %d frame silence = %q, want the measured silence %q (frame %q)", i, got, want, frame)
+		}
+	}
+}
+
+// A quiet claim dropped because the receiver is mid-turn re-admits under the
+// same stretch identity once the receiver is idle, and the re-admitted frame
+// carries the content the dropped claim minted: the silence is measured at
+// the wake's due boundary, which no re-admission moves, so receiver-busy time
+// cannot shift it. Measuring at the admitted tick instead would re-mint a
+// different content under the same attention id on every re-admission, which
+// the durable fold rejects as conflicting content — wedging the watchdog on
+// that id forever.
+func TestDelegateResourceSupervision_QuietWatchdogDeferredClaimReadmitsIdenticalContent(t *testing.T) {
+	root, _, lease, clock := newStableQuietSupervisionHarness(t)
+	clock.Advance(delegateQuietWindow + 2*time.Minute)
+
+	// The receiver is mid-turn: the tick mints the stretch's first claim and
+	// drops it uncommitted, so nothing appends yet.
+	root.mu.Lock()
+	idle := root.state
+	root.state = SessionProcessing
+	root.mu.Unlock()
+	if err := root.runDelegateQuietWatchdogTick(lease, clock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got := pendingQuietAttention(t, root); len(got) != 0 {
+		t.Fatalf("deferred quiet attention = %#v, want none appended", got)
+	}
+
+	// A later tick, with the receiver idle again, re-admits the same stretch
+	// identity. The frame must name the due-boundary silence — the window —
+	// not the re-admission tick's later measurement.
+	root.mu.Lock()
+	root.state = idle
+	root.mu.Unlock()
+	clock.Advance(3 * time.Minute)
+	if err := root.runDelegateQuietWatchdogTick(lease, clock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	fold := rootAttentionFold(t, root)
+	if len(fold.order) != 1 {
+		t.Fatalf("re-admitted quiet attention = %#v, want exactly one", fold.order)
+	}
+	attentionID := fold.order[0]
+	if want := delegateQuietAttentionIDForStretch(lease, 1); attentionID != want {
+		t.Fatalf("re-admitted attention id = %q, want %q", attentionID, want)
+	}
+	want := fmt.Sprintf("%dm", int(delegateQuietWindow/time.Minute))
+	if got := quietFrameSilence(t, fold.content[attentionID].Text()); got != want {
+		t.Fatalf("re-admitted frame silence = %q, want the due-boundary silence %q", got, want)
 	}
 }
 
@@ -3091,12 +3212,12 @@ func TestDelegateControllerOrdinaryFinalizationRetainsModeWhenItPrecedesStop(t *
 func TestDelegateResourceSupervision_StopBeforeOrdinaryFinalizationDrainsQuietAttention(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	fixture := newColdStableDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response {
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{func(llm.Request) llm.Response {
 		close(entered)
 		<-release
 		return agenttest.FinalResponse("ordinary result before covered stop")
-	}}
+	}})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	started := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "start", 0)
 	if started.result.Err != nil {
@@ -3226,18 +3347,18 @@ func runStableSubagentStopHook(t *testing.T, blocking bool) stableSubagentStopOb
 		decision = `{"decision":"block","reason":"address hook feedback"}`
 	}
 	pluginDir := writeStableSubagentStopPlugin(t, marker, decision)
-	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+	fixture := newColdDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.Config.PluginDirs = []string{pluginDir}
 		// The hook appends to a persistent marker, so this is intentionally a
 		// mutating fixture rather than a read-only role.
 		descriptor.ToolNameCeiling = append(descriptor.ToolNameCeiling, "write_file")
 	})
 	continuationSawHook := false
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("initial result") },
-	}
+	})
 	if blocking {
-		fixture.adapter.steps = append(fixture.adapter.steps, func(llm.Request) llm.Response {
+		fixture.adapter.appendSteps(func(llm.Request) llm.Response {
 			_, err := os.Stat(marker)
 			continuationSawHook = err == nil
 			return agenttest.FinalResponse("continued after hook")
@@ -3245,7 +3366,7 @@ func runStableSubagentStopHook(t *testing.T, blocking bool) stableSubagentStopOb
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)
 	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "inspect", 60_000)
-	abortUnpersistedStableDelegateOutcome(t, outcome)
+	abortUnpersistedDelegateOutcome(t, outcome)
 	if outcome.result.Err != nil {
 		t.Fatalf("stable hook run: %v", outcome.result.Err)
 	}
@@ -3283,7 +3404,7 @@ func writeStableSubagentStopPlugin(t *testing.T, marker, decision string) string
 	return pluginDir
 }
 
-func restoreSupervisionRoot(t *testing.T, fixture coldStableDelegateFixture, clock *agenttest.FakeClock) *Session {
+func restoreSupervisionRoot(t *testing.T, fixture coldDelegateFixture, clock *agenttest.FakeClock) *Session {
 	t.Helper()
 	restore := RestoreSessionConfig{
 		StateDir:    fixture.stateDir,
@@ -3325,7 +3446,7 @@ func restoreSupervisionRoot(t *testing.T, fixture coldStableDelegateFixture, clo
 // finished generation is released with attention still owed, and the root's
 // retry (retryDelegateAttentionLater). A root nothing wakes leaves it undriven
 // (TestSupervisionRootDrivesAttentionTheChildDropped). Tests that call
-// drivePendingStableDelegateAttention or run root turns themselves don't call
+// drivePendingDelegateAttention or run root turns themselves don't call
 // this. The loop stops before the root closes, since cleanups run
 // last-registered first.
 func serveSupervisionRootWakes(t *testing.T, root *Session) {
@@ -3346,7 +3467,7 @@ func serveSupervisionRootWakes(t *testing.T, root *Session) {
 			case <-stop:
 				return
 			case <-wakes:
-				root.drivePendingStableDelegateAttention()
+				root.drivePendingDelegateAttention()
 			}
 		}
 	}()
@@ -3619,7 +3740,7 @@ func stableSupervisionReservedAttentionIDLocked(c *delegateTreeController, runti
 // The trailing childGates{...} line cannot call the live gate accessors —
 // childStopGated, childFatalRunGated, childDrainAbandoned, childDrainGracePending
 // and childCommittedSendStart — because the first three take c.mu through
-// directStableDelegateForChildSession, and the fatal-run gate takes the subagent
+// directDelegateForChildSession, and the fatal-run gate takes the subagent
 // registry's mu through getSub and then sub.mu. Each gate is instead rendered
 // from the TryLocked source that already printed its fields, and each predicate
 // names the accessor it mirrors, so a change there shows up here as a drift.
@@ -3705,7 +3826,7 @@ func stableSupervisionState(root *Session, sub *subagent) string {
 }
 
 // stableSupervisionDirectRowLocked captures the direct stable delegate row for
-// childSessionID while c.mu is held. It mirrors directStableDelegateForChildSession
+// childSessionID while c.mu is held. It mirrors directDelegateForChildSession
 // — snapshotsForChildSession's filter over c.durable
 // (delegate_tree_controller.go) plus delegateRowVisibleTo's pick — which the
 // report cannot call because that accessor would re-take c.mu.
@@ -3728,7 +3849,7 @@ func stableSupervisionDirectRowLocked(c *delegateTreeController, root *Session, 
 // TestWaitForStableSupervisionRunOutlastsDeferredAttentionDrive pins the
 // contract of waitForStableSupervisionRun: it must not return while an armed
 // delegate attention still owes a run. Arming attention only notifies, and
-// driveStableDelegateAttention refuses the resulting drive whenever the child
+// driveDelegateAttention refuses the resulting drive whenever the child
 // is not drivable yet (mid-run, mid-finalization, or dispose gated) or the
 // controller is still busy with the previous generation. The dispose gate
 // stands in for those refusals here because it is the one a test can hold open
@@ -3736,13 +3857,13 @@ func stableSupervisionDirectRowLocked(c *delegateTreeController, root *Session, 
 // closed channel and the caller reads that generation's reported delivery
 // instead of the attention generation's private no-action finish.
 func TestWaitForStableSupervisionRunOutlastsDeferredAttentionDrive(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response {
 			return llm.Response{Message: llm.Assistant("attention requires no action")}
 		},
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
@@ -3773,13 +3894,13 @@ func TestWaitForStableSupervisionRunOutlastsDeferredAttentionDrive(t *testing.T)
 // that gives the guard back does not re-drive the child (releaseDriveGuard).
 // The root's retry is the wake this test exercises.
 func TestSupervisionRootDrivesAttentionTheChildDropped(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response {
 			return llm.Response{Message: llm.Assistant("attention requires no action")}
 		},
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
@@ -3804,7 +3925,7 @@ func TestSupervisionRootDrivesAttentionTheChildDropped(t *testing.T) {
 // releases the generation, so attention armed meanwhile is refused as busy.
 // It returns the tail's completion channel, closed after the tail re-arms
 // the remaining attention, and the func that lets the tail go on.
-func pauseStableTailBeforeRelease(t *testing.T, root *Session, sub *subagent, fixture coldStableDelegateFixture) (<-chan struct{}, func()) {
+func pauseStableTailBeforeRelease(t *testing.T, root *Session, sub *subagent, fixture coldDelegateFixture) (<-chan struct{}, func()) {
 	t.Helper()
 	paused, resume := make(chan struct{}), make(chan struct{})
 	var resumeOnce sync.Once
@@ -3842,16 +3963,16 @@ func pauseStableTailBeforeRelease(t *testing.T, root *Session, sub *subagent, fi
 // refused on it. The guard holder must drive the child again once it lets
 // go. Nothing wakes this root, so only that re-drive can deliver.
 func TestDelegateResourceSupervision_AttentionRefusedOnAHeldGuardIsRedriven(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("second result") },
 		func(llm.Request) llm.Response {
 			return llm.Response{Message: llm.Assistant("attention requires no action")}
 		},
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
-	sub := warmStableDelegateUnservedRoot(t, root, fixture)
+	sub := warmDelegateUnservedRoot(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	tailDone, resumeTail := pauseStableTailBeforeRelease(t, root, sub, fixture)
 
@@ -3891,16 +4012,16 @@ func TestDelegateResourceSupervision_AttentionRefusedOnAHeldGuardIsRedriven(t *t
 // nothing is, so it stops after one try, and the finalize tail's re-arm
 // delivers the attention once, with no second generation.
 func TestDelegateResourceSupervision_AttentionRedriveThatLosesStops(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("second result") },
 		func(llm.Request) llm.Response {
 			return llm.Response{Message: llm.Assistant("attention requires no action")}
 		},
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
-	sub := warmStableDelegateUnservedRoot(t, root, fixture)
+	sub := warmDelegateUnservedRoot(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	_, resumeTail := pauseStableTailBeforeRelease(t, root, sub, fixture)
 
@@ -3919,7 +4040,7 @@ func TestDelegateResourceSupervision_AttentionRedriveThatLosesStops(t *testing.T
 			// A second drive refused on the busy drive's guard owes the
 			// child one re-drive. The tail is still parked, so that
 			// re-drive is refused busy too.
-			root.driveStableDelegateAttention(held)
+			root.driveDelegateAttention(held)
 		}
 	})
 	armStableSupervisionAttention(t, sub, "attention:losing-redrive", "inspect after the losing re-drive")
@@ -3947,9 +4068,9 @@ func TestDelegateResourceSupervision_AttentionRedriveThatLosesStops(t *testing.T
 // guard, and the turn drives the child again when it ends. Nothing wakes this
 // root, so only that re-drive can deliver.
 func TestDelegateResourceSupervision_AttentionRefusedOnANotificationTurnIsRedriven(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
+	fixture := newColdDelegateFixture(t, "")
 	inTurn, endTurn := make(chan struct{}), make(chan struct{})
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 		func(llm.Request) llm.Response {
 			close(inTurn)
@@ -3959,9 +4080,9 @@ func TestDelegateResourceSupervision_AttentionRefusedOnANotificationTurnIsRedriv
 		func(llm.Request) llm.Response {
 			return llm.Response{Message: llm.Assistant("attention requires no action")}
 		},
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
-	sub := warmStableDelegateUnservedRoot(t, root, fixture)
+	sub := warmDelegateUnservedRoot(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
 
 	var starts atomic.Int32
@@ -3998,18 +4119,18 @@ func TestDelegateResourceSupervision_AttentionRefusedOnANotificationTurnIsRedriv
 	}
 }
 
-// TestStableDelegateAttentionDriveClearsResolvedProjection pins that a
+// TestDelegateAttentionDriveClearsResolvedProjection pins that a
 // delegate whose attention already resolved in its transcript does not stay
 // flagged. A resolution can outrun the committed attention run that would emit
 // the clearing event -- acceptDelegateAttention makes the marker durable, and a
 // later-declined CommitStart leaves the last journal event at
 // needs_attention:true with nothing pending -- and the transcript-driven retry
 // then finds no pending attention and never starts the run that would clear it.
-func TestStableDelegateAttentionDriveClearsResolvedProjection(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+func TestDelegateAttentionDriveClearsResolvedProjection(t *testing.T) {
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
@@ -4075,7 +4196,7 @@ func TestStableDelegateAttentionDriveClearsResolvedProjection(t *testing.T) {
 		t.Fatalf("racing open projection = needs:%t keptRacedWake:%t, want true/true", racedFlag, racedKept)
 	}
 
-	root.driveStableDelegateAttention(sub)
+	root.driveDelegateAttention(sub)
 
 	controller.mu.Lock()
 	cleared := !controller.durable[fixture.delegateID].NeedsAttention
@@ -4098,10 +4219,10 @@ func TestStableDelegateAttentionDriveClearsResolvedProjection(t *testing.T) {
 // missing child transcript is not read as an empty one: the projection and its
 // wake stay put for retry instead of the attention being silently discarded.
 func TestClearResolvedDelegateAttentionDefersWhenTranscriptMissing(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
@@ -4129,16 +4250,16 @@ func TestClearResolvedDelegateAttentionDefersWhenTranscriptMissing(t *testing.T)
 	}
 }
 
-// resolvedStableDelegateAttention warms the stable supervision delegate, then
+// resolvedDelegateAttention warms the stable supervision delegate, then
 // appends and opens one attention item on it and resolves that item with
 // disposition, leaving its wake noted. It returns the root's controller and
 // the delegate's ID.
-func resolvedStableDelegateAttention(t *testing.T, attentionID string, disposition delegateAttentionResolution) (*delegateTreeController, string) {
+func resolvedDelegateAttention(t *testing.T, attentionID string, disposition delegateAttentionResolution) (*delegateTreeController, string) {
 	t.Helper()
-	fixture := newColdStableDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
-	}
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
@@ -4161,7 +4282,7 @@ func resolvedStableDelegateAttention(t *testing.T, attentionID string, dispositi
 // lowered NeedsAttention (a closing delegate does): a wake left behind would
 // block retirement of the whole tree with nothing pending in the transcript.
 func TestClearResolvedDelegateAttentionDropsWakesAfterTheFlagWasLowered(t *testing.T) {
-	controller, delegateID := resolvedStableDelegateAttention(t, "delegate:resolved-after-the-flag-lowered", delegateAttentionConsumed)
+	controller, delegateID := resolvedDelegateAttention(t, "delegate:resolved-after-the-flag-lowered", delegateAttentionConsumed)
 	controller.mu.Lock()
 	_, err := controller.appendLocked(delegatestore.Event{
 		Kind:             delegatestore.EventDelegateAttentionChanged,
@@ -4189,7 +4310,7 @@ func TestClearResolvedDelegateAttentionDropsWakesAfterTheFlagWasLowered(t *testi
 // it and renews the durability of its resolution marker before forgetting it.
 func TestClearResolvedDelegateAttentionLeavesWakesToAPendingStop(t *testing.T) {
 	const attentionID = "delegate:resolved-during-a-stop"
-	controller, delegateID := resolvedStableDelegateAttention(t, attentionID, delegateAttentionDiscarded)
+	controller, delegateID := resolvedDelegateAttention(t, attentionID, delegateAttentionDiscarded)
 	controller.mu.Lock()
 	controller.durable[delegateID].PendingStopSeq = 1
 	controller.mu.Unlock()
@@ -4214,16 +4335,16 @@ func TestClearResolvedDelegateAttentionLeavesWakesToAPendingStop(t *testing.T) {
 // deliberately do not, so that the drive they exercise is the deferred one.
 // A deferred drive can end on the root's retry, so the root serves its wakes
 // as a served root does (serveSupervisionRootWakes).
-func warmStableSupervisionDelegate(t *testing.T, root *Session, fixture coldStableDelegateFixture) *subagent {
+func warmStableSupervisionDelegate(t *testing.T, root *Session, fixture coldDelegateFixture) *subagent {
 	t.Helper()
 	serveSupervisionRootWakes(t, root)
-	return warmStableDelegateUnservedRoot(t, root, fixture)
+	return warmDelegateUnservedRoot(t, root, fixture)
 }
 
-// warmStableDelegateUnservedRoot is warmStableSupervisionDelegate without the
+// warmDelegateUnservedRoot is warmStableSupervisionDelegate without the
 // root's wake consumer, for a test that must show the child delivers its own
 // attention: nothing on the root drives it.
-func warmStableDelegateUnservedRoot(t *testing.T, root *Session, fixture coldStableDelegateFixture) *subagent {
+func warmDelegateUnservedRoot(t *testing.T, root *Session, fixture coldDelegateFixture) *subagent {
 	t.Helper()
 	sendAndAcknowledge(t, root, fixture.delegateID, "warm retained runtime")
 	sub := root.subagents.get(fixture.childID)
@@ -4301,9 +4422,12 @@ func assertSingleRecoveryNudge(t *testing.T, adapter *fakeAdapter) {
 	if len(requests) == 0 {
 		t.Fatal("provider received no requests")
 	}
-	nudge := communicateNudge("communicate")
 	last := requests[len(requests)-1]
-	if got := countMessageText(last.Messages, nudge); got != 1 {
+	// The reminder text depends on whether the delegate already sent a
+	// non-terminal update; either way exactly one reminder must land.
+	got := countMessageText(last.Messages, wrapHookContext(communicateNudge("communicate"))) +
+		countMessageText(last.Messages, wrapHookContext(communicateUpdateNudge("communicate")))
+	if got != 1 {
 		t.Fatalf("recovery nudge count in final request = %d, want exactly one: %#v", got, last.Messages)
 	}
 }
@@ -4361,10 +4485,10 @@ func pendingQuietAttention(t *testing.T, root *Session) []string {
 // state right after the wait doesn't race it (#4009).
 func TestStableSupervisionQuiescenceWaitsForTheChildNamer(t *testing.T) {
 	t.Parallel()
-	fixture := newColdStableDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
-	}
+	})
 	released, releaseNamer := context.WithCancel(context.Background())
 	fixture.client.Register(&agenttest.ScriptedAdapter{Provider: testSessionNamerProvider, Responder: func(request llm.Request) llm.Response {
 		<-released.Done()

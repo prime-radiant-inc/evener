@@ -23,9 +23,9 @@ interface RailRevealInputs {
   onRevealConsumed: (() => void) | undefined;
   resources: RailResources;
   archivedLists: Record<string, ArchivedList>;
-  expandedOverrides: ReadonlyMap<string, boolean>;
+  expansion: ReadonlyMap<string, boolean>;
   isExpanded: (id: string, defaultOpen: boolean) => boolean;
-  setExpanded: (id: string, value: boolean) => void;
+  setRowExpanded: (id: string, value: boolean) => void;
   groupingMode: RailGroupingMode;
   bodyRef: RefObject<HTMLElement | null>;
 }
@@ -38,9 +38,9 @@ export function useRailReveal({
   onRevealConsumed,
   resources,
   archivedLists,
-  expandedOverrides,
+  expansion,
   isExpanded,
-  setExpanded,
+  setRowExpanded,
   groupingMode,
   bodyRef,
 }: RailRevealInputs): void {
@@ -91,10 +91,10 @@ export function useRailReveal({
   const openRevealSection = useCallback(
     (key: string, defaultOpen: boolean) => {
       if (isExpanded(key, defaultOpen)) return true;
-      setExpanded(key, true);
+      setRowExpanded(key, true);
       return false;
     },
-    [isExpanded, setExpanded],
+    [isExpanded, setRowExpanded],
   );
   // Where a revealed project's row lives: the fold it is rendered in, whether
   // that fold starts open, and the catalog that carries it. Archived is the
@@ -136,9 +136,9 @@ export function useRailReveal({
       ...revealExpansionIds(resources.testRuns, [], revealTarget, "flat"),
       ...revealExpansionIds(resources.archivedProjects, [], revealTarget, "flat", { rowsUnderProjectNode: true }),
     ];
-    const nextFold = chain.find((id) => expandedOverrides.get(id) !== true);
+    const nextFold = chain.find((id) => expansion.get(id) !== true);
     if (nextFold) {
-      setExpanded(nextFold, true);
+      setRowExpanded(nextFold, true);
       return;
     }
     const currentState = navigationStore.getState();
@@ -204,9 +204,9 @@ export function useRailReveal({
         ...revealExpansionIds(resources.testRuns, [], carrierRef, "flat"),
         ...revealExpansionIds(resources.archivedProjects, [], carrierRef, "flat", { rowsUnderProjectNode: true }),
       ];
-      const nextCarrierFold = carrierChain.find((id) => expandedOverrides.get(id) !== true);
+      const nextCarrierFold = carrierChain.find((id) => expansion.get(id) !== true);
       if (nextCarrierFold) {
-        setExpanded(nextCarrierFold, true);
+        setRowExpanded(nextCarrierFold, true);
         return;
       }
     }
@@ -217,8 +217,8 @@ export function useRailReveal({
         return;
       }
       const projectID = projectNodeExpansionKey(location.project_key);
-      if (expandedOverrides.get(projectID) !== true) {
-        setExpanded(projectID, true);
+      if (expansion.get(projectID) !== true) {
+        setRowExpanded(projectID, true);
         return;
       }
       // One decision covers both which fold must open and which catalog holds
@@ -282,10 +282,10 @@ export function useRailReveal({
   }, [
     revealTarget,
     resources,
-    expandedOverrides,
+    expansion,
     groupingMode,
     consumeReveal,
-    setExpanded,
+    setRowExpanded,
     requestRevealResource,
     openRevealSection,
     projectPlacement,

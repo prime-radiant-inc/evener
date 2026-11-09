@@ -250,7 +250,7 @@ export function CommandsSheet({ route, navigation }: NativeStackScreenProps<Rout
 						</Text>
 					) : catalog.loading && catalog.items.length === 0 ? (
 						<CatalogSkeleton />
-					) : null
+					) : undefined
 				}
 			/>
 		</Sheet>
