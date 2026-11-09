@@ -78,7 +78,7 @@ func TestChildRestoreDoesNotReforwardDeliveredTerminalJobs(t *testing.T) {
 	}
 }
 
-func TestChildRestoreForwardsNewTerminalGeneration(t *testing.T) {
+func TestChildRestoreForwardsSecondGenerationFromAnotherJournalOnce(t *testing.T) {
 	parent, child := forwardingChild(t)
 	finishChildJob(t, child, "job-a", "gen-1")
 	if err := child.recoverForwardedTerminalEvents(); err != nil {

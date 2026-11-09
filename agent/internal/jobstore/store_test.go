@@ -402,3 +402,25 @@ func closeStore(t *testing.T, s *Store) {
 		t.Fatalf("close: %v", err)
 	}
 }
+
+func TestStoreHasEventSeesAppendsAndLeavesJournalIntact(t *testing.T) {
+	s := openStore(t, filepath.Join(t.TempDir(), "jobs.jsonl"))
+	isFinished := func(e *Event) bool { return e.Kind == EventJobFinished && e.JobID == "job_A" }
+
+	if held, err := s.HasEvent(isFinished); err != nil || held {
+		t.Fatalf("empty journal HasEvent = %v, %v; want false, nil", held, err)
+	}
+	appendEvent(t, s, Event{Kind: EventJobStarted, JobID: "job_A", Type: JobShell})
+	if held, err := s.HasEvent(isFinished); err != nil || held {
+		t.Fatalf("started-only HasEvent = %v, %v; want false, nil", held, err)
+	}
+	appendEvent(t, s, Event{Kind: EventJobFinished, JobID: "job_A", Status: StatusCompleted, TerminalGen: "GEN1"})
+	if held, err := s.HasEvent(isFinished); err != nil || !held {
+		t.Fatalf("finished HasEvent = %v, %v; want true, nil", held, err)
+	}
+
+	events, err := s.LoadEvents()
+	if err != nil || len(events) != 2 {
+		t.Fatalf("LoadEvents after HasEvent = %d events, %v; want 2, nil", len(events), err)
+	}
+}
