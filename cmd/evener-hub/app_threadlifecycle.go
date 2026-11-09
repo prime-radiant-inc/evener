@@ -680,6 +680,12 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 		discoveryErr = hubRosterRefresh(ctx, cfg.Roster)
 		discoveryDone(discoveryErr)
 	}
+	if cfg.Roster != nil && cfg.ResumeLocks != nil {
+		// The protocol check below calls lookupDaemonOwner, which refuses an
+		// unconfirmed claim. Confirm a recorded replacement through its direct
+		// read first, while a status probe may still be missing it.
+		retryPendingReplacementConfirmation(ctx, cfg, sources, sessionID)
+	}
 	protocolDone := trace.stage(ctx, "protocol_check")
 	if err := daemonRestartRequiredError(ctx, cfg, "", sessionID, ""); err != nil {
 		protocolDone(err)
@@ -834,10 +840,10 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 	}
 	if supersededOwner != nil && cfg.ResumeLocks != nil {
 		// The replacement reached rendezvous, but its post-launch confirmation
-		// may still fail. Keep the exact superseded identity until the
-		// replacement is confirmed, so a later request can finish the
-		// retirement this one cannot.
-		cfg.ResumeLocks.NotePendingRetirement(sessionID, *supersededOwner)
+		// may still fail. Keep the exact replacement and superseded identity
+		// until the replacement is confirmed, so a later request can retry the
+		// direct confirmation and finish the retirement this one cannot.
+		cfg.ResumeLocks.NotePendingReplacement(sessionID, entry, *supersededOwner)
 	}
 	replacementConfirmed := false
 	if cfg.Roster != nil {
@@ -882,7 +888,7 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 func completeSupersededRetirement(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, sessionID string, fallback *rendezvous.Entry) {
 	entry := fallback
 	if cfg.ResumeLocks != nil {
-		if pending, ok := cfg.ResumeLocks.PendingRetirement(sessionID); ok {
+		if _, pending, ok := cfg.ResumeLocks.PendingReplacement(sessionID); ok {
 			entry = &pending
 		}
 	}
@@ -891,8 +897,31 @@ func completeSupersededRetirement(ctx context.Context, cfg hubcore.WebConfig, so
 	}
 	retireSupersededOwner(ctx, cfg, sources, entry)
 	if cfg.ResumeLocks != nil {
-		cfg.ResumeLocks.ClearPendingRetirement(sessionID)
+		cfg.ResumeLocks.ClearPendingReplacement(sessionID)
 	}
+}
+
+// retryPendingReplacementConfirmation tries the exact replacement entry a
+// failed post-launch confirmation left behind. Discovery's status probe can
+// keep missing while the daemon serves a direct read; without this retry the
+// replacement's unconfirmed claim makes lookupDaemonOwner refuse every later
+// resume before the pending retirement can run.
+func retryPendingReplacementConfirmation(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, sessionID string) {
+	entry, _, ok := cfg.ResumeLocks.PendingReplacement(sessionID)
+	if !ok {
+		return
+	}
+	if entry.Protocol != appwire.ProtocolVersion || entry.Endpoint == "" || entry.ThreadID == "" {
+		return
+	}
+	if cfg.Roster.HasConfirmedEntry(entry) {
+		return
+	}
+	readDone := threadLifecycleFromContext(ctx).stage(ctx, "daemon_read")
+	_, err := cfg.Roster.ReadSpawnedThread(ctx, entry, func(ctx context.Context) (appwire.ThreadReadResponse, error) {
+		return readSpawnedLocalThread(ctx, sources, entry)
+	})
+	readDone(err)
 }
 
 // launchRefusalIsOwnership reports whether a refused launch failed because the

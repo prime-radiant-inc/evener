@@ -494,9 +494,8 @@ func TestResumeFailedConfirmationCompletesRetirementOnRetry(t *testing.T) {
 	if spawnCalls != 1 {
 		t.Fatalf("first resume spawns=%d, want 1", spawnCalls)
 	}
-
-	// Discovery can confirm the replacement now; the retry reuses it.
-	prober.failReplacementPID.Store(0)
+	// The status probe keeps failing. Only the pending replacement's direct
+	// read can confirm it and let the retry reach the retirement.
 	response, err := resumeThreadLocked(context.Background(), cfg, sources, appwire.ThreadResumeParams{Session: sessionID})
 	if err != nil {
 		t.Fatalf("retry after failed confirmation: %v", err)
