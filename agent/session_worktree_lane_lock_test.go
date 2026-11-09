@@ -64,12 +64,13 @@ func TestTransferWorktreeLaneTo_keepsTheLockDuringRewrite(t *testing.T) {
 	installWorktreeSeams(t, r.s, worktreeTestSeams{
 		beforeLaneLockRewrite: func(lanePath string) {
 			cmd := exec.Command("git", "-C", r.mainRoot, "worktree", "lock", "--reason", "competitor", lanePath)
-			out, err := cmd.CombinedOutput()
-			if err == nil {
+			if _, err := cmd.CombinedOutput(); err == nil {
 				t.Error("a competing acquisition succeeded while the lane lock was being rewritten")
 			}
-			if !strings.Contains(string(out), "already locked") {
-				t.Errorf("competing acquisition failed for the wrong reason: %v: %s", err, out)
+			// A failed competitor must leave the lane's occupancy marker
+			// unchanged; the diagnostic text is git's, not this test's contract.
+			if listing := wtGit(t, r.mainRoot, "worktree", "list", "--porcelain"); !strings.Contains(listing, "locked "+oldMarker) {
+				t.Errorf("competing acquisition changed the lane's occupancy marker:\n%s", listing)
 			}
 		},
 	})
