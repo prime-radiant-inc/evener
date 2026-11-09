@@ -3,11 +3,12 @@ package agent
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
-	"primeradiant.com/evener/agent/internal/tool"
 )
 
 func TestConfigureWatchRequiresCondition(t *testing.T) {
@@ -1253,35 +1254,51 @@ func TestWatchHistoryCountsTerminalFlushDeliveries(t *testing.T) {
 	}
 }
 
-// The repair errors for a parent observer name the watcher's result tool, so a
-// session that renamed it is not sent to a tool it does not have.
+// A parent observer's invalid watch configuration is rejected, and the repair
+// error names the watcher's own result tool so a session that renamed it is not
+// sent to a tool it does not have. The two errors' text is pinned whole in
+// testdata/watchrepair, since it is model-facing prose.
 func TestWatchRepairErrorsNameTheResultTool(t *testing.T) {
 	t.Parallel()
-	const repairPrefix = "; parent observers that need communicate messages use source=\"parent\" with events [\"communicate\"], and read delivered event.message in the frame. "
 	for _, tc := range []struct {
 		name       string
 		resultTool string
-		wantTool   string
 	}{
-		{"default", "", "communicate"},
-		{"renamed", "respond", "respond"},
+		{"default", ""},
+		{"renamed", "respond"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			jm := newTestJM(t)
 
 			_, outputMatchErr := jm.configureWatch(watchArgs{Target: "caller", OutputMatch: "APPROVAL_REQUEST", Events: []string{"communicate"}, ResultTool: tc.resultTool})
+			if outputMatchErr == nil {
+				t.Fatal("an output_match on a parent observer watch was accepted")
+			}
 			eventFilterErr := validateWatchEventArgs(watchArgs{Events: []string{"communicate"}, EventFilter: &watchEventFilter{}, ResultTool: tc.resultTool})
+			if eventFilterErr == nil {
+				t.Fatal("an event_filter on a parent observer watch was accepted")
+			}
 
-			repair := repairPrefix + tool.ObserverReporting(tc.wantTool)
-			wantOutputMatch := "invalid_request: output_match watches concrete job output" + repair
-			if outputMatchErr == nil || outputMatchErr.Error() != wantOutputMatch {
-				t.Fatalf("output_match error = %v, want %q", outputMatchErr, wantOutputMatch)
+			// Name the tool the session actually has: the renamed case must not
+			// mention the default one at all.
+			wantTool := "communicate"
+			if tc.resultTool != "" {
+				wantTool = tc.resultTool
+				if strings.Contains(outputMatchErr.Error(), "communicate(") {
+					t.Fatalf("renamed session's repair names the default tool: %s", outputMatchErr)
+				}
 			}
-			wantEventFilter := "invalid_request: event_filter matches assistant.tool events" + repair
-			if eventFilterErr == nil || eventFilterErr.Error() != wantEventFilter {
-				t.Fatalf("event_filter error = %v, want %q", eventFilterErr, wantEventFilter)
+			if !strings.Contains(outputMatchErr.Error(), wantTool+"(end_turn=true)") {
+				t.Fatalf("output_match repair does not name %q: %s", wantTool, outputMatchErr)
 			}
+			if !strings.Contains(eventFilterErr.Error(), wantTool+"(end_turn=true)") {
+				t.Fatalf("event_filter repair does not name %q: %s", wantTool, eventFilterErr)
+			}
+
+			agenttest.CheckGolden(t, filepath.Join("testdata", "watchrepair", tc.name+".md"),
+				[]byte(outputMatchErr.Error()+"\n\n"+eventFilterErr.Error()+"\n"), *updatePromptGoldens,
+				"Regenerate with `go test ./agent -run 'TestWatchRepairErrorsNameTheResultTool$' -count=1 -update-prompt` and read the diff.")
 		})
 	}
 }

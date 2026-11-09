@@ -68,8 +68,12 @@ func TestWaitingRootIsWokenByItsDelegateReport(t *testing.T) {
 	if len(rootPendingAttention(root)) != 0 {
 		t.Fatal("the child's report reached the root before the wait settled: the wake would not prove causality")
 	}
-	if got := len(adapter.requestsFor("WAITED-CHILD")); got != 1 {
-		t.Fatalf("child requests = %d, want the blocked first request to still be open", got)
+	// Delegate creation launches the child in its own goroutine, so the root
+	// finishing its turn says nothing about the child having reached the
+	// provider yet. Wait for that request, then assert it is still the only
+	// one: the child is parked on reportGate, not answering.
+	if got := len(adapter.waitForRequests(t, "WAITED-CHILD", 1)); got != 1 {
+		t.Fatalf("child requests = %d, want the single blocked request only", got)
 	}
 
 	// Release the child. Its report raises the wake a served root listens on.
