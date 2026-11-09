@@ -3,11 +3,76 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
 	"primeradiant.com/evener/llm"
 )
+
+// The delegate normalizer must leave arguments it does not rewrite untouched
+// (dispatch runs it several times per call) and drop an effort that means
+// "nothing configured" so the enum never sees an empty string.
+func TestNormalizeDelegateArgs(t *testing.T) {
+	t.Parallel()
+	canonical := map[string]any{
+		"prompt":           "p",
+		"reasoning_effort": "max",
+		"task_list": []any{
+			map[string]any{"title": "t", "prompt": "read", "reasoning_effort": "high"},
+			map[string]any{"title": "u", "prompt": "read"},
+		},
+	}
+	got, err := normalizeDelegateArgs(canonical)
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if reflect.ValueOf(got).Pointer() != reflect.ValueOf(canonical).Pointer() {
+		t.Fatalf("canonical args were rebuilt instead of returned untouched: %#v", got)
+	}
+
+	aliased := map[string]any{
+		"prompt":           "p",
+		"reasoning_effort": " OFF ",
+		"task_list": []any{
+			map[string]any{"title": "t", "prompt": "read", "reasoning_effort": "MAX"},
+			map[string]any{"title": "u", "prompt": "read", "reasoning_effort": ""},
+			map[string]any{"title": "v", "prompt": "read", "reasoning_effort": "inherit"},
+		},
+	}
+	got, err = normalizeDelegateArgs(aliased)
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if got["reasoning_effort"] != llm.ReasoningEffortNone {
+		t.Errorf("top-level effort = %v, want the canonical none", got["reasoning_effort"])
+	}
+	tasks := got["task_list"].([]any)
+	for i, want := range []any{"max", nil, nil} {
+		fields := tasks[i].(map[string]any)
+		effort, present := fields["reasoning_effort"]
+		if want == nil {
+			if present {
+				t.Errorf("task_list[%d].reasoning_effort = %v, want it dropped", i, effort)
+			}
+			continue
+		}
+		if effort != want {
+			t.Errorf("task_list[%d].reasoning_effort = %v, want %v", i, effort, want)
+		}
+	}
+	if effort := aliased["reasoning_effort"]; effort != " OFF " {
+		t.Errorf("normalizer mutated its input: %v", effort)
+	}
+
+	empty, err := normalizeDelegateArgs(map[string]any{"prompt": "p", "reasoning_effort": ""})
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if _, present := empty["reasoning_effort"]; present {
+		t.Errorf("empty reasoning_effort = %v, want it dropped", empty["reasoning_effort"])
+	}
+}
 
 // Delegate dispatch validates the effort on its normalized form, so disable
 // aliases are accepted (and frozen into the child as the canonical off) while
@@ -73,18 +138,10 @@ func TestDelegateCreate_RegisteredAcceptsEveryVocabularyLevel(t *testing.T) {
 			client.Register(adapter)
 			t.Cleanup(adapter.releaseRun)
 
-			raw, err := json.Marshal(map[string]any{
+			call := executeDelegateTool(context.Background(), root, "registered-effort-"+tc.requested, "delegate", map[string]any{
 				"prompt":           "spawn at " + tc.requested,
 				"model":            "gpt-5.2",
 				"reasoning_effort": tc.requested,
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			call := root.reg.ExecuteCall(context.Background(), root.currentEnv(), llm.ToolCallData{
-				ID:        "registered-effort-" + tc.requested,
-				Name:      "delegate",
-				Arguments: raw,
 			})
 			if call.IsError {
 				t.Fatalf("registered delegate rejected reasoning_effort %q: %s", tc.requested, call.Output)

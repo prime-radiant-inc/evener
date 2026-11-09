@@ -418,22 +418,20 @@ func TestDefTaskListEffortEnumIncludesInherit(t *testing.T) {
 func TestDefDelegateEffortEnumMatchesHandlerVocabulary(t *testing.T) {
 	def := DefDelegate(nil)
 	props := def.Parameters["properties"].(map[string]any)
-	want := []string{"minimal", "low", "medium", "high", "xhigh", "max", "none"}
+	want := llm.AcceptedReasoningEfforts()
 
 	enum := props["reasoning_effort"].(map[string]any)["enum"].([]string)
 	if !reflect.DeepEqual(enum, want) {
 		t.Fatalf("reasoning_effort enum = %v, want %v", enum, want)
 	}
-	for _, level := range enum {
-		if err := llm.ValidateReasoningEffort(level); err != nil {
-			t.Fatalf("schema advertises %q, which the delegate handler rejects: %v", level, err)
-		}
-	}
 
 	item := props["task_list"].(map[string]any)["items"].(map[string]any)
 	taskEnum := item["properties"].(map[string]any)["reasoning_effort"].(map[string]any)["enum"].([]string)
-	if !reflect.DeepEqual(taskEnum, want) {
-		t.Fatalf("task_list reasoning_effort enum = %v, want %v", taskEnum, want)
+	// A seeded task item also offers the "inherit" sentinel, exactly as the
+	// session task_list tool does.
+	wantTaskEnum := append(slices.Clone(want), "inherit")
+	if !reflect.DeepEqual(taskEnum, wantTaskEnum) {
+		t.Fatalf("task_list reasoning_effort enum = %v, want %v", taskEnum, wantTaskEnum)
 	}
 }
 

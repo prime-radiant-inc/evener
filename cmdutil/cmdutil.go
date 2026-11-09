@@ -126,19 +126,15 @@ func ResolveReasoningEffort(cliValue, envValue string) (ReasoningEffortResolutio
 	}
 
 	v := llm.NormalizeReasoningEffort(raw)
-	switch v {
-	case llm.ReasoningEffortNone:
-		// A disable alias (none/null/off/false/0): thinking explicitly off,
-		// which the session keeps distinct from "nothing configured".
-		return ReasoningEffortResolution{Set: true, Value: llm.ReasoningEffortNone}, nil
-	case "minimal", "low", "medium", "high", "xhigh", "max":
-		// "xhigh" and "max" are distinct ascending tiers (max above xhigh);
-		// the per-model clamp maps either to the nearest level the chosen
-		// model actually advertises.
-		return ReasoningEffortResolution{Set: true, Value: v}, nil
-	default:
-		return ReasoningEffortResolution{}, fmt.Errorf("invalid reasoning effort %q (expected minimal|low|medium|high|xhigh|max|none)", raw)
+	// One validator for every entry point, so a level added to the vocabulary
+	// reaches the session, the delegate tool, and this flag together. A
+	// disable alias (none/null/off/false/0) stays the distinct explicit "none";
+	// "xhigh" and "max" are distinct ascending tiers that the per-model clamp
+	// narrows to what the chosen model advertises.
+	if err := llm.ValidateReasoningEffort(v); err != nil {
+		return ReasoningEffortResolution{}, err
 	}
+	return ReasoningEffortResolution{Set: true, Value: v}, nil
 }
 
 // MaxRoundsToConfig converts a --max-rounds CLI value to a SessionConfig value.

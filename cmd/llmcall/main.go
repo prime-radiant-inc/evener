@@ -112,7 +112,7 @@ func llmcallMain(args []string, stdout, stderr io.Writer) error {
 	fs.Float64Var(&cfg.temperature, "temperature", -1, "sampling temperature (unset if <0)")
 	fs.Float64Var(&cfg.topP, "top-p", -1, "top-p nucleus sampling (unset if <0)")
 	fs.IntVar(&cfg.maxTokens, "max-tokens", -1, "max output tokens (unset if <0)")
-	fs.StringVar(&cfg.reasoningEffort, "reasoning-effort", "", "reasoning effort: minimal|low|medium|high|xhigh|max|none")
+	fs.StringVar(&cfg.reasoningEffort, "reasoning-effort", "", "reasoning effort: "+strings.Join(llm.AcceptedReasoningEfforts(), "|"))
 	var stop stringSliceFlag
 	fs.Var(&stop, "stop", "stop sequence (repeatable)")
 	fs.BoolVar(&cfg.webSearch, "web-search", false, "enable provider-native web search")

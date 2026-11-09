@@ -661,6 +661,14 @@ func ReasoningEffortVocabulary() []string {
 	return effort.Tiers()
 }
 
+// AcceptedReasoningEfforts returns every value a session entry point accepts:
+// the six ranked levels plus the explicit off sentinel. It is the set a tool
+// schema or CLI flag should advertise, so a surface cannot enumerate fewer
+// levels than ValidateReasoningEffort allows.
+func AcceptedReasoningEfforts() []string {
+	return append(ReasoningEffortVocabulary(), ReasoningEffortNone)
+}
+
 // ValidateReasoningEffort reports whether effort is a value NewSession, a
 // delegate dispatch, or a plugin-agent task config may safely accept. The
 // empty string (unset) and ReasoningEffortNone (explicit off) are always

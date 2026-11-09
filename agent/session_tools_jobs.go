@@ -231,34 +231,63 @@ func decodeDelegateArgs(args map[string]any) (delegateArgs, error) {
 // so dispatch refused them first. Normalizing here, where dispatch runs it
 // before validation, makes the advertised contract and the handler's real
 // contract the same. Both effort fields canonicalize through the same helpers
-// task_list uses, so a delegate seed accepts exactly what task_list accepts:
-// the canonical levels, the disable aliases, and "inherit". An effort that
-// normalizes to nothing configured is dropped, which is what "inherit" and
-// omission both mean.
+// task_list uses, so a seeded task accepts the task_list levels and its
+// "inherit" sentinel; it also tolerates the disable aliases the handler
+// accepts, which task_list's own schema does not. An effort that normalizes to
+// nothing configured is dropped, which is what "inherit" and omission mean.
 func normalizeDelegateArgs(args map[string]any) (map[string]any, error) {
-	normalized := maps.Clone(args)
+	// Rewrite only what needs it: the common call carries no effort or an
+	// already-canonical one, and this runs several times per dispatch.
+	var normalized map[string]any
+	ensureClone := func() {
+		if normalized == nil {
+			normalized = maps.Clone(args)
+		}
+	}
 	if raw, ok := args["reasoning_effort"].(string); ok {
-		setEffort(normalized, "reasoning_effort", llm.NormalizeReasoningEffort(raw))
+		if effort := llm.NormalizeReasoningEffort(raw); rewriteEffort(raw, effort) {
+			ensureClone()
+			setEffort(normalized, "reasoning_effort", effort)
+		}
 	}
 	if items, ok := args["task_list"].([]any); ok {
-		tasks := make([]any, len(items))
+		var tasks []any
 		for i, item := range items {
 			fields, ok := item.(map[string]any)
 			if !ok {
-				tasks[i] = item
 				continue
 			}
-			clean := maps.Clone(fields)
-			if raw, ok := fields["reasoning_effort"].(string); ok {
-				// A seeded task is a per-task override, so it accepts
-				// "inherit" (stored as no override) exactly as task_list does.
-				setEffort(clean, "reasoning_effort", normalizeTaskEffort(raw))
+			raw, ok := fields["reasoning_effort"].(string)
+			if !ok {
+				continue
 			}
+			effort := normalizeTaskEffort(raw)
+			if !rewriteEffort(raw, effort) {
+				continue
+			}
+			if tasks == nil {
+				tasks = append([]any(nil), items...)
+			}
+			clean := maps.Clone(fields)
+			setEffort(clean, "reasoning_effort", effort)
 			tasks[i] = clean
 		}
-		normalized["task_list"] = tasks
+		if tasks != nil {
+			ensureClone()
+			normalized["task_list"] = tasks
+		}
+	}
+	if normalized == nil {
+		return args, nil
 	}
 	return normalized, nil
+}
+
+// rewriteEffort reports whether an effort argument must be rewritten: the
+// normalized value differs, or it means "nothing configured" and so must be
+// dropped rather than left for the enum to reject.
+func rewriteEffort(raw, effort string) bool {
+	return effort != raw || effort == ""
 }
 
 // setEffort writes effort to key, or drops the key when the normalized value

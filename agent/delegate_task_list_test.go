@@ -58,20 +58,11 @@ func TestCreateDelegate_TaskListEffortVocabulary(t *testing.T) {
 		t.Run(tc.requested, func(t *testing.T) {
 			t.Parallel()
 			root, _, _ := newDelegateResourceBootstrapSession(t)
-			root.cfg.testOnly.skipGitSnapshot = true
-			raw, err := json.Marshal(map[string]any{
+			call := executeDelegateTool(context.Background(), root, "task-effort-"+tc.requested, "delegate", map[string]any{
 				"prompt": "brief",
 				"task_list": []any{
 					map[string]any{"title": "step", "prompt": "do it", "reasoning_effort": tc.requested},
 				},
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			call := root.reg.ExecuteCall(context.Background(), root.currentEnv(), llm.ToolCallData{
-				ID:        "task-effort-" + tc.requested,
-				Name:      "delegate",
-				Arguments: raw,
 			})
 			if call.IsError {
 				t.Fatalf("registered delegate rejected task_list effort %q: %s", tc.requested, call.Output)
@@ -197,5 +188,33 @@ func TestCreateDelegate_TaskListRejectedWhenSharingTaskStore(t *testing.T) {
 	}
 	if plain := root.createDelegate(context.Background(), delegateArgs{Task: "brief"}); plain.Err != nil {
 		t.Fatalf("createDelegate without task_list on a shared store: %v", plain.Err)
+	}
+}
+
+// A seeded task that names inherit runs at the delegate's own effort, which is
+// how the "inherit" enum value the schema advertises reaches the handler.
+func TestCreateDelegate_TaskListInheritUsesDelegateEffort(t *testing.T) {
+	t.Parallel()
+	root, _, _ := newDelegateResourceBootstrapSession(t)
+	call := executeDelegateTool(context.Background(), root, "task-inherit", "delegate", map[string]any{
+		"prompt":           "brief",
+		"reasoning_effort": "max",
+		"task_list": []any{
+			map[string]any{"title": "step", "prompt": "do it", "reasoning_effort": "inherit"},
+		},
+	})
+	if call.IsError {
+		t.Fatalf("registered delegate rejected inherit: %s", call.Output)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(toolResultJSON(call), &result); err != nil {
+		t.Fatalf("decode registered delegate output %q: %v", call.Output, err)
+	}
+	aggregate := delegateAggregateSnapshot(t, root.delegateController, result["delegate_id"].(string))
+	if got := aggregate.Descriptor.TaskTemplates[0].ReasoningEffort; got != "" {
+		t.Fatalf("seeded inherit task effort = %q, want no override", got)
+	}
+	if got := aggregate.Descriptor.Config.ReasoningEffort; got != "max" {
+		t.Fatalf("delegate effort = %q, want the spawn's max", got)
 	}
 }

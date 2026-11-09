@@ -234,7 +234,7 @@ func DelegateModelDescriptionAdditionBudget(maxBytes int) int {
 // being narrower than createDelegate's validation, which rejected a legitimate
 // level at argument validation before the handler ever saw it.
 func delegateReasoningEffortLevels() []string {
-	return append(llm.ReasoningEffortVocabulary(), llm.ReasoningEffortNone)
+	return llm.AcceptedReasoningEfforts()
 }
 
 // delegateReasoningEffortDescription names the levels the schema enumerates,
@@ -310,7 +310,7 @@ func DefDelegateWithResultTool(agentTypes []string, sandboxSchema DelegateSandbo
 						"properties": map[string]any{
 							"title":            map[string]any{"type": "string", "description": shortTaskTitleDescription},
 							"prompt":           map[string]any{"type": "string", "description": "Full, self-contained instruction for this step."},
-							"reasoning_effort": map[string]any{"type": "string", "enum": append([]string(nil), effortLevels...), "description": "Reasoning effort while this task is in progress."},
+							"reasoning_effort": map[string]any{"type": "string", "enum": append(slices.Clone(effortLevels), "inherit"), "description": "Reasoning effort while this task is in progress; \"inherit\" uses the delegate's effort."},
 							"type":             map[string]any{"type": "string", "enum": []string{"research", "implement", "verify", "fix"}, "description": "Kind of work; defaults to implement."},
 						},
 						"required": []string{"title", "prompt"},
