@@ -72,8 +72,13 @@ func TestValidateNavigationResourceSnapshotRejectsWrongSchema(t *testing.T) {
 		{
 			name: "wrong root slot", resource: "live", category: "graph",
 			mutate: func(snapshot *hubapi.NavigationSnapshot, key navigationResourceKey) {
-				snapshot.Containers[0].Owner.Slot = "projects"
-				snapshot.Containers[0].Key = navigationRootContainerKey(key, "projects")
+				for index := range snapshot.Containers {
+					if snapshot.Containers[index].Owner.Kind == "resource_root" {
+						snapshot.Containers[index].Owner.Slot = "projects"
+						snapshot.Containers[index].Key = navigationRootContainerKey(key, "projects")
+						return
+					}
+				}
 			},
 		},
 		{
@@ -135,22 +140,9 @@ func TestValidateNavigationResourceSnapshotRejectsWrongSchema(t *testing.T) {
 		{
 			name: "wrong view scope", resource: "live", category: "scope",
 			mutate: func(snapshot *hubapi.NavigationSnapshot, key navigationResourceKey) {
-				oldKey := snapshot.Entities[0].Key
 				other := key
 				other.Offset++
-				newKey := navigationEntityKey(other, "session", "local:schema-session")
-				snapshot.Entities[0].Key = newKey
-				for i := range snapshot.Containers {
-					for child := range snapshot.Containers[i].Children {
-						if snapshot.Containers[i].Children[child] == oldKey {
-							snapshot.Containers[i].Children[child] = newKey
-						}
-					}
-					if snapshot.Containers[i].Owner.EntityKey == oldKey {
-						snapshot.Containers[i].Owner.EntityKey = newKey
-						snapshot.Containers[i].Key = navigationOwnedContainerKey(newKey, snapshot.Containers[i].Owner.Slot)
-					}
-				}
+				renameNavigationSchemaEntity(snapshot, snapshot.Entities[0].Key, navigationEntityKey(other, "session", "local:schema-session"))
 			},
 		},
 		{
@@ -171,21 +163,7 @@ func TestValidateNavigationResourceSnapshotRejectsWrongSchema(t *testing.T) {
 			// test.
 			name: "anchor tier slot removed", resource: "project", category: "graph",
 			mutate: func(snapshot *hubapi.NavigationSnapshot, _ navigationResourceKey) {
-				current, recent := -1, -1
-				for index, container := range snapshot.Containers {
-					if container.Owner.Kind != "entity" {
-						continue
-					}
-					switch container.Owner.Slot {
-					case "current":
-						current = index
-					case "recent":
-						recent = index
-					}
-				}
-				if current < 0 || recent < 0 {
-					panic("project fixture lacks tier containers")
-				}
+				current, recent := navigationSchemaTierContainer(t, snapshot, "current"), navigationSchemaTierContainer(t, snapshot, "recent")
 				snapshot.Containers[recent].Children = append(snapshot.Containers[recent].Children, snapshot.Containers[current].Children...)
 				snapshot.Containers = append(snapshot.Containers[:current], snapshot.Containers[current+1:]...)
 			},
@@ -225,20 +203,7 @@ func TestValidateNavigationResourceSnapshotRejectsWrongSchema(t *testing.T) {
 			mutate: func(snapshot *hubapi.NavigationSnapshot, key navigationResourceKey) {
 				// Well-formed key syntax naming some other identity: the scope
 				// rule, not the syntax rule, must refuse it.
-				oldKey := snapshot.Entities[0].Key
-				newKey := navigationViewScope(key) + "/entity/" + strings.Repeat("0", 64)
-				snapshot.Entities[0].Key = newKey
-				for index := range snapshot.Containers {
-					for child := range snapshot.Containers[index].Children {
-						if snapshot.Containers[index].Children[child] == oldKey {
-							snapshot.Containers[index].Children[child] = newKey
-						}
-					}
-					if snapshot.Containers[index].Owner.EntityKey == oldKey {
-						snapshot.Containers[index].Owner.EntityKey = newKey
-						snapshot.Containers[index].Key = navigationOwnedContainerKey(newKey, snapshot.Containers[index].Owner.Slot)
-					}
-				}
+				renameNavigationSchemaEntity(snapshot, snapshot.Entities[0].Key, navigationViewScope(key)+"/entity/"+strings.Repeat("0", 64))
 			},
 		},
 		{
@@ -403,14 +368,28 @@ func TestValidateNavigationResourceSnapshotKeepsOnlyAdditiveGraphRules(t *testin
 		{
 			name: "wrong root slot", resource: "live", category: "graph", validateAccepts: true,
 			mutate: func(snapshot *hubapi.NavigationSnapshot, fixture navigationSchemaFixture) {
-				snapshot.Containers[0].Owner.Slot = "projects"
-				snapshot.Containers[0].Key = navigationRootContainerKey(fixture.key, "projects")
+				for index := range snapshot.Containers {
+					if snapshot.Containers[index].Owner.Kind == "resource_root" {
+						snapshot.Containers[index].Owner.Slot = "projects"
+						snapshot.Containers[index].Key = navigationRootContainerKey(fixture.key, "projects")
+						return
+					}
+				}
 			},
 		},
 		{
 			name: "extra root", resource: "manifest", category: "graph", validateAccepts: true,
 			mutate: func(snapshot *hubapi.NavigationSnapshot, fixture navigationSchemaFixture) {
 				snapshot.Containers = append(snapshot.Containers, hubapi.NavigationOrderContainer{Key: navigationRootContainerKey(fixture.key, "sessions"), Owner: hubapi.NavigationContainerOwner{Kind: "resource_root", Slot: "sessions"}, Children: []string{}})
+			},
+		},
+		{
+			// The manifest holds no entities, so a missing root is refused only by
+			// the root-count rule: no other hub rule fires and Validate accepts an
+			// empty graph.
+			name: "root container missing", resource: "manifest", category: "graph", validateAccepts: true,
+			mutate: func(snapshot *hubapi.NavigationSnapshot, _ navigationSchemaFixture) {
+				snapshot.Containers = nil
 			},
 		},
 		{

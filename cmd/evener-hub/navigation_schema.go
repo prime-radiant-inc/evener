@@ -156,11 +156,9 @@ func validateNavigationResourceSnapshot(
 			parented[child] = true
 		}
 	}
-	if expectedRoot == "" {
-		if rootCount != 0 {
-			return navigationSchemaError("graph")
-		}
-	} else if rootCount != 1 {
+	// A kind with no root slot has already refused any resource_root container
+	// above, so only a kind that needs one can be missing it here.
+	if expectedRoot != "" && rootCount != 1 {
 		return navigationSchemaError("graph")
 	}
 
