@@ -8,6 +8,9 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
+// testFetchToken is a well-formed retained entry token for cursor tests.
+const testFetchToken = "0123456789abcdef-1"
+
 func TestFetchCursorRoundTrip(t *testing.T) {
 	identity := CursorIdentity{ThreadRef: "local:thread", Incarnation: "view-7", ProjectionVersion: 3}
 	position := appwire.ThreadItemPosition{Entry: 17, Item: 4, Sub: 2}
@@ -20,7 +23,7 @@ func TestFetchCursorRoundTrip(t *testing.T) {
 
 	for _, origin := range origins {
 		t.Run(string(origin), func(t *testing.T) {
-			want := FetchCursor{Position: position, ItemVersion: 11, Origin: origin, Offset: 4097}
+			want := FetchCursor{Position: position, ItemVersion: 11, Origin: origin, Offset: 4097, Token: testFetchToken}
 			encoded, err := EncodeFetchCursor(identity, want)
 			if err != nil {
 				t.Fatal(err)
@@ -41,7 +44,7 @@ func TestFetchCursorRoundTrip(t *testing.T) {
 
 func TestFetchCursorDecodesIdentityFromFetchOnlyRequest(t *testing.T) {
 	wantIdentity := CursorIdentity{ThreadRef: "local:thread", Incarnation: "window-view", ProjectionVersion: TranscriptItemProjectionVersion}
-	wantCursor := FetchCursor{Position: appwire.ThreadItemPosition{Entry: 9, Item: 2}, ItemVersion: 7, Origin: FetchCursorOriginSavedIndex, Offset: 41}
+	wantCursor := FetchCursor{Position: appwire.ThreadItemPosition{Entry: 9, Item: 2}, ItemVersion: 7, Origin: FetchCursorOriginSavedIndex, Offset: 41, Token: testFetchToken}
 	encoded, err := EncodeFetchCursor(wantIdentity, wantCursor)
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +65,7 @@ func TestFetchCursorTranslatesHubNamespaceAndResolver(t *testing.T) {
 	remote := CursorIdentity{ThreadRef: "local:thread", Incarnation: "window-view", ProjectionVersion: TranscriptItemProjectionVersion}
 	want := FetchCursor{
 		Position: appwire.ThreadItemPosition{Entry: 9, Item: 2}, ItemVersion: 7,
-		Origin: FetchCursorOriginRemoteSource, Offset: 41,
+		Origin: FetchCursorOriginRemoteSource, Offset: 41, Token: testFetchToken,
 	}
 	inner := want
 	inner.Origin = FetchCursorOriginServingDaemon
@@ -96,6 +99,7 @@ func TestFetchCursorRejectsLegacyMalformedAndWrongIdentity(t *testing.T) {
 		Position:    appwire.ThreadItemPosition{Entry: 17, Item: 4},
 		ItemVersion: 11,
 		Origin:      FetchCursorOriginServingDaemon,
+		Token:       testFetchToken,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -160,9 +164,9 @@ func TestFetchCursorRequiresStrictOriginVersionAndOffset(t *testing.T) {
 	}
 
 	for name, cursor := range map[string]FetchCursor{
-		"missing origin":    {Position: appwire.ThreadItemPosition{Entry: 17}, ItemVersion: 11},
-		"unknown origin":    {Position: appwire.ThreadItemPosition{Entry: 17}, ItemVersion: 11, Origin: FetchCursorOrigin("other")},
-		"zero item version": {Position: appwire.ThreadItemPosition{Entry: 17}, Origin: FetchCursorOriginSavedIndex},
+		"missing origin":    {Position: appwire.ThreadItemPosition{Entry: 17}, ItemVersion: 11, Token: testFetchToken},
+		"unknown origin":    {Position: appwire.ThreadItemPosition{Entry: 17}, ItemVersion: 11, Origin: FetchCursorOrigin("other"), Token: testFetchToken},
+		"zero item version": {Position: appwire.ThreadItemPosition{Entry: 17}, Origin: FetchCursorOriginSavedIndex, Token: testFetchToken},
 	} {
 		t.Run("encode "+name, func(t *testing.T) {
 			encoded, err := EncodeFetchCursor(identity, cursor)

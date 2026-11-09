@@ -369,16 +369,11 @@ func TestDaemonlessThreadTurnsContinuesInsideWindowedTurn(t *testing.T) {
 	assertRetained := func(items []appwire.ThreadItem) {
 		t.Helper()
 		for _, item := range items {
-			cursor, identity, err := appitempaging.DecodeFetchCursorForRef(item.FetchCursor, ref)
+			cursor, _, err := appitempaging.DecodeFetchCursorForRef(item.FetchCursor, ref)
 			if err != nil {
 				t.Fatalf("decode saved fetch cursor: %v", err)
 			}
-			cursor.Offset = 0
-			key, err := appitempaging.EncodeFetchCursor(identity, cursor)
-			if err != nil {
-				t.Fatalf("normalize saved fetch cursor: %v", err)
-			}
-			if _, ok := operations.canonicalItemStore().get(key); !ok {
+			if _, ok := operations.canonicalItemStore().get(cursor.Token); !ok {
 				t.Fatalf("saved fetch cursor for %q has no retained canonical bytes", item.Text)
 			}
 		}

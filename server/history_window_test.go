@@ -156,7 +156,7 @@ func TestLiveThreadReadFetchesCanonicalItemRange(t *testing.T) {
 		ProjectionVersion: appitempaging.TranscriptItemProjectionVersion,
 	}
 	cursor, err := appitempaging.EncodeFetchCursor(identity, appitempaging.FetchCursor{
-		Position: *item.Position, ItemVersion: item.Version, Origin: appitempaging.FetchCursorOriginServingDaemon,
+		Position: *item.Position, ItemVersion: item.Version, Origin: appitempaging.FetchCursorOriginServingDaemon, Token: "0123456789abcdef-1",
 	})
 	if err != nil {
 		t.Fatal(err)

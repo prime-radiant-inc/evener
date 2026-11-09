@@ -66,12 +66,12 @@ func (o *sessionOperations) retainCanonicalWindowOptions(options *transcriptWind
 	}
 	encodedCursors := make(map[itemKey]string)
 	mintFetchCursor := options.MintFetchCursor
-	options.MintFetchCursor = func(candidate appitempaging.TranscriptItemCandidate) (string, error) {
+	options.MintFetchCursor = func(candidate appitempaging.TranscriptItemCandidate, token string) (string, error) {
 		key := itemKey{position: candidate.Position, version: candidate.Item.Version}
 		if cursor := encodedCursors[key]; cursor != "" {
 			return cursor, nil
 		}
-		cursor, err := mintFetchCursor(candidate)
+		cursor, err := mintFetchCursor(candidate, token)
 		if err == nil {
 			encodedCursors[key] = cursor
 		}
@@ -90,11 +90,11 @@ func (o *sessionOperations) retainCanonicalWindowOptions(options *transcriptWind
 			if canonical[index].Item.Version == 0 {
 				continue
 			}
-			cursor, err := options.MintFetchCursor(canonical[index])
+			token, err := options.fetchToken(canonical[index])
 			if err != nil {
 				return nil, err
 			}
-			retained, ok := store.borrow(cursor)
+			retained, ok := store.borrow(token)
 			if !ok {
 				continue
 			}
@@ -105,6 +105,11 @@ func (o *sessionOperations) retainCanonicalWindowOptions(options *transcriptWind
 		return canonical, nil
 	}
 	options.RetainFetchItem = store.putItem
+	if options.fetchTokens != nil {
+		options.fetchTokens.assign = func(identity appitempaging.CursorIdentity, candidate appitempaging.TranscriptItemCandidate) (string, error) {
+			return store.tokenFor(fetchEntryTriple(identity, candidate)), nil
+		}
+	}
 }
 
 func (o *sessionOperations) retainRemoteWindowItems(
@@ -142,7 +147,7 @@ func (o *sessionOperations) retainRemoteWindowItems(
 			if visible.FetchCursor == "" {
 				continue
 			}
-			cursor, identity, err := appitempaging.DecodeFetchCursorForRef(visible.FetchCursor, ref)
+			cursor, _, err := appitempaging.DecodeFetchCursorForRef(visible.FetchCursor, ref)
 			if err != nil {
 				return err
 			}
@@ -158,12 +163,7 @@ func (o *sessionOperations) retainRemoteWindowItems(
 				// the fetch-time version fence, not to the read that minted it.
 				continue
 			}
-			cursor.Offset = 0
-			key, err := appitempaging.EncodeFetchCursor(identity, cursor)
-			if err != nil {
-				return err
-			}
-			if err := o.canonicalItemStore().putItem(key, item); err != nil {
+			if err := o.canonicalItemStore().putItem(cursor.Token, item); err != nil {
 				return err
 			}
 		}
@@ -635,7 +635,7 @@ func (o *sessionOperations) fetch(ctx context.Context, request appwire.SessionFe
 	default:
 		return appwire.SessionFetchResponse{}, appwire.TranscriptItemCursorStale()
 	}
-	canonical, ok := o.canonicalItemStore().borrow(validationCursor)
+	canonical, ok := o.canonicalItemStore().borrow(requestedCursor.Token)
 	if !ok {
 		return appwire.SessionFetchResponse{}, appwire.TranscriptItemCursorStale()
 	}

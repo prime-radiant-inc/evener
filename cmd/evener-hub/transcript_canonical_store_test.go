@@ -73,3 +73,24 @@ func TestTranscriptCanonicalStoreRejectsOversizeItem(t *testing.T) {
 		t.Fatal("oversize canonical item was retained")
 	}
 }
+
+func TestEvictedFetchTokenIsNeverReissued(t *testing.T) {
+	store := newTranscriptCanonicalStore(256)
+	triple := "local:thread\x00view\x001\x000\x001"
+	first := store.tokenFor(triple)
+	if err := store.putItem(first, appwire.ThreadItem{
+		ID: "item", Type: "agentMessage", TurnID: "turn-1", Version: 1, Text: "visible",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.borrow(first); !ok {
+		t.Fatal("retained entry missing")
+	}
+	store.put("other", make([]byte, 256))
+	if _, ok := store.borrow(first); ok {
+		t.Fatal("entry was not evicted")
+	}
+	if second := store.tokenFor(triple); second == first {
+		t.Fatalf("evicted token %q was reissued, so an outstanding cursor could revive", first)
+	}
+}

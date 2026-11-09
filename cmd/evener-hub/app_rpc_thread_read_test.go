@@ -1803,7 +1803,7 @@ func TestSessionOperationsRejectsHubCompatibilityCursorWithoutCanonicalBytes(t *
 		ThreadRef: "local:compat-page-back", Incarnation: window.ViewIncarnation("compat-page-back-snapshot", appwire.TranscriptItemPageLimit), ProjectionVersion: appitempaging.TranscriptItemProjectionVersion,
 	}
 	fetchCursor, err := appitempaging.EncodeFetchCursor(identity, appitempaging.FetchCursor{
-		Position: targetPosition, ItemVersion: target.Version, Origin: appitempaging.FetchCursorOriginHubCompat,
+		Position: targetPosition, ItemVersion: target.Version, Origin: appitempaging.FetchCursorOriginHubCompat, Token: "0123456789abcdef-1",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1858,7 +1858,7 @@ func TestSessionOperationsBoundsPreBeforeHubCompatibilityFetchToNewestPage(t *te
 		ThreadRef: "local:compat-pre-before", Incarnation: window.ViewIncarnation("compat-pre-before-snapshot", appwire.TranscriptItemPageLimit), ProjectionVersion: appitempaging.TranscriptItemProjectionVersion,
 	}
 	fetchCursor, err := appitempaging.EncodeFetchCursor(identity, appitempaging.FetchCursor{
-		Position: targetPosition, ItemVersion: 1, Origin: appitempaging.FetchCursorOriginHubCompat,
+		Position: targetPosition, ItemVersion: 1, Origin: appitempaging.FetchCursorOriginHubCompat, Token: "0123456789abcdef-1",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1942,7 +1942,7 @@ func TestSessionOperationsBoundsUnreachableHubCompatibilityFetch(t *testing.T) {
 		ThreadRef: "local:compat-unreachable", Incarnation: window.ViewIncarnation("compat-unreachable-snapshot", appwire.TranscriptItemPageLimit), ProjectionVersion: appitempaging.TranscriptItemProjectionVersion,
 	}
 	fetchCursor, err := appitempaging.EncodeFetchCursor(identity, appitempaging.FetchCursor{
-		Position: targetPosition, ItemVersion: target.Version - 1, Origin: appitempaging.FetchCursorOriginHubCompat,
+		Position: targetPosition, ItemVersion: target.Version - 1, Origin: appitempaging.FetchCursorOriginHubCompat, Token: "0123456789abcdef-1",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2006,7 +2006,7 @@ func TestSessionOperationsRejectsHubCompatibilityFetchAcrossHistoryIncarnation(t
 		ThreadRef: "local:compat-rewritten", Incarnation: window.ViewIncarnation("compat-rewritten-before", appwire.TranscriptItemPageLimit), ProjectionVersion: appitempaging.TranscriptItemProjectionVersion,
 	}
 	_, err := operations.fetchHubCompatibilityTranscriptItem(t.Context(), identity.ThreadRef, identity, appitempaging.FetchCursor{
-		Position: targetPosition, ItemVersion: target.Version, Origin: appitempaging.FetchCursorOriginHubCompat,
+		Position: targetPosition, ItemVersion: target.Version, Origin: appitempaging.FetchCursorOriginHubCompat, Token: "0123456789abcdef-1",
 	})
 	if !errors.Is(err, appwire.TranscriptItemCursorStale()) {
 		t.Fatalf("rewritten-history compatibility fetch = %v, want stale", err)
@@ -2682,16 +2682,11 @@ func requireRetainedCanonicalItems(t *testing.T, operations *sessionOperations, 
 		if item.FetchCursor == "" {
 			continue
 		}
-		cursor, identity, err := appitempaging.DecodeFetchCursorForRef(item.FetchCursor, ref)
+		cursor, _, err := appitempaging.DecodeFetchCursorForRef(item.FetchCursor, ref)
 		if err != nil {
 			t.Fatalf("decode fetch cursor for %q: %v", item.ID, err)
 		}
-		cursor.Offset = 0
-		key, err := appitempaging.EncodeFetchCursor(identity, cursor)
-		if err != nil {
-			t.Fatalf("normalize fetch cursor for %q: %v", item.ID, err)
-		}
-		if _, ok := operations.canonicalItemStore().get(key); !ok {
+		if _, ok := operations.canonicalItemStore().get(cursor.Token); !ok {
 			t.Fatalf("fetch cursor for %q has no retained canonical bytes", item.ID)
 		}
 		retained++

@@ -37,6 +37,10 @@ type FetchCursor struct {
 	ItemVersion uint64
 	Origin      FetchCursorOrigin
 	Offset      uint64
+	// Token names the view owner's retained entry this cursor was minted from.
+	// Tokens are never reused, so an entry evicted after the cursor was minted
+	// cannot be repopulated with a later enrichment of the same item version.
+	Token string
 }
 
 type fetchCursorWire struct {
@@ -49,6 +53,7 @@ type fetchCursorWire struct {
 	ItemVersion       uint64                     `json:"item_version"`
 	Origin            FetchCursorOrigin          `json:"origin"`
 	Offset            uint64                     `json:"offset"`
+	Token             string                     `json:"token"`
 }
 
 type fetchCursorDecodeWire struct {
@@ -61,12 +66,13 @@ type fetchCursorDecodeWire struct {
 	ItemVersion       *uint64                   `json:"item_version"`
 	Origin            *FetchCursorOrigin        `json:"origin"`
 	Offset            *uint64                   `json:"offset"`
+	Token             *string                   `json:"token"`
 }
 
 // EncodeFetchCursor creates a hub-owned cursor for one settled item. Item
 // version zero and origins outside the four serving arrangements are refused.
 func EncodeFetchCursor(identity CursorIdentity, cursor FetchCursor) (string, error) {
-	if !validIdentity(identity) || cursor.ItemVersion == 0 || !validFetchCursorOrigin(cursor.Origin) {
+	if !validIdentity(identity) || cursor.ItemVersion == 0 || !validFetchCursorOrigin(cursor.Origin) || !validFetchToken(cursor.Token) {
 		return "", appwire.TranscriptItemCursorStale()
 	}
 	return encodeCursorForm(fetchCursorWire{
@@ -79,6 +85,7 @@ func EncodeFetchCursor(identity CursorIdentity, cursor FetchCursor) (string, err
 		ItemVersion:       cursor.ItemVersion,
 		Origin:            cursor.Origin,
 		Offset:            cursor.Offset,
+		Token:             cursor.Token,
 	})
 }
 
@@ -95,6 +102,7 @@ func DecodeFetchCursor(encoded string, want CursorIdentity) (FetchCursor, error)
 		ItemVersion: *wire.ItemVersion,
 		Origin:      *wire.Origin,
 		Offset:      *wire.Offset,
+		Token:       *wire.Token,
 	}, nil
 }
 
@@ -118,6 +126,7 @@ func DecodeFetchCursorForRef(encoded, threadRef string) (FetchCursor, CursorIden
 		ItemVersion: *wire.ItemVersion,
 		Origin:      *wire.Origin,
 		Offset:      *wire.Offset,
+		Token:       *wire.Token,
 	}, identity, nil
 }
 
@@ -150,7 +159,7 @@ func validFetchCursorShape(wire fetchCursorDecodeWire) bool {
 		validCursorPosition(wire.Position) &&
 		wire.ItemVersion != nil && *wire.ItemVersion != 0 &&
 		wire.Origin != nil && validFetchCursorOrigin(*wire.Origin) &&
-		wire.Offset != nil
+		wire.Offset != nil && wire.Token != nil && validFetchToken(*wire.Token)
 }
 
 func validFetchCursorOrigin(origin FetchCursorOrigin) bool {
@@ -396,4 +405,21 @@ func decodeCursorForm(encoded string, wire any) error {
 		return appwire.TranscriptItemCursorStale()
 	}
 	return nil
+}
+
+// validFetchToken reports whether token is a well-formed non-reused retained
+// entry token: a store-scoped random prefix, a dash, and a hexadecimal counter.
+func validFetchToken(token string) bool {
+	if len(token) < 18 || len(token) > 64 || token[16] != '-' {
+		return false
+	}
+	for index, char := range token {
+		if index == 16 {
+			continue
+		}
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return false
+		}
+	}
+	return true
 }

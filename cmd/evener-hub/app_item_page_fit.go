@@ -61,10 +61,13 @@ type transcriptWindowPackOptions struct {
 	// The content budget alone cannot see those follow-ups, so a page whose
 	// content fits can still overflow the Manager response cap.
 	StructuredFollowUpParams *appwire.ThreadTurnsListParams
-	CanonicalizeCandidates   func([]appitempaging.TranscriptItemCandidate) ([]appitempaging.TranscriptItemCandidate, error)
-	MintFetchCursor          func(appitempaging.TranscriptItemCandidate) (string, error)
-	RetainFetchItem          func(string, appwire.ThreadItem) error
-	MintContinuationCursor   func(transcriptWindowContinuation) (string, error)
+	// fetchTokens lets a store-backed view owner assign the non-reused retained
+	// entry token each fetch cursor carries.
+	fetchTokens            *transcriptWindowFetchTokens
+	CanonicalizeCandidates func([]appitempaging.TranscriptItemCandidate) ([]appitempaging.TranscriptItemCandidate, error)
+	MintFetchCursor        func(appitempaging.TranscriptItemCandidate, string) (string, error)
+	RetainFetchItem        func(string, appwire.ThreadItem) error
+	MintContinuationCursor func(transcriptWindowContinuation) (string, error)
 }
 
 const (
@@ -90,11 +93,12 @@ func transcriptWindowOptionsFor(
 	identity := transcriptWindowCursorIdentity(result.Identity, params, itemLimit)
 	return transcriptWindowPackOptions{
 		Params: params, ItemLimit: itemLimit, AppliedBy: appliedBy,
-		MintFetchCursor: func(candidate appitempaging.TranscriptItemCandidate) (string, error) {
+		fetchTokens: &transcriptWindowFetchTokens{identity: identity},
+		MintFetchCursor: func(candidate appitempaging.TranscriptItemCandidate, token string) (string, error) {
 			fetchIdentity := identity
 			fetchIdentity.ProjectionVersion = appitempaging.TranscriptItemProjectionVersion
 			return appitempaging.EncodeFetchCursor(fetchIdentity, appitempaging.FetchCursor{
-				Position: candidate.Position, ItemVersion: candidate.Item.Version, Origin: fetchOrigin,
+				Position: candidate.Position, ItemVersion: candidate.Item.Version, Origin: fetchOrigin, Token: token,
 			})
 		},
 		MintContinuationCursor: func(continuation transcriptWindowContinuation) (string, error) {
@@ -1248,7 +1252,11 @@ func mintTranscriptWindowFetchCursor(options transcriptWindowPackOptions, candid
 	if options.MintFetchCursor == nil {
 		return "", errors.New("transcript window requires a fetch cursor callback")
 	}
-	cursor, err := options.MintFetchCursor(candidate)
+	token, err := options.fetchToken(candidate)
+	if err != nil {
+		return "", err
+	}
+	cursor, err := options.MintFetchCursor(candidate, token)
 	if err != nil {
 		return "", fmt.Errorf("mint transcript item fetch cursor: %w", err)
 	}
@@ -1256,11 +1264,36 @@ func mintTranscriptWindowFetchCursor(options transcriptWindowPackOptions, candid
 		return "", errors.New("transcript item fetch cursor callback returned an empty cursor")
 	}
 	if options.RetainFetchItem != nil {
-		if err := options.RetainFetchItem(cursor, candidate.Item); err != nil {
+		if err := options.RetainFetchItem(token, candidate.Item); err != nil {
 			return "", fmt.Errorf("retain transcript item fetch bytes: %w", err)
 		}
 	}
 	return cursor, nil
+}
+
+// transcriptWindowFetchTokens carries the window identity and the view owner's
+// token assignment into the packer's mint callbacks.
+type transcriptWindowFetchTokens struct {
+	identity appitempaging.CursorIdentity
+	assign   func(appitempaging.CursorIdentity, appitempaging.TranscriptItemCandidate) (string, error)
+}
+
+func (o transcriptWindowPackOptions) fetchToken(candidate appitempaging.TranscriptItemCandidate) (string, error) {
+	if o.fetchTokens == nil {
+		return defaultFetchToken(appitempaging.CursorIdentity{}, candidate), nil
+	}
+	if o.fetchTokens.assign != nil {
+		return o.fetchTokens.assign(o.fetchTokens.identity, candidate)
+	}
+	return defaultFetchToken(o.fetchTokens.identity, candidate), nil
+}
+
+// defaultFetchToken is the deterministic token for a packer with no retained
+// store. It never revives an evicted entry because such a packer retains none.
+func defaultFetchToken(identity appitempaging.CursorIdentity, candidate appitempaging.TranscriptItemCandidate) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%d\x00%d\x00%d", identity.ThreadRef, identity.Incarnation,
+		candidate.Position.Entry, candidate.Position.Item, candidate.Item.Version)))
+	return hex.EncodeToString(sum[:8]) + "-" + hex.EncodeToString(sum[8:16])
 }
 
 func mintTranscriptWindowContinuation(options transcriptWindowPackOptions, request transcriptWindowContinuation) (string, error) {

@@ -29,7 +29,7 @@ func TestBuildFetchResponseReassemblesCanonicalItemEncoding(t *testing.T) {
 		t.Fatal(err)
 	}
 	identity := CursorIdentity{ThreadRef: "local:thread", Incarnation: "window-view", ProjectionVersion: TranscriptItemProjectionVersion}
-	cursor := FetchCursor{Position: position, ItemVersion: item.Version, Origin: FetchCursorOriginServingDaemon}
+	cursor := FetchCursor{Position: position, ItemVersion: item.Version, Origin: FetchCursorOriginServingDaemon, Token: "0123456789abcdef-1"}
 
 	var got []byte
 	for {

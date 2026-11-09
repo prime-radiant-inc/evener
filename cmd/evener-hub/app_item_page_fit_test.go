@@ -1252,7 +1252,7 @@ func testWindowPackOptions(params appwire.ThreadWindowParams) transcriptWindowPa
 	return transcriptWindowPackOptions{
 		Params:    params,
 		AppliedBy: "saved-index",
-		MintFetchCursor: func(candidate appitempaging.TranscriptItemCandidate) (string, error) {
+		MintFetchCursor: func(candidate appitempaging.TranscriptItemCandidate, _ string) (string, error) {
 			return "fetch-" + candidate.Item.ID, nil
 		},
 		MintContinuationCursor: func(request transcriptWindowContinuation) (string, error) {
