@@ -249,7 +249,7 @@ func TestNotificationTurnOwnsDaemonSteeringAfterCompletedUserTurn(t *testing.T) 
 		t.Fatalf("warmup ProcessInput: %v", err)
 	}
 	recorder := serveAndRecord(t, sess)
-	sess.SteerKind("daemon steering", events.SteeringKindLoopDetected)
+	sess.steerKind("daemon steering", events.SteeringKindLoopDetected)
 	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
 	}
@@ -289,7 +289,7 @@ func TestNotificationTurnOwnsDirectRetrySteering(t *testing.T) {
 		t.Fatalf("warmup ProcessInput: %v", err)
 	}
 	recorder := serveAndRecord(t, sess)
-	sess.SteerKind("daemon steering", events.SteeringKindLoopDetected)
+	sess.steerKind("daemon steering", events.SteeringKindLoopDetected)
 	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
 	}
@@ -374,7 +374,7 @@ func TestNotificationPendingAfterToolRunsBeforeAnotherNormalRound(t *testing.T) 
 		},
 	}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{}))
-	sess.RegisterTool(
+	sess.registerTool(
 		"enqueue_test_notification",
 		"test-only: finish a managed job while another tool round is running",
 		map[string]any{"type": "object", "properties": map[string]any{}},
@@ -404,7 +404,7 @@ func TestNotificationPendingAfterToolRunsBeforeAnotherNormalRound(t *testing.T) 
 // notification reminder turn carries SteeringKind on schema.Turn, not only on
 // the live SteeringInjectedData event, so a reload labels it the same way the
 // live transcript did (review round 2: this direct-append site bypasses the
-// SteerKind/consumeSteeringMessage queue path that already persisted its
+// steerKind/consumeSteeringMessage queue path that already persisted its
 // kind). Uses the same minimal durable-record construction as
 // TestAcceptNotificationInputAdoptsNotificationProvenance
 // (session_provenance_test.go) rather than a full background delegate run.

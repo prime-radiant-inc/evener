@@ -582,9 +582,9 @@ func TestSubagentRunPreservesStructuredResultAcrossLateNotification(t *testing.T
 	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 		t.Fatal("late notification drive did not finish")
 	}
-	liveStructured, ok := child.sess.CommunicateStructured().(map[string]any)
+	liveStructured, ok := child.sess.communicateStructured().(map[string]any)
 	if !ok || liveStructured["summary"] != "late structured overwrite" {
-		t.Fatalf("live child structured result = %#v, want the late notification overwrite", child.sess.CommunicateStructured())
+		t.Fatalf("live child structured result = %#v, want the late notification overwrite", child.sess.communicateStructured())
 	}
 	packet := loadDelegateTerminalPacket(t, parent, result.DelegateID)
 	var structured map[string]any

@@ -264,12 +264,12 @@ func (s *Session) TranscriptRecordedLength() int64 {
 	return s.attachedTranscript().RecordedLength()
 }
 
-// SetDescendantRecordedFunc installs fn on every descendant session this
+// setDescendantRecordedFunc installs fn on every descendant session this
 // session spawns, now and later (inherited like the descendant event func):
 // fn(sessionID, record) under that child's append lock. The constraints of
 // SetTranscriptRecordedFunc apply: fn must not call back into any session of
 // the tree or take a lock an appender or a session holds.
-func (s *Session) SetDescendantRecordedFunc(fn func(sessionID string, rec transcript.Record)) {
+func (s *Session) setDescendantRecordedFunc(fn func(sessionID string, rec transcript.Record)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cfg.spawn.descendantRecorded = fn

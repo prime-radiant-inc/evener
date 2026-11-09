@@ -646,7 +646,7 @@ func TestAskUser_InterruptedTurnEndsIdle(t *testing.T) {
 		},
 	}
 	sess := newSession(t, withAdapter(f))
-	sess.RegisterTool("trigger_cancel", "cancels the test's ProcessInput context mid-round, after ask_user has already posted",
+	sess.registerTool("trigger_cancel", "cancels the test's ProcessInput context mid-round, after ask_user has already posted",
 		map[string]any{"type": "object", "properties": map[string]any{}},
 		func(context.Context, any) (any, error) {
 			cancel()
@@ -1008,7 +1008,7 @@ func TestAskUser_BoundaryDrainHoldsNotifications(t *testing.T) {
 		},
 	}
 	sess := newSession(t, withAdapter(f))
-	sess.RegisterTool("enqueue_test_notification",
+	sess.registerTool("enqueue_test_notification",
 		"test-only: enqueues a job notification mid-round, simulating a job finishing while the model is asking a question",
 		map[string]any{"type": "object", "properties": map[string]any{}},
 		func(context.Context, any) (any, error) {
@@ -1071,7 +1071,7 @@ func TestAskUser_QueuedInputDrainsAsReply(t *testing.T) {
 	}
 	sess := newSession(t, withAdapter(f))
 	ctx := tripwireCtx(t)
-	sess.RegisterTool("enqueue_test_queued_input",
+	sess.registerTool("enqueue_test_queued_input",
 		"test-only: enqueues a user message mid-round, simulating the user typing ahead while the model is asking a question",
 		map[string]any{"type": "object", "properties": map[string]any{}},
 		func(context.Context, any) (any, error) {
@@ -1763,7 +1763,7 @@ func TestAskUser_RestoreResolvesAcrossInterruptSameRound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	sess.RegisterTool("trigger_cancel", "cancels the test's ProcessInput context mid-round, after ask_user has already posted",
+	sess.registerTool("trigger_cancel", "cancels the test's ProcessInput context mid-round, after ask_user has already posted",
 		map[string]any{"type": "object", "properties": map[string]any{}},
 		func(context.Context, any) (any, error) {
 			cancel()
@@ -1836,7 +1836,7 @@ func TestAskUser_InterruptMarkerWriteFailurePreservesBoundary(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AcceptClientMutationQueue: %v", err)
 	}
-	if got := sess.QueueDepth(); got != 1 {
+	if got := sess.queueDepth(); got != 1 {
 		t.Fatalf("queue depth before already-canceled input = %d, want 1", got)
 	}
 	drainPendingEvents(sess)
@@ -1878,7 +1878,7 @@ func TestAskUser_InterruptMarkerWriteFailurePreservesBoundary(t *testing.T) {
 	if got := sess.WireState(); got != string(SessionAwaiting) {
 		t.Fatalf("live wire state after failed interrupt marker = %q, want %q", got, SessionAwaiting)
 	}
-	if got := sess.QueueDepth(); got != 1 {
+	if got := sess.queueDepth(); got != 1 {
 		t.Fatalf("queue depth after failed interrupt marker = %d, want 1", got)
 	}
 	for _, turn := range sessionHistory(sess) {
@@ -1925,7 +1925,7 @@ func TestAskUser_InterruptMarkerWriteFailurePreservesBoundary(t *testing.T) {
 	if got := restored.WireState(); got != string(SessionAwaiting) {
 		t.Fatalf("restored wire state = %q, want %q", got, SessionAwaiting)
 	}
-	if got := restored.QueueDepth(); got != 1 {
+	if got := restored.queueDepth(); got != 1 {
 		t.Fatalf("restored queue depth = %d, want 1", got)
 	}
 	for _, turn := range sessionHistory(restored) {
@@ -1962,10 +1962,10 @@ func TestAskUser_FailedInterruptMarkerAfterAnsweredToolRoundMatchesRestore(t *te
 	c := llm.NewClient()
 	c.Register(adapter)
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{StateDir: dir}))
-	sess.RegisterTool("loop_tool", "returns a completed result", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
+	sess.registerTool("loop_tool", "returns a completed result", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
 		return "ok", nil
 	})
-	sess.RegisterTool("trigger_cancel", "lets the post-tool hook cancel", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
+	sess.registerTool("trigger_cancel", "lets the post-tool hook cancel", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
 		return "triggered", nil
 	})
 
@@ -2207,7 +2207,7 @@ func TestAskUser_InterruptMarkerRetainedWriteIsAdopted(t *testing.T) {
 		},
 	})
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{StateDir: dir}))
-	sess.RegisterTool("trigger_cancel", "cancels after ask_user posts",
+	sess.registerTool("trigger_cancel", "cancels after ask_user posts",
 		map[string]any{"type": "object", "properties": map[string]any{}},
 		func(context.Context, any) (any, error) { return "cancel after the tool results are durable", nil })
 	syncFailure := errors.New("retained interrupt marker sync failure")
@@ -4242,7 +4242,7 @@ func TestAskUser_LiveStateAfterPoisonedTranscriptRefusalMatchesRestore(t *testin
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	sess.RegisterTool("loop_tool", "runs one non-terminal tool round", map[string]any{"type": "object"}, func(ctx context.Context, args any) (any, error) {
+	sess.registerTool("loop_tool", "runs one non-terminal tool round", map[string]any{"type": "object"}, func(ctx context.Context, args any) (any, error) {
 		return "ok", nil
 	})
 
@@ -4382,7 +4382,7 @@ func TestAskUser_LiveStateAfterToolRoundBudgetCarrierMatchesRestore(t *testing.T
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	sess.RegisterTool("loop_tool", "runs one non-terminal tool round", map[string]any{"type": "object"}, func(ctx context.Context, args any) (any, error) {
+	sess.registerTool("loop_tool", "runs one non-terminal tool round", map[string]any{"type": "object"}, func(ctx context.Context, args any) (any, error) {
 		return "ok", nil
 	})
 
@@ -4597,7 +4597,7 @@ func TestAskUser_LiveStateAfterObserverYieldMatchesRestore(t *testing.T) {
 	}, 4096); err != nil {
 		t.Fatalf("create stable observer watch: %v", err)
 	}
-	sess.RegisterTool("loop_tool", "runs one non-terminal tool round", map[string]any{"type": "object"}, func(ctx context.Context, args any) (any, error) {
+	sess.registerTool("loop_tool", "runs one non-terminal tool round", map[string]any{"type": "object"}, func(ctx context.Context, args any) (any, error) {
 		return "ok", nil
 	})
 

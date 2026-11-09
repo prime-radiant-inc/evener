@@ -362,7 +362,7 @@ func stceExecToolBranches(t *testing.T) {
 	t.Helper()
 	newSession := func() *Session {
 		s, _, _ := stmNewSession(t, []byte("exec"))
-		s.RegisterTool("probe", "probe", map[string]any{"type": "object"}, func(context.Context, any) (any, error) { return "ok", nil })
+		s.registerTool("probe", "probe", map[string]any{"type": "object"}, func(context.Context, any) (any, error) { return "ok", nil })
 		return s
 	}
 	setClosing := func(s *Session) { s.mu.Lock(); s.closing = true; s.mu.Unlock() }

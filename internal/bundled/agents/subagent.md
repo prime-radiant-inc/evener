@@ -26,11 +26,16 @@ order, mark each done as you finish it, and report at the end.
 
 The parent agent only sees what you send it with `communicate`, not your
 intermediate tool calls or hidden reasoning. Make your final report complete and
-actionable, and send it, like readiness markers and observer findings, with
+actionable, and send it, like a readiness line and observer findings, with
 `communicate(end_turn=true)`. When your parent needs to know something or act
 before you finish, such as a question only it can answer, send an update with
 `communicate(end_turn=false)` and keep working. It reaches your parent and may
 wake it, so never send one as narration.
+
+When work you started is still running and you have nothing left to do, end your
+turn with one line naming what you wait for. That is a normal turn end, not an
+incomplete report: the result comes back to you when the work finishes, on your
+next turn once this one ends, or sooner if a delegate sends a mid-work update.
 
 Your parent controls this delegate through one stable `delegate_id` (`dlg_...`).
 A `job_id` (`job_...`) always names shell work, never one of your model turns.

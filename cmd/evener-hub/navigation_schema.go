@@ -117,7 +117,9 @@ func validateNavigationResourceSnapshot(
 
 	expectedRoot := navigationExpectedRootSlot(key.Kind)
 	rootCount := 0
-	parentCount := make(map[string]int, len(snapshot.Entities))
+	// snapshot.Validate already refused two parents and an owner that names no
+	// entity, so presence is all this walk needs to know about parenting.
+	parented := make(map[string]bool, len(snapshot.Entities))
 	ownedSlots := make(map[string]map[string]bool, len(snapshot.Entities))
 	for _, container := range snapshot.Containers {
 		if container.Owner.Kind == "resource_root" {
@@ -129,8 +131,8 @@ func validateNavigationResourceSnapshot(
 				return navigationSchemaError("graph")
 			}
 		} else {
-			kind, exists := entityKinds[container.Owner.EntityKey]
-			if !exists || container.Key != navigationOwnedContainerKey(container.Owner.EntityKey, container.Owner.Slot) {
+			kind := entityKinds[container.Owner.EntityKey]
+			if container.Key != navigationOwnedContainerKey(container.Owner.EntityKey, container.Owner.Slot) {
 				return navigationSchemaError("graph")
 			}
 			if !navigationOwnedSlotAllowed(key.Kind, kind, container.Owner.EntityKey == projectAnchor, container.Owner.Slot) {
@@ -149,26 +151,24 @@ func validateNavigationResourceSnapshot(
 			ownedSlots[container.Owner.EntityKey][container.Owner.Slot] = true
 		}
 		for _, child := range container.Children {
-			parentCount[child]++
+			parented[child] = true
 		}
 	}
-	if expectedRoot == "" {
-		if rootCount != 0 {
-			return navigationSchemaError("graph")
-		}
-	} else if rootCount != 1 {
+	// A kind with no root slot has already refused any resource_root container
+	// above, so only a kind that needs one can be missing it here.
+	if expectedRoot != "" && rootCount != 1 {
 		return navigationSchemaError("graph")
 	}
 
 	for entityKey, kind := range entityKinds {
 		anchor := entityKey == projectAnchor
 		if anchor {
-			if parentCount[entityKey] != 0 || !navigationHasExactSlots(ownedSlots[entityKey], "current", "recent", "archived") {
+			if parented[entityKey] || !navigationHasExactSlots(ownedSlots[entityKey], "current", "recent", "archived") {
 				return navigationSchemaError("graph")
 			}
 			continue
 		}
-		if parentCount[entityKey] != 1 {
+		if !parented[entityKey] {
 			return navigationSchemaError("graph")
 		}
 		if kind == "session" {

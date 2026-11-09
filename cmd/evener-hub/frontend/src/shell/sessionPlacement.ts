@@ -14,6 +14,14 @@ function isSessionPaneFor(pane: OpenPaneRecord, ref: string): boolean {
   return pane.type === "session" && refParam(pane.params) === ref;
 }
 
+// A cascade presents its source conversation; placement must see that role
+// without losing the original record's identity or its parent metadata.
+function sessionRouteRole(pane: OpenPaneRecord): OpenPaneRecord {
+  if (pane.type !== "sessionZoom") return pane;
+  const params = zoomIntentOf(pane);
+  return params !== null && !params.inspection ? { ...pane, ...params.source } : pane;
+}
+
 /** Placement facts the caller already holds about a session link. */
 export interface SessionOpenOptions {
   /** The caller's own row says this ref names a top-level session (the rail's
@@ -36,9 +44,13 @@ export interface SessionOpenOptions {
 // behind it made a press look ignored while the read was in flight. The route
 // effect still confirms the placement when the read answers, and a stale hint
 // is corrected through the ordinary nested-owner path.
+//
+// Every other unopened link opens its pane here too, non-destructively; the
+// route then nests it beside the owner the location read names. Without this,
+// a nested row or palette link sat ignored for the length of that read.
 export function openSessionByRef(ref: string, options: SessionOpenOptions = {}): void {
   const workspace = workspaceStore.getState();
-  const existing = presentedPanes(workspace.panes).find((pane) => isSessionPaneFor(pane, ref));
+  const existing = presentedPanes(workspace.panes).find((pane) => isSessionPaneFor(sessionRouteRole(pane), ref));
   const url = paneToURL("session", { ref });
   // Publish the ordinary route BEFORE touching the workspace. Replacing or
   // focusing a pane can retire an attention-owned history entry, and that
@@ -49,6 +61,8 @@ export function openSessionByRef(ref: string, options: SessionOpenOptions = {}):
     workspace.focusPane(existing.id);
   } else if (options.topLevel === true) {
     openTopLevelSession(ref);
+  } else {
+    workspace.openPane("session", { ref });
   }
 }
 
@@ -91,23 +105,45 @@ export function openTopLevelSession(ref: string): void {
 }
 
 // Keeps a nested session out of main by putting the owner in main and the
-// contextual child in secondary. A child already in main - the rail's
-// immediate top-level placement, before a stale hint is corrected - moves to
-// secondary instead of being recreated, preserving its per-mount work.
+// contextual child in secondary. A child already open - the rail's immediate
+// placement, before the location read confirms ownership - moves beside the
+// owner instead of being recreated, preserving its per-mount work.
 export function openNestedSessionWithOwner(ref: string, ownerRef: string): void {
-  const child = presentedPanes(workspaceStore.getState().panes).find((pane) => isSessionPaneFor(pane, ref));
-  if (child?.slot === "main") {
-    // The press placed this session in main from the rail row's top-level
-    // kind before the location read answered. Ownership is now confirmed
-    // nested, so keep that pane - and its per-mount composer work, including
-    // staged images - and move the owner in beside it instead of replacing
-    // the workspace and remounting the child.
-    for (const pane of [...workspaceStore.getState().panes]) {
-      if (pane.id !== child.id) workspaceStore.getState().closePane(pane.id);
+  const workspace = workspaceStore.getState();
+  const childRecord = presentedPanes(workspace.panes).find((pane) => isSessionPaneFor(sessionRouteRole(pane), ref));
+  const child = childRecord === undefined ? undefined : sessionRouteRole(childRecord);
+  if (child !== undefined) {
+    cancelCarriedComposerSeat(ref);
+    // Ownership is now confirmed nested, so keep the child - and its per-mount
+    // composer work, including staged images - and move the owner in beside it
+    // instead of replacing the workspace and remounting the child.
+    const main = workspace.mainPane();
+    const ownerPane = presentedPanes(workspace.panes).find((pane) => isSessionPaneFor(pane, ownerRef));
+    const ownerRole = presentedPanes(workspace.panes).find((pane) =>
+      isSessionPaneFor(sessionRouteRole(pane), ownerRef),
+    );
+    const ownerIsMain = ownerRole !== undefined && ownerRole.id === main?.id;
+    const cascadeMain = cascadeMainCoversRef(ownerRef);
+    if (ownerIsMain || cascadeMain) {
+      // The owner or its cascade already owns main. Keep every neighboring
+      // pane; only a duplicate plain owner beside a cascade retires.
+      if (cascadeMain && ownerPane !== undefined) workspace.closePane(ownerPane.id);
+      workspace.focusPane(child.id);
+      const retained = workspaceStore.getState().panes.find((pane) => pane.id === child.id);
+      if (retained) recordConversationOpenParent(retained, ownerRef);
+      // Focus and the recorded parent edge are not store-visible when nothing
+      // moved, so publish the unchanged records for route reconciliation.
+      workspaceStore.setState({ panes: [...workspaceStore.getState().panes] });
+      return;
     }
-    const ownerId = workspaceStore.getState().openPane("session", { ref: ownerRef }, { slot: "secondary" });
-    workspaceStore.getState().promotePane(ownerId);
-    workspaceStore.getState().focusPane(child.id);
+    // An unrelated primary still clears. Keep the child and an existing owner
+    // pane, then promote the owner.
+    for (const pane of [...workspace.panes]) {
+      if (pane.id !== child.id && pane.id !== ownerPane?.id) workspace.closePane(pane.id);
+    }
+    const ownerId = ownerPane?.id ?? workspace.openPane("session", { ref: ownerRef }, { slot: "secondary" });
+    workspace.promotePane(ownerId);
+    workspace.focusPane(child.id);
     const opened = workspaceStore.getState().panes.find((pane) => pane.id === child.id);
     if (opened) recordConversationOpenParent(opened, ownerRef);
     return;

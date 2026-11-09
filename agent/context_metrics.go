@@ -26,9 +26,9 @@ func (s *Session) ContextStatus() (ContextMetrics, float64) {
 	return s.contextMgr.EstimateStatus(hist, 0)
 }
 
-// ContextMetrics returns the estimated context use for this session. Each call
+// contextMetrics returns the estimated context use for this session. Each call
 // takes one full sample.
-func (s *Session) ContextMetrics() ContextMetrics {
+func (s *Session) contextMetrics() ContextMetrics {
 	metrics, _ := s.ContextStatus()
 	return metrics
 }

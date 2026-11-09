@@ -1,6 +1,9 @@
 package llm
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestClampReasoningEffort(t *testing.T) {
 	cases := []struct {
@@ -67,6 +70,22 @@ func TestReasoningEffortRank(t *testing.T) {
 	}
 	if ReasoningEffortRank("MAX") != ReasoningEffortRank("max") {
 		t.Error("rank should be case-insensitive")
+	}
+}
+
+// AcceptedReasoningEfforts is what a schema or flag should advertise. It must
+// be exactly the vocabulary plus the off sentinel, and every member must
+// validate, or an advertising surface would publish a level the handler
+// rejects.
+func TestAcceptedReasoningEfforts(t *testing.T) {
+	want := append(ReasoningEffortVocabulary(), ReasoningEffortNone)
+	if got := AcceptedReasoningEfforts(); !slices.Equal(got, want) {
+		t.Fatalf("AcceptedReasoningEfforts() = %v, want %v", got, want)
+	}
+	for _, level := range AcceptedReasoningEfforts() {
+		if err := ValidateReasoningEffort(level); err != nil {
+			t.Errorf("accepted level %q does not validate: %v", level, err)
+		}
 	}
 }
 

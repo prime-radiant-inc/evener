@@ -4261,7 +4261,8 @@ export interface Task {
   notes?: string[];
   /**
    * ReasoningEffort overrides the reasoning effort for a subagent that runs
-   * this task (low|medium|high); empty uses the session default.
+   * this task (minimal|low|medium|high|xhigh|max|none); empty uses the
+   * session default.
    */
   reasoning_effort?: string;
   /**

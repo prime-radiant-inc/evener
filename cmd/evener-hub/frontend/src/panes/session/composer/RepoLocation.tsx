@@ -20,21 +20,19 @@
 // the same unbroken text it always did.
 //
 // Facts come from the hub's evener/git/head method keyed on the session's cwd,
-// resolved per cwd and cached by state, failing soft to "no branch shown"
-// (see shell/gitLocation.ts). A soft failure is retried when the connection
-// recovers, since a dropped hub leaves the line bare for as long as the pane
-// lives otherwise (issue #1355). This is display metadata only: nothing here is
-// sent anywhere, and a slow or failed lookup simply renders the cwd alone.
+// failing soft to "no branch shown" and retried when the connection recovers
+// (see shell/gitLocation.ts, whose useGitLocation owns the lookup's retry and
+// late-answer fencing). This is display metadata only: nothing here is sent
+// anywhere, and a slow or failed lookup simply renders the cwd alone.
 //
 // The lookup runs only for a session whose cwd is on THIS hub's filesystem
 // (the `local` prop). A source-backed session's cwd belongs to another host, so
 // resolving it here could show an unrelated local repository that happens to
 // share the path; such a session still shows its working dir, just no branch.
 
-import type { AppwireClientLike } from "@evener/appwire-client";
-import { memo, useEffect, useState } from "react";
+import { memo } from "react";
 import { useClient } from "../../../shell/clientContext";
-import { resolveGitLocation } from "../../../shell/gitLocation";
+import { useGitLocation } from "../../../shell/gitLocation";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { ForgeMark } from "./ForgeMark";
 import styles from "./repoLocation.module.css";
@@ -116,58 +114,16 @@ function MiddleTruncated({ text, cutOf }: { text: string; cutOf: (chars: string[
   );
 }
 
-// The last resolved lookup, tagged with the cwd it belongs to AND the client
-// that answered: a response for a cwd the composer has since left, or one the
-// previous hub answered before this pane reconnected, must never be displayed
-// against the current cwd or hub.
-interface ResolvedLocation {
-  client: AppwireClientLike;
-  cwd: string;
-  branch: string;
-  originUrl: string;
-}
-
 // Memoized to keep the line stable in the pane footer while the
 // session's cwd and locality are unchanged.
 export const RepoLocation = memo(function RepoLocation({ cwd, local, link = true }: RepoLocationProps) {
   const client = useClient();
-  const [resolved, setResolved] = useState<ResolvedLocation | null>(null);
-
-  useEffect(() => {
-    if (!local || cwd.trim() === "") return undefined;
-    let active = true;
-    // Fences a retry's response against an earlier lookup's in the same mount.
-    // A retry can start while the pre-drop lookup is still in flight, and both
-    // carry the same client/cwd tag, so only this order token can keep the
-    // older answer from overwriting the newer one.
-    let generation = 0;
-    const resolve = () => {
-      const mine = ++generation;
-      void resolveGitLocation(client, cwd).then((location) => {
-        if (active && mine === generation) setResolved({ client, cwd, ...location });
-      });
-    };
-    resolve();
-    // A lookup that failed while the hub was down fails soft to "no branch",
-    // and neither `client` nor `cwd` changes when the SAME client reconnects -
-    // so this effect would never re-run and the line would stay bare for
-    // the life of the pane (issue #1355). Retry on each transition of this
-    // client into "ready". The client is the connection the lookup actually
-    // uses, so its recovery is observed exactly when a retry can succeed.
-    const unwatch = client.onStateChange((state) => {
-      if (state === "ready") resolve();
-    });
-    return () => {
-      active = false;
-      unwatch();
-    };
-  }, [client, cwd, local]);
+  const location = useGitLocation(client, cwd, local);
 
   if (cwd.trim() === "") return null;
 
-  const current = local && resolved !== null && resolved.client === client && resolved.cwd === cwd ? resolved : null;
-  const branch = current?.branch ?? "";
-  const remote = current !== null && current.originUrl !== "" ? parseRepoRemote(current.originUrl) : null;
+  const branch = location.branch;
+  const remote = location.originUrl !== "" ? parseRepoRemote(location.originUrl) : null;
   const reference = remote !== null ? `${remote.owner}/${remote.repo}#${branch}` : "";
 
   return (

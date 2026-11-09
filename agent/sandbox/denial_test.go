@@ -6,14 +6,14 @@ func TestDeniedErrorMessageOmitsFullPath(t *testing.T) {
 	e := &DeniedError{
 		Mode:   ModeWorkspaceWrite,
 		Tool:   "write_file",
-		Path:   "/home/alice/.ssh/id_rsa",
+		Path:   "/fixture-home/alice/.ssh/id_rsa",
 		Reason: "credential path masked",
 	}
 	msg := e.Error()
 	if want := "id_rsa"; !contains(msg, want) {
 		t.Fatalf("message %q should name the basename %q", msg, want)
 	}
-	if contains(msg, "/home/alice/.ssh") {
+	if contains(msg, "/fixture-home/alice/.ssh") {
 		t.Fatalf("message %q must not echo the full secret path", msg)
 	}
 	if !contains(msg, "write_file") || !contains(msg, "workspace-write") {
@@ -22,7 +22,7 @@ func TestDeniedErrorMessageOmitsFullPath(t *testing.T) {
 }
 
 func TestDeniedErrorRedactsAbsolutePath(t *testing.T) {
-	abs := &DeniedError{Path: "/home/alice/.aws/credentials"}
+	abs := &DeniedError{Path: "/fixture-home/alice/.aws/credentials"}
 	if got := abs.Redacted(); got != "credentials" {
 		t.Fatalf("Redacted() = %q, want basename %q", got, "credentials")
 	}
@@ -42,7 +42,7 @@ func TestDeniedErrorSensitiveNeverEchoesBasename(t *testing.T) {
 	e := &DeniedError{
 		Mode:      ModeReadOnly,
 		Tool:      "read_file",
-		Path:      "/home/alice/.ssh/id_rsa",
+		Path:      "/fixture-home/alice/.ssh/id_rsa",
 		Reason:    "credential path masked",
 		Sensitive: true,
 	}
@@ -61,7 +61,7 @@ func TestDeniedErrorSensitiveNeverEchoesBasename(t *testing.T) {
 func TestDeniedErrorNonSensitiveKeepsBasename(t *testing.T) {
 	// The zero value (Sensitive false) is the existing behavior — basename shown —
 	// so the additive field does not break existing callers.
-	e := &DeniedError{Tool: "write_file", Path: "/home/alice/notes/todo.txt"}
+	e := &DeniedError{Tool: "write_file", Path: "/fixture-home/alice/notes/todo.txt"}
 	if got := e.Redacted(); got != "todo.txt" {
 		t.Fatalf("non-sensitive Redacted() = %q, want basename %q", got, "todo.txt")
 	}

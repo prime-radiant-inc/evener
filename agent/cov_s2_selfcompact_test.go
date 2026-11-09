@@ -47,7 +47,7 @@ func TestS2Cov_MaybeElicitNoteBeforeCompaction_PinsElicitedNote(t *testing.T) {
 	if gotFoldable != 3 {
 		t.Fatalf("foldable len = %d, want 3", gotFoldable)
 	}
-	if got := sess.PinnedNote(); got != "KEEP_THIS_VERBATIM" {
+	if got := sess.pinnedNote(); got != "KEEP_THIS_VERBATIM" {
 		t.Fatalf("PinnedNote = %q, want elicited note", got)
 	}
 
@@ -72,7 +72,7 @@ func TestS2Cov_MaybeElicitNoteBeforeCompaction_ErrorWarns(t *testing.T) {
 		return "", errors.New("boom")
 	}
 	sess.maybeElicitNoteBeforeCompaction(context.Background(), hist, 0)
-	if got := sess.PinnedNote(); got != "" {
+	if got := sess.pinnedNote(); got != "" {
 		t.Fatalf("PinnedNote = %q, want empty after elicit error", got)
 	}
 	sess.Close()

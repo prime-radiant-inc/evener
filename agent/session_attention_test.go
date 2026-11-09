@@ -3191,7 +3191,7 @@ func TestRootDelegateAttention_EmptySnapshotNotificationTurnConsumesCoveredDeliv
 	)
 	// A pending steering item is what accepts this notification turn; no root
 	// attention is armed, so the begin snapshot is empty.
-	root.SteerKind("unrelated steering wake", events.SteeringKindNotification)
+	root.steerKind("unrelated steering wake", events.SteeringKindNotification)
 	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatalf("process steering-wake notification turn: %v", err)
 	}
@@ -3672,7 +3672,7 @@ func TestRootDelegateAttention_EmptySnapshotCoverageFailureWarnsAndRetries(t *te
 	wakes := make(chan struct{}, 2)
 	root.SetNotifyFunc(func() { wakes <- struct{}{} })
 
-	root.SteerKind("unrelated steering wake", events.SteeringKindNotification)
+	root.steerKind("unrelated steering wake", events.SteeringKindNotification)
 	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatalf("empty-snapshot turn failed with the coverage-only resolution error: %v", err)
 	}

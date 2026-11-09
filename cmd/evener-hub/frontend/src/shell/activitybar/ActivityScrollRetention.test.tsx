@@ -19,9 +19,9 @@ import { resetDisclosureStoreForTests, setDisclosureOpen } from "../../widgets/d
 import { requireClass } from "../../widgets/internal/requireClass";
 import { installFocusedScope } from "../statusbar/scopeTestUtils";
 import { resetWorkspaceStoreForTests } from "../workspace";
-import { ActivitySidebar } from "./ActivitySidebar";
 import styles from "./activitybar.module.css";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitySidebarStore";
+import { ActivitySidebar } from "./activitySidebarTestUtils";
 
 const ref = "remote:owner";
 const ROW_HEIGHT = 48;

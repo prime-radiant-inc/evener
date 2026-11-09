@@ -14,7 +14,7 @@ import (
 	"primeradiant.com/evener/identifier"
 )
 
-const testHome = "/home/tester"
+const testHome = "/fixture-home/tester"
 
 // netStr renders a tri-state network value for test diagnostics.
 //
@@ -396,7 +396,7 @@ func assertNoRootIsMasked(t *testing.T, rp ResolvedPolicy) {
 // writable-private rather than read-only (#4188). Relative values, which the go
 // command refuses, contribute nothing.
 func TestCacheRootsFollowTheHostGoSettings(t *testing.T) {
-	home := "/home/tester"
+	home := "/fixture-home/tester"
 	sep := string(filepath.ListSeparator)
 	for _, tc := range []struct {
 		name string
@@ -427,9 +427,9 @@ func TestCacheRootsFollowTheHostGoSettings(t *testing.T) {
 // Go's default GOCACHE is under $XDG_CACHE_HOME when that is set, so the
 // overlay serves $XDG_CACHE_HOME in place of ~/.cache.
 func TestCacheRootsFollowXDGCacheHome(t *testing.T) {
-	roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: "/home/tester", XDGCacheHome: "/xdg/cache"}, "/work/project")
+	roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: "/fixture-home/tester", XDGCacheHome: "/xdg/cache"}, "/work/project")
 	// ~/.cache stays served too, for tools that write it whatever XDG says.
-	if !slices.Contains(roots, "/xdg/cache") || !slices.Contains(roots, "/home/tester/.cache") {
+	if !slices.Contains(roots, "/xdg/cache") || !slices.Contains(roots, "/fixture-home/tester/.cache") {
 		t.Errorf("cache roots %v must serve XDG_CACHE_HOME alongside ~/.cache", roots)
 	}
 }
@@ -442,7 +442,7 @@ func TestCacheRootsFollowXDGCacheHome(t *testing.T) {
 // $XDG_CACHE_HOME. A relative value, which npm and cargo resolve against their
 // own cwd, contributes nothing — the go command's rule for its cache settings.
 func TestCacheRootsFollowNpmAndCargoSettings(t *testing.T) {
-	home := "/home/tester"
+	home := "/fixture-home/tester"
 	roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: home, CargoHome: "/custom/cargo", NpmConfigCache: "/custom/npm"}, "/work/project")
 	for _, want := range []string{"/custom/cargo", "/custom/npm", filepath.Join(home, ".cargo"), filepath.Join(home, ".npm")} {
 		if !slices.Contains(roots, want) {
@@ -475,7 +475,7 @@ func TestCacheRootsFollowTheProjectNpmrc(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(worktree, ".npmrc"), []byte("cache="+cacheDir+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: "/home/tester"}, worktree)
+	roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: "/fixture-home/tester"}, worktree)
 	if !slices.Contains(roots, cacheDir) {
 		t.Errorf("cache roots %v must serve the project .npmrc cache", roots)
 	}
@@ -484,7 +484,7 @@ func TestCacheRootsFollowTheProjectNpmrc(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(worktree, ".npmrc"), []byte("cache="+missing+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	roots = cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: "/home/tester"}, worktree)
+	roots = cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: "/fixture-home/tester"}, worktree)
 	if slices.Contains(roots, missing) {
 		t.Errorf("a project .npmrc cache that does not exist must not be served: %v", roots)
 	}
@@ -495,7 +495,7 @@ func TestCacheRootsFollowTheProjectNpmrc(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(worktree, ".npmrc"), []byte("cache=./.npm\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	plain := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: "/home/tester"}, worktree)
+	plain := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: "/fixture-home/tester"}, worktree)
 	if slices.Contains(plain, "./.npm") || slices.Contains(plain, filepath.Join(worktree, ".npm")) {
 		t.Errorf("a relative project npmrc cache must add no root: %v", plain)
 	}
@@ -527,7 +527,7 @@ func TestCacheRootsFollowANestedPackageNpmrc(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	roots := cacheRootsForSession(ModeWorkspaceWrite, HostFacts{Home: "/home/tester"}, worktree, packageDir)
+	roots := cacheRootsForSession(ModeWorkspaceWrite, HostFacts{Home: "/fixture-home/tester"}, worktree, packageDir)
 	if !slices.Contains(roots, packageCache) {
 		t.Errorf("cache roots %v must serve the nested package npmrc cache", roots)
 	}
@@ -574,7 +574,7 @@ func TestResolveFollowsANestedPackageNpmrc(t *testing.T) {
 // directory must be writable where npm may write it.
 func TestCacheRootsFollowProbedNpmrcCaches(t *testing.T) {
 	roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{
-		Home:           "/home/tester",
+		Home:           "/fixture-home/tester",
 		NpmConfigCache: "/from/env/npm",
 		NpmrcCaches:    []string{"/from/user/npm", "/from/global/npm"},
 	}, "/work/project")
@@ -613,18 +613,18 @@ func TestResolvedCacheRootsExcludeMaskedPaths(t *testing.T) {
 // A cache root at, above or inside the worktree (or at or above home, or a
 // temp root) is dropped.
 func TestCacheRootsNeverCoverTheWorktree(t *testing.T) {
-	const worktree = "/home/tester/src/project"
+	const worktree = "/fixture-home/tester/src/project"
 	for _, host := range []HostFacts{
-		{Home: "/home/tester", GoModCache: "/home/tester/src"},
-		{Home: "/home/tester", GoCache: worktree},
-		{Home: "/home/tester", GoPath: "/home/tester/src/project/..", GoModCache: "/home/tester"},
-		{Home: "/home/tester", XDGCacheHome: "/home/tester/src"},
-		{Home: "/home/tester", CargoHome: "/home/tester/src"},
-		{Home: "/home/tester", NpmConfigCache: worktree + "/.npm"},
+		{Home: "/fixture-home/tester", GoModCache: "/fixture-home/tester/src"},
+		{Home: "/fixture-home/tester", GoCache: worktree},
+		{Home: "/fixture-home/tester", GoPath: "/fixture-home/tester/src/project/..", GoModCache: "/fixture-home/tester"},
+		{Home: "/fixture-home/tester", XDGCacheHome: "/fixture-home/tester/src"},
+		{Home: "/fixture-home/tester", CargoHome: "/fixture-home/tester/src"},
+		{Home: "/fixture-home/tester", NpmConfigCache: worktree + "/.npm"},
 		// A cache inside the worktree is workspace the session writes for good;
 		// an overlay there would discard those writes too.
-		{Home: "/home/tester", GoModCache: worktree + "/.cache/mod"},
-		{Home: "/home/tester", GoPath: worktree + "/gopath"},
+		{Home: "/fixture-home/tester", GoModCache: worktree + "/.cache/mod"},
+		{Home: "/fixture-home/tester", GoPath: worktree + "/gopath"},
 	} {
 		for _, r := range cacheRootsFor(ModeWorkspaceWrite, host, worktree) {
 			if identifier.PathUnder(worktree, r) || identifier.PathUnder(r, worktree) || r == host.Home {
@@ -872,7 +872,7 @@ func TestCacheRootsNeverCoverTheWorktreeThroughASymlink(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(worktree, "mod"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: "/home/tester", GoModCache: filepath.Join(link, "mod")}, worktree)
+	roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: "/fixture-home/tester", GoModCache: filepath.Join(link, "mod")}, worktree)
 	if slices.Contains(roots, filepath.Join(link, "mod")) {
 		t.Errorf("a cache root resolving inside the worktree must be dropped: %v", roots)
 	}
@@ -888,7 +888,7 @@ func TestCacheRootsNeverCoverTheWorktreeThroughAMissingPathsSymlinkedParent(t *t
 		t.Fatal(err)
 	}
 	missing := filepath.Join(link, "not", "yet", "modcache")
-	roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: "/home/tester", GoModCache: missing}, worktree)
+	roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: "/fixture-home/tester", GoModCache: missing}, worktree)
 	if slices.Contains(roots, missing) {
 		t.Errorf("a missing cache root whose parent resolves inside the worktree must be dropped: %v", roots)
 	}
@@ -968,7 +968,7 @@ func TestCacheRootsLeaveOutALinkSpelledInsideAPrivateMount(t *testing.T) {
 	if err := os.Symlink(store, link); err != nil {
 		t.Fatal(err)
 	}
-	roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{OS: "linux", Home: "/home/tester", XDGCacheHome: link}, "/work/project")
+	roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{OS: "linux", Home: "/fixture-home/tester", XDGCacheHome: link}, "/work/project")
 	if slices.Contains(roots, link) {
 		t.Errorf("a cache root reached through a link under /tmp must not be overlaid: %v", roots)
 	}
@@ -1001,7 +1001,7 @@ func TestCacheRootsLeaveOutALinkChainThroughAPrivateMount(t *testing.T) {
 		t.Fatal(err)
 	}
 	xdg := filepath.Join(front, "cache")
-	roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{OS: "linux", Home: "/home/tester", XDGCacheHome: xdg}, "/work/project")
+	roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{OS: "linux", Home: "/fixture-home/tester", XDGCacheHome: xdg}, "/work/project")
 	if slices.Contains(roots, xdg) {
 		t.Errorf("a cache root whose resolution passes through a link in /tmp must not be overlaid: %v", roots)
 	}

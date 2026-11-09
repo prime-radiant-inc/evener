@@ -9,6 +9,14 @@ checkout, so another session's stashes sit in the same list: inspect
 `git stash list` before creating or popping one, and prefer file-scoped
 `git restore` over stash for mutation checks inside worktrees.
 
+## Supported platforms
+
+Nothing ships for Windows: `.goreleaser.yml` builds Linux and Darwin only.
+Do not add Windows-only work, findings, coverage or checks, and do not
+treat an existing Windows compile check as a support promise.
+`GOOS=windows` remains a compile target only for the build-tag cross-vet
+(`docs/developing-evener/conventions/go-workspace.md`).
+
 ## Product behavior and evergreen documentation
 
 Read [the product guide](docs/product/README.md) and the relevant row in

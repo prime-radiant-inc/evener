@@ -222,7 +222,7 @@ func miscStatusAndPersistenceProgram(t *testing.T, token string) {
 	detailedStatusMCPServers = func(*Session) []mcpconfig.ServerInfo {
 		return []mcpconfig.ServerInfo{{Name: "srv", Tools: []string{"mcp_tool"}}}
 	}
-	s.RegisterTool("mcp_tool", "fixture", map[string]any{"type": "object"}, func(context.Context, any) (any, error) { return nil, nil })
+	s.registerTool("mcp_tool", "fixture", map[string]any{"type": "object"}, func(context.Context, any) (any, error) { return nil, nil })
 	ds := s.DetailedStatus()
 	if len(ds.Skills) != 2 || ds.Skills[0].Name != "a" || len(ds.Plugins) != 1 || len(ds.HookEvents) != 2 {
 		t.Fatalf("detailed status fixture = %#v", ds)

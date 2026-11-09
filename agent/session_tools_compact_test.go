@@ -19,8 +19,8 @@ func TestCompactTool_PinsAndRequests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compact exec: %v", err)
 	}
-	if s.PinnedNote() != "keep the migration plan" {
-		t.Fatalf("note not pinned: got %q", s.PinnedNote())
+	if s.pinnedNote() != "keep the migration plan" {
+		t.Fatalf("note not pinned: got %q", s.pinnedNote())
 	}
 	instr, ok := s.takeForceRequest()
 	if !ok || instr != "drop the build logs" {
@@ -39,8 +39,8 @@ func TestCompactTool_ClearNote_NoForce(t *testing.T) {
 	if _, err := rt.Exec(context.Background(), nil, map[string]any{"note_to_self": ""}); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
-	if s.PinnedNote() != "" {
-		t.Fatalf("empty note should clear, got %q", s.PinnedNote())
+	if s.pinnedNote() != "" {
+		t.Fatalf("empty note should clear, got %q", s.pinnedNote())
 	}
 	if _, ok := s.takeForceRequest(); ok {
 		t.Fatal("clearing a note must not force a compaction")
@@ -58,7 +58,7 @@ func TestCompactTool_DoubleCompact_Errors(t *testing.T) {
 		t.Fatal("second compact in the same round must error")
 	}
 	// The rejected second call must not have clobbered the accepted first note.
-	if got := s.PinnedNote(); got != "a" {
+	if got := s.pinnedNote(); got != "a" {
 		t.Fatalf("rejected double-call mutated the note: got %q, want %q", got, "a")
 	}
 }

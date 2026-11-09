@@ -63,7 +63,7 @@ func TestSession_CancelQueued_WorksWhileIdle(t *testing.T) {
 	if text != "buffered on idle session" {
 		t.Fatalf("CancelQueued returned %q, want the queued text", text)
 	}
-	if depth := sess.QueueDepth(); depth != 0 {
+	if depth := sess.queueDepth(); depth != 0 {
 		t.Fatalf("QueueDepth after cancel: got %d, want 0", depth)
 	}
 }
@@ -221,7 +221,7 @@ func TestSession_CancelQueued_CanceledContext(t *testing.T) {
 	if _, _, err := sess.CancelQueued(ctx, 0, ""); err == nil {
 		t.Fatal("CancelQueued with canceled ctx: expected error, got nil")
 	}
-	if depth := sess.QueueDepth(); depth != 1 {
+	if depth := sess.queueDepth(); depth != 1 {
 		t.Fatalf("QueueDepth after ctx-canceled cancel: got %d, want 1", depth)
 	}
 }
