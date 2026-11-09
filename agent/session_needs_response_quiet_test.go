@@ -281,6 +281,36 @@ func TestNeedsResponseRestArmsBesideParkedSteering(t *testing.T) {
 	}
 }
 
+// A queue parked by a Stop is not work either: nothing will run it until the
+// person acts, so a turn that ends on needs_response still rests awaiting.
+// WireState and pendingQueueDepth already read the parked queue this way; the
+// settle and the quiet-period timer must agree (issue #4142).
+func TestNeedsResponseRestArmsBesideAParkedQueue(t *testing.T) {
+	t.Parallel()
+	sess, fake := newQuietPeriodSession(t, func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") })
+	ctx := tripwireCtx(t)
+	// The Stop parked a real message: the queue strip must keep showing it,
+	// and the raw depth still counts it.
+	queueOneMutation(t, sess, "queue-parked", "later")
+	if err := sess.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		snapshot.QueueHeld = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !sess.clientMutations.queueHeld() || sess.QueueDepth() == 0 {
+		t.Fatal("precondition: the queue is not parked with a message in it")
+	}
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	fake.Advance(needsResponseQuietPeriodDefault)
+	fake.Drain()
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state = %q, want awaiting: a queue parked by a Stop is not work", got)
+	}
+}
+
 // Runnable user steering that arrives during the quiet period will start the
 // next turn, so the rest stays idle and announces nothing.
 func TestNeedsResponseSteeringArrivingInsideTheQuietPeriodNeverArms(t *testing.T) {

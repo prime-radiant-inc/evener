@@ -799,7 +799,9 @@ func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
 	// Runnable user steering is queued input for this purpose: a carrier that
 	// returned its steer undelivered leaves it for the next wake, and a
 	// session that will move on its own is not waiting on the user.
-	moves := s.QueueDepth() > 0 || s.hasRunnableUserSteering()
+	// A queue parked by a Stop is not work either: nothing runs it until the
+	// person acts, and WireState already reads it that way (issue #4142).
+	moves := s.pendingQueueDepth() > 0 || s.hasRunnableUserSteering()
 	if settleTerminalState(hadOutput, goalKicked, moves, s.autonomyInFlight()) != SessionAwaiting {
 		return
 	}
@@ -857,9 +859,10 @@ func (s *Session) restStillPendingLocked(generation uint64) bool {
 // neither starts a turn the moment it arrives.
 func (s *Session) restAwaiting(generation uint64) bool {
 	steeringHeld := s.userSteeringHeld()
+	queueHeld := s.clientMutations != nil && s.clientMutations.queueHeld()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.restStillPendingLocked(generation) || len(s.inputQueue) > 0 || s.runnableUserSteeringLocked(steeringHeld) {
+	if !s.restStillPendingLocked(generation) || (!queueHeld && len(s.inputQueue) > 0) || s.runnableUserSteeringLocked(steeringHeld) {
 		return false
 	}
 	s.state = SessionAwaiting
