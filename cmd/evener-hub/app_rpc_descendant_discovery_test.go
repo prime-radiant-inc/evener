@@ -42,28 +42,23 @@ type childDiscoveryProvider struct {
 // timeout, and the test context still cancels the wait first when the test ends.
 const childDiscoveryWait = 15 * time.Second
 
-func awaitChildReady(ctx context.Context, t *testing.T, ready <-chan string) string {
+// awaitChildValue bounds one receive from a channel the real runtime must
+// feed. A closed channel fails at the wait rather than yielding a zero value
+// that only fails at an unrelated assertion later.
+func awaitChildValue[T any](ctx context.Context, t *testing.T, ch <-chan T, what string) T {
 	t.Helper()
+	waitCtx, cancel := context.WithTimeout(ctx, childDiscoveryWait)
+	defer cancel()
 	select {
-	case childID := <-ready:
-		return childID
-	case <-ctx.Done():
-		t.Fatalf("child readiness: %v", ctx.Err())
-		return ""
-	}
-}
-
-func awaitChildDiscoveryNotice(ctx context.Context, t *testing.T, notes <-chan appwire.Notification) appwire.Notification {
-	t.Helper()
-	select {
-	case note, ok := <-notes:
+	case value, ok := <-ch:
 		if !ok {
-			t.Fatal("notification connection closed before the child output")
+			t.Fatalf("%s: channel closed", what)
 		}
-		return note
-	case <-ctx.Done():
-		t.Fatalf("no child output notice: %v", ctx.Err())
-		return appwire.Notification{}
+		return value
+	case <-waitCtx.Done():
+		t.Fatalf("%s: %v", what, waitCtx.Err())
+		var zero T
+		return zero
 	}
 }
 
@@ -206,9 +201,7 @@ func testHubChildDiscovery(t *testing.T, scenario string) {
 	done := make(chan error, 1)
 	go func() { _, err := sess.ProcessInput(ctx, "child-discovery-root", nil); done <- err }()
 	t.Cleanup(func() { cancel(); <-done; sess.Close() })
-	readyCtx, cancelReady := context.WithTimeout(ctx, childDiscoveryWait)
-	childID := awaitChildReady(readyCtx, t, providerScript.ready)
-	cancelReady()
+	childID := awaitChildValue(ctx, t, providerScript.ready, "child readiness")
 	for _, row := range roster.List() {
 		if slices.Contains(row.RunningSubagentIDs, childID) {
 			t.Fatal("child already in initial roster")
@@ -317,10 +310,8 @@ func testHubChildDiscovery(t *testing.T, scenario string) {
 		t.Fatalf("discovery found=%v refreshes=%d reads=%d", found, refreshes.Load(), reads.Load())
 	}
 	close(providerScript.release)
-	notesCtx, cancelNotes := context.WithTimeout(ctx, childDiscoveryWait)
-	defer cancelNotes()
 	for {
-		note := awaitChildDiscoveryNotice(notesCtx, t, client.Notifications())
+		note := awaitChildValue(ctx, t, client.Notifications(), "no child output notice")
 		if note.Method != appwire.NotifyHistoryUpdated {
 			continue
 		}
