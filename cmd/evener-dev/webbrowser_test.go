@@ -835,7 +835,8 @@ drain:
 	if r := tg.await(t); r.status != 143 {
 		t.Fatalf("status = %d, want 143", r.status)
 	}
-	if launcher.guard(retirementGuard) != nil {
+	// mermaidguard is the first guard after retirementguard in launch order:
+	if launcher.guard(retirementGuard) != nil || launcher.guard("mermaidguard") != nil {
 		t.Fatal("a guard started after the interrupt")
 	}
 }
