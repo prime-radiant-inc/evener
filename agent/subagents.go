@@ -1736,8 +1736,92 @@ func (s *Session) launchSubagentRun(runCtx context.Context, sub *subagent, runCa
 	go func() {
 		defer s.sendersWG.Done()
 		defer runCancel()
+		s.runSubagentStartHook(runCtx, sub, sub.agentTypeName())
 		sub.run(runCtx, input, inputProvenance)
 	}()
+}
+
+// agentTypeName reports the child's hook-visible agent type: the plugin-scoped
+// catalog key for a plugin agent ("toolsmith:toolsmith"), and "subagent" for an
+// unnamed delegate or a resumed child whose spawn config predates the field.
+// sub.agentType is a different, older field that is empty for unnamed delegates,
+// so it is not the answer here.
+func (a *subagent) agentTypeName() string {
+	if a == nil || a.sess == nil {
+		return ""
+	}
+	a.sess.mu.Lock()
+	name := a.sess.cfg.spawn.agentType
+	a.sess.mu.Unlock()
+	if strings.TrimSpace(name) == "" {
+		return "subagent"
+	}
+	return name
+}
+
+// runSubagentStartHook fires the parent's SubagentStart hooks for one child run
+// launch. additionalContext reaches the child as steering; a copy the child
+// already holds is not delivered twice, which is what makes an idle-attention
+// drive (a launch on a child that already ran) a no-op when nothing was
+// compacted away. A failed hook must not fail the spawn: its summarized warning
+// goes to the operator and the run continues.
+//
+// The hook runs on the PARENT's runner — the parent owns the plugin set — but
+// reads the CHILD's identity, which is the value a matcher targets.
+func (s *Session) runSubagentStartHook(ctx context.Context, sub *subagent, agentType string) {
+	if s.hookRunner == nil || sub == nil || sub.sess == nil {
+		return
+	}
+	in := s.hookInput(plugin.HookSubagentStart)
+	in.AgentID = sub.sess.ID()
+	in.AgentType = agentType
+	res := s.hookRunner.RunSubagentStartFor(s.apiLogContext(ctx), in, agentType)
+	for _, m := range res.ModelContext {
+		if sub.sess.hookContextAlreadyPresent(m) {
+			continue
+		}
+		if err := sub.sess.deliverHookContext(m); err != nil {
+			s.emitDiagnosticWarning(events.WarningData{Message: err.Error()})
+		}
+	}
+	for _, m := range res.UserMessages {
+		s.deliverHookUserMessage(m)
+	}
+	// continue:false is honored as a stop of the SPAWNING action, which has
+	// already committed at this point: the delegate id is durable, the child
+	// session exists, and the caller holds it. The reason reaches the operator
+	// and the run proceeds, because abandoning sub.run here would strand the
+	// child's done channel and its generation.
+	if res.Stopped {
+		reason := strings.TrimSpace(res.StopReason)
+		if reason == "" {
+			reason = "SubagentStart hook stopped this run"
+		}
+		s.deliverHookUserMessage(reason)
+	}
+}
+
+// hookContextAlreadyPresent reports whether the child's current history holds a
+// hook-context steering turn with exactly this text. Claude re-injects a
+// SubagentStart hook's context only when the child no longer carries an earlier
+// copy, so a compaction that discarded the copy re-injects on the next launch
+// with no extra durable state. The scan reads history under s.mu; delivery
+// happens outside the lock, so hooks never run under it.
+func (s *Session) hookContextAlreadyPresent(text string) bool {
+	if s == nil || strings.TrimSpace(text) == "" {
+		return false
+	}
+	wrapped := wrapHookContext(text)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, turn := range s.history {
+		if turn.Kind == schema.TurnSteering &&
+			turn.SteeringKind == events.SteeringKindHookContext &&
+			turn.Message.Text() == wrapped {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Session) cancelAgent(agentID string) (any, error) {

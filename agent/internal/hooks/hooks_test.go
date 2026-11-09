@@ -433,6 +433,53 @@ func TestHookRunner_SessionStartUsesExplicitKind(t *testing.T) {
 	}
 }
 
+// TestRunSubagentStartFor_MatchesAgentType proves SubagentStart hooks match on
+// the child's agent type, the same value its agent_type input carries.
+func TestRunSubagentStartFor_MatchesAgentType(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookSubagentStart, plugin.RegisteredHook{Matcher: "^toolsmith:toolsmith$", Type: "command", Timeout: 5,
+		Command: `echo '{"hookSpecificOutput":{"hookEventName":"SubagentStart","additionalContext":"injected"}}'`})
+	got := r.RunSubagentStartFor(context.Background(), Input{HookEventName: "SubagentStart"}, "toolsmith:toolsmith")
+	if len(got.ModelContext) != 1 || got.ModelContext[0] != "injected" {
+		t.Fatalf("ModelContext = %v, want the injected context", got.ModelContext)
+	}
+	miss := r.RunSubagentStartFor(context.Background(), Input{HookEventName: "SubagentStart"}, "other")
+	if len(miss.ModelContext) != 0 {
+		t.Fatalf("another agent type must not match, got %v", miss.ModelContext)
+	}
+}
+
+// TestRunSubagentStartFor_Exit2IsUserOnly proves a spawn warning reaches the
+// operator and never the child's model, as one summarized line.
+func TestRunSubagentStartFor_Exit2IsUserOnly(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookSubagentStart, plugin.RegisteredHook{Type: "command", Timeout: 5,
+		Command: `echo "spawn warning" >&2; exit 2`})
+	got := r.RunSubagentStartFor(context.Background(), Input{HookEventName: "SubagentStart"}, "subagent")
+	if len(got.ModelContext) != 0 {
+		t.Fatalf("exit 2 must not reach the model, got %v", got.ModelContext)
+	}
+	if len(got.UserMessages) != 1 {
+		t.Fatalf("exit 2 stderr must reach the user, got %v", got.UserMessages)
+	}
+	if !strings.HasPrefix(got.UserMessages[0], "SubagentStart hook failed (exit 2)") {
+		t.Fatalf("a failed SubagentStart hook must warn with the event, hook, and exit code; got %q", got.UserMessages[0])
+	}
+}
+
+// TestRunSubagentStartFor_HonorsContinueFalse covers Claude's universal continue
+// field on the new event: the runner reports the stop and its reason, and the
+// dispatch site decides how to end the launch.
+func TestRunSubagentStartFor_HonorsContinueFalse(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookSubagentStart, plugin.RegisteredHook{Type: "command", Timeout: 5,
+		Command: `echo '{"continue":false,"stopReason":"no spawn"}'`})
+	got := r.RunSubagentStartFor(context.Background(), Input{HookEventName: "SubagentStart"}, "subagent")
+	if !got.Stopped || got.StopReason != "no spawn" {
+		t.Fatalf("Stopped/StopReason = %t/%q, want true/%q", got.Stopped, got.StopReason, "no spawn")
+	}
+}
+
 func TestHookRunner_PreToolUse_Deny(t *testing.T) {
 	runner := newRunner(nil, "")
 	// A command hook that outputs a deny JSON

@@ -469,8 +469,8 @@ func (r *Runner) runHook(ctx context.Context, hook plugin.RegisteredHook, event 
 	}
 
 	if err != nil {
-		if event == plugin.HookSessionStart {
-			return sessionStartFailureWarning(hook, err.Error(), -1)
+		if summarizesHookFailure(event) {
+			return hookFailureWarning(event, hook, err.Error(), -1)
 		}
 		return parsedHookOutput{Continue: true, IsError: true, SystemMessage: err.Error()}
 	}
@@ -489,23 +489,31 @@ func (r *Runner) runHook(ctx context.Context, hook plugin.RegisteredHook, event 
 	// facing warning line instead. Every other event keeps the Claude-compatible
 	// contract that a non-zero hook's stderr reaches the model (07 §Exit-code
 	// semantics), which is how a tool-event hook corrects the model.
-	if event == plugin.HookSessionStart && hr.ExitCode != 0 {
-		return sessionStartFailureWarning(hook, output, hr.ExitCode)
+	if summarizesHookFailure(event) && hr.ExitCode != 0 {
+		return hookFailureWarning(event, hook, output, hr.ExitCode)
 	}
 	return parseHookOutput(output, hr.ExitCode)
 }
 
-// maxHookFailureDetail bounds the excerpt of a failed SessionStart hook's output
-// carried on the warning line, so the summary stays one readable line.
+// maxHookFailureDetail bounds the excerpt of a failed hook's output carried on
+// the warning line, so the summary stays one readable line.
 const maxHookFailureDetail = 160
 
-// sessionStartFailureWarning renders a failed SessionStart hook as ONE user-facing
-// warning line: the event, the hook's configured identity, and its exit code,
-// optionally followed by the first line of its output so the operator can see WHY
-// without the model ever seeing it. exitCode < 0 means the hook never produced one
-// (a spawn failure or a timeout kill), in which case detail is the error text.
-func sessionStartFailureWarning(hook plugin.RegisteredHook, detail string, exitCode int) parsedHookOutput {
-	line := strings.Join(append([]string{"SessionStart hook"}, hookIdentityParts(hook)...), " ")
+// summarizesHookFailure reports whether a FAILED hook's output belongs to the
+// operator rather than the model. SessionStart's output is the session's first
+// steering input, and SubagentStart's is the child's; neither can act on shell
+// stderr, so both arrive as one summarized warning line.
+func summarizesHookFailure(event plugin.HookEvent) bool {
+	return event == plugin.HookSessionStart || event == plugin.HookSubagentStart
+}
+
+// hookFailureWarning renders a failed hook as ONE user-facing warning line: the
+// event, the hook's configured identity, and its exit code, optionally followed
+// by the first line of its output so the operator can see WHY without the model
+// ever seeing it. exitCode < 0 means the hook never produced one (a spawn
+// failure or a timeout kill), in which case detail is the error text.
+func hookFailureWarning(event plugin.HookEvent, hook plugin.RegisteredHook, detail string, exitCode int) parsedHookOutput {
+	line := strings.Join(append([]string{string(event) + " hook"}, hookIdentityParts(hook)...), " ")
 	if exitCode < 0 {
 		line += " failed to run"
 	} else {
@@ -716,6 +724,21 @@ func (r *Runner) RunSessionStartFor(ctx context.Context, input Input, kind plugi
 	}
 	outputs := r.runAll(ctx, plugin.HookSessionStart, target, input)
 	return collectSystemMessages(plugin.HookSessionStart, outputs)
+}
+
+// RunSubagentStartFor dispatches SubagentStart hooks for a specific child agent
+// type. The agent type is both the matcher target and the input's agent_type:
+// a plugin agent is named by its catalog key ("plugin:agent"), and an unnamed
+// delegate reports "subagent". An empty agent type falls back to "subagent",
+// because a child always knows what it is and a matcher must never silently
+// miss for want of a name.
+func (r *Runner) RunSubagentStartFor(ctx context.Context, input Input, agentType string) RunResult {
+	target := strings.TrimSpace(agentType)
+	if target == "" {
+		target = "subagent"
+	}
+	outputs := r.runAll(ctx, plugin.HookSubagentStart, target, input)
+	return collectSystemMessages(plugin.HookSubagentStart, outputs)
 }
 
 // RunSessionEnd dispatches SessionEnd hooks. No return value needed.
