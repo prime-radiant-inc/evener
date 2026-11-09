@@ -727,8 +727,25 @@ func (r *Runner) RunSubagentStop(ctx context.Context, input Input) StopResult {
 	return r.runStopEvent(ctx, plugin.HookSubagentStop, input)
 }
 
+// RunSubagentStopFor dispatches SubagentStop hooks for one child run and matches
+// them on the child's agent type — the same value SubagentStart matches on, so a
+// hook aimed at a plugin agent hears both ends of its run. The dispatch site
+// passes the already-normalized type (subagentHookAgentType owns the never-empty
+// fallback) in both input.AgentType and the target.
+func (r *Runner) RunSubagentStopFor(ctx context.Context, input Input, agentType string) StopResult {
+	return r.runStopEventFor(ctx, plugin.HookSubagentStop, input, strings.TrimSpace(agentType))
+}
+
 func (r *Runner) runStopEvent(ctx context.Context, event plugin.HookEvent, input Input) StopResult {
-	outputs := r.runAll(ctx, event, input.ToolName, input)
+	return r.runStopEventFor(ctx, event, input, input.ToolName)
+}
+
+// runStopEventFor is runStopEvent with an explicit matcher target. Stop has no
+// matcher in Claude, so its target stays the tool name (empty on a turn
+// boundary) and a configured matcher never narrows it; SubagentStop targets the
+// child's agent type.
+func (r *Runner) runStopEventFor(ctx context.Context, event plugin.HookEvent, input Input, target string) StopResult {
+	outputs := r.runAll(ctx, event, target, input)
 	var result StopResult
 	for _, o := range outputs {
 		applyStopped(event, o, &result.Stopped, &result.StopReason)
@@ -783,6 +800,15 @@ func (r *Runner) RunSessionEnd(ctx context.Context, input Input) {
 	r.runAll(ctx, plugin.HookSessionEnd, "", input)
 }
 
+// RunSessionEndFor dispatches SessionEnd hooks and matches them on the Claude
+// session end reason ("clear", "resume", "logout", "prompt_input_exit", "other").
+// The target is the same value the input's reason carries, so a hook reading
+// either sees one answer. A matcher that names no reason is unreachable here,
+// which is what Claude's "reason" matcher promises.
+func (r *Runner) RunSessionEndFor(ctx context.Context, input Input, reason string) {
+	r.runAll(ctx, plugin.HookSessionEnd, strings.TrimSpace(reason), input)
+}
+
 // RunPreCompactFor dispatches PreCompact hooks and matches them on the fold's
 // trigger ("manual" for /compact, "auto" for every other publisher), the same
 // value the input carries. There is deliberately no target-less wrapper: an
@@ -817,9 +843,14 @@ func (r *Runner) RunPostCompactFor(ctx context.Context, input Input, trigger str
 	return result
 }
 
-// RunNotification dispatches Notification hooks.
+// RunNotification dispatches Notification hooks and matches them on the
+// notification type the input carries (Claude's "notification_type"). Evener
+// emits one kind, a diagnostic warning, so the type is "warning"; the runner
+// reads it from the input for the same reason the tool events read tool_name
+// from theirs — the value a hook receives and the value its matcher targets are
+// one field and cannot disagree.
 func (r *Runner) RunNotification(ctx context.Context, input Input) RunResult {
-	outputs := r.runAll(ctx, plugin.HookNotification, "", input)
+	outputs := r.runAll(ctx, plugin.HookNotification, input.NotificationType, input)
 	return collectSystemMessages(plugin.HookNotification, outputs)
 }
 

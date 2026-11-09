@@ -2014,7 +2014,10 @@ func closeSupersededSession(sess *agent.Session, shutdownClaimed bool) {
 		sess.CloseForShutdown()
 		return
 	}
-	sess.Close()
+	// This close IS a clear: a concurrent thread/clear replaced this identity,
+	// which is the one session end reason evener can prove. A shutdown-claimed
+	// session was already closed by CloseForShutdown and reports no reason.
+	sess.CloseWithReason("clear")
 }
 
 // processNextServeInput gives durable turn/start work priority over the

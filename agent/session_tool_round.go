@@ -603,6 +603,7 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 	s.mu.Lock()
 	delivered := s.comm.called
 	text = s.comm.reply
+	stopHookActive := s.stopHookActive
 	s.mu.Unlock()
 	if !delivered && !askedThisRound {
 		return false, "", nil
@@ -615,6 +616,12 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 		// boundary — spec §5.1/§5.5).
 		hi := s.hookInput(plugin.HookStop)
 		hi.Reason = "communicate.end_turn"
+		// stop_hook_active tells a Stop hook whether this dispatch follows a
+		// block in the same turn, so a hook that blocks to ask for more work can
+		// tell the continuation apart and avoid blocking forever. The reply text
+		// is last_assistant_message: it is what the turn is about to deliver.
+		hi.StopHookActive = &stopHookActive
+		hi.LastAssistantMessage = text
 		stopResult := s.hookRunner.RunStop(s.apiLogContext(ctx), hi)
 		for _, m := range stopResult.ModelContext {
 			if err := s.deliverHookContext(m); err != nil {
@@ -625,7 +632,11 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 			s.deliverHookUserMessage(m)
 		}
 		if stopResult.Blocked {
-			// Don't finish — keep looping.
+			// Don't finish — keep looping. The next Stop dispatch in this turn
+			// is a continuation, which is what stop_hook_active reports.
+			s.mu.Lock()
+			s.stopHookActive = true
+			s.mu.Unlock()
 			return false, "", nil
 		}
 	}

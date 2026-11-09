@@ -641,6 +641,12 @@ type Session struct {
 
 	// communicate/result tool state (transient, reset each processOneInput call)
 	comm communicateResult
+	// stopHookActive is the Stop hook's stop_hook_active, per TURN rather than
+	// per process: it is false at a turn's first Stop dispatch and true on any
+	// dispatch that follows a Stop hook's block in the same turn, and a tool call
+	// clears it (execTool), because the work the block asked for has been done.
+	// Cleared with comm when the next turn starts. Guarded by mu.
+	stopHookActive bool
 	// latestReport is the most recent terminal communicate this session
 	// accepted. Unlike comm it survives the next input's reset, so a drain
 	// can restore the report that input erased.

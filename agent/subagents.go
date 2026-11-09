@@ -128,6 +128,12 @@ type subagent struct {
 	// guard to a run clears it instead (resetSubagentForRunLocked), since that
 	// run drains the child. Guarded by sub.mu.
 	attentionDriveRefused bool
+	// stopHookActive is the SubagentStop hook's stop_hook_active for THIS run:
+	// false at the run's first dispatch and true only when a SubagentStop hook
+	// blocked and the run continued. It is reset at every run start
+	// (resetSubagentForRunLocked), so a resumed child never inherits a previous
+	// run's continuation. Guarded by sub.mu.
+	stopHookActive bool
 }
 
 // startBlockedLocked reports whether the child can't take a new generation
@@ -1729,6 +1735,9 @@ func resetSubagentForRunLocked(sub *subagent, cancel context.CancelFunc, started
 	// The run drains the child's attention, so a refusal recorded on the guard
 	// it takes over is no longer owed a re-drive.
 	sub.attentionDriveRefused = false
+	// A fresh run has not been blocked by a SubagentStop hook yet, whatever the
+	// previous one did.
+	sub.stopHookActive = false
 }
 
 func (s *Session) launchSubagentRun(runCtx context.Context, sub *subagent, runCancel context.CancelFunc, input string, inputProvenance *provenance.Causal) {
@@ -2652,7 +2661,24 @@ func (a *subagent) runSubagentStopHook(ctx context.Context, res string, err erro
 	} else {
 		input.Reason = "complete"
 	}
-	stopResult := a.sess.hookRunner.RunSubagentStop(a.sess.apiLogContext(ctx), input)
+	// The matcher target and the input's agent_type are the same value: the type
+	// SubagentStart reported for this child, normalized once by
+	// subagentHookAgentType so neither can be empty.
+	agentType := subagentHookAgentType(a.agentTypeName(), "")
+	input.AgentType = agentType
+	// stop_hook_active is the run's own continuation flag, not the delivered
+	// report: a hook that blocks to ask for more work can tell the next dispatch
+	// apart from the first.
+	a.mu.Lock()
+	active := a.stopHookActive
+	a.mu.Unlock()
+	input.StopHookActive = &active
+	// last_assistant_message is the child's last ASSISTANT turn, which is what
+	// the child said. The delivered report is not the same thing: a run that
+	// ends on a nudge or an empty result can deliver text that no assistant turn
+	// carries.
+	input.LastAssistantMessage = a.lastAssistantText()
+	stopResult := a.sess.hookRunner.RunSubagentStopFor(a.sess.apiLogContext(ctx), input, agentType)
 	for _, m := range stopResult.ModelContext {
 		if steerErr := a.sess.deliverHookContext(m); steerErr != nil {
 			return res, errors.Join(err, steerErr)
@@ -2671,11 +2697,30 @@ func (a *subagent) runSubagentStopHook(ctx context.Context, res string, err erro
 	if !stopResult.Blocked {
 		return res, err
 	}
+	a.mu.Lock()
+	a.stopHookActive = true
+	a.mu.Unlock()
 	reason := strings.TrimSpace(stopResult.BlockReason)
 	if reason == "" {
 		reason = "SubagentStop hook blocked completion. Continue and address the hook feedback before stopping."
 	}
 	return a.sess.processInputWithProvenance(ctx, reason, nil, inputProvenance)
+}
+
+// lastAssistantText is the child's most recent ASSISTANT turn text, or "" when
+// it has none. It is SubagentStop's last_assistant_message.
+func (a *subagent) lastAssistantText() string {
+	if a == nil || a.sess == nil {
+		return ""
+	}
+	a.sess.mu.Lock()
+	defer a.sess.mu.Unlock()
+	for i := len(a.sess.history) - 1; i >= 0; i-- {
+		if a.sess.history[i].Kind == schema.TurnAssistant {
+			return a.sess.history[i].Message.Text()
+		}
+	}
+	return ""
 }
 
 func (a *subagent) followUpProvenance(inputProvenance *provenance.Causal) *provenance.Causal {

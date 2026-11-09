@@ -19,6 +19,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/mcpconfig"
 	"primeradiant.com/evener/agent/plugin"
@@ -29,6 +30,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/llm"
 	apilog "primeradiant.com/evener/llm/apilog"
@@ -1864,4 +1866,83 @@ func TestRunServeClearSessionInheritsTheShutdownLifetime(t *testing.T) {
 	if !liveAtClear {
 		t.Fatal("the cleared session's lifetime context was already over when the clear ran")
 	}
+}
+
+// TestClearSupersededSessionSendsClearReason proves the clear close reports the
+// one session end reason evener can prove. A session replaced by thread/clear is
+// closed through closeSupersededSession, and its SessionEnd hook must see
+// reason "clear" and be matched by a "clear" matcher — not silently skipped by a
+// target evener never set.
+func TestClearSupersededSessionSendsClearReason(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	pluginDir := filepath.Join(dir, "clear-hook-plugin")
+	if err := os.MkdirAll(filepath.Join(pluginDir, ".claude-plugin"), 0o755); err != nil {
+		t.Fatalf("mkdir plugin manifest dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginDir, ".claude-plugin", "plugin.json"),
+		[]byte(`{"name":"clear-hook-plugin","version":"1.0.0"}`), 0o644); err != nil {
+		t.Fatalf("write plugin manifest: %v", err)
+	}
+	capture := filepath.Join(dir, "session-end-input.jsonl")
+	clearMarker := filepath.Join(dir, "clear-matched")
+	otherMarker := filepath.Join(dir, "other-matched")
+	if err := os.MkdirAll(filepath.Join(pluginDir, "hooks"), 0o755); err != nil {
+		t.Fatalf("mkdir hooks dir: %v", err)
+	}
+	hooksJSON := `{"hooks":{"SessionEnd":[` +
+		`{"matcher":"*","hooks":[{"type":"command","timeout":5,"command":` + jsonString("cat >> "+shellquote.Literal(capture)+"; echo >> "+shellquote.Literal(capture)) + `}]},` +
+		`{"matcher":"clear","hooks":[{"type":"command","timeout":5,"command":` + jsonString("touch "+shellquote.Literal(clearMarker)) + `}]},` +
+		`{"matcher":"other","hooks":[{"type":"command","timeout":5,"command":` + jsonString("touch "+shellquote.Literal(otherMarker)) + `}]}` +
+		`]}}`
+	if err := os.WriteFile(filepath.Join(pluginDir, "hooks", "hooks.json"), []byte(hooksJSON), 0o644); err != nil {
+		t.Fatalf("write hooks.json: %v", err)
+	}
+
+	client := llm.NewClient()
+	client.Register(&closedStreamAdapter{})
+	sess, err := agent.NewSession(client, provider.NewOpenAIProfile("test-model"),
+		execenv.NewLocalExecutionEnvironment(t.TempDir()),
+		agent.SessionConfig{PluginDirs: []string{pluginDir}})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	// The hook runner announces HookStart/HookEnd on the session's event stream;
+	// a full buffer must not wedge the close.
+	sess.ConsumeEventsLossless(func(events.SessionEvent) {}, func() {})
+
+	closeSupersededSession(sess, false)
+
+	data, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatalf("read SessionEnd capture: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("SessionEnd ran %d time(s), want 1: %q", len(lines), string(data))
+	}
+	var got struct {
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal([]byte(lines[0]), &got); err != nil {
+		t.Fatalf("decode SessionEnd input: %v (%s)", err, lines[0])
+	}
+	if got.Reason != "clear" {
+		t.Errorf("session end reason = %q, want clear", got.Reason)
+	}
+	if _, err := os.Stat(clearMarker); err != nil {
+		t.Errorf("the clear-matched SessionEnd hook did not fire: %v", err)
+	}
+	if _, err := os.Stat(otherMarker); !os.IsNotExist(err) {
+		t.Errorf("the other-matched SessionEnd hook fired for a clear; stat err = %v", err)
+	}
+}
+
+// jsonString returns s as a JSON string literal.
+func jsonString(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
 }

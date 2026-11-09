@@ -1750,6 +1750,85 @@ func TestRunSubagentStop_ContinueFalseStops(t *testing.T) {
 	}
 }
 
+// TestRunSubagentStopFor_MatchesAgentType proves SubagentStop's matcher target is
+// the child's agent type, the same value SubagentStart matches on: a hook for one
+// type fires and a hook for another does not.
+func TestRunSubagentStopFor_MatchesAgentType(t *testing.T) {
+	r := newRunner(nil, "")
+	hit := filepath.Join(t.TempDir(), "agent-type-hit")
+	miss := filepath.Join(t.TempDir(), "agent-type-miss")
+	r.Add(plugin.HookSubagentStop, plugin.RegisteredHook{
+		Matcher: "toolsmith:toolsmith", Type: "command", Timeout: 5,
+		Command: "touch " + shellquote.Literal(hit),
+	})
+	r.Add(plugin.HookSubagentStop, plugin.RegisteredHook{
+		Matcher: "subagent", Type: "command", Timeout: 5,
+		Command: "touch " + shellquote.Literal(miss),
+	})
+	out := r.RunSubagentStopFor(context.Background(), Input{HookEventName: "SubagentStop"}, "toolsmith:toolsmith")
+	if out.Blocked || out.Stopped {
+		t.Fatalf("a plain touch hook must not block or stop: %+v", out)
+	}
+	if _, err := os.Stat(hit); err != nil {
+		t.Fatalf("the toolsmith:toolsmith hook did not fire: %v", err)
+	}
+	if _, err := os.Stat(miss); !os.IsNotExist(err) {
+		t.Fatalf("a subagent-matched hook fired for a plugin agent; stat err = %v", err)
+	}
+}
+
+// TestRunSessionEndFor_MatchesReason proves SessionEnd's matcher target is the
+// Claude session end reason: a clear close fires only the clear hook, a plain
+// close only the other hook.
+func TestRunSessionEndFor_MatchesReason(t *testing.T) {
+	dir := t.TempDir()
+	clearMarker := filepath.Join(dir, "clear")
+	otherMarker := filepath.Join(dir, "other")
+	r := newRunner(nil, "")
+	r.Add(plugin.HookSessionEnd, plugin.RegisteredHook{
+		Matcher: "clear", Type: "command", Timeout: 5,
+		Command: "touch " + shellquote.Literal(clearMarker),
+	})
+	r.Add(plugin.HookSessionEnd, plugin.RegisteredHook{
+		Matcher: "other", Type: "command", Timeout: 5,
+		Command: "touch " + shellquote.Literal(otherMarker),
+	})
+
+	r.RunSessionEndFor(context.Background(), Input{HookEventName: "SessionEnd", Reason: "clear"}, "clear")
+	if _, err := os.Stat(clearMarker); err != nil {
+		t.Fatalf("the clear-matched hook did not fire for reason clear: %v", err)
+	}
+	if _, err := os.Stat(otherMarker); !os.IsNotExist(err) {
+		t.Fatalf("the other-matched hook fired for reason clear; stat err = %v", err)
+	}
+}
+
+// TestRunNotification_MatchesNotificationType proves Notification's matcher
+// target is the input's notification_type: a hook for the emitted type fires and
+// one for a Claude type evener never emits does not.
+func TestRunNotification_MatchesNotificationType(t *testing.T) {
+	dir := t.TempDir()
+	warningMarker := filepath.Join(dir, "warning")
+	idleMarker := filepath.Join(dir, "idle")
+	r := newRunner(nil, "")
+	r.Add(plugin.HookNotification, plugin.RegisteredHook{
+		Matcher: "warning", Type: "command", Timeout: 5,
+		Command: "touch " + shellquote.Literal(warningMarker),
+	})
+	r.Add(plugin.HookNotification, plugin.RegisteredHook{
+		Matcher: "idle_prompt", Type: "command", Timeout: 5,
+		Command: "touch " + shellquote.Literal(idleMarker),
+	})
+
+	r.RunNotification(context.Background(), Input{HookEventName: "Notification", NotificationType: "warning"})
+	if _, err := os.Stat(warningMarker); err != nil {
+		t.Fatalf("the warning-matched hook did not fire: %v", err)
+	}
+	if _, err := os.Stat(idleMarker); !os.IsNotExist(err) {
+		t.Fatalf("an idle_prompt-matched hook fired for a warning; stat err = %v", err)
+	}
+}
+
 // TestRunPostToolBatch_IgnoresConfiguredMatcher proves Claude's "There is no
 // matcher for this event": a configured matcher naming one tool must not skip
 // a PostToolBatch hook, because the event describes a whole batch.

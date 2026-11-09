@@ -261,7 +261,7 @@ func (s *Session) emitWithProvenance(kind events.EventKind, data events.EventDat
 		s.jobManager.onSessionEvent(ev)
 	}
 	if kind == events.EventWarning {
-		s.fireNotificationHook(warningHookMessage(data))
+		s.fireNotificationHook(warningHookMessage(data), warningHookTitle(data))
 	}
 }
 
@@ -557,7 +557,7 @@ func (s *Session) SetDescendantEventFunc(f func(events.SessionEvent)) {
 // timeout. A close that has already published its budget supersedes that, and an
 // exhausted deadline of either kind declines the hook rather than launching one
 // nothing is left to wait for.
-func (s *Session) fireNotificationHook(message string) {
+func (s *Session) fireNotificationHook(message, title string) {
 	ctx := s.sessionContext()
 	s.closeCtxMu.RLock()
 	closeCtx := s.closeCtx
@@ -568,7 +568,7 @@ func (s *Session) fireNotificationHook(message string) {
 	if ctx.Err() != nil {
 		return
 	}
-	s.runNotificationHook(ctx, message)
+	s.runNotificationHook(ctx, message, title)
 }
 
 func warningHookMessage(data events.EventData) string {
@@ -583,13 +583,36 @@ func warningHookMessage(data events.EventData) string {
 	return fmt.Sprint(data)
 }
 
-func (s *Session) runNotificationHook(ctx context.Context, message string) {
+// warningHookTitle is the warning's own title, empty when it carries none. It is
+// the Notification hook's "title" field, so a hook renders the same heading the
+// user sees.
+func warningHookTitle(data events.EventData) string {
+	switch v := data.(type) {
+	case events.WarningData:
+		return v.Title
+	case *events.WarningData:
+		if v != nil {
+			return v.Title
+		}
+	}
+	return ""
+}
+
+// notificationHookType is the Claude notification_type evener emits. Evener has
+// exactly one user-visible notification kind — a diagnostic warning — so this is
+// evener-native rather than Claude's permission_prompt/idle_prompt vocabulary,
+// and the runner matches on the value the input carries.
+const notificationHookType = "warning"
+
+func (s *Session) runNotificationHook(ctx context.Context, message, title string) {
 	if s.hookRunner == nil {
 		return
 	}
 	input := s.hookInput(plugin.HookNotification)
 	input.Message = message
 	input.Reason = message
+	input.NotificationType = notificationHookType
+	input.Title = title
 	result := s.hookRunner.RunNotification(s.apiLogContext(ctx), input)
 	for _, m := range result.ModelContext {
 		if err := s.deliverHookContext(m); err != nil {

@@ -113,7 +113,7 @@ func FuzzSessionAuxExactProgram(f *testing.F) {
 			nilSession.emitDiagnosticWarning(events.WarningData{})
 		case 10:
 			s := newSession(t)
-			s.runNotificationHook(context.Background(), "ignored")
+			s.runNotificationHook(context.Background(), "ignored", "")
 		case 11:
 			fuzzAuxForkBasic(t)
 		case 12:
@@ -142,7 +142,7 @@ func FuzzSessionAuxExactProgram(f *testing.F) {
 			runner.Add(plugin.HookNotification, plugin.RegisteredHook{Matcher: "*", Type: "command", Timeout: 5, Command: `printf '%s\n' '{"hookSpecificOutput":{"additionalContext":"model","systemMessage":"user"}}'`})
 			runner.Add(plugin.HookNotification, plugin.RegisteredHook{Matcher: "*", Type: "command", Timeout: 5, Command: `printf '%s\n' 'user'`})
 			s.hookRunner = runner
-			s.runNotificationHook(context.Background(), "notice")
+			s.runNotificationHook(context.Background(), "notice", "")
 			_ = s.Events()
 			_ = warningHookMessage((*events.WarningData)(nil))
 			_ = warningHookMessage(&events.WarningData{Message: "pointer"})

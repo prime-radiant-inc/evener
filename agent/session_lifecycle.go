@@ -95,6 +95,15 @@ func (s *Session) Close() {
 	s.close(context.Background(), closeOptions{cleanupEnv: true})
 }
 
+// CloseWithReason closes the session and reports the given Claude session end
+// reason to SessionEnd hooks. Evener can prove only "clear" (a thread clear
+// replaced this identity); every other caller passes nothing, which reaches the
+// hooks as Claude's "other". An unrecognized reason is reduced to "other" too,
+// so a hook matched on a reason evener cannot prove never fires on a guess.
+func (s *Session) CloseWithReason(reason string) {
+	s.close(context.Background(), closeOptions{cleanupEnv: true, reason: reason})
+}
+
 // CloseForShutdown closes the session with a terminal lifecycle boundary.
 // A cancelled in-flight turn may already have published an interrupted idle
 // boundary; that boundary must not suppress the session's closed notification.
@@ -105,6 +114,31 @@ func (s *Session) CloseForShutdown() {
 type closeOptions struct {
 	cleanupEnv    bool
 	forceTerminal bool
+	// reason is the Claude session end reason ("clear", "resume", "logout",
+	// "prompt_input_exit", "other"). Empty means "other": the normal close paths
+	// can prove no reason, and SessionEnd must not claim one they cannot.
+	reason string
+}
+
+// claudeSessionEndReasons is Claude's closed session end vocabulary. A hook
+// matcher targets exactly one of these words.
+var claudeSessionEndReasons = map[string]bool{
+	"clear":             true,
+	"resume":            true,
+	"logout":            true,
+	"prompt_input_exit": true,
+	"other":             true,
+}
+
+// claudeSessionEndReason maps a caller's reason onto Claude's vocabulary. Evener
+// can prove only "clear"; an empty or unrecognized reason is "other" rather than
+// a word a hook would act on.
+func claudeSessionEndReason(reason string) string {
+	trimmed := strings.TrimSpace(reason)
+	if claudeSessionEndReasons[trimmed] {
+		return trimmed
+	}
+	return "other"
 }
 
 // releaseRuntime runs the session's single one-time teardown under an explicit
@@ -682,7 +716,10 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 			// SessionEnd hooks (best-effort, bounded timeout)
 			if s.hookRunner != nil {
 				hookCtx, hookCancel := context.WithTimeout(context.Background(), 10*time.Second)
-				s.hookRunner.RunSessionEnd(s.apiLogContext(hookCtx), s.hookInput(plugin.HookSessionEnd))
+				reason := claudeSessionEndReason(options.reason)
+				in := s.hookInput(plugin.HookSessionEnd)
+				in.Reason = reason
+				s.hookRunner.RunSessionEndFor(s.apiLogContext(hookCtx), in, reason)
 				hookCancel()
 			}
 
@@ -2054,6 +2091,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	s.restMu.Unlock()
 	s.turnStartedAt = s.sclock().Now()
 	s.comm = communicateResult{}
+	// stop_hook_active is per turn: a continuation a Stop hook blocked into this
+	// turn must not leak into the next one.
+	s.stopHookActive = false
 	// A claimed answering steering carrier has already crossed its durable
 	// admission boundary before this carrier turn runs, so preserve its
 	// established entry-clear behavior. Ordinary user input clears only after

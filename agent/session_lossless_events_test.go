@@ -366,7 +366,7 @@ func TestNotificationHookRunningAtShutdownIsInterrupted(t *testing.T) {
 	hookDone := make(chan struct{})
 	go func() {
 		defer close(hookDone)
-		s.fireNotificationHook("warning")
+		s.fireNotificationHook("warning", "")
 	}()
 	waitFor(t, func() bool {
 		_, err := os.Stat(marker)
@@ -443,7 +443,7 @@ func TestNotificationHookDeclinedOnceTheSessionLifetimeIsOver(t *testing.T) {
 	})
 	s.hookRunner = runner
 
-	s.fireNotificationHook("warning after shutdown started")
+	s.fireNotificationHook("warning after shutdown started", "")
 
 	if len(dispatched) != 0 {
 		t.Fatal("a warning emitted after the session lifetime ended dispatched a notification hook")
@@ -472,7 +472,7 @@ func TestNotificationHookUsesCloseContextAndSkipsExpiredClose(t *testing.T) {
 	// under a millisecond. 10s sits far below the hook's own 30s timeout, so
 	// it still fires if cancellation stops being honored.
 	awaitWithin(t, 10*time.Second, "canceled notification hook", func() {
-		s.runNotificationHook(ctx, "warning")
+		s.runNotificationHook(ctx, "warning", "")
 	})
 
 	marker := t.TempDir() + "/hook-started"
@@ -485,7 +485,7 @@ func TestNotificationHookUsesCloseContextAndSkipsExpiredClose(t *testing.T) {
 	})
 	s.hookRunner = runner
 	s.closeCtx = ctx
-	s.fireNotificationHook("expired warning")
+	s.fireNotificationHook("expired warning", "")
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("expired close started notification hook; stat error = %v", err)
 	}
