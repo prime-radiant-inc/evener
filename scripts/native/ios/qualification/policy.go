@@ -158,18 +158,28 @@ func checkLock(ctx context.Context, committed, resolved, output string) error {
 	if err != nil {
 		return fmt.Errorf("%w: committed lock: %w", errLockMismatch, err)
 	}
-	diff, err := exec.CommandContext(ctx, "git", "diff", "--no-index", "--no-ext-diff", "--text", "--", committed, candidatePath).CombinedOutput()
-	var exit *exec.ExitError
-	if err != nil && (!errors.As(err, &exit) || exit.ExitCode() != 1) {
-		return fmt.Errorf("lock diff: %w", err)
+	diffPath := filepath.Join(output, "Podfile.lock.diff")
+	// An equal nonempty lock needs no external diff: write the empty diff Git
+	// would have produced and return without launching it. This also makes an
+	// equal lock's outcome independent of whether Git is installed or the
+	// context was cancelled. An empty committed lock is never equal evidence:
+	// it still falls through to rejection below, with Git's diff retained.
+	equal := len(original) > 0 && bytes.Equal(original, candidate)
+	var diff []byte
+	if !equal {
+		diff, err = exec.CommandContext(ctx, "git", "diff", "--no-index", "--no-ext-diff", "--text", "--", committed, candidatePath).CombinedOutput()
+		var exit *exec.ExitError
+		if err != nil && (!errors.As(err, &exit) || exit.ExitCode() != 1) {
+			return fmt.Errorf("lock diff: %w", err)
+		}
 	}
-	if err := os.WriteFile(filepath.Join(output, "Podfile.lock.diff"), diff, 0o600); err != nil {
+	if err := os.WriteFile(diffPath, diff, 0o600); err != nil {
 		return err
 	}
-	if len(original) == 0 || !bytes.Equal(original, candidate) {
-		return errLockMismatch
+	if equal {
+		return nil
 	}
-	return nil
+	return errLockMismatch
 }
 
 func selectSimulator(data []byte) (string, string, error) {
