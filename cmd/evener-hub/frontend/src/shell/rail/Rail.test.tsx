@@ -42,6 +42,7 @@ import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import { hoverForTooltip } from "../../widgets/tooltip/tooltipTestUtils";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { ClientProvider } from "../clientContext";
+import { MobilePanel } from "../mobile/MobilePanel";
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { archiveSessionIdentity, Rail } from "./Rail";
@@ -2104,6 +2105,20 @@ describe("resource-backed Rail", () => {
     expect(projectRow.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByRole("treeitem", { name: /keyboard child/i })).toBeNull();
   });
+
+  test("tapping the already-focused session in the mobile drawer closes it", () => {
+    installState([sectionResource("live", [summary({ ref: "local:active", session_id: "active", title: "Active" })])]);
+    const paneId = workspaceStore.getState().openPane("session", { ref: "local:active" });
+    expect(workspaceStore.getState().focusedPaneId).toBe(paneId);
+    const onClose = vi.fn();
+    render(<MobilePanel rail={<Rail />} open onClose={onClose} />);
+
+    fireEvent.click(within(sectionRoot("Live")).getByText("Active"));
+
+    expect(workspaceStore.getState().focusedPaneId).toBe(paneId);
+    expect(onClose).toHaveBeenCalled();
+  });
+
   test("a loading row is passive: keyboard activation persists no expansion override", () => {
     window.history.replaceState({}, "", "/");
     // An unloaded project starts collapsed, so expand it first to render its

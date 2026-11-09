@@ -332,11 +332,20 @@ function routePlacementIsApplied(
   const childPanes = panes.filter(
     (pane) => pane.type === "session" && pane.slot === "secondary" && sessionRefOf(pane) === ref,
   );
+  const child = childPanes[0];
+  // The cascade route role is a copy of its source record; parent metadata is
+  // keyed by the original workspace record.
+  const originalChild = child === undefined ? undefined : workspace.panes.find((pane) => pane.id === child.id);
+  const childParent = originalChild === undefined ? undefined : conversationOpenParentRef(originalChild);
   return (
     ownerPanes.length === 1 &&
     ownerPanes[0]?.id === main.id &&
-    childPanes.length === 1 &&
-    focusIsApplied(childPanes[0]?.id ?? "")
+    child !== undefined &&
+    focusIsApplied(child.id) &&
+    // A placement that already has the right shape is not settled until the
+    // child records its owner, or a host swap loses the Back target.
+    childParent !== undefined &&
+    conversationContextIncludes(childParent, ancestorRef)
   );
 }
 

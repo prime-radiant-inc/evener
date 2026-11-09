@@ -781,6 +781,50 @@ describe("replacePrimary", () => {
     expect(workspaceStore.getState().focusedPaneId).toBe(sessionId);
   });
 
+  // The immediate pane a session link opens is already the requested identity.
+  // Reusing it keeps its one mount and its retained view while the replacement
+  // still clears every other pane.
+  test("reuses an existing pane of the requested identity for the new primary", () => {
+    const workspace = workspaceStore.getState();
+    const previousMain = workspace.replacePrimary("session", { ref: "local:session-a" });
+    const existing = workspace.openPane("session", { ref: "local:session-b" }, { slot: "secondary" });
+    workspace.openPane("doc", { ref: "secondary" });
+
+    const replaced = workspace.replacePrimary("session", { ref: "local:session-b" });
+
+    expect(replaced).toBe(existing);
+    expect(replaced).not.toBe(previousMain);
+    expect(workspaceStore.getState().panes).toHaveLength(1);
+    expect(workspaceStore.getState().panes[0]).toMatchObject({
+      id: existing,
+      type: "session",
+      params: { ref: "local:session-b" },
+      slot: "main",
+    });
+    expect(workspaceStore.getState().focusedPaneId).toBe(existing);
+  });
+
+  test("does not reuse a secondary singleton with stale params", () => {
+    const workspace = workspaceStore.getState();
+    workspace.replacePrimary("settings", { section: "general" });
+    const stale: OpenPaneRecord = {
+      id: "pane_settings_secondary",
+      type: "settings",
+      params: { section: "theme" },
+      slot: "secondary",
+    };
+    workspaceStore.setState({
+      panes: [...workspaceStore.getState().panes, stale],
+      focusedPaneId: workspaceStore.getState().focusedPaneId,
+    });
+
+    const replaced = workspace.replacePrimary("settings", { section: "credentials" });
+
+    expect(replaced).not.toBe(stale);
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ section: "credentials" });
+    expect(workspaceStore.getState().panes).toHaveLength(1);
+  });
+
   // A replacement that always rebuilds the workspace clears useful secondary
   // panes even when the requested primary is already the current identity.
   test("preserves secondary panes when the requested primary identity is already main", () => {
