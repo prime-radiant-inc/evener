@@ -50,6 +50,9 @@
 # replaced in their consumers. Run it inside the workspace checkout: package
 # enumeration needs the workspace, while the consumer probe itself does not.
 #
+# Indexed arrays and while-read only: stock macOS bash 3.2 has neither
+# associative arrays nor mapfile (see scripts/fuzz/run-fuzz.sh).
+#
 # Exit status: 0 every module passed, 1 a module is missing a requirement,
 # 2 a consumer setup problem or usage error (also when both occur).
 set -uo pipefail
@@ -97,39 +100,65 @@ scratch_dir tmp evener-consumer-check
 
 # Resolve every target directory, and every workspace module that its consumer
 # must replace, once. Directories are keyed by their absolute path.
-declare -A dir_seen=()
 dirs=()
 resolved=""
-resolve_dir() {
-	local dir
+add_dir() {
+	local dir i
 	dir="$(CDPATH='' cd -- "$1" && pwd)" || die "module directory does not exist: $1"
-	if [ -z "${dir_seen[$dir]:-}" ]; then
-		dir_seen[$dir]=1
-		dirs+=("$dir")
-	fi
+	i=0
+	while [ "$i" -lt "${#dirs[@]}" ]; do
+		if [ "${dirs[$i]}" = "$dir" ]; then
+			resolved="$dir"
+			return 0
+		fi
+		i=$((i + 1))
+	done
+	dirs+=("$dir")
 	resolved="$dir"
 }
 
 resolved_targets=()
-for dir in "${target_dirs[@]}"; do
-	resolve_dir "$dir"
+for target in "${target_dirs[@]}"; do
+	add_dir "$target"
 	resolved_targets+=("$resolved")
 done
-for dir in "${workspace_dirs[@]}"; do
-	resolve_dir "$dir"
-done
+if [ "${#workspace_dirs[@]}" -gt 0 ]; then
+	for target in "${workspace_dirs[@]}"; do
+		add_dir "$target"
+	done
+fi
 
-declare -A path_of=()
-declare -A path_dir=()
-for dir in "${dirs[@]}"; do
+paths=()
+i=0
+while [ "$i" -lt "${#dirs[@]}" ]; do
+	dir="${dirs[$i]}"
 	path="$(cd "$dir" && GOWORK=off GOFLAGS= go list -m -f '{{.Path}}' 2>/dev/null)" || die "$dir: cannot read the module path from go.mod"
 	[ -n "$path" ] || die "$dir: go.mod names no module path"
-	if [ -n "${path_dir[$path]:-}" ]; then
-		die "duplicate module path $path in ${path_dir[$path]} and $dir"
-	fi
-	path_of[$dir]="$path"
-	path_dir[$path]="$dir"
+	j=0
+	while [ "$j" -lt "$i" ]; do
+		if [ "${paths[$j]}" = "$path" ]; then
+			die "duplicate module path $path in ${dirs[$j]} and $dir"
+		fi
+		j=$((j + 1))
+	done
+	paths+=("$path")
+	i=$((i + 1))
 done
+
+# find_dir_index sets dir_index to the argument's position in dirs.
+dir_index=-1
+find_dir_index() {
+	local needle="$1" i
+	i=0
+	while [ "$i" -lt "${#dirs[@]}" ]; do
+		if [ "${dirs[$i]}" = "$needle" ]; then
+			dir_index=$i
+			return 0
+		fi
+		i=$((i + 1))
+	done
+	dir_index=-1
+}
 
 # The consumer's sum must cover every external module its graph can select. The
 # per-module sums are incomplete alone (a workspace fills the gaps from its
@@ -149,38 +178,55 @@ sort -u "$sums_raw" >"$sums" || die "cannot sort the consumer go.sum"
 
 gap_modules=0
 setup_modules=0
-for i in "${!resolved_targets[@]}"; do
+i=0
+while [ "$i" -lt "${#resolved_targets[@]}" ]; do
 	dir="${resolved_targets[$i]}"
-	path="${path_of[$dir]}"
 	consumer="$tmp/consumer-$i"
+	i=$((i + 1))
+	find_dir_index "$dir"
+	[ "$dir_index" -ge 0 ] || die "internal: unresolved module directory $dir"
+	path="${paths[$dir_index]}"
 	mkdir -p "$consumer" || die "cannot create $consumer"
 
 	go_version="$(awk '$1 == "go" { print $2; exit }' "$dir/go.mod")"
 	if [ -z "$go_version" ]; then
 		go_version="$(go env GOVERSION | sed 's/^go//')"
 	fi
-	{
-		printf 'module evener-consumer-check\n\n'
-		printf 'go %s\n\n' "$go_version"
-		printf 'require %s v0.0.0\n\n' "$path"
-		for replace_dir in "${dirs[@]}"; do
-			printf 'replace %s v0.0.0 => %s\n' "${path_of[$replace_dir]}" "$replace_dir"
-		done
-	} >"$consumer/go.mod"
-	cp "$sums" "$consumer/go.sum"
+	# go mod edit writes the require and replace directives, quoting directory
+	# paths (a checkout path may contain spaces) instead of hand-rolling go.mod
+	# syntax here.
+	printf 'module evener-consumer-check\n' >"$consumer/go.mod" || die "cannot create $consumer/go.mod"
+	edit_args=(-go="$go_version" -require="$path@v0.0.0")
+	r=0
+	while [ "$r" -lt "${#dirs[@]}" ]; do
+		edit_args+=(-replace="${paths[$r]}@v0.0.0=${dirs[$r]}")
+		r=$((r + 1))
+	done
+	(
+		cd "$consumer" || exit 2
+		GOWORK=off GOFLAGS= go mod edit "${edit_args[@]}"
+	) || die "cannot write $consumer/go.mod"
+	cp "$sums" "$consumer/go.sum" || die "cannot write $consumer/go.sum"
 
-	mapfile -t packages < <(cd "$dir" && GOFLAGS= go list -e -f '{{.ImportPath}}' ./... 2>"$consumer/enum.err" | sed '/^$/d')
+	packages=()
+	while IFS= read -r pkg; do
+		[ -n "$pkg" ] && packages+=("$pkg")
+	done < <(cd "$dir" && GOFLAGS= go list -e -f '{{.ImportPath}}' ./... 2>"$consumer/enum.err")
 	# With -e, a pattern that matches no package lists the pattern itself
 	# (./...), which a directory outside the workspace does; only the module's
 	# own import paths may reach the probe.
 	enumerated=1
-	for pkg in "${packages[@]}"; do
-		case "$pkg" in
-		"$path" | "$path"/*) ;;
-		*) enumerated=0 ;;
-		esac
-	done
-	if [ "${#packages[@]}" -eq 0 ] || [ "$enumerated" -eq 0 ]; then
+	if [ "${#packages[@]}" -eq 0 ]; then
+		enumerated=0
+	else
+		for pkg in "${packages[@]}"; do
+			case "$pkg" in
+			"$path" | "$path"/*) ;;
+			*) enumerated=0 ;;
+			esac
+		done
+	fi
+	if [ "$enumerated" -eq 0 ]; then
 		printf 'FAIL  %s (consumer setup: cannot enumerate the module packages)\n' "$path" >&2
 		sed 's/^/      /' "$consumer/enum.err" >&2
 		setup_modules=$((setup_modules + 1))

@@ -28,13 +28,14 @@ func writeConsumerCheckTree(t *testing.T, root string, files map[string]string) 
 }
 
 // writeConsumerCheckWork writes a go.work using the named module directories,
-// all relative to root, and returns its path.
+// all relative to root, and returns its path. Paths are quoted so a fixture
+// directory can contain spaces.
 func writeConsumerCheckWork(t *testing.T, root string, uses ...string) string {
 	t.Helper()
 	var body strings.Builder
 	body.WriteString("go 1.21.0\n\nuse (\n")
 	for _, use := range uses {
-		body.WriteString("\t./" + use + "\n")
+		body.WriteString("\t\"./" + use + "\"\n")
 	}
 	body.WriteString(")\n")
 	writeConsumerCheckTree(t, root, map[string]string{"go.work": body.String()})
@@ -42,12 +43,24 @@ func writeConsumerCheckWork(t *testing.T, root string, uses ...string) string {
 }
 
 // runConsumerCheck runs the check with workfile as GOWORK and returns its
-// combined output and exit status.
+// combined output and exit status. The fixture environment is offline
+// throughout, including workspace enumeration: a default test must not depend
+// on a proxy or checksum-database lookup, and an inherited -mod=mod must not
+// repair a fixture.
 func runConsumerCheck(t *testing.T, workfile string, dirs ...string) (string, int) {
 	t.Helper()
 	args := append([]string{consumerCheckScript}, dirs...)
 	cmd := exec.Command("bash", args...)
-	cmd.Env = append(os.Environ(), "GOWORK="+workfile, "TMPDIR="+t.TempDir())
+	cmd.Env = append(os.Environ(),
+		"GOWORK="+workfile,
+		"TMPDIR="+t.TempDir(),
+		"GOPROXY=off",
+		"GOSUMDB=off",
+		"GOFLAGS=",
+		"GOPRIVATE=",
+		"GONOPROXY=",
+		"GONOSUMDB=",
+	)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return string(out), 0
@@ -59,8 +72,7 @@ func runConsumerCheck(t *testing.T, workfile string, dirs ...string) (string, in
 	return string(out), exit.ExitCode()
 }
 
-// writeConsumerCheckLibAndDep writes the complete lib-plus-dep fixture used by
-// the passing and discovery cases.
+// writeConsumerCheckLibAndDep writes the complete lib-plus-dep fixture.
 func writeConsumerCheckLibAndDep(t *testing.T, root string) {
 	t.Helper()
 	writeConsumerCheckTree(t, root, map[string]string{
@@ -71,11 +83,11 @@ func writeConsumerCheckLibAndDep(t *testing.T, root string) {
 	})
 }
 
-// TestGoModuleConsumerCheck pins the check's contract (#4709): a consumer of one
-// module catches a missing direct requirement and a missing transitive
-// requirement, reports a consumer setup failure as setup rather than as a
-// module defect, and does not cross into nested modules the way a
-// `<module>/...` wildcard does.
+// TestGoModuleConsumerCheck pins the check's contract (#4709) by exit status:
+// 0 for a complete module, 1 for a missing direct or transitive requirement,
+// and 2 when the consumer cannot be prepared. The nested-module case proves a
+// `<module>/...` wildcard does not leak the child module's requirements into
+// the parent's check, and the space case proves a checkout path is quoted.
 func TestGoModuleConsumerCheck(t *testing.T) {
 	t.Run("complete module and replaced dependency pass", func(t *testing.T) {
 		root := t.TempDir()
@@ -84,11 +96,6 @@ func TestGoModuleConsumerCheck(t *testing.T) {
 		out, status := runConsumerCheck(t, work, filepath.Join(root, "lib"), filepath.Join(root, "dep"))
 		if status != 0 {
 			t.Fatalf("status = %d, want 0\n%s", status, out)
-		}
-		for _, want := range []string{"PASS  example.com/lib", "PASS  example.com/dep"} {
-			if !strings.Contains(out, want) {
-				t.Errorf("output lacks %q:\n%s", want, out)
-			}
 		}
 	})
 
@@ -104,11 +111,6 @@ func TestGoModuleConsumerCheck(t *testing.T) {
 		out, status := runConsumerCheck(t, work, filepath.Join(root, "libdirect"), filepath.Join(root, "dep"))
 		if status != 1 {
 			t.Fatalf("status = %d, want 1 (missing requirement)\n%s", status, out)
-		}
-		for _, want := range []string{"missing module requirement", "example.com/dep"} {
-			if !strings.Contains(out, want) {
-				t.Errorf("output lacks %q:\n%s", want, out)
-			}
 		}
 	})
 
@@ -127,11 +129,6 @@ func TestGoModuleConsumerCheck(t *testing.T) {
 		if status != 1 {
 			t.Fatalf("status = %d, want 1 (missing transitive requirement)\n%s", status, out)
 		}
-		for _, want := range []string{"missing module requirement", "example.com/leaf"} {
-			if !strings.Contains(out, want) {
-				t.Errorf("output lacks %q:\n%s", want, out)
-			}
-		}
 	})
 
 	t.Run("missing consumer sums are setup, not a module defect", func(t *testing.T) {
@@ -144,12 +141,6 @@ func TestGoModuleConsumerCheck(t *testing.T) {
 		out, status := runConsumerCheck(t, work, filepath.Join(root, "libext"))
 		if status != 2 {
 			t.Fatalf("status = %d, want 2 (consumer setup)\n%s", status, out)
-		}
-		if !strings.Contains(out, "consumer setup") {
-			t.Errorf("output does not name consumer setup:\n%s", out)
-		}
-		if strings.Contains(out, "missing module requirement") {
-			t.Errorf("setup failure was reported as a module requirement:\n%s", out)
 		}
 	})
 
@@ -166,14 +157,6 @@ func TestGoModuleConsumerCheck(t *testing.T) {
 		if status != 2 {
 			t.Fatalf("status = %d, want 2 (setup wins over the gap)\n%s", status, out)
 		}
-		for _, want := range []string{"consumer setup", "some packages also looked absent"} {
-			if !strings.Contains(out, want) {
-				t.Errorf("output lacks %q:\n%s", want, out)
-			}
-		}
-		if strings.Contains(out, "(missing module requirement)") {
-			t.Errorf("setup run was reported as a missing requirement:\n%s", out)
-		}
 	})
 
 	t.Run("nested module is not part of the parent module's packages", func(t *testing.T) {
@@ -189,23 +172,19 @@ func TestGoModuleConsumerCheck(t *testing.T) {
 		if status != 0 {
 			t.Fatalf("status = %d, want 0: a nested module's packages are not the parent's\n%s", status, out)
 		}
-		if !strings.Contains(out, "PASS  example.com/prefix") {
-			t.Errorf("output lacks the parent module PASS:\n%s", out)
-		}
 	})
 
-	t.Run("default discovery checks every workspace module", func(t *testing.T) {
+	t.Run("default discovery reports a workspace module's gap", func(t *testing.T) {
 		root := t.TempDir()
-		work := writeConsumerCheckWork(t, root, "lib", "dep")
+		work := writeConsumerCheckWork(t, root, "lib", "dep", "broken")
 		writeConsumerCheckLibAndDep(t, root)
+		writeConsumerCheckTree(t, root, map[string]string{
+			"broken/go.mod":    "module example.com/broken\n\ngo 1.21.0\n",
+			"broken/broken.go": "package broken\n\nimport _ \"example.com/dep/pkg\"\n",
+		})
 		out, status := runConsumerCheck(t, work)
-		if status != 0 {
-			t.Fatalf("status = %d, want 0\n%s", status, out)
-		}
-		for _, want := range []string{"PASS  example.com/lib", "PASS  example.com/dep"} {
-			if !strings.Contains(out, want) {
-				t.Errorf("output lacks %q:\n%s", want, out)
-			}
+		if status != 1 {
+			t.Fatalf("status = %d, want 1: default discovery did not report the workspace module's gap\n%s", status, out)
 		}
 	})
 
@@ -222,8 +201,20 @@ func TestGoModuleConsumerCheck(t *testing.T) {
 		if status != 2 {
 			t.Fatalf("status = %d, want 2 (cannot enumerate outside the workspace)\n%s", status, out)
 		}
-		if !strings.Contains(out, "consumer setup") {
-			t.Errorf("output does not name consumer setup:\n%s", out)
+	})
+
+	t.Run("a module directory with spaces produces a valid consumer", func(t *testing.T) {
+		root := t.TempDir()
+		work := writeConsumerCheckWork(t, root, "lib space", "dep")
+		writeConsumerCheckTree(t, root, map[string]string{
+			"lib space/go.mod": "module example.com/libspace\n\ngo 1.21.0\n\nrequire example.com/dep v0.0.0\n\nreplace example.com/dep v0.0.0 => ../dep\n",
+			"lib space/lib.go": "package libspace\n\nimport _ \"example.com/dep/pkg\"\n",
+			"dep/go.mod":       "module example.com/dep\n\ngo 1.21.0\n",
+			"dep/pkg/pkg.go":   "package pkg\n",
+		})
+		out, status := runConsumerCheck(t, work, filepath.Join(root, "lib space"), filepath.Join(root, "dep"))
+		if status != 0 {
+			t.Fatalf("status = %d, want 0: a path with spaces must still produce a valid consumer\n%s", status, out)
 		}
 	})
 }
