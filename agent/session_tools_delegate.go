@@ -36,8 +36,9 @@ type delegateCreateResult struct {
 func registerDelegateTool(reg *tool.Registry, s *Session) error {
 	reg.Remove("delegate")
 	if err := reg.Register(tool.RegisteredTool{
-		Definition: s.delegateToolDefinition(),
-		Limit:      schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
+		Definition:    s.delegateToolDefinition(),
+		NormalizeArgs: normalizeDelegateArgs,
+		Limit:         schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
 			return delegateCreateTool(ctx, s, args, jobToolResultMaxChars(reg, "delegate"))

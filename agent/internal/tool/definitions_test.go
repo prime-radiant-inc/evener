@@ -220,7 +220,7 @@ func TestDefDelegateParamsAndEnum(t *testing.T) {
 	}
 
 	effortEnum := props["reasoning_effort"].(map[string]any)["enum"].([]string)
-	wantEffortEnum := append(llm.ReasoningEffortVocabulary(), llm.ReasoningEffortNone)
+	wantEffortEnum := []string{"minimal", "low", "medium", "high", "xhigh", "max", "none"}
 	if !reflect.DeepEqual(effortEnum, wantEffortEnum) {
 		t.Errorf("reasoning_effort enum = %v, want %v", effortEnum, wantEffortEnum)
 	}
@@ -418,7 +418,7 @@ func TestDefTaskListEffortEnumIncludesInherit(t *testing.T) {
 func TestDefDelegateEffortEnumMatchesHandlerVocabulary(t *testing.T) {
 	def := DefDelegate(nil)
 	props := def.Parameters["properties"].(map[string]any)
-	want := append(llm.ReasoningEffortVocabulary(), llm.ReasoningEffortNone)
+	want := []string{"minimal", "low", "medium", "high", "xhigh", "max", "none"}
 
 	enum := props["reasoning_effort"].(map[string]any)["enum"].([]string)
 	if !reflect.DeepEqual(enum, want) {

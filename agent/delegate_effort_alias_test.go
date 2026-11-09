@@ -48,9 +48,25 @@ func TestDelegateCreate_NormalizesReasoningEffortAlias(t *testing.T) {
 // already validated against the full six-level vocabulary.
 func TestDelegateCreate_RegisteredAcceptsEveryVocabularyLevel(t *testing.T) {
 	t.Parallel()
-	levels := append(llm.ReasoningEffortVocabulary(), llm.ReasoningEffortNone)
-	for _, level := range levels {
-		t.Run(level, func(t *testing.T) {
+	cases := []struct{ requested, want string }{
+		{"minimal", "minimal"},
+		{"low", "low"},
+		{"medium", "medium"},
+		{"high", "high"},
+		{"xhigh", "xhigh"},
+		{"max", "max"},
+		{"none", "none"},
+		// The handler accepts these forms too; dispatch must canonicalize them
+		// rather than refuse them at the schema enum.
+		{"MAX", "max"},
+		{" Max ", "max"},
+		{"off", "none"},
+		{"0", "none"},
+		{"false", "none"},
+		{"null", "none"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.requested, func(t *testing.T) {
 			t.Parallel()
 			root, client, _ := newDelegateResourceBootstrapSession(t)
 			adapter := newTask6FrozenDescriptorAdapter()
@@ -58,20 +74,20 @@ func TestDelegateCreate_RegisteredAcceptsEveryVocabularyLevel(t *testing.T) {
 			t.Cleanup(adapter.releaseRun)
 
 			raw, err := json.Marshal(map[string]any{
-				"prompt":           "spawn at " + level,
+				"prompt":           "spawn at " + tc.requested,
 				"model":            "gpt-5.2",
-				"reasoning_effort": level,
+				"reasoning_effort": tc.requested,
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
 			call := root.reg.ExecuteCall(context.Background(), root.currentEnv(), llm.ToolCallData{
-				ID:        "registered-effort-" + level,
+				ID:        "registered-effort-" + tc.requested,
 				Name:      "delegate",
 				Arguments: raw,
 			})
 			if call.IsError {
-				t.Fatalf("registered delegate rejected reasoning_effort %q: %s", level, call.Output)
+				t.Fatalf("registered delegate rejected reasoning_effort %q: %s", tc.requested, call.Output)
 			}
 			var result map[string]any
 			if err := json.Unmarshal(toolResultJSON(call), &result); err != nil {
@@ -82,8 +98,8 @@ func TestDelegateCreate_RegisteredAcceptsEveryVocabularyLevel(t *testing.T) {
 				t.Fatalf("registered delegate result has no delegate_id: %s", call.Output)
 			}
 			aggregate := delegateAggregateSnapshot(t, root.delegateController, delegateID)
-			if got := aggregate.Descriptor.Config.ReasoningEffort; got != level {
-				t.Fatalf("descriptor ReasoningEffort = %q, want %q", got, level)
+			if got := aggregate.Descriptor.Config.ReasoningEffort; got != tc.want {
+				t.Fatalf("descriptor ReasoningEffort = %q, want %q", got, tc.want)
 			}
 		})
 	}

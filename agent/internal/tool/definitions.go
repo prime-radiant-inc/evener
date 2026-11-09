@@ -240,7 +240,7 @@ func delegateReasoningEffortLevels() []string {
 // delegateReasoningEffortDescription names the levels the schema enumerates,
 // built from the same source so the prose and the enum cannot drift.
 func delegateReasoningEffortDescription() string {
-	return fmt.Sprintf("Reasoning effort for this delegate (%s, or %s to turn thinking off). Default inherits from parent.",
+	return fmt.Sprintf("Reasoning effort for this delegate (%s, or %s to turn thinking off where the model supports it). Default inherits from parent.",
 		strings.Join(llm.ReasoningEffortVocabulary(), ", "), llm.ReasoningEffortNone)
 }
 

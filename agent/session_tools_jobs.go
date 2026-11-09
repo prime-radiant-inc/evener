@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
@@ -224,6 +225,52 @@ func decodeDelegateArgs(args map[string]any) (delegateArgs, error) {
 	return a, nil
 }
 
+// normalizeDelegateArgs is the delegate tool's NormalizeArgs. createDelegate
+// already accepted disable aliases and mixed-case levels (it validates the
+// normalized value), but the schema enum listed only the canonical literals,
+// so dispatch refused them first. Normalizing here, where dispatch runs it
+// before validation, makes the advertised contract and the handler's real
+// contract the same. Both effort fields canonicalize through the same helpers
+// task_list uses, so a delegate seed accepts exactly what task_list accepts:
+// the canonical levels, the disable aliases, and "inherit". An effort that
+// normalizes to nothing configured is dropped, which is what "inherit" and
+// omission both mean.
+func normalizeDelegateArgs(args map[string]any) (map[string]any, error) {
+	normalized := maps.Clone(args)
+	if raw, ok := args["reasoning_effort"].(string); ok {
+		setEffort(normalized, "reasoning_effort", llm.NormalizeReasoningEffort(raw))
+	}
+	if items, ok := args["task_list"].([]any); ok {
+		tasks := make([]any, len(items))
+		for i, item := range items {
+			fields, ok := item.(map[string]any)
+			if !ok {
+				tasks[i] = item
+				continue
+			}
+			clean := maps.Clone(fields)
+			if raw, ok := fields["reasoning_effort"].(string); ok {
+				// A seeded task is a per-task override, so it accepts
+				// "inherit" (stored as no override) exactly as task_list does.
+				setEffort(clean, "reasoning_effort", normalizeTaskEffort(raw))
+			}
+			tasks[i] = clean
+		}
+		normalized["task_list"] = tasks
+	}
+	return normalized, nil
+}
+
+// setEffort writes effort to key, or drops the key when the normalized value
+// means "nothing configured".
+func setEffort(fields map[string]any, key, effort string) {
+	if effort == "" {
+		delete(fields, key)
+		return
+	}
+	fields[key] = effort
+}
+
 // delegateTaskListArg decodes the delegate tool's task_list items into task
 // templates. Every item needs a title and a prompt that defines its own step,
 // so an empty prompt is an error rather than a blank task.
@@ -250,12 +297,12 @@ func delegateTaskListArg(args map[string]any) ([]taskpkg.TaskTemplate, error) {
 		if prompt == "" {
 			return nil, fmt.Errorf("invalid_request: task_list[%d].prompt is required", i)
 		}
-		// A seeded task is a per-task override, so it accepts the same levels
-		// the task_list tool accepts: the canonical vocabulary plus explicit
-		// off, normalized first so a padded or upper-case level is stored in
-		// the form the request path reads. Empty means "inherit the session".
-		effort := llm.NormalizeReasoningEffort(stringArg(fields, "reasoning_effort"))
-		if err := llm.ValidateReasoningEffort(effort); err != nil {
+		// A seeded task is a per-task override, so it accepts the levels the
+		// task_list tool accepts, including the "inherit" sentinel (stored as
+		// no override) and the disable aliases, canonicalized so the request
+		// path reads one form.
+		effort, err := validateTaskEffort(stringArg(fields, "reasoning_effort"))
+		if err != nil {
 			return nil, fmt.Errorf("invalid_request: task_list[%d].reasoning_effort: %w", i, err)
 		}
 		kind := strings.TrimSpace(stringArg(fields, "type"))

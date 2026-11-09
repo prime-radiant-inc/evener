@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -40,30 +41,54 @@ func TestDecodeDelegateArgs_PromptAndTaskList(t *testing.T) {
 	}
 }
 
-// task_list reasoning_effort accepts every level the task handler accepts, and
-// stores it canonically so a padded or upper-case level reaches the request
-// path in the form the vocabulary defines.
-func TestDecodeDelegateArgs_TaskListEffortVocabulary(t *testing.T) {
+// A delegate's seeded task_list accepts every effort form the task_list tool
+// accepts, through real dispatch: aliases and "inherit" survive schema
+// validation and land in the descriptor canonically.
+func TestCreateDelegate_TaskListEffortVocabulary(t *testing.T) {
 	t.Parallel()
-	a, err := decodeDelegateArgs(map[string]any{
-		"prompt": "do work",
-		"task_list": []any{
-			map[string]any{"title": "deep", "prompt": "think hard", "reasoning_effort": "MAX"},
-			map[string]any{"title": "off", "prompt": "think less", "reasoning_effort": "off"},
-			map[string]any{"title": "inherit", "prompt": "default"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("decode: %v", err)
+	cases := []struct{ requested, want string }{
+		{"max", "max"},
+		{"MAX", "max"},
+		{"xhigh", "xhigh"},
+		{"minimal", "minimal"},
+		{"off", llm.ReasoningEffortNone},
+		{"inherit", ""},
 	}
-	want := []string{"max", llm.ReasoningEffortNone, ""}
-	if len(a.TaskList) != len(want) {
-		t.Fatalf("task_list = %+v, want %d entries", a.TaskList, len(want))
-	}
-	for i, effort := range want {
-		if a.TaskList[i].ReasoningEffort != effort {
-			t.Errorf("task_list[%d].reasoning_effort = %q, want %q", i, a.TaskList[i].ReasoningEffort, effort)
-		}
+	for _, tc := range cases {
+		t.Run(tc.requested, func(t *testing.T) {
+			t.Parallel()
+			root, _, _ := newDelegateResourceBootstrapSession(t)
+			root.cfg.testOnly.skipGitSnapshot = true
+			raw, err := json.Marshal(map[string]any{
+				"prompt": "brief",
+				"task_list": []any{
+					map[string]any{"title": "step", "prompt": "do it", "reasoning_effort": tc.requested},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			call := root.reg.ExecuteCall(context.Background(), root.currentEnv(), llm.ToolCallData{
+				ID:        "task-effort-" + tc.requested,
+				Name:      "delegate",
+				Arguments: raw,
+			})
+			if call.IsError {
+				t.Fatalf("registered delegate rejected task_list effort %q: %s", tc.requested, call.Output)
+			}
+			var result map[string]any
+			if err := json.Unmarshal(toolResultJSON(call), &result); err != nil {
+				t.Fatalf("decode registered delegate output %q: %v", call.Output, err)
+			}
+			delegateID, _ := result["delegate_id"].(string)
+			aggregate := delegateAggregateSnapshot(t, root.delegateController, delegateID)
+			if len(aggregate.Descriptor.TaskTemplates) != 1 {
+				t.Fatalf("task templates = %+v, want one", aggregate.Descriptor.TaskTemplates)
+			}
+			if got := aggregate.Descriptor.TaskTemplates[0].ReasoningEffort; got != tc.want {
+				t.Fatalf("seeded task effort = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

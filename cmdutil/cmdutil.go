@@ -108,7 +108,8 @@ func (f *StringSliceFlag) Set(val string) error {
 type ReasoningEffortResolution struct {
 	// Set indicates a CLI/env override was provided (even if it resolves to "").
 	Set bool
-	// Value is the normalized effort: "low"|"medium"|"high" or "" (meaning none/clear).
+	// Value is the normalized effort: minimal|low|medium|high|xhigh|max, "none"
+	// (thinking explicitly off), or "" (nothing configured).
 	Value string
 }
 
