@@ -76,7 +76,7 @@ type managerCleanupFailureResult struct {
 var (
 	cleanupBarrierOnce sync.Once
 	cleanupBarrierFile *os.File
-	cleanupBarrierErr  error
+	errCleanupBarrier  error
 )
 
 // signalCleanupBarrier writes one milestone to the pipe the parent handed this
@@ -86,22 +86,22 @@ func signalCleanupBarrier(milestone string) error {
 	cleanupBarrierOnce.Do(func() {
 		cleanupBarrierFile = os.NewFile(cleanupBarrierPipeFd, "cleanup-barrier")
 		if cleanupBarrierFile == nil {
-			cleanupBarrierErr = fmt.Errorf("cleanup barrier pipe is not open on fd %d", cleanupBarrierPipeFd)
+			errCleanupBarrier = fmt.Errorf("cleanup barrier pipe is not open on fd %d", cleanupBarrierPipeFd)
 			return
 		}
 		info, err := cleanupBarrierFile.Stat()
 		if err != nil {
-			cleanupBarrierErr = fmt.Errorf("stat cleanup barrier fd %d: %w", cleanupBarrierPipeFd, err)
+			errCleanupBarrier = fmt.Errorf("stat cleanup barrier fd %d: %w", cleanupBarrierPipeFd, err)
 			return
 		}
 		if info.Mode()&os.ModeNamedPipe == 0 {
 			// Writing milestones into an inherited regular file or socket would
 			// corrupt it silently; only the parent's pipe may receive them.
-			cleanupBarrierErr = fmt.Errorf("cleanup barrier fd %d is %v, want a pipe", cleanupBarrierPipeFd, info.Mode())
+			errCleanupBarrier = fmt.Errorf("cleanup barrier fd %d is %v, want a pipe", cleanupBarrierPipeFd, info.Mode())
 		}
 	})
-	if cleanupBarrierErr != nil {
-		return cleanupBarrierErr
+	if errCleanupBarrier != nil {
+		return errCleanupBarrier
 	}
 	_, err := fmt.Fprintln(cleanupBarrierFile, milestone)
 	return err
@@ -1165,7 +1165,7 @@ func (b *cleanupBarrier) wait(milestone string) error {
 	line, err := b.reader.ReadString('\n')
 	if err != nil {
 		waitErr := b.cmd.Wait()
-		return fmt.Errorf("await cleanup barrier %q: helper exited before signaling: read error %v, helper exit %v; helper output:\n%s", milestone, err, waitErr, b.output.String())
+		return fmt.Errorf("await cleanup barrier %q: helper exited before signaling: read error %w, helper exit %w; helper output:\n%s", milestone, err, waitErr, b.output.String())
 	}
 	if got := strings.TrimSpace(line); got != milestone {
 		return fmt.Errorf("cleanup barrier = %q, want %q", got, milestone)
