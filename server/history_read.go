@@ -24,8 +24,16 @@ func (h *threadHistory) answerContinuation(ctx context.Context, params appwire.T
 	return verdict, snapshot, err
 }
 
-func (h *threadHistory) fetch(encoded string) (appwire.SessionFetchResponse, error) {
+func (h *threadHistory) fetch(requestRef, encoded string) (appwire.SessionFetchResponse, error) {
 	cursor, identity, err := appitempaging.DecodeFetchCursorForRef(encoded, h.ref)
+	if err != nil && requestRef != "" && requestRef != h.ref {
+		// A window read admitted through the current-session ref mints its cursors
+		// for that ref, which differs from the stable workspace ref this history
+		// records once Clear has kept the workspace and changed the session. The
+		// request already resolved to this history, so the admitted ref names the
+		// same thread and its cursor is valid here.
+		cursor, identity, err = appitempaging.DecodeFetchCursorForRef(encoded, requestRef)
+	}
 	if err != nil || cursor.Origin != appitempaging.FetchCursorOriginServingDaemon {
 		return appwire.SessionFetchResponse{}, appwire.TranscriptItemCursorStale()
 	}
