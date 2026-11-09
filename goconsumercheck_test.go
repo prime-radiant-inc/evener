@@ -59,6 +59,18 @@ func runConsumerCheck(t *testing.T, workfile string, dirs ...string) (string, in
 	return string(out), exit.ExitCode()
 }
 
+// writeConsumerCheckLibAndDep writes the complete lib-plus-dep fixture used by
+// the passing and discovery cases.
+func writeConsumerCheckLibAndDep(t *testing.T, root string) {
+	t.Helper()
+	writeConsumerCheckTree(t, root, map[string]string{
+		"lib/go.mod":     "module example.com/lib\n\ngo 1.21.0\n\nrequire example.com/dep v0.0.0\n\nreplace example.com/dep v0.0.0 => ../dep\n",
+		"lib/lib.go":     "package lib\n\nimport _ \"example.com/dep/pkg\"\n",
+		"dep/go.mod":     "module example.com/dep\n\ngo 1.21.0\n",
+		"dep/pkg/pkg.go": "package pkg\n",
+	})
+}
+
 // TestGoModuleConsumerCheck pins the check's contract (#4709): a consumer of one
 // module catches a missing direct requirement and a missing transitive
 // requirement, reports a consumer setup failure as setup rather than as a
@@ -68,12 +80,7 @@ func TestGoModuleConsumerCheck(t *testing.T) {
 	t.Run("complete module and replaced dependency pass", func(t *testing.T) {
 		root := t.TempDir()
 		work := writeConsumerCheckWork(t, root, "lib", "dep")
-		writeConsumerCheckTree(t, root, map[string]string{
-			"lib/go.mod":     "module example.com/lib\n\ngo 1.21.0\n\nrequire example.com/dep v0.0.0\n\nreplace example.com/dep v0.0.0 => ../dep\n",
-			"lib/lib.go":     "package lib\n\nimport _ \"example.com/dep/pkg\"\n",
-			"dep/go.mod":     "module example.com/dep\n\ngo 1.21.0\n",
-			"dep/pkg/pkg.go": "package pkg\n",
-		})
+		writeConsumerCheckLibAndDep(t, root)
 		out, status := runConsumerCheck(t, work, filepath.Join(root, "lib"), filepath.Join(root, "dep"))
 		if status != 0 {
 			t.Fatalf("status = %d, want 0\n%s", status, out)
@@ -167,12 +174,7 @@ func TestGoModuleConsumerCheck(t *testing.T) {
 	t.Run("default discovery checks every workspace module", func(t *testing.T) {
 		root := t.TempDir()
 		work := writeConsumerCheckWork(t, root, "lib", "dep")
-		writeConsumerCheckTree(t, root, map[string]string{
-			"lib/go.mod":     "module example.com/lib\n\ngo 1.21.0\n\nrequire example.com/dep v0.0.0\n\nreplace example.com/dep v0.0.0 => ../dep\n",
-			"lib/lib.go":     "package lib\n\nimport _ \"example.com/dep/pkg\"\n",
-			"dep/go.mod":     "module example.com/dep\n\ngo 1.21.0\n",
-			"dep/pkg/pkg.go": "package pkg\n",
-		})
+		writeConsumerCheckLibAndDep(t, root)
 		out, status := runConsumerCheck(t, work)
 		if status != 0 {
 			t.Fatalf("status = %d, want 0\n%s", status, out)

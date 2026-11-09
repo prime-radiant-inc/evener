@@ -46,7 +46,8 @@
 #
 # With no arguments every module in the workspace's go.work is checked. Named
 # directories are the only modules checked, but every workspace module is still
-# replaced in their consumers.
+# replaced in their consumers. Run it inside the workspace checkout: package
+# enumeration needs the workspace, while the consumer probe itself does not.
 #
 # Exit status: 0 every module passed, 1 a module is missing a requirement,
 # 2 a consumer setup problem or usage error (also when both occur).
@@ -64,16 +65,17 @@ die() {
 }
 
 workfile="$(cd "$repo_root" && go env GOWORK 2>/dev/null)" || workfile=""
-workspace_dirs=()
-if [ -n "$workfile" ] && [ "$workfile" != "off" ] && [ -f "$workfile" ]; then
-	workdir="$(dirname -- "$workfile")"
-	while IFS= read -r disk; do
-		case "$disk" in
-		/*) workspace_dirs+=("$disk") ;;
-		*) workspace_dirs+=("$workdir/$disk") ;;
-		esac
-	done < <(cd "$repo_root" && go work edit -json | sed -n 's/.*"DiskPath": "\([^"]*\)".*/\1/p')
+if [ ! -f "$workfile" ]; then
+	die "no go.work; run this from the workspace checkout (or set GOWORK)"
 fi
+workdir="$(dirname -- "$workfile")"
+workspace_dirs=()
+while IFS= read -r disk; do
+	case "$disk" in
+	/*) workspace_dirs+=("$disk") ;;
+	*) workspace_dirs+=("$workdir/$disk") ;;
+	esac
+done < <(cd "$repo_root" && go work edit -json | sed -n 's/.*"DiskPath": "\([^"]*\)".*/\1/p')
 
 if [ "$#" -gt 0 ]; then
 	target_dirs=("$@")
@@ -110,21 +112,15 @@ for dir in "${workspace_dirs[@]}"; do
 done
 
 declare -A path_of=()
-declare -A path_seen=()
 declare -A path_dir=()
-replace_paths=()
-replace_dirs=()
 for dir in "${dirs[@]}"; do
 	path="$(cd "$dir" && GOWORK=off GOFLAGS= go list -m -f '{{.Path}}' 2>/dev/null)" || die "$dir: cannot read the module path from go.mod"
 	[ -n "$path" ] || die "$dir: go.mod names no module path"
-	if [ -n "${path_seen[$path]:-}" ]; then
+	if [ -n "${path_dir[$path]:-}" ]; then
 		die "duplicate module path $path in ${path_dir[$path]} and $dir"
 	fi
 	path_of[$dir]="$path"
-	path_seen[$path]=1
 	path_dir[$path]="$dir"
-	replace_paths+=("$path")
-	replace_dirs+=("$dir")
 done
 
 # The consumer's sum must cover every external module its graph can select. The
@@ -138,7 +134,7 @@ for dir in "${dirs[@]}"; do
 		cat "$dir/go.sum" >>"$sums_raw" || die "$dir/go.sum is unreadable"
 	fi
 done
-if [ -n "$workfile" ] && [ -f "$workfile.sum" ]; then
+if [ -f "$workfile.sum" ]; then
 	cat "$workfile.sum" >>"$sums_raw" || die "$workfile.sum is unreadable"
 fi
 sort -u "$sums_raw" >"$sums" || die "cannot sort the consumer go.sum"
@@ -159,13 +155,16 @@ for i in "${!resolved_targets[@]}"; do
 		printf 'module evener-consumer-check\n\n'
 		printf 'go %s\n\n' "$go_version"
 		printf 'require %s v0.0.0\n\n' "$path"
-		for j in "${!replace_paths[@]}"; do
-			printf 'replace %s v0.0.0 => %s\n' "${replace_paths[$j]}" "${replace_dirs[$j]}"
+		for replace_dir in "${dirs[@]}"; do
+			printf 'replace %s v0.0.0 => %s\n' "${path_of[$replace_dir]}" "$replace_dir"
 		done
 	} >"$consumer/go.mod"
 	cp "$sums" "$consumer/go.sum"
 
-	mapfile -t packages < <(cd "$dir" && go list -e -f '{{.ImportPath}}' ./... 2>"$consumer/enum.err" | sed '/^$/d')
+	mapfile -t packages < <(cd "$dir" && GOFLAGS= go list -e -f '{{.ImportPath}}' ./... 2>"$consumer/enum.err" | sed '/^$/d')
+	# With -e, a pattern that matches no package lists the pattern itself
+	# (./...), which a directory outside the workspace does; only the module's
+	# own import paths may reach the probe.
 	enumerated=1
 	for pkg in "${packages[@]}"; do
 		case "$pkg" in
@@ -190,16 +189,17 @@ for i in "${!resolved_targets[@]}"; do
 		continue
 	fi
 
+	gap_re='no required module provides package|is replaced but not required|cannot find module providing package'
 	if grep -Eq 'missing go.sum entry|updates to go.mod needed|module lookup disabled|replacement directory|outside module root' "$consumer/err"; then
 		printf 'FAIL  %s (consumer setup, not a module requirement)\n' "$path" >&2
 		sed 's/^/      /' "$consumer/err" >&2
-		if grep -Eq 'no required module provides package|is replaced but not required|cannot find module providing package' "$consumer/err"; then
+		if grep -Eq "$gap_re" "$consumer/err"; then
 			printf '      (some packages also looked absent; rerun after the setup error is cleared to judge requirements)\n' >&2
 		fi
 		setup_modules=$((setup_modules + 1))
 		continue
 	fi
-	if grep -Eq 'no required module provides package|is replaced but not required|cannot find module providing package' "$consumer/err"; then
+	if grep -Eq "$gap_re" "$consumer/err"; then
 		printf 'FAIL  %s (missing module requirement)\n' "$path" >&2
 		sed 's/^/      /' "$consumer/err" >&2
 		gap_modules=$((gap_modules + 1))
