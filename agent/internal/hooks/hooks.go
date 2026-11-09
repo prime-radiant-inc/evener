@@ -763,9 +763,10 @@ func routeOutput(event plugin.HookEvent, o parsedHookOutput, model, user *[]stri
 
 // applyStopped records a hook's continue:false on an event that honors it. A
 // stop takes precedence over the event-specific decision its caller aggregates,
-// so every aggregating runner calls this before routing; the dispatch site
-// delivers StopReason as a user-visible warning and ends the action. The first
-// non-empty stopReason wins, matching Claude's single-stop semantics.
+// so every aggregating runner calls this before routing; the dispatch site,
+// once wired, delivers StopReason as a user-visible warning and ends the
+// action. The first non-empty stopReason wins, matching Claude's single-stop
+// semantics.
 func applyStopped(event plugin.HookEvent, o parsedHookOutput, stopped *bool, stopReason *string) {
 	if o.Continue || !HonorsContinue(event) {
 		return

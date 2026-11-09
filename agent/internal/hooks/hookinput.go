@@ -28,6 +28,7 @@ type Input struct {
 	// value as the legacy UserPrompt alias; Claude-style hooks read "prompt".
 	Prompt string `json:"prompt,omitempty"`
 
+	// Tier: claude-compatible-subset.
 	// Event-specific fields, all omitempty. Pointers where false or 0 is
 	// meaningful and absence differs from zero.
 	Trigger              string          `json:"trigger,omitempty"`

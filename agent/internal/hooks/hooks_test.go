@@ -1479,6 +1479,22 @@ func TestInput_EventFieldsJSONNames(t *testing.T) {
 			t.Fatalf("missing %s in %s", want, b)
 		}
 	}
+
+	// Every event field is omitempty, so an Input carrying none of them emits
+	// none of their keys. Claude hooks distinguish absent from zero.
+	empty, err := json.Marshal(Input{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{
+		`"trigger"`, `"custom_instructions"`, `"compact_summary"`, `"stop_hook_active"`,
+		`"last_assistant_message"`, `"error"`, `"error_details"`, `"is_interrupt"`,
+		`"duration_ms"`, `"tool_calls"`, `"notification_type"`, `"title"`,
+	} {
+		if strings.Contains(string(empty), key) {
+			t.Errorf("%s must be omitted from an empty Input, got %s", key, empty)
+		}
+	}
 }
 
 // TestHonorsContinue names the five events where Claude discards
@@ -1523,5 +1539,49 @@ func TestRunPostToolUse_ContinueFalseStops(t *testing.T) {
 	}
 	if out.StopReason == "" {
 		t.Fatalf("StopReason must be carried")
+	}
+}
+
+// TestRunPreToolUse_ContinueFalseStops covers the PreToolUse aggregation site:
+// a stop is recorded there independently of the event's own deny decision.
+func TestRunPreToolUse_ContinueFalseStops(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPreToolUse, plugin.RegisteredHook{Type: "command", Timeout: 5,
+		Command: `echo '{"continue":false,"stopReason":"stop"}'`})
+	out := r.RunPreToolUse(context.Background(), Input{HookEventName: "PreToolUse", ToolName: "Bash"})
+	if !out.Stopped {
+		t.Fatalf("PreToolUse must honor continue:false")
+	}
+	if out.StopReason != "stop" {
+		t.Fatalf("StopReason = %q, want %q", out.StopReason, "stop")
+	}
+}
+
+// TestRunStop_ContinueFalseStops covers the Stop aggregation site.
+func TestRunStop_ContinueFalseStops(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookStop, plugin.RegisteredHook{Type: "command", Timeout: 5,
+		Command: `echo '{"continue":false,"stopReason":"stop"}'`})
+	out := r.RunStop(context.Background(), Input{HookEventName: "Stop"})
+	if !out.Stopped {
+		t.Fatalf("Stop must honor continue:false")
+	}
+	if out.StopReason != "stop" {
+		t.Fatalf("StopReason = %q, want %q", out.StopReason, "stop")
+	}
+}
+
+// TestRunSubagentStop_ContinueFalseStops covers the SubagentStop aggregation
+// site, which shares runStopEvent but has its own event key and block row.
+func TestRunSubagentStop_ContinueFalseStops(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookSubagentStop, plugin.RegisteredHook{Type: "command", Timeout: 5,
+		Command: `echo '{"continue":false,"stopReason":"stop"}'`})
+	out := r.RunSubagentStop(context.Background(), Input{HookEventName: "SubagentStop"})
+	if !out.Stopped {
+		t.Fatalf("SubagentStop must honor continue:false")
+	}
+	if out.StopReason != "stop" {
+		t.Fatalf("StopReason = %q, want %q", out.StopReason, "stop")
 	}
 }

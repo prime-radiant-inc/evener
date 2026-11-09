@@ -732,6 +732,11 @@ func subagentHookAgentType(requested, agentName string) string {
 	if r := strings.TrimSpace(requested); r != "" && r != "default" {
 		return r
 	}
+	// A legacy frozen descriptor and an unnamed plugin agent can both carry an
+	// empty agent name; the type must still never be empty inside a subagent.
+	if agentName == "" {
+		return "subagent"
+	}
 	return agentName
 }
 
