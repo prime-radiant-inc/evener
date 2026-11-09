@@ -10,11 +10,11 @@ package dev
 // a single invocation, and cost-balanced shards (4 × -parallel 3) take it to
 // ~21s. BALANCE is what matters, not shard count — the weights come from a
 // survey cached by test-set identity. When a test is added, renamed, or
-// removed, the run packs from the lane's last survey instead of surveying
-// again, charges an unmeasured test the packing minimum, and (when the shard
-// logs are verbose, as under the gate's timing capture) records the costs its
-// own shards measured as the new test set's survey. A run surveys only when
-// the lane has no survey at all, or when asked to.
+// removed, a run whose shard logs are verbose (EVENER_SHARD_JSON_DIR, the
+// gate's timing capture) packs from the lane's last survey instead of
+// surveying again, charges an unmeasured test the packing minimum, and records
+// the costs its own shards measured as the new test set's survey. Any other
+// run surveys, as does a lane with no survey at all.
 //
 // Interface (unchanged from the script):
 //
@@ -454,10 +454,10 @@ func runShards(cfg shardsConfig) int {
 	cachedSurvey := cfg.cachedSurveyPath(listOut, parsed, goflags)
 
 	var costs []testCost
-	// recordShardCosts is set when the run packs from a survey of a different
-	// test set: its shards then measure the current one, and a green run
-	// records that as this test set's survey.
-	recordShardCosts := false
+	// borrowed is set when the run packs from a survey of a different test
+	// set: its shards then measure the current one, and a green run records
+	// that as this test set's survey.
+	borrowed := false
 	if !cfg.noSurvey {
 		surveyLog := filepath.Join(logdir, "survey.log")
 		cacheHit := false
@@ -471,20 +471,21 @@ func runShards(cfg shardsConfig) int {
 			// written by concurrent gate runs, so a nonempty file can be a
 			// partial write caught mid-flight.
 		}
-		if !cacheHit && !cfg.resurvey {
-			// A changed test set has no survey of its own, but surveying runs
-			// the whole suite once more before the shards run it. The lane's
-			// last survey prices every test the two sets share.
-			if data := olderSurvey(cachedSurvey, surveyLaneKey(parsed, goflags, cfg.skip)); data != nil {
-				var skip *regexp.Regexp
-				if cfg.skip != "" {
-					skip, _ = regexp.Compile(cfg.skip)
-				}
-				costs = costsFromOlderSurvey(parseSurvey(string(data)), listOut, skip)
-				recordShardCosts = len(costs) > 0
-			}
+		// A changed test set has no survey of its own, but surveying runs the
+		// whole suite once more before the shards run it. The lane's last
+		// survey prices every test the two sets share. Only a run whose shard
+		// logs carry per-test costs borrows: it can record them, so the lane
+		// never settles on a survey that no longer describes it.
+		var older []byte
+		if !cacheHit && !cfg.resurvey && cfg.jsonDir != "" {
+			older = olderSurvey(cachedSurvey)
 		}
-		if !cacheHit && !recordShardCosts {
+		switch {
+		case cacheHit:
+		case older != nil:
+			costs = costsFromOlderSurvey(parseSurvey(string(older)), cfg.shardedTestNames(listOut))
+			borrowed = true
+		default:
 			_, _ = fmt.Fprintf(cfg.stdout, "%s-shards: surveying test costs (one-time for this test set)\n", cfg.label)
 			args := surveyArgs(cfg.surveyParallel, cfg.skip, parsed.short, parsed.test)
 			if err := cfg.runToLog(in, surveyLog, cfg.pkgDir, build, args...); err != nil {
@@ -502,7 +503,7 @@ func runShards(cfg shardsConfig) int {
 				}
 			}
 		}
-		if !recordShardCosts {
+		if !borrowed {
 			if data, err := os.ReadFile(surveyLog); err == nil {
 				costs = parseSurvey(string(data))
 			}
@@ -715,9 +716,9 @@ func runShards(cfg shardsConfig) int {
 		_, _ = fmt.Fprintf(cfg.stdout, "full logs: %s\n", fullLogs)
 		return 1
 	}
-	// Only the verbose shard logs carry per-test costs. Like every cache
-	// write, a failure here costs a later run a survey and nothing else.
-	if recordShardCosts && jsonShards {
+	// Like every cache write, a failure here costs a later run a survey and
+	// nothing else.
+	if borrowed {
 		var measured []byte
 		for i := range bins {
 			data, err := os.ReadFile(shardLogPath(i))
@@ -789,13 +790,14 @@ func (cfg shardsConfig) cachedSurveyPath(listOut string, parsed parsedFlags, gof
 }
 
 // olderSurvey returns the lane's most recent survey of a different test set,
-// or nil when the cache holds none. The file name carries the lane key, so
-// only a survey measured under this build, mode and skip is a candidate.
-func olderSurvey(cachedSurvey, laneKey string) []byte {
+// or nil when the cache holds none. A cache file is named for its lane and
+// then its test set, so only a survey measured under this build, mode and
+// skip is a candidate.
+func olderSurvey(cachedSurvey string) []byte {
 	if cachedSurvey == "" {
 		return nil
 	}
-	siblings, _ := filepath.Glob(filepath.Join(filepath.Dir(cachedSurvey), "survey-"+laneKey+"-*.log"))
+	siblings, _ := filepath.Glob(cachedSurvey[:strings.LastIndex(cachedSurvey, "-")] + "-*.log")
 	var newest string
 	var newestAt time.Time
 	for _, path := range siblings {
@@ -829,19 +831,28 @@ func (cfg shardsConfig) surveyCoversTestSet(data []byte, listOut string) bool {
 	for _, tc := range parseSurvey(string(data)) {
 		have[tc.name] = true
 	}
-	var skip *regexp.Regexp
-	if cfg.skip != "" {
-		skip, _ = regexp.Compile(cfg.skip)
-	}
-	for _, tc := range equalWeights(listOut) {
-		if skip != nil && skip.MatchString(tc.name) {
-			continue
-		}
-		if !have[tc.name] {
+	for _, name := range cfg.shardedTestNames(listOut) {
+		if !have[name] {
 			return false
 		}
 	}
 	return true
+}
+
+// shardedTestNames is the listed tests this run must place in a shard: every
+// one the -test.skip regex does not match.
+func (cfg shardsConfig) shardedTestNames(listOut string) []string {
+	var skip *regexp.Regexp
+	if cfg.skip != "" {
+		skip, _ = regexp.Compile(cfg.skip)
+	}
+	var names []string
+	for _, tc := range equalWeights(listOut) {
+		if skip == nil || !skip.MatchString(tc.name) {
+			names = append(names, tc.name)
+		}
+	}
+	return names
 }
 
 // writeFileAtomic replaces path with data by writing a uniquely named temp

@@ -678,22 +678,18 @@ func shortHash(payload string) string {
 	return hex.EncodeToString(sum[:])[:16]
 }
 
-// costsFromOlderSurvey prices the current test set from a survey of a
-// different one. A test the survey measured keeps its cost; one it did not is
-// charged nothing, which packing raises to minTestCost. Every listed test gets
-// a cost, so every test lands in a shard. Tests matching skip are left out, as
-// a survey leaves them out.
-func costsFromOlderSurvey(survey []testCost, listOutput string, skip *regexp.Regexp) []testCost {
+// costsFromOlderSurvey prices the named tests from a survey of a different
+// test set. A test the survey measured keeps its cost; one it did not is
+// charged nothing, which packing raises to minTestCost. Every name gets a
+// cost, so every test lands in a shard.
+func costsFromOlderSurvey(survey []testCost, names []string) []testCost {
 	measured := map[string]float64{}
 	for _, tc := range survey {
 		measured[tc.name] = tc.cost
 	}
-	var costs []testCost
-	for _, tc := range equalWeights(listOutput) {
-		if skip != nil && skip.MatchString(tc.name) {
-			continue
-		}
-		costs = append(costs, testCost{name: tc.name, cost: measured[tc.name]})
+	costs := make([]testCost, 0, len(names))
+	for _, name := range names {
+		costs = append(costs, testCost{name: name, cost: measured[name]})
 	}
 	return costs
 }
