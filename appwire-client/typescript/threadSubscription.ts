@@ -263,8 +263,8 @@ class ThreadSubscriptions {
       threadId: thread.id,
       sessionId: thread.sessionId ?? thread.id,
       status: copyStatus((newer ? member.metadata?.status : undefined) ?? thread.status),
-      ...(thread.evener.askPending === true ? { askPending: true } : {}),
-      ...((thread.evener.pendingEscalations?.length ?? 0) > 0 ? { approvalPending: true } : {}),
+      ...(thread.evener?.askPending === true ? { askPending: true } : {}),
+      ...((thread.evener?.pendingEscalations?.length ?? 0) > 0 ? { approvalPending: true } : {}),
     };
   }
 

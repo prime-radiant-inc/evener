@@ -19,6 +19,10 @@ test("an awaiting turn with a pending question is attention-worthy", () => {
   expect(isAttentionWorthy(model("awaiting", true))).toBe(true);
 });
 
+test("a pending question is attention-worthy independently of the status", () => {
+  expect(isAttentionWorthy(model("idle", true))).toBe(true);
+});
+
 test("warnings and restart needs remain attention-worthy", () => {
   expect(isAttentionWorthy(model("warning"))).toBe(true);
   expect(isAttentionWorthy(model("restartRequired"))).toBe(true);

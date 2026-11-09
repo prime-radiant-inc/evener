@@ -12,11 +12,14 @@ export function totalItemCount(model: ThreadModel | undefined): number {
 // idle, while a question, approval, warning or restart need still needs you.
 export function isAttentionWorthy(model: ThreadModel | undefined): boolean {
   if (!model) return false;
-  return attentionNeedsYou(
-    attentionState(model.status.type, {
-      askPending: model.askPending,
-      approvalPending: (model.pendingEscalations?.length ?? 0) > 0,
-    }),
+  return (
+    model.askPending ||
+    attentionNeedsYou(
+      attentionState(model.status.type, {
+        askPending: model.askPending,
+        approvalPending: (model.pendingEscalations?.length ?? 0) > 0,
+      }),
+    )
   );
 }
 
