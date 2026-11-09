@@ -12,11 +12,6 @@
 // repo can be cloned anywhere. Without a recognized forge the branch alone is
 // shown, as plain text. The cwd is never a link.
 //
-// A phone renders the line in the same footer but passes `link={false}`: that
-// line is caption-height, below the phone's touch floor, so an outbound anchor
-// there would sit under a thumb aiming for the chips at the end of the row.
-// The branch still shows, as plain text.
-//
 // Both truncatable spans middle-truncate under pressure, not end-truncate: the
 // path's and the reference's ENDINGS - the project directory, the branch - are
 // the parts an end-truncation kept hiding, and the parts a person scanning the

@@ -590,3 +590,56 @@ test.each([false, true])("repeated composer /status targets its ref, phone=%s", 
   expect(workspaceStore.getState().panes.some((pane) => pane.type === "sessionDetails")).toBe(false);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
 });
+
+// A phone's composer rests by shedding what an empty editor does not need -
+// attach, the status chips and the activity chips - while the session menu
+// and Send stay, so a landscape phone spends its height on the transcript
+// and session actions stay reachable without focusing first. Focus engages
+// the full row again.
+test("a resting phone composer sheds chips and attach until focus engages the full row", async ({ onTestFinished }) => {
+  onTestFinished(installMobileViewport());
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  await threadsStore.getState().ensureThread("ref_a");
+  render(
+    <ClientProvider client={fake}>
+      <Composer ref="ref_a" source={createTestComposerSource("ref_a")} focused={false} />
+    </ClientProvider>,
+  );
+  await screen.findByRole("textbox", { name: "Message" });
+  await flushPendingTurnsProjectionForTests();
+
+  // At rest: no attach, no status chips, no activity chips. The menu-only
+  // chrome keeps the session actions reachable, and Send stays.
+  expect(screen.queryByTestId("composer-attach")).toBeNull();
+  expect(screen.queryByTestId("session-chrome-inline")).toBeNull();
+  expect(document.querySelector('[data-testid="composer-form"] [data-activity-tab]')).toBeNull();
+  expect(screen.getByTestId("session-chrome-menu")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Session actions" })).toBeTruthy();
+  expect(screen.getByTestId("composer-submit")).toBeTruthy();
+
+  // Focus engages the full row.
+  fireEvent.focus(screen.getByRole("textbox", { name: "Message" }));
+  await waitFor(() => expect(screen.getByTestId("composer-attach")).toBeTruthy());
+  expect(screen.getByTestId("session-chrome-inline")).toBeTruthy();
+  expect(screen.getByTestId("composer-submit")).toBeTruthy();
+  expect(document.querySelector('[data-testid="composer-form"] [data-activity-tab]')).toBeTruthy();
+  expect(screen.queryByTestId("session-chrome-menu")).toBeNull();
+});
+
+// A turn in flight keeps its Stop control even while the editor rests
+// collapsed: stopping a runaway turn must never depend on focusing first.
+test("a collapsed mobile composer still offers Stop while a turn is running", async ({ onTestFinished }) => {
+  onTestFinished(installMobileViewport());
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: "active" } } as Partial<Thread>));
+  await threadsStore.getState().ensureThread("ref_a");
+  render(
+    <ClientProvider client={fake}>
+      <Composer ref="ref_a" source={createTestComposerSource("ref_a")} focused={false} />
+    </ClientProvider>,
+  );
+  await screen.findByRole("textbox", { name: "Message" });
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(screen.getByTestId("composer-stop")).toBeTruthy());
+});

@@ -42,6 +42,7 @@ import {
 } from "react";
 import { activitySidebarStore } from "../../../shell/activitybar/activitySidebarStore";
 import type { SessionMenuTurnVerbs } from "../../../shell/sessionMenu/SessionMenu";
+import { ActivityChips } from "../../../shell/statusbar/ActivityChips";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { useMountAutofocus } from "../../../shell/useMountAutofocus";
 import {
@@ -242,6 +243,13 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   // Track live focus too, so stopping does not collapse a focused editor.
   // React focus events follow the composer's controls and portaled menus.
   const [followUpFocused, setFollowUpFocused] = useState(false);
+  // Editor engagement is narrower than the card's focus above: it turns on
+  // only when the textbox itself is focused, and turns off only when focus
+  // leaves the card entirely (the same frame guard), so a press on a resting
+  // row's own controls - the session menu, Send - never counts as editor
+  // engagement. The phone collapse below keys on it, so pressing a resting
+  // control cannot expand the row out from under that press.
+  const [editorEngaged, setEditorEngaged] = useState(false);
   const followUpFocusSequenceRef = useRef(0);
 
   // Steer moves into the menu below the phone-width boundary.
@@ -680,9 +688,31 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   // wire shape is notLoaded + send:false, which the capability alone would not
   // render a card for.
   const showFollowUpCard = ended && (canSendWhenEnded || fence.fencedLocal || fence.sendDriven);
-  // Only the editor shrinks at rest. Controls stay available without typing.
-  // Drafts, attachments and recovery keep enough writing space after blur.
+  // Only the editor shrinks at rest; on the desktop the full row stays
+  // available without typing. Drafts, attachments and recovery keep enough
+  // writing space after blur.
   const followUpEngaged = fence.fencedLocal || fence.sendDriven || followUpFocused || hasContent;
+
+  // The phone layout's one bottom surface is this card's own control row,
+  // and a resting card sheds what an empty editor does not need: no attach,
+  // no status chips, no activity chips. The session menu and Send stay -
+  // both remain useful with nothing drafted, and the menu is a phone's one
+  // surface for session actions. Editor engagement (a draft, the editor's
+  // own focus, a send in flight, a stalled storage write) brings the full
+  // row back; the actions slot never sheds, so Stop stays reachable while a
+  // turn runs, and the resting leading never swaps while one of its own
+  // controls is pressed. The exited follow-up keeps its full row at rest:
+  // that surface is the one place on a phone the model picker is directly
+  // reachable without engaging the editor. The desktop layout always keeps
+  // the full row.
+  const controlsCollapsed =
+    isMobile &&
+    !ended &&
+    !fence.fencedLocal &&
+    !fence.sendDriven &&
+    !editorEngaged &&
+    !hasContent &&
+    !mutationWriteStalled;
 
   function handleTextChange(value: SkillEditorValue, caret: number): void {
     editSkillNames(value.skillNames);
@@ -831,8 +861,10 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   function handleFollowUpFocus(event: ReactFocusEvent<HTMLDivElement>): void {
     followUpFocusSequenceRef.current += 1;
     setFollowUpFocused(true);
-    if ((event.target as Element).closest('[role="textbox"]'))
+    if ((event.target as Element).closest('[role="textbox"]')) {
+      setEditorEngaged(true);
       formAnchorRef.current?.setAttribute("data-composer-editing", "");
+    }
   }
 
   function handleFollowUpBlur(): void {
@@ -841,7 +873,10 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
     // Wait until the next frame so a control or portal keeps the empty editor
     // expanded without shrinking it during a focus transfer.
     requestAnimationFrame(() => {
-      if (mountedRef.current && followUpFocusSequenceRef.current === sequence) setFollowUpFocused(false);
+      if (mountedRef.current && followUpFocusSequenceRef.current === sequence) {
+        setFollowUpFocused(false);
+        setEditorEngaged(false);
+      }
     });
     endComposerEditingSoon();
   }
@@ -876,6 +911,38 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
 
   const sessionChrome = (
     <MemoizedSessionChrome ref={ref} paneId={paneId} placement="composer" discoverActivity turnVerbs={turnVerbs} />
+  );
+
+  // data-testid on every control in this row: two different buttons here
+  // start with "Steer" (this one and QueueStrip's "Steer queue now"), so
+  // tests address controls by a stable hook instead of navigating by
+  // accessible name - the naming style follows StatusRow's own
+  // status-row-* testids.
+  //
+  // While the phone card rests (controlsCollapsed), the leading slot
+  // shrinks to the menu-only chrome: the session menu stays reachable, and
+  // that placement's hidden panel keeps initial activity discovery
+  // following the pane on screen (issue #1335) with no status chips.
+  const leadingControls = controlsCollapsed ? (
+    <MemoizedSessionChrome ref={ref} paneId={paneId} placement="menu" discoverActivity />
+  ) : (
+    <div className={CLASS.leading}>
+      <Tooltip label="Attach an image">
+        <IconButton
+          label="Attach image"
+          icon={<AttachIcon />}
+          variant="quiet"
+          size="xs"
+          type="button"
+          data-testid="composer-attach"
+          onClick={() => fileInputRef.current?.click()}
+        />
+      </Tooltip>
+      {!askPending && sessionChrome}
+      {/* The phone pane has no footer strip (Session.tsx's edgeFooter), so
+          this row is where the activity counts live on a phone. */}
+      {isMobile && <ActivityChips sessionRef={ref} paneId={paneId} />}
+    </div>
   );
   return (
     <div
@@ -1023,28 +1090,7 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
                     aria-label="Message"
                   />
                 }
-                leading={
-                  /* data-testid on every control in this row: two different
-                     buttons here start with "Steer" (this one and
-                     QueueStrip's "Steer queue now"), so tests address
-                     controls by a stable hook instead of navigating by
-                     accessible name - the naming style follows StatusRow's
-                     own status-row-* testids. */
-                  <div className={CLASS.leading}>
-                    <Tooltip label="Attach an image">
-                      <IconButton
-                        label="Attach image"
-                        icon={<AttachIcon />}
-                        variant="quiet"
-                        size="xs"
-                        type="button"
-                        data-testid="composer-attach"
-                        onClick={() => fileInputRef.current?.click()}
-                      />
-                    </Tooltip>
-                    {!askPending && sessionChrome}
-                  </div>
-                }
+                leading={leadingControls}
                 actions={
                   <>
                     {/* Distinct keys replace the actual button, so a press
