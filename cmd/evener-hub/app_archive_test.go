@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -89,6 +90,19 @@ func TestArchiveSetDefersNavigationReceiptWhenRefreshTimesOut(t *testing.T) {
 	}
 	if !response.NavigationDeferred {
 		t.Fatalf("response = %+v, want NavigationDeferred for a timed-out receipt", response)
+	}
+	if got, want := response.Navigation.GenerationID, navigation.Capability().GenerationID; got != want {
+		t.Fatalf("deferred navigation generation = %q, want the live %q", got, want)
+	}
+	if len(response.Navigation.Targets) != 0 {
+		t.Fatalf("deferred navigation targets = %+v, want none", response.Navigation.Targets)
+	}
+	wire, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(wire), `"navigationDeferred":true`) || strings.Contains(string(wire), `"generation_id":""`) {
+		t.Fatalf("deferred response wire shape = %s, want the live generation and navigationDeferred", wire)
 	}
 	if attentionPokes != 1 {
 		t.Fatalf("attention pokes = %d, want 1 for an applied decision", attentionPokes)

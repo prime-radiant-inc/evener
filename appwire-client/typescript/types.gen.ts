@@ -85,9 +85,10 @@ export interface ArchiveResponse {
   /**
    * NavigationDeferred reports that the archive decision is durable but its
    * synchronous navigation receipt was not built before the refresh deadline.
-   * The receipt arrives later as a navigation invalidation; the decision must
-   * not be retried as failed. Older clients ignore the field and converge
-   * from that invalidation.
+   * Navigation carries the live generation with no targets; any later receipt
+   * arrives as an invalidation, and the decision must not be retried as
+   * failed. Older clients ignore the field and converge from that
+   * invalidation.
    */
   navigationDeferred?: boolean;
 }

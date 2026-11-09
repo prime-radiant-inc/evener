@@ -130,12 +130,14 @@ func archiveSet(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.R
 		// change hook (hub_startup wires Archive.SetOnChange to bump the inputs
 		// version and Invalidate) has already scheduled the rebuild. Reporting
 		// the archival as failed would invite a retry of a completed mutation,
-		// so report the committed decision and defer only the receipt: the
-		// rebuild publishes it as an invalidation.
+		// so report the committed decision and defer only the receipt. The
+		// receipt carries the service's current generation with no targets: a
+		// zero mutation would make a converging client reset its generation to
+		// "", and the rebuild publishes the real change as an invalidation.
 		if cfg.PokeAttention != nil {
 			cfg.PokeAttention()
 		}
-		return appwire.ArchiveResponse{OK: true, NavigationDeferred: true}, nil
+		return appwire.ArchiveResponse{OK: true, Navigation: navigation.EmptyMutation(), NavigationDeferred: true}, nil
 	}
 	if cfg.PokeAttention != nil {
 		cfg.PokeAttention()

@@ -197,16 +197,19 @@ type ArchiveParams struct {
 	Source string `json:"source,omitempty"`
 }
 
-// ArchiveResponse confirms the durable decision and returns the navigation
-// receipt committed by the same refresh that publishes its invalidation.
+// ArchiveResponse confirms the durable decision and, when one was committed,
+// returns the navigation receipt that publishes its invalidation. A deferred
+// receipt reports the committed decision with an empty target set; its change
+// publishes later as an invalidation.
 type ArchiveResponse struct {
 	OK         bool               `json:"ok"`
 	Navigation NavigationMutation `json:"navigation"`
 	// NavigationDeferred reports that the archive decision is durable but its
 	// synchronous navigation receipt was not built before the refresh deadline.
-	// The receipt arrives later as a navigation invalidation; the decision must
-	// not be retried as failed. Older clients ignore the field and converge
-	// from that invalidation.
+	// Navigation carries the live generation with no targets; any later receipt
+	// arrives as an invalidation, and the decision must not be retried as
+	// failed. Older clients ignore the field and converge from that
+	// invalidation.
 	NavigationDeferred bool `json:"navigationDeferred,omitempty"`
 }
 
