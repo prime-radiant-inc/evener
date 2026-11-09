@@ -278,6 +278,13 @@ func TestDelegateControllerRefusedBatchQueuesOnlyTheRefusedPlan(t *testing.T) {
 	c.mu.Lock()
 	c.reservations[9010] = &delegateStartRecord{token: 9010, delegateID: fixture.delegateID, trigger: delegatestore.TriggerAttention}
 	c.mu.Unlock()
+	// The hand-made reservation stands for a start that neither commits nor
+	// aborts here: withdraw it before the root closes, or the close waits on it.
+	t.Cleanup(func() {
+		c.mu.Lock()
+		delete(c.reservations, 9010)
+		c.mu.Unlock()
+	})
 	batch := delegateMutationPlans{deliveries: []delegateDeliveryPlan{refusedPlans[0], delivered[0]}}
 	if err := root.executeDelegateMutationPlans(batch); err != nil {
 		t.Fatalf("execute refused batch: %v", err)
@@ -289,6 +296,15 @@ func TestDelegateControllerRefusedBatchQueuesOnlyTheRefusedPlan(t *testing.T) {
 	case resolution := <-waiter.resolution:
 		if resolution.fallback || resolution.packet == nil || resolution.commit == nil {
 			t.Fatalf("second plan resolution = %#v, want the delivered report", resolution)
+		}
+		// Acknowledge the report as the waiting send's tool round does, so
+		// the root's Close finds no admitted delivery to wait on.
+		plans, err := resolution.commit.Complete(true)
+		if err != nil {
+			t.Fatalf("acknowledge the delivered report: %v", err)
+		}
+		if err := root.executeDelegateMutationPlans(plans); err != nil {
+			t.Fatalf("execute the acknowledgement: %v", err)
 		}
 	default:
 		t.Fatal("the never-tried waiter-bearing plan was not delivered normally")
@@ -326,6 +342,13 @@ func TestDelegateControllerFlushKeepsDrainingAfterTransientRefusal(t *testing.T)
 	c.mu.Lock()
 	c.reservations[9011] = &delegateStartRecord{token: 9011, delegateID: "dlg_other", trigger: delegatestore.TriggerAttention}
 	c.mu.Unlock()
+	// The hand-made reservation stands for a start that neither commits nor
+	// aborts here: withdraw it before the root closes, or the close waits on it.
+	t.Cleanup(func() {
+		c.mu.Lock()
+		delete(c.reservations, 9011)
+		c.mu.Unlock()
+	})
 	if err := root.flushPendingDelegateDeliveries(); err != nil {
 		t.Fatalf("flush root: %v", err)
 	}
@@ -441,9 +464,13 @@ func TestDelegateControllerTransientRefusalDoesNotBlockAttentionStart(t *testing
 
 	// The start commits normally: the kept claim is deferred delivery, not work
 	// in flight.
-	if _, err := c.CommitStart(reservation); err != nil {
+	started, err := c.CommitStart(reservation)
+	if err != nil {
 		t.Fatalf("CommitStart after the transient refusal = %v, want success", err)
 	}
+	// No run launches the committed generation: end it before the root
+	// closes and waits on it.
+	t.Cleanup(func() { endUnlaunchedDelegate(root, started) })
 	// The queued retry then delivers the child's report as durable attention.
 	if err := owner.flushPendingDelegateDeliveries(); err != nil {
 		t.Fatalf("flush owner: %v", err)

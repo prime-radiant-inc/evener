@@ -298,7 +298,8 @@ func TestEnsureDelegateArtifactsDir_RefusesSymlinkedSessionsDir(t *testing.T) {
 func TestDisposeUnadoptedSubagentSession_RemovesArtifactsDir(t *testing.T) {
 	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
-	_, _, _, prepared := prepareCommittedUnadoptedDelegate(t, root, "disposed before adoption")
+	_, started, _, prepared := prepareCommittedUnadoptedDelegate(t, root, "disposed before adoption")
+	t.Cleanup(func() { endUnlaunchedDelegate(root, started) })
 
 	childID := prepared.sub.sess.id
 	dir, err := ensureDelegateArtifactsDir(root.stateDir, childID)

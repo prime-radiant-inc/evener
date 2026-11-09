@@ -392,12 +392,24 @@ func TestHeldAttentionProjectionSeedsNoContinuationAnchor(t *testing.T) {
 	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, controller, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+	ownController := sess.delegateController
 	sess.delegateController = controller
 	sess.owningDelegateID = "dlg_target"
 	controller.mu.Lock()
 	controller.live[lease.delegateID].runtime = sess
 	controller.live[lease.delegateID].binding.runtime = sess
 	controller.mu.Unlock()
+	// The harness tree names this session as its running delegate only for
+	// the projection under test. Give the session its own tree back before
+	// its Close, which closes the tree it owns: the harness tree's seeded
+	// generation has no run to settle it, and tearing that tree down would
+	// tear this session down inside its own close.
+	defer func() {
+		sess.mu.Lock()
+		sess.delegateController = ownController
+		sess.owningDelegateID = ""
+		sess.mu.Unlock()
+	}()
 
 	const heldID = "delegate:dlg_worker/delivery/1/reopened/2"
 	held := schema.NewTurn(schema.TurnSteering, llm.User("held report"))
@@ -473,6 +485,14 @@ func acceptedTriggerSession(t *testing.T) *Session {
 	if err := sess.acceptDelegateAttention(reservation); err != nil {
 		t.Fatalf("acceptDelegateAttention: %v", err)
 	}
+	// No drive owns this accepted reservation, so nothing commits it; release
+	// it the way a drive that cannot commit does, before the session and the
+	// controller close (cleanups are LIFO), so Close finds no start to wait on.
+	t.Cleanup(func() {
+		if err := controller.AbortStart(reservation); err != nil {
+			t.Errorf("AbortStart: %v", err)
+		}
+	})
 	return sess
 }
 
