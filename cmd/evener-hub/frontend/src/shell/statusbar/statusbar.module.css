@@ -31,6 +31,18 @@
   flex: none;
 }
 
+/* The composer's engaged row: wrapped chips yield onto a second line
+   instead of crushing the status chrome beside them: the strip yields
+   (shrink 999 beside the chrome's 1) and wraps, and it flows after the
+   chrome rather than pushing to the row's end. The status bar never uses
+   this. */
+.chipsWrap {
+  margin-left: 0;
+  flex: 0 999 auto;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
 .chip {
   display: inline-flex;
   align-items: center;
@@ -102,47 +114,20 @@
   }
 }
 
-/* The phone keeps the footer on the pane's bottom edge as one row: the
- * working directory flexes beside the chips, which stay at the touch floor at
- * the end. A bar narrower than 600px already drops the names (the container
- * rule above), and the phone shows a single count per chip (StatusBar.tsx), so
- * the four counts leave the path real width. The path takes only the width the
- * chips leave; if even 48px of path plus the chips is too wide, the chip row
- * scrolls sideways rather than shrinking a target or wrapping to a second row.
- * The bar owns the
- * home-indicator band because nothing docks below it; PaneScaffold drops the
- * composer footer's own inset when this bar follows it. The inset yields while
- * the on-screen keyboard covers that band, as the composer dock's does. */
+/* A phone mounts no status bar (Session renders the strip desktop-only; the
+ * activity counts ride the composer's engaged control row instead), so on a
+ * phone these rules address that row's chips alone: compact padding, and the
+ * glyph at every width so each tab stays identifiable in the crowded row. The
+ * chips themselves are touch targets via the shared tap-floor block above, and
+ * their strip's wrap contract is .chipsWrap above. */
 @media (max-width: 899px) {
-  .bar {
-    flex-wrap: nowrap;
-    gap: var(--space-2);
-    padding: 0 var(--space-2) max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px));
-  }
-
-  .leading {
-    /* Basis 0: the path takes only the width the chips leave, so the path
-     * truncates before a chip shrinks. */
-    flex: 1 1 0;
-    min-width: 48px;
-  }
-
+  /* The phone's wrapped strip must never take the 320px narrow-pane grid
+   * below: that grid's two max-content columns need ~130px, and the
+   * composer's leading can squeeze below that while its row shares the
+   * pane with the open Overview. The wrapping flex row absorbs any width
+   * by taking another line instead of overflowing it. */
   .chips {
     display: flex;
-    flex: 0 1 auto;
-    min-width: 0;
-    /* The bar's margin-left: auto right-aligns the row; flex-start keeps any
-     * overflow at the scrollable end. */
-    justify-content: flex-start;
-    gap: var(--space-1);
-    overflow-x: auto;
-    /* A cut-off chip is the overflow cue; a scrollbar in the pane's bottom
-     * edge would cost the bar height for a control a thumb already has. */
-    scrollbar-width: none;
-  }
-
-  .chips::-webkit-scrollbar {
-    display: none;
   }
 
   .chip {
@@ -150,38 +135,22 @@
     padding: 0 var(--space-1);
   }
 
-  /* One line keeps the category glyph at every phone width; the 320px
-   * container rule above compacts narrow desktop panes instead. */
+  /* The phone's strip never shows the category names, at any leading width:
+   * its row shares the line with attach, the status chrome's compact rung and
+   * Send, and the named strip (~387px) cannot fit beside them even at the
+   * phone composer's widest leading (~636px, after the narrower Stop replaces
+   * Send mid-press). A name threshold inside that range would flip the strip
+   * into its wide variant during the swap and reflow the row out from under
+   * the thumb still holding the pressed Send point. The count and the chip's
+   * accessible name keep every tab identifiable without the visible label. */
+  .chipName {
+    display: none;
+  }
+
+  /* The phone keeps the category glyph at every width; the 320px container
+   * rule above compacts narrow desktop panes instead. */
   .chipGlyph {
     display: inline-flex;
   }
-
-  /* An editing composer means the on-screen keyboard is up on a phone: the
-   * glance strip would sit between the input and the keyboard, spending its
-   * height from the remaining transcript. The composer sets this attribute
-   * from its editor's focus, and keeps it while focus stays in the composer
-   * or one of its menus, so pressing Send or another composer control does
-   * not move the dock under the pointer. It clears when the editor is no
-   * longer the editing surface. */
-  :global(body):has([data-composer-editing]) .bar {
-    display: none;
-  }
 }
 
-/* At the Duo's 466pt cover width the existing one-row status bar keeps its
- * four activity links and their 44px targets. Compact framing, not smaller
- * controls or a second activity model, recovers the transcript's space. */
-@media (min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4) {
-  .bar {
-    gap: var(--space-1);
-    padding-inline: var(--space-1);
-  }
-
-  .leading {
-    min-width: 32px;
-  }
-
-  .chips {
-    gap: 0;
-  }
-}

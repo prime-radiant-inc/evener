@@ -1,10 +1,10 @@
 import type { AnyNotification, ThreadReadResponse } from "@evener/appwire-client";
 import { makeTranscriptDisplayConfig, WireError } from "@evener/appwire-client";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
-import { resetActivitySidebarStoreForTests } from "../../shell/activitybar/activitySidebarStore";
+import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../../shell/activitybar/activitySidebarStore";
 import { ClientProvider } from "../../shell/clientContext";
 import * as StatusBarModule from "../../shell/statusbar/StatusBar";
 import { resetMobileViewportForTests } from "../../shell/useIsMobile";
@@ -22,12 +22,15 @@ import * as ComposerModule from "./composer/Composer";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
 import { RECOVERY_HINT_DELAY_MS } from "./Session";
+import { installMobileViewport } from "./testing/mobileViewport";
 import "./index";
 import { CommittedSession as Session } from "./testing/CommittedSession";
 import { resetTranscriptPagingForTests } from "./transcript/useTranscript";
 import "./testing/editorGeometry";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
+import { answerActivityRead } from "../../stores/sessionActivityTestUtils";
 import { connectReadyFakeClient } from "../../testing/connectionTestUtils";
+import { ALL_CAPABILITIES } from "../../threadTestUtils";
 import { readResponse, setNavigationTitle, turnFixture, versionedReadResponse } from "./sessionTestUtils";
 import { writeSeenWatermark } from "./transcript/flow/seenWatermark";
 
@@ -972,4 +975,48 @@ test("a first-ever visit shows no divider, and unmounting stores the last turn a
   expect(screen.queryByTestId("seen-divider")).toBeNull();
   unmount();
   expect(localStorage.getItem("evener.transcript.seen.v1.ref_a")).toBe("turn_2");
+});
+
+// A phone share link to a notLoaded remote session with no send surface has
+// no composer (the conversation lifetime never starts, so no card and no
+// menu of its own), no status bar (the phone layout keeps one bottom
+// surface, the composer's own row), and no rail (a single-pane phone hides
+// it), so the fallback session menu is the only remaining way into Overview
+// and About - the desktop's status bar still carries one there.
+test("a phone keeps a session menu for a notLoaded remote share with no send surface", async ({ onTestFinished }) => {
+  // This suite stubs SessionChrome for its placement pins; the fallback
+  // menu's own behavior needs the real chrome back for this test.
+  vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+  onTestFinished(() => {
+    stubSessionSlots();
+  });
+  const restoreViewport = installMobileViewport();
+  onTestFinished(restoreViewport);
+  const ref = "remote-share";
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () =>
+    readResponse(ref, {
+      status: { type: "notLoaded" },
+      evener: { ref, capabilities: { ...ALL_CAPABILITIES, send: false }, queue: { revision: 0 } },
+    }),
+  );
+  fake.on("evener/thread/activity/read", answerActivityRead);
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await flushPendingTurnsProjectionForTests();
+
+  // No composer card, no composer menu: the fallback menu is the phone's
+  // only session surface, and its Overview item opens the shared sidebar.
+  expect(screen.queryByTestId("composer-form")).toBeNull();
+  const trigger = screen.getByRole("button", { name: "Session actions" });
+  fireEvent.click(trigger);
+  fireEvent.click(screen.getByRole("menuitem", { name: "Overview" }));
+  // The bare pane render has no app shell to host the shared sidebar; the
+  // menu's Overview request is the contract, and it lands in the store the
+  // shell's sidebar follows.
+  await waitFor(() => expect(activitySidebarStore.getState()).toMatchObject({ open: true, ref: "remote-share" }));
 });

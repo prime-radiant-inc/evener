@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Thread } from "@evener/appwire-client";
+import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
@@ -624,4 +625,140 @@ test.each([false, true])("repeated composer /status targets its ref, phone=%s", 
   }
   expect(workspaceStore.getState().panes.some((pane) => pane.type === "sessionDetails")).toBe(false);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+});
+
+// A phone's composer rests by shedding what an empty editor does not need -
+// attach, the status chips and the activity chips - while the session menu
+// and Send stay, so a landscape phone spends its height on the transcript
+// and session actions stay reachable without focusing first. Focus engages
+// the full row again.
+test("a resting phone composer sheds chips and attach until focus engages the full row", async ({ onTestFinished }) => {
+  onTestFinished(installMobileViewport());
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  await threadsStore.getState().ensureThread("ref_a");
+  render(
+    <ClientProvider client={fake}>
+      <Composer ref="ref_a" source={createTestComposerSource("ref_a")} focused={false} />
+    </ClientProvider>,
+  );
+  await screen.findByRole("textbox", { name: "Message" });
+  await flushPendingTurnsProjectionForTests();
+
+  // At rest: no attach, no status chips, no activity chips. The menu-only
+  // chrome keeps the session actions reachable, and Send stays.
+  expect(screen.queryByTestId("composer-attach")).toBeNull();
+  expect(screen.queryByTestId("session-chrome-inline")).toBeNull();
+  expect(document.querySelector('[data-testid="composer-form"] [data-activity-tab]')).toBeNull();
+  expect(screen.getByTestId("session-chrome-menu")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Session actions" })).toBeTruthy();
+  expect(screen.getByTestId("composer-submit")).toBeTruthy();
+
+  // Focus engages the full row.
+  fireEvent.focus(screen.getByRole("textbox", { name: "Message" }));
+  await waitFor(() => expect(screen.getByTestId("composer-attach")).toBeTruthy());
+  expect(screen.getByTestId("session-chrome-inline")).toBeTruthy();
+  expect(screen.getByTestId("composer-submit")).toBeTruthy();
+  expect(document.querySelector('[data-testid="composer-form"] [data-activity-tab]')).toBeTruthy();
+  expect(screen.queryByTestId("session-chrome-menu")).toBeNull();
+});
+
+// A cascade column's chrome renders the conversation's activity controls
+// below the footer (CascadeColumn's ScopeActivityControls), so its seat
+// declares that ownership and the phone composer row keeps no second set of
+// chips beside the status chrome, even engaged.
+test("a composer whose seat owns the activity counts never mounts chips", async ({ onTestFinished }) => {
+  onTestFinished(installMobileViewport());
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_owned_counts"));
+  await threadsStore.getState().ensureThread("ref_owned_counts");
+  render(
+    <ClientProvider client={fake}>
+      <Composer
+        ref="ref_owned_counts"
+        source={createTestComposerSource("ref_owned_counts")}
+        focused={false}
+        ownsActivityCounts
+      />
+    </ClientProvider>,
+  );
+  await screen.findByRole("textbox", { name: "Message" });
+  await flushPendingTurnsProjectionForTests();
+
+  // The engaged row keeps the status chrome and attach, but no chips.
+  fireEvent.focus(screen.getByRole("textbox", { name: "Message" }));
+  await waitFor(() => expect(screen.getByTestId("session-chrome-inline")).toBeTruthy());
+  expect(screen.getByTestId("composer-attach")).toBeTruthy();
+  expect(document.querySelector('[data-testid="composer-form"] [data-activity-tab]')).toBeNull();
+});
+
+// A turn in flight keeps its Stop control even while the editor rests
+// collapsed: stopping a runaway turn must never depend on focusing first.
+test("a collapsed mobile composer still offers Stop while a turn is running", async ({ onTestFinished }) => {
+  onTestFinished(installMobileViewport());
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: "active" } } as Partial<Thread>));
+  await threadsStore.getState().ensureThread("ref_a");
+  render(
+    <ClientProvider client={fake}>
+      <Composer ref="ref_a" source={createTestComposerSource("ref_a")} focused={false} />
+    </ClientProvider>,
+  );
+  await screen.findByRole("textbox", { name: "Message" });
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(screen.getByTestId("composer-stop")).toBeTruthy());
+});
+
+// A press on a row control can blur the focused editor to body without
+// moving focus, and the press's focus transfer lands only a task after its
+// click. The collapse must hold through the press - clearing engagement on
+// the blur's frame would unmount the pressed control and lose its action -
+// and then rest once the press's release reconciles where focus sits.
+test("a phone press keeps the pressed control mounted through the press", async ({ onTestFinished }) => {
+  onTestFinished(installMobileViewport());
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  await threadsStore.getState().ensureThread("ref_a");
+  render(
+    <ClientProvider client={fake}>
+      <Composer ref="ref_a" source={createTestComposerSource("ref_a")} focused={false} />
+    </ClientProvider>,
+  );
+  const editor = await screen.findByRole("textbox", { name: "Message" });
+  await flushPendingTurnsProjectionForTests();
+
+  // The editor's focus engages the full row.
+  await act(async () => {
+    editor.focus();
+  });
+  await waitFor(() => expect(screen.getByTestId("composer-attach")).toBeTruthy());
+
+  // A press on Attach blurs the editor to body without focusing the button;
+  // the pressed control must stay mounted through the press and its click.
+  await act(async () => {
+    fireEvent.pointerDown(screen.getByTestId("composer-attach"));
+  });
+  await act(async () => {
+    editor.blur();
+  });
+  // jsdom schedules the frame on a ~16ms timer, so a plain task yield never
+  // reaches it; wait real milliseconds inside act() so the blur's frame has
+  // fired before the mid-press assertion.
+  await act(async () => {
+    await new Promise((resolve) => {
+      setTimeout(resolve, 50);
+    });
+  });
+  expect(screen.getByTestId("composer-attach")).toBeTruthy();
+  await act(async () => {
+    fireEvent.click(screen.getByTestId("composer-attach"));
+  });
+  await act(async () => {
+    await nextMacrotask();
+  });
+
+  // The press released and focus stayed on body: the row rests again, with
+  // the controls that never shed still in it.
+  await waitFor(() => expect(screen.queryByTestId("composer-attach")).toBeNull());
+  expect(screen.getByTestId("composer-submit")).toBeTruthy();
 });

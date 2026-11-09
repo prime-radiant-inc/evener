@@ -122,6 +122,10 @@ function ScopeConversation({
       // autofocuses its composer — the user taps in, or the pane's own
       // focus plumbing acts.
       focused: false,
+      // CascadeColumn renders this scope's activity controls below the
+      // conversation footer, so the composer's phone row adds no second
+      // set of chips beside the status chrome.
+      ownsActivityCounts: true,
       // A resumed conversation replaces its path entry in place; a cascade
       // column has no route of its own to navigate. The seat declares the
       // fallback session menu so the conversation's own gate can render it in

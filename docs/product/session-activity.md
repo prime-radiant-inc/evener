@@ -742,9 +742,9 @@ the sidebar describes that conversation, its checkmarks mark it, and its
 breadcrumbs show its own ancestry — until the workspace scope moves, Overview
 closes, or another open request names a different scope, and the cascade keeps
 focus even when an ordinary pane for that conversation exists. A focus-based
-open request (a footer chip, an ordinary pane's Overview) releases the held
+open request (an activity chip, an ordinary pane's Overview) releases the held
 scope and leaves the sidebar, its preference saves and its checkmarks with the
-focused conversation. Each ordinary pane's footer remains bound to its own
+focused conversation. Each ordinary pane's status surface remains bound to its own
 conversation.
 
 Columns and spines expose Agents, Jobs, Watches and Tasks peeks, including empty
@@ -868,9 +868,11 @@ describe the executable proof and presentation contract.
 The [browser binding](../../cmd/evener-hub/frontend/src/stores/sessionActivity.ts)
 shares a store by actual client object, requested ref and scope. A committed view
 acquires its holder; an abandoned render starts no read. Every visible ordinary
-session pane has a status footer on both viewports that observes that pane's
-summary and its subtree summary (for the Agents count) by explicit ref, so
-side-by-side panes retain independent counts while duplicate consumers of one
+session pane observes that pane's
+summary and its subtree summary (for the Agents count) by explicit ref on both
+viewports, through its flush status footer on desktop and through the activity
+chips in the composer's control row on the phone, which renders no footer
+strip, so side-by-side panes retain independent counts while duplicate consumers of one
 ref and scope share
 the same owner. Agents, Jobs and Watches tabs observe their own
 session-scoped collection. A visible page boundary supplies further demand,
@@ -884,7 +886,7 @@ a store another holder keeps alive takes in no late page for a view that has
 closed. Its retained rows stay, and the next observer reconciles them with a
 fresh walk, as for any retained store.
 
-About is the last sidebar category and has no count or footer chip. Its
+About is the last sidebar category and has no count or chip. Its
 [adapter](../../cmd/evener-hub/frontend/src/shell/activitybar/AboutTab.tsx)
 holds the shared thread model for the sidebar's explicit public session ref and
 renders the existing details body. That model owner supplies hydration,
@@ -941,7 +943,7 @@ remain visible. Task details
 remain an explicit disclosure choice.
 
 The browser Tasks tab keeps its settled/total count in the tab label (done
-plus cancelled tasks; the footer chip and each cascade Tasks chip count the
+plus cancelled tasks; the pane's activity chip and each cascade Tasks chip count the
 same) and starts its body with the task groups, without aggregate summary lines
 above them. The
 standalone Tasks pane and Tasks Sheet retain their aggregate headers and trigger
@@ -1010,7 +1012,7 @@ optional active count sums the subagents running at every depth and the
 session's own running jobs, only when both are known; watches and completed work
 are not part of that number. The sidebar's Agents, Jobs, Watches and Tasks tabs use session-scoped
 reads on both viewports; About uses the shared session model. The Agents count
-is the exception: the footer chip, the sidebar's Agents tab label, each
+is the exception: the pane's activity chip, the sidebar's Agents tab label, each
 cascade scope's Agents chip, the Overview and Activity action counts and the
 conversation's liveness line all count subagents at every depth, from the subtree
 summary
