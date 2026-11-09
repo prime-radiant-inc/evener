@@ -2,8 +2,9 @@
 import "fake-indexeddb/auto";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { settleProjectionWorkForTests } from "../../../panes/session/composer/queue/testing/flushPendingTurnsProjection";
 import { setProductionEntryCacheForTests } from "../../../stores/entryTranscriptRoutes";
-import { clearProjectionWorkForTests, settleProjectionWorkForTests } from "../../../stores/projectionWork";
+import { clearProjectionWorkForTests } from "../../../stores/projectionWork";
 import { entryHistoryKey } from "../../../stores/sessionCacheSchema";
 import { SessionEntryCache } from "../../../stores/sessionEntryCache";
 import {

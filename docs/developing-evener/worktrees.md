@@ -32,7 +32,7 @@ One tool, seven operations, selected by `operation`:
 | `switch` | Enters an existing worktree without creating one. | `name` (a worktree this tool manages) or `path` (any worktree git already knows about, including hand-made ones) |
 | `exit` | Leaves the current worktree and returns to where the session was before, without touching the worktree itself. | none |
 | `list` | Reports every managed worktree: path, branch, lock/occupant state, and how stale it is (age, dirty, commits ahead, merged). | none |
-| `remove` | Deletes a worktree (and, optionally, its branch). | `name` (required), `force` (skip the dirty-tree safety check), `delete_branch` (also delete the branch, if it's safe to) |
+| `remove` | Deletes a worktree (and, optionally, its branch). | `name` (required), `force` (retire this session's own retained-idle children under the lane and allow unverified branch deletion), `force_dirty` (skip the dirty-tree safety check), `delete_branch` (also delete the branch, if it's safe to) |
 | `prune` | Sweeps every managed worktree in one call and removes the ones that are safe to remove. | `orphaned_delegate_days` (optional; also release delegate-lane locks whose parent session provably cannot act — default 0 keeps the locked-lane rule absolute) |
 | `dispose` | Retires one finished delegate isolation lane by its delegate id — unlocks it, removes the worktree, deletes its branch, and marks the delegate disposed. | `id` (required — the `dlg_…` delegate id), `force` (discard unmerged commits), `force_dirty` (discard uncommitted changes) |
 
@@ -110,6 +110,14 @@ so once it can show the branch's work is actually captured elsewhere (merged, or
 never diverged) — it does not trust git's own "already merged" check, because that
 check is relative to whatever the main checkout happens to have checked out right now,
 which can be misleading (e.g. a detached-HEAD review).
+
+`remove --force` also retires the caller's own retained-idle **shared-workspace**
+children whose recorded working directory is under the lane — the default-isolation
+delegates that have no lane of their own, which used to dead-end a clean lane's
+removal. It closes their durable resumability (`workspace_lane_removed`) before
+tearing the resident runtime down, refuses while an armed or pending watch targets
+one, and refuses a child that starts a notification drive or finalizer at the moment
+of effect. Every other live-work blocker still fails closed.
 
 `prune` is the "clean up everything that's safe to clean up" call — the one-shot
 alternative to remembering to `remove` every finished lane by hand. It walks every

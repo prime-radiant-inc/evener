@@ -1860,7 +1860,7 @@ func TestRetirementRetainedRootSteeringBlocksUntilConsumed(t *testing.T) {
 	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
-	if err := root.SteerKind("retained-root-sentinel", events.SteeringKindNoteHandoff); err != nil {
+	if err := root.steerKind("retained-root-sentinel", events.SteeringKindNoteHandoff); err != nil {
 		t.Fatal(err)
 	}
 	original, err := os.ReadFile(queuesFilePath(root.stateDir, root.ID()))

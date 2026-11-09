@@ -72,7 +72,7 @@ func TestVoicePresentationRetryRestoreAndAdmission(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("reclaim %v %v", ok, err)
 	}
-	if reclaimed.ClientMutationID != params.ClientMutationID || !reflect.DeepEqual(reclaimed.VoicePresentation, want) || restored.QueueDepth() != 0 {
+	if reclaimed.ClientMutationID != params.ClientMutationID || !reflect.DeepEqual(reclaimed.VoicePresentation, want) || restored.queueDepth() != 0 {
 		t.Fatal("start restore lost association or entered exposed queue")
 	}
 	steers := clientSteeringFromSnapshot(restored.clientMutations.snapshot())

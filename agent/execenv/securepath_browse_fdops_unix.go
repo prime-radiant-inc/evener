@@ -109,8 +109,8 @@ func toFsErr(err error) error {
 // dropping any match under a masked path. Results are absolute and sorted like the
 // off path (newest mtime first, ties by path). The returned int is the number of
 // candidate matches dropped by the dotfile/gitignore exclusion (see
-// GlobExcluder) — it never includes matches dropped by masking, which is a
-// separate security boundary. budget is shared across every brace-expanded
+// GlobWithExclusions) — it never includes matches dropped by masking, which is
+// a separate security boundary. budget is shared across every brace-expanded
 // pattern the call walks, exactly like the off path's GlobWithBudget.
 //
 // Dotfiles/dirs and gitignored paths are excluded by default (matching the

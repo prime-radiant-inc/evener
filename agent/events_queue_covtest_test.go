@@ -107,11 +107,11 @@ func TestCovEnqueueWithImages_Empty(t *testing.T) {
 	}
 }
 
-// TestCovContextMetrics_NilContextMgr covers ContextMetrics with nil contextMgr.
+// TestCovContextMetrics_NilContextMgr covers contextMetrics with nil contextMgr.
 func TestCovContextMetrics_NilContextMgr(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
-	got := s.ContextMetrics()
+	got := s.contextMetrics()
 	if got.Used != 0 || got.Window != 0 || got.Remaining != 0 {
 		t.Fatalf("expected zero ContextMetrics, got %+v", got)
 	}

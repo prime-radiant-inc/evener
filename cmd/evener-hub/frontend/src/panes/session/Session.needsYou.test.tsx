@@ -887,3 +887,61 @@ test("the mobile stack host offers attention navigation over its focused session
   await flushPendingTurnsProjectionForTests();
   await waitFor(() => expect(screen.getByTestId("next-needs-you-next")).toBeTruthy());
 });
+
+// The phone layout keeps one bottom surface: the composer's own control
+// row. The pane's status strip is gone there - its activity chips moved
+// into that row - so a landscape phone spends its height on content, and a
+// resting composer sheds its chips and attach instead of showing them.
+test("a mobile session pane keeps its activity chips in the composer's control row, not a footer strip", async ({
+  onTestFinished,
+}) => {
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+    stubSessionSlots();
+  });
+  onTestFinished(installMobileViewport());
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => attentionRead("ref_a"));
+  const pane = attentionSession("mobile-chrome-pane");
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  window.history.replaceState({}, "", "/s/ref_a");
+
+  render(
+    <ClientProvider client={fake}>
+      <NeedsYouProvider>
+        <StackHost />
+      </NeedsYouProvider>
+    </ClientProvider>,
+  );
+  await act(async () => await vi.dynamicImportSettled());
+  const editor = await screen.findByRole("textbox", { name: "Message" });
+  // The composer's status chips render only once the pane's thread model
+  // hydrates, so wait for the transcript's own content before reading the
+  // control row.
+  await screen.findByText("attention content");
+  await flushPendingTurnsProjectionForTests();
+  act(() => editor.focus());
+
+  // No footer strip under the composer on a phone.
+  expect(screen.queryByTestId("statusbar")).toBeNull();
+
+  // Focus engages the control row deterministically: the session open
+  // autofocuses this editor, but that races this read, so engage it here -
+  // attach, the status chips and the activity chips all ride inside it.
+  const form = screen.getByTestId("composer-form");
+  expect(form.querySelector('[data-testid="composer-attach"]')).toBeTruthy();
+  expect(form.querySelector("[data-activity-tab]")).toBeTruthy();
+
+  // Blurring the resting editor rests the row again: no attach, no chips.
+  // Send stays (the actions slot never sheds), so the resting card remains
+  // a usable one-line composer. A real blur() moves focus off the editor,
+  // which the engagement reconcile reads; a synthetic blur event alone
+  // would leave activeElement on the editor.
+  act(() => {
+    editor.blur();
+  });
+  await waitFor(() => expect(form.querySelector('[data-testid="composer-attach"]')).toBeNull());
+  expect(form.querySelector("[data-activity-tab]")).toBeNull();
+  expect(form.querySelector('[data-testid="composer-submit"]')).toBeTruthy();
+});

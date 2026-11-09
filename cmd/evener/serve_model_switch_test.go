@@ -574,7 +574,7 @@ func TestServeModelSwitch_ProviderFailureRestoresCapability(t *testing.T) {
 					ranTurn = true
 				}
 				// A failed turn rests the session on systemError (agent
-				// RestingWireState) until the next turn starts.
+				// restingWireState) until the next turn starts.
 				if params.Status.Type == appwire.ThreadStatusSystemError &&
 					params.Capabilities != nil && params.Capabilities.ChangeModel && ranTurn {
 					// Boot parks the thread with ChangeModel too, and on a

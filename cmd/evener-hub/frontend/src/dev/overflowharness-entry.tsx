@@ -20,6 +20,8 @@ import { ActivitySidebar } from "../shell/activitybar/ActivitySidebar";
 import { activityContext, activitySummary } from "../stores/sessionActivityTestUtils";
 import { isElementVisible } from "./guardVisibility";
 import "../panes/session";
+import { askDockStore } from "../panes/session/composer/askDock/askDockStore";
+import { writeComposerDraft } from "../panes/session/composer/draft";
 import { refreshPendingTurnsProjection } from "../panes/session/composer/queue/pendingTurnsStore";
 import Session from "../panes/session/Session";
 import Settings from "../panes/settings/Settings";
@@ -66,6 +68,12 @@ const intentTailMode = params.get("intenttail") === "1";
 const heldTailMode = params.get("heldtail") === "1";
 // The guard sweeps busy sessions with and without advertised Steer.
 const steerMode = params.get("steer") === "1";
+// ?ask=1: reconcile one live question into the ask dock after the fixture
+// settles, so the guard can measure the composer's pending-question state -
+// the chrome's standalone column mount. The static fixture carries no
+// ask_user call and no further thread event follows the boot, so the
+// injected batch persists for the measurement.
+const askMode = params.get("ask") === "1";
 
 // The width a container query or a flex line resolves against: the element's
 // content box, which clientWidth includes padding in.
@@ -1594,7 +1602,7 @@ function measureComposerContentWidth(): number | null {
   );
 }
 
-function measure() {
+async function measure() {
   if (settingsMode) return measureSettings();
   const pane = document.getElementById("oh-pane");
   if (!pane) throw new Error("harness pane never mounted");
@@ -1677,6 +1685,21 @@ function measure() {
       const target = disclosureTargets.find((candidate) => candidate.kind === disclosure.kind);
       disclosure.restoredOpen = target?.details.open ?? false;
     }
+  }
+  // The phone has no footer strip: the status facts and the compose controls
+  // the probes below measure live in the composer's ENGAGED control row, so
+  // focus the editor first (the same engagement a tap on the input produces)
+  // and let the row carry them before anything reads them.
+  // Never while a dialog or menu is visibly open: the focus steal would close
+  // it and unmount the very editor these measurements exist to check. Closed
+  // overlays stay in the tree (hidden), so a bare role match would never
+  // engage at all - filter by the same visibility the footer probes use.
+  const openOverlay = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"], [role="menu"]')).find(
+    (element) => element.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }),
+  );
+  if (matchMedia("(max-width: 899px)").matches && !openOverlay) {
+    pane?.querySelector<HTMLElement>('[data-composer] [role="textbox"]')?.focus();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   }
   const status = pane.querySelector<HTMLElement>('[data-testid="status-row"]');
   const effort = pane.querySelector<HTMLElement>('[data-testid="status-row-effort"]');
@@ -1876,6 +1899,18 @@ const settled = new Promise<true>((resolve) => {
   requestAnimationFrame(() =>
     requestAnimationFrame(() =>
       setTimeout(() => {
+        if (askMode) {
+          askDockStore.reconcile(REF, [
+            {
+              key: "guard:0",
+              callId: "call_guard",
+              header: "Guard check",
+              question: "Clear the pending ask to continue?",
+              options: [{ label: "Yes, continue", detail: "" }],
+              multiSelect: false,
+            },
+          ]);
+        }
         // NotificationCard renders its body (and with it the raw-notification
         // overflow fixture) only when expanded. Expand it the way a user would
         // - through React's synthetic click - so the guard's two disclosure
@@ -2080,12 +2115,20 @@ async function measureDuoCompactStates(phase: "focus" | "rest") {
     await twoPaintedFrames();
     await document.fonts.ready;
   };
+  // The typed Duo draft lives in this profile's storage and would rehydrate on
+  // every later harness page in the same guard run, so later resting-row
+  // measurements would read an expanded, draft-carrying composer. Every exit
+  // clears it through the composer's own blank-write cleanup.
+  const finish = (approvalResolved: boolean) => {
+    writeComposerDraft(REF, { text: "", skillNames: [] });
+    return { states: results, approvalResolved };
+  };
   if (phase === "focus") {
     snapshot("empty");
     editor.focus();
     await settle();
     snapshot("focused");
-    return { states: results, approvalResolved: false };
+    return finish(false);
   }
   if (editor.textContent === "") throw new Error("trusted browser input did not enter a draft");
   await settle();
@@ -2150,10 +2193,10 @@ async function measureDuoCompactStates(phase: "focus" | "rest") {
   await settle();
   snapshot("approval");
   const allow = pane.querySelector<HTMLButtonElement>("[data-sandbox-escalation-allow]");
-  if (!allow) return { states: results, approvalResolved: false };
+  if (!allow) return finish(false);
   allow.click();
   await settle();
-  return { states: results, approvalResolved: !pane.querySelector('[role="group"][aria-label="Sandbox approval"]') };
+  return finish(!pane.querySelector('[role="group"][aria-label="Sandbox approval"]'));
 }
 
 declare global {

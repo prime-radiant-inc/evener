@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 )
@@ -55,7 +56,14 @@ type delegateSendResult struct {
 func marshalDelegateSendResult(res sendMessageResult, maxChars int) (any, error) {
 	_ = maxChars
 	out := delegateSendResultFrom(res)
-	return tool.StateResult{Output: formatDelegateSend(out), State: out}, nil
+	return tool.StateResult{
+		Output: formatDelegateSend(out),
+		State:  out,
+		// A failed send is a failed tool call: a cold-restore construction
+		// failure must not be credited as a successful mutation by the goal
+		// no-progress signal. The structured State contract is unchanged.
+		IsError: res.Status == jobstore.StatusFailed,
+	}, nil
 }
 
 func delegateSendResultFrom(res sendMessageResult) delegateSendResult {

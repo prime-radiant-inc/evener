@@ -125,6 +125,11 @@ type ResolvedPolicy struct {
 	CacheStrategy CacheStrategy // how cache roots are served (never persistent-writable)
 	SessionTmp    bool          // a per-session writable tmp (TMPDIR) is provisioned
 
+	// SessionDir is the resolved directory the session started in. It locates
+	// the npm project config (the nearest package root) without weakening the
+	// Git layout's safety checks.
+	SessionDir string
+
 	// CacheRoots are the absolute language cache directories (~/.cache with
 	// $XDG_CACHE_HOME, ~/.npm with $npm_config_cache, ~/.cargo with $CARGO_HOME,
 	// and Go's, see goCacheRoots) served under the cache strategy: overlaid read-real/
@@ -410,8 +415,9 @@ func guardedHostRoots(candidates []string, home, worktree string) []string {
 // Resolve turns a policy request plus host facts and the session's cwd into a
 // ResolvedPolicy, or a typed *RefusalError when the host cannot enforce the
 // request (the fail-closed floor). It is a pure function of its inputs (reads no
-// process environment): the credential denylist anchors on host.Home, and the
-// git layout is resolved structurally from cwd's on-disk .git entries.
+// process environment): the credential denylist anchors on host.Home, the git
+// layout is resolved structurally from cwd's on-disk .git entries, and the
+// project .npmrc is read from the worktree it names.
 //
 // PLAIN off short-circuits before any host check, so it resolves on every host
 // (including Windows) — it is today's behavior with no containment. A WRITE-BLOCKED
@@ -521,8 +527,9 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 		Network:             netOn,
 		Backend:             backend,
 		CacheStrategy:       cacheStrategyFor(policy.Mode, backend, host),
-		CacheRoots:          cacheRootsFor(policy.Mode, host, layout.WorktreeRoot),
+		CacheRoots:          cacheRootsForSession(policy.Mode, host, layout.WorktreeRoot, cwd),
 		SessionTmp:          true,
+		SessionDir:          identifier.ResolveClean(cwd),
 		MaskedPaths:         masked,
 		Git:                 layout,
 		ManagedContentRoots: host.EvenerManagedContentRoots,
@@ -562,6 +569,9 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 	rp.FileTool.WriteRoots = filterMasked(rp.FileTool.WriteRoots, rp)
 	rp.Spawned.ReadRoots = filterMasked(rp.Spawned.ReadRoots, wholeMask)
 	rp.Spawned.WriteRoots = filterMasked(rp.Spawned.WriteRoots, rp)
+	// Caches are overlaid, and a missing root is created on the host, so a
+	// cache root must never be a masked path either (#4542 review).
+	rp.CacheRoots = filterMasked(rp.CacheRoots, wholeMask)
 	rp.CacheRoots = dropCacheRootsSharingWriteRoots(rp.CacheRoots, bwrapWriteRoots(rp))
 
 	// File-tool read roots: restricted needs the grant, and the read-anywhere
@@ -721,6 +731,15 @@ func chooseBackend(policy SandboxPolicy, host HostFacts, net bool) (Backend, *Re
 // than in envvars.
 const npmConfigCacheEnv = "npm_config_cache"
 
+// npm's config-file location variables, like npmConfigCacheEnv not evener's own.
+// npm reads its environment configuration case-insensitively, so the probe
+// matches these with envValueFold.
+const (
+	npmConfigUserConfigEnv   = "npm_config_userconfig"
+	npmConfigGlobalConfigEnv = "npm_config_globalconfig"
+	npmConfigPrefixEnv       = "npm_config_prefix"
+)
+
 // defaultCacheRoots are the language cache directories served under the cache
 // strategy, expressed relative to $HOME. $XDG_CACHE_HOME joins ~/.cache when
 // set, npm's and cargo's join ~/.npm and ~/.cargo when $npm_config_cache and
@@ -736,6 +755,13 @@ var defaultCacheRoots = []string{".npm", ".cargo"}
 // would hide the real files behind an upper layer discarded at session end, so
 // edits there would silently vanish.
 func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
+	return cacheRootsForSession(mode, host, worktree, worktree)
+}
+
+// cacheRootsForSession is cacheRootsFor with the session's own directory, which
+// locates an independent nested package's npm config. Callers that only know the
+// worktree pass it as sessionDir.
+func cacheRootsForSession(mode Mode, host HostFacts, worktree, sessionDir string) []string {
 	switch mode {
 	case ModeWorkspaceWrite, ModeRestricted:
 		// ~/.cache stays served alongside $XDG_CACHE_HOME, for tools that
@@ -747,7 +773,7 @@ func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 		for _, rel := range defaultCacheRoots {
 			out = append(out, filepath.Join(host.Home, rel))
 		}
-		roots := guardedHostRoots(slices.Concat(out, npmCargoCacheRoots(host), goCacheRoots(host)), host.Home, worktree)
+		roots := guardedHostRoots(slices.Concat(out, npmCargoCacheRoots(host, worktree, sessionDir), goCacheRoots(host)), host.Home, worktree)
 		// A root that is not a directory yet (a file, a dangling link to an
 		// unmounted drive) stays: each spawn decides whether it is overlaid
 		// (liveCacheRoots), so one that becomes available is served.
@@ -913,11 +939,47 @@ func goCacheRoots(host HostFacts) []string {
 }
 
 // npmCargoCacheRoots are the cache directories npm and cargo move with the
-// environment: $npm_config_cache and $CARGO_HOME. A relative value, which each
-// tool resolves against its own working directory, is not a stable root and
+// environment or npm's .npmrc files: $npm_config_cache and $CARGO_HOME, plus
+// the absolute `cache=` values the probe read from the user and global .npmrc
+// and the project one under worktree (#4542). A relative value, which each tool
+// resolves against its own working directory, is not a stable root and
 // contributes nothing — the go command's rule for its cache settings.
-func npmCargoCacheRoots(host HostFacts) []string {
-	return absRoots(host.NpmConfigCache, host.CargoHome)
+func npmCargoCacheRoots(host HostFacts, worktree, sessionDir string) []string {
+	roots := absRoots(host.NpmConfigCache, host.CargoHome)
+	// The probe only records absolute values from .npmrc files.
+	roots = append(roots, host.NpmrcCaches...)
+	if projectDir := npmProjectDir(sessionDir, worktree); projectDir != "" {
+		roots = append(roots, readProjectNpmrcCacheRoots(filepath.Join(projectDir, ".npmrc"), npmrcHostLookup(host), host.Home)...)
+	}
+	return roots
+}
+
+// npmProjectDir returns the directory whose .npmrc npm uses for a session
+// started in cwd: the nearest ancestor at or above cwd (and at or below
+// worktree) holding package.json or node_modules, else cwd. It keeps the
+// session's own package config authoritative inside a larger checkout.
+func npmProjectDir(cwd, worktree string) string {
+	cwd = identifier.ResolveClean(cwd)
+	if cwd == "" {
+		return ""
+	}
+	worktree = identifier.ResolveClean(worktree)
+	dir := cwd
+	for {
+		for _, marker := range []string{"package.json", "node_modules"} {
+			if _, err := os.Stat(filepath.Join(dir, marker)); err == nil {
+				return dir
+			}
+		}
+		if worktree == "" || dir == worktree || !identifier.PathUnder(dir, worktree) {
+			return cwd
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return cwd
+		}
+		dir = parent
+	}
 }
 
 // absRoots returns the absolute entries of dirs, in order, dropping the rest: a

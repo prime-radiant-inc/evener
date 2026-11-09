@@ -1472,7 +1472,7 @@ func TestRetirementSafetyEscalation(t *testing.T) {
 					root.cfg.testOnly.closeAfterDisposeSweepJoin = func() { close(joined); <-continueClose }
 					go func() { defer close(closed); root.Close() }()
 					<-joined
-					stillPending := root.HasPendingEscalations()
+					stillPending := root.hasPendingEscalations()
 					// Release the broken implementation without waiting its close
 					// budget only on failure. On success, Close must supply the
 					// original denial without cancellation from the test context.
@@ -1513,7 +1513,7 @@ func TestRetirementSafetyEscalation(t *testing.T) {
 					case <-time.After(5 * time.Second):
 						t.Fatal("approved rerun not entered")
 					}
-					if root.HasPendingEscalations() {
+					if root.hasPendingEscalations() {
 						t.Fatal("rerun barrier precedes actual resolution")
 					}
 					assertRetirementEvidenceBlocked(t, c, "environment")

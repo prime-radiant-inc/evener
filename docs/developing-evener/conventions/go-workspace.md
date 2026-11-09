@@ -68,12 +68,20 @@ sibling. Pin each indirect at the version the workspace itself selects
 (`go list -m <module>` from the root), so a consumer resolves the code
 evener tested.
 
-To check a module, build a consumer OUTSIDE the workspace: a scratch
-module whose `go.mod` requires just that module, plus a directory
-`replace` for every evener module, and no other requires. Then
+To check a module, run its own packages through a consumer OUTSIDE the
+workspace: a scratch module whose `go.mod` requires just that module, plus a
+directory `replace` for every evener module, and no other requires. The
+checked-in script does this for every module, or for the directories you name:
 
 ```
-GOWORK=off GOFLAGS= GOPROXY=off go list -deps primeradiant.com/evener/agent/...
+scripts/gate/go-module-consumer-check.sh
+scripts/gate/go-module-consumer-check.sh agent
+```
+
+Each consumer runs
+
+```
+GOWORK=off GOFLAGS= GOPROXY=off go list -mod=readonly -deps <the module's own packages>
 ```
 
 `-mod=readonly` is the default and is the point: it reports "no required
@@ -81,6 +89,32 @@ module provides package X" instead of silently repairing the gap.
 `GOFLAGS=` keeps an ambient `-mod=mod` from turning the probe into a
 rewrite. Never point a `-mod=mod` probe at the tree — it edits `go.mod`
 and `go.sum` in place; check `git status` after any probe.
+
+Two details decide whether the probe answers the right question:
+
+- The package list is the module's own, enumerated with `go list -e ./...`
+  from the module directory. Do not use `primeradiant.com/evener/...` for the
+  root module: every sibling module's import path has that prefix, so the
+  wildcard pulls sibling packages and their requirements into a check of the
+  root's `go.mod`. `./...` prunes nested modules, which is the module boundary.
+- A consumer with no `go.sum` dies on "missing go.sum entry" before it can
+  report a missing requirement. That is consumer setup, not a module defect.
+  The script copies the union of the workspace modules' `go.sum` files (and
+  `go.work.sum`) into the scratch consumer so a missing sum does not
+  masquerade as a requirement gap; it adds no require and runs no `-mod=mod`
+  on the tree.
+
+The probe follows the packages a consumer builds, not a dependency's test-only
+imports: a module's own `_test.go` files can need a require a consumer never
+compiles. The module's own test gate covers that.
+
+The script separates the two answers. Exit 1 and "missing module requirement"
+means the module's own `go.mod` is incomplete; the message names the package
+and module to add at the version the workspace selects. Exit 2 and "consumer
+setup" means the probe could not judge the module — a missing sum, a selected
+version outside the module cache, or a bad replace. Clear that first: a setup
+failure also makes the packages that needed the missing module look absent, so
+the script reports setup ahead of any requirement gap.
 
 ## The compiler is the completeness net. Grep is not.
 

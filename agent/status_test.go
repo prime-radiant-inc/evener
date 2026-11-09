@@ -358,7 +358,7 @@ func TestSession_DetailedStatus_CustomTool(t *testing.T) {
 	defer sess.Close()
 
 	// Register a custom tool after session init.
-	sess.RegisterTool("my_custom_tool", "A custom tool", map[string]any{
+	sess.registerTool("my_custom_tool", "A custom tool", map[string]any{
 		"type": "object", "properties": map[string]any{},
 	}, func(ctx context.Context, args any) (any, error) {
 		return "ok", nil

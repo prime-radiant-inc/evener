@@ -53,11 +53,19 @@ var floorPrefixDrops = []string{
 //
 // It returns a fresh slice and never reads the process environment; the overlay
 // branch inspects the filesystem at the cache paths it judges (servedByOverlay).
-// Called at EVERY spawn site (shell jobs, rg, stdio MCP servers, hook commands)
-// so no spawned process escapes the floor.
+// Every spawn site calls ApplyEnvFloorInDir with the directory it confines the
+// process to, so no spawned process escapes the floor.
 func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) []string {
+	return ApplyEnvFloorInDir(env, policy, sessionScratch, policy.SessionDir)
+}
+
+// ApplyEnvFloorInDir is ApplyEnvFloor for a spawn in workingDir: npm's project
+// config is located from that directory, which must be the directory the spawn
+// is confined to (the dir passed to Confine or ConfineTrustedInfra) and may
+// differ from the session's own.
+func ApplyEnvFloorInDir(env []string, policy ResolvedPolicy, sessionScratch, workingDir string) []string {
 	out := make([]string, 0, len(env)+4)
-	redirected, pinned := redirectedCacheVars(env, policy)
+	redirected, pinned := redirectedCacheVars(env, policy, workingDir)
 	goEnvOff := spawnGoEnvFileRefused(env, policy)
 	for _, kv := range env {
 		name, val, ok := strings.Cut(kv, "=")
@@ -133,7 +141,7 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) [
 // The second result pins a served GOMODCACHE that go would otherwise derive
 // from a redirected GOPATH: without the pin the spawn's go would put its
 // module cache in the scratch GOPATH and lose the warm one it is served.
-func redirectedCacheVars(env []string, policy ResolvedPolicy) (map[string]bool, map[string]string) {
+func redirectedCacheVars(env []string, policy ResolvedPolicy, workingDir string) (map[string]bool, map[string]string) {
 	out := map[string]bool{}
 	pins := map[string]string{}
 	switch policy.CacheStrategy {
@@ -146,7 +154,7 @@ func redirectedCacheVars(env []string, policy ResolvedPolicy) (map[string]bool, 
 		// cache root of theirs dropped from CacheRoots lies at or inside a
 		// directory the user made writable on purpose, whose writes this
 		// must not override.
-		dirs, unknown := overlayCacheDirs(env, policy)
+		dirs, unknown := overlayCacheDirs(env, policy, workingDir)
 		writeRoots := bwrapWriteRoots(policy)
 		roots := liveCacheRoots(policy)
 		for _, name := range []string{envvars.GoCache.Name, envvars.GoModCache.Name, envvars.GoPath.Name} {
@@ -158,11 +166,13 @@ func redirectedCacheVars(env []string, policy ResolvedPolicy) (map[string]bool, 
 		// serve their directory and no persistent write root covers it: read-only
 		// otherwise, whether the root was dropped or the host's filesystem refuses
 		// its overlay (#4220), or the directory lies outside every cache root (a
-		// child with no HOME resolving its own). A directory inside a write root
-		// keeps today's "leave it alone": those writes persist where the user
-		// granted.
+		// child with no HOME resolving its own). An unreadable project or
+		// user/global .npmrc leaves npm's effective cache unknown, so it is
+		// redirected even though a write root might have covered the unknowable
+		// value. A known directory inside a write root keeps today's "leave it
+		// alone": those writes persist where the user granted.
 		for _, name := range []string{npmConfigCacheEnv, envvars.CargoHome.Name} {
-			if dir := dirs[name]; filepath.IsAbs(dir) && !servedByOverlay(roots, dir) && !overlapsAnyRoot(dir, writeRoots) {
+			if dir := dirs[name]; unknown[name] || (filepath.IsAbs(dir) && !servedByOverlay(roots, dir) && !overlapsAnyRoot(dir, writeRoots)) {
 				out[name] = true
 			}
 		}
@@ -246,10 +256,11 @@ func canBeDirectory(dir string) bool {
 // the checksum database lives. The file counts only when it is the one the probe
 // read and the floor can read it as the spawn will (see below); otherwise every
 // setting the spawn's environment leaves to it is reported unknown (the
-// environment overrides the file). For npm and cargo: the spawn's own
-// $npm_config_cache / $CARGO_HOME, else ~/.npm / ~/.cargo under its own HOME
-// (neither has a config file the floor consults).
-func overlayCacheDirs(env []string, policy ResolvedPolicy) (map[string]string, map[string]bool) {
+// environment overrides the file). For npm: the spawn's own
+// $npm_config_cache, else the project/user/global .npmrc, else ~/.npm under its
+// own HOME; a config the bounded reader refuses is reported unknown. For cargo:
+// $CARGO_HOME, else ~/.cargo under its own HOME.
+func overlayCacheDirs(env []string, policy ResolvedPolicy, workingDir string) (map[string]string, map[string]bool) {
 	host := policy.resolveHost
 	vars := envVars(env)
 	firstOr := func(values ...string) string {
@@ -318,18 +329,81 @@ func overlayCacheDirs(env []string, policy ResolvedPolicy) (map[string]string, m
 	if out[envvars.GoCache.Name] == "" && cacheHome != "" {
 		out[envvars.GoCache.Name] = filepath.Join(cacheHome, "go-build")
 	}
-	out[npmConfigCacheEnv] = envValueFold(env, npmConfigCacheEnv)
+	// npm resolves "~" and its default user config from the spawn's HOME,
+	// falling back to the login user's home, not this process's own HOME.
+	npmHome := firstOr(home, host.LoginHome, host.Home)
+	cache, known := npmConfigCacheFor(env, policy, workingDir, npmHome)
+	out[npmConfigCacheEnv] = cache
+	if !known {
+		unknown[npmConfigCacheEnv] = true
+	}
 	out[envvars.CargoHome.Name] = vars[envvars.CargoHome.Name]
 	// With no HOME in the spawn's own environment (a clean EnvPolicyNone), npm
 	// and cargo fall back to the login user's home in the user database — not
 	// this process's own HOME, which a deployment may override — so their default
 	// caches are judged where the tools will really write.
-	npmHome := firstOr(home, host.LoginHome, host.Home)
 	if npmHome != "" {
 		out[npmConfigCacheEnv] = firstOr(out[npmConfigCacheEnv], filepath.Join(npmHome, ".npm"))
 		out[envvars.CargoHome.Name] = firstOr(out[envvars.CargoHome.Name], filepath.Join(npmHome, ".cargo"))
 	}
 	return out, unknown
+}
+
+// npmConfigCacheFor returns the cache npm would use for a spawn in workingDir:
+// its own npm_config_cache, else the project .npmrc of the nearest package to
+// workingDir, else the user/global .npmrc its own environment names, with
+// ${NAME} expanded from that environment and ~ from the same resolved npm home
+// the caller uses for npm's default. An empty result falls back to that home's
+// .npm in the caller. known is false when the effective path cannot be
+// resolved safely — a config file that cannot be read, a nonempty relative
+// config filename, or a ~ value with no home — so the cache is unknown and
+// must be redirected rather than judged from a config npm may read.
+func npmConfigCacheFor(env []string, policy ResolvedPolicy, workingDir, home string) (string, bool) {
+	lookup := npmrcEnvLookup(env)
+	if value := envValueFold(env, npmConfigCacheEnv); value != "" {
+		return expandNpmCacheHome(expandNpmrcVars(value, lookup), home)
+	}
+	if workingDir == "" {
+		workingDir = policy.SessionDir
+	}
+	// npmProjectDir treats an empty cwd as "."; with no working directory known,
+	// there is no project file to consult.
+	if workingDir != "" {
+		if projectDir := npmProjectDir(workingDir, policy.Git.WorktreeRoot); projectDir != "" {
+			value, ok := readProjectNpmrcCacheValue(filepath.Join(projectDir, ".npmrc"), lookup, home, policy)
+			if !ok {
+				return "", false
+			}
+			if value != "" {
+				return value, true
+			}
+		}
+	}
+	user := envValueFold(env, npmConfigUserConfigEnv)
+	if user == "" && home != "" {
+		user = filepath.Join(home, ".npmrc")
+	}
+	global := envValueFold(env, npmConfigGlobalConfigEnv)
+	if global == "" {
+		if prefix := envValueFold(env, npmConfigPrefixEnv); prefix != "" {
+			global = filepath.Join(prefix, "etc", "npmrc")
+		}
+	}
+	roots, ok := readNpmrcCacheRootsEnv(user, lookup, home, policy)
+	if !ok {
+		return "", false
+	}
+	if len(roots) > 0 {
+		return roots[len(roots)-1], true
+	}
+	roots, ok = readNpmrcCacheRootsEnv(global, lookup, home, policy)
+	if !ok {
+		return "", false
+	}
+	if len(roots) > 0 {
+		return roots[len(roots)-1], true
+	}
+	return "", true
 }
 
 // envVars maps an environment slice to its values by name.
@@ -368,7 +442,7 @@ func spawnGoEnvFileRefused(env []string, policy ResolvedPolicy) bool {
 	// One merely under /tmp or /dev is still probed, since bwrap may rebind
 	// the worktree holding it; a host file the private /tmp hides then turns
 	// GOENV off needlessly, which costs that spawn only `go env -w`.
-	if goEnvFileMasked(policy, file) {
+	if fileMaskedAlongPath(policy, file) {
 		return false
 	}
 	_, err := readGoEnvFileSettings(hostProbeSystem{}, file)
@@ -427,21 +501,32 @@ func goEnvFileHidden(policy ResolvedPolicy, path string) bool {
 	if policy.Backend != BackendSeatbelt && (inPrivateMount(path) || linksThroughPrivateMount(path)) {
 		return true
 	}
-	return goEnvFileMasked(policy, path)
+	return fileMaskedAlongPath(policy, path)
 }
 
-// goEnvFileMasked reports whether the go env file at path is under a mask at
-// any step of resolving it: every link and directory walkPhysical visits. A
-// carve-out inside a mask (the plugin store, the skills directory) counts as
-// masked too: no one keeps a go env file there, and treating one as hidden
-// costs only its GOPATH.
-func goEnvFileMasked(policy ResolvedPolicy, path string) bool {
+// fileMaskedAlongPath reports whether path is under a mask at any step of
+// resolving it: every link and directory walkPhysical visits. A carve-out
+// inside a mask (the plugin store, the skills directory) counts as masked too:
+// a config there is not one the sandboxed process sees.
+func fileMaskedAlongPath(policy ResolvedPolicy, path string) bool {
 	masked := underAMask(policy, path)
 	walkPhysical(path, func(p string, _, _ bool) bool {
 		masked = masked || underAMask(policy, p)
 		return masked
 	})
 	return masked
+}
+
+// npmConfigFileHidden reports whether the spawn cannot see the npm config at
+// path: under a mask at any step of resolving it, or, outside Seatbelt,
+// spelled in or linked through bwrap's private /tmp or /dev. A config the
+// spawn cannot read must be unknown, not absent: npm falls through to the
+// defaults the floor may not serve, so its cache must be redirected.
+func npmConfigFileHidden(policy ResolvedPolicy, path string) bool {
+	if policy.Backend != BackendSeatbelt && (inPrivateMount(path) || linksThroughPrivateMount(path)) {
+		return true
+	}
+	return fileMaskedAlongPath(policy, path)
 }
 
 // underAMask reports whether p lies at or under a masked path, by its spelling

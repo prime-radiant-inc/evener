@@ -510,7 +510,7 @@ the diagnostic instructs a restart.
 
 **Evidence.** [failClosed and retryDurabilityUntilSettledOrExhausted](../../agent/session_fail_closed.go#L54)
 set the cause without a reset;
-[refuseOnUnhealthyTranscript](../../agent/session_lifecycle.go#L1804) checks it
+[refuseOnUnhealthyTranscript](../../agent/session_transcript_refusal.go#L98) checks it
 before current writer health. Existing
 `TestRetainedCompletionFailsAServedSessionClosedAfterExhaustingRetries` and
 `TestRetainedCompletionSettlesAfterRetryingTheBarrier` distinguish
@@ -679,14 +679,15 @@ resume; newer instructions take precedence over the objective that was waiting.
 
 ### R06 Read-only goal progress
 
-**Current behavior.** Goal progress accounting treats eligible mutating or unknown
-tool-call attempts as progress, excluding result/communicate and task_list,
-rather than measuring successful contribution. Useful read-only investigation
-can accumulate no-progress turns while an attempted mutation resets them.
-Thresholds differ before and after mutating activity.
+**Current behavior.** Goal progress accounting credits only executed,
+successful, progress-eligible tool results. Read-only tools,
+result/communicate, task_list, unknown tool names, and failed calls (including
+structured shell, delegate-send and invalid-argument failures) do not reset
+the no-progress streak. Useful read-only investigation can therefore still
+accumulate no-progress turns even when it advances the work.
 
-**Evidence.** [callsMadeProgress](../../agent/session_goal.go#L173), its
-[lifecycle call site](../../agent/session_lifecycle.go#L2403), and
+**Evidence.** [toolResultsMadeProgress](../../agent/session_goal.go#L178), its
+[lifecycle call site](../../agent/session_lifecycle.go#L2034), and
 [goal progress state](../../agent/internal/goal/goal.go#L18) encode the rule.
 Root daemon sessions with continuation and notification wiring already exempt
 waiting for dependents that can guarantee a wake. Child and one-shot sessions
@@ -741,7 +742,7 @@ replacement/crash restoration rather than every idle transition.
 
 **Evidence.** [Goal restoration](../../agent/session_init.go#L1271),
 [continuation callback wiring](../../agent/session_goal.go#L18), and daemon
-[wiring](../../cmd/evener/serve.go#L1268) load and wire without a restore wake.
+[wiring](../../cmd/evener/serve_bridge.go#L174) load and wire without a restore wake.
 Existing goal/ask tests distinguish persisted state from pending-question holds.
 
 **Decision.** Automatically resume an unfinished active goal when its runtime
@@ -768,7 +769,7 @@ preserving an unanswered question.
 
 **Evidence.** [Compact](../../agent/session_compaction.go#L30) checks pending asks
 before compaction, and the [explicit command
-callback](../../cmd/evener/serve.go#L1430) uses that entry point. Automatic
+callback](../../cmd/evener/serve_wiring.go#L59) uses that entry point. Automatic
 [context management](../../agent/internal/contextmgr/context_strategy.go#L68)
 calls the context manager separately. Existing `session_ask_test.go` tests the
 explicit-compaction refusal.
@@ -838,7 +839,7 @@ path; this case concerns API-key snapshots.
 
 **Evidence.** [LoadRegistry](../../cmdutil/registry.go#L64),
 [Store.Get](../../internal/credentials/store.go#L86),
-[daemon client construction](../../cmd/evener/serve.go#L588),
+[daemon client construction](../../cmd/evener/serve.go#L615),
 [session client retention](../../agent/session_init.go#L1116), and
 [hub credential save](../../cmd/evener-hub/app_auth.go#L613) have different
 lifetimes. A new runtime reloads configuration; a running one lacks that repair

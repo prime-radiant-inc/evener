@@ -636,7 +636,7 @@ func TestSession_PreCompactHookRunsAtCompactionBoundary(t *testing.T) {
 // verifies a SessionStart hook's ModelContext output carries SteeringKind on
 // the appended schema.Turn, not only on the live SteeringInjectedData event,
 // so a reload labels it the same way the live transcript did (review round 2:
-// this direct-append site bypasses the SteerKind/consumeSteeringMessage queue
+// this direct-append site bypasses the steerKind/consumeSteeringMessage queue
 // path that already persisted its kind).
 func TestDeliverSessionStartHookResultForUserTurn_PersistsHookContextKind(t *testing.T) {
 	t.Parallel()
@@ -1805,7 +1805,7 @@ func TestSession_RegisterTool(t *testing.T) {
 	}
 	defer sess.Close()
 
-	sess.RegisterTool("my_tool", "a custom tool", map[string]any{"type": "object"}, func(ctx context.Context, args any) (any, error) {
+	sess.registerTool("my_tool", "a custom tool", map[string]any{"type": "object"}, func(ctx context.Context, args any) (any, error) {
 		return "hello from custom", nil
 	})
 
@@ -1853,7 +1853,7 @@ func TestSession_SetModel_UpdatesContextManager(t *testing.T) {
 	}
 
 	// Pressure with 200K window: 100K/200K = 0.50
-	p1 := sess.ContextPressure()
+	p1 := sess.contextPressure()
 	if p1 < 0.40 || p1 > 0.60 {
 		t.Fatalf("pressure before SetModel = %.2f, expected ~0.50", p1)
 	}
@@ -1862,7 +1862,7 @@ func TestSession_SetModel_UpdatesContextManager(t *testing.T) {
 	sess.SetModel("claude-opus-4-5[1m]")
 
 	// Pressure with 1M window: 100K/1M = 0.10
-	p2 := sess.ContextPressure()
+	p2 := sess.contextPressure()
 	if p2 > 0.20 {
 		t.Fatalf("pressure after SetModel to 1M = %.2f, expected < 0.20 (stale profile?)", p2)
 	}

@@ -1290,7 +1290,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		g := meta.Goal
 		s.getOrCreateGoalStore().Restore(g.Objective, g.Status, g.StopReason, g.Iterations, g.NoProgressStreak, g.MadeProgressOnce, g.CreatedAt, g.UpdatedAt)
 	}
-	s.pinnedNote = meta.PinnedNote
+	s.pinnedNoteText = meta.PinnedNote
 	// Legacy values predate the write-path control strip: a note or URL label
 	// persisted then can still drive a terminal through the details drawer, the
 	// model copy or the tool output. Normalizing at the load boundary closes

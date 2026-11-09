@@ -379,6 +379,32 @@ test("root and child render through real conversation readers inside one scaffol
   expect(fake.calls.filter((call) => /send|resume|steer|interrupt/.test(call.method))).toHaveLength(0);
 });
 
+// A phone cascade column renders its conversation's activity controls below
+// the conversation footer (CascadeColumn's ScopeActivityControls), so the
+// shared composer inside that footer must not mount a second set of activity
+// chips beside the status chrome.
+test("a phone cascade column keeps its activity counts out of the composer row", async () => {
+  const { fake } = fixture();
+  installMobileViewport();
+  mount(fake);
+  await screen.findByText("child content child-id");
+  const columns = screen.getAllByTestId("cascade-column");
+  expect(columns.length).toBeGreaterThan(0);
+  for (const column of columns) {
+    expect(within(column).getAllByTestId("cascade-activity-controls").length).toBeGreaterThan(0);
+    expect(within(column).queryAllByTestId("composer-form").length).toBeGreaterThan(0);
+  }
+  // Focusing the shared composer engages the phone row that would otherwise
+  // carry the chips (a resting phone row sheds them by design).
+  const [editor] = screen.getAllByRole("textbox");
+  if (!editor) throw new Error("cascade column conversation rendered no composer editor");
+  fireEvent.focus(editor);
+  await waitFor(() => expect(screen.getByTestId("composer-attach")).toBeTruthy());
+  // The column's controls own the counts; no composer row duplicates them.
+  expect(document.querySelectorAll('[data-testid="composer-form"] [data-activity-tab]')).toHaveLength(0);
+  expect(fake.calls.filter((call) => /send|resume|steer|interrupt/.test(call.method))).toHaveLength(0);
+});
+
 test("only the focused leaf offers attention navigation", async () => {
   const { fake } = fixture();
   installNeedsYouRows(["child", "local:target"]);

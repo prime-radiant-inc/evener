@@ -1001,10 +1001,10 @@ func (s *Session) DrainJobTree(ctx context.Context) (string, error) {
 	return s.drainJobTreeUsing(ctx, s.ProcessInputKind)
 }
 
-// DrainJobTreeKeepingReport is DrainJobTree for a delegate that has already
+// drainJobTreeKeepingReport is DrainJobTree for a delegate that has already
 // reported: a drain turn that ends with a terminal communicate replaces the
 // report, and a drain turn that ends without one leaves the report standing.
-func (s *Session) DrainJobTreeKeepingReport(ctx context.Context) (string, error) {
+func (s *Session) drainJobTreeKeepingReport(ctx context.Context) (string, error) {
 	return s.drainJobTreeUsing(ctx, s.keepingReport(s.ProcessInputKind))
 }
 
@@ -1026,7 +1026,7 @@ func (s *Session) drainJobTreeUsing(ctx context.Context, process func(context.Co
 // already reported; any other error still propagates.
 func (s *Session) keepingReport(process func(context.Context, string, []ImageAttachment, EntryKind) (string, error)) func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
 	return func(ctx context.Context, input string, images []ImageAttachment, kind EntryKind) (string, error) {
-		reported := s.Communicated()
+		reported := s.communicated()
 		res, err := process(ctx, input, images, kind)
 		if !reported {
 			return res, err
@@ -1453,7 +1453,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 					// only user-sourced steering, so a carrier turn stands down
 					// before any model call — which is exactly how an earlier
 					// attempt at this shipped inert.
-					if err := s.SteerKind(text, events.SteeringKindNotification); err != nil {
+					if err := s.steerKind(text, events.SteeringKindNotification); err != nil {
 						bgAnnounced[setKey]--
 						s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("job announcement admission failed: %v", err)})
 						return lastResult, err

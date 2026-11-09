@@ -1,4 +1,8 @@
-import { makeTranscriptDisplayConfig, presetContent, type TranscriptDisplayConfigV1 } from "@evener/appwire-client";
+import {
+  contentVectorForConfig,
+  makeTranscriptDisplayConfig,
+  type TranscriptDisplayConfigV1,
+} from "@evener/appwire-client";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { startTransition, useState } from "react";
@@ -246,7 +250,10 @@ test("selecting Custom restores its mounted vector and content edits update the 
   );
 
   await user.click(screen.getByRole("radio", { name: "Custom" }));
-  expect(latestContent(changes)).toEqual({ kind: "custom", ...presetContent("tools") });
+  expect(latestContent(changes)).toEqual({
+    kind: "custom",
+    ...contentVectorForConfig(makeTranscriptDisplayConfig({ kind: "preset", level: "tools" })),
+  });
   await user.click(clickAdvanced());
   await user.click(screen.getByRole("switch", { name: "Reasoning" }));
   const remembered = latestContent(changes);
@@ -356,7 +363,10 @@ test("first Custom selection clones the current preset and remount clears dorman
     />,
   );
   await user.click(screen.getByRole("radio", { name: "Custom" }));
-  expect(latestContent(changes)).toEqual({ kind: "custom", ...presetContent("intent") });
+  expect(latestContent(changes)).toEqual({
+    kind: "custom",
+    ...contentVectorForConfig(makeTranscriptDisplayConfig({ kind: "preset", level: "intent" })),
+  });
 });
 
 test("content and Advanced changes remain independent in both directions", async () => {

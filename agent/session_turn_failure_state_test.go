@@ -203,10 +203,10 @@ func TestRestore_FailedTurnWithQueuedInputResumesActive(t *testing.T) {
 		t.Fatalf("Enqueue: %v", err)
 	}
 	restored, startState := restoreClosedSession(t, sess, dir, "test-model")
-	if got := restored.QueueDepth(); got != 1 {
+	if got := restored.queueDepth(); got != 1 {
 		t.Fatalf("restored QueueDepth = %d, want 1", got)
 	}
-	if got := restored.RestingWireState(); got != appwire.ThreadStatusSystemError {
+	if got := restored.restingWireState(); got != appwire.ThreadStatusSystemError {
 		t.Fatalf("restored RestingWireState = %q, want %q", got, appwire.ThreadStatusSystemError)
 	}
 	if got := restored.WireState(); got != string(SessionProcessing) {
@@ -244,10 +244,10 @@ func TestSession_FailedTurnWithQueuedInputEndsActiveAndOpen(t *testing.T) {
 	if _, err := sess.ProcessInput(ctx, "first", nil); err == nil {
 		t.Fatal("first turn succeeded, want the scripted provider failure")
 	}
-	if got := sess.QueueDepth(); got != 1 {
+	if got := sess.queueDepth(); got != 1 {
 		t.Fatalf("QueueDepth after the failed turn = %d, want 1: the queued message survives the failure", got)
 	}
-	if got := sess.RestingWireState(); got != appwire.ThreadStatusSystemError {
+	if got := sess.restingWireState(); got != appwire.ThreadStatusSystemError {
 		t.Fatalf("RestingWireState = %q, want %q", got, appwire.ThreadStatusSystemError)
 	}
 	if got := sess.WireState(); got != string(SessionProcessing) {
@@ -284,7 +284,7 @@ func TestSession_FailedTurnWithQueuedInputEndsActiveAndOpen(t *testing.T) {
 // A restored session whose carrier turn failed while a question was still
 // pending publishes awaiting from the start: restore rebuilds the pending
 // question before it stamps SessionStart, and a pending question outranks the
-// failure (RestingWireState).
+// failure (restingWireState).
 func TestRestore_FailedTurnWithPendingQuestionResumesAwaiting(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

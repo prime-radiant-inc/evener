@@ -122,7 +122,7 @@ func (r *Registry) SourceForRef(raw string) (Source, error) {
 	}
 	source, ok := r.Source(ref.SourceID)
 	if !ok {
-		return nil, fmt.Errorf("source not found: %s", ref.SourceID)
+		return nil, fmt.Errorf("%w: %s", ErrSourceNotFound, ref.SourceID)
 	}
 	return source, nil
 }

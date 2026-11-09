@@ -912,9 +912,7 @@ test("a primary press still holds editing after a non-primary press", async () =
   await act(async () => {
     fireEvent.pointerDown(attach, { button: 0 });
   });
-  await new Promise((resolve) => {
-    setTimeout(resolve, 0);
-  });
+  await waitForMacrotaskInActScope();
   await act(async () => {
     editor.blur();
   });
@@ -923,9 +921,7 @@ test("a primary press still holds editing after a non-primary press", async () =
   await act(async () => {
     fireEvent.click(attach);
   });
-  await new Promise((resolve) => {
-    setTimeout(resolve, 0);
-  });
+  await waitForMacrotaskInActScope();
   // With no hold left, an outside press ends editing.
   await act(async () => {
     fireEvent.pointerDown(document.body);
