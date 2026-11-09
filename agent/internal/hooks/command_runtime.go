@@ -124,10 +124,13 @@ func (r systemCommandHookRuntime) Run(ctx context.Context, invocation commandHoo
 	// empty ExtraFiles so the hook inherits no evener fds beyond stdio.
 	env := invocation.Env
 	if sbx := invocation.SandboxWrapper; sbx != nil {
-		env = sandbox.ApplyEnvFloor(env, sbx.Policy(), sbx.SessionTmp())
+		// The floor must judge npm's project config from the directory the hook
+		// is confined to, not the session's launch dir.
+		workingDir := sbx.Policy().Git.WorktreeRoot
+		env = sandbox.ApplyEnvFloorInDir(env, sbx.Policy(), sbx.SessionTmp(), workingDir)
 		// Confine wraps the argv and, for Seatbelt, sets cmd.Dir to the worktree
 		// (sandbox-exec has no chdir flag, unlike bwrap's --chdir).
-		sbx.Confine(cmd, sbx.Policy().Git.WorktreeRoot)
+		sbx.Confine(cmd, workingDir)
 		cmd.ExtraFiles = nil
 	}
 	cmd.Env = env

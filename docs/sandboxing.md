@@ -523,8 +523,11 @@ affect later builds. Go caches receive stricter handling: locations that share
 persistent write roots are redirected into session scratch, as detailed below.
 
 - `workspace-write` serves the language cache roots (`~/.cache` alongside a set
-  `$XDG_CACHE_HOME`, `~/.npm` and `~/.cargo` alongside a set `$npm_config_cache`
-  or `$CARGO_HOME`, the `pkg` directory of your first GOPATH entry and of Go's
+  `$XDG_CACHE_HOME`, `~/.npm` and `~/.cargo` alongside a set `$npm_config_cache`,
+  an absolute `.npmrc` `cache=` (user, project, or a configured global file;
+  a project value is served only where the directory already exists and never
+  makes Evener create one), or
+  `$CARGO_HOME`, the `pkg` directory of your first GOPATH entry and of Go's
   `$HOME/go` default, and a `GOMODCACHE` or `GOCACHE` you set elsewhere) as a
   **read-real, write-private overlay** where the
   host's bubblewrap supports it: builds read warm from the real cache, but writes
