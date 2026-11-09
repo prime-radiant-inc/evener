@@ -109,11 +109,15 @@ creation idempotency.
   active turn receives it with its next model request; an idle session is woken
   for it. The per-session concurrency cap is deferred: revisit if the W6.1
   follow-up still shows load spikes after the workflow rules land. Owns W1.3.
-- [ ] **D3 Usage-limit behavior.** Recommended: on a usage-limit 429 with no
-  eligible fallback, the session waits until the provider's reset time (or a
-  model switch), holds notifications instead of starting failing turns, and
-  resumes on its own; this implements R05 for the quota case. Separately: should
-  launch config default a cross-provider fallback chain? Owns W1.4.
+- [x] **D3 Usage-limit behavior.** Decided 2026-11-09: on a usage-limit 429
+  with no eligible fallback, the session enters a visible "waiting for quota
+  until <reset>" state: no provider calls, notifications held rather than
+  starting failing turns, an active goal stays active. It resumes on its own at
+  the reset time. The human can change the model while it waits; that resumes
+  immediately on the new model with the held notifications and goal. The state
+  shows wherever sessions are listed. Implements R05 for the quota case.
+  Still open: whether launch config should default a cross-provider fallback
+  chain. Owns W1.4.
 - [ ] **D4 Watch budget.** Recommended: replace the 50-delivery lifetime budget
   with a rate limit and a warning before any hard stop. Owns W2.2.
 - [ ] **D5 Local `implementing-features` copy.** `~/.config/evener/skills/implementing-features`
@@ -279,6 +283,15 @@ if one of these is unexpected, stop it with `job_stop`.
 - [ ] Failing test `TestUsageLimitKeepsGoalWaiting`: active goal stays
   waiting, not blocked, and continues after recovery; a cancelled goal does
   not resume (R05 acceptance).
+- [ ] Failing test `TestModelSwitchWhileWaitingForQuotaResumesImmediately`:
+  while waiting, the human switches model through the existing session
+  control; the next model request goes to the new model without waiting for
+  the reset, carrying the held notifications once, and the goal continues.
+- [ ] Failing test `TestWaitingForQuotaIsVisibleInSessionState`: the session
+  state read by clients reports the waiting state and the reset time, and
+  clears it on resume.
+- [ ] Update the affected client surfaces that list sessions (hub web, native)
+  to show the state; follow `docs/developing-evener/design-system.md`.
 - [ ] Implement per D3. Pass, update R05 (remove from open list once
   verified), commit, PR.
 
