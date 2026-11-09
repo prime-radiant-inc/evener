@@ -2234,6 +2234,7 @@ Underlying Go kind: `struct` (no struct fields).
 | `error` | string | yes |  |
 | `terminal` | bool | yes |  |
 | `resumable` | bool | yes |  |
+| `needsAttention` | bool | yes |  |
 | `notResumableReason` | string | yes |  |
 | `mandate` | string | yes |  |
 | `task` | string | yes |  |
@@ -3737,6 +3738,7 @@ Underlying Go kind: `string` (no struct fields).
 | `error` | string | yes |  |
 | `terminal` | bool |  |  |
 | `resumable` | bool |  |  |
+| `needsAttention` | bool | yes |  |
 | `notResumableReason` | string | yes |  |
 | `model` | string | yes |  |
 | `reasoningEffort` | string | yes |  |

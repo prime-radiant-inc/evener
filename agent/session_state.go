@@ -15,14 +15,15 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// SessionState represents the current lifecycle state of a session.
-type SessionState string
+// SessionState represents the current lifecycle state of a session. It is the
+// declared session machine in appwire, which also owns the legal edges.
+type SessionState = appwire.SessionState
 
 const (
 	// SessionIdle indicates the session is not currently processing.
-	SessionIdle SessionState = "idle"
+	SessionIdle = appwire.SessionStateIdle
 	// SessionProcessing indicates the session is actively processing.
-	SessionProcessing SessionState = "active"
+	SessionProcessing = appwire.SessionStateActive
 	// SessionAwaiting indicates the session is idle with the ball in its
 	// human partner's court: a question is pending, or the last completed
 	// turn ended on a communicate that said needs_response and no autonomous
@@ -35,9 +36,9 @@ const (
 	// defaults unrecognized strings to idle, so changing this string would
 	// silently downgrade an awaiting session to idle across AppWire, the roster,
 	// and the NeedsYou tier.
-	SessionAwaiting SessionState = "awaiting"
+	SessionAwaiting = appwire.SessionStateAwaiting
 	// SessionClosed indicates the session has been closed.
-	SessionClosed SessionState = "closed"
+	SessionClosed = appwire.SessionStateClosed
 )
 
 // State returns the current session state.

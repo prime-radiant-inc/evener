@@ -10,7 +10,7 @@ import (
 // that needs the answer calls this instead of restating the check, so they
 // cannot disagree.
 func delegateRunTerminal(outcome *delegatestore.Outcome, currentRunOpen bool) bool {
-	return outcome != nil && !currentRunOpen
+	return appwire.DelegateRunTerminal(outcome != nil, currentRunOpen)
 }
 
 // delegateOutcomeStopGated is the sticky deliberate-stop gate over one settled

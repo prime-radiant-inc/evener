@@ -200,7 +200,7 @@ func TestRun_Help(t *testing.T) {
 	got := out.String()
 	// Match the SUBCOMMANDS block's own line shape ("  <name>  <description>"),
 	// not a bare substring: "jobs" and "watches" also appear in the prose above it.
-	for _, sub := range []string{"locate", "transcript", "apilog", "jobs", "mutations", "watches", "tree", "plugins"} {
+	for _, sub := range []string{"locate", "transcript", "apilog", "jobs", "mutations", "watches", "tree", "plugins", "lifecycle"} {
 		if !strings.Contains(got, "\n  "+sub+" ") {
 			t.Errorf("help should list subcommand %q; got:\n%s", sub, got)
 		}
@@ -212,6 +212,48 @@ func TestRun_NoSelectorErrors(t *testing.T) {
 	var out, errb bytes.Buffer
 	if code := run([]string{"locate", "--state-dir", base}, &out, &errb); code != 1 {
 		t.Errorf("no selector should exit 1, got %d", code)
+	}
+}
+
+func TestRun_Lifecycle(t *testing.T) {
+	var out, errb bytes.Buffer
+	if code := run([]string{"lifecycle"}, &out, &errb); code != 0 {
+		t.Fatalf("lifecycle exit = %d, stderr=%s", code, errb.String())
+	}
+	text := out.String()
+	for _, kind := range []string{"session", "turn", "job", "delegate", "watch", "task", "goal", "hostOperation"} {
+		if !strings.Contains(text, kind) {
+			t.Errorf("lifecycle text omits machine %q", kind)
+		}
+	}
+
+	out.Reset()
+	errb.Reset()
+	if code := run([]string{"lifecycle", "--json"}, &out, &errb); code != 0 {
+		t.Fatalf("lifecycle --json exit = %d, stderr=%s", code, errb.String())
+	}
+	var machines []struct {
+		Kind   string `json:"kind"`
+		States []struct {
+			Name string `json:"name"`
+		} `json:"states"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &machines); err != nil {
+		t.Fatalf("lifecycle --json is not a machine array: %v\n%s", err, out.String())
+	}
+	if len(machines) == 0 {
+		t.Fatal("lifecycle --json returned no machines")
+	}
+	for _, machine := range machines {
+		if machine.Kind == "" || len(machine.States) == 0 {
+			t.Errorf("machine without kind or states: %+v", machine)
+		}
+	}
+
+	out.Reset()
+	errb.Reset()
+	if code := run([]string{"lifecycle", "local:abc"}, &out, &errb); code != 2 {
+		t.Errorf("stray selector exit = %d, want 2", code)
 	}
 }
 

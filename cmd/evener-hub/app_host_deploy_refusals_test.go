@@ -341,7 +341,7 @@ func mintDeployTokenWithTarget(t *testing.T, store *hostops.Store, m *hubHostMan
 	return mintTokenOrFatal(t, store, request)
 }
 
-func TestOperationWireStateCoversTheClosedSet(t *testing.T) {
+func TestValidOperationStateCoversTheClosedSet(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		state hostops.State
@@ -355,12 +355,12 @@ func TestOperationWireStateCoversTheClosedSet(t *testing.T) {
 		{hostops.StateOrphanUnverified, appwire.OperationStateOrphanUnverified},
 	}
 	for _, tc := range cases {
-		got, err := operationWireState(tc.state)
+		got, err := validOperationState(tc.state)
 		if err != nil || got != tc.want {
-			t.Fatalf("operationWireState(%q) = %q, %v; want %q", tc.state, got, err, tc.want)
+			t.Fatalf("validOperationState(%q) = %q, %v; want %q", tc.state, got, err, tc.want)
 		}
 	}
-	if _, err := operationWireState(hostops.State("nonsense")); err == nil {
+	if _, err := validOperationState(hostops.State("nonsense")); err == nil {
 		t.Fatal("a state outside the wire's set mapped onto the wire")
 	}
 }

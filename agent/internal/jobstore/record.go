@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -15,38 +16,30 @@ const (
 	JobShell JobType = "shell"
 )
 
-// Status identifies the lifecycle state of a job.
-type Status string
+// Status identifies the lifecycle state of a job. It is the declared job
+// machine in appwire, so the store, the activity projections and the client
+// unions name the same closed set. IsTerminal comes from that declaration.
+type Status = appwire.JobStatus
 
 const (
-	StatusRunning   Status = "running"
-	StatusCompleted Status = "completed"
+	StatusRunning   = appwire.JobStatusRunning
+	StatusCompleted = appwire.JobStatusCompleted
 	// StatusCommandExitedNonzero is the terminal state of a job whose
 	// supervised command ran to a reaped exit and reported failure: the job
 	// system did its work (launch, supervision, capture), the COMMAND is
 	// what failed. StatusFailed is reserved for the job system's own
 	// failures, so this vocabulary keeps "the job ran a command that
 	// failed" apart from "the job failed".
-	StatusCommandExitedNonzero Status = "command_exited_nonzero"
+	StatusCommandExitedNonzero = appwire.JobStatusCommandExitedNonzero
 	// StatusCommandKilled is the companion: the job system reaped the
 	// process fine, but the command was terminated by a signal before it
 	// could exit on its own. The reason attr carries the signal name.
-	StatusCommandKilled Status = "command_killed"
-	StatusFailed        Status = "failed"
-	StatusCancelled     Status = "cancelled"
-	StatusStopped       Status = "stopped"
-	StatusExhausted     Status = "exhausted"
+	StatusCommandKilled = appwire.JobStatusCommandKilled
+	StatusFailed        = appwire.JobStatusFailed
+	StatusCancelled     = appwire.JobStatusCancelled
+	StatusStopped       = appwire.JobStatusStopped
+	StatusExhausted     = appwire.JobStatusExhausted
 )
-
-// IsTerminal reports whether the status means no further runtime work is expected.
-func (s Status) IsTerminal() bool {
-	switch s {
-	case StatusCompleted, StatusCommandExitedNonzero, StatusCommandKilled, StatusFailed, StatusCancelled, StatusStopped, StatusExhausted:
-		return true
-	default:
-		return false
-	}
-}
 
 // NotifyState identifies terminal-notification delivery progress.
 type NotifyState string

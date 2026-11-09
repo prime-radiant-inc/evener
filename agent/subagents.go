@@ -30,20 +30,22 @@ import (
 
 const delegateSalvagedDraftNote = "partial draft salvaged in the child transcript — resume it with delegate_send rather than re-dispatching"
 
-// SubagentStatus tracks the lifecycle of a sub-agent.
-type SubagentStatus string
+// SubagentStatus tracks the lifecycle of a sub-agent run. It is the declared
+// delegate run machine, so the in-memory subagent model and the durable
+// delegate store name the same states.
+type SubagentStatus = appwire.DelegateRunStatus
 
 const (
 	// SubagentRunning indicates the sub-agent is currently executing a run.
-	SubagentRunning SubagentStatus = "running"
+	SubagentRunning = appwire.DelegateRunRunning
 	// SubagentCompleted indicates the sub-agent's run finished without error.
-	SubagentCompleted SubagentStatus = "completed"
+	SubagentCompleted = appwire.DelegateRunCompleted
 	// SubagentFailed indicates the sub-agent's run finished with an error.
-	SubagentFailed SubagentStatus = "failed"
+	SubagentFailed = appwire.DelegateRunFailed
 	// SubagentCancelled indicates the sub-agent's run was cancelled.
-	SubagentCancelled SubagentStatus = "cancelled"
+	SubagentCancelled = appwire.DelegateRunCancelled
 	// SubagentExhausted indicates the sub-agent stopped at a configured budget.
-	SubagentExhausted SubagentStatus = "exhausted"
+	SubagentExhausted = appwire.DelegateRunExhausted
 )
 
 // subagentResult is the structured output from a completed sub-agent.

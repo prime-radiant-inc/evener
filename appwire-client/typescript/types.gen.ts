@@ -1403,7 +1403,7 @@ export interface HostDeployParams {
 export interface HostDeployResponse {
   id: string;
   clientOperationId: string;
-  state: string;
+  state: OperationState;
 }
 
 export interface HostEntry {
@@ -1470,7 +1470,7 @@ export interface HostNotificationParams {
 export interface HostOperationsParams {
   name?: string;
   operationId?: string;
-  state?: string;
+  state?: OperationState;
   generation?: number;
   incarnationId?: string;
   id?: string;
@@ -1556,7 +1556,7 @@ export interface HostRestartParams {
 export interface HostRestartResponse {
   id: string;
   clientOperationId: string;
-  state: string;
+  state: OperationState;
 }
 
 export interface HostRow {
@@ -2042,6 +2042,12 @@ export interface JobActivityDelegate {
   error?: string;
   terminal?: boolean;
   resumable?: boolean;
+  /**
+   * NeedsAttention means the delegate has delivered input it has not consumed
+   * yet, such as a question, a descendant report or a job completion. The
+   * delegate processes it autonomously; it is not by itself a human question.
+   */
+  needsAttention?: boolean;
   notResumableReason?: string;
   mandate?: string;
   task?: string;
@@ -2920,7 +2926,7 @@ export interface OperationRecord {
   generation: number;
   incarnationId: string;
   kind: string;
-  state: string;
+  state: OperationState;
   progress?: OperationProgressEntry[];
   result?: OperationResult;
   createdAt: string;
@@ -3747,6 +3753,12 @@ export interface SessionDelegate {
   error?: string;
   terminal: boolean;
   resumable: boolean;
+  /**
+   * NeedsAttention means the delegate has delivered input it has not consumed
+   * yet, such as a question, a descendant report or a job completion. The
+   * delegate processes it autonomously; it is not by itself a human question.
+   */
+  needsAttention?: boolean;
   notResumableReason?: string;
   model?: string;
   reasoningEffort?: string;
@@ -5693,6 +5705,107 @@ export const NOTIFICATION_NAMES = [
 
 export type NotificationName = (typeof NOTIFICATION_NAMES)[number];
 
+export const LIFECYCLE_CLASSES = [
+  "active",
+  "waiting",
+  "idle",
+  "settled",
+  "failed",
+  "neutral",
+  "ended",
+] as const;
+
+export type LifecycleClass = (typeof LIFECYCLE_CLASSES)[number];
+
+export const MACHINE_KINDS = [
+  "session",
+  "turn",
+  "threadStatus",
+  "job",
+  "delegate",
+  "delegateRun",
+  "delegateOutcome",
+  "watch",
+  "task",
+  "goal",
+  "hostOperation",
+  "mutationProjection",
+] as const;
+
+export type MachineKind = (typeof MACHINE_KINDS)[number];
+
+export const SESSION_STATES = [
+  "idle",
+  "active",
+  "awaiting",
+  "closed",
+] as const;
+
+export type SessionState = (typeof SESSION_STATES)[number];
+
+export const JOB_STATUSES = [
+  "running",
+  "completed",
+  "command_exited_nonzero",
+  "command_killed",
+  "failed",
+  "exhausted",
+  "cancelled",
+  "stopped",
+] as const;
+
+export type JobStatus = (typeof JOB_STATUSES)[number];
+
+export const DELEGATE_PHASES = [
+  "idle",
+  "running",
+  "settling",
+  "stopping",
+  "closed",
+] as const;
+
+export type DelegatePhase = (typeof DELEGATE_PHASES)[number];
+
+export const DELEGATE_RUN_STATUSES = [
+  "running",
+  "completed",
+  "failed",
+  "exhausted",
+  "cancelled",
+  "stopped",
+] as const;
+
+export type DelegateRunStatus = (typeof DELEGATE_RUN_STATUSES)[number];
+
+export const DELEGATE_OUTCOMES = [
+  "completed",
+  "failed",
+  "exhausted",
+  "cancelled",
+  "stopped",
+] as const;
+
+export type DelegateOutcome = (typeof DELEGATE_OUTCOMES)[number];
+
+export const GOAL_STATUSES = [
+  "active",
+  "complete",
+  "blocked",
+] as const;
+
+export type GoalStatus = (typeof GOAL_STATUSES)[number];
+
+export const OPERATION_STATES = [
+  "pending",
+  "running",
+  "complete",
+  "failed",
+  "interrupted",
+  "orphan-unverified",
+] as const;
+
+export type OperationState = (typeof OPERATION_STATES)[number];
+
 export const SESSION_ACTIVITY_SCOPES = [
   "session",
   "subtree",
@@ -5785,6 +5898,129 @@ export const TRANSCRIPT_HOOK_EXIT_DETAILS = [
 ] as const;
 
 export type TranscriptHookExitDetail = (typeof TRANSCRIPT_HOOK_EXIT_DETAILS)[number];
+
+export const LIFECYCLE_MACHINES = {
+  "session": {
+    initial: "idle",
+    states: {
+      "idle": { class: "idle", terminal: false, summary: "resting between turns" },
+      "active": { class: "active", terminal: false, summary: "running a turn" },
+      "awaiting": { class: "waiting", terminal: false, summary: "resting with the next move owed to the human" },
+      "closed": { class: "ended", terminal: true, summary: "closed and unable to move again" },
+    },
+  },
+  "turn": {
+    initial: "inProgress",
+    states: {
+      "inProgress": { class: "active", terminal: false, summary: "turn is running" },
+      "completed": { class: "settled", terminal: true, summary: "turn finished" },
+      "failed": { class: "failed", terminal: true, summary: "turn ended on an error" },
+      "interrupted": { class: "neutral", terminal: true, summary: "turn was interrupted" },
+    },
+  },
+  "threadStatus": {
+    initial: "notLoaded",
+    states: {
+      "idle": { class: "idle", terminal: false, resting: true, summary: "resting between turns" },
+      "active": { class: "active", terminal: false, summary: "running a turn" },
+      "awaiting": { class: "waiting", terminal: false, summary: "waiting on a question or a reply" },
+      "warning": { class: "waiting", terminal: false, summary: "working with a warning that needs attention" },
+      "closed": { class: "ended", terminal: true, summary: "the session ended" },
+      "notLoaded": { class: "ended", terminal: false, summary: "no session is loaded for this row" },
+      "systemError": { class: "failed", terminal: false, resting: true, summary: "resting on a failed turn" },
+      "restartRequired": { class: "waiting", terminal: false, summary: "an older daemon process must be restarted" },
+    },
+  },
+  "job": {
+    initial: "running",
+    states: {
+      "running": { class: "active", terminal: false, summary: "runtime work is in progress" },
+      "completed": { class: "settled", terminal: true, summary: "the command exited zero" },
+      "command_exited_nonzero": { class: "failed", terminal: true, summary: "the supervised command reported failure" },
+      "command_killed": { class: "failed", terminal: true, summary: "the supervised command was killed by a signal" },
+      "failed": { class: "failed", terminal: true, summary: "the job system failed" },
+      "exhausted": { class: "failed", terminal: true, summary: "the job stopped at a configured budget" },
+      "cancelled": { class: "neutral", terminal: true, summary: "the job was cancelled" },
+      "stopped": { class: "neutral", terminal: true, summary: "the job was stopped" },
+    },
+  },
+  "delegate": {
+    initial: "idle",
+    states: {
+      "idle": { class: "idle", terminal: false, summary: "no run is open; a new run may start" },
+      "running": { class: "active", terminal: false, summary: "a run is in progress" },
+      "settling": { class: "active", terminal: false, summary: "a run is preparing its terminal packet" },
+      "stopping": { class: "active", terminal: false, summary: "a stop is draining the open run" },
+      "closed": { class: "ended", terminal: true, summary: "the delegate cannot run again" },
+    },
+  },
+  "delegateRun": {
+    initial: "running",
+    states: {
+      "running": { class: "active", terminal: false, summary: "the subagent run is executing" },
+      "completed": { class: "settled", terminal: true, summary: "the run finished" },
+      "failed": { class: "failed", terminal: true, summary: "the run ended on an error" },
+      "exhausted": { class: "failed", terminal: true, summary: "the run stopped at a configured budget" },
+      "cancelled": { class: "neutral", terminal: true, summary: "the run was cancelled" },
+      "stopped": { class: "neutral", terminal: true, summary: "the run was stopped" },
+    },
+  },
+  "delegateOutcome": {
+    states: {
+      "completed": { class: "settled", terminal: true, summary: "the run finished" },
+      "failed": { class: "failed", terminal: true, summary: "the run ended on an error" },
+      "exhausted": { class: "failed", terminal: true, summary: "the run stopped at a configured budget" },
+      "cancelled": { class: "neutral", terminal: true, summary: "the run was cancelled" },
+      "stopped": { class: "neutral", terminal: true, summary: "the run was stopped" },
+    },
+  },
+  "watch": {
+    initial: "armed",
+    states: {
+      "armed": { class: "active", terminal: false, summary: "the watch can still fire" },
+      "ended": { class: "ended", terminal: true, summary: "the watch can never fire again" },
+      "unknown": { class: "neutral", terminal: false, summary: "retained evidence cannot establish liveness" },
+    },
+  },
+  "task": {
+    initial: "open",
+    states: {
+      "open": { class: "idle", terminal: false, summary: "ready to start once its dependencies settle" },
+      "in_progress": { class: "active", terminal: false, summary: "the task is being worked" },
+      "done": { class: "settled", terminal: false, summary: "the task is done and may be reopened" },
+      "cancelled": { class: "neutral", terminal: false, summary: "the task is cancelled and may be reopened" },
+    },
+  },
+  "goal": {
+    initial: "active",
+    states: {
+      "active": { class: "active", terminal: false, summary: "the goal is being pursued" },
+      "complete": { class: "settled", terminal: true, summary: "the goal was completed" },
+      "blocked": { class: "failed", terminal: true, summary: "the goal stopped without completing" },
+    },
+  },
+  "hostOperation": {
+    initial: "pending",
+    states: {
+      "pending": { class: "active", terminal: false, summary: "accepted and waiting for its worker" },
+      "running": { class: "active", terminal: false, summary: "the operation is running" },
+      "complete": { class: "settled", terminal: true, summary: "the operation completed" },
+      "failed": { class: "failed", terminal: true, summary: "the operation failed" },
+      "interrupted": { class: "neutral", terminal: true, summary: "a controller shutdown interrupted the operation" },
+      "orphan-unverified": { class: "neutral", terminal: false, summary: "historical record whose boundary was never verified" },
+    },
+  },
+  "mutationProjection": {
+    initial: "pending",
+    states: {
+      "pending": { class: "active", terminal: false, summary: "accepted, not yet in the transcript projection" },
+      "reflected": { class: "settled", terminal: false, summary: "visible in the transcript projection" },
+      "removed": { class: "ended", terminal: true, summary: "removed from the transcript projection" },
+    },
+  },
+} as const;
+
+export type LifecycleMachineCatalog = typeof LIFECYCLE_MACHINES;
 
 export const STEERING_KINDS = [
   "interrupted",

@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/appwire"
 )
 
 var (
@@ -331,7 +332,7 @@ func applyRunStarted(state State, event Event) error {
 	if payload.Generation != aggregate.Generation+1 {
 		return fmt.Errorf("delegate %q run generation %d, want %d", event.DelegateID, payload.Generation, aggregate.Generation+1)
 	}
-	if aggregate.Phase != PhaseIdle {
+	if !appwire.DelegateLifecycle().CanTransition(string(aggregate.Phase), string(PhaseRunning)) {
 		return fmt.Errorf("delegate %q phase %q cannot start", event.DelegateID, aggregate.Phase)
 	}
 	if !aggregate.Resumable {
@@ -365,7 +366,7 @@ func applyTerminalPrepared(state State, event Event) error {
 	if err != nil {
 		return err
 	}
-	if aggregate.Phase != PhaseRunning {
+	if !appwire.DelegateLifecycle().CanTransition(string(aggregate.Phase), string(PhaseSettling)) {
 		return fmt.Errorf("delegate %q phase %q cannot prepare terminal", event.DelegateID, aggregate.Phase)
 	}
 	if err := validateTerminalPacket(event.TerminalPrepared.Packet); err != nil {
@@ -383,6 +384,13 @@ func applyRunFinished(state State, event Event) error {
 		return err
 	}
 	if aggregate.Phase != PhaseRunning && aggregate.Phase != PhaseSettling && aggregate.Phase != PhaseStopping {
+		return fmt.Errorf("delegate %q phase %q cannot finish", event.DelegateID, aggregate.Phase)
+	}
+	target := PhaseIdle
+	if !aggregate.Resumable {
+		target = PhaseClosed
+	}
+	if !appwire.DelegateLifecycle().CanTransition(string(aggregate.Phase), string(target)) {
 		return fmt.Errorf("delegate %q phase %q cannot finish", event.DelegateID, aggregate.Phase)
 	}
 	if !validOutcomeStatus(payload.Outcome.Status) {
@@ -499,7 +507,8 @@ func applySubtreeStopRequested(state State, event Event) error {
 		aggregate.PendingStopSeq = event.Seq
 		aggregate.PendingStopAt = event.TS
 		aggregate.NeedsAttention = false
-		if aggregate.Phase != PhaseClosed {
+		if appwire.DelegateLifecycle().CanTransition(string(aggregate.Phase), string(PhaseStopping)) ||
+			!appwire.DelegateLifecycle().HasState(string(aggregate.Phase)) {
 			aggregate.Phase = PhaseStopping
 		}
 	}
@@ -876,12 +885,7 @@ func validRunTrigger(trigger RunTrigger) bool {
 }
 
 func validOutcomeStatus(status OutcomeStatus) bool {
-	switch status {
-	case OutcomeCompleted, OutcomeFailed, OutcomeExhausted, OutcomeCancelled, OutcomeStopped:
-		return true
-	default:
-		return false
-	}
+	return status.Valid()
 }
 
 func validateOutcome(outcome Outcome) error {

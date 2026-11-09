@@ -11,6 +11,9 @@ changes; keep implementation history in Git and pull requests.
 - [Product principles](principles.md): the experience changes should produce.
 - [Subsystem map](subsystems.md): responsibilities, sources of truth, entry
   points, dependencies, and recovery ownership across the product.
+- [Lifecycles](lifecycles.md): the declared state machine for sessions, turns,
+  jobs, delegates, watches, tasks, goals, host operations and client mutations,
+  with owners, legal transitions and client classes.
 - [Session activity](session-activity.md): scoped delegate, job and watch reads,
   navigation boundaries, pagination and shared recovery ownership.
 - [Manager workflow](../automation.md#manager-sessions): an immutable session

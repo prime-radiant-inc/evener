@@ -38,6 +38,7 @@ const DELEGATE_FIELDS = [
 	"latestIntent",
 	"usage",
 	"worktree",
+	"needsAttention",
 ] as const satisfies readonly (keyof ActivityDelegate & keyof SessionDelegate)[];
 
 // Fails to compile when SessionDelegate gains a field the adapter neither

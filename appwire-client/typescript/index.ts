@@ -460,6 +460,15 @@ export {
   resolvedValue,
   schemaPathKind,
 } from "./launchSchema";
+export type { LifecycleMachineFacts, LifecycleStateFacts } from "./lifecycle";
+export {
+  lifecycleMachine,
+  lifecycleState,
+  lifecycleStateClass,
+  lifecycleStateIsFailed,
+  lifecycleStateIsResting,
+  lifecycleStateIsTerminal,
+} from "./lifecycle";
 export type { FenceToken } from "./markdownFence";
 export { fenceTokenTerminated, isMermaidCodeToken, MERMAID_FENCE, mermaidText } from "./markdownFence";
 export { marketplaceSourceLabel, marketplaceSourcePin, marketplaceSourceTakesRef } from "./marketplaceSourceLabel";
