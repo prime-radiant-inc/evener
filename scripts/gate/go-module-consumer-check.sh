@@ -82,8 +82,8 @@ else
 	target_dirs=("${workspace_dirs[@]}")
 fi
 
-scratch_dir tmp evener-consumer-check
 trap scratch_rm EXIT
+scratch_dir tmp evener-consumer-check
 
 # Resolve every target directory, and every workspace module that its consumer
 # must replace, once. Directories are keyed by their absolute path.
