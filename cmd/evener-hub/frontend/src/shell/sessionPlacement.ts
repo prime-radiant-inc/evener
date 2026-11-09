@@ -9,18 +9,23 @@ function isSessionPaneFor(pane: OpenPaneRecord, ref: string): boolean {
 }
 
 // openSessionByRef is how anything in the app follows a link to a session.
-// Existing live session panes retain their identity and regain focus.
-// Read-only transcript context belongs to its contextual callers.
-// Unopened sessions route through the URL, so the
-// router's own rules apply to every such link: a nested session opens beside
-// its top-level owner instead of landing in main next to an unrelated root
-// (see openRouteAsPane). Callers that already know the placement they want
-// use the two helpers below directly.
+// An existing pane regains focus; an unopened session opens its pane here so
+// the press paints before the route settles. The URL still runs the router's
+// own rules: a nested session opens beside its top-level owner instead of
+// landing in main next to an unrelated root (see openRouteAsPane). Read-only
+// transcript context belongs to its contextual callers. Callers that already
+// know the placement they want use the two helpers below directly.
 export function openSessionByRef(ref: string): void {
   const workspace = workspaceStore.getState();
   const existing = presentedPanes(workspace.panes).find((pane) => isSessionPaneFor(pane, ref));
   if (existing) {
     workspace.focusPane(existing.id);
+  } else {
+    // Non-destructive first paint: the route decides the final main slot (and,
+    // for a nested route, reuses this pane beside its owner). Replacing the
+    // primary here would drop the workspace before the location read can say
+    // whether this session was nested after all.
+    workspace.openPane("session", { ref });
   }
   const url = paneToURL("session", { ref });
   // The rail, scope crumbs and every session link land here: a press that

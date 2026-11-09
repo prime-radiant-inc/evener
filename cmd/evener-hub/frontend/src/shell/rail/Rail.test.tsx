@@ -25,7 +25,7 @@ import { navigationInvalidatedNotification } from "@evener/appwire-client/testin
 import { act, cleanup, fireEvent, render as renderUI, screen, waitFor, within } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { lazy } from "react";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { installMobileViewport } from "../../panes/session/testing/mobileViewport";
 import {
   archivedListKey,
@@ -41,6 +41,7 @@ import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import { hoverForTooltip } from "../../widgets/tooltip/tooltipTestUtils";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { ClientProvider } from "../clientContext";
+import { MobilePanel } from "../mobile/MobilePanel";
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { archiveSessionIdentity, Rail } from "./Rail";
@@ -302,6 +303,15 @@ function render(ui: ReactElement, client = new FakeClient()) {
   return renderUI(ui, { wrapper: ({ children }) => <ClientProvider client={client}>{children}</ClientProvider> });
 }
 
+/** The session pane stub every activation test opens through `paneFor`. */
+function registerSessionPaneStub() {
+  return registerPaneForTests({
+    id: "session",
+    title: () => "session",
+    component: lazy(() => Promise.resolve({ default: () => null })),
+  });
+}
+
 /** The disclosure button inside the heading named `name` - the rail's section
  * fold, the same control however the section is authored. */
 function sectionDisclosure(name: string | RegExp): HTMLElement {
@@ -335,6 +345,16 @@ function stubScrollIntoView(): () => void {
     else delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
   };
 }
+
+let restoreSessionPane: () => void;
+
+beforeAll(() => {
+  restoreSessionPane = registerSessionPaneStub();
+});
+
+afterAll(() => {
+  restoreSessionPane();
+});
 
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
@@ -1849,11 +1869,7 @@ describe("resource-backed Rail", () => {
     // zoom system's triage surface). The rail NAVIGATES, idempotently: open
     // the session pane, open the sidebar scoped to it, never toggle closed.
     resetActivitySidebarStoreForTests();
-    const restoreSessionPane = registerPaneForTests({
-      id: "session",
-      title: () => "session",
-      component: lazy(() => Promise.resolve({ default: () => null })),
-    });
+    const restoreSessionPane = registerSessionPaneStub();
     try {
       installState([
         sectionResource("live", [summary({ ref: "local:active", session_id: "active", title: "Active" })]),
@@ -1881,13 +1897,47 @@ describe("resource-backed Rail", () => {
     }
   });
 
+  test("a live session row places the session before the route publishes", () => {
+    const restoreSessionPane = registerSessionPaneStub();
+    try {
+      installState([
+        sectionResource("live", [summary({ ref: "local:active", session_id: "active", title: "Active" })]),
+      ]);
+      render(<Rail />);
+
+      fireEvent.click(within(sectionRoot("Live")).getByText("Active"));
+
+      const main = workspaceStore.getState().mainPane();
+      expect(main).toMatchObject({ type: "session", params: { ref: "local:active" } });
+      expect(workspaceStore.getState().focusedPaneId).toBe(main?.id);
+      expect(window.location.pathname).toBe("/s/local%3Aactive");
+    } finally {
+      restoreSessionPane();
+    }
+  });
+
+  test("tapping the already-focused session in the mobile drawer closes it", () => {
+    const restoreSessionPane = registerSessionPaneStub();
+    try {
+      installState([
+        sectionResource("live", [summary({ ref: "local:active", session_id: "active", title: "Active" })]),
+      ]);
+      const paneId = workspaceStore.getState().openPane("session", { ref: "local:active" });
+      expect(workspaceStore.getState().focusedPaneId).toBe(paneId);
+      const onClose = vi.fn();
+      render(<MobilePanel rail={<Rail />} open onClose={onClose} />);
+
+      fireEvent.click(within(sectionRoot("Live")).getByText("Active"));
+
+      expect(onClose).toHaveBeenCalledTimes(1);
+    } finally {
+      restoreSessionPane();
+    }
+  });
+
   test("a rail row's Overview action on desktop preserves a retained Details placement", async () => {
     resetActivitySidebarStoreForTests();
-    const restoreSessionPane = registerPaneForTests({
-      id: "session",
-      title: () => "session",
-      component: lazy(() => Promise.resolve({ default: () => null })),
-    });
+    const restoreSessionPane = registerSessionPaneStub();
     const restoreDetailsPane = registerPaneForTests({
       id: "sessionDetails",
       title: () => "details",
@@ -1917,11 +1967,7 @@ describe("resource-backed Rail", () => {
   test("a rail row's Overview action on mobile opens the new activity sidebar", async () => {
     const restoreViewport = installMobileViewport();
     resetActivitySidebarStoreForTests();
-    const restoreSessionPane = registerPaneForTests({
-      id: "session",
-      title: () => "session",
-      component: lazy(() => Promise.resolve({ default: () => null })),
-    });
+    const restoreSessionPane = registerSessionPaneStub();
     try {
       installState([
         sectionResource("live", [summary({ ref: "local:active", session_id: "active", title: "Active" })]),
@@ -1955,6 +2001,7 @@ describe("resource-backed Rail", () => {
   });
 
   test("operates the rendered resource-backed tree with keyboard focus, activation, and toggle", () => {
+    const restoreSessionPane = registerSessionPaneStub();
     window.history.replaceState({}, "", "/");
     // Session rows are leaves now: the tree's branch rows are projects (and
     // host groups), so the keyboard contract - expand, descend, activate,
@@ -1966,33 +2013,41 @@ describe("resource-backed Rail", () => {
         summary({ ref: "local:child", session_id: "child", title: "Keyboard child" }),
       ]),
     ]);
-    render(<Rail />);
+    try {
+      render(<Rail />);
 
-    const projectRow = screen.getByRole("treeitem", { name: /^project/i });
-    act(() => projectRow.focus());
-    expect(document.activeElement).toBe(projectRow);
-    expect(projectRow.getAttribute("aria-expanded")).toBe("false");
+      const projectRow = screen.getByRole("treeitem", { name: /^project/i });
+      act(() => projectRow.focus());
+      expect(document.activeElement).toBe(projectRow);
+      expect(projectRow.getAttribute("aria-expanded")).toBe("false");
 
-    fireEvent.keyDown(projectRow, { key: "ArrowRight" });
-    expect(projectRow.getAttribute("aria-expanded")).toBe("true");
-    const parentRow = screen.getByRole("treeitem", { name: /keyboard parent/i });
-    fireEvent.keyDown(projectRow, { key: "ArrowRight" });
-    expect(document.activeElement).toBe(parentRow);
-    // A session row is a leaf: ArrowRight on it opens nothing and the row
-    // carries no expanded state at all.
-    fireEvent.keyDown(parentRow, { key: "ArrowRight" });
-    expect(parentRow.getAttribute("aria-expanded")).toBeNull();
-    const childRow = screen.getByRole("treeitem", { name: /keyboard child/i });
-    fireEvent.keyDown(parentRow, { key: "ArrowDown" });
-    expect(document.activeElement).toBe(childRow);
+      fireEvent.keyDown(projectRow, { key: "ArrowRight" });
+      expect(projectRow.getAttribute("aria-expanded")).toBe("true");
+      const parentRow = screen.getByRole("treeitem", { name: /keyboard parent/i });
+      fireEvent.keyDown(projectRow, { key: "ArrowRight" });
+      expect(document.activeElement).toBe(parentRow);
+      // A session row is a leaf: ArrowRight on it opens nothing and the row
+      // carries no expanded state at all.
+      fireEvent.keyDown(parentRow, { key: "ArrowRight" });
+      expect(parentRow.getAttribute("aria-expanded")).toBeNull();
+      const childRow = screen.getByRole("treeitem", { name: /keyboard child/i });
+      fireEvent.keyDown(parentRow, { key: "ArrowDown" });
+      expect(document.activeElement).toBe(childRow);
 
-    fireEvent.keyDown(childRow, { key: "Enter" });
-    expect(window.location.pathname).toBe("/s/local%3Achild");
-    fireEvent.keyDown(childRow, { key: "ArrowLeft" });
-    expect(document.activeElement).toBe(projectRow);
-    fireEvent.keyDown(projectRow, { key: "ArrowLeft" });
-    expect(projectRow.getAttribute("aria-expanded")).toBe("false");
-    expect(screen.queryByRole("treeitem", { name: /keyboard child/i })).toBeNull();
+      fireEvent.keyDown(childRow, { key: "Enter" });
+      expect(window.location.pathname).toBe("/s/local%3Achild");
+      expect(workspaceStore.getState().mainPane()).toMatchObject({
+        type: "session",
+        params: { ref: "local:child" },
+      });
+      fireEvent.keyDown(childRow, { key: "ArrowLeft" });
+      expect(document.activeElement).toBe(projectRow);
+      fireEvent.keyDown(projectRow, { key: "ArrowLeft" });
+      expect(projectRow.getAttribute("aria-expanded")).toBe("false");
+      expect(screen.queryByRole("treeitem", { name: /keyboard child/i })).toBeNull();
+    } finally {
+      restoreSessionPane();
+    }
   });
   test("a loading row is passive: keyboard activation persists no expansion override", () => {
     window.history.replaceState({}, "", "/");

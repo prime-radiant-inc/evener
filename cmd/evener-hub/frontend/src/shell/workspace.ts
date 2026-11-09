@@ -650,6 +650,15 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       return main.id;
     }
 
+    // A session link opens its pane before the route settles. Reuse that exact
+    // pane as the new primary instead of discarding and remounting the view;
+    // every other pane still clears, as a primary replacement always did.
+    const reusable = presentedPanes(state.panes).find((pane) => primaryMatches(pane, type, params));
+    if (reusable !== undefined) {
+      set({ panes: [{ ...reusable, slot: "main" }], focusedPaneId: reusable.id });
+      return reusable.id;
+    }
+
     const id = nextPaneId(type);
     set({ panes: [{ id, type, params, slot: "main" }], focusedPaneId: id });
     return id;

@@ -12,6 +12,7 @@ import { act, cleanup, renderHook, screen, waitFor, within } from "@testing-libr
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { ALL_CAPABILITIES as CAPS } from "../../threadTestUtils";
+import "../../panes/session";
 import "../../panes/sessionPanels";
 import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
 import { resetComposerFocusStoreForTests } from "../../panes/session/composer/composerFocus";

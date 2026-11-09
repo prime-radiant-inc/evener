@@ -1347,6 +1347,10 @@ async function expectHealthyBackgroundUsable() {
 // call-through below always reaches the real implementation.
 const realStartBackgroundTranscripts = backgroundTranscriptsModule.startBackgroundTranscripts;
 
+function noBackgroundTranscriptsOwner() {
+  return { dispose: () => Promise.resolve(), settled: () => Promise.resolve() };
+}
+
 // Call-through interception of the real owner factory. Each record marks the
 // synchronous retirement boundary (dispose() called) separately from the real
 // disposal outcome (pending/fulfilled/rejected); the real promise and any
@@ -4350,6 +4354,36 @@ test("rail activation updates the URL and a later Settings activation returns Se
   );
 });
 
+test("a rail activation places a top-level session before its location read settles", async () => {
+  const user = userEvent.setup();
+  const held = heldRouteLocation("local:s1");
+  window.history.pushState({}, "", "/settings");
+  render(<AppShell client={held.client} />);
+  await screen.findByRole("navigation", { name: "Settings sections" });
+  await screen.findByText("Session one");
+
+  await user.click(screen.getByText("Session one"));
+
+  expect(window.location.pathname).toBe("/s/local%3As1");
+  const optimistic = workspaceStore
+    .getState()
+    .panes.find((pane) => pane.type === "session" && refParam(pane.params) === "local:s1");
+  expect(optimistic).toBeTruthy();
+  expect(workspaceStore.getState().focusedPaneId).toBe(optimistic?.id);
+  await waitFor(() =>
+    expect(navigationStore.getState().resources.get(keyID({ kind: "location", ref: "local:s1" }))?.loading).toBe(true),
+  );
+  expect(workspaceStore.getState().focusedPaneId).toBe(optimistic?.id);
+
+  await act(async () => held.release());
+  await waitFor(() =>
+    expect(workspaceStore.getState().mainPane()).toMatchObject({
+      type: "session",
+      params: { ref: "local:s1" },
+    }),
+  );
+});
+
 // Closing a deleted session's pane is not enough for the pane the ADDRESS BAR
 // names (kata 1hdc): the route-application effect below re-runs on every
 // workspace change, so a URL still naming the deleted session re-opens a pane
@@ -6961,37 +6995,39 @@ function navClientWithDeferredLivePageTwo(script: {
 }
 
 test("live-next demand-load retries after the page request fails", async () => {
+  // The background roster owner retries an incomplete sweep on its own 250 ms
+  // timer. Its attempt count is not the chord's retry contract, so isolate the
+  // chord here: the first demand fails, the second succeeds.
+  const background = vi
+    .spyOn(backgroundTranscriptsModule, "startBackgroundTranscripts")
+    .mockReturnValue(noBackgroundTranscriptsOwner());
+  onTestFinished(() => background.mockRestore());
   let pageTwoAttempts = 0;
   const client = navClientWithDeferredLivePageTwo({
     onPageTwo: (params) => {
       pageTwoAttempts++;
-      // The background Live roster owner discovers the complete roster and
-      // spends the first attempt; the chord's first demand spends the second,
-      // and its retry is the third.
-      if (pageTwoAttempts <= 2) throw new Error("transient read failure");
+      if (pageTwoAttempts === 1) throw new Error("transient read failure");
       return wireSnapshot(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"');
     },
   });
   const user = userEvent.setup();
   render(<AppShell client={client} />);
   await rail().findByText("Live A");
-  // Page two was already read once (and failed) by background discovery.
-  await waitFor(() => expect(pageTwoAttempts).toBe(1));
 
   await user.click(rail().getByText("Live A"));
   await waitFor(() => {
     expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
   });
 
-  // The first demand re-requests the failed page and fails again; the view
-  // stays and no navigation happens.
+  // The first demand reads the unloaded page and fails; the view stays and no
+  // navigation happens.
   await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift>}{/Alt}");
-  await waitFor(() => expect(pageTwoAttempts).toBe(2));
+  await waitFor(() => expect(pageTwoAttempts).toBe(1));
   expect(window.location.pathname).toBe("/s/local%3Alive-a");
 
   // A cached "already demanded" entry must not brick the retry.
   await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift>}{/Alt}");
-  await waitFor(() => expect(pageTwoAttempts).toBe(3));
+  await waitFor(() => expect(pageTwoAttempts).toBe(2));
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
 });
 

@@ -35,6 +35,7 @@ import { requireClass } from "../../widgets/internal/requireClass";
 import { activitySidebarStore } from "../activitybar/activitySidebarStore";
 import { useClient } from "../clientContext";
 import { closePanesForDeletedSessions } from "../deletedSessionPanes";
+import { useMobileSheetDismiss } from "../mobile/sheetDismissal";
 import { navigate } from "../routing";
 import { openSessionByRef } from "../sessionPlacement";
 import { useIsMobile } from "../useIsMobile";
@@ -495,6 +496,7 @@ function NavigationRail({
   // host row returns undefined, leaving it without a selected state rather
   // than asserting it is a non-selection.
   const selectedSessionRef = useWorkspaceStore(currentSessionRef);
+  const dismissMobileSheet = useMobileSheetDismiss();
   const isRowSelected = (node: RailNode): boolean | undefined =>
     node.kind === "session" ? node.session.ref === selectedSessionRef : undefined;
   const [expandedOverrides, setExpandedOverrides] = useState<ReadonlyMap<string, boolean>>(loadExpansion);
@@ -606,6 +608,7 @@ function NavigationRail({
   }
   function openSession(session: RailSession) {
     openSessionByRef(session.ref);
+    dismissMobileSheet?.();
   }
   function handleActivate(node: RailNode) {
     if (isPassiveRailNode(node)) return;

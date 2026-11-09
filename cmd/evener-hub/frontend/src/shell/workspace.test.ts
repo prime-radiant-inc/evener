@@ -678,6 +678,25 @@ describe("replacePrimary", () => {
     expect(workspaceStore.getState().focusedPaneId).toBe(sessionId);
   });
 
+  // The immediate pane a session link opens is already the requested identity.
+  // Reusing it keeps its one mount and its retained view while the replacement
+  // still clears every other pane.
+  test("reuses an existing pane of the requested identity for the new primary", () => {
+    const workspace = workspaceStore.getState();
+    const previousMain = workspace.replacePrimary("session", { ref: "local:session-a" });
+    const existing = workspace.openPane("session", { ref: "local:session-b" }, { slot: "secondary" });
+    workspace.openPane("doc", { ref: "secondary" });
+
+    const replaced = workspace.replacePrimary("session", { ref: "local:session-b" });
+
+    expect(replaced).toBe(existing);
+    expect(replaced).not.toBe(previousMain);
+    expect(workspaceStore.getState().panes).toEqual([
+      { id: existing, type: "session", params: { ref: "local:session-b" }, slot: "main" },
+    ]);
+    expect(workspaceStore.getState().focusedPaneId).toBe(existing);
+  });
+
   // A replacement that always rebuilds the workspace clears useful secondary
   // panes even when the requested primary is already the current identity.
   test("preserves secondary panes when the requested primary identity is already main", () => {
