@@ -169,7 +169,8 @@ this costs build and vet time rather than bytes in the shipped executable.
 **Change:** move it to `agent/sandbox/sandboxcontract`
 alongside the existing `sandboxtest`, or to `contract_test.go` plus a small
 support package for the four cross-package callers. **Risk:** medium (import-path
-updates only). **Delta:** −500 production lines, −9 exported symbols.
+updates only). **Delta:** −500 lines of test-only source out of the
+`agent/sandbox` package, −9 exported symbols.
 
 **F11. `execenv`'s file-tool audit path is never wired.** `agent/execenv/audit.go`
 defines `auditSink`, which only tests ever assign; its comment still claims the
