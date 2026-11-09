@@ -284,8 +284,6 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 				budget := execenv.NewGlobBudget()
 				matches, excluded, err = g.GlobWithBudget(ctx, pat, path, includeIgnored, budget)
 				truncatedAt = budget.TruncatedAt()
-			case execenv.GlobExcluder:
-				matches, excluded, err = g.GlobWithExclusions(ctx, pat, path, includeIgnored)
 			default:
 				matches, err = env.Glob(ctx, pat, path, includeIgnored)
 			}
