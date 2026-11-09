@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -297,6 +298,27 @@ func TestE2E_VoiceReconnectAfterRepeatedInterruptions(t *testing.T) {
 	if err != nil || len(deliveries) != 3 {
 		t.Fatalf("reconnect created duplicate or missing speech: count=%d err=%v", len(deliveries), err)
 	}
+}
+
+// A replaced device socket retires its subscription while the successor's
+// baseline read is on the relay, and the relay reports that cut as a
+// retryable outage. The successor must read again, become ready and speak.
+func TestE2E_VoiceReconnectRetriesRelayOutageBeforeReady(t *testing.T) {
+	f := newVoiceCorrectionStack(t)
+	var cut atomic.Bool
+	voiceStopRecoveryHub(t, f, nil, false, func(ctx context.Context, params appwire.ThreadReadParams) error {
+		if bridge, _ := ctx.Value(voicePresentationContextKey{}).(bool); bridge && params.Subscribe && cut.CompareAndSwap(false, true) {
+			return appwire.RetryableSessionUnavailable("relay connection ended before route publication")
+		}
+		return nil
+	})
+	if !cut.Load() {
+		t.Fatal("the bridge's baseline read never met the relay outage")
+	}
+	f.admit(t, "RELAY-CUT-INPUT-91", false)
+	f.next(t).RespondToolCall("communicate", communicateArgs("RELAY-CUT-OUTPUT-91"))
+	start := voiceJourneyEvent(t, f.device, "speech_start")
+	f.speechRequest(t, f.openSpeaker(t), start, "RELAY-CUT-OUTPUT-91")
 }
 
 func TestVoicePlaybackFenceRejectsUnrepresentableGeneration(t *testing.T) {

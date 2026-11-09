@@ -174,7 +174,7 @@ func (b *voiceBridge) run() {
 	b.reconcileTimer.Stop()
 	defer b.reconcileTimer.Stop()
 	defer b.close()
-	read, err := b.client.ThreadRead(b.ctx, appwire.ThreadReadParams{Ref: b.binding.Ref, IncludeTurns: true, Subscribe: true, ItemLimit: appwire.TranscriptItemPageLimit})
+	read, err := b.readBaseline()
 	if err != nil || !b.validSpeechRead(read) {
 		_ = b.reportError("session_unavailable")
 		return
@@ -432,6 +432,28 @@ func (b *voiceBridge) readControls(controls chan<- voiceControl) {
 		default:
 			// A full input queue invalidates the whole partial utterance.
 			return
+		}
+	}
+}
+
+// readBaseline subscribes the bridge to its bound session. A replaced socket's
+// subscription can retire under this read, and the relay reports that cut as
+// a retryable outage, not a verdict on the session; it is read again within
+// the hub's live-read retry budget before the device is told otherwise.
+func (b *voiceBridge) readBaseline() (appwire.ThreadReadResponse, error) {
+	params := appwire.ThreadReadParams{Ref: b.binding.Ref, IncludeTurns: true, Subscribe: true, ItemLimit: appwire.TranscriptItemPageLimit}
+	deadline := time.Now().Add(liveReadRetryBudget)
+	for {
+		read, err := b.client.ThreadRead(b.ctx, params)
+		if !voiceRelayOutage(err) || !time.Now().Before(deadline) {
+			return read, err
+		}
+		retry := time.NewTimer(liveReadRetryDelay)
+		select {
+		case <-retry.C:
+		case <-b.ctx.Done():
+			retry.Stop()
+			return read, err
 		}
 	}
 }
