@@ -659,8 +659,8 @@ func TestDoctorSessionsToolAppliesDefaultSince(t *testing.T) {
 	bucket := newBucketUnder(t, stateHome)
 	recent := writeDoctorFixtureSession(t, bucket)
 	old := writeDoctorFixtureSession(t, bucket)
-	oldTime := time.Now().Add(-2 * doctorSessionsDefaultSince)
-	if err := os.Chtimes(bucket+"/sessions/"+old+".transcript.jsonl", oldTime, oldTime); err != nil {
+	oldTime := time.Now().Add(-2 * tool.DoctorSessionsDefaultSince)
+	if err := os.Chtimes(schema.SessionTranscriptPath(bucket, old), oldTime, oldTime); err != nil {
 		t.Fatal(err)
 	}
 
@@ -682,7 +682,7 @@ func TestDoctorSessionsToolAppliesDefaultSince(t *testing.T) {
 	if ids := census(map[string]any{}); !ids[recent] || ids[old] {
 		t.Errorf("default census = %v, want recent only", ids)
 	}
-	wide := (3 * doctorSessionsDefaultSince).String()
+	wide := (3 * tool.DoctorSessionsDefaultSince).String()
 	if ids := census(map[string]any{"since": wide}); !ids[recent] || !ids[old] {
 		t.Errorf("explicit wide since census = %v, want both", ids)
 	}

@@ -740,7 +740,7 @@ func safeTokenForRepro(name string) bool {
 // cannot read is recorded in Unreadable, never silently skipped — matching
 // ListSessions' sweep for the --since path, and Locate's own error for an
 // explicit --sessions selector that doesn't resolve.
-func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, error) {
+func RunAudit(ctx context.Context, stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, error) {
 	if len(opts.Sessions) > 0 && opts.Since > 0 {
 		return AuditResult{}, errors.New("--sessions and --since are mutually exclusive")
 	}
@@ -754,7 +754,7 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 	if len(opts.Sessions) > 0 {
 		refs = opts.Sessions
 	} else {
-		sweep, err := ListSessions(context.Background(), stateBase, SessionsOpts{Since: opts.Since})
+		sweep, err := ListSessions(ctx, stateBase, SessionsOpts{Since: opts.Since})
 		if err != nil {
 			return AuditResult{}, err
 		}

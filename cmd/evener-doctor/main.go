@@ -567,7 +567,7 @@ func cmdAudit(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, "state", err)
 	}
-	res, err := doctor.RunAudit(base, runbook, opts)
+	res, err := doctor.RunAudit(context.Background(), base, runbook, opts)
 	if err != nil {
 		return fail(stderr, "audit", err)
 	}

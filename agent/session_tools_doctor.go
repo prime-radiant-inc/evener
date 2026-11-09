@@ -40,11 +40,6 @@ func doctorTools(deps *toolDeps) []tool.RegisteredTool {
 	}
 }
 
-// doctorSessionsDefaultSince bounds a sessions census that names no since.
-// A state root can hold tens of thousands of sessions; an unbounded census
-// from a turn would run for the better part of an hour.
-const doctorSessionsDefaultSince = 7 * 24 * time.Hour
-
 // doctorEvenerCommandNames is the single source for the command enum: the
 // definition's schema and this dispatcher both derive from it, so the tool
 // surface and dispatch cannot drift.
@@ -220,7 +215,7 @@ func dispatchDoctorEvener(ctx context.Context, deps *toolDeps, args map[string]a
 		return doctor.ScanTurnIDs(stateBase)
 
 	case "sessions":
-		opts := doctor.SessionsOpts{Since: doctorSessionsDefaultSince}
+		opts := doctor.SessionsOpts{Since: tool.DoctorSessionsDefaultSince}
 		if v := stringArg(args, "since"); v != "" {
 			d, err := time.ParseDuration(v)
 			if err != nil {
@@ -260,7 +255,7 @@ func dispatchDoctorEvener(ctx context.Context, deps *toolDeps, args map[string]a
 			}
 			opts.Since = d
 		}
-		res, err := doctor.RunAudit(stateBase, runbook, opts)
+		res, err := doctor.RunAudit(ctx, stateBase, runbook, opts)
 		return res, err
 
 	case "plugins":

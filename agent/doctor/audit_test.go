@@ -377,7 +377,7 @@ func auditFixture(t *testing.T) (base, tripSID, healthySID string) {
 // failing the test on any audit error.
 func runFixtureAudit(t *testing.T, base string, opts AuditOpts) AuditResult {
 	t.Helper()
-	res, err := RunAudit(base, mustParseFixtureRunbook(t), opts)
+	res, err := RunAudit(context.Background(), base, mustParseFixtureRunbook(t), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -600,7 +600,7 @@ func TestRunAudit_APIHealthMetricsAreAddressable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := RunAudit(base, rb, AuditOpts{Sessions: []string{sidA}})
+	res, err := RunAudit(context.Background(), base, rb, AuditOpts{Sessions: []string{sidA}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -655,7 +655,7 @@ func TestRunAudit_SinceSurfacesSweepUnreadable(t *testing.T) {
 
 func TestRunAudit_RequiresSessionsOrSince(t *testing.T) {
 	rb := mustParseFixtureRunbook(t)
-	if _, err := RunAudit(t.TempDir(), rb, AuditOpts{}); err == nil {
+	if _, err := RunAudit(context.Background(), t.TempDir(), rb, AuditOpts{}); err == nil {
 		t.Fatal("want error when neither --sessions nor --since is given")
 	}
 }
@@ -734,7 +734,7 @@ func TestRunAudit_LegacyBucketEvidenceNamesSessions(t *testing.T) {
 		// The reproduction line must actually re-run: feeding the evidence
 		// refs back as --sessions audits both sessions again, with no
 		// blank-identity unreadable rows.
-		res2, err := RunAudit(base, rb, AuditOpts{Sessions: f.Evidence.SessionRefs})
+		res2, err := RunAudit(context.Background(), base, rb, AuditOpts{Sessions: f.Evidence.SessionRefs})
 		if err != nil {
 			t.Fatalf("re-running %q DoctorCommand refs: %v", f.Title, err)
 		}
@@ -815,7 +815,7 @@ func TestRunAudit_DuplicateSIDAcrossBucketsAuditsBoth(t *testing.T) {
 	}
 	// The reproduction line must re-run: feeding the evidence refs back as
 	// --sessions audits both again, with no unreadable rows.
-	res2, err := RunAudit(base, rb, AuditOpts{Sessions: runTimeout.Evidence.SessionRefs})
+	res2, err := RunAudit(context.Background(), base, rb, AuditOpts{Sessions: runTimeout.Evidence.SessionRefs})
 	if err != nil {
 		t.Fatalf("re-running evidence refs: %v", err)
 	}
@@ -877,7 +877,7 @@ func TestRunAudit_DoctorCommandCommaSafeForUnsafeBucketNames(t *testing.T) {
 			writeAuditSession(t, bucket, sidA, fourIdenticalFailingShellTurns(), fiveRunTimeoutJobsFor(sidA))
 
 			rb := mustParseFixtureRunbook(t)
-			res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+			res, err := RunAudit(context.Background(), base, rb, AuditOpts{Since: 24 * time.Hour})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1022,7 +1022,7 @@ func TestRunAudit_HexNamedLegacyBucketsAuditedWithProjRefs(t *testing.T) {
 		t.Fatalf("DoctorCommand %q missing prefix %q", dc, prefix)
 	}
 	reproRefs := strings.Split(sessionsValue, ",")
-	res2, err := RunAudit(base, rb, AuditOpts{Sessions: reproRefs})
+	res2, err := RunAudit(context.Background(), base, rb, AuditOpts{Sessions: reproRefs})
 	if err != nil {
 		t.Fatalf("re-running evidence refs: %v", err)
 	}
@@ -1098,7 +1098,7 @@ func TestRunAudit_ExplicitUnsafeSelectorEmitsSafeEvidence(t *testing.T) {
 
 			rb := mustParseFixtureRunbook(t)
 			sel := "proj:" + bucketName + ":" + sidA
-			res, err := RunAudit(base, rb, AuditOpts{Sessions: []string{sel}})
+			res, err := RunAudit(context.Background(), base, rb, AuditOpts{Sessions: []string{sel}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1390,7 +1390,7 @@ func TestRunAudit_DoctorCommandCappedAtEvidenceSessionRefCap(t *testing.T) {
 
 func TestRunAudit_SessionsAndSinceMutuallyExclusive(t *testing.T) {
 	rb := mustParseFixtureRunbook(t)
-	if _, err := RunAudit(t.TempDir(), rb, AuditOpts{Sessions: []string{"x"}, Since: time.Hour}); err == nil {
+	if _, err := RunAudit(context.Background(), t.TempDir(), rb, AuditOpts{Sessions: []string{"x"}, Since: time.Hour}); err == nil {
 		t.Fatal("want error when both --sessions and --since are given")
 	}
 }
@@ -1606,7 +1606,7 @@ func TestRunAudit_R10F1_CmdExeMetacharactersRejectedFromDoctorCommand(t *testing
 			writeAuditSession(t, bucket, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
 
 			rb := mustParseFixtureRunbook(t)
-			res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+			res, err := RunAudit(context.Background(), base, rb, AuditOpts{Since: 24 * time.Hour})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -2006,7 +2006,7 @@ func TestRunAudit_R13F4_OmissionWordingMatchesNonReproDesc(t *testing.T) {
 	writeAuditSession(t, nonReproBucketB, nonReproSid, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(nonReproSid))
 
 	rb := mustParseFixtureRunbook(t)
-	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	res, err := RunAudit(context.Background(), base, rb, AuditOpts{Since: 24 * time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
