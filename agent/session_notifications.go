@@ -110,6 +110,17 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 		s.emit(events.SteeringInjectedData{Text: reminder, Kind: events.SteeringKindNotification})
 	}
 
+	s.settleDeliveredJobNotifications(ctx, jobNotifs)
+
+	// Drain any pending steering messages before the first LLM call (spec 2.5).
+	s.injectDrainedSteering()
+	return true
+}
+
+// settleDeliveredJobNotifications records jobNotifs delivered once their
+// reminder is durable in the transcript, requeueing any whose delivery record
+// failed, and settles the caller-targeted watch sends among them.
+func (s *Session) settleDeliveredJobNotifications(ctx context.Context, jobNotifs []deliverableJobNotification) {
 	deliveredFailures := s.markJobNotificationsDelivered(jobNotifs)
 	s.requeueJobNotifications(deliveredFailures)
 	if len(deliveredFailures) == 0 {
@@ -125,10 +136,30 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 		}
 		s.settleDeliveredWatchNotification(ctx, d)
 	}
+}
 
-	// Drain any pending steering messages before the first LLM call (spec 2.5).
-	s.injectDrainedSteering()
-	return true
+// injectLaterJobNotifications delivers notifications that arrived while a
+// notification turn was running, at the round boundary, so the turn's next
+// model request carries them instead of waiting for the turn to end. Each is
+// consumed here exactly once; a failed transcript write puts them back for the
+// next wake.
+func (s *Session) injectLaterJobNotifications(ctx context.Context) {
+	jobNotifs, retryJobNotifs, injectedJobNotifs := s.filterDeliverableJobNotifications(s.drainJobNotifications())
+	s.requeueJobNotifications(retryJobNotifs)
+	s.requeueJobNotifications(s.markJobNotificationsDelivered(injectedJobNotifs))
+	if len(jobNotifs) == 0 {
+		return
+	}
+	reminder := s.formatJobNotificationReminder(jobNotifs)
+	if err := s.appendSteeringTurnDurablyForOwner(reminder, events.SteeringKindNotification, s.activeTurnOwner()); err != nil {
+		s.requeueJobNotifications(jobNotifications(jobNotifs))
+		return
+	}
+	for _, n := range jobNotifs {
+		s.unionActiveProvenance(n.notification.Provenance)
+	}
+	s.emit(events.SteeringInjectedData{Text: reminder, Kind: events.SteeringKindNotification})
+	s.settleDeliveredJobNotifications(ctx, jobNotifs)
 }
 
 func (s *Session) settleDeliveredWatchNotification(ctx context.Context, d deliverableJobNotification) {

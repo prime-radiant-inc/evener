@@ -234,7 +234,9 @@ human or parent steering, and other known steering kinds cannot acknowledge a
 completion. Runtime frame headers establish job identity and event type;
 output excerpts and watch frames cannot settle completion delivery. This
 authority boundary applies to every client; S10 preserves the original
-conversation content. See [job control](../job-control.md).
+conversation content. A completion arriving during a notification turn joins
+that turn's next model request rather than waiting for the turn to end. See
+[job control](../job-control.md).
 
 S12 refuses wait-shaped actions at the tool boundary: a repeat `job_status` on
 an unchanged running target and a sleep-only `shell` command return a

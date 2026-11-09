@@ -47,6 +47,12 @@ another job or change the event type. Watch and watch-send frames do not
 acknowledge shell completion. If delivery marking must retry after the runtime
 completion entry was recorded, that retry does not inject it again.
 
+A completion that finishes while a notification turn is already running reaches
+the model at that turn's next round boundary: the next model request carries it,
+and the turn does not hold it until the turn ends. An ordinary turn instead
+yields at the boundary so the drain runs a notification turn. Each completion is
+delivered and recorded once.
+
 ```mermaid
 flowchart LR
   Start[Launch managed work] --> ID[Retain typed identity]

@@ -400,6 +400,123 @@ func TestNotificationPendingAfterToolRunsBeforeAnotherNormalRound(t *testing.T) 
 	requireNotificationState(t, sess.jobManager, jobID, jobstore.NotifyDelivered)
 }
 
+// notificationDeliveredCount counts the jobs.jsonl delivered events for jobID.
+func notificationDeliveredCount(t *testing.T, jm *jobManager, jobID string) int {
+	t.Helper()
+	events, err := jm.store.LoadEvents()
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	n := 0
+	for _, ev := range events {
+		if ev.Kind == jobstore.EventJobNotificationDelivered && ev.JobID == jobID {
+			n++
+		}
+	}
+	return n
+}
+
+// TestNotificationTurnDeliversLaterCompletionBeforeTurnEnds pins that a
+// notification turn does not hold back a job that finishes while it runs: the
+// next model request after the arrival carries it, inside the same turn, and
+// every notification is delivered and recorded exactly once.
+func TestNotificationTurnDeliversLaterCompletionBeforeTurnEnds(t *testing.T) {
+	t.Parallel()
+	const jobA, jobB = "job_opens_turn", "job_finishes_during_turn"
+	call := func(id, name string) llm.ToolCallData {
+		return llm.ToolCallData{ID: id, Name: name, Arguments: []byte(`{}`), Type: "function"}
+	}
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response { return agenttest.ToolCallResponse(call("c1", "idle_test_tool")) },
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(call("c2", "enqueue_test_notification"))
+			},
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("handled both") },
+		},
+	}
+	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{}))
+	sess.RegisterTool("idle_test_tool", "test-only: a round that changes nothing",
+		map[string]any{"type": "object", "properties": map[string]any{}},
+		func(context.Context, any) (any, error) { return "ok", nil })
+	sess.RegisterTool("enqueue_test_notification", "test-only: finish a managed job during this round",
+		map[string]any{"type": "object", "properties": map[string]any{}},
+		func(context.Context, any) (any, error) {
+			enqueueCompletedJobNotification(t, sess, jobB)
+			return "queued", nil
+		})
+	enqueueCompletedJobNotification(t, sess, jobA)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	defer cancel()
+	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
+	}
+
+	requests := adapter.Requests()
+	if len(requests) != 3 {
+		t.Fatalf("model requests = %d, want 3 (all in the one notification turn)", len(requests))
+	}
+	bBlock := []string{"<job-notification", fmt.Sprintf(`job_id=%q`, jobB)}
+	if requestsContain(requests[:2], bBlock...) {
+		t.Fatal("job B reached the model before it finished")
+	}
+	if !requestsContain(requests[2:], bBlock...) {
+		t.Fatal("the request after job B finished did not carry its notification")
+	}
+	for _, id := range []string{jobA, jobB} {
+		requireNotificationState(t, sess.jobManager, id, jobstore.NotifyDelivered)
+		if n := notificationDeliveredCount(t, sess.jobManager, id); n != 1 {
+			t.Errorf("job %s recorded delivered %d times, want 1", id, n)
+		}
+		if n := countHistoryNeedle(sess, fmt.Sprintf(`job_id=%q`, id)); n != 1 {
+			t.Errorf("job %s appears in the transcript %d times, want 1", id, n)
+		}
+	}
+	if sess.peekNotifications() != 0 {
+		t.Error("notifications still pending after the turn")
+	}
+}
+
+// TestNotificationTurnWithoutLaterArrivalsRunsItsOwnBatchOnly pins that a
+// notification turn with nothing arriving mid-turn delivers its own batch once
+// and ends on the model's final answer.
+func TestNotificationTurnWithoutLaterArrivalsRunsItsOwnBatchOnly(t *testing.T) {
+	t.Parallel()
+	const jobA = "job_only_notification"
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "c1", Name: "idle_test_tool", Arguments: []byte(`{}`), Type: "function"})
+			},
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("done") },
+		},
+	}
+	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{}))
+	sess.RegisterTool("idle_test_tool", "test-only: a round that changes nothing",
+		map[string]any{"type": "object", "properties": map[string]any{}},
+		func(context.Context, any) (any, error) { return "ok", nil })
+	enqueueCompletedJobNotification(t, sess, jobA)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	defer cancel()
+	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
+	}
+	if n := len(adapter.Requests()); n != 2 {
+		t.Fatalf("model requests = %d, want 2", n)
+	}
+	requireNotificationState(t, sess.jobManager, jobA, jobstore.NotifyDelivered)
+	if n := notificationDeliveredCount(t, sess.jobManager, jobA); n != 1 {
+		t.Errorf("recorded delivered %d times, want 1", n)
+	}
+	if n := countHistoryNeedle(sess, fmt.Sprintf(`job_id=%q`, jobA)); n != 1 {
+		t.Errorf("job appears in the transcript %d times, want 1", n)
+	}
+}
+
 // TestAcceptNotificationInput_PersistsNotificationKind verifies the durable
 // notification reminder turn carries SteeringKind on schema.Turn, not only on
 // the live SteeringInjectedData event, so a reload labels it the same way the

@@ -1730,13 +1730,16 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			s.finishProcessingAtFailureBoundary(ctx)
 			return "", progressed, nil
 		}
-		// A managed job can finish while this tool batch is running. Yield before
-		// another ordinary model round so the outer drain delivers that completion
-		// as an EntryNotification turn. Notification turns already own their current
-		// batch and leave any later arrivals for the next wake.
-		if kind != EntryNotification && s.peekNotifications() > 0 {
-			s.finishProcessingAtFailureBoundary(ctx)
-			return "", progressed, nil
+		// A managed job can finish while this tool batch is running. An ordinary
+		// turn yields before another model round so the outer drain delivers that
+		// completion as an EntryNotification turn. A notification turn is that
+		// delivery already, so it folds the arrival into its next model request.
+		if s.peekNotifications() > 0 {
+			if kind != EntryNotification {
+				s.finishProcessingAtFailureBoundary(ctx)
+				return "", progressed, nil
+			}
+			s.injectLaterJobNotifications(ctx)
 		}
 	}
 
