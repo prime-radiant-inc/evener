@@ -105,10 +105,7 @@ func TestMain(m *testing.M) {
 	// Production code spawns git with the process environment, so the isolation
 	// has to be the process's: a fixture-only setting would leave the code under
 	// test reading host config and starting detached maintenance.
-	gitConfigDir, err := os.MkdirTemp("", "evener-agent-gitconfig-*")
-	if err == nil {
-		err = gittest.IsolateProcess(gitConfigDir)
-	}
+	removeGitConfig, err := gittest.IsolateProcess()
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "agent TestMain: %v\n", err)
 		os.Exit(2)
@@ -137,7 +134,7 @@ func TestMain(m *testing.M) {
 	if testHome != "" {
 		_ = os.RemoveAll(testHome)
 	}
-	_ = os.RemoveAll(gitConfigDir)
+	removeGitConfig()
 	if sharedWorkspace != "" {
 		_ = os.Chmod(sharedWorkspace, 0o755)
 		_ = os.RemoveAll(sharedWorkspace)

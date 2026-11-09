@@ -19,31 +19,43 @@ var quiescentSettings = []struct{ section, name, value string }{
 }
 
 // IsolateProcess makes every git this process and its children spawn, the
-// harness's and the code under test's alike, read one global config file in
-// dir holding the quiescent settings and no system config. It removes the
-// ambient config-injection and init-template variables Env strips, so the
-// host's git configuration cannot reach a test repository. Call it from
-// TestMain before m.Run; dir must outlive the run.
-func IsolateProcess(dir string) error {
+// harness's and the code under test's alike, read one global config file
+// holding the quiescent settings and no system config. It removes the ambient
+// config-injection and init-template variables Env strips, so the host's git
+// configuration cannot reach a test repository. Call it from TestMain before
+// m.Run, and call remove, which deletes the config file, after it.
+func IsolateProcess() (remove func(), err error) {
+	dir, err := os.MkdirTemp("", "gittest-config-*")
+	if err != nil {
+		return nil, err
+	}
+	remove = func() { _ = os.RemoveAll(dir) }
+	defer func() {
+		if err != nil {
+			remove()
+			remove = nil
+		}
+	}()
+
 	var config strings.Builder
 	for _, setting := range quiescentSettings {
 		fmt.Fprintf(&config, "[%s]\n\t%s = %s\n", setting.section, setting.name, setting.value)
 	}
 	path := filepath.Join(dir, "gitconfig")
 	if err := os.WriteFile(path, []byte(config.String()), 0o644); err != nil {
-		return err
+		return nil, err
 	}
 	for _, entry := range os.Environ() {
 		if key, _, _ := strings.Cut(entry, "="); isConfigEnvironment(key) {
 			if err := os.Unsetenv(key); err != nil {
-				return err
+				return nil, err
 			}
 		}
 	}
 	if err := os.Setenv("GIT_CONFIG_GLOBAL", path); err != nil {
-		return err
+		return nil, err
 	}
-	return os.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	return remove, os.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 }
 
 // quiescentEnvironment injects the quiescent settings through git's
@@ -60,7 +72,8 @@ func quiescentEnvironment() []string {
 }
 
 // RequireIsolated fails t unless git run through run in the repository at dir
-// sees the quiescent settings and no system-scope config. A package passes the
+// sees the quiescent settings, no system-scope config and no global config
+// beyond them. A package passes the
 // runner its code under test spawns git through, so the check covers the
 // environment that code really builds.
 func RequireIsolated(t testing.TB, run Runner, dir string) {
@@ -80,9 +93,17 @@ func RequireIsolated(t testing.TB, run Runner, dir string) {
 	if err != nil {
 		t.Fatalf("git config --list --show-scope: %v", err)
 	}
+	quiescent := make(map[string]bool, len(quiescentSettings))
+	for _, setting := range quiescentSettings {
+		quiescent[setting.section+"."+setting.name+"="+setting.value] = true
+	}
 	for line := range strings.Lines(listing) {
-		if scope, _, _ := strings.Cut(line, "\t"); scope == "system" {
-			t.Errorf("git read system-scope config: %q", strings.TrimSpace(line))
+		scope, entry, _ := strings.Cut(strings.TrimSpace(line), "\t")
+		switch {
+		case scope == "system":
+			t.Errorf("git read system-scope config: %q", entry)
+		case scope == "global" && !quiescent[entry]:
+			t.Errorf("git read host global config: %q", entry)
 		}
 	}
 }

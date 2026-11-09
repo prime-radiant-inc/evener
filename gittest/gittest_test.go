@@ -193,9 +193,11 @@ func TestIsolateProcessReachesGitThatInheritsTheEnvironment(t *testing.T) {
 	t.Setenv("GIT_CONFIG_KEY_0", "gc.auto")
 	t.Setenv("GIT_CONFIG_VALUE_0", "1")
 
-	if err := IsolateProcess(t.TempDir()); err != nil {
+	remove, err := IsolateProcess()
+	if err != nil {
 		t.Fatalf("IsolateProcess: %v", err)
 	}
+	t.Cleanup(remove)
 	dir := t.TempDir()
 	Run(t, dir, "init", "-q")
 	RequireIsolated(t, func(dir string, args ...string) (string, error) {

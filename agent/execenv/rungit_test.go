@@ -3,8 +3,11 @@ package execenv
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os/exec"
 	"testing"
+
+	"primeradiant.com/evener/gittest"
 )
 
 // TestRunGitUsesArgvExecutorDirectly proves RunGit prefers the ArgvExecutor
@@ -251,4 +254,21 @@ func (e *shellOnlyEnv) ExecCommand(_ context.Context, command string, timeoutMS 
 	e.gotTimeoutMS = timeoutMS
 	e.gotWorkingDir = workingDir
 	return e.result, nil
+}
+
+// TestRunGitRunsUnderTheTestProcessGitConfig pins TestMain's git isolation at
+// RunGit on the local environment, which spawns git with the process
+// environment: TestMain's gittest.IsolateProcess must reach it.
+func TestRunGitRunsUnderTheTestProcessGitConfig(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	gittest.Run(t, dir, "init", "-q")
+	env := NewLocalExecutionEnvironment(dir)
+	gittest.RequireIsolated(t, func(dir string, args ...string) (string, error) {
+		res, err := RunGit(t.Context(), env, dir, 0, args...)
+		if err == nil && res.ExitCode != 0 {
+			err = fmt.Errorf("git %v: exit %d", args, res.ExitCode)
+		}
+		return res.Stdout, err
+	}, dir)
 }
