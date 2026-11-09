@@ -1817,6 +1817,12 @@ Rules:
   `job:<job_id>` use the same shell ID. Stable delegate status, watch, stop, and
   `delegate_send` use `delegate_id`; its conversation uses `transcript_ref`.
 - Shell jobs created by subagents are visible to the parent through forwarded durable job events.
+- Restoring a child re-forwards every terminal record it owns, so a forward
+  interrupted before the parent appended it is repaired. Forwarding is
+  idempotent: the parent journal keeps one `job_started` per job and one
+  `job_finished` or `job_notification_pending` per `(job_id, terminal_generation)`,
+  however many times the child restores. The forwarded `job_started` carries
+  the original `background` and `working_dir`.
 - Dedupe rule: the shell owner's durable record is authoritative over a
   forwarded copy. Stable delegates have no forwarded job copy; the controller
   fold is their sole lifecycle authority.
