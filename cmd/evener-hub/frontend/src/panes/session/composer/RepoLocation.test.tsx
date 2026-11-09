@@ -70,6 +70,12 @@ test("names the repository as owner/repo#branch and links it to the forge page",
   renderLocation("/home/jesse/repo", client);
 
   expect((await screen.findByTestId("composer-repo-path")).textContent).toBe("/home/jesse/repo");
+  // The location line links the branch to its forge repo page, so its lookup
+  // is the one form that asks the hub for the origin remote.
+  expect(client.calls.find((call) => call.method === "evener/git/head")?.params).toEqual({
+    cwd: "/home/jesse/repo",
+    includeOrigin: true,
+  });
   const link = await screen.findByTestId("composer-repo-link");
   expect(link.getAttribute("href")).toBe("https://github.com/owner/repo");
   expect(link.getAttribute("target")).toBe("_blank");

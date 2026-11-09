@@ -4,7 +4,7 @@
 //   - the Spawn pane's branch chip, which needs only the branch
 //     (resolveHeadBranch), and
 //   - the session location line, which also links the branch to its
-//     forge repo page and so needs the "origin" remote (resolveGitLocation),
+//     forge repo page and so needs the "origin" remote (useGitLocation),
 //   - the About tab's branch row (useHeadBranch), which like the Spawn chip
 //     renders only the branch and so does not ask for the origin.
 //
@@ -61,14 +61,6 @@ export async function resolveHeadBranch(
   return (await requestGitHead(client, cwd, false, host)).branch;
 }
 
-export async function resolveGitLocation(client: AppwireClientLike, cwd: string): Promise<GitLocation> {
-  // The session location line reads a SESSION's directory, and the
-  // session surfaces are not host-scoped yet, so this keeps the controller's
-  // own call (a tracked follow-up, not a regression: the session surface has no
-  // remote host to pass).
-  return requestGitHead(client, cwd, true, "local");
-}
-
 // The hook forms serve the components that show a directory's git location
 // while mounted: the session location line (useGitLocation) and the About
 // tab's branch row (useHeadBranch). A mounted component's lookup must
@@ -80,6 +72,9 @@ export async function resolveGitLocation(client: AppwireClientLike, cwd: string)
 // `enabled` false asks the hub nothing: the caller gates locality (a
 // source-backed session's cwd belongs to another host) and any wire-supplied
 // value that wins over a view-time lookup.
+// Session surfaces are not host-scoped yet, so both forms keep the
+// controller's own call (a tracked follow-up, not a regression: the session
+// surface has no remote host to pass).
 
 // The last answer, tagged with the client that answered and the cwd it
 // belongs to: a response for a cwd the caller has since left, or one the
@@ -116,12 +111,12 @@ function useGitHead(client: AppwireClientLike, cwd: string, includeOrigin: boole
   return enabled && resolved !== null && resolved.client === client && resolved.cwd === cwd ? resolved.location : EMPTY;
 }
 
-/** The mounted, fail-soft, retry-on-recovery form of resolveHeadBranch. */
+/** The mounted, fail-soft, retry-on-recovery branch-only lookup. */
 export function useHeadBranch(client: AppwireClientLike, cwd: string, enabled: boolean = true): string {
   return useGitHead(client, cwd, false, enabled).branch;
 }
 
-/** The mounted, fail-soft, retry-on-recovery form of resolveGitLocation. */
+/** The mounted, fail-soft, retry-on-recovery branch-plus-origin lookup. */
 export function useGitLocation(client: AppwireClientLike, cwd: string, enabled: boolean = true): GitLocation {
   return useGitHead(client, cwd, true, enabled);
 }
