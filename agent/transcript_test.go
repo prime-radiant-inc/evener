@@ -1099,12 +1099,7 @@ func TestSession_TranscriptClosedOnSessionClose(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		StateDir: stateDir,
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(stateDir))
 
 	if sess.transcript == nil {
 		t.Fatal("expected non-nil transcript")
@@ -1114,7 +1109,7 @@ func TestSession_TranscriptClosedOnSessionClose(t *testing.T) {
 
 	// After Close, the transcript file should be readable (properly flushed).
 	tpath := schema.SessionTranscriptPath(stateDir, sess.ID())
-	_, _, _, err = readTranscript(context.Background(), tpath, "")
+	_, _, _, err := readTranscript(context.Background(), tpath, "")
 	if err != nil {
 		t.Fatalf("transcript not readable after Close: %v", err)
 	}

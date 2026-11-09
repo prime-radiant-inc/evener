@@ -524,17 +524,12 @@ func TestSession_EmptyResponseExhaustedFlushesMeta(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		StateDir: dir,
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
 	drainSessionEvents(sess)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "hi", nil)
+	_, err := sess.ProcessInput(ctx, "hi", nil)
 	if err == nil || !errors.Is(err, errEmptyResponseExhausted) {
 		t.Fatalf("expected emptyResponseExhaustedError, got %v", err)
 	}
@@ -571,17 +566,12 @@ func TestSession_BareTextWithoutResultToolFlushesMeta(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		StateDir: dir,
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
 	drainSessionEvents(sess)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "hi", nil)
+	_, err := sess.ProcessInput(ctx, "hi", nil)
 	if err == nil || !errors.Is(err, errBareTextWithoutResultTool) {
 		t.Fatalf("expected bareTextWithoutResultToolError, got %v", err)
 	}
@@ -940,15 +930,12 @@ func TestSession_WebSearch_FlagNotSetWhenBaseURLDiverges(t *testing.T) {
 		t.Fatalf("pre-condition: gw's resolved Caps.WebSearch must be an explicit false, not nil (nil is fail-open at the adapter layer): %v", ws)
 	}
 
-	sess, err := NewSession(c, withTestSessionNamer(c, profile), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(withTestSessionNamer(c, profile)), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "hello", nil)
+	_, err := sess.ProcessInput(ctx, "hello", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -1278,10 +1265,7 @@ func TestSession_RecordInputTokens_SkipsWebSearchResponse(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, withTestSessionNamer(c, newAnthropicProfile("claude-opus-4-6")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(newAnthropicProfile("claude-opus-4-6")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	ctx := context.Background()
@@ -2042,10 +2026,7 @@ func TestSession_AssistantTextStart_IncludesModel(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model-42")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model-42")), withDir(dir), withConfig(SessionConfig{}))
 
 	var evs []events.SessionEvent
 	done := make(chan struct{})
@@ -2234,10 +2215,7 @@ func TestAssistantTextEnd_EnrichedData(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
 	// Collect events.
 	var evs []events.SessionEvent
@@ -2252,7 +2230,7 @@ func TestAssistantTextEnd_EnrichedData(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 
-	_, err = sess.ProcessInput(ctx, "test", nil)
+	_, err := sess.ProcessInput(ctx, "test", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}

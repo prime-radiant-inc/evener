@@ -299,10 +299,7 @@ func TestJobManagerNotificationCallbackWakesSession(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{StateDir: dir})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(c), withDir(t.TempDir()), withConfig(SessionConfig{}), withStateDir(dir))
 	defer sess.Close()
 
 	var wakes int
@@ -322,10 +319,7 @@ func TestJobManagerNotificationCallbackRegistrationRace(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{StateDir: dir})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(c), withDir(t.TempDir()), withConfig(SessionConfig{}), withStateDir(dir))
 	defer sess.Close()
 
 	done := make(chan struct{})
@@ -360,10 +354,7 @@ func TestSessionCloseClosesJobStore(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{StateDir: dir})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(c), withDir(t.TempDir()), withConfig(SessionConfig{}), withStateDir(dir))
 	store := sess.jobManager.store
 
 	sess.Close()

@@ -188,10 +188,7 @@ func TestSession_SessionEnd_EmittedExactlyOnce(t *testing.T) {
 	}}
 	c.Register(f)
 	dir := t.TempDir()
-	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model")), withDir(dir), withConfig(SessionConfig{}))
 	eventsPtr, mu, doneCh := collectEvents(sess)
 
 	ctx := tripwireCtx(t)
@@ -220,10 +217,7 @@ func TestSession_CloseForShutdownAfterCompletedTurnEmitsOneClosedBoundary(t *tes
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 	}})
-	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model")), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	eventsPtr, mu, doneCh := collectEvents(sess)
 	if _, err := sess.ProcessInput(context.Background(), "hello", nil); err != nil {
 		t.Fatal(err)
@@ -411,10 +405,7 @@ func TestSession_InterruptedTurnStillEmitsExactlyOneSessionEnd(t *testing.T) {
 	c := llm.NewClient()
 	blocked := make(chan struct{})
 	c.Register(&blockingAdapter{name: "openai", blocked: blocked})
-	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model")), withDir(dir), withConfig(SessionConfig{}))
 	eventsPtr, mu, doneCh := collectEvents(sess)
 
 	// Per-turn cancel modeled on cmd/evener/serve.go: outer ctx stays alive,
@@ -482,10 +473,7 @@ func TestSession_CloseForShutdownAfterInterruptedTurnEmitsClosedBoundary(t *test
 	c := llm.NewClient()
 	blocked := make(chan struct{})
 	c.Register(&blockingAdapter{name: "openai", blocked: blocked})
-	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model")), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	eventsPtr, mu, doneCh := collectEvents(sess)
 	turnCtx, cancelTurn := context.WithCancel(t.Context())
 	t.Cleanup(func() {
@@ -536,10 +524,7 @@ func TestSession_Close_CancelsInFlightLLMCall(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&blockingAdapter{name: "openai", blocked: blocked})
 	dir := t.TempDir()
-	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model")), withDir(dir), withConfig(SessionConfig{}))
 
 	done := make(chan error, 1)
 	go func() {
@@ -568,10 +553,7 @@ func TestSession_CloseCannotBeReopenedByLateTurnCompletion(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&closeRaceAdapter{name: "openai", blocked: blocked, release: release})
 	dir := t.TempDir()
-	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model")), withDir(dir), withConfig(SessionConfig{}))
 	drainSessionEvents(sess)
 
 	processDone := make(chan error, 1)
@@ -612,10 +594,7 @@ func TestSession_ExecToolRefusesClosedSession(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model")), withDir(dir), withConfig(SessionConfig{}))
 	drainSessionEvents(sess)
 
 	ran := false
@@ -649,10 +628,7 @@ func TestSession_ExecToolEmitsEndWhenCloseBeginsAfterStart(t *testing.T) {
 	}
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("test-model"), env, SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model")), withEnv(env), withConfig(SessionConfig{}))
 
 	toolStarted := make(chan struct{})
 	releaseTool := make(chan struct{})
@@ -763,10 +739,7 @@ func TestSession_AppendCanceledToolResultsPreservesCompletedStatus(t *testing.T)
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 	drainSessionEvents(sess)
 
@@ -806,10 +779,7 @@ func TestSession_AppendToolResultsSynthesizesCanceledResultsOnCancel(t *testing.
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 	drainSessionEvents(sess)
 
@@ -863,10 +833,7 @@ func TestSession_CloseCancelsInFlightWithoutInterruptMarker(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&blockingAdapter{name: "openai", blocked: blocked})
 	dir := t.TempDir()
-	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model")), withDir(dir), withConfig(SessionConfig{}))
 
 	eventsDone := make(chan []events.SessionEvent, 1)
 	go func() {
@@ -965,10 +932,7 @@ func TestSession_GracefulShutdown_CorrectOrdering(t *testing.T) {
 		checkpointAck:        make(chan struct{}),
 	}
 
-	sess, err := NewSession(c, NewOpenAIProfile("test-model"), trackEnv, SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model")), withEnv(trackEnv), withConfig(SessionConfig{}))
 
 	// The event consumer records when SESSION_END is received and when the
 	// channel closes. It uses a two-phase loop so it can participate in the
@@ -1182,10 +1146,7 @@ func TestSession_Meta_PopulatesOriginalPrompt(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	ctx := tripwireCtx(t)
@@ -1206,10 +1167,7 @@ func TestSession_Meta_OriginalPrompt_EmptyForFreshSession(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	meta := sess.Meta()
@@ -1230,10 +1188,7 @@ func TestSession_ProcessInput_WithImage_BuildsMultiPartUserMessage(t *testing.T)
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	imgBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
@@ -1302,10 +1257,7 @@ func TestSession_ProcessInput_ImageOnly_OmitsEmptyTextPart(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	imgs := []ImageAttachment{
@@ -1410,10 +1362,7 @@ func TestSession_QueueMutationWaitsForQueuePublicationSlot(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	sess.queueEventsMu.Lock()
@@ -1465,10 +1414,7 @@ func TestSession_DrainAsSteer_JoinsWithDoubleNewline(t *testing.T) {
 		},
 	}
 	c.Register(f)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	if err := sess.Enqueue(context.Background(), "alpha"); err != nil {
@@ -1513,16 +1459,13 @@ func TestSession_DrainAsSteer_RejectsIdleWithoutMutatingQueue(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	if err := sess.Enqueue(context.Background(), "alpha"); err != nil {
 		t.Fatalf("Enqueue alpha: %v", err)
 	}
-	err = sess.DrainAsSteerWithInput(context.Background(), "bravo", nil)
+	err := sess.DrainAsSteerWithInput(context.Background(), "bravo", nil)
 	if err == nil || !strings.Contains(err.Error(), "no active turn") {
 		t.Fatalf("DrainAsSteerWithInput idle err=%v, want no active turn", err)
 	}
@@ -1552,10 +1495,7 @@ func TestSession_Enqueue_OnEmptyText_ReturnsError(t *testing.T) {
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai"}
 	c.Register(f)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 	if err := sess.Enqueue(context.Background(), "   "); err == nil {
 		t.Fatalf("Enqueue blank text: want error, got nil")
@@ -1572,10 +1512,7 @@ func TestSession_DrainAsSteer_Empty_ReturnsError(t *testing.T) {
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai"}
 	c.Register(f)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 	sess.mu.Lock()
 	sess.state = SessionProcessing
@@ -1592,10 +1529,7 @@ func TestSession_QueuePreview_ReturnsCopy(t *testing.T) {
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai"}
 	c.Register(f)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 	_ = sess.Enqueue(context.Background(), "first")
 	_ = sess.Enqueue(context.Background(), "second")
@@ -1622,10 +1556,7 @@ func TestSession_QueuePreview_FirstLineTruncated_FIFO(t *testing.T) {
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai"}
 	c.Register(f)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 	// Single-line, multi-line with LF, and CRLF terminator. The CRLF case
 	// catches an easy bug where we forget to trim the trailing CR after
@@ -1688,10 +1619,7 @@ func TestSession_DoubleCloseCannotRecoverATerminalBoundary(t *testing.T) {
 			c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 				func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 			}})
-			sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-			if err != nil {
-				t.Fatal(err)
-			}
+			sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model")), withDir(t.TempDir()), withConfig(SessionConfig{}))
 			eventsPtr, mu, doneCh := collectEvents(sess)
 			if tc.runTurn {
 				if _, err := sess.ProcessInput(context.Background(), "hello", nil); err != nil {
@@ -1740,10 +1668,7 @@ func TestSession_TerminalBoundaryReachesNoJobWatch(t *testing.T) {
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 	}})
-	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model")), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	jm := sess.jobManager
 	if jm == nil {
 		t.Fatal("session has no job manager; this test would prove nothing")

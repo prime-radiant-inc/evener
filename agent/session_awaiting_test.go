@@ -158,10 +158,7 @@ func TestProcessInput_InterruptStaysIdle(t *testing.T) {
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { <-blocker; return agenttest.FinalResponse("late") },
 	}})
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model")), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { _, _ = sess.ProcessInput(ctx, "hello", nil); close(done) }()
@@ -466,10 +463,7 @@ func TestProcessInput_NeedsResponseWithLiveChildRestsIdle(t *testing.T) {
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") },
 	}})
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model")), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	defer sess.Close()
 	child := newTestSessionForState(t)
 	sess.subagents.mu.Lock()

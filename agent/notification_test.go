@@ -457,10 +457,7 @@ func TestNotification_EmptyNoOpDoesNotSuppressNextTurnEnd(t *testing.T) {
 		},
 	}
 	c.Register(adapter)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	collect := drainEvents(sess)
 
 	// No job notification is queued: the notification queue is empty.
@@ -506,10 +503,7 @@ func TestNotificationTurn_EmptyQueueIsNoOp(t *testing.T) {
 		},
 	}
 	c.Register(adapter)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	collect := drainEvents(sess)
 
 	// No job notification is queued: the queue is empty.
@@ -616,10 +610,7 @@ func TestNotification_InterleavesWithActiveGoal(t *testing.T) {
 		},
 	}
 	c.Register(adapter)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
 	sess.getOrCreateGoalStore().Set("interleave objective", time.Now())
 
@@ -806,10 +797,7 @@ func TestNotification_BreakerFiresUnderSustainedNotifications(t *testing.T) {
 	c := llm.NewClient()
 	adapter := &sustainedNotificationAdapter{name: "openai", t: t, ceil: 60}
 	c.Register(adapter)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	adapter.sess = sess
 	collect := drainEvents(sess)
 
@@ -891,10 +879,7 @@ func TestNotification_GoalContinuesInlineWithoutKickFunc(t *testing.T) {
 		},
 	}
 	c.Register(adapter)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	// Deliberately do NOT call SetKickFunc: kickFunc stays nil, modelling `evener run`.
 	collect := drainEvents(sess)
 
@@ -1053,10 +1038,7 @@ func TestNotification_GoalClearedDuringInterleaveStops(t *testing.T) {
 		},
 	}
 	c.Register(adapter)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	collect := drainEvents(sess)
 
 	sess.getOrCreateGoalStore().Set("clear-me objective", time.Now())
@@ -1147,10 +1129,7 @@ func TestNotification_GoalRetargetedDuringInterleaveUsesNewObjective(t *testing.
 		},
 	}
 	c.Register(adapter)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
 	sess.getOrCreateGoalStore().Set(oldObjective, time.Now())
 

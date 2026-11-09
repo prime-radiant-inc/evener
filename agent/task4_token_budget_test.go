@@ -105,10 +105,7 @@ func TestSessionContinuationTokenBudgetShadowBlocksUnsafeDelta(t *testing.T) {
 	resolved.Caps.ContextWindow = new(524_288)
 	resolved.Caps.MaxOutputTokens = new(131_072)
 	profile = profile.WithResolved(resolved)
-	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(client), withProfile(profile), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	defer sess.Close()
 	sess.strategy = nil
 	sess.cfg.testOnly.responsesContinuationShadowEstimateFunc = func(llm.Request) (int, bool) { return 1, true }
@@ -151,10 +148,7 @@ func TestSessionContinuationTokenBudgetPreClientCarriesAdmittedShadow(t *testing
 	resolved.Caps.ContextWindow = new(524_288)
 	resolved.Caps.MaxOutputTokens = new(131_072)
 	profile = profile.WithResolved(resolved)
-	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(client), withProfile(profile), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	defer sess.Close()
 	sess.cfg.testOnly.responsesContinuationShadowEstimateFunc = func(llm.Request) (int, bool) { return 400_000, true }
 	req := llm.Request{Provider: profile.ID(), Model: profile.Model(), Messages: []llm.Message{llm.User("tiny delta")}, MaxTokens: new(131_072), HistoryMode: llm.HistoryModeResponsesDelta, PreviousResponseID: "resp-anchor"}
@@ -251,10 +245,7 @@ func TestSessionFallbackTokenBudgetUsesFallbackCap(t *testing.T) {
 	fallbackResolved.Caps.MaxOutputTokens = new(8_192)
 	fallback = fallback.WithResolved(fallbackResolved)
 
-	sess, err := NewSession(client, primary, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(client), withProfile(primary), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	defer sess.Close()
 	sess.strategy = nil
 	sess.cfg.ModelFallbacks = []string{"budget-fallback/fallback"}
@@ -347,10 +338,7 @@ func TestSessionDeltaWithoutFullHistoryDoesNotDispatchModelFallback(t *testing.T
 	client.Register(fallbackAdapter)
 	primary := testOpenAICompatProfile("delta-primary", "primary", 0)
 	fallback := testOpenAICompatProfile("delta-fallback", "fallback", 0)
-	sess, err := NewSession(client, primary, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(client), withProfile(primary), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	defer sess.Close()
 	sess.cfg.ModelFallbacks = []string{"delta-fallback/fallback"}
 	sess.resolveProfile = func(string) (*provider.Profile, error) { return fallback, nil }
@@ -384,10 +372,7 @@ func TestSessionContextBudgetCompactRetry(t *testing.T) {
 	resolved.Caps.ContextWindow = new(524_288)
 	resolved.Caps.MaxOutputTokens = new(131_072)
 	profile = profile.WithResolved(resolved)
-	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(client), withProfile(profile), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	defer sess.Close()
 	drainSessionEvents(sess)
 	sess.strategy = nil
@@ -412,10 +397,7 @@ func TestSessionContextBudgetCompactRetryTerminalNoProgress(t *testing.T) {
 	resolved.Caps.ContextWindow = new(100)
 	resolved.Caps.MaxOutputTokens = new(8)
 	profile = profile.WithResolved(resolved)
-	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(client), withProfile(profile), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	defer sess.Close()
 	drainSessionEvents(sess)
 	sess.strategy = nil
@@ -472,10 +454,7 @@ func TestSessionContextBudgetProviderContextRetry(t *testing.T) {
 	resolved.Caps.ContextWindow = new(524_288)
 	resolved.Caps.MaxOutputTokens = new(8_192)
 	profile = profile.WithResolved(resolved)
-	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(client), withProfile(profile), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	defer sess.Close()
 	drainSessionEvents(sess)
 	sess.strategy = nil
@@ -504,10 +483,7 @@ func TestSessionContextBudgetProviderContextTerminal(t *testing.T) {
 	resolved.Caps.ContextWindow = new(524_288)
 	resolved.Caps.MaxOutputTokens = new(8_192)
 	profile = profile.WithResolved(resolved)
-	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(client), withProfile(profile), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	defer sess.Close()
 	drainSessionEvents(sess)
 	sess.strategy = nil
@@ -535,10 +511,7 @@ func TestSessionProviderContextRecoveryPrecedesConfiguredFallback(t *testing.T) 
 	client.Register(fallback)
 	profile := testOpenAICompatProfile("budget-primary", "primary", 0)
 	fbProfile := testOpenAICompatProfile("budget-fallback", "fallback", 0)
-	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(client), withProfile(profile), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	defer sess.Close()
 	drainSessionEvents(sess)
 	sess.strategy = nil
@@ -573,10 +546,7 @@ func TestSessionProviderContextRecoverySecondErrorSkipsConfiguredFallback(t *tes
 	client.Register(fallback)
 	profile := testOpenAICompatProfile("budget-primary-terminal", "primary", 0)
 	fbProfile := testOpenAICompatProfile("budget-fallback-terminal", "fallback", 0)
-	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(client), withProfile(profile), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	defer sess.Close()
 	drainSessionEvents(sess)
 	sess.strategy = nil
@@ -620,10 +590,7 @@ func TestSessionFallbackBudgetObservationBeforeClientAdmission(t *testing.T) {
 	fallbackResolved.Caps.ContextWindow = new(65_536)
 	fallbackResolved.Caps.MaxOutputTokens = nil
 	fallbackProfile = fallbackProfile.WithResolved(fallbackResolved)
-	sess, err := NewSession(client, primaryProfile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(client), withProfile(primaryProfile), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	defer sess.Close()
 	sess.strategy = nil
 	sess.cfg.ModelFallbacks = []string{"budget-observe-fallback/fallback"}
@@ -665,10 +632,7 @@ func TestSessionFallbackRecomputesProviderSensitiveFullHistoryEstimate(t *testin
 	fallbackResolved.Caps.ContextWindow = new(65_536)
 	fallbackResolved.Caps.MaxOutputTokens = nil
 	fallbackProfile = fallbackProfile.WithResolved(fallbackResolved)
-	sess, err := NewSession(client, primaryProfile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(client), withProfile(primaryProfile), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	defer sess.Close()
 	sess.strategy = nil
 	sess.cfg.ModelFallbacks = []string{"budget-gemini/gemini-test"}
@@ -734,10 +698,7 @@ func TestSessionAnchorRejectionRebudgetsFullHistoryRequest(t *testing.T) {
 	resolved.Caps.ContextWindow = new(20_000)
 	resolved.Caps.MaxOutputTokens = new(1_000)
 	profile = profile.WithResolved(resolved)
-	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(client), withProfile(profile), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	defer sess.Close()
 	req := llm.Request{Provider: profile.ID(), Model: profile.Model(), Messages: []llm.Message{llm.User("delta")}, MaxTokens: new(1_000), HistoryMode: llm.HistoryModeResponsesDelta, PreviousResponseID: "resp-anchor", FullHistoryInputTokensEstimate: 18_000}
 	fullHistory := []llm.Message{llm.User("small history")}
@@ -780,10 +741,7 @@ func TestSessionUnsafeFallbackSkippedBeforeLaterFallbackSucceeds(t *testing.T) {
 	unsafeResolved.Caps.MaxOutputTokens = new(8)
 	unsafeProfile = unsafeProfile.WithResolved(unsafeResolved)
 	laterProfile := testOpenAICompatProfile("budget-chain-later", "later", 0)
-	sess, err := NewSession(client, primaryProfile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(client), withProfile(primaryProfile), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	defer sess.Close()
 	sess.cfg.ModelFallbacks = []string{"budget-chain-unsafe/unsafe", "budget-chain-later/later"}
 	sess.resolveProfile = func(ref string) (*provider.Profile, error) {
@@ -814,10 +772,7 @@ func TestSessionStreamTokenBudgetAdmissionMatchesComplete(t *testing.T) {
 	resolved.Caps.ContextWindow = new(100)
 	resolved.Caps.MaxOutputTokens = new(8)
 	profile = profile.WithResolved(resolved)
-	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(client), withProfile(profile), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	defer sess.Close()
 	req := llm.Request{Provider: profile.ID(), Model: profile.Model(), Messages: []llm.Message{llm.User("task")}, InputTokensEstimate: 100, MaxTokens: new(8)}
 	if _, err := sess.callModel(context.Background(), llm.DefaultRetryPolicy(), profile, req, &groupRecord{}); err == nil {
@@ -856,10 +811,7 @@ func TestSessionFallbackContextRecoveryPrecedesLaterFallback(t *testing.T) {
 	primaryProfile := testOpenAICompatProfile("budget-round2-primary", "primary", 0)
 	fallbackAProfile := testOpenAICompatProfile("budget-round2-fallback-a", "fallback-a", 0)
 	fallbackBProfile := testOpenAICompatProfile("budget-round2-fallback-b", "fallback-b", 0)
-	sess, err := NewSession(client, primaryProfile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(client), withProfile(primaryProfile), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	defer sess.Close()
 	drainSessionEvents(sess)
 	sess.strategy = nil
@@ -910,10 +862,7 @@ func TestSessionFallbackNonContextErrorContinuesConfiguredChain(t *testing.T) {
 	primaryProfile := testOpenAICompatProfile("budget-round2-chain-primary", "primary", 0)
 	fallbackAProfile := testOpenAICompatProfile("budget-round2-chain-a", "fallback-a", 0)
 	fallbackBProfile := testOpenAICompatProfile("budget-round2-chain-b", "fallback-b", 0)
-	sess, err := NewSession(client, primaryProfile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(client), withProfile(primaryProfile), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	defer sess.Close()
 	sess.strategy = nil
 	sess.cfg.ModelFallbacks = []string{"budget-round2-chain-a/fallback-a", "budget-round2-chain-b/fallback-b"}
@@ -968,10 +917,7 @@ func TestSessionContinuationShadowEstimateUsesTheHandedProfile(t *testing.T) {
 	liveRow.Caps.ThinkingAsText = nil
 	liveRow.Caps.Reasoning = new(false)
 	sessionProfile = sessionProfile.WithResolved(liveRow)
-	sess, err := NewSession(client, sessionProfile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(client), withProfile(sessionProfile), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	req := llm.Request{

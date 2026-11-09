@@ -29,10 +29,7 @@ func TestSession_ContextManager_Created(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	if sess.contextMgr == nil {
@@ -63,14 +60,11 @@ func TestSession_ContextManager_AccumulatesUsage(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	ctx := context.Background()
-	_, err = sess.ProcessInput(ctx, "hi", nil)
+	_, err := sess.ProcessInput(ctx, "hi", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -130,10 +124,7 @@ func TestSession_ContextManager_CompactsWhenNeeded(t *testing.T) {
 	// tool result to cross the compaction threshold.
 	profile := WithContextWindow(NewOpenAIProfile("gpt-5.2"), 27_500)
 
-	sess, err := NewSession(c, profile, env, SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(profile), withEnv(env), withConfig(SessionConfig{}))
 
 	// Collect events to verify compaction actually ran (not just that the adapter
 	// was called twice). Without this, commenting out MaybeCompact still passes.
@@ -152,7 +143,7 @@ func TestSession_ContextManager_CompactsWhenNeeded(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	_, err = sess.ProcessInput(ctx, "read the file", nil)
+	_, err := sess.ProcessInput(ctx, "read the file", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -213,10 +204,7 @@ func TestSession_ContextManager_EmitsEvents(t *testing.T) {
 
 	profile := WithContextWindow(NewOpenAIProfile("gpt-5.2"), 27_500)
 
-	sess, err := NewSession(c, profile, env, SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(profile), withEnv(env), withConfig(SessionConfig{}))
 
 	var evs []events.SessionEvent
 	done := make(chan struct{})
@@ -228,7 +216,7 @@ func TestSession_ContextManager_EmitsEvents(t *testing.T) {
 	}()
 
 	ctx := context.Background()
-	_, err = sess.ProcessInput(ctx, "read the file", nil)
+	_, err := sess.ProcessInput(ctx, "read the file", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -256,10 +244,7 @@ func TestBuildCompactionMeta_ExcludesTaskState(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
 	defer sess.Close()
 
 	store := sess.getOrCreateTaskStore()
@@ -290,10 +275,7 @@ func TestBuildCompactionMeta_SessionID(t *testing.T) {
 
 	t.Run("with stateDir", func(t *testing.T) {
 		dir := t.TempDir()
-		sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
-		if err != nil {
-			t.Fatalf("NewSession: %v", err)
-		}
+		sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
 		defer sess.Close()
 
 		meta := sess.buildCompactionMeta()
@@ -307,10 +289,7 @@ func TestBuildCompactionMeta_SessionID(t *testing.T) {
 
 	t.Run("without stateDir", func(t *testing.T) {
 		dir := t.TempDir()
-		sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-		if err != nil {
-			t.Fatalf("NewSession: %v", err)
-		}
+		sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 		defer sess.Close()
 
 		meta := sess.buildCompactionMeta()

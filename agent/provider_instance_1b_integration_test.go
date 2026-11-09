@@ -188,10 +188,7 @@ func TestPhase1b_CompatX_NoOpenAIBehavior(t *testing.T) {
 	}
 
 	// ── work instance: the session stamps the prompt-cache fields ──
-	workSess, err := NewSession(c, workProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession(work): %v", err)
-	}
+	workSess := newSession(t, withClient(c), withProfile(workProfile), withDir(dir), withConfig(SessionConfig{}))
 	defer workSess.Close()
 
 	workReq := llm.Request{Model: "gpt-5.2", Provider: workProfile.ID()}
@@ -204,10 +201,7 @@ func TestPhase1b_CompatX_NoOpenAIBehavior(t *testing.T) {
 	}
 
 	// ── compat-x instance: stamped the same way ──
-	compatSess, err := NewSession(c, compatProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession(compat-x): %v", err)
-	}
+	compatSess := newSession(t, withClient(c), withProfile(compatProfile), withDir(dir), withConfig(SessionConfig{}))
 	defer compatSess.Close()
 
 	// The prompt-cache fields are stamped here for compat-x too; what the
@@ -368,10 +362,7 @@ func TestPhase1b_Resume_ProfileIDPreserved(t *testing.T) {
 		t.Fatalf("Resolve(work): %v", err)
 	}
 
-	sess, err := NewSession(c, workProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(workProfile), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	// Meta() must carry the instance name as ProfileID.
