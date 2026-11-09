@@ -357,6 +357,18 @@ describe("pluginComponents cache", () => {
     });
   });
 
+  test("a path target lands its entry under the path: key form", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(COMPONENTS, () => ({ results: [{ path: "/opt/plugin", components: { commands: ["fmt"] } }] }));
+    await store.getState().fetchPluginComponents([{ path: "/opt/plugin" }]);
+    expect(fake.calls.map((call) => call.params)).toEqual([{ targets: [{ path: "/opt/plugin" }] }]);
+    expect(store.getState().pluginComponents.get("path:/opt/plugin")).toEqual({
+      status: "loaded",
+      components: { commands: ["fmt"] },
+    });
+    expect(store.getState().pluginComponents.size).toBe(1);
+  });
+
   test("a concurrent call for a key still loading waits for the first request instead of sending its own", async () => {
     const { fake, store } = storeWithFake();
     const release = deferRequest<PluginComponentsResponse>(fake, COMPONENTS);
