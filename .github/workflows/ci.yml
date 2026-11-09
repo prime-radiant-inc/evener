@@ -59,7 +59,13 @@ jobs:
       # #144): the JSON reporter it wrote is turned into the ratchet's rows and
       # the "web" budget entry is enforced. This lane owns the frontend scope,
       # so it enforces exactly the duration its own run measured.
+      #
+      # In a merge group the check reports without failing. Every member's own
+      # pull-request run already enforced the budget, and a wall-time breach
+      # here removes the whole group from the queue, bystanders included, for
+      # what is most often the runner's load.
       - name: Timing budget (web row from the same vitest run)
+        continue-on-error: ${{ github.event_name == 'merge_group' }}
         run: |
           . scripts/lib/timing-tsv-lib.sh
           vitest_json_to_tsv /tmp/gate-web-vitest.json > /tmp/gate-web-timing.tsv
@@ -493,8 +499,10 @@ jobs:
       # The timing ratchet's rows come from the test run above (issue #144), so
       # the budget is enforced without a second full pass. Each lane checks its
       # own scope: the rows name only the packages this lane measured, and a
-      # missing file fails the check rather than passing silently.
+      # missing file fails the check rather than passing silently. A merge
+      # group reports without failing, for the reason given in web-unit.
       - name: Timing budget (rows from the same test run)
+        continue-on-error: ${{ github.event_name == 'merge_group' }}
         run: scripts/gate/test-timing-budget.sh --check --measured /tmp/gate-timing-${{ matrix.scope }}.tsv
 
   # The hub's runner-bound integration tests: daemon retirement, host deploy,

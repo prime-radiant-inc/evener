@@ -1010,6 +1010,11 @@ a second non-fuzz run; CI's two Go test lanes and its web lane each check the ro
 their own scope produced. A run that writes no file fails the check rather than
 passing silently.
 
+The budget blocks a pull request's run and a push to main. In a merge-group run
+the same check reports its findings and does not fail the lane: each member's
+pull-request run already enforced the budget on that change, and a wall-time
+breach in the group would remove every member from the queue.
+
 ## The Browser Guards
 
 jsdom evaluates no cascade and reports zero for every box, so an entire class of
