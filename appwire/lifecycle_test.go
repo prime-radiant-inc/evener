@@ -325,3 +325,26 @@ func TestLifecycleMachinesStableOrder(t *testing.T) {
 		t.Error("LifecycleMachines is not stable between calls")
 	}
 }
+
+func TestJobListStatusFilterKeepsSchemaAndHandlerSets(t *testing.T) {
+	public := make(map[string]bool, len(JobListStatusFilterNames()))
+	for _, name := range JobListStatusFilterNames() {
+		public[name] = true
+	}
+	for _, status := range AllJobStatuses() {
+		if !public[status] {
+			t.Errorf("declared job status %q is missing from the job_list filter", status)
+		}
+	}
+	if !public[string(DelegatePhaseIdle)] {
+		t.Error("the delegate's public idle phase is missing from the job_list filter")
+	}
+	for _, internal := range []DelegatePhase{DelegatePhaseSettling, DelegatePhaseStopping, DelegatePhaseClosed} {
+		if public[string(internal)] {
+			t.Errorf("internal delegate phase %q leaked into the model-facing job_list schema", internal)
+		}
+		if !JobListStatusFilterValid(string(internal)) {
+			t.Errorf("internal delegate phase %q left the handler's compatibility set", internal)
+		}
+	}
+}

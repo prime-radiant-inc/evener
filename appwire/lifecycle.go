@@ -55,7 +55,7 @@ const (
 	// LifecycleSettled means a run finished successfully, or the entity is
 	// done and may only be reopened.
 	LifecycleSettled LifecycleClass = "settled"
-	// LifecycleFailed means a run finished because something broke.
+	// LifecycleFailed means a run finished because it failed.
 	LifecycleFailed LifecycleClass = "failed"
 	// LifecycleNeutral means a run was ended deliberately (stopped, cancelled,
 	// interrupted) rather than finishing or breaking.
@@ -687,34 +687,46 @@ func AllDelegateRunStatuses() []string { return delegateRunMachine.stateNames() 
 // AllDelegateOutcomes returns every declared delegate outcome in table order.
 func AllDelegateOutcomes() []string { return delegateOutcomeMachine.stateNames() }
 
-// JobListStatusFilterNames is the compatibility set the job-list status filter
-// accepts: every declared job status plus every declared delegate phase,
-// because a delegate activation job has historically reported its aggregate
-// phase as its status. It is a filter union, not the job machine's vocabulary.
-// It is deduplicated and declared in this order so the handler and the
-// model-facing schema cannot disagree.
+// JobListStatusFilterNames is the model-facing job-list schema's status set:
+// every declared job status plus the delegate's public idle phase, because an
+// ended delegate activation job has historically reported "idle" as its status.
+// It is a filter union, not the job machine's vocabulary, and its order is the
+// schema's historical order. The delegate's internal settling, stopping and
+// closed phases stay out of the schema; JobListStatusFilterValid also accepts
+// them for internal callers.
 func JobListStatusFilterNames() []string {
 	return append([]string(nil), jobStatusFilterNames...)
 }
 
-// JobListStatusFilterValid reports whether a job-list status filter accepts
-// name.
-func JobListStatusFilterValid(name string) bool { return jobStatusFilterSet[name] }
+// JobListStatusFilterValid reports whether the job-list handler accepts name.
+// It is deliberately wider than the model-facing schema: the handler keeps the
+// delegate's internal phases as a legacy filter vocabulary.
+func JobListStatusFilterValid(name string) bool { return jobStatusArgSet[name] }
 
-var jobStatusFilterNames, jobStatusFilterSet = jobStatusFilterValues()
-
-func jobStatusFilterValues() ([]string, map[string]bool) {
-	names := append(AllJobStatuses(), AllDelegatePhases()...)
-	out := make([]string, 0, len(names))
-	seen := make(map[string]bool, len(names))
-	for _, name := range names {
-		if seen[name] {
-			continue
-		}
-		seen[name] = true
-		out = append(out, name)
+var (
+	jobStatusFilterNames = []string{
+		string(JobStatusRunning),
+		string(DelegatePhaseIdle),
+		string(JobStatusCompleted),
+		string(JobStatusFailed),
+		string(JobStatusCommandExitedNonzero),
+		string(JobStatusCommandKilled),
+		string(JobStatusExhausted),
+		string(JobStatusCancelled),
+		string(JobStatusStopped),
 	}
-	return out, seen
+	jobStatusArgSet = jobStatusArgValues()
+)
+
+func jobStatusArgValues() map[string]bool {
+	set := make(map[string]bool, len(jobStatusFilterNames)+3)
+	for _, name := range jobStatusFilterNames {
+		set[name] = true
+	}
+	for _, name := range []DelegatePhase{DelegatePhaseSettling, DelegatePhaseStopping, DelegatePhaseClosed} {
+		set[string(name)] = true
+	}
+	return set
 }
 
 // AllGoalStatuses returns every declared goal status in table order.

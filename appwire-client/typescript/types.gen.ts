@@ -2043,9 +2043,9 @@ export interface JobActivityDelegate {
   terminal?: boolean;
   resumable?: boolean;
   /**
-   * NeedsAttention means the delegate owes a person attention. The shared
-   * subagent dot reads it as attention; the durable phase stays running while
-   * a question or approval blocks the run.
+   * NeedsAttention means the delegate has delivered input it has not consumed
+   * yet, such as a question, a descendant report or a job completion. The
+   * delegate processes it autonomously; it is not by itself a human question.
    */
   needsAttention?: boolean;
   notResumableReason?: string;
@@ -3754,9 +3754,9 @@ export interface SessionDelegate {
   terminal: boolean;
   resumable: boolean;
   /**
-   * NeedsAttention means the delegate owes a person attention (a question or
-   * an approval). It is the fact the shared subagent dot renders as attention;
-   * phase alone cannot say it because the phase stays running.
+   * NeedsAttention means the delegate has delivered input it has not consumed
+   * yet, such as a question, a descendant report or a job completion. The
+   * delegate processes it autonomously; it is not by itself a human question.
    */
   needsAttention?: boolean;
   notResumableReason?: string;

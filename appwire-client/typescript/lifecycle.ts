@@ -25,12 +25,13 @@ const MACHINES = LIFECYCLE_MACHINES as unknown as Record<string, LifecycleMachin
 
 /** The declared machine for kind, or undefined when this build does not know it. */
 export function lifecycleMachine(kind: string): LifecycleMachineFacts | undefined {
-  return MACHINES[kind];
+  return Object.hasOwn(MACHINES, kind) ? MACHINES[kind] : undefined;
 }
 
 /** The declared state facts for kind/name, or undefined when either is unknown. */
 export function lifecycleState(kind: string, name: string): LifecycleStateFacts | undefined {
-  return MACHINES[kind]?.states[name];
+  const machine = lifecycleMachine(kind);
+  return machine && Object.hasOwn(machine.states, name) ? machine.states[name] : undefined;
 }
 
 /** The state's presentation family. An unknown state reads active, matching

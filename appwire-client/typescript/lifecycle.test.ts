@@ -78,8 +78,11 @@ describe("generated lifecycle catalog", () => {
     expect(lifecycleMachine("bogus")).toBeUndefined();
     expect(lifecycleState("bogus", "idle")).toBeUndefined();
     expect(lifecycleState("job", "bogus")).toBeUndefined();
+    expect(lifecycleMachine("constructor")).toBeUndefined();
+    expect(lifecycleState("job", "toString")).toBeUndefined();
     // The class fallback matches Go: a newer daemon's state stays visible.
     expect(lifecycleStateClass("job", "bogus")).toBe("active");
+    expect(lifecycleStateClass("constructor", "idle")).toBe("active");
   });
 
   test("matches the shared cross-language classification contract", () => {

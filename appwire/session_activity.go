@@ -142,9 +142,9 @@ type SessionDelegate struct {
 	Error                  string `json:"error,omitempty"`
 	Terminal               bool   `json:"terminal"`
 	Resumable              bool   `json:"resumable"`
-	// NeedsAttention means the delegate owes a person attention (a question or
-	// an approval). It is the fact the shared subagent dot renders as attention;
-	// phase alone cannot say it because the phase stays running.
+	// NeedsAttention means the delegate has delivered input it has not consumed
+	// yet, such as a question, a descendant report or a job completion. The
+	// delegate processes it autonomously; it is not by itself a human question.
 	NeedsAttention     bool   `json:"needsAttention,omitempty"`
 	NotResumableReason string `json:"notResumableReason,omitempty"`
 	Model              string `json:"model,omitempty"`

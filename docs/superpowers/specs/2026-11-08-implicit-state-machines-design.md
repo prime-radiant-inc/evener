@@ -18,6 +18,10 @@ The failure this exposed is concrete. A delegate row carries `lifecycle`,
 dot keyed its amber attention state on `phase` values (`awaiting_approval`,
 `awaiting_input`, `needs-you`) that no producer emitted, while the real
 `needsAttention` fact never reached the activity row the dot reads.
+Carrying that fact exposed its actual meaning: it tracks delivered input the
+delegate has not consumed yet, including ordinary job completions and
+descendant reports, so it is not by itself a human question. The activity rows
+carry it; the dot keeps only the legacy phase vocabulary.
 
 ## Goals
 
@@ -30,7 +34,8 @@ dot keyed its amber attention state on `phase` values (`awaiting_approval`,
   because it ranks several facts, not one state.
 - Agents can read the declaration through the doctor tool without parsing a
   transcript.
-- The delegate attention dot reads the fact the daemon actually sends.
+- The delegate activity rows carry the attention fact the daemon actually
+  sends, and the dot keeps its legacy phase fallback.
 - Existing behavior, wire strings and false-valued JSON omission stay the same
   except the attention fix, which adds a truthful state.
 
@@ -44,8 +49,8 @@ dot keyed its amber attention state on `phase` values (`awaiting_approval`,
   provider sign-in, pane lifetime) into the registry. They are inventoried as
   adjacent machines with owners.
 - A new generic workflow engine, database, or event system.
-- Changing the transcript status word. `needsAttention` reaches the dot; the
-  word still states the lifecycle.
+- Changing the transcript status word. `needsAttention` reaches the activity
+  row; the word still states the lifecycle.
 - Backward compatibility code beyond accepting both delegate phase names in the
   job-status filter, which already existed.
 
@@ -150,8 +155,8 @@ wire set.
 `appwire.SessionDelegate` and `appwire.JobActivityDelegate` gain
 `needsAttention` (optional on the wire). The activity producers fill it from the
 delegate aggregate. The client parser and activity store carry it; the shared
-dot reads it before the legacy phase vocabulary and after terminality. A
-terminal row still reads by its outcome.
+dot keeps the legacy phase vocabulary because the fact is pending delivered
+input, not human attention. A terminal row still reads by its outcome.
 
 ### Agent surface
 
@@ -180,8 +185,8 @@ the bundled doctoring skill.
 
 ## Compatibility
 
-- An older daemon omits `needsAttention`; the dot falls back to the legacy
-  phase vocabulary and never reads attention from an absent fact.
+- An older daemon omits `needsAttention`; no row state changes, because the dot
+  reads only the legacy phase vocabulary.
 - An older client ignores the added key; the field is `omitempty`, so a false
   value changes no existing JSON or fingerprint.
 - A newer daemon's unknown state reads active in Go and the client catalog,
@@ -196,8 +201,7 @@ the bundled doctoring skill.
   host-operation predicates match their old results for known and unknown
   states.
 - A delegate with `needsAttention` set produces a `SessionDelegate` and a
-  `JobActivityDelegate` carrying it; an open row reads attention and a
-  terminal row reads by outcome.
+  `JobActivityDelegate` carrying it; a terminal row reads by outcome.
 - `job_list`'s status schema and its handler accept the same declared set.
 - `evener doctor lifecycle` returns the registry with no selector and rejects
   one.
@@ -213,8 +217,8 @@ the bundled doctoring skill.
   guards.
 - Session, turn, thread-status, task, watch, goal and host-operation predicates
   match their old results, including unknown states.
-- Both activity producers carry `needsAttention` on their delegate rows, the
-  dot reads attention, and a terminal row reads by outcome.
+- Both activity producers carry `needsAttention` on their delegate rows, and a
+  terminal row reads by outcome.
 - The job-status filter and the `job_list` schema accept both vocabularies.
 - An unknown state classifies as active in Go and in the client catalog.
 - `evener doctor lifecycle` returns the machines with no selector and rejects a

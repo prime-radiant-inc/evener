@@ -113,10 +113,11 @@ A delegate row on the wire carries several facts from this machine:
 - `terminal` means an outcome exists and no run is open.
 - `resumable` means a new run may start.
 
-A terminal row is read by its outcome, not by a stale phase. A delegate that
-needs attention carries `needsAttention`, which the shared subagent dot reads
-as attention; the legacy phase-valued attention vocabulary is still accepted
-from older producers.
+A terminal row is read by its outcome, not by a stale phase. A delegate with
+delivered input it has not consumed yet carries `needsAttention`; that means
+the delegate owes itself a turn, not that a person is blocked. The shared
+subagent dot still accepts the legacy phase-valued attention vocabulary from
+older producers.
 
 ### Delegate run and outcome
 

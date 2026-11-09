@@ -83,9 +83,9 @@ type JobActivityDelegate struct {
 	Error              string `json:"error,omitempty"`
 	Terminal           bool   `json:"terminal,omitempty"`
 	Resumable          bool   `json:"resumable,omitempty"`
-	// NeedsAttention means the delegate owes a person attention. The shared
-	// subagent dot reads it as attention; the durable phase stays running while
-	// a question or approval blocks the run.
+	// NeedsAttention means the delegate has delivered input it has not consumed
+	// yet, such as a question, a descendant report or a job completion. The
+	// delegate processes it autonomously; it is not by itself a human question.
 	NeedsAttention      bool                   `json:"needsAttention,omitempty"`
 	NotResumableReason  string                 `json:"notResumableReason,omitempty"`
 	Mandate             string                 `json:"mandate,omitempty"`
