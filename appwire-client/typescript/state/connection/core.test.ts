@@ -490,6 +490,104 @@ describe("createConnectionStore", () => {
 });
 
 describe("onConnectionNotification", () => {
+  test("releases every real client subscription across swap, clear and disposal", () => {
+    const store = createConnectionStore();
+    const first = new AppwireClient({ url: "ws://first/rpc" });
+    const second = new AppwireClient({ url: "ws://second/rpc" });
+    const detachments: Array<ReturnType<typeof vi.fn>> = [];
+    for (const client of [first, second]) {
+      const subscribe = client.onNotification.bind(client);
+      vi.spyOn(client, "onNotification").mockImplementation((handler) => {
+        const detach = vi.fn(subscribe(handler));
+        detachments.push(detach);
+        return detach;
+      });
+    }
+    const stop = onConnectionNotification(store, () => {});
+    try {
+      store.connect(first);
+      store.connect(first);
+      expect(detachments).toHaveLength(1);
+      store.connect(second);
+      expect(detachments.map((detach) => detach.mock.calls.length)).toEqual([1, 0]);
+      store.setState({ client: null });
+      expect(detachments.map((detach) => detach.mock.calls.length)).toEqual([1, 1]);
+      store.connect(first);
+      stop();
+      stop();
+      store.connect(second);
+      expect(detachments.map((detach) => detach.mock.calls.length)).toEqual([1, 1, 1]);
+    } finally {
+      stop();
+      store.setState({ client: null });
+      first.close();
+      second.close();
+      vi.restoreAllMocks();
+    }
+  });
+
+  test.each(["swap", "clear", "A-B-A", "dispose"] as const)(
+    "rejects an in-flight notification after %s retires its attachment",
+    async (retirement) => {
+      const store = createConnectionStore();
+      const firstSocket = new FakeSocket({ autoInitialize: true });
+      const secondSocket = new FakeSocket({ autoInitialize: true });
+      const first = new AppwireClient({ url: "ws://first/rpc", socketFactory: () => firstSocket });
+      const second = new AppwireClient({ url: "ws://second/rpc", socketFactory: () => secondSocket });
+      const seen: unknown[] = [];
+      const notification = { method: "evener/plugin/updated", params: {} } as const;
+      let retirements = 0;
+      // The real client snapshots listeners before dispatch. This earlier
+      // subscriber retires the attachment while its callback is still queued.
+      const stopRetiring = first.onNotification(() => {
+        retirements += 1;
+        if (retirement === "dispose") stop();
+        else if (retirement === "clear") store.setState({ client: null });
+        else {
+          store.connect(second);
+          if (retirement === "A-B-A") store.connect(first);
+        }
+      });
+      store.connect(first);
+      const stop = onConnectionNotification(store, (n) => seen.push(n));
+      try {
+        const connecting = Promise.all([first.connect(), second.connect()]);
+        firstSocket.open();
+        secondSocket.open();
+        await connecting;
+
+        firstSocket.receive(notification);
+
+        expect(retirements).toBe(1);
+        expect(seen).toHaveLength(0);
+        stopRetiring();
+        if (retirement === "dispose") {
+          store.connect(second);
+          firstSocket.receive(notification);
+          secondSocket.receive(notification);
+          expect(seen).toHaveLength(0);
+        } else {
+          if (retirement === "clear") store.connect(second);
+          const currentSocket = retirement === "A-B-A" ? firstSocket : secondSocket;
+          const retiredSocket = retirement === "A-B-A" ? secondSocket : firstSocket;
+          retiredSocket.receive(notification);
+          expect(seen).toHaveLength(0);
+          currentSocket.receive(notification);
+          expect(seen).toEqual([notification]);
+          stop();
+          currentSocket.receive(notification);
+          expect(seen).toHaveLength(1);
+        }
+      } finally {
+        stopRetiring();
+        stop();
+        store.setState({ client: null });
+        first.close();
+        second.close();
+      }
+    },
+  );
+
   test("follows whichever client the store holds, detaching a replaced client", () => {
     const store = createConnectionStore();
     const first = new FakeClient("ready");

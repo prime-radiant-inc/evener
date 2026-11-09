@@ -193,19 +193,31 @@ export function createConnectionStore(): ConnectionStore {
 export function onConnectionNotification(store: ConnectionStore, handler: (n: AnyNotification) => void): () => void {
   let wired: AppwireClientLike | null = null;
   let unwire: (() => void) | undefined;
+  let generation = 0;
+  let disposed = false;
   const attach = (client: AppwireClientLike | null): void => {
-    if (client === wired) return; // already wired to this exact client, including both null
+    if (disposed || client === wired) return;
+    const attachment = ++generation;
     unwire?.();
     wired = client;
     // A cleared client (the store's `client` set to null - a disconnect, a
     // test reset) has no listener to attach; detaching the previous one
     // above is this call's whole job then, not a no-op skipped by the null
     // check that used to sit ahead of it.
-    unwire = client ? client.onNotification(handler) : undefined;
+    unwire = client
+      ? client.onNotification((notification) => {
+          // Unsubscribing cannot retract a callback already in dispatch.
+          // Identity alone cannot distinguish a retired A -> B -> A attachment.
+          if (disposed || generation !== attachment || store.getState().client !== client) return;
+          handler(notification);
+        })
+      : undefined;
   };
   const unsubscribe = store.subscribe((state) => attach(state.client));
   attach(store.getState().client);
   return () => {
+    if (disposed) return;
+    disposed = true;
     unsubscribe();
     unwire?.();
   };
