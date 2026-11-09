@@ -279,7 +279,10 @@ export function createEditorialClient(): EditorialClient {
       },
     });
     const summary = summaries.find((row) => row.ref === ref);
-    if (summary) summary.state = "idle";
+    if (summary) {
+      summary.state = "idle";
+      summary.ask_pending = false;
+    }
     revision++;
     client.emitNotification(
       navigationInvalidatedNotification({
