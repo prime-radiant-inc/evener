@@ -1,4 +1,5 @@
 import {
+  type AppwireClientLike,
   type PluginLaunchCandidate,
   type PluginPreviewResponse,
   type PluginSelectionState,
@@ -12,12 +13,18 @@ import { type ReactElement, useState } from "react";
 import { Button, Card, Disclosure, EmptyState, InlineNotice, Switch } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { countsSummary } from "../plugins/pluginCounts";
+import { LauncherPluginSheet } from "./LauncherPluginSheet";
 import styles from "./pluginSelection.module.css";
 
 export interface PluginSelectionPanelProps {
   preview: PluginPreviewResponse;
   selection: PluginSelectionState;
   removeOnly?: boolean;
+  /** The client a Details-opened sheet reads component inventories through. */
+  client: Pick<AppwireClientLike, "request">;
+  /** The launch source the preview resolved against; the sheet's read follows
+   * it so its Contents describe the plugins that host would load. */
+  host?: string;
   onSelectionChange(next: PluginSelectionState): void;
   onRetry(): void;
 }
@@ -32,6 +39,7 @@ const CLASS = {
   source: requireClass(styles.source, "pluginSelection.module.css", "source"),
   counts: requireClass(styles.counts, "pluginSelection.module.css", "counts"),
   description: requireClass(styles.description, "pluginSelection.module.css", "description"),
+  details: requireClass(styles.details, "pluginSelection.module.css", "details"),
   resultCount: requireClass(styles.resultCount, "pluginSelection.module.css", "resultCount"),
   diagnostics: requireClass(styles.diagnostics, "pluginSelection.module.css", "diagnostics"),
   issueList: requireClass(styles.issueList, "pluginSelection.module.css", "issueList"),
@@ -47,10 +55,16 @@ export function PluginSelectionPanel({
   preview,
   selection,
   removeOnly = false,
+  client,
+  host,
   onSelectionChange,
   onRetry,
 }: PluginSelectionPanelProps): ReactElement {
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  // The panel owns the one open sheet: a row's Details opens its candidate,
+  // and only one candidate is open at a time. The sheet mounts only while it
+  // is open, so its read starts when the sheet does.
+  const [sheetCandidate, setSheetCandidate] = useState<PluginLaunchCandidate | null>(null);
   const selectedNames = selection.mode === "explicit" ? new Set(selection.names) : null;
   const issueNames =
     selectedNames ?? new Set(preview.plugins.filter((plugin) => plugin.selected).map((plugin) => plugin.name));
@@ -138,6 +152,11 @@ export function PluginSelectionPanel({
                         )}
                       </span>
                       {plugin.description && <span className={CLASS.description}>{plugin.description}</span>}
+                      <span className={CLASS.details}>
+                        <Button variant="link" size="xs" type="button" onClick={() => setSheetCandidate(plugin)}>
+                          Details
+                        </Button>
+                      </span>
                     </span>
                   }
                 />
@@ -145,6 +164,22 @@ export function PluginSelectionPanel({
             );
           })}
         </div>
+        {sheetCandidate !== null && (
+          <LauncherPluginSheet
+            open
+            onClose={() => setSheetCandidate(null)}
+            candidate={sheetCandidate}
+            client={client}
+            host={host}
+            selected={selectedNames?.has(sheetCandidate.name) ?? sheetCandidate.selected}
+            onToggleSelected={(next) => {
+              // The same remove-only guard the row's own switch applies: an
+              // unreadable preview still allows taking plugins out.
+              if (!removeOnly || !next)
+                onSelectionChange(setPluginSelected(selection, preview, sheetCandidate.name, next));
+            }}
+          />
+        )}
         {preview.plugins.length === 0 && (
           <EmptyState size="compact" title="No plugins are available for this session." />
         )}

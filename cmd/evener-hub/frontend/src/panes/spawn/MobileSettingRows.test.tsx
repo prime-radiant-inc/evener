@@ -1,4 +1,5 @@
 import type { PluginPreviewResponse } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
@@ -31,6 +32,7 @@ function props(overrides: Partial<MobileSettingRowsProps> = {}): MobileSettingRo
     onAccessChange: vi.fn(),
     pluginPreview: { status: "ready", response: { plugins: [] } as PluginPreviewResponse },
     pluginSelection: { mode: "default" },
+    pluginClient: new FakeClient(),
     onPluginSelectionChange: vi.fn(),
     onPluginRetry: vi.fn(),
     ...overrides,

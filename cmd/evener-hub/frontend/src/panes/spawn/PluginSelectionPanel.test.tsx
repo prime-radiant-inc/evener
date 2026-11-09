@@ -1,7 +1,12 @@
-import type { PluginPreviewResponse } from "@evener/appwire-client";
-import { render, screen, within } from "@testing-library/react";
+import {
+  type PluginComponents,
+  type PluginPreviewResponse,
+  SCOPED_HOST_READ_DEBOUNCE_MS,
+} from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { PluginSelectionPanel } from "./PluginSelectionPanel";
 
 const preview: PluginPreviewResponse = {
@@ -51,6 +56,7 @@ function renderPanel(overrides: Partial<React.ComponentProps<typeof PluginSelect
     <PluginSelectionPanel
       preview={preview}
       selection={{ mode: "default" }}
+      client={new FakeClient()}
       onSelectionChange={onSelectionChange}
       onRetry={vi.fn()}
       {...overrides}
@@ -160,4 +166,127 @@ test("shows a removable retained stale name while preserving other selected name
   expect(screen.getByText("missing")).toBeTruthy();
   await user.click(screen.getByRole("button", { name: "Remove missing" }));
   expect(onSelectionChange).toHaveBeenLastCalledWith({ mode: "explicit", names: ["alpha"] });
+});
+
+describe("the Details action opens the launcher sheet", () => {
+  const COMPONENTS: PluginComponents = { skills: ["run"], commands: ["fmt"] };
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function fakeWithComponents(): FakeClient {
+    const fake = new FakeClient();
+    fake.on("evener/plugin/components", (params) => ({
+      results: params.targets.map((target) => ({ ...target, components: COMPONENTS })),
+    }));
+    return fake;
+  }
+
+  async function settleComponentsRead(): Promise<void> {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SCOPED_HOST_READ_DEBOUNCE_MS);
+      await Promise.resolve();
+    });
+  }
+
+  function rowOf(name: string): HTMLElement {
+    const row = screen.getByRole("switch", { name }).closest("div");
+    if (row === null) throw new Error(`no row renders the ${name} switch`);
+    return row;
+  }
+
+  test("every row's description ends in a Details action", () => {
+    renderPanel();
+    const metadata = document.querySelectorAll('[data-testid="plugin-row-metadata"]');
+    expect(metadata).toHaveLength(2);
+    for (const container of metadata) {
+      if (!(container instanceof HTMLElement)) throw new Error("a row's metadata is not an element");
+      const details = within(container).getByRole("button", { name: "Details" });
+      // The action is the description's last element, after source, counts and
+      // any description text - a quiet link-button, not a trailing control.
+      const last = container.lastElementChild;
+      if (last === null) throw new Error("a row's metadata has no last element");
+      expect(last.contains(details)).toBe(true);
+    }
+  });
+
+  test("Details opens the candidate's sheet, reading Contents by the candidate's own target", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const fake = fakeWithComponents();
+    renderPanel({ client: fake });
+
+    // alpha is installed from a marketplace (and also carries a path): the
+    // marketplace+name pair picks the read target.
+    await user.click(within(rowOf("alpha")).getByRole("button", { name: "Details" }));
+    await settleComponentsRead();
+    const alphaSheet = screen.getByRole("dialog", { name: "alpha" });
+    expect(fake.calls.map((call) => call.params)).toEqual([{ targets: [{ plugin: "alpha", marketplace: "acme" }] }]);
+    expect(within(alphaSheet).getByRole("heading", { name: "Contents" })).toBeTruthy();
+    expect(alphaSheet.querySelector('[data-kind="skills"]')).toBeTruthy();
+    expect(within(alphaSheet).getByText("acme")).toBeTruthy();
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+
+    await user.click(within(alphaSheet).getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    // beta is a directory source with no marketplace: its path picks the
+    // target. One sheet is open at a time.
+    await user.click(within(rowOf("beta")).getByRole("button", { name: "Details" }));
+    await settleComponentsRead();
+    expect(fake.calls.map((call) => call.params)).toEqual([
+      { targets: [{ plugin: "alpha", marketplace: "acme" }] },
+      { targets: [{ path: "/tmp/beta" }] },
+    ]);
+    const betaSheet = screen.getByRole("dialog", { name: "beta" });
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+    expect(within(betaSheet).getByRole("heading", { name: "Contents" })).toBeTruthy();
+  });
+
+  test("the sheet's switch reflects the row's selection and toggles it", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const fake = fakeWithComponents();
+    const { onSelectionChange } = renderPanel({ client: fake });
+
+    await user.click(within(rowOf("alpha")).getByRole("button", { name: "Details" }));
+    const alphaSheet = screen.getByRole("dialog", { name: "alpha" });
+    const included = within(alphaSheet).getByRole("switch", { name: "Included in this session" });
+    // alpha is selected in the preview's default selection; beta is not.
+    expect(included.getAttribute("aria-checked")).toBe("true");
+    await user.click(included);
+    // Toggling the only selected plugin off materializes an empty selection.
+    expect(onSelectionChange).toHaveBeenCalledWith({ mode: "explicit", names: [] });
+
+    await user.click(within(alphaSheet).getByRole("button", { name: "Close" }));
+    await user.click(within(rowOf("beta")).getByRole("button", { name: "Details" }));
+    const betaSheet = screen.getByRole("dialog", { name: "beta" });
+    const betaIncluded = within(betaSheet).getByRole("switch", { name: "Included in this session" });
+    expect(betaIncluded.getAttribute("aria-checked")).toBe("false");
+    await user.click(betaIncluded);
+    expect(onSelectionChange).toHaveBeenLastCalledWith({ mode: "explicit", names: ["alpha", "beta"] });
+  });
+
+  test("closing the sheet unmounts it and a reopen reads again", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const fake = fakeWithComponents();
+    renderPanel({ client: fake });
+
+    await user.click(within(rowOf("alpha")).getByRole("button", { name: "Details" }));
+    await settleComponentsRead();
+    expect(fake.calls.filter((call) => call.method === "evener/plugin/components")).toHaveLength(1);
+    await user.click(within(screen.getByRole("dialog", { name: "alpha" })).getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    // The panel mounts the sheet only while it is open, so each open performs
+    // its own read.
+    await user.click(within(rowOf("alpha")).getByRole("button", { name: "Details" }));
+    await settleComponentsRead();
+    expect(fake.calls.filter((call) => call.method === "evener/plugin/components")).toHaveLength(2);
+    expect(
+      within(screen.getByRole("dialog", { name: "alpha" })).getByRole("heading", { name: "Contents" }),
+    ).toBeTruthy();
+  });
 });

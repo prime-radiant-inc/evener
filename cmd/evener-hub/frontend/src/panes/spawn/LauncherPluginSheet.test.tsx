@@ -1,0 +1,146 @@
+import {
+  type PluginComponents,
+  type PluginLaunchCandidate,
+  SCOPED_HOST_READ_DEBOUNCE_MS,
+  WireError,
+} from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { act, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, expect, test, vi } from "vitest";
+import { LauncherPluginSheet } from "./LauncherPluginSheet";
+
+// A directory-source candidate: no marketplace, so the preview resolved it
+// by path - the same path the sheet's read must target.
+const DIRECTORY_CANDIDATE: PluginLaunchCandidate = {
+  name: "beta",
+  version: "0.9.0",
+  description: "Beta helpers",
+  source: "directory",
+  path: "/tmp/beta",
+  selected: false,
+  skillCount: 0,
+  agentCount: 0,
+  commandCount: 0,
+  hookCount: 1,
+  mcpCount: 1,
+};
+
+const COMPONENTS: PluginComponents = { skills: ["run"] };
+
+function componentsClient(): FakeClient {
+  const fake = new FakeClient();
+  fake.on("evener/plugin/components", (params) => ({
+    results: params.targets.map((target) => ({ ...target, components: COMPONENTS })),
+  }));
+  return fake;
+}
+
+function renderSheet(overrides: Partial<React.ComponentProps<typeof LauncherPluginSheet>> = {}) {
+  const onClose = vi.fn();
+  const onToggleSelected = vi.fn();
+  render(
+    <LauncherPluginSheet
+      open
+      candidate={DIRECTORY_CANDIDATE}
+      selected={false}
+      onClose={onClose}
+      onToggleSelected={onToggleSelected}
+      client={componentsClient()}
+      {...overrides}
+    />,
+  );
+  return { onClose, onToggleSelected };
+}
+
+async function settleRead(): Promise<void> {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(SCOPED_HOST_READ_DEBOUNCE_MS);
+    await Promise.resolve();
+  });
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+test("a closed sheet renders no dialog", () => {
+  renderSheet({ open: false });
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+test("a directory-source candidate reads by its path and renders the answer as Contents", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  const fake = new FakeClient();
+  fake.on("evener/plugin/components", (params) => {
+    expect(params).toEqual({ targets: [{ path: "/tmp/beta" }] });
+    return { results: [{ path: "/tmp/beta", components: COMPONENTS }] };
+  });
+  const { onToggleSelected } = renderSheet({ client: fake });
+  const sheet = screen.getByRole("dialog", { name: "beta" });
+  await settleRead();
+  // The one-target batch named the candidate by path alone.
+  expect(fake.calls).toEqual([{ method: "evener/plugin/components", params: { targets: [{ path: "/tmp/beta" }] } }]);
+  expect(within(sheet).getByRole("heading", { name: "Contents" })).toBeTruthy();
+  expect(sheet.querySelector('[data-kind="skills"]')).toBeTruthy();
+  expect(sheet.querySelector('[data-reason="manifest-only"]')).toBeNull();
+  // Metadata: Version when the candidate carries one, no Marketplace row for
+  // a directory source, and the candidate's source kind.
+  expect(within(sheet).getByText("v0.9.0")).toBeTruthy();
+  expect(within(sheet).queryByText("Marketplace")).toBeNull();
+  expect(within(sheet).getByText("directory")).toBeTruthy();
+  // Launcher mode has no editor: one selection switch, no footer actions.
+  const included = within(sheet).getByRole("switch", { name: "Included in this session" });
+  expect(included.getAttribute("aria-checked")).toBe("false");
+  await user.click(included);
+  expect(onToggleSelected).toHaveBeenCalledWith(true);
+  expect(within(sheet).queryByRole("button", { name: "Install" })).toBeNull();
+  expect(within(sheet).queryByRole("button", { name: "Remove" })).toBeNull();
+});
+
+test("an erroring read degrades with the quiet notice where Contents would be, and retry re-reads", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  const fake = new FakeClient();
+  fake.on("evener/plugin/components", () => {
+    throw new WireError("method not found: evener/plugin/components", -32601);
+  });
+  renderSheet({ client: fake });
+  const sheet = screen.getByRole("dialog", { name: "beta" });
+  await settleRead();
+  // The read failed for the whole method, not for this plugin: a quiet
+  // degrade notice where Contents would be, never the failure alert.
+  const notice = within(sheet).getByRole("status");
+  expect(notice.getAttribute("data-reason")).toBe("components-degraded");
+  expect(within(sheet).queryByRole("alert")).toBeNull();
+  expect(within(sheet).queryByRole("heading", { name: "Contents" })).toBeNull();
+  expect(document.querySelector('[data-reason="manifest-only"]')).toBeNull();
+
+  // The hub learns the method: the retry's fresh read now answers.
+  fake.on("evener/plugin/components", () => ({ results: [{ path: "/tmp/beta", components: COMPONENTS }] }));
+  await user.click(within(sheet).getByRole("button", { name: "Retry" }));
+  await settleRead();
+  expect(fake.calls.filter((call) => call.method === "evener/plugin/components")).toHaveLength(2);
+  expect(within(sheet).getByRole("heading", { name: "Contents" })).toBeTruthy();
+  expect(within(sheet).queryByRole("status")).toBeNull();
+});
+
+test("a plugin whose own load fails shows the failure where Contents would be, never manifest-only", async () => {
+  vi.useFakeTimers();
+  const fake = new FakeClient();
+  fake.on("evener/plugin/components", () => ({
+    results: [{ path: "/tmp/beta", error: "beta: manifest is not valid" }],
+  }));
+  renderSheet({ client: fake });
+  const sheet = screen.getByRole("dialog", { name: "beta" });
+  await settleRead();
+  // The row carries the plugin's own load failure: the failure alert, with no
+  // retry (the plugin is the problem, not the read) and no Contents.
+  const failure = within(sheet).getByRole("alert");
+  expect(failure.getAttribute("data-reason")).toBe("plugin-broken");
+  expect(within(sheet).queryByRole("status")).toBeNull();
+  expect(within(sheet).queryByRole("button", { name: "Retry" })).toBeNull();
+  expect(within(sheet).queryByRole("heading", { name: "Contents" })).toBeNull();
+  expect(document.querySelector('[data-reason="manifest-only"]')).toBeNull();
+});
