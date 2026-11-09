@@ -122,16 +122,20 @@ func (o updateFileOp) apply(ctx context.Context, fm execenv.FileMutator) ([]stri
 			k = seekLineSequence(origLines, oldLines, pos)
 		}
 		if k < 0 {
-			diagLine := mismatchLineForMissingSequence(origLines, oldLines[0], searchStart)
-			return nil, fmt.Errorf("%s", formatPatchMismatchError(patchMismatchDiagnostic{
+			hunkLine, diagLine := firstDifferingLine(origLines, oldLines, pos)
+			if hunkLine == 0 {
+				diagLine = mismatchLineForMissingSequence(origLines, oldLines[0], searchStart)
+			}
+			return nil, &PatchMismatchError{
 				kind:      "expected lines not found",
-				path:      o.path,
-				want:      oldLines[0],
-				line:      diagLine,
-				got:       lineAt(origLines, diagLine-1),
+				Path:      o.path,
+				HunkLine:  hunkLine,
+				Want:      oldLines[hunkLine],
+				Line:      diagLine,
+				Got:       lineAt(origLines, diagLine-1),
 				lines:     origLines,
 				hunkLines: h,
-			}))
+			}
 		}
 		out = append(out, origLines[pos:k]...)
 		out = append(out, applyReplacementEntries(origLines[k:k+len(oldLines)], entries)...)
@@ -242,35 +246,44 @@ func hintFromHunk(hunkLines []string) string {
 	return ""
 }
 
-type patchMismatchDiagnostic struct {
+// PatchMismatchError reports where an update hunk stopped matching the file;
+// its message is what the model sees. HunkLine is the 0-based index into the
+// hunk's old/context lines (context and '-' lines, in order) of the first one
+// that differs from the closest partial match; Want is that hunk line and Got
+// the file line at the same position (empty at end of file). Line is the
+// 1-based file line of Got.
+type PatchMismatchError struct {
+	Path     string
+	HunkLine int
+	Want     string
+	Got      string
+	Line     int
+
 	kind      string
-	path      string
-	want      string
-	got       string
-	line      int
 	gotEOF    bool
 	lines     []string
 	hunkLines []string
 }
 
-func formatPatchMismatchError(d patchMismatchDiagnostic) string {
+func (d *PatchMismatchError) Error() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "apply_patch: %s in %s", d.kind, d.path)
-	if d.line > 0 {
-		fmt.Fprintf(&b, " at line %d", d.line)
+	fmt.Fprintf(&b, "apply_patch: %s in %s", d.kind, d.Path)
+	if d.Line > 0 {
+		fmt.Fprintf(&b, " at line %d", d.Line)
 	}
-	fmt.Fprintf(&b, "\nwanted: %q", d.want)
+	fmt.Fprintf(&b, "\nfirst difference at old/context line %d of the hunk", d.HunkLine+1)
+	fmt.Fprintf(&b, "\nwanted: %q", d.Want)
 	if d.gotEOF {
 		fmt.Fprintf(&b, "\ngot:    end of file after %d lines", len(d.lines))
-	} else if d.got != "" || d.line > 0 {
-		fmt.Fprintf(&b, "\ngot:    %q", d.got)
+	} else if d.Got != "" || d.Line > 0 {
+		fmt.Fprintf(&b, "\ngot:    %q", d.Got)
 	}
 
-	if d.line > 0 {
-		fmt.Fprintf(&b, "\n\nFile context around line %d:\n%s", d.line, formatLineSnippet(d.lines, d.line, 2))
+	if d.Line > 0 {
+		fmt.Fprintf(&b, "\n\nFile context around line %d:\n%s", d.Line, formatLineSnippet(d.lines, d.Line, 2))
 	}
 
-	if matches := candidateLineIndexes(d.lines, d.want, d.line, 3); len(matches) > 0 {
+	if matches := candidateLineIndexes(d.lines, d.Want, d.Line, 3); len(matches) > 0 {
 		fmt.Fprintf(&b, "\n\nNearby matches for wanted line:\n")
 		for i, idx := range matches {
 			if i > 0 {
@@ -283,7 +296,7 @@ func formatPatchMismatchError(d patchMismatchDiagnostic) string {
 	oldLines := oldLinesFromHunk(d.hunkLines)
 	if len(oldLines) > 0 {
 		fmt.Fprintf(&b, "\n\nExpected old/context lines from patch:\n%s", formatExpectedLines(oldLines))
-		if matches := candidateSequenceIndexes(d.lines, oldLines, d.line, 2); len(matches) > 0 {
+		if matches := candidateSequenceIndexes(d.lines, oldLines, d.Line, 2); len(matches) > 0 {
 			fmt.Fprintf(&b, "\n\nPotential locations for old/context block:\n")
 			for i, idx := range matches {
 				if i > 0 {
@@ -392,6 +405,31 @@ func looseCandidateSequenceIndexes(lines, pattern []string, failedLine int, limi
 	return nearestIndexes(out, failedLine, limit)
 }
 
+// firstDifferingLine finds where pattern comes closest to matching lines at or
+// after start: the file position whose leading run of fuzzy-matching lines is
+// longest. It returns the pattern index of the first line that fails there and
+// the 1-based file line at that position (0 past the end of the file). With no
+// line matching anywhere it returns pattern index 0 and file line 0.
+func firstDifferingLine(lines, pattern []string, start int) (int, int) {
+	bestRun, bestAt := 0, -1
+	for i := max(start, 0); i < len(lines); i++ {
+		run := 0
+		for run < len(pattern) && i+run < len(lines) && fuzzyLineMatch(lines[i+run], pattern[run]) {
+			run++
+		}
+		if run > bestRun {
+			bestRun, bestAt = run, i
+		}
+	}
+	if bestAt < 0 || bestRun >= len(pattern) {
+		return 0, 0
+	}
+	if bestAt+bestRun >= len(lines) {
+		return bestRun, 0
+	}
+	return bestRun, bestAt + bestRun + 1
+}
+
 func mismatchLineForMissingSequence(lines []string, want string, searchStart int) int {
 	for i := searchStart; i < len(lines); i++ {
 		if fuzzyLineMatch(lines[i], want) {
@@ -447,18 +485,24 @@ type replacementEntry struct {
 }
 
 func replacementEntriesFromHunk(hunk []string) []replacementEntry {
+	// Empty lines after the last hunk line are separators before the next
+	// hunk or file marker, not context.
+	for len(hunk) > 0 && hunk[len(hunk)-1] == "" {
+		hunk = hunk[:len(hunk)-1]
+	}
 	var entries []replacementEntry
 	for _, l := range hunk {
-		if l == "" || strings.HasPrefix(l, "@@") {
+		if strings.HasPrefix(l, "@@") {
+			continue
+		}
+		if l == "" {
+			// A blank context line written without its leading space.
+			entries = append(entries, replacementEntry{prefix: ' '})
 			continue
 		}
 		switch l[0] {
 		case ' ', '-', '+':
-			body := ""
-			if len(l) > 1 {
-				body = l[1:]
-			}
-			entries = append(entries, replacementEntry{prefix: l[0], body: body})
+			entries = append(entries, replacementEntry{prefix: l[0], body: l[1:]})
 		}
 	}
 	return entries
