@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { friendlyErrorMessage, WireError } from "../../errors";
 import { deferRequest, FakeClient, failing } from "../../testing/fakeClient";
-import type { MarketplaceEntry, PluginEntry } from "../../types.gen";
+import type { MarketplaceEntry, PluginComponentsResponse, PluginComponentsResult, PluginEntry } from "../../types.gen";
 import { createHubWriteGate, HubWriteBusyError, type HubWriteGate } from "./hubWriteGate";
 import { createMarketplacesStore } from "./marketplaces";
 import {
@@ -26,6 +26,13 @@ const FORMATTER: PluginEntry = { ...LINTER, plugin: "formatter", installPath: "/
 
 const LIST = "evener/plugin/list";
 type ListResult = { plugins: PluginEntry[] };
+const COMPONENTS = "evener/plugin/components";
+
+const componentRow = (plugin: string): PluginComponentsResult => ({
+  plugin,
+  marketplace: "acme",
+  components: { skills: [`${plugin}:run`] },
+});
 
 function storeWithFake(gate: HubWriteGate = createHubWriteGate()) {
   const fake = new FakeClient("ready");
@@ -321,6 +328,144 @@ describe("list ordering", () => {
   });
 });
 
+describe("pluginComponents cache", () => {
+  test("one batch read lands a loaded entry per pair target under its key", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(COMPONENTS, () => ({ results: [componentRow("linter"), componentRow("formatter")] }));
+    await store.getState().fetchPluginComponents([
+      { plugin: "linter", marketplace: "acme" },
+      { plugin: "formatter", marketplace: "acme" },
+    ]);
+    expect(fake.calls.map((call) => [call.method, call.params])).toEqual([
+      [
+        COMPONENTS,
+        {
+          targets: [
+            { plugin: "linter", marketplace: "acme" },
+            { plugin: "formatter", marketplace: "acme" },
+          ],
+        },
+      ],
+    ]);
+    expect(store.getState().pluginComponents.get("linter@acme")).toEqual({
+      status: "loaded",
+      components: { skills: ["linter:run"] },
+    });
+    expect(store.getState().pluginComponents.get("formatter@acme")).toEqual({
+      status: "loaded",
+      components: { skills: ["formatter:run"] },
+    });
+  });
+
+  test("a concurrent call for a key still loading waits for the first request instead of sending its own", async () => {
+    const { fake, store } = storeWithFake();
+    const release = deferRequest<PluginComponentsResponse>(fake, COMPONENTS);
+    const first = store.getState().fetchPluginComponents([{ plugin: "linter", marketplace: "acme" }]);
+    await Promise.resolve();
+    const second = store.getState().fetchPluginComponents([{ plugin: "linter", marketplace: "acme" }]);
+    expect(fake.calls.filter((call) => call.method === COMPONENTS)).toHaveLength(1);
+    release({ results: [componentRow("linter")] });
+    await Promise.all([first, second]);
+    expect(fake.calls.filter((call) => call.method === COMPONENTS)).toHaveLength(1);
+    expect(store.getState().pluginComponents.get("linter@acme")).toEqual({
+      status: "loaded",
+      components: { skills: ["linter:run"] },
+    });
+  });
+
+  test("a broken target's error row lands its key as an error entry while its sibling still loads", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(COMPONENTS, () => ({
+      results: [
+        { plugin: "linter", marketplace: "acme", error: "linter: manifest is not valid" },
+        componentRow("formatter"),
+      ],
+    }));
+    await store.getState().fetchPluginComponents([
+      { plugin: "linter", marketplace: "acme" },
+      { plugin: "formatter", marketplace: "acme" },
+    ]);
+    expect(store.getState().pluginComponents.get("linter@acme")).toEqual({
+      status: "error",
+      error: "linter: manifest is not valid",
+    });
+    expect(store.getState().pluginComponents.get("formatter@acme")).toEqual({
+      status: "loaded",
+      components: { skills: ["formatter:run"] },
+    });
+  });
+
+  test("a hub that refuses the whole method (an older hub) lands an error entry for every requested key and does not throw", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(COMPONENTS, failing("method not found"));
+    const reading = store.getState().fetchPluginComponents([
+      { plugin: "linter", marketplace: "acme" },
+      { plugin: "formatter", marketplace: "acme" },
+    ]);
+    await expect(reading).resolves.toBeUndefined();
+    const error = friendlyErrorMessage(new Error("method not found"));
+    expect(store.getState().pluginComponents.get("linter@acme")).toEqual({ status: "error", error });
+    expect(store.getState().pluginComponents.get("formatter@acme")).toEqual({ status: "error", error });
+  });
+
+  test("an answer that carries no rows lands an error entry for every requested key", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(COMPONENTS, () => ({ results: [] }));
+    await store.getState().fetchPluginComponents([{ plugin: "linter", marketplace: "acme" }]);
+    expect(store.getState().pluginComponents.get("linter@acme")).toEqual({
+      status: "error",
+      error: expect.any(String),
+    });
+  });
+
+  test("an install's updated list retires the cache; the next fetchPlugins re-issues the batch and re-lands the entries", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(LIST, () => ({ plugins: [LINTER, FORMATTER] }));
+    fake.on(COMPONENTS, () => ({ results: [componentRow("linter"), componentRow("formatter")] }));
+    await store.getState().fetchPlugins();
+    await store.getState().fetchPluginComponents([{ plugin: "linter", marketplace: "acme" }]);
+    expect(store.getState().pluginComponents.size).toBe(2);
+
+    fake.on("evener/plugin/install", () => ({ plugins: [LINTER] }));
+    await store.getState().installPlugin("linter", "acme");
+    expect(store.getState().pluginComponents.size).toBe(0);
+
+    fake.on(LIST, () => ({ plugins: [LINTER] }));
+    await store.getState().fetchPlugins();
+    await store.getState().fetchPluginComponents([{ plugin: "linter", marketplace: "acme" }]);
+    expect(fake.calls.filter((call) => call.method === COMPONENTS)).toHaveLength(2);
+    expect(fake.calls.at(-1)?.params).toEqual({ targets: [{ plugin: "linter", marketplace: "acme" }] });
+    expect(store.getState().pluginComponents.get("linter@acme")).toEqual({
+      status: "loaded",
+      components: { skills: ["linter:run"] },
+    });
+    expect(store.getState().pluginComponents.has("formatter@acme")).toBe(false);
+  });
+
+  test("fetchPlugins landing a fresh list issues one batch read for the list's pair keys and never re-reads settled entries", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(LIST, () => ({ plugins: [LINTER, FORMATTER] }));
+    fake.on(COMPONENTS, () => ({ results: [componentRow("linter"), componentRow("formatter")] }));
+    await store.getState().fetchPlugins();
+    await store.getState().fetchPluginComponents([{ plugin: "linter", marketplace: "acme" }]);
+    expect(fake.calls.filter((call) => call.method === COMPONENTS)).toEqual([
+      {
+        method: COMPONENTS,
+        params: {
+          targets: [
+            { plugin: "linter", marketplace: "acme" },
+            { plugin: "formatter", marketplace: "acme" },
+          ],
+        },
+      },
+    ]);
+
+    await store.getState().fetchPlugins();
+    await store.getState().fetchPluginComponents([{ plugin: "linter", marketplace: "acme" }]);
+    expect(fake.calls.filter((call) => call.method === COMPONENTS)).toHaveLength(1);
+  });
+});
+
 describe("reconnect", () => {
   // pluginRevision is what a host re-keys data it derives from the plugin set
   // on. A connection that was away may have missed any number of
@@ -419,5 +564,19 @@ describe("notifications", () => {
     expect(store.getState().plugins).toEqual([LINTER, FORMATTER]);
     expect(store.getState().pluginRevision).toBe(2);
     expect(fake.calls.filter((c) => c.method === LIST)).toHaveLength(2);
+  });
+
+  test("evener/plugin/updated retires every cached inventory ahead of the debounced refetch", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(LIST, () => ({ plugins: [LINTER] }));
+    fake.on(COMPONENTS, () => ({ results: [componentRow("linter")] }));
+    await store.getState().fetchPlugins();
+    await store.getState().fetchPluginComponents([{ plugin: "linter", marketplace: "acme" }]);
+    expect(store.getState().pluginComponents.size).toBe(1);
+
+    store.start();
+    fake.emitNotification({ method: "evener/plugin/updated", params: {} });
+    expect(store.getState().pluginRevision).toBe(1);
+    expect(store.getState().pluginComponents.size).toBe(0);
   });
 });

@@ -575,6 +575,7 @@ export {
   retryEligibility,
 } from "./retryEligibility";
 export type {
+  PluginComponentsReadArgs,
   PluginPreviewLoadState,
   PluginPreviewReadArgs,
   ScopedHostReadInputs,
@@ -584,6 +585,7 @@ export type {
 } from "./scopedHostRead";
 export {
   createScopedHostReadStore,
+  pluginComponentsReadInputs,
   pluginPreviewReadInputs,
   SCOPED_HOST_READ_DEBOUNCE_MS,
 } from "./scopedHostRead";
