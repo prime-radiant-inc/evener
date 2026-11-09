@@ -1641,9 +1641,9 @@ func (s *Session) childFatalRunGated(childSessionID string) bool {
 // calling the result tool. Sent at most once.
 func communicateNudge(toolName string) string {
 	return "You stopped without calling " + toolName + ". " +
-		"You MUST call " + toolName + " with end_turn=true and a message summarizing your complete findings " +
+		"You MUST call " + toolName + " with end_turn=true and a message summarizing your complete findings, or naming the work you are waiting on, " +
 		"before stopping. The parent agent receives ONLY the " + toolName + " message — " +
-		"it cannot see anything else you did. Report your results now."
+		"it cannot see anything else you did. Report your results, or what you are waiting on, now."
 }
 
 // communicateUpdateNudge is the reminder for a subagent that sent its parent a

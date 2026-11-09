@@ -246,8 +246,9 @@ This reference contract is not itself the runtime system prompt, but the followi
   resumable delegate starts its next private run through the same call.
 - Use `delegate_send(to=<delegate_id>)` for follow-up on a durable child
   conversation; it reaches only your own delegates. A delegate reaches its
-  parent only through `communicate`: `end_turn=false` for an update,
-  `end_turn=true` for observer completion and its final report.
+  parent only through `communicate`: `end_turn=false` for an update, and
+  `end_turn=true` for its report, a readiness line before a watch frame, or
+  the one line naming the work it is waiting on.
   `delegate_send` rejects `caller`, `job_id`, `transcript_ref`, and
   unsupported runtime aliases.
 - A delegate's `communicate(end_turn=false)` is an update its parent receives
@@ -877,7 +878,8 @@ Observer/sidecar pattern:
 Observer sidecars are composition, not a separate model-facing observer tool.
 Use `delegate_send(to=<delegate_id>)` for parent-to-child follow-up and
 `communicate(end_turn=false)` for a non-terminal update to the parent.
-Use `communicate(end_turn=true)` for observer completion and final results.
+Use `communicate(end_turn=true)` for an observer's readiness line, its
+completion, final results, or the one line naming work it waits on.
 
 Practical observer guidance for agents:
 

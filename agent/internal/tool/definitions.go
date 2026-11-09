@@ -394,7 +394,7 @@ func DefDelegateSendNamed(resultTool string) llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "delegate_send",
 		Description: "Sends a message to one of your own delegates, by the durable delegate_id you got when you created it. " +
-			"To reach your own parent, use `" + resultTool + "` instead: end_turn=false for an update, end_turn=true for your final report. " +
+			"To reach your own parent, use `" + resultTool + "` instead: end_turn=false for an update, end_turn=true for your report, the one line naming the work you are waiting on, or a readiness line before a watch frame. " +
 			"`to` accepts only a `dlg_...` delegate_id this session owns; it rejects `caller`, job/turn handles, and runtime aliases. " +
 			"If the delegate is running or being driven, the message is steered and returns on delivery. " +
 			"Idle delegates are started/resumed automatically through the existing restore path, so follow-up messages resume them without an explicit idle-mode flag.",
@@ -743,7 +743,7 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        name,
-		Description: "Send a user-facing message. Use this tool for every message, readiness marker, requested status marker, request for input, and final answer the user or caller should see. A valid call has visible text in `message` or `output.message`. If you will immediately keep working after this message, set `end_turn=false` and continue by calling the next work tool in the following round. Use `end_turn=false` only for visible narration or status before immediate continued work. Use `end_turn=true` when this message should stop the current activation: final answers, completed results, blocking requests for input, or readiness markers that wait for future user/caller/watch-frame input. Set `message` to the exact visible text. Always include `output` as an object with exactly these top-level fields: `message`, `data`, and `artifacts`. For ordinary status or conversational messages, use `output.message=\"\"`, `output.data={}`, and `output.artifacts=[]`. When handing back completed work or machine-readable results, populate `output` with the evidence and structured data the caller needs.",
+		Description: "Send a user-facing message. Use this tool for every message, readiness line, requested status marker, request for input, and final answer the user or caller should see. A valid call has visible text in `message` or `output.message`. If you will immediately keep working after this message, set `end_turn=false` and continue by calling the next work tool in the following round. Use `end_turn=false` only for visible narration or status before immediate continued work. Use `end_turn=true` when this message should stop the current activation: final answers, completed results, blocking requests for input, readiness lines that wait for future user/caller/watch-frame input, and a line naming the work you are waiting on. Set `message` to the exact visible text. Always include `output` as an object with exactly these top-level fields: `message`, `data`, and `artifacts`. For ordinary status or conversational messages, use `output.message=\"\"`, `output.data={}`, and `output.artifacts=[]`. When handing back completed work or machine-readable results, populate `output` with the evidence and structured data the caller needs.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -755,7 +755,7 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 				},
 				"end_turn": map[string]any{
 					"type":        "boolean",
-					"description": "Set to false only for visible narration/status before immediate continued work. Set to true when this message ends the current activation: final answer, completed result, blocking input request, or readiness marker that waits for future user/caller/watch-frame input.",
+					"description": "Set to false only for visible narration/status before immediate continued work. Set to true when this message ends the current activation: final answer, completed result, blocking input request, readiness line that waits for future user/caller/watch-frame input, or a line naming the work you are waiting on.",
 				},
 				"output": map[string]any{
 					"type":                 "object",
@@ -820,7 +820,7 @@ func WithCommunicateEndReason(def llm.ToolDefinition) llm.ToolDefinition {
 // watches through resultTool, shared by every tool description and error that
 // teaches it.
 func ObserverReporting(resultTool string) string {
-	return "Observers send updates with `" + resultTool + "(end_turn=false)` and report findings with `" + resultTool + "(end_turn=true)`."
+	return "Observers send updates with `" + resultTool + "(end_turn=false)`, and a readiness line or their findings with `" + resultTool + "(end_turn=true)`."
 }
 
 // communicateDelegateDescription is communicate worded for a delegate, whose
@@ -830,13 +830,13 @@ func ObserverReporting(resultTool string) string {
 const communicateDelegateDescription = "Send a message to your parent agent; it is the only way your parent hears from you. Put the text your parent should read in `message`. " +
 	"With `end_turn=false` the message is an update: your parent receives it, and it wakes a parent that is waiting on you, so send one only when your parent needs to know something or act on it, never to narrate progress, and keep working in the following round. " +
 	"The result's `delivery` says whether your parent has the update (`delivered`), will get it at its next step (`queued`), or cannot get it (`not_delivered`, with a `reason`); the call succeeds either way. " +
-	"With `end_turn=true` the message is your final report and ends your turn: put the complete result in it. A readiness marker you send before waiting for watch frames also uses `end_turn=true`. " +
+	"With `end_turn=true` the message ends your turn with your report, your one line naming the work you are waiting on, or a readiness line before you wait for watch frames: put the complete result in a report. A `result_schema` still requires its output on every call, so when the schema has no truthful pending value, keep the turn open rather than invent one. " +
 	"Always include `output` in the shape its schema gives; when you hand back completed work or machine-readable results, fill it with the evidence and structured data your parent needs."
 
 // WithCommunicateDelegateUpdates returns a copy of a communicate definition
 // worded for a delegate: end_turn=false sends an update its parent receives,
-// end_turn=true its final report. The output schema stays as the caller
-// built it.
+// end_turn=true its report, its wait line, or an observer readiness line. The
+// output schema stays as the caller built it.
 func WithCommunicateDelegateUpdates(def llm.ToolDefinition) llm.ToolDefinition {
 	params := CloneSchemaMap(def.Parameters)
 	props, _ := params["properties"].(map[string]any)
@@ -844,7 +844,7 @@ func WithCommunicateDelegateUpdates(def llm.ToolDefinition) llm.ToolDefinition {
 		message["description"] = "The text your parent agent receives. When the task asks for concrete findings, put them here."
 	}
 	if endTurn, ok := props["end_turn"].(map[string]any); ok {
-		endTurn["description"] = "false: send an update and keep working; your parent receives it, and it wakes a parent that is waiting on you. true: send your final report, or a readiness marker before you wait for watch frames, and end your turn."
+		endTurn["description"] = "false: send an update and keep working; your parent receives it, and it wakes a parent that is waiting on you. true: send your report, the one line naming the work you are waiting on, or a readiness line before you wait for watch frames, and end your turn."
 	}
 	def.Description = communicateDelegateDescription
 	def.Parameters = params
