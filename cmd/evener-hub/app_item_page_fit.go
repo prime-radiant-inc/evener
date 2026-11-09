@@ -1062,10 +1062,7 @@ func packItemCandidates[T any](
 					// budget stays an upper bound on the structured page and
 					// no iteration returns an over-cap response.
 					contentFits = false
-					effectiveBudget = len(encoded) - (structuredBytes - transcriptWindowMaximumContentBudget)
-					if effectiveBudget < 0 {
-						effectiveBudget = 0
-					}
+					effectiveBudget = max(len(encoded)-(structuredBytes-transcriptWindowMaximumContentBudget), 0)
 				}
 			}
 			if contentFits || end-start == 1 {
