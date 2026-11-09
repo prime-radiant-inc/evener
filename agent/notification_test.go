@@ -411,12 +411,12 @@ func notificationToolCall(id, name string) llm.ToolCallData {
 func registerNotificationTestTools(t *testing.T, sess *Session, lateJobID string) {
 	t.Helper()
 	noArgs := map[string]any{"type": "object", "properties": map[string]any{}}
-	sess.RegisterTool("idle_test_tool", "test-only: a round that changes nothing", noArgs,
+	sess.registerTool("idle_test_tool", "test-only: a round that changes nothing", noArgs,
 		func(context.Context, any) (any, error) { return "ok", nil })
 	if lateJobID == "" {
 		return
 	}
-	sess.RegisterTool("enqueue_test_notification", "test-only: finish a managed job during this round", noArgs,
+	sess.registerTool("enqueue_test_notification", "test-only: finish a managed job during this round", noArgs,
 		func(context.Context, any) (any, error) {
 			enqueueCompletedJobNotification(t, sess, lateJobID)
 			return "queued", nil
