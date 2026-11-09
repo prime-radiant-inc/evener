@@ -22,6 +22,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener/internal/rvreg"
+	"primeradiant.com/evener/internal/testfs"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/server"
 )
@@ -522,7 +523,7 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 // TestRunServe_StreamErrorPublishesSystemErrorStatus proves the real serve
 // input loop publishes owning Session state after an exhausted streaming
 // failure: the session rests on a failed turn, so it reports systemError until
-// its next turn (agent RestingWireState). The wrapper observes the production
+// its next turn (agent restingWireState). The wrapper observes the production
 // processing start and finish while forwarding every state mutation to the
 // real AppWire server projection.
 func TestRunServe_StreamErrorPublishesSystemErrorStatus(t *testing.T) {
@@ -856,9 +857,9 @@ func newClearServeDeps(t *testing.T) (serveDeps, *clearTestState, []string) {
 	args := []string{
 		"--model", "openai/gpt-test",
 		"--addr", "127.0.0.1:0",
-		"--dir", resolvedTempDir(t),
-		"--state-dir", resolvedTempDir(t),
-		"--run-dir", resolvedTempDir(t),
+		"--dir", testfs.CanonicalTempDir(t),
+		"--state-dir", testfs.CanonicalTempDir(t),
+		"--run-dir", testfs.CanonicalTempDir(t),
 	}
 	return deps, state, args
 }

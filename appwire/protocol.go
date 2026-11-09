@@ -223,7 +223,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerDevicePairingCancel, DevicePairingParams{}, DevicePairingStatus{}, ScopeHub, "Revokes a device pairing invitation."},
 	{MethodEvenerNavigationRead, NavigationReadParams{}, NavigationReadResponse{}, ScopeHub, "Reads one bounded, revisioned hub navigation resource as a normalized v3 snapshot or delta, optionally conditional on its exact base."},
 	{MethodEvenerFavoriteSet, FavoriteSetParams{}, FavoriteSetResponse{}, ScopeHub, "Sets or clears a project favorite and returns the committed navigation invalidation targets."},
-	{MethodEvenerArchiveSet, ArchiveParams{}, ArchiveResponse{}, ScopeHub, "Sets or clears an explicit project or session archive decision and returns its committed navigation receipt."},
+	{MethodEvenerArchiveSet, ArchiveParams{}, ArchiveResponse{}, ScopeHub, "Sets or clears an explicit project or session archive decision and returns its committed navigation receipt, or marks that receipt deferred when the decision persisted but its refresh deadline expired."},
 	{MethodEvenerProjectDelete, ProjectDeleteParams{}, ProjectDeleteResponse{}, ScopeHub, "Deletes every removable session in one path-validated local project and returns detailed outcomes plus its committed navigation receipt."},
 	{MethodEvenerSessionDelete, SessionDeleteParams{}, SessionDeleteResponse{}, ScopeHub, "Deletes one ended or confirmed-crashed local session; live or concurrently reserved targets are returned in skipped, and successful cleanup includes its committed navigation receipt."},
 	{MethodEvenerPinSectionRename, PinSectionRenameParams{}, PinSectionRenameResponse{}, ScopeHub, "Renames a named pin section and returns its canonical summary and committed navigation receipt."},

@@ -19,6 +19,10 @@ import (
 
 type exactServeListener struct{ closed chan struct{} }
 
+// exactServeListenAddr is the address the fixture listener reports, so a
+// diagnostic can be matched to it without copying the daemon's log wording.
+const exactServeListenAddr = "127.0.0.1:49131"
+
 func (l *exactServeListener) Accept() (net.Conn, error) { <-l.closed; return nil, net.ErrClosed }
 func (l *exactServeListener) Close() error {
 	select {
@@ -28,7 +32,7 @@ func (l *exactServeListener) Close() error {
 	}
 	return nil
 }
-func (*exactServeListener) Addr() net.Addr { return exactServeAddr("127.0.0.1:49131") }
+func (*exactServeListener) Addr() net.Addr { return exactServeAddr(exactServeListenAddr) }
 
 type exactServeAddr string
 

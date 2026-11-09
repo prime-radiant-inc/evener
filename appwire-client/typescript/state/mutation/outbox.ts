@@ -14,14 +14,14 @@
 // state; discovery only announces records the storage already holds.
 //
 // Every host-shaped capability is an option: the storage itself
-// (MutationOutboxStorage — IndexedDB on the web, whatever native brings), the
+// (MutationOutboxStorage — IndexedDB on the web, SQLite on native), the
 // sibling-client channel, the lifecycle events, and the timer. None of them
 // default to a browser global, so this module names no DOM type and a host
 // that has no siblings or no lifecycle passes nothing and gets nothing.
 //
-// Native has no outbox and no durable record of its own yet; nothing here
-// aliases its in-flight UI state, and D25d is where native gains records and
-// this class is what notices them.
+// NativeMutationRuntime constructs this outbox and the shared dispatcher over
+// MutationOutboxSQLite. Durable mutation records remain separate from the
+// native draft document and its in-flight UI state.
 import type { AppwireClientLike } from "../../clientLike";
 import type {
   MutationAttachmentRef,

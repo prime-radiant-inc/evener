@@ -8,18 +8,27 @@ import { docImageReadURL, rebindFileReference, type FileReference } from "@evene
 import type { NativeStackHeaderItem, NativeStackScreenProps } from "@react-navigation/native-stack";
 import { SymbolView } from "expo-symbols";
 import * as SecureStore from "expo-secure-store";
-import { Component, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+	Component,
+	type ComponentProps,
+	useCallback,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+	useSyncExternalStore,
+} from "react";
 import {
 	FlatList,
-	type CellRendererProps,
+	type FlatListProps,
 	Image,
+	type ListViewToken,
 	type NativeScrollEvent,
 	type NativeSyntheticEvent,
 	Platform,
 	Pressable,
 	Text,
 	View,
-	type ViewToken,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { useHeldAlertCount, useHoldAlerts } from "../alerts/alertsContext";
@@ -51,6 +60,7 @@ import { useShareDocument } from "./useShareDocument";
 const hubs = new HubProfiles(SecureStore);
 
 type Row = { kind: "block"; block: DocumentBlock } | { kind: "line"; index: number; text: string };
+type ReaderCellProps = ComponentProps<NonNullable<FlatListProps<Row>["CellRendererComponent"]>>;
 
 interface ScrollMetrics {
 	offset: number;
@@ -178,8 +188,8 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 		anchor.current = headings[0]?.index ?? 0;
 	}, [headings]);
 	const [titleShown, setTitleShown] = useState(false);
-	const viewabilityChanged = useRef(({ viewableItems }: { viewableItems: Pick<ViewToken, "index">[] }) => {
-		viewable.current = viewableItems.flatMap((token) => (token.index === null ? [] : [token.index]));
+	const viewabilityChanged = useRef(({ viewableItems }: { viewableItems: Pick<ListViewToken, "index">[] }) => {
+		viewable.current = viewableItems.flatMap((token) => (token.index === undefined ? [] : [token.index]));
 		setTitleShown(
 			!viewable.current.includes(anchor.current) && viewable.current.some((index) => index > anchor.current),
 		);
@@ -390,7 +400,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 
 	const cellRenderer = useMemo(
 		() =>
-			class ReaderCell extends Component<CellRendererProps<Row>> {
+			class ReaderCell extends Component<ReaderCellProps> {
 				render() {
 					const { children, index, onLayout, style } = this.props;
 					return (

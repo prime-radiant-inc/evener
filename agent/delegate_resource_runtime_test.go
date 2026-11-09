@@ -294,8 +294,8 @@ func TestDelegateResourceRuntime_RegisteredIdleRestoreFailureReturnsStableResult
 		Name:      "delegate_send",
 		Arguments: json.RawMessage(fmt.Sprintf(`{"to":%q,"message":"resume through registered tool"}`, fixture.delegateID)),
 	})
-	if call.IsError {
-		t.Fatalf("registered post-commit restore failure returned a transport error: %s", call.Output)
+	if !call.IsError {
+		t.Fatalf("registered post-commit restore failure was not marked as an error: %s", call.Output)
 	}
 	var result struct {
 		DelegateID          string `json:"delegate_id"`
@@ -369,8 +369,8 @@ func TestDelegateResourceRuntime_RegisteredIdleSendClampsInlineWaitOnSuccessAndF
 					Name:      "delegate_send",
 					Arguments: arguments,
 				})
-				if call.IsError {
-					t.Fatalf("registered %s send: %s", path, call.Output)
+				if call.IsError != failure {
+					t.Fatalf("registered %s send IsError = %v, want %v: %s", path, call.IsError, failure, call.Output)
 				}
 				if !observed || !observedDeadline {
 					t.Fatalf("registered %s wait was not observed with a deadline", path)

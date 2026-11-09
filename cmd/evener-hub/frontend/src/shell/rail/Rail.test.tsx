@@ -25,7 +25,7 @@ import { navigationInvalidatedNotification } from "@evener/appwire-client/testin
 import { act, cleanup, fireEvent, render as renderUI, screen, waitFor, within } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { lazy } from "react";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { installMobileViewport } from "../../panes/session/testing/mobileViewport";
 import {
   archivedListKey,
@@ -42,6 +42,7 @@ import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import { hoverForTooltip } from "../../widgets/tooltip/tooltipTestUtils";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { ClientProvider } from "../clientContext";
+import { MobilePanel } from "../mobile/MobilePanel";
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { archiveSessionIdentity, Rail } from "./Rail";
@@ -336,6 +337,22 @@ function stubScrollIntoView(): () => void {
     else delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
   };
 }
+
+// Session activation places the session pane in the press's own tick (the
+// rail's row kind carries its top-level placement), so the suite needs the
+// pane type the app's import graph registers. Tests that need a different
+// pane descriptor still install and restore their own.
+let restoreSessionPane: () => void;
+beforeAll(() => {
+  restoreSessionPane = registerPaneForTests({
+    id: "session",
+    title: () => "Session",
+    component: lazy(() => Promise.resolve({ default: () => null })),
+  });
+});
+afterAll(() => {
+  restoreSessionPane();
+});
 
 beforeEach(() => {
   // The store reads expansion from the browser port when it resets; clear
@@ -1961,11 +1978,6 @@ describe("resource-backed Rail", () => {
     // zoom system's triage surface). The rail NAVIGATES, idempotently: open
     // the session pane, open the sidebar scoped to it, never toggle closed.
     resetActivitySidebarStoreForTests();
-    const restoreSessionPane = registerPaneForTests({
-      id: "session",
-      title: () => "session",
-      component: lazy(() => Promise.resolve({ default: () => null })),
-    });
     try {
       installState([
         sectionResource("live", [summary({ ref: "local:active", session_id: "active", title: "Active" })]),
@@ -1986,7 +1998,6 @@ describe("resource-backed Rail", () => {
       ).toBe(true);
       expect(workspaceStore.getState().panes.map((pane) => pane.type)).toEqual(["session"]);
     } finally {
-      restoreSessionPane();
       // The reset updates a store the row subscribes to; unwrapped it lands
       // outside act and the teardown console guard reports it on this test.
       act(() => resetActivitySidebarStoreForTests());
@@ -1995,11 +2006,6 @@ describe("resource-backed Rail", () => {
 
   test("a rail row's Overview action on desktop preserves a retained Details placement", async () => {
     resetActivitySidebarStoreForTests();
-    const restoreSessionPane = registerPaneForTests({
-      id: "session",
-      title: () => "session",
-      component: lazy(() => Promise.resolve({ default: () => null })),
-    });
     const restoreDetailsPane = registerPaneForTests({
       id: "sessionDetails",
       title: () => "details",
@@ -2020,7 +2026,6 @@ describe("resource-backed Rail", () => {
       expect(workspaceStore.getState().panes.find((pane) => pane.id === details)?.type).toBe("sessionDetails");
       expect(workspaceStore.getState().panes.map((pane) => pane.type)).toEqual(["sessionDetails", "session"]);
     } finally {
-      restoreSessionPane();
       restoreDetailsPane();
       act(() => resetActivitySidebarStoreForTests());
     }
@@ -2029,11 +2034,6 @@ describe("resource-backed Rail", () => {
   test("a rail row's Overview action on mobile opens the new activity sidebar", async () => {
     const restoreViewport = installMobileViewport();
     resetActivitySidebarStoreForTests();
-    const restoreSessionPane = registerPaneForTests({
-      id: "session",
-      title: () => "session",
-      component: lazy(() => Promise.resolve({ default: () => null })),
-    });
     try {
       installState([
         sectionResource("live", [summary({ ref: "local:active", session_id: "active", title: "Active" })]),
@@ -2046,7 +2046,6 @@ describe("resource-backed Rail", () => {
       expect(workspaceStore.getState().panes.map((pane) => pane.type)).toEqual(["session"]);
     } finally {
       restoreViewport();
-      restoreSessionPane();
       act(() => resetActivitySidebarStoreForTests());
     }
   });
@@ -2106,6 +2105,20 @@ describe("resource-backed Rail", () => {
     expect(projectRow.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByRole("treeitem", { name: /keyboard child/i })).toBeNull();
   });
+
+  test("tapping the already-focused session in the mobile drawer closes it", () => {
+    installState([sectionResource("live", [summary({ ref: "local:active", session_id: "active", title: "Active" })])]);
+    const paneId = workspaceStore.getState().openPane("session", { ref: "local:active" });
+    expect(workspaceStore.getState().focusedPaneId).toBe(paneId);
+    const onClose = vi.fn();
+    render(<MobilePanel rail={<Rail />} open onClose={onClose} />);
+
+    fireEvent.click(within(sectionRoot("Live")).getByText("Active"));
+
+    expect(workspaceStore.getState().focusedPaneId).toBe(paneId);
+    expect(onClose).toHaveBeenCalled();
+  });
+
   test("a loading row is passive: keyboard activation persists no expansion override", () => {
     window.history.replaceState({}, "", "/");
     // An unloaded project starts collapsed, so expand it first to render its

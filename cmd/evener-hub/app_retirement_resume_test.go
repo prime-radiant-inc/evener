@@ -1118,9 +1118,10 @@ func captureHubStderr(t *testing.T, fn func()) string {
 // triggered by daemon retirement carries the same correlated lifecycle trace as
 // an explicit resume: an operation=resume stream whose records carry the
 // requested identity in session_id and, for every stage at or after ownership
-// resolution, the resolved target in resolved_session_id. The log destination
-// is the hub's own stderr, not a configurable seam, so capture it around the
-// call.
+// resolution, the resolved target in resolved_session_id. Production resolves
+// the log destination to the hub's own stderr, so this test captures stderr
+// around the call; a fixture that installs hubDiagnosticSink reads the same
+// records directly.
 func TestResumeAfterConfirmedRetirementRecordsLifecycle(t *testing.T) {
 	requested := hubtest.SessionID(t)
 	root := t.TempDir()

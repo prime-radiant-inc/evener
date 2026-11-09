@@ -79,7 +79,7 @@ func TestNotificationTurnAnnouncesOneNamedBoundary(t *testing.T) {
 	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	rec := serveAndRecord(t, s)
-	s.SteerKind("look at this", events.SteeringKindNotification)
+	s.steerKind("look at this", events.SteeringKindNotification)
 
 	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
@@ -109,7 +109,7 @@ func TestNotificationBoundaryPrecedesTheTurnsContent(t *testing.T) {
 	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	rec := serveAndRecord(t, s)
-	s.SteerKind("look at this", events.SteeringKindNotification)
+	s.steerKind("look at this", events.SteeringKindNotification)
 
 	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
@@ -178,7 +178,7 @@ func TestNotificationTurnReleasesItsTurnID(t *testing.T) {
 	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	serveAndRecord(t, s)
-	s.SteerKind("look at this", events.SteeringKindNotification)
+	s.steerKind("look at this", events.SteeringKindNotification)
 
 	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
@@ -618,7 +618,7 @@ func TestUnservedSessionAnnouncesBoundary(t *testing.T) {
 	s := prepared.sub.sess
 	defer s.Close()
 
-	s.SteerKind("look at this", events.SteeringKindNotification)
+	s.steerKind("look at this", events.SteeringKindNotification)
 
 	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)

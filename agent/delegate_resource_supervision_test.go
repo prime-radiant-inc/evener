@@ -74,8 +74,8 @@ func TestDelegateTerminalCommunicateMarksGenerationEvidence(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("communicate: %v", err)
 	}
-	if !runtime.Communicated() || !strings.Contains(runtime.CommunicateOutput(), "reported result") {
-		t.Fatalf("reported path changed: called=%t output=%q", runtime.Communicated(), runtime.CommunicateOutput())
+	if !runtime.communicated() || !strings.Contains(runtime.communicateOutput(), "reported result") {
+		t.Fatalf("reported path changed: called=%t output=%q", runtime.communicated(), runtime.communicateOutput())
 	}
 	if recorded, err := c.recordAttentionNoAction(lease); err != nil || recorded {
 		t.Fatalf("record no-action after terminal = recorded:%t err:%v, want refusal", recorded, err)

@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/internal/testfs"
 )
 
 // startHeldRun starts the evener-dev binary against the fixture with one shard
@@ -22,11 +24,7 @@ import (
 func startHeldRun(t *testing.T, extraEnv ...string) (*exec.Cmd, int, string, string) {
 	t.Helper()
 	bin := buildEvenerDev(t)
-	tmp := t.TempDir()
-	resolvedTmp, err := filepath.EvalSymlinks(tmp)
-	if err != nil {
-		t.Fatalf("resolving TMPDIR: %v", err)
-	}
+	tmp := testfs.CanonicalTempDir(t)
 	holdDir := t.TempDir()
 	if err := syscall.Mkfifo(filepath.Join(holdDir, "hold.fifo"), 0o600); err != nil {
 		t.Fatalf("mkfifo: %v", err)
@@ -73,7 +71,7 @@ func startHeldRun(t *testing.T, extraEnv ...string) (*exec.Cmd, int, string, str
 			if _, err := fmt.Sscanf(filepath.Base(matches[0]), "held.%d", &heldPid); err != nil {
 				t.Fatalf("parsing held pid from %s: %v", matches[0], err)
 			}
-			return cmd, heldPid, resolvedTmp, holdDir
+			return cmd, heldPid, tmp, holdDir
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("held shard never announced; stderr:\n%s", &stderr)

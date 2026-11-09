@@ -838,6 +838,139 @@ test("the composer editing attribute follows the editor, not composer controls",
   await waitFor(() => expect(anchor?.hasAttribute("data-composer-editing")).toBe(false));
 });
 
+test("a non-primary press holds no composer editing state", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_non_primary"));
+  await threadsStore.getState().ensureThread("ref_non_primary");
+  render(
+    <ClientProvider client={fake}>
+      <Toast />
+      <Composer
+        ref="ref_non_primary"
+        paneId="pane_non_primary"
+        source={createTestComposerSource("ref_non_primary")}
+        focused={false}
+      />
+    </ClientProvider>,
+  );
+  await settleActivityDiscovery("ref_non_primary");
+  await flushPendingTurnsProjectionForTests();
+
+  const anchor = screen.getByTestId("composer-form").closest("[data-composer]");
+  const editor = screen.getByRole("textbox", { name: "Message" });
+  const attach = screen.getByTestId("composer-attach");
+
+  // A right press fires pointerdown but never a click, so it must not arm a
+  // hold that outlives it. An editor blur afterwards ends editing.
+  await act(async () => {
+    fireEvent.pointerDown(attach, { button: 2 });
+  });
+  await act(async () => {
+    editor.focus();
+  });
+  await waitFor(() => expect(anchor?.hasAttribute("data-composer-editing")).toBe(true));
+  await act(async () => {
+    editor.blur();
+  });
+  await waitFor(() => expect(anchor?.hasAttribute("data-composer-editing")).toBe(false));
+});
+
+test("a primary press still holds editing after a non-primary press", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_primary_after_non_primary"));
+  await threadsStore.getState().ensureThread("ref_primary_after_non_primary");
+  render(
+    <ClientProvider client={fake}>
+      <Toast />
+      <Composer
+        ref="ref_primary_after_non_primary"
+        paneId="pane_primary_after_non_primary"
+        source={createTestComposerSource("ref_primary_after_non_primary")}
+        focused={false}
+      />
+    </ClientProvider>,
+  );
+  await settleActivityDiscovery("ref_primary_after_non_primary");
+  await flushPendingTurnsProjectionForTests();
+
+  const anchor = screen.getByTestId("composer-form").closest("[data-composer]");
+  const editor = screen.getByRole("textbox", { name: "Message" });
+  const attach = screen.getByTestId("composer-attach");
+
+  // A right press fires pointerdown but never a click. Its unclicked listeners
+  // must not leave a release behind that clears the next press's hold.
+  await act(async () => {
+    fireEvent.pointerDown(attach, { button: 2 });
+  });
+  await act(async () => {
+    editor.focus();
+  });
+  await waitFor(() => expect(anchor?.hasAttribute("data-composer-editing")).toBe(true));
+
+  // The primary press holds editing through a blur that lands before its click,
+  // even after the deferred clear a stale release would schedule.
+  await act(async () => {
+    fireEvent.pointerDown(attach, { button: 0 });
+  });
+  await waitForMacrotaskInActScope();
+  await act(async () => {
+    editor.blur();
+  });
+  expect(anchor?.hasAttribute("data-composer-editing")).toBe(true);
+
+  await act(async () => {
+    fireEvent.click(attach);
+  });
+  await waitForMacrotaskInActScope();
+  // With no hold left, an outside press ends editing.
+  await act(async () => {
+    fireEvent.pointerDown(document.body);
+  });
+  await waitFor(() => expect(anchor?.hasAttribute("data-composer-editing")).toBe(false));
+});
+
+test("an outside press ends editing while focus sits on a composer control", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_control_focus"));
+  await threadsStore.getState().ensureThread("ref_control_focus");
+  render(
+    <ClientProvider client={fake}>
+      <Toast />
+      <Composer
+        ref="ref_control_focus"
+        paneId="pane_control_focus"
+        source={createTestComposerSource("ref_control_focus")}
+        focused={false}
+      />
+    </ClientProvider>,
+  );
+  await settleActivityDiscovery("ref_control_focus");
+  await flushPendingTurnsProjectionForTests();
+
+  const anchor = screen.getByTestId("composer-form").closest("[data-composer]");
+  const editor = screen.getByRole("textbox", { name: "Message" });
+  const attach = screen.getByTestId("composer-attach");
+
+  await act(async () => {
+    editor.focus();
+  });
+  await waitFor(() => expect(anchor?.hasAttribute("data-composer-editing")).toBe(true));
+
+  // FocusScope restoring a menu trigger, or Attach after the file picker,
+  // leaves focus on a composer button with the keyboard down.
+  await act(async () => {
+    attach.focus();
+  });
+  await waitFor(() => expect(anchor?.hasAttribute("data-composer-editing")).toBe(true));
+
+  // A press outside is leaving editing even though focus still sits on a
+  // composer control.
+  await act(async () => {
+    fireEvent.pointerDown(document.body);
+  });
+  await waitFor(() => expect(anchor?.hasAttribute("data-composer-editing")).toBe(false));
+});
+
 test("the current-task control opens this column's tasks without stealing cascade focus", async () => {
   const user = userEvent.setup();
   const overrides = { evener: currentWorkEvener({ task: true }) };

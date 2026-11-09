@@ -37,8 +37,8 @@
 // goroutine and run its turns one at a time. While a turn is running, other
 // goroutines may observe and steer it. These methods are safe to call
 // concurrently with a running turn: [Session.Events], [Session.State],
-// [Session.Meta], [Session.QueueDepth], [Session.Steer], [Session.Enqueue],
-// [Session.SetModel], [Session.SetReasoningEffort], and [Session.Close].
+// [Session.Meta], [Session.Steer], [Session.Enqueue], [Session.SetModel],
+// [Session.SetReasoningEffort], and [Session.Close].
 //
 // [Session.Events] returns a channel that [Session.Close] closes, so a range
 // loop over it ends when the session closes. Close stops the session and is the

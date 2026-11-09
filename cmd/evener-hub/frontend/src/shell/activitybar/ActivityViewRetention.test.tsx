@@ -15,8 +15,8 @@ import { resetThreadsStoreForTests } from "../../stores/threads";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
 import { installFocusedScope } from "../statusbar/scopeTestUtils";
 import { resetWorkspaceStoreForTests } from "../workspace";
-import { ActivitySidebar } from "./ActivitySidebar";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitySidebarStore";
+import { ActivitySidebar } from "./activitySidebarTestUtils";
 
 const ref = "remote:owner";
 const otherRef = "remote:other";

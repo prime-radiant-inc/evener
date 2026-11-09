@@ -723,7 +723,7 @@ func TestDelegateResourceCreate_ToolCapabilityCeiling(t *testing.T) {
 		t.Cleanup(adapter.releaseRun)
 
 		const runtimeOnlyTool = "mcp__task6__runtime_only"
-		root.RegisterTool(runtimeOnlyTool, "exists only on the live parent", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
+		root.registerTool(runtimeOnlyTool, "exists only on the live parent", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
 			return nil, nil
 		})
 

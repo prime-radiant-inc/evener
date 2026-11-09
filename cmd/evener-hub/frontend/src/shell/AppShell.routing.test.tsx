@@ -6,6 +6,7 @@ import type {
 } from "@evener/appwire-client";
 import { APPWIRE_PROTOCOL_VERSION, type ConnectionState, WireError } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
@@ -35,6 +36,7 @@ import { paletteStore } from "./palette/paletteController";
 import { conversationPaneLifetime } from "./paneLifetime";
 import { navigate, refParam } from "./routing";
 import {
+  conversationOpenParentRef,
   documentPaneState,
   getDockviewApi,
   type OpenPaneRecord,
@@ -1082,6 +1084,174 @@ test("rail activation updates the URL and a later Settings activation returns Se
   expect(workspaceStore.getState().panes.some((pane) => pane.type === "settings" && pane.slot === "secondary")).toBe(
     false,
   );
+});
+
+// A rail row's own summary says whether it is a top-level session, so a press
+// on that row can place the session in the same tick. It must not wait for the
+// route's location read: that read is a hub round trip, and on a busy or
+// remote hub the press would otherwise look ignored until it answered. The
+// route still reconciles a stale hint through the ordinary placement path.
+test("rail activation places a top-level session before its location read answers", async () => {
+  const location = deferred<void>();
+  const client = navClient();
+  client.on("evener/navigation/read", (params: NavigationReadParams) => {
+    if (params.resource !== "location") return navigationRead(params);
+    return location.promise.then(() => navigationRead(params));
+  });
+
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("Session one");
+
+  await user.click(screen.getByText("Session one"));
+
+  expect(window.location.pathname).toBe("/s/local%3As1");
+  // No waitFor: the held location read is still unanswered, so this must
+  // already be true in the press's own commit.
+  expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:s1" });
+
+  await act(async () => {
+    location.resolve(undefined);
+    await location.promise;
+  });
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:s1" });
+  });
+});
+
+// The rail's immediate placement trusts the row's kind. When the delayed
+// location read says the row was stale and the session is nested, the pane
+// must move beside its owner, not be disposed and recreated: image
+// attachments are per-mount composer state and would disappear with it.
+test("a delayed nested location reply keeps the immediately opened child pane", async () => {
+  const location = deferred<void>();
+  const client = navClient();
+  client.on("evener/navigation/read", (params: NavigationReadParams) => {
+    if (params.resource !== "location") return navigationRead(params);
+    return location.promise.then(() =>
+      wireSnapshot(
+        params,
+        {
+          ref: params.ref,
+          top_level_ref: "local:owner",
+          top_level: false,
+          session: { ...TREE_SESSION, ref: params.ref, session_id: params.ref, kind: "subagent" },
+        },
+        '"test"',
+      ),
+    );
+  });
+
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("Session one");
+  await user.click(screen.getByText("Session one"));
+
+  const child = workspaceStore.getState().mainPane();
+  if (!child) throw new Error("missing immediately opened child");
+  expect(child.params).toEqual({ ref: "local:s1" });
+
+  await act(async () => {
+    location.resolve(undefined);
+    await location.promise;
+  });
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:owner" });
+  });
+  const state = workspaceStore.getState();
+  expect(state.panes.find((pane) => pane.id === child.id)?.slot).toBe("secondary");
+  expect(state.focusedPaneId).toBe(child.id);
+});
+
+test.each(["unrelated", "owner"])(
+  "a nested rail link beside an %s main keeps its child pane before the location read answers",
+  async (initialMain) => {
+    const location = deferred<void>();
+    const client = navClient();
+    client.on("evener/navigation/read", (params: NavigationReadParams) => {
+      if (params.resource === "section" && params.section === "live") {
+        return wireSnapshot(
+          params,
+          { sessions: [{ ...TREE_SESSION, kind: "subagent" }], remaining: 0, truncated: false },
+          '"test"',
+        );
+      }
+      if (params.resource === "location") {
+        return location.promise.then(() =>
+          wireSnapshot(
+            params,
+            {
+              ref: params.ref,
+              top_level_ref: "local:owner",
+              top_level: false,
+              session: { ...TREE_SESSION, ref: params.ref, session_id: params.ref, kind: "subagent" },
+            },
+            '"test"',
+          ),
+        );
+      }
+      return navigationRead(params);
+    });
+
+    const user = userEvent.setup();
+    const initialRef = initialMain === "owner" ? "local:owner" : "local:unrelated";
+    workspaceStore.getState().openPane("session", { ref: initialRef });
+    render(<AppShell client={client} />);
+    await screen.findByText("Session one");
+    await user.click(screen.getByText("Session one"));
+
+    const child = workspaceStore
+      .getState()
+      .panes.find((pane) => pane.type === "session" && refParam(pane.params) === "local:s1");
+    expect(child).toBeTruthy();
+    expect(child?.slot).toBe("secondary");
+    expect(workspaceStore.getState().focusedPaneId).toBe(child?.id);
+    if (initialMain === "owner") expect(child && conversationOpenParentRef(child)).toBeUndefined();
+
+    await act(async () => {
+      location.resolve(undefined);
+      await location.promise;
+    });
+    await waitFor(() => {
+      expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:owner" });
+    });
+    const state = workspaceStore.getState();
+    expect(state.panes.find((pane) => pane.id === child?.id)).toBe(child);
+    expect(state.panes.find((pane) => pane.id === child?.id)?.slot).toBe("secondary");
+    expect(state.focusedPaneId).toBe(child?.id);
+    expect(child && conversationOpenParentRef(child)).toBe("local:owner");
+  },
+);
+
+test("a restored secondary cascade for the routed nested session is not duplicated", async () => {
+  const workspace = workspaceStore.getState();
+  workspace.openPane("session", { ref: "local:owner" });
+  const sourceId = workspace.openPane("session", { ref: "local:child" }, { slot: "secondary" });
+  const source = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+  if (!source) throw new Error("missing nested source pane");
+  act(() =>
+    workspaceStore.getState().retypePane(source, "sessionZoom", {
+      ref: "local:child",
+      source: { type: "session", params: { ref: "local:child" } },
+      edges: [],
+    }),
+  );
+  const cascade = workspaceStore.getState().panes.find((pane) => pane.type === "sessionZoom");
+  if (!cascade) throw new Error("missing restored cascade");
+  act(() => {
+    recordConversationOpenParent(cascade, "local:owner");
+    workspaceStore.getState().focusPane(cascade.id);
+  });
+
+  installLocationForRoute("local:child", "local:owner");
+  window.history.pushState({}, "", "/s/local:child");
+  render(<AppShell client={new FakeClient("ready")} />);
+
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:owner" }));
+  const panes = workspaceStore.getState().panes;
+  expect(panes.some((pane) => pane.id === cascade.id)).toBe(true);
+  expect(panes.filter((pane) => pane.type === "session" && refParam(pane.params) === "local:child")).toHaveLength(0);
+  expect(workspaceStore.getState().focusedPaneId).toBe(cascade.id);
 });
 
 // Closing a deleted session's pane is not enough for the pane the ADDRESS BAR

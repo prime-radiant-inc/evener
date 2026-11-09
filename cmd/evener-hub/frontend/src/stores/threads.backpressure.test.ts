@@ -8,13 +8,15 @@ import {
   refreshPendingTurnsProjection,
   resetPendingTurnsStoreForTests,
 } from "../panes/session/composer/queue/pendingTurnsStore";
-import { flushPendingTurnsProjectionForTests } from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
+import {
+  flushPendingTurnsProjectionForTests,
+  settleProjectionWorkForTests,
+} from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
 import { resetSubagentModuleStoreForTests } from "../panes/session/transcript/tools/subagentModuleStore";
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { resetConnectionStoreForTests } from "./connection";
 import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutationOutboxIndexedDB";
-import { settleProjectionWorkForTests } from "./projectionWork";
 import { SessionEntryCache } from "./sessionEntryCache";
 import {
   installBackpressureRetrySchedulerForTests,

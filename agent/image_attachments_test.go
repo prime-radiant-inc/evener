@@ -114,7 +114,7 @@ func TestSession_DrainAsSteerWithInput_AppendsAndDrainsAtomically(t *testing.T) 
 		t.Fatalf("DrainAsSteerWithInput: %v", err)
 	}
 
-	if depth := sess.QueueDepth(); depth != 0 {
+	if depth := sess.queueDepth(); depth != 0 {
 		t.Fatalf("QueueDepth=%d, want 0", depth)
 	}
 	queue := sess.SteeringQueueSnapshot()

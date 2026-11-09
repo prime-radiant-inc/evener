@@ -139,7 +139,7 @@
   overflow-wrap: break-word;
   font-family: var(--font-prose);
   font-size: var(--font-size-prose);
-  line-height: var(--line-height-body);
+  line-height: var(--line-height-prose);
   /* --ink-hi: spec decision 5 - see this file's header comment. */
   color: var(--ink-hi);
 }

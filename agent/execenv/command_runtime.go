@@ -513,6 +513,6 @@ func wrapCommandForSandbox(cmd *exec.Cmd, wrapper *sandbox.Wrapper, dir string) 
 	if wrapper == nil {
 		return
 	}
-	cmd.Env = sandbox.ApplyEnvFloor(cmd.Env, wrapper.Policy(), wrapper.SessionTmp())
+	cmd.Env = sandbox.ApplyEnvFloorInDir(cmd.Env, wrapper.Policy(), wrapper.SessionTmp(), dir)
 	wrapper.Confine(cmd, dir)
 }

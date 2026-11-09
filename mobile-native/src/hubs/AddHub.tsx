@@ -295,18 +295,20 @@ function Address({ onPairing }: { onPairing(target: PairingTarget): void }) {
 					label="Address"
 					value={address}
 					keyboardType="url"
+					testID="hub-address"
 					placeholder="https://hub.example.com:9180"
 					onChangeText={setAddress}
 				/>
 			</Group>
 			<Group label="Token (optional)">
-				<Field label="Token (optional)" value={token} secure onChangeText={setToken} />
+				<Field label="Token (optional)" value={token} secure testID="hub-token" onChangeText={setToken} />
 			</Group>
 			<Group>
 				<Row
 					label="Continue"
 					tone="accent"
 					disabled={!address.trim()}
+					testID="hub-continue"
 					onPress={() => onPairing({ origin: address.trim(), token: token.trim() })}
 				/>
 			</Group>
@@ -325,7 +327,14 @@ function Field({
 	secure?: boolean;
 } & Pick<
 	TextInputProps,
-	"value" | "onChangeText" | "onSubmitEditing" | "placeholder" | "keyboardType" | "editable" | "returnKeyType"
+	| "value"
+	| "onChangeText"
+	| "onSubmitEditing"
+	| "placeholder"
+	| "keyboardType"
+	| "editable"
+	| "returnKeyType"
+	| "testID"
 >) {
 	const { palette } = useColors();
 	const scale = useTextScale();

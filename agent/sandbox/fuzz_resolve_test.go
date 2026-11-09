@@ -92,11 +92,11 @@ func (fixture fuzzResolveFixture) homeFor(homeHint string) string {
 func FuzzResolve(f *testing.F) {
 	// Seeds spanning the floor matrix: each host tier × representative modes. The
 	// trailing string is a fuzzed DenylistRemove entry; cwd is a safe path hint.
-	f.Add(0, true, "linux", "/home/u", true, true, "", "/work", "")                          // off, bwrap
-	f.Add(1, true, "linux", "/home/u", true, false, "", "/work", ".aws")                     // read-only, bwrap; remove a credential
-	f.Add(2, false, "linux", "/home/u", true, true, "", "/work", "/proc")                    // workspace-write net=off; try to remove /proc
-	f.Add(3, true, "linux", "/home/u", false, false, "", "/work", "")                        // restricted, non-bwrap linux
-	f.Add(3, false, "linux", "/home/u", false, false, "", "/work", "")                       // restricted net=off, non-bwrap linux
+	f.Add(0, true, "linux", "/fixture-home/u", true, true, "", "/work", "")                  // off, bwrap
+	f.Add(1, true, "linux", "/fixture-home/u", true, false, "", "/work", ".aws")             // read-only, bwrap; remove a credential
+	f.Add(2, false, "linux", "/fixture-home/u", true, true, "", "/work", "/proc")            // workspace-write net=off; try to remove /proc
+	f.Add(3, true, "linux", "/fixture-home/u", false, false, "", "/work", "")                // restricted, non-bwrap linux
+	f.Add(3, false, "linux", "/fixture-home/u", false, false, "", "/work", "")               // restricted net=off, non-bwrap linux
 	f.Add(2, true, "windows", "C:/u", false, false, "", "C:/work", "")                       // workspace-write, windows
 	f.Add(1, true, "darwin", "/Users/u", false, false, "/usr/bin/sandbox-exec", "/work", "") // read-only, seatbelt
 	f.Add(3, true, "darwin", "/Users/u", false, false, "", "/work", "")                      // restricted, darwin bare

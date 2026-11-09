@@ -180,6 +180,17 @@
   }
 }
 
+@media (min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4) {
+  .pane:has(> .body[data-pane-scaffold^="session:"]) > .footer {
+    padding: var(--space-1) var(--space-2);
+    padding-bottom: max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px));
+  }
+
+  .pane:has(> .body[data-pane-scaffold^="session:"]):not(:has([data-composer-editing])) > .footerBeforeEdge {
+    padding-bottom: var(--space-1);
+  }
+}
+
 /* squircle-proto: continuous (Apple-style) corner curvature where the engine
  * supports corner-shape; border-radius stays the fallback and supplies the
  * corner area this shapes. Mobile's border-radius: 0 makes this a no-op

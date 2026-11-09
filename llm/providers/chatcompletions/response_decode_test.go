@@ -65,6 +65,34 @@ func TestFromChatCompletionResponse_EncryptedDetailsRoundTrip(t *testing.T) {
 	}
 }
 
+// TestFromChatCompletionResponse_ToolCallThoughtSignature keeps the Gemini
+// continuation token carried by OpenAI-compatible gateways such as shisa.
+func TestFromChatCompletionResponse_ToolCallThoughtSignature(t *testing.T) {
+	raw := chatResponseRaw(map[string]any{
+		"role":    "assistant",
+		"content": nil,
+		"tool_calls": []any{map[string]any{
+			"id":   "call_gemini",
+			"type": "function",
+			"function": map[string]any{
+				"name":      "read_file",
+				"arguments": `{"path":"x"}`,
+			},
+			"extra_content": map[string]any{
+				"google": map[string]any{"thought_signature": "sig-1"},
+			},
+		}},
+	}, "tool_calls")
+	resp, err := fromChatCompletionResponse(raw, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := resp.ToolCalls()
+	if len(calls) != 1 || calls[0].ThoughtSignature != "sig-1" {
+		t.Fatalf("tool calls = %+v, want one call with the Gemini signature", calls)
+	}
+}
+
 // TestCollectEncryptedDetailsProgrammaticFallback pins the fallback for an
 // item built without its verbatim raw JSON: the known fields still round-trip.
 func TestCollectEncryptedDetailsProgrammaticFallback(t *testing.T) {

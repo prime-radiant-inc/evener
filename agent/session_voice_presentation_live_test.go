@@ -172,8 +172,8 @@ func TestVoicePresentationLiveReference(t *testing.T) {
 				if runErr != nil {
 					t.Fatalf("ProcessInput: %s (requests=%d blocked=%d)", strings.ReplaceAll(runErr.Error(), key, "[redacted]"), requests, blocked)
 				}
-				if requests != 1 || blocked != 0 || response.Model == "" || !sess.Communicated() {
-					t.Fatalf("runtime proof incomplete: requests=%d blocked=%d response_model=%q communicated=%t", requests, blocked, response.Model, sess.Communicated())
+				if requests != 1 || blocked != 0 || response.Model == "" || !sess.communicated() {
+					t.Fatalf("runtime proof incomplete: requests=%d blocked=%d response_model=%q communicated=%t", requests, blocked, response.Model, sess.communicated())
 				}
 				var calls []llm.ToolCallData
 				for _, part := range response.Message.Content {

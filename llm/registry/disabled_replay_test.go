@@ -98,6 +98,237 @@ func TestModelDisabledAgreesWithResolveAcrossLayerShapes(t *testing.T) {
 	}
 }
 
+// TestModelDisabledPinnedVerdicts pins modelDisabled's answer for the layer,
+// glob and alias shapes the ordering rules distinguish. The exhaustive shape
+// test above compares the two replays with each other; a table of fixed
+// answers catches the two drifting together.
+func TestModelDisabledPinnedVerdicts(t *testing.T) {
+	const codexBase = "[providers.mine]\nbase = \"openai-codex\"\napi_key = \"sk\"\n"
+	cases := []struct {
+		name            string
+		config          string
+		overlay         string
+		instance, model string
+		want            bool
+	}{
+		{
+			name:     "no flags",
+			instance: "anthropic", model: "claude-opus-4-6",
+			want: false,
+		},
+		{
+			name:     "config exact row disables",
+			config:   "[providers.anthropic.models.\"claude-opus-4-6\"]\ndisabled = true\n",
+			instance: "anthropic", model: "claude-opus-4-6",
+			want: true,
+		},
+		{
+			name:     "config provider glob disables, exact row re-enables",
+			config:   "[providers.anthropic.models.\"claude-*\"]\ndisabled = true\n[providers.anthropic.models.\"claude-opus-4-6\"]\ndisabled = false\n",
+			instance: "anthropic", model: "claude-opus-4-6",
+			want: false,
+		},
+		{
+			name:     "config top glob disables",
+			config:   "[models.\"*opus-4-6*\"]\ndisabled = true\n",
+			instance: "anthropic", model: "claude-opus-4-6",
+			want: true,
+		},
+		{
+			name:     "config top glob disables, config exact row re-enables",
+			config:   "[models.\"*opus-4-6*\"]\ndisabled = true\n[providers.anthropic.models.\"claude-opus-4-6\"]\ndisabled = false\n",
+			instance: "anthropic", model: "claude-opus-4-6",
+			want: false,
+		},
+		{
+			name:     "config exact row disables, config top glob re-enables then exact wins",
+			config:   "[providers.anthropic.models.\"claude-opus-4-6\"]\ndisabled = true\n[models.\"*opus-4-6*\"]\ndisabled = false\n",
+			instance: "anthropic", model: "claude-opus-4-6",
+			want: true,
+		},
+		{
+			name:     "curated overlay top glob disables",
+			overlay:  "[models.\"*opus-4-6*\"]\ndisabled = true\n",
+			instance: "anthropic", model: "claude-opus-4-6",
+			want: true,
+		},
+		{
+			name:     "config exact row re-enables over curated overlay glob",
+			overlay:  "[models.\"*opus-4-6*\"]\ndisabled = true\n",
+			config:   "[providers.anthropic.models.\"claude-opus-4-6\"]\ndisabled = false\n",
+			instance: "anthropic", model: "claude-opus-4-6",
+			want: false,
+		},
+		{
+			name:     "curated overlay provider glob disables",
+			overlay:  "[providers.anthropic.models.\"claude-opus-4-6*\"]\ndisabled = true\n",
+			instance: "anthropic", model: "claude-opus-4-6",
+			want: true,
+		},
+		{
+			// lookupRow takes the region-prefixed reference to the canonical
+			// row, and its exact entry is what the replay applies.
+			name:     "region-prefixed reference applies the canonical exact row",
+			config:   "[providers.anthropic.models.\"claude-opus-4-6\"]\ndisabled = true\n",
+			instance: "anthropic", model: "us.claude-opus-4-6",
+			want: true,
+		},
+		{
+			// The flag lives on layer rows, so the order between layers is what
+			// decides this: the curated overlay's disabled row must lose to the
+			// user config's re-enabling row.
+			name:     "config exact row re-enables a curated overlay exact row",
+			overlay:  "[providers.anthropic.models.\"claude-opus-4-6\"]\ndisabled = true\n",
+			config:   "[providers.anthropic.models.\"claude-opus-4-6\"]\ndisabled = false\n",
+			instance: "anthropic", model: "claude-opus-4-6",
+			want: false,
+		},
+		{
+			// The reverse of the case above on the same two layers: no
+			// re-enable, so the overlay's row is the last writer.
+			name:     "curated overlay exact row disables with no config row",
+			overlay:  "[providers.anthropic.models.\"claude-opus-4-6\"]\ndisabled = true\n",
+			instance: "anthropic", model: "claude-opus-4-6",
+			want: true,
+		},
+		{
+			// Different tags, different positions: a config top-level glob
+			// replays after the overlay's rows, so it is the last writer here.
+			name:     "config top glob re-enables a curated overlay exact row",
+			overlay:  "[providers.anthropic.models.\"claude-opus-4-6\"]\ndisabled = true\n",
+			config:   "[models.\"*opus-4-6*\"]\ndisabled = false\n",
+			instance: "anthropic", model: "claude-opus-4-6",
+			want: false,
+		},
+		{
+			// The reference matches only *4-6; the canonical row matches both,
+			// so the longer pattern is a target match and applies last.
+			name:     "region-prefixed reference replays canonical-row globs",
+			config:   "[providers.anthropic.models.\"claude-opus-4-6*\"]\ndisabled = true\n[providers.anthropic.models.\"*4-6\"]\ndisabled = false\n",
+			instance: "anthropic", model: "us.claude-opus-4-6",
+			want: true,
+		},
+		{
+			// Target-matching globs replay before reference-matching ones even
+			// when shorter patterns sort first: the longer canonical-row
+			// pattern is a target match, so it applies last and wins.
+			name:     "target-matching glob replays after a shorter reference-only glob",
+			config:   "[providers.anthropic.models.\"claude-opus-4-6*\"]\ndisabled = true\n[providers.anthropic.models.\"us.claude*\"]\ndisabled = false\n",
+			instance: "anthropic", model: "us.claude-opus-4-6",
+			want: false,
+		},
+		{
+			name:     "same-provider alias inherits a disabled target",
+			config:   "[providers.anthropic.models.\"claude-opus-4-6\"]\ndisabled = true\n[providers.anthropic.models.\"house-model\"]\nalias_of = \"claude-opus-4-6\"\n",
+			instance: "anthropic", model: "house-model",
+			want: true,
+		},
+		{
+			name:     "same-provider alias of an enabled target stays enabled",
+			config:   "[providers.anthropic.models.\"house-model\"]\nalias_of = \"claude-opus-4-6\"\n",
+			instance: "anthropic", model: "house-model",
+			want: false,
+		},
+		{
+			name:     "cross-provider alias inherits a disabled target",
+			config:   codexBase + "[providers.openai.models.\"gpt-5.6\"]\ndisabled = true\n[providers.mine.models.\"house-model\"]\nalias_of = \"openai/gpt-5.6\"\n",
+			instance: "mine", model: "house-model",
+			want: true,
+		},
+		{
+			name:     "cross-provider alias exact row re-enables over disabled target",
+			config:   codexBase + "[providers.openai.models.\"gpt-5.6\"]\ndisabled = true\n[providers.mine.models.\"house-model\"]\nalias_of = \"openai/gpt-5.6\"\ndisabled = false\n",
+			instance: "mine", model: "house-model",
+			want: false,
+		},
+		{
+			name:     "cross-provider alias top glob re-enables over disabled target",
+			config:   codexBase + "[providers.openai.models.\"gpt-5.6\"]\ndisabled = true\n[models.\"house-*\"]\ndisabled = false\n[providers.mine.models.\"house-model\"]\nalias_of = \"openai/gpt-5.6\"\n",
+			instance: "mine", model: "house-model",
+			want: false,
+		},
+		{
+			name:     "cross-provider alias exact row disables over enabled target",
+			config:   codexBase + "[providers.mine.models.\"house-model\"]\nalias_of = \"openai/gpt-5.6\"\ndisabled = true\n",
+			instance: "mine", model: "house-model",
+			want: true,
+		},
+		{
+			// Globs replay against the alias's target row id too, so a glob
+			// written for the target catches the alias.
+			name:     "cross-provider alias is caught by a target-id glob",
+			config:   codexBase + "[models.\"gpt-5.6*\"]\ndisabled = true\n[providers.mine.models.\"house-model\"]\nalias_of = \"openai/gpt-5.6\"\n",
+			instance: "mine", model: "house-model",
+			want: true,
+		},
+		{
+			// The glob lives on the alias's own record and matches only the
+			// target id, while the target itself stays served: only the altID
+			// rule can produce this verdict.
+			name:     "provider-scoped target-id glob disables the alias alone",
+			config:   codexBase + "[providers.mine.models.\"gpt-5.6*\"]\ndisabled = true\n[providers.mine.models.\"house-model\"]\nalias_of = \"openai/gpt-5.6\"\n",
+			instance: "mine", model: "house-model",
+			want: true,
+		},
+		{
+			// The same shape left enabled must stay served, so the case above is
+			// not passing on a coincidental inherited verdict.
+			name:     "provider-scoped target-id glob leaves the alias served when enabled",
+			config:   codexBase + "[providers.mine.models.\"gpt-5.6*\"]\ndisabled = false\n[providers.mine.models.\"house-model\"]\nalias_of = \"openai/gpt-5.6\"\n",
+			instance: "mine", model: "house-model",
+			want: false,
+		},
+		{
+			// Target-matching globs replay before reference-matching ones, so the
+			// glob written for the alias itself is the last writer.
+			name:     "cross-provider alias reference glob beats target-id glob",
+			config:   codexBase + "[models.\"gpt-5.6*\"]\ndisabled = true\n[models.\"house-*\"]\ndisabled = false\n[providers.mine.models.\"house-model\"]\nalias_of = \"openai/gpt-5.6\"\n",
+			instance: "mine", model: "house-model",
+			want: false,
+		},
+		{
+			// The same two globs with the flags the other way round: the
+			// reference-matching glob still wins.
+			name:     "cross-provider alias reference glob disables over target-id glob",
+			config:   codexBase + "[models.\"gpt-5.6*\"]\ndisabled = false\n[models.\"house-*\"]\ndisabled = true\n[providers.mine.models.\"house-model\"]\nalias_of = \"openai/gpt-5.6\"\n",
+			instance: "mine", model: "house-model",
+			want: true,
+		},
+		{
+			name:     "curated cross-provider alias inherits a disabled target",
+			config:   "[providers.openai.models.\"gpt-5.6-sol\"]\ndisabled = true\n",
+			instance: "openai-codex", model: "gpt-5.6-sol",
+			want: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var extra []Option
+			if tc.overlay != "" {
+				extra = append(extra, WithOverlay(overlayWith(tc.overlay)))
+			}
+			r := fixtureLoad(t, nil, tc.config, extra...)
+			rec, ok := r.recordFor(tc.instance)
+			if !ok {
+				t.Fatalf("no %s record", tc.instance)
+			}
+			ref := Ref{Instance: tc.instance, Model: tc.model}
+			got := r.modelDisabled(rec, ref, r.lookupRow(rec, tc.model))
+			if got != tc.want {
+				t.Fatalf("modelDisabled(%s) = %v, want %v", ref, got, tc.want)
+			}
+			_, err := r.resolveOn(rec, ref, nil)
+			resolveDisabled := errors.Is(err, ErrModelDisabled)
+			if err != nil && !resolveDisabled {
+				t.Fatalf("resolveOn(%s) = %v", ref, err)
+			}
+			if resolveDisabled != tc.want {
+				t.Fatalf("Resolve disabled(%s) = %v, modelDisabled = %v, want %v", ref, resolveDisabled, got, tc.want)
+			}
+		})
+	}
+}
+
 func pow(base, exp int) int {
 	out := 1
 	for range exp {

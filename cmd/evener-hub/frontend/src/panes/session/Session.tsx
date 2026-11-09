@@ -137,8 +137,14 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
 
   const footerCwd = !deletedRef && model ? model.cwd : null;
   const edgeFooter = useMemo(() => {
-    const location =
-      footerCwd === null ? null : <RepoLocation cwd={footerCwd} local={ref.startsWith("local:")} link={!isMobile} />;
+    // The phone layout keeps one bottom surface, the composer's own control
+    // row: the strip's activity chips ride inside that row instead, and its
+    // working-directory line stays a desktop-line concern (a phone reads
+    // the working directory and branch through the session menu's
+    // Overview), so a landscape phone spends its height on content rather
+    // than chrome strips.
+    if (isMobile) return undefined;
+    const location = footerCwd === null ? null : <RepoLocation cwd={footerCwd} local={ref.startsWith("local:")} />;
     return <StatusBar sessionRef={ref} paneId={paneId} leading={location} />;
   }, [footerCwd, isMobile, paneId, ref]);
 

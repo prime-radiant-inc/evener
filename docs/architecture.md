@@ -330,7 +330,7 @@ appenders and exactly one drainer:
   job-completion records and watch-send wake tokens. Appended by the `jobManager`'s
   `enqueue` upcall from observation paths (`enqueueJobNotificationAndNotify`); drained
   by the loop in the notification-accept path (`acceptNotificationInput`,
-  `agent/session_lifecycle.go`).
+  `agent/session_notifications.go`).
 - **Watch outbox** — the durable pending watch sends (jobstore `watch_send_pending`
   records). Appended by the `jobManager`'s observation paths (`onSessionEvent`,
   `feedJobOutput`, `fireProgressTick`, `armFinalizedJob`) taking only leaf locks;

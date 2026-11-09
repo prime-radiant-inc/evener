@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/internal/testfs"
 	"primeradiant.com/evener/llm"
 )
 
@@ -24,7 +25,7 @@ func TestFailedResumeKeepsTheSessionsScratch(t *testing.T) {
 	errRestore := errors.New("restore failed after reopening the scratch")
 	saveMeta := func(t *testing.T) string {
 		t.Helper()
-		stateDir := resolvedTempDir(t)
+		stateDir := testfs.CanonicalTempDir(t)
 		if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
 			ID: sessionID, ProfileID: "openai", Model: "gpt-test",
 			CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(2, 0).UTC(),
@@ -64,7 +65,7 @@ func TestFailedResumeKeepsTheSessionsScratch(t *testing.T) {
 	}
 
 	t.Run("run", func(t *testing.T) {
-		t.Setenv("TMPDIR", resolvedTempDir(t))
+		t.Setenv("TMPDIR", testfs.CanonicalTempDir(t))
 		installRunScriptedProvider(t, &scriptedProvider{name: "openai"})
 		oldEnsure, oldRestore := runEnsureUserConfigDirs, runRestoreSession
 		t.Cleanup(func() { runEnsureUserConfigDirs, runRestoreSession = oldEnsure, oldRestore })
@@ -81,7 +82,7 @@ func TestFailedResumeKeepsTheSessionsScratch(t *testing.T) {
 	})
 
 	t.Run("serve", func(t *testing.T) {
-		t.Setenv("TMPDIR", resolvedTempDir(t))
+		t.Setenv("TMPDIR", testfs.CanonicalTempDir(t))
 		deps := defaultServeDeps()
 		deps.ensureConfigDirs = func() error { return nil }
 		deps.seedMarketplaces = func(context.Context) error { return nil }

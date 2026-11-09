@@ -35,7 +35,7 @@ func (s *RemoteHubSource) toRemoteRef(rawRef, threadID string) (appwire.Ref, err
 		return appwire.Ref{}, err
 	}
 	if ref.SourceID != s.id {
-		return appwire.Ref{}, fmt.Errorf("source not found: %s", ref.SourceID)
+		return appwire.Ref{}, fmt.Errorf("%w: %s", ErrSourceNotFound, ref.SourceID)
 	}
 	return appwire.Ref{SourceID: remoteHubNamespace, ThreadID: ref.ThreadID}, nil
 }

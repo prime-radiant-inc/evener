@@ -29,7 +29,7 @@ import {
   subscribeComposerSubmissionCommitted,
   updateRecoveryPendingTurn,
 } from "./queue/pendingTurnsStore";
-import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
+import { compositionIsEmpty, mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
 import {
   materializeSelectionReferences,
   parseSkillDocument,
@@ -411,12 +411,13 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     nextComposerText?: string,
   ): Promise<boolean> {
     if (disposed) return Promise.resolve(false);
-    const isEmptyCleanup =
-      nextText.trim() === "" &&
-      nextAttachments.length === 0 &&
-      nextSkillNames.length === 0 &&
-      nextCommandNames.length === 0 &&
-      (nextMentions?.length ?? 0) === 0;
+    const isEmptyCleanup = compositionIsEmpty({
+      text: nextText,
+      attachments: nextAttachments,
+      skillNames: nextSkillNames,
+      commandNames: nextCommandNames,
+      mentions: nextMentions,
+    });
     if (!isEmptyCleanup) cancelCleanupRetry();
     const version = ++recoveryWriteVersionRef.current;
     const replacementEpoch = recoveryReplacementEpochRef.current;
@@ -435,11 +436,13 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
         )
           return true;
         if (
-          nextText.trim() === "" &&
-          nextAttachments.length === 0 &&
-          nextSkillNames.length === 0 &&
-          nextCommandNames.length === 0 &&
-          (nextMentions?.length ?? 0) === 0
+          compositionIsEmpty({
+            text: nextText,
+            attachments: nextAttachments,
+            skillNames: nextSkillNames,
+            commandNames: nextCommandNames,
+            mentions: nextMentions,
+          })
         ) {
           const lease = recoveryOwnerLeaseRef.current;
           if (!lease || lease.clientMutationId !== clientMutationId) return false;

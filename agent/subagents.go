@@ -822,7 +822,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 	subCfg.spawn.subagentTask = task
 	subCfg.spawn.inheritedContext = inheritedContext
 	subCfg.spawn.depth = depth + 1
-	subCfg.spawn.parentSteer = s.SteerWithProvenance
+	subCfg.spawn.parentSteer = s.steerWithProvenance
 	subCfg.spawn.parentSystemNotification = s.routeSystemNotification
 	if subCfg.ShareTasksWithChildren {
 		ownerSessionID := parentCfg.spawn.sharedTaskStoreOwnerSessionID
@@ -1285,7 +1285,7 @@ func (s *Session) seedChildTasks(subSess *Session, agent *plugin.Agent, frozen *
 				return err
 			}
 		} else if current, ok := subStore.CurrentInProgress(); ok {
-			if err := subSess.SteerKind(formatCurrentTaskSteering(current, subSess.canInstructTool("task_list")), events.SteeringKindCurrentTask); err != nil {
+			if err := subSess.steerKind(formatCurrentTaskSteering(current, subSess.canInstructTool("task_list")), events.SteeringKindCurrentTask); err != nil {
 				return err
 			}
 		}
@@ -1366,7 +1366,7 @@ func (s *Session) hasSalvageFromFinalRound() bool {
 func (a *subagent) trySetDisposeGate() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.running || a.driving {
+	if a.running || a.driving || a.finalizing || a.disposeGated {
 		return false
 	}
 	a.disposeGated = true
@@ -1641,9 +1641,9 @@ func (s *Session) childFatalRunGated(childSessionID string) bool {
 // calling the result tool. Sent at most once.
 func communicateNudge(toolName string) string {
 	return "You stopped without calling " + toolName + ". " +
-		"You MUST call " + toolName + " with end_turn=true and a message summarizing your complete findings " +
+		"You MUST call " + toolName + " with end_turn=true and a message summarizing your complete findings, or naming the work you are waiting on, " +
 		"before stopping. The parent agent receives ONLY the " + toolName + " message — " +
-		"it cannot see anything else you did. Report your results now."
+		"it cannot see anything else you did. Report your results, or what you are waiting on, now."
 }
 
 // communicateUpdateNudge is the reminder for a subagent that sent its parent a
@@ -1682,7 +1682,7 @@ func delegateNudgeText(toolName string, updated bool) string {
 // it. If the session refuses the steer, the reminder is delivered directly so a
 // missing report is still addressed.
 func (a *subagent) deliverCommunicateNudge(ctx context.Context, inputProvenance *provenance.Causal) (string, error) {
-	updated := a.sess.CommunicateUpdate()
+	updated := a.sess.communicateUpdate()
 	if hook := a.sess.cfg.testOnly.subagentNudgeSelected; hook != nil {
 		hook(updated)
 	}
@@ -1746,7 +1746,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 				needsNudge = decision == delegateCompletionNeedsNudge
 			}
 		} else {
-			needsNudge = !a.sess.Communicated()
+			needsNudge = !a.sess.communicated()
 		}
 		shouldNudge := nudgeAvailable && !cancelRequested &&
 			!budgetExhausted &&
@@ -1906,7 +1906,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	a.sess.mu.Unlock()
 
 	runProvenance := a.followUpProvenance(inputProvenance)
-	runStructured := a.sess.CommunicateStructured()
+	runStructured := a.sess.communicateStructured()
 	finalizeTime := finish.endedAt
 	if finalizeTime.IsZero() {
 		finalizeTime = a.sess.sclock().Now()
@@ -2065,6 +2065,12 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 // the run-end taxonomy classifyRunEnd owns, read from its own projections: a
 // run settles ordinarily exactly when it ended nil or on a model-behavior
 // sentinel, and the exhausted status is the budget exhaustion.
+//
+// The 2026-11-09 lifecycle ruling settles the trade this deliberately makes
+// (issue #5674): a report may be presented twice in a narrow window rather
+// than lost. Do not move an unlisted error class into "presented" to reduce
+// duplication; that needs a presented-marker durable across tool rounds and
+// restarts, not a wider verdict here.
 func attentionRunPresentedItsReport(err error) bool {
 	end := classifyRunEnd(err, false)
 	return end.mode == delegateSettlementOrdinary || end.status == SubagentExhausted
@@ -2101,7 +2107,7 @@ func (a *subagent) drainForFinalization(ctx context.Context, result string) (str
 	// a foreign prune can release the lane mid-finalization.
 	stopEvidenceTicker := a.sess.startLaneEvidenceTicker(ctx)
 	defer stopEvidenceTicker()
-	drained, err := a.sess.DrainJobTreeKeepingReport(ctx)
+	drained, err := a.sess.drainJobTreeKeepingReport(ctx)
 	if err != nil {
 		return result, parentDriveNotify, err
 	}
@@ -2309,11 +2315,12 @@ type delegateTerminalPacketMetadata struct {
 }
 
 type delegateTerminalWorktreeReport struct {
-	Path    string `json:"path"`
-	Branch  string `json:"branch"`
-	HeadSHA string `json:"head_sha"`
-	Ahead   int    `json:"ahead"`
-	Dirty   bool   `json:"dirty"`
+	Path         string `json:"path"`
+	Branch       string `json:"branch"`
+	HeadSHA      string `json:"head_sha"`
+	Ahead        int    `json:"ahead"`
+	Dirty        bool   `json:"dirty"`
+	DisposalHint string `json:"disposal_hint,omitempty"`
 }
 
 // delegateFinishFromRun constructs the one immutable packet used by
@@ -2449,11 +2456,12 @@ func delegateTerminalMetadataFromRun(inputs delegateTerminalRunInputs) delegateT
 	}
 	if inputs.worktree != nil {
 		metadata.Worktree = &delegateTerminalWorktreeReport{
-			Path:    inputs.worktree.Path,
-			Branch:  inputs.worktree.Branch,
-			HeadSHA: inputs.worktree.HeadSHA,
-			Ahead:   inputs.worktree.Ahead,
-			Dirty:   inputs.worktree.Dirty,
+			Path:         inputs.worktree.Path,
+			Branch:       inputs.worktree.Branch,
+			HeadSHA:      inputs.worktree.HeadSHA,
+			Ahead:        inputs.worktree.Ahead,
+			Dirty:        inputs.worktree.Dirty,
+			DisposalHint: inputs.worktree.DisposalHint,
 		}
 	}
 	metadata.ScratchPath = inputs.scratchPath

@@ -1502,7 +1502,7 @@ describe("operations polling (S15)", () => {
     // polling until a terminal state rather than freeze the record behind a
     // settled state.
     expect(operationStateSettled("orphan-unverified")).toBe(false);
-    for (const state of ["pending", "running"]) {
+    for (const state of ["pending", "running", "future-state", "toString"]) {
       expect(operationStateSettled(state)).toBe(false);
     }
     const seed: HostOperationRef = {
@@ -1520,6 +1520,25 @@ describe("operations polling (S15)", () => {
     expect(operationNeedsRead({ ...seed, state: "running" })).toBe(true);
     // An orphan-unverified body is durable: it still owes reads.
     expect(operationNeedsRead({ ...seed, state: "orphan-unverified", fetched: true })).toBe(true);
+    expect(operationNeedsRead({ ...seed, state: "future-state", fetched: true })).toBe(true);
+    expect(operationNeedsRead({ ...seed, state: "future-state", gone: true })).toBe(false);
+  });
+
+  test("keeps polling an unverified orphan until its authoritative outcome arrives", async () => {
+    const fake = connectReadyFakeClient();
+    fake.on("evener/host/list", () => ({ hosts: [row("beta")] }));
+    const states = ["orphan-unverified", "interrupted"] as const;
+    let reads = 0;
+    await startedDeploy(fake, () => ({
+      operations: [operationRecord({ state: states[reads++] })],
+    }));
+
+    await hostOpsStore.getState().pollOperation("beta");
+    expect(hostOpsStore.getState().operations.beta?.state).toBe("orphan-unverified");
+    await hostOpsStore.getState().pollOperation("beta");
+    expect(hostOpsStore.getState().operations.beta?.state).toBe("interrupted");
+    await hostOpsStore.getState().pollOperation("beta");
+    expect(reads).toBe(2);
   });
 
   test("the view names the operation's kind and state, and never invents a message", () => {

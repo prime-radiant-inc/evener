@@ -40,7 +40,7 @@ export function useShareIntake({ onShare, port, ready = false }: ShareIntakeOpti
 		let active = true;
 		Linking.getInitialURL()
 			.then((url) => {
-				if (active && isShareURL(url)) void intake.offer();
+				if (active && isShareURL(url ?? null)) void intake.offer();
 			})
 			.catch(() => {});
 		const urlSubscription = Linking.addEventListener("url", (event) => {

@@ -772,6 +772,14 @@ func (s *Session) AcceptClientMutationSteerAs(params appwire.TurnSteerParams, ac
 			rejectClientMutation(record, appwire.InvalidParams("input is required"))
 			return nil
 		}
+		// Steering is the user speaking again, so it re-engages a turn a Stop
+		// parked: both holds release (lifecycle ruling 2026-11-09, issue #191).
+		// Clearing SteeringHeld is what lets the carrier run the steer at all;
+		// clearing QueueHeld is what unparks the messages the Stop left behind.
+		// A second steer while held therefore releases the first too: new user
+		// activity re-engages the parked rail rather than inheriting its hold.
+		snapshot.QueueHeld = false
+		snapshot.SteeringHeld = false
 		reserveClientMutationTurnID(snapshot, record)
 		record.ExecutionState = "accepted"
 		return nil
@@ -787,6 +795,14 @@ func (s *Session) AcceptClientMutationSteerAs(params appwire.TurnSteerParams, ac
 	})
 	if err != nil {
 		return appwire.TurnSteerResponse{}, err
+	}
+	// Only a FRESH application unparks: replay re-runs no accept callback, so
+	// it releases no hold, and a Stop that landed after the original steer
+	// must keep the attention rail silent. A fresh steer is a re-engagement
+	// like turn/start, so the deferred root attention re-arms with it
+	// (lifecycle ruling 2026-11-09, issue #191).
+	if lookup.Disposition != clientMutationDispositionReplayed {
+		s.unparkRootDelegateAttention()
 	}
 	if lookup.Disposition == clientMutationDispositionReplayed {
 		var replayed appwire.TurnSteerResponse
@@ -850,7 +866,7 @@ func (s *Session) wakeForPendingSteering() {
 // wake is cheap -- it finds nothing runnable and no-ops, and repeated wakes
 // coalesce into one parked send.
 func (s *Session) wakeForPendingQueuedInput() {
-	if s.QueueDepth() == 0 {
+	if s.queueDepth() == 0 {
 		return
 	}
 	s.wakePendingUserInput()
@@ -1947,7 +1963,7 @@ func (s *Session) completeClientMutationTurnWithState(clientMutationID, executio
 		s.wakeRunnableClientMutationStartAfterFence()
 	}
 	if returned {
-		// The durable queue grew a message back. QueueDepth,
+		// The durable queue grew a message back. queueDepth,
 		// WireState and the queued-input wake all read the process-local copy,
 		// so without this the message is durably present and invisible -- and
 		// the wake that would run it gates on that same stale depth.
@@ -2001,7 +2017,7 @@ func returnClaimedQueuedMutation(
 	}
 	// Callers own the queue revision and the runtime reflection: restore bumps
 	// the revision once for the whole rebuild, and the completion path bumps it
-	// per return. Both must reflect afterwards -- QueueDepth,
+	// per return. Both must reflect afterwards -- queueDepth,
 	// WireState and the queued-input wake all read the process-local copy, so a
 	// message restored only here would be durably present and invisible.
 	record.ProjectionState = acceptedClientMutationProjection(record.Method)

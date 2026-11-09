@@ -105,7 +105,7 @@ func TestForcedNoteLive(t *testing.T) {
 	t.Logf("turn-2 out=%.80q", out2)
 
 	hist := currentHistory(t, sess)
-	pinned := sess.PinnedNote()
+	pinned := sess.pinnedNote()
 	sess.Close()
 	<-done
 

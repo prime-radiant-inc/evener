@@ -1479,6 +1479,94 @@ test("recovery Drain waits for pending autosaves and uses the committed revision
   expect(resend.mock.calls[0]?.[3]).toEqual({ [record.clientMutationId]: 1 });
 });
 
+test("a second same-ref drain is refused while the first preparation is pending", async () => {
+  const fake = connectReadyFakeClient();
+  await hydrate(fake, "ref_a", {
+    evener: {
+      ref: "ref_a",
+      capabilities: CAPABILITIES,
+      queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
+    },
+  });
+  const record = await seedRecovery("rejected", "visible recovery text");
+  await flushPendingTurnsProjectionForTests();
+  let releasePreparation!: () => void;
+  const preparation = new Promise<void>((resolve) => {
+    releasePreparation = resolve;
+  });
+  const getRecoveryRevision = vi.fn(async () => {
+    await preparation;
+    return 1;
+  });
+  const resend = vi
+    .spyOn(MutationOutboxIndexedDB.prototype, "resendRecoveryResult")
+    .mockRejectedValue(new Error("scripted resend stop"));
+  onTestFinished(() => resend.mockRestore());
+  const props = defaultProps({
+    activeRecoveryId: record.clientMutationId,
+    activeRecoveryRevision: record.compositionRevision ?? 0,
+    getRecoveryRevision,
+    getComposerText: () => ({ text: "visible recovery text", attachments: [], hasPending: false }),
+  });
+  render(
+    <>
+      <QueueStrip {...props} />
+      <QueueStrip {...props} />
+      <Toast />
+    </>,
+  );
+  await flushPendingTurnsProjectionForTests();
+  const user = userEvent.setup();
+  const drains = await screen.findAllByRole("button", { name: "Steer queue now" });
+  expect(drains).toHaveLength(2);
+  await user.click(drains[0]!);
+  // The first press is still inside its durable preparation. The second press
+  // must hear the same per-ref refusal a dispatch in flight gives (#4605).
+  await user.click(drains[1]!);
+  releasePreparation();
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(getRecoveryRevision).toHaveBeenCalledTimes(1));
+  expect(resend).toHaveBeenCalledTimes(1);
+});
+
+test("a drain whose revision read is unavailable refuses once and releases the guard", async () => {
+  const fake = connectReadyFakeClient();
+  await hydrate(fake, "ref_a", {
+    evener: {
+      ref: "ref_a",
+      capabilities: CAPABILITIES,
+      queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
+    },
+  });
+  const record = await seedRecovery("rejected", "visible recovery text");
+  await flushPendingTurnsProjectionForTests();
+  const getRecoveryRevision = vi.fn(async (): Promise<number | undefined> => undefined);
+  const resend = vi
+    .spyOn(MutationOutboxIndexedDB.prototype, "resendRecoveryResult")
+    .mockRejectedValue(new Error("scripted resend stop"));
+  onTestFinished(() => resend.mockRestore());
+  renderStrip(
+    defaultProps({
+      activeRecoveryId: record.clientMutationId,
+      activeRecoveryRevision: record.compositionRevision ?? 0,
+      getRecoveryRevision,
+      getComposerText: () => ({ text: "visible recovery text", attachments: [], hasPending: false }),
+    }),
+  );
+  await flushPendingTurnsProjectionForTests();
+  const user = userEvent.setup();
+  const drain = await screen.findByRole("button", { name: "Steer queue now" });
+  await user.click(drain);
+  await flushPendingTurnsProjectionForTests();
+  expect(getRecoveryRevision).toHaveBeenCalledTimes(1);
+  expect(resend).not.toHaveBeenCalled();
+
+  getRecoveryRevision.mockResolvedValue(1);
+  await user.click(drain);
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(resend).toHaveBeenCalledTimes(1));
+});
+
 describe("row rendering", () => {
   async function hydrateWithTwoRows(fake: FakeClient) {
     await hydrate(fake, "ref_a", {

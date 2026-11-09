@@ -96,6 +96,7 @@ native:.:./cmd/evener-hub/internal/launchconfig:FuzzLaunchConfigResolve
 native:.:./cmd/evener-fuzzregistry:FuzzParseRegistry
 native:.:./cmd/evener-fuzzregistry:FuzzRegistryProgram
 native:.:./cmd/evener-dev:FuzzParseGoTestJSON
+native:.:./scripts/native/ios/qualification:FuzzSimulatorSelection
 native:agent:./plugin:FuzzPluginManifestParse
 native:agent:./plugin:FuzzPluginLoaderProgram
 native:agent:./plugin:FuzzDiscoverEvenerwideFrontmatter

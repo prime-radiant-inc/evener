@@ -933,6 +933,60 @@ func compatibilityItemCandidateResultForRead(
 	return sourceItemCandidateResultForRead(ctx, source, params, response)
 }
 
+// resolveReadSource resolves the source a thread/read reads from, refreshing the
+// roster and resolving once more when a transient failure would otherwise answer
+// from the persisted transcript. That saved projection carries no mutation
+// authority and no provenance, so a client reads it as a replaced manager. The
+// refresh opens a window for a registration this read raced to land; it does not
+// register sources itself. The retry runs under the deletion fence again, so a
+// deletion that begins during the refresh is still terminal. A resolution that
+// stays broken keeps today's error, and the caller's saved-history fallback is
+// unchanged.
+func resolveReadSource(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadReadParams) (appsource.Source, error) {
+	source, err := sourceForThreadWithDeletionFence(ctx, cfg, sources, params.Ref, params.ThreadID)
+	if !readSourceRetryable(cfg, sources, params, err) {
+		return source, err
+	}
+	// The refresh paces the retry: it leaves the window a registration that lost
+	// the race with this read needs to land. Its own failure is not reported —
+	// this branch's answer is the saved history below, and an unrelated refresh
+	// error would replace readable history with an outage.
+	_ = hubRosterRefresh(ctx, cfg.Roster)
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	retried, retryErr := sourceForThreadWithDeletionFence(ctx, cfg, sources, params.Ref, params.ThreadID)
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if retryErr == nil || isTargetDeletedError(retryErr) {
+		return retried, retryErr
+	}
+	return nil, err
+}
+
+// readSourceRetryable reports whether the read's failed source resolution is
+// worth one more attempt after a roster refresh. A resolved source needs none. A
+// target-deleted fence and a pending-ask page are terminal: the page names a
+// live ask set that only a resolved source answers, and the fence must not be
+// widened by another attempt. A live-only read has no saved answer to improve
+// and never takes an unbudgeted ownership refresh. A hub with no roster or no
+// source registry has nothing to refresh.
+func readSourceRetryable(cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadReadParams, err error) bool {
+	if err == nil || cfg.Roster == nil || sources == nil || params.LiveOnly {
+		return false
+	}
+	if isTargetDeletedError(err) || params.IsPendingAskPage() {
+		return false
+	}
+	// The live-read classifier answers the same question for a resolution
+	// failure — could another attempt succeed — and its terminal verdicts (a
+	// canceled request, a refused protocol, a dead session) are no more
+	// retryable here. A resolution that fails because nothing is registered is
+	// not a wire error, which is exactly what it treats as transient.
+	return retryableLiveReadFailure(err)
+}
+
 func (o *sessionOperations) Read(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 	// An ordinary thread/read retains its default downstream subscription when
 	// the source hands off a live relay. Internal Manager snapshot reads call
@@ -985,7 +1039,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 			}
 		}
 	}
-	source, err := sourceForThreadWithDeletionFence(ctx, cfg, sources, params.Ref, params.ThreadID)
+	source, err := resolveReadSource(ctx, cfg, sources, params)
 	if err != nil {
 		if isTargetDeletedError(err) || params.IsPendingAskPage() {
 			return appwire.ThreadReadResponse{}, err

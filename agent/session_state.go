@@ -60,7 +60,7 @@ func (s *Session) awaitingOrHasPendingAsk() bool {
 	return s.state == SessionAwaiting || len(s.askPending) > 0
 }
 
-// WireState is the externally-reported session state: RestingWireState, with
+// WireState is the externally-reported session state: restingWireState, with
 // one override. A resting session (idle, or resting on a failed turn) with
 // undelivered job notifications or claimable queued input reads as "active",
 // because work the session owns can start its next turn without user input. A
@@ -75,14 +75,14 @@ func (s *Session) awaitingOrHasPendingAsk() bool {
 // could move the session are gated behind the very answer the user was never
 // told to give. TestWireState_AwaitingOutranksAutonomy pins this.
 func (s *Session) WireState() string {
-	state := s.RestingWireState()
+	state := s.restingWireState()
 	if appwire.IsRestingThreadStatus(state) && s.sessionWorkPending() {
 		return string(SessionProcessing)
 	}
 	return state
 }
 
-// RestingWireState is State() with one substitution: a session resting on a
+// restingWireState is State() with one substitution: a session resting on a
 // failed turn publishes appwire.ThreadStatusSystemError, which every client
 // shows as Failed. It rests on a failed turn when it is idle, or awaiting with
 // no pending question, and its history ends in a recorded turn failure
@@ -97,7 +97,7 @@ func (s *Session) WireState() string {
 // WireState (this state plus the work-pending override) on its SessionStart
 // event, and serve publishes the same WireState before the first turn, so the
 // bridge and the synchronous startup write agree (#251).
-func (s *Session) RestingWireState() string {
+func (s *Session) restingWireState() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, failed := s.restingFailureLocked(); failed {
@@ -109,7 +109,7 @@ func (s *Session) RestingWireState() string {
 // RestingFailure summarizes the failed turn the session rests on for its row's
 // why line (S1c): the failure's headline and its structured cause, never its
 // message, which can quote a provider's error body. It reads what
-// RestingWireState reads, under the same one hold, so it is present only while
+// restingWireState reads, under the same one hold, so it is present only while
 // the session publishes systemError, and a restored session summarizes the
 // failure the live one did. It is nil when the session rests on no failed
 // turn, or when the failure recorded no diagnostic (a legacy entry): the row
@@ -421,7 +421,7 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		MemorySaveUnavailable:    memorySaveUnavailable,
 		Origin:                   s.origin,
 		Goal:                     s.goalSnapshotForMeta(),
-		PinnedNote:               s.pinnedNote,
+		PinnedNote:               s.pinnedNoteText,
 		Skills:                   &skills,
 		HumanNote:                human,
 		AgentNote:                agentNote,
@@ -473,10 +473,10 @@ func (s *Session) goalSnapshotForMeta() *schema.GoalSnapshot {
 	}
 }
 
-// ContextPressure returns the estimated context pressure as a fraction. It may
+// contextPressure returns the estimated context pressure as a fraction. It may
 // exceed 1.0 when used exceeds the window. Returns 0 if the context manager is
 // not initialized. Each call takes one full sample.
-func (s *Session) ContextPressure() float64 {
+func (s *Session) contextPressure() float64 {
 	_, pressure := s.ContextStatus()
 	return pressure
 }
@@ -800,7 +800,9 @@ func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
 	// Runnable user steering is queued input for this purpose: a carrier that
 	// returned its steer undelivered leaves it for the next wake, and a
 	// session that will move on its own is not waiting on the user.
-	moves := s.QueueDepth() > 0 || s.hasRunnableUserSteering()
+	// A queue parked by a Stop is not work either: nothing runs it until the
+	// person acts, and WireState already reads it that way (issue #4142).
+	moves := s.pendingQueueDepth() > 0 || s.hasRunnableUserSteering()
 	if settleTerminalState(hadOutput, goalKicked, moves, s.autonomyInFlight()) != SessionAwaiting {
 		return
 	}
@@ -858,9 +860,10 @@ func (s *Session) restStillPendingLocked(generation uint64) bool {
 // neither starts a turn the moment it arrives.
 func (s *Session) restAwaiting(generation uint64) bool {
 	steeringHeld := s.userSteeringHeld()
+	queueHeld := s.clientMutations != nil && s.clientMutations.queueHeld()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.restStillPendingLocked(generation) || len(s.inputQueue) > 0 || s.runnableUserSteeringLocked(steeringHeld) {
+	if !s.restStillPendingLocked(generation) || (!queueHeld && len(s.inputQueue) > 0) || s.runnableUserSteeringLocked(steeringHeld) {
 		return false
 	}
 	s.state = SessionAwaiting
