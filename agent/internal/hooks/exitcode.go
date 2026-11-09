@@ -17,8 +17,8 @@ type eventExitPolicy struct {
 // Enforced (BlockOnExit2=true): the runner denies/blocks when a matched hook
 // exits 2:
 //   - PreToolUse: RunPreToolUse denies the tool call
-//   - Stop: runStopEvent prevents stopping
-//   - SubagentStop: runStopEvent prevents the subagent stopping
+//   - Stop: runStopEventFor prevents stopping
+//   - SubagentStop: runStopEventFor prevents the subagent stopping
 //   - PostToolBatch: RunPostToolBatch stops the round loop
 //
 // In the Claude contract, exit 2 also blocks UserPromptSubmit (erase the prompt)

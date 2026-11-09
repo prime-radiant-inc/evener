@@ -647,6 +647,14 @@ type Session struct {
 	// clears it (execTool), because the work the block asked for has been done.
 	// Cleared with comm when the next turn starts. Guarded by mu.
 	stopHookActive bool
+	// turnInterrupted records that the turn which just ran ended on a
+	// cancellation (an interrupt, a signal, a shutdown). It is set in the
+	// interrupt branch before the turn settles idle, because that settle would
+	// otherwise make a killed working turn look like an idle prompt: the state
+	// becomes SessionIdle and the pending ask is cleared, so the close could
+	// not tell them apart afterwards. Monotonic within a turn and cleared at
+	// the next turn's start. Guarded by mu.
+	turnInterrupted bool
 	// latestReport is the most recent terminal communicate this session
 	// accepted. Unlike comm it survives the next input's reset, so a drain
 	// can restore the report that input erased.

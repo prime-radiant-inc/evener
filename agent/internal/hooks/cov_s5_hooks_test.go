@@ -84,11 +84,11 @@ func TestCov_MergeHookInputMaps(t *testing.T) {
 	}
 }
 
-// RunSessionEnd dispatches SessionEnd hooks (fire-and-forget, no result).
-func TestCov_RunSessionEnd(t *testing.T) {
+// RunSessionEndFor dispatches SessionEnd hooks (fire-and-forget, no result).
+func TestCov_RunSessionEndFor(t *testing.T) {
 	r := newRunner(nil, "")
 	r.Add(plugin.HookSessionEnd, plugin.RegisteredHook{
 		Matcher: "*", Type: "command", Command: "true", Timeout: 5, PluginName: "p"})
 	// Must not panic and must complete synchronously.
-	r.RunSessionEnd(context.Background(), Input{})
+	r.RunSessionEndFor(context.Background(), Input{}, "other")
 }

@@ -128,12 +128,6 @@ type subagent struct {
 	// guard to a run clears it instead (resetSubagentForRunLocked), since that
 	// run drains the child. Guarded by sub.mu.
 	attentionDriveRefused bool
-	// stopHookActive is the SubagentStop hook's stop_hook_active for THIS run:
-	// false at the run's first dispatch and true only when a SubagentStop hook
-	// blocked and the run continued. It is reset at every run start
-	// (resetSubagentForRunLocked), so a resumed child never inherits a previous
-	// run's continuation. Guarded by sub.mu.
-	stopHookActive bool
 }
 
 // startBlockedLocked reports whether the child can't take a new generation
@@ -1735,9 +1729,6 @@ func resetSubagentForRunLocked(sub *subagent, cancel context.CancelFunc, started
 	// The run drains the child's attention, so a refusal recorded on the guard
 	// it takes over is no longer owed a re-drive.
 	sub.attentionDriveRefused = false
-	// A fresh run has not been blocked by a SubagentStop hook yet, whatever the
-	// previous one did.
-	sub.stopHookActive = false
 }
 
 func (s *Session) launchSubagentRun(runCtx context.Context, sub *subagent, runCancel context.CancelFunc, input string, inputProvenance *provenance.Causal) {
@@ -2666,13 +2657,14 @@ func (a *subagent) runSubagentStopHook(ctx context.Context, res string, err erro
 	// subagentHookAgentType so neither can be empty.
 	agentType := subagentHookAgentType(a.agentTypeName(), "")
 	input.AgentType = agentType
-	// stop_hook_active is the run's own continuation flag, not the delivered
-	// report: a hook that blocks to ask for more work can tell the next dispatch
-	// apart from the first.
-	a.mu.Lock()
-	active := a.stopHookActive
-	a.mu.Unlock()
-	input.StopHookActive = &active
+	// stop_hook_active is always false here. Claude sets it when a Stop-type hook
+	// is dispatched again after its own block; a SubagentStop block is surfaced
+	// as the run's next input from inside this same dispatch (the caller never
+	// dispatches the hook twice), so no continuation dispatch exists to report.
+	// The field is still present, as false, so a hook reading it sees Claude's
+	// type rather than an absence.
+	stopHookActive := false
+	input.StopHookActive = &stopHookActive
 	// last_assistant_message is the child's last ASSISTANT turn, which is what
 	// the child said. The delivered report is not the same thing: a run that
 	// ends on a nudge or an empty result can deliver text that no assistant turn
@@ -2697,9 +2689,6 @@ func (a *subagent) runSubagentStopHook(ctx context.Context, res string, err erro
 	if !stopResult.Blocked {
 		return res, err
 	}
-	a.mu.Lock()
-	a.stopHookActive = true
-	a.mu.Unlock()
 	reason := strings.TrimSpace(stopResult.BlockReason)
 	if reason == "" {
 		reason = "SubagentStop hook blocked completion. Continue and address the hook feedback before stopping."

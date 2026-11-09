@@ -62,7 +62,7 @@ func TestExitBehavior_BlockEntriesAreEnforced(t *testing.T) {
 		case plugin.HookStop:
 			blocked = r.RunStop(context.Background(), in(event)).Blocked
 		case plugin.HookSubagentStop:
-			blocked = r.RunSubagentStop(context.Background(), in(event)).Blocked
+			blocked = r.RunSubagentStopFor(context.Background(), in(event), "subagent").Blocked
 		case plugin.HookPostToolBatch:
 			blocked = r.RunPostToolBatch(context.Background(), in(event)).Stopped
 		}

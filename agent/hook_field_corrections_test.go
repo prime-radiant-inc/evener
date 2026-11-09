@@ -3,10 +3,12 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/hooks"
@@ -113,6 +115,93 @@ func TestStop_HookInputFields(t *testing.T) {
 		if msg, _ := got["last_assistant_message"].(string); msg != wantMessage[i] {
 			t.Errorf("dispatch %d last_assistant_message = %q, want %q", i, msg, wantMessage[i])
 		}
+	}
+}
+
+// TestStop_StopHookActiveResetsWithTheTurn proves stop_hook_active is per TURN,
+// not per process: a turn whose Stop hook blocked leaves the flag set, and the
+// next turn's first Stop dispatch must still report false. Removing the
+// turn-start reset fails this test.
+func TestStop_StopHookActiveResetsWithTheTurn(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	capture := filepath.Join(dir, "stop-input.jsonl")
+	// The hook records every dispatch and blocks only while the marker exists,
+	// so turn one's boundary blocks and turn two's does not.
+	marker := filepath.Join(dir, "block-turn-one")
+	if err := os.WriteFile(marker, nil, 0o644); err != nil {
+		t.Fatalf("write block marker: %v", err)
+	}
+	runner := hooks.NewRunner(nil, "")
+	runner.Add(plugin.HookStop, plugin.RegisteredHook{
+		Matcher: "*", Type: "command", Timeout: 5,
+		Command: appendStdinHook(capture) +
+			"; if [ -e " + shellquote.Literal(marker) + ` ]; then printf '%s' '{"decision":"block","reason":"keep going"}'; fi`,
+	})
+	// The second turn's first model call observes the flag. A tool call would
+	// clear it before the Stop dispatch, so the model call is the only point in
+	// a turn that can prove the TURN-START reset and nothing else.
+	var flagAtSecondTurnStart *bool
+	var sess *Session
+	sess = newSession(t, withDir(dir), withSteps(
+		func(llm.Request) llm.Response {
+			sess.mu.Lock()
+			active := sess.stopHookActive
+			sess.mu.Unlock()
+			flagAtSecondTurnStart = &active
+			return toolCallResponse(communicateCall("c1", "turn two reply"))
+		},
+	))
+	sess.hookRunner = runner
+	drainSessionEvents(sess)
+
+	// Turn one ends with a Stop block, so its flag is set when the turn returns.
+	sess.mu.Lock()
+	sess.state = SessionProcessing
+	sess.comm = communicateResult{called: true, reply: "turn one reply"}
+	sess.mu.Unlock()
+	if done, _, err := sess.deliverIfCommunicated(context.Background(), false); err != nil || done {
+		t.Fatalf("turn one boundary = done %v, err %v; want a blocked (not done) boundary", done, err)
+	}
+	sess.mu.Lock()
+	wasActive := sess.stopHookActive
+	sess.mu.Unlock()
+	if !wasActive {
+		t.Fatal("setup: the Stop block did not set stopHookActive")
+	}
+
+	// Turn two starts through the real turn-start path, which is what must
+	// clear it. It runs one scripted turn, then dispatches Stop again.
+	before := len(decodeHookCapture(t, capture))
+	if err := os.Remove(marker); err != nil {
+		t.Fatalf("remove block marker: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter and one local shell hook; only fires on a genuine hang.
+	defer cancel()
+	if out, err := sess.ProcessInput(ctx, "second turn", nil); err != nil {
+		t.Fatalf("turn two: %v", err)
+	} else if strings.TrimSpace(out) != "turn two reply" {
+		t.Fatalf("turn two delivered %q, want its communicate reply", out)
+	}
+
+	if flagAtSecondTurnStart == nil {
+		t.Fatal("turn two never reached its model call")
+	}
+	if *flagAtSecondTurnStart {
+		t.Fatal("the second turn's first model call saw stop_hook_active still set; the per-turn reset did not run")
+	}
+
+	captured := decodeHookCapture(t, capture)
+	if len(captured) <= before {
+		t.Fatalf("turn two dispatched no Stop hook: %d line(s), %d before", len(captured), before)
+	}
+	active, present := captured[before]["stop_hook_active"].(bool)
+	if !present || active {
+		t.Fatalf("the next turn's first dispatch stop_hook_active = %v (present=%v), want false", captured[before]["stop_hook_active"], present)
+	}
+	if msg, _ := captured[before]["last_assistant_message"].(string); msg != "turn two reply" {
+		t.Errorf("last_assistant_message = %q, want the second turn's reply", msg)
 	}
 }
 
@@ -326,8 +415,10 @@ func sessionEndReasonProbe(t *testing.T, seed func(*Session)) (promptExit, other
 // TestSessionEnd_PromptInputExitNeedsAnIdleShutdown proves Claude's
 // prompt_input_exit is only claimed where evener can prove it: the daemon's
 // shutdown close of an idle session. An idle shutdown fires the
-// prompt_input_exit hook and not the other hook; a shutdown with work still in
-// flight (a pending ask, or a running job) fires the other hook and not the
+// prompt_input_exit hook and not the other hook. So does a shutdown with a
+// question on screen: a pending ask IS prompt input, so it is the most literal
+// case rather than in-flight work. A shutdown with real work in flight (a
+// running job, or a turn killed mid-stream) fires the other hook and not the
 // prompt_input_exit one, because the user did not exit a prompt — the session
 // died under work.
 func TestSessionEnd_PromptInputExitNeedsAnIdleShutdown(t *testing.T) {
@@ -352,14 +443,14 @@ func TestSessionEnd_PromptInputExitNeedsAnIdleShutdown(t *testing.T) {
 			s.setAskPendingLocked([]askQuestion{{Question: "which database?"}})
 			s.mu.Unlock()
 		})
-		if promptExit || !other {
-			t.Fatalf("a shutdown with a pending ask fired prompt_input_exit=%v other=%v, want only other", promptExit, other)
+		if !promptExit || other {
+			t.Fatalf("a shutdown with a question on screen fired prompt_input_exit=%v other=%v, want only prompt_input_exit", promptExit, other)
 		}
 		if len(captured) != 1 {
 			t.Fatalf("SessionEnd ran %d time(s), want 1", len(captured))
 		}
-		if got, _ := captured[0]["reason"].(string); got != "other" {
-			t.Errorf("reason = %q, want other", got)
+		if got, _ := captured[0]["reason"].(string); got != "prompt_input_exit" {
+			t.Errorf("reason = %q, want prompt_input_exit", got)
 		}
 	})
 
@@ -374,6 +465,48 @@ func TestSessionEnd_PromptInputExitNeedsAnIdleShutdown(t *testing.T) {
 		})
 		if promptExit || !other {
 			t.Fatalf("a shutdown with a running job fired prompt_input_exit=%v other=%v, want only other", promptExit, other)
+		}
+		if len(captured) != 1 {
+			t.Fatalf("SessionEnd ran %d time(s), want 1", len(captured))
+		}
+		if got, _ := captured[0]["reason"].(string); got != "other" {
+			t.Errorf("reason = %q, want other", got)
+		}
+	})
+
+	// A turn killed mid-stream settles itself to SessionIdle and clears its
+	// pending ask (the interrupt branch), so a shutdown after it looks idle
+	// unless the interrupt is recorded. Without that marker this subtest fires
+	// prompt_input_exit for a user who killed a working session.
+	t.Run("interrupted turn", func(t *testing.T) {
+		promptExit, other, captured := sessionEndReasonProbe(t, func(s *Session) {
+			// A blocking job stands in for the shutdown: the turn is cancelled
+			// the way a SIGTERM cancels it, and ProcessInput settles idle.
+			trigger := llm.ToolCallData{ID: "interrupt1", Name: "trigger_interrupt", Arguments: json.RawMessage(`{}`), Type: "function"}
+			f := &fakeAdapter{
+				name: "openai",
+				steps: []func(llm.Request) llm.Response{
+					func(llm.Request) llm.Response { return toolCallResponse(trigger) },
+				},
+			}
+			s.client.Register(f)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			s.RegisterTool("trigger_interrupt", "cancels the test's ProcessInput context mid-turn",
+				map[string]any{"type": "object", "properties": map[string]any{}},
+				func(context.Context, any) (any, error) {
+					cancel()
+					return "cancelling", nil
+				})
+			if _, err := s.ProcessInput(ctx, "do a long turn", nil); !errors.Is(err, context.Canceled) {
+				t.Fatalf("ProcessInput err = %v, want context.Canceled", err)
+			}
+			if got := s.State(); got != SessionIdle {
+				t.Fatalf("state after interrupt = %q, want %q (the settle that hides the interrupt)", got, SessionIdle)
+			}
+		})
+		if promptExit || !other {
+			t.Fatalf("a shutdown after an interrupted turn fired prompt_input_exit=%v other=%v, want only other", promptExit, other)
 		}
 		if len(captured) != 1 {
 			t.Fatalf("SessionEnd ran %d time(s), want 1", len(captured))

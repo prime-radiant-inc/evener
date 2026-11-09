@@ -156,16 +156,21 @@ func claudeSessionEndReason(reason string) string {
 }
 
 // idleForPromptExit reports whether the session is idle enough for Claude's
-// "prompt_input_exit" to be true: no pending ask, no in-flight turn, and no
-// running job or delegate. It reads every facet before releaseRuntimeOnce
-// mutates any of them, and holds no session lock of its own — the helpers it
-// calls each take the lock they need.
+// "prompt_input_exit" to be true: no in-flight turn, no running job or
+// delegate, and no turn that was just cut short. A pending ask does NOT count —
+// a question on screen is the most literal case of the user exiting while
+// prompt input was visible.
+//
+// It reads every facet before releaseRuntimeOnce mutates any of them.
 func (s *Session) idleForPromptExit() bool {
 	if s == nil {
 		return false
 	}
 	s.mu.Lock()
-	idle := s.state != SessionProcessing && !s.closing && len(s.askPending) == 0
+	// turnInterrupted is the marker that survives the interrupt branch's own
+	// settle: that settle sets SessionIdle and clears the pending ask, so
+	// without this a turn killed mid-stream would read as an idle prompt.
+	idle := s.state != SessionProcessing && !s.closing && !s.turnInterrupted
 	s.mu.Unlock()
 	if !idle {
 		return false
@@ -1401,6 +1406,10 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			if isTurnCancellation(processCtx, err) {
 				s.mu.Lock()
 				closed := s.closingOrClosedLocked()
+				// Recorded BEFORE the settle below makes the session look idle:
+				// a later shutdown close must be able to tell that this turn was
+				// cut short, not that the user was sitting at an idle prompt.
+				s.turnInterrupted = true
 				s.mu.Unlock()
 
 				markerAccepted := false
@@ -2142,6 +2151,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// stop_hook_active is per turn: a continuation a Stop hook blocked into this
 	// turn must not leak into the next one.
 	s.stopHookActive = false
+	// A new turn is new work; the previous turn's interrupt no longer says
+	// anything about this session's idleness.
+	s.turnInterrupted = false
 	// A claimed answering steering carrier has already crossed its durable
 	// admission boundary before this carrier turn runs, so preserve its
 	// established entry-clear behavior. Ordinary user input clears only after

@@ -1741,7 +1741,7 @@ func TestRunSubagentStop_ContinueFalseStops(t *testing.T) {
 	r := newRunner(nil, "")
 	r.Add(plugin.HookSubagentStop, plugin.RegisteredHook{Type: "command", Timeout: 5,
 		Command: `echo '{"continue":false,"stopReason":"stop"}'`})
-	out := r.RunSubagentStop(context.Background(), Input{HookEventName: "SubagentStop"})
+	out := r.RunSubagentStopFor(context.Background(), Input{HookEventName: "SubagentStop"}, "subagent")
 	if !out.Stopped {
 		t.Fatalf("SubagentStop must honor continue:false")
 	}
@@ -1832,6 +1832,26 @@ func TestRunSessionEndFor_MatchesPromptInputExit(t *testing.T) {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("a %s-matched hook fired for prompt_input_exit; stat err = %v", name, err)
 		}
+	}
+}
+
+// TestRunStop_IgnoresConfiguredMatcher proves Claude's "no matcher" for Stop: a
+// hook configured with an exact tool matcher still fires, because there is no
+// tool to match against at a turn boundary. Consulting the matcher would skip
+// every such hook silently, which is what the old target did.
+func TestRunStop_IgnoresConfiguredMatcher(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "stop-ran")
+	r := newRunner(nil, "")
+	r.Add(plugin.HookStop, plugin.RegisteredHook{
+		Matcher: "Bash", Type: "command", Timeout: 5,
+		Command: "touch " + shellquote.Literal(marker),
+	})
+	out := r.RunStop(context.Background(), Input{HookEventName: "Stop"})
+	if out.Blocked || out.Stopped {
+		t.Fatalf("a plain touch hook must not block or stop: %+v", out)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("a Bash-matched Stop hook did not fire at a turn boundary: %v", err)
 	}
 }
 

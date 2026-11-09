@@ -354,7 +354,7 @@ type parsedHookOutput struct {
 	TerminalSequence  string
 	UpdatedInput      map[string]any
 	// Blocked is the top-level JSON decision:"block" signal. It is consumed by
-	// Stop/SubagentStop (runStopEvent); PreToolUse uses PermissionDecision instead
+	// Stop/SubagentStop (runStopEventFor); PreToolUse uses PermissionDecision instead
 	// (the deprecated block->deny mapping sets PermissionDecision, not this flag).
 	Blocked     bool
 	BlockReason string
@@ -719,12 +719,7 @@ func (r *Runner) RunPostToolUseFailure(ctx context.Context, input Input) RunResu
 // RunStop dispatches Stop hooks and aggregates results.
 // Any block from any hook means blocked.
 func (r *Runner) RunStop(ctx context.Context, input Input) StopResult {
-	return r.runStopEvent(ctx, plugin.HookStop, input)
-}
-
-// RunSubagentStop dispatches SubagentStop hooks and aggregates results.
-func (r *Runner) RunSubagentStop(ctx context.Context, input Input) StopResult {
-	return r.runStopEvent(ctx, plugin.HookSubagentStop, input)
+	return r.runStopEventFor(ctx, plugin.HookStop, input, "")
 }
 
 // RunSubagentStopFor dispatches SubagentStop hooks for one child run and matches
@@ -736,16 +731,20 @@ func (r *Runner) RunSubagentStopFor(ctx context.Context, input Input, agentType 
 	return r.runStopEventFor(ctx, plugin.HookSubagentStop, input, strings.TrimSpace(agentType))
 }
 
-func (r *Runner) runStopEvent(ctx context.Context, event plugin.HookEvent, input Input) StopResult {
-	return r.runStopEventFor(ctx, event, input, input.ToolName)
-}
-
-// runStopEventFor is runStopEvent with an explicit matcher target. Stop has no
-// matcher in Claude, so its target stays the tool name (empty on a turn
-// boundary) and a configured matcher never narrows it; SubagentStop targets the
-// child's agent type.
+// runStopEventFor dispatches a blocking event's hooks and aggregates their
+// results. Stop has no matcher in Claude — its table lists the event with
+// "(none)" — so a configured matcher never narrows it, exactly as
+// RunPostToolBatch treats its own matcher: the registered hooks go straight to
+// execution. (At a turn boundary there is no tool name to match against, so
+// consulting a matcher would silently skip every hook whose matcher was not
+// "*"/empty.) SubagentStop targets the child's agent type.
 func (r *Runner) runStopEventFor(ctx context.Context, event plugin.HookEvent, input Input, target string) StopResult {
-	outputs := r.runAll(ctx, event, target, input)
+	var outputs []parsedHookOutput
+	if event == plugin.HookStop {
+		outputs = r.runMatched(ctx, event, r.hooks[event], input)
+	} else {
+		outputs = r.runAll(ctx, event, target, input)
+	}
 	var result StopResult
 	for _, o := range outputs {
 		applyStopped(event, o, &result.Stopped, &result.StopReason)
@@ -793,11 +792,6 @@ func (r *Runner) RunSubagentStartFor(ctx context.Context, input Input, agentType
 	target := strings.TrimSpace(agentType)
 	outputs := r.runAll(ctx, plugin.HookSubagentStart, target, input)
 	return collectSystemMessages(plugin.HookSubagentStart, outputs)
-}
-
-// RunSessionEnd dispatches SessionEnd hooks. No return value needed.
-func (r *Runner) RunSessionEnd(ctx context.Context, input Input) {
-	r.runAll(ctx, plugin.HookSessionEnd, "", input)
 }
 
 // RunSessionEndFor dispatches SessionEnd hooks and matches them on the Claude

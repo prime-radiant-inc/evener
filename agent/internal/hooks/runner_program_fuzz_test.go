@@ -514,9 +514,9 @@ func runHookRunnerProgram(t *testing.T, mode byte, token string) hookRunnerProgr
 	if !stop.Blocked || stop.BlockReason != "stop reason" || !containsHookRunnerProgramString(stop.TerminalSequences, "stop-terminal") || !containsHookRunnerProgramString(stop.UserMessages, "stop json") {
 		t.Fatalf("RunStop = %#v", stop)
 	}
-	subagentStop := runner.RunSubagentStop(ctx, input)
+	subagentStop := runner.RunSubagentStopFor(ctx, input, "subagent")
 	if subagentStop.Blocked || !containsHookRunnerProgramString(subagentStop.TerminalSequences, "sub-terminal") {
-		t.Fatalf("RunSubagentStop = %#v", subagentStop)
+		t.Fatalf("RunSubagentStopFor = %#v", subagentStop)
 	}
 
 	userPrompt := runner.RunUserPromptSubmit(ctx, input)
@@ -532,7 +532,7 @@ func runHookRunnerProgram(t *testing.T, mode byte, token string) hookRunnerProgr
 		t.Fatalf("SessionStart results = startup:%#v blank:%#v resume:%#v clear:%#v", startup, blankStartup, resume, clear)
 	}
 
-	runner.RunSessionEnd(ctx, input)
+	runner.RunSessionEndFor(ctx, input, "other")
 	preCompact := runner.RunPreCompactFor(ctx, input, "auto")
 	if !reflect.DeepEqual(preCompact.UserMessages, []string{"compact user"}) {
 		t.Fatalf("RunPreCompactFor = %#v", preCompact)

@@ -825,6 +825,8 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 			if preResult.DenyMessage != "" {
 				denyMsg = preResult.DenyMessage
 			}
+			// A denied call never ran, so it does not clear stop_hook_active:
+			// the work a Stop hook's block asked for is still undone.
 			return tool.ExecResult{
 				ToolName:   call.Name,
 				CallID:     call.ID,
