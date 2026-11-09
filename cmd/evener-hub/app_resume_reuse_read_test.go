@@ -140,4 +140,20 @@ func TestResumeUnreadableOwnerSpawnsReplacement(t *testing.T) {
 	if spawnCalls != 1 {
 		t.Fatalf("replacement spawns after recovery=%d, want 1", spawnCalls)
 	}
+
+	// A hub restart rebuilds the roster from the run directory. A surviving
+	// record for the unreadable owner becomes an unconfirmed claim on that fresh
+	// roster, and lookupDaemonOwner checks unconfirmed claims before the healthy
+	// replacement, so the session must keep working across the restart.
+	restartedRoster := hubcore.NewRoster(runDir, prober)
+	restartedRoster.SetProcessAlive(func(int) bool { return true })
+	restartedRoster.Refresh()
+	restartedCfg := cfg
+	restartedCfg.Roster = restartedRoster
+	if _, err := resumeThreadLocked(context.Background(), restartedCfg, newHubSourceRegistry(restartedCfg), appwire.ThreadResumeParams{Session: sessionID}); err != nil {
+		t.Fatalf("resume after hub restart: %v", err)
+	}
+	if spawnCalls != 1 {
+		t.Fatalf("replacement spawns after hub restart=%d, want 1", spawnCalls)
+	}
 }

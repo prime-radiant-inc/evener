@@ -720,6 +720,10 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 	if err != nil {
 		return appwire.ThreadResumeResponse{}, appwire.HubLaunchError(err.Error())
 	}
+	// supersededOwner is the exact roster entry whose read failed and which this
+	// resume replaced. Its rendezvous record is retired only after the
+	// replacement is confirmed, so a failed launch leaves the old record alone.
+	var supersededOwner *rendezvous.Entry
 	// Serialize concurrent resumes of the same session behind a per-session
 	// lock shared with the REST send path (kata sm1a). While one resume holds
 	// the lock, another RPC mutation that also decided to resume waits here
@@ -749,6 +753,8 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 				// through to one replacement spawn instead. A daemon that still
 				// owns the session refuses the child at its API-log reservation,
 				// so the attempt cannot take the session from a healthy owner.
+				owner := le.Entry
+				supersededOwner = &owner
 			}
 		}
 		if state := cfg.ResumeLocks.RecoveryState(sessionID); state.ResumeRequired && !state.ExitConfirmed {
@@ -799,11 +805,13 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 		}
 		return appwire.ThreadResumeResponse{}, appwire.HubLaunchError(resumeFailureError(ctx, cfg, sessionID, err).Error())
 	}
+	replacementConfirmed := false
 	if cfg.Roster != nil {
 		refreshDone := trace.stage(ctx, "post_launch_discovery")
 		refreshErr := hubRosterRefresh(ctx, cfg.Roster)
 		refreshDone(refreshErr)
-		if entry.Protocol == appwire.ProtocolVersion && entry.Endpoint != "" && entry.ThreadID != "" && !cfg.Roster.HasConfirmedEntry(entry) {
+		replacementConfirmed = cfg.Roster.HasConfirmedEntry(entry)
+		if entry.Protocol == appwire.ProtocolVersion && entry.Endpoint != "" && entry.ThreadID != "" && !replacementConfirmed {
 			// A successful scan can still miss an owner whose status probe
 			// failed. Confirm the exact spawned endpoint through its read before
 			// relying on the shared roster for subsequent requests.
@@ -815,15 +823,36 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 			if err != nil {
 				return appwire.ThreadResumeResponse{}, appwire.Unavailable(errors.Join(refreshErr, err).Error())
 			}
+			replacementConfirmed = true
 			read.Thread = annotateThreadProject(read.Thread)
 			read.Thread = applyHubCapabilities(cfg, read.Thread)
+			retireSupersededOwner(ctx, cfg, supersededOwner)
 			return appwire.ThreadResumeResponse{Thread: read.Thread}, nil
 		}
-		if refreshErr != nil && !cfg.Roster.HasConfirmedEntry(entry) {
+		if refreshErr != nil && !replacementConfirmed {
 			return appwire.ThreadResumeResponse{}, appwire.Unavailable(refreshErr.Error())
 		}
 	}
+	if replacementConfirmed {
+		retireSupersededOwner(ctx, cfg, supersededOwner)
+	}
 	return hubResumedThreadResponse(ctx, cfg, sources, entry.SessionID, entry.ThreadID)
+}
+
+// retireSupersededOwner removes the exact rendezvous record of the owner this
+// resume replaced, after the replacement is confirmed. A record left behind for
+// an alive-but-unprobeable PID becomes an unconfirmed claim when a new hub
+// constructs its roster from the run directory, and lookupDaemonOwner checks
+// unconfirmed claims before the healthy replacement, so the leftover would
+// block every later resume (#5530). Removal is exact-owned and best-effort:
+// the replacement is already serving, and a lost race with the old daemon's own
+// cleanup leaves a working session.
+func retireSupersededOwner(ctx context.Context, cfg hubcore.WebConfig, entry *rendezvous.Entry) {
+	if entry == nil || cfg.Roster == nil || cfg.RunDir == "" {
+		return
+	}
+	_ = rendezvous.RemoveIfOwned(cfg.RunDir, *entry)
+	_ = hubRosterRefresh(ctx, cfg.Roster)
 }
 
 // resumeOwnership keeps the verified stopped transcript authoritative even when
