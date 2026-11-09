@@ -413,9 +413,11 @@ func chainedShellDrainScenario(t *testing.T, tweak func(*runConfig)) *scriptedPr
 	// Shell A is gated so it cannot reach terminal completion until the drain
 	// starts; otherwise its notification can beat the tool-result model round
 	// and be folded into that request. Shell B needs no gate: it is launched
-	// from A's notification turn, and a notification turn owns its current
-	// batch (no post-tool yield), so B's completion always waits for the next
-	// drain wake.
+	// from A's notification turn, and a notification turn delivers a completion
+	// that arrives during it at its next request. B is gated until that next
+	// request (the one carrying B's tool result) has been built, so B can
+	// never be folded into it and is delivered by the drain wake that follows
+	// the turn, whatever the scheduler does.
 	//
 	// Releasing A is not enough: the drain must also not START until A has
 	// finalized. A drain that begins while A is still running finds a sole
@@ -436,6 +438,8 @@ func chainedShellDrainScenario(t *testing.T, tweak func(*runConfig)) *scriptedPr
 			t.Errorf("release shell A: %v", err)
 		}
 	}, func(sess *agent.Session) { awaitDurableJobCompletion(t, sess) })
+	shellBGate := filepath.Join(t.TempDir(), "release-shell-b")
+	shellBCommand := "while [ ! -f " + shellBGate + " ]; do sleep 0.02; done; printf shell-b"
 	jobIDPattern := regexp.MustCompile(`job_id="([^"]+)"`)
 	adapter := &scriptedProvider{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
@@ -454,11 +458,14 @@ func chainedShellDrainScenario(t *testing.T, tweak func(*runConfig)) *scriptedPr
 			if got := strings.Count(requestDeliveredText(req), "<job-notification"); got != 1 {
 				t.Fatalf("shell A notification request count = %d, want 1", got)
 			}
-			return scriptedToolCalls(scriptedShellCall("shell_b", "printf shell-b", "background"))
+			return scriptedToolCalls(scriptedShellCall("shell_b", shellBCommand, "background"))
 		},
 		func(req llm.Request) llm.Response {
 			if got := strings.Count(requestDeliveredText(req), "<job-notification"); got != 1 {
 				t.Fatalf("shell B tool-result request notification count = %d, want only A's notification", got)
+			}
+			if err := os.WriteFile(shellBGate, []byte("go\n"), 0o600); err != nil {
+				t.Errorf("release shell B: %v", err)
 			}
 			return scriptedCommunicate("waiting for B")
 		},
