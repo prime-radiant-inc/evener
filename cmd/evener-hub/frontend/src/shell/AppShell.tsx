@@ -178,7 +178,7 @@ function usePathname(interactiveNavigation: MutableRefObject<string | null>): re
       window.removeEventListener("popstate", onPopState);
       unobserve();
     };
-  }, []);
+  }, [interactiveNavigation]);
   return [pathname, historyRevision];
 }
 
