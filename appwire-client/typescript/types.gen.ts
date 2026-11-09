@@ -5054,6 +5054,7 @@ export const HOST_REQUEST_METHODS = [
   "evener/paths/complete",
   "evener/plugin/checkNow",
   "evener/plugin/checkUpdates",
+  "evener/plugin/components",
   "evener/plugin/disable",
   "evener/plugin/enable",
   "evener/plugin/install",
