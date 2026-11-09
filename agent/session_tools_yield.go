@@ -18,13 +18,13 @@ func registerYieldTool(reg *tool.Registry, s *Session) error {
 		Definition: tool.DefYield(),
 		ReadOnly:   true,
 		Exec: func(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			return quietYieldTool(s, ctx, args)
+			return quietYieldTool(ctx, s, args)
 		},
 	})
 }
 
 // quietYieldTool validates one yield call and arms its optional fallback.
-func quietYieldTool(s *Session, ctx context.Context, args map[string]any) (any, error) {
+func quietYieldTool(ctx context.Context, s *Session, args map[string]any) (any, error) {
 	if s.cfg.TurnEndsProcess {
 		return nil, errors.New("invalid_request: yield needs a session that outlives this turn; call communicate with end_turn=true instead")
 	}

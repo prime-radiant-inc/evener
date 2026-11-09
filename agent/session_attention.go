@@ -773,6 +773,21 @@ func (s *Session) pendingDelegateAttentionIDs() ([]string, error) {
 	return s.pendingDelegateAttentionIDsLocked()
 }
 
+// hasPendingDelegateAttentionRows reports whether this session's own durable
+// attention fold still holds an unresolved row, whichever receiver owns it.
+// Unlike hasPendingDelegateAttention (the root's cached rail), it answers for a
+// delegate's own child-report rows. A quiet-yielding delegate's finalization
+// drain reads it to run the notification turn that presents them.
+func (s *Session) hasPendingDelegateAttentionRows() bool {
+	if s == nil {
+		return false
+	}
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	ids, err := s.pendingDelegateAttentionIDsLocked()
+	return err == nil && len(ids) != 0
+}
+
 // reopenConsumedDelegateAttention restores an attention item a presentation
 // start consumed but will never present: the start failed after the consume
 // marker landed. The marker is irreversible by design — it fences concurrent

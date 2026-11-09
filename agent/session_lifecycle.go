@@ -1161,7 +1161,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// the continuation's acceptance drains steering, and the parked steer
 		// belongs to the carrier the next external wake runs; the goal is
 		// untouched in the store and the settle after that carrier kicks it.
-		if !awaiting && haveDeferredCont && !s.steeringParkedNow() {
+		if shouldRunDeferredContinuation(awaiting, haveDeferredCont, s.steeringParkedNow(), ranYielded) {
 			haveDeferredCont = false
 			// Re-validate against the goal store before running: the user may have
 			// cleared (/goal clear) or retargeted (/goal <new>) the goal during the
@@ -1203,6 +1203,14 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		}
 		return strings.Join(outputs, "\n"), nil
 	}
+}
+
+// shouldRunDeferredContinuation is the drain loop's inline-continuation gate.
+// A yielded turn resumed nothing, so a continuation deferred across it must
+// wait for the fallback or an ordinary event; running it would cancel the
+// fresh fallback and resume model work.
+func shouldRunDeferredContinuation(awaiting, deferred, steeringParked, yielded bool) bool {
+	return !awaiting && deferred && !steeringParked && !yielded
 }
 
 // endInputAtTurnFailure tells a live subscriber that this input is over, and
@@ -2580,6 +2588,10 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	}
 	hasSteering := s.hasPendingSteering()
 	hasRootAttention := s.hasPendingRootDelegateAttention()
+	// A quiet-yielding delegate's child reports are durable attention rows in
+	// its own history. Admit the notification turn that presents them; the
+	// root rail keeps its existing gate.
+	hasDelegateRows := s.quietYieldActive() && !s.rootAttentionRailParked() && s.hasPendingDelegateAttentionRows()
 	// A delegate parked in its finalization drain is woken for its own
 	// delegates' updates (hasPendingDelegateUpdateAttention); the update is
 	// already in its transcript, so the turn's model request carries it. Only
@@ -2596,7 +2608,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	// defers the attention, and a turn carrying nothing deliverable runs
 	// nothing. The begin-consumed wake stays consumed — the IDs stay cached
 	// and unpark re-arms them.
-	if len(jobNotifs) == 0 && !hasSteering && !hasDelegateUpdate && (!hasRootAttention || s.rootAttentionRailParked()) && yieldDue == nil {
+	if len(jobNotifs) == 0 && !hasSteering && !hasDelegateUpdate && !hasDelegateRows && (!hasRootAttention || s.rootAttentionRailParked()) && yieldDue == nil {
 		if len(retryJobNotifs) == 0 && len(injectedFailures) == 0 {
 			s.resetJobNotificationRetry()
 		}

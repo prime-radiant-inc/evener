@@ -162,6 +162,8 @@ var envelopeSamplingForbiddenLocks = []envelopeSamplingLock{
 var envelopeSamplingPermittedLocks = map[string]string{
 	"Session.mu": "the emit path re-acquires it (emit -> activeCausalProvenance), " +
 		"so holding it across an emit self-deadlocks on the first execution",
+	"Session.yieldMu": "leaf quiet-yield state: held only for in-memory reads and " +
+		"writes, never across an emit or I/O, so a sampler may block on it for that short hold",
 }
 
 // TestEnvelopeSamplingNeverBlocksOnAnEmitHeldLock runs every method the daemon's

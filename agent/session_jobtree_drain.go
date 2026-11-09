@@ -1271,7 +1271,13 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		// and resume restores them; see
 		// TestRootDelegateAttention_PendingContentSurvivesCompactionRestart),
 		// so a request after a compaction or a failed turn still presents it.
-		notificationTurnOwed := s.peekNotifications() > 0 || s.pendingRootDelegateAttention() || s.hasUndrivenDelegateUpdate(drivenUpdates)
+		// A quiet-yielding session's own wake must be admitted here: a due
+		// fallback has no job notification, and a delegate's child report is a
+		// durable attention row in its own history rather than a root rail
+		// entry. Without this rung the drain stays correctly outstanding
+		// (quietYieldActive) but never runs the turn that resolves it.
+		quietYieldRows := s.quietYieldActive() && s.hasPendingDelegateAttentionRows()
+		notificationTurnOwed := s.peekNotifications() > 0 || s.pendingRootDelegateAttention() || s.hasUndrivenDelegateUpdate(drivenUpdates) || s.hasDueQuietYield() || quietYieldRows
 		if s.hasPendingStableSteering() && !notificationTurnOwed {
 			return lastResult, nil
 		}
