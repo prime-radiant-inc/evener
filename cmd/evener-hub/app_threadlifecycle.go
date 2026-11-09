@@ -23,6 +23,7 @@ import (
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/internal/transcriptindex"
+	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -822,7 +823,7 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 			launch.cleanupErr = cleanup
 		}
 		launchErr := resumeFailureError(ctx, cfg, sessionID, err)
-		if supersededOwner != nil && cfg.ResumeLocks != nil {
+		if supersededOwner != nil && cfg.ResumeLocks != nil && launchRefusalIsOwnership(err) {
 			cfg.ResumeLocks.NoteReplacementFailure(sessionID, rendezvous.OwnershipFingerprint(*supersededOwner), launchErr)
 		}
 		if supersededReadErr != nil {
@@ -863,6 +864,20 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 		cfg.ResumeLocks.ClearReplacementFailure(sessionID)
 	}
 	return hubResumedThreadResponse(ctx, cfg, sources, entry.SessionID, entry.ThreadID)
+}
+
+// launchRefusalIsOwnership reports whether a refused launch failed because the
+// session's live owner still holds its API-log reservation. The daemon runs in
+// another process, so the refusal crosses the boundary as the child's stderr
+// text; an in-process spawner may wrap the sentinel directly. Only this refusal
+// means replaying the same launch cannot help until the owner releases the
+// session — credential and preparation failures stay retryable.
+func launchRefusalIsOwnership(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, llm.ErrAPILogTargetLocked) ||
+		strings.Contains(err.Error(), llm.ErrAPILogTargetLocked.Error())
 }
 
 // relayConnectionInvalidator is the local source's seam for dropping the

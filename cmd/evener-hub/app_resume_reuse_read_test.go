@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -206,23 +208,23 @@ func TestResumeUnreadableOwnerSpawnsReplacement(t *testing.T) {
 	}
 }
 
-// TestResumeReplacementFailureKeepsReadCauseAndIsNotRetried reproduces the two
-// late review findings on the replacement fall-through: a refused launch must
-// carry the read failure that caused it, and a client retry against the same
-// unreadable owner must not launch another child for it.
-func TestResumeReplacementFailureKeepsReadCauseAndIsNotRetried(t *testing.T) {
+// newUnreadableOwnerResumeFixture builds a primed roster whose only owner is a
+// live daemon that answers thread/read with readMessage, plus the past session
+// a resume needs. The caller installs its own spawner.
+func newUnreadableOwnerResumeFixture(t *testing.T, project, readMessage string) (cfg hubcore.WebConfig, sessionID string) {
+	t.Helper()
 	root := t.TempDir()
 	workingDir := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "project-5530-failed-spawn-0000000000")
-	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+	stateDir := filepath.Join(root, "projects", project)
+	sessionID = buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
 	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 
 	oldDaemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: appwire.LocalSourceID})
 	appserver.HandleTyped(oldDaemon.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("thread history is closed")
+		return appwire.ThreadReadResponse{}, appwire.SessionUnavailable(readMessage)
 	})
 	oldHTTP := httptest.NewServer(http.HandlerFunc(oldDaemon.ServeWebSocket))
-	defer oldHTTP.Close()
+	t.Cleanup(oldHTTP.Close)
 
 	oldEntry := rendezvous.Entry{
 		PID:          108084,
@@ -243,31 +245,57 @@ func TestResumeReplacementFailureKeepsReadCauseAndIsNotRetried(t *testing.T) {
 	roster.Refresh()
 	prober.failPID.Store(int64(oldEntry.PID))
 
-	spawnCalls := 0
-	launchFailure := errors.New("evener serve: session " + sessionID + " is already running; send work to the live session or fork it")
-	spawner := &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
-		spawnCalls++
-		return rendezvous.Entry{}, launchFailure
-	}}
-	cfg := hubcore.WebConfig{
+	cfg = hubcore.WebConfig{
 		RunDir:      runDir,
 		Roster:      roster,
-		Spawner:     spawner,
 		Past:        past,
 		ResumeLocks: hubcore.NewResumeLocks(),
 	}
+	return cfg, sessionID
+}
+
+// assertHubLaunchRefusal requires the structured hub-launch classification,
+// not a rendered message.
+func assertHubLaunchRefusal(t *testing.T, err error) {
+	t.Helper()
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("error is not an appwire refusal: %T %v", err, err)
+	}
+	if wire.Code != appwire.CodeUnavailable || evenerErrorInfoFromData(wire.Data) != string(appwire.ErrorHubLaunch) {
+		t.Fatalf("error classification = code %d info %q, want unavailable/hubLaunch",
+			wire.Code, evenerErrorInfoFromData(wire.Data))
+	}
+}
+
+// TestResumeReplacementFailureKeepsReadCauseAndIsNotRetried reproduces the two
+// late review findings on the replacement fall-through: a refused launch must
+// carry the read failure that caused it, and a client retry against the same
+// unreadable owner must not launch another child for it. The causes are opaque
+// fixture sentinels; the refusal shape is asserted by type and code.
+func TestResumeReplacementFailureKeepsReadCauseAndIsNotRetried(t *testing.T) {
+	readSentinel := "read-sentinel-" + t.Name()
+	launchSentinel := "launch-sentinel-" + t.Name()
+	cfg, sessionID := newUnreadableOwnerResumeFixture(t, "project-5530-failed-spawn-0000000000", readSentinel)
+	spawnCalls := 0
+	spawner := &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+		spawnCalls++
+		return rendezvous.Entry{}, fmt.Errorf("%s: %w", launchSentinel, llm.ErrAPILogTargetLocked)
+	}}
+	cfg.Spawner = spawner
 	sources := newHubSourceRegistry(cfg)
 
 	_, firstErr := resumeThreadLocked(context.Background(), cfg, sources, appwire.ThreadResumeParams{Session: sessionID})
 	if firstErr == nil {
 		t.Fatal("first resume unexpectedly succeeded")
 	}
-	if !strings.Contains(firstErr.Error(), "thread history is closed") {
+	if !strings.Contains(firstErr.Error(), readSentinel) {
 		t.Fatalf("first resume lost the read cause: %v", firstErr)
 	}
-	if !strings.Contains(firstErr.Error(), "already running") {
+	if !strings.Contains(firstErr.Error(), launchSentinel) {
 		t.Fatalf("first resume lost the launch cause: %v", firstErr)
 	}
+	assertHubLaunchRefusal(t, firstErr)
 	if spawnCalls != 1 {
 		t.Fatalf("first resume spawns=%d, want 1", spawnCalls)
 	}
@@ -276,10 +304,78 @@ func TestResumeReplacementFailureKeepsReadCauseAndIsNotRetried(t *testing.T) {
 	if secondErr == nil {
 		t.Fatal("second resume unexpectedly succeeded")
 	}
-	if !strings.Contains(secondErr.Error(), "thread history is closed") {
+	if !strings.Contains(secondErr.Error(), readSentinel) {
 		t.Fatalf("second resume lost the read cause: %v", secondErr)
 	}
+	if !strings.Contains(secondErr.Error(), launchSentinel) {
+		t.Fatalf("second resume lost the launch cause: %v", secondErr)
+	}
+	assertHubLaunchRefusal(t, secondErr)
 	if spawnCalls != 1 {
 		t.Fatalf("second resume spawned again for the same unreadable owner: spawns=%d, want 1", spawnCalls)
+	}
+}
+
+// TestResumeReplacementTemporaryFailureIsRetried proves a launch failure that
+// is not an ownership refusal stays retryable: fixing its cause must let the
+// next resume launch a replacement instead of replaying the cached failure.
+func TestResumeReplacementTemporaryFailureIsRetried(t *testing.T) {
+	readSentinel := "read-sentinel-" + t.Name()
+	temporarySentinel := "temporary-launch-sentinel-" + t.Name()
+	cfg, sessionID := newUnreadableOwnerResumeFixture(t, "project-5530-temporary-failure-0000000000", readSentinel)
+	replacementWorkingDir := t.TempDir()
+
+	replacementDaemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: appwire.LocalSourceID})
+	appserver.HandleTyped(replacementDaemon.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: liveProjectThread(sessionID, replacementWorkingDir)}, nil
+	})
+	replacementHTTP := httptest.NewServer(http.HandlerFunc(replacementDaemon.ServeWebSocket))
+	t.Cleanup(replacementHTTP.Close)
+	replacementEntry := rendezvous.Entry{
+		PID:          108085,
+		Protocol:     appwire.ProtocolVersion,
+		Endpoint:     "ws" + strings.TrimPrefix(replacementHTTP.URL, "http"),
+		SourceID:     appwire.LocalSourceID,
+		ThreadID:     sessionID,
+		SessionID:    sessionID,
+		WorkspaceRef: appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: sessionID}.String(),
+		WorkingDir:   replacementWorkingDir,
+		StartedAt:    time.Now().UTC(),
+	}
+	spawnCalls := 0
+	spawner := &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+		spawnCalls++
+		if spawnCalls == 1 {
+			return rendezvous.Entry{}, errors.New(temporarySentinel)
+		}
+		writeRendezvous(t, cfg.RunDir, replacementEntry)
+		return replacementEntry, nil
+	}}
+	cfg.Spawner = spawner
+	sources := newHubSourceRegistry(cfg)
+
+	_, firstErr := resumeThreadLocked(context.Background(), cfg, sources, appwire.ThreadResumeParams{Session: sessionID})
+	if firstErr == nil {
+		t.Fatal("first resume unexpectedly succeeded")
+	}
+	if !strings.Contains(firstErr.Error(), temporarySentinel) {
+		t.Fatalf("first resume lost the temporary launch cause: %v", firstErr)
+	}
+	if !strings.Contains(firstErr.Error(), readSentinel) {
+		t.Fatalf("first resume lost the read cause: %v", firstErr)
+	}
+	if spawnCalls != 1 {
+		t.Fatalf("first resume spawns=%d, want 1", spawnCalls)
+	}
+
+	response, secondErr := resumeThreadLocked(context.Background(), cfg, sources, appwire.ThreadResumeParams{Session: sessionID})
+	if secondErr != nil {
+		t.Fatalf("temporary launch failure was not retried: %v", secondErr)
+	}
+	if spawnCalls != 2 {
+		t.Fatalf("second resume spawns=%d, want 2", spawnCalls)
+	}
+	if response.Thread.ID != sessionID {
+		t.Fatalf("resumed thread=%+v, want %s", response.Thread, sessionID)
 	}
 }
