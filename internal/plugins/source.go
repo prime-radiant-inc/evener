@@ -317,7 +317,9 @@ func isHexPair(name string) bool {
 // copyTree recursively copies src to dst (files, dirs, and symlink targets as
 // regular files), creating directories as needed and overwriting existing files.
 // Every entry named .git is skipped, and a symlink reaching Git metadata is
-// refused: those bytes must never enter a published plugin tree (#4768). A
+// refused: those bytes must never enter a published plugin tree (#4768). The
+// link's target is opened once and the opened descriptor is what gets copied,
+// so a link retargeted after a name check cannot substitute Git metadata. A
 // named pipe or other non-regular entry fails the copy rather than blocking on
 // its open (#4847).
 func copyTree(src, dst string) error {
@@ -338,11 +340,6 @@ func copyTree(src, dst string) error {
 			}
 			return nil
 		}
-		if fi.Mode()&os.ModeSymlink != 0 {
-			if err := refuseGitSymlink(src, path); err != nil {
-				return err
-			}
-		}
 		rel, err := filepath.Rel(src, path)
 		if err != nil {
 			return err
@@ -353,6 +350,14 @@ func copyTree(src, dst string) error {
 		}
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			in, err := openPluginSourceLink(src, path)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = in.Close() }()
+			return copyOpenedFile(in, target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, fi.Mode().Perm())
 		}
 		return copyRegularFile(path, target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, fi.Mode().Perm())
 	})

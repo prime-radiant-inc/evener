@@ -239,6 +239,13 @@ func copyRegularFile(src, dst string, flags int, mode fs.FileMode) error {
 		return err
 	}
 	defer func() { _ = in.Close() }()
+	return copyOpenedFile(in, dst, flags, mode)
+}
+
+// copyOpenedFile copies the bytes an already-open descriptor holds. Callers
+// that verified the descriptor (rather than the path that named it) use this
+// so the verification and the bytes belong to the same identity.
+func copyOpenedFile(in *os.File, dst string, flags int, mode fs.FileMode) error {
 	out, err := os.OpenFile(dst, flags, mode)
 	if err != nil {
 		return err
