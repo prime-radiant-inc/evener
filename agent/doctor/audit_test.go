@@ -2161,3 +2161,32 @@ func TestRunAudit_SessionLocationsShareNonReproBudget(t *testing.T) {
 		t.Errorf("SessionLocations has %d entries but Description names %d non-reproducible sessions — the structured and prose channels must disclose the same capped set", len(runTimeout.Evidence.SessionLocations), descNonRepro)
 	}
 }
+
+// An explicit-session audit honors cancellation too: cancelled before the
+// first session, between sessions, and after the last one all return the
+// cancellation error with no partial result.
+func TestRunAudit_ExplicitSessionsHonorCancellation(t *testing.T) {
+	base := t.TempDir()
+	sids := seedRunTimeoutSessions(t, stateHomeBucket(base, hash1), 2)
+	rb := mustParseFixtureRunbook(t)
+
+	for name, tc := range map[string]struct {
+		allowed  int
+		sessions []string
+	}{
+		"before first session":   {allowed: 0, sessions: sids},
+		"between sessions":       {allowed: 1, sessions: sids},
+		"after the last session": {allowed: 1, sessions: sids[:1]},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := &cancelAfterChecks{Context: context.Background(), allowed: tc.allowed}
+			res, err := RunAudit(ctx, base, rb, AuditOpts{Sessions: tc.sessions})
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("err = %v, want context.Canceled", err)
+			}
+			if res.SessionsChecked != 0 || len(res.Findings) != 0 {
+				t.Errorf("cancelled audit returned partial result: %+v", res)
+			}
+		})
+	}
+}

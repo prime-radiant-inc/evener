@@ -795,6 +795,9 @@ func RunAudit(ctx context.Context, stateBase string, runbook Runbook, opts Audit
 	sessionsBySig := map[string]map[string]bool{}
 
 	for _, ref := range refs {
+		if err := ctx.Err(); err != nil {
+			return AuditResult{}, err
+		}
 		paths, err := Locate(stateBase, ref)
 		if err != nil {
 			res.Unreadable = append(res.Unreadable, UnreadableSession{SessionID: ref, TranscriptRef: ref, Error: err.Error()})
@@ -1117,6 +1120,9 @@ func RunAudit(ctx context.Context, stateBase string, runbook Runbook, opts Audit
 		res.Summary = append(res.Summary, AuditSummaryRow{Title: f.Title, Severity: f.Severity, Sessions: trueCount})
 	}
 	sort.Slice(res.Unreadable, func(i, j int) bool { return res.Unreadable[i].SessionID < res.Unreadable[j].SessionID })
+	if err := ctx.Err(); err != nil {
+		return AuditResult{}, err
+	}
 	return res, nil
 }
 

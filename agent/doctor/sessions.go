@@ -135,8 +135,13 @@ func ListSessions(ctx context.Context, stateBase string, opts SessionsOpts) (Ses
 			if !cutoff.IsZero() && transcriptOlderThan(paths.TranscriptPath, cutoff) {
 				continue
 			}
-			row, err := sessionRow(b, paths, meta, delegates)
+			row, err := sessionRow(ctx, b, paths, meta, delegates)
 			if err != nil {
+				// A cancelled read is the operation stopping, not a
+				// session that could not be read.
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return SessionsResult{}, ctxErr
+				}
 				res.Unreadable = append(res.Unreadable, UnreadableSession{
 					SessionID:     meta.ID,
 					TranscriptRef: paths.TranscriptRef,
@@ -149,6 +154,9 @@ func ListSessions(ctx context.Context, stateBase string, opts SessionsOpts) (Ses
 			}
 			res.Sessions = append(res.Sessions, row)
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return SessionsResult{}, err
 	}
 	sort.Slice(res.Sessions, func(i, j int) bool { return res.Sessions[i].LastActivity.After(res.Sessions[j].LastActivity) })
 	sort.Slice(res.Unreadable, func(i, j int) bool { return res.Unreadable[i].SessionID < res.Unreadable[j].SessionID })
@@ -169,8 +177,8 @@ func transcriptOlderThan(path string, cutoff time.Time) bool {
 // transcript (header + entries, for started/models/outcome), the transcript
 // file's own size and mtime (bytes/last-activity), the meta (turn count,
 // subagent/observer facts), and the jobs fold (delegate count).
-func sessionRow(b bucket, paths Paths, meta schema.SessionMeta, delegates delegateCache) (SessionRow, error) {
-	doc, err := loadTranscript(paths.TranscriptPath)
+func sessionRow(ctx context.Context, b bucket, paths Paths, meta schema.SessionMeta, delegates delegateCache) (SessionRow, error) {
+	doc, err := loadTranscriptContext(ctx, paths.TranscriptPath)
 	if err != nil {
 		return SessionRow{}, fmt.Errorf("session %s: %w", meta.ID, err)
 	}
@@ -178,7 +186,7 @@ func sessionRow(b bucket, paths Paths, meta schema.SessionMeta, delegates delega
 	if err != nil {
 		return SessionRow{}, fmt.Errorf("stat transcript %s: %w", paths.TranscriptPath, err)
 	}
-	events, err := jobstore.ReadEvents(paths.JobsPath)
+	events, err := jobstore.ScanEvents(ctx, paths.JobsPath, jobstore.ScanLimits{})
 	if err != nil {
 		return SessionRow{}, fmt.Errorf("session %s: %w", meta.ID, err)
 	}
