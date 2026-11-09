@@ -12,8 +12,9 @@
 // width (there are no inline triggers and no narrow-collapse - the status
 // row's container-query variants own compression inside .body instead),
 // followed by Rename, the tree-gated Pin/Archive/Delete organization group,
-// and Shut down. The composer placement alone can also lead with the
-// narrow-layout turn verbs (Stop/Steer - SessionMenuProps.turnVerbs). The
+// and Shut down. The composer's row mounts can also lead with the
+// narrow-layout turn verbs (Stop/Steer - SessionMenuProps.turnVerbs): the
+// engaged inline chrome and the phone's collapsed-row menu. The
 // Overview count adds the subagents running at every depth
 // (useSubagentCounts) to the session summary's running jobs. The hidden
 // ActivityPanel retains discovery and refresh wiring. Overview opens the
@@ -84,10 +85,13 @@ export interface SessionChromeProps {
   discoveryOnly?: boolean;
   /**
    * Turn verbs for the session menu, offered by the composer's narrow
-   * layout (Jesse's 2026-09-28 ruling on the #1339 phone-width wrap). Only
-   * the composer placement forwards them: the footer and menu-only mounts
-   * share SessionMenu with the rail, where no draft exists for Steer to
-   * send. Composer.tsx owns presence, disablement, and the press handlers.
+   * layout (Jesse's 2026-09-28 ruling on the #1339 phone-width wrap). The
+   * composer's two row mounts forward them - the engaged inline chrome and
+   * the phone's collapsed-row menu, which is the phone's only session menu
+   * while the composer rests. The footer mount and the notLoaded menu mount
+   * (which passes no turnVerbs) share SessionMenu with the rail, where no
+   * draft exists for Steer to send. Composer.tsx owns presence,
+   * disablement, and the press handlers.
    */
   turnVerbs?: SessionMenuTurnVerbs;
 }
@@ -352,9 +356,12 @@ export function SessionChrome({
             overviewOpen={sidebarOpenHere}
             overviewLabel={overviewLabel}
             onOpenVerbosity={() => setVerbosityOpen(true)}
-            // Composer placement only: the header comment on the prop says
-            // why the other placements must never carry turn verbs.
-            turnVerbs={placement === "composer" ? turnVerbs : undefined}
+            // The composer's two row mounts carry the turn verbs (the
+            // header comment on the prop says why the footer and rail
+            // mounts must never): the engaged inline chrome, and the
+            // phone's collapsed row, whose menu is the phone's only
+            // session menu while the composer rests.
+            turnVerbs={placement === "footer" ? undefined : turnVerbs}
             actions={{
               onOpenOverview: openOverview,
               onRename: async (name) => {

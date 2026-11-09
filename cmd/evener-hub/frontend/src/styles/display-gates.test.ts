@@ -235,4 +235,15 @@ test("the phone composer's activity chips yield to the row and wrap at the tap f
     css.replace(/\/\*[\s\S]*?\*\//g, " "),
   );
   expect(chipsWrap, "statusbar.module.css must keep the wrapped chips strip yielding and wrapping").not.toBeNull();
+  // Below the width where attach + the status chrome + the counts fit one
+  // line, the strip claims a full line of the leading instead of starving
+  // the chrome (whose container-contained .body reports a near-zero basis
+  // to the flex algorithm no matter what its status content needs).
+  const ownLine = /@container statusbar \(max-width: 360px\)\s*\{[^}]*\.chipsWrap\s*\{[^}]*flex:\s*0 0 100%/.exec(
+    css.replace(/\/\*[\s\S]*?\*\//g, " "),
+  );
+  expect(
+    ownLine,
+    "statusbar.module.css must give the wrapped chips their own line below 360px of leading",
+  ).not.toBeNull();
 });

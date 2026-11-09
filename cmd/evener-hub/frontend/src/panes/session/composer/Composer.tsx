@@ -945,7 +945,7 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   const leadingControls = (
     <div className={CLASS.leading}>
       {controlsCollapsed ? (
-        <MemoizedSessionChrome ref={ref} paneId={paneId} placement="menu" discoverActivity />
+        <MemoizedSessionChrome ref={ref} paneId={paneId} placement="menu" discoverActivity turnVerbs={turnVerbs} />
       ) : (
         <>
           <Tooltip label="Attach an image">

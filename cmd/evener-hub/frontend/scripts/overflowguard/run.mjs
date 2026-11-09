@@ -139,7 +139,7 @@ async function measureAt(cdpEndpoint, url, width) {
 
     const exceptionSafety = await evaluate(
       send,
-      `(() => {
+      `(async () => {
         const systemPrompt = [...document.querySelectorAll('[data-testid="system-notice-scaffold"]')].find((details) =>
           details.querySelector(':scope > summary')?.textContent?.startsWith('System prompt'),
         );
@@ -155,7 +155,7 @@ async function measureAt(cdpEndpoint, url, width) {
           return originalGetBoundingClientRect.call(this);
         };
         try {
-          window.measure();
+          await window.measure();
         } catch {
           threw = true;
         } finally {
@@ -178,7 +178,7 @@ async function measureAt(cdpEndpoint, url, width) {
       } catch (error) {
         // Request the new named measurements before allowing an unchanged
         // harness fixture failure to obscure the intended RED boundary.
-        const legacyMeasurement = JSON.parse(await evaluate(send, "JSON.stringify(window.measure())"));
+        const legacyMeasurement = JSON.parse(await evaluate(send, "window.measure().then((result) => JSON.stringify(result))"));
         if (!Array.isArray(legacyMeasurement.editors)) {
           return {
             ...legacyMeasurement,
@@ -194,7 +194,44 @@ async function measureAt(cdpEndpoint, url, width) {
     const finalMeasurement =
       url.includes("settings=1") && width < 900
         ? await measureSettingsSelect(send)
-        : JSON.parse(await evaluate(send, "JSON.stringify(window.measure())"));
+        : JSON.parse(await evaluate(send, "window.measure().then((result) => JSON.stringify(result))"));
+    // The footer and compose-controls probes describe the phone's one bottom
+    // surface, the composer's ENGAGED control row: a phone mounts no status
+    // bar, and the resting row's menu carries the status surface, so those
+    // probes must not read the resting row. The measurement above kept the
+    // Verbosity dialog open (the editor probes need it open), and measure()'s
+    // own engagement declines to run under an open overlay - so on a phone,
+    // close the dialog with a trusted Escape, wait out the close animation,
+    // and take the footer/controls fields from a second, engaged
+    // measurement. Desktop keeps the fields above: its status bar is the
+    // footer the probes read, dialog or no dialog.
+    let engagedFooter = null;
+    let engagedCurrentWork = null;
+    if (detail && realizedLayout.mobile) {
+      await send("Input.dispatchKeyEvent", {
+        type: "keyDown",
+        key: "Escape",
+        code: "Escape",
+        windowsVirtualKeyCode: 27,
+      });
+      await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      const closed = await evaluate(
+        send,
+        `(async () => {
+          for (let i = 0; i < 20; i++) {
+            const open = [...document.querySelectorAll('[role="dialog"], [role="menu"]')].some((element) =>
+              element.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }));
+            if (!open) return true;
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          }
+          return false;
+        })()`,
+      );
+      if (!closed) throw new Error("the Verbosity dialog did not close after Escape");
+      const engaged = JSON.parse(await evaluate(send, "window.measure().then((result) => JSON.stringify(result))"));
+      engagedFooter = engaged.footer;
+      engagedCurrentWork = engaged.currentWork;
+    }
     let settingsLayouts = null;
     if (url.includes("settings=1")) {
       const initialLayout = realizedLayout.mobile ? "mobile" : "desktop";
@@ -218,12 +255,14 @@ async function measureAt(cdpEndpoint, url, width) {
           measurement:
             width < 900
               ? await measureSettingsSelect(send)
-              : JSON.parse(await evaluate(send, "JSON.stringify(window.measure())")),
+              : JSON.parse(await evaluate(send, "window.measure().then((result) => JSON.stringify(result))")),
         },
       ];
     }
     return {
       ...finalMeasurement,
+      footer: engagedFooter ?? finalMeasurement.footer,
+      currentWork: engagedCurrentWork ?? finalMeasurement.currentWork,
       settingsLayouts,
       exceptionSafety,
       detail,
@@ -243,8 +282,8 @@ async function measureSettingsSelect(send) {
   return JSON.parse(
     await evaluate(
       send,
-      `JSON.stringify((() => {
-    const measurement = window.measure();
+      `(async () => {
+    const measurement = await window.measure();
     const statusReason = document.querySelector('[role="status"][data-reason]')?.dataset.reason ?? null;
     for (const editor of measurement.editors) {
       const owner = document.querySelector('[data-testid="' + editor.ownerTestId + '"]');
@@ -278,8 +317,8 @@ async function measureSettingsSelect(send) {
         })),
       });
     }
-    return measurement;
-  })())`,
+    return JSON.stringify(measurement);
+  })()`,
     ),
   );
 }
@@ -1746,7 +1785,8 @@ async function main() {
         widthFailed = true;
         console.log(
           `${width}px ... FAIL - footer status facts are internally clipped: ` +
-            `${result.footer.statusScrollWidth}px in ${result.footer.statusClientWidth}px`,
+            `${result.footer.statusScrollWidth}px in ${result.footer.statusClientWidth}px: ` +
+            JSON.stringify(result.footer.geometry),
         );
       }
       if (result.footer.modelClientWidth <= 0) {

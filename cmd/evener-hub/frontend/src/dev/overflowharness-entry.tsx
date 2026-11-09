@@ -1588,7 +1588,7 @@ function measureComposerContentWidth(): number | null {
   );
 }
 
-function measure() {
+async function measure() {
   if (settingsMode) return measureSettings();
   const pane = document.getElementById("oh-pane");
   if (!pane) throw new Error("harness pane never mounted");
@@ -1671,6 +1671,21 @@ function measure() {
       const target = disclosureTargets.find((candidate) => candidate.kind === disclosure.kind);
       disclosure.restoredOpen = target?.details.open ?? false;
     }
+  }
+  // The phone has no footer strip: the status facts and the compose controls
+  // the probes below measure live in the composer's ENGAGED control row, so
+  // focus the editor first (the same engagement a tap on the input produces)
+  // and let the row carry them before anything reads them.
+  // Never while a dialog or menu is visibly open: the focus steal would close
+  // it and unmount the very editor these measurements exist to check. Closed
+  // overlays stay in the tree (hidden), so a bare role match would never
+  // engage at all - filter by the same visibility the footer probes use.
+  const openOverlay = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"], [role="menu"]')).find(
+    (element) => element.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }),
+  );
+  if (matchMedia("(max-width: 899px)").matches && !openOverlay) {
+    pane?.querySelector<HTMLElement>('[data-composer] [role="textbox"]')?.focus();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   }
   const status = pane.querySelector<HTMLElement>('[data-testid="status-row"]');
   const effort = pane.querySelector<HTMLElement>('[data-testid="status-row-effort"]');
