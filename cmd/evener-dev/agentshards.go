@@ -9,8 +9,12 @@ package dev
 // measurements this design rests on: one ~2750-test binary spends ~26-32s as
 // a single invocation, and cost-balanced shards (4 × -parallel 3) take it to
 // ~21s. BALANCE is what matters, not shard count — the weights come from a
-// survey cached by test-set identity, so a run pays the survey only when a
-// test is added, renamed, or removed.
+// survey cached by test-set identity. When a test is added, renamed, or
+// removed, the run packs from the lane's last survey instead of surveying
+// again, charges an unmeasured test the packing minimum, and (when the shard
+// logs are verbose, as under the gate's timing capture) records the costs its
+// own shards measured as the new test set's survey. A run surveys only when
+// the lane has no survey at all, or when asked to.
 //
 // Interface (unchanged from the script):
 //
@@ -450,6 +454,10 @@ func runShards(cfg shardsConfig) int {
 	cachedSurvey := cfg.cachedSurveyPath(listOut, parsed, goflags)
 
 	var costs []testCost
+	// recordShardCosts is set when the run packs from a survey of a different
+	// test set: its shards then measure the current one, and a green run
+	// records that as this test set's survey.
+	recordShardCosts := false
 	if !cfg.noSurvey {
 		surveyLog := filepath.Join(logdir, "survey.log")
 		cacheHit := false
@@ -463,7 +471,20 @@ func runShards(cfg shardsConfig) int {
 			// written by concurrent gate runs, so a nonempty file can be a
 			// partial write caught mid-flight.
 		}
-		if !cacheHit {
+		if !cacheHit && !cfg.resurvey {
+			// A changed test set has no survey of its own, but surveying runs
+			// the whole suite once more before the shards run it. The lane's
+			// last survey prices every test the two sets share.
+			if data := olderSurvey(cachedSurvey, surveyLaneKey(parsed, goflags, cfg.skip)); data != nil {
+				var skip *regexp.Regexp
+				if cfg.skip != "" {
+					skip, _ = regexp.Compile(cfg.skip)
+				}
+				costs = costsFromOlderSurvey(parseSurvey(string(data)), listOut, skip)
+				recordShardCosts = len(costs) > 0
+			}
+		}
+		if !cacheHit && !recordShardCosts {
 			_, _ = fmt.Fprintf(cfg.stdout, "%s-shards: surveying test costs (one-time for this test set)\n", cfg.label)
 			args := surveyArgs(cfg.surveyParallel, cfg.skip, parsed.short, parsed.test)
 			if err := cfg.runToLog(in, surveyLog, cfg.pkgDir, build, args...); err != nil {
@@ -481,8 +502,10 @@ func runShards(cfg shardsConfig) int {
 				}
 			}
 		}
-		if data, err := os.ReadFile(surveyLog); err == nil {
-			costs = parseSurvey(string(data))
+		if !recordShardCosts {
+			if data, err := os.ReadFile(surveyLog); err == nil {
+				costs = parseSurvey(string(data))
+			}
 		}
 	}
 	if code := in.exitCode(); code != 0 {
@@ -692,6 +715,22 @@ func runShards(cfg shardsConfig) int {
 		_, _ = fmt.Fprintf(cfg.stdout, "full logs: %s\n", fullLogs)
 		return 1
 	}
+	// Only the verbose shard logs carry per-test costs. Like every cache
+	// write, a failure here costs a later run a survey and nothing else.
+	if recordShardCosts && jsonShards {
+		var measured []byte
+		for i := range bins {
+			data, err := os.ReadFile(shardLogPath(i))
+			if err != nil {
+				measured = nil
+				break
+			}
+			measured = append(measured, data...)
+		}
+		if cfg.surveyCoversTestSet(measured, listOut) {
+			_ = writeFileAtomic(cachedSurvey, measured)
+		}
+	}
 	green = true
 	return 0
 }
@@ -746,7 +785,36 @@ func (cfg shardsConfig) cachedSurveyPath(listOut string, parsed parsedFlags, gof
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return ""
 	}
-	return filepath.Join(cacheDir, "survey-"+testSetKey(listOut, parsed, goflags, cfg.skip)+".log")
+	return filepath.Join(cacheDir, "survey-"+surveyLaneKey(parsed, goflags, cfg.skip)+"-"+testSetKey(listOut, parsed, goflags, cfg.skip)+".log")
+}
+
+// olderSurvey returns the lane's most recent survey of a different test set,
+// or nil when the cache holds none. The file name carries the lane key, so
+// only a survey measured under this build, mode and skip is a candidate.
+func olderSurvey(cachedSurvey, laneKey string) []byte {
+	if cachedSurvey == "" {
+		return nil
+	}
+	siblings, _ := filepath.Glob(filepath.Join(filepath.Dir(cachedSurvey), "survey-"+laneKey+"-*.log"))
+	var newest string
+	var newestAt time.Time
+	for _, path := range siblings {
+		info, err := os.Stat(path)
+		if err != nil || path == cachedSurvey || info.Size() == 0 {
+			continue
+		}
+		if newest == "" || info.ModTime().After(newestAt) {
+			newest, newestAt = path, info.ModTime()
+		}
+	}
+	if newest == "" {
+		return nil
+	}
+	data, err := os.ReadFile(newest)
+	if err != nil {
+		return nil
+	}
+	return data
 }
 
 // surveyCoversTestSet reports whether a cached survey accounts for every test

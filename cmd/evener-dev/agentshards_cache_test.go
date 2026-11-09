@@ -130,3 +130,131 @@ func TestWriteFileAtomicReplacesTheDestinationInode(t *testing.T) {
 		t.Fatalf("directory holds %v, want only the destination; a temp file leaked", names)
 	}
 }
+
+// olderTestSetSurvey replaces the run's survey cache with one measured before
+// name existed: a different test set, so a different cache entry, carrying no
+// cost for name. lane is the entry's lane prefix, or "" for the run's own. It
+// returns the entry's path.
+func olderTestSetSurvey(t *testing.T, cacheDir, lane, name string) string {
+	t.Helper()
+	cached, err := filepath.Glob(filepath.Join(cacheDir, "survey-*.log"))
+	if err != nil || len(cached) != 1 {
+		t.Fatalf("survey cache not written: %v %v", cached, err)
+	}
+	data, err := os.ReadFile(cached[0])
+	if err != nil {
+		t.Fatalf("reading survey cache: %v", err)
+	}
+	var kept []string
+	for line := range strings.SplitSeq(string(data), "\n") {
+		if !strings.Contains(line, name) {
+			kept = append(kept, line)
+		}
+	}
+	if lane == "" {
+		base := filepath.Base(cached[0])
+		lane = base[:strings.LastIndex(base, "-")]
+	}
+	older := filepath.Join(cacheDir, lane+"-0000000000000000.log")
+	if err := os.WriteFile(older, []byte(strings.Join(kept, "\n")), 0o644); err != nil {
+		t.Fatalf("seeding older survey: %v", err)
+	}
+	if err := os.Remove(cached[0]); err != nil {
+		t.Fatalf("removing current survey: %v", err)
+	}
+	return older
+}
+
+// primedShardsConfig returns a config whose cache holds one complete survey,
+// and the number of tests that priming run placed into shards.
+func primedShardsConfig(t *testing.T) (shardsConfig, int) {
+	t.Helper()
+	cfg, stdout, stderr, _ := e2eConfig(t)
+	if rc := runShards(cfg); rc != 0 {
+		t.Fatalf("priming run rc = %d\nstdout:\n%s\nstderr:\n%s", rc, stdout, stderr)
+	}
+	total := shardedTestCount(t, stdout.String())
+	if total == 0 {
+		t.Fatalf("priming run sharded no tests:\n%s", stdout)
+	}
+	return cfg, total
+}
+
+// TestAgentShardsReusesTheLanesSurveyWhenTheTestSetChanges: adding a test
+// changes the test set's identity, and surveying again runs the whole suite a
+// second time before the shards run it. The lane's last survey still prices
+// every other test, so the run packs from it, places the unmeasured test in a
+// shard anyway, and runs the suite once.
+func TestAgentShardsReusesTheLanesSurveyWhenTheTestSetChanges(t *testing.T) {
+	cfg, total := primedShardsConfig(t)
+	older := olderTestSetSurvey(t, cfg.cacheDir, "", "TestFixtureAlpha")
+
+	var stdout, stderr bytes.Buffer
+	cfg.stdout, cfg.stderr = &stdout, &stderr
+	if rc := runShards(cfg); rc != 0 {
+		t.Fatalf("changed-test-set run rc = %d\nstdout:\n%s\nstderr:\n%s", rc, &stdout, &stderr)
+	}
+	if got := shardedTestCount(t, stdout.String()); got != total {
+		t.Fatalf("changed-test-set run sharded %d tests, want %d; the unmeasured test ran in no shard:\n%s", got, total, &stdout)
+	}
+	// A survey pass writes a cache entry for the new test set, so the older
+	// entry standing alone means no survey ran.
+	cached, err := filepath.Glob(filepath.Join(cfg.cacheDir, "survey-*.log"))
+	if err != nil || len(cached) != 1 || cached[0] != older {
+		t.Fatalf("cache holds %v (err %v), want only %s; the run surveyed instead of reusing the lane's survey", cached, err, older)
+	}
+}
+
+// TestAgentShardsRecordsShardCostsForAChangedTestSet: a run that borrowed an
+// older survey measured every test while running its shards. It records those
+// costs for the current test set, so the unmeasured test is priced from then
+// on and the borrowed survey does not go stale.
+func TestAgentShardsRecordsShardCostsForAChangedTestSet(t *testing.T) {
+	cfg, _ := primedShardsConfig(t)
+	older := olderTestSetSurvey(t, cfg.cacheDir, "", "TestFixtureAlpha")
+
+	cfg.jsonDir = filepath.Join(t.TempDir(), "json")
+	var stdout, stderr bytes.Buffer
+	cfg.stdout, cfg.stderr = &stdout, &stderr
+	if rc := runShards(cfg); rc != 0 {
+		t.Fatalf("changed-test-set run rc = %d\nstdout:\n%s\nstderr:\n%s", rc, &stdout, &stderr)
+	}
+	cached, err := filepath.Glob(filepath.Join(cfg.cacheDir, "survey-*.log"))
+	if err != nil {
+		t.Fatalf("globbing survey cache: %v", err)
+	}
+	priced := false
+	for _, path := range cached {
+		if path == older {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("reading %s: %v", path, err)
+		}
+		for _, tc := range parseSurvey(string(data)) {
+			priced = priced || tc.name == "TestFixtureAlpha"
+		}
+	}
+	if !priced {
+		t.Fatalf("no cache entry prices TestFixtureAlpha after a green run measured it: %v", cached)
+	}
+}
+
+// TestAgentShardsIgnoresAnotherLanesSurvey: the build decides what a test
+// costs, so a survey measured under another build prices nothing here. With
+// only that to borrow, the run surveys.
+func TestAgentShardsIgnoresAnotherLanesSurvey(t *testing.T) {
+	cfg, _ := primedShardsConfig(t)
+	other := olderTestSetSurvey(t, cfg.cacheDir, "survey-ffffffffffffffff", "TestFixtureAlpha")
+
+	var stdout, stderr bytes.Buffer
+	cfg.stdout, cfg.stderr = &stdout, &stderr
+	if rc := runShards(cfg); rc != 0 {
+		t.Fatalf("other-lane run rc = %d\nstdout:\n%s\nstderr:\n%s", rc, &stdout, &stderr)
+	}
+	cached, err := filepath.Glob(filepath.Join(cfg.cacheDir, "survey-*.log"))
+	if err != nil || len(cached) != 2 {
+		t.Fatalf("cache holds %v (err %v), want %s and this lane's own survey", cached, err, other)
+	}
+}

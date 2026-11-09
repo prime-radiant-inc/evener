@@ -654,12 +654,46 @@ func testSetKey(listOutput string, parsed parsedFlags, goflags, skip string) str
 func testSetKeyForParserVersion(listOutput string, parsed parsedFlags, goflags, skip, parserVersion string) string {
 	lines := strings.Split(strings.TrimRight(listOutput, "\n"), "\n")
 	sort.Strings(lines)
-	payload := strings.Join(lines, "\n") + "\n" +
-		"parser\x00" + parserVersion + "\n" +
+	return shortHash(strings.Join(lines, "\n") + "\n" + surveyLanePayload(parsed, goflags, skip, parserVersion))
+}
+
+// surveyLaneKey names the lane a survey was measured in: everything in
+// testSetKey except the test list. Two surveys with the same lane key priced
+// their tests the same way, so one can price the tests it shares with the
+// other's test set.
+func surveyLaneKey(parsed parsedFlags, goflags, skip string) string {
+	return shortHash(surveyLanePayload(parsed, goflags, skip, surveyParserVersion))
+}
+
+func surveyLanePayload(parsed parsedFlags, goflags, skip, parserVersion string) string {
+	return "parser\x00" + parserVersion + "\n" +
 		"build\x00" + strings.Join(parsed.build, "\x00") + "\n" +
 		"short\x00" + strconv.FormatBool(parsed.short) + "\n" +
 		"goflags\x00" + goflags + "\n" +
 		"skip\x00" + skip + "\n"
+}
+
+func shortHash(payload string) string {
 	sum := sha256.Sum256([]byte(payload))
 	return hex.EncodeToString(sum[:])[:16]
+}
+
+// costsFromOlderSurvey prices the current test set from a survey of a
+// different one. A test the survey measured keeps its cost; one it did not is
+// charged nothing, which packing raises to minTestCost. Every listed test gets
+// a cost, so every test lands in a shard. Tests matching skip are left out, as
+// a survey leaves them out.
+func costsFromOlderSurvey(survey []testCost, listOutput string, skip *regexp.Regexp) []testCost {
+	measured := map[string]float64{}
+	for _, tc := range survey {
+		measured[tc.name] = tc.cost
+	}
+	var costs []testCost
+	for _, tc := range equalWeights(listOutput) {
+		if skip != nil && skip.MatchString(tc.name) {
+			continue
+		}
+		costs = append(costs, testCost{name: tc.name, cost: measured[tc.name]})
+	}
+	return costs
 }
