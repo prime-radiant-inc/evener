@@ -54,7 +54,7 @@ The five inputs most likely to bite a person, each pinned to the task whose test
 
 - [ ] **Step 1: Declare the types and the method**
 
-Add the seven Go types to `appwire/types_auth_commands.go` next to the other plugin types, and add the constant + table row to `appwire/protocol.go` next to `MethodEvenerPluginList`'s row: `{MethodEvenerPluginComponents, PluginComponentsParams{}, PluginComponentsResponse{}, ScopeHub, "Returns plugins' loaded components - skills, agents, commands, hook events, and MCP server names - plus load diagnostics; one target per installed plugin by name or any directory by path, results fail-soft per target."}`.
+Add the six Go types to `appwire/types_auth_commands.go` next to the other plugin types, and add the constant + table row to `appwire/protocol.go` next to `MethodEvenerPluginList`'s row: `{MethodEvenerPluginComponents, PluginComponentsParams{}, PluginComponentsResponse{}, ScopeHub, "Returns plugins' loaded components - skills, agents, commands, hook events, and MCP server names - plus load diagnostics; one target per installed plugin by name or any directory by path, results fail-soft per target."}`.
 
 - [ ] **Step 2: Regenerate and check freshness**
 
