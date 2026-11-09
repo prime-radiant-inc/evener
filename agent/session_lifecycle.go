@@ -1436,6 +1436,19 @@ func delegateEntryRequiresReport(kind EntryKind) bool {
 }
 
 func (s *Session) processOneInput(ctx context.Context, input string, images []ImageAttachment, kind EntryKind, inputProvenance *provenance.Causal) (out string, progressed bool, err error) {
+	// A yield arms a fallback wake that outlives its turn. A later turn that
+	// starts here resumed the session itself, so the fallback is over; the
+	// deferred cancel covers every other exit (communicate won the round, the
+	// turn failed, a Stop landed) so a stale timer cannot resume a session
+	// that already moved. The successful yield path sets yielded and leaves
+	// its timer armed (issue #832).
+	yielded := false
+	s.cancelPendingQuietYield()
+	defer func() {
+		if !yielded {
+			s.cancelPendingQuietYield()
+		}
+	}()
 	communicatePreviewCalls := map[string]struct{}{}
 	defer func() {
 		for callID := range communicatePreviewCalls {
@@ -2106,6 +2119,15 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		if done {
 			return text, progressed, nil
 		}
+		// The yield tool's call is in this round's persisted results above.
+		// Ending here is the whole contract of the tool: no further model
+		// round, no user-visible output, and the session's ordinary inbound
+		// events (or the armed fallback) are what resume it (issue #832).
+		if s.consumeQuietYieldRequest() {
+			yielded = true
+			s.finishProcessingAtBoundary(ctx, SessionIdle)
+			return "", progressed, nil
+		}
 		if yieldToObserverCallback || sessionLifecycleFault(ctx, "yield_observer") != nil {
 			s.finishProcessingAtFailureBoundary(ctx)
 			return "", progressed, nil
@@ -2510,6 +2532,10 @@ func (s *Session) acceptRuntimeInput(p *provenance.Causal) {
 // stands down before reaching here when a served session could not be named, so
 // every wake that gets this far can address its own turn.
 func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (proceed bool) {
+	// A quiet yield's fallback timer is one of the events this turn can
+	// deliver. Take it once, before the deliverability gate below, so it
+	// cannot be lost between the gate and the reminder build (issue #832).
+	yieldDue := s.takeDueQuietYield()
 	s.drivePendingDelegateAttention()
 	// Drive signal (b) (spec §3): a child driven on its pending caller-targeted
 	// watch sends may have no token queued yet (the drive was launched on the
@@ -2542,7 +2568,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	// defers the attention, and a turn carrying nothing deliverable runs
 	// nothing. The begin-consumed wake stays consumed — the IDs stay cached
 	// and unpark re-arms them.
-	if len(jobNotifs) == 0 && !hasSteering && !hasDelegateUpdate && (!hasRootAttention || s.rootAttentionRailParked()) {
+	if len(jobNotifs) == 0 && !hasSteering && !hasDelegateUpdate && (!hasRootAttention || s.rootAttentionRailParked()) && yieldDue == nil {
 		if len(retryJobNotifs) == 0 && len(injectedFailures) == 0 {
 			s.resetJobNotificationRetry()
 		}
@@ -2570,8 +2596,21 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	var reminder string
 	if len(jobNotifs) > 0 {
 		reminder = s.formatJobNotificationReminder(jobNotifs)
+	}
+	if yieldDue != nil {
+		if reminder != "" {
+			reminder += "\n\n"
+		}
+		reminder += formatQuietYieldTimeoutReminder(*yieldDue)
+	}
+	if reminder != "" {
 		if err := errors.Join(s.appendSteeringTurnDurablyForOwner(reminder, events.SteeringKindNotification, turnID), sessionLifecycleFault(ctx, "append_notification")); err != nil {
 			s.requeueJobNotifications(jobNotifications(jobNotifs))
+			if yieldDue != nil {
+				// Loss-proof: a failed append puts the fallback back for the
+				// next wake instead of consuming the only timeout notice.
+				s.restoreDueQuietYield(*yieldDue)
+			}
 			s.finishNotificationNoop()
 			return false
 		}

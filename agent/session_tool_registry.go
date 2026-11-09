@@ -497,6 +497,9 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 	if err := registerJobTools(reg, s, deps); err != nil {
 		return err
 	}
+	if err := registerYieldTool(reg, s); err != nil {
+		return err
+	}
 	if err := registerDelegateTool(reg, s); err != nil {
 		return err
 	}

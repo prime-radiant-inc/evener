@@ -880,6 +880,15 @@ type Session struct {
 	// attachment. Guarded by pendingJobNotifsMu.
 	jobNotifyCallbacks int
 
+	// yieldMu guards the quiet-yield state: the request a turn's yield tool
+	// made, the fallback timer armed for it, and the due record a timer firing
+	// leaves for the notification turn that consumes it. See session_yield.go.
+	yieldMu      sync.Mutex
+	yieldSeq     uint64
+	yieldRequest *quietYield
+	yieldArmed   *armedQuietYield
+	yieldDue     *quietYield
+
 	jobManager *jobManager
 
 	// detachedProcesses contains processes this session explicitly launched with

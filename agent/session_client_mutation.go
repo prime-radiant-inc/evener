@@ -1110,6 +1110,9 @@ func (s *Session) InterruptClientMutation(
 		// restore is where a hold persisted by the old unconditional write is
 		// released.
 		snapshot.SteeringHeld = snapshotHasPendingUserSteering(snapshot)
+		// A quiet yield's fallback is over too: the user stopped the session,
+		// and a timer that outlived the Stop would resume it anyway.
+		s.cancelPendingQuietYield()
 		return nil
 	})
 	if err != nil {

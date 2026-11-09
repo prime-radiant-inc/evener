@@ -583,6 +583,34 @@ func DefJobStop() llm.ToolDefinition {
 	}
 }
 
+// YieldTimeoutMaxSeconds bounds yield's optional fallback timeout. The turn
+// tool and the agent-side validator share this one number so the advertised
+// schema and the enforced limit cannot drift.
+const YieldTimeoutMaxSeconds = 3600
+
+// DefYield defines quiet yield: a non-user-visible terminal tool that ends the
+// current activation and lets ordinary inbound events wake the durable session.
+// It replaces sleeps and repeated status polling while background work runs.
+func DefYield() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Name:        "yield",
+		Description: "End the current activation quietly, then let the next real event wake you. Use this instead of sleeping or polling while background work runs: a tool result is recorded, then the turn ends without another model round or a user-visible message. Job and stable delegate completion, watch delivery, and user input keep waking the session normally. With `timeout_seconds`, exactly one fallback wake arrives after that deadline, for one bounded check rather than a polling loop. Without a timeout, at least one running shell job or stable delegate must be able to wake you. Do not use this to deliver a message: call communicate for anything the user or caller should see.",
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"timeout_seconds": map[string]any{
+					"type":        "integer",
+					"minimum":     1,
+					"maximum":     YieldTimeoutMaxSeconds,
+					"description": "Optional fallback wake after this many seconds (at most one hour). One wake, not a periodic progress tick; the first ordinary event cancels it.",
+				},
+			},
+			"required": []any{},
+		},
+	}
+}
+
 func DefGrep() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "grep",
