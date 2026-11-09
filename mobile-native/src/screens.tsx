@@ -77,7 +77,6 @@ import { useNativePreferences } from "./NativePreferencesProvider";
 import { drafts } from "./nativeDrafts";
 import { useComposerDraft } from "./session/useComposerDraft";
 import { handoffResumeDraft } from "./resumeDraftHandoff";
-import { nativeImagePicker } from "./nativeImagePicker";
 import { NATIVE_MUTATION_HOST_UNAVAILABLE } from "./nativeMutationHost";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
 import { readerPositions } from "./nativeReaderPosition";
