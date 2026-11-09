@@ -333,7 +333,10 @@ function routePlacementIsApplied(
     (pane) => pane.type === "session" && pane.slot === "secondary" && sessionRefOf(pane) === ref,
   );
   const child = childPanes[0];
-  const childParent = child === undefined ? undefined : conversationOpenParentRef(child);
+  // The cascade route role is a copy of its source record; parent metadata is
+  // keyed by the original workspace record.
+  const originalChild = child === undefined ? undefined : workspace.panes.find((pane) => pane.id === child.id);
+  const childParent = originalChild === undefined ? undefined : conversationOpenParentRef(originalChild);
   return (
     ownerPanes.length === 1 &&
     ownerPanes[0]?.id === main.id &&

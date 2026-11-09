@@ -14,6 +14,14 @@ function isSessionPaneFor(pane: OpenPaneRecord, ref: string): boolean {
   return pane.type === "session" && refParam(pane.params) === ref;
 }
 
+// A cascade presents its source conversation; placement must see that role
+// without losing the original record's identity or its parent metadata.
+function sessionRouteRole(pane: OpenPaneRecord): OpenPaneRecord {
+  if (pane.type !== "sessionZoom") return pane;
+  const params = zoomIntentOf(pane);
+  return params !== null && !params.inspection ? { ...pane, ...params.source } : pane;
+}
+
 /** Placement facts the caller already holds about a session link. */
 export interface SessionOpenOptions {
   /** The caller's own row says this ref names a top-level session (the rail's
@@ -102,7 +110,8 @@ export function openTopLevelSession(ref: string): void {
 // owner instead of being recreated, preserving its per-mount work.
 export function openNestedSessionWithOwner(ref: string, ownerRef: string): void {
   const workspace = workspaceStore.getState();
-  const child = presentedPanes(workspace.panes).find((pane) => isSessionPaneFor(pane, ref));
+  const childRecord = presentedPanes(workspace.panes).find((pane) => isSessionPaneFor(sessionRouteRole(pane), ref));
+  const child = childRecord === undefined ? undefined : sessionRouteRole(childRecord);
   if (child !== undefined) {
     cancelCarriedComposerSeat(ref);
     // Ownership is now confirmed nested, so keep the child - and its per-mount
@@ -110,7 +119,10 @@ export function openNestedSessionWithOwner(ref: string, ownerRef: string): void 
     // instead of replacing the workspace and remounting the child.
     const main = workspace.mainPane();
     const ownerPane = presentedPanes(workspace.panes).find((pane) => isSessionPaneFor(pane, ownerRef));
-    const ownerIsMain = ownerPane !== undefined && ownerPane.id === main?.id;
+    const ownerRole = presentedPanes(workspace.panes).find((pane) =>
+      isSessionPaneFor(sessionRouteRole(pane), ownerRef),
+    );
+    const ownerIsMain = ownerRole !== undefined && ownerRole.id === main?.id;
     const cascadeMain = cascadeMainCoversRef(ownerRef);
     if (ownerIsMain || cascadeMain) {
       // The owner or its cascade already owns main. Keep every neighboring

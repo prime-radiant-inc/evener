@@ -1223,6 +1223,37 @@ test.each(["unrelated", "owner"])(
   },
 );
 
+test("a restored secondary cascade for the routed nested session is not duplicated", async () => {
+  const workspace = workspaceStore.getState();
+  workspace.openPane("session", { ref: "local:owner" });
+  const sourceId = workspace.openPane("session", { ref: "local:child" }, { slot: "secondary" });
+  const source = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+  if (!source) throw new Error("missing nested source pane");
+  act(() =>
+    workspaceStore.getState().retypePane(source, "sessionZoom", {
+      ref: "local:child",
+      source: { type: "session", params: { ref: "local:child" } },
+      edges: [],
+    }),
+  );
+  const cascade = workspaceStore.getState().panes.find((pane) => pane.type === "sessionZoom");
+  if (!cascade) throw new Error("missing restored cascade");
+  act(() => {
+    recordConversationOpenParent(cascade, "local:owner");
+    workspaceStore.getState().focusPane(cascade.id);
+  });
+
+  installLocationForRoute("local:child", "local:owner");
+  window.history.pushState({}, "", "/s/local:child");
+  render(<AppShell client={new FakeClient("ready")} />);
+
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:owner" }));
+  const panes = workspaceStore.getState().panes;
+  expect(panes.some((pane) => pane.id === cascade.id)).toBe(true);
+  expect(panes.filter((pane) => pane.type === "session" && refParam(pane.params) === "local:child")).toHaveLength(0);
+  expect(workspaceStore.getState().focusedPaneId).toBe(cascade.id);
+});
+
 // Closing a deleted session's pane is not enough for the pane the ADDRESS BAR
 // names (kata 1hdc): the route-application effect below re-runs on every
 // workspace change, so a URL still naming the deleted session re-opens a pane
