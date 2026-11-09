@@ -1694,10 +1694,7 @@ func TestAskUser_RestoreResolvesAcrossInterrupt(t *testing.T) {
 			},
 		},
 	})
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
 
 	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	if _, err := sess.ProcessInput(context.Background(), "which db should we use?", nil); err != nil {
@@ -1759,10 +1756,7 @@ func TestAskUser_RestoreResolvesAcrossInterruptSameRound(t *testing.T) {
 			},
 		},
 	})
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
 	sess.registerTool("trigger_cancel", "cancels the test's ProcessInput context mid-round, after ask_user has already posted",
 		map[string]any{"type": "object", "properties": map[string]any{}},
 		func(context.Context, any) (any, error) {
@@ -2878,10 +2872,7 @@ func TestAskUser_RestoreDoesNotResolveAcrossASuccessfulHumanNoteCarrierCompletio
 			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(comm) },
 		},
 	})
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
 
 	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
@@ -3194,11 +3185,7 @@ func TestAskUser_InjectPostToolSteeringClearsPendingAskForAnAcceptedUserSteer(t 
 	}
 	c := llm.NewClient()
 	c.Register(fa)
-	var err error
-	sess, err = NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess = newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
 	defer sess.Close()
 
 	runAskRound(t, sess)
@@ -3263,11 +3250,7 @@ func TestAskUser_SteeringInjectedNeverObservesAskPendingStillTrue(t *testing.T) 
 	}
 	c := llm.NewClient()
 	c.Register(fa)
-	var err error
-	sess, err = NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess = newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
 	defer sess.Close()
 
 	var samples []int
@@ -3699,10 +3682,7 @@ func TestAskUser_RestoreRebuildsPendingCountAndOrder(t *testing.T) {
 			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask1, ask2) },
 		},
 	})
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
 
 	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "pick a db and a name", nil); err != nil {
@@ -4138,11 +4118,7 @@ func TestAskUser_MidRoundResolvingSteerClearingAFreshAskDoesNotForceAwaitingEarl
 		},
 	}
 	c.Register(fa)
-	var err error
-	sess, err = NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess = newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
 	defer sess.Close()
 
 	ctx := tripwireCtx(t)
@@ -4434,10 +4410,7 @@ func TestAskUser_LiveStateAfterNotificationYieldMatchesRestore(t *testing.T) {
 			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(taskList) },
 		},
 	})
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
 
 	// TRIPWIRE: scripted adapter and queued notification are deterministic; this only trips on a genuine lifecycle deadlock.
 	ctx := tripwireCtx(t)
@@ -4498,11 +4471,7 @@ func TestAskUser_LiveStateAfterCommunicateWithPendingNotificationMatchesRestore(
 		},
 	}
 	c.Register(adapter)
-	var err error
-	sess, err = NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess = newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
 
 	// TRIPWIRE: scripted provider and in-memory notification are deterministic;
 	// this only fires on a genuine lifecycle deadlock.
