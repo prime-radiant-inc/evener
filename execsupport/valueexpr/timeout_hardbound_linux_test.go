@@ -100,13 +100,63 @@ func TestCommandTimeoutHardBoundDespiteEscapedDescendant(t *testing.T) {
 	// The escapee held the captured stdout until the drain closed it, and
 	// its ten seconds still run: it must exist and have outlived the run's
 	// group kill, or the scenario above never materialized.
-	pid, err := os.ReadFile(marker)
+	// The deadline bounds the timed run, not the escaped child's startup: the
+	// outer shell can spawn the setsid descendant inside the budget while that
+	// descendant is scheduled only after evaluate returns. Wait for its pid
+	// report before deciding the scenario never ran; the survival assertion
+	// below still requires the escaped child itself.
+	pid, err := waitForPIDReport(marker, 5*time.Second)
 	if err != nil {
 		t.Fatalf("the escaped descendant never reported its pid (%v); the scenario did not run", err)
 	}
 	escapee := strings.TrimSpace(string(pid))
 	if exec.Command("kill", "-0", escapee).Run() != nil {
 		t.Fatalf("the escaped descendant (pid %s) did not outlive the run's group kill", escapee)
+	}
+}
+
+// waitForPIDReport waits for a fixture's pid marker to become readable. The
+// marker is the escaped child's own readiness signal, so a slow-but-live child
+// is observed instead of being mistaken for a child that never started.
+func waitForPIDReport(path string, timeout time.Duration) ([]byte, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		data, err := os.ReadFile(path)
+		// The shell creates the marker with its redirection before it writes
+		// the pid, so an empty read is not the report: keep waiting for one.
+		if err == nil && strings.TrimSpace(string(data)) != "" {
+			return data, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestWaitForPIDReportObservesLateReport(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "late.pid")
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		_ = os.WriteFile(path, []byte("123\n"), 0o600)
+	}()
+
+	data, err := waitForPIDReport(path, time.Second)
+	if err != nil {
+		t.Fatalf("waitForPIDReport: %v", err)
+	}
+	if string(data) != "123\n" {
+		t.Fatalf("pid report = %q; want the child's late write", data)
+	}
+}
+
+func TestWaitForPIDReportTimesOutWithoutAReport(t *testing.T) {
+	start := time.Now()
+	if _, err := waitForPIDReport(filepath.Join(t.TempDir(), "missing.pid"), 100*time.Millisecond); err == nil {
+		t.Fatal("waitForPIDReport returned nil for a marker that never appeared")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("waitForPIDReport blocked %v past its deadline", elapsed)
 	}
 }
 
