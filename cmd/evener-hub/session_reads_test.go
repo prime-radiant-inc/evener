@@ -837,6 +837,64 @@ func TestManagerReadRefreshAcrossPages(t *testing.T) {
 	}
 }
 
+func TestTranscriptReadFollowUps(t *testing.T) {
+	params := appwire.ThreadTurnsListParams{
+		Ref: "local:follow-ups", ItemLimit: 7,
+		ThreadWindowParams: appwire.ThreadWindowParams{
+			TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn-target"}, ItemTypes: []string{"messages", "tool-results"},
+			PreviewBytes: 100, MessageBytes: 200, WindowBudgetBytes: 16_384,
+		},
+	}
+	followUp := func(cursor string) appwire.SessionStatusFollowUp {
+		return appwire.SessionStatusFollowUp{
+			Tool: "read_transcript",
+			Arguments: appwire.SessionStatusArguments{Hub: appwire.SessionStatusTarget{
+				ThreadWindowParams: params.ThreadWindowParams,
+				Ref:                params.Ref, Cursor: cursor, ItemLimit: params.ItemLimit,
+			}},
+		}
+	}
+	tests := []struct {
+		name string
+		page appwire.ThreadTurnsListResponse
+		want []appwire.SessionStatusFollowUp
+	}{
+		{
+			name: "page then turns then legacy",
+			page: appwire.ThreadTurnsListResponse{
+				Window: &appwire.ThreadWindowResult{ContinuationCursor: "page"},
+				Data: []appwire.Turn{
+					{ID: "turn-1", Elision: &appwire.ThreadTurnElision{ContinuationCursor: "turn-1"}},
+					{ID: "turn-2", Elision: &appwire.ThreadTurnElision{ContinuationCursor: "turn-2"}},
+				},
+				NextCursor: "legacy",
+			},
+			want: []appwire.SessionStatusFollowUp{followUp("page"), followUp("turn-1"), followUp("turn-2"), followUp("legacy")},
+		},
+		{
+			name: "equal cursors retain first occurrence",
+			page: appwire.ThreadTurnsListResponse{
+				Window: &appwire.ThreadWindowResult{ContinuationCursor: "same"},
+				Data: []appwire.Turn{
+					{ID: "turn-1", Elision: &appwire.ThreadTurnElision{ContinuationCursor: "same"}},
+					{ID: "turn-2", Elision: &appwire.ThreadTurnElision{ContinuationCursor: "other"}},
+				},
+				NextCursor: "same",
+			},
+			want: []appwire.SessionStatusFollowUp{followUp("same"), followUp("other")},
+		},
+		{name: "absent cursors", page: appwire.ThreadTurnsListResponse{Data: []appwire.Turn{{ID: "turn-1"}}}, want: []appwire.SessionStatusFollowUp{}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := transcriptReadFollowUps(params, test.page)
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("follow-ups = %+v, want %+v", got, test.want)
+			}
+		})
+	}
+}
+
 // A Manager read_transcript continuation must follow the initial page's
 // hub-minted cursor through the source adapter's candidate paging, which
 // resolves hub-owned cursors. Forwarding it directly to the source's

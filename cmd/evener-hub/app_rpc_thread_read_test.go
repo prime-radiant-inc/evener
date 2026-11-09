@@ -255,7 +255,7 @@ func TestSessionOperationsExactWindowPreservesEmptyCheckpointTurn(t *testing.T) 
 	}
 }
 
-func TestSessionOperationsDefaultsWindowItemLimit(t *testing.T) {
+func TestManagerTurnsPublishesPerTurnElisionFollowUp(t *testing.T) {
 	items := make([]appwire.ThreadItem, 12)
 	for i := range items {
 		position := appwire.ThreadItemPosition{Entry: uint64(i)}
@@ -294,20 +294,36 @@ func TestSessionOperationsDefaultsWindowItemLimit(t *testing.T) {
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
 	operations := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
 
-	response, err := operations.Invoke(t.Context(), appwire.ManagerView{Ref: "local:manager", Manager: true}, appwire.SessionOperationRequest{
-		Turns: &appwire.ThreadTurnsListParams{
-			Ref: "local:window-default", TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn-default"}, ItemTypes: []string{"messages"},
+	params := appwire.ThreadTurnsListParams{
+		Ref: "local:window-default", ItemLimit: 2,
+		ThreadWindowParams: appwire.ThreadWindowParams{
+			TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn-default"}, ItemTypes: []string{"messages"},
+			PreviewBytes: 512, MessageBytes: 1024, WindowBudgetBytes: appwire.ThreadWindowBudgetBytesFloor,
 		},
-	})
+	}
+	response, err := operations.Invoke(t.Context(), appwire.ManagerView{Ref: "local:manager", Manager: true}, appwire.SessionOperationRequest{Turns: &params})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.Turns == nil || len(response.Turns.Data) != 1 || len(response.Turns.Data[0].Items) != transcriptWindowDefaultItemLimit {
-		t.Fatalf("default-limit window = %+v, want %d items", response.Turns, transcriptWindowDefaultItemLimit)
+	if response.Turns == nil || len(response.Turns.Data) != 1 || len(response.Turns.Data[0].Items) != params.ItemLimit {
+		t.Fatalf("exact window = %+v, want %d items", response.Turns, params.ItemLimit)
 	}
 	elision := response.Turns.Data[0].Elision
-	if elision == nil || elision.CapWithheld != 2 || elision.ContinuationCursor == "" {
-		t.Fatalf("default-limit elision = %+v, want two withheld items and continuation", elision)
+	if elision == nil || elision.CapWithheld != len(items)-params.ItemLimit || elision.ContinuationCursor == "" {
+		t.Fatalf("exact-window elision = %+v", elision)
+	}
+	if response.Turns.NextCursor != "" || response.Turns.Window == nil || response.Turns.Window.ContinuationCursor != "" {
+		t.Fatalf("exact window unexpectedly has a page-level continuation: %+v", response.Turns)
+	}
+	wantFollowUps := []appwire.SessionStatusFollowUp{{
+		Tool: "read_transcript",
+		Arguments: appwire.SessionStatusArguments{Hub: appwire.SessionStatusTarget{
+			ThreadWindowParams: params.ThreadWindowParams,
+			Ref:                params.Ref, Cursor: elision.ContinuationCursor, ItemLimit: params.ItemLimit,
+		}},
+	}}
+	if !reflect.DeepEqual(response.FollowUps, wantFollowUps) {
+		t.Fatalf("per-turn recovery = %+v, want %+v", response.FollowUps, wantFollowUps)
 	}
 }
 

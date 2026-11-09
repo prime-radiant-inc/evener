@@ -360,6 +360,37 @@ func (b *boundSessionOperations) Invoke(ctx context.Context, request appwire.Ses
 	return b.owner.Invoke(ctx, view, request)
 }
 
+func transcriptReadFollowUps(params appwire.ThreadTurnsListParams, page appwire.ThreadTurnsListResponse) []appwire.SessionStatusFollowUp {
+	followUps := make([]appwire.SessionStatusFollowUp, 0)
+	seen := make(map[string]struct{})
+	appendCursor := func(cursor string) {
+		if cursor == "" {
+			return
+		}
+		if _, ok := seen[cursor]; ok {
+			return
+		}
+		seen[cursor] = struct{}{}
+		followUps = append(followUps, appwire.SessionStatusFollowUp{
+			Tool: "read_transcript",
+			Arguments: appwire.SessionStatusArguments{Hub: appwire.SessionStatusTarget{
+				ThreadWindowParams: params.ThreadWindowParams,
+				Ref:                params.Ref, Cursor: cursor, ItemLimit: params.ItemLimit,
+			}},
+		})
+	}
+	if page.Window != nil {
+		appendCursor(page.Window.ContinuationCursor)
+	}
+	for _, turn := range page.Data {
+		if turn.Elision != nil {
+			appendCursor(turn.Elision.ContinuationCursor)
+		}
+	}
+	appendCursor(page.NextCursor)
+	return followUps
+}
+
 func (o *sessionOperations) Invoke(ctx context.Context, caller appwire.ManagerView, request appwire.SessionOperationRequest) (appwire.SessionOperationResponse, error) {
 	var response appwire.SessionOperationResponse
 	var err error
@@ -406,16 +437,7 @@ func (o *sessionOperations) Invoke(ctx context.Context, caller appwire.ManagerVi
 			return response, err
 		}
 		response.Turns = &page
-		continuationCursor := page.NextCursor
-		if page.Window != nil && page.Window.ContinuationCursor != "" {
-			continuationCursor = page.Window.ContinuationCursor
-		}
-		if continuationCursor != "" {
-			response.FollowUps = []appwire.SessionStatusFollowUp{{Tool: "read_transcript", Arguments: appwire.SessionStatusArguments{Hub: appwire.SessionStatusTarget{
-				ThreadWindowParams: request.Turns.ThreadWindowParams,
-				Ref:                request.Turns.Ref, Cursor: continuationCursor, ItemLimit: request.Turns.ItemLimit,
-			}}}}
-		}
+		response.FollowUps = transcriptReadFollowUps(*request.Turns, page)
 	} else if request.Fetch != nil {
 		fetch, err := o.fetch(ctx, *request.Fetch)
 		if err != nil {
