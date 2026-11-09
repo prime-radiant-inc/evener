@@ -487,6 +487,7 @@ adversarial review, `simplify-code`, and the merge queue.
 | --- | --- | --- |
 | F1 denial redaction | #5916 | `13b3eb0341` |
 | F2 registry replay order | #5918 | `b63101730e` |
+| F2 follow-up: missing-tag prologue pin | #5933 | `474e6e6747` |
 | F3 navigation schema | #5919 | `3b4d9a44dc` |
 | F5 serve extraction | #5911 | `db3f5bf01f` |
 | F7 lifecycle split | #5910 | `1c23784297` |
