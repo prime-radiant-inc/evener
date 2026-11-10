@@ -1619,3 +1619,59 @@ func TestWorktreeSwitchByPath_RejectsNestedRepositoriesExternalWorktree(t *testi
 		t.Fatal("candidate environment accepted another repository's external linked checkout")
 	}
 }
+
+// A direct nested-repository refusal is not enough: a session can first adopt
+// the nested repository's main checkout (its root is inside the workspace), and
+// make that adopted policy the trust anchor for a second switch to the nested
+// repository's external linked checkout. The launch sandbox must stay the
+// anchor across switches (#3724 review).
+func TestWorktreeSwitch_TrustAnchorSurvivesNestedRepositorySwitch(t *testing.T) {
+	repo := canonicalFixtureTempDir(t, "worktree-anchor-main-*")
+	copyWorktreeBaseRepo(t, repo)
+	nested := filepath.Join(repo, "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	copyWorktreeBaseRepo(t, nested)
+	_, head := worktreeBaseRepo(t)
+	external := canonicalFixtureTempDir(t, "worktree-anchor-external-*")
+	wtGit(t, nested, "worktree", "add", "-q", "-b", "nested-lane", external, head)
+
+	// The control policy makes .git/worktrees writable from the workspace, so
+	// the session can register the nested repository itself as a worktree of
+	// the launch repository.
+	entry := filepath.Join(repo, ".git", "worktrees", "forged-nested")
+	if err := os.MkdirAll(entry, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(entry, "gitdir"), []byte(filepath.Join(nested, ".git")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(entry, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(entry, "commondir"), []byte("../..\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s, stateDir, env := newSandboxedFixtureSession(t, repo, "worktree-anchor-state-*")
+	if env.Sandbox.Git.Kind == sandbox.NonGit {
+		t.Fatalf("fixture sandbox kind = %v, want a Git layout", env.Sandbox.Git.Kind)
+	}
+	r := &wtRepo{s: s, mainRoot: repo, stateDir: stateDir}
+	if _, err := r.switchOp(t, map[string]any{"path": nested}); err != nil {
+		t.Fatalf("first switch to the nested main checkout: %v", err)
+	}
+	if got := s.currentEnv().WorkingDirectory(); got != nested {
+		t.Fatalf("after the first switch WorkingDirectory = %q, want %q", got, nested)
+	}
+
+	_, switchErr := r.switchOp(t, map[string]any{"path": external})
+	if switchErr == nil {
+		t.Fatal("second switch adopted the nested repository's external linked checkout")
+	}
+	if !errors.Is(switchErr, errUntrustedWorktreeProject) {
+		t.Fatalf("second switch error = %v, want the untrusted-project refusal", switchErr)
+	}
+	requireSwitchKeptScope(t, s, nested, nested, external, filepath.Join(external, ".git"))
+}

@@ -245,7 +245,11 @@ func (s *Session) worktreeSwitchByPath(ctx context.Context, rawPath string) (Wor
 	if st.currentWorktree != "" && filepath.Clean(st.currentWorktree) == filepath.Clean(matchedPath) {
 		return WorktreeSwitchResult{Path: matchedPath, Branch: matchedBranch, NoOp: true}, nil
 	}
-	if err := rejectUntrustedSwitchTarget(st.env, matchedPath); err != nil {
+	anchor := s.worktreeTrustAnchor()
+	if anchor == nil {
+		anchor = st.env
+	}
+	if err := rejectUntrustedSwitchTarget(anchor, matchedPath); err != nil {
 		return WorktreeSwitchResult{}, fmt.Errorf("manage_worktree switch: %w", err)
 	}
 	if err := s.leaveCurrentWorktreeFromPorcelain(run, porcelain); err != nil {

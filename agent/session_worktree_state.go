@@ -450,7 +450,11 @@ func (s *Session) worktreeControlEnv(mainRepoRoot string) (execenv.ExecutionEnvi
 	if !ok {
 		return nil, errors.New("manage_worktree requires a local execution environment")
 	}
-	if err := rejectUntrustedMainRoot(local, mainRepoRoot); err != nil {
+	anchor := s.worktreeTrustAnchor()
+	if anchor == nil {
+		anchor = local
+	}
+	if err := rejectUntrustedMainRoot(anchor, mainRepoRoot); err != nil {
 		return nil, err
 	}
 	control := local.WithWorkingDirectory(mainRepoRoot)
@@ -468,11 +472,26 @@ func (s *Session) worktreeControlEnv(mainRepoRoot string) (execenv.ExecutionEnvi
 	// classification above: UseControlPolicy re-resolves mainRepoRoot, and a
 	// session can swap its metadata between the two resolutions.
 	if control.Sandbox != nil {
-		if err := rejectUntrustedLayout(local, local.Sandbox, control.Sandbox.Git); err != nil {
+		if err := rejectUntrustedLayout(anchor, anchor.Sandbox, control.Sandbox.Git); err != nil {
 			return nil, err
 		}
 	}
 	return control, nil
+}
+
+// worktreeTrustAnchor returns the environment whose sandbox policy is the
+// session's original containment boundary: the parked launch environment while
+// a worktree is entered, otherwise the current environment. Validating a
+// switch against a worktree the session already adopted would let a second
+// switch use the adopted policy as its own trust anchor (#3724 review).
+func (s *Session) worktreeTrustAnchor() *execenv.LocalExecutionEnvironment {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.worktreeRestoreEnv != nil {
+		return s.worktreeRestoreEnv
+	}
+	anchor, _ := s.env.(*execenv.LocalExecutionEnvironment)
+	return anchor
 }
 
 // errUntrustedWorktreeProject refuses a managed-worktree control environment
@@ -1018,6 +1037,10 @@ func (s *Session) enterWorktree(path string, managed bool) error {
 	}
 	saveRestore := s.worktreeRestoreEnv == nil
 	prior := local
+	anchor := local
+	if s.worktreeRestoreEnv != nil {
+		anchor = s.worktreeRestoreEnv
+	}
 	next := local.WithWorkingDirectory(path)
 	s.mu.Unlock()
 
@@ -1033,7 +1056,7 @@ func (s *Session) enterWorktree(path string, managed bool) error {
 	// resolved policy, not the path classification the switch made earlier: a
 	// sandboxed job can replace the target's .git pointer between the two, and
 	// a re-resolution at install time would then carry unchecked grants.
-	if err := rejectUntrustedCandidateEnvironment(local, next); err != nil {
+	if err := rejectUntrustedCandidateEnvironment(anchor, next); err != nil {
 		return err
 	}
 
