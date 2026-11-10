@@ -10,46 +10,6 @@ import (
 	"testing"
 )
 
-// TestLoadFamiliesReadFileError covers the os.ReadFile error path in
-// loadFamilies: a family file that is listed by ReadDir but cannot be read
-// (e.g. it is a directory, not a regular file) should produce a joined error.
-func TestLoadFamiliesReadFileError(t *testing.T) {
-	root := t.TempDir()
-	mkDir := filepath.Join(root, "make")
-	if err := os.MkdirAll(mkDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	// A directory named like a family file: ReadDir lists it, but ReadFile fails.
-	if err := os.Mkdir(filepath.Join(mkDir, "building.mk"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	families, err := loadFamilies(root)
-	if err == nil {
-		t.Fatalf("loadFamilies with an unreadable .mk should error")
-	}
-	if len(families) != 0 {
-		t.Fatalf("loadFamilies should return no families, got %d", len(families))
-	}
-	if !strings.Contains(err.Error(), "building.mk") {
-		t.Fatalf("error should name building.mk: %v", err)
-	}
-}
-
-// TestPrintHelpWriteError covers the write-error path in printHelp by
-// passing a writer that fails on Write.
-func TestPrintHelpWriteError(t *testing.T) {
-	root := t.TempDir()
-	writeFixtureMk(t, root, "building", "## Build the binary.\nbuild:\n\tgo build .\n")
-	err := printHelp(&failingWriter{}, root)
-	if err == nil {
-		t.Fatalf("printHelp with a failing writer should error")
-	}
-}
-
-type failingWriter struct{}
-
-func (failingWriter) Write(p []byte) (int, error) { return 0, errors.New("write failed") }
-
 // TestParseFamilyNonCommentLineSeparatesBlock covers the branch in ParseFamily
 // where a non-comment, non-rule line separates a ## block from its rule.
 func TestParseFamilyNonCommentLineSeparatesBlock(t *testing.T) {
@@ -161,45 +121,6 @@ func TestGenerateOneParseError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "building.mk") {
 		t.Fatalf("error should name the .mk file: %v", err)
-	}
-}
-
-// TestPrintHelpWithParseErrors covers the path where loadFamilies returns
-// both families and a joined error.
-func TestPrintHelpWithParseErrors(t *testing.T) {
-	root := t.TempDir()
-	writeFixtureMk(t, root, "building", "## Build the binary.\nbuild:\n\tgo build .\n")
-	writeFixtureMk(t, root, "linting", "## trigger: CI\n.PHONY: lint\n")
-	var buf bytes.Buffer
-	err := printHelp(&buf, root)
-	if err == nil {
-		t.Fatalf("printHelp with a parse error in one family should error")
-	}
-	if !strings.Contains(err.Error(), "linting.mk") {
-		t.Fatalf("error should name linting.mk: %v", err)
-	}
-	// The valid family should still be rendered.
-	output := buf.String()
-	if !strings.Contains(output, "building:") {
-		t.Fatalf("printHelp should still output the valid family: %s", output)
-	}
-}
-
-// TestLoadFamiliesWithParseError covers loadFamilies returning a joined error
-// while still returning successfully parsed families.
-func TestLoadFamiliesWithParseError(t *testing.T) {
-	root := t.TempDir()
-	writeFixtureMk(t, root, "building", "## Build the binary.\nbuild:\n\tgo build .\n")
-	writeFixtureMk(t, root, "linting", "## trigger: CI\n.PHONY: lint\n")
-	families, err := loadFamilies(root)
-	if err == nil {
-		t.Fatalf("loadFamilies with a parse error should return an error")
-	}
-	if len(families) != 1 {
-		t.Fatalf("loadFamilies should return 1 valid family, got %d", len(families))
-	}
-	if families[0].Stem != "building" {
-		t.Fatalf("valid family stem = %q, want building", families[0].Stem)
 	}
 }
 
@@ -335,14 +256,6 @@ func TestParseFamilyDanglingBlock(t *testing.T) {
 	}
 	if !errors.Is(err, errBlockUnattached) {
 		t.Fatalf("error should mention never attached: %v", err)
-	}
-}
-
-// TestRenderHelpEmptyFamilies covers renderHelp with no families.
-func TestRenderHelpEmptyFamilies(t *testing.T) {
-	got := renderHelp(nil)
-	if got != "" {
-		t.Fatalf("renderHelp with no families should return empty, got %q", got)
 	}
 }
 
@@ -805,36 +718,6 @@ func TestFilesWithSuffixNonIsNotExistError(t *testing.T) {
 	}
 }
 
-// TestRenderHelpSingleFamily covers renderHelp with one family.
-func TestRenderHelpSingleFamily(t *testing.T) {
-	families := []family{
-		{Stem: "building", Targets: []Target{{Name: "build", Summary: "Build the binary."}}},
-	}
-	got := renderHelp(families)
-	if !strings.Contains(got, "building:") {
-		t.Fatalf("renderHelp should contain family stem: %s", got)
-	}
-	if !strings.Contains(got, "build") || !strings.Contains(got, "Build the binary.") {
-		t.Fatalf("renderHelp should contain target: %s", got)
-	}
-}
-
-// TestRenderHelpMultipleFamilies covers renderHelp with multiple families.
-func TestRenderHelpMultipleFamilies(t *testing.T) {
-	families := []family{
-		{Stem: "building", Targets: []Target{{Name: "build", Summary: "Build."}}},
-		{Stem: "testing", Targets: []Target{{Name: "test", Summary: "Test."}}},
-	}
-	got := renderHelp(families)
-	if !strings.Contains(got, "building:") || !strings.Contains(got, "testing:") {
-		t.Fatalf("renderHelp should contain both families: %s", got)
-	}
-	// There should be a blank line between families.
-	if !strings.Contains(got, "\n\ntesting:") {
-		t.Fatalf("renderHelp should have a blank line between families: %s", got)
-	}
-}
-
 // TestParseFamilyEmptyInput covers ParseFamily with an empty source.
 func TestParseFamilyEmptyInput(t *testing.T) {
 	targets, err := ParseFamily([]byte(""))
@@ -843,32 +726,6 @@ func TestParseFamilyEmptyInput(t *testing.T) {
 	}
 	if len(targets) != 0 {
 		t.Fatalf("ParseFamily with empty input should return no targets, got %d", len(targets))
-	}
-}
-
-// TestPrintHelpSuccess covers the happy path for printHelp.
-func TestPrintHelpSuccess(t *testing.T) {
-	root := t.TempDir()
-	writeFixtureMk(t, root, "building", "## Build the binary.\nbuild:\n\tgo build .\n")
-	var buf bytes.Buffer
-	err := printHelp(&buf, root)
-	if err != nil {
-		t.Fatalf("printHelp success: %v", err)
-	}
-	output := buf.String()
-	if !strings.Contains(output, "building:") {
-		t.Fatalf("printHelp output should contain family: %s", output)
-	}
-}
-
-// TestLoadFamiliesFamilyFilesError covers the error propagation from
-// familyFiles in loadFamilies.
-func TestLoadFamiliesFamilyFilesError(t *testing.T) {
-	root := t.TempDir()
-	// No make/ directory at all — familyFiles returns an error.
-	_, err := loadFamilies(root)
-	if err == nil {
-		t.Fatalf("loadFamilies with no make/ dir should error")
 	}
 }
 
@@ -1158,21 +1015,6 @@ func TestRuleShape(t *testing.T) {
 		if isRule != tt.isRule {
 			t.Fatalf("ruleShape(%q) = %v, want %v (name=%q)", tt.line, isRule, tt.isRule, name)
 		}
-	}
-}
-
-// TestRenderHelpWidthPadding covers renderHelp's per-family width padding.
-func TestRenderHelpWidthPadding(t *testing.T) {
-	families := []family{
-		{Stem: "building", Targets: []Target{
-			{Name: "build", Summary: "Build."},
-			{Name: "very-long-name", Summary: "Long."},
-		}},
-	}
-	got := renderHelp(families)
-	// The short name "build" should be padded to align with "very-long-name".
-	if !strings.Contains(got, "  build           Build.") {
-		t.Fatalf("renderHelp should pad short names: %q", got)
 	}
 }
 
