@@ -111,4 +111,5 @@ docs-check:
 
 ## Print every make target, grouped by family, with its one-line summary.
 help:
-	@go run ./internal/maketargetsdoc -mode help
+	@printf 'usage: make [target]\n\nTargets are grouped by family (make/<family>.mk); run `make <target>`\nfor any name below.\n\n'
+	@awk -f scripts/make-help.awk make/*.mk
