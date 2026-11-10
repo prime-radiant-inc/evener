@@ -3573,6 +3573,10 @@ export class TranscriptRepository {
   #reclaimBackgroundModel(): void {
     if (this.#readerCount > 0 || this.#pending.size > 0 || this.#writes.size > 0 || !this.#model) return;
     this.#model = hydratedDisplay(pruneBackgroundHistoryBodies(this.#model));
+    // The pruned model also replaces the displayed turns the foreground floor
+    // last scanned; keeping that reference alive defeats the payload
+    // reclamation. The next reader publish rescans from the new model.
+    this.#foregroundFloor.scannedTurns = undefined;
   }
 
   #publish(): void {
