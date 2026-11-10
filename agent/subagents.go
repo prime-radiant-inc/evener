@@ -2682,14 +2682,16 @@ func (a *subagent) runSubagentStopHook(ctx context.Context, res string, err erro
 	// continue:false ends the child run instead of starting a continuation. A
 	// block asks the child to keep working; a stop says the action itself is
 	// over, so it wins over a block and its reason becomes the run's result —
-	// the same value a completed run reports, so no re-run happens.
+	// the same value a completed run reports, so no model turn follows for the
+	// hook's own reason. The run's error is returned unchanged: a stop ends the
+	// run, it does not launder a failed one into a completed one.
 	if stopResult.Stopped {
 		reason := strings.TrimSpace(stopResult.StopReason)
 		if reason == "" {
 			reason = "SubagentStop hook stopped this run"
 		}
 		a.sess.deliverHookUserMessage(reason)
-		return reason, nil
+		return reason, err
 	}
 	if stopResult.Blocked || len(stopResult.ModelContext) != 0 || len(stopResult.UserMessages) != 0 {
 		if lease, stableRun := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); stableRun && a.sess.delegateController != nil {

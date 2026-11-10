@@ -126,14 +126,16 @@ existing plugin sees.
   failed fires `PostToolUseFailure` instead. A call refused before execution
   (unknown tool, invalid arguments, tool policy, a `PreToolUse` deny) fires
   neither. A plugin that relied on `PostToolUse` also seeing failures must add
-  `PostToolUseFailure` (`agent/session_tools.go:1036`; the switch is
+  `PostToolUseFailure` (`agent/session_tools.go:1055-1058`; the switch is
   `case !res.IsError`).
 - **`continue: false` is honored.** At every fired event except five, it stops
-  the action it guards, and the hook's `stopReason` is delivered as a user-visible
-  warning: `PreToolUse` stops the call, the two tool post-hooks end the turn,
-  `Stop` and `SubagentStop` end the turn or run, `UserPromptSubmit` and
+  the action it guards: `PreToolUse` stops the call, the two tool post-hooks end
+  the turn, `Stop` and `SubagentStop` end the turn or run, `UserPromptSubmit` and
   `SessionStart` keep the prompt from the model, `SubagentStart` stops the
-  launch, and `PostToolBatch` stops the round loop. It is discarded on
+  launch, and `PostToolBatch` stops the round loop. The `stopReason` reaches the
+  **user** as a warning on all of those except `PreToolUse`, where it becomes the
+  tool call's error result and so reaches the **model**
+  (`agent/session_tools.go:829-843`). It is discarded on
   `StopFailure`, `Notification`, `PreCompact`, `PostCompact`, and `SessionEnd`,
   exactly as Claude discards it (`agent/internal/hooks/hookinput.go`,
   `continueDiscardedEvents`; `agent/internal/hooks/hooks.go`, `applyStopped`;
@@ -142,7 +144,7 @@ existing plugin sees.
   no effort is configured. A plugin that expected the old bare string now gets an
   object, or no field at all
   (`agent/internal/hooks/hookinput.go`, the `Effort` struct and the `*Effort`
-  field; `agent/session_events.go:645-647`). `CLAUDE_EFFORT` stays the bare
+  field; `agent/session_events.go:639-647`). `CLAUDE_EFFORT` stays the bare
   level (`agent/internal/hooks/command_runtime.go:242-243`).
 - **Matcher exact mode accepts `,` and spaces.** `Edit, Write` now matches
   `Edit` or `Write`; before, the comma made it fall through to regex mode and
@@ -213,7 +215,7 @@ and each is traced to the code that implements it.
   fire for a failing `bash`.** Evener treats a nonzero shell exit as a success
   (Jesse's 2026-10-16 ruling, `agent/transcript/failures.go:50-51`), so the shell tool
   returns `IsError == false` and the call fires `PostToolUse`. Claude fires
-  `PostToolUseFailure` there (`agent/session_tools.go:1028-1032`).
+  `PostToolUseFailure` there (`agent/session_tools.go:1047-1052`).
 - **`Notification`'s only type is the Evener-native `warning`.** Evener emits one
   kind of notification, a model-facing diagnostic warning, so `notification_type`
   and the matcher target are `warning`. Claude's `permission_prompt`,
@@ -230,8 +232,8 @@ and each is traced to the code that implements it.
 - **`PostToolUseFailure.error` is the model-facing text, not the full output.** It
   is `ExecResult.Output`, the truncated text the model receives; `FullOutput`
   stays on the event stream. `PostToolBatch.tool_calls[].tool_response` is the
-  same truncated text (`agent/session_tools.go:1043`;
-  `agent/internal/tool/registry.go:301`; `agent/session_tool_round.go:145-153`).
+  same truncated text (`agent/session_tools.go:1062`, `agent/session_tool_round.go:147`;
+  `agent/internal/tool/registry.go:301` defines it).
 - **`terminalSequence` is parsed but has no delivery site.** A hook may return
   it; Evener carries it and never emits it (`agent/internal/hooks/hooks.go`,
   the `TerminalSequences` fields, each commented "parsed but currently has no
@@ -243,7 +245,7 @@ and each is traced to the code that implements it.
   has no such fields).
 - **`SubagentStop`'s `stop_hook_active` is always `false`.** The field is present
   so a hook sees Claude's type rather than an absence
-  (`agent/subagents.go:2664-2667`).
+  (`agent/subagents.go:2660-2667`).
 - **Go RE2, not JavaScript, and the widened exact set applies to every event.**
   Matchers use Go RE2 (see [below](#go-re2-not-javascript-regex)). The `,`/space/
   hyphen exact set has no per-event discriminator, so a `FileChanged` matcher
@@ -257,25 +259,34 @@ and each is traced to the code that implements it.
 - **`Stop`'s `stop_hook_active` is per turn.** A Stop hook that blocks sets the
   flag; the next tool call in the turn clears it; a new turn clears it. It never
   leaks across turns (`agent/session.go:644-649`;
-  `agent/session_tool_round.go:606,623,638`; `agent/session_tools.go:862`;
-  `agent/session_lifecycle.go:2153`).
+  `agent/session_tool_round.go:606,623,655`; `agent/session_tools.go:881`;
+  `agent/session_lifecycle.go:2160`).
 - **`continue: false` stops what each event guards.** The event-to-action map:
-  `PreToolUse` stops the call (`agent/session_tools.go`, the `preResult.Stopped`
-  arm); `PostToolUse` and `PostToolUseFailure` end the turn after the results are
-  persisted (`agent/session_tools.go` records the stop, `agent/session_lifecycle.go`
-  applies it after `deliverIfCommunicated`); `Stop` ends the turn and its
-  `stopReason` replaces the vetoed reply (`agent/session_tool_round.go`);
-  `SubagentStop` ends the child run with no continuation (`agent/subagents.go`);
-  `SubagentStart` keeps the child from launching (`agent/subagents.go`);
-  `UserPromptSubmit` and `SessionStart` end the turn before its first model
-  request (`agent/session_lifecycle.go`, `takePromptHookStop` and
-  `takeSessionStartHookStop`); `PostToolBatch` stops the round loop
-  (`agent/session_lifecycle.go`). `StopFailure`, `Notification`, `PreCompact`,
-  `PostCompact`, and `SessionEnd` discard it (`agent/internal/hooks/hookinput.go`,
-  `continueDiscardedEvents`).
+  `PreToolUse` stops the call — the tool never runs and `stopReason` becomes the
+  call's error result, so it reaches the **model** (`agent/session_tools.go:829-843`);
+  `PostToolUse` and `PostToolUseFailure` end the turn after the results are
+  persisted (`agent/session_tools.go:1086` records the stop,
+  `agent/session_lifecycle.go:2647-2654` reads it, `:2724-2735` ends the turn);
+  `Stop` ends the turn and its `stopReason` replaces the vetoed reply
+  (`agent/session_tool_round.go:638-651`); `SubagentStop` ends the child run
+  (`agent/subagents.go:2682-2697`) so no model turn follows for the hook's own
+  reason — a delegate that owns managed jobs can still be driven by their
+  finalization; `SubagentStart` keeps the child from launching
+  (`agent/subagents.go:1807-1815`); `UserPromptSubmit` and `SessionStart` end the turn
+  before its first model request (`agent/session_lifecycle.go:2339-2348`,
+  `takePromptHookStop` at `:2857`, `takeSessionStartHookStop` at `:2868`, recorded
+  by `agent/session_init.go:2296`); `PostToolBatch` stops the round loop
+  (`agent/session_lifecycle.go:2724`). `StopFailure`, `Notification`,
+  `PreCompact`, `PostCompact`, and `SessionEnd` discard it
+  (`agent/internal/hooks/hookinput.go`, `continueDiscardedEvents`).
+- **`SessionStart`'s `compact` matcher target has no production dispatch site.**
+  `startup`, `resume`, and `clear` are dispatched; `compact` is a defined
+  constant (`agent/plugin/hooks.go:58-59`) that nothing sends, so a `compact`-
+  matched `SessionStart` hook never fires. Pre-existing, and unchanged by this
+  version.
 - **`effort` is an object and is absent when unset.** `{"level": "high"}`, not
   `"high"`; the field is omitted entirely when no effort is configured
-  (`agent/internal/hooks/hookinput.go`, `Effort`; `agent/session_events.go:645-647`).
+  (`agent/internal/hooks/hookinput.go`, `Effort`; `agent/session_events.go:639-647`).
 
 ### When `PreToolUse` runs (input rewriting)
 
@@ -571,8 +582,8 @@ Notes:
   (`agent/session_events.go:652-653`).
 - `agent_id` and `agent_type` appear only inside a subagent. A root session's
   hook sees neither. `agent_type` is `subagent` for an unnamed delegate, or the
-  plugin-scoped catalog key for a plugin agent (`agent/session_events.go:640-651`;
-  `agent/subagents.go:731-741`).
+  plugin-scoped catalog key for a plugin agent (`agent/session_events.go:642-651`;
+  `agent/subagents.go:731-735`).
 
 Event-specific fields, all omitted when absent:
 
@@ -637,8 +648,9 @@ The output JSON Evener reads (exit 0):
 ```
 
 - `continue` is **honored** on every fired event except five: `continue: false`
-  stops the action the event guards and `stopReason` becomes a user-visible
-  warning. It is discarded on `StopFailure`, `Notification`, `PreCompact`,
+  stops the action the event guards. `stopReason` becomes a user-visible warning
+  everywhere except `PreToolUse`, where it becomes the tool call's error result
+  and reaches the **model** (`agent/session_tools.go:829-843`). It is discarded on `StopFailure`, `Notification`, `PreCompact`,
   `PostCompact`, and `SessionEnd`, as Claude discards it. `suppressOutput` is
   still parsed but has no runtime effect.
 - `hookSpecificOutput.additionalContext` is delivered to the **model**, wrapped in

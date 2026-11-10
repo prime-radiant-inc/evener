@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -214,6 +215,106 @@ func TestSubagentStop_ContinueFalseEndsTheRunWithNoContinuation(t *testing.T) {
 	}
 	if n := requests.Load(); n != 0 {
 		t.Errorf("model requests = %d, want 0: a stop starts no continuation", n)
+	}
+}
+
+// TestPostToolUse_ContinueFalseWithNoReasonStillEndsTheTurn proves the stop is
+// keyed on the FACT, not the reason. `{"continue":false}` with no stopReason is
+// legal Claude; a bare-string carrier would read it as "not stopped" and let the
+// loop reach another model request. It must end the turn with a default message.
+func TestPostToolUse_ContinueFalseWithNoReasonStillEndsTheTurn(t *testing.T) {
+	t.Parallel()
+	cmd := `printf '%s' '{"continue":false}'`
+	sess, adapter := postHookFixture(t, "PostToolUse", cmd, func(round int, req llm.Request) llm.Response {
+		if round > 0 {
+			t.Fatalf("a reasonless continue:false must still end the turn; reached request %d", round)
+		}
+		return toolCallResponse(batchShellCall("shell-0"))
+	})
+	warnings := collectWarnings(sess)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "run a tool", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	awaitWarningNaming(t, warnings, "a tool hook stopped this round")
+	sess.Close()
+
+	if got := len(adapter.Requests()); got != 1 {
+		t.Fatalf("model requests = %d, want 1: a reasonless continue:false still stops the loop", got)
+	}
+}
+
+// TestSessionStart_ContinueFalseDoesNotLeakPastAFailedAdmission proves a stop
+// recorded for an input that never ran does not swallow the next prompt. The
+// first prompt fails before its user turn is recorded; the second prompt is an
+// ordinary turn, must reach the model, and must get the model's answer.
+func TestSessionStart_ContinueFalseDoesNotLeakPastAFailedAdmission(t *testing.T) {
+	t.Parallel()
+	cmd := `printf '%s' '{"continue":false,"stopReason":"startup hook stopped the session"}'`
+	sess, adapter := postHookFixture(t, "SessionStart", cmd, func(_ int, _ llm.Request) llm.Response {
+		return finalResponse("second prompt answered")
+	})
+	// Fail exactly the first input, before its user turn is recorded. The seam
+	// is the pre-incorporation failure a SessionStart stop can be recorded
+	// across; nil in production.
+	sess.cfg.testOnly.failTurnBeforeRecording = func() error {
+		sess.cfg.testOnly.failTurnBeforeRecording = nil
+		return errors.New("first prompt refused")
+	}
+	warnings := collectWarnings(sess)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, err := sess.ProcessInput(ctx, "first prompt", nil)
+	if err == nil || !strings.Contains(err.Error(), "first prompt refused") {
+		t.Fatalf("first prompt error = %v, want the injected refusal", err)
+	}
+	if got := len(adapter.Requests()); got != 0 {
+		t.Fatalf("model requests after the failed admission = %d, want 0", got)
+	}
+	awaitWarningNaming(t, warnings, "startup hook stopped the session")
+
+	text, err := sess.ProcessInput(ctx, "second prompt", nil)
+	if err != nil {
+		t.Fatalf("second prompt: %v", err)
+	}
+	sess.Close()
+
+	if got := len(adapter.Requests()); got != 1 {
+		t.Fatalf("model requests = %d, want 1: a stale SessionStart stop swallowed the second prompt", got)
+	}
+	if text != "second prompt answered" {
+		t.Fatalf("second prompt's answer = %q, want the model's reply: the stop leaked onto it", text)
+	}
+}
+
+// TestSubagentStop_ContinueFalseKeepsTheRunError proves a stop ends the run
+// without laundering a failure into success: a child whose run errored still
+// reports its error, even though the hook's stop supplies the result text.
+func TestSubagentStop_ContinueFalseKeepsTheRunError(t *testing.T) {
+	t.Parallel()
+	subSess := newSession(t, withSteps(func(llm.Request) llm.Response { return finalResponse("ok") }))
+	runner := hooks.NewRunner(nil, "")
+	runner.Add(plugin.HookSubagentStop, plugin.RegisteredHook{
+		Matcher: "*",
+		Type:    "command",
+		Command: `printf '%s' '{"continue":false,"stopReason":"subagent stop ended the run"}'`,
+		Timeout: 5,
+	})
+	subSess.hookRunner = runner
+	sub := &subagent{id: subSess.id, sess: subSess, status: SubagentRunning}
+	runErr := errors.New("provider exploded")
+
+	got, err := sub.runSubagentStopHook(context.Background(), "the delivered report", runErr, nil)
+	subSess.Close()
+
+	if got != "subagent stop ended the run" {
+		t.Errorf("run result = %q, want the hook's stopReason", got)
+	}
+	if !errors.Is(err, runErr) {
+		t.Fatalf("run error = %v, want the original run error: a stop must not report a failed child as completed", err)
 	}
 }
 

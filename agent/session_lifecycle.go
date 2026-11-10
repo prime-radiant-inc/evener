@@ -1219,6 +1219,13 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		return "", admissionErr
 	}
 	defer release()
+	// A SessionStart hook's continue:false is recorded while an input is being
+	// accepted and consumed by processOneInput's take. An input refused before
+	// that -- an unhealthy transcript, a closed session, a failed user-turn
+	// append -- returns without ever reaching the take, so this clear is what
+	// keeps a stop recorded for an input that never ran from swallowing the
+	// NEXT, unrelated prompt. Idempotent on the path that did consume it.
+	defer s.clearSessionStartHookStop()
 	// Stamp the session id for the whole turn so LLM side calls made from tools
 	// (web fetch summaries, naming, in-turn compaction) attribute to this
 	// session in the per-session API log. callModelWithFallback layers its
@@ -2153,7 +2160,8 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	s.stopHookActive = false
 	// A tool post-hook's continue:false belongs to the round that raised it; the
 	// round loop consumes it, and a new turn must not inherit an unconsumed one.
-	s.toolHookStop = ""
+	s.toolHookStop = false
+	s.toolHookStopReason = ""
 	// Likewise a UserPromptSubmit stop belongs to the input that raised it.
 	s.promptHookStop = ""
 	// A new turn is new work; the previous turn's interrupt no longer says
@@ -2637,11 +2645,13 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// already durable. It joins PostToolBatch's block in the same turn-ending
 		// tail below, so a round that also communicated keeps its reply.
 		s.mu.Lock()
-		toolHookStop := s.toolHookStop
-		s.toolHookStop = ""
+		toolHookStopped := s.toolHookStop
+		toolHookStopReason := s.toolHookStopReason
+		s.toolHookStop = false
+		s.toolHookStopReason = ""
 		s.mu.Unlock()
-		batchBlocked := toolHookStop != ""
-		batchStop := toolHookStop
+		batchBlocked := toolHookStopped
+		batchStop := toolHookStopReason
 		if s.hookRunner != nil && len(calls) > 0 {
 			hi := s.hookInput(plugin.HookPostToolBatch)
 			hi.ToolCalls = s.batchToolCalls(calls, results)
@@ -2861,6 +2871,15 @@ func (s *Session) takeSessionStartHookStop() bool {
 	stopped := s.sessionStartHookStop != ""
 	s.sessionStartHookStop = ""
 	return stopped
+}
+
+// clearSessionStartHookStop drops a SessionStart hook's recorded continue:false
+// when the input that raised it never ran. Without it the flag would survive to
+// the next prompt, which is not the input the hook stopped. Guarded by mu.
+func (s *Session) clearSessionStartHookStop() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessionStartHookStop = ""
 }
 
 // acceptUserInputWithSkillSelection is acceptUserInput plus the typed skill

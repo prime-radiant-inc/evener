@@ -650,11 +650,14 @@ type Session struct {
 	// toolHookStop carries a PostToolUse or PostToolUseFailure hook's
 	// continue:false out of execTool to the round loop, which ends the turn the
 	// same way PostToolBatch's block does -- after the tool results are already
-	// persisted. execTool runs one call at a time on the round's goroutine (or
-	// several in parallel), so the first non-empty reason wins and later ones do
-	// not overwrite it. Consumed and cleared each tool-executing round. Guarded
-	// by mu.
-	toolHookStop string
+	// persisted. The FACT and the REASON are separate fields because
+	// `{"continue":false}` with no stopReason is legal Claude: a bare string
+	// would make "stopped, no reason" indistinguishable from "not stopped".
+	// execTool runs one call at a time on the round's goroutine (or several in
+	// parallel), so the first stop wins and later ones do not overwrite it.
+	// Consumed and cleared each tool-executing round. Guarded by mu.
+	toolHookStop       bool
+	toolHookStopReason string
 	// promptHookStop carries a UserPromptSubmit hook's continue:false out of
 	// acceptUserInput to the turn loop, which ends the turn before the first
 	// model request: the prompt never reaches the model. The reason is already

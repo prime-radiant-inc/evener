@@ -1085,8 +1085,9 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		// uses). The reason becomes a user warning and a steering turn there.
 		if hookResult.Stopped {
 			s.mu.Lock()
-			if s.toolHookStop == "" {
-				s.toolHookStop = strings.TrimSpace(hookResult.StopReason)
+			if !s.toolHookStop {
+				s.toolHookStop = true
+				s.toolHookStopReason = strings.TrimSpace(hookResult.StopReason)
 			}
 			s.mu.Unlock()
 		}
