@@ -36,7 +36,7 @@ const VITE_READY_TIMEOUT_MS = 30_000;
  * the one case where the process is alive and silent, and four times the
  * observed floor is the margin chosen for it.
  */
-const CHROME_ANNOUNCEMENT_DEADLINE_MS = 120_000;
+export const CHROME_ANNOUNCEMENT_DEADLINE_MS = 120_000;
 const VITE_LOCAL_ANNOUNCEMENT = /Local:\s+http:\/\/(\[[^\]]+\]|[^/:\s]+):(\d+)(?:\/\s*)?$/;
 
 function isLoopbackHost(hostname) {
