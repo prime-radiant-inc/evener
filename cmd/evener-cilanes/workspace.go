@@ -229,7 +229,7 @@ func parseGoFile(fset *token.FileSet, root, file string) (parsedFile, error) {
 	for _, group := range f.Comments {
 		for _, comment := range group.List {
 			if patterns, ok := strings.CutPrefix(comment.Text, "//go:embed "); ok {
-				for _, pattern := range strings.Fields(patterns) {
+				for pattern := range strings.FieldsSeq(patterns) {
 					parsed.names = append(parsed.names, embedDir(pattern))
 				}
 			}
