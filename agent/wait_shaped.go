@@ -58,6 +58,13 @@ func (p *jobStatusPolls) forgetDelegates() {
 	}
 }
 
+// forgetAll drops every remembered state.
+func (p *jobStatusPolls) forgetAll() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	clear(p.last)
+}
+
 // forget drops target's remembered state; the next job_status call on it is
 // treated as a first call. A notification about the target is news, so it
 // resets the memory.
@@ -118,9 +125,10 @@ var (
 // segments, optionally with echo/printf/true filler, or a bare loop whose body
 // is only sleep. It is deliberately conservative: any construct it does not
 // recognise (pipes, redirects, substitution, other commands) means the command
-// may be doing real work, so it is allowed.
+// may be doing real work, so it is allowed. Quotes count as such a construct: a
+// quoted string may hold separators that are text, not commands.
 func isSleepOnlyCommand(command string) bool {
-	if strings.ContainsAny(command, "`|<>\\()") || strings.Contains(command, "$") {
+	if strings.ContainsAny(command, "`|<>\\()'\"") || strings.Contains(command, "$") {
 		return false
 	}
 	command = strings.ReplaceAll(command, "&&", ";")

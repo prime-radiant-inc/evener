@@ -219,7 +219,10 @@ type delegateLiveState struct {
 	// encountered a finalization failure has completed all retained-runtime writes.
 	recoveryRunnerPending bool
 	activityAt            time.Time
-	productiveActivityAt  time.Time
+	// activityReports counts the activity reports that advanced activityAt, so a
+	// reader can tell new progress from the passing of time.
+	activityReports      uint64
+	productiveActivityAt time.Time
 	// activityPublishedAt is the activity time ReportActivityPhase last
 	// published a snapshot for; the one-second activity coalescer measures it.
 	// The intent channel keeps its own publication clock (intentPublishedAt),
@@ -264,6 +267,9 @@ type delegateSnapshot struct {
 	// Provider retry/backoff remains ordinary activity everywhere else, but it
 	// does not move this clock.
 	latestProductiveActivityAt time.Time
+	// activityReports is the live activity-report count; zero for a snapshot with
+	// no live line.
+	activityReports uint64
 	// pendingStopSeq is the sequence of a subtree stop admitted against this
 	// delegate and not yet completed; 0 when no stop is outstanding. It is what
 	// distinguishes a delegate that was ASKED to stop from one that has.
@@ -1328,6 +1334,7 @@ func (c *delegateTreeController) captureDelegateSnapshotLocked(id string) delega
 		if live.activityAt.After(snapshot.latestActivityAt) {
 			snapshot.latestActivityAt = live.activityAt
 		}
+		snapshot.activityReports = live.activityReports
 		if live.productiveActivityAt.After(snapshot.latestProductiveActivityAt) {
 			snapshot.latestProductiveActivityAt = live.productiveActivityAt
 		}

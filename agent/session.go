@@ -1281,7 +1281,13 @@ func (s *Session) enqueueJobNotification(n jobNotification) {
 // The caller holds pendingJobNotifsMu; this must never take jm.mu, because
 // the established order is jm.mu then pendingJobNotifsMu.
 func (s *Session) appendOrFoldJobNotificationLocked(n jobNotification) {
-	s.jobStatusPolls.forget(n.JobID)
+	if n.JobID == "" {
+		// A self timer is about no one job: the recheck it schedules is news
+		// for every running target.
+		s.jobStatusPolls.forgetAll()
+	} else {
+		s.jobStatusPolls.forget(n.JobID)
+	}
 	if n.WatchID != "" && !n.Terminal {
 		for i := range s.pendingJobNotifs {
 			p := &s.pendingJobNotifs[i]

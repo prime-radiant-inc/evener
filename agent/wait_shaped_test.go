@@ -129,6 +129,8 @@ func TestSleepOnlyShellCommandIsRefused(t *testing.T) {
 		"for i in 1 2; do sleep 0.01; printf x > out.txt; done",
 		"printf ok",
 		"sleep 0.01 | cat",
+		"echo 'first;sleep 30;echo last'",
+		`printf "%s\n" "a; sleep 30"`,
 		"sleep $(printf 0.01)",
 	}
 	for _, cmd := range allowed {
@@ -213,5 +215,45 @@ func TestWaitGuidanceNamesEndReasonOnlyWhereTheResultToolOffersIt(t *testing.T) 
 				t.Errorf("shell refusal names end_reason = %v, result tool offers it = %v", got, offered)
 			}
 		})
+	}
+}
+
+func TestJobStatusAfterSelfTimerWakeIsAllowed(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	jobID := startBackgroundShellJob(t, s, idleShellCommand)
+	t.Cleanup(func() { _, _ = s.jobManager.stop(jobID) })
+
+	callTool(s, "job_status", map[string]any{"target": jobID})
+	if res := callTool(s, "job_status", map[string]any{"target": jobID}); !isWaitRefused(res) {
+		t.Fatalf("setup: repeat was not refused: %+v", res)
+	}
+	// A self timer carries no job id: it is not about any one job.
+	s.enqueueJobNotification(jobNotification{Kind: jobNotificationKindWatch, WatchID: "timer1", Fires: 1})
+	if res := callTool(s, "job_status", map[string]any{"target": jobID}); res.IsError {
+		t.Fatalf("scheduled recheck after a self-timer wake was refused: %s", res.Output)
+	}
+}
+
+func TestJobStatusOnDelegateFollowsNewActivityReportOnly(t *testing.T) {
+	t.Parallel()
+	s := newSession(t, withoutGitSnapshot())
+	id := "dlg_activity_reports"
+	start := time.Unix(10, 0).UTC()
+	seedStableToolRunningDelegate(t, s, id, "", start)
+	lease := delegateLease{delegateID: id, generation: 1}
+
+	callTool(s, "job_status", map[string]any{"target": id})
+	if res := callTool(s, "job_status", map[string]any{"target": id}); !isWaitRefused(res) {
+		t.Fatalf("repeat with no new activity report executed: %+v", res)
+	}
+	if err := s.delegateController.ReportActivityPhase(lease, start.Add(time.Minute), "tool_running"); err != nil {
+		t.Fatal(err)
+	}
+	if res := callTool(s, "job_status", map[string]any{"target": id}); res.IsError {
+		t.Fatalf("job_status after a new activity report was refused: %s", res.Output)
+	}
+	if res := callTool(s, "job_status", map[string]any{"target": id}); !isWaitRefused(res) {
+		t.Fatalf("repeat after consuming the activity report executed: %+v", res)
 	}
 }

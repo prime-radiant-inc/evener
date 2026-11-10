@@ -237,8 +237,8 @@ authority boundary applies to every client; S10 preserves the original
 conversation content. See [job control](../job-control.md).
 
 S12 refuses wait-shaped actions at the tool boundary: a repeat `job_status` on
-an unchanged running target and a sleep-only `shell` command return
-`wait_refused`, and the refusal text, tool descriptions and system prompt all
+an unchanged running target and a sleep-only `shell` command return a
+park-prefixed refusal, and the refusal text, tool descriptions and system prompt all
 say to end the turn so the completion wakes the agent. The session keeps no
 wait primitive. See [job control](../job-control.md).
 
