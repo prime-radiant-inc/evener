@@ -20,7 +20,7 @@ func TestFromAnthropicResponseWebSearchContentBlocks(t *testing.T) {
 	r := fromAnthropicResponse(anthRaw(t, `{"content":[
 		{"type":"server_tool_use","id":"srvu_1","name":"web_search","input":{"query":"tokyo weather"}},
 		{"type":"web_search_tool_result","content":[{"title":"t","url":"https://e/"}]}
-	]}`), "m")
+	]}`), "m", nil)
 	var webSearches []*llm.WebSearchData
 	for _, p := range r.Message.Content {
 		if p.Kind == llm.ContentWebSearch {
@@ -39,7 +39,7 @@ func TestFromAnthropicResponseWebSearchContentBlocks(t *testing.T) {
 }
 
 func TestFromAnthropicResponseSkipsNonObjectContent(t *testing.T) {
-	r := fromAnthropicResponse(anthRaw(t, `{"content":["nope",{"type":"text","text":"hi"}],"stop_reason":"end_turn"}`), "m")
+	r := fromAnthropicResponse(anthRaw(t, `{"content":["nope",{"type":"text","text":"hi"}],"stop_reason":"end_turn"}`), "m", nil)
 	if len(r.Message.Content) != 1 || r.Message.Content[0].Text != "hi" {
 		t.Fatalf("content = %#v, want only the decodable text part", r.Message.Content)
 	}
@@ -51,19 +51,19 @@ func TestFromAnthropicResponseToolUseFinishFallback(t *testing.T) {
 	body := func(stop string) map[string]any {
 		return anthRaw(t, `{"content":[{"type":"tool_use","id":"t1","name":"shell","input":{}}],"stop_reason":"`+stop+`"}`)
 	}
-	if r := fromAnthropicResponse(body("end_turn"), "m"); r.Finish.Reason != llm.FinishReasonToolCalls {
+	if r := fromAnthropicResponse(body("end_turn"), "m", nil); r.Finish.Reason != llm.FinishReasonToolCalls {
 		t.Fatalf("end_turn + tool_use must fall back to tool_calls, got %q", r.Finish.Reason)
 	}
-	if r := fromAnthropicResponse(body("max_tokens"), "m"); r.Finish.Reason != llm.FinishReasonLength {
+	if r := fromAnthropicResponse(body("max_tokens"), "m", nil); r.Finish.Reason != llm.FinishReasonLength {
 		t.Fatalf("max_tokens must survive the tool-call override, got %q", r.Finish.Reason)
 	}
 }
 
 func TestFromAnthropicResponseStopDetails(t *testing.T) {
-	if r := fromAnthropicResponse(anthRaw(t, `{"stop_reason":"end_turn","stop_details":{"type":"stop","detail":"x"}}`), "m"); len(r.Warnings) != 0 {
+	if r := fromAnthropicResponse(anthRaw(t, `{"stop_reason":"end_turn","stop_details":{"type":"stop","detail":"x"}}`), "m", nil); len(r.Warnings) != 0 {
 		t.Fatalf("stop_details that describe no refusal must add no warning: %+v", r.Warnings)
 	}
-	r := fromAnthropicResponse(anthRaw(t, `{"stop_reason":"refusal","stop_details":{"type":"refusal","category":"cyber"}}`), "m")
+	r := fromAnthropicResponse(anthRaw(t, `{"stop_reason":"refusal","stop_details":{"type":"refusal","category":"cyber"}}`), "m", nil)
 	if len(r.Warnings) != 1 || r.Warnings[0].Code != "refusal" {
 		t.Fatalf("a refusal stop_details must add exactly one refusal warning: %+v", r.Warnings)
 	}
