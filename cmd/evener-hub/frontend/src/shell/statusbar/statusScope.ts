@@ -59,14 +59,14 @@ export function deriveScope(
   const row = selectSessionSummary(ref, navigation);
   const rowMatches = row?.ref === ref;
   const runtime = activity?.runtime;
+  const askPending = runtime?.askPending ?? (rowMatches ? row.ask_pending === true : false);
+  const approvalPending = runtime?.approvalPending ?? (rowMatches ? row.approval_pending === true : false);
   const leaf = {
     ref,
     title: rowMatches ? row.title : ref,
     ...(rowMatches && row.tasks ? { tasks: row.tasks } : {}),
-    ...((rowMatches ? row.ask_pending === true : runtime?.askPending === true) ? { ask_pending: true } : {}),
-    ...((rowMatches ? row.approval_pending === true : runtime?.approvalPending === true)
-      ? { approval_pending: true }
-      : {}),
+    ...(askPending ? { ask_pending: true } : {}),
+    ...(approvalPending ? { approval_pending: true } : {}),
   };
   const context = activity?.context;
   const ancestryKnown = context?.ancestryKnown === true;

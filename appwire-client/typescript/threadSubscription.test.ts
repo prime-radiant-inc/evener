@@ -481,6 +481,46 @@ test("a resync clears ask authority on every membership for the thread", async (
   second.release();
 });
 
+test("a resync discards an askPending frame received before the recovery snapshot", async () => {
+  const client = activityClient();
+  const initial = deferred<ThreadReadResponse>(),
+    entered = deferred<void>();
+  const idle: ThreadReadResponse = {
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-root",
+      sessionId: "root-session",
+      status: { type: "idle" },
+      evener: { ...threadFixture().thread.evener, askPending: false },
+    },
+  };
+  let reads = 0;
+  client.on("thread/read", () => {
+    reads += 1;
+    if (reads === 1) {
+      entered.resolve();
+      return initial.promise;
+    }
+    return idle;
+  });
+  const lease = acquireThreadSubscription(client, activityRef);
+  const ensuring = lease.ensure();
+  await entered.promise;
+  client.emitNotification({
+    method: "thread/status/changed",
+    params: { ref: activityRef, threadId: "wire-root", status: { type: "awaiting" }, askPending: true },
+  });
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref: activityRef, threadId: "wire-root" },
+  });
+  initial.resolve(idle);
+  await ensuring;
+  await lease.read({ includeTurns: true });
+  expect(lease.metadata?.()?.askPending).toBe(false);
+  lease.release();
+});
+
 test("a read in flight across a resync cannot reseed stale ask metadata", async () => {
   const client = activityClient(),
     old = deferred<ThreadReadResponse>(),

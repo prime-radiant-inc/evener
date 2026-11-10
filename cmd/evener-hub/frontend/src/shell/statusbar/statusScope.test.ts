@@ -1,4 +1,8 @@
-import { type SessionActivitySnapshot, SessionActivityStore } from "@evener/appwire-client";
+import {
+  type NavigationSessionSummary,
+  type SessionActivitySnapshot,
+  SessionActivityStore,
+} from "@evener/appwire-client";
 import { createNavigationStore } from "@evener/appwire-client/state/navigation";
 import { memoryNavigationPersistence } from "@evener/appwire-client/testing/navigationPersistence";
 import { describe, expect, it } from "vitest";
@@ -31,6 +35,36 @@ describe("typed activity scope", () => {
       },
     } as SessionActivitySnapshot;
     const scope = deriveScope(navigation(), "remote:deep", snapshot, null);
+    expect(scope.leaf).toMatchObject({
+      ref: "remote:deep",
+      ask_pending: true,
+      approval_pending: true,
+    });
+  });
+  it("prefers qualified runtime attention over a loaded navigation row", () => {
+    const base = navigation();
+    const resources = new Map(base.resources);
+    const row = {
+      ref: "remote:deep",
+      title: "Deep",
+      ask_pending: false,
+      approval_pending: false,
+    } as unknown as NavigationSessionSummary;
+    resources.set("location:remote:deep", {
+      key: { kind: "location", ref: "remote:deep" },
+      data: { session: row },
+      error: null,
+    } as never);
+    const snapshot = {
+      runtime: {
+        threadId: "wire-deep",
+        sessionId: "deep",
+        status: { type: "awaiting" },
+        askPending: true,
+        approvalPending: true,
+      },
+    } as SessionActivitySnapshot;
+    const scope = deriveScope({ ...base, resources }, "remote:deep", snapshot, null);
     expect(scope.leaf).toMatchObject({
       ref: "remote:deep",
       ask_pending: true,

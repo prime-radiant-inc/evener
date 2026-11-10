@@ -199,6 +199,7 @@ class ThreadSubscriptions {
       // arriving after this resync overlays that read.
       member.requestedEscalations.clear();
       member.resolvedEscalations.clear();
+      member.pendingAsk = undefined;
       member.askAuthoritative = false;
       member.resyncRevision += 1;
     }
