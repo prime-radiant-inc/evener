@@ -289,3 +289,40 @@ func TestAppendBatchFailClosedDistinguishesClosedFromRecorded(t *testing.T) {
 		t.Fatalf("synced appendBatch on a closed writer = (retained %v, err %v), want ErrWriterClosed", retained, err)
 	}
 }
+
+// A nil or closed writer records nothing, so every door must name that as
+// NoTranscriptEntrySeq rather than 0: callers stamp the returned Seq directly
+// onto a turn, and 0 is a valid durable entry a fold record may later name.
+func TestWriterNoOpReturnsNoTranscriptEntrySeq(t *testing.T) {
+	turn := schema.NewTurn(schema.TurnUserInput, llm.User("no writer"))
+	var nilWriter *Writer
+	if seq, err := nilWriter.Append(turn); seq != schema.NoTranscriptEntrySeq || err != nil {
+		t.Fatalf("nil Append = (%d, %v), want (NoTranscriptEntrySeq, nil)", seq, err)
+	}
+	if seq, err := nilWriter.AppendDurable(turn); seq != schema.NoTranscriptEntrySeq || err != nil {
+		t.Fatalf("nil AppendDurable = (%d, %v), want (NoTranscriptEntrySeq, nil)", seq, err)
+	}
+	if seq, err := nilWriter.AppendSynced(turn); seq != schema.NoTranscriptEntrySeq || err != nil {
+		t.Fatalf("nil AppendSynced = (%d, %v), want (NoTranscriptEntrySeq, nil)", seq, err)
+	}
+	if seq, err := nilWriter.AppendBatch([]schema.Turn{turn}); seq != schema.NoTranscriptEntrySeq || err != nil {
+		t.Fatalf("nil AppendBatch = (%d, %v), want (NoTranscriptEntrySeq, nil)", seq, err)
+	}
+
+	w, err := NewWriterWithFS(afero.NewMemMapFs(), "/noop.jsonl", Header{SessionID: "sess-noop"})
+	if err != nil {
+		t.Fatalf("NewWriterWithFS: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if seq, err := w.Append(turn); seq != schema.NoTranscriptEntrySeq || err != nil {
+		t.Fatalf("closed Append = (%d, %v), want (NoTranscriptEntrySeq, nil)", seq, err)
+	}
+	if seq, err := w.AppendDurable(turn); seq != schema.NoTranscriptEntrySeq || err != nil {
+		t.Fatalf("closed AppendDurable = (%d, %v), want (NoTranscriptEntrySeq, nil)", seq, err)
+	}
+	if seq, err := w.AppendBatch([]schema.Turn{turn}); seq != schema.NoTranscriptEntrySeq || err != nil {
+		t.Fatalf("closed AppendBatch = (%d, %v), want (NoTranscriptEntrySeq, nil)", seq, err)
+	}
+}

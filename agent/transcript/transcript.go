@@ -513,7 +513,7 @@ func (w *Writer) AppendDurable(turn schema.Turn) (seq int, err error) {
 // nil); a clean durable append is not fsynced twice.
 func (w *Writer) AppendSynced(turn schema.Turn) (seq int, err error) {
 	if w == nil {
-		return 0, nil // no writer to record into — see Append's nil no-op
+		return schema.NoTranscriptEntrySeq, nil // no writer to record into — see Append's nil no-op
 	}
 	// failClosed=true: a closed writer records nothing, and this door must not
 	// read that as durable. The decision is made under appendBatch's lock, so a
@@ -548,7 +548,8 @@ func (w *Writer) AppendSynced(turn schema.Turn) (seq int, err error) {
 // sequence number. It returns the sequence number the first turn took. A batch
 // whose whole buffer landed but did not sync is a retained record, per the
 // contract on Append. No caller until A2's fold; kept here as the exported
-// entry to the one write primitive. No-op returning (0, nil) for a nil or
+// entry to the one write primitive. No-op returning
+// (schema.NoTranscriptEntrySeq, nil) for a nil or
 // closed writer, matching Append.
 func (w *Writer) AppendBatch(turns []schema.Turn) (int, error) {
 	firstSeq, _, err := w.appendBatch(turns, true, true, false)
@@ -571,16 +572,17 @@ func (w *Writer) appendBatch(turns []schema.Turn, forceSync, queueRetained, fail
 	if w == nil {
 		// A writer that never existed (a session with no state directory) is a
 		// nil no-op for every door, synced or not — there is nothing to record
-		// and nothing to lose. Only a CLOSED writer fails closed.
-		return 0, nil, nil
+		// and nothing to lose. Seq names no entry: 0 is a valid durable entry a
+		// fold record may later name.
+		return schema.NoTranscriptEntrySeq, nil, nil
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.closed.Load() {
 		if failClosed {
-			return 0, nil, ErrWriterClosed
+			return schema.NoTranscriptEntrySeq, nil, ErrWriterClosed
 		}
-		return 0, nil, nil
+		return schema.NoTranscriptEntrySeq, nil, nil
 	}
 	return w.appendBatchLocked(turns, forceSync, queueRetained)
 }
