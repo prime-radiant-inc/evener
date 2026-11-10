@@ -4,12 +4,15 @@ package llm
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"syscall"
 	"testing"
 )
 
+// A target that is not a regular file is refused up front, before the open
+// locks, re-permissions or reads the device.
 func TestOpenPrivateAPILogFileRejectsANonRegularFile(t *testing.T) {
 	file, err := openPrivateAPILogFile("/dev/null")
 	if file != nil {
@@ -18,6 +21,9 @@ func TestOpenPrivateAPILogFileRejectsANonRegularFile(t *testing.T) {
 	}
 	if err == nil {
 		t.Fatal("openPrivateAPILogFile(/dev/null) error = nil, want a refusal")
+	}
+	if _, ok := errors.AsType[*fs.PathError](err); ok {
+		t.Fatalf("err = %v: a later operation on the device failed, want the regular-file refusal", err)
 	}
 }
 
