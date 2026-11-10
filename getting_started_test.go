@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/internal/devtool/repoaudit"
 )
 
 // Execute the guide's actual setup block. Only the network clone source is
@@ -17,7 +19,7 @@ func TestGettingStartedExercisePreservesExistingWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fences, err := markdownFences(string(doc))
+	fences, err := repoaudit.MarkdownFences(string(doc))
 	if err != nil {
 		t.Fatalf("docs/getting-started.md: %v", err)
 	}

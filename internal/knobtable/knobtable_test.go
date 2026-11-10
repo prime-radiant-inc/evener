@@ -1,4 +1,4 @@
-package main
+package knobtable
 
 import (
 	"bytes"
@@ -197,48 +197,19 @@ func TestHubRowsResolveDefaultsAndSkipRecordTables(t *testing.T) {
 	}
 }
 
-// TestRepoKnobsHaveConsumers is the audit this generator exists for: a
-// registered variable or hub.toml key that no code reads is dead and should be
-// deleted, and a removed hub.toml key belongs in removedKnobs.
-func TestRepoKnobsHaveConsumers(t *testing.T) {
-	root := "../.."
-	sources, err := scanGoSources(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	env, err := envRows(root, sources)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, r := range env {
-		if len(r.Consumers) == 0 {
-			t.Errorf("%s is registered in envvars but nothing reads it", r.Name)
-		}
-	}
-	hub, _, err := hubRows(root, sources)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, r := range hub {
-		if len(r.Consumers) == 0 {
-			t.Errorf("hub.toml key %s is decoded but nothing reads it", r.Key)
-		}
-	}
-}
-
 func TestGenerateWritesOutputDoc(t *testing.T) {
 	root := fixtureRoot(t)
 	if err := os.MkdirAll(filepath.Join(root, "docs", "developing-evener"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := generate(root); err != nil {
+	if err := Generate(root); err != nil {
 		t.Fatal(err)
 	}
 	first, err := os.ReadFile(filepath.Join(root, outputDoc))
 	if err != nil || len(first) == 0 {
 		t.Fatalf("output doc: %v (%d bytes)", err, len(first))
 	}
-	if err := generate(root); err != nil {
+	if err := Generate(root); err != nil {
 		t.Fatal(err)
 	}
 	second, _ := os.ReadFile(filepath.Join(root, outputDoc))

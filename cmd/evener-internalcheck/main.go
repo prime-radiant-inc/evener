@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"go/types"
 	"io"
+	"slices"
 	"sort"
 	"strings"
 
@@ -54,6 +55,12 @@ var libraryPackages = []string{
 	"primeradiant.com/evener/execsupport/shellquote",
 	"primeradiant.com/evener/execsupport/syncio",
 	"primeradiant.com/evener/execsupport/valueexpr",
+}
+
+// LibraryPackages returns the import paths of the caller-facing library
+// packages this check holds to an internal-free exported surface.
+func LibraryPackages() []string {
+	return slices.Clone(libraryPackages)
 }
 
 func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
