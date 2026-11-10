@@ -191,7 +191,13 @@ func TestRemoteOwnerRejectsWrongAssociation(t *testing.T) {
 			}
 			commands[tc.step].output = strings.ReplaceAll(commands[tc.step].output, tc.old, tc.replacement)
 			if tc.step == 1 {
-				commands = append(commands[:2], ownerCommand{systemctlListUnits, ""}, ownerCommand{systemctlListUnitsUser, ""})
+				// A completed empty global read is supplemented by the
+				// per-process candidate proof; an ambiguous read is not.
+				if tc.replacement == "" {
+					commands = append(commands[:2], ownerCommand{selectedLockCandidateRemote("/srv/state", "4242"), ""}, ownerCommand{systemctlListUnits, ""}, ownerCommand{systemctlListUnitsUser, ""})
+				} else {
+					commands = append(commands[:2], ownerCommand{systemctlListUnits, ""}, ownerCommand{systemctlListUnitsUser, ""})
+				}
 			}
 			if tc.name == "wrong config" {
 				commands = append(commands[:9], ownerCommand{ownerContext("/srv", []string{"HOME=/home/dev"}) + resolveDeployCommand("/srv/other.toml"), "/srv/other.toml\n"})
