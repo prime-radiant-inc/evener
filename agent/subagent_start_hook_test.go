@@ -776,6 +776,7 @@ func TestSubagentStop_HookStopDoesNotOutliveItsRun(t *testing.T) {
 	sub.hookStopped = true
 
 	cancel := func() {}
+	sub.mu.Lock()
 	resetSubagentForRunLocked(sub, cancel, subSess.sclock().Now())
 	sub.mu.Unlock()
 
