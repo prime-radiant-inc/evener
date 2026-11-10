@@ -117,29 +117,66 @@ wrapper):
 The structure is the same either way: each event maps to an array of **matcher
 groups**; each group has a `matcher` and an array of **handlers**.
 
+## Behavior changes in this version
+
+Four changes differ from earlier Evener versions. Each one changes what an
+existing plugin sees.
+
+- **`PostToolUse` fires only for a tool that succeeded.** A tool that ran and
+  failed fires `PostToolUseFailure` instead. A call refused before execution
+  (unknown tool, invalid arguments, tool policy, a `PreToolUse` deny) fires
+  neither. A plugin that relied on `PostToolUse` also seeing failures must add
+  `PostToolUseFailure` (`agent/session_tools.go:1036`; the switch is
+  `case !res.IsError`).
+- **`continue: false` is honored where a dispatch site acts on it.** On
+  `SubagentStart` the child never launches; on `PostToolBatch` the round loop
+  stops before the next model call. In both, the hook's `stopReason` is
+  delivered as a user-visible warning. The runner computes the same `Stopped`
+  result on the other fired events, but their dispatch sites do not yet end the
+  action on it. It is discarded entirely on `StopFailure`, `Notification`,
+  `PreCompact`, `PostCompact`, and `SessionEnd`, exactly as Claude discards it
+  (`agent/internal/hooks/hookinput.go`, `continueDiscardedEvents`;
+  `agent/internal/hooks/hooks.go`, `applyStopped`; the only consumers are
+  `agent/subagents.go:1807` and `agent/session_lifecycle.go:2633`).
+- **`effort` is an object** — `{"level": "high"}` — and the field is absent when
+  no effort is configured. A plugin that expected the old bare string now gets an
+  object, or no field at all
+  (`agent/internal/hooks/hookinput.go`, the `Effort` struct and the `*Effort`
+  field; `agent/session_events.go:645-647`). `CLAUDE_EFFORT` stays the bare
+  level (`agent/internal/hooks/command_runtime.go:242-243`).
+- **Matcher exact mode accepts `,` and spaces.** `Edit, Write` now matches
+  `Edit` or `Write`; before, the comma made it fall through to regex mode and
+  match nothing (`agent/internal/hooks/matcher.go`, `isExactMatcher` and
+  `splitExactMatcher`, lines 62-81).
+
 ## Which events Evener fires
 
-Evener fires **nine** events. A hook on any other event name is parsed but never
-runs (and warns loudly at load — see [Misconfiguration
+Evener fires **fourteen** events. A hook on any other event name is parsed but
+never runs (and warns loudly at load — see [Misconfiguration
 warnings](#misconfiguration-warnings-loud-not-silent)).
 
 | Event | When it fires | Matcher target |
 |---|---|---|
 | `SessionStart` | before the first model turn | `startup`, `resume`, `clear`, `compact` |
-| `UserPromptSubmit` | after a user prompt is submitted | (none) |
-| `PreToolUse` | before a tool runs (before schema validation) | tool name |
-| `PostToolUse` | after a tool runs | tool name |
-| `Stop` | before the assistant/session stops | (none) |
-| `SubagentStop` | after a delegate run finishes and before it settles | (not yet wired) |
-| `PreCompact` | before context compaction | `manual`/`auto` (not yet wired) |
-| `SessionEnd` | at session teardown | session end reason (not yet wired) |
-| `Notification` | on a user-visible notification | notification type (not yet wired) |
+| `UserPromptSubmit` | after a user prompt is submitted | (none — the target is empty; use `*` or omit) |
+| `PreToolUse` | before a tool runs (before schema validation) | Claude tool name |
+| `PostToolUse` | after a tool runs and succeeds | Claude tool name |
+| `PostToolUseFailure` | after a tool runs and fails | Claude tool name |
+| `PostToolBatch` | after a round that executed tools, before the next model request | (none — any configured matcher is ignored) |
+| `Stop` | before the assistant/session stops | (none — any configured matcher is ignored) |
+| `SubagentStart` | before a delegate child run's first model request | child agent type |
+| `SubagentStop` | after a delegate run finishes and before it settles | child agent type |
+| `StopFailure` | when a turn ends on a provider/model failure | Claude error name (`rate_limit`, `server_error`, `unknown`, …) |
+| `PreCompact` | before context compaction | `manual`/`auto` |
+| `PostCompact` | after a fold that actually compacted | `manual`/`auto` |
+| `SessionEnd` | at session teardown | session end reason (`clear`, `prompt_input_exit`, `other`) |
+| `Notification` | on a user-visible notification | `notification_type` (`warning`) |
 
-All nine are tier `claude-compatible-subset`: Evener fires them with a
+All fourteen are tier `claude-compatible-subset`: Evener fires them with a
 Claude-compatible **subset** of the behavior. None is a complete end-to-end
-reimplementation of the Claude event — for example `PreToolUse` honors `allow` and
-`deny` decisions but not `ask`/`defer` (no interactive permission prompt), and
-several events ignore their matcher target today (noted above).
+reimplementation of the Claude event — for example `PreToolUse` honors `allow`
+and `deny` decisions but not `ask`/`defer` (no interactive permission prompt),
+and `PreCompact` cannot block compaction (below).
 
 **`Stop` is not consulted at an ask-ending boundary.** When a round posts one or more
 `ask_user` questions, the turn ends straight into the `awaiting` session state without
@@ -148,17 +185,90 @@ veto (a `Blocked` result would just force the model past its own unanswered ques
 `ask_user` is otherwise an ordinary tool: `PreToolUse` and `PostToolUse` still fire
 around the call like any other.
 
-**Other Claude events are reserved, not fired.** Names like `PostToolUseFailure`,
-`PermissionRequest`, `SubagentStart`, `PostCompact`, `Setup`, `FileChanged`, and
-the rest of the Claude vocabulary are *recognized* (Evener knows they are real
-Claude events) but **reserved** — declaring a hook for one parses cleanly and
-warns that the event is not fired yet. The full event vocabulary and the roadmap
-live in
+**Other Claude events are reserved, not fired.** Names like `PermissionRequest`,
+`Setup`, `FileChanged`, `TaskCreated`, `DirectoryAdded`, and the rest of the
+Claude vocabulary are *recognized* (Evener knows they are real Claude events) but
+**reserved** — declaring a hook for one parses cleanly and warns that the event
+is not fired yet. The full event vocabulary and the roadmap live in
 [07](subagent-management/07-lifecycle-hooks-claude-compat.md#event-contract).
 
 **Unknown names are rejected loudly.** A typo like `PreToolUze` is neither an Evener
 event nor a Claude event, so Evener warns that it is likely a typo and the hook
 will never fire.
+
+### Claude-compatibility caveats
+
+These are the places the fired subset differs from Claude. Each is deliberate
+and each is traced to the code that implements it.
+
+- **`PreCompact` cannot block compaction.** In Claude, exit 2 (or
+  `decision: "block"`) blocks the compaction. In Evener the hook runs mid-fold,
+  where aborting would mean unwinding an in-flight strategy, so `RunPreCompactFor`
+  only parses and aggregates output. Its exit 2 is non-blocking
+  (`agent/internal/hooks/exitcode.go:47-57`; `RunPreCompactFor` in
+  `agent/internal/hooks/hooks.go`). This is the one event whose decision control
+  the design deliberately leaves out. `UserPromptSubmit`'s exit-2 block is also
+  not enforced yet, because its runner has no block path either.
+- **A nonzero shell exit is success in Evener, so `PostToolUseFailure` does not
+  fire for a failing `bash`.** Evener treats a nonzero shell exit as a success
+  (Jesse's 2026-10-16 ruling, `agent/transcript/failures.go:50-51`), so the shell tool
+  returns `IsError == false` and the call fires `PostToolUse`. Claude fires
+  `PostToolUseFailure` there (`agent/session_tools.go:1028-1032`).
+- **`Notification`'s only type is the Evener-native `warning`.** Evener emits one
+  kind of notification, a model-facing diagnostic warning, so `notification_type`
+  and the matcher target are `warning`. Claude's `permission_prompt`,
+  `idle_prompt`, and other types never occur, and a matcher naming one never
+  matches (`agent/session_events.go:601-605,614`).
+- **`SessionEnd` sends `clear`, `prompt_input_exit`, and `other`.** `clear` is a
+  thread clear that replaced this identity; `prompt_input_exit` is a daemon
+  shutdown that found the session provably idle (otherwise it downgrades to
+  `other`); every other close sends `other`. `resume` and `logout` are in the
+  vocabulary but never sent, because Evener has no boundary that proves them. A
+  **retirement close runs no `SessionEnd` hook at all** (`agent/session_lifecycle.go`
+  `claudeSessionEndReasons`, `sessionEndPromptInputExit`, `idleForPromptExit`,
+  and the `if !retirement` guard around `RunSessionEndFor`).
+- **`PostToolUseFailure.error` is the model-facing text, not the full output.** It
+  is `ExecResult.Output`, the truncated text the model receives; `FullOutput`
+  stays on the event stream. `PostToolBatch.tool_calls[].tool_response` is the
+  same truncated text (`agent/session_tools.go:1043`;
+  `agent/internal/tool/registry.go:301`; `agent/session_tool_round.go:145-153`).
+- **`terminalSequence` is parsed but has no delivery site.** A hook may return
+  it; Evener carries it and never emits it (`agent/internal/hooks/hooks.go`,
+  the `TerminalSequences` fields, each commented "parsed but currently has no
+  delivery-site consumer").
+- **`Stop` and `SubagentStop` omit `background_tasks`, `session_crons`, and
+  `agent_transcript_path`.** Evener has jobs but no cron concept and no
+  per-subagent transcript path an agent-facing hook can read. It omits the
+  fields rather than send a half-truthful list (`agent/internal/hooks/hookinput.go`
+  has no such fields).
+- **`SubagentStop`'s `stop_hook_active` is always `false`.** The field is present
+  so a hook sees Claude's type rather than an absence
+  (`agent/subagents.go:2664-2667`).
+- **Go RE2, not JavaScript, and the widened exact set applies to every event.**
+  Matchers use Go RE2 (see [below](#go-re2-not-javascript-regex)). The `,`/space/
+  hyphen exact set has no per-event discriminator, so a `FileChanged` matcher
+  (reserved) or a `StopFailure` matcher is exact in Evener where Claude uses its
+  narrower set (`agent/internal/hooks/matcher.go:27-34,62-81`).
+- **`PostCompact` fires only for a winning fold that actually compacted.** A
+  request-time fold publishes on every model request whether or not a layer
+  folded anything; the hook is gated on `commit.actualCompaction`, which is
+  `stagedCompactionCount() > 0`, and skipped for a fold a newer one superseded
+  (`agent/session_compaction.go:309,812-824`).
+- **`Stop`'s `stop_hook_active` is per turn.** A Stop hook that blocks sets the
+  flag; the next tool call in the turn clears it; a new turn clears it. It never
+  leaks across turns (`agent/session.go:644-649`;
+  `agent/session_tool_round.go:606,623,638`; `agent/session_tools.go:862`;
+  `agent/session_lifecycle.go:2153`).
+- **`continue: false` stops only two events so far.** `SubagentStart` (the child
+  never launches) and `PostToolBatch` (the round loop stops) act on it; the
+  runner records `Stopped` for the others, but no other dispatch site consumes
+  it yet. The five discarding events are `StopFailure`, `Notification`,
+  `PreCompact`, `PostCompact`, and `SessionEnd`
+  (`agent/subagents.go:1807`; `agent/session_lifecycle.go:2633`;
+  `agent/internal/hooks/hookinput.go`, `continueDiscardedEvents`).
+- **`effort` is an object and is absent when unset.** `{"level": "high"}`, not
+  `"high"`; the field is omitted entirely when no effort is configured
+  (`agent/internal/hooks/hookinput.go`, `Effort`; `agent/session_events.go:645-647`).
 
 ### When `PreToolUse` runs (input rewriting)
 
@@ -171,18 +281,27 @@ flowchart LR
   Pre --> Merge[Merge updatedInput]
   Merge --> Schema[Validate final arguments]
   Schema --> Policy[Apply final execution policy]
-  Policy --> Tool[Execute tool]
-  Tool --> Post[PostToolUse hooks]
+  Policy --> Refused{Refused before execution}
+  Refused -->|yes| Neither[Neither tool event fires]
+  Refused -->|no| Tool[Execute tool]
+  Tool --> Failed{Failed}
+  Failed -->|no| Post[PostToolUse hooks]
+  Failed -->|yes| PostFail[PostToolUseFailure hooks]
 ```
 
 Evener decodes the call and best-effort parses its arguments for the pre-hook.
 After applying any `updatedInput`, it validates the final arguments and checks
-execution policy. Only an admitted call reaches the tool and post-hook.
+execution policy. Only an admitted call reaches the tool and a post-hook: a
+success fires `PostToolUse`, a failure fires `PostToolUseFailure`, and a refusal
+before execution (unknown tool, invalid arguments, policy, breaker park, a
+`PreToolUse` deny) fires neither.
 
 A `PreToolUse` hook can therefore rewrite arguments or deny the call, but it
 **cannot** push an invalid or disallowed shape past validation and final policy —
 those run on the post-hook input. `PostToolUse` runs after execution and cannot
-undo a tool that already ran.
+undo a tool that already ran. A nonzero shell exit counts as success here, so a
+`Bash` command that exits nonzero fires `PostToolUse` — see the
+[caveats](#claude-compatibility-caveats).
 
 ## The #1 mistake: `shell` → `Bash`
 
@@ -219,9 +338,12 @@ hook is tested against. It will fail silently. Write `"Bash"`.
 A matcher decides which targets a group's hooks fire for. The rules, in order:
 
 1. **Empty, omitted, or `"*"` → matches everything.**
-2. **Only `[A-Za-z0-9_|]` characters → exact name / pipe-list.** `"Bash"` matches
-   only `Bash` (not `BashOutput`). `"Edit|Write|MultiEdit"` matches exactly
-   `Edit`, `Write`, or `MultiEdit`.
+2. **Only letters, digits, `_`, `-`, `|`, `,`, and spaces → exact name or a
+   separator list.** `,` and `|` both separate alternatives, and surrounding
+   whitespace is trimmed from each. `"Bash"` matches only `Bash` (not
+   `BashOutput`). `"Edit|Write|MultiEdit"` and `"Edit, Write, MultiEdit"` both
+   match exactly `Edit`, `Write`, or `MultiEdit`. `"code-reviewer"` matches the
+   hyphenated name exactly rather than as a regex.
 3. **Anything else → a Go RE2 regular expression.** `"memory__.*"` matches
    `memory__search` by regex.
 
@@ -234,6 +356,9 @@ Worked examples:
 | `"Bash"` | `BashOutput` | **no** match (exact mode, not substring) |
 | `"Edit|Write"` | `Write` | match (pipe-list) |
 | `"Edit|Write"` | `Read` | no match |
+| `"Edit, Write"` | `Write` | match (comma-list) |
+| `" Edit , Write "` | `Edit` | match (alternatives are trimmed) |
+| `"code-reviewer"` | `code-reviewer` | match (exact, hyphen allowed) |
 | `"memory__.*"` | `memory__search` | match (regex) |
 | `"memory"` | `memory__search` | **no** match (exact mode, no substring) |
 
@@ -248,20 +373,38 @@ Two traps worth calling out:
 Evener trims surrounding whitespace before classifying the matcher, so
 `" Bash "` is the exact matcher `"Bash"`.
 
+The widened exact set applies to **every** event. Claude's exact set is narrower
+for `FileChanged` and `StopFailure` (no comma, space, or hyphen); Evener has no
+per-event discriminator, so a hyphenated matcher there is exact rather than a
+regex.
+
 ### Matcher targets by event
 
 For the events Evener fires, the matcher is tested against:
 
-- **Tool events** (`PreToolUse`, `PostToolUse`): the **Claude tool name**,
-  including `<server>__<tool>` (see the [gotcha](#the-1-mistake-shell--bash)).
+- **Tool events** (`PreToolUse`, `PostToolUse`, `PostToolUseFailure`): the
+  **Claude tool name**, including `<server>__<tool>` (see the
+  [gotcha](#the-1-mistake-shell--bash)).
 - **`SessionStart`**: the start kind — `startup`, `resume`, `clear`, or
   `compact`.
-- **`UserPromptSubmit`**, **`Stop`**: no matcher target; use `"*"` or omit.
-- **`SubagentStop`**, **`SessionEnd`**, **`Notification`**, **`PreCompact`**:
-  these fire, but their matcher target is **not yet wired** — the runner matches
-  with an empty target today, so use `"*"` or omit the matcher. (The intended
-  targets — delegate agent type, end reason, notification type, `manual`/`auto`
-  — are a reserved compatibility item.)
+- **`SubagentStart`**, **`SubagentStop`**: the child's **agent type**, the same
+  value the input's `agent_type` carries. A plugin agent is its catalog key
+  (`toolsmith:toolsmith`); an unnamed delegate reports `subagent`. There is no
+  `general-purpose` alias.
+- **`StopFailure`**: the **Claude error name** — `rate_limit`, `overloaded`,
+  `authentication_failed`, `oauth_org_not_allowed`, `billing_error`,
+  `model_not_found`, `invalid_request`, `server_error`, or `unknown`.
+- **`PreCompact`**, **`PostCompact`**: the fold's `trigger` — `manual` for
+  `/compact`, `auto` for every other publisher.
+- **`SessionEnd`**: the session end reason — `clear`, `prompt_input_exit`, or
+  `other`.
+- **`Notification`**: the `notification_type` — always `warning` today.
+- **`UserPromptSubmit`**, **`Stop`**: no matcher target. `UserPromptSubmit`
+  matches against an empty target, so `""`, `*`, or a regex that matches the
+  empty string fires; a name matcher such as `"startup"` does not. `Stop` ignores
+  a configured matcher entirely.
+- **`PostToolBatch`**: no matcher target. Claude documents none, so Evener
+  ignores a configured matcher rather than skip the hook.
 
 `SubagentStop` runs once for a completed stable delegate generation before
 terminal settlement. A blocking result starts one continuation; subtree stop
@@ -396,10 +539,12 @@ A command hook reads a single JSON object on stdin. The fields Evener populates:
   "tool_use_id": "call-123",
   "tool_response": "…",
   "transcript_path": "/path/to/session.transcript.jsonl",
-  "effort": "high",
+  "effort": { "level": "high" },
   "prompt": "…",
   "message": "…",
   "reason": "…",
+  "agent_id": "01ABC…",
+  "agent_type": "toolsmith:toolsmith",
 
   "tool_result": "…",
   "user_prompt": "…"
@@ -414,9 +559,29 @@ Notes:
 - `tool_result` and `user_prompt` are **legacy Evener aliases** kept during
   migration. Prefer the official `tool_response` and `prompt`; the aliases will
   not necessarily survive forever.
-- `permission_mode`, `agent_id`, `agent_type`, and `CLAUDE_CODE_REMOTE` are part
-  of the Claude contract but Evener omits them today. Do not write a hook that
-  depends on them.
+- `permission_mode` is part of the Claude contract but Evener omits it — it has
+  no permission-mode field to report and does not fabricate one
+  (`agent/session_events.go:652-653`).
+- `agent_id` and `agent_type` appear only inside a subagent. A root session's
+  hook sees neither. `agent_type` is `subagent` for an unnamed delegate, or the
+  plugin-scoped catalog key for a plugin agent (`agent/session_events.go:640-651`;
+  `agent/subagents.go:731-741`).
+
+Event-specific fields, all omitted when absent:
+
+| Event | Fields |
+|---|---|
+| `PostToolUseFailure` | `tool_name`, `tool_input`, `tool_use_id`, `error` (the model-facing text), `is_interrupt` (`false`), `duration_ms` |
+| `PostToolBatch` | `tool_calls`: `[{tool_name, tool_input, tool_use_id, tool_response}]` |
+| `StopFailure` | `error` (a Claude error name), `error_details` (status/code when known), `last_assistant_message` (the failure text the conversation shows) |
+| `Stop` | `stop_hook_active`, `last_assistant_message` (the reply the turn is about to deliver) |
+| `SubagentStop` | `stop_hook_active` (always `false`), `last_assistant_message` (the child's last assistant turn, not the delivered report) |
+| `PreCompact` | `trigger`, `custom_instructions` (omitted when the fold carried none) |
+| `PostCompact` | `trigger`, `compact_summary` |
+| `SessionEnd` | `reason` |
+| `Notification` | `message`, `title`, `notification_type` (`warning`) |
+| `SubagentStart` | `agent_id`, `agent_type` |
+| all | `effort` (`{"level": …}`) when configured |
 
 (A `prompt` handler does not receive this JSON on stdin; it gets the legacy
 `$TOOL_INPUT`/`$USER_PROMPT`/etc. substitutions described above.)
@@ -427,16 +592,18 @@ Evener reads the command's **stdout**, **stderr**, and **exit code**.
 
 - **Exit 0, empty stdout** → success, no decision.
 - **Exit 0, plain-text stdout** → reaches the **model** only for `SessionStart` and
-  `UserPromptSubmit` (context events). Other fired events show it to the **user**
-  as a diagnostic warning, except `SessionEnd`, whose outputs are discarded.
+  `UserPromptSubmit` (context events). Most other fired events show it to the
+  **user** as a diagnostic warning. `StopFailure`, `PostCompact`, and `SessionEnd`
+  discard their stdout entirely — they have no turn to steer or report to.
 - **Exit 0, JSON stdout** → parsed as a structured decision (below).
 - **Exit 2** → an event-specific block/error (see the [exit-code
   table](#exit-codes-per-event)). JSON is not parsed on exit 2. Failure text comes
   from stderr when nonblank, otherwise stdout.
 - **Other non-zero** → a non-blocking error for the events Evener fires.
-- **Any non-zero from `SessionStart`** → summarized into a single user-facing
-  warning; the hook's output never reaches the model (see [Failed `SessionStart`
-  hooks](#failed-sessionstart-hooks)).
+- **Any non-zero from `SessionStart`, `SubagentStart`, or `PostCompact`** →
+  summarized into a single user-facing warning; the hook's output never reaches
+  the model (see [Failed `SessionStart` hooks](#failed-sessionstart-hooks); the
+  same summary applies to all three).
 
 > **JSON is parsed only on exit 0.** If your hook exits non-zero, any JSON it
 > printed is not interpreted as a decision, but its bytes can become failure text
@@ -462,18 +629,20 @@ The output JSON Evener reads (exit 0):
 }
 ```
 
-- `continue` and `suppressOutput` are **parsed but not acted on today** — Evener
-  reads them for Claude compatibility, but they have no runtime effect yet (a
-  deferred item); a hook that sets `continue: false` still runs to completion.
-  `stopReason` and the rest of the structured output schema are reserved (see
-  [07](subagent-management/07-lifecycle-hooks-claude-compat.md#hook-output-contract)).
+- `continue` is **honored on `SubagentStart` and `PostToolBatch`**: there,
+  `continue: false` stops the child launch or the round loop and `stopReason`
+  becomes a user-visible warning. On the other fired events the runner records
+  the stop but no dispatch site acts on it yet. On `StopFailure`,
+  `Notification`, `PreCompact`, `PostCompact`, and `SessionEnd` it is discarded.
+  `suppressOutput` is still parsed but has no runtime effect.
 - `hookSpecificOutput.additionalContext` is delivered to the **model**, wrapped in
   a `<SYSTEM-REMINDER>`.
 - The top-level `systemMessage` field is shown to the **user** (a `[warning]`-style
   message via Evener's diagnostic-warning channel) — it is **not** sent to the model.
-- `terminalSequence` is parsed but has no consumer; it triggers no terminal notification.
+- `terminalSequence` is parsed but has no delivery site; it triggers no terminal
+  notification.
 - `decision: "block"` blocks where the event supports it (e.g. `Stop`,
-  `SubagentStop`).
+  `SubagentStop`, and `PostToolBatch`).
 - For `PreToolUse`, `hookSpecificOutput.permissionDecision` honors `allow` and
   `deny`; the reason is read from `permissionDecisionReason`. Deprecated top-level
   form is accepted as a fallback: `decision: "approve"` → allow, `decision: "block"`
@@ -514,12 +683,17 @@ nonblank stderr, falling back to stdout. The Evener-fired subset:
 | Event | Exit 2 effect |
 |---|---|
 | `PreToolUse` | block the tool call — failure text becomes the deny reason, surfaced to the model as the tool's error result |
+| `PostToolBatch` | stop the round loop before the next model call — failure text (or the JSON `reason`) becomes a user warning and a steering turn, then the turn ends |
 | `Stop` | prevent stopping |
 | `SubagentStop` | prevent the subagent stopping |
 | `UserPromptSubmit` | **no block yet** — Claude erases the prompt here, but Evener does not yet enforce the block; failure text is delivered to the model |
-| `PreCompact` | **no block yet** — Claude blocks compaction here, but Evener does not yet enforce the block; failure text is delivered to the model |
+| `PreCompact` | **no block** — Claude blocks compaction here; Evener's runner parses and aggregates only, and cannot block mid-fold. Failure text is delivered to the model |
 | `PostToolUse` | **no block** (cannot undo the tool) — failure text is delivered to the model as context |
+| `PostToolUseFailure` | **no block** (cannot undo the tool) — failure text is delivered to the model as context |
+| `SubagentStart` | **no block** — the failure is summarized to the **user**; the spawn still proceeds |
+| `StopFailure` | **ignored** — the turn already failed; exit code and all output are discarded |
 | `SessionStart` | **no block** — the failure is summarized to the **user**; neither stderr nor stdout reaches the model (see [Failed `SessionStart` hooks](#failed-sessionstart-hooks)) |
+| `PostCompact` | **no block** — the failure is summarized to the **user**; exit-0 stdout is discarded |
 | `SessionEnd` | **no block** — the session is ending, so the stderr is captured but not delivered (no following turn) |
 | `Notification` | **no block** — failure text is delivered to the model |
 
@@ -535,7 +709,7 @@ CLI (and a warning in the browser) for each of:
 - **An unknown event name** (e.g. `PreToolUze`) — "not a recognized Claude or evener
   event (likely a typo); this hook will never fire."
 - **A recognized-but-unsupported event** (a real Claude event Evener does not fire
-  yet, e.g. `PostToolUseFailure`) — "declared for a reserved event evener does not
+  yet, e.g. `PermissionRequest`) — "declared for a reserved event evener does not
   yet fire; this hook will not run."
 - **An invalid-regex matcher** (e.g. one using lookbehind) — names the plugin,
   event, and matcher; the hook is skipped.

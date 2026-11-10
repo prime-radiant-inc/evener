@@ -7,7 +7,7 @@ deferred phases (B–E) as a roadmap. This document's job is to define the line
 between what evener implements and what it only recognizes — so docs, tests, CLI
 output, and APIs never imply Claude parity evener has not built.
 
-> **Evergreen pointer:** the shipped hook subset (the nine fired events, discovery, matcher rules, command/prompt handlers, `PreToolUse` allow/deny + input rewrite, the exit-2 block scope) is documented as current reality in [`../subagent-runtime-contracts.md`](../subagent-runtime-contracts.md) ("Lifecycle hooks (Claude-compatible subset)"). This file remains the full contract-and-roadmap record, including reserved behavior.
+> **Evergreen pointer:** the shipped hook subset (the fourteen fired events, discovery, matcher rules, command/prompt handlers, `PreToolUse` allow/deny + input rewrite, the exit-2 block scope) is documented as current reality in [`../subagent-runtime-contracts.md`](../subagent-runtime-contracts.md) ("Lifecycle hooks (Claude-compatible subset)"). This file remains the full contract-and-roadmap record, including reserved behavior.
 
 **Shipped behavior lives elsewhere.** How hooks work **today** — discovery, the
 matcher, the `command`/`prompt` handlers, the input/output fields evener populates
@@ -19,8 +19,8 @@ table below spans both (the full event set, the full exit-code table), the rows
 evener fires are detailed in [Hooks](../hooks.md) and recapped here only for the
 compatibility map.
 
-Phase 1 — making the nine events evener already fires Claude-compatible in matcher,
-exec form, input/output fields, exit-code behavior, and env vars — is **shipped**
+Phase 1 — making the nine hook events evener already fired compatible with Claude in
+matcher, exec form, input/output fields, exit-code behavior, and env vars — is **shipped**
 (see [Hooks](../hooks.md)). It deliberately did **not** claim full Claude Code
 parity: it completed no event end-to-end, nor added the events, handler types, or
 output schemas Claude documents but evener does not yet implement. Those are the
@@ -40,7 +40,7 @@ The design preserves existing evener behavior where it works, fixes compatibilit
 
 ## Implementation status
 
-Tiers `evener-native` and `claude-compatible-subset` are **shipped** and documented in full in [Hooks](../hooks.md): the Claude-compatible matcher (exact/pipe-list vs Go RE2, invalid-regex skip-and-diagnose; `Bash` no longer substring-matches `BashOutput`), the `command` exec-form (`args`) and explicit `shell` selection, the evener-native `prompt` handler, the official input fields and legacy aliases, the `additionalContext`→model (system reminder) / `systemMessage`→user delivery split, the `PreToolUse` `allow`/`deny` schema with `permissionDecisionReason` and the deprecated `approve`/`block` mapping, the event-specific exit-code table for the nine fired events, the `CLAUDE_EFFORT`/`PLUGIN_ROOT` env vars, tier-labeled `/status` diagnostics, and loud load-time warnings for unknown events, recognized-but-unsupported events, invalid-regex matchers, and unsupported handler types. The implementing packages are listed under [Source anchors](#evener-code-anchors).
+Tiers `evener-native` and `claude-compatible-subset` are **shipped** and documented in full in [Hooks](../hooks.md): the Claude-compatible matcher (exact/separator-list vs Go RE2, invalid-regex skip-and-diagnose; `Bash` no longer substring-matches `BashOutput`), the `command` exec-form (`args`) and explicit `shell` selection, the evener-native `prompt` handler, the official input fields and legacy aliases, the `additionalContext`→model (system reminder) / `systemMessage`→user delivery split, the `PreToolUse` `allow`/`deny` schema with `permissionDecisionReason` and the deprecated `approve`/`block` mapping, the event-specific exit-code table for the fourteen fired events, the `CLAUDE_EFFORT`/`PLUGIN_ROOT` env vars, tier-labeled `/status` diagnostics, and loud load-time warnings for unknown events, recognized-but-unsupported events, invalid-regex matchers, and unsupported handler types. The implementing packages are listed under [Source anchors](#evener-code-anchors).
 
 Every other Claude hook capability — new events, the `http`/`mcp_tool`/`agent` handler types, the `PreToolUse` `ask`/`defer` decisions and `updatedInput` revalidation, `if` permission-rule evaluation, async execution, and typed SDK lifecycle hooks — is **deferred** and marked reserved/experimental below. See [Roadmap](#roadmap-deferred-phases).
 
@@ -72,7 +72,7 @@ Every other Claude hook capability — new events, the `http`/`mcp_tool`/`agent`
 
 ### Evener code anchors
 
-- `agent/plugin/hooks.go` defines the hook event enum, the `validHookEvents` set (the 9 evener fires), the `recognizedClaudeEvents` set (every Claude event name), the `hookEventTier`/`EventTier` tier registry, `RegisteredHook` (matcher, type, command/prompt, timeout, model, plugin name/dir, the official handler fields `Args`/`Shell`/`If`/`Async`/`AsyncRewake`/`StatusMessage`, source metadata `SourcePath`/`Event`/`GroupIndex`/`HandlerIndex`, and `UnknownFields`), and the parser `parsePluginHooksDiag` (which returns the supported hooks map plus the `unsupported` and `unknown` event sets).
+- `agent/plugin/hooks.go` defines the hook event enum, the `validHookEvents` set (the 14 evener fires), the `recognizedClaudeEvents` set (every Claude event name), the `hookEventTier`/`EventTier` tier registry, `RegisteredHook` (matcher, type, command/prompt, timeout, model, plugin name/dir, the official handler fields `Args`/`Shell`/`If`/`Async`/`AsyncRewake`/`StatusMessage`, source metadata `SourcePath`/`Event`/`GroupIndex`/`HandlerIndex`, and `UnknownFields`), and the parser `parsePluginHooksDiag` (which returns the supported hooks map plus the `unsupported` and `unknown` event sets).
 - `agent/plugin/plugin.go` defines `Instance` with `Hooks`, `UnsupportedHooks`, and `UnknownHooks`, and the `Load`/`LoadAll` entry points that read each plugin's manifest hooks, manifest-referenced hook path, or default `<dir>/hooks/hooks.json`.
 - `agent/internal/hooks/matcher.go` implements `matchTarget` (empty/star, exact/pipe-list, RE2 regex).
 - `agent/internal/hooks/exitcode.go` implements `exitBehavior` (the central exit-code table for the fired events).
@@ -92,13 +92,13 @@ Typed or internal behavior owned by evener: internal lifecycle events, SDK callb
 
 ### `claude-compatible-subset`
 
-Behavior implemented and tested to match the Claude Code docs closely enough for normal plugin/config portability. A subset feature includes parser support, runtime support, diagnostics, tests, and documented caveats. The shipped `claude-compatible-subset` — wrapper/direct JSON parsing and file discovery, the nine fired events, matcher semantics, command `args` exec-form and `shell` selection, the official input fields and legacy aliases, the `additionalContext` model-delivery channel (system reminder) and `systemMessage` user-display channel, the `PreToolUse` `allow`/`deny` decisions with `permissionDecisionReason` and the deprecated `approve`/`block` mapping, the fired-event exit-code table, the `CLAUDE_EFFORT` env var, and `command`/`prompt` handler execution — is documented in full in [Hooks](../hooks.md). Claude-compatible handler support remains event-specific per the [handler support table](#handler-support-by-event).
+Behavior implemented and tested to match the Claude Code docs closely enough for normal plugin/config portability. A subset feature includes parser support, runtime support, diagnostics, tests, and documented caveats. The shipped `claude-compatible-subset` — wrapper/direct JSON parsing and file discovery, the fourteen fired events, matcher semantics, command `args` exec-form and `shell` selection, the official input fields and legacy aliases, the `additionalContext` model-delivery channel (system reminder) and `systemMessage` user-display channel, the `PreToolUse` `allow`/`deny` decisions with `permissionDecisionReason` and the deprecated `approve`/`block` mapping, the fired-event exit-code table, the `CLAUDE_EFFORT` env var, and `command`/`prompt` handler execution — is documented in full in [Hooks](../hooks.md). Claude-compatible handler support remains event-specific per the [handler support table](#handler-support-by-event).
 
 ### `reserved-placeholder`
 
 Claude-documented behavior evener recognizes as a future compatibility target but does not yet execute. Reserved placeholders parse or diagnose predictably and are never advertised as working. They include:
 
-- the events evener does not yet fire — `PostToolUseFailure`, `PostToolBatch`, `SubagentStart`, `PostCompact`, `PermissionRequest`, `PermissionDenied`, `ConfigChange`, `UserPromptExpansion`, `StopFailure`, plus `Setup`, `InstructionsLoaded`, `MessageDisplay`, `TaskCreated`, `TaskCompleted`, `TeammateIdle`, `CwdChanged`, `FileChanged`, `WorktreeCreate`, `WorktreeRemove`, `Elicitation`, `ElicitationResult`;
+- the events evener does not yet fire — `PermissionRequest`, `PermissionDenied`, `ConfigChange`, `UserPromptExpansion`, plus `Setup`, `InstructionsLoaded`, `MessageDisplay`, `TaskCreated`, `TaskCompleted`, `TeammateIdle`, `CwdChanged`, `FileChanged`, `WorktreeCreate`, `WorktreeRemove`, `Elicitation`, `ElicitationResult`, `DirectoryAdded`, `PreModelSwitch`, `PostModelSwitch`;
 - the `http` and `mcp_tool` handler types;
 - the `PreToolUse` `ask`/`defer` decisions (no interactive permission prompt) and `updatedInput` revalidation;
 - `if` permission-rule evaluation; `async`/`asyncRewake` execution; `once`/`statusMessage` behavior;
@@ -164,7 +164,7 @@ Existing event names remain; ordering is stable and tested. Steps for events eve
 4. Run `SessionStart` hooks for matcher `startup`, `resume`, `clear`, or `compact` before the first model turn when they can add initial context.
 5. Emit evener `SESSION_START` / client event.
 6. Process user/model/tool turns.
-7. Run `PreCompact` before compaction (and the reserved `PostCompact` after compaction once implemented).
+7. Run `PreCompact` before compaction, and `PostCompact` after a winning fold that actually compacted.
 8. Run `Stop` before allowing an assistant/session stop, if configured and not in a loop-guarded retry path.
 9. Run `SessionEnd` for final cleanup/notification only.
 10. Emit evener `SESSION_END` or error/cancellation event.
@@ -183,8 +183,8 @@ Existing event names remain; ordering is stable and tested. Steps for events eve
 10. Emit `TOOL_CALL_START`.
 11. Execute the tool.
 12. Emit `TOOL_CALL_END` or failure/error event.
-13. Run `PostToolUse` hooks with sanitized result/error (the reserved `PostToolUseFailure` on failure once implemented).
-14. (Reserved) After a batch of tool calls, run `PostToolBatch` before the next model request once batching is implemented.
+13. Run `PostToolUse` hooks when the tool ran and succeeded, or `PostToolUseFailure` when it ran and failed; a call refused before execution fires neither.
+14. After a round that executed tools, run `PostToolBatch` before the next model request (before `injectPostToolSteering`, so its context reaches the same request).
 
 ### Delegate lifecycle
 
@@ -192,7 +192,7 @@ Existing event names remain; ordering is stable and tested. Steps for events eve
 2. Resolve agent type and plugin/builtin/project agent definition.
 3. Compute effective child policy.
 4. Create the stable `dlg_...` delegate resource and child session so hook input can include stable child identity/session metadata. Delegate run generations are private and are not activation jobs or public `job_id` values.
-5. (Reserved) Run `SubagentStart` compatibility/SDK hooks before the child model receives initial context once implemented.
+5. Run `SubagentStart` compatibility hooks from the parent's run-launch funnel, before the child model receives initial context.
 6. Run child turns.
 7. On completion, failure, exhaustion, cancellation, or close, run `SubagentStop` if configured.
 8. Finalize the private run outcome and the stable delegate aggregate/diagnostics.
@@ -281,28 +281,31 @@ Evener tracks the full Claude-documented event vocabulary, but only fires events
 | `MessageDisplay` | reserved-placeholder | no matcher | Display-only; must not mutate transcript/model context. |
 | `PreToolUse` | implemented, compatibility-incomplete | tool name | Runs before registry schema validation and can rewrite input; `allow`/`deny` and deprecated mapping shipped; `ask`/`defer` and `updatedInput` revalidation reserved. |
 | `PermissionRequest` | reserved-placeholder | tool name | Requires a evener approval/permission-request boundary. |
-| `PostToolUse` | implemented, compatibility-incomplete | tool name | Cannot undo or block tool execution; can add context/messages. |
-| `PostToolUseFailure` | reserved-placeholder | tool name | Uses official `error`, optional `is_interrupt`, and `duration_ms` fields. |
-| `PostToolBatch` | reserved-placeholder | no matcher | Runs before the next model call after a tool batch. |
+| `PostToolUse` | implemented, compatibility-incomplete | tool name | Fires only when the tool ran and succeeded; cannot undo or block execution, and can add context/messages. A nonzero shell exit counts as success, so a failing `Bash` fires this, not `PostToolUseFailure`. |
+| `PostToolUseFailure` | implemented, compatibility-incomplete | tool name | Fires when the tool ran and failed. Uses official `error` (the model-facing text), optional `is_interrupt` (always `false`), and `duration_ms`. Exit 2 is non-blocking and its stderr reaches the model. |
+| `PostToolBatch` | implemented, compatibility-incomplete | no matcher | Runs once per round that executed tools, before the next model call. Ignores a configured matcher. Exit 2 or `decision: "block"` stops the round loop; a round that also communicated keeps its reply. |
 | `PermissionDenied` | reserved-placeholder | tool name | Exit code ignored; JSON `retry` controls retry. |
-| `Notification` | implemented, compatibility-incomplete | notification type (not wired; current runner matches with an empty target) | User-visible/logging side effects only. |
-| `SubagentStart` | reserved-placeholder | agent type | Implement at the child setup boundary. |
-| `SubagentStop` | implemented, compatibility-incomplete | agent type (not wired; shares the stop runner) | Needs the agent matcher target and a stop-loop guard. |
+| `Notification` | implemented, compatibility-incomplete | `notification_type` (always `warning`) | Matches on the type the input carries. Evener emits one kind, a diagnostic warning, so Claude's `permission_prompt`/`idle_prompt` matchers never match. |
+| `SubagentStart` | implemented, compatibility-incomplete | child agent type | Fires from the parent's single run-launch funnel before the child's first model request. `additionalContext` is injected into the child's context, deduped against an existing copy. Exit 2 shows stderr to the user only; a failed hook is a user warning. |
+| `SubagentStop` | implemented, compatibility-incomplete | child agent type | Matches the same value `SubagentStart` does. `stop_hook_active` is always `false`; `last_assistant_message` is the child's last assistant turn, not the delivered report. |
 | `TaskCreated` | reserved-placeholder | no matcher | Implement only if the evener task store exposes a rollback-capable creation hook. |
 | `TaskCompleted` | reserved-placeholder | no matcher | Implement only if completion can be blocked safely. |
-| `Stop` | implemented, compatibility-incomplete | no matcher | Blocks stopping when requested by the current JSON/exit semantics; full Claude output parity remains future work. |
-| `StopFailure` | reserved-placeholder | no matcher | Exit/output ignored per Claude; diagnostics only. |
+| `Stop` | implemented, compatibility-incomplete | no matcher | Blocks stopping when requested by the current JSON/exit semantics. Carries `stop_hook_active` (per turn) and `last_assistant_message`. Full Claude output parity remains future work. |
+| `StopFailure` | implemented, compatibility-incomplete | Claude error name | Fires in the terminal provider-error branch instead of `Stop`. Exit code and all output are ignored, including `continue:false`; `terminalSequence` is parsed but has no delivery site. |
 | `TeammateIdle` | reserved-placeholder | no matcher | Only if evener adds a teammate/team runtime. |
 | `ConfigChange` | reserved-placeholder | config source | Can block config except policy settings in Claude; evener needs an explicit config-reload boundary. |
+| `DirectoryAdded` | reserved-placeholder | Claude's matcher (evener never evaluates it) | Recognized as a real Claude event; evener has no directory-added boundary. Declaring one yields a reserved warning, not "likely a typo". |
 | `CwdChanged` | reserved-placeholder | no matcher | Requires a working-directory-change boundary and optional env-file behavior. |
 | `FileChanged` | reserved-placeholder | literal filenames/watch list | Special matcher/watch semantics; does not use normal matcher rules. |
 | `WorktreeCreate` | reserved-placeholder | no matcher | Any non-zero aborts creation in Claude; only implement with a worktree feature. |
 | `WorktreeRemove` | reserved-placeholder | no matcher | Failures debug/log only. |
-| `PreCompact` | implemented, compatibility-incomplete | `manual`/`auto` (not wired) | Fires; blocking parity and matcher target need completion. |
-| `PostCompact` | reserved-placeholder | `manual`, `auto` | Add when a post-compaction boundary exists. |
-| `SessionEnd` | implemented, compatibility-incomplete | session end reason (not wired; current runner matches with an empty target) | Present in evener's current set. |
+| `PreCompact` | implemented, compatibility-incomplete | `manual`/`auto` | Matches the fold's trigger. Exit 2 is non-blocking: the hook runs mid-fold, where aborting would unwind an in-flight strategy. **This is the one event whose decision control is a deliberate non-goal.** |
+| `PostCompact` | implemented, compatibility-incomplete | `manual`/`auto` | Fires only for a winning fold that actually compacted (`commit.actualCompaction`). `systemMessage`, `additionalContext`, and `continue:false` are discarded; a failed hook is a user-only summary. |
+| `SessionEnd` | implemented, compatibility-incomplete | session end reason (`clear`/`prompt_input_exit`/`other`) | A thread clear sends `clear`; an idle daemon shutdown sends `prompt_input_exit` (else `other`); every other close sends `other`. `resume`/`logout` are never sent, and a retirement close runs no `SessionEnd` hook. |
 | `Elicitation` | reserved-placeholder | MCP server name | Requires MCP elicitation support. |
 | `ElicitationResult` | reserved-placeholder | MCP server name | Requires MCP elicitation support. |
+| `PreModelSwitch` | reserved-placeholder | Claude's matcher (evener never evaluates it) | Recognized as a real Claude event; evener has no model-switch boundary. Declaring one yields a reserved warning, not "likely a typo". |
+| `PostModelSwitch` | reserved-placeholder | Claude's matcher (evener never evaluates it) | Recognized as a real Claude event; evener has no model-switch boundary. Declaring one yields a reserved warning, not "likely a typo". |
 
 ### Event field names
 
@@ -316,14 +319,14 @@ Common fields:
   "transcript_path": "string",
   "cwd": "string",
   "permission_mode": "default|plan|acceptEdits|auto|dontAsk|bypassPermissions",
-  "effort": "low|medium|high|...",
+  "effort": { "level": "low|medium|high|..." },
   "hook_event_name": "PreToolUse",
   "agent_id": "string",
   "agent_type": "string"
 }
 ```
 
-Evener populates `session_id`, `cwd`, `hook_event_name`, `transcript_path` (when persistence is on), and `effort` (when configured). `permission_mode`, `agent_id`, and `agent_type` are part of the contract but **omitted on the wire** because evener has no real value for them today — it never fabricates one.
+Evener populates `session_id`, `cwd`, `hook_event_name`, `transcript_path` (when persistence is on), and `effort` (when configured) as an object, `{"level": "high"}`; the field is absent when unset. `agent_id` and `agent_type` appear only inside a subagent — the child's id and its normalized agent type (`subagent` for an unnamed delegate, else the plugin-scoped catalog key); a root session's hook sees neither. `permission_mode` is part of the contract but **omitted on the wire** because evener has no permission-mode value for it — it never fabricates one.
 
 Tool event fields:
 
@@ -334,11 +337,13 @@ Tool event fields:
   "tool_input": {"key": "value"},
   "tool_response": "string or structured result",
   "tool_result": "legacy evener alias during migration",
-  "error": "error text for PostToolUseFailure (reserved)",
+  "error": "the model-facing (truncated) error text, for PostToolUseFailure",
   "is_interrupt": false,
   "duration_ms": 123
 }
 ```
+
+`PostToolBatch` adds `tool_calls`, an array of `{tool_name, tool_input, tool_use_id, tool_response}` where `tool_response` is the same model-facing text.
 
 Prompt/message fields:
 
@@ -358,16 +363,16 @@ Matcher semantics are `claude-compatible-subset` (implemented), because they cha
 
 ### General matcher rules
 
-The matcher rules — empty/star matches all; a matcher of only `[A-Za-z0-9_|]+` is exact-name or pipe-list matching; anything else is a Go RE2 regex (with the documented lookbehind/backreference caveat); an invalid regex skips the hook and emits a sanitized diagnostic — are implemented and documented with worked examples in [Hooks → Matchers](../hooks.md#matchers). `FileChanged` is the documented exception (literal filename/watch-list semantics, not general matcher rules) and remains reserved.
+The matcher rules — empty/star matches all; a matcher of only letters, digits, `_`, `-`, `|`, `,`, and spaces is exact-name or separator-list matching (`|` or `,`, alternatives trimmed); anything else is a Go RE2 regex (with the documented lookbehind/backreference caveat); an invalid regex skips the hook and emits a sanitized diagnostic — are implemented and documented with worked examples in [Hooks → Matchers](../hooks.md#matchers). The widened exact set applies to every event, including `FileChanged` and `StopFailure` where Claude's is narrower. `FileChanged` is the documented exception (literal filename/watch-list semantics, not general matcher rules) and remains reserved.
 
 ### Event-specific matcher targets
 
 - Tool events (`PreToolUse`, `PermissionRequest`, `PostToolUse`, `PostToolUseFailure`, `PermissionDenied`): the **Claude** tool name, including `mcp__<server>__<tool>`. Evener translates its canonical names to Claude names before matching (`shell` → `Bash`); a matcher must name the Claude tool.
 - `SessionStart`: `startup`, `resume`, `clear`, or `compact`.
 - `Setup`: CLI setup flag.
-- `SessionEnd`: session end reason.
-- `Notification`: notification type.
-- `SubagentStart`, `SubagentStop`: agent type.
+- `SessionEnd`: session end reason (`clear`, `prompt_input_exit`, `other`).
+- `Notification`: `notification_type` (always `warning` in evener).
+- `SubagentStart`, `SubagentStop`: the child agent type, the same value as `agent_type`.
 - `PreCompact`, `PostCompact`: `manual` or `auto`.
 - `ConfigChange`: config source.
 - `InstructionsLoaded`: load reason.
@@ -476,10 +481,10 @@ The general parsing rules (exit 0 = success / plain-text context / JSON decision
 
 Delivery channels (shipped): `hookSpecificOutput.additionalContext` is delivered to the **model** wrapped in a system reminder; the top-level `systemMessage` field is shown to the **user** (diagnostic-warning channel) and is **not** sent to the model. These are distinct channels, not interchangeable.
 
-The remaining universal fields are part of the Claude output contract but not fully honored by evener yet:
+The universal fields:
 
-- `continue` (default `true`) — Claude: a value of `false` halts further processing for the event. Evener parses it but does not act on it; a hook that returns `continue: false` still runs to completion.
-- `stopReason` — Claude: the message surfaced to the user when `continue` is `false`. Evener does not parse or consume it.
+- `continue` (default `true`) — a value of `false` halts further processing for the event. Evener **acts on it** on `SubagentStart` (the child never launches) and `PostToolBatch` (the round loop stops); the stop reason becomes a user-visible warning. On the other fired events the runner records the stop but no dispatch site consumes it yet. It **discards** it on `StopFailure`, `Notification`, `PreCompact`, `PostCompact`, and `SessionEnd`, exactly as Claude does (`continueDiscardedEvents`, `agent/internal/hooks/hookinput.go`; consumers `agent/subagents.go:1807`, `agent/session_lifecycle.go:2633`).
+- `stopReason` — the message surfaced to the user when `continue` is `false`. Evener reads it (falling back to the JSON `reason`) and reduces it to one line.
 - `suppressOutput` (default `false`) — Claude: suppress normal hook-output display. Evener parses it but does not act on it.
 
 The event-specific output schemas below are the **reserved** part of the output contract — the structured decisions evener does not yet honor in full.
@@ -497,7 +502,7 @@ For events where Claude allows top-level blocking:
 }
 ```
 
-Relevant events include `UserPromptSubmit`, `UserPromptExpansion`, `PostToolUse`, `PostToolUseFailure`, `PostToolBatch`, `Stop`, `SubagentStop`, `ConfigChange`, and `PreCompact`. For `PostToolUse`/`PostToolUseFailure`, a block decision cannot retroactively undo an already-completed tool execution; it maps only to the event's supported feedback/loop behavior. Evener currently honors the top-level `decision: "block"` for `Stop`/`SubagentStop`.
+Relevant events include `UserPromptSubmit`, `UserPromptExpansion`, `PostToolUse`, `PostToolUseFailure`, `PostToolBatch`, `Stop`, `SubagentStop`, `ConfigChange`, and `PreCompact`. For `PostToolUse`/`PostToolUseFailure`, a block decision cannot retroactively undo an already-completed tool execution; it maps only to the event's supported feedback/loop behavior. Evener currently honors the top-level `decision: "block"` for `Stop`, `SubagentStop`, and `PostToolBatch`.
 
 #### `PreToolUse` (partially shipped; see [Hooks](../hooks.md#what-your-hook-returns))
 
@@ -601,7 +606,7 @@ The transcript and model context keep the original text.
 
 ## Exit-code semantics
 
-Evener implements a central table (`agent/internal/hooks/exitcode.go`, `exitBehavior`); it does not treat every exit-code-2 hook as generic denial. The table below is the full Claude contract. Evener **enforces** the exit-2 block only for the events whose dispatch site has a block path today — `PreToolUse`, `Stop`, and `SubagentStop`. For `UserPromptSubmit` (erase prompt) and `PreCompact` (block compaction) the Claude contract blocks, but evener's runners do not yet enforce it (deferred parity, marked ⚠ below); `exitBehavior` returns non-blocking for them so the table never claims a block nothing consumes. Every other event is reserved and defaults to non-blocking so an unimplemented event never blocks.
+Evener implements a central table (`agent/internal/hooks/exitcode.go`, `exitBehavior`); it does not treat every exit-code-2 hook as generic denial. The table below is the full Claude contract. Evener **enforces** the exit-2 block only for the events whose dispatch site has a block path today — `PreToolUse`, `Stop`, `SubagentStop`, and `PostToolBatch`. For `UserPromptSubmit` (erase prompt) the Claude contract blocks, but evener's runner does not yet enforce it (deferred parity, marked ⚠ below); `exitBehavior` returns non-blocking for it so the table never claims a block nothing consumes. For `PreCompact` the block is a **deliberate non-goal**: the hook runs mid-fold, where aborting would unwind an in-flight strategy, so exit 2 stays non-blocking. Every other event defaults to non-blocking so an unimplemented event never blocks.
 
 | Event | Exit 0 | Exit 2 | Other non-zero |
 |---|---|---|---|
@@ -619,7 +624,7 @@ Evener implements a central table (`agent/internal/hooks/exitcode.go`, `exitBeha
 | `TaskCreated` | parse output | roll back task creation | non-blocking error |
 | `TaskCompleted` | parse output | prevent marking complete | non-blocking error |
 | `ConfigChange` | parse output | block config change except policy settings | non-blocking error |
-| `PreCompact` | parse output | block compaction (⚠ Claude contract; evener does not yet enforce the block) | non-blocking error |
+| `PreCompact` | parse output | block compaction (⚠ Claude contract; evener cannot block mid-fold, a deliberate non-goal) | non-blocking error |
 | `Elicitation` | parse output | deny elicitation | non-blocking error |
 | `ElicitationResult` | parse output | block response | non-blocking error |
 | `WorktreeCreate` | parse output | abort worktree creation | any non-zero aborts |
@@ -662,9 +667,11 @@ Phase 1 is the shipped `claude-compatible-subset`, documented in [Hooks](../hook
 **Shipped (Phase B partial):**
 - `PreToolUse` `allow`/`deny` decisions, `permissionDecisionReason`, and the deprecated `approve`/`block` top-level mapping.
 - `hookSpecificOutput.additionalContext` model-delivery channel (system reminder); `systemMessage` user-display channel.
+- `PostToolUseFailure`, `PostToolBatch`, `SubagentStart`, `StopFailure`, and `PostCompact` — fired at real evener runtime boundaries, with their matcher targets and the caveats named in [Hooks](../hooks.md#claude-compatibility-caveats).
+- `continue: false` acted on by `SubagentStart` and `PostToolBatch`; discarded on `StopFailure`, `Notification`, `PreCompact`, `PostCompact`, and `SessionEnd`.
 
 **Remaining reserved (`reserved-placeholder`):**
-- Parser recognition and runner methods for `PostToolUseFailure`, `PostToolBatch`, `SubagentStart`, `PostCompact`, `PermissionRequest`, `PermissionDenied`, `ConfigChange`, `UserPromptExpansion`, `StopFailure` — wired only at real evener runtime boundaries.
+- Parser recognition and runner methods for `PermissionRequest`, `PermissionDenied`, `ConfigChange`, `UserPromptExpansion` — wired only at real evener runtime boundaries.
 - `PreToolUse` `ask`/`defer` decisions (no interactive permission prompt) and `updatedInput` revalidation after input rewrite.
 - The `PermissionRequest` decision object and `PermissionDenied.retry`, gated on a real evener approval flow.
 - Top-level `decision: "block"` for the broader event set; `if` permission-rule evaluation.
@@ -698,7 +705,7 @@ These are the contract the implemented behavior satisfies (Phase 1 — shipped a
 - Wrapper and direct hook JSON formats remain supported.
 - Parser diagnostics include source path, event, matcher, handler index/type, and a sanitized reason for invalid configs; misconfigured event names and invalid matchers warn loudly at load.
 - Matcher behavior follows Claude semantics for empty/star, exact, pipe-list, and regex modes, with the documented Go RE2 caveat.
-- `Bash` no longer regex-substring matches `BashOutput`; `Edit|Write` exact-list matches only those names.
+- `Bash` no longer regex-substring matches `BashOutput`; `Edit|Write` and `Edit, Write` exact-list forms match only those names.
 - Negative matcher tests cover non-substring behavior for tools and MCP names, pipe-list matching for non-tool events, invalid-regex diagnostics, and empty-matcher behavior.
 - MCP tool names such as `mcp__memory__search` match regex `mcp__memory__.*` but not exact matcher `mcp__memory`.
 - Command hooks support shell form and exec-form `args` without requiring plugin authors to wrap every path in `bash -c`.

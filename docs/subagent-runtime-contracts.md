@@ -165,18 +165,30 @@ remains: **`skills`/`tasks` entries are not value-validated** (empty strings/fie
 Evener fires a tested subset of the Claude hook contract; the rest is recognized but
 reserved. (`agent/plugin/hooks.go`, `agent/internal/hooks/`.)
 
-- **Nine events fire:** `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
-  `Notification`, `SubagentStop`, `Stop`, `PreCompact`, `SessionEnd` (`validHookEvents`).
-  The full ~30-name Claude vocabulary is recognized as `reserved-placeholder` — parsed,
+- **Fourteen events fire:** `SessionStart`, `UserPromptSubmit`, `PreToolUse`,
+  `PostToolUse`, `PostToolUseFailure`, `PostToolBatch`, `Stop`, `SubagentStart`,
+  `SubagentStop`, `StopFailure`, `PreCompact`, `PostCompact`, `SessionEnd`,
+  `Notification` (`validHookEvents`, `agent/plugin/hooks.go:64-79`). The full
+  ~30-name Claude vocabulary is recognized as `reserved-placeholder` — parsed,
   diagnosed, never fired (`recognizedClaudeEvents`); unknown names are bucketed
   separately and warned loudly at load.
 - **Discovery:** inline manifest object, manifest string path, else default
   `<dir>/hooks/hooks.json`; both wrapper (`{description?, hooks:{}}`) and direct
   (events-at-top) JSON shapes parse.
-- **Matchers** (`agent/internal/hooks/matcher.go`): empty/`*` = all; `[A-Za-z0-9_|]` =
-  exact or pipe-list; otherwise Go RE2. `Bash` does not match `BashOutput`. Matchers run
-  against the **Claude** tool name (`shell` → `Bash`). An invalid regex is skipped and
-  diagnosed once at load, not per dispatch.
+- **Matchers** (`agent/internal/hooks/matcher.go`): empty/`*` = all; the set
+  `[A-Za-z0-9_|,\- ]` = exact name or a separator list (`|` or `,`, alternatives
+  trimmed); otherwise Go RE2. `Bash` does not match `BashOutput`. Matchers run
+  against the **Claude** tool name (`shell` → `Bash`). An invalid regex is skipped
+  and diagnosed once at load, not per dispatch.
+- **Matcher targets by event:** tool events (`PreToolUse`, `PostToolUse`,
+  `PostToolUseFailure`) match the Claude tool name; `SessionStart` matches
+  `startup`/`resume`/`clear`/`compact`; `SubagentStart`/`SubagentStop` match the
+  child agent type (the same value as the input's `agent_type`); `StopFailure`
+  matches the Claude error name; `PreCompact`/`PostCompact` match `manual`/`auto`;
+  `SessionEnd` matches `clear`/`prompt_input_exit`/`other`; `Notification` matches
+  `notification_type` (always `warning`). `UserPromptSubmit`, `Stop`, and
+  `PostToolBatch` have no matcher target; `Stop` and `PostToolBatch` ignore a
+  configured matcher entirely.
 - **Handlers:** only `command` and `prompt` execute; `http`/`mcp_tool`/`agent` are
   reserved and skipped-with-diagnostic. `command` supports shell-form (`bash -c`) and
   exec-form (`args`); `${CLAUDE_PLUGIN_ROOT}`/`${PLUGIN_ROOT}` expand in command/prompt/
@@ -190,7 +202,7 @@ reserved. (`agent/plugin/hooks.go`, `agent/internal/hooks/`.)
   call). `allow`/`deny` with `permissionDecisionReason` are honored, including the
   deprecated `approve→allow`/`block→deny` mapping (preferred keys win); `ask`/`defer` are
   recognized but **not** honored (the tool proceeds with a diagnostic).
-- **Exit-code 2 blocks only for `PreToolUse`, `Stop`, `SubagentStop`**
+- **Exit-code 2 blocks only for `PreToolUse`, `Stop`, `SubagentStop`, `PostToolBatch`**
   (`agent/internal/hooks/exitcode.go` `exitBehavior`); every other event is non-blocking.
   JSON output is parsed only on exit 0; on exit 2 stdout is treated as stderr and JSON is
   ignored.
@@ -201,12 +213,20 @@ reserved. (`agent/plugin/hooks.go`, `agent/internal/hooks/`.)
   to confirm execution. Browser `/status` opens Overview's About tab, not a hook
   tier/count display.
 
-Known gaps (stated so you don't over-trust the compat surface): **`UserPromptSubmit` and
-`PreCompact` do not enforce the exit-2 block** even though Claude's contract blocks; and
-`continue`/`suppressOutput`/`terminalSequence` are **parsed but have no consumer** (a
-hook returning `continue:false` still runs to completion). `if`/`async`/`statusMessage`
-and the `http`/`mcp_tool`/`agent` handlers are parsed-but-inert. See
-`subagent-management/07-lifecycle-hooks-claude-compat.md` for the full reserved set.
+Known gaps (stated so you don't over-trust the compat surface): **`UserPromptSubmit` does
+not enforce the exit-2 block** even though Claude's contract blocks it, and
+**`PreCompact` cannot block compaction at all** (a deliberate non-goal); a nonzero shell exit is success in
+evener, so `PostToolUseFailure` does not fire for a failing `Bash`; `SessionEnd` sends
+only `clear`/`prompt_input_exit`/`other`, and a retirement close runs no `SessionEnd`
+hook; `Notification`'s only type is `warning`; `Stop`/`SubagentStop` omit
+`background_tasks`, `session_crons`, and `agent_transcript_path`; and
+`suppressOutput`/`terminalSequence` are **parsed but have no consumer**.
+`continue:false` is acted on by `SubagentStart` and `PostToolBatch` only; the other
+dispatch sites record it but do not yet stop on it, and `StopFailure`, `Notification`,
+`PreCompact`, `PostCompact`, and `SessionEnd` discard it. `if`/`async`/`statusMessage`
+and the `http`/`mcp_tool`/`agent` handlers
+are parsed-but-inert. See `hooks.md` for the full caveat list and
+`subagent-management/07-lifecycle-hooks-claude-compat.md` for the reserved set.
 
 ## Events and diagnostics
 
