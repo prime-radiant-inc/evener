@@ -570,7 +570,9 @@ func targetFromResolved(res registry.Resolved, provider, model string) targetInf
 		dropsToolResultImages: dropsToolResultImages(res),
 		seenToolResultDocuments: !res.Synthesized && res.Caps.AcceptsModality("pdf") &&
 			deliversToolResultDocuments(res.Protocol),
-		seesToolResultImages: res.Caps.AcceptsModality("image") && !dropsToolResultImages(res),
+		// The estimate follows the same visibility decision request shaping
+		// makes, including its rejection of synthesized rows (#4217).
+		seesToolResultImages: RowSeesToolResultMedia(res, "image/png"),
 		unsignedThinking:     unsignedThinkingReplayed(res, fallbackProvider, model),
 	}
 }

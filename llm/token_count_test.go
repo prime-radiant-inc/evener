@@ -913,7 +913,7 @@ func TestEstimateMessagesInputTokensForResolved_BillsToolResultImagesOnlyWhenThe
 	}
 	synthesized := registry.Resolved{Instance: "gateway", ModelID: "gpt-4o", Protocol: registry.ProtocolAnthropic,
 		Synthesized: true, Caps: registry.Caps{InputModalities: []string{"text", "image"}}}
-	if got, want := EstimateMessagesInputTokensForResolved(synthesized, toolResult(true)).Tokens, textOnly(synthesized)+imageCost(synthesized); got != want {
+	if got, want := EstimateMessagesInputTokensForResolved(synthesized, toolResult(true)).Tokens, textOnly(synthesized); got != want {
 		t.Fatalf("synthesized-row tool-result image = %d, want %d: projection and accounting share RowSeesToolResultMedia", got, want)
 	}
 	if got := EstimateMessagesInputTokens(toolResult(true)).Tokens; got <= EstimateMessagesInputTokens(toolResult(false)).Tokens {
