@@ -1290,6 +1290,7 @@ Underlying Go kind: `string` (no struct fields).
 | `instanceId` | string | yes |  |
 | `parentRef` | string | yes |  |
 | `kind` | string | yes |  |
+| `forkLabel` | string | yes |  |
 | `profile` | string | yes |  |
 | `turnCount` | int | yes |  |
 | `activeTurnId` | string | yes |  |
