@@ -21,6 +21,7 @@ import {
 } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { CatalogPluginRow } from "../../../plugins/PluginRow";
+import { useCatalogRowFocusRehome } from "./catalogRowFocus";
 import { useExtensionsHostState, useExtensionsHostStore } from "./hostStore";
 import styles from "./marketplacesPlugins.module.css";
 
@@ -72,6 +73,11 @@ export function BrowseSection({
   const [filterLoading, setFilterLoading] = useState(false);
   const [pendingInstall, setPendingInstall] = useState<{ plugin: string; marketplace: string } | null>(null);
   const openPlugin = onOpen ?? (() => {});
+  const sectionRef = useRef<HTMLElement>(null);
+  // An inline install's fresh list reshapes the confirmed row, and the
+  // confirm's own focus restore then loses its opener: the hook returns
+  // focus to the row when that happened.
+  useCatalogRowFocusRehome(pendingInstall, sectionRef);
 
   const trimmedQuery = filterQuery.trim();
 
@@ -194,7 +200,7 @@ export function BrowseSection({
       : marketplaces.filter((m) => marketplaceUnresolved(m.name) || marketplaceHasMatch(m.name));
 
   return (
-    <section className={CLASS.section}>
+    <section ref={sectionRef} className={CLASS.section}>
       <div className={CLASS.filterRow}>
         <Input
           value={filterQuery}
@@ -326,8 +332,11 @@ function MarketplaceNode({
               <EmptyState size="compact" reason="empty" title="This marketplace has no plugins." />
             </li>
           ) : (
+            // data-plugin/data-marketplace identify the row to focusCatalogRow:
+            // the row's own elements do not survive a reshape (split row and
+            // whole-row button remount), but this <li> does.
             rows.map((p) => (
-              <li key={p.name}>
+              <li key={p.name} data-plugin={p.name} data-marketplace={marketplace.name}>
                 <CatalogPluginRow
                   plugin={p}
                   installed={isInstalled(p.name, marketplace.name)}

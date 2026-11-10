@@ -1066,6 +1066,48 @@ test("a catalog row's main area opens the detail sheet in catalog mode, with no 
   ).toBe(false);
 });
 
+test("an install through the catalog sheet returns focus to the row it reshaped", async () => {
+  const fake = connectSeededClient();
+  fake.on("evener/marketplace/browse", () => ({
+    name: ACME.name,
+    plugins: [{ name: "formatter", description: "Fixture formatter" }],
+  }));
+  fake.on("evener/plugin/install", () => ({
+    plugins: [
+      LINTER,
+      {
+        plugin: "formatter",
+        marketplace: ACME.name,
+        version: "1.4.0",
+        enabled: true,
+        autoUpgrade: false,
+        broken: false,
+        installPath: "/formatter",
+        installedAt: 1,
+        lastUpdated: 1,
+      },
+    ],
+  }));
+  const user = userEvent.setup();
+  render(<MarketplacesPluginsSection />);
+  await screen.findByRole("button", { name: /linter/ });
+  await user.click(screen.getByRole("radio", { name: "Browse" }));
+  await user.click(screen.getByText(/acme-plugins/, { selector: "summary" }));
+  await screen.findByRole("list", { name: `${ACME.name} plugins` });
+  // Open from the row's main area, so the sheet's FocusScope remembers the
+  // row's main button as its opener.
+  await user.click(screen.getByRole("button", { name: /formatter/ }));
+  const sheet = screen.getByRole("dialog", { name: "formatter" });
+  await user.click(within(sheet).getByRole("button", { name: "Install" }));
+  const confirm = screen.getByRole("dialog", { name: "Install plugin" });
+  await user.click(within(confirm).getByRole("button", { name: "Install" }));
+  // The install's fresh list reshapes the row - the split row's main button
+  // is replaced by the whole-row button - and the sheet closes.
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "formatter" })).toBeNull());
+  const reshapedRow = screen.getByRole("button", { name: /formatter/ });
+  expect(document.activeElement).toBe(reshapedRow);
+});
+
 test("an already-installed catalog row opens the sheet in installed mode", async () => {
   const fake = connectSeededClient();
   fake.on("evener/marketplace/browse", () => ({
