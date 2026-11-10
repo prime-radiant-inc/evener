@@ -177,6 +177,118 @@ describe("durable minimal handoffs", () => {
 		expect(recovered.hasUndeliveredCompletions()).toBe(false);
 	});
 
+	it("a delivered completion is not re-applied when acknowledgement keeps failing", () => {
+		const { repository, ledger } = setup();
+		const a = destination("a");
+		const b = destination("b");
+		ledger.beginSubmission("capture-a", a, ["recovered-a"]);
+		ledger.resolveSubmission("capture-a", "completed", ["recovered-a"], []);
+		repository.write(a, {
+			draft: "work",
+			unconfirmed: "pending",
+			unconfirmedCaptureToken: "capture-a",
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		repository.write(b, { draft: "b work", unconfirmed: null });
+		let ackFails = true;
+		const failingAck = new Proxy(ledger, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "acknowledgeApplied" && typeof value === "function")
+					return (...args: unknown[]) => {
+						if (ackFails) throw new Error("acknowledgement unavailable");
+						return (value as (...inner: unknown[]) => unknown).apply(target, args);
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as DraftSubmissionLedgerSQLite;
+		const live = new DraftLibrary(
+			() => repository,
+			() => "id-live",
+			() => failingAck,
+		);
+		// The refusal delivers the completed markers at the occupied destination
+		// and records the delivery durably; the obligation stays unacknowledged.
+		expect(live.handoff(a, b)).toBe(false);
+		// The destination's reconciliation consumes the markers after its
+		// recovery rows are deleted, as it does for any settled disposition.
+		expect(live.open(b).finishCompletedCommandRecovery(["recovered-a"])).toBe(true);
+		let writesToB = 0;
+		const watched = new Proxy(repository, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "write" && typeof value === "function")
+					return (...args: unknown[]) => {
+						if ((args[0] as DraftDestination).sessionRef === "b") writesToB += 1;
+						return (value as (...inner: unknown[]) => unknown).apply(target, args);
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as DraftRepository;
+		const retried = new DraftLibrary(
+			() => watched,
+			() => "id-retry",
+			() => failingAck,
+		);
+		// Retrying the acknowledgement must not re-add markers the destination
+		// already consumed: the durable completed delivery is the evidence.
+		retried.retryPendingHandoffs();
+		expect(writesToB).toBe(0);
+		expect(repository.read(b).completedCommandRecoveryIds).toBeUndefined();
+		retried.retryPendingHandoffs();
+		expect(writesToB).toBe(0);
+		// The ledger recovering acknowledges the completion without touching the
+		// destination's settled record again.
+		ackFails = false;
+		retried.retryPendingHandoffs();
+		expect(ledger.outstandingObligations()).toHaveLength(0);
+		expect(writesToB).toBe(0);
+	});
+
+	it("a completion at an unloaded owner retries the load instead of writing behind it", () => {
+		const { repository, ledger } = setup();
+		const a = destination("a");
+		ledger.beginSubmission("capture-a", a, ["recovered-a"]);
+		ledger.resolveSubmission("capture-a", "completed", ["recovered-a"], []);
+		repository.write(a, {
+			draft: "work",
+			unconfirmed: "pending",
+			unconfirmedCaptureToken: "capture-a",
+			composer: { recoveryIds: ["recovered-a"] },
+		});
+		// The owner's initial load fails while storage is briefly unavailable.
+		let failRead = true;
+		const flaky = new Proxy(repository, {
+			get(target, property) {
+				const value = Reflect.get(target, property, target);
+				if (property === "read" && typeof value === "function")
+					return (dest: DraftDestination) => {
+						if (failRead) throw new Error("draft unavailable");
+						return (value as (inner: DraftDestination) => unknown).call(target, dest);
+					};
+				return typeof value === "function" ? (value as (...inner: unknown[]) => unknown).bind(target) : value;
+			},
+		}) as DraftRepository;
+		const live = new DraftLibrary(
+			() => flaky,
+			() => "id-live",
+			() => ledger,
+		);
+		const owner = live.open(a);
+		expect(owner.getSnapshot().loaded).toBe(false);
+		// Storage recovers before the completion retry. Delivering by writing the
+		// persisted record behind the unloaded document would acknowledge the
+		// obligation and end the retries while the composer stays unavailable.
+		failRead = false;
+		live.retryPendingHandoffs();
+		expect(owner.getSnapshot().loaded).toBe(true);
+		expect(owner.getSnapshot().record).toMatchObject({
+			unconfirmed: null,
+			completedCommandRecoveryIds: ["recovered-a"],
+		});
+		expect(ledger.outstandingObligations()).toHaveLength(0);
+	});
+
 	it("a restarted handoff refuses an occupied destination without stranding its cited sources", () => {
 		const { repository, ledger, library } = setup();
 		const a = destination("a");

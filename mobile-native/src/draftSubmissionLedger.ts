@@ -200,6 +200,20 @@ export class DraftSubmissionLedgerSQLite {
 			.map((row) => ({ hubId: row.hub_id, sessionRef: row.session_ref }));
 	}
 
+	/** Whether a completed disposition was already delivered here: the durable
+	 * evidence that a retried acknowledgement must not re-apply markers the
+	 * destination's reconciliation has since consumed. */
+	hasCompletedDelivery(destination: DraftDestination, recoveryId: string): boolean {
+		return (
+			this.#db.getFirstSync<{ found: number }>(
+				"SELECT 1 AS found FROM draft_handoff_deliveries WHERE hub_id = ? AND session_ref = ? AND recovery_id = ? AND disposition = 'completed'",
+				destination.hubId,
+				destination.sessionRef,
+				recoveryId,
+			) !== null
+		);
+	}
+
 	private mapObligation(row: ObligationRow): DraftSubmissionObligation {
 		return {
 			obligationId: row.obligation_id,

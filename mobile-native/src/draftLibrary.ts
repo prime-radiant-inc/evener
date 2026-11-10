@@ -680,7 +680,20 @@ export class DraftLibrary {
 		}
 		if (routed.length === 0) return true;
 		try {
-			for (const destination of routed) {
+			const pending = routed
+				.map((destination) => ({
+					destination,
+					recoveryIds: completion.completedCommandIds.filter(
+						(recoveryId) => !ledger.hasCompletedDelivery(destination, recoveryId),
+					),
+				}))
+				.filter((entry) => entry.recoveryIds.length > 0);
+			// A destination that already holds the completed delivery has
+			// consumed its markers: re-applying them on every acknowledgement
+			// retry would restart its reconciliation with zero deletions each
+			// pass.
+			if (pending.length === 0) return true;
+			for (const { destination, recoveryIds } of pending) {
 				const document = this.open(destination);
 				let destinationSnapshot = document.getSnapshot();
 				if (!destinationSnapshot.loaded) {
@@ -688,11 +701,11 @@ export class DraftLibrary {
 					destinationSnapshot = document.getSnapshot();
 				}
 				if (!destinationSnapshot.loaded) return false;
-				if (!document.adoptCompletedCommandRecovery(completion.completedCommandIds)) return false;
+				if (!document.adoptCompletedCommandRecovery(recoveryIds)) return false;
 			}
 			ledger.writeDeliveries(
-				routed.flatMap((destination) =>
-					completion.completedCommandIds.map((recoveryId) => ({
+				pending.flatMap(({ destination, recoveryIds }) =>
+					recoveryIds.map((recoveryId) => ({
 						destination,
 						recoveryId,
 						disposition: "completed" as const,
@@ -711,8 +724,20 @@ export class DraftLibrary {
 	 * proof the capture is gone. */
 	private deliverCompletionAt(owner: DraftDestination, completion: DraftCompletionDelivery): CompletionDeliveryOutcome {
 		const open = this.hubs.get(owner.hubId)?.get(owner.sessionRef);
-		const live = open?.getSnapshot();
-		if (open !== undefined && live?.loaded) {
+		if (open !== undefined) {
+			let live = open.getSnapshot();
+			if (!live.loaded) {
+				open.retry();
+				live = open.getSnapshot();
+			}
+			if (!live.loaded) {
+				// The owner's document exists but its initial load failed.
+				// Writing the persisted record behind it would clear the capture
+				// and acknowledge the completion while the composer stays
+				// unavailable. Keep the delivery owed so the retry pass keeps
+				// loading the document until storage recovers.
+				return "owned-live";
+			}
 			if (open.adoptCompletion(completion)) return "delivered";
 			// The adoption's own save can fail after the in-memory merge: the
 			// errored live document retries the completion through its own
