@@ -101,10 +101,9 @@ func (s *Session) waitingForQuota() bool {
 // does a usage limit that names no reset time, or one already past: the
 // turn fails as before, and the permanent-failure handling stands.
 //
-// A model switch picked meanwhile ends the turn instead
-// (errModelSwitchedDuringQuotaWait); otherwise, before the retry, it
-// delivers steering that arrived, as a round boundary does, so the retry
-// carries what the user said.
+// Before the retry it applies a model switch picked meanwhile and delivers
+// steering that arrived, as a round boundary does, so the retry runs on the
+// model the user picked and carries what they said.
 func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model string, wakesBefore uint64) (retry bool, err error) {
 	resetAt, ok := llm.UsageLimitResetAt(callErr)
 	if !ok || llm.Kind(callErr) != llm.KindQuotaExceeded || s.cfg.TurnEndsProcess {
@@ -158,35 +157,27 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 		return false, err
 	}
 	end()
-	s.mu.Lock()
-	switched := s.pendingModel.model != ""
-	s.mu.Unlock()
-	if switched {
-		return false, errModelSwitchedDuringQuotaWait
-	}
+	s.applyModelSwitchPickedDuringWait()
 	s.injectDrainedSteering()
 	return true, nil
 }
 
-// errModelSwitchedDuringQuotaWait ends a waiting call's turn because the
-// user picked another model. The turn may already hold rounds the old model
-// produced, which only a new turn treats as prior history for the new
-// target, so the switch applies at the turn boundary and the work continues
-// at once in a new turn (resumingAfterModelSwitch).
-var errModelSwitchedDuringQuotaWait = errors.New("model switched while waiting for quota")
-
-type resumeAfterModelSwitchKey struct{}
-
-// withResumeAfterModelSwitch marks the turn that continues a turn a model
-// switch ended during a quota wait: it records no input of its own (the
-// ended turn recorded it) and carries on from the transcript.
-func withResumeAfterModelSwitch(ctx context.Context, resume bool) context.Context {
-	return context.WithValue(ctx, resumeAfterModelSwitchKey{}, resume)
-}
-
-func resumingAfterModelSwitch(ctx context.Context) bool {
-	resume, _ := ctx.Value(resumeAfterModelSwitchKey{}).(bool)
-	return resume
+// applyModelSwitchPickedDuringWait applies a switch picked while the call
+// waited, so the retry runs on the model the user chose. The rounds this turn
+// already made on the old model then become prior history: the turn's
+// in-flight boundary moves to the present, so the new target's replay
+// provenance rules filter them (no signed thinking or encrypted reasoning
+// another model produced is sent to it), as they would at a turn boundary.
+func (s *Session) applyModelSwitchPickedDuringWait() {
+	s.mu.Lock()
+	before := s.profile
+	s.mu.Unlock()
+	s.applyQueuedModelSwitches(true)
+	s.mu.Lock()
+	if s.profile != before {
+		s.turnHistoryBaseline = len(s.history)
+	}
+	s.mu.Unlock()
 }
 
 // quotaWaitFailure is the row summary of a call waiting out callErr: the

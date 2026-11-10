@@ -7,7 +7,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1141,89 +1140,89 @@ func TestCapacityReclamationSparesADelegateWaitingForQuota(t *testing.T) {
 	}
 }
 
-// A model switch while a call waits ends that call's turn instead of
-// swapping models under it: the turn may already hold earlier rounds the old
-// model produced, and only a new turn treats them as prior history for the
-// new target. The work continues at once in a new turn on the new model,
-// with an active goal still driven and a notification queued meanwhile
-// delivered once.
-func TestModelSwitchWhileWaitingContinuesInANewTurn(t *testing.T) {
-	limit := usageLimitError(t, "openai", quotaResetAt)
-	s, _, _, adapter := newAttentionLivelockSession(t, nil)
+// A switch applied while a call waits mid-turn moves the rest of the turn to
+// a model the earlier rounds were not produced for. Those rounds become prior
+// history for it: the new target's provenance rules apply to them, so it is
+// not sent the old model's signed thinking. The turn still finishes on the
+// new model, a notification queued during the wait is delivered once, and an
+// active goal stays active.
+func TestModelSwitchWhileWaitingFiltersThisTurnsEarlierReasoning(t *testing.T) {
+	limit := usageLimitError(t, "anthropic", quotaResetAt)
+	progress := communicateCallArgs("progress-update", map[string]any{"message": "halfway there", "end_turn": false})
+	done := communicateCall("finished", "back at work")
+	adapter := &fakeErrAdapter{name: "anthropic", steps: []func(llm.Request) (llm.Response, error){
+		// The old model's first round thinks (signed) and makes progress.
+		func(req llm.Request) (llm.Response, error) {
+			return llm.Response{Provider: "anthropic", Model: req.Model, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "old-model reasoning", Signature: "sig-old-model"}},
+				{Kind: llm.ContentToolCall, ToolCall: &progress},
+			}}, Finish: llm.FinishReason{Reason: llm.FinishReasonToolCalls}}, nil
+		},
+		// Its next round meets the usage limit.
+		func(llm.Request) (llm.Response, error) { return llm.Response{}, limit },
+	}}
+	// The new model answers this and every later request (the goal's
+	// continuations included).
+	for range 20 {
+		adapter.steps = append(adapter.steps, func(req llm.Request) (llm.Response, error) {
+			return llm.Response{Provider: "anthropic", Model: req.Model, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentToolCall, ToolCall: &done},
+			}}, Finish: llm.FinishReason{Reason: llm.FinishReasonToolCalls}}, nil
+		})
+	}
+	dir := t.TempDir()
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	clk := agenttest.NewFakeClock()
+	s := newSession(t, withAdapter(adapter), withProfile(baseProviderProfile("anthropic", "claude-opus-4-6")), withDir(dir), withoutGitSnapshot(),
+		withConfig(SessionConfig{StateDir: dir, LLMRetryPolicy: &policy, clock: clk}))
 	serveSession(t, s)
 	if _, err := s.SetGoal(context.Background(), "ship the release"); err != nil {
 		t.Fatalf("SetGoal: %v", err)
 	}
 	s.SetKickFunc(func(string) {})
-	// The first round makes progress (a non-terminal update); every request
-	// after it meets the limit.
-	adapter.mu.Lock()
-	adapter.streamScript = func(st *llm.ChanStream) {
-		call := communicateCallArgs("progress-update", map[string]any{"message": "halfway there", "end_turn": false})
-		sendCommunicatePreview(st, call)
-		st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &call})
-		finish := llm.FinishReason{Reason: llm.FinishReasonToolCalls}
-		st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &finish})
-		adapter.mu.Lock()
-		adapter.streamErr = limit
-		adapter.mu.Unlock()
-	}
-	adapter.mu.Unlock()
 	trip := tripwireCtx(t).Done()
 	run := startInput(context.Background(), s, "start the work", EntryUserInput)
 	run.awaitQuotaWait(t, s, trip)
 	enqueueCompletedJobNotification(t, s, "job_during_switch")
 	s.notify()
+	if status, _, _ := s.GoalStatus(); status != string(goal.StatusActive) {
+		t.Fatalf("goal status while waiting = %q, want active", status)
+	}
 
-	// The new model answers; each request records where the turn it belongs
-	// to began, and where the old model's progress round sits.
-	type seen struct {
-		model              string
-		turnFrom, oldRound int
-	}
-	var mu sync.Mutex
-	var after []seen
-	recoverProvider(adapter)
-	adapter.mu.Lock()
-	answer := adapter.streamScript
-	adapter.streamScript = func(st *llm.ChanStream) {
-		s.mu.Lock()
-		from := s.turnHistoryBaseline
-		oldRound := -1
-		for i, turn := range s.history {
-			if turn.Kind == schema.TurnAssistant && oldRound < 0 {
-				oldRound = i
-			}
-		}
-		s.mu.Unlock()
-		reqs := adapterRequests(adapter)
-		mu.Lock()
-		after = append(after, seen{model: reqs[len(reqs)-1].Model, turnFrom: from, oldRound: oldRound})
-		mu.Unlock()
-		answer(st)
-	}
-	adapter.mu.Unlock()
-	if err := s.SetModel("gpt-5.4"); err != nil {
+	if err := s.SetModel("claude-sonnet-4-5"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
-	run.awaitEnd(t, trip, "the switch ends the waiting turn and the work continues")
+	run.awaitEnd(t, trip, "the switch resumes the call")
 	if run.err != nil {
 		t.Fatalf("the input after the switch: %v", run.err)
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(after) == 0 {
-		t.Fatal("no request reached the new model")
+	reqs := adapter.Requests()
+	if len(reqs) < 3 {
+		t.Fatalf("requests = %d, want the progress round, the limited one and the retry", len(reqs))
 	}
-	first := after[0]
-	if first.model != "gpt-5.4" || first.turnFrom <= first.oldRound {
-		t.Fatalf("first request after the switch: model %q, its turn begins at history %d with the old model's round at %d; want gpt-5.4 in a turn that begins after that round", first.model, first.turnFrom, first.oldRound)
+	retry := reqs[2]
+	if retry.Model != "claude-sonnet-4-5" {
+		t.Fatalf("the retry ran on %q, want claude-sonnet-4-5", retry.Model)
+	}
+	if hasContentKind(retry.Messages, llm.ContentThinking) {
+		t.Fatal("the retry on the new model was sent the old model's signed thinking from this turn's earlier round")
+	}
+	keptRound := false
+	for _, m := range retry.Messages {
+		for _, p := range m.Content {
+			if p.Kind == llm.ContentToolCall && p.ToolCall != nil && p.ToolCall.ID == "progress-update" {
+				keptRound = true
+			}
+		}
+	}
+	if !keptRound {
+		t.Fatal("the retry lost the earlier round's progress update itself")
 	}
 	_, _ = s.ProcessInputKind(context.Background(), "", nil, EntryNotification)
 	if got := s.jobNotificationsDelivered(); got != 1 {
 		t.Fatalf("job notifications delivered = %d, want the one queued during the wait delivered once", got)
 	}
 	if status, iterations, _ := s.GoalStatus(); status == string(goal.StatusBlocked) && iterations == 0 {
-		t.Fatal("the goal blocked instead of continuing on the new model")
+		t.Fatal("the goal blocked on the usage limit instead of continuing")
 	}
 }
