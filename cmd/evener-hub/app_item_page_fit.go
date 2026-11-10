@@ -171,7 +171,13 @@ func spendTranscriptWindowCursor(result transcriptItemCandidateResult, params ap
 	cursor, err := appitempaging.DecodeWindowCursor(encoded, identity, appitempaging.WindowCursorDirectionForward)
 	if err == nil {
 		if err := appitempaging.ValidateWindowCursorBoundary(candidates, cursor); err != nil {
-			return transcriptItemCandidateResult{}, err
+			// A forward continuation whose proof anchors on the last served
+			// item resumes a source range that starts strictly after it. The
+			// anchor turn was validated separately, and every item this range
+			// holds is withheld, so no loaded position names the boundary.
+			if len(candidates) == 0 || appitempaging.ComparePosition(candidates[0].Position, cursor.Position) <= 0 {
+				return transcriptItemCandidateResult{}, err
+			}
 		}
 		first := len(candidates)
 		boundaryTurnID := ""
@@ -205,7 +211,7 @@ func spendTranscriptWindowCursor(result transcriptItemCandidateResult, params ap
 			selected = candidatesForTurnIDs(candidates, result.TurnIDs)
 			result.Candidates = appitempaging.TranscriptItemWindow{Candidates: selected}
 		}
-		result.Exhausted = true
+		result.Exhausted = result.WithheldTurns == 0
 		return result, nil
 	}
 	if params.TurnWindow == nil || (params.TurnWindow.Latest == 0 && params.TurnWindow.Before == nil) {
@@ -222,7 +228,7 @@ func spendTranscriptWindowCursor(result transcriptItemCandidateResult, params ap
 		result.Candidates = appitempaging.TranscriptItemWindow{
 			Candidates: appitempaging.CandidatesBefore(candidates, cursor.Position, len(candidates)),
 		}
-		result.Exhausted = true
+		result.Exhausted = result.WithheldTurns == 0
 		return result, nil
 	}
 	boundaryTurnID := ""
@@ -239,7 +245,7 @@ func spendTranscriptWindowCursor(result transcriptItemCandidateResult, params ap
 	selected := candidatesForTurnIDs(candidates, turnIDs)
 	result.Candidates = appitempaging.TranscriptItemWindow{Candidates: selected}
 	result.TurnIDs = turnIDs
-	result.Exhausted = true
+	result.Exhausted = result.WithheldTurns == 0
 	return result, nil
 }
 
@@ -362,6 +368,22 @@ func transcriptWindowBoundaryCandidate(
 	return appitempaging.TranscriptItemCandidate{}, errors.New("transcript window continuation has no positioned boundary item")
 }
 
+// transcriptWindowLastBoundaryCandidate returns the newest positioned
+// candidate across the served turns. A forward continuation resumes after the
+// last served item, so that item is its proof of the boundary it leaves.
+func transcriptWindowLastBoundaryCandidate(
+	turns []transcriptWindowCandidateTurn,
+	start int,
+	end int,
+) (appitempaging.TranscriptItemCandidate, error) {
+	for index := end - 1; index >= start; index-- {
+		if len(turns[index].candidates) > 0 {
+			return turns[index].candidates[len(turns[index].candidates)-1], nil
+		}
+	}
+	return appitempaging.TranscriptItemCandidate{}, errors.New("transcript window continuation has no positioned served item")
+}
+
 func setTranscriptWindowContinuationProof(
 	continuation *transcriptWindowContinuation,
 	turns []transcriptWindowCandidateTurn,
@@ -434,15 +456,24 @@ type transcriptItemCandidateResult struct {
 	TurnShells []appwire.Turn
 	Identity   appitempaging.CursorIdentity
 	Exhausted  bool
-	History    appsource.HistoryIdentity
+	// WithheldTurns is how many turns the source's bounded transfer did not
+	// deliver, beyond Candidates. FirstWithheldTurnID and LastWithheldTurnID
+	// name its chronological edges when the source named them.
+	WithheldTurns       int
+	FirstWithheldTurnID string
+	LastWithheldTurnID  string
+	History             appsource.HistoryIdentity
 }
 
 func transcriptItemCandidateResultFromSource(result appsource.ItemCandidateResult) transcriptItemCandidateResult {
 	return transcriptItemCandidateResult{
-		Candidates: result.Candidates,
-		Identity:   result.Identity,
-		Exhausted:  result.Exhausted,
-		History:    result.History,
+		Candidates:          result.Candidates,
+		Identity:            result.Identity,
+		Exhausted:           result.Exhausted,
+		WithheldTurns:       result.WithheldTurns,
+		FirstWithheldTurnID: result.FirstWithheldTurnID,
+		LastWithheldTurnID:  result.LastWithheldTurnID,
+		History:             result.History,
 	}
 }
 
@@ -868,8 +899,8 @@ func packItemCandidates[T any](
 			direction = transcriptWindowContinuationForward
 			trimmedEnd = "newest"
 		}
-		sourceWithheldTurns := 0
-		if !result.Exhausted && windowOptions.Params.TurnWindow != nil && windowOptions.Params.TurnWindow.Latest > len(prepared) {
+		sourceWithheldTurns := result.WithheldTurns
+		if sourceWithheldTurns == 0 && !result.Exhausted && windowOptions.Params.TurnWindow != nil && windowOptions.Params.TurnWindow.Latest > len(prepared) {
 			sourceWithheldTurns = windowOptions.Params.TurnWindow.Latest - len(prepared)
 		}
 		start, end := 0, len(prepared)
@@ -1045,8 +1076,14 @@ func packItemCandidates[T any](
 			if windowResult.WithheldTurns > 0 {
 				windowResult.TrimmedEnd = trimmedEnd
 				request := transcriptWindowContinuation{Direction: direction}
-				if start > 0 {
-					windowResult.FirstWithheldTurnID = prepared[0].turn.ID
+				switch {
+				case start > 0:
+					// Locally trimmed turns belong between the served page and
+					// any turns the upstream transfer still withheld.
+					windowResult.FirstWithheldTurnID = result.FirstWithheldTurnID
+					if windowResult.FirstWithheldTurnID == "" {
+						windowResult.FirstWithheldTurnID = prepared[0].turn.ID
+					}
 					windowResult.LastWithheldTurnID = prepared[start-1].turn.ID
 					request.TurnID = prepared[0].turn.ID
 					request.ResumeWindow = &appwire.ThreadTurnWindow{Before: &appwire.ThreadTurnBoundary{
@@ -1055,9 +1092,14 @@ func packItemCandidates[T any](
 					if proofErr := setTranscriptWindowContinuationProof(&request, candidateTurns, start, end, 0, start); proofErr != nil {
 						return zero, proofErr
 					}
-				} else if end < len(prepared) {
+				case end < len(prepared):
+					// Locally trimmed turns precede any turns the upstream
+					// transfer still withheld.
 					windowResult.FirstWithheldTurnID = prepared[end].turn.ID
-					windowResult.LastWithheldTurnID = prepared[len(prepared)-1].turn.ID
+					windowResult.LastWithheldTurnID = result.LastWithheldTurnID
+					if windowResult.LastWithheldTurnID == "" {
+						windowResult.LastWithheldTurnID = prepared[len(prepared)-1].turn.ID
+					}
 					request.TurnID = prepared[end].turn.ID
 					request.ResumeWindow = &appwire.ThreadTurnWindow{
 						Since: turns[len(turns)-1].ID, Limit: windowResult.WithheldTurns,
@@ -1065,17 +1107,40 @@ func packItemCandidates[T any](
 					if proofErr := setTranscriptWindowContinuationProof(&request, candidateTurns, end, len(candidateTurns), end, len(candidateTurns)); proofErr != nil {
 						return zero, proofErr
 					}
-				} else {
-					// An incomplete latest source page proves how many requested turns
-					// are absent but cannot name their IDs. Continue immediately before
-					// the oldest served position through the source-owned identity.
-					request.TurnID = prepared[0].turn.ID
-					request.AnchorTurnID = candidateTurns[0].candidates[0].TurnID
-					request.Position = candidateTurns[0].candidates[0].Position
-					request.Version = candidateTurns[0].candidates[0].Item.Version
-					request.ResumeWindow = &appwire.ThreadTurnWindow{Before: &appwire.ThreadTurnBoundary{
-						TurnID: turns[0].ID, Limit: windowResult.WithheldTurns,
-					}}
+				default:
+					// The transfer withheld turns beyond everything it delivered,
+					// so the served page is one edge of the source window. Resume
+					// past the served edge and name the withheld turns the source
+					// reported.
+					windowResult.FirstWithheldTurnID = result.FirstWithheldTurnID
+					windowResult.LastWithheldTurnID = result.LastWithheldTurnID
+					request.TurnID = result.FirstWithheldTurnID
+					if request.TurnID == "" {
+						request.TurnID = prepared[0].turn.ID
+					}
+					if direction == transcriptWindowContinuationForward {
+						request.ResumeWindow = &appwire.ThreadTurnWindow{
+							Since: turns[len(turns)-1].ID, Limit: windowResult.WithheldTurns,
+						}
+						boundary, boundaryErr := transcriptWindowLastBoundaryCandidate(candidateTurns, start, end)
+						if boundaryErr != nil {
+							return zero, boundaryErr
+						}
+						request.AnchorTurnID = boundary.TurnID
+						request.Position = boundary.Position
+						request.Version = boundary.Item.Version
+					} else {
+						request.ResumeWindow = &appwire.ThreadTurnWindow{Before: &appwire.ThreadTurnBoundary{
+							TurnID: turns[0].ID, Limit: windowResult.WithheldTurns,
+						}}
+						boundary, boundaryErr := transcriptWindowBoundaryCandidate(candidateTurns, start, end)
+						if boundaryErr != nil {
+							return zero, boundaryErr
+						}
+						request.AnchorTurnID = boundary.TurnID
+						request.Position = boundary.Position
+						request.Version = boundary.Item.Version
+					}
 				}
 				cursor, cursorErr := mintTranscriptWindowContinuation(windowOptions, request)
 				if cursorErr != nil {

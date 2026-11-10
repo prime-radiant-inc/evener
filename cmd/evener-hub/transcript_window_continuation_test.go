@@ -193,6 +193,63 @@ func TestResolveTranscriptWindowContinuationRejectsInvalidItemProofs(t *testing.
 	})
 }
 
+func TestResolveTranscriptWindowContinuationKeepsUpstreamWithheldRangeOpen(t *testing.T) {
+	const ref = "local:resolver"
+	params := appwire.ThreadTurnsListParams{
+		Ref:        ref,
+		TurnWindow: &appwire.ThreadTurnWindow{Latest: 3},
+		ItemTypes:  []string{"messages"},
+	}
+	const itemLimit = 10
+	identity := appitempaging.CursorIdentity{
+		ThreadRef: ref, Incarnation: "resolver-view", ProjectionVersion: appitempaging.TranscriptItemProjectionVersion,
+	}
+	resume := &appwire.ThreadTurnWindow{Before: &appwire.ThreadTurnBoundary{TurnID: "turn-b", Limit: 1}}
+	anchorRange := testResolverLoadedRange(t, identity, []appwire.Turn{testResolverTurn("turn-c", "item-c", 7)})
+	anchor := anchorRange.Result.Candidates.Candidates[0]
+	cursor, err := appitempaging.EncodeWindowCursor(
+		transcriptWindowCursorIdentity(identity, params.ThreadWindowParams, itemLimit),
+		appitempaging.WindowCursorDirectionBackward,
+		appitempaging.WindowCursor{
+			AnchorTurnID: anchor.TurnID, Position: anchor.Position, ItemVersion: anchor.Item.Version, ResumeWindow: resume,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params.Cursor = cursor
+
+	// The resumed range is itself a bounded transfer page: four turns are
+	// withheld upstream beyond the one it delivered.
+	stable := testResolverLoadedRange(t, identity, []appwire.Turn{testResolverTurn("turn-a", "item-a", 1)})
+	stable.Result.Exhausted = false
+	stable.Result.WithheldTurns = 4
+	stable.Result.FirstWithheldTurnID = "turn-withheld-first"
+	stable.Result.LastWithheldTurnID = "turn-withheld-last"
+	loader := func(_ context.Context, selector *appwire.ThreadTurnWindow) (transcriptWindowLoadedRange, error) {
+		switch {
+		case reflect.DeepEqual(selector, resume):
+			return stable, nil
+		case selector.Turn == "turn-c":
+			return anchorRange, nil
+		default:
+			t.Fatalf("loader selector = %+v, want stable resume or exact anchor", selector)
+			return transcriptWindowLoadedRange{}, nil
+		}
+	}
+
+	got, _, err := resolveTranscriptWindowContinuation(t.Context(), params, itemLimit, loader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Result.Exhausted {
+		t.Fatal("resolved range marked exhausted while four turns remain withheld upstream")
+	}
+	if got.Result.WithheldTurns != 4 || got.Result.FirstWithheldTurnID != "turn-withheld-first" {
+		t.Fatalf("resolved range lost upstream withheld turns: %+v", got.Result)
+	}
+}
+
 func TestResolveTranscriptWindowContinuationValidatesAllEmptyDigest(t *testing.T) {
 	const ref = "local:resolver"
 	params := appwire.ThreadTurnsListParams{

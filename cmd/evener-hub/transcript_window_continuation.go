@@ -79,7 +79,12 @@ func resolveTranscriptWindowContinuation(
 			loaded.Result = continued
 		}
 	}
-	loaded.Result.Exhausted = true
+	// A continuation-relative range is complete only when the source transfer
+	// delivered everything it selected. A range that still withholds turns
+	// upstream stays open so the packer can continue from them.
+	if loaded.Result.WithheldTurns == 0 {
+		loaded.Result.Exhausted = true
+	}
 	return loaded, direction, nil
 }
 

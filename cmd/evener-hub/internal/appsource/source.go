@@ -58,6 +58,13 @@ type ItemCandidateResult struct {
 	Candidates appitempaging.TranscriptItemWindow
 	Identity   appitempaging.CursorIdentity
 	Exhausted  bool
+	// WithheldTurns is how many turns the source's bounded transfer did not
+	// deliver, beyond the candidates above. FirstWithheldTurnID and
+	// LastWithheldTurnID name its chronological edges when the source named
+	// them.
+	WithheldTurns       int
+	FirstWithheldTurnID string
+	LastWithheldTurnID  string
 	// History is the identity of the history read the candidates came from.
 	History HistoryIdentity
 }
@@ -222,6 +229,12 @@ func (s *LocalDaemonSource) ItemCandidatesFromRead(
 		if response.Window != nil && response.Window.WithheldTurns > 0 {
 			exhausted = false
 		}
+		withheldTurns, firstWithheldTurnID, lastWithheldTurnID := 0, "", ""
+		if response.Window != nil {
+			withheldTurns = response.Window.WithheldTurns
+			firstWithheldTurnID = response.Window.FirstWithheldTurnID
+			lastWithheldTurnID = response.Window.LastWithheldTurnID
+		}
 		return ItemCandidateResult{
 			Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates},
 			Identity: appitempaging.CursorIdentity{
@@ -229,8 +242,11 @@ func (s *LocalDaemonSource) ItemCandidatesFromRead(
 				Incarnation:       cursorIncarnation,
 				ProjectionVersion: localDaemonItemCursorProjectionVersion,
 			},
-			Exhausted: exhausted,
-			History:   ReadHistoryIdentity(response),
+			Exhausted:           exhausted,
+			WithheldTurns:       withheldTurns,
+			FirstWithheldTurnID: firstWithheldTurnID,
+			LastWithheldTurnID:  lastWithheldTurnID,
+			History:             ReadHistoryIdentity(response),
 		}, nil
 	}
 	unlock := s.itemPagingLocks.lock(resolved.pagingRef)

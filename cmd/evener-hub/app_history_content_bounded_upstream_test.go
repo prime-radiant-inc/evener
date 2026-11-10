@@ -25,6 +25,7 @@ type boundedWindowDaemon struct {
 	capBytes         int
 	pageCalls        int
 	maxResponseBytes int
+	servedPageTurns  [][]string
 }
 
 func (d *boundedWindowDaemon) handler(sessionID, ref string) http.HandlerFunc {
@@ -295,5 +296,128 @@ func TestManagerSinceWindowReadWalksBoundedUpstreamPages(t *testing.T) {
 	}
 	if page.Window.TrimmedEnd != "newest" {
 		t.Fatalf("trimmed end = %q, want newest", page.Window.TrimmedEnd)
+	}
+}
+
+// fencedWindowHandler serves bounded transfer pages through the production
+// history handler, so every page's Snapshot.Incarnation carries the window
+// view fence the handler applies. Two pages of one window therefore carry
+// different snapshot identities even though the source transcript is the same.
+func (d *boundedWindowDaemon) fencedWindowHandler(t *testing.T, sessionID, ref string) http.HandlerFunc {
+	t.Helper()
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleThreadHistory(daemon.Router(),
+		func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			thread := appwire.Thread{
+				ID: sessionID, SessionID: sessionID, Source: "local",
+				Evener: appwire.EvenerThread{Ref: ref, Capabilities: appwire.ThreadCapabilities{WindowRead: true}},
+			}
+			response := appwire.ThreadReadResponse{
+				Thread: thread,
+				// One source incarnation for the whole transcript. The handler
+				// fences it per requested window.
+				Snapshot: &appwire.SnapshotIdentity{Incarnation: "fenced-window-source", Length: int64(len(d.turns))},
+			}
+			if !params.IncludeTurns || params.TurnWindow == nil {
+				return response, nil
+			}
+			d.pageCalls++
+			selected := selectWindowTestTurns(d.turns, *params.TurnWindow)
+			page, withheld := pageWindowTestTurns(selected, *params.TurnWindow, d.capBytes)
+			thread.Turns = page
+			response.Thread = thread
+			served := make([]string, len(page))
+			for index := range page {
+				served[index] = page[index].ID
+			}
+			d.servedPageTurns = append(d.servedPageTurns, served)
+			if len(withheld) > 0 {
+				response.Window = &appwire.ThreadWindowResult{
+					ServedTurns:         len(page),
+					WithheldTurns:       len(withheld),
+					FirstWithheldTurnID: withheld[0].ID,
+					LastWithheldTurnID:  withheld[len(withheld)-1].ID,
+					TrimmedEnd:          "oldest",
+				}
+				if params.TurnWindow.Since != "" {
+					response.Window.TrimmedEnd = "newest"
+				}
+			}
+			return response, nil
+		},
+		func(_ context.Context, _ appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+			t.Fatal("fenced window read unexpectedly paged thread/turns")
+			return appwire.ThreadTurnsListResponse{}, nil
+		})
+	return daemon.ServeWebSocket
+}
+
+func TestManagerWindowReadGathersPagesUnderFencedSnapshots(t *testing.T) {
+	const sessionID = "fenced-window-upstream"
+	const ref = "local:" + sessionID
+	const upstreamCap = 12 << 10
+	const budget = 16 << 10
+
+	daemon := &boundedWindowDaemon{capBytes: upstreamCap}
+	for i := range 12 {
+		id := fmt.Sprintf("turn-%02d", i+1)
+		position := appwire.ThreadItemPosition{Entry: uint64(i + 1)}
+		daemon.turns = append(daemon.turns, appwire.Turn{
+			ID: id, Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFragment,
+			Items: []appwire.ThreadItem{{
+				ID: id + "-message", Type: "userMessage", TurnID: id, TranscriptKey: id + "-message",
+				Text: strings.Repeat(fmt.Sprintf("%02d", i+1), 2_000), Position: &position, Version: 1,
+			}},
+		})
+	}
+	httpServer := httptest.NewServer(daemon.fencedWindowHandler(t, sessionID, ref))
+	t.Cleanup(httpServer.Close)
+
+	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		return []appsource.LocalDaemonEntry{{
+			Entry: rendezvous.Entry{
+				Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(httpServer.URL, "http"),
+				SourceID: "local", ThreadID: sessionID, SessionID: sessionID,
+				WorkspaceRef: ref, InstanceID: sessionID,
+			},
+			SessionID:         sessionID,
+			CapabilitiesKnown: true,
+			Capabilities:      appwire.ThreadCapabilities{WindowRead: true},
+		}}
+	}, httpServer.Client())
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := testWebConfig(t, hubcore.WebConfig{})
+	server := appserver.NewServer(appserver.ServerConfig{})
+	owner := &sessionOperations{cfg: cfg, sources: sources, server: server, relays: newHubRelay(server, cfg, sources)}
+	caller := appwire.ManagerView{Ref: "local:manager", InstanceID: "manager-instance", Manager: true}
+
+	page := managerInvoke(t, owner, caller, appwire.SessionOperationRequest{
+		Turns: &appwire.ThreadTurnsListParams{
+			Ref:               ref,
+			TurnWindow:        &appwire.ThreadTurnWindow{Latest: 12},
+			WindowBudgetBytes: budget,
+		},
+	}).Turns
+	if page == nil {
+		t.Fatal("Manager windowed read returned no turns page")
+	}
+	if len(daemon.servedPageTurns) < 2 {
+		t.Fatalf("daemon served %d upstream page(s), want more than one bounded page", len(daemon.servedPageTurns))
+	}
+	firstPage := make(map[string]bool, len(daemon.servedPageTurns[0]))
+	for _, turnID := range daemon.servedPageTurns[0] {
+		firstPage[turnID] = true
+	}
+	gatheredLaterPage := false
+	for _, turn := range page.Data {
+		if !firstPage[turn.ID] {
+			gatheredLaterPage = true
+			break
+		}
+	}
+	if !gatheredLaterPage {
+		t.Fatalf("served turns %v are all from the first upstream page %v; the walk discarded the later page",
+			turnIDsFromTurns(page.Data), daemon.servedPageTurns[0])
 	}
 }

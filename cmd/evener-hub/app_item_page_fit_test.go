@@ -1102,6 +1102,237 @@ func TestPackTranscriptWindowAllEmptyBudgetContinuationUsesDigest(t *testing.T) 
 	}
 }
 
+// testPartialTransferCandidates builds four delivered turns sized so the
+// packer serves three of them under the budget floor.
+func testPartialTransferCandidates() []appitempaging.TranscriptItemCandidate {
+	var candidates []appitempaging.TranscriptItemCandidate
+	for index := 1; index <= 4; index++ {
+		turnID := fmt.Sprintf("turn-%02d", index)
+		candidates = append(candidates, testWindowTurnCandidates(turnID, []appwire.ThreadItem{{
+			Type: "agentMessage", ID: turnID + "-message", Text: strings.Repeat("x", 4_500), Version: 1,
+		}})...)
+	}
+	for index := range candidates {
+		position := appwire.ThreadItemPosition{Entry: uint64(index + 1)}
+		candidates[index].Position = position
+		candidates[index].Item.Position = &position
+	}
+	return candidates
+}
+
+// testPartialTransferResult is a transfer that delivered four of twelve
+// selected turns: eight turns remain upstream, undelivered.
+func testPartialTransferResult() transcriptItemCandidateResult {
+	result := testWindowCandidateResult(testPartialTransferCandidates())
+	result.Exhausted = false
+	result.WithheldTurns = 8
+	result.FirstWithheldTurnID = "upstream-first"
+	result.LastWithheldTurnID = "upstream-last"
+	return result
+}
+
+func TestPackTranscriptWindowResumesEveryUnservedTurnAfterPartialTransfer(t *testing.T) {
+	tests := []struct {
+		name              string
+		window            *appwire.ThreadTurnWindow
+		wantDirection     transcriptWindowContinuationDirection
+		wantResume        func(*appwire.ThreadTurnWindow) (string, int)
+		wantFirstWithheld string
+		wantLastWithheld  string
+	}{
+		{
+			name:          "latest",
+			window:        &appwire.ThreadTurnWindow{Latest: 12},
+			wantDirection: transcriptWindowContinuationBackward,
+			wantResume: func(resume *appwire.ThreadTurnWindow) (string, int) {
+				return resume.Before.TurnID, resume.Before.Limit
+			},
+			wantFirstWithheld: "upstream-first",
+			wantLastWithheld:  "turn-01",
+		},
+		{
+			name:          "since",
+			window:        &appwire.ThreadTurnWindow{Since: "turn-seed", Limit: 12},
+			wantDirection: transcriptWindowContinuationForward,
+			wantResume: func(resume *appwire.ThreadTurnWindow) (string, int) {
+				return resume.Since, resume.Limit
+			},
+			wantFirstWithheld: "turn-04",
+			wantLastWithheld:  "upstream-last",
+		},
+		{
+			name:          "before",
+			window:        &appwire.ThreadTurnWindow{Before: &appwire.ThreadTurnBoundary{TurnID: "turn-after", Limit: 12}},
+			wantDirection: transcriptWindowContinuationBackward,
+			wantResume: func(resume *appwire.ThreadTurnWindow) (string, int) {
+				return resume.Before.TurnID, resume.Before.Limit
+			},
+			wantFirstWithheld: "upstream-first",
+			wantLastWithheld:  "turn-01",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var continuation transcriptWindowContinuation
+			options := testWindowPackOptions(appwire.ThreadWindowParams{
+				TurnWindow: test.window, WindowBudgetBytes: 1,
+			})
+			options.MintContinuationCursor = func(request transcriptWindowContinuation) (string, error) {
+				continuation = request
+				return "window-continuation", nil
+			}
+			got, err := packThreadTurnsWindowItemCandidates(testPartialTransferResult(), nil, options)
+			if err != nil {
+				t.Fatalf("pack: %v", err)
+			}
+			if ids := turnIDsFromTurns(got.Data); len(ids) != 3 {
+				t.Fatalf("served turns = %v, want three of the four delivered turns", ids)
+			}
+			if got.Window == nil || got.Window.WithheldTurns != 9 {
+				t.Fatalf("window result = %+v, want the one locally withheld turn plus eight upstream", got.Window)
+			}
+			if got.Window.ContinuationCursor == "" {
+				t.Fatal("partial transfer minted no continuation")
+			}
+			if got.Window.FirstWithheldTurnID != test.wantFirstWithheld || got.Window.LastWithheldTurnID != test.wantLastWithheld {
+				t.Fatalf("reported withheld turns = %q..%q, want %q..%q",
+					got.Window.FirstWithheldTurnID, got.Window.LastWithheldTurnID, test.wantFirstWithheld, test.wantLastWithheld)
+			}
+			if continuation.Direction != test.wantDirection {
+				t.Fatalf("continuation direction = %q, want %q", continuation.Direction, test.wantDirection)
+			}
+			if continuation.ResumeWindow == nil {
+				t.Fatal("continuation has no resume window")
+			}
+			if test.wantDirection == transcriptWindowContinuationForward {
+				if continuation.ResumeWindow.Since == "" {
+					t.Fatalf("forward resume window = %+v, want a since selector", continuation.ResumeWindow)
+				}
+			} else if continuation.ResumeWindow.Before == nil {
+				t.Fatalf("backward resume window = %+v, want a before selector", continuation.ResumeWindow)
+			}
+			if turnID, limit := test.wantResume(continuation.ResumeWindow); limit != 9 {
+				t.Fatalf("resume window %q limit = %d, want every unserved turn (9)", turnID, limit)
+			}
+		})
+	}
+}
+
+func TestPackTranscriptWindowResumesUpstreamTurnsWhenAllDeliveredTurnServed(t *testing.T) {
+	tests := []struct {
+		name          string
+		window        *appwire.ThreadTurnWindow
+		wantDirection transcriptWindowContinuationDirection
+		wantResumeID  string
+		wantLimit     int
+	}{
+		{
+			name:          "since",
+			window:        &appwire.ThreadTurnWindow{Since: "turn-seed", Limit: 12},
+			wantDirection: transcriptWindowContinuationForward,
+			wantResumeID:  "turn-04",
+			wantLimit:     8,
+		},
+		{
+			name:          "latest",
+			window:        &appwire.ThreadTurnWindow{Latest: 12},
+			wantDirection: transcriptWindowContinuationBackward,
+			wantResumeID:  "turn-01",
+			wantLimit:     8,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var continuation transcriptWindowContinuation
+			options := testWindowPackOptions(appwire.ThreadWindowParams{TurnWindow: test.window})
+			options.MintContinuationCursor = func(request transcriptWindowContinuation) (string, error) {
+				continuation = request
+				return "window-continuation", nil
+			}
+			got, err := packThreadTurnsWindowItemCandidates(testPartialTransferResult(), nil, options)
+			if err != nil {
+				t.Fatalf("pack: %v", err)
+			}
+			if ids := turnIDsFromTurns(got.Data); len(ids) != 4 {
+				t.Fatalf("served turns = %v, want every delivered turn", ids)
+			}
+			if got.Window == nil || got.Window.WithheldTurns != 8 || got.Window.ContinuationCursor == "" {
+				t.Fatalf("window result = %+v, want the eight upstream turns withheld with a continuation", got.Window)
+			}
+			if got.Window.FirstWithheldTurnID != "upstream-first" || got.Window.LastWithheldTurnID != "upstream-last" {
+				t.Fatalf("reported withheld turns = %q..%q, want the upstream boundaries",
+					got.Window.FirstWithheldTurnID, got.Window.LastWithheldTurnID)
+			}
+			if continuation.Direction != test.wantDirection {
+				t.Fatalf("continuation direction = %q, want %q", continuation.Direction, test.wantDirection)
+			}
+			if continuation.ResumeWindow == nil {
+				t.Fatal("continuation has no resume window")
+			}
+			if test.wantDirection == transcriptWindowContinuationForward {
+				if continuation.ResumeWindow.Since != test.wantResumeID || continuation.ResumeWindow.Limit != test.wantLimit {
+					t.Fatalf("forward resume window = %+v, want since %q limit %d",
+						continuation.ResumeWindow, test.wantResumeID, test.wantLimit)
+				}
+			} else {
+				if continuation.ResumeWindow.Before == nil ||
+					continuation.ResumeWindow.Before.TurnID != test.wantResumeID ||
+					continuation.ResumeWindow.Before.Limit != test.wantLimit {
+					t.Fatalf("backward resume window = %+v, want before %q limit %d",
+						continuation.ResumeWindow, test.wantResumeID, test.wantLimit)
+				}
+			}
+		})
+	}
+}
+
+func TestPackTranscriptItemWindowAnchorsEmptyOldestServedTurn(t *testing.T) {
+	filled := testWindowTurnCandidates("turn-filled", []appwire.ThreadItem{{
+		Type: "agentMessage", ID: "item-filled", Text: "visible", Version: 7,
+	}})
+	position := appwire.ThreadItemPosition{Entry: 1}
+	filled[0].Position = position
+	filled[0].Item.Position = &position
+
+	result := testWindowCandidateResult(filled)
+	result.TurnIDs = []string{"turn-empty", "turn-filled"}
+	result.TurnShells = []appwire.Turn{
+		{ID: "turn-empty", Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFragment},
+		filled[0].Turn,
+	}
+	result.Exhausted = false
+	result.WithheldTurns = 5
+	result.FirstWithheldTurnID = "upstream-first"
+	result.LastWithheldTurnID = "upstream-last"
+
+	var continuation transcriptWindowContinuation
+	options := testWindowPackOptions(appwire.ThreadWindowParams{
+		TurnWindow: &appwire.ThreadTurnWindow{Latest: 7},
+	})
+	options.MintContinuationCursor = func(request transcriptWindowContinuation) (string, error) {
+		continuation = request
+		return "window-continuation", nil
+	}
+	got, err := packThreadTurnsWindowItemCandidates(result, nil, options)
+	if err != nil {
+		t.Fatalf("pack: %v", err)
+	}
+	if got.Window == nil || got.Window.WithheldTurns != 5 || got.Window.ContinuationCursor == "" {
+		t.Fatalf("window result = %+v, want the five upstream turns withheld with a continuation", got.Window)
+	}
+	if continuation.Direction != transcriptWindowContinuationBackward {
+		t.Fatalf("continuation direction = %q, want backward", continuation.Direction)
+	}
+	if continuation.AnchorTurnID != "turn-filled" || continuation.Position != position || continuation.Version != 7 {
+		t.Fatalf("continuation anchor = %+v at %+v version %d, want the positioned turn after the empty shell",
+			continuation.AnchorTurnID, continuation.Position, continuation.Version)
+	}
+	if continuation.ResumeWindow == nil || continuation.ResumeWindow.Before == nil ||
+		continuation.ResumeWindow.Before.TurnID != "turn-empty" || continuation.ResumeWindow.Before.Limit != 5 {
+		t.Fatalf("resume window = %+v, want before the empty oldest served turn with the five upstream turns", continuation.ResumeWindow)
+	}
+}
+
 func TestPackTranscriptItemWindowBudgetsEnrichedImages(t *testing.T) {
 	candidates := testWindowCandidateResult(testWindowTurnCandidates("turn-image", []appwire.ThreadItem{{
 		Type: "commandExecution", ID: "item-image", Version: 1, Output: "created image",

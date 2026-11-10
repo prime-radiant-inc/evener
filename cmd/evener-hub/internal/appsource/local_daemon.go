@@ -746,7 +746,8 @@ func readThreadWindowTransfer(ctx context.Context, client *appwire.Client, param
 			return appwire.ThreadReadResponse{}, err
 		}
 		pages++
-		if started && merged.Snapshot != nil && page.Snapshot != nil && merged.Snapshot.Incarnation != page.Snapshot.Incarnation {
+		if started && merged.Snapshot != nil && page.Snapshot != nil &&
+			localDaemonSourceIncarnation(merged.Snapshot.Incarnation) != localDaemonSourceIncarnation(page.Snapshot.Incarnation) {
 			// The history line was replaced between pages. Mixing the two
 			// snapshots would serve one window from two transcripts; keep the
 			// page already read and let its withheld turns continue.
@@ -793,6 +794,17 @@ func readThreadWindowTransfer(ctx context.Context, client *appwire.Client, param
 	merged.Thread.Turns = turns
 	merged.Window = pending
 	return merged, nil
+}
+
+// localDaemonSourceIncarnation removes the normalized window fence a daemon
+// applies to a windowed read's snapshot. Each transfer page names a different
+// window selector, so its fence differs even when both pages project the same
+// source transcript; the unfenced value is the identity that must be compared.
+func localDaemonSourceIncarnation(incarnation string) string {
+	if source, ok := appwire.ThreadWindowSourceIncarnation(incarnation); ok {
+		return source
+	}
+	return incarnation
 }
 
 // localDaemonNextWindowPage names the daemon read that fetches the turns the
