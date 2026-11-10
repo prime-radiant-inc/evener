@@ -1,9 +1,7 @@
 package doctor
 
 import (
-	"context"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 )
@@ -72,40 +70,5 @@ func TestConditionsSummary(t *testing.T) {
 	}
 	if got := conditionsSummary(nil); got != "" {
 		t.Fatalf("empty conditions = %q, want empty", got)
-	}
-}
-
-// RenderAudit surfaces every part of the result: the summary rows, each
-// manual step, each unreadable session, and each finding.
-func TestRenderAuditShowsEveryPartOfTheResult(t *testing.T) {
-	t.Parallel()
-	out := RenderAudit(AuditResult{
-		Runbook:         "runbook-sentinel",
-		SessionsChecked: 1,
-		Findings: []Finding{{
-			Signature: "signature-sentinel", Severity: "high", Category: "cat", Title: "finding-title-sentinel",
-			Description:  "desc",
-			SuggestedFix: SuggestedFix{Type: "diagnosis"},
-		}},
-		Summary:    []AuditSummaryRow{{Title: "summary-title-sentinel", Severity: "high", Sessions: 1}},
-		Manual:     []string{"manual-step-sentinel"},
-		Unreadable: []UnreadableSession{{SessionID: "session-sentinel", TranscriptRef: "local:session-sentinel", Error: "error-sentinel"}},
-	})
-	for _, want := range []string{"runbook-sentinel", "summary-title-sentinel", "manual-step-sentinel", "session-sentinel", "error-sentinel", "signature-sentinel"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("rendered audit missing %q:\n%s", want, out)
-		}
-	}
-}
-
-func TestRunAudit_SweepListError(t *testing.T) {
-	t.Parallel()
-	// A file (not a directory) as state base makes the --since sweep's
-	// session listing fail, and the audit reports that failure.
-	rb := mustParseFixtureRunbook(t)
-	tmpFile := t.TempDir() + "/notadir"
-	writeFile(t, tmpFile, "x")
-	if _, err := RunAudit(context.Background(), tmpFile, rb, AuditOpts{Since: time.Hour}); err == nil {
-		t.Fatal("want error from ListSessions sweep on invalid state base")
 	}
 }

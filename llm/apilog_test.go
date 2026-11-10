@@ -184,6 +184,7 @@ func TestWrapStreamSettlesAnOwnedGroupWithoutAStream(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewAPILogger: %v", err)
 			}
+			t.Cleanup(func() { _ = logger.Close() })
 			wrapped := logger.WrapStream(func(context.Context, Request) (Stream, error) {
 				return nil, tc.err
 			})
@@ -265,7 +266,7 @@ func TestSettlementStreamPumpStopsWhenClosing(t *testing.T) {
 	closing := make(chan struct{})
 	close(closing)
 	stream := &apiAttemptSettlementStream{
-		inner:   &pumpTestStream{events: make(chan StreamEvent)},
+		inner:   &controlledAPILogStream{events: make(chan StreamEvent)},
 		ctx:     context.Background(),
 		group:   NewAPIAttemptGroup("ag_pump_close"),
 		out:     make(chan StreamEvent),
@@ -293,7 +294,7 @@ func TestSettlementStreamPumpSettlesAnErrorEvent(t *testing.T) {
 	group := NewAPIAttemptGroup("ag_pump_error")
 	ctx := WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), group), sink)
 	stream := &apiAttemptSettlementStream{
-		inner:   &pumpTestStream{events: events},
+		inner:   &controlledAPILogStream{events: events},
 		ctx:     ctx,
 		group:   group,
 		out:     make(chan StreamEvent, 1),
@@ -326,7 +327,7 @@ func TestSettlementStreamPumpDropsAnEventWhileClosing(t *testing.T) {
 	events := make(chan StreamEvent)
 	closing := make(chan struct{})
 	stream := &apiAttemptSettlementStream{
-		inner:   &pumpTestStream{events: events},
+		inner:   &controlledAPILogStream{events: events},
 		ctx:     context.Background(),
 		group:   NewAPIAttemptGroup("ag_pump_forward_close"),
 		out:     make(chan StreamEvent),
@@ -343,10 +344,3 @@ func TestSettlementStreamPumpDropsAnEventWhileClosing(t *testing.T) {
 		t.Fatalf("pump forwarded event after closing: %#v", event)
 	}
 }
-
-type pumpTestStream struct {
-	events <-chan StreamEvent
-}
-
-func (s *pumpTestStream) Events() <-chan StreamEvent { return s.events }
-func (s *pumpTestStream) Close() error               { return nil }

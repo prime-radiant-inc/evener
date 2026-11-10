@@ -1394,10 +1394,10 @@ func TestEstimateOpenAIImageTokens(t *testing.T) {
 	})
 
 	t.Run("mid image hits short-side downscale", func(t *testing.T) {
-		// 1500x1500: scaleWithin leaves it (<=2048), short=1500>768 downscales to
+		// 1100x1100: scaleWithin leaves it (<=2048), short=1100>768 downscales to
 		// 768x768 → 85 + 170*ceilDiv(768,512)^2 = 85 + 170*4. Undownscaled it
 		// would tile 3x3.
-		got := EstimateInputTokens(openaiReq(&ImageData{MediaType: "image/png", Data: pngImage(t, 1500, 1500)}))
+		got := EstimateInputTokens(openaiReq(&ImageData{MediaType: "image/png", Data: pngImage(t, 1100, 1100)}))
 		if got.Tokens != 85+170*4 {
 			t.Fatalf("Tokens = %d, want %d", got.Tokens, 85+170*4)
 		}
