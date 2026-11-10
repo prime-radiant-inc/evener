@@ -289,3 +289,10 @@ func TestWatches_SelfLoopsEmptyMessageIsUnambiguous(t *testing.T) {
 		t.Error("an empty --self-loops result must not render like a session with no watches")
 	}
 }
+
+// A terminal event kind with no short label is reported by its raw kind.
+func TestTerminalKind_Default(t *testing.T) {
+	if got := terminalKind(jobstore.EventKind("something_else")); got != "something_else" {
+		t.Errorf("terminalKind fallback = %q, want the raw kind", got)
+	}
+}

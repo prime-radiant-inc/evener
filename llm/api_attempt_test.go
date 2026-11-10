@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -676,4 +678,207 @@ func builtAPIAttemptRecordWithError(t *testing.T, err error) apilog.APIAttemptRe
 		Err:        err,
 		FinishedAt: startedAt.Add(time.Millisecond),
 	})
+}
+
+// SetWireRequestMetadata replaces the preliminary request snapshot with what
+// the transport wrote, and its credential material both scrubs this attempt's
+// record and carries into later attempts of the group.
+func TestSetWireRequestMetadataOnActiveAttempt(t *testing.T) {
+	sink := &recordingAPIAttemptSink{}
+	group := NewAPIAttemptGroup("ag_wire_meta")
+	ctx := WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), group), sink)
+	startedAt := time.Unix(1_700_000_000, 0).UTC()
+
+	attempt := BeginAPIAttempt(ctx, testAPIAttemptMeta(startedAt))
+	attempt.SetWireRequestMetadata(http.MethodPut, "https://provider.test/v1/updated",
+		http.Header{"X-After": []string{"value"}, "X-Wire-Credential": []string{"bearer wire-secret"}},
+		NewAPILogCredentialMaterial(nil, nil, "wire-secret"))
+	attempt.Complete(testAPIAttemptResult(startedAt.Add(time.Millisecond), apilog.AttemptSuccess, nil))
+
+	attempts, _, _ := sink.snapshot()
+	if len(attempts) != 1 {
+		t.Fatalf("attempts = %d, want 1", len(attempts))
+	}
+	if attempts[0].Request.Method != http.MethodPut {
+		t.Fatalf("method = %q, want %q", attempts[0].Request.Method, http.MethodPut)
+	}
+	if attempts[0].Request.Endpoint != "https://provider.test/v1/updated" {
+		t.Fatalf("endpoint = %q, want updated", attempts[0].Request.Endpoint)
+	}
+	want := apilog.EncodedHeader{"X-After": []string{"value"}}
+	if !reflect.DeepEqual(attempts[0].Request.Headers, want) {
+		t.Fatalf("headers = %v, want %v (the credential-bearing header scrubbed)", attempts[0].Request.Headers, want)
+	}
+
+	next := BeginAPIAttempt(ctx, testAPIAttemptMeta(startedAt))
+	defer next.Complete(testAPIAttemptResult(startedAt.Add(time.Second), apilog.AttemptSuccess, nil))
+	if !slices.Contains(next.CredentialMaterial().Values, "wire-secret") {
+		t.Fatalf("next attempt's credential material = %+v, want the wire credential", next.CredentialMaterial())
+	}
+}
+
+// An attempt without both a group and a sink is inert: it ignores every
+// update a transport would make to an active one.
+func TestInertAPIAttemptIgnoresUpdates(t *testing.T) {
+	t.Run("credential material", func(t *testing.T) {
+		a := &APIAttempt{meta: APIAttemptMeta{CredentialMaterial: NewAPILogCredentialMaterial([]string{"X-Key"}, nil, "secret")}}
+		if got := a.CredentialMaterial(); !reflect.DeepEqual(got, APILogCredentialMaterial{}) {
+			t.Fatalf("inactive CredentialMaterial = %+v, want empty", got)
+		}
+	})
+	t.Run("request body", func(t *testing.T) {
+		wantBody := []byte("original")
+		a := &APIAttempt{meta: APIAttemptMeta{RequestBody: append([]byte(nil), wantBody...), RequestBodyInexact: true}}
+		a.SetRequestBody([]byte("body"), true)
+		if !reflect.DeepEqual(a.meta.RequestBody, wantBody) || !a.meta.RequestBodyInexact {
+			t.Fatalf("inactive SetRequestBody mutated metadata to body %q, inexact %v", a.meta.RequestBody, a.meta.RequestBodyInexact)
+		}
+	})
+	t.Run("merged credential material", func(t *testing.T) {
+		want := NewAPILogCredentialMaterial([]string{"X-Original"}, nil, "original-secret")
+		a := &APIAttempt{meta: APIAttemptMeta{CredentialMaterial: want}}
+		a.MergeCredentialMaterial(NewAPILogCredentialMaterial(nil, nil, "secret"))
+		if !reflect.DeepEqual(a.meta.CredentialMaterial, want) {
+			t.Fatalf("inactive MergeCredentialMaterial mutated metadata to %+v, want %+v", a.meta.CredentialMaterial, want)
+		}
+	})
+	t.Run("wire request metadata", func(t *testing.T) {
+		a := &APIAttempt{}
+		a.SetWireRequestMetadata(http.MethodGet, "https://noop.test", http.Header{}, APILogCredentialMaterial{})
+		if a.Active() || a.meta.Method != "" {
+			t.Fatalf("inert attempt took wire metadata: %+v", a.meta)
+		}
+	})
+}
+
+// The attempt helpers are called on every provider path, coordinated or not,
+// so each tolerates a missing context, group or error.
+func TestAPIAttemptHelpersTolerateMissingCoordination(t *testing.T) {
+	var noContext context.Context
+	t.Run("context active without a context", func(t *testing.T) {
+		if APIAttemptContextActive(noContext) {
+			t.Fatal("APIAttemptContextActive(nil) = true, want false")
+		}
+	})
+	t.Run("group lookup without a context", func(t *testing.T) {
+		if got := apiAttemptGroupFromContext(noContext); got != nil {
+			t.Fatalf("apiAttemptGroupFromContext(nil) = %v, want nil", got)
+		}
+	})
+	t.Run("credential material without a context", func(t *testing.T) {
+		if _, ok := apiLogCredentialMaterialFromContext(noContext); ok {
+			t.Fatal("apiLogCredentialMaterialFromContext(nil) reports material")
+		}
+	})
+	t.Run("begin without a group", func(t *testing.T) {
+		if BeginAPIAttempt(context.Background(), testAPIAttemptMeta(time.Unix(1_700_000_000, 0).UTC())).Active() {
+			t.Fatal("attempt with no group is active")
+		}
+	})
+	t.Run("settle without a group", func(t *testing.T) {
+		var group *APIAttemptGroup
+		group.Settle(context.Background(), apilog.AttemptSuccess)
+	})
+	t.Run("wait without a group", func(t *testing.T) {
+		WaitForPriorAPIAttempts(context.Background())
+	})
+	t.Run("sanitize without an error", func(t *testing.T) {
+		if err := sanitizeAPILogError(nil, APILogCredentialMaterial{}); err != nil {
+			t.Fatalf("sanitizeAPILogError(nil) = %v, want nil", err)
+		}
+	})
+	t.Run("absent optional int", func(t *testing.T) {
+		if got := optionalAPILogInt(42, false); got != nil {
+			t.Fatalf("optionalAPILogInt(42, false) = %v, want nil", got)
+		}
+	})
+}
+
+// TestBeginAPIAttemptAfterSettlingReturnsInert covers the branch where
+// group.settling is true, so BeginAPIAttempt returns an inert attempt.
+func TestBeginAPIAttemptAfterSettlingReturnsInert(t *testing.T) {
+	sink := &recordingAPIAttemptSink{}
+	group := NewAPIAttemptGroup("ag_settling")
+	ctx := WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), group), sink)
+	startedAt := time.Unix(1_700_000_000, 0).UTC()
+
+	first := BeginAPIAttempt(ctx, testAPIAttemptMeta(startedAt))
+	first.Complete(testAPIAttemptResult(startedAt.Add(time.Millisecond), apilog.AttemptSuccess, nil))
+	group.Settle(ctx, apilog.AttemptSuccess)
+
+	// After settlement, a new attempt must be inert.
+	late := BeginAPIAttempt(ctx, testAPIAttemptMeta(startedAt))
+	if late.Active() {
+		t.Fatal("attempt begun after settlement should be inert")
+	}
+	late.Complete(testAPIAttemptResult(startedAt.Add(time.Second), apilog.AttemptSuccess, nil))
+
+	attempts, settlements, _ := sink.snapshot()
+	if len(attempts) != 1 || len(settlements) != 1 {
+		t.Fatalf("attempts/settlements = %d/%d, want 1/1", len(attempts), len(settlements))
+	}
+}
+
+// TestCanonicalAPIAttemptOutcomeDefaultSuccess covers the default branch where
+// the outcome is empty, there is no error, and the function returns AttemptSuccess.
+func TestCanonicalAPIAttemptOutcomeDefaultSuccess(t *testing.T) {
+	if got := canonicalAPIAttemptOutcome(APIAttemptResult{}); got != apilog.AttemptSuccess {
+		t.Fatalf("canonicalAPIAttemptOutcome(empty) = %q, want %q", got, apilog.AttemptSuccess)
+	}
+}
+
+// TestRecordFailureWithNilErr covers the branch in recordFailure where
+// failure.Err is nil, so the observer is never invoked.
+func TestRecordFailureWithNilErr(t *testing.T) {
+	sink := &recordingAPIAttemptSink{}
+	observerCalled := false
+	sink.failureObserverFn = func(APILogFailure) { observerCalled = true }
+	group := NewAPIAttemptGroup("ag_nil_failure_err")
+	ctx := WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), group), sink)
+	group.Settle(ctx, apilog.AttemptSuccess)
+
+	group.recordFailure(APILogFailure{Operation: "test", AttemptGroupID: group.ID})
+	if observerCalled {
+		t.Fatal("observer called for nil-error failure")
+	}
+}
+
+// TestMergeCredentialMaterialCoversBothSides exercises APILogCredentialMaterial.Merge
+// with non-empty left and right to cover the merge loops.
+func TestMergeCredentialMaterialCoversBothSides(t *testing.T) {
+	left := NewAPILogCredentialMaterial([]string{"X-Left"}, []string{"left_q"}, "left-secret")
+	right := NewAPILogCredentialMaterial([]string{"X-Right"}, []string{"right_q"}, "right-secret")
+	merged := left.Merge(right)
+	if _, ok := merged.HeaderNames["X-Left"]; !ok {
+		t.Fatal("merged missing left header name")
+	}
+	if _, ok := merged.HeaderNames["X-Right"]; !ok {
+		t.Fatal("merged missing right header name")
+	}
+	if _, ok := merged.QueryNames["left_q"]; !ok {
+		t.Fatal("merged missing left query name")
+	}
+	if _, ok := merged.QueryNames["right_q"]; !ok {
+		t.Fatal("merged missing right query name")
+	}
+	for _, secret := range []string{"left-secret", "right-secret"} {
+		if !slices.Contains(merged.Values, secret) {
+			t.Fatalf("merged missing value %q", secret)
+		}
+	}
+}
+
+// A header whose name itself carries a credential value is dropped from the
+// credential-free clone.
+func TestCloneCredentialFreeHTTPHeaderDropsACredentialName(t *testing.T) {
+	material := NewAPILogCredentialMaterial(nil, nil, "secret")
+	header := http.Header{
+		"X-Safe":          []string{"ok"},
+		"X-secret-header": []string{"value"},
+	}
+	cloned := cloneCredentialFreeHTTPHeader(header, material.patterns, material.secretNames)
+	want := apilog.EncodedHeader{"X-Safe": []string{"ok"}}
+	if !reflect.DeepEqual(cloned, want) {
+		t.Fatalf("credential-free headers = %#v, want %#v", cloned, want)
+	}
 }

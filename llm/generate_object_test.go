@@ -224,3 +224,27 @@ func TestStreamGenerateObject_ParseFailure_ReturnsNoObjectGeneratedError(t *test
 		t.Fatalf("expected RawText to be set")
 	}
 }
+
+func TestStripMarkdownCodeFence(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"no fence trims whitespace", "  {\"a\":1}  ", `{"a":1}`},
+		{"fenced json", "```json\n{\"a\":1}\n```", `{"a":1}`},
+		{"bare fence", "```\n[1,2]\n```", `[1,2]`},
+		{"opening fence with no newline returned as-is", "```json", "```json"},
+		{"fence without closing", "```\n{\"a\":1}", `{"a":1}`},
+		// The opening line is dropped and content is cut at the LAST closing
+		// fence, so an interior fence survives.
+		{"interior fence kept", "```\nline1\n```\nline2\n```", "line1\n```\nline2"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := stripMarkdownCodeFence(tt.in); got != tt.want {
+				t.Errorf("stripMarkdownCodeFence(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
