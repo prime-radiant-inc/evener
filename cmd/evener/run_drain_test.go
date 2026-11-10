@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -416,8 +417,12 @@ func chainedShellDrainScenario(t *testing.T, tweak func(*runConfig)) *scriptedPr
 	// from A's notification turn, and a notification turn delivers a completion
 	// that arrives during it at its next request. B is gated until that next
 	// request (the one carrying B's tool result) has been built, so B can
-	// never be folded into it and is delivered by the drain wake that follows
-	// the turn, whatever the scheduler does.
+	// never be folded into it. The model then answers that request only once B
+	// has finalized: its answer ends A's turn, so B is already queued when the
+	// drain looks again and the drain delivers it. Answering sooner would let
+	// the drain find B still running on a slow runner, arm the undisposed-job
+	// announcement, and announce B instead of delivering it when the recheck
+	// tick beats B's completion (the same seam as A's barrier below).
 	//
 	// Releasing A is not enough: the drain must also not START until A has
 	// finalized. A drain that begins while A is still running finds a sole
@@ -433,11 +438,15 @@ func chainedShellDrainScenario(t *testing.T, tweak func(*runConfig)) *scriptedPr
 	// scenario fails outright rather than once in a thousand runs.
 	gate := filepath.Join(t.TempDir(), "release-shell-a")
 	shellACommand := "while [ ! -f " + gate + " ]; do sleep 0.02; done; sleep 0.5; printf shell-a"
+	var drainSession atomic.Pointer[agent.Session]
 	releaseOnDrainStart(t, func() {
 		if err := os.WriteFile(gate, []byte("go\n"), 0o600); err != nil {
 			t.Errorf("release shell A: %v", err)
 		}
-	}, func(sess *agent.Session) { awaitDurableJobCompletion(t, sess) })
+	}, func(sess *agent.Session) {
+		drainSession.Store(sess)
+		awaitDurableJobCompletion(t, sess)
+	})
 	shellBGate := filepath.Join(t.TempDir(), "release-shell-b")
 	shellBCommand := "while [ ! -f " + shellBGate + " ]; do sleep 0.02; done; printf shell-b"
 	jobIDPattern := regexp.MustCompile(`job_id="([^"]+)"`)
@@ -467,6 +476,7 @@ func chainedShellDrainScenario(t *testing.T, tweak func(*runConfig)) *scriptedPr
 			if err := os.WriteFile(shellBGate, []byte("go\n"), 0o600); err != nil {
 				t.Errorf("release shell B: %v", err)
 			}
+			awaitDurableJobCompletion(t, drainSession.Load())
 			return scriptedCommunicate("waiting for B")
 		},
 		func(req llm.Request) llm.Response {
