@@ -528,18 +528,24 @@ func selectedLockRemote(root string) string {
 // PID. An empty result is errNoUniqueLockOwner so the caller may supplement it;
 // a malformed or ambiguous result keeps the caller's existing refusal.
 func uniqueOwnerPID(out []byte, ambiguous, invalid string) (string, error) {
-	fields := strings.Fields(string(out))
-	if len(fields) == 0 {
+	var owners []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			owners = append(owners, line)
+		}
+	}
+	if len(owners) == 0 {
 		return "", errNoUniqueLockOwner
 	}
-	pid, err := numericPID(fields[0])
+	pid, err := numericPID(owners[0])
 	if err != nil || pid == "0" {
 		return "", fmt.Errorf("%w: %s", errOwnerEvidence, invalid)
 	}
 	// A global-list read can repeat the same held row under churn; repeated
-	// identical PIDs are one owner, while any distinct PID is a real conflict.
-	for _, field := range fields[1:] {
-		if field != pid {
+	// identical lines are one owner, while any distinct line is a real
+	// conflict. A line holding several words is malformed, not a duplicate.
+	for _, line := range owners[1:] {
+		if line != pid {
 			return "", fmt.Errorf("%w: %s", errOwnerEvidence, ambiguous)
 		}
 	}
