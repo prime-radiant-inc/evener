@@ -200,13 +200,14 @@ func runServeForegroundShellPersistenceCaseWithCheckpoint(t *testing.T, mode for
 	gatePath := filepath.Join(workDir, "shell-release")
 	// The loop also has a deadline: cleanup writes the gate file, but t.TempDir
 	// removes the workspace immediately afterwards, so a loop that misses that
-	// window must not poll a vanished path forever (#4078). The wall-clock
-	// deadline is far beyond this test's 15s context.
+	// window must not poll a vanished path forever (#4078). A loop counter, not
+	// SECONDS: the fixture runs under /bin/sh, where SECONDS is unset. The bound
+	// is far beyond this test's 15s context.
 	shellCommand := fmt.Sprintf(
 		"sleep 600 & child=$!; "+
 			"trap 'kill \"$child\" 2>/dev/null; wait \"$child\" 2>/dev/null; exit 0' TERM; "+
 			"printf '%%s' \"$child\" > %s; printf '%%s' $$ > %s; "+
-			"while [ ! -f %s ] && [ \"$SECONDS\" -lt \"$deadline\" ]; do sleep 0.01; done; "+
+			"i=0; while [ ! -f %s ] && [ \"$i\" -lt 6000 ]; do sleep 0.01; i=$((i+1)); done; "+
 			"kill \"$child\" 2>/dev/null; wait \"$child\" 2>/dev/null; printf shell-complete",
 		strconv.Quote(shellChildPIDPath), strconv.Quote(shellPIDPath), strconv.Quote(gatePath))
 	// The shell loop polls for this file. The explicit release below follows the
