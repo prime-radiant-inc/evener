@@ -645,8 +645,10 @@ type Session struct {
 	// per process: it is false at a turn's first Stop dispatch and true on any
 	// dispatch that follows a Stop hook's block in the same turn, and a tool call
 	// clears it (execTool), because the work the block asked for has been done.
-	// Cleared with comm when the next turn starts. Guarded by mu.
-	stopHookActive bool
+	// Cleared with comm when the next turn starts. Atomic rather than mu-guarded:
+	// a tool call clears it, and a parallel read-only tool batch must not
+	// serialize on the session-wide lock to do so.
+	stopHookActive atomic.Bool
 	// toolHookStop carries a PostToolUse or PostToolUseFailure hook's
 	// continue:false out of execTool to the round loop, which ends the turn the
 	// same way PostToolBatch's block does -- after the tool results are already

@@ -603,8 +603,8 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 	s.mu.Lock()
 	delivered := s.comm.called
 	text = s.comm.reply
-	stopHookActive := s.stopHookActive
 	s.mu.Unlock()
+	stopHookActive := s.stopHookActive.Load()
 	if !delivered && !askedThisRound {
 		return false, "", nil
 	}
@@ -636,11 +636,7 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 		// stop takes precedence over a block -- the hook asked for the action to
 		// end, not to continue -- so it is checked first.
 		if stopResult.Stopped {
-			if reason := strings.TrimSpace(stopResult.StopReason); reason != "" {
-				text = reason
-			} else {
-				text = "Stop hook stopped this turn"
-			}
+			text = s.hookStopText(stopResult.StopReason, "Stop hook stopped this turn")
 			s.deliverHookUserMessage(text)
 			s.finishProcessingAtBoundary(ctx, boundaryState)
 			if hook := s.cfg.testOnly.afterCommunicateBoundary; hook != nil {
@@ -651,9 +647,7 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 		if stopResult.Blocked {
 			// Don't finish — keep looping. The next Stop dispatch in this turn
 			// is a continuation, which is what stop_hook_active reports.
-			s.mu.Lock()
-			s.stopHookActive = true
-			s.mu.Unlock()
+			s.stopHookActive.Store(true)
 			return false, "", nil
 		}
 	}

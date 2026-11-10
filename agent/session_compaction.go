@@ -504,12 +504,12 @@ func (s *Session) steerCompactionTranscriptReminderForFold(publishedRevision int
 // anything (staged EventContextCompaction payloads exist) — never merely
 // that the history published: an unchanged publication sets it false.
 //
-// trigger and compactSummary are what the PreCompact/PostCompact hooks report:
-// the fold's trigger ("manual" only for /compact) and, for PostCompact, the text
-// of the fold's last summary turn (else its last checkpoint, else empty).
-// compactSummary is filled at the transcript commit, once every layer has
-// reported the turns it produced; both are read by flush only for a winning
-// fold that actually compacted.
+// The PreCompact/PostCompact hooks report the fold's trigger ("manual" only for
+// /compact) and, for PostCompact, the text of the fold's last summary turn (else
+// its last checkpoint, else empty). Both are stageCompactionEffects' own state:
+// the trigger is its parameter, and compactSummary is filled at the transcript
+// commit, once every layer has reported the turns it produced. flush reads them
+// only for a winning fold that actually compacted.
 // captured is the explicit operation snapshot the fold's REQUESTING caller
 // captured (the round-tail dispatch's forced operation, or the per-request
 // fold's pending automatic operation); an unrelated manual fold captures
@@ -527,8 +527,6 @@ type foldCommit struct {
 	resetEnvContextTrackerLocked func(bool)
 	publishedRevision            int
 	actualCompaction             bool
-	trigger                      compactionTrigger
-	compactSummary               string
 	captured                     *schema.SkillCompactionOperation
 	stagedCompactionCount        func() int
 	claimCompactionLocked        func()
@@ -710,7 +708,8 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	// handoff receipt to each compaction turn, so the durable transcript
 	// carries the typed record a restart reconciles from. Write errors are
 	// carried into flush, where emitting is safe again.
-	commit := &foldCommit{trigger: trigger}
+	commit := &foldCommit{}
+	var compactSummary string
 	var compactionTurnWriteErrs []error
 	var steeringWriteErrs []error
 	commitTranscriptsLocked := func() bool {
@@ -718,7 +717,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 		// summary turn, else its last checkpoint, else empty. Read here, at the
 		// transcript commit, because every layer has reported by now; flush only
 		// ever reads the stored value.
-		commit.compactSummary = lastCompactionTurnText(pendingCompactionTurns)
+		compactSummary = lastCompactionTurnText(pendingCompactionTurns)
 		if commit.receipt != nil {
 			for i := range pendingCompactionTurns {
 				state := pendingCompactionTurns[i].SkillState.Clone()
@@ -809,14 +808,14 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 		// not part of the compaction the hook reports. Everything the hook
 		// describes — the summary, the markers, the history swap — is
 		// already durable when it fires.
-		if s.hookRunner != nil && commit.actualCompaction {
+		if s.hookRunner != nil && s.hookRunner.Has(plugin.HookPostCompact) && commit.actualCompaction {
 			s.mu.Lock()
 			supersededNow := commit.publishedRevision < s.newestPublishedFoldRevision
 			s.mu.Unlock()
 			if !supersededNow {
 				hi := s.hookInput(plugin.HookPostCompact)
-				hi.Trigger = string(commit.trigger)
-				hi.CompactSummary = commit.compactSummary
+				hi.Trigger = string(trigger)
+				hi.CompactSummary = compactSummary
 				result := s.hookRunner.RunPostCompactFor(s.apiLogContext(s.foldHookContext(ctx)), hi, hi.Trigger)
 				for _, m := range result.UserMessages {
 					s.deliverHookUserMessage(m)
@@ -986,7 +985,7 @@ func (s *Session) runPreCompactHook(ctx context.Context, history *[]schema.Turn,
 	}
 	var messages []preCompactMessage
 	var deferred []func()
-	if s.hookRunner != nil {
+	if s.hookRunner != nil && s.hookRunner.Has(plugin.HookPreCompact) {
 		hi := s.hookInput(plugin.HookPreCompact)
 		hi.Trigger = string(trigger)
 		// Claude's null custom_instructions means the user passed none, so

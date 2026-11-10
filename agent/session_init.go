@@ -2297,10 +2297,7 @@ func (s *Session) recordSessionStartStop(result hooks.RunResult) {
 	if !result.Stopped {
 		return
 	}
-	reason := strings.TrimSpace(result.StopReason)
-	if reason == "" {
-		reason = "SessionStart hook stopped this session"
-	}
+	reason := s.hookStopText(result.StopReason, "SessionStart hook stopped this session")
 	s.deliverHookUserMessage(reason)
 	s.mu.Lock()
 	s.sessionStartHookStop = reason

@@ -452,6 +452,26 @@ func TestRunSubagentStartFor_MatchesAgentType(t *testing.T) {
 	}
 }
 
+// TestRunSubagentStartFor_MatchesAnAgentTypeThatLooksLikeAToolName proves a
+// non-tool matcher target is never rewritten into Claude's tool vocabulary. An
+// agent type named "shell" is not a tool name: translating it would match "Bash"
+// while the input's agent_type stayed "shell", so the hook aimed at the agent
+// would silently never fire.
+func TestRunSubagentStartFor_MatchesAnAgentTypeThatLooksLikeAToolName(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookSubagentStart, plugin.RegisteredHook{Matcher: "^shell$", Type: "command", Timeout: 5,
+		Command: `echo '{"hookSpecificOutput":{"hookEventName":"SubagentStart","additionalContext":"shell injected"}}'`})
+	got := r.RunSubagentStartFor(context.Background(), Input{HookEventName: "SubagentStart", AgentType: "shell"}, "shell")
+	if len(got.ModelContext) != 1 || got.ModelContext[0] != "shell injected" {
+		t.Fatalf("ModelContext = %v, want the context for an agent type named \"shell\"", got.ModelContext)
+	}
+	// The translated spelling must NOT be what the matcher sees, or the hook would
+	// fire for a differently-named agent.
+	if wrong := r.RunSubagentStartFor(context.Background(), Input{HookEventName: "SubagentStart", AgentType: "Bash"}, "Bash"); len(wrong.ModelContext) != 0 {
+		t.Fatalf("an agent type named \"Bash\" matched ^shell$: %v", wrong.ModelContext)
+	}
+}
+
 // TestRunSubagentStartFor_Exit2IsUserOnly proves a spawn warning reaches the
 // operator and never the child's model, as one summarized line.
 func TestRunSubagentStartFor_Exit2IsUserOnly(t *testing.T) {

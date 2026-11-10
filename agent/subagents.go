@@ -1807,10 +1807,7 @@ func (s *Session) runSubagentStartHook(ctx context.Context, sub *subagent, agent
 	if !res.Stopped {
 		return "", false
 	}
-	reason := strings.TrimSpace(res.StopReason)
-	if reason == "" {
-		reason = "SubagentStart hook stopped this run"
-	}
+	reason := s.hookStopText(res.StopReason, "SubagentStart hook stopped this run")
 	s.deliverHookUserMessage(reason)
 	return reason, true
 }
@@ -2154,30 +2151,27 @@ type subagentFinalize struct {
 // call it, so neither can drift from the other. a.mu is never held across
 // FinishGeneration or the announcements.
 func (a *subagent) finalizeRun(f subagentFinalize) {
-	res, err, finish := f.result, f.err, f.finish
-	lease, stableRun := f.lease, f.stableRun
-	noActionClaim, restoreParentDriveNotify := f.noActionClaim, f.restoreParentDriveNotify
 	a.sess.mu.Lock()
 	turns := a.sess.turns
 	a.sess.mu.Unlock()
 
 	runProvenance := a.followUpProvenance(f.inputProvenance)
 	runStructured := a.sess.CommunicateStructured()
-	finalizeTime := finish.endedAt
+	finalizeTime := f.finish.endedAt
 	if finalizeTime.IsZero() {
 		finalizeTime = a.sess.sclock().Now()
 	}
 	a.mu.Lock()
 	a.finalizing = true
-	a.result = res
-	a.err = err
+	a.result = f.result
+	a.err = f.err
 	a.runProvenance = provenance.Clone(runProvenance)
 	a.runStructured = runStructured
 	a.runStructuredCaptured = true
 	a.running = false
 	a.turnsUsed = turns
 	a.endedAt = &finalizeTime
-	runEnd := classifyRunEnd(err, a.cancelRequested)
+	runEnd := classifyRunEnd(f.err, a.cancelRequested)
 	a.status = runEnd.status
 	// The payload is non-nil exactly when the run published Exhausted
 	// (classifier contract), so its presence alone is the overwrite decision.
@@ -2194,14 +2188,14 @@ func (a *subagent) finalizeRun(f subagentFinalize) {
 	// result to the parent and any waiting send) wait until the tail's end:
 	// see announceFinishedGeneration.
 	var announcements delegateMutationPlans
-	if stableRun && a.sess.delegateController != nil {
-		finish.endedAt = finalizeTime
+	if f.stableRun && a.sess.delegateController != nil {
+		f.finish.endedAt = finalizeTime
 		var plans delegateMutationPlans
 		var finishErr error
-		if noActionClaim != nil {
-			plans, finishErr = a.sess.delegateController.FinishNoAction(noActionClaim)
+		if f.noActionClaim != nil {
+			plans, finishErr = a.sess.delegateController.FinishNoAction(f.noActionClaim)
 		} else {
-			plans, finishErr = a.sess.delegateController.FinishGeneration(lease, finish)
+			plans, finishErr = a.sess.delegateController.FinishGeneration(f.lease, f.finish)
 		}
 		announcements = delegateMutationPlans{updates: plans.updates, deliveries: plans.deliveries}
 		plans.updates, plans.deliveries = nil, nil
@@ -2212,20 +2206,20 @@ func (a *subagent) finalizeRun(f subagentFinalize) {
 			a.sess.emit(events.EventWarning, warningDataFromError("delegate generation settlement incomplete", finishErr))
 		}
 	}
-	if restoreParentDriveNotify != nil {
-		a.sess.SetNotifyFunc(restoreParentDriveNotify)
+	if f.restoreParentDriveNotify != nil {
+		a.sess.SetNotifyFunc(f.restoreParentDriveNotify)
 	}
 	a.mu.Lock()
 	a.finalizing = false
 	a.mu.Unlock()
-	if restoreParentDriveNotify != nil && a.sess.peekNotifications() > 0 {
+	if f.restoreParentDriveNotify != nil && a.sess.peekNotifications() > 0 {
 		a.sess.notify()
 	}
-	if stableRun && a.sess.delegateController != nil {
+	if f.stableRun && a.sess.delegateController != nil {
 		if hook := a.sess.cfg.testOnly.subagentBeforeGenerationAnnounced; hook != nil {
 			hook(a)
 		}
-		a.announceFinishedGeneration(lease, announcements)
+		a.announceFinishedGeneration(f.lease, announcements)
 	}
 	// Remaining attention is re-armed only once the finished generation is
 	// announced and released: a successor generation must not start ahead
@@ -2234,7 +2228,7 @@ func (a *subagent) finalizeRun(f subagentFinalize) {
 	// attention reservation reported, so it lowers the controller's lingering
 	// needs-attention projection itself instead of leaving it for a parent
 	// drive that may never come.
-	if stableRun {
+	if f.stableRun {
 		if pending, pendingErr := a.sess.pendingDelegateAttentionIDs(); pendingErr != nil {
 			a.sess.emit(events.EventWarning, warningDataFromError("inspect remaining delegate attention", pendingErr))
 		} else if len(pending) != 0 {
@@ -2248,7 +2242,7 @@ func (a *subagent) finalizeRun(f subagentFinalize) {
 	if done != nil {
 		close(done)
 	}
-	if stableRun && a.sess.delegateController != nil {
+	if f.stableRun && a.sess.delegateController != nil {
 		// The schedule is armed whether or not the quiescence report
 		// succeeded, and that is load-bearing: a failed report is
 		// stale-shaped — this generation superseded, the resident runtime
@@ -2260,7 +2254,7 @@ func (a *subagent) finalizeRun(f subagentFinalize) {
 		// finalize tail of its own. The retention rationale and the fixture
 		// opt-out live on the seam's field comment.
 		if !a.sess.cfg.testOnly.disableDelegateIdleRelease {
-			a.sess.scheduleIdleRuntimeRelease(lease.generation)
+			a.sess.scheduleIdleRuntimeRelease(f.lease.generation)
 		}
 	}
 }
@@ -2446,17 +2440,6 @@ func (a *subagent) delegateTerminalRunInputs(result string, runErr error) delega
 // captureCommunicateReport would replace the stop reason with it. For the same
 // reason it never reports the earlier run's structured result.
 func (a *subagent) hookStoppedFinish(stopReason string) delegateFinish {
-	if a == nil || a.sess == nil {
-		message, _ := json.Marshal(stopReason)
-		return delegateFinish{
-			outcome:     delegatestore.OutcomeCompleted,
-			disposition: delegatestore.DispositionReported,
-			packet: &delegatestore.TerminalPacket{
-				Kind:    delegatestore.PacketReported,
-				Message: message,
-			},
-		}
-	}
 	inputs := a.delegateTerminalRunInputs(stopReason, nil)
 	inputs.completedWithoutReport = true
 	return stableDelegateFinishFromRun(inputs)
@@ -2734,10 +2717,7 @@ func (a *subagent) runSubagentStopHook(ctx context.Context, res string, err erro
 	// hook's own reason. The run's error is returned unchanged: a stop ends the
 	// run, it does not launder a failed one into a completed one.
 	if stopResult.Stopped {
-		reason := strings.TrimSpace(stopResult.StopReason)
-		if reason == "" {
-			reason = "SubagentStop hook stopped this run"
-		}
+		reason := a.sess.hookStopText(stopResult.StopReason, "SubagentStop hook stopped this run")
 		a.sess.deliverHookUserMessage(reason)
 		return reason, err
 	}

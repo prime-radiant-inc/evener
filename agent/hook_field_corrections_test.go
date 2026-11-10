@@ -142,9 +142,7 @@ func TestStop_CancelledCallKeepsStopHookActive(t *testing.T) {
 	}))
 	sess.RegisterTool("probe", "probe", map[string]any{"type": "object"},
 		func(context.Context, any) (any, error) { return "ran", nil })
-	sess.mu.Lock()
-	sess.stopHookActive = true
-	sess.mu.Unlock()
+	sess.stopHookActive.Store(true)
 
 	res := sess.execTool(context.Background(), llm.ToolCallData{ID: "cancelled", Name: "probe", Arguments: json.RawMessage(`{}`)}, "")
 	if !res.IsError {
@@ -153,10 +151,7 @@ func TestStop_CancelledCallKeepsStopHookActive(t *testing.T) {
 	if !strings.HasPrefix(res.Output, "tool skipped:") {
 		t.Fatalf("skipped call output = %q, want the skipped-tool result", res.Output)
 	}
-	sess.mu.Lock()
-	active := sess.stopHookActive
-	sess.mu.Unlock()
-	if !active {
+	if !sess.stopHookActive.Load() {
 		t.Fatal("a call that never ran cleared stop_hook_active: the Stop hook's work is still undone")
 	}
 	sess.Close()
@@ -189,9 +184,7 @@ func TestStop_StopHookActiveResetsWithTheTurn(t *testing.T) {
 	var sess *Session
 	sess = newSession(t, withDir(dir), withSteps(
 		func(llm.Request) llm.Response {
-			sess.mu.Lock()
-			active := sess.stopHookActive
-			sess.mu.Unlock()
+			active := sess.stopHookActive.Load()
 			flagAtSecondTurnStart = &active
 			return toolCallResponse(communicateCall("c1", "turn two reply"))
 		},
@@ -207,10 +200,7 @@ func TestStop_StopHookActiveResetsWithTheTurn(t *testing.T) {
 	if done, _, err := sess.deliverIfCommunicated(context.Background(), false); err != nil || done {
 		t.Fatalf("turn one boundary = done %v, err %v; want a blocked (not done) boundary", done, err)
 	}
-	sess.mu.Lock()
-	wasActive := sess.stopHookActive
-	sess.mu.Unlock()
-	if !wasActive {
+	if !sess.stopHookActive.Load() {
 		t.Fatal("setup: the Stop block did not set stopHookActive")
 	}
 

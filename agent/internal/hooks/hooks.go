@@ -232,6 +232,13 @@ func (r *Runner) Add(event plugin.HookEvent, hooks ...plugin.RegisteredHook) {
 	r.hooks[event] = append(r.hooks[event], hooks...)
 }
 
+// Has reports whether any hook is registered for the event, so a dispatch site
+// can skip building an input and parsing a round of tool calls that no hook will
+// read.
+func (r *Runner) Has(event plugin.HookEvent) bool {
+	return len(r.hooks[event]) > 0
+}
+
 // InvalidMatcherDiagnostic describes a registered hook whose matcher is not a
 // valid Go RE2 regex. It carries only the plugin name, event name, offending
 // matcher, and the sanitized warning text — never any hook payload or secret.
@@ -598,10 +605,26 @@ func firstLine(text string) string {
 	return ""
 }
 
-// runAll matches the event's hooks against toolName and executes them.
-func (r *Runner) runAll(ctx context.Context, event plugin.HookEvent, toolName string, input Input) []parsedHookOutput {
-	claudeName := toolname.EvenerToClaude(toolName)
-	return r.runMatched(ctx, event, r.MatchHooks(event, claudeName), input)
+// matchesToolName reports whether an event's matcher target is a tool name.
+// Only these targets are translated from evener's name to Claude's: every other
+// event matches on a value with no evener spelling — an agent type, a trigger, a
+// reason — so translating it would rewrite, say, a subagent named "shell" to
+// "Bash" and skip the hook aimed at it.
+func matchesToolName(event plugin.HookEvent) bool {
+	switch event {
+	case plugin.HookPreToolUse, plugin.HookPostToolUse, plugin.HookPostToolUseFailure, plugin.HookPostToolBatch:
+		return true
+	default:
+		return false
+	}
+}
+
+// runAll matches the event's hooks against target and executes them.
+func (r *Runner) runAll(ctx context.Context, event plugin.HookEvent, target string, input Input) []parsedHookOutput {
+	if matchesToolName(event) {
+		target = toolname.EvenerToClaude(target)
+	}
+	return r.runMatched(ctx, event, r.MatchHooks(event, target), input)
 }
 
 // runEvent dispatches an event's registered hooks, consulting the matcher only
@@ -659,16 +682,27 @@ func (r *Runner) runMatched(ctx context.Context, event plugin.HookEvent, matched
 	return results
 }
 
+// collectTerminalSequences gathers the non-empty terminalSequence each output
+// carried, in dispatch order. Every collector that reports one uses this, so a
+// sequence cannot be dropped by one event's aggregation and delivered by
+// another's.
+func collectTerminalSequences(outputs []parsedHookOutput) []string {
+	var seqs []string
+	for _, o := range outputs {
+		if o.TerminalSequence != "" {
+			seqs = append(seqs, o.TerminalSequence)
+		}
+	}
+	return seqs
+}
+
 // RunPreToolUse dispatches PreToolUse hooks and aggregates results.
 // Any deny from any hook means denied.
 func (r *Runner) RunPreToolUse(ctx context.Context, input Input) PreToolUseResult {
 	outputs := r.runAll(ctx, plugin.HookPreToolUse, input.ToolName, input)
-	var result PreToolUseResult
+	result := PreToolUseResult{TerminalSequences: collectTerminalSequences(outputs)}
 	for _, o := range outputs {
 		applyStopped(plugin.HookPreToolUse, o, &result.Stopped, &result.StopReason)
-		if o.TerminalSequence != "" {
-			result.TerminalSequences = append(result.TerminalSequences, o.TerminalSequence)
-		}
 		denied := false
 		switch o.PermissionDecision {
 		case "deny":
@@ -767,12 +801,9 @@ func (r *Runner) RunSubagentStopFor(ctx context.Context, input Input, agentType 
 // whose matcher was not "*"/empty.) SubagentStop targets the child's agent type.
 func (r *Runner) runStopEventFor(ctx context.Context, event plugin.HookEvent, input Input, target string) StopResult {
 	outputs := r.runEvent(ctx, event, target, input)
-	var result StopResult
+	result := StopResult{TerminalSequences: collectTerminalSequences(outputs)}
 	for _, o := range outputs {
 		applyStopped(event, o, &result.Stopped, &result.StopReason)
-		if o.TerminalSequence != "" {
-			result.TerminalSequences = append(result.TerminalSequences, o.TerminalSequence)
-		}
 		if o.Blocked || (exitBehavior(event).BlockOnExit2 && o.RawExitCode == 2) {
 			result.Blocked = true
 			if result.BlockReason == "" {
@@ -847,11 +878,8 @@ func (r *Runner) RunPreCompactFor(ctx context.Context, input Input, trigger stri
 // carried for a delivery site PostCompact does not yet have.
 func (r *Runner) RunPostCompactFor(ctx context.Context, input Input, trigger string) RunResult {
 	outputs := r.runAll(ctx, plugin.HookPostCompact, trigger, input)
-	var result RunResult
+	result := RunResult{TerminalSequences: collectTerminalSequences(outputs)}
 	for _, o := range outputs {
-		if o.TerminalSequence != "" {
-			result.TerminalSequences = append(result.TerminalSequences, o.TerminalSequence)
-		}
 		if o.IsError {
 			if o.SystemMessage != "" {
 				result.UserMessages = append(result.UserMessages, o.SystemMessage)
@@ -880,13 +908,7 @@ func (r *Runner) RunNotification(ctx context.Context, input Input) RunResult {
 // it is carried for a delivery site StopFailure does not yet have.
 func (r *Runner) RunStopFailureFor(ctx context.Context, input Input, errorName string) RunResult {
 	outputs := r.runAll(ctx, plugin.HookStopFailure, errorName, input)
-	var result RunResult
-	for _, o := range outputs {
-		if o.TerminalSequence != "" {
-			result.TerminalSequences = append(result.TerminalSequences, o.TerminalSequence)
-		}
-	}
-	return result
+	return RunResult{TerminalSequences: collectTerminalSequences(outputs)}
 }
 
 // routeOutput places one parsed hook output into the model/user buckets for the
@@ -944,12 +966,9 @@ func applyStopped(event plugin.HookEvent, o parsedHookOutput, stopped *bool, sto
 // collectSystemMessages aggregates system messages, additional context, and terminal
 // sequences from parsed outputs, and routes into ModelContext/UserMessages buckets.
 func collectSystemMessages(event plugin.HookEvent, outputs []parsedHookOutput) RunResult {
-	var result RunResult
+	result := RunResult{TerminalSequences: collectTerminalSequences(outputs)}
 	for _, o := range outputs {
 		applyStopped(event, o, &result.Stopped, &result.StopReason)
-		if o.TerminalSequence != "" {
-			result.TerminalSequences = append(result.TerminalSequences, o.TerminalSequence)
-		}
 		routeOutput(event, o, &result.ModelContext, &result.UserMessages)
 	}
 	return result
@@ -963,7 +982,7 @@ func collectSystemMessages(event plugin.HookEvent, outputs []parsedHookOutput) R
 // field still routes normally.
 func collectPostToolBatchMessages(outputs []parsedHookOutput) RunResult {
 	blockOnExit2 := exitBehavior(plugin.HookPostToolBatch).BlockOnExit2
-	var result RunResult
+	result := RunResult{TerminalSequences: collectTerminalSequences(outputs)}
 	for _, o := range outputs {
 		applyStopped(plugin.HookPostToolBatch, o, &result.Stopped, &result.StopReason)
 		blocked := o.Blocked || (blockOnExit2 && o.RawExitCode == 2)
@@ -980,9 +999,6 @@ func collectPostToolBatchMessages(outputs []parsedHookOutput) RunResult {
 					result.StopReason = firstLine(o.SystemMessage)
 				}
 			}
-		}
-		if o.TerminalSequence != "" {
-			result.TerminalSequences = append(result.TerminalSequences, o.TerminalSequence)
 		}
 		if !blocked || !o.IsError {
 			routeOutput(plugin.HookPostToolBatch, o, &result.ModelContext, &result.UserMessages)

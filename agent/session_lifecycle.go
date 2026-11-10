@@ -175,18 +175,14 @@ func (s *Session) idleForPromptExit() bool {
 	if !idle {
 		return false
 	}
-	// The same job/delegate gate the idle-runtime release uses
-	// (idleReleasePregatesClear): a running job, a pending terminal flush, or a
-	// watch send still owed is work the session owns.
-	if s.jobManager != nil && (s.jobManager.hasPendingWatchSends() || s.jobManager.hasRuntimeObligations()) {
-		return false
-	}
-	if s.subagents != nil && s.subagents.hasRunningChildren() {
-		return false
-	}
-	// Queued input, undelivered notifications, and undealt attention are work
-	// the session owns, so the prompt was not the only thing left standing.
-	return !s.sessionWorkPending()
+	// The gates the idle-runtime release itself applies
+	// (idleReleasePregatesClear), so a claim made here and a release that path
+	// would refuse cannot disagree: a running job, a pending terminal flush, a
+	// watch send still owed, a running child, or an unconsumed delivery, close,
+	// or restore residue all mean the prompt was not the only thing left
+	// standing. Queued input, undelivered notifications, and undealt attention
+	// count too.
+	return s.idleReleasePregatesClear() && !s.sessionWorkPending()
 }
 
 // releaseRuntime runs the session's single one-time teardown under an explicit
@@ -768,7 +764,7 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 
 		if !retirement {
 			// SessionEnd hooks (best-effort, bounded timeout)
-			if s.hookRunner != nil {
+			if s.hookRunner != nil && s.hookRunner.Has(plugin.HookSessionEnd) {
 				hookCtx, hookCancel := context.WithTimeout(context.Background(), 10*time.Second)
 				in := s.hookInput(plugin.HookSessionEnd)
 				in.Reason = sessionEndReason
@@ -2163,7 +2159,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	s.comm = communicateResult{}
 	// stop_hook_active is per turn: a continuation a Stop hook blocked into this
 	// turn must not leak into the next one.
-	s.stopHookActive = false
+	s.stopHookActive.Store(false)
 	// A tool post-hook's continue:false belongs to the round that raised it; the
 	// round loop consumes it, and a new turn must not inherit an unconsumed one.
 	s.toolHookStop = false
@@ -2664,7 +2660,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		s.mu.Unlock()
 		batchBlocked := toolHookStopped
 		batchStop := toolHookStopReason
-		if s.hookRunner != nil && len(calls) > 0 {
+		// A session whose plugins register no PostToolBatch hook skips building
+		// and parsing every call this round; the gate is the same one the
+		// dispatch would apply, in front of the work it needs.
+		if s.hookRunner != nil && s.hookRunner.Has(plugin.HookPostToolBatch) && len(calls) > 0 {
 			hi := s.hookInput(plugin.HookPostToolBatch)
 			hi.ToolCalls = s.batchToolCalls(calls, results)
 			batchRes := s.hookRunner.RunPostToolBatch(s.apiLogContext(ctx), hi)
@@ -2734,12 +2733,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// firstLineClamp bounds the reason: it becomes a warning AND a steering
 		// turn, and multi-line shell stderr must not fill the transcript.
 		if batchBlocked {
-			batchStop = firstLineClamp(batchStop, maxHookStopReasonRunes)
-			if batchStop == "" {
-				// A block with no stated reason still ends the turn with a
-				// legible line, rather than a silent stop.
-				batchStop = "a tool hook stopped this round"
-			}
+			// A block with no stated reason still ends the turn with a legible
+			// line, rather than a silent stop.
+			batchStop = s.hookStopText(firstLineClamp(batchStop, maxHookStopReasonRunes), "a tool hook stopped this round")
 			s.deliverHookUserMessage(batchStop)
 			s.appendSteeringTurn(batchStop, events.SteeringKindHookContext)
 			s.finishProcessingAtFailureBoundary(ctx)
@@ -3092,10 +3088,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 		// reason is delivered to the user now and carried to the turn loop, which
 		// ends the turn before its first request (see promptHookStop).
 		if result.Stopped {
-			reason := strings.TrimSpace(result.StopReason)
-			if reason == "" {
-				reason = "UserPromptSubmit hook stopped this prompt"
-			}
+			reason := s.hookStopText(result.StopReason, "UserPromptSubmit hook stopped this prompt")
 			s.deliverHookUserMessage(reason)
 			s.mu.Lock()
 			s.promptHookStop = reason

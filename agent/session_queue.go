@@ -397,6 +397,17 @@ func (s *Session) deliverHookUserMessage(text string) {
 	s.emitDiagnosticWarning(events.WarningData{Source: string(diagnostic.SourceHook), Message: text})
 }
 
+// hookStopText trims a hook's stop reason and supplies the event's fallback when
+// it is empty, so every site that ends an action on continue:false reports it
+// the same way. It does not deliver: the call sites need the text as well as the
+// warning.
+func (s *Session) hookStopText(reason, fallback string) string {
+	if trimmed := strings.TrimSpace(reason); trimmed != "" {
+		return trimmed
+	}
+	return fallback
+}
+
 // FollowUp queues a message to process after the current input completes.
 func (s *Session) FollowUp(msg string) error {
 	release, err := s.beginRetirementMutation("input")

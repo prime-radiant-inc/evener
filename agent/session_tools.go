@@ -807,8 +807,10 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		s.emit(events.EventToolCallRepaired, repaired)
 	}
 
-	// PreToolUse hooks
-	if s.hookRunner != nil {
+	// PreToolUse hooks. A runner with none registered skips building the input
+	// and dispatching a hook that cannot run; the zero result is what an unmatched
+	// dispatch returns anyway.
+	if s.hookRunner != nil && s.hookRunner.Has(plugin.HookPreToolUse) {
 		hi := s.toolHookInput(plugin.HookPreToolUse, call, prep.RawArgumentsRejected)
 
 		preResult := s.hookRunner.RunPreToolUse(s.apiLogContext(ctx), hi)
@@ -827,10 +829,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		// stop_hook_active reset below: the work a Stop hook's block asked for is
 		// still undone.
 		if !prep.RawArgumentsRejected && preResult.Stopped {
-			stopMsg := strings.TrimSpace(preResult.StopReason)
-			if stopMsg == "" {
-				stopMsg = "Tool call stopped by hook"
-			}
+			stopMsg := s.hookStopText(preResult.StopReason, "Tool call stopped by hook")
 			return tool.ExecResult{
 				ToolName:   call.Name,
 				CallID:     call.ID,
@@ -962,9 +961,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		// tool that never ran cannot clear it, so the clear sits here — past both
 		// closing checks and past a validation-only result, at the call that
 		// actually dispatches.
-		s.mu.Lock()
-		s.stopHookActive = false
-		s.mu.Unlock()
+		s.stopHookActive.Store(false)
 		if prevalidated {
 			res = s.reg.ExecutePreparedCall(ctx, s.currentEnv(), call)
 		} else {
@@ -1051,7 +1048,9 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	// shell exit is a SUCCESS here (agent/transcript/failures.go, Jesse's
 	// 2026-10-16 ruling — that rule also drives transcript glyphs, failure
 	// counts, and loop detection).
-	if s.hookRunner != nil {
+	// A runner with neither post-tool event registered skips building an input
+	// for a dispatch that cannot match; every result it would carry is zero.
+	if s.hookRunner != nil && (s.hookRunner.Has(plugin.HookPostToolUse) || s.hookRunner.Has(plugin.HookPostToolUseFailure)) {
 		var hookResult hooks.RunResult
 		switch {
 		case !res.IsError:

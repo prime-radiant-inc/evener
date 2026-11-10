@@ -571,14 +571,26 @@ func (s *Session) fireNotificationHook(message, title string) {
 	s.runNotificationHook(ctx, message, title)
 }
 
-func warningHookMessage(data events.EventData) string {
+// warningData is the warning payload an event carries, and whether it carries
+// one at all. A nil *WarningData is "no payload": both readers treat it as not a
+// warning.
+func warningData(data events.EventData) (events.WarningData, bool) {
 	switch v := data.(type) {
 	case events.WarningData:
-		return v.Message
+		return v, true
 	case *events.WarningData:
 		if v != nil {
-			return v.Message
+			return *v, true
 		}
+	}
+	return events.WarningData{}, false
+}
+
+// warningHookMessage is the warning's message text, or the event's own printing
+// when the event is not a warning. It is the Notification hook's "message" field.
+func warningHookMessage(data events.EventData) string {
+	if v, ok := warningData(data); ok {
+		return v.Message
 	}
 	return fmt.Sprint(data)
 }
@@ -587,15 +599,8 @@ func warningHookMessage(data events.EventData) string {
 // the Notification hook's "title" field, so a hook renders the same heading the
 // user sees.
 func warningHookTitle(data events.EventData) string {
-	switch v := data.(type) {
-	case events.WarningData:
-		return v.Title
-	case *events.WarningData:
-		if v != nil {
-			return v.Title
-		}
-	}
-	return ""
+	v, _ := warningData(data)
+	return v.Title
 }
 
 // notificationHookType is the Claude notification_type evener emits. Evener has
