@@ -1,6 +1,6 @@
 import { useCallback, useSyncExternalStore } from "react";
 
-const MOBILE_QUERY = "(max-width: 899px)";
+export const MOBILE_QUERY = "(max-width: 899px)";
 type ViewportListener = () => void;
 type MatchMediaFactory = typeof window.matchMedia;
 

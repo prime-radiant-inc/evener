@@ -5,7 +5,8 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { expect, test, vi } from "vitest";
-import { readModuleCss } from "../../styles/cssBlock";
+import { MOBILE_QUERY } from "../../shell/useIsMobile";
+import { escapeRegExp, readModuleCss } from "../../styles/cssBlock";
 import { Select } from "./index";
 
 const OPTIONS = [
@@ -127,6 +128,8 @@ test("keeps the native select at 32px on desktop and the mobile touch floor", ()
   const css = readModuleCss(import.meta.url, "select.module.css");
   expect(css).toMatch(/\.select\s*\{[^}]*height:\s*32px/);
   expect(css).toMatch(
-    /@media \(max-width: 899px\), \(any-pointer: coarse\) \{[\s\S]*?\.select\s*\{[^}]*min-height:\s*var\(--tap-min\)/,
+    new RegExp(
+      `@media ${escapeRegExp(MOBILE_QUERY)}, \\(any-pointer: coarse\\) \\{[\\s\\S]*?\\.select\\s*\\{[^}]*min-height:\\s*var\\(--tap-min\\)`,
+    ),
   );
 });

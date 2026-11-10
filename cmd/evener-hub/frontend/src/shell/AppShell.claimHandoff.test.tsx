@@ -32,6 +32,7 @@ import { resetDockChunkForTests } from "./DockRegion";
 import { type DockHostModule, resetDockHostLoaderForTests, setDockHostImporterForTests } from "./dockHostChunk";
 import { conversationPaneLifetime } from "./paneLifetime";
 import { navigate } from "./routing";
+import { MOBILE_QUERY } from "./useIsMobile";
 import { getDockviewApi, type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
 let cache: SessionEntryCache;
@@ -233,7 +234,7 @@ test.each([
 test("pre-event media snapshot cannot replace the host before preparation", async () => {
   const fixture = await mountHost(false);
   const desktop = getDockviewApi();
-  const media = window.matchMedia("(max-width: 899px)");
+  const media = window.matchMedia(MOBILE_QUERY);
   vi.spyOn(media, "matches", "get").mockReturnValue(true);
   fixture.view.rerender(<AppShell client={fixture.client} bannerDelayMs={0} />);
   expect(getDockviewApi()).toBe(desktop);

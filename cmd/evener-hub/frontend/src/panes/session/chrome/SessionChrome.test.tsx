@@ -20,6 +20,7 @@ import {
 import { ClientProvider } from "../../../shell/clientContext";
 import { resetFocusedActivityScopeForTests } from "../../../shell/focusedSession";
 import { registerPaneForTests } from "../../../shell/paneRegistry";
+import { MOBILE_QUERY } from "../../../shell/useIsMobile";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../../stores/navigation/store";
@@ -27,6 +28,7 @@ import { sessionActivitySnapshot } from "../../../stores/sessionActivity";
 import { activityClient, activitySummary } from "../../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../../stores/transcriptDisplay";
+import { escapeRegExp } from "../../../styles/cssBlock";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
 import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { installMobileViewport } from "../testing/mobileViewport";
@@ -1045,7 +1047,7 @@ test("the cadence slot is desktop-hidden and mobile-shown (CSS source, jsdom has
   const base = css.match(/\.cadenceSlot \{([^}]*)\}/);
   expect(base).not.toBeNull();
   expect(base![1]).toContain("display: none");
-  const mobile = css.match(/@media \(max-width: 899px\) \{([\s\S]*?)\n\}/);
+  const mobile = css.match(new RegExp(`@media ${escapeRegExp(MOBILE_QUERY)} \\{([\\s\\S]*?)\\n\\}`));
   expect(mobile).not.toBeNull();
   const slot = mobile![1]!.match(/\.cadenceSlot \{([^}]*)\}/);
   expect(slot).not.toBeNull();
