@@ -139,3 +139,27 @@ func TestCanonicalizingCandidatesRegistersOnlyRetainedEntries(t *testing.T) {
 		t.Fatalf("canonicalizing a never-retained candidate registered %d live entries", registered)
 	}
 }
+
+func TestRetainedCursorMemoFollowsATokenChange(t *testing.T) {
+	operations := &sessionOperations{}
+	result := transcriptItemCandidateResult{Identity: appitempaging.CursorIdentity{ThreadRef: "local:thread", Incarnation: "memo-view", ProjectionVersion: 1}}
+	options := transcriptWindowOptionsFor(result, appwire.ThreadWindowParams{}, 1,
+		transcriptWindowAppliedByServingDaemon, appitempaging.FetchCursorOriginServingDaemon)
+	operations.retainCanonicalWindowOptions(&options)
+	candidate := appitempaging.TranscriptItemCandidate{
+		TurnID:   "turn-1",
+		Item:     appwire.ThreadItem{ID: "item", Type: "agentMessage", Version: 1},
+		Position: appwire.ThreadItemPosition{Entry: 1},
+	}
+	first, err := options.MintFetchCursor(candidate, "0123456789abcdef-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := options.MintFetchCursor(candidate, "0123456789abcdef-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("a retried pack after eviction received the cursor for the retired token")
+	}
+}

@@ -63,11 +63,15 @@ func (o *sessionOperations) retainCanonicalWindowOptions(options *transcriptWind
 	type itemKey struct {
 		position appwire.ThreadItemPosition
 		version  uint64
+		// token identifies the retained entry the cursor was minted for. An
+		// eviction during budget trimming gives the retried item a new token,
+		// and a memo keyed without it would hand back the retired one.
+		token string
 	}
 	encodedCursors := make(map[itemKey]string)
 	mintFetchCursor := options.MintFetchCursor
 	options.MintFetchCursor = func(candidate appitempaging.TranscriptItemCandidate, token string) (string, error) {
-		key := itemKey{position: candidate.Position, version: candidate.Item.Version}
+		key := itemKey{position: candidate.Position, version: candidate.Item.Version, token: token}
 		if cursor := encodedCursors[key]; cursor != "" {
 			return cursor, nil
 		}
