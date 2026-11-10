@@ -94,8 +94,11 @@ func parseGoTestJSON(r io.Reader, expected []string) ([]string, error) {
 			var ev timingEvent
 			// A truncated or malformed line is not a measurement.
 			err := json.Unmarshal([]byte(line), &ev)
-			if err == nil && ev.Action == "output" && ev.Test == "" && ev.Package != "" {
+			if err == nil && ev.Action == "output" && ev.Package != "" {
 				// test-cpu-exec's line: the CPU the package's test binary spent.
+				// It follows the binary's exit, so when a test never ended (a
+				// -timeout panic) test2json attributes it to that test; it is
+				// the package's line wherever it lands.
 				if secs, ok := strings.CutPrefix(strings.TrimSpace(ev.Output), testCPUMarker+"\t"); ok {
 					if _, perr := strconv.ParseFloat(secs, 64); perr == nil {
 						pkgCPU[ev.Package] = secs
