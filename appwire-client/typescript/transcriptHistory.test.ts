@@ -703,6 +703,13 @@ test("hydrateThread maps evener.pendingEscalations verbatim into pendingEscalati
   expect(model.pendingEscalations).toEqual([escalation]);
 });
 
+// EvenerThread.kind is how a past read names a fork child. The token
+// fallback reads it to avoid charging the child's inherited prefix.
+test("hydrateThread carries the wire's thread kind", () => {
+  expect(testHydrate({ evener: { kind: "fork" } }).kind).toBe("fork");
+  expect(testHydrate().kind).toBeUndefined();
+});
+
 test("hydrateThread defaults pendingEscalations to an empty array when evener.pendingEscalations is absent", () => {
   const model = testHydrate();
   expect(model.pendingEscalations).toEqual([]);

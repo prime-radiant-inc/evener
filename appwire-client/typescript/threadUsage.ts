@@ -84,6 +84,18 @@ export function sessionTokens(model: ThreadModel): SessionTokens | null {
     if (inputTokens > 0 || outputTokens > 0) return { inputTokens, outputTokens, scope: "session" };
   }
 
+  // A fork child's transcript opens with a verbatim copy of the parent's
+  // prefix; those turns' usage was the parent's spend. The hub derives a
+  // divergence-scoped total for forks (app_threadread.go's
+  // stampDerivedTotals), and the cumulative branch above prefers it. When it
+  // is absent (an older producer, or the live daemon path, which does not
+  // stamp kind for forks) the client cannot tell where the child's own
+  // history begins, so it must report no total rather than charge the
+  // inherited prefix to the child. A fork's own spend is then unknown here;
+  // reporting nothing is the honest answer where the plain sum would report
+  // the parent's.
+  if (model.kind === "fork") return null;
+
   let inputTokens = 0;
   let outputTokens = 0;
   for (const turn of model.turns) {
