@@ -464,7 +464,8 @@ native:.:./internal/bundled:FuzzAssets
 native:.:./internal/fuzzroutes:FuzzReadOnly
 native:.:./internal/httpguard:FuzzHubTokenAuthorized
 native:.:./internal/httpguard:FuzzPolicy
-native:.:./internal/maketargetsdoc:FuzzParseFamily
+native:.:./internal/maketargetsdoc:FuzzRenderRewrite
+native:.:./internal/maketargetsdoc/makefile:FuzzParseFamily
 native:.:./internal/selfupdate:FuzzResolveTarget
 native:.:./test/scenarios:FuzzScenarioStateRule
 native:.:./tools/tool-fluency/cmd/evener-fluency:FuzzFluencyParsers
