@@ -362,7 +362,7 @@ class ThreadSubscriptions {
     const pending = member.pendingAsk?.threadId === thread.id ? member.pendingAsk : undefined;
     const earlyAsk = pending?.askPending;
     member.pendingAsk = undefined;
-    if (member.metadata?.threadId !== thread.id) member.askAuthoritative = false;
+    if (member.metadata?.threadId !== thread.id && member.statusThreadId !== thread.id) member.askAuthoritative = false;
     const askPending =
       earlyAsk !== undefined
         ? earlyAsk

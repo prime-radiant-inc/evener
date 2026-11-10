@@ -552,6 +552,53 @@ test("a resync discards an askPending frame received before the recovery snapsho
   lease.release();
 });
 
+test("a live ask frame survives the replacement thread's delayed snapshot", async () => {
+  const client = activityClient();
+  const replacement = deferred<ThreadReadResponse>(),
+    entered = deferred<void>();
+  const old: ThreadReadResponse = {
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-old",
+      sessionId: "root-session",
+      status: { type: "idle" },
+      evener: { ...threadFixture().thread.evener, askPending: false },
+    },
+  };
+  const fresh: ThreadReadResponse = {
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-new",
+      sessionId: "root-session",
+      status: { type: "idle" },
+      evener: { ...threadFixture().thread.evener, askPending: false },
+    },
+  };
+  let reads = 0;
+  client.on("thread/read", () => {
+    reads += 1;
+    if (reads === 1) return old;
+    entered.resolve();
+    return replacement.promise;
+  });
+  const lease = acquireThreadSubscription(client, activityRef);
+  await lease.ensure();
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref: activityRef, threadId: "wire-new" },
+  });
+  const reading = lease.read({ includeTurns: true });
+  await entered.promise;
+  client.emitNotification({
+    method: "thread/status/changed",
+    params: { ref: activityRef, threadId: "wire-new", status: { type: "awaiting" }, askPending: true },
+  });
+  replacement.resolve(fresh);
+  await reading;
+  expect(lease.metadata?.()?.askPending).toBe(true);
+  lease.release();
+});
+
 test("a read in flight across a resync cannot reseed stale ask metadata", async () => {
   const client = activityClient(),
     old = deferred<ThreadReadResponse>(),
