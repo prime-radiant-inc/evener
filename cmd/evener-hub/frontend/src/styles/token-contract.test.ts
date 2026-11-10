@@ -1209,7 +1209,8 @@ test("does not flag outline or box-shadow mentioned only in comments", () => {
 const GLOBAL_CSS = STYLESHEETS["styles/global.css"]!;
 
 function cssPxToken(cssText: string, name: string): number {
-  const match = new RegExp(`${name}\\s*:\\s*([\\d.]+)px\\s*;`).exec(cssText);
+  const value = declaredToken(cssText, name);
+  const match = value === undefined ? null : /^([\d.]+)px$/.exec(value);
   if (!match) throw new Error(`token-contract: ${name} is not declared in px`);
   return Number(match[1]);
 }
