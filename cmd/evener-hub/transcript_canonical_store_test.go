@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appitempaging"
 )
 
 func TestTranscriptCanonicalStoreEvictsLeastRecentlyUsedBytes(t *testing.T) {
@@ -92,5 +93,30 @@ func TestEvictedFetchTokenIsNeverReissued(t *testing.T) {
 	}
 	if second := store.tokenFor(triple); second == first {
 		t.Fatalf("evicted token %q was reissued, so an outstanding cursor could revive", first)
+	}
+}
+
+func TestCanonicalizingCandidatesRegistersOnlyRetainedEntries(t *testing.T) {
+	operations := &sessionOperations{}
+	options := transcriptWindowOptionsFor(transcriptItemCandidateResult{}, appwire.ThreadWindowParams{}, 1,
+		transcriptWindowAppliedByServingDaemon, appitempaging.FetchCursorOriginServingDaemon)
+	operations.retainCanonicalWindowOptions(&options)
+	candidate := appitempaging.TranscriptItemCandidate{
+		Item:     appwire.ThreadItem{ID: "item", Type: "agentMessage", Version: 1},
+		Position: appwire.ThreadItemPosition{Entry: 1},
+	}
+	canonical, err := options.CanonicalizeCandidates([]appitempaging.TranscriptItemCandidate{candidate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(canonical) != 1 {
+		t.Fatalf("canonical candidates = %d, want the untouched candidate", len(canonical))
+	}
+	store := operations.canonicalItemStore()
+	store.mu.Lock()
+	registered := len(store.live)
+	store.mu.Unlock()
+	if registered != 0 {
+		t.Fatalf("canonicalizing a never-retained candidate registered %d live entries", registered)
 	}
 }

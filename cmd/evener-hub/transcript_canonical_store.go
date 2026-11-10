@@ -33,17 +33,22 @@ type transcriptCanonicalStore struct {
 	// triple receives a new token and an older cursor cannot be revived.
 	live    map[string]string
 	triples map[string]string
-	prefix  string
-	next    uint64
+	// remoteTokens maps a controller-retained entry to the owning hub's token
+	// for the same item, so a fetch can forward that token without letting it
+	// double as the controller's cache key.
+	remoteTokens map[string]string
+	prefix       string
+	next         uint64
 }
 
 func newTranscriptCanonicalStore(maxBytes int) *transcriptCanonicalStore {
 	return &transcriptCanonicalStore{
-		maxBytes: maxBytes,
-		entries:  make(map[string]*list.Element),
-		live:     make(map[string]string),
-		triples:  make(map[string]string),
-		prefix:   fmt.Sprintf("%016x", rand.Uint64()),
+		maxBytes:     maxBytes,
+		entries:      make(map[string]*list.Element),
+		live:         make(map[string]string),
+		triples:      make(map[string]string),
+		remoteTokens: make(map[string]string),
+		prefix:       fmt.Sprintf("%016x", rand.Uint64()),
 	}
 }
 
@@ -60,6 +65,33 @@ func (s *transcriptCanonicalStore) tokenFor(triple string) string {
 	s.live[triple] = token
 	s.triples[token] = triple
 	return token
+}
+
+// retainedToken returns the token of the entry currently live for an item
+// identity triple without assigning one. Canonicalization uses it so a
+// candidate that is filtered or truncated away registers no entry.
+func (s *transcriptCanonicalStore) retainedToken(triple string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	token := s.live[triple]
+	return token, token != ""
+}
+
+// retainRemoteToken records the owning hub's token for a controller-retained
+// entry. The mapping lives exactly as long as that entry.
+func (s *transcriptCanonicalStore) retainRemoteToken(key, remoteToken string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.remoteTokens[key] = remoteToken
+}
+
+// remoteToken returns the owning hub's token recorded for a controller-retained
+// entry.
+func (s *transcriptCanonicalStore) remoteToken(key string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	token, ok := s.remoteTokens[key]
+	return token, ok
 }
 
 func (s *transcriptCanonicalStore) putItem(key string, item appwire.ThreadItem) error {
@@ -110,6 +142,7 @@ func (s *transcriptCanonicalStore) putOwnedTriple(key, triple string, data []byt
 			delete(s.live, entry.triple)
 		}
 		delete(s.triples, entry.key)
+		delete(s.remoteTokens, entry.key)
 		s.bytes -= len(entry.data)
 		s.order.Remove(oldest)
 	}

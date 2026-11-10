@@ -90,9 +90,12 @@ func (o *sessionOperations) retainCanonicalWindowOptions(options *transcriptWind
 			if canonical[index].Item.Version == 0 {
 				continue
 			}
-			token, err := options.fetchToken(canonical[index])
-			if err != nil {
-				return nil, err
+			if options.fetchTokens == nil {
+				continue
+			}
+			token, ok := store.retainedToken(fetchEntryTriple(options.fetchTokens.identity, canonical[index]))
+			if !ok {
+				continue
 			}
 			retained, ok := store.borrow(token)
 			if !ok {
@@ -142,12 +145,15 @@ func (o *sessionOperations) retainRemoteWindowItems(
 			}
 		}
 	}
-	for _, turn := range window.Turns {
-		for _, visible := range turn.Items {
+	store := o.canonicalItemStore()
+	for turnIndex := range window.Turns {
+		items := window.Turns[turnIndex].Items
+		for itemIndex := range items {
+			visible := &items[itemIndex]
 			if visible.FetchCursor == "" {
 				continue
 			}
-			cursor, _, err := appitempaging.DecodeFetchCursorForRef(visible.FetchCursor, ref)
+			cursor, identity, err := appitempaging.DecodeFetchCursorForRef(visible.FetchCursor, ref)
 			if err != nil {
 				return err
 			}
@@ -163,12 +169,32 @@ func (o *sessionOperations) retainRemoteWindowItems(
 				// the fetch-time version fence, not to the read that minted it.
 				continue
 			}
-			if err := o.canonicalItemStore().putItem(cursor.Token, item); err != nil {
+			key := store.tokenFor(remoteCanonicalTriple(identity, cursor.Token))
+			// The owning hub's token is stable across re-retentions, so it cannot
+			// tell this retained encoding from one enriched after an eviction.
+			// The cursor carries the controller's own token instead, and the
+			// fetch forwards the recorded remote token for the remote hop.
+			store.retainRemoteToken(key, cursor.Token)
+			if err := store.putItem(key, item); err != nil {
+				return err
+			}
+			cursor.Token = key
+			visible.FetchCursor, err = appitempaging.EncodeFetchCursor(identity, cursor)
+			if err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// remoteCanonicalTriple names the controller-owned retention entry for a
+// remote hub's fetch token. The remote mints that token for its own encoding,
+// and the controller retains the enriched copy it measured under a token of
+// its own, so an eviction or restart retires the cursor instead of reviving it
+// against bytes enriched from a newer source item.
+func remoteCanonicalTriple(identity appitempaging.CursorIdentity, token string) string {
+	return "remote\x00" + identity.ThreadRef + "\x00" + identity.Incarnation + "\x00" + token
 }
 
 type boundSessionOperations struct {
@@ -599,6 +625,15 @@ func (o *sessionOperations) fetch(ctx context.Context, request appwire.SessionFe
 	}
 	requestedCursor := cursor
 	cursor.Offset = 0
+	if cursor.Origin == appitempaging.FetchCursorOriginRemoteSource {
+		// Forward the owning hub's token when the controller still holds the
+		// entry it was recorded with. Without one the remote hop still runs and
+		// answers its own typed error; the local borrow below then reports the
+		// controller's loss as stale rather than preempting that answer.
+		if remoteToken, ok := o.canonicalItemStore().remoteToken(cursor.Token); ok {
+			cursor.Token = remoteToken
+		}
+	}
 	validationCursor, err := appitempaging.EncodeFetchCursor(identity, cursor)
 	if err != nil {
 		return appwire.SessionFetchResponse{}, err
@@ -1138,6 +1173,23 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		}
 	}
 	read, err := liveThreadRead(ctx, relays, source, sourceParams, capture, params.LiveOnly)
+	if remoteSavedWindowAttempt && params.TurnWindow.Latest > 0 &&
+		((err != nil && isWindowUnsupportedOnDaemonError(err)) || (err == nil && read.response.Window == nil)) {
+		// An older remote hub cannot serve window fields for a live session.
+		// Rebuild the latest window from its legacy pages, exactly as a local
+		// older daemon's latest window is rebuilt; non-latest reads keep the
+		// typed failure instead.
+		if read != nil {
+			read.finish(false)
+			read = nil
+		}
+		err = nil
+		remoteSavedWindowAttempt = false
+		hubCompatibility = true
+		sourceParams.ThreadWindowParams = appwire.ThreadWindowParams{}
+		sourceParams.ItemLimit = appwire.TranscriptItemPageLimit
+		read, err = relays.readThreadWithSubscription(ctx, source, sourceParams, capture)
+	}
 	if err == nil && params.LiveOnly && liveReadDaemonless(read.response) {
 		// A remote hub that loses its daemon answers a non-subscribing read from
 		// its saved transcript. LiveOnly is hub-internal and never crosses the

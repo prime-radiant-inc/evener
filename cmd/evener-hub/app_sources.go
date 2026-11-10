@@ -225,21 +225,44 @@ func (lookup deletionTargetLookup) fenceError(cfg hubcore.WebConfig, ref, thread
 // follows. Reading only the typed shape would let a real deletion be wrapped as
 // an unknown mutation outcome instead of reported as the deletion it is.
 func isTargetDeletedError(err error) bool {
+	data, ok := typedWireErrorData(err)
+	if !ok {
+		return false
+	}
+	return data.MutationOutcome == appwire.MutationOutcomeTargetDeleted
+}
+
+// isWindowUnsupportedOnDaemonError reports whether err is the typed refusal of
+// a daemon that predates transcript windows, including one that crossed a
+// remote hub hop.
+func isWindowUnsupportedOnDaemonError(err error) bool {
+	data, ok := typedWireErrorData(err)
+	if !ok {
+		return false
+	}
+	return data.EvenerErrorInfo == appwire.ErrorWindowUnsupportedOnDaemon
+}
+
+// typedWireErrorData returns the error data carried by a wire error. The wire
+// client decodes Data as the typed appwire.ErrorData on some paths and as
+// map[string]any on others, so a shape that is not already typed is
+// re-marshaled rather than asserted.
+func typedWireErrorData(err error) (appwire.ErrorData, bool) {
 	wireErr, ok := wireErrorFromError(err)
 	if !ok || wireErr.Data == nil {
-		return false
+		return appwire.ErrorData{}, false
 	}
 	data, ok := wireErr.Data.(appwire.ErrorData)
 	if !ok {
 		raw, merr := json.Marshal(wireErr.Data)
 		if merr != nil {
-			return false
+			return appwire.ErrorData{}, false
 		}
 		if json.Unmarshal(raw, &data) != nil {
-			return false
+			return appwire.ErrorData{}, false
 		}
 	}
-	return data.MutationOutcome == appwire.MutationOutcomeTargetDeleted
+	return data, true
 }
 
 func deletionThreadID(ref, threadID string) string {
