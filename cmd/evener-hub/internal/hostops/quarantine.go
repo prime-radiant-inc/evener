@@ -1003,13 +1003,12 @@ func newerStoreVersion(fs afero.Fs, path string) (uint64, bool, error) {
 	var header struct {
 		Version *uint64 `json:"version"`
 	}
-	if err := json.Unmarshal(raw, &header); err != nil || header.Version == nil {
-		return 0, false, nil
+	// Malformed JSON and a document without a version are damage, not a newer
+	// build's file: only a parsed numeric version above storeVersion qualifies.
+	if decodeErr := json.Unmarshal(raw, &header); decodeErr == nil && header.Version != nil && *header.Version > storeVersion {
+		return *header.Version, true, nil
 	}
-	if *header.Version <= storeVersion {
-		return 0, false, nil
-	}
-	return *header.Version, true, nil
+	return 0, false, nil
 }
 
 // allocatorEpochStride is the id space one quarantine epoch owns when its
