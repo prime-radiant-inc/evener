@@ -87,7 +87,7 @@ func (s *Session) reserveStartAfterFinalization(ctx context.Context, actor deleg
 	for ok {
 		if !channelClosed(finalizing.released) {
 			if expired {
-				return nil, errDelegateTargetBusy
+				return nil, finalizationOutwaited()
 			}
 			if observe := s.cfg.testOnly.delegateSendAwaitingFinalization; observe != nil {
 				observe()
@@ -102,7 +102,7 @@ func (s *Session) reserveStartAfterFinalization(ctx context.Context, actor deleg
 				// The ceiling covers the whole attempt: it fires once.
 				expired = true
 				if !channelClosed(finalizing.released) {
-					return nil, errDelegateTargetBusy
+					return nil, finalizationOutwaited()
 				}
 			}
 		}
@@ -110,6 +110,10 @@ func (s *Session) reserveStartAfterFinalization(ctx context.Context, actor deleg
 		finalizing, ok = errors.AsType[delegateFinalizingError](err)
 	}
 	return reservation, err
+}
+
+func finalizationOutwaited() error {
+	return delegateBusyError{reason: delegateBusyFinalizing, retryAfter: delegateFinalizationRetryAfter}
 }
 
 // channelClosed reports whether ch is closed, without blocking. A nil channel
@@ -202,7 +206,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	if committedChildID != "" {
 		if !s.claimChildCommittedSendStart(committedChildID) {
 			_ = s.delegateController.AbortStart(reservation)
-			return failed(errDelegateTargetBusy)
+			return failed(busyBecause(delegateBusyConcurrentSend))
 		}
 		committedClaimHeld = true
 	}
@@ -251,7 +255,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		if resident := s.subagents.get(committedChildID); resident != nil && resident.sess != nil {
 			if !s.takeSendDriveGuard(resident) {
 				_ = s.delegateController.AbortStart(reservation)
-				return failed(errDelegateTargetBusy)
+				return failed(busyBecause(delegateBusyConcurrentSend))
 			}
 			guarded = resident
 		}
@@ -333,7 +337,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 			guarded = nil
 		}
 		if !s.takeSendDriveGuard(sub) {
-			cause := errDelegateTargetBusy
+			cause := busyBecause(delegateBusyConcurrentSend)
 			return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, cause, func() {
 				finishRestore(sub, nil)
 			})

@@ -195,6 +195,47 @@ type delegateFinalizingError struct {
 func (delegateFinalizingError) Error() string        { return errDelegateTargetBusy.Error() }
 func (delegateFinalizingError) Is(target error) bool { return target == errDelegateTargetBusy }
 
+// delegateBusyReason says why a send was refused as target_busy.
+type delegateBusyReason string
+
+const (
+	// delegateBusyFinalizing: the delegate's finished generation has not
+	// released its finalization within the send's wait ceiling.
+	delegateBusyFinalizing delegateBusyReason = "finalizing"
+	// delegateBusyStopping: a stop is pending on the delegate.
+	delegateBusyStopping delegateBusyReason = "stopping"
+	// delegateBusyConcurrentSend: another send, drive or run holds the
+	// delegate's next generation.
+	delegateBusyConcurrentSend delegateBusyReason = "concurrent_send"
+	// delegateBusyClosing: the controller is closing or a lane handoff or
+	// reclamation covers the delegate.
+	delegateBusyClosing delegateBusyReason = "closing"
+)
+
+// delegateFinalizationRetryAfter is the retry hint for a send that outwaited a
+// finalization: the delegate's finalize tail is stuck, so an immediate retry
+// fails the same way.
+const delegateFinalizationRetryAfter = 5 * time.Second
+
+// delegateBusyError is errDelegateTargetBusy with the reason the model needs
+// to act on it. retryAfter is zero where no wait is meaningful.
+type delegateBusyError struct {
+	reason     delegateBusyReason
+	retryAfter time.Duration
+}
+
+func busyBecause(reason delegateBusyReason) error { return delegateBusyError{reason: reason} }
+
+func (e delegateBusyError) Is(target error) bool { return target == errDelegateTargetBusy }
+
+func (e delegateBusyError) Error() string {
+	msg := fmt.Sprintf("%s: reason=%s", errDelegateTargetBusy.Error(), e.reason)
+	if e.retryAfter > 0 {
+		msg += fmt.Sprintf(" retry_after_ms=%d", e.retryAfter.Milliseconds())
+	}
+	return msg + ". Nothing was sent. End your turn and retry after the delegate's next notification instead of retrying immediately."
+}
+
 type delegateLiveState struct {
 	runtime       *Session
 	binding       *delegateRuntimeBinding

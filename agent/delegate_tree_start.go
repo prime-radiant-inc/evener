@@ -614,7 +614,7 @@ func (c *delegateTreeController) ReserveStart(actor delegateActor, delegateID st
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closing {
-		return nil, errDelegateTargetBusy
+		return nil, busyBecause(delegateBusyClosing)
 	}
 	if err := c.authorizeMutationLocked(actor, delegateID); err != nil {
 		return nil, err
@@ -625,11 +625,14 @@ func (c *delegateTreeController) ReserveStart(actor delegateActor, delegateID st
 		}
 	}
 	aggregate := c.durable[delegateID]
-	if aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.PendingStopSeq != 0 || c.reclamationCoversLocked(delegateID) {
-		return nil, errDelegateTargetBusy
+	if aggregate.PendingStopSeq != 0 {
+		return nil, busyBecause(delegateBusyStopping)
 	}
-	if c.laneHandoffCoversLocked(delegateID) {
-		return nil, errDelegateTargetBusy
+	if aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable {
+		return nil, busyBecause(delegateBusyConcurrentSend)
+	}
+	if c.reclamationCoversLocked(delegateID) || c.laneHandoffCoversLocked(delegateID) {
+		return nil, busyBecause(delegateBusyClosing)
 	}
 	// Idle but still finalizing: the finished generation's runtime has not
 	// reported quiescence, so it can't take another generation yet. Refusing
@@ -639,7 +642,7 @@ func (c *delegateTreeController) ReserveStart(actor delegateActor, delegateID st
 	}
 	for _, existing := range c.reservations {
 		if existing.delegateID == delegateID {
-			return nil, errDelegateTargetBusy
+			return nil, busyBecause(delegateBusyConcurrentSend)
 		}
 	}
 	if !c.reserveCapacityLocked(delegateTurnCapacity) {
