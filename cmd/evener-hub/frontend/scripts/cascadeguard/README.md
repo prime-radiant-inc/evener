@@ -47,10 +47,11 @@ The guard checks:
   running-to-resting transition and under reduced motion, without changing the
   selected branch, focus or column geometry. The fixture's only busy
   conversation is the origin itself, which never renders; the running spine
-  indicator family stays covered by the jsdom suites. The released ancestor's
-  reports reach the source as delegate notifications, and the source answers
-  each with a turn after the ancestor is idle, so the dotted journey's Return
-  baseline waits until the source's answer to the final report has rendered.
+  indicator family stays covered by the jsdom suites. After its release the
+  ancestor idles and then runs once more, and its reports keep reaching the
+  source as delegate notifications that the source answers in its own turns,
+  so the dotted journey's Return baseline waits until the source's completed
+  answer to the ancestor's final report has rendered.
 - Narrow overflow, selected-leaf visibility, independent transcript scrolling,
   parent selection, ancestor Tasks, one Escape, a keyboard pop through the
   pane's own footer breadcrumb crumb and native keyboard branching through the

@@ -1085,26 +1085,30 @@ async function dottedAncestorStatus(ref) {
   return releasedAfter;
 }
 
-// The released ancestor reports to the source after its held round and again
-// with its final reply, which carries its retained transcript. The source
-// answers each report with a turn of its own, and those turns land after the
-// ancestor is already idle. Until the source has answered the final report,
-// released work can still append rows under an end-following source reader and
-// move its top entry, so Return's baseline waits for that answer to render.
+// After the release the ancestor finishes its held round, idles, and runs once
+// more for its own child's reports; that later run's final reply carries its
+// retained transcript. Each report reaches the source as a steering item, and
+// the source answers it with an agent message in whichever turn drains it,
+// possibly the turn already running. Until that answer to the final report is
+// complete and rendered, released work can still append rows under an
+// end-following source reader and move its top entry, so Return's baseline
+// waits for it.
 async function sourceAnswersReleasedAncestor(ref, releasedAfter) {
   const retained = `Scope ${fixture.refs.indexOf(ref)} retained transcript paragraph.`;
   let answer = null;
   await waitFrames(() => {
-    const updates = frames.slice(releasedAfter).filter(frame => frame.direction === "Network.webSocketFrameReceived" &&
-      frame.method === "history/updated" && frame.params.ref === fixture.rootRef);
-    const reportAt = updates.findIndex(frame => (frame.params.items ?? []).some(item => item.type === "steering" && item.text?.includes(retained)));
-    if (reportAt < 0) return false;
-    const reportTurns = new Set(updates[reportAt].params.items.filter(item => item.type === "steering").map(item => item.turnId));
-    answer = updates.slice(reportAt).flatMap(frame => frame.params.turns ?? [])
-      .find(turn => turn.status === "completed" && !reportTurns.has(turn.id))?.id ?? null;
-    return answer !== null;
+    const items = [];
+    const completed = new Set();
+    for (const frame of frames.slice(releasedAfter)) {
+      if (frame.direction !== "Network.webSocketFrameReceived" || frame.method !== "history/updated" || frame.params.ref !== fixture.rootRef) continue;
+      items.push(...(frame.params.items ?? []));
+      for (const turn of frame.params.turns ?? []) if (turn.status === "completed") completed.add(turn.id);
+    }
+    const report = items.find(item => item.type === "steering" && item.text?.includes(retained));
+    answer = report ? items.find(item => item.type === "agentMessage" && item.position?.entry > report.position.entry) ?? null : null;
+    return answer !== null && completed.has(answer.turnId);
   }, "the source completes its answer to the released ancestor's final report");
-  await wait(`(${sourcePortExpr})?.querySelector(${q(`[data-row-id="${answer}"]`)}) != null`,
+  await wait(`(${sourcePortExpr})?.querySelector(${q(`[data-view-anchor-id="${answer.id}"]`)}) != null`,
     "the source reader renders its answer to the released ancestor's final report");
 }
 
