@@ -15,6 +15,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -318,6 +319,11 @@ const (
 	TruncatedByChars TruncationReason = "chars"
 )
 
+// LineRange is a 1-based inclusive window of lines.
+type LineRange struct {
+	From, To int
+}
+
 // ExecResult holds the outcome of executing a single tool call, including
 // the truncated output sent to the model, the full untruncated output, timing,
 // and any image or state side-channel data.
@@ -344,6 +350,10 @@ type ExecResult struct {
 	// Truncated is set: a search that hit the line cap can be raised, one that
 	// hit the character cap has to be narrowed.
 	TruncatedBy TruncationReason
+
+	// OmittedLines is the 1-based inclusive line window a truncated read_file
+	// result cut out, so offset/limit can fetch exactly it. Nil otherwise.
+	OmittedLines *LineRange
 
 	IsError bool
 
@@ -988,8 +998,15 @@ func truncateResult(toolName, callID, full string, isErr bool, lim schema.ToolOu
 		}
 	}
 	truncated := reason != ""
+	var omitted *LineRange
 	if truncated && out != full {
 		out += "\n[Tool output was truncated.]"
+		if toolName == "read_file" && reason == TruncatedByChars && lim.Strategy == schema.TruncHeadTail {
+			omitted = omittedNumberedLines(full, lim.MaxChars)
+			if omitted != nil {
+				out += fmt.Sprintf("\n[Lines %d-%d were cut; read_file with offset=%d limit=%d returns them.]", omitted.From, omitted.To, omitted.From, omitted.To-omitted.From+1)
+			}
+		}
 		if toolName == "grep" && reason == TruncatedByChars {
 			out += "\n[The size cap cut this search; raising max_results will not return more. Narrow the path or glob_filter.]"
 		}
@@ -1002,8 +1019,48 @@ func truncateResult(toolName, callID, full string, isErr bool, lim schema.ToolOu
 		RecoverableOutput: full,
 		Truncated:         truncated,
 		TruncatedBy:       reason,
+		OmittedLines:      omitted,
 		IsError:           isErr,
 	}
+}
+
+// omittedNumberedLines is the window of line-numbered text that
+// truncateCharsWithStatus's head/tail cut at limit drops. Both boundary lines
+// are included because each is shown only in part. It returns nil when the
+// text at either boundary carries no line number.
+func omittedNumberedLines(full string, limit int) *LineRange {
+	runes := []rune(full)
+	headCount := limit / 2
+	tailStart := len(runes) - (limit - headCount)
+	if headCount <= 0 || tailStart <= headCount {
+		return nil
+	}
+	from, ok := numberedLineAt(runes, headCount)
+	if !ok {
+		return nil
+	}
+	to, ok := numberedLineAt(runes, tailStart)
+	if !ok {
+		return nil
+	}
+	return &LineRange{From: from, To: to}
+}
+
+// numberedLineAt parses the "%4d\t" prefix of the line containing runes[pos].
+func numberedLineAt(runes []rune, pos int) (int, bool) {
+	start := pos
+	for start > 0 && runes[start-1] != '\n' {
+		start--
+	}
+	end := start
+	for end < len(runes) && runes[end] != '\t' && runes[end] != '\n' {
+		end++
+	}
+	if end >= len(runes) || runes[end] != '\t' {
+		return 0, false
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(runes[start:end])))
+	return n, err == nil
 }
 
 func truncateChars(s string, limit int, strategy schema.TruncationStrategy) string {
