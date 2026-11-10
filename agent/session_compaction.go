@@ -1175,6 +1175,14 @@ func (s *Session) foldHookContext(base context.Context) context.Context {
 	if closeCtx != nil {
 		ctx = closeCtx
 	}
+	// A fold can run on a context independent of the session (Compact's caller
+	// may pass its own), so sampling closeCtx once is not enough: a close that
+	// starts after this read must still end the hook rather than let it run to
+	// its own timeout while session resources are torn down.
+	sessionCtx := s.sessionContext()
+	if sessionCtx != nil && sessionCtx != ctx {
+		ctx = joinCancel(ctx, sessionCtx)
+	}
 	return ctx
 }
 
@@ -1345,4 +1353,18 @@ func (s *Session) buildCompactionMeta() contextmgr.CompactionMeta {
 	}
 
 	return meta
+}
+
+// joinCancel returns a context that is cancelled when either parent is. The
+// first parent's values win; the second contributes only its cancellation.
+func joinCancel(primary, secondary context.Context) context.Context {
+	ctx, cancel := context.WithCancel(primary)
+	go func() {
+		defer cancel()
+		select {
+		case <-secondary.Done():
+		case <-ctx.Done():
+		}
+	}()
+	return ctx
 }

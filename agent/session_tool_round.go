@@ -197,13 +197,21 @@ func (s *Session) batchToolCalls(calls []llm.ToolCallData, results []tool.ExecRe
 		// input and an exact integer keeps its value.
 		input := s.batchToolInput(call)
 		response := ""
+		callID := call.ID
 		if i < len(results) {
 			response = results[i].Output
+			// prepareToolCall synthesizes an ID for a provider call that had
+			// none, and dispatch records the arguments under it. The result
+			// carries the ID the call actually ran under, which is what a hook
+			// matches on.
+			if callID == "" {
+				callID = results[i].CallID
+			}
 		}
 		out[i] = hooks.BatchToolCall{
 			ToolName:     toolname.EvenerToClaude(call.Name),
 			ToolInput:    input,
-			ToolUseID:    call.ID,
+			ToolUseID:    callID,
 			ToolResponse: response,
 		}
 	}

@@ -2280,7 +2280,10 @@ func (a *subagent) finalizeRun(f subagentFinalize) {
 			// left pending too: re-arming it calls armDelegateAttention, which
 			// releases the hold, so a hook that keeps refusing would relaunch
 			// forever.
-			if !userStopped && !f.attentionUnpresented {
+			// The skip applies only when this tail actually reopened the row for
+			// a hook stop. A hook-stopped launch that was not attention-triggered
+			// never runs that reopen, so its remaining row still needs the arm.
+			if !userStopped && (!f.attentionUnpresented || !f.attentionRun) {
 				if armErr := a.sess.armDelegateAttention(pending[0]); armErr != nil {
 					a.sess.emit(warningDataFromError("rearm remaining delegate attention", armErr))
 				}

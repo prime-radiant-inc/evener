@@ -515,18 +515,15 @@ func TestSubagentStart_StoppedLaunchStillRearmsPendingAttention(t *testing.T) {
 		t.Fatal("the delegate child carries no owning delegate id")
 	}
 
-	// The row must be pending while the stopped run finalizes: a row appended
-	// before the send belongs to that run and its own turn presents it, so the
-	// re-arm would have nothing left to take. The seam places it at the last
-	// unlocked boundary before settlement, which is the state the tail reads.
-	fixture.root.cfg.testOnly.subagentBeforeSettlement = func(observed *subagent) {
-		if observed.id != created.ChildSessionID {
-			return
-		}
-		appended, err := observed.sess.appendDelegateNotificationDurably(attention, "owed attention content")
-		if err != nil || !appended {
-			t.Errorf("append pending attention = appended:%t err:%v", appended, err)
-		}
+	// The row must be pending while the stopped run finalizes. The launch is
+	// hook-stopped, so it never reaches the model and cannot present the row;
+	// appending it here is what the finalize tail then has to recover.
+	appended, appendErr := child.appendDelegateNotificationDurably(attention, "owed attention content")
+	if appendErr != nil || !appended {
+		t.Fatalf("append pending attention = appended:%t err:%v", appended, appendErr)
+	}
+	if pending, err := child.pendingDelegateAttentionIDs(); err != nil || len(pending) == 0 {
+		t.Fatalf("the appended row is not pending: %v err=%v", pending, err)
 	}
 
 	// delegate_send is the stable launch path: its run carries a lease, which is
