@@ -1,8 +1,10 @@
 package appsource
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -960,6 +962,101 @@ func (s *RemoteHubSource) FetchTranscriptItem(
 		}
 	}
 	return appitempaging.BuildFetchResponse(candidate.Item, identity, cursor)
+}
+
+// remoteRetainedItemMaxBytes bounds one item this controller reassembles from
+// an owning hub's retained fetch ranges. It matches the hub-side canonical
+// store budget, so a remote hub cannot make the controller buffer more than
+// the owner itself would retain.
+const remoteRetainedItemMaxBytes = 256 << 20
+
+// FetchRetainedItem resolves the owning hub's retained canonical encoding of
+// the item a fetch cursor names.
+//
+// A controller that retains a remote window's item must keep the exact bytes
+// behind the window's cursor, not a later ordinary re-read: a file-backed image
+// descriptor can change without an item-version change, and the re-read would
+// then describe different bytes under the same cursor. The controller forwards
+// the owning hub's token (the alias recorded when the window was retained) to
+// the owner as a fetch-cursor read; the owner answers that read from the entry
+// it retained when it minted the cursor. Range responses are capped, so the
+// complete encoding is assembled from consecutive offsets. A token the owner
+// no longer holds reports typed stale/unavailable, and an owner that predates
+// token resolution answers with no fetch at all: both report resolved false so
+// the caller keeps its ordinary re-read behavior.
+func (s *RemoteHubSource) FetchRetainedItem(
+	ctx context.Context,
+	ref string,
+	identity appitempaging.CursorIdentity,
+	cursor appitempaging.FetchCursor,
+) (appwire.ThreadItem, bool, error) {
+	var item appwire.ThreadItem
+	remoteRef, err := s.toRemoteRef(ref, "")
+	if err != nil {
+		return item, false, err
+	}
+	ownerIdentity := identity
+	ownerIdentity.ThreadRef = remoteRef.String()
+	ownerCursor := cursor
+	ownerCursor.Offset = 0
+	var canonical bytes.Buffer
+	var total uint64
+	for {
+		encoded, err := appitempaging.EncodeFetchCursor(ownerIdentity, ownerCursor)
+		if err != nil {
+			return item, false, err
+		}
+		response, err := s.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, FetchCursor: encoded})
+		if err != nil {
+			return item, false, err
+		}
+		if response.Fetch == nil {
+			return item, false, nil
+		}
+		fragment, err := base64.StdEncoding.DecodeString(response.Fetch.Data)
+		if err != nil || response.Fetch.Offset != ownerCursor.Offset || len(fragment) == 0 {
+			return item, false, appwire.TranscriptItemCursorStale()
+		}
+		if canonical.Len() != 0 && response.Fetch.TotalLength != total {
+			// A later range described a different item; its bytes cannot be
+			// concatenated with the ranges already assembled.
+			return item, false, appwire.TranscriptItemCursorStale()
+		}
+		total = response.Fetch.TotalLength
+		if total == 0 || total > remoteRetainedItemMaxBytes {
+			return item, false, appwire.FetchUnavailableRemote()
+		}
+		canonical.Write(fragment)
+		if uint64(canonical.Len()) > total {
+			return item, false, appwire.TranscriptItemCursorStale()
+		}
+		if uint64(canonical.Len()) == total {
+			break
+		}
+		ownerCursor.Offset = uint64(canonical.Len())
+	}
+	if err := json.Unmarshal(canonical.Bytes(), &item); err != nil {
+		return appwire.ThreadItem{}, false, appwire.TranscriptItemCursorStale()
+	}
+	if item.Position == nil || *item.Position != cursor.Position || item.Version != cursor.ItemVersion {
+		// The owner's retained entry does not describe the item the cursor
+		// fences; never retain bytes the item-version fence rejects.
+		return appwire.ThreadItem{}, false, nil
+	}
+	return item, true, nil
+}
+
+// TranslateItem applies the item-level translation a remote thread read
+// applies to every item: manager and authorship refs move into the controller
+// namespace, and the remote hub's own origin-relative image routes become the
+// host-qualified controller routes this hub proxies. Callers that resolve one
+// retained encoding directly, rather than reading a whole thread, use it so the
+// bytes they keep are the encoding the window showed.
+func (s *RemoteHubSource) TranslateItem(item appwire.ThreadItem) appwire.ThreadItem {
+	s.translateItemActor(&item)
+	s.translateItemAuthorship(&item)
+	rewriteItemImageURLs(s.id, &item)
+	return item
 }
 
 // ItemCandidatesFromRead converts an already-materialized remote item read

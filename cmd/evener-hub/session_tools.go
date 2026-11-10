@@ -135,22 +135,36 @@ func (o *sessionOperations) retainRemoteWindowItems(
 	if !hasFetchCursor {
 		return nil
 	}
-	full, err := remote.ReadThread(ctx, appwire.ThreadReadParams{
-		Ref: ref, IncludeTurns: true, ItemsView: string(appwire.TurnItemsViewFragment), ItemLimit: appwire.TranscriptItemPageLimit,
-	})
-	if err != nil {
-		return err
-	}
-	full.Thread = enrichSourcedThreadImages(remote, full.Thread)
-	byPosition := make(map[appwire.ThreadItemPosition]appwire.ThreadItem)
-	for _, turn := range full.Thread.Turns {
-		for _, item := range turn.Items {
-			if item.Position != nil {
-				byPosition[*item.Position] = item
+	store := o.canonicalItemStore()
+	// The owning hub's retained encoding of the item behind each returned token
+	// is what the window showed. Resolving it from the token keeps file-backed
+	// descriptors stable even when they changed, without an item-version change,
+	// between the window and this retention. Only an owner that cannot resolve
+	// the token — an older hub, or one that already retired the entry — falls
+	// back to the ordinary re-read this retention used before.
+	var fallback map[appwire.ThreadItemPosition]appwire.ThreadItem
+	fallbackItems := func() (map[appwire.ThreadItemPosition]appwire.ThreadItem, error) {
+		if fallback != nil {
+			return fallback, nil
+		}
+		full, err := remote.ReadThread(ctx, appwire.ThreadReadParams{
+			Ref: ref, IncludeTurns: true, ItemsView: string(appwire.TurnItemsViewFragment), ItemLimit: appwire.TranscriptItemPageLimit,
+		})
+		if err != nil {
+			return nil, err
+		}
+		full.Thread = enrichSourcedThreadImages(remote, full.Thread)
+		items := make(map[appwire.ThreadItemPosition]appwire.ThreadItem)
+		for _, turn := range full.Thread.Turns {
+			for _, item := range turn.Items {
+				if item.Position != nil {
+					items[*item.Position] = item
+				}
 			}
 		}
+		fallback = items
+		return fallback, nil
 	}
-	store := o.canonicalItemStore()
 	for turnIndex := range window.Turns {
 		items := window.Turns[turnIndex].Items
 		for itemIndex := range items {
@@ -162,17 +176,32 @@ func (o *sessionOperations) retainRemoteWindowItems(
 			if err != nil {
 				return err
 			}
-			item, ok := byPosition[cursor.Position]
-			if !ok {
-				// The window can address an exact older item beyond the ordinary
-				// inter-hub read's reach. Preserve that valid window; its fetch
-				// repeats this origin check and returns fetch-unavailable-remote.
-				continue
-			}
-			if item.Version != cursor.ItemVersion {
-				// A change between the window and this retention read belongs to
-				// the fetch-time version fence, not to the read that minted it.
-				continue
+			item, resolved, err := remote.FetchRetainedItem(ctx, ref, identity, cursor)
+			if err == nil && resolved {
+				item = translateRetainedRemoteItem(remote, item)
+			} else {
+				if err != nil && !retainedFetchUnavailable(err) {
+					return err
+				}
+				byPosition, fallbackErr := fallbackItems()
+				if fallbackErr != nil {
+					return fallbackErr
+				}
+				var ok bool
+				item, ok = byPosition[cursor.Position]
+				if !ok {
+					// The window can address an exact older item beyond the
+					// ordinary inter-hub read's reach. Preserve that valid
+					// window; its fetch repeats this origin check and returns
+					// fetch-unavailable-remote.
+					continue
+				}
+				if item.Version != cursor.ItemVersion {
+					// A change between the window and this retention read belongs
+					// to the fetch-time version fence, not to the read that minted
+					// it.
+					continue
+				}
 			}
 			triple := remoteCanonicalTriple(identity, cursor.Token)
 			key := store.tokenFor(triple)
@@ -192,6 +221,33 @@ func (o *sessionOperations) retainRemoteWindowItems(
 		}
 	}
 	return nil
+}
+
+// translateRetainedRemoteItem applies the item-level translation the window's
+// own items received: the remote source moves refs and image routes into the
+// controller namespace, and this hub neutralizes any image route still relative
+// to the owning hub. The result is the encoding the window showed, complete.
+func translateRetainedRemoteItem(remote *appsource.RemoteHubSource, item appwire.ThreadItem) appwire.ThreadItem {
+	item = remote.TranslateItem(item)
+	thread := enrichSourcedThreadImages(remote, appwire.Thread{Turns: []appwire.Turn{{Items: []appwire.ThreadItem{item}}}})
+	return thread.Turns[0].Items[0]
+}
+
+// retainedFetchUnavailable reports whether the owning hub refused to resolve
+// the token itself: an owner that predates token resolution re-reads ordinary
+// fetches and answers stale here, and one that retired the entry says so typed.
+// Both keep the window readable through the ordinary re-read fallback.
+func retainedFetchUnavailable(err error) bool {
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		return false
+	}
+	data, ok := appwire.DecodedErrorData(wire.Data)
+	if !ok {
+		return false
+	}
+	return data.EvenerErrorInfo == appwire.ErrorTranscriptItemCursorStale ||
+		data.EvenerErrorInfo == appwire.ErrorFetchUnavailableRemote
 }
 
 // remoteCanonicalTriple names the controller-owned retention entry for a
@@ -1050,6 +1106,11 @@ func readSourceRetryable(cfg hubcore.WebConfig, sources *appsource.Registry, par
 }
 
 func (o *sessionOperations) Read(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	if params.FetchCursor != "" {
+		if response, ok, err := o.retainedFetchRead(ctx, params); ok {
+			return response, err
+		}
+	}
 	// An ordinary thread/read retains its default downstream subscription when
 	// the source hands off a live relay. Internal Manager snapshot reads call
 	// read(..., false) directly and do not capture.
@@ -1064,6 +1125,49 @@ func (o *sessionOperations) Read(ctx context.Context, params appwire.ThreadReadP
 		return o.read(ctx, params, false)
 	}
 	return o.read(ctx, params, true)
+}
+
+// retainedFetchRead answers a fetch-cursor read from the exact canonical
+// encoding this hub retained when it minted the cursor. A controller retaining
+// a remote window's item asks the owning hub for the bytes behind the returned
+// token; serving the retained entry, rather than a fresh source read, makes
+// those bytes identical to the encoding the cursor named even if a file-backed
+// descriptor changed meanwhile without an item-version change. The local,
+// saved-index, and hub-compatibility fetch arrangements are untouched: only the
+// remote-source cursor this hub itself retained is answered here, and a token
+// it no longer holds falls through to the ordinary read unchanged.
+func (o *sessionOperations) retainedFetchRead(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return appwire.ThreadReadResponse{}, true, err
+	}
+	if err := appwire.ValidateThreadReadParams(params); err != nil {
+		return appwire.ThreadReadResponse{}, true, err
+	}
+	if params.Ref == "" {
+		return appwire.ThreadReadResponse{}, false, nil
+	}
+	if _, err := appwire.ParseRef(params.Ref); err != nil {
+		return appwire.ThreadReadResponse{}, false, nil
+	}
+	cursor, identity, err := appitempaging.DecodeFetchCursorForRef(params.FetchCursor, params.Ref)
+	if err != nil || cursor.Origin != appitempaging.FetchCursorOriginRemoteSource {
+		return appwire.ThreadReadResponse{}, false, nil
+	}
+	if err := deletionFenceError(o.cfg, params.Ref, params.ThreadID, ""); err != nil {
+		return appwire.ThreadReadResponse{}, true, err
+	}
+	canonical, ok := o.canonicalItemStore().borrow(cursor.Token)
+	if !ok {
+		return appwire.ThreadReadResponse{}, false, nil
+	}
+	fetch, err := appitempaging.BuildFetchResponseBytes(canonical, identity, cursor)
+	if err != nil {
+		return appwire.ThreadReadResponse{}, true, err
+	}
+	return appwire.ThreadReadResponse{
+		Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: identity.ThreadRef}},
+		Fetch:  &fetch,
+	}, true, nil
 }
 
 func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadParams, capture bool) (appwire.ThreadReadResponse, error) {
