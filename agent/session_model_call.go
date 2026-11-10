@@ -354,11 +354,13 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 
 	t.HistoryExpand = time.Since(tPhaseStart)
 
-	// The expanded history keeps the target-policy thinking so the fallback
-	// chain can apply each target's own replay policy; the primary's request is
-	// trimmed for the primary's wire before it is built and budgeted (#4563).
+	// The expanded history keeps the target-policy thinking and every
+	// tool-result payload so the fallback chain can apply each target's own
+	// replay and media policy; the primary request is projected for the
+	// primary's wire before it is built and budgeted (#4563, #4217).
 	untrimmedHistory := history
 	history = projectThinkingForTarget(profile, history)
+	history = projectToolResultMediaFor(profile, history)
 
 	// --- Phase: ToolDefs --- (toolDefs snapshotted with profile/sys above)
 	req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort)
@@ -723,7 +725,7 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 		req.HistoryMode = llm.HistoryModeResponsesDelta
 		req.PreviousResponseID = strings.TrimSpace(candidate.Turn.ResponseID)
 		req.Messages = responsesContinuationDeltaMessages(req.Messages, candidate.Delta, func(mediaType string) bool {
-			return !profile.SeesToolResultMedia(mediaType)
+			return !llm.RowSeesToolResultMedia(profile.Resolved(), mediaType)
 		})
 		req.Continuation = &llm.ContinuationMetadata{
 			PreviousResponseIDHash:  candidate.Turn.ResponseIDHash,
@@ -1089,8 +1091,8 @@ func isProviderTerminalError(err error) bool {
 	return strings.HasPrefix(err.Error(), "provider error: ") && ok
 }
 
-// takeRoundFallbackMessages returns and clears the round's untrimmed request
-// messages kept for per-target fallback projection (#4563).
+// takeRoundFallbackMessages returns and clears the round's unprojected request
+// messages kept for per-target fallback projection (#4563, #4217).
 func (s *Session) takeRoundFallbackMessages() []llm.Message {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1518,9 +1520,10 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	if s.cfg.LLMRetryPolicy != nil {
 		policy = *s.cfg.LLMRetryPolicy
 	}
-	// The primary request was trimmed for its target. Fallbacks apply their own
-	// thinking policy to the round's untrimmed messages instead of inheriting
-	// the primary's (#4563). A direct caller with no prepared round keeps the
+	// The primary request was projected for its target. Fallbacks apply their
+	// own thinking and media policy to the round's unprojected messages instead
+	// of inheriting the primary's (#4563, #4217). A direct caller with no
+	// prepared round keeps the
 	// request's own full-history shadows.
 	fallbackHistory := fullHistory
 	if base := s.takeRoundFallbackMessages(); len(base) > 0 {

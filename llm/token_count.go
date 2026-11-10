@@ -941,6 +941,14 @@ func EstimatorTargetsEquivalent(a, b registry.Resolved) bool {
 	if registry.BoolValue(a.Caps.MultimodalToolResults) != registry.BoolValue(b.Caps.MultimodalToolResults) {
 		return false
 	}
+	// Effective tool-result visibility decides how much media a request carries
+	// and what the estimate prices, so a metadata refresh that changes it must
+	// invalidate a recorded measurement (#4217).
+	for _, mediaType := range []string{"image/png", "application/pdf"} {
+		if RowSeesToolResultMedia(a, mediaType) != RowSeesToolResultMedia(b, mediaType) {
+			return false
+		}
+	}
 	return a.Caps.ReasoningDisabled() == b.Caps.ReasoningDisabled()
 }
 

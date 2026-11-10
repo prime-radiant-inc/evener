@@ -141,11 +141,11 @@ type Session struct {
 	// longer validate against the new profile). Nil until a switch drops any.
 	// The model-switch marker surfaces it as a warning line.
 	lastDroppedModelFallbacks []string
-	// roundFallbackMessages is the round's untrimmed request messages (system
+	// roundFallbackMessages is the round's unprojected request messages (system
 	// plus expanded history) kept for the fallback chain, whose targets apply
-	// their own thinking-replay policy. prepareModelRequestWithError writes it
-	// and callModelWithFallback takes and clears it on the same turn goroutine;
-	// mu guards the exchange (#4563).
+	// their own thinking-replay and tool-result media policy.
+	// prepareModelRequestWithError writes it and callModelWithFallback takes and
+	// clears it on the same turn goroutine; mu guards the exchange (#4563, #4217).
 	roundFallbackMessages []llm.Message
 	// rejectedToolResultDocuments holds tool-call IDs whose document payload a
 	// provider rejected. Request assembly omits those bytes for the rest of the

@@ -233,21 +233,52 @@ func TestSetModel_BlindToBlindSwitchReportsNoNewOrphans(t *testing.T) {
 	}
 }
 
-// TestFallbackRequestDropsMediaTheFallbackCannotSee covers the shared-request
-// gap a review found: the fallback reuses the primary's built messages, so
-// without this projection an image-capable primary would hand tool-result
-// images to an image-blind fallback while the fallback's own budget counted
-// none.
+// fallbackMediaProfiles builds the production one-registry shape the fallback
+// media tests need: the client and the profiles resolve from the same rows, so
+// shared client shaping and request assembly make the same media decision.
+func fallbackMediaProfiles(t *testing.T, primaryProtocol string, primaryCaps registry.Caps, fallbackProtocol string, fallbackCaps registry.Caps) (*registry.Registry, *llm.Client, *provider.Profile, *provider.Profile) {
+	t.Helper()
+	r, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+		registry.WithInstances(map[string]registry.Provider{
+			"gw": {
+				Surface: registry.SurfaceOpenAI, Protocol: primaryProtocol, APIKey: "k",
+				DefaultModel: "primary", InheritModels: new(false),
+				Transport: registry.Transport{BaseURL: "http://gw.test.invalid/v1"},
+				Models:    map[string]registry.Model{"primary": {Caps: primaryCaps}},
+			},
+			"gwb": {
+				Surface: registry.SurfaceOpenAI, Protocol: fallbackProtocol, APIKey: "k",
+				DefaultModel: "fallback", InheritModels: new(false),
+				Transport: registry.Transport{BaseURL: "http://gwb.test.invalid/v1"},
+				Models:    map[string]registry.Model{"fallback": {Caps: fallbackCaps}},
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("fixture registry: %v", err)
+	}
+	primary, err := provider.Resolve(r, "gw/primary")
+	if err != nil {
+		t.Fatalf("resolve primary: %v", err)
+	}
+	fallback, err := provider.Resolve(r, "gwb/fallback")
+	if err != nil {
+		t.Fatalf("resolve fallback: %v", err)
+	}
+	return r, llm.NewClient(llm.WithRegistry(r)), primary, fallback
+}
+
+// TestFallbackRequestDropsMediaTheFallbackCannotSee covers one direction: an
+// image-capable primary must not hand tool-result images to an image-blind
+// fallback, and the fallback's own budget then prices what it receives.
 func TestFallbackRequestDropsMediaTheFallbackCannotSee(t *testing.T) {
 	t.Parallel()
-	primary := provider.FromResolved(registry.Resolved{
-		Instance: "gw", ModelID: "vis", WireID: "vis", Protocol: registry.ProtocolOpenAIResponses, Surface: registry.SurfaceOpenAI,
-		Caps: registry.Caps{InputModalities: []string{"text", "image"}},
-	}, nil)
-	blind := provider.FromResolved(registry.Resolved{
-		Instance: "gwb", ModelID: "blind", WireID: "blind", Protocol: registry.ProtocolOpenAIChat, Surface: registry.SurfaceOpenAI,
-		Caps: registry.Caps{InputModalities: []string{"text"}},
-	}, nil)
+	r, client, primary, _ := fallbackMediaProfiles(t,
+		registry.ProtocolOpenAIResponses, registry.Caps{InputModalities: []string{"text", "image"}},
+		registry.ProtocolOpenAIChat, registry.Caps{InputModalities: []string{"text"}})
 	primaryAdapter := &agenttest.ScriptedAdapter{
 		Provider: "gw",
 		FaultResponder: func(llm.Request) error {
@@ -263,19 +294,15 @@ func TestFallbackRequestDropsMediaTheFallbackCannotSee(t *testing.T) {
 			return agenttest.ToolCallResponse(communicateCall("c1", "ok"))
 		},
 	}
+	client.Register(primaryAdapter)
+	client.Register(blindAdapter)
 	sess := newSession(t,
+		withClient(client),
 		withProfile(primary),
-		withAdapter(primaryAdapter),
-		withAdapter(blindAdapter),
 		withConfig(SessionConfig{
-			ModelFallbacks: []string{"gwb/blind"},
-			ResolveProfile: func(ref string) (*provider.Profile, error) {
-				if ref == "gwb/blind" {
-					return blind, nil
-				}
-				return nil, nil
-			},
-			testOnly: testConfig{skipGitSnapshot: true},
+			ModelFallbacks: []string{"gwb/fallback"},
+			ResolveProfile: func(ref string) (*provider.Profile, error) { return provider.Resolve(r, ref) },
+			testOnly:       testConfig{skipGitSnapshot: true},
 		}),
 	)
 	sess.appendTurn(schema.TurnToolResults, imageToolResultMessage())
@@ -299,6 +326,58 @@ func TestFallbackRequestDropsMediaTheFallbackCannotSee(t *testing.T) {
 	}
 	if !strings.Contains(toolResultText(blindReqs[0].Messages), "[image: chart.png]") {
 		t.Fatal("the fallback lost the tool result's text")
+	}
+}
+
+// TestFallbackRetainsImagesThePrimaryCannotSee is the other direction: the
+// blind primary's request omits the image, but an image-capable fallback must
+// still receive it. Primary assembly alone cannot answer this, so the round
+// keeps its unfiltered messages and each dispatch target projects its own.
+func TestFallbackRetainsImagesThePrimaryCannotSee(t *testing.T) {
+	t.Parallel()
+	r, client, primary, _ := fallbackMediaProfiles(t,
+		registry.ProtocolOpenAIChat, registry.Caps{InputModalities: []string{"text"}},
+		registry.ProtocolAnthropic, registry.Caps{InputModalities: []string{"text", "image"}})
+	primaryAdapter := &agenttest.ScriptedAdapter{
+		Provider: "gw",
+		FaultResponder: func(llm.Request) error {
+			return llm.ErrorFromHTTPStatus("gw", 404, "model not found", nil, nil)
+		},
+		Responder: func(llm.Request) llm.Response { return agenttest.FinalResponse("unused") },
+	}
+	fallbackAdapter := &agenttest.ScriptedAdapter{
+		Provider:  "gwb",
+		Responder: func(llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
+	}
+	client.Register(primaryAdapter)
+	client.Register(fallbackAdapter)
+	sess := newSession(t,
+		withClient(client),
+		withProfile(primary),
+		withConfig(SessionConfig{
+			ModelFallbacks: []string{"gwb/fallback"},
+			ResolveProfile: func(ref string) (*provider.Profile, error) { return provider.Resolve(r, ref) },
+			testOnly:       testConfig{skipGitSnapshot: true},
+		}),
+	)
+	sess.appendTurn(schema.TurnToolResults, imageToolResultMessage())
+
+	// TRIPWIRE: scripted in-process adapters; 30s only catches a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "continue", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	primaryReqs := primaryAdapter.Requests()
+	if len(primaryReqs) == 0 || len(toolResultImages(primaryReqs[0])) != 0 {
+		t.Fatal("the image-blind primary request carried the image")
+	}
+	fallbackReqs := fallbackAdapter.Requests()
+	if len(fallbackReqs) == 0 {
+		t.Fatal("the fallback never ran")
+	}
+	if got := toolResultImages(fallbackReqs[0]); len(got) != 1 {
+		t.Fatalf("image-capable fallback received %d image(s), want 1", len(got))
 	}
 }
 
