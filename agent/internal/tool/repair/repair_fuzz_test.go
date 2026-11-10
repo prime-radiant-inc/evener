@@ -241,11 +241,11 @@ func FuzzRepairSuggestions(f *testing.F) {
 		if !strings.HasPrefix(message, fmt.Sprintf("unknown tool: %q.", requested)) {
 			t.Fatalf("unknown-tool prefix mismatch: %q", message)
 		}
-		if DiagnoseUnknownTool(requested, available).Kind == UnknownToolKindSystemMessage {
-			// A name Evener itself injects into the conversation is explained
-			// as a system message and carries no tool list or suggestion.
-			if strings.Contains(message, "\nAvailable tools: ") {
-				t.Fatalf("system-message diagnostic listed tools: %q", message)
+		if diagnosis := DiagnoseUnknownTool(requested, available); diagnosis.Kind == UnknownToolKindSystemMessage {
+			// A name Evener itself injects into the conversation is a system
+			// message, not a missing tool, so it carries no suggestions.
+			if len(diagnosis.Suggestions) != 0 {
+				t.Fatalf("system-message diagnosis carried suggestions: %#v", diagnosis.Suggestions)
 			}
 			return
 		}
