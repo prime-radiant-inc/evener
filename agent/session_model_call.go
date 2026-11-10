@@ -297,11 +297,8 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		// A dropped document was rejected for delivery, not read successfully;
 		// the request copy says so and the transcript keeps the payload (#4465).
 		annotateDroppedToolResult: true,
-		dropsToolResultMedia: func(mediaType string) bool {
-			return !llm.RowSeesToolResultMedia(profile.Resolved(), mediaType)
-		},
-		protocolOf:     s.instanceProtocol,
-		canonicalModel: func(model string) string { return s.canonicalModelID(profile.ID(), model) },
+		protocolOf:                s.instanceProtocol,
+		canonicalModel:            func(model string) string { return s.canonicalModelID(profile.ID(), model) },
 	}
 	// presentedTurns is the history this request projects: a leased delegate
 	// turn projects the controller's own later snapshot, which can hold turns
