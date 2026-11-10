@@ -156,18 +156,36 @@ provenance. They only open the turn; the opening request admits the content.
 `flushPendingDelegateDeliveries` in prepare all collapse into `admitInput`.
 
 The post-tool point stays: after a tool batch the round loop goes to the
-next round, and that round's prepare admits whatever arrived. A
-non-notification turn no longer has to yield so that a notification turn
-can run. The notification rides that turn's next request.
+next round, and that round's prepare admits whatever arrived. Mid-turn
+delivery keeps today's moment (after a tool batch, before the next call).
+
+Decided (Jesse, 2026-11-10): an ordinary turn no longer ends early so a
+notification turn can run (`kind != EntryNotification && peekNotifications()`
+yield). The notification rides that turn's next request and the turn keeps
+going. Known costs, accepted:
+- the notification spends a round of the turn's own cap;
+- the turn adopts the notification's provenance, so a user turn can carry
+  watch lineage (commit provenance trailer, self-influence depth) and the
+  runaway fuse can fire inside a user-started turn when it really is a loop;
+- clients show the notification as an in-turn row, one turn boundary
+  instead of two.
+
+Kept on purpose: a turn that has communicated its terminal result admits
+nothing (steering opens a carrier turn, as today); input that arrives when
+no further request follows (round cap, Stop, hook block) stays owed and
+opens the next turn. The observer-yield decision in `injectPostToolSteering`
+reads the inbox instead of the steering queue.
 
 ### What stays outside
 
 - **Skill delivery (P17)** keeps its own seam. It is an obligation the
   request must satisfy, not an input. It already lives in prepare.
 - **Context projections (P18)** stay as they are.
-- **User input (P1, P2)** still opens its own turn and keeps its client
-  states. Its incorporation marker could move from "at append" to "on
-  send", but that changes what clients see. See open question 1.
+- **User input (P1, P2)** is out of scope: another session is reworking
+  the user-input side. This design does not change how user input opens a
+  turn or when it counts as incorporated. The item shape is meant to let that
+  work submit user input later; coordinate before either side changes
+  `acceptUserInputWithSkillSelection` or the client-mutation queue.
 
 ### How W2.2 rebuilds on this
 
@@ -219,6 +237,9 @@ asserts:
 - **Provenance.** The turn that carries it reports its provenance.
 - **Quota wake.** Submitting it during a quota wait wakes the wait, and the
   retried request carries it.
+- **Keeps the turn going**: a notification arriving during a user turn's
+  tool batch rides that turn's next request; a self-caused one raises depth
+  and the runaway fuse fires at the limit.
 - **Watch counting** (watch kinds only). Deliveries are counted once, after
   coalescing.
 
@@ -227,13 +248,10 @@ misses rule Y" becomes a missing row, not a new round.
 
 ## Open questions for Jesse
 
-1. Should user input count as incorporated when its request is sent, not
-   when it is appended? It is more truthful, but the queued/incorporated
-   chip timing changes on every client.
-2. Should the 19-path inventory, as a table without line numbers, go in
+1. Should the 19-path inventory, as a table without line numbers, go in
    `docs/product/subsystems.md` as the evergreen record of "what feeds a
    request"?
-3. What happens to #6068? My recommendation is to leave it open, unmerged,
+2. What happens to #6068? My recommendation is to leave it open, unmerged,
    until step 2 lands, then rebuild its rules on admission and close it.
    The alternative is to merge it as is and refactor afterwards, which
    leaves its four open findings in place in the meantime.
