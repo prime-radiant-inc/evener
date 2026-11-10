@@ -2,6 +2,7 @@ package repair
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -71,4 +72,45 @@ func TestUnknownToolMessage_CapsLongList(t *testing.T) {
 	msg := UnknownToolMessage("zzzzzz", names)
 	wantMsg(t, msg, "tool_00", "msg missing first tool")
 	notMsg(t, msg, "tool_39", "msg should not contain tool_39 (beyond cap)")
+}
+
+func TestUnknownToolSuggestsShellForExecCommand(t *testing.T) {
+	for _, requested := range []string{"exec_command", "bash", "run_shell_command", "execute_command"} {
+		d := DiagnoseUnknownTool(requested, []string{"read_file", "shell", "edit_file"})
+		if d.Kind != UnknownToolKindMissing {
+			t.Fatalf("%s: kind = %q, want %q", requested, d.Kind, UnknownToolKindMissing)
+		}
+		if !slices.Contains(d.Suggestions, "shell") {
+			t.Fatalf("%s: suggestions = %v, want shell", requested, d.Suggestions)
+		}
+	}
+	for _, requested := range []string{"str_replace_editor", "edit"} {
+		d := DiagnoseUnknownTool(requested, []string{"shell", "edit_file"})
+		if !slices.Contains(d.Suggestions, "edit_file") {
+			t.Fatalf("%s: suggestions = %v, want edit_file", requested, d.Suggestions)
+		}
+	}
+}
+
+func TestUnknownToolAliasWithoutRegisteredTargetIsNotSuggested(t *testing.T) {
+	d := DiagnoseUnknownTool("exec_command", []string{"read_file", "glob"})
+	if slices.Contains(d.Suggestions, "shell") {
+		t.Fatalf("suggestions = %v, want no unregistered shell", d.Suggestions)
+	}
+	d = DiagnoseUnknownTool("edit", []string{"shell"})
+	if len(d.Suggestions) != 0 {
+		t.Fatalf("suggestions = %v, want none", d.Suggestions)
+	}
+}
+
+func TestJobNotificationIsReportedAsSystemMessageNotTool(t *testing.T) {
+	for _, requested := range []string{"job-notification", "job_notification"} {
+		d := DiagnoseUnknownTool(requested, []string{"shell", "job_status"})
+		if d.Kind != UnknownToolKindSystemMessage {
+			t.Fatalf("%s: kind = %q, want %q", requested, d.Kind, UnknownToolKindSystemMessage)
+		}
+		if len(d.Suggestions) != 0 {
+			t.Fatalf("%s: suggestions = %v, want none", requested, d.Suggestions)
+		}
+	}
 }
