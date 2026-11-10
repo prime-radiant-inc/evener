@@ -514,3 +514,102 @@ func TestSecondQuarantineDoesNotReuseEarlierCustodyIDs(t *testing.T) {
 		t.Fatalf("the first store reads empty")
 	}
 }
+
+// TestRebuildAfterOlderArtifactsAreRemovedKeepsTheCustodyFloor pins the allocator
+// floor rebuild finding: a later proven custody inherits floor 3 from the earlier
+// custody while retaining only fence id 1 and its own high-water mark 1. Once the
+// older artifacts are removed and operations.json is missing, the rebuild must
+// start the replacement's allocator at the floor that custody records; otherwise
+// validateSnapshot refuses every reopen and host changes stay unavailable
+// despite valid custody.
+func TestRebuildAfterOlderArtifactsAreRemovedKeepsTheCustodyFloor(t *testing.T) {
+	dir := t.TempDir()
+	path := StorePath(dir)
+	writeRawStore(t, path, 0o600, quarantinedStoreJSON)
+	if _, err := Open(path); err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	firstCustodyPath, _ := quarantineArtifact(t, filepath.Dir(path), ".custody-")
+	firstAsidePath, _ := quarantineArtifact(t, filepath.Dir(path), ".quarantined-")
+	if err := forgetStore(path); err != nil {
+		t.Fatalf("forgetStore: %v", err)
+	}
+
+	// The second corrupt file keeps only a fence at id 1 with high-water mark 1.
+	// Its tokens region is schema-invalid, which routes the file into quarantine
+	// while custody discards that family and its record set stays whole.
+	second := `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+		`{"id":"00000000000000000001","clientOperationId":"op-h1","host":"h1","kind":"restart","state":"orphan-unverified",` +
+		`"generation":3,"incarnationId":"inc-h1","orphanBoundary":[{"kind":"local-markerless","platform":"linux","nonce":"nonce-h1"}],` +
+		`"createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}],"tokens":7}`
+	writeRawStore(t, path, 0o600, second)
+	secondStore, err := Open(path)
+	if err != nil {
+		t.Fatalf("second Open: %v", err)
+	}
+	if signal := secondStore.Quarantine(); signal == nil || signal.Unproven || signal.QuarantineEpoch != 2 {
+		t.Fatalf("second Quarantine() = %+v, want a proven quarantine at epoch 2", signal)
+	}
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	secondCustodyPath := ""
+	for _, entry := range entries {
+		if candidate := filepath.Join(filepath.Dir(path), entry.Name()); strings.Contains(entry.Name(), ".custody-") && candidate != firstCustodyPath {
+			secondCustodyPath = candidate
+		}
+	}
+	if secondCustodyPath == "" {
+		t.Fatalf("the second quarantine wrote no custody file beside %v", entries)
+	}
+	var secondCustody struct {
+		AllocatorFloor         uint64 `json:"allocatorFloor"`
+		AllocatorHighWaterMark uint64 `json:"allocatorHighWaterMark"`
+	}
+	if err := json.Unmarshal(mustReadFile(t, secondCustodyPath), &secondCustody); err != nil {
+		t.Fatalf("decode second custody: %v", err)
+	}
+	if secondCustody.AllocatorFloor != 3 || secondCustody.AllocatorHighWaterMark != 1 {
+		t.Fatalf("second custody floor/mark = %d/%d, want the fixture's inherited 3 above its own 1",
+			secondCustody.AllocatorFloor, secondCustody.AllocatorHighWaterMark)
+	}
+
+	// Only the later custody and its aside remain, and the replacement store is
+	// missing: the next boot rebuilds from that custody alone.
+	for _, artifact := range []string{firstCustodyPath, firstAsidePath, path} {
+		if err := os.Remove(artifact); err != nil {
+			t.Fatalf("remove %s: %v", artifact, err)
+		}
+	}
+	if err := forgetStore(path); err != nil {
+		t.Fatalf("forgetStore: %v", err)
+	}
+
+	rebuilt, err := Open(path)
+	if err != nil {
+		t.Fatalf("rebuild Open: %v", err)
+	}
+	state := storeSnapshotForTest(rebuilt)
+	if state.AllocatorFloor != 3 || state.AllocatorHighWaterMark < state.AllocatorFloor {
+		t.Fatalf("rebuilt floor/mark = %d/%d, want floor 3 at or below the allocator mark",
+			state.AllocatorFloor, state.AllocatorHighWaterMark)
+	}
+	if record, ok := rebuilt.Record("00000000000000000001"); !ok || record.Host != "h1" || record.State != StateOrphanUnverified {
+		t.Fatalf("rebuilt store's fence import = %+v, want the id 1 fence for h1", record)
+	}
+	created, err := rebuilt.Create(NewRecord{ClientOperationID: "after", Host: "h2", Kind: KindRestart, Generation: 1, IncarnationID: "inc"})
+	if err != nil {
+		t.Fatalf("host change after the rebuild: %v", err)
+	}
+	if id, err := parseAllocatorID(created.ID); err != nil || id <= 3 {
+		t.Fatalf("the rebuilt store issued id %q (err %v), want one above the custody floor 3", created.ID, err)
+	}
+	// The rebuilt file itself must validate on every later boot.
+	if err := forgetStore(path); err != nil {
+		t.Fatalf("forgetStore: %v", err)
+	}
+	if _, err := Open(path); err != nil {
+		t.Fatalf("reopen of the rebuilt store: %v", err)
+	}
+}

@@ -942,17 +942,18 @@ func readCustodyFile(fs afero.Fs, path, storePath string) (custodyFile, error) {
 
 // replacementState is the state the replacement store opens with: empty except
 // for the custody imports, `compactSeq` from zero, zero outstanding tokens, and
-// the row-id allocator starting above the custodial high-water mark plus the
+// the row-id allocator starting above the custody's accounted prefix plus the
 // ids the ownership-only imports consumed — so no fresh operation reuses an
-// imported record's id. floor carries the highest id any earlier custody file
-// for this store handed out, so an id is never reused across quarantine epochs
-// either.
+// imported record's id and the allocator mark is never left below the floor the
+// custody records. floor carries the highest allocator bound any earlier
+// custody file for this store requires, so an id is never reused across
+// quarantine epochs either.
 func replacementState(custody custodyFile, floor uint64) (snapshot, error) {
 	records, err := custodyImports(custody)
 	if err != nil {
 		return snapshot{}, fmt.Errorf("%w: %w", ErrQuarantineIncomplete, err)
 	}
-	allocated := max(custody.AllocatorHighWaterMark, floor)
+	allocated := max(custody.AllocatorHighWaterMark, custody.accountedPrefix(), floor)
 	for _, record := range records {
 		id, err := parseAllocatorID(record.ID)
 		if err != nil {

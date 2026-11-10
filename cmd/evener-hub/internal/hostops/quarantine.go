@@ -136,10 +136,12 @@ type quarantineArtifacts struct {
 	rebuildStamp string
 	rebuildEpoch uint64
 	asides       []string
-	// allocatorFloor is the highest controller-assigned id any existing custody
-	// file for this store handed out (its high-water mark or one of its imported
-	// ids). The replacement allocator and every later quarantine's ownership ids
-	// start above it, so no id is ever reused across quarantine epochs.
+	// allocatorFloor is the highest allocator bound any existing custody file for
+	// this store requires the replacement to start above: its accounted prefix,
+	// which covers its recorded floor, its high-water mark and its imported ids.
+	// The replacement allocator and every later quarantine's ownership ids start
+	// above it, so no id is ever reused across quarantine epochs — including an
+	// id an earlier custody file accounts for without evidence.
 	allocatorFloor uint64
 	// custodyStamps and asideStamps are the timestamps of the custody and aside
 	// files found; resolveStoreFS checks they are one-to-one (each custody file
@@ -245,8 +247,11 @@ func scanQuarantineArtifacts(fs afero.Fs, storePath string) (quarantineArtifacts
 				artifacts.rebuildStamp = stamp
 				artifacts.rebuildEpoch = custody.QuarantineEpoch
 			}
-			if custody.AllocatorHighWaterMark > artifacts.allocatorFloor {
-				artifacts.allocatorFloor = custody.AllocatorHighWaterMark
+			// The custody's own floor covers ids it accounts for without a record
+			// or mark (an earlier custody's skipped prefix), so the replacement
+			// allocator must start above it too.
+			if prefix := custody.accountedPrefix(); prefix > artifacts.allocatorFloor {
+				artifacts.allocatorFloor = prefix
 			}
 			for _, row := range custody.RecordIDs {
 				allocated, err := parseAllocatorID(row.RecordID)
