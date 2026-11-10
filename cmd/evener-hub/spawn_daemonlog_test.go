@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // registeringFakeEvener is a stub daemon that says one thing on each stream,
@@ -665,19 +666,14 @@ func TestATrimNeverCutsTheRunItOpenedFor(t *testing.T) {
 // lines, so this is a short backstop against buffering, not a race.
 func readEventually(t *testing.T, path, want string) string {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
 	var last string
-	for {
+	testwait.UntilSeen(t, fmt.Sprintf("%s to contain %q", path, want), func() (bool, string) {
 		data, err := os.ReadFile(path)
-		if err == nil {
-			last = string(data)
-			if strings.Contains(last, want) {
-				return last
-			}
+		if err != nil {
+			return false, err.Error()
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s never contained %q; last read (err=%v):\n%s", path, want, err, last)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		last = string(data)
+		return strings.Contains(last, want), last
+	})
+	return last
 }

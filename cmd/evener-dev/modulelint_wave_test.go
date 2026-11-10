@@ -15,19 +15,8 @@ import (
 	"time"
 
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/testwait"
 )
-
-func waitFor(t *testing.T, what string, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s", what)
-}
 
 func countGlob(t *testing.T, pattern string) int {
 	t.Helper()
@@ -66,7 +55,7 @@ func TestLintRunBoundsConcurrencyToWaves(t *testing.T) {
 	code := make(chan int, 1)
 	go func() { code <- r.run() }()
 	started := func() int { return countGlob(t, filepath.Join(sync, "started.*")) }
-	waitFor(t, "wave 1 to start", func() bool { return started() == 2 })
+	testwait.Until(t, "wave 1 to start", func() bool { return started() == 2 })
 	if got := started(); got != 2 {
 		t.Errorf("%d children started while wave 1 held, want the wave bound of 2", got)
 	}
@@ -144,7 +133,7 @@ func TestLintRunInterruptStopsChildrenAndSummarizes(t *testing.T) {
 	r.signals = signals
 	code := make(chan int, 1)
 	go func() { code <- r.run() }()
-	waitFor(t, "the child to publish its pid", func() bool {
+	testwait.Until(t, "the child to publish its pid", func() bool {
 		b, err := os.ReadFile(pidFile)
 		return err == nil && strings.HasSuffix(string(b), "\n")
 	})
@@ -173,7 +162,7 @@ func TestLintRunInterruptStopsChildrenAndSummarizes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "the interrupted child to be gone", func() bool {
+	testwait.Until(t, "the interrupted child to be gone", func() bool {
 		return syscall.Kill(pid, 0) != nil
 	})
 	if left := scratchLeft(t); len(left) != 0 {
