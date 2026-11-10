@@ -19,11 +19,12 @@ web UI, use [`docs/web-ui/design-system.md`](../web-ui/design-system.md).
 | `proofs/` | Captured evidence for a specific claim or gate. |
 | `mockups/` | Static mockups and reference images. |
 
-Older, uncited plans were removed in 2026-11: they were task-by-task
-checklists whose value ended when the work landed, and the specs they
-implemented remain. A plan is kept when it is dated 2026-10-15 or later, or when
-a retained document, test, or other plan cites it. A stale citation in a code
-comment points at history; the spec for the feature is in `specs/`.
+Plans were removed in 2026-11: they were task-by-task checklists whose value
+ended when the work landed, and the specs they implemented remain. A plan that
+still held an undelivered decision went to an issue before its file went, and
+the last such program is [#6029](https://github.com/prime-radiant-inc/evener/issues/6029).
+A stale citation in a code comment points at history; the spec for the feature
+is in `specs/`.
 
 ## Status rules
 
