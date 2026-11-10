@@ -28,7 +28,7 @@ type workspace struct {
 	// wholeTreeTesters are packages whose tests read the whole repository:
 	// they list its tracked files, or walk from its root. No name says which
 	// files they read, so every change reaches them.
-	wholeTreeTesters []string
+	wholeTreeTesters map[string]bool
 }
 
 // goPackage is one package directory's dependencies, split as go test
@@ -49,11 +49,17 @@ type dependencies struct {
 	// trees are directories named with a trailing /..., which cover every
 	// package below them.
 	trees []string
+	// typeScriptNames are the paths that lie inside a TypeScript tree, the
+	// only ones the tree rule reads.
+	typeScriptNames []string
 }
 
 func (d *dependencies) add(p string) {
 	if d.paths == nil {
 		d.paths = map[string]bool{}
+	}
+	if !d.paths[p] && typeScriptTreeOf(p) != "" {
+		d.typeScriptNames = append(d.typeScriptNames, p)
 	}
 	d.paths[p] = true
 }
@@ -78,7 +84,7 @@ func loadWorkspace(root string, tracked []string) (*workspace, error) {
 	if err != nil {
 		return nil, err
 	}
-	ws := &workspace{foreignModuleDirs: map[string]bool{}, packages: map[string]*goPackage{}}
+	ws := &workspace{foreignModuleDirs: map[string]bool{}, packages: map[string]*goPackage{}, wholeTreeTesters: map[string]bool{}}
 	modulePaths := map[string]string{}
 	for _, use := range work.Use {
 		dir := path.Clean(filepath.ToSlash(use.Path))
@@ -134,8 +140,8 @@ func loadWorkspace(root string, tracked []string) (*workspace, error) {
 			}
 		}
 		for _, name := range file.names {
-			if file.test && readsWholeTree(name, file.dir) && !slices.Contains(ws.wholeTreeTesters, file.dir) {
-				ws.wholeTreeTesters = append(ws.wholeTreeTesters, file.dir)
+			if file.test && readsWholeTree(name, file.dir) {
+				ws.wholeTreeTesters[file.dir] = true
 			}
 			if dir, ok := importDirs[name]; ok {
 				deps.add(dir)
@@ -325,9 +331,13 @@ func pathCandidates(s, pkgDir, moduleDir string) []string {
 // they depend on a reached package's build.
 func (ws *workspace) affected(buildSeeds, testSeeds map[string]string) map[string]string {
 	builders := map[string][]string{}
+	var treeBuilders []*goPackage
 	for _, pkg := range ws.packages {
 		for p := range pkg.build.paths {
 			builders[p] = append(builders[p], pkg.dir)
+		}
+		if len(pkg.build.trees) > 0 {
+			treeBuilders = append(treeBuilders, pkg)
 		}
 	}
 	built := maps.Clone(buildSeeds)
@@ -336,7 +346,7 @@ func (ws *workspace) affected(buildSeeds, testSeeds map[string]string) map[strin
 		dir := queue[0]
 		queue = queue[1:]
 		next := slices.Clone(builders[dir])
-		for _, pkg := range ws.packages {
+		for _, pkg := range treeBuilders {
 			if pkg.build.coversTree(dir) {
 				next = append(next, pkg.dir)
 			}
@@ -352,9 +362,7 @@ func (ws *workspace) affected(buildSeeds, testSeeds map[string]string) map[strin
 
 	tested := maps.Clone(built)
 	for dir, why := range testSeeds {
-		if _, ok := tested[dir]; !ok {
-			tested[dir] = why
-		}
+		setIfAbsent(tested, dir, why)
 	}
 	builtDirs := slices.Sorted(maps.Keys(built))
 	for _, pkg := range ws.packages {
@@ -377,17 +385,12 @@ func (d dependencies) coversTree(dir string) bool {
 }
 
 // readersOf are the packages whose build, and those whose tests alone, name
-// file or a directory holding it inside tree. A name above the tree (the
-// repository root, "cmd") is not counted: those are walks whose reach a name
-// cannot show.
-func (ws *workspace) readersOf(file, tree string) (build, test []string) {
+// a TypeScript tree's file or a directory inside the tree holding it. A name
+// above the tree (the repository root, "cmd") is not counted: those are
+// walks whose reach a name cannot show.
+func (ws *workspace) readersOf(file string) (build, test []string) {
 	reads := func(d dependencies) bool {
-		for p := range d.paths {
-			if atOrUnder(p, tree) && atOrUnder(file, p) {
-				return true
-			}
-		}
-		return false
+		return slices.ContainsFunc(d.typeScriptNames, func(name string) bool { return atOrUnder(file, name) })
 	}
 	for _, pkg := range ws.packages {
 		switch {
@@ -397,8 +400,6 @@ func (ws *workspace) readersOf(file, tree string) (build, test []string) {
 			test = append(test, pkg.dir)
 		}
 	}
-	slices.Sort(build)
-	slices.Sort(test)
 	return build, test
 }
 

@@ -22,16 +22,41 @@ func (p plan) runs(id string) bool {
 	return ok
 }
 
-func (p plan) mark(l lane, why string) {
-	if _, ok := p.why[l.id()]; !ok {
-		p.why[l.id()] = why
+// markWhere runs every lane that matches, crediting why.
+func (p plan) markWhere(matches func(lane) bool, why string) {
+	for _, l := range catalog {
+		if matches(l) {
+			setIfAbsent(p.why, l.id(), why)
+		}
 	}
 }
 
-func (p plan) markAll(why string) {
-	for _, l := range catalog {
-		p.mark(l, why)
+func everyLane(lane) bool { return true }
+
+// setIfAbsent keeps the first reason recorded for a key.
+func setIfAbsent(m map[string]string, key, value string) {
+	if _, ok := m[key]; !ok {
+		m[key] = value
 	}
+}
+
+// runsEverything reports the first changed path that runs every lane
+// without consulting the workspace, so the caller can skip loading it: a
+// path that steers every lane, or no changed path at all.
+func runsEverything(changed []string) (string, bool) {
+	if len(changed) == 0 {
+		return "(no changed paths)", true
+	}
+	if i := slices.IndexFunc(changed, steersEveryLane); i >= 0 {
+		return changed[i], true
+	}
+	return "", false
+}
+
+func allLanes(why string) plan {
+	p := plan{why: map[string]string{}}
+	p.markWhere(everyLane, why)
+	return p
 }
 
 // planLanes decides which lanes a change to the changed paths runs. Each
@@ -42,55 +67,39 @@ func (p plan) markAll(why string) {
 // lanes and every lane that runs a package whose source names that path,
 // with that package's own dependents.
 func planLanes(ws *workspace, changed []string) plan {
+	if why, ok := runsEverything(changed); ok {
+		return allLanes(why)
+	}
 	p := plan{why: map[string]string{}}
-	if len(changed) == 0 {
-		p.markAll("(no changed paths)")
-		return p
-	}
 	buildSeeds, testSeeds := map[string]string{}, map[string]string{}
-	seed := func(seeds map[string]string, dir, why string) {
-		if _, ok := seeds[dir]; !ok {
-			seeds[dir] = why
-		}
-	}
 	for _, file := range changed {
 		tree := typeScriptTreeOf(file)
 		pkgDir, isPackageSource := ws.packageSource(file)
-		if steersEveryLane(file) ||
-			(strings.HasSuffix(file, ".go") && !isPackageSource) ||
-			(tree == "" && !isPackageSource) {
-			p.markAll(file)
+		if (strings.HasSuffix(file, ".go") && !isPackageSource) || (tree == "" && !isPackageSource) {
+			p.markWhere(everyLane, file)
 			continue
 		}
 		if isPackageSource {
 			if strings.HasSuffix(file, "_test.go") {
-				seed(testSeeds, pkgDir, file)
+				setIfAbsent(testSeeds, pkgDir, file)
 			} else {
-				seed(buildSeeds, pkgDir, file)
+				setIfAbsent(buildSeeds, pkgDir, file)
 			}
-			for _, l := range catalog {
-				if l.goSource {
-					p.mark(l, file)
-				}
-			}
+			p.markWhere(func(l lane) bool { return l.goSource }, file)
 		}
 		if tree != "" {
-			for _, l := range catalog {
-				if l.typeScript {
-					p.mark(l, file)
-				}
-			}
-			build, test := ws.readersOf(file, tree)
+			p.markWhere(func(l lane) bool { return l.typeScript }, file)
+			build, test := ws.readersOf(file)
 			for _, reader := range build {
-				seed(buildSeeds, reader, file)
+				setIfAbsent(buildSeeds, reader, file)
 			}
 			for _, reader := range test {
-				seed(testSeeds, reader, file)
+				setIfAbsent(testSeeds, reader, file)
 			}
 		}
 	}
-	for _, dir := range ws.wholeTreeTesters {
-		seed(testSeeds, dir, changed[0])
+	for dir := range ws.wholeTreeTesters {
+		setIfAbsent(testSeeds, dir, changed[0])
 	}
 	reached := ws.affected(buildSeeds, testSeeds)
 	dirs := slices.Sorted(maps.Keys(reached))
@@ -100,7 +109,7 @@ func planLanes(ws *workspace, changed []string) plan {
 		}
 		for _, dir := range dirs {
 			if l.runsPackage(dir, ws.moduleOf(dir)) {
-				p.mark(l, reached[dir])
+				setIfAbsent(p.why, l.id(), reached[dir])
 				break
 			}
 		}
@@ -139,37 +148,26 @@ func (p plan) writeOutputs(w io.Writer) error {
 			excluded[l.job] = append(excluded[l.job], map[string]string{matrixKeys[l.job]: l.cell})
 		}
 	}
-	var lines []string
-	add := func(name string, value any) error {
-		data, err := json.Marshal(value)
-		if err != nil {
-			return err
-		}
-		lines = append(lines, name+"="+string(data))
-		return nil
-	}
-	var matrixJobs []string
 	for _, l := range catalog {
 		if cellsRun[l.job] == 0 && !slices.Contains(skip, l.job) {
 			skip = append(skip, l.job)
 		}
-		if l.cell != "" && !slices.Contains(matrixJobs, l.job) {
-			matrixJobs = append(matrixJobs, l.job)
-		}
 	}
-	if err := add("skip", skip); err != nil {
-		return err
+	// json.Marshal cannot fail on string slices and string maps.
+	var out strings.Builder
+	line := func(name string, value any) {
+		data, _ := json.Marshal(value)
+		out.WriteString(name + "=" + string(data) + "\n")
 	}
-	for _, job := range matrixJobs {
+	line("skip", skip)
+	for _, job := range slices.Sorted(maps.Keys(matrixKeys)) {
 		cells := excluded[job]
 		if cellsRun[job] == 0 || cells == nil {
 			cells = []map[string]string{}
 		}
-		if err := add("exclude_"+strings.ReplaceAll(job, "-", "_"), cells); err != nil {
-			return err
-		}
+		line("exclude_"+strings.ReplaceAll(job, "-", "_"), cells)
 	}
-	_, err := io.WriteString(w, strings.Join(lines, "\n")+"\n")
+	_, err := io.WriteString(w, out.String())
 	return err
 }
 

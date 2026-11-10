@@ -999,8 +999,8 @@ outputs. The classifier writes no outputs unless it finishes.
 
 **Keeping the catalog true.** `cmd/evener-cilanes/lanes.go` lists each
 skippable job and matrix cell with what it runs. A job missing from the
-catalog always runs, and a renamed job or cell matches nothing and runs. The
-unsafe drift is a lane that starts running packages its entry does not
+catalog always runs, and a renamed job or cell matches nothing and runs;
+`TestCatalogMatchesTheWorkflow` names either drift. The unsafe drift is a lane that starts running packages its entry does not
 claim: when a lane's make target changes what it tests, change its entry in
 the same pull request. A test that reads a file through a computed path no
 literal names, or walks a directory above the one it names, is the one

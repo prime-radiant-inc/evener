@@ -34,11 +34,12 @@ jobs:
   # cmd/evener-cilanes decides them (docs/developing-evener/testing.md, "Pull
   # Requests Skip Lanes a Change Cannot Reach"). `skip` lists whole jobs, and
   # each exclude_* output lists matrix cells to drop. Every lane runs in a
-  # merge group and on main, where the classifier does not run, and when it
-  # fails: its outputs are then empty, so nothing is skipped. Those runs keep
+  # merge group and on main, where this job is skipped, and when it fails:
+  # its outputs are then empty, so nothing is skipped. Those runs keep
   # main safe from a wrong skip, which can only bounce a pull request in the
   # merge queue.
   changes:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     outputs:
@@ -49,19 +50,16 @@ jobs:
     steps:
       # The pull request's merge commit and its first parent, the base it
       # merges onto: HEAD^1...HEAD is exactly what the merge changes.
-      - if: github.event_name == 'pull_request'
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 2
 
-      - if: github.event_name == 'pull_request'
-        uses: actions/setup-go@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.work
           cache: false
 
       - id: plan
-        if: github.event_name == 'pull_request'
         run: go run ./cmd/evener-cilanes/bin --base HEAD^1 >> "$GITHUB_OUTPUT"
 
   # Every job carries a timeout-minutes of about three times its slowest green

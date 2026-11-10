@@ -60,25 +60,37 @@ func Run(args []string, stdout, stderr io.Writer) int {
 }
 
 func classify(repo, base string, outputs, report io.Writer) error {
-	tracked, err := gitPaths(repo, "ls-files", "-z")
-	if err != nil {
-		return err
-	}
 	// --no-renames lists a moved file under both names, so the package it
 	// left counts as changed too.
 	changed, err := gitPaths(repo, "diff", "--name-only", "-z", "--no-renames", base+"...HEAD")
 	if err != nil {
 		return err
 	}
-	ws, err := loadWorkspace(repo, tracked)
+	p, err := planChange(repo, changed)
 	if err != nil {
 		return err
 	}
-	p := planLanes(ws, changed)
 	if err := p.writeReport(report); err != nil {
 		return err
 	}
 	return p.writeOutputs(outputs)
+}
+
+// planChange plans changed, loading the workspace only when no path already
+// runs every lane: parsing it is most of the classifier's time.
+func planChange(repo string, changed []string) (plan, error) {
+	if why, ok := runsEverything(changed); ok {
+		return allLanes(why), nil
+	}
+	tracked, err := gitPaths(repo, "ls-files", "-z")
+	if err != nil {
+		return plan{}, err
+	}
+	ws, err := loadWorkspace(repo, tracked)
+	if err != nil {
+		return plan{}, err
+	}
+	return planLanes(ws, changed), nil
 }
 
 func gitPaths(repo string, args ...string) ([]string, error) {
