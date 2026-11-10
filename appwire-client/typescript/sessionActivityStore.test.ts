@@ -138,6 +138,83 @@ test("escalation frames clear one approval at a time from the activity runtime",
   });
 });
 
+test("a status frame before the initial read keeps askPending in the activity runtime", async () => {
+  const client = activityClient(),
+    late = deferred<ThreadReadResponse>(),
+    entered = deferred<void>();
+  client.on("thread/read", () => {
+    entered.resolve();
+    return late.promise;
+  });
+  client.on("evener/thread/activity/read", () => ({
+    ...summaryFixture(),
+    context: { ...activityContext(), sessionId: "root-session", ref: "remote:canonical-root" },
+  }));
+  const store = owner(client);
+  store.start();
+  await entered.promise;
+  client.emitNotification({
+    method: "thread/status/changed",
+    params: { ref: activityRef, threadId: "wire-root", status: { type: "awaiting" }, askPending: true },
+  });
+  late.resolve({
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-root",
+      sessionId: "root-session",
+      evener: { ...threadFixture().thread.evener, askPending: false },
+    },
+  });
+  await activityState(store, () => store.getSnapshot().runtime?.askPending === true);
+  expect(store.getSnapshot().runtime?.askPending).toBe(true);
+});
+
+test("a resolved frame before the initial response keeps the other approval in the activity runtime", async () => {
+  const client = activityClient(),
+    late = deferred<ThreadReadResponse>(),
+    entered = deferred<void>();
+  const escalation = (escalationId: string) => ({
+    threadId: "wire-root",
+    ref: activityRef,
+    escalationId,
+    mode: "read-only",
+    tool: "read_file",
+    kind: "file",
+    deniedPath: "/outside",
+  });
+  client.on("thread/read", () => {
+    entered.resolve();
+    return late.promise;
+  });
+  client.on("evener/thread/activity/read", () => ({
+    ...summaryFixture(),
+    context: { ...activityContext(), sessionId: "root-session", ref: "remote:canonical-root" },
+  }));
+  const store = owner(client);
+  store.start();
+  await entered.promise;
+  client.emitNotification({
+    method: "evener/sandbox/escalation/resolved",
+    params: { threadId: "wire-root", ref: activityRef, escalationId: "esc_1" },
+  });
+  late.resolve({
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-root",
+      sessionId: "root-session",
+      evener: {
+        ...threadFixture().thread.evener,
+        pendingEscalations: [escalation("esc_1"), escalation("esc_2")],
+      },
+    },
+  });
+  await activityState(store, () => store.getSnapshot().runtime?.approvalPending === true);
+  expect(store.getSnapshot().runtime).toMatchObject({
+    approvalPending: true,
+    pendingEscalationIds: ["esc_2"],
+  });
+});
+
 test("replacement activity identity retires the previous runtime atomically", async () => {
   const client = runtimeClient(),
     store = owner(client);

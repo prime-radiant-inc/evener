@@ -131,6 +131,37 @@ test("a delayed read cannot revert askPending set by a newer status frame", asyn
   transcript.release();
 });
 
+test("a status frame before the initial read applies its askPending once the read lands", async () => {
+  const client = activityClient(),
+    late = deferred<ThreadReadResponse>(),
+    entered = deferred<void>();
+  const read: ThreadReadResponse = {
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-root",
+      sessionId: "root-session",
+      evener: { ...threadFixture().thread.evener, askPending: false },
+    },
+  };
+  client.on("thread/read", () => {
+    entered.resolve();
+    return late.promise;
+  });
+  const lease = acquireThreadSubscription(client, activityRef);
+  const ensuring = lease.ensure();
+  await entered.promise;
+  expect(lease.metadata?.()).toBeNull();
+  client.emitNotification({
+    method: "thread/status/changed",
+    params: { ref: activityRef, threadId: "wire-root", status: { type: "awaiting" }, askPending: true },
+  });
+  expect(lease.metadata?.()).toBeNull();
+  late.resolve(read);
+  await ensuring;
+  expect(lease.metadata?.()?.askPending).toBe(true);
+  lease.release();
+});
+
 test("escalation frames keep shared approval metadata current across multiple approvals", async () => {
   const client = activityClient();
   const escalation = (escalationId: string) => ({
@@ -184,6 +215,50 @@ test("escalation frames keep shared approval metadata current across multiple ap
   expect(lease.metadata?.()).toMatchObject({
     approvalPending: true,
     pendingEscalationIds: ["esc_3"],
+  });
+  lease.release();
+});
+
+test("a resolved frame before the initial response keeps the other pending approval", async () => {
+  const client = activityClient(),
+    late = deferred<ThreadReadResponse>(),
+    entered = deferred<void>();
+  const escalation = (escalationId: string) => ({
+    threadId: "wire-root",
+    ref: activityRef,
+    escalationId,
+    mode: "read-only",
+    tool: "read_file",
+    kind: "file",
+    deniedPath: "/outside",
+  });
+  const read: ThreadReadResponse = {
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-root",
+      sessionId: "root-session",
+      evener: {
+        ...threadFixture().thread.evener,
+        pendingEscalations: [escalation("esc_1"), escalation("esc_2")],
+      },
+    },
+  };
+  client.on("thread/read", () => {
+    entered.resolve();
+    return late.promise;
+  });
+  const lease = acquireThreadSubscription(client, activityRef);
+  const ensuring = lease.ensure();
+  await entered.promise;
+  client.emitNotification({
+    method: "evener/sandbox/escalation/resolved",
+    params: { threadId: "wire-root", ref: activityRef, escalationId: "esc_1" },
+  });
+  late.resolve(read);
+  await ensuring;
+  expect(lease.metadata?.()).toMatchObject({
+    approvalPending: true,
+    pendingEscalationIds: ["esc_2"],
   });
   lease.release();
 });
