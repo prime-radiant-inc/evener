@@ -28,17 +28,27 @@ var (
 	errFixtureStartupTimedOut     = errors.New("fixture startup timed out")
 )
 
-// waitForProbeFixture waits for the orphan-pipe fixture and the probe at the
-// same time. A shell that fails to start (a fork failure under load, for
-// example) leaves h.AwaitStarted blocking forever; cleanup cannot release the
-// FIFO until the test returns, so the package would hang to its global timeout.
-// Observing probe completion and a bounded tripwire terminates the wait.
-func waitForProbeFixture(h *orphanpipetest.Holder, done <-chan probeRun, tripwire time.Duration) error {
+// awaitFixtureReadiness reports the fixture's start on the returned channel. A
+// shell that fails to start (a fork failure under load, for example) leaves
+// h.AwaitStarted blocking forever; cleanup closes the started FIFO when the test
+// ends, so the goroutine does not outlive its test.
+func awaitFixtureReadiness(h *orphanpipetest.Holder) <-chan struct{} {
 	started := make(chan struct{})
 	go func() {
 		h.AwaitStarted()
 		close(started)
 	}()
+	return started
+}
+
+// waitForProbeFixture waits for the orphan-pipe fixture and the probe at the
+// same time. Observing probe completion and a bounded tripwire terminates the
+// wait even when the shell never reaches its spawn.
+//
+// done must be buffered with room for its single result. When readiness and
+// completion are both ready, the result is read to observe it and then
+// returned, so the caller's later Await still receives it.
+func waitForProbeFixture(started <-chan struct{}, done chan probeRun, tripwire time.Duration) error {
 	trip := time.NewTimer(tripwire)
 	defer trip.Stop()
 	select {
@@ -49,6 +59,7 @@ func waitForProbeFixture(h *orphanpipetest.Holder, done <-chan probeRun, tripwir
 		// a ready started signal wins over declaring a startup failure.
 		select {
 		case <-started:
+			done <- got
 			return nil
 		default:
 		}
@@ -58,9 +69,9 @@ func waitForProbeFixture(h *orphanpipetest.Holder, done <-chan probeRun, tripwir
 	}
 }
 
-func awaitFixtureStarted(t *testing.T, h *orphanpipetest.Holder, done <-chan probeRun) {
+func awaitFixtureStarted(t *testing.T, h *orphanpipetest.Holder, done chan probeRun) {
 	t.Helper()
-	if err := waitForProbeFixture(h, done, loginShellPathFixtureTripwire); err != nil {
+	if err := waitForProbeFixture(awaitFixtureReadiness(h), done, loginShellPathFixtureTripwire); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -143,8 +154,38 @@ func TestLoginShellPATHProbeFixtureStartupFailureEndsTheWait(t *testing.T) {
 	}
 	done := make(chan probeRun, 1)
 	done <- probeRun{capture.view, nil}
-	if err := waitForProbeFixture(h, done, 100*time.Millisecond); !errors.Is(err, errProbeFinishedBeforeFixture) {
+	if err := waitForProbeFixture(awaitFixtureReadiness(h), done, 100*time.Millisecond); !errors.Is(err, errProbeFinishedBeforeFixture) {
 		t.Fatalf("waitForProbeFixture on a probe that already finished = %v, want %v", err, errProbeFinishedBeforeFixture)
+	}
+}
+
+// TestWaitForProbeFixturePreservesAProbeThatFinishesAsTheFixtureStarts pins the
+// both-ready race: the probe's sole result and the fixture's readiness can be
+// ready at the same instant. Observing the result must not consume it, because
+// the caller still awaits that result and would otherwise block forever.
+func TestWaitForProbeFixturePreservesAProbeThatFinishesAsTheFixtureStarts(t *testing.T) {
+	// Each round presents a pre-closed readiness channel and a pre-filled
+	// result, so both select cases are ready. Select may take either branch;
+	// repeating the round makes the completion branch overwhelmingly likely to
+	// occur, and that branch must leave the result for the caller.
+	const rounds = 200
+	for i := 0; i < rounds; i++ {
+		started := make(chan struct{})
+		close(started)
+		done := make(chan probeRun, 1)
+		want := probeRun{out: []byte("preserved")}
+		done <- want
+		if err := waitForProbeFixture(started, done, loginShellPathFixtureTripwire); err != nil {
+			t.Fatalf("round %d: waitForProbeFixture on a ready fixture = %v", i, err)
+		}
+		select {
+		case got := <-done:
+			if string(got.out) != string(want.out) {
+				t.Fatalf("round %d: preserved result = %q, want %q", i, got.out, want.out)
+			}
+		default:
+			t.Fatalf("round %d: waitForProbeFixture consumed the probe's sole result while readiness was also ready", i)
+		}
 	}
 }
 
