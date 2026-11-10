@@ -216,6 +216,34 @@ func TestFixtureSlow(t *testing.T) {
 	}
 }
 
+// TestFixtureBurn spends SHARD_FIXTURE_BURN (a Go duration) of this process's
+// own CPU time when armed, so a CPU measurement of the binary has a known
+// floor. It counts CPU, not wall time, so a busy host cannot shorten the work.
+func TestFixtureBurn(t *testing.T) {
+	want, err := time.ParseDuration(os.Getenv("SHARD_FIXTURE_BURN"))
+	if err != nil {
+		return
+	}
+	start := processCPU(t)
+	for processCPU(t)-start < want {
+		for i := 0; i < 1_000_000; i++ {
+			fixtureSink += i
+		}
+	}
+}
+
+// fixtureSink keeps TestFixtureBurn's loop from being optimized away.
+var fixtureSink int
+
+func processCPU(t *testing.T) time.Duration {
+	t.Helper()
+	var ru syscall.Rusage
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
+		t.Fatalf("getrusage: %v", err)
+	}
+	return time.Duration(ru.Utime.Nano() + ru.Stime.Nano())
+}
+
 // TestFixtureLiveStackBin is how the hub-shards harness sees the directory of
 // binaries the runner built once and handed to every shard. Inert unless the
 // harness asks for it, so every other fixture run is unaffected.

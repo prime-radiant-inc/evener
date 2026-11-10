@@ -12,6 +12,8 @@ package dev
 //	PKG  <package>                     one per package terminal event
 //	TEST <package> <name> <seconds>    one per test AND subtest result
 //	SUM  <package> <seconds>           the package's own wall time
+//	CPU  <package> <seconds>           its test binary's CPU time, when the
+//	                                   binary ran under test-cpu-exec
 //
 // The SUM is the package-level terminal event's Elapsed field — the package's
 // actual wall time — not the sum of its tests' Elapsed values. Under t.Parallel
@@ -45,6 +47,7 @@ type timingEvent struct {
 	Action  string
 	Package string
 	Test    string
+	Output  string
 	Elapsed *float64
 }
 
@@ -77,6 +80,7 @@ func parseGoTestJSON(r io.Reader, expected []string) ([]string, error) {
 	var rows []string
 	seen := map[string]bool{}
 	pkgSeconds := map[string]float64{}
+	pkgCPU := map[string]string{}
 
 	// bufio.Reader, not Scanner: a Scanner caps a line at its buffer and would
 	// fail the whole measurement on one oversized `Output` event (go test -json
@@ -89,8 +93,16 @@ func parseGoTestJSON(r io.Reader, expected []string) ([]string, error) {
 		if line = strings.TrimSpace(line); line != "" {
 			var ev timingEvent
 			// A truncated or malformed line is not a measurement.
-			if err := json.Unmarshal([]byte(line), &ev); err == nil &&
-				timingTerminalActions[ev.Action] && ev.Package != "" {
+			err := json.Unmarshal([]byte(line), &ev)
+			if err == nil && ev.Action == "output" && ev.Test == "" && ev.Package != "" {
+				// test-cpu-exec's line: the CPU the package's test binary spent.
+				if secs, ok := strings.CutPrefix(strings.TrimSpace(ev.Output), testCPUMarker+"\t"); ok {
+					if _, perr := strconv.ParseFloat(secs, 64); perr == nil {
+						pkgCPU[ev.Package] = secs
+					}
+				}
+			}
+			if err == nil && timingTerminalActions[ev.Action] && ev.Package != "" {
 				if ev.Test == "" {
 					// Package-level terminal event: its Elapsed is the package's
 					// own wall time, the metric the budget compares.
@@ -123,6 +135,14 @@ func parseGoTestJSON(r io.Reader, expected []string) ([]string, error) {
 	sort.Strings(pkgs)
 	for _, pkg := range pkgs {
 		rows = append(rows, "SUM\t"+pkg+"\t"+formatSeconds(pkgSeconds[pkg]))
+	}
+	cpuPkgs := make([]string, 0, len(pkgCPU))
+	for pkg := range pkgCPU {
+		cpuPkgs = append(cpuPkgs, pkg)
+	}
+	sort.Strings(cpuPkgs)
+	for _, pkg := range cpuPkgs {
+		rows = append(rows, "CPU\t"+pkg+"\t"+pkgCPU[pkg])
 	}
 
 	var missing []string
