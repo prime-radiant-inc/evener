@@ -127,9 +127,9 @@ there (the frontend's pinned `@biomejs/biome` lives in
 `cmd/evener-hub/frontend/node_modules`, and `mobile-native` carries its own copy
 for the native tree), so a root `npx biome` resolves an unrelated `biome@0.3.3`
 package that ignores its arguments and exits 0 — a root-scoped invocation checks
-nothing while reporting success. Use
-`make lint-biome` (part of `make lint`), or run Biome from the frontend
-directory: `cd cmd/evener-hub/frontend && npm run lint` to check or
+nothing while reporting success. Biome runs in `make test-web`; to run it by
+hand, run it from the frontend directory:
+`cd cmd/evener-hub/frontend && npm run lint` to check or
 `npm run check` to fix. Before the gate, run
 `cd cmd/evener-hub/frontend && npx biome check --write <touched paths>` on
 touched files under `src/` and on touched files in the AppWire TypeScript
