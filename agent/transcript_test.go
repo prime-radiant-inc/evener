@@ -1037,6 +1037,51 @@ func TestResumeHistoryFoldRecord_CheckpointOnlyHead(t *testing.T) {
 	}
 }
 
+// A fold record that names a Seq at or after the record's own position is the
+// same class of write bug the self-referential guard already defends against.
+// Such a Seq must not be appended twice: once by the record-driven branch and
+// again by the post-anchor loop. A duplicated assistant tool-call or
+// tool-result pair breaks call/result pairing.
+func TestResumeHistoryFoldRecord_DoesNotDuplicateNamedPostAnchorSeq(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name         string
+		layers       []int
+		retainedSeqs []int
+	}{
+		{name: "retained seq at the record", layers: []int{1}, retainedSeqs: []int{2}},
+		{name: "retained seq after the record", layers: []int{1}, retainedSeqs: []int{3}},
+		{name: "layer seq after the record", layers: []int{1, 3}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			entries := []transcript.Entry{
+				{Kind: "entry", Seq: 0, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("kept"))},
+				{Kind: "entry", Seq: 1, Turn: schema.NewTurn(schema.TurnSummary, llm.User("summary"))},
+				{Kind: "entry", Seq: 2, Turn: schema.Turn{Kind: schema.TurnFoldRecord, Fold: &schema.FoldRecord{
+					FoldID: "1", Layers: tc.layers, RetainedSeqs: tc.retainedSeqs,
+				}}},
+				{Kind: "entry", Seq: 3, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("after"))},
+				{Kind: "entry", Seq: 4, Turn: schema.NewTurn(schema.TurnAssistant, llm.Assistant("after reply"))},
+			}
+			for i := range entries {
+				entries[i].Turn.Seq = entries[i].Seq
+			}
+
+			history := ResumeHistory(entries)
+			want := []string{"summary", "after", "after reply"}
+			if len(history) != len(want) {
+				t.Fatalf("resumed %d turns, want %d: %+v", len(history), len(want), history)
+			}
+			for i, text := range want {
+				if history[i].Message.Text() != text {
+					t.Errorf("turn %d = %q, want %q", i, history[i].Message.Text(), text)
+				}
+			}
+		})
+	}
+}
+
 // The last fold record wins: a second fold's record supersedes the first, and
 // its retained seqs may name entries recorded before the first fold's marker.
 func TestResumeHistoryFoldRecord_LastRecordWins(t *testing.T) {

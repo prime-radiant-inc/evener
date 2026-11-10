@@ -207,10 +207,14 @@ func resumeTurns(entries []transcript.Entry) (turns []schema.Turn, origins []int
 	if rec != nil {
 		foldID = rec.FoldID
 		add := func(seq int) {
-			if i, ok := lookup(seq); ok {
+			if i, ok := lookup(seq); ok && i < anchorIdx {
 				appendEntry(i)
 				return
 			}
+			// A Seq at or after the record is the same class of write bug the
+			// self-referential guard in appendEntry defends against: appending
+			// it here and again from the post-anchor loop would duplicate the
+			// turn and break call/result pairing.
 			unresolvedSeqs = append(unresolvedSeqs, seq)
 		}
 		for _, seq := range rec.Layers {
