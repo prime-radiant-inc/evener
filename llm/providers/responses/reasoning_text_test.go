@@ -62,7 +62,7 @@ func TestResponseContentFromOutputItems_KeepsReasoningTextContent(t *testing.T) 
 		t.Fatalf("unmarshal fixture: %v", err)
 	}
 
-	content := responseContentFromOutputItems(out)
+	content := responseContentFromOutputItems(out, nil)
 	if len(content) != 2 {
 		t.Fatalf("content parts = %d, want 2 (thinking + text): %#v", len(content), content)
 	}
