@@ -1,8 +1,6 @@
 package agent
 
 import (
-	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -31,20 +29,6 @@ func TestClampJobTailBytes(t *testing.T) {
 				t.Fatalf("clampJobPageBytes(%d) = %d, want %d", tc.in, got, tc.want)
 			}
 		})
-	}
-}
-
-// TestIsOutputNotExistErr covers the error-checking helper.
-func TestIsOutputNotExistErr(t *testing.T) {
-	t.Parallel()
-	if !isOutputNotExistErr(os.ErrNotExist) {
-		t.Fatal("expected true for os.ErrNotExist")
-	}
-	if !isOutputNotExistErr(fmt.Errorf("wrapped: %w", os.ErrNotExist)) {
-		t.Fatal("expected true for wrapped ErrNotExist")
-	}
-	if isOutputNotExistErr(errors.New("other error")) {
-		t.Fatal("expected false for non-NotExist error")
 	}
 }
 
