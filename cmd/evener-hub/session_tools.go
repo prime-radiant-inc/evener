@@ -107,7 +107,9 @@ func (o *sessionOperations) retainCanonicalWindowOptions(options *transcriptWind
 		}
 		return canonical, nil
 	}
-	options.RetainFetchItem = store.putItem
+	options.RetainFetchItem = func(token string, candidate appitempaging.TranscriptItemCandidate) error {
+		return store.putItem(token, fetchEntryTriple(options.fetchTokens.identity, candidate), candidate.Item)
+	}
 	if options.fetchTokens != nil {
 		options.fetchTokens.assign = func(identity appitempaging.CursorIdentity, candidate appitempaging.TranscriptItemCandidate) (string, error) {
 			return store.tokenFor(fetchEntryTriple(identity, candidate)), nil
@@ -169,13 +171,14 @@ func (o *sessionOperations) retainRemoteWindowItems(
 				// the fetch-time version fence, not to the read that minted it.
 				continue
 			}
-			key := store.tokenFor(remoteCanonicalTriple(identity, cursor.Token))
+			triple := remoteCanonicalTriple(identity, cursor.Token)
+			key := store.tokenFor(triple)
 			// The owning hub's token is stable across re-retentions, so it cannot
 			// tell this retained encoding from one enriched after an eviction.
 			// The cursor carries the controller's own token instead, and the
 			// fetch forwards the recorded remote token for the remote hop.
 			store.retainRemoteToken(key, cursor.Token)
-			if err := store.putItem(key, item); err != nil {
+			if err := store.putItem(key, triple, item); err != nil {
 				return err
 			}
 			cursor.Token = key

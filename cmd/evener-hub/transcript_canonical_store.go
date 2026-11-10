@@ -94,10 +94,13 @@ func (s *transcriptCanonicalStore) remoteToken(key string) (string, bool) {
 	return token, ok
 }
 
-func (s *transcriptCanonicalStore) putItem(key string, item appwire.ThreadItem) error {
-	if _, ok := s.borrow(key); ok {
-		return nil
-	}
+// putItem retains the canonical encoding of the item a token was minted for.
+// The token must still be the live assignment for the item's identity triple:
+// an eviction between the mint and this call retires the token, and the bytes
+// are dropped rather than repopulating it. A cursor naming a retired token then
+// fails typed stale, as an eviction promises, instead of resuming a different
+// encoding.
+func (s *transcriptCanonicalStore) putItem(token, triple string, item appwire.ThreadItem) error {
 	data, err := json.Marshal(item)
 	if err != nil {
 		return err
@@ -106,9 +109,11 @@ func (s *transcriptCanonicalStore) putItem(key string, item appwire.ThreadItem) 
 		return fmt.Errorf("canonical transcript item is %d bytes, store limit is %d", len(data), s.maxBytes)
 	}
 	s.mu.Lock()
-	triple := s.triples[key]
-	s.mu.Unlock()
-	s.putOwnedTriple(key, triple, data)
+	defer s.mu.Unlock()
+	if s.live[triple] != token {
+		return nil
+	}
+	s.putLocked(token, triple, data)
 	return nil
 }
 
@@ -127,6 +132,12 @@ func (s *transcriptCanonicalStore) putOwned(key string, data []byte) {
 func (s *transcriptCanonicalStore) putOwnedTriple(key, triple string, data []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.putLocked(key, triple, data)
+}
+
+// putLocked retains data under key and evicts least-recently-used entries until
+// the byte budget holds. The caller holds the lock.
+func (s *transcriptCanonicalStore) putLocked(key, triple string, data []byte) {
 	if current := s.entries[key]; current != nil {
 		s.order.MoveToFront(current)
 	} else {

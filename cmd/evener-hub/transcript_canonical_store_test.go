@@ -67,7 +67,7 @@ func TestTranscriptCanonicalStoreDuplicateKeyKeepsFirstBytes(t *testing.T) {
 
 func TestTranscriptCanonicalStoreRejectsOversizeItem(t *testing.T) {
 	store := newTranscriptCanonicalStore(1)
-	if err := store.putItem("item", appwire.ThreadItem{ID: "item"}); err == nil {
+	if err := store.putItem("item", "triple", appwire.ThreadItem{ID: "item"}); err == nil {
 		t.Fatal("oversize canonical item was accepted")
 	}
 	if _, ok := store.get("item"); ok {
@@ -79,7 +79,7 @@ func TestEvictedFetchTokenIsNeverReissued(t *testing.T) {
 	store := newTranscriptCanonicalStore(256)
 	triple := "local:thread\x00view\x001\x000\x001"
 	first := store.tokenFor(triple)
-	if err := store.putItem(first, appwire.ThreadItem{
+	if err := store.putItem(first, triple, appwire.ThreadItem{
 		ID: "item", Type: "agentMessage", TurnID: "turn-1", Version: 1, Text: "visible",
 	}); err != nil {
 		t.Fatal(err)
@@ -93,6 +93,25 @@ func TestEvictedFetchTokenIsNeverReissued(t *testing.T) {
 	}
 	if second := store.tokenFor(triple); second == first {
 		t.Fatalf("evicted token %q was reissued, so an outstanding cursor could revive", first)
+	}
+}
+
+func TestRetiredFetchTokenIsNotRevivedByADelayedRetention(t *testing.T) {
+	store := newTranscriptCanonicalStore(64)
+	triple := "local:thread\x00view\x002\x000\x002"
+	token := store.tokenFor(triple)
+	// Retaining bytes past the budget evicts the entry immediately, retiring the
+	// token exactly as an eviction between a concurrent read's mint and its
+	// retained insert does.
+	store.putOwnedTriple(token, triple, make([]byte, 80))
+	if _, ok := store.borrow(token); ok {
+		t.Fatal("retained entry survived over the byte budget")
+	}
+	if err := store.putItem(token, triple, appwire.ThreadItem{ID: "delayed", Type: "agentMessage"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.borrow(token); ok {
+		t.Fatal("a delayed retention revived an evicted token, so an outstanding cursor could resume a different encoding")
 	}
 }
 

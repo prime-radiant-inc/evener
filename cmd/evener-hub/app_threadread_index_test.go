@@ -283,7 +283,9 @@ func TestSessionOperationsFetchesSavedItemCanonicalRanges(t *testing.T) {
 		ItemTypes:    []string{"agentMessage"},
 		MessageBytes: 64,
 	}, func(options *transcriptWindowPackOptions) {
-		options.RetainFetchItem = operations.canonicalItemStore().putItem
+		options.RetainFetchItem = func(token string, candidate appitempaging.TranscriptItemCandidate) error {
+			return operations.canonicalItemStore().putItem(token, fetchEntryTriple(options.fetchTokens.identity, candidate), candidate.Item)
+		}
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -415,6 +417,28 @@ func TestDaemonlessThreadTurnsContinuesInsideWindowedTurn(t *testing.T) {
 	}
 	if wantSizes := []int{10, 10, 5}; !slices.Equal(pageSizes, wantSizes) {
 		t.Fatalf("saved window page sizes = %v, want omitted-limit default %v", pageSizes, wantSizes)
+	}
+}
+
+func TestDaemonlessThreadTurnsServesThreadIDOnlyWindowRequest(t *testing.T) {
+	cfg, entry, _ := seedIndexedPastSession(t,
+		execution("turn_id_only", schema.NewTurn(schema.TurnAssistant, llm.Assistant("answer"))),
+		completedExecution("turn_id_only"),
+	)
+	operations := &sessionOperations{cfg: cfg, sources: newExitedLocalRegistry()}
+	page, err := operations.turns(t.Context(), appwire.ThreadTurnsListParams{
+		ThreadID:           entry.Meta.ID,
+		ThreadWindowParams: appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn_id_only"}},
+	})
+	if err != nil {
+		t.Fatalf("thread id only windowed turns list: %v", err)
+	}
+	items := flattenTestItems(page.Data)
+	if len(items) != 1 || items[0].Text != "answer" {
+		t.Fatalf("thread id only window items = %+v, want the requested turn's item", items)
+	}
+	if page.Window == nil {
+		t.Fatal("thread id only window request served no window metadata")
 	}
 }
 

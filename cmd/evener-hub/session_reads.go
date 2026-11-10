@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"primeradiant.com/evener/agent"
@@ -73,9 +74,10 @@ func (o *sessionOperations) discover(ctx context.Context, params appwire.ThreadL
 }
 
 func (o *sessionOperations) turns(ctx context.Context, p appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+	p.Ref = canonicalTurnsListRef(p.Ref, p.ThreadID)
 	if p.Cursor == "" {
 		read, err := o.read(ctx, appwire.ThreadReadParams{
-			Ref: p.Ref, IncludeTurns: true, ItemLimit: p.ItemLimit,
+			Ref: p.Ref, ThreadID: p.ThreadID, IncludeTurns: true, ItemLimit: p.ItemLimit,
 			ThreadWindowParams: p.ThreadWindowParams,
 		}, false)
 		if err != nil {
@@ -86,7 +88,7 @@ func (o *sessionOperations) turns(ctx context.Context, p appwire.ThreadTurnsList
 	if err := appwire.ValidateThreadTurnsListParams(p); err != nil {
 		return appwire.ThreadTurnsListResponse{}, err
 	}
-	source, err := sourceForThreadWithDeletionFence(ctx, o.cfg, o.sources, p.Ref, "")
+	source, err := sourceForThreadWithDeletionFence(ctx, o.cfg, o.sources, p.Ref, p.ThreadID)
 	if err == nil {
 		if p.TurnWindow != nil {
 			page, continuationErr := continueLiveTranscriptWindowOwned(ctx, source, p, o)
@@ -121,6 +123,17 @@ func (o *sessionOperations) turns(ctx context.Context, p appwire.ThreadTurnsList
 		return page, nil
 	}
 	return appwire.ThreadTurnsListResponse{}, err
+}
+
+// canonicalTurnsListRef names the thread a turns-list request addresses when it
+// carries a thread id but no ref. Cursors and the saved index key on the
+// canonical ref, and a thread id addresses the local source (sourceForThread
+// treats that pair the same either way).
+func canonicalTurnsListRef(ref, threadID string) string {
+	if strings.TrimSpace(ref) != "" || strings.TrimSpace(threadID) == "" {
+		return ref
+	}
+	return appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: strings.TrimSpace(threadID)}.String()
 }
 
 func continueLiveTranscriptWindow(ctx context.Context, source appsource.Source, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {

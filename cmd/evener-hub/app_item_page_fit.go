@@ -66,7 +66,7 @@ type transcriptWindowPackOptions struct {
 	fetchTokens            *transcriptWindowFetchTokens
 	CanonicalizeCandidates func([]appitempaging.TranscriptItemCandidate) ([]appitempaging.TranscriptItemCandidate, error)
 	MintFetchCursor        func(appitempaging.TranscriptItemCandidate, string) (string, error)
-	RetainFetchItem        func(string, appwire.ThreadItem) error
+	RetainFetchItem        func(string, appitempaging.TranscriptItemCandidate) error
 	MintContinuationCursor func(transcriptWindowContinuation) (string, error)
 }
 
@@ -1264,7 +1264,7 @@ func mintTranscriptWindowFetchCursor(options transcriptWindowPackOptions, candid
 		return "", errors.New("transcript item fetch cursor callback returned an empty cursor")
 	}
 	if options.RetainFetchItem != nil {
-		if err := options.RetainFetchItem(token, candidate.Item); err != nil {
+		if err := options.RetainFetchItem(token, candidate); err != nil {
 			return "", fmt.Errorf("retain transcript item fetch bytes: %w", err)
 		}
 	}

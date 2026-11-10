@@ -130,11 +130,17 @@ func TestFetchCursorRejectsLegacyMalformedAndWrongIdentity(t *testing.T) {
 
 func TestFetchCursorRequiresStrictOriginVersionAndOffset(t *testing.T) {
 	identity := CursorIdentity{ThreadRef: "local:thread", Incarnation: "view-7", ProjectionVersion: 3}
-	valid := `{"version":1,"kind":"fetch","thread_ref":"local:thread","incarnation":"view-7","projection_version":3,"position":{"entry":17,"item":4},"item_version":11,"origin":"serving-daemon","offset":0}`
+	valid := `{"version":1,"kind":"fetch","thread_ref":"local:thread","incarnation":"view-7","projection_version":3,"position":{"entry":17,"item":4},"item_version":11,"origin":"serving-daemon","offset":0,"token":"0123456789abcdef-1"}`
+	if _, err := DecodeFetchCursor(base64.RawURLEncoding.EncodeToString([]byte(valid)), identity); err != nil {
+		t.Fatalf("baseline fetch cursor does not decode: %v", err)
+	}
 	tests := map[string]string{
 		"missing codec version":    strings.Replace(valid, `"version":1,`, "", 1),
 		"zero codec version":       strings.Replace(valid, `"version":1`, `"version":0`, 1),
 		"fractional codec version": strings.Replace(valid, `"version":1`, `"version":1.5`, 1),
+		"missing token":            strings.Replace(valid, `,"token":"0123456789abcdef-1"`, "", 1),
+		"empty token":              strings.Replace(valid, `"token":"0123456789abcdef-1"`, `"token":""`, 1),
+		"malformed token":          strings.Replace(valid, `"token":"0123456789abcdef-1"`, `"token":"no-separator"`, 1),
 		"missing origin":           strings.Replace(valid, `,"origin":"serving-daemon"`, "", 1),
 		"unknown origin":           strings.Replace(valid, `"origin":"serving-daemon"`, `"origin":"other"`, 1),
 		"missing item version":     strings.Replace(valid, `,"item_version":11`, "", 1),
