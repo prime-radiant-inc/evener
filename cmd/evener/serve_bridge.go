@@ -216,6 +216,9 @@ func (b *serveBridge) bridgeSession(s *agent.Session) {
 	b.srv.SetDescendantLiveWatchesFunc(func(threadIDs []string) map[string][]agent.WatchStatusInfo {
 		return s.LiveWatchRowsForSessions(threadIDs)
 	})
+	// A waiting delegate's row carries its usage-limit wait and resume time,
+	// sampled the same way.
+	b.srv.SetDescendantQuotaWaitsFunc(s.DescendantQuotaWaits)
 	// The root's row carries its whole tree's subagent tally (S3), read from
 	// the delegate controller when the list is served. Set per session so it
 	// follows the replacement a thread/clear installs.

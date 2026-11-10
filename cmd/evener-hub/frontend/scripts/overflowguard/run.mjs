@@ -361,7 +361,6 @@ async function measureComposerSend(cdpEndpoint, url, width) {
               ? [...button.querySelectorAll('span')].find((candidate) => candidate.textContent?.trim() === 'Send')
               : null;
             const box = button?.getBoundingClientRect();
-            const activity = document.querySelector('[data-testid="composer-activity"]');
             return {
               theme: ${JSON.stringify(state.theme)},
               fontSize: ${JSON.stringify(state.fontSize)},
@@ -371,7 +370,6 @@ async function measureComposerSend(cdpEndpoint, url, width) {
               width: box?.width ?? null,
               height: box?.height ?? null,
               labelDisplay: label ? getComputedStyle(label).display : null,
-              activityPresent: activity !== null,
             };
           })()`,
         ),
@@ -1733,11 +1731,6 @@ async function main() {
       const sendFailures = [];
       for (const measurement of sendMeasurements) {
         const label = `${measurement.theme}/${measurement.fontSize}`;
-        if (width <= 390) {
-          if (measurement.activityPresent) {
-            sendFailures.push(`${label} composer Activity/recipient row is still rendered`);
-          }
-        }
         if (
           measurement.matchingButtons !== 1 ||
           measurement.tag !== "button" ||

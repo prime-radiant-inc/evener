@@ -19,7 +19,11 @@ import {
 	quietState,
 	taskSettledCount,
 } from "@evener/appwire-client";
-import { subagentTallyToShow } from "@evener/appwire-client/state/navigation";
+import {
+	quotaWaitRemainingMs,
+	subagentTallyToShow,
+	waitingForQuotaText,
+} from "@evener/appwire-client/state/navigation";
 
 export type BoardState = AttentionClass;
 
@@ -257,10 +261,11 @@ export function summaryText(band: Band, count: number): string {
 
 export type Hue = "danger" | "attention";
 
-/** What a why line says, apart from its words: the state's reason, the
- * running subagents, a silence (quiet, or long enough to be stuck), the
- * session's latest intent, the job it runs, or only the state's own word. */
-export type WhyKind = "reason" | "subagents" | "stuck" | "quiet" | "intent" | "job" | "state";
+/** What a why line says, apart from its words: the state's reason, a wait
+ * for a provider's usage limit to reset, the running subagents, a silence
+ * (quiet, or long enough to be stuck), the session's latest intent, the job
+ * it runs, or only the state's own word. */
+export type WhyKind = "reason" | "quota" | "subagents" | "stuck" | "quiet" | "intent" | "job" | "state";
 
 export interface WhyLine {
 	/** Absent on a line that stands in for a why line (a held change's). */
@@ -333,8 +338,11 @@ function workingWhyLine(row: NavigationSessionSummary, activity: SessionActivity
 /** The row's why line. activity and msSinceReadMs are S5's live read (the
  * Board polls evener/activity/read); omitting them keeps every state exactly
  * as it read before S5, including a working row's pre-S5 fallback
- * (workingActivity). */
+ * (workingActivity). A row whose model call waits out a usage limit says
+ * when it resumes while that time is still ahead. */
 export function whyLine(item: ClassifiedRow, activity?: SessionActivity, msSinceReadMs = 0): WhyLine | null {
+	const quotaWait = quotaWaitRemainingMs(item.row, Date.now());
+	if (quotaWait !== null) return { kind: "quota", text: waitingForQuotaText(quotaWait) };
 	if (item.state === "working")
 		return activity ? workingWhyLine(item.row, activity, msSinceReadMs) : workingActivity(item.row);
 	const reason = REASONS[item.state];

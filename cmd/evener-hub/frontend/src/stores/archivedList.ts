@@ -10,12 +10,7 @@
 // and a replaced or recovered connection resets the store, so no list
 // outlives the connection that served it.
 
-import {
-  type ArchivedList,
-  type ArchivedListCatalog,
-  archivedListKey,
-  createArchivedListStore,
-} from "@evener/appwire-client";
+import { type ArchivedList, archivedListKey, createArchivedListStore } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { connectedClientPort, onConnectionReplacedOrRecovered } from "./connection";
 
@@ -31,10 +26,6 @@ onConnectionReplacedOrRecovered(() => archivedListStore.reset());
 export const refreshArchivedList = archivedListStore.refresh;
 export const loadMoreArchivedList = archivedListStore.loadMore;
 export const refreshLoadedArchivedLists = archivedListStore.refreshLoaded;
-
-export function useArchivedList(catalog: ArchivedListCatalog, projectKey: string): ArchivedList | undefined {
-  return useStore(archivedListStore, (state) => state.lists[archivedListKey(catalog, projectKey)]);
-}
 
 export function useArchivedLists(): Record<string, ArchivedList> {
   return useStore(archivedListStore, (state) => state.lists);

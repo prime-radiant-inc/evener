@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"primeradiant.com/evener/internal/maketargetsdoc/makefile"
 )
 
 // stemToDoc maps a make/<stem>.mk family file to the docs/developing-evener
@@ -142,7 +144,7 @@ func generateOne(docDir, mkPath, stem string) error {
 	if err != nil {
 		return err
 	}
-	targets, err := ParseFamily(src)
+	targets, err := makefile.ParseFamily(src)
 	if err != nil {
 		return fmt.Errorf("%s: %w", mkPath, err)
 	}

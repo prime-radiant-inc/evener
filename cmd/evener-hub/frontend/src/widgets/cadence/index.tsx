@@ -20,7 +20,10 @@ const VIEWBOX_WIDTH = 64;
 const VIEWBOX_HEIGHT = 10;
 const TICK_WIDTH = 1.2;
 
-const STATE_LABELS: Record<CadenceState, string> = {
+/** The one session-status vocabulary. Every surface that names a session's
+ * state in words reads this table: the accessible names on Cadence and
+ * StatusDot, and the kind rows in the activity tree. */
+export const STATE_LABELS: Record<CadenceState, string> = {
   idle: "Idle",
   working: "Working",
   "needs-you": "Needs you",

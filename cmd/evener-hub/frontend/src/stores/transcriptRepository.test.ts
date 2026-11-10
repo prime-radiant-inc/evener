@@ -289,6 +289,26 @@ function repository(cache: ReturnType<typeof createEntryCacheFixture>["cache"], 
   });
 }
 
+// Counts reads of displayed item positions. A publication that leaves the
+// displayed turn array unchanged cannot move the foreground floor, so it must
+// not walk the range again (#4700).
+function countPositionReads(model: ThreadModel) {
+  let reads = 0;
+  const items = model.turns.flatMap((turn) => turn.items);
+  for (const item of items) {
+    const position = item.position;
+    Object.defineProperty(item, "position", {
+      configurable: true,
+      enumerable: true,
+      get() {
+        reads += 1;
+        return position;
+      },
+    });
+  }
+  return { items, reads: () => reads };
+}
+
 it.each(
   (["end", "final"] as const).flatMap((source) =>
     (["accepted", "stale-generation", "wrong-identity", "suppressed", "disposed", "cancelled"] as const)
@@ -3846,4 +3866,52 @@ it("keeps a resolved escalation out of every later read, including one issued be
     reader.dispose();
     repo.dispose();
   }
+});
+
+it("metadata-only publications do not rewalk the displayed range for the foreground floor (#4700)", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(readMany(400), { lifetime: 1, readId: "floor-work", boundary: "floor-work" });
+  await owner.settled();
+  const reader = owner.attachReader();
+  await reader.openLocal(40);
+  // A second reader must not reopen the floor: the floor is repository-wide.
+  const second = owner.attachReader();
+  await second.openLocal(20);
+  const opened = owner.getSnapshot();
+  if (!opened) throw new Error("local opening did not publish a model");
+  expect(owner.holdsResidentForegroundRange()).toBe(true);
+  let counter = countPositionReads(opened);
+  // The opening established the floor. A metadata-only publication keeps the
+  // displayed turn array, so only hydratedDisplay's own displayed-range pass
+  // can read a position: at most one read per item. The floor scan adds at
+  // least its own position read per item, so any floor work exceeds this.
+  owner.acceptResponseFields({ humanNote: "metadata only" });
+  expect(counter.reads()).toBeLessThanOrEqual(counter.items.length);
+  expect(owner.holdsResidentForegroundRange()).toBe(true);
+
+  // New displayed content changes the turn array, so the floor scan runs in
+  // addition to the displayed-range pass: at least two reads per item.
+  counter = countPositionReads(owner.getSnapshot()!);
+  expect(owner.accept(historyUpdate("live-tail", 500), { lifetime: 1 })).toBe(true);
+  expect(counter.reads()).toBeGreaterThanOrEqual(counter.items.length * 2);
+  expect(owner.holdsResidentForegroundRange()).toBe(true);
+
+  // A metadata-only publication after that goes back to one pass per item.
+  counter = countPositionReads(owner.getSnapshot()!);
+  owner.acceptResponseFields({ humanNote: "after live" });
+  expect(counter.reads()).toBeLessThanOrEqual(counter.items.length);
+  expect(owner.holdsResidentForegroundRange()).toBe(true);
+
+  // A source boundary resets the floor; the next metadata-only publication
+  // must recompute it, so the floor pass returns.
+  owner.beginFreshBaseline();
+  counter = countPositionReads(owner.getSnapshot()!);
+  owner.acceptResponseFields({ humanNote: "after reset" });
+  expect(counter.reads()).toBeGreaterThanOrEqual(counter.items.length * 2);
+
+  second.dispose();
+  reader.dispose();
+  owner.dispose();
 });

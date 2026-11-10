@@ -489,6 +489,25 @@ describe("why lines on the fallbacks (spec 7.2, 18)", () => {
 		expect(new Set(states.map((state) => whyLine({ row: row("s"), state })?.text)).size).toBe(states.length);
 	});
 
+	// A working session whose model call waits out a usage limit until a
+	// known reset resumes by itself: while that time is ahead its line says so;
+	// once it has passed the wait is over and the working line returns.
+	it.each([
+		["ahead", 90 * 60_000, true],
+		["passed", -60_000, false],
+	] as const)(
+		"a working row whose quota wait resume time is %s (%d ms away) has the quota line: %s",
+		(_when, offsetMs, quota) => {
+			const failure = {
+				title: "Usage limit reached",
+				cause_kind: "provider",
+				status: 429,
+				resumes_at: new Date(Date.now() + offsetMs).toISOString(),
+			};
+			expect(whyLine({ row: row("s", { state: "active", failure }), state: "working" })?.kind === "quota").toBe(quota);
+		},
+	);
+
 	it("has none for Idle", () => {
 		expect(whyLine({ row: row("s"), state: "idle" })).toBeNull();
 	});

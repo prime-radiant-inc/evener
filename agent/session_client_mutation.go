@@ -515,6 +515,12 @@ func (s *Session) AcceptClientMutationStartAs(params appwire.TurnStartParams, ac
 		}
 	}
 	if pending, ok := s.clientMutations.snapshot().PendingExecutions[params.ClientMutationID]; ok && pending.ExecutionState == "accepted" {
+		// A start admitted behind a running recovered turn is the user
+		// speaking: a call of that turn waiting out a usage limit tries once
+		// more.
+		if lookup.Disposition != clientMutationDispositionReplayed {
+			s.wakeQuotaWait()
+		}
 		s.wakeClientMutationStart()
 	}
 	return response, nil

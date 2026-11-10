@@ -42,6 +42,11 @@ func (s *Session) StopDelegateRun(delegateID string) (appwire.DelegateStopOutcom
 	}
 	switch _, err := sub.requestRunCancel(true); {
 	case errors.Is(err, errSubagentNotRunning), errors.Is(err, errSubagentSettling):
+		// A finished delegate can still be running a notification turn its
+		// parent drives, which a quota wait can hold for hours.
+		if sub.stopDrive() {
+			return appwire.DelegateStopStopping, nil
+		}
 		return appwire.DelegateStopNotRunning, nil
 	case err != nil:
 		return "", err
@@ -106,4 +111,48 @@ func (a *subagent) requestRunCancel(asUserStop bool) (chan struct{}, error) {
 		cancel()
 	}
 	return done, nil
+}
+
+// stopDrive cancels the parent-driven notification turn in flight on this
+// delegate, as a Stop, reporting whether one was.
+func (a *subagent) stopDrive() bool {
+	a.mu.Lock()
+	cancel := a.driveCancel
+	if cancel != nil {
+		a.driveStopped = true
+	}
+	a.mu.Unlock()
+	if cancel == nil {
+		return false
+	}
+	cancel()
+	return true
+}
+
+// stopSubtreeDrives stops every parent-driven notification turn in flight
+// in delegateID's subtree: a subtree Stop cancels running generations
+// through the controller, and drive turns run outside any generation.
+func (s *Session) stopSubtreeDrives(delegateID string) {
+	if s.subagents == nil {
+		return // no runtime children, so no drives
+	}
+	for _, childSessionID := range s.delegateController.subtreeChildSessionIDs(delegateID) {
+		if sub := s.subagentForChild(childSessionID); sub != nil {
+			sub.stopDrive()
+		}
+	}
+}
+
+// subtreeChildSessionIDs names the session of every delegate in
+// delegateID's subtree, itself included.
+func (c *delegateTreeController) subtreeChildSessionIDs(delegateID string) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var ids []string
+	for id := range c.subtreeMembersLocked(delegateID) {
+		if aggregate := c.durable[id]; aggregate != nil && aggregate.Descriptor.ChildSessionID != "" {
+			ids = append(ids, aggregate.Descriptor.ChildSessionID)
+		}
+	}
+	return ids
 }

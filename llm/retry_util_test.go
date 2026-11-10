@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 	"time"
 )
@@ -398,5 +399,46 @@ func TestRetryRunBudgetExhaustionReportsTheRunBudgetSentinel(t *testing.T) {
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("reserve %v: the sentinel must unwrap to context.DeadlineExceeded: %v", reserve, err)
 		}
+	}
+}
+
+// TestDefaultSleepTimerAndCancel covers the timer-elapsed and context-cancelled
+// arms of DefaultSleep.
+func TestDefaultSleepTimerAndCancel(t *testing.T) {
+	if err := DefaultSleep(context.Background(), time.Millisecond); err != nil {
+		t.Fatalf("DefaultSleep(1ms) = %v, want nil", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := DefaultSleep(ctx, time.Hour); !errors.Is(err, context.Canceled) {
+		t.Fatalf("DefaultSleep(cancelled) = %v, want context.Canceled", err)
+	}
+}
+
+// TestRetryableError covers the nil-error and bare-sentinel guards plus a
+// genuinely retryable typed error.
+func TestRetryableError(t *testing.T) {
+	if retryableError(nil) {
+		t.Fatal("retryableError(nil) = true, want false")
+	}
+	if retryableError(context.Canceled) {
+		t.Fatal("retryableError(context.Canceled) = true, want false")
+	}
+	if !retryableError(ErrorFromHTTPStatus("openai", 429, "slow down", nil, nil)) {
+		t.Fatal("retryableError(429 rate limit) = false, want true")
+	}
+}
+
+// TestSaturatingDelay covers the zero-base, negative-value, and overflow/NaN arms.
+func TestSaturatingDelay(t *testing.T) {
+	if got := saturatingDelay(0, 100); got != 0 {
+		t.Fatalf("saturatingDelay(0, 100) = %v, want 0", got)
+	}
+	if got := saturatingDelay(time.Second, -5); got != 0 {
+		t.Fatalf("saturatingDelay(1s, -5) = %v, want 0", got)
+	}
+	if got := saturatingDelay(time.Second, math.NaN()); got != time.Duration(math.MaxInt64) {
+		t.Fatalf("saturatingDelay(1s, NaN) = %v, want MaxInt64", got)
 	}
 }

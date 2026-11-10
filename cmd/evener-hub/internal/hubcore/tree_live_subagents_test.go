@@ -267,3 +267,33 @@ func treeNodeState(t *testing.T, tree Tree, id string) string {
 	}
 	return found.State
 }
+
+// A local delegate has no live entry of its own; its root's entry carries
+// its state and, while its model call waits out a usage limit, the limit's
+// summary. The tree's live resolution gives the delegate both, the same
+// facts every row the tree builds for a session reads (fieldsFor).
+func TestTreeLiveResolvesALocalDelegatesQuotaWait(t *testing.T) {
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	wait := &appwire.ThreadFailure{Title: "Usage limit reached", Cause: &appwire.DiagnosticCause{Kind: "provider", Status: 429}, ResumesAt: now.Add(2 * time.Hour).UnixMilli()}
+	metas := []schema.SessionMeta{
+		{ID: "parent", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "child", CreatedAt: now, UpdatedAt: now, ParentSessionID: "parent", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+	}
+	live := []LiveEntry{{
+		PID: 1, SessionID: "parent", Status: appwire.ThreadStatusIdle,
+		RunningSubagentIDs:    []string{"child", "quiet"},
+		RunningSubagentStates: map[string]string{"child": appwire.ThreadStatusActive, "quiet": appwire.ThreadStatusActive},
+		ChildQuotaWaits:       map[string]*appwire.ThreadFailure{"child": wait},
+	}}
+	lv := newTreeLive(metas, live, nil)
+	child := lv.fieldsFor("child")
+	if child.State != "active" || child.Failure == nil || child.Failure.ResumesAt != wait.ResumesAt {
+		t.Fatalf("delegate facts = state %q failure %+v, want working with the usage limit resuming at %d", child.State, child.Failure, wait.ResumesAt)
+	}
+	if quiet := lv.fieldsFor("quiet"); quiet.Failure != nil {
+		t.Fatalf("a working delegate that is not waiting carries %+v", quiet.Failure)
+	}
+	if parent := lv.fieldsFor("parent"); parent.Failure != nil {
+		t.Fatalf("the root carries its delegate's wait %+v", parent.Failure)
+	}
+}

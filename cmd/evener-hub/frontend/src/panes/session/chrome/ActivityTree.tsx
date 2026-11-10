@@ -36,7 +36,7 @@ import {
 } from "react";
 import { WatchGlyph } from "../../../shell/rail/RailRow";
 import { armedWatchCount } from "../../../shell/rail/railNodes";
-import { Chevron, SubagentDot, VisuallyHidden } from "../../../widgets";
+import { Chevron, STATE_LABELS, SubagentDot, VisuallyHidden } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { OpenTranscriptButton } from "../transcript/openTranscript";
 import { ActivityRowDetail, ActivityWatchDetail } from "./ActivityRowDetail";
@@ -107,14 +107,9 @@ function rowStatusText(row: ActivityJobRow | ActivityDelegateRow): string {
 
 // The shell row's kind glyph ($): working is alive, live failure is danger,
 // and needs-you is attention. Settled outcomes keep the glyph's default low
-// ink and truthful accessible name.
-const KIND_STATE_LABEL: Record<string, string> = {
-  idle: "Idle",
-  working: "Working",
-  "needs-you": "Needs you",
-  failed: "Failed",
-  ended: "Ended",
-};
+// ink and truthful accessible name. The words come from the one status
+// vocabulary, so a kind row and a status dot never name a state differently.
+const KIND_STATE_LABEL: Record<string, string> = STATE_LABELS;
 
 function kindStateClass(state: string): string | undefined {
   switch (state) {
