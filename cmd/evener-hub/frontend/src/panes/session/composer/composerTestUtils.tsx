@@ -76,21 +76,6 @@ export function readResponse(ref: string, overrides: Partial<Thread> = {}): Thre
   return { thread: testThread(ref, overrides) };
 }
 
-export function _emptyActivityTree(ref: string) {
-  return {
-    revision: 1,
-    root: {
-      sessionId: `sess_${ref}`,
-      ref,
-      label: "Root session",
-      aggregate: "completed",
-      counts: { active: 0, failed: 0, completed: 0, complete: true },
-      entries: [],
-      branch: {},
-    },
-  };
-}
-
 export async function mountComposerWithHandle(
   ref: string,
   overrides: Partial<Thread> = {},
