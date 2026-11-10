@@ -1,9 +1,14 @@
 package schema
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/identifier"
 )
 
 // TestListSessionMetasWithErrors_ReportsCorruptMeta proves the forensic
@@ -13,7 +18,7 @@ import (
 // fixture yields only the valid meta through it.
 func TestListSessionMetasWithErrors_ReportsCorruptMeta(t *testing.T) {
 	dir := t.TempDir()
-	sessionsDir := filepath.Join(dir, sessionsSubdir)
+	sessionsDir := filepath.Join(dir, SessionsSubdir)
 	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -28,7 +33,7 @@ func TestListSessionMetasWithErrors_ReportsCorruptMeta(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	metas, failures, err := ListSessionMetasWithErrors(dir)
+	metas, failures, err := ListSessionMetasWithErrors(context.Background(), dir)
 	if err != nil {
 		t.Fatalf("ListSessionMetasWithErrors: %v", err)
 	}
@@ -61,7 +66,7 @@ func TestListSessionMetasWithErrors_ReportsCorruptMeta(t *testing.T) {
 // keeps rejecting it and never follows the link.
 func TestListSessionMetasWithErrors_ReportsNonRegularMeta(t *testing.T) {
 	dir := t.TempDir()
-	sessionsDir := filepath.Join(dir, sessionsSubdir)
+	sessionsDir := filepath.Join(dir, SessionsSubdir)
 	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +79,7 @@ func TestListSessionMetasWithErrors_ReportsNonRegularMeta(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	metas, failures, err := ListSessionMetasWithErrors(dir)
+	metas, failures, err := ListSessionMetasWithErrors(context.Background(), dir)
 	if err != nil {
 		t.Fatalf("ListSessionMetasWithErrors: %v", err)
 	}
@@ -92,5 +97,29 @@ func TestListSessionMetasWithErrors_ReportsNonRegularMeta(t *testing.T) {
 	}
 	if len(metas) != 0 {
 		t.Fatalf("ListSessionMetas = %+v, want none", metas)
+	}
+}
+
+// A cancelled context stops the meta listing partway through the sessions
+// dir instead of reading every remaining meta.
+func TestListSessionMetasWithErrorsStopsWhenCancelled(t *testing.T) {
+	dir := t.TempDir()
+	for range 50 {
+		id, err := identifier.NewSessionID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := SaveSessionMetaWithFS(sessionMetaFS, dir, SessionMeta{ID: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ctx := &agenttest.CountdownContext{Context: context.Background(), Allow: 10}
+	metas, failures, err := ListSessionMetasWithErrors(ctx, dir)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if metas != nil || failures != nil {
+		t.Errorf("cancelled listing returned partial data: %d metas, %d failures", len(metas), len(failures))
 	}
 }

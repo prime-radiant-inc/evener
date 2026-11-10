@@ -1,6 +1,5 @@
-import type { DecodedJobOutputPage } from "@evener/appwire-client";
-import type { AnsiByteRow, AnsiByteRows, AnsiByteState } from "../../widgets/codeblock/ansi";
-import { ANSI_BYTE_FRAGMENT_BYTES, parseAnsiByteRows } from "../../widgets/codeblock/ansi";
+import type { AnsiByteRow, AnsiByteRows, AnsiByteState, DecodedJobOutputPage } from "@evener/appwire-client";
+import { ANSI_BYTE_FRAGMENT_BYTES, parseAnsiByteRows } from "@evener/appwire-client";
 
 export const JOB_LOG_PAGE_BYTES = 64 * 1024;
 export const JOB_LOG_WINDOW_BYTES = 512 * 1024;
@@ -22,6 +21,81 @@ export type JobLogWindows = {
 };
 export type JobLogDemand = { direction: "backward" | "forward"; boundaryBytes: number; limitBytes: number };
 export type JobLogPageSelection = { beforeBytes: number; maxBytes: number };
+
+/** A rendered display row: output text, or a missing byte interval's marker. */
+export type JobLogDemandRow =
+  | { kind: "output"; row: { offsetBytes: number; endBytes: number } }
+  | { kind: "unloaded" | "pruned"; startBytes: number; endBytes: number };
+
+/** An unloaded display row and its index in the display rows. */
+export type JobLogGapCandidate = {
+  row: { startBytes: number; endBytes: number };
+  index: number;
+};
+
+export type JobLogBoundaryGeometry = {
+  viewportTop: number;
+  viewportHeight: number;
+  /** Client-space bottom of the display row at this index, measured or estimated. */
+  rowBottom: (rowIndex: number) => number | undefined;
+};
+
+export type JobLogDemandGap = {
+  /** Display-row index of the gap to page from, or -1. */
+  index: number;
+  /** The gap was found only by geometry: no visible marker, no crossed gap. The
+   * reader is already at the boundary, so the caller must not scroll to it. */
+  geometric: boolean;
+};
+
+/** The unloaded gap a scroll at this position must page from.
+ *
+ * A gap is demanded when its marker is on screen, when the reading position
+ * crossed it in either direction, or when geometry shows the reader reached
+ * the boundary with the marker just off-screen. */
+export function jobLogDemandGapIndex(input: {
+  rows: readonly JobLogDemandRow[];
+  gaps: readonly JobLogGapCandidate[];
+  markerStartBytes: number | undefined;
+  previous: { byteOffset: number; following: boolean } | null;
+  byteOffset: number | undefined;
+  following: boolean;
+  geometry: JobLogBoundaryGeometry;
+}): JobLogDemandGap {
+  const { rows, gaps, markerStartBytes, previous, byteOffset, following, geometry } = input;
+  const crossed = (row: { startBytes: number; endBytes: number }) =>
+    previous !== null &&
+    !(previous.following && following) &&
+    byteOffset !== undefined &&
+    ((previous.byteOffset < row.startBytes && byteOffset >= row.endBytes) ||
+      (previous.byteOffset >= row.endBytes && byteOffset < row.startBytes));
+  for (const { row, index } of gaps) {
+    if (row.startBytes === markerStartBytes || crossed(row)) return { index, geometric: false };
+  }
+  // A backward wheel that reaches the loaded window's start can leave the
+  // unloaded marker just above the viewport: measuring the rows the wheel
+  // scrolled past adjusts the offset to keep the visible content still, and the
+  // marker ends up off-screen. The viewport is nonetheless at the paging
+  // boundary - the first loaded row has been scrolled fully past the top - so
+  // page from the gap above it even though the marker cannot be seen. Without
+  // this, the wheel that reached the boundary strands the reader until an
+  // unrelated scroll reveals the marker again.
+  if (previous === null || following || byteOffset === undefined || byteOffset >= previous.byteOffset)
+    return { index: -1, geometric: false };
+  for (const { row, index } of gaps) {
+    const next = rows[index + 1];
+    if (next?.kind !== "output" || next.row.offsetBytes !== row.endBytes) continue;
+    const bottom = geometry.rowBottom(index + 1);
+    if (bottom === undefined) continue;
+    // The first loaded row must be fully above the viewport, but only just: a
+    // row more than a viewport above means the reader is inside the loaded
+    // window, where scrolling to the gap would teleport it.
+    const distance = geometry.viewportTop - bottom;
+    if (distance < 0 || distance > geometry.viewportHeight) continue;
+    return { index, geometric: true };
+  }
+  return { index: -1, geometric: false };
+}
 
 export function emptyJobLogWindows(): JobLogWindows {
   return { older: null, live: null, retainedStartBytes: 0, totalBytes: 0 };

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { WireError } from "@evener/appwire-client";
-import { type ConversationClientLike, createNewSessionService } from "../../mobile/src/services/newSession";
+import { type ConversationClientLike, createNewSessionService } from "./conversation/services/newSession";
 import { type CreationDraft, CreationDraftRepository } from "./creationDraftRepository";
 import { creationImageDraft } from "./creationImageDraft";
 import { ImageSelection } from "./imageSelection";
@@ -59,6 +59,25 @@ it("starts once with hub defaults and preserves exact prompt", async () => {
 		hubId: "hub-a",
 		thread: { evener: { ref: "canonical/t" } },
 	});
+});
+it("starts as Manager only when chosen", async () => {
+	const { store, calls } = setup();
+	void store.getState().setCwd("/project");
+	store.getState().setManager(true);
+	const pending = store.getState().submit();
+	const start = calls.find((c) => c.method === "thread/start");
+	expect(start?.params).toMatchObject({ cwd: "/project", manager: true });
+	start?.response.resolve({ thread: { id: "t", evener: { ref: "local:t" } }, turn: {} });
+	expect(await pending).toMatchObject({ status: "created" });
+});
+it("omits manager from the wire when not chosen", async () => {
+	const { store, calls } = setup();
+	void store.getState().setCwd("/project");
+	const pending = store.getState().submit();
+	const start = calls.find((c) => c.method === "thread/start");
+	expect(start?.params).not.toHaveProperty("manager");
+	start?.response.resolve({ thread: { id: "t", evener: { ref: "local:t" } }, turn: {} });
+	expect(await pending).toMatchObject({ status: "created" });
 });
 it("resets dependent selections and suppresses obsolete model catalogs", async () => {
 	const { store, calls } = setup();

@@ -1,12 +1,10 @@
 package hub
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -23,11 +21,8 @@ import (
 // In particular, a provider diagnostic is a successful RPC, not a transport error.
 func TestModelListExplicitRefreshRecoversProvider(t *testing.T) {
 	root := t.TempDir()
-	binary := filepath.Join(root, "evener")
-	build := exec.CommandContext(t.Context(), "go", "build", "-o", binary, "../evener")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
-	}
+	// TestMain already builds the ordinary evener binary for this process.
+	binary := filepath.Join(liveStackBinaries(t, repoRootForTestMain()), "evener")
 	for _, item := range os.Environ() {
 		key, _, _ := strings.Cut(item, "=")
 		switch key {
@@ -70,7 +65,7 @@ func TestModelListExplicitRefreshRecoversProvider(t *testing.T) {
 			creds := filepath.Join(t.TempDir(), "credentials.toml")
 			t.Setenv("EVENER_PROVIDERS_CONFIG", config)
 			t.Setenv("EVENER_CREDENTIALS_CONFIG", creds)
-			if err := os.WriteFile(config, []byte(fmt.Sprintf("[providers.refreshfixture]\nbase = \"openai-compatible\"\nbase_url = %q\n", provider.URL+"/v1")), 0600); err != nil {
+			if err := os.WriteFile(config, []byte(fmt.Sprintf("[providers.refreshfixture]\nbase = \"openai-compatible\"\nbase_url = %q\ndefault_model = \"refresh-model-sentinel\"\n", provider.URL+"/v1")), 0600); err != nil {
 				t.Fatal(err)
 			}
 			store, err := credentials.LoadStore(creds)
@@ -90,9 +85,7 @@ func TestModelListExplicitRefreshRecoversProvider(t *testing.T) {
 			defer hub.Close()
 			client := dialHubRPC(t, hub)
 			defer client.Close()
-			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-				t.Fatal(err)
-			}
+			mustInitializeHubClient(t, client)
 			list := func(refresh bool) appwire.ModelListResponse {
 				t.Helper()
 				var resp appwire.ModelListResponse
@@ -122,14 +115,30 @@ func TestModelListExplicitRefreshRecoversProvider(t *testing.T) {
 			for _, model := range fresh.Data {
 				if model.Provider == "refreshfixture" && model.Model == "refresh-model-sentinel" {
 					found = true
+					if !model.InstanceDefault {
+						t.Fatalf("refreshed model/list dropped the instance-default marker: %+v", model)
+					}
 				}
 			}
 			if !found || calls.Load() <= prior {
 				t.Fatalf("explicit retry retained stale provider result: models=%+v calls=%d before=%d", fresh.Data, calls.Load(), prior)
 			}
 			after := calls.Load()
-			if len(list(false).Data) != len(fresh.Data) || calls.Load() != after {
+			cachedAgain := list(false).Data
+			if len(cachedAgain) != len(fresh.Data) || calls.Load() != after {
 				t.Fatal("refresh did not populate normal cached reads")
+			}
+			foundCached := false
+			for _, model := range cachedAgain {
+				if model.Provider == "refreshfixture" && model.Model == "refresh-model-sentinel" {
+					foundCached = true
+					if !model.InstanceDefault {
+						t.Fatalf("cached model/list dropped the instance-default marker: %+v", model)
+					}
+				}
+			}
+			if !foundCached {
+				t.Fatalf("cached model/list lost the sentinel row: %+v", cachedAgain)
 			}
 		})
 	}

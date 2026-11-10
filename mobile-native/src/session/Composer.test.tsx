@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { palettes } from "../design/tokens";
 import { Platform } from "react-native";
 import { alertRequests, pressable, render, renderedText } from "../renderNative.testkit";
+import { withTestID } from "../markerTestUtils";
 import { Composer, ModelChip } from "./Composer";
 import { ComposerFocus } from "./composerFocus";
 
@@ -20,7 +21,6 @@ vi.mock("react-native", async () => ({
 		props.visible ? createElement("Modal", null, props.children) : null,
 }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 // Records what the composer holds: whether, and as what kind.
 const holds = vi.hoisted(() => ({ calls: [] as [boolean, string][] }));
 vi.mock("../alerts/alertsContext", () => ({
@@ -91,6 +91,17 @@ describe("Composer", () => {
 		const { props, tree } = composer();
 		act(() => fields(tree)[0]?.props.onChangeText("hello"));
 		expect(props.onChangeText).toHaveBeenCalledWith("hello");
+	});
+
+	it("carries the field's stable identifier on the working input", () => {
+		const { props, tree } = composer({ value: "hello" });
+		const [field] = withTestID(tree, "composer-message");
+		expect(field && String(field.type)).toBe("TextInput");
+		expect(field.props.value).toBe("hello");
+		act(() => {
+			field.props.onChangeText("next");
+		});
+		expect(props.onChangeText).toHaveBeenCalledWith("next");
 	});
 
 	it("keeps a full-height focus target while resting and when the field opens", () => {

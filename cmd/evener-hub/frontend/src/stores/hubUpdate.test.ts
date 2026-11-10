@@ -1,9 +1,10 @@
 import type { UpdateCheckResponse } from "@evener/appwire-client";
 import { HUB_UNREACHABLE_MESSAGE, WireError } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { connectionStore } from "./connection";
+import { connectReadyFakeClient } from "../testing/connectionTestUtils";
+import { resetConnectionStoreForTests } from "./connection";
 import {
   APPLY_TIMEOUT_MS,
   hubUpdateStore,
@@ -12,12 +13,6 @@ import {
   resetHubUpdateStoreForTests,
 } from "./hubUpdate";
 import { resetThreadsStoreForTests } from "./threads";
-
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
 
 const UP_TO_DATE: UpdateCheckResponse = {
   channel: "snapshot",
@@ -28,6 +23,12 @@ const UP_TO_DATE: UpdateCheckResponse = {
   latestCommit: "be7002918fdc60dbdeab71d9dd17e00d3d006c56",
   updateAvailable: false,
   applicable: true,
+  onDiskCommit: "be70029",
+  installAvailable: false,
+  restartPending: false,
+  startedAt: "2026-10-21T12:00:00Z",
+  restartSupported: true,
+  installTargetMatchesLaunch: true,
 };
 
 function healthFetch(versions: string[]): typeof fetch {
@@ -37,6 +38,15 @@ function healthFetch(versions: string[]): typeof fetch {
     i += 1;
     if (version === "DOWN") throw new TypeError("Failed to fetch");
     return new Response(JSON.stringify({ version }), { status: 200 });
+  }) as unknown as typeof fetch;
+}
+
+function healthIdentityFetch(identities: { version: string; started_at: string }[]): typeof fetch {
+  let i = 0;
+  return vi.fn(async () => {
+    const identity = identities[Math.min(i, identities.length - 1)];
+    i += 1;
+    return new Response(JSON.stringify(identity), { status: 200 });
   }) as unknown as typeof fetch;
 }
 
@@ -66,7 +76,7 @@ function settler(settlers: CheckSettler[], index: number): CheckSettler {
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetHubUpdateStoreForTests();
 });
@@ -78,7 +88,7 @@ afterEach(() => {
 
 describe("runCheck", () => {
   test("requests evener/update/check with the selected channel and stores the result", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/update/check", () => UP_TO_DATE);
     hubUpdateStore.getState().setChannel("snapshot");
 
@@ -92,7 +102,7 @@ describe("runCheck", () => {
   });
 
   test("sends an empty channel when none is selected yet", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/update/check", () => UP_TO_DATE);
 
     await act(() => hubUpdateStore.getState().runCheck());
@@ -101,7 +111,7 @@ describe("runCheck", () => {
   });
 
   test("stores the hub's own message and clears the previous result on failure", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/update/check", () => {
       throw new WireError("GET x: 403 Forbidden: API rate limit exceeded", -1);
     });
@@ -114,7 +124,7 @@ describe("runCheck", () => {
   });
 
   test("shows the generic message for a non-WireError rejection, not its raw text", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/update/check", () => {
       throw new Error("TypeError: cyclic object value");
     });
@@ -127,7 +137,7 @@ describe("runCheck", () => {
   });
 
   test("setChannel clears the stale check result", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/update/check", () => UP_TO_DATE);
     await act(() => hubUpdateStore.getState().runCheck());
 
@@ -146,7 +156,7 @@ describe("runCheck", () => {
   });
 
   test("runCheck clears a stale restartTimedOut flag", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/update/check", () => UP_TO_DATE);
     hubUpdateStore.setState({ restartTimedOut: true });
 
@@ -157,7 +167,7 @@ describe("runCheck", () => {
 
   test("ignores stale runCheck response when channel changed during flight", async () => {
     vi.useFakeTimers();
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let resolveCheck: ((value: UpdateCheckResponse) => void) | undefined;
     const checkPromise = new Promise<UpdateCheckResponse>((resolve) => {
       resolveCheck = resolve;
@@ -190,7 +200,7 @@ describe("runCheck", () => {
 
   test("keeps the newest result when two checks on the same channel finish out of order", async () => {
     vi.useFakeTimers();
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const settlers = scriptedChecks(fake);
     hubUpdateStore.getState().setChannel("snapshot");
 
@@ -223,7 +233,7 @@ describe("runCheck", () => {
 
   test("ignores a late failure from a superseded check on the same channel", async () => {
     vi.useFakeTimers();
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const settlers = scriptedChecks(fake);
     hubUpdateStore.getState().setChannel("snapshot");
 
@@ -257,7 +267,7 @@ describe("runCheck", () => {
 describe("apply", () => {
   test("refuses to apply when the check says already up to date", async () => {
     resetHubUpdateStoreForTests();
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/update/check", () => UP_TO_DATE);
     fake.on("evener/update/apply", () => ({
       release: "snapshot",
@@ -282,7 +292,7 @@ describe("apply", () => {
     const reload = vi.fn();
     const fetchImpl = healthFetch(["be70029"]);
     resetHubUpdateStoreForTests({ fetchImpl, reload });
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/update/check", () => ({ ...UP_TO_DATE, updateAvailable: true }));
     // The server re-checked and found nothing to install: no download, no
     // exec, no version change to wait for.
@@ -310,7 +320,7 @@ describe("apply", () => {
     const reload = vi.fn();
     const fetchImpl = healthFetch(["be70029", "DOWN", "DOWN", "3b1c5f8"]);
     resetHubUpdateStoreForTests({ fetchImpl, reload });
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/update/check", () => ({ ...UP_TO_DATE, updateAvailable: true, latestCommit: "3b1c5f8aaaa" }));
     fake.on("evener/update/apply", () => ({
       release: "snapshot",
@@ -360,7 +370,7 @@ describe("apply", () => {
     vi.useFakeTimers();
     const reload = vi.fn();
     resetHubUpdateStoreForTests({ fetchImpl: healthFetch(["be70029"]), reload });
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/update/check", () => ({ ...UP_TO_DATE, updateAvailable: true }));
     fake.on("evener/update/apply", () => ({
       release: "snapshot",
@@ -398,7 +408,7 @@ describe("apply", () => {
       });
     }) as unknown as typeof fetch;
     resetHubUpdateStoreForTests({ fetchImpl, reload });
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/update/check", () => ({ ...UP_TO_DATE, updateAvailable: true }));
     fake.on("evener/update/apply", () => ({
       release: "snapshot",
@@ -428,7 +438,7 @@ describe("apply", () => {
     vi.useFakeTimers();
     const fetchImpl = healthFetch(["be70029"]);
     resetHubUpdateStoreForTests({ fetchImpl, reload: vi.fn() });
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/update/check", () => ({ ...UP_TO_DATE, updateAvailable: true }));
     fake.on("evener/update/apply", () => {
       throw new WireError("this hub is a dev build", -1);
@@ -449,7 +459,7 @@ describe("apply", () => {
   test("shows the hub-unreachable message when apply fails on the transport", async () => {
     const fetchImpl = healthFetch(["be70029"]);
     resetHubUpdateStoreForTests({ fetchImpl, reload: vi.fn() });
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/update/check", () => ({ ...UP_TO_DATE, updateAvailable: true }));
     fake.on("evener/update/apply", () => {
       throw new Error('AppwireClient: cannot call "evener/update/apply" while state is "closed"');
@@ -467,7 +477,7 @@ describe("apply", () => {
     vi.useFakeTimers();
     const fetchImpl = healthFetch(["be70029"]);
     resetHubUpdateStoreForTests({ fetchImpl, reload: vi.fn() });
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/update/apply", () => ({
       release: "snapshot",
       channel: "snapshot",
@@ -487,7 +497,7 @@ describe("apply", () => {
     const reload = vi.fn();
     const fetchImpl = healthFetch(["be70029", "DOWN", "DOWN", "3b1c5f8"]);
     resetHubUpdateStoreForTests({ fetchImpl, reload });
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/update/check", () => ({ ...UP_TO_DATE, updateAvailable: true, latestCommit: "3b1c5f8aaaa" }));
     fake.on("evener/update/apply", () => ({
       release: "snapshot",
@@ -514,7 +524,7 @@ describe("apply", () => {
 describe("stale check invalidation", () => {
   test("runCheck clears the previous result while checking", async () => {
     vi.useFakeTimers();
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const settlers = scriptedChecks(fake);
     hubUpdateStore.getState().setChannel("snapshot");
 
@@ -553,7 +563,7 @@ describe("stale check invalidation", () => {
   });
 
   test("apply refuses a check from another channel", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/update/check", () => ({ ...UP_TO_DATE, channel: "snapshot" as const }));
     hubUpdateStore.getState().setChannel("snapshot");
     await act(() => hubUpdateStore.getState().runCheck());
@@ -566,5 +576,49 @@ describe("stale check invalidation", () => {
 
     expect(hubUpdateStore.getState().applyError).toBe("That result is stale; run a fresh check first");
     expect(fake.calls.some((c) => c.method === "evener/update/apply")).toBe(false);
+  });
+});
+
+describe("restart", () => {
+  test("polls started_at, so a same-version restart still reloads", async () => {
+    vi.useFakeTimers();
+    const reload = vi.fn();
+    const fetchImpl = healthIdentityFetch([
+      { version: "be70029", started_at: "2026-10-21T12:00:00Z" },
+      { version: "be70029", started_at: "2026-10-21T12:00:01Z" },
+    ]);
+    resetHubUpdateStoreForTests({ fetchImpl, reload });
+    const fake = connectReadyFakeClient();
+    fake.on("evener/update/check", () => ({
+      ...UP_TO_DATE,
+      updateAvailable: true,
+      startedAt: "2026-10-21T12:00:00Z",
+      restartSupported: true,
+      installTargetMatchesLaunch: true,
+    }));
+    fake.on("evener/hub/restart", () => ({
+      restarting: true,
+      incarnation: "2026-10-21T12:00:00Z",
+      currentVersion: "be70029",
+      targetVersion: "be70029",
+    }));
+    hubUpdateStore.getState().setChannel("snapshot");
+    await act(() => hubUpdateStore.getState().runCheck());
+
+    let restarting: Promise<void>;
+    act(() => {
+      restarting = hubUpdateStore.getState().restart();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(hubUpdateStore.getState().restarting).toBe(true);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(RESTART_POLL_MS);
+      await restarting!;
+    });
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(hubUpdateStore.getState().restartTimedOut).toBe(false);
   });
 });

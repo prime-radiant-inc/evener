@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
@@ -26,7 +27,7 @@ const compactedAttentionText = `<delegate-notification delegate_id="dlg_worker" 
 func newCompactableSession(t *testing.T, configure ...func(*SessionConfig)) (*Session, *fakeAdapter) {
 	t.Helper()
 	main := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("answered the update") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("answered the update") },
 	}}
 	client := llm.NewClient()
 	client.Register(main)
@@ -240,7 +241,7 @@ func TestRootDelegateAttentionKeepsDeliveryOrderAcrossCompactionRestart(t *testi
 	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := identifier.MustNewSessionID()
-	if err := os.MkdirAll(filepath.Join(stateDir, sessionsSubdir), 0o755); err != nil {
+	if err := os.MkdirAll(schema.SessionsDir(stateDir), 0o755); err != nil {
 		t.Fatalf("mkdir sessions: %v", err)
 	}
 	writer, err := transcript.NewWriter(transcriptPath(stateDir, rootID), transcript.Header{SessionID: rootID, ProfileID: "openai", Model: "gpt-5.2"})
@@ -314,6 +315,141 @@ func TestAcceptedDelegateAttentionTriggerFoldsAwayOncePresented(t *testing.T) {
 	}
 }
 
+// A responses-continuation delta never carries an attention delivery: every
+// one is a steering turn, and the eligibility rules reject any delta whose
+// suffix holds a steering turn. A round that settles as a delta therefore
+// presented no attention at all — it credits no coverage and clears no latch —
+// so a latched trigger's reopen stays owed even when the staged set, the whole
+// projection, holds it. Suppressing the reopen on staging alone would lose the
+// report: nothing else presented it. Only a settled full-history request may
+// clear the latch, because only that form can have carried the report.
+func TestSettledResponsesDeltaLeavesTheLatchedReopenOwed(t *testing.T) {
+	t.Parallel()
+	leaseCtx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, delegateLease{delegateID: "dlg_target", generation: 1})
+	pendingReopen := func(sess *Session) string {
+		pending, err := sess.pendingDelegateAttentionIDs()
+		if err != nil {
+			t.Fatalf("read pending delegate attention: %v", err)
+		}
+		for _, id := range pending {
+			if strings.Contains(id, delegateAttentionReopenMarker) {
+				return id
+			}
+		}
+		return ""
+	}
+
+	// The strongest witness: the latch sits in the staged set — the staged
+	// set is the whole projection — and the round still settled as a delta.
+	// The delta provably carried no steering turn, so the model saw no
+	// report, and the reopen must fire.
+	sess := acceptedTriggerSession(t)
+	sess.stagePresentedAttentionCoverage(leaseCtx, currentHistory(t, sess))
+	sess.promoteStagedAttentionCoverage(llm.Request{HistoryMode: llm.HistoryModeResponsesDelta})
+	if _, err := sess.reopenLatchedDelegateAttention(); err != nil {
+		t.Fatalf("reopenLatchedDelegateAttention: %v", err)
+	}
+	if reopened := pendingReopen(sess); reopened == "" {
+		t.Fatal("the reopen skipped a latched trigger a settled delta provably did not carry (no pending row holds a reopened identity)")
+	}
+}
+
+// A projection that kept a held row out is a nonstandard view of the resident
+// history: no stored exchange matches its prefix, and the state its own
+// exchange would store is missing turns the resident history keeps. The
+// request must not continue from an anchor, and the exchange it settles must
+// record no continuation metadata — a later request that continued from this
+// exchange's server state would silently drop the held row; the report's own
+// run would anchor past its turn, carry only newer items, and the model would
+// answer around a report it was never shown.
+func TestHeldAttentionProjectionSeedsNoContinuationAnchor(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	adapter := &agenttest.FakeAdapter{
+		Provider: "openai",
+		PlanResponsesContinuationFunc: func(req llm.Request) (llm.ResponsesContinuationPlan, error) {
+			return phase4DIContinuationPlan(req), nil
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.4")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:                    dir,
+		OpenAIResponsesContinuation: "auto",
+		MaxSubagentDepth:            1,
+		testOnly: testConfig{
+			responsesContinuationSupportRegistry: map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{
+				llm.ResponsesEndpointFamilyOpenAIPublic: phase4DIEnabledSupport(),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	drainSessionEvents(sess)
+
+	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, controller, "dlg_target", "")
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+	ownController := sess.delegateController
+	sess.delegateController = controller
+	sess.owningDelegateID = "dlg_target"
+	controller.mu.Lock()
+	controller.live[lease.delegateID].runtime = sess
+	controller.live[lease.delegateID].binding.runtime = sess
+	controller.mu.Unlock()
+	// The harness tree names this session as its running delegate only for
+	// the projection under test. Give the session its own tree back before
+	// its Close, which closes the tree it owns: the harness tree's seeded
+	// generation has no run to settle it, and tearing that tree down would
+	// tear this session down inside its own close.
+	defer func() {
+		sess.mu.Lock()
+		sess.delegateController = ownController
+		sess.owningDelegateID = ""
+		sess.mu.Unlock()
+	}()
+
+	const heldID = "delegate:dlg_worker/delivery/1/reopened/2"
+	held := schema.NewTurn(schema.TurnSteering, llm.User("held report"))
+	held.AttentionID = heldID
+	anchor := responsesContinuationEligibleAssistantTurn("resp_phase4d_anchor")
+	anchor.ResponseIDHash = "cont-handle-v1:response_id:phase4d"
+	anchor.ResponseRequestFingerprint = "cont-req-v1:phase4d"
+	anchor.ResponseStorageScopeFingerprint = "cont-scope-v1:phase4d"
+	sess.mu.Lock()
+	sess.history = []schema.Turn{
+		held,
+		anchor,
+		schema.NewTurn(schema.TurnEnvironment, llm.User("environment context")),
+	}
+	sess.mu.Unlock()
+	sess.attentionMu.Lock()
+	sess.attentionAutomaticDriveHolds = map[string]struct{}{heldID: {}}
+	sess.attentionMu.Unlock()
+
+	ctx := context.WithValue(context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease), delegateAttentionRunContextKey{}, struct{}{})
+	var timings events.RoundTimings
+	_, _, _, req, _, _, err := sess.prepareModelRequestWithError(ctx, 1, &timings)
+	if err != nil {
+		t.Fatalf("prepare model request: %v", err)
+	}
+	if req.HistoryMode != llm.HistoryModeFullHistory {
+		t.Fatalf("HistoryMode = %q, want full history: a projection that dropped a held row is a nonstandard view and must not continue from a stored anchor", req.HistoryMode)
+	}
+	if req.PreviousResponseID != "" {
+		t.Fatalf("PreviousResponseID = %q, want empty: the filtered projection must not continue from an anchor", req.PreviousResponseID)
+	}
+	if req.Continuation != nil {
+		t.Fatalf("Continuation metadata = %+v, want none: the exchange this request settles must not become a later anchor", req.Continuation)
+	}
+	_, meta := singleAttemptRequestMetadata(req)
+	if meta.ContextMarker != "" || meta.RequestFingerprint != "" {
+		t.Fatalf("attempt metadata = %+v, want no anchor fields: the settled exchange must not record a continuation fingerprint", meta)
+	}
+}
+
 const acceptedTriggerText = `<delegate-notification delegate_id="dlg_worker" kind="update">TRIGGER_ITEM</delegate-notification>`
 
 // acceptedTriggerSession is a delegate runtime that has accepted an attention
@@ -349,5 +485,191 @@ func acceptedTriggerSession(t *testing.T) *Session {
 	if err := sess.acceptDelegateAttention(reservation); err != nil {
 		t.Fatalf("acceptDelegateAttention: %v", err)
 	}
+	// No drive owns this accepted reservation, so nothing commits it; release
+	// it the way a drive that cannot commit does, before the session and the
+	// controller close (cleanups are LIFO), so Close finds no start to wait on.
+	t.Cleanup(func() {
+		if err := controller.AbortStart(reservation); err != nil {
+			t.Errorf("AbortStart: %v", err)
+		}
+	})
 	return sess
+}
+
+// deriveHeldFixture builds the durable shape a user-stopped presentation
+// leaves for a cold restore: a delegate whose first generation settled with
+// the given outcome, its accepted source row consumed at that generation, and
+// a reopened row keyed to the same generation still pending. The session's
+// controller is the harness's; the derivation reads only durable state.
+func deriveHeldFixture(t *testing.T, outcome delegatestore.OutcomeStatus, reason string) (*Session, string) {
+	t.Helper()
+	sess, _ := newCompactableSession(t)
+	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, controller, "dlg_hold", "")
+	controller.mu.Lock()
+	controller.live["dlg_hold"] = &delegateLiveState{runtime: sess}
+	controller.mu.Unlock()
+	sess.delegateController = controller
+	sess.owningDelegateID = "dlg_hold"
+	// The delegate identity exists only for the derivation under test: this
+	// session is no real delegate child, and its own teardown cleanup would
+	// otherwise treat the fabricated settled outcome as a run whose result it
+	// must deliver, waiting out the delivery give-up on close. Detach the
+	// fabrication before that teardown runs (cleanups are LIFO, and the
+	// session's own close was registered first).
+	t.Cleanup(func() {
+		sess.mu.Lock()
+		sess.delegateController = nil
+		sess.owningDelegateID = ""
+		sess.mu.Unlock()
+	})
+
+	const sourceID = "delegate:dlg_worker/delivery/1"
+	if _, err := sess.appendDelegateNotificationDurably(sourceID, acceptedTriggerText); err != nil {
+		t.Fatalf("append the source row: %v", err)
+	}
+	reservation, err := controller.ReserveAttention(sess, sourceID)
+	if err != nil {
+		t.Fatalf("ReserveAttention: %v", err)
+	}
+	if err := sess.acceptDelegateAttention(reservation); err != nil {
+		t.Fatalf("acceptDelegateAttention: %v", err)
+	}
+	// The claimed generation's rest: the run settled with the fixture's
+	// outcome, leaving the aggregate at that generation. The three durable
+	// facts the derivation reads are seeded directly — the journal's own
+	// settle path is pinned end to end by the release-restore test, and a
+	// journaled finish here would queue the run's terminal delivery, which
+	// the session's teardown then waits out.
+	controller.mu.Lock()
+	aggregate := controller.durable["dlg_hold"]
+	aggregate.Generation = 1
+	aggregate.Trigger = delegatestore.TriggerAttention
+	aggregate.CurrentRunOpen = false
+	aggregate.LatestOutcome = &delegatestore.Outcome{
+		Status:  outcome,
+		Reason:  reason,
+		EndedAt: time.Unix(20, 0).UTC(),
+	}
+	controller.durable["dlg_hold"] = aggregate
+	controller.mu.Unlock()
+	reopenedID := delegateAttentionReopenID(sourceID, 1)
+	if _, err := sess.appendDelegateNotificationDurably(reopenedID, acceptedTriggerText); err != nil {
+		t.Fatalf("append the reopened row: %v", err)
+	}
+	return sess, reopenedID
+}
+
+// A restored session's held rows come from durable state, and the predicate
+// draws exactly the user stop's boundary: a pending reopen of the generation
+// the delegate rests at is held when that generation settled cancelled and
+// no new event has armed the row's wake; a controller-noted wake is a new
+// event's arm and presents, and reopens keyed to a generation the journal
+// never reached — the busy and failed-launch shapes — stay presentable on
+// the restore.
+func TestDeriveHeldDelegateAttentionFromOutcome(t *testing.T) {
+	t.Parallel()
+
+	t.Run("cancelled generation holds its reopened row", func(t *testing.T) {
+		t.Parallel()
+		sess, reopenedID := deriveHeldFixture(t, delegatestore.OutcomeCancelled, "cancelled")
+		sess.deriveHeldDelegateAttentionFromOutcome()
+		sess.attentionMu.Lock()
+		held := sess.delegateAttentionHeldFromAutomaticDriveLocked(reopenedID)
+		sess.attentionMu.Unlock()
+		if !held {
+			t.Fatal("the cancelled generation's reopened row was not held")
+		}
+		ids, err := sess.automaticDelegateAttentionIDs()
+		if err != nil {
+			t.Fatalf("read the drive-side rows: %v", err)
+		}
+		if slices.Contains(ids, reopenedID) {
+			t.Fatalf("the drive-side read still offers the held row: %v", ids)
+		}
+	})
+
+	t.Run("controller-noted wake presents instead", func(t *testing.T) {
+		t.Parallel()
+		sess, reopenedID := deriveHeldFixture(t, delegatestore.OutcomeCancelled, "cancelled")
+		sess.delegateController.noteDelegateAttention("dlg_hold", reopenedID)
+		sess.deriveHeldDelegateAttentionFromOutcome()
+		ids, err := sess.automaticDelegateAttentionIDs()
+		if err != nil {
+			t.Fatalf("read the drive-side rows: %v", err)
+		}
+		if !slices.Contains(ids, reopenedID) {
+			t.Fatalf("a controller-noted wake is a new event's arm and must present: %v", ids)
+		}
+	})
+
+	t.Run("busy-keyed reopen stays presentable", func(t *testing.T) {
+		t.Parallel()
+		sess, reopenedID := deriveHeldFixture(t, delegatestore.OutcomeCancelled, "cancelled")
+		// A busy-class refusal claims the recycled generation without ever
+		// journaling it, so its reopen keys past the aggregate's rest.
+		const busySourceID = "delegate:dlg_worker/delivery/2"
+		transcriptPath := sess.TranscriptPath()
+		appendColdAttentionRow(t, transcriptPath, sess.id, busySourceID, acceptedTriggerText)
+		appendColdConsumedClaim(t, transcriptPath, sess.id, busySourceID, 2)
+		busyReopenedID := delegateAttentionReopenID(busySourceID, 2)
+		appendColdAttentionRow(t, transcriptPath, sess.id, busyReopenedID, acceptedTriggerText)
+		sess.deriveHeldDelegateAttentionFromOutcome()
+		ids, err := sess.automaticDelegateAttentionIDs()
+		if err != nil {
+			t.Fatalf("read the drive-side rows: %v", err)
+		}
+		if !slices.Contains(ids, busyReopenedID) {
+			t.Fatalf("a busy-keyed reopen must stay presentable on the restore: %v", ids)
+		}
+		if slices.Contains(ids, reopenedID) {
+			t.Fatalf("the cancelled generation's reopened row lost its hold beside the busy key: %v", ids)
+		}
+	})
+
+	t.Run("failed launch stays presentable", func(t *testing.T) {
+		t.Parallel()
+		sess, reopenedID := deriveHeldFixture(t, delegatestore.OutcomeFailed, "launch_failed")
+		sess.deriveHeldDelegateAttentionFromOutcome()
+		ids, err := sess.automaticDelegateAttentionIDs()
+		if err != nil {
+			t.Fatalf("read the drive-side rows: %v", err)
+		}
+		if !slices.Contains(ids, reopenedID) {
+			t.Fatalf("a failed launch's reopened row must stay presentable on the restore: %v", ids)
+		}
+	})
+
+	t.Run("stopped send at the recycled generation owes no attention quiet", func(t *testing.T) {
+		t.Parallel()
+		sess, reopenedID := deriveHeldFixture(t, delegatestore.OutcomeCancelled, "cancelled")
+		// The reviewed shape: a busy refusal reopened the source at the
+		// recycled generation, and a SEND — not an attention run — committed
+		// and settled that generation before the paced retry presented the
+		// reopen. The send's user stop settles cancelled at the same
+		// generation the reopen claims, so the generation and outcome match
+		// the attention quiet exactly; only the run's trigger distinguishes
+		// the send. The resident gate holds attention runs' reports alone,
+		// so the restored session must not hold the reopen either.
+		controller := sess.delegateController
+		controller.mu.Lock()
+		aggregate := controller.durable["dlg_hold"]
+		aggregate.Trigger = delegatestore.TriggerOwnerInput
+		controller.durable["dlg_hold"] = aggregate
+		controller.mu.Unlock()
+		sess.deriveHeldDelegateAttentionFromOutcome()
+		sess.attentionMu.Lock()
+		held := sess.delegateAttentionHeldFromAutomaticDriveLocked(reopenedID)
+		sess.attentionMu.Unlock()
+		if held {
+			t.Fatal("a stopped send at the recycled generation held the busy reopen: the resident quiet covers attention runs alone")
+		}
+		ids, err := sess.automaticDelegateAttentionIDs()
+		if err != nil {
+			t.Fatalf("read the drive-side rows: %v", err)
+		}
+		if !slices.Contains(ids, reopenedID) {
+			t.Fatalf("the stopped send's busy reopen must stay presentable on the restore: %v", ids)
+		}
+	})
 }

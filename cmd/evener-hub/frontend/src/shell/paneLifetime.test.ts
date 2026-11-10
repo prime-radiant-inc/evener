@@ -1,7 +1,11 @@
 import type { DockviewApi } from "dockview-core";
 import { lazy } from "react";
-import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { createAttachmentOperations } from "../panes/session/composer/attachments/useAttachments";
+import { retainedTranscriptReadView } from "../panes/session/transcript/transcriptReadView";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
+import type { MutationRecoveryRecord } from "../stores/mutationOutbox";
+import { captureAttentionPlacement, presentAttentionTarget, restoreAttentionPlacement } from "./attentionPlacement";
 import { conversationPaneLifetime, disposeConversationPaneLifetime } from "./paneLifetime";
 import { registerPaneForTests } from "./paneRegistry";
 import { type OpenPaneRecord, registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
@@ -17,11 +21,129 @@ beforeEach(() => {
   installLocalStorage(new MemoryStorage());
   resetWorkspaceStoreForTests();
 });
-afterEach(() => resetWorkspaceStoreForTests());
+afterEach(() => {
+  resetWorkspaceStoreForTests();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 function rootPane(): OpenPaneRecord {
   return { id: "session-1", type: "session", params: { ref: "root" }, slot: "main" };
 }
+
+function recoveryRow(id: string, text: string): MutationRecoveryRecord {
+  const input = [{ type: "text" as const, text }];
+  return {
+    version: 1,
+    clientMutationId: id,
+    intentSequence: 1,
+    createdAt: 1,
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input },
+    composerText: text,
+    recoveryKind: "rejected",
+    state: "submitting",
+    attempted: false,
+  } as MutationRecoveryRecord;
+}
+
+test("attention substitution retains the source lifetime", async () => {
+  const pane = rootPane();
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  const source = conversationPaneLifetime(pane);
+  const composer = source.composer;
+  if (!composer) throw new Error("missing composer");
+  composer.editText("/skill /command");
+  composer.editSkillNames(["skill"]);
+  composer.updateSelectionMeta({
+    text: "/skill /command",
+    skillNames: ["skill"],
+    commandNames: ["command"],
+    mentions: [
+      { kind: "skill", name: "skill", offset: 0 },
+      { kind: "command", name: "command", offset: 7 },
+    ],
+  });
+  const view = retainedTranscriptReadView(source, "root", "session");
+  const origin = captureAttentionPlacement();
+  if (!origin) throw new Error("missing fixture origin");
+
+  let complete: BlobCallback | undefined;
+  vi.stubGlobal(
+    "Image",
+    class {
+      width = 2;
+      height = 3;
+      onload: (() => void) | null = null;
+      set src(_value: string) {
+        this.onload?.();
+      }
+    },
+  );
+  vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:attention-image");
+  vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+    drawImage() {},
+  } as unknown as CanvasRenderingContext2D);
+  vi.spyOn(HTMLCanvasElement.prototype, "toBlob").mockImplementation((callback) => {
+    complete = callback;
+  });
+  const rejected: string[] = [];
+  createAttachmentOperations(composer.editor, composer.attachments).ingestFiles(
+    [new File([new Uint8Array([1])], "a.png", { type: "image/png" })],
+    (reason) => rejected.push(reason),
+  );
+  expect(composer.attachments.getState().items[0]?.pending).toBe(true);
+  const draft = composer.getSnapshot();
+  const destination = presentAttentionTarget("local:b");
+  expect(destination?.pane).not.toBe(origin.pane);
+  expect(workspaceStore.getState().panes).toContain(origin.pane);
+  expect(origin.pane.slot).toBe("parked");
+  expect(source.alive).toBe(true);
+  const settled = new Promise<void>((resolve) => {
+    const unsubscribe = composer.attachments.subscribe((state) => {
+      if (state.items[0]?.pending === false) {
+        unsubscribe();
+        resolve();
+      }
+    });
+  });
+  if (!complete) throw new Error("encoder did not reach browser canvas");
+  complete(new Blob([new Uint8Array([9, 8, 7])], { type: "image/png" }));
+  await settled;
+  expect(rejected).toEqual([]);
+  expect(composer.attachments.getState().items[0]).toMatchObject({ data: "CQgH", width: 2, height: 3, pending: false });
+  expect(composer.getSnapshot()).toEqual(draft);
+  expect(restoreAttentionPlacement(origin)).toBe(true);
+  expect(conversationPaneLifetime(origin.pane)).toBe(source);
+  expect(source.composer).toBe(composer);
+  expect(retainedTranscriptReadView(source, "root", "session")).toBe(view);
+  expect(origin.readViewId).toBe(view.id);
+  workspaceStore.getState().closePane(origin.pane.id);
+  expect(source.alive).toBe(false);
+  expect(restoreAttentionPlacement(origin)).toBe(false);
+});
+
+test("close retires parked readers without resurrection", () => {
+  const pane = rootPane();
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  const origin = captureAttentionPlacement();
+  if (!origin) throw new Error("missing fixture origin");
+  const source = conversationPaneLifetime(pane);
+  const reader = retainedTranscriptReadView(source, "root", "session");
+  presentAttentionTarget("local:b");
+  expect(source.alive).toBe(true);
+  workspaceStore.getState().closePane(pane.id);
+  expect(source.alive).toBe(false);
+  expect(reader.alive).toBe(false);
+  const replacement = rootPane();
+  workspaceStore.setState({ panes: [...workspaceStore.getState().panes, replacement] });
+  expect(restoreAttentionPlacement(origin)).toBe(false);
+  expect(conversationPaneLifetime(replacement).serial).not.toBe(source.serial);
+});
 
 test("the same committed pane retains its source owner across focus changes", () => {
   const pane = rootPane();
@@ -106,4 +228,30 @@ test.each([false, true])("layout restore success %s disposes only committed repl
     expect(conversationPaneLifetime(restored).composer).toBe(composer);
     expect(composer?.getSnapshot().text).toBe("keep this draft");
   }
+});
+
+test("a resumed source keeps its seat for the live lifetime, and a mobile reload mints a fresh one", async () => {
+  const pane = rootPane();
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  const lifetime = conversationPaneLifetime(pane);
+  const composer = lifetime.composer;
+  if (!composer) throw new Error("session lifetime lacks its source");
+  const preserved = recoveryRow("resumed-seat-row", "local resumed work");
+  composer.setActiveRecoveryId(preserved);
+  const seat = lifetime.composerSeatId;
+
+  // Resuming in place keeps the authoring lifetime, so the retained work
+  // stays restorable under the same durable seat.
+  lifetime.adoptResumedSource("local:mobile-resumed");
+  expect(conversationPaneLifetime(pane).composerSeatId).toBe(seat);
+
+  // A reload reconstructs the resumed route under a fresh pane id. The
+  // maintained mapping is gone by design: placement mints a fresh seat, so
+  // restoring the retained work takes one tap (Edit) on the recovery row
+  // instead of mounting automatically.
+  resetWorkspaceStoreForTests();
+  const reloadedId = workspaceStore.getState().openPane("session", { ref: "local:mobile-resumed" });
+  const reloaded = workspaceStore.getState().panes.find((record) => record.id === reloadedId);
+  if (!reloaded?.composerSeatId) throw new Error("reloaded conversation lacks its seat");
+  expect(reloaded.composerSeatId).not.toBe(seat);
 });

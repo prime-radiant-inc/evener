@@ -51,9 +51,7 @@ function DiffCell({ cell }: { cell: DiffTableCell | undefined }) {
  * the neutral --diff-add-bg wash. Not on token-contract's semantic-use
  * allowlist, so it stays on the neutral diff washes + ink scale only, the
  * same exemption DiffBlock uses for the same reason (structural diff
- * notation, not app status). Shares Table's header/row chrome declarations
- * (surface-inset header band, hover rows) duplicated here rather than via
- * `composes:` - the two widgets have no shared CSS module to compose from.
+ * notation, not app status).
  */
 export function DiffTable({ columns, rows }: DiffTableProps) {
   return (

@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+
+	"primeradiant.com/evener/agent/schema"
 )
 
 func TestDelegateControllerCloseDrainRetriesStaleEvidence(t *testing.T) {
@@ -20,7 +22,7 @@ func TestDelegateControllerCloseDrainRetriesStaleEvidence(t *testing.T) {
 		t.Fatalf("StopSubtree: %v", err)
 	}
 	stop := c.stopForResult(result)
-	transcriptPath := filepath.Join(c.stateDir, sessionsSubdir, "child-dlg_target.transcript.jsonl")
+	transcriptPath := filepath.Join(c.stateDir, schema.SessionsSubdir, "child-dlg_target.transcript.jsonl")
 	if err := os.MkdirAll(filepath.Dir(transcriptPath), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}

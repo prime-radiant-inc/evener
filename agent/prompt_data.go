@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/frontmatter"
+	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/llm"
 )
@@ -31,6 +32,10 @@ type promptData struct {
 	// background shell job still running then is stopped instead of waking the
 	// session later.
 	TurnEndsProcess bool
+	// DetachSupported gates the Background work detach guidance, like the shell
+	// schema's mode: a wrapper-backed environment refuses DetachCommand
+	// (#4922), so the prompt must not send the model to detached.
+	DetachSupported bool
 	// MemoryRead gates the memory guidance section: memory is enabled, bound,
 	// and memory_read is callable. MemorySearch additionally requires
 	// memory_search.
@@ -75,6 +80,9 @@ type promptData struct {
 	// the template omits them rather than render a clean-repo number.
 	GitStatusUnknown      bool
 	GitRecentCommitTitles []string
+	// CommitTrailer is the exact Co-authored-by line the model is told to end
+	// commit messages with. Empty when provenance is off or cannot be built.
+	CommitTrailer string
 
 	// Workspace
 	WorkspaceTree string
@@ -109,6 +117,9 @@ type promptData struct {
 	// jobs sections and the stated allowance.
 	CanDelegate         bool
 	DelegationAllowance int
+	ManagerEnabled      bool
+	ManagerDiscovery    bool
+	ManagerStatus       bool
 
 	// Available agents (for delegate)
 	AvailableAgents []agentEntry
@@ -124,6 +135,11 @@ type promptData struct {
 
 	// CLI appends (--system-prompt-append, applied after everything)
 	CLIAppends []string
+
+	// unreadableAppends lists SystemPromptAppend paths whose read failed, so
+	// renderSystemPrompt can disclose that the requested file was left out. It
+	// is not a template input.
+	unreadableAppends []string
 }
 
 // skillEntry is a skill for template rendering.
@@ -205,7 +221,7 @@ func summarizeTaskPrompt(prompt string) string {
 		}
 	}
 	if len(text) > 120 {
-		return strings.TrimSpace(text[:117]) + "..."
+		return strings.TrimSpace(runetrim.Cut(text, 117)) + "..."
 	}
 	return text
 }

@@ -114,7 +114,7 @@ does: `cmd/evener-hub/frontend/vite.config.ts` pins Vite's `cacheDir` to
 stop rewriting the shared `node_modules/.vite` — and stop racing each other
 on its `deps_temp_*` directory. Anything that still fingerprints or diffs
 `node_modules` while a fleet is running will see the shared install's caches
-move and blame whatever it was guarding — `TestInstallHomeGeneratedHome`'s
+move and blame whatever it was guarding — `TestInstallTarget`'s
 install-mutation digest fired exactly this way during a 12-agent run and
 cost a root-cause investigation before the digest learned to skip
 `.vite`/`.vite-temp`. A guard over shared state must exclude the parts a

@@ -14,7 +14,6 @@ const harness = vi.hoisted(() => ({ kv: new Map<string, string>() }));
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("expo-sqlite/kv-store", () => ({
 	Storage: {
 		getItemSync: (key: string) => harness.kv.get(key) ?? null,

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
@@ -82,12 +83,10 @@ func TestThreadStartRefusalsBeforeTheSpawnSayNotAccepted(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := hubcore.WebConfig{
+			cfg := testWebConfig(t, hubcore.WebConfig{
 				RunDir:           t.TempDir(),
-				HubStateRoot:     t.TempDir(),
 				LaunchConfigRoot: t.TempDir(),
-				Past:             hubcore.NewPastIndex(""),
-			}
+			})
 			if tc.spawner {
 				cfg.Spawner = &fakeRPCModelContractSpawner{
 					spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
@@ -100,11 +99,9 @@ func TestThreadStartRefusalsBeforeTheSpawnSayNotAccepted(t *testing.T) {
 			defer hub.Close()
 			client := dialHubRPC(t, hub)
 			defer client.Close()
-			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-				t.Fatalf("Initialize: %v", err)
-			}
+			mustInitializeHubClient(t, client)
 
-			_, err := client.ThreadStart(context.Background(), tc.params(t))
+			_, err := appwiretest.ThreadStart(context.Background(), client, tc.params(t))
 			wire, data := wireErrorData(t, err)
 			if wire.Code != tc.code || data.EvenerErrorInfo != tc.info {
 				t.Fatalf("refusal code=%d info=%q, want %d %q: %v", wire.Code, data.EvenerErrorInfo, tc.code, tc.info, err)
@@ -163,17 +160,16 @@ func TestThreadStartRefusalAfterTheSpawnLeavesItsOutcomeOpen(t *testing.T) {
 		writeRendezvous(t, runDir, entry)
 		return entry, nil
 	}}
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 		RunDir:  runDir,
 		Roster:  hubcore.NewRoster(runDir, fakeProber{sessionID: sessionID, status: appwire.ThreadStatusActive}),
 		Spawner: spawner,
-		Past:    hubcore.NewPastIndex(""),
-	})
+	}))
 	defer hub.Close()
 	client := dialSkillInputHub(t, hub)
 	defer client.Close()
 
-	_, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+	_, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
 		Model: "openai/gpt-5",
 		CWD:   "/tmp",
 		Input: skillInputHubSelection(),
@@ -362,20 +358,19 @@ func TestThreadStartFailuresFromTheSpawnOnLeaveTheOutcomeOpen(t *testing.T) {
 			PID: 406, Protocol: appwire.ProtocolVersion, Endpoint: "ws" + daemon.URL[len("http"):],
 			SourceID: "local", ThreadID: sessionID, SessionID: sessionID, WorkingDir: "/tmp", Model: "gpt-5",
 		}
-		hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 			RunDir: runDir,
 			Roster: hubcore.NewRoster(runDir, fakeProber{sessionID: sessionID, status: appwire.ThreadStatusActive}),
 			Spawner: &fakeRPCSpawner{spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
 				writeRendezvous(t, runDir, entry)
 				return entry, nil
 			}},
-			Past: hubcore.NewPastIndex(""),
-		})
+		}))
 		defer hub.Close()
 		client := dialSkillInputHub(t, hub)
 		defer client.Close()
 
-		_, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		_, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
 			Model: "openai/gpt-5", CWD: "/tmp",
 			Input: []appwire.InputItem{{Type: "text", Text: "go"}},
 		})

@@ -162,7 +162,7 @@ func TestRunExitsWhenADelegateIsWedgedInAnUncancellableToolCall(t *testing.T) {
 			// under one mutex, so blocking here would deadlock the delegate's own
 			// turn), so poll with a cheap real tool round instead.
 			if !wedge.isWedged() {
-				return scriptedToolCalls(scriptedForegroundShellCall("poll_wedge", "sleep 0.05"))
+				return scriptedToolCalls(scriptedForegroundShellCall("poll_wedge", "ls >/dev/null"))
 			}
 			id := wedgeDelegateIDPattern.FindString(text)
 			if id == "" {
@@ -236,8 +236,8 @@ func TestRunExitsWhenADelegateIsWedgedInAnUncancellableToolCall(t *testing.T) {
 }
 
 // closeStopJoinObservations records every stop join Session.Close bounds, via
-// agent.ObserveCloseStopJoin: the stop's deadline, the cascade's, and when it
-// was minted. The companion budget seam records the immutable cascade budget.
+// agent.ObserveCloseStopJoinBudget: the stop's deadline, the cascade's, and the
+// immutable cascade budget.
 type closeStopJoinObservations struct {
 	mu   sync.Mutex
 	seen []closeStopJoin

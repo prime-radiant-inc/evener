@@ -3,7 +3,7 @@
 import { expect, test } from "vitest";
 import type { InputItem, PendingMutation } from "../../types.gen";
 import type { PendingTurnEntry } from "./pendingEntries";
-import { ownPendingSend, queueEntryPreviewText, reconcilePendingEntries } from "./pendingEntries";
+import { ownPendingSend, ownPendingTurnInput, queueEntryPreviewText, reconcilePendingEntries } from "./pendingEntries";
 import type { MutationOutboxRecord } from "./records";
 import { threadModel as model } from "./testing";
 
@@ -96,6 +96,47 @@ test("pending input retains a command alongside the same-spelling skill across s
   ).toMatchObject([{ skillNames: ["probe"], commandNames: ["probe"] }]);
 });
 
+// RoboRev round-1 M3: a mint's replacement carries the ORIGINAL wire id in
+// its payload while owning a fresh storage key, so the durable record and
+// the daemon's feed name the same composition under two ids. The pending
+// projection is keyed by the effective wire identity, or the one composition
+// projects twice - and a reflected feed id must retire the durable
+// replacement that carries it.
+function mintedReplacement(): MutationOutboxRecord {
+  const record = outbox("mutation_20");
+  return {
+    ...record,
+    payload: { ...record.payload, clientMutationId: "mutation_1" },
+  };
+}
+
+test("a replacement row and its feed identity project as one pending entry", () => {
+  const pending: PendingMutation = {
+    clientMutationId: "mutation_1",
+    method: "turn/steer",
+    input: [{ type: "text", text: "hello" }],
+    executionState: "claimed",
+    projectionState: "reflected",
+  };
+  expect(
+    reconcilePendingEntries(
+      "ref_a",
+      [mintedReplacement()],
+      model({ pendingMutations: [pending] }),
+      NOTHING_SUBMITTED_HERE,
+      UNATTRIBUTED_ONLY,
+    ),
+  ).toHaveLength(1);
+});
+
+test("a reflected wire identity retires the replacement's pending entry", () => {
+  const reflected = model();
+  reflected.queue = { revision: 1, clientMutationIds: ["mutation_1"] };
+  expect(
+    reconcilePendingEntries("ref_a", [mintedReplacement()], reflected, NOTHING_SUBMITTED_HERE, UNATTRIBUTED_ONLY),
+  ).toEqual([]);
+});
+
 test("the authoritative pending projection replaces the same outbox identity", () => {
   const pending: PendingMutation = {
     clientMutationId: "mutation_1",
@@ -185,7 +226,7 @@ test("a pending mutation this client never submitted is not its own", () => {
       new Map([["mutation_1", 1]]),
       UNATTRIBUTED_ONLY,
     ),
-    // createdAt: undefined pins spec §4's no-inheritance from the
+    // createdAt: undefined pins no-inheritance from the
     // authoritative side: the foreign id lands in the unknown-createdAt
     // bucket even beside a populated submittedHere map - nothing lets
     // mutation_1's timestamp leak into another client's entry.
@@ -410,4 +451,50 @@ test("ownPendingSend ignores a send Stop canceled, another client's send, and ot
   expect(ownPendingSend([])).toBe(false);
   expect(ownPendingSend(null)).toBe(false);
   expect(ownPendingSend(undefined)).toBe(false);
+});
+
+test("ownPendingTurnInput counts this client's unsettled sends and queues", () => {
+  for (const method of ["send", "queue"] as const) {
+    for (const state of ["submitting", "blockedUnknown", "accepted", "claimed"] as const) {
+      expect(ownPendingTurnInput([entry({ method, state })])).toBe(true);
+    }
+  }
+});
+
+test("ownPendingTurnInput ignores canceled and other clients' input, and every other method", () => {
+  expect(ownPendingTurnInput([entry({ state: "canceled" })])).toBe(false);
+  expect(ownPendingTurnInput([entry({ method: "queue", state: "canceled" })])).toBe(false);
+  expect(ownPendingTurnInput([entry({ fromThisClient: false })])).toBe(false);
+  expect(ownPendingTurnInput([entry({ method: "queue", fromThisClient: false })])).toBe(false);
+  for (const method of ["steer", "drain", "promote"] as const) {
+    expect(ownPendingTurnInput([entry({ method })])).toBe(false);
+  }
+  expect(ownPendingTurnInput([])).toBe(false);
+  expect(ownPendingTurnInput(null)).toBe(false);
+  expect(ownPendingTurnInput(undefined)).toBe(false);
+});
+
+test("ownPendingTurnInput sees one own unsettled entry in a mixed list", () => {
+  expect(
+    ownPendingTurnInput([
+      entry({ id: "foreign-send", fromThisClient: false }),
+      entry({ id: "own-steer", method: "steer" }),
+      entry({ id: "own-canceled", state: "canceled" }),
+      entry({ id: "own-queue", method: "queue" }),
+    ]),
+  ).toBe(true);
+  expect(
+    ownPendingTurnInput([
+      entry({ id: "foreign-send", fromThisClient: false }),
+      entry({ id: "own-steer", method: "steer" }),
+      entry({ id: "own-canceled", state: "canceled" }),
+    ]),
+  ).toBe(false);
+});
+
+test("ownPendingSend keeps counting only this client's sends", () => {
+  expect(ownPendingSend([entry({ method: "send", state: "claimed" })])).toBe(true);
+  expect(ownPendingSend([entry({ method: "queue", state: "claimed" })])).toBe(false);
+  expect(ownPendingSend([entry({ method: "steer", state: "claimed" })])).toBe(false);
+  expect(ownPendingSend([entry({ method: "send", fromThisClient: false })])).toBe(false);
 });

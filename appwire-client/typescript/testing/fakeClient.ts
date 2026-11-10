@@ -8,7 +8,7 @@
 import { APPWIRE_PROTOCOL_VERSION, type AppwireClient, type ConnectionState, type TerminalReason } from "../client";
 import type { AppwireClientLike } from "../clientLike";
 import { ConnectionClosedError } from "../errors";
-import type { AnyNotification, InitializeResponse, MethodName, MethodTypes } from "../types.gen";
+import type { AnyNotification, InitializeResponse, MethodName, MethodTypes, ThreadReadParams } from "../types.gen";
 import { METHOD_NAMES, NOTIFICATION_NAMES } from "../types.gen";
 
 // The hub's real method catalog, as data. MethodName alone is a compile-time
@@ -93,6 +93,16 @@ const TRANSPORT_CLOSED_MESSAGE = "FakeClient: socket closed";
 // `Promise.resolve().then(invoke)` did and only adopt a returned promise.
 function isThenable<T>(value: T | Promise<T>): value is Promise<T> {
   return value !== null && value !== undefined && typeof (value as { then?: unknown }).then === "function";
+}
+
+// Adds the hub's requestGeneration echo to a thread/read response whose
+// scripted shape omitted it. A handler that scripted its own generation -
+// modeling a specific generation on purpose - is returned untouched.
+function stampReadGeneration<T>(response: T, requestGeneration: number): T {
+  if (typeof response !== "object" || response === null) return response;
+  const read = response as T & { requestGeneration?: number };
+  if (read.requestGeneration !== undefined) return response;
+  return { ...read, requestGeneration };
 }
 
 export class FakeClient implements AppwireClientLike {
@@ -317,7 +327,21 @@ export class FakeClient implements AppwireClientLike {
     // never deliver. The cast restores this call site's M-specific result at
     // the boundary: `handler` is erased to RequestHandler<MethodName>, whose
     // result is the union of every method's, not this M's.
-    return this.defer<MethodTypes[M]["result"]>(() => handler(params) as MethodTypes[M]["result"]);
+    // The hub echoes ThreadReadParams.requestGeneration onto ThreadReadResponse
+    // (types.gen.ts: "RequestGeneration echoes ThreadReadParams.RequestGeneration"),
+    // and the client's read discipline (transcriptHistory.ts's readDisposition)
+    // discards a response answering an older generation than the newest issued -
+    // a response with no echo reads as generation 0, so without the echo every
+    // read a store issues after its held model first carries history is silently
+    // discarded as superseded. Handlers script plain responses; the fake adds
+    // the echo itself, and a handler's own scripted generation wins.
+    return this.defer<MethodTypes[M]["result"]>(() => {
+      const result = handler(params) as MethodTypes[M]["result"];
+      if (method !== "thread/read") return result;
+      const requestGeneration = (params as ThreadReadParams).requestGeneration;
+      if (requestGeneration === undefined) return result;
+      return Promise.resolve(result).then((resolved) => stampReadGeneration(resolved, requestGeneration));
+    });
   }
 
   onNotification(cb: (n: AnyNotification) => void): () => void {
@@ -348,8 +372,9 @@ export class FakeClient implements AppwireClientLike {
   // Mirrors AppwireClient.resumeThread's ordering, which is what makes
   // "Stop during the resume's reconnect" a testable state: the real class
   // forces a reconnect, awaits it, and only then runs beforeRequest,
-  // synchronously before the resume RPC (../client.ts). A Stop that lands
-  // inside that await is therefore seen by the guard and cancels the resume.
+  // immediately before the resume RPC - awaited, so the hook may be async
+  // (../client.ts). A Stop that lands inside that await is therefore seen by
+  // the guard and cancels the resume.
   //
   // This fake owns no socket, so there is nothing to reconnect and no
   // `connected` promise to await; "after reconnect settles" here means one
@@ -362,7 +387,10 @@ export class FakeClient implements AppwireClientLike {
   // "during the reconnect" that the guard had already passed, proving nothing
   // about production; a test that needs the full reconnect race still belongs
   // on the real client with FakeSocket (client.test.ts, reconnect.test.ts).
-  async resumeThread(ref: string, options?: { beforeRequest?: () => void }): ReturnType<AppwireClient["resumeThread"]> {
+  async resumeThread(
+    ref: string,
+    options?: { beforeRequest?: () => void | Promise<void> },
+  ): ReturnType<AppwireClient["resumeThread"]> {
     // AppwireClient.resumeThread's own precondition (client.ts): a client that
     // is not ready at call time - including one already closed - throws this
     // plain Error, not ConnectionClosedError. Reporting "closed" here would
@@ -379,7 +407,8 @@ export class FakeClient implements AppwireClientLike {
     // close() staged in the same turn must reject here, not fall through to a
     // guard run followed by a generic closed-state request error.
     if (this.state === "closed") throw new ConnectionClosedError(CLOSED_MESSAGE);
-    options?.beforeRequest?.();
+    const revalidation = options?.beforeRequest?.();
+    if (revalidation) await revalidation;
     return this.request("thread/resume", { ref });
   }
 

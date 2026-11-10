@@ -82,7 +82,8 @@ func (c *Caller) Complete(ctx context.Context, profile *provider.Profile, req ll
 // re-run a route already tried here, the same contract CompleteConfigured
 // reports.
 func (c *Caller) CompleteRouted(ctx context.Context, profile *provider.Profile, providerName, modelID string, req llm.Request) (llm.Response, bool, error) {
-	return c.run(ctx, profile, route{provider: providerName, model: modelID}, req)
+	resp, ranSessionModel, _, err := c.run(ctx, profile, route{provider: providerName, model: modelID}, req)
+	return resp, ranSessionModel, err
 }
 
 // CompleteConfigured is Complete for work too costly to hand to a model nobody
@@ -93,6 +94,18 @@ func (c *Caller) CompleteRouted(ctx context.Context, profile *provider.Profile, 
 // It reports whether it ran the session model, so a caller that layers routes
 // of its own on top of this one does not re-run a route already tried here.
 func (c *Caller) CompleteConfigured(ctx context.Context, profile *provider.Profile, req llm.Request) (resp llm.Response, ranSessionModel bool, err error) {
+	resp, ranSessionModel, _, err = c.CompleteConfiguredWithProvenance(ctx, profile, req)
+	return resp, ranSessionModel, err
+}
+
+// CompleteConfiguredWithProvenance is CompleteConfigured and also reports the
+// bounded resolution provenance of a reply the caller may still reject
+// locally: the cheap-route refusal that a successful session-model fallback
+// inside this call displaced. It is empty when no fallback ran and on every
+// failure, whose ResolutionError already carries the same evidence. Err in each
+// AttemptFailure can contain private provider text, so consumers must extract
+// safe metadata rather than serialize the value.
+func (c *Caller) CompleteConfiguredWithProvenance(ctx context.Context, profile *provider.Profile, req llm.Request) (resp llm.Response, ranSessionModel bool, previous []AttemptFailure, err error) {
 	cheap := route{provider: profile.CheapProvider(), model: profile.ConfiguredCheapModel()}
 	if cheap.model == "" {
 		cheap = sessionModel(profile)
@@ -102,15 +115,17 @@ func (c *Caller) CompleteConfigured(ctx context.Context, profile *provider.Profi
 
 // run executes one resolution. Both the cheap and the fallback attempt share
 // one API-attempt group so callers see a single logical attempt group covering
-// the whole resolution.
-func (c *Caller) run(ctx context.Context, profile *provider.Profile, cheap route, req llm.Request) (llm.Response, bool, error) {
+// the whole resolution. It hands back the bounded prior failed attempts of a
+// successful internal fallback, for callers whose local validation can still
+// reject the reply.
+func (c *Caller) run(ctx context.Context, profile *provider.Profile, cheap route, req llm.Request) (llm.Response, bool, []AttemptFailure, error) {
 	ctx, scope := llm.BeginAPIAttemptGroupScope(ctx)
-	resp, ranSessionModel, err := c.complete(ctx, profile, cheap, req)
+	resp, ranSessionModel, previous, err := c.complete(ctx, profile, cheap, req)
 	scope.SettleResult(err)
-	return resp, ranSessionModel, err
+	return resp, ranSessionModel, previous, err
 }
 
-func (c *Caller) complete(ctx context.Context, profile *provider.Profile, cheap route, req llm.Request) (llm.Response, bool, error) {
+func (c *Caller) complete(ctx context.Context, profile *provider.Profile, cheap route, req llm.Request) (llm.Response, bool, []AttemptFailure, error) {
 	if req.AdapterTimeout == nil {
 		req.AdapterTimeout = c.AdapterTimeout
 	}
@@ -131,7 +146,7 @@ func (c *Caller) complete(ctx context.Context, profile *provider.Profile, cheap 
 			// request's media. The caller's own choice of the session route
 			// is not gated — that is the try-the-session-model default, not a
 			// fallback.
-			return llm.Response{}, false, ErrSessionModelCannotTakeMedia
+			return llm.Response{}, false, nil, ErrSessionModelCannotTakeMedia
 		}
 		cheap = active
 	}
@@ -151,7 +166,7 @@ func (c *Caller) complete(ctx context.Context, profile *provider.Profile, cheap 
 			// probe acquired c.mu. Re-run this request on the active model —
 			// unless that reroute would hand media to a model that cannot see it.
 			if sessionModelCannotTakeMedia(profile, req) {
-				return llm.Response{}, false, ErrSessionModelCannotTakeMedia
+				return llm.Response{}, false, nil, ErrSessionModelCannotTakeMedia
 			}
 			cheap = active
 			req.Provider, req.Model = active.provider, active.model
@@ -165,7 +180,7 @@ func (c *Caller) complete(ctx context.Context, profile *provider.Profile, cheap 
 				cause:    err,
 			}
 		}
-		return resp, cheap == active, err
+		return resp, cheap == active, nil, err
 	}
 
 	if sessionModelCannotTakeMedia(profile, req) {
@@ -177,8 +192,9 @@ func (c *Caller) complete(ctx context.Context, profile *provider.Profile, cheap 
 		// aux callers never carry media, so the gate is inert for naming,
 		// summarization and web fetch.
 		c.finishProbe(cheap, refusedProbe, true)
-		return llm.Response{}, false, errors.Join(ErrSessionModelCannotTakeMedia, err)
+		return llm.Response{}, false, nil, errors.Join(ErrSessionModelCannotTakeMedia, err)
 	}
+	cheapFailure := AttemptFailure{Provider: cheap.provider, Model: cheap.model, Err: err}
 	req.Provider, req.Model = active.provider, active.model
 	fallbackResp, fallbackErr := c.client.Complete(ctx, req)
 	if fallbackErr != nil {
@@ -197,42 +213,44 @@ func (c *Caller) complete(ctx context.Context, profile *provider.Profile, cheap 
 			joinedErr = errors.Join(ErrAllModelsRefused, joinedErr)
 		}
 		c.finishProbe(cheap, refusedProbe, false)
-		return llm.Response{}, true, &ResolutionError{
+		return llm.Response{}, true, nil, &ResolutionError{
 			Terminal: AttemptFailure{Provider: active.provider, Model: active.model, Err: fallbackErr},
-			Previous: []AttemptFailure{{Provider: cheap.provider, Model: cheap.model, Err: err}},
+			Previous: []AttemptFailure{cheapFailure},
 			cause:    joinedErr,
 		}
 	}
 	c.finishProbe(cheap, refusedProbe, true)
-	return fallbackResp, true, nil
+	return fallbackResp, true, []AttemptFailure{cheapFailure}, nil
 }
 
 // sessionModelCannotTakeMedia reports whether routing this request onto the
 // session model would hand it media it cannot see: an image part needs image
 // input on the row, and a document part needs document input — the row
-// declares pdf and its adapter represents a user-message document (the
-// Responses builder writes input_file and the Anthropic builder writes a
-// document content block; the Google builder rejects the kind and chat strips
-// it, so a pdf row on those protocols stays blocked).
+// declares pdf and its adapter represents that user-message document (the
+// Responses builder writes input_file, the Anthropic builder writes a
+// document content block, Google writes inlineData/fileData, and the Chat
+// builder writes a file part for inline bytes).
 func sessionModelCannotTakeMedia(profile *provider.Profile, req llm.Request) bool {
 	images, documents := requestMediaKinds(req)
-	if documents && !profile.AcceptsDocumentInput() {
-		return true
+	for _, doc := range documents {
+		if !profile.AcceptsDocumentInput(doc) {
+			return true
+		}
 	}
 	return images && !profile.AcceptsImageInput()
 }
 
-// requestMediaKinds reports whether any message part is an image or a
-// document — content only a model with the matching input modality can
-// actually see.
-func requestMediaKinds(req llm.Request) (images, documents bool) {
+// requestMediaKinds reports whether any message part is an image, and
+// collects the document parts — content only a model with the matching
+// input modality can actually see.
+func requestMediaKinds(req llm.Request) (images bool, documents []*llm.DocumentData) {
 	for _, m := range req.Messages {
 		for _, p := range m.Content {
 			switch p.Kind {
 			case llm.ContentImage:
 				images = true
 			case llm.ContentDocument:
-				documents = true
+				documents = append(documents, p.Document)
 			}
 		}
 	}

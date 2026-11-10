@@ -18,10 +18,36 @@
   pointer-events: auto;
 }
 
-.pillSlot {
+.stack {
   position: absolute;
   bottom: var(--space-3);
-  left: 50%;
-  transform: translateX(-50%);
+  /* Both inline anchors, not just the trailing one: the stack's width is
+   * then the pane's width less the two insets. With only `right` it
+   * shrink-wrapped its content, so a trigger label wider than the pane
+   * pushed the control out to the left instead of being truncated. */
+  left: var(--space-3);
+  right: var(--space-3);
   z-index: var(--z-raised);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-2);
+  pointer-events: none;
+}
+
+.stack > * {
+  pointer-events: auto;
+}
+
+.pillSlot {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.attentionSlot {
+  display: flex;
+  justify-content: flex-end;
+  /* The slot's own min-content is its child's full nowrap label; cap it to
+   * the stack so the control, not the label, decides the footprint. */
+  max-width: 100%;
 }

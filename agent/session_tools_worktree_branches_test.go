@@ -74,34 +74,6 @@ func TestGitCmdError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// pathEqualOrUnder
-// ---------------------------------------------------------------------------
-
-func TestPathEqualOrUnderMore(t *testing.T) {
-	t.Parallel()
-	t.Run("equal", func(t *testing.T) {
-		if !pathEqualOrUnder("/a/b/c", "/a/b/c") {
-			t.Fatalf("expected true for equal paths")
-		}
-	})
-	t.Run("under", func(t *testing.T) {
-		if !pathEqualOrUnder("/a/b/c/d", "/a/b/c") {
-			t.Fatalf("expected true for path under target")
-		}
-	})
-	t.Run("not under", func(t *testing.T) {
-		if pathEqualOrUnder("/a/b", "/a/b/c") {
-			t.Fatalf("expected false for path not under target")
-		}
-	})
-	t.Run("sibling", func(t *testing.T) {
-		if pathEqualOrUnder("/a/b/d", "/a/b/c") {
-			t.Fatalf("expected false for sibling path")
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
 // metaDirForProject / metaDirForLane
 // ---------------------------------------------------------------------------
 

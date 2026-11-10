@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
-	"primeradiant.com/evener/agent/execenv"
 	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/llm"
 )
@@ -181,10 +180,7 @@ func TestMaybeInjectTaskReminder_NoNudgeForASessionWithoutTasks(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("test"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	for _, rounds := range []int{9, 10, 15, 100} {
@@ -201,10 +197,7 @@ func TestMaybeInjectTaskReminder_InactivityAfter25Rounds(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("test"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	// Create tasks via store directly (simulating prior tool use).
@@ -241,10 +234,7 @@ func TestMaybeInjectTaskReminder_NoNudgeIfEverUsed(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("test"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	sess.taskToolEverUsed = true

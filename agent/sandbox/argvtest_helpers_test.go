@@ -10,7 +10,22 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+
+	"primeradiant.com/evener/identifier"
 )
+
+// canonicalTempDir returns a fresh t.TempDir by its canonical path: symlinks
+// resolved, the spelling Resolve gives every root it is handed. On macOS
+// t.TempDir is under /var, a symlink to /private/var, so a path a test builds
+// from the raw spelling never matches what Resolve emits.
+func canonicalTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
 
 // hasSeq reports whether args contains seq as a contiguous subsequence — the way
 // bwrap flags come in ordered (flag, value…) groups.
@@ -56,8 +71,8 @@ func devShmMainCheckout(t *testing.T) string {
 		t.Skipf("this host offers no writable /dev/shm: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
-	root = resolveCleanPath(root)
-	if !pathUnder(root, "/dev/shm") {
+	root = identifier.ResolveClean(root)
+	if !identifier.PathUnder(root, "/dev/shm") {
 		// /dev/shm is a symlink here (to /run/shm, say): --dev does not
 		// shadow the resolved path, so there is no /dev/shm workspace to test.
 		t.Skipf("/dev/shm resolves to %q on this host; no /dev/shm-based workspace exists", root)
@@ -77,8 +92,8 @@ func tmpMainCheckout(t *testing.T) string {
 		t.Skipf("this host offers no writable /tmp for the workspace: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
-	root = resolveCleanPath(root)
-	if !pathUnder(root, "/tmp") {
+	root = identifier.ResolveClean(root)
+	if !identifier.PathUnder(root, "/tmp") {
 		// /tmp is a symlink here (to /var/tmp, say): the sandbox's /tmp
 		// tmpfs does not shadow the resolved path, so there is no /tmp-based
 		// workspace this host can offer.

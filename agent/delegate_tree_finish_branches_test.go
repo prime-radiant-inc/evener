@@ -86,7 +86,7 @@ func TestDelegateStoppedTerminalPacket(t *testing.T) {
 // recorded packet is what both the live frame and a replay read.
 func TestStoppedGenerationFinishOverReportedRunReadsStopped(t *testing.T) {
 	t.Parallel()
-	reported := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+	reported := delegateFinishFromRun(delegateTerminalRunInputs{
 		result:       "the settle pass now waits for the drain",
 		communicated: true,
 		descriptor:   notificationWireDescriptor("Fix race in tree settle"),
@@ -459,6 +459,30 @@ func TestDelegatePreparedFinishCancelled(t *testing.T) {
 	}
 	if finish.reason != "cancelled" {
 		t.Fatalf("expected 'cancelled', got %q", finish.reason)
+	}
+}
+
+func TestDelegatePreparedFinishServerContinuationExhaustion(t *testing.T) {
+	t.Parallel()
+	resumable := true
+	metadata := delegateTerminalPacketMetadata{
+		Outcome:             delegatestore.OutcomeExhausted,
+		ExhaustionBudget:    delegatestore.ExhaustionBudgetServerContinuations,
+		ExhaustionLimit:     8,
+		ExhaustionResumable: &resumable,
+	}
+	raw, _ := json.Marshal(metadata)
+	packet := delegatestore.TerminalPacket{Kind: delegatestore.PacketTerminalError, Metadata: raw}
+	finish := delegatePreparedFinish(packet)
+	if finish.outcome != delegatestore.OutcomeExhausted {
+		t.Fatalf("expected exhausted, got %v", finish.outcome)
+	}
+	if finish.reason != "server_continuation_budget_exhausted" {
+		t.Fatalf("expected server-continuation reason, got %q", finish.reason)
+	}
+	if finish.exhaustionBudget != delegatestore.ExhaustionBudgetServerContinuations || finish.exhaustionLimit != 8 ||
+		finish.exhaustionResumable == nil || !*finish.exhaustionResumable {
+		t.Fatalf("restored exhaustion = budget %q limit %d resumable %v", finish.exhaustionBudget, finish.exhaustionLimit, finish.exhaustionResumable)
 	}
 }
 

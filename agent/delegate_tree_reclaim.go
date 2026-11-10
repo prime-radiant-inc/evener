@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 )
@@ -296,6 +295,13 @@ func (c *delegateTreeController) claimableRuntimeSubtreeLocked(rootID string) ([
 			// one stopped-and-forgotten delegate burning a maxRetainedTerminal
 			// slot for the life of the process.
 			if live.binding != nil || live.recoveryRequired || live.finalizationRecoveryRequired || live.recoveryRunnerPending || liveGenerationOwesSteering(live) || len(live.waiters) != 0 || live.quietClaim != nil {
+				return nil, false
+			}
+			// A turn still running on the runtime -- a parent's notification
+			// drive, whose model call can wait out a usage limit for hours --
+			// would be torn out from under it, by the idle release and by
+			// capacity reclamation alike.
+			if live.runtime != nil && live.runtime.inputsInFlight.Load() > 0 {
 				return nil, false
 			}
 			if live.runtime != nil {
@@ -610,7 +616,7 @@ func (s *Session) releaseIdleRuntimeAfterFinalize() bool {
 			// back up.
 			s.rescheduleIdleRuntimeReleaseRetry()
 		default:
-			s.emit(events.EventWarning, warningDataFromError("idle runtime release claim failed", err))
+			s.emit(warningDataFromError("idle runtime release claim failed", err))
 		}
 		return false
 	}
@@ -674,7 +680,7 @@ func (s *Session) releaseIdleRuntimeAfterFinalize() bool {
 		unhookReclaimedRuntimeRecord(entry)
 	}
 	if err := s.delegateController.CompleteRuntimeReclamation(claim, closed); err != nil {
-		s.emit(events.EventWarning, warningDataFromError("idle runtime release completion failed", err))
+		s.emit(warningDataFromError("idle runtime release completion failed", err))
 		return false
 	}
 	completed = true
@@ -753,11 +759,19 @@ func reclamationTeardownWaves(entries []delegateRuntimeReclamationEntry) [][]del
 // resources after the claim completed: the runtime's manager-held children
 // the durable subtree never tracked, then the runtime itself, non-terminally.
 func (s *Session) teardownReclaimedRuntimeEntry(entry delegateRuntimeReclamationEntry) {
-	if hook := s.cfg.testOnly.idleTeardownMemberStarted; hook != nil {
+	// The teardown hooks are runtime-mutable through updateSessionTestConfig,
+	// so their reads share the setter's session mutex.
+	s.mu.Lock()
+	hook := s.cfg.testOnly.idleTeardownMemberStarted
+	s.mu.Unlock()
+	if hook != nil {
 		hook(entry.runtime)
 	}
 	defer func() {
-		if hook := s.cfg.testOnly.idleTeardownMemberSettled; hook != nil {
+		s.mu.Lock()
+		hook := s.cfg.testOnly.idleTeardownMemberSettled
+		s.mu.Unlock()
+		if hook != nil {
 			hook(entry.runtime)
 		}
 	}()
@@ -824,7 +838,12 @@ func (s *Session) scheduleIdleRuntimeRelease(finalizedGeneration uint64) {
 		return
 	}
 	delay := delegateIdleReleaseDelayDefault
-	if override := s.cfg.testOnly.delegateIdleReleaseDelay; override != nil {
+	// The seam is runtime-mutable through updateSessionTestConfig, so its
+	// read shares the setter's session mutex.
+	s.mu.Lock()
+	override := s.cfg.testOnly.delegateIdleReleaseDelay
+	s.mu.Unlock()
+	if override != nil {
 		delay = *override
 	}
 	arm := s.delegateController.nextIdleReleaseArmID()
@@ -970,7 +989,12 @@ func (c *delegateTreeController) currentDelegateGeneration(delegateID string) ui
 // or a whole-tree retirement that has not decided. The fixtures that opt out
 // of the release entirely opt out of its retries too.
 func (s *Session) rescheduleIdleRuntimeReleaseRetry() {
-	if s.cfg.testOnly.disableDelegateIdleRelease {
+	// The seam is runtime-mutable through updateSessionTestConfig, so its
+	// read shares the setter's session mutex.
+	s.mu.Lock()
+	releaseDisabled := s.cfg.testOnly.disableDelegateIdleRelease
+	s.mu.Unlock()
+	if releaseDisabled {
 		return
 	}
 	s.scheduleIdleRuntimeRelease(s.delegateController.currentDelegateGeneration(s.owningDelegateID))
@@ -985,10 +1009,8 @@ func (s *Session) rescheduleIdleRuntimeReleaseRetry() {
 // none of the session-local residue retirement refuses on: a
 // delegate-delivery parcel the pump has not consumed, a manager already
 // closing, or restore side effects still settling on this manager's
-// children. In-flight notification and delivery consumers are absent here
-// deliberately: they hold the tree's shared retirement mutation, which
-// ClaimIdleRuntimeRelease takes before any pre-gate runs, so the claim
-// itself refuses while one is executing.
+// children. A turn in flight on the runtime (a parent's notification drive)
+// is refused earlier, by claimableRuntimeSubtreeLocked, for both releases.
 func (s *Session) idleReleasePregatesClear() bool {
 	if s.peekNotifications() != 0 {
 		return false
@@ -1010,5 +1032,19 @@ func (s *Session) idleReleasePregatesClear() bool {
 			return false
 		}
 	}
+	return true
+}
+
+// admitRuntimeInput counts an input in flight on runtime unless a
+// reclamation claim already covers its delegate. It runs under c.mu, the
+// lock claimableRuntimeSubtreeLocked reads the count under, so a claim and
+// an admission are ordered: whichever comes second sees the other.
+func (c *delegateTreeController) admitRuntimeInput(runtime *Session) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, reclaiming := c.reclaiming[runtime.owningDelegateID]; reclaiming {
+		return false
+	}
+	runtime.inputsInFlight.Add(1)
 	return true
 }

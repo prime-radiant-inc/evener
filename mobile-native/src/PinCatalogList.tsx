@@ -114,7 +114,7 @@ export function PinCatalogList({
 						disabled={!connected || !loaded || loading || uncertain || pending}
 						onPress={more}
 					/>
-				) : null
+				) : undefined
 			}
 		/>
 	);

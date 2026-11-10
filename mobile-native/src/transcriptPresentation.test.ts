@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import {
+	customContentForSelection,
 	makeTranscriptDisplayConfig,
-	presetContent,
 	projectThread as sharedProjectThread,
 	THREAD_ITEM_EVENT_KINDS,
 } from "@evener/appwire-client";
@@ -17,7 +17,7 @@ import { hasUsageLines, projectNativeTranscript, usageRows } from "./transcriptP
 
 function conversation(
 	items: MobileTimelineItem[],
-	overrides: Partial<Pick<MobileConversation, "usage" | "turns" | "olderCursor" | "cost">> = {},
+	overrides: Partial<Pick<MobileConversation, "usage" | "turns" | "olderCursor" | "cost" | "kind">> = {},
 ): MobileConversation {
 	return {
 		items,
@@ -183,7 +183,10 @@ it("renders summary-only rows as intent, active or failed as critical, and never
 	];
 	const result = projectNativeTranscript(
 		conversation(items),
-		makeTranscriptDisplayConfig({ kind: "custom", ...presetContent("chat") }),
+		makeTranscriptDisplayConfig({
+			kind: "custom",
+			...customContentForSelection(makeTranscriptDisplayConfig({ kind: "preset", level: "chat" })),
+		}),
 	);
 	expect(result.items.map((item) => item.id)).toEqual(["summarized", "settled", "failed", "active", "unknown"]);
 	expect(result.activityPresentation.get("summarized")).toEqual({
@@ -218,7 +221,9 @@ it.each(["chat", "intent", "tools", "activity", "full"] as const)(
 			]),
 			makeTranscriptDisplayConfig({ kind: "preset", level }),
 		);
-		expect(result.expandByDefault).toBe(presetContent(level).expandByDefault);
+		expect(result.expandByDefault).toBe(
+			customContentForSelection(makeTranscriptDisplayConfig({ kind: "preset", level })).expandByDefault,
+		);
 		// A live run shows its steps where tool calls show; at Chat and Intent
 		// the tray shows the live step instead (S7).
 		expect(result.liveRunsOpen).toBe(level === "tools" || level === "activity" || level === "full");
@@ -394,6 +399,15 @@ it("falls back to summing the loaded turns when the thread has no cumulative tot
 	});
 });
 
+// A fork child's inherited prefix is the parent's spend; never show it.
+it("does not charge a fork child's inherited turns to its footer", () => {
+	const result = projectNativeTranscript(
+		conversation([], { usage: undefined, kind: "fork", turns: [usageTurn("t1", 6961, 73)] }),
+		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts: true, estimatedCost: false }),
+	);
+	expect(result.usage).toEqual({ derived: null, cumulative: null, cost: null });
+});
+
 // thread/read windows items via itemLimit and reports the truncation through
 // olderCursor. A sum over that window is not the session total, so the scope
 // says exactly what it counts instead of overstating it.
@@ -504,7 +518,10 @@ it("does not mutate clustered members or source items while projecting", () => {
 	const before = structuredClone(items);
 	projectNativeTranscript(
 		conversation(items),
-		makeTranscriptDisplayConfig({ kind: "custom", ...presetContent("full") }),
+		makeTranscriptDisplayConfig({
+			kind: "custom",
+			...customContentForSelection(makeTranscriptDisplayConfig({ kind: "preset", level: "full" })),
+		}),
 	);
 	expect(items).toEqual(before);
 });
@@ -573,6 +590,7 @@ it("renders a missing-description tool call in full rather than second-guessing 
 			toolCalls: false,
 			reasoning: false,
 			expandByDefault: false,
+			thinkingOpenByDefault: false,
 		}),
 	);
 	expect(result.activityPresentation.get("missing")).toEqual({ mode: "full" });
@@ -673,6 +691,7 @@ it("keeps each member attachment adjacent while messages and unkeyed warnings re
 			toolIntent: false,
 			reasoning: false,
 			expandByDefault: false,
+			thinkingOpenByDefault: false,
 		}),
 	);
 	// D24-6: the members survive whatever the config — a custom vector that

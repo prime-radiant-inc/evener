@@ -3,12 +3,11 @@
 // hub's hosts and live sessions, and this phone's memory of starts. It lives
 // apart from NewSessionSheet.tsx, the navigator, so the pages the sheet mounts
 // can read it without importing their own navigator.
-import type { AppwireClient } from "@evener/appwire-client";
+import type { AppwireClient, LaunchOptionSchemaResponse, PluginPreviewLoadState } from "@evener/appwire-client";
 import { createContext, useContext } from "react";
 import type { HostsController } from "../hosts/hostsController";
 import type { LiveSessionsReader } from "../hosts/liveCounts";
 import type { createNewSessionStore } from "../newSession";
-import type { PluginPreviewLoadState } from "../../../cmd/evener-hub/frontend/src/panes/spawn/usePluginPreview";
 import type { LaunchMemory } from "./launchMemory";
 import type { LaunchDefaults } from "./useLaunchDefaults";
 
@@ -43,6 +42,10 @@ export interface NewSessionContextValue {
 	/** The hub's launch defaults for the chosen host and project, read once for
 	 * the sheet (useLaunchDefaults.ts); null until the hub says them. */
 	launchDefaults: LaunchDefaults | null;
+	/** The hub's launch option schema for the chosen host (useLaunchSchema.ts),
+	 * naming the fields this hub build offers; null until the hub says it, so a
+	 * page hides a field the hub has not named. */
+	launchSchema: LaunchOptionSchemaResponse | null;
 	/** A host's name on screen: the hub's own machine is named after the hub
 	 * (ruling 3). */
 	hostLabel(host: string): string;

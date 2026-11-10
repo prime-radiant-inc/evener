@@ -10,6 +10,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"primeradiant.com/evener/agent/activitybound"
+
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
@@ -52,7 +54,7 @@ func TestDelegateStatusInfo_PayloadCapMatchesTheRead(t *testing.T) {
 	}
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", RootID: "root",
-		StableDelegates: map[string]delegateSnapshot{"dlg_1": row},
+		Delegates: map[string]delegateSnapshot{"dlg_1": row},
 	}
 	delegate := projectActivitySession(snap, newActivityBudget()).Entries[0].Delegate
 	if delegate.Usage != nil || delegate.Worktree != nil {
@@ -71,7 +73,7 @@ func TestTruncateActivityText_DoesNotMaterializeTheInput(t *testing.T) {
 	var before, after runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&before)
-	got := truncateActivityText(input, activityMaxLabelRunes)
+	got := activitybound.Truncate(input, activityMaxLabelRunes)
 	runtime.ReadMemStats(&after)
 	if n := len([]rune(got)); n != activityMaxLabelRunes {
 		t.Fatalf("label = %d runes, want %d", n, activityMaxLabelRunes)
@@ -101,8 +103,8 @@ func TestProjectBoundedActivityTree_CapsOutcomeReasonAndOriginIDs(t *testing.T) 
 	row.lastOutcome = &delegatestore.Outcome{Status: delegatestore.OutcomeCompleted, Reason: huge}
 	root := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", RootID: "root",
-		StableDelegates: map[string]delegateSnapshot{"dlg_0": row},
-		Children:        map[string]*activitySessionSnapshot{"child": child},
+		Delegates: map[string]delegateSnapshot{"dlg_0": row},
+		Children:  map[string]*activitySessionSnapshot{"child": child},
 	}
 
 	got, err := projectBoundedActivityTree(root, "root", 0, 0, 0, time.Unix(10, 0).UTC())
@@ -162,8 +164,8 @@ func TestProjectBoundedActivityTree_BoundsMaxDepthAncestorChain(t *testing.T) {
 		}
 		node = &activitySessionSnapshot{
 			SessionID: ownerID, Ref: "local:" + ownerID, RootID: "root",
-			StableDelegates: map[string]delegateSnapshot{row.id: row},
-			Children:        map[string]*activitySessionSnapshot{childID: node},
+			Delegates: map[string]delegateSnapshot{row.id: row},
+			Children:  map[string]*activitySessionSnapshot{childID: node},
 		}
 	}
 
@@ -244,7 +246,7 @@ func TestProjectActivitySession_CapsDelegateProse(t *testing.T) {
 	row.descriptor.Description = prose
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", RootID: "root",
-		StableDelegates: map[string]delegateSnapshot{"dlg_1": row},
+		Delegates: map[string]delegateSnapshot{"dlg_1": row},
 	}
 	got := projectActivitySession(snap, newActivityBudget())
 	if len(got.Entries) != 1 || got.Entries[0].Delegate == nil {
@@ -262,6 +264,24 @@ func TestProjectActivitySession_CapsDelegateProse(t *testing.T) {
 		if !strings.HasSuffix(value, "…") {
 			t.Fatalf("delegate %s does not say it was cut", name)
 		}
+	}
+}
+
+// Retired delegate job rows are kept in the journal and ignored: they are not an
+// unsupported type, so they do not leave the branch with a permanent error.
+func TestProjectActivitySession_RetiredDelegateRecordsAreNotBranchErrors(t *testing.T) {
+	t.Parallel()
+	records := []*jobstore.JobRecord{
+		{JobID: "job_legacy_delegate", Type: jobstore.JobType(delegateResourceType), OwnerSessionID: "root", Status: jobstore.StatusStopped},
+		{JobID: "job_shell", Type: jobstore.JobShell, OwnerSessionID: "root", Status: jobstore.StatusRunning},
+	}
+	snap := activitySessionSnapshot{SessionID: "root", Ref: "local:root", Jobs: records}
+	got := projectActivitySession(snap, newActivityBudget())
+	if got.Branch.Error != "" {
+		t.Fatalf("branch error = %q, want none for a retired delegate record", got.Branch.Error)
+	}
+	if len(got.Entries) != 1 {
+		t.Fatalf("entries = %d, want only the shell job", len(got.Entries))
 	}
 }
 
@@ -326,12 +346,12 @@ func TestTruncateActivityText_IsRuneSafe(t *testing.T) {
 	t.Parallel()
 	// 150 runes, 300 bytes: over the 200-byte fast path, under the 200-rune cap.
 	withinRunes := strings.Repeat("é", 150)
-	if got := truncateActivityText(withinRunes, activityMaxLabelRunes); got != withinRunes {
+	if got := activitybound.Truncate(withinRunes, activityMaxLabelRunes); got != withinRunes {
 		t.Fatalf("150-rune string was altered to %q", got)
 	}
 
 	long := strings.Repeat("é", activityMaxLabelRunes+50)
-	got := truncateActivityText(long, activityMaxLabelRunes)
+	got := activitybound.Truncate(long, activityMaxLabelRunes)
 	if !utf8.ValidString(got) {
 		t.Fatalf("truncation split a multi-byte rune: %q", got)
 	}
@@ -363,7 +383,7 @@ func TestProjectActivitySession_CapsDelegatePayloads(t *testing.T) {
 	}
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", RootID: "root",
-		StableDelegates: map[string]delegateSnapshot{"dlg_1": row},
+		Delegates: map[string]delegateSnapshot{"dlg_1": row},
 	}
 	got := projectActivitySession(snap, newActivityBudget())
 	delegate := got.Entries[0].Delegate
@@ -438,8 +458,8 @@ func TestProjectBoundedActivityTree_BoundsPacketPayloadsOnContinuationAncestors(
 		}
 		node = &activitySessionSnapshot{
 			SessionID: ownerID, Ref: "local:" + ownerID, RootID: "root",
-			StableDelegates: map[string]delegateSnapshot{row.id: row},
-			Children:        map[string]*activitySessionSnapshot{childID: node},
+			Delegates: map[string]delegateSnapshot{row.id: row},
+			Children:  map[string]*activitySessionSnapshot{childID: node},
 		}
 	}
 

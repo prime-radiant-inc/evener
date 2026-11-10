@@ -304,6 +304,29 @@ describe("messages that didn't make it (spec 14)", () => {
 		expect(list.map((ghost) => ghost.text)).toEqual(["something else", "maybe sent"]);
 	});
 
+	it("keeps parked replacement work distinct from an identical pending send", () => {
+		const list = ghosts(
+			session("idle"),
+			[pending({ id: "unrelated", text: "same words", state: "blockedUnknown" })],
+			null,
+			[],
+			true,
+			undefined,
+			[{ id: "park-a", ...unsent("same words") }],
+		);
+		expect(list.map((ghost) => [ghost.key, ghost.origin.kind])).toEqual([
+			["pending:unrelated", "pending"],
+			["draft:parked:park-a", "parked"],
+		]);
+		expect(list[1]).toMatchObject({
+			state: "parked",
+			text: "same words",
+			buttons: ["discard"],
+			menu: ["edit"],
+			origin: { kind: "parked", parkId: "park-a" },
+		});
+	});
+
 	it("says why the hub refused a message, and offers Edit only when it can come back", () => {
 		expect(ghosts(session("idle"), [], null, [row()], true)[0]).toMatchObject({
 			state: "refused",

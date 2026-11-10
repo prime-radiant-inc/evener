@@ -14,8 +14,6 @@ import {
 } from "./sessionMessage";
 
 vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
-vi.mock("expo-crypto", () => ({ randomUUID: () => "test-uuid", getRandomValues: (array: Uint8Array) => array }));
-
 const capabilities = (over: Partial<ThreadCapabilities> = {}): ThreadCapabilities => ({
 	send: true,
 	steer: true,
@@ -192,7 +190,7 @@ describe("submitting a message to a session", () => {
 		const runtime = {
 			submit: async (request: unknown) => {
 				calls.push(["submit", request]);
-				return undefined;
+				return { clientMutationId: "mutation-1" };
 			},
 			settleTarget: async (...args: unknown[]) => {
 				calls.push(["settle", ...args]);
@@ -225,7 +223,7 @@ describe("submitting a message to a session", () => {
 
 	it("keeps a message it admitted when the release can't run", async () => {
 		const runtime = {
-			submit: async () => undefined,
+			submit: async () => ({ clientMutationId: "mutation-1" }),
 			settleTarget: async (): Promise<"blocked"> => {
 				throw new Error("offline");
 			},

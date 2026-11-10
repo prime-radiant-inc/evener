@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -29,9 +30,9 @@ func sourceForThread(sources *appsource.Registry, ref, threadID string) (appsour
 		}
 		return source, nil
 	}
-	source, ok := sources.Source("local")
+	source, ok := sources.Source(appwire.LocalSourceID)
 	if !ok {
-		return nil, errors.New("source not found: local")
+		return nil, fmt.Errorf("%w: %s", appsource.ErrSourceNotFound, appwire.LocalSourceID)
 	}
 	if threadID == "" {
 		return source, nil
@@ -178,7 +179,7 @@ type deletionTargetLookup func(store *hubcore.DeletionStore, ref, threadID strin
 // between two checks made by a single request; production reads the durable
 // store directly. Work that runs in the background, past the request that
 // started it, captures the lookup once when it is built instead of reading
-// this variable live (see newHubRelayFunctions): a test restoring the seam must
+// this variable live (see newHubRelay): a test restoring the seam must
 // not race with, or be answered by, a relay some earlier test left running.
 var deletionTargetState deletionTargetLookup = func(store *hubcore.DeletionStore, ref, threadID string) (hubcore.DeletionState, bool) {
 	return store.TargetState(ref, threadID)
@@ -242,7 +243,7 @@ func isTargetDeletedError(err error) bool {
 }
 
 func deletionThreadID(ref, threadID string) string {
-	if parsed, err := appwire.ParseRef(ref); err == nil && parsed.SourceID == "local" {
+	if parsed, err := appwire.ParseRef(ref); err == nil && parsed.SourceID == appwire.LocalSourceID {
 		return parsed.ThreadID
 	}
 	return threadID
@@ -264,7 +265,7 @@ func hubKnowsRef(cfg hubcore.WebConfig, ref string) bool {
 func sessionRecoveryState(cfg hubcore.WebConfig, ref, threadID string) hubcore.SessionRecoveryState {
 	if ref != "" {
 		parsed, err := appwire.ParseRef(ref)
-		if err != nil || parsed.SourceID != "local" {
+		if err != nil || parsed.SourceID != appwire.LocalSourceID {
 			return hubcore.SessionRecoveryState{}
 		}
 	}
@@ -452,6 +453,16 @@ func admitSessionRecovery(ctx context.Context, cfg hubcore.WebConfig, message ap
 			return ctx
 		}
 		rawRef, id = params.Ref, strings.TrimSpace(params.ThreadID)
+	case appwire.MethodEvenerJobsStop:
+		var request appwire.SessionStopRequest
+		if json.Unmarshal(message.Request.Params, &request) != nil {
+			return ctx
+		}
+		if request.Job != nil {
+			rawRef = request.Job.Ref
+		} else if request.OwnedDelegate != nil {
+			rawRef = request.OwnedDelegate.Ref
+		}
 	case appwire.MethodThreadFork, appwire.MethodEvenerThreadNameSet, appwire.MethodThreadModelSet, appwire.MethodThreadVisionModelSet,
 		appwire.MethodThreadReasoningEffortSet, appwire.MethodThreadCompactStart,
 		appwire.MethodThreadClear, appwire.MethodThreadShutdown, appwire.MethodGoalSet,
@@ -470,7 +481,7 @@ func admitSessionRecovery(ctx context.Context, cfg hubcore.WebConfig, message ap
 	}
 	if rawRef != "" {
 		ref, err := appwire.ParseRef(rawRef)
-		if err != nil || ref.SourceID != "local" {
+		if err != nil || ref.SourceID != appwire.LocalSourceID {
 			return ctx
 		}
 		// Resume's explicit sessionId takes precedence; other handlers resolve ref
@@ -524,7 +535,7 @@ func sessionConnectionRecoveryError(ctx context.Context, cfg hubcore.WebConfig, 
 		if err != nil {
 			return err
 		}
-		if parsed.SourceID != "local" {
+		if parsed.SourceID != appwire.LocalSourceID {
 			return nil
 		}
 		threadID = parsed.ThreadID

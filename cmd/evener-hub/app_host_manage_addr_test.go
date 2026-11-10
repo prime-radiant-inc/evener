@@ -9,11 +9,7 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
-// The runtime host surfaces (evener/host/add, evener/host/update) commit what
-// hub.toml loading would accept, so the config_path/addr pair and the addr host
-// rules spec 03's "config_path / addr" section assigns to validateHostConfigs
-// must refuse here too, at the field the operator can fix. A runtime add that
-// stores a half-specified pair is the reviewer finding these tests pin.
+// Runtime host adapters share bootstrap-listener validation with TOML loading.
 
 func TestHostManageAddRefusesUnusableHostAddr(t *testing.T) {
 	m := testHostManager(nil, nil)
@@ -21,9 +17,6 @@ func TestHostManageAddRefusesUnusableHostAddr(t *testing.T) {
 		entry appwire.HostEntry
 		field string
 	}{
-		{appwire.HostEntry{Name: "cfgonly", Address: "c.example", ConfigPath: "/etc/evener/hub.toml"}, ""},
-		{appwire.HostEntry{Name: "addronly", Address: "a.example", Addr: "127.0.0.1:9180"}, ""},
-		{appwire.HostEntry{Name: "offbox", Address: "o.example", ConfigPath: "/etc/evener/hub.toml", Addr: "10.0.0.5:9180"}, "addr"},
 		{appwire.HostEntry{Name: "noport", Address: "n.example", ConfigPath: "/etc/evener/hub.toml", Addr: "127.0.0.1"}, "addr"},
 	} {
 		_, err := m.Add(context.Background(), appwire.HostAddParams{Entry: tc.entry})
@@ -56,9 +49,7 @@ func TestHostManageUpdateRefusesUnusableHostAddr(t *testing.T) {
 	f := newUpdateFixture(t)
 	before := readHubTOMLBytes(t, f.configPath)
 	for _, entry := range []appwire.HostEntry{
-		{Address: "side.example", ConfigPath: "/etc/evener/hub.toml"},
-		{Address: "side.example", Addr: "127.0.0.1:9180"},
-		{Address: "side.example", ConfigPath: "/etc/evener/hub.toml", Addr: "10.0.0.5:9180"},
+		{Address: "side.example", ConfigPath: "/etc/evener/hub.toml", Addr: "10.0.0.5:70000"},
 	} {
 		if _, err := f.m.Update(context.Background(), updateRequest(t, f.m, "side", entry)); err == nil {
 			t.Errorf("Update(%+v) accepted an entry hub.toml loading refuses", entry)
@@ -69,5 +60,22 @@ func TestHostManageUpdateRefusesUnusableHostAddr(t *testing.T) {
 	}
 	if got, ok := f.m.cfg.hosts.Get("side"); !ok || got.ConfigPath != "" || got.Addr != "" {
 		t.Fatalf("refused updates changed the stored entry: %+v (ok=%v)", got, ok)
+	}
+}
+
+func TestHostManageConfigOnlyAndBootstrapAddr(t *testing.T) {
+	m := testHostManager(nil, nil)
+	for _, entry := range []appwire.HostEntry{
+		{Name: "cfgonly", Address: "c.example", ConfigPath: "/etc/evener/hub.toml"},
+		{Name: "addronly", Address: "a.example", Addr: "0.0.0.0:0"},
+		{Name: "specific", Address: "s.example", Addr: "10.0.0.5:9180"},
+	} {
+		if _, err := m.Add(t.Context(), appwire.HostAddParams{Entry: entry}); err != nil {
+			t.Fatal(err)
+		}
+		got, ok := m.cfg.hosts.Get(entry.Name)
+		if !ok || got.ConfigPath != entry.ConfigPath || got.Addr != entry.Addr {
+			t.Fatalf("stored=%+v", got)
+		}
 	}
 }

@@ -64,20 +64,20 @@ func TestFileToolCanReadMaskedPathsDenyInEveryMode(t *testing.T) {
 	anywhere := ResolvedPolicy{
 		Mode:        ModeReadOnly,
 		FileTool:    AccessScope{Read: ReadAnywhere},
-		MaskedPaths: []string{"/home/me/.ssh"},
+		MaskedPaths: []string{"/fixture-home/me/.ssh"},
 	}
-	if anywhere.FileToolCanRead("/home/me/.ssh/id_rsa") {
+	if anywhere.FileToolCanRead("/fixture-home/me/.ssh/id_rsa") {
 		t.Error("a masked path must deny reads even in read-anywhere mode")
 	}
-	if !anywhere.FileToolCanRead("/home/me/.sshx/not-under-the-mask") {
-		t.Error("masking /home/me/.ssh must not mask the sibling /home/me/.sshx (prefix boundary)")
+	if !anywhere.FileToolCanRead("/fixture-home/me/.sshx/not-under-the-mask") {
+		t.Error("masking /fixture-home/me/.ssh must not mask the sibling /fixture-home/me/.sshx (prefix boundary)")
 	}
 	restricted := ResolvedPolicy{
 		Mode:        ModeRestricted,
-		FileTool:    AccessScope{Read: ReadWorktreeOnly, ReadRoots: []string{"/home/me"}},
-		MaskedPaths: []string{"/home/me/.ssh"},
+		FileTool:    AccessScope{Read: ReadWorktreeOnly, ReadRoots: []string{"/fixture-home/me"}},
+		MaskedPaths: []string{"/fixture-home/me/.ssh"},
 	}
-	if restricted.FileToolCanRead("/home/me/.ssh/id_rsa") {
+	if restricted.FileToolCanRead("/fixture-home/me/.ssh/id_rsa") {
 		t.Error("a masked path must deny reads even when a read root contains it")
 	}
 }

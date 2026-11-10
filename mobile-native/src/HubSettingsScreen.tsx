@@ -5,7 +5,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useS
 import { Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { type ConnectionState, createHubOverviewStore } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { isReady, whenReady } from "./connectionDisplay";
 import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "./retainedScreen";
 import { FirstLoad, SheetStatus } from "./sheet/SheetStatus";
@@ -194,8 +194,15 @@ function HubSettings({
 	);
 	const data = state.data;
 	const hub = data?.hub;
+	// Go's omitempty drops an empty agents slice, an empty MCP server list and
+	// zero past-index counters, so the screen supplies the same [] / 0 the web
+	// sections do; the overview store caches the response as sent (issue #1465).
+	const agents = data?.agents ?? [];
+	const mcpDiscovered = data?.mcpDiscovered;
+	const mcpServers = mcpDiscovered?.servers ?? [];
+	const pastIndex = hub?.pastIndex;
 	return (
-		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.palette.canvas }]}>
+		<SafeAreaView edges={["bottom"]} style={[styles.fill, { backgroundColor: colors.palette.canvas }]}>
 			<GroupedPage>
 				<Group label={hubName} selectableLabel>
 					<Row
@@ -232,23 +239,21 @@ function HubSettings({
 							<Detail label="Bearer token age" value={hub?.bearerTokenAge} />
 							<Detail label="Run directory" value={hub?.runDir} />
 							<Detail label="State directory" value={data.storage?.stateDir} />
-							{hub?.pastIndex && (
+							{pastIndex && (
 								<>
-									<Detail label="Past session index" value={hub.pastIndex.path} />
-									<Detail label="Index size" value={hub.pastIndex.size} />
-									<Detail label="Indexed sessions" value={hub.pastIndex.count} />
-									<Detail label="Past results per page" value={hub.pastIndex.perPage} />
+									<Detail label="Past session index" value={pastIndex.path} />
+									<Detail label="Index size" value={pastIndex.size} />
+									<Detail label="Indexed sessions" value={pastIndex.count ?? 0} />
+									<Detail label="Past results per page" value={pastIndex.perPage ?? 0} />
 								</>
 							)}
 						</Section>
 						<GroupFooter>These locations are on the hub.</GroupFooter>
 						<Section title="Agents">
-							{data.agents === undefined ? (
-								<Row label="Agent information unavailable" />
-							) : data.agents.length === 0 ? (
+							{agents.length === 0 ? (
 								<Row label="No agents discovered" />
 							) : (
-								data.agents.map((agent) => (
+								agents.map((agent) => (
 									<Detail
 										key={agent.name}
 										label={agent.name}
@@ -259,16 +264,16 @@ function HubSettings({
 							)}
 						</Section>
 						<Section title="Discovered MCP servers">
-							{data.mcpDiscovered === undefined ? (
+							{mcpDiscovered === undefined ? (
 								<Row label="MCP discovery unavailable" />
 							) : (
 								<>
 									{/* The hub composes these diagnostics and sends them as data, not
 									    as a rejection, so they are shown as the hub wrote them. */}
 									<View style={{ paddingHorizontal: space.rowInset }}>
-										<ErrorMessage message={data.mcpDiscovered.error || null} />
+										<ErrorMessage message={mcpDiscovered.error || null} />
 									</View>
-									{data.mcpDiscovered.servers?.map((server) => (
+									{mcpServers.map((server) => (
 										<View key={server.name}>
 											<View accessible accessibilityLabel={server.name} style={detailRowStyle}>
 												<Copy>{server.name}</Copy>
@@ -280,9 +285,7 @@ function HubSettings({
 											</View>
 										</View>
 									))}
-									{!data.mcpDiscovered.error && data.mcpDiscovered.servers?.length === 0 && (
-										<Row label="No MCP servers discovered" />
-									)}
+									{!mcpDiscovered.error && mcpServers.length === 0 && <Row label="No MCP servers discovered" />}
 								</>
 							)}
 						</Section>

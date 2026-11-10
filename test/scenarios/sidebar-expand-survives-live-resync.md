@@ -7,15 +7,18 @@ expand bookkeeping doesn't carry across that render, a project you deliberately
 opened silently collapses the moment something happens somewhere else.
 
 The mechanism moved wholesale. There is no `doResync()` and no
-`window.EvenerSidebarModel` — expansion is React state in `Rail.tsx`
-(`expandedOverrides`, `:164`, seeded from `localStorage` by `loadExpansion`),
-resolved per row by `overrideLookup` (`railNodes.ts:106-108`) and persisted on
-every toggle by `setExpanded` (`Rail.tsx:197-205`). The refetch is
-`navigationStore.getState().loadManifest()` (`stores/navigation/store.ts:339-352`), scheduled on a 250ms debounce
+`window.EvenerSidebarModel` — expansion is the navigation store's `expanded`
+map, read at store construction through the `NavigationPersistence` port
+(`stores/navigation/persistence.ts`), resolved per row by `overrideLookup`
+(`railNodes.ts:106-108`) and written on every toggle by `setRowExpanded`
+(`Rail.tsx`). The refetch is
+`navigationStore.getState().loadManifest()` (`appwire-client/typescript/state/navigation/store.ts`),
+scheduled on a 250ms debounce
 by any of `thread/started`, `thread/closed`, `evener/attention/changed`,
-`navigation invalidation` (`navigation invalidation`, `stores/navigation/store.ts:443-450,455-467`).
-Those two live in different stores and never touch each other, which is exactly
-the property this card exists to keep true.
+`navigation invalidation` (`appwire-client/typescript/state/navigation/store.ts`). Expansion and the
+manifest now live in the same navigation store, but a refetch replaces the
+manifest and resources, never the `expanded` map. That is exactly the property
+this card exists to keep true.
 
 **Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — the selector
 map there is the single place these hooks are maintained. Rows are
@@ -107,7 +110,7 @@ entirely in the client bundle, so there is no REST-level counterpart to assert.
 - **Step 4**: the session row appears, the treeitem flips to
   `aria-expanded="true"`, and the localStorage blob gains
   `"projectnode:<A key>": true`. Falsify: the row appears but nothing is
-  persisted — the toggle bypassed `setExpanded` and will not survive step 7.
+  persisted — the toggle bypassed `setRowExpanded` and will not survive step 7.
 - **Step 6 (the core assertion)**: `window.__treeFetches` is **> 0** (a refetch
   genuinely ran — without this the whole step is an idle-DOM false pass), the
   new live session's row is visible under the `Live` heading (independent proof
@@ -117,8 +120,8 @@ entirely in the client bundle, so there is no REST-level counterpart to assert.
   the client's expand bookkeeping and the regression is back.
 - **Step 7**: `$A` is still expanded on a cold page load, from
   `evener.rail.expanded.v1` alone. Falsify: it comes back collapsed — the write
-  in step 4 is not being read at mount (`loadExpansion` is the lazy `useState`
-  initializer, `Rail.tsx:164`).
+  in step 4 is not being read at mount (the store reads `loadExpansion` through
+  its persistence port at construction, `stores/navigation/persistence.ts`).
 
 ## Cleanup
 

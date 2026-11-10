@@ -12,8 +12,10 @@ import (
 	"io"
 	"log"
 	"maps"
+	"reflect"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -22,6 +24,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/searchresult"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
@@ -214,9 +217,26 @@ func cloneSchemaValue(v any) any {
 		return append([]float64(nil), x...)
 	case []bool:
 		return append([]bool(nil), x...)
-	default:
-		return v
 	}
+	if v == nil {
+		return nil
+	}
+	// Other serializable containers must not share mutable state with the
+	// source. Scalars keep their Go types, including existing float64 values.
+	switch reflect.ValueOf(v).Kind() {
+	case reflect.Map, reflect.Slice, reflect.Array, reflect.Struct, reflect.Pointer:
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return v
+		}
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.UseNumber()
+		var out any
+		// Marshal produced valid JSON and decoding into a generic value cannot fail.
+		_ = dec.Decode(&out)
+		return out
+	}
+	return v
 }
 
 // normalizeAskUserArgs normalizes ask_user arguments by wrapping the shorthand
@@ -291,6 +311,19 @@ func normalizeAskUserArgs(args map[string]any) (map[string]any, error) {
 	return nil, errors.New(errorMsg)
 }
 
+// TruncationReason names the registry output limit that shortened a result.
+type TruncationReason string
+
+const (
+	TruncatedByLines TruncationReason = "lines"
+	TruncatedByChars TruncationReason = "chars"
+)
+
+// LineRange is a 1-based inclusive window of lines.
+type LineRange struct {
+	From, To int
+}
+
 // ExecResult holds the outcome of executing a single tool call, including
 // the truncated output sent to the model, the full untruncated output, timing,
 // and any image or state side-channel data.
@@ -312,6 +345,20 @@ type ExecResult struct {
 	// Truncated reports whether the registry's generic output limit changed the
 	// model-facing text.
 	Truncated bool
+
+	// TruncatedBy says which of the registry's limits cut the output when
+	// Truncated is set: a search that hit the line cap can be raised, one that
+	// hit the character cap has to be narrowed.
+	TruncatedBy TruncationReason
+
+	// OmittedLines is the 1-based inclusive line window a truncated read_file
+	// result cut out, so offset/limit can fetch exactly it. Nil otherwise.
+	OmittedLines *LineRange
+
+	// UnchangedSinceTurn is set on a repeat read_file of the same path and range
+	// whose file is unchanged since the read made at that turn. The content is
+	// still returned; this is a hint, not a refusal.
+	UnchangedSinceTurn *int
 
 	IsError bool
 
@@ -376,6 +423,11 @@ var ErrCompleteOutputExceedsLimit = errors.New("complete output exceeds configur
 type StateResult struct {
 	Output string
 	State  any
+	// IsError marks the result as a failed execution even though Output is the
+	// model-facing text: a structured failure (for example a shell that could
+	// not start) is still a failure, and consumers such as the goal
+	// no-progress signal and the failure breaker must treat it as one.
+	IsError bool
 	// RequireCompleteOutput opts this result into complete-or-fail shaping:
 	// when the registry's output policy would truncate Output, the dispatch
 	// fails with ErrCompleteOutputExceedsLimit instead of returning partial
@@ -458,6 +510,9 @@ type RegisteredTool struct {
 	Schema     *jsonschema.Schema
 	Limit      schema.ToolOutputLimit
 	OmitIntent bool
+	// UnmarshalArgs optionally preserves tool-specific values before preparation
+	// and dispatch validate them. Nil retains encoding/json's float64 numbers.
+	UnmarshalArgs func([]byte, *map[string]any) error
 	// NormalizeArgs optionally canonicalizes arguments immediately before schema
 	// validation. It must preserve all non-normalized caller values. The failure
 	// breaker's fingerprint runs it too, on a copy whose numbers are int64,
@@ -469,6 +524,14 @@ type RegisteredTool struct {
 	PreValidate func(args map[string]any) error
 	// Agent-layer executor with environment context.
 	Exec func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error)
+}
+
+// UnmarshalArguments is the shared argument decoder for preparation and dispatch.
+func (t RegisteredTool) UnmarshalArguments(raw []byte, args *map[string]any) error {
+	if t.UnmarshalArgs != nil {
+		return t.UnmarshalArgs(raw, args)
+	}
+	return json.Unmarshal(raw, args)
 }
 
 // toolMiddleware is called after argument validation but before tool execution.
@@ -742,6 +805,9 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 	// release the next identical call. Only failures park — a repeated
 	// identical *success* may still be the call that finally sees the world
 	// change, and refusing it would strand a session repeating its result tool.
+	// A read-only call is never parked either: the file, job, session, or
+	// memory page it reads may have appeared since the last failure, so its
+	// repeat must re-check the world (it still gets the failure nudge).
 	// model_list is an exact JSON continuation protocol. Repeating a page is a
 	// valid retry, and appending breaker text would corrupt its bounded envelope.
 	judged := !breakerBypassed(ctx) && name != "model_list"
@@ -756,8 +822,10 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 	// still judged on its raw arguments.
 	key := newDispatchKey(name, call.Arguments, t.NormalizeArgs)
 	if judged {
-		if failStreak, _, snippets := r.breaker.check(key); failStreak >= breakerThreshold {
-			return rejectedResult(name, callID, failureParkText(name, snippets), defaultToolLimit(name))
+		if !t.ReadOnly {
+			if failStreak, _, snippets := r.breaker.check(key); failStreak >= breakerThreshold {
+				return rejectedResult(name, callID, failureParkText(name, snippets), defaultToolLimit(name))
+			}
 		}
 	} else {
 		// A human authorized this dispatch, which retires the refusals that
@@ -780,7 +848,7 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 
 	var args map[string]any
 	if len(call.Arguments) > 0 {
-		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+		if err := t.UnmarshalArguments(call.Arguments, &args); err != nil {
 			msg := fmt.Sprintf("invalid tool arguments JSON: %v", err)
 			return rejectedResult(name, callID, msg, t.Limit)
 		}
@@ -836,7 +904,7 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 	// omits intent.
 	ctx = context.WithValue(ctx, ctxIntentKey{}, strings.TrimSpace(intent))
 	v, err := t.Exec(ctx, env, args)
-	res := dispatchedResult(name, callID, t.Limit, v, err)
+	res := dispatchedResult(name, callID, dispatchLimit(name, t.Limit, args), v, err)
 	if judged {
 		// Recorded on the untruncated body, before any nudge is appended, so
 		// the nudge cannot poison the body hash. FullOutput rather than
@@ -899,7 +967,7 @@ func dispatchedResult(name, callID string, lim schema.ToolOutputLimit, v any, er
 	// StateResult carries an LLM-facing Output plus a JSON-serializable
 	// State snapshot that rides along on the TOOL_CALL_END event.
 	if st, ok := v.(StateResult); ok {
-		res := truncateResult(name, callID, st.Output, false, lim)
+		res := truncateResult(name, callID, st.Output, st.IsError, lim)
 		if st.RequireCompleteOutput && res.Truncated {
 			// The operation promised complete content: a configured limit
 			// produces an explicit complete-delivery failure, never a
@@ -935,21 +1003,36 @@ func dispatchedResult(name, callID string, lim schema.ToolOutputLimit, v any, er
 
 func truncateResult(toolName, callID, full string, isErr bool, lim schema.ToolOutputLimit) ExecResult {
 	out := full
-	truncated := false
+	var reason TruncationReason
 	if lim.Strategy == schema.TruncHeadCount {
-		out, truncated = truncateHeadCountWithStatus(out, lim.MaxLines, lim.MaxChars)
+		out, reason = truncateHeadCountReason(out, lim.MaxLines, lim.MaxChars)
 	} else {
 		var charTruncated bool
 		out, charTruncated = truncateCharsWithStatus(out, lim.MaxChars, lim.Strategy)
-		truncated = charTruncated
+		if charTruncated {
+			reason = TruncatedByChars
+		}
 		if lim.MaxLines > 0 {
 			var lineTruncated bool
 			out, lineTruncated = truncateLinesWithStatus(out, lim.MaxLines)
-			truncated = truncated || lineTruncated
+			if lineTruncated && reason == "" {
+				reason = TruncatedByLines
+			}
 		}
 	}
+	truncated := reason != ""
+	var omitted *LineRange
 	if truncated && out != full {
 		out += "\n[Tool output was truncated.]"
+		if toolName == "read_file" && reason == TruncatedByChars && lim.Strategy == schema.TruncHeadTail {
+			omitted = omittedNumberedLines(full, lim.MaxChars)
+			if omitted != nil {
+				out += fmt.Sprintf("\n[Lines %d-%d were cut; read_file with offset=%d limit=%d returns them.]", omitted.From, omitted.To, omitted.From, omitted.To-omitted.From+1)
+			}
+		}
+		if toolName == "grep" && reason == TruncatedByChars {
+			out += "\n[The size cap cut this search; raising max_results will not return more. Narrow the path or glob_filter.]"
+		}
 	}
 	return ExecResult{
 		ToolName:          toolName,
@@ -958,6 +1041,8 @@ func truncateResult(toolName, callID, full string, isErr bool, lim schema.ToolOu
 		FullOutput:        full,
 		RecoverableOutput: full,
 		Truncated:         truncated,
+		TruncatedBy:       reason,
+		OmittedLines:      omitted,
 		IsError:           isErr,
 	}
 }
@@ -970,6 +1055,45 @@ func rejectedResult(toolName, callID, full string, lim schema.ToolOutputLimit) E
 	res := truncateResult(toolName, callID, full, true, lim)
 	res.Rejected = true
 	return res
+}
+
+// omittedNumberedLines is the window of line-numbered text that
+// truncateCharsWithStatus's head/tail cut at limit drops. Both boundary lines
+// are included because each is shown only in part. It returns nil when the
+// text at either boundary carries no line number.
+func omittedNumberedLines(full string, limit int) *LineRange {
+	runes := []rune(full)
+	headCount := limit / 2
+	tailStart := len(runes) - (limit - headCount)
+	if headCount <= 0 || tailStart <= headCount {
+		return nil
+	}
+	from, ok := numberedLineAt(runes, headCount)
+	if !ok {
+		return nil
+	}
+	to, ok := numberedLineAt(runes, tailStart)
+	if !ok {
+		return nil
+	}
+	return &LineRange{From: from, To: to}
+}
+
+// numberedLineAt parses the "%4d\t" prefix of the line containing runes[pos].
+func numberedLineAt(runes []rune, pos int) (int, bool) {
+	start := pos
+	for start > 0 && runes[start-1] != '\n' {
+		start--
+	}
+	end := start
+	for end < len(runes) && runes[end] != '\t' && runes[end] != '\n' {
+		end++
+	}
+	if end >= len(runes) || runes[end] != '\t' {
+		return 0, false
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(runes[start:end])))
+	return n, err == nil
 }
 
 func truncateChars(s string, limit int, strategy schema.TruncationStrategy) string {
@@ -997,7 +1121,7 @@ func truncateCharsWithStatus(s string, limit int, strategy schema.TruncationStra
 	}
 }
 
-// truncateHeadCount bounds glob/grep-shaped output (one match per line, though
+// truncateHeadCountReason bounds glob/grep-shaped output (one match per line, though
 // grep's context_lines can add several output lines per match plus "--" group
 // separators, so this counts LINES, not matches) by keeping the first
 // maxEntries lines and appending a count-only structural summary. Unlike truncateChars'
@@ -1008,20 +1132,18 @@ func truncateCharsWithStatus(s string, limit int, strategy schema.TruncationStra
 //
 // After the line-count bound is applied, maxChars (when positive) further
 // bounds the result's character count by truncating from the TAIL and
-// appending a warning — the line-count bound's head (and its summary line,
-// reserved for by the budget) is always preserved, so a single enormous
-// matched line still cannot balloon the result past both bounds.
-func truncateHeadCount(s string, maxEntries, maxChars int) string {
-	out, _ := truncateHeadCountWithStatus(s, maxEntries, maxChars)
-	return out
-}
-
-func truncateHeadCountWithStatus(s string, maxEntries, maxChars int) (string, bool) {
+// appending a warning. The earliest entries survive; trailing notes, including
+// the line-count summary, are dropped whole when the character bound fires.
+// A single enormous matched line still cannot balloon past both bounds.
+//
+// It names the limit that cut the output. The character cap is reported when
+// both fire: it is the one a larger entry cap cannot lift.
+func truncateHeadCountReason(s string, maxEntries, maxChars int) (string, TruncationReason) {
 	if maxEntries <= 0 || s == "" {
-		return s, false
+		return s, ""
 	}
 	out := s
-	truncated := false
+	var reason TruncationReason
 	lines := strings.Split(s, "\n")
 	total := len(lines)
 	if total > maxEntries {
@@ -1030,29 +1152,35 @@ func truncateHeadCountWithStatus(s string, maxEntries, maxChars int) (string, bo
 		// line (searchresult.WithNotes), so no reader counts it as a hit.
 		summary := fmt.Sprintf("\n\n[%d total lines; showing first %d; %d lines omitted]", total, maxEntries, total-maxEntries)
 		out = strings.Join(shown, "\n") + summary
-		truncated = true
+		reason = TruncatedByLines
 	}
 	if maxChars > 0 {
 		var charTruncated bool
 		out, charTruncated = truncateCharsFromTailWithStatus(out, maxChars)
-		truncated = truncated || charTruncated
+		if charTruncated {
+			reason = TruncatedByChars
+		}
 	}
-	return out, truncated
+	return out, reason
 }
 
-// truncateCharsFromTailWithStatus bounds s to at most limit characters by dropping
-// characters from the END and appending a warning marker, preserving
-// whatever head content the caller already assembled (e.g. truncateHeadCount's
-// earliest-first matches and their summary line), and reports whether it did so.
+// truncateCharsFromTailWithStatus keeps an entry prefix and a complete warning
+// marker when s exceeds limit. Existing notes after the first blank line are
+// dropped whole, never cut into fragments. The removed count includes them.
 func truncateCharsFromTailWithStatus(s string, limit int) (string, bool) {
 	runes := []rune(s)
 	if limit <= 0 || len(runes) <= limit {
 		return s, false
 	}
+	entries, _ := searchresult.Split(s)
+	entryRunes := len(runes)
+	if len(entries) != len(s) {
+		entryRunes = utf8.RuneCountInString(entries)
+	}
 	removed := len(runes) - limit
 	for {
 		marker := fmt.Sprintf("\n\n[Output truncated: %d characters removed from the end.]", removed)
-		keep := max(limit-len([]rune(marker)), 0)
+		keep := min(max(limit-len([]rune(marker)), 0), entryRunes)
 		actualRemoved := len(runes) - keep
 		if actualRemoved == removed {
 			return string(runes[:keep]) + marker, true
@@ -1081,6 +1209,24 @@ func truncateLinesWithStatus(s string, limit int) (string, bool) {
 	head := strings.Join(lines[:headCount], "\n")
 	tail := strings.Join(lines[len(lines)-tailCount:], "\n")
 	return head + marker + tail, true
+}
+
+// grepNoteLines is the room past max_results that a grep result's blank line
+// and trailing notes (result cap, retained-output cap, overlong lines) need.
+const grepNoteLines = 4
+
+// dispatchLimit is the output limit for one call. grep's max_results counts
+// output lines, so a caller who raises it past the registry's line cap must not
+// be cut back to that cap; the character cap still bounds the result.
+func dispatchLimit(name string, lim schema.ToolOutputLimit, args map[string]any) schema.ToolOutputLimit {
+	if name != "grep" || lim.Strategy != schema.TruncHeadCount {
+		return lim
+	}
+	if v, ok := args["max_results"].(float64); ok {
+		// The clamp keeps an absurd value from overflowing the conversion.
+		lim.MaxLines = max(lim.MaxLines, int(min(v, 1<<30))+grepNoteLines)
+	}
+	return lim
 }
 
 func defaultToolLimit(toolName string) schema.ToolOutputLimit {

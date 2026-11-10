@@ -16,8 +16,10 @@ import {
   mergeTranscriptItemVersioned,
   mergeTranscriptReaderWindow,
   mergeTranscriptTurnVersioned,
+  olderHistoryExhausted,
   pruneBackgroundHistoryBodies,
   readDisposition,
+  resolvePendingEscalation,
   type SnapshotIdentity,
   type ThreadItem,
   type ThreadItemPosition,
@@ -25,18 +27,21 @@ import {
   type ThreadReadResponse,
   type ThreadTurnsListResponse,
   type TurnModel,
+  withOlderFrontier,
 } from "@evener/appwire-client";
 import nacl from "tweetnacl";
 import { type EntryRetainedBody, type EntryWriteAdmission, entryWriteAdmissionFor } from "./entryWriteAdmission";
 import {
   entryHistoryKey,
   SESSION_CACHE_LOOKUP_DEADLINE_MS,
+  type TranscriptCoverageRow,
   type TranscriptItemRow,
   type TranscriptResolvedIdentity,
   type TranscriptSessionMetadata,
 } from "./sessionCacheSchema";
 import { type EntryCoverageInput, mayMatchCapacityIdentity, type SessionEntryCache } from "./sessionEntryCache";
 import { encodedPayloadBytes } from "./transcriptPayloadBudget";
+import { withDeadline } from "./withDeadline";
 
 // A changed offer is eligible for an actual write, not proof that its merged
 // persisted plan differs. Hash synchronously: no lookup may retain these bodies
@@ -97,6 +102,17 @@ function hydratedDisplay(model: ThreadModel): ThreadModel {
     return items.length === 0 ? [] : [{ ...turn, items }];
   });
   return changed ? { ...model, turns } : model;
+}
+
+// Whether a recorded certificate's own stated extent contains a position.
+// Coverage is what the record proves about itself — its extents, boundaries
+// and provenance edges — never numeric adjacency between neighbouring item
+// positions: the projection's part indices are legitimately sparse (a part
+// skips merged text runs and hidden calls, and an entry can project no items
+// at all), so a numeric gap is never evidence of a coverage hole.
+function coveredByCert(position: ThreadItemPosition, cert: TranscriptCoverageRow): boolean {
+  if (cert.start === null || cert.end === null) return false;
+  return comparePosition(cert.start, position) <= 0 && comparePosition(position, cert.end) <= 0;
 }
 
 /**
@@ -246,6 +262,15 @@ export interface TranscriptRepositoryBinding {
    */
   historyGeneration?: number;
   /**
+   * The escalation ids this client resolved, owned by whoever replaces the
+   * repository so a replacement inherits them. A resolved escalation never
+   * returns, but the resolving client learns of it from its own acknowledgment,
+   * which the daemon's snapshot cut does not order, so a read issued before the
+   * resolve can still carry the card; every read the repository adopts drops
+   * these. Absent, the repository keeps its own.
+   */
+  resolvedEscalations?: Set<string>;
+  /**
    * A browser-lifetime nonce. The baseline identity is minted from the
    * tab-local connection lifetime and source revision, but that lifetime
    * counter resets with the page: without a per-browser-lifetime nonce a
@@ -307,6 +332,8 @@ export interface TranscriptRepositoryBinding {
   reconcile?: () => void;
   /** Read-only, deadline-owned transport ports for end disposition and final retirement. */
   readHistory?: (held?: SnapshotIdentity, signal?: AbortSignal) => Promise<ThreadReadResponse>;
+  /** Only accepted readHistory responses, never local/cache publication or caller-owned hydration. */
+  onHistoryReadAccepted?: (response: ThreadReadResponse, model: ThreadModel) => void;
   readHistoryPage?: (request: {
     snapshot: SnapshotIdentity;
     cursor: string;
@@ -335,7 +362,7 @@ export interface TranscriptReaderResult {
 }
 
 export interface TranscriptReader {
-  openLocal(limit: number): Promise<TranscriptReaderResult>;
+  openLocal(limit: number, options?: { certifyOnly?: boolean }): Promise<TranscriptReaderResult>;
   getSnapshot(): ThreadModel | undefined;
   /** @internal Reports retained body ownership without exposing payloads. */
   getRetentionSnapshotForTesting(): {
@@ -381,6 +408,39 @@ export class TranscriptRepository {
   // Identity-only range ownership survives foreground reader replacement, not
   // source reconciliation. Background payload reclamation remains unchanged.
   #foregroundStart: ThreadItemPosition | undefined;
+  // True while the current baseline came from a plain windowed read — one
+  // whose response carried an older cursor and was not an authoritative
+  // reconciliation. Such a baseline presents only the wire window, so the
+  // recorded range below it is owed from the durable record. The shape is set
+  // when a read REPLACES the history (or first hydrates one), PRESERVED
+  // across merge-shaped reads — whose disposition says nothing about the
+  // range an earlier replace dropped, so an overlay/end read arriving while
+  // recovery is still owed must not clear the debt — and cleared when the
+  // source's own reconciliation speaks for the record below (an authoritative
+  // window, or a cursorless whole-history replace whose deletions remove it).
+  #windowedBaseline = false;
+  // The owed recorded identities, with each row's position: rows the durable
+  // record holds below the wire window that the accepted model does not
+  // present. `undefined` means no debt is known to stand; `{ pending: true }`
+  // (a capture in flight) means the debt is unknown and callers must treat it
+  // as owed. Captured from the record itself, never from a read's
+  // disposition, so it survives cached-repository replacement: the next
+  // repository derives it from the same record. Positions let a completeness
+  // verdict bound the demand to the promotion window — identities that fall
+  // below its newest-200 boundary are older demand, not debt.
+  #owedRecorded: { unknown: true } | { identities: ReadonlyMap<string, ThreadItemPosition> } | undefined;
+  // Restored recorded identities no current-baseline statement has
+  // validated: a connected-certificate older query, an accepted read or page,
+  // or the opening cut's own loaded range. Their cached bodies still display
+  // through recovery, but the range is not reconciled and must not be
+  // treated as converged.
+  #unreconciledRecorded: ReadonlySet<string> = new Set();
+  // The route's hint that a raced open's convergence is owed: the recorded
+  // range below a plain windowed baseline is owed to the DISPLAY (an armed
+  // unresolved miss), not merely available to the older-paging machinery.
+  // Noted by the route at its opens; without it an ordinary pane's deeper
+  // rows belong to the bounded page path, which owns cursors and generations.
+  #recordedRangeOwed = false;
   #localOlder: { before: ThreadItemPosition; floor: ThreadItemPosition; sourceRevision: number } | undefined;
   #replacementRevision = 0;
   #uncommittedReplacementFrom: ThreadItemPosition | undefined;
@@ -483,6 +543,7 @@ export class TranscriptRepository {
   // whose demand the eviction policy consults.
   #unregisterPreferred: (() => void) | undefined;
   readonly #endClaims = new Set<string>();
+  readonly #resolvedEscalations: Set<string>;
   #endWork: Promise<void> | undefined;
   #endRetryCancel: (() => void) | undefined;
   #endRetryAttempt = 0;
@@ -497,6 +558,7 @@ export class TranscriptRepository {
     this.#cache = cache;
     this.#admission = binding.admission ?? entryWriteAdmissionFor(cache);
     this.#binding = scalarBinding;
+    this.#resolvedEscalations = binding.resolvedEscalations ?? new Set();
     this.#baselineIdentity = this.#mintBaseline();
     if (binding.isPreferred) {
       this.#unregisterPreferred = cache.registerPreferredHistory(binding.historyKey, binding.isPreferred);
@@ -592,6 +654,24 @@ export class TranscriptRepository {
       invalidated: this.#invalidated,
       disposed: this.#disposed,
     };
+  }
+
+  /**
+   * True while the held view is still the one a completed local open
+   * established: no invalidation (recovery need, seed authority, cache
+   * continuity, invalidation marker, disposal) has overturned it since. A
+   * remount over a still-held view can serve it without a disk
+   * recertification, whose lookup-deadline expiry would discard the loaded
+   * range and fall back to a source read.
+   */
+  holdsEstablishedView(): boolean {
+    return (
+      !this.#recoveryNeeded &&
+      !this.#seedAuthorityInvalid &&
+      !this.#cacheContinuityLost &&
+      !this.#invalidated &&
+      !this.#disposed
+    );
   }
 
   /**
@@ -710,6 +790,9 @@ export class TranscriptRepository {
               )
             : hydrated;
         })();
+    // Local overlay preservation must not turn a rejected server read into
+    // accepted history or recovery authority.
+    if (candidate === before) return false;
     if (request.preserveEnded && before?.overlay) {
       for (const item of Object.values(before.overlay)) {
         if (item.kind !== "notice" && (!item.roundId || !this.#endClaims.has(item.roundId))) continue;
@@ -727,7 +810,6 @@ export class TranscriptRepository {
         );
       }
     }
-    if (candidate === before) return false;
     this.#model = candidate;
     const previousHistory = before?.history;
     const acceptedHistory = candidate.history;
@@ -768,11 +850,49 @@ export class TranscriptRepository {
     let turns = this.#readTurns(response, candidate);
     const coverageRows = this.#rowsFromWindow(response);
     const replacesHistory = before?.history && readDisposition(before.history, response) === "replace";
+    const freshBaseline = !before?.history;
+    if (replacesHistory || freshBaseline) {
+      // The baseline shape follows the response that established it, not the
+      // latest read's disposition: a merge-shaped read arriving later keeps
+      // the debt the replace created (the record below the wire window is
+      // still owed), and a repository whose first read is windowed owes the
+      // same debt even though no previous history was replaced.
+      this.#windowedBaseline = !response.authoritative && response.olderCursor !== undefined;
+      if (this.#windowedBaseline) {
+        // A windowed shape keeps whatever demand the route noted and
+        // whatever identities a fill resolved: a merge-shaped read arriving
+        // later preserves both. No durable pull runs here — the accepted
+        // read's own pipeline must not be reordered behind capture work.
+      } else {
+        // An authoritative window and a cursorless whole-history replace are
+        // the source's own reconciliation of everything below: no recorded
+        // range stays owed and nothing restored can be unreconciled against a
+        // baseline that speaks for it.
+        this.#owedRecorded = undefined;
+        this.#recordedRangeOwed = false;
+        this.#unreconciledRecorded = new Set();
+      }
+    }
+    // A read the source answered speaks for every identity it carried: the
+    // range it covered is reconciled against the current baseline, whatever
+    // cached version an earlier restore displayed for it.
+    this.#reconcileRows(rows);
     const replacement =
       replacesHistory || response.authoritative
         ? {
             from: replacesHistory
-              ? { entry: 0, item: 0 }
+              ? // A fresh-baseline replace of a WINDOWED answer must stop at
+                // the window: the response carries an older cursor for
+                // exactly the history it omits, so it never claims those
+                // rows are gone, and deleting them would leave the durable
+                // record unable to converge a reopened pane that the same
+                // read left only a window. A replace without a cursor is
+                // the whole history from position zero.
+                response.olderCursor === undefined
+                ? { entry: 0, item: 0 }
+                : ((response.thread.turns ?? [])
+                    .flatMap((turn) => (turn.items ?? []).flatMap((item) => (item.position ? [item.position] : [])))
+                    .sort(comparePosition)[0] ?? { entry: 0, item: 0 })
               : ((response.thread.turns ?? [])
                   .flatMap((turn) => (turn.items ?? []).flatMap((item) => (item.position ? [item.position] : [])))
                   .sort(comparePosition)[0] ?? { entry: 0, item: 0 }),
@@ -885,6 +1005,12 @@ export class TranscriptRepository {
     }
   }
 
+  #withoutResolvedEscalations(model: ThreadModel): ThreadModel {
+    let kept = model;
+    for (const escalationId of this.#resolvedEscalations) kept = resolvePendingEscalation(kept, escalationId);
+    return kept;
+  }
+
   /** Apply response metadata after the caller's generation and intent fences. */
   acceptResponseFields(fields: Partial<Pick<ThreadModel, "goal" | "humanNote">>): void {
     if (this.#disposed || this.#sealed || !this.#model) return;
@@ -904,6 +1030,9 @@ export class TranscriptRepository {
         this.#endClaims.add(notification.params.roundId);
         this.#startEndDisposition();
       }
+    }
+    if (notification.method === "evener/sandbox/escalation/resolved") {
+      this.#resolvedEscalations.add(notification.params.escalationId);
     }
     const previousModel = this.#model;
     const now = this.#now();
@@ -1018,6 +1147,10 @@ export class TranscriptRepository {
     this.#boundary++;
     const rows = this.#pageItemRows(response, candidate);
     const turns = this.#pageTurnRows(response, candidate);
+    // A page the source answered speaks for every identity it carries: the
+    // range it covered is reconciled against the current baseline, whatever
+    // cached version an earlier restore displayed for it.
+    this.#reconcileRows(rows);
     for (const row of rows) this.#pending.set(row.transcriptKey, row);
     const positions = rows.map((row) => row.position).sort(comparePosition);
     if (candidate !== current) this.#publish();
@@ -1092,22 +1225,15 @@ export class TranscriptRepository {
         const turns = await this.#readTurnMetadata(this.#turnIDsForRows(rows, []));
         return { rows, turns };
       };
-      let timer: ReturnType<typeof setTimeout> | undefined;
       let payload: Awaited<ReturnType<typeof lookup>> | undefined;
       try {
-        payload = await Promise.race([
-          lookup(),
-          new Promise<undefined>((resolve) => {
-            timer = setTimeout(() => resolve(undefined), SESSION_CACHE_LOOKUP_DEADLINE_MS);
-          }),
-        ]);
+        payload = await withDeadline(lookup(), SESSION_CACHE_LOOKUP_DEADLINE_MS);
       } catch {
         // This known local continuation may have no server cursor. Ordinary
         // server paging would then strand its omitted bodies.
         return { kind: "reconcile" };
       } finally {
         lookupActive = false;
-        if (timer !== undefined) clearTimeout(timer);
       }
       if (!this.#acceptsLifetime(lifetime)) return { kind: "server" };
       if (this.#sourceRevision !== revisionAtStart) return { kind: "reconcile" };
@@ -1189,20 +1315,13 @@ export class TranscriptRepository {
       const turnMetadata = await this.#readTurnMetadata(turnIds);
       return { window, turnMetadata };
     };
-    let timer: ReturnType<typeof setTimeout> | undefined;
     let payload: Awaited<ReturnType<typeof lookup>> | undefined;
     try {
-      payload = await Promise.race([
-        lookup(),
-        new Promise<undefined>((resolve) => {
-          timer = setTimeout(() => resolve(undefined), SESSION_CACHE_LOOKUP_DEADLINE_MS);
-        }),
-      ]);
+      payload = await withDeadline(lookup(), SESSION_CACHE_LOOKUP_DEADLINE_MS);
     } catch {
       return { kind: "server" };
     } finally {
       lookupActive = false;
-      if (timer !== undefined) clearTimeout(timer);
     }
     if (!this.#acceptsLifetime(lifetime)) return { kind: "server" };
     // An authoritative reconciliation during the lookup retires this window's
@@ -1221,7 +1340,11 @@ export class TranscriptRepository {
     if (window.stale) {
       if (window.coverage.length > 0) return { kind: "reconcile" };
       const newest = this.#model ?? current;
-      return newest.olderCursor ? { kind: "server" } : { kind: "exhausted", model: newest };
+      // A cursorless frontier is only history end when a source read or page
+      // named it "none" (#5585). A cache seed's frontier is unknown, so the
+      // server decides; the olderCursor-alone test could not tell the two
+      // apart and had to re-derive them from read admission.
+      return olderHistoryExhausted(newest) ? { kind: "exhausted", model: newest } : { kind: "server" };
     }
     if (window.rows.length === 0) {
       // Certified local coverage below the oldest row ended. Only a frontier
@@ -1229,7 +1352,8 @@ export class TranscriptRepository {
       // remains on the network.
       if (window.complete && window.serverCursor === undefined) {
         this.#localReadContinuation = undefined;
-        return { kind: "exhausted", model: { ...(this.#model ?? current), olderCursor: undefined } };
+        // The certified chain ended: a source-named "no more history".
+        return { kind: "exhausted", model: withOlderFrontier(this.#model ?? current, undefined) };
       }
       return { kind: "server" };
     }
@@ -1238,7 +1362,7 @@ export class TranscriptRepository {
     const newest = this.#model ?? current;
     const restored = this.#restoreWindow(newest, window.rows, turnMetadata, () => this.#acceptsLifetime(lifetime));
     if (!restored) return { kind: "server" };
-    const model: ThreadModel = window.complete ? { ...restored, olderCursor: window.serverCursor } : restored;
+    const model: ThreadModel = window.complete ? withOlderFrontier(restored, window.serverCursor) : restored;
     // Evaluate the caller's ownership guard immediately before publication,
     // with no await between: the attached-reader subscription publishes this
     // model synchronously, so a guard that ran only after this method returned
@@ -1254,6 +1378,258 @@ export class TranscriptRepository {
   localOlderPosition(): ThreadItemPosition | undefined {
     if (this.#disposed || this.#invalidated) return undefined;
     return this.#localOlder?.sourceRevision === this.#sourceRevision ? this.#localOlder.before : undefined;
+  }
+
+  /**
+   * The oldest position still missing a real body below a restored window.
+   * Bodies the published model already holds are not debt: pages that loaded
+   * while a restore was in flight provided theirs, so the continuation must
+   * not re-advertise them.
+   */
+  #missingBodyFloor(model: ThreadModel | undefined, windowStart: ThreadItemPosition): ThreadItemPosition | undefined {
+    let floor: ThreadItemPosition | undefined;
+    for (const item of (model?.history?.turns ?? []).flatMap((turn) => turn.items)) {
+      if (!item.position || comparePosition(item.position, windowStart) >= 0) continue;
+      if (!encodeTranscriptItem(item).identityOnly) continue;
+      if (!floor || comparePosition(item.position, floor) < 0) floor = item.position;
+    }
+    return floor;
+  }
+
+  /**
+   * True when every item the retained foreground interval requires is
+   * resident with a real body. The interval runs from the oldest bodied
+   * position this revision published — the floor only ever moves deeper, so
+   * identities above it that lost their bodies (a release reclaimed them,
+   * later updates repopulated only the tail) stay inside the requirement,
+   * while identities below it are older demand, not debt. A settled stall
+   * accepts only on this standard: the latest window alone cannot vouch for
+   * a deeper range.
+   */
+  holdsResidentForegroundRange(): boolean {
+    if (this.#disposed || this.#invalidated) return false;
+    const model = this.#model;
+    const start = this.#foregroundStart;
+    if (!model || !start) return false;
+    const required = (model.history?.turns ?? model.turns)
+      .flatMap((turn) => turn.items)
+      .filter((item) => item.position && comparePosition(item.position, start) >= 0);
+    if (required.length === 0) return false;
+    const displayed = new Map(
+      model.turns.flatMap((turn) => turn.items.map((item) => [item.transcriptKey ?? item.id, item] as const)),
+    );
+    return required.every((item) => {
+      const body = displayed.get(item.transcriptKey ?? item.id);
+      return (
+        body !== undefined && (body.version ?? 0) >= (item.version ?? 0) && !encodeTranscriptItem(body).identityOnly
+      );
+    });
+  }
+
+  /**
+   * The recorded range a plain windowed baseline still owes the display, as
+   * the item identities the durable record holds that the accepted model
+   * does not present. `undefined` means no debt stands; `unknown` means a
+   * capture was attempted and the durable record could not answer — callers
+   * must treat that as owed — and is re-kicked by every later accepted read
+   * while the demand stands. There is no in-flight state: the route awaits
+   * the capture where it notes the miss, so no decision point ever observes
+   * a capture that has not answered. The debt is derived from the record,
+   * preserved across merge-shaped reads and repository replacement, and
+   * cleared by the source's own reconciliation or by a restore that
+   * presents it.
+   */
+  owedRecorded(): { unknown: true } | { identities: ReadonlyMap<string, ThreadItemPosition> } | undefined {
+    if (!this.#recordedRangeOwed) return undefined;
+    return this.#owedRecorded;
+  }
+
+  /**
+   * The recorded range below a windowed baseline is owed: a plain
+   * latest-window answer cannot speak for rows its cursor excludes. Only a
+   * windowed baseline can leave such debt, so the route's completeness
+   * verdict consults the armed demand only while this holds.
+   */
+  holdsWindowedBaseline(): boolean {
+    return this.#windowedBaseline;
+  }
+
+  /**
+   * Arm the owed-range demand where the route declares a stranding miss: the
+   * open's deadline-missed or recovered-nothing verdict leaves a convergence
+   * outstanding that no per-open marker survives. The arming is synchronous —
+   * no durable pull runs inside the open that notes it, so the note cannot
+   * reorder the tracked reads and certifications around it. The identities
+   * resolve from the fill's own durable pull; until then the demand stands
+   * as unknown and every verdict treats it as owed.
+   */
+  noteOwedRecordedRange(): void {
+    this.#recordedRangeOwed = true;
+    this.#owedRecorded ??= { unknown: true };
+  }
+
+  /**
+   * Adopt the pending unreconciled identities of the repository a stale-cursor
+   * replacement retired. The set is the route's fact — recorded rows the
+   * display restored but no current-baseline statement validated — so the
+   * bounded reconciliation resumes against this replacement instead of dying
+   * with the instance the refresh replaced. In-memory bookkeeping only: the
+   * identities stay reconciled-by-the-source the moment a page or read speaks
+   * for them, exactly as rows this repository restored itself.
+   */
+  inheritUnreconciledRecorded(keys: ReadonlySet<string>): void {
+    if (keys.size === 0) return;
+    const next = new Set(this.#unreconciledRecorded);
+    for (const key of keys) next.add(key);
+    this.#unreconciledRecorded = next;
+  }
+
+  /**
+   * Compute the armed demand's identities from durable rows the fill already
+   * pulled — no extra read, and no state change: the identities the record
+   * holds below the open's window floor that the displayed model does not
+   * present with a real body —
+   * restricted to rows inside the recorded-coverage component linked to the
+   * window. Rows outside it are disconnected islands behind an uncertified
+   * gap: the display cannot present them without stitching across the gap,
+   * so they are not owed to the display and the cursor-owning paging
+   * machinery speaks for them. The CALLER commits the result with the
+   * presentation, after every fence has passed — a fill whose presentation a
+   * fence discards changes nothing, because a resolution measured against one
+   * window's obsolete floor must not clear or reshape a demand a newer
+   * baseline still owes.
+   */
+  #resolveOwedFromRows(
+    rows: readonly TranscriptItemRow<unknown>[],
+    model: ThreadModel | undefined,
+    coverage: readonly TranscriptCoverageRow[],
+    windowFloor: ThreadItemPosition,
+  ): Map<string, ThreadItemPosition> {
+    const displayedItems = (model?.history?.turns ?? model?.turns ?? []).flatMap((turn) => turn.items);
+    // Presentation means a real body, the same standard the completeness
+    // check demands: a body-suppressed shell's identity-only items present
+    // nothing, so a shell owes the record's whole range instead of clearing
+    // the demand on identities that carry no bodies.
+    const presented = new Set(
+      displayedItems
+        .filter((item) => !encodeTranscriptItem(item).identityOnly)
+        .map((item) => item.transcriptKey ?? item.id),
+    );
+    // The floor is the open's own window: the oldest row its window assembly
+    // presents. At and above it the record holds the window itself, which is
+    // never owed — and the displayed model may be mid-replacement and present
+    // nothing, so the floor cannot be derived from the model.
+    const owed = new Map<string, ThreadItemPosition>();
+    for (const row of rows) {
+      if (presented.has(row.transcriptKey)) continue;
+      if (!(comparePosition(row.position, windowFloor) < 0)) continue;
+      if (!coverage.some((cert) => coveredByCert(row.position, cert))) continue;
+      owed.set(row.transcriptKey, row.position);
+    }
+    return owed;
+  }
+
+  /**
+   * Some captured identity is not presented by the current model: the fill's
+   * durable pulls have work to do. An unknown capture counts as owed — the
+   * pulls themselves fail fast when storage cannot answer — while a capture
+   * whose identities a later read has all presented skips the pulls entirely.
+   */
+  #hasUnpresentedOwed(): boolean {
+    const owed = this.#owedRecorded;
+    if (owed === undefined) return false;
+    if ("unknown" in owed) return true;
+    const presented = new Set(
+      (this.#model?.history?.turns ?? this.#model?.turns ?? [])
+        .flatMap((turn) => turn.items)
+        .filter((item) => !encodeTranscriptItem(item).identityOnly)
+        .map((item) => item.transcriptKey ?? item.id),
+    );
+    for (const key of owed.identities.keys()) if (!presented.has(key)) return true;
+    return false;
+  }
+
+  /**
+   * Recorded identities restored with their cached bodies that no
+   * current-baseline statement has validated: no connected certificate covers
+   * them and no accepted read or page carried them. Their bodies stay
+   * displayed through recovery, but the range is not reconciled and must not
+   * be treated as converged until the source speaks for it.
+   */
+  unreconciledRecorded(): ReadonlySet<string> {
+    return this.#unreconciledRecorded;
+  }
+
+  /**
+   * Identities the source just spoke for are reconciled with the current
+   * baseline: drop them from the unreconciled set, whatever cached version an
+   * earlier restore displayed for them.
+   */
+  #reconcileRows(rows: readonly { transcriptKey: string }[]): void {
+    if (this.#unreconciledRecorded.size === 0) return;
+    const spoken = new Set(rows.map((row) => row.transcriptKey));
+    const next = new Set<string>();
+    for (const key of this.#unreconciledRecorded) if (!spoken.has(key)) next.add(key);
+    if (next.size === this.#unreconciledRecorded.size) return;
+    this.#unreconciledRecorded = next;
+  }
+
+  /**
+   * The most recent window of expected items holds real bodies: every
+   * expected item in the window has a displayed counterpart that is not
+   * identity-only. A model that expects identities it holds only
+   * identity-only — reclaimed rows a pane came to restore — does not, even
+   * when a live update has published a resident tail above them. A model
+   * with no expected items expects nothing, so it is missing nothing.
+   */
+  holdsBodiedForegroundWindow(): boolean {
+    const model = this.#model;
+    if (!model) return false;
+    const historyTurns = model.history?.turns;
+    const expected = (historyTurns !== undefined && historyTurns.length > 0 ? historyTurns : model.turns)
+      .flatMap((turn) => turn.items)
+      .slice(-200);
+    if (expected.length === 0) return true;
+    const displayed = new Map(
+      model.turns.flatMap((turn) => turn.items.map((item) => [item.transcriptKey ?? item.id, item] as const)),
+    );
+    return expected.every((item) => {
+      const restored = displayed.get(item.transcriptKey ?? item.id);
+      return restored !== undefined && !encodeTranscriptItem(restored).identityOnly;
+    });
+  }
+
+  /**
+   * The accepted source window expects no items at all: every expected turn
+   * carries zero items - the shape an in-progress turn with nothing recorded
+   * yet has, not only a zero-turn thread. Such a window never creates the
+   * foreground start the resident-range check requires - only a published
+   * item moves that floor - so it has nothing to restore and nothing a local
+   * open could add. But emptiness alone is not evidence: an unverified cache
+   * shell seeds empty turns from metadata before any source read succeeds,
+   * and rows that disappeared between the metadata lookup and the
+   * restoration are indistinguishable from a genuinely empty transcript. So
+   * only an accepted source read that named an empty window establishes it -
+   * the same provenance openLocal's provenEmptySourceWindow requires
+   * (#coverageReadId set, and a read whose coverage named no rows). And the
+   * expectation it judges is the RECORDED history: an accepted read can
+   * carry history.turns = [] while live overlays contribute display turns,
+   * and those overlay turns are not recorded history to restore - the same
+   * history-first `??` ordering the resident-range and window checks use.
+   * The window check already treats an empty expectation as missing
+   * nothing; this is its range-side complement.
+   */
+  expectsEmptyForegroundWindow(): boolean {
+    if (this.#disposed || this.#invalidated) return false;
+    const model = this.#model;
+    if (!model) return false;
+    const expected = model.history?.turns ?? model.turns;
+    return (
+      expected.every((turn) => turn.items.length === 0) &&
+      this.#coverageReadId !== undefined &&
+      this.#coverageStart === null &&
+      this.#coverageEnd === null
+    );
   }
 
   attachReader(): TranscriptReader {
@@ -1308,7 +1684,7 @@ export class TranscriptRepository {
           cachedPayloadCount: cut?.cacheRows.length ?? 0,
         };
       },
-      openLocal: async (limit) => {
+      openLocal: async (limit, options) => {
         if (!active || !this.#acceptsLifetime(lifetime)) return { status: "recovery-needed" };
         let cut = openingState;
         if (!cut) {
@@ -1372,13 +1748,39 @@ export class TranscriptRepository {
           // at the opening cut, without treating arbitrary disk rows as current.
           const loadedStart = cut.model && this.#oldestPosition(cut.model);
           const latestStart = window.rows[0]?.position;
-          if (
-            window.complete &&
-            loadedStart &&
-            latestStart &&
-            comparePosition(loadedStart, latestStart) < 0 &&
-            window.rows.length < limit
-          ) {
+          const loadedBelowWindow = !!(loadedStart && latestStart && comparePosition(loadedStart, latestStart) < 0);
+          // An accepted daemon read answers with the latest item window plus a
+          // server cursor, so a fresh-baseline replace can drop the model's
+          // older identities entirely while the record still holds them. The
+          // durable cache, not the wire, holds those bodies, and the promotion
+          // window still owes them. The debt is measured in item identities
+          // the durable pull actually holds below the window — never in the
+          // snapshot's byte length, which is a byte boundary (the same number
+          // that exceeds an 80-item transcript's item count would demand 200
+          // items the record does not have, and a record whose bytes stay
+          // under its item count would drop real debt).
+          const presentedKeys = new Set(
+            (cut.model?.history?.turns ?? cut.model?.turns ?? [])
+              .flatMap((turn) => turn.items)
+              .map((item) => item.transcriptKey ?? item.id),
+          );
+          // The fill below may assemble a presentation whose open is then
+          // fenced mid-read (the settlement races retire an open's ownership
+          // while its reads still run): the debt must survive a discarded
+          // fill, or the next open presents the bare wire window with every
+          // disarm point reading the debt as already satisfied.
+          let owedSatisfiedByFill = false;
+          let unreconciledFromFill: Set<string> | undefined;
+          let resolvedOwed: Map<string, ThreadItemPosition> | undefined;
+          // A certification open's contract is to certify what its caller's
+          // publication established, not to promote additional recorded
+          // ranges: the owed fill — with its durable pull, contiguity walk
+          // and resolution — belongs to the promotion and recovery opens, so
+          // a certifying open never pays for it and keeps the timing
+          // envelope its caller's own deadlines assume.
+          const owedFillEligible =
+            !options?.certifyOnly && this.#windowedBaseline && this.#recordedRangeOwed && this.#hasUnpresentedOwed();
+          if (window.complete && latestStart && window.rows.length < limit && (loadedBelowWindow || owedFillEligible)) {
             // Durable rows below the certified window that the opening cut had
             // loaded. The certified older query is scoped to connected
             // certificates and deliberately refuses numeric adjacency, so its
@@ -1393,7 +1795,7 @@ export class TranscriptRepository {
             // (global-contracts: isolated stored seeds merge without certifying
             // an interval).
             let olderRows: readonly TranscriptItemRow<unknown>[] = [];
-            if (cut.authorityValid) {
+            if (cut.authorityValid && loadedBelowWindow) {
               const older = await this.#cache.getOlderWindow(
                 this.#binding.historyKey,
                 latestStart,
@@ -1403,18 +1805,109 @@ export class TranscriptRepository {
               if (!older.stale) olderRows = older.rows;
             }
             const durableOlder = await this.#cache.getLatest(this.#binding.historyKey, limit);
+            // The owed fill's connectivity, on recorded coverage: the
+            // component of certificates linked to the window's own
+            // certificate by what the record states — extents that overlap,
+            // a boundary another range covers, a recorded cursor succession.
+            // A durable row is owed only when a certificate in that
+            // component contains it; a record the replacement never trimmed
+            // into linkage is an island behind an uncertified gap, and the
+            // promotion must not stitch it below the window: the display
+            // would show it as if the missing history between it and the
+            // window did not exist.
+            let olderCoverage: readonly TranscriptCoverageRow[] = [];
+            if (owedFillEligible) {
+              olderCoverage = await this.#cache.getRestoreCoverage(this.#binding.historyKey, latestStart);
+            }
+            // The pull the fill already pays resolves the armed demand's
+            // identities — the record's own rows are the capture's only
+            // input, so no open ever issues a capture read of its own. Rows
+            // outside the recorded-coverage component are disconnected
+            // islands behind an uncertified gap: they are not owed to the
+            // display, and the server-paging machinery that owns cursors
+            // speaks for them.
+            // The debt resolution is computed here and committed with the
+            // presentation below, after every fence has passed: a resolution
+            // measured against this fill's own floor must not mutate the
+            // armed demand while a newer read can still move the window under
+            // the fill — a fenced presentation discarded, the demand must
+            // stand exactly as it was.
+            resolvedOwed = owedFillEligible
+              ? this.#resolveOwedFromRows(durableOlder, cut.model, olderCoverage, latestStart)
+              : undefined;
+            // The owed fill is measured from the pull itself: identities the
+            // record holds below the window that the model does not present —
+            // the range a plain windowed replace dropped, however much of it
+            // the opening cut also loaded.
+            const owedFromRecord =
+              owedFillEligible &&
+              durableOlder.some(
+                (row) =>
+                  comparePosition(row.position, latestStart) < 0 &&
+                  !presentedKeys.has(row.transcriptKey) &&
+                  olderCoverage.some((cert) => coveredByCert(row.position, cert)),
+              );
             const olderByKey = new Map<string, TranscriptItemRow<unknown>>();
             for (const row of [...olderRows, ...durableOlder]) {
               const held = olderByKey.get(row.transcriptKey);
               if (!held || held.version <= row.version) olderByKey.set(row.transcriptKey, row);
             }
-            const boundedOlder = [...olderByKey.values()].filter(
-              (row) =>
-                comparePosition(row.position, latestStart) < 0 && comparePosition(row.position, loadedStart) >= 0,
-            );
+            const boundedOlder = [...olderByKey.values()].filter((row) => {
+              if (comparePosition(row.position, latestStart) >= 0) return false;
+              // The floored fill serves the range the opening cut loaded; the
+              // owed fill adds the identities the record still holds that the
+              // model does not present — but only rows inside the
+              // recorded-coverage component, never across an uncertified
+              // gap. The two compose.
+              if (
+                owedFromRecord &&
+                !presentedKeys.has(row.transcriptKey) &&
+                olderCoverage.some((cert) => coveredByCert(row.position, cert))
+              )
+                return true;
+              if (!loadedStart) return false;
+              return comparePosition(row.position, loadedStart) >= 0;
+            });
             if (boundedOlder.length > 0) {
+              // Rows restored by the unrestricted fill have no current-baseline
+              // statement behind them: the certified older query's connected
+              // certificates are the only local validation, and it can be
+              // gapped. Track the ones it did not cover as unreconciled —
+              // their cached bodies display through recovery, but the range
+              // must not be treated as converged until the source speaks for
+              // it. Rows the opening cut already presented (the loaded range
+              // of the floored fill) keep their earlier session validation.
+              const certifiedKeys = new Set(olderRows.map((row) => row.transcriptKey));
+              const nextUnreconciled = new Set(this.#unreconciledRecorded);
+              for (const key of certifiedKeys) nextUnreconciled.delete(key);
+              for (const row of boundedOlder) {
+                if (certifiedKeys.has(row.transcriptKey) || presentedKeys.has(row.transcriptKey)) continue;
+                nextUnreconciled.add(row.transcriptKey);
+              }
+              // The fences below can still discard this fill's whole
+              // presentation, exactly as they can discard the owed demand's
+              // satisfaction: a discarded presentation displayed nothing, so
+              // it must not record keys as unreconciled either — commit the
+              // set with the presentation, after every fence has passed.
+              unreconciledFromFill = nextUnreconciled;
               boundedOlder.sort((left, right) => comparePosition(left.position, right.position));
               window = { ...window, rows: [...boundedOlder, ...window.rows] };
+              // The promotion presents the range the route noted as owed: the
+              // demand is satisfied for this baseline — committed with
+              // the presentation below, once every fence has passed — and
+              // only when the assembled fill actually presents every identity
+              // the armed capture names. A fill that restored only the loaded
+              // interval's rows (a certify-only open's bounded restore, or an
+              // older page inside the range the opening cut already loaded)
+              // satisfies none of what the capture owes and must not consume
+              // the demand: the flag it would clear is what keeps the owed
+              // fill eligible for the next open.
+              const armedOwed =
+                resolvedOwed !== undefined && resolvedOwed.size > 0 ? { identities: resolvedOwed } : undefined;
+              if (armedOwed !== undefined) {
+                const fillPresents = new Set(window.rows.map((row) => row.transcriptKey));
+                owedSatisfiedByFill = [...armedOwed.identities.keys()].every((key) => fillPresents.has(key));
+              }
             }
           }
           if (!openingCurrent()) {
@@ -1457,9 +1950,15 @@ export class TranscriptRepository {
           if (!restored || !openingCurrent()) {
             return { model: latest ?? this.#model, status: "recovery-needed", boundary: this.#boundary };
           }
-          // A racing accepted model wins by item version; the stale query only fills absent slots.
+          // A racing accepted model wins by item version; the stale query only
+          // fills absent slots. Local older pages and accepted notifications
+          // also replace the model without advancing the read boundary, so
+          // merge whenever the repository's model moved past the opening's
+          // captured cut — a late restore must never discard them.
           latest =
-            this.#boundary > openingCutBoundary ? this.#mergeReaderModels(latest ?? current, restored) : restored;
+            this.#boundary > openingCutBoundary || this.#model !== current
+              ? this.#mergeReaderModels(latest ?? current, restored)
+              : restored;
           const retainedRangeComplete = checkRetainedRange(latest);
           const oldestReturned = boundedRows[0]?.position;
           const certifiedStart = window.coverage[0]?.start;
@@ -1468,14 +1967,26 @@ export class TranscriptRepository {
               ? oldestReturned
               : undefined;
           // Keep the unrestored identities: raw paging uses them to detect
-          // eviction rather than mistaking a short page for exhaustion.
+          // eviction rather than mistaking a short page for exhaustion. The
+          // continuation must describe bodies still missing in the published
+          // model, not the opening's captured cut: local pages that loaded
+          // while this restore was in flight already provided theirs, and
+          // re-advertising loaded history only risks a redundant lookup that
+          // can reconcile the retained range away.
+          // The fill's debt resolution commits here, with the presentation
+          // and beside the other presentation-scoped commits: every fence
+          // above has passed, so the fill's own floor measured it.
+          if (resolvedOwed !== undefined) {
+            this.#owedRecorded = resolvedOwed.size > 0 ? { identities: resolvedOwed } : undefined;
+            if (resolvedOwed.size === 0) this.#recordedRangeOwed = false;
+          }
+          if (owedSatisfiedByFill) this.#recordedRangeOwed = false;
+          if (unreconciledFromFill !== undefined) this.#unreconciledRecorded = unreconciledFromFill;
           this.#model = latest;
-          const heldStart = this.#oldestPosition(current);
-          const heldBefore =
-            oldestReturned && heldStart && comparePosition(heldStart, oldestReturned) < 0 ? oldestReturned : undefined;
+          const missingFloor = oldestReturned ? this.#missingBodyFloor(latest, oldestReturned) : undefined;
           this.#localOlder =
-            heldBefore && heldStart
-              ? { before: heldBefore, floor: heldStart, sourceRevision: sourceRevisionAtOpen }
+            missingFloor && oldestReturned
+              ? { before: oldestReturned, floor: missingFloor, sourceRevision: sourceRevisionAtOpen }
               : undefined;
           this.#publish();
           const certifiedSnapshot = window.coverage.at(-1)?.representedSnapshot;
@@ -1500,11 +2011,33 @@ export class TranscriptRepository {
             !this.#seedAuthorityInvalid &&
             !this.#cacheContinuityLost &&
             !this.#recoveryNeeded;
+          // The hand-off re-open behind an accepted read can capture its cut
+          // before that read's durable commit lands: the committed-coverage
+          // fields the cut froze name the previous read, while the window the
+          // open just read is certified by the newer one. The newer read is
+          // this repository's own latest accepted read — the same authority
+          // the stale cut wanted to be current with, on the same baseline
+          // (openingCurrent above fenced any source-revision change) — so its
+          // certificate satisfies the cut's coverage requirement instead of
+          // refusing a complete window over pure bookkeeping lag.
+          const cutCommittedSnapshot = cut.committedSnapshot;
+          const coveredByFreshRead =
+            cut.readId !== undefined &&
+            this.#coverageReadId !== undefined &&
+            this.#coverageReadId !== cut.readId &&
+            cutCommittedSnapshot !== undefined &&
+            window.coverage.some(
+              (row) =>
+                row.kind === "read" &&
+                row.readId === this.#coverageReadId &&
+                row.representedSnapshot >= cutCommittedSnapshot,
+            );
           const status =
             window.complete &&
             !window.stale &&
             ((cut.readId === undefined && this.#seedSnapshot !== undefined) ||
-              this.#coversOpeningCut(window.coverage, cut.readId, cut.continuityId, cut.committedSnapshot)) &&
+              this.#coversOpeningCut(window.coverage, cut.readId, cut.continuityId, cut.committedSnapshot) ||
+              coveredByFreshRead) &&
             seedCovered &&
             pendingCutCovered &&
             cut.authorityValid &&
@@ -1516,7 +2049,7 @@ export class TranscriptRepository {
                 ? "stale"
                 : "recovery-needed";
           if (localBefore) this.#localReadContinuation = this.#coverageReadId;
-          const before = heldBefore ?? localBefore;
+          const before = (missingFloor ? oldestReturned : undefined) ?? localBefore;
           return {
             model: latest ?? current,
             status: retainedRangeComplete === false ? "recovery-needed" : status,
@@ -1659,6 +2192,7 @@ export class TranscriptRepository {
         })
       )
         throw new Error("final read was discarded");
+      if (current() && this.#model) this.#binding.onHistoryReadAccepted?.(response, this.#model);
       this.#sealed = true;
       await this.settled(false);
       if (!current()) return { kind: "cancelled" };
@@ -1826,6 +2360,7 @@ export class TranscriptRepository {
       !this.acceptRead(response, { lifetime: this.#binding.lifetime, readId: boundary, boundary, preserveEnded: true })
     )
       throw new Error("end disposition read was discarded");
+    if (current() && this.#model) this.#binding.onHistoryReadAccepted?.(response, this.#model);
     cover(this.#readItems(response));
     const minimum = anchors[0];
     let cursor = response.olderCursor;
@@ -1912,22 +2447,17 @@ export class TranscriptRepository {
    * oldest recorded rows body-less — a user-visible blank transcript.
    */
   async #durableAuthoritiesState(): Promise<"unchanged" | "changed" | "unestablished"> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const authorities = await Promise.race([
+      const authorities = await withDeadline(
         Promise.all([this.#cache.getClearEpoch(), this.#cache.getHistoryGeneration(this.#binding.historyKey)]),
-        new Promise<undefined>((resolve) => {
-          timer = setTimeout(() => resolve(undefined), SESSION_CACHE_LOOKUP_DEADLINE_MS);
-        }),
-      ]);
+        SESSION_CACHE_LOOKUP_DEADLINE_MS,
+      );
       if (authorities === undefined) return "unestablished";
       return authorities[0] === this.#binding.clearEpoch && authorities[1] === (this.#binding.historyGeneration ?? 0)
         ? "unchanged"
         : "changed";
     } catch {
       return "unestablished";
-    } finally {
-      if (timer !== undefined) clearTimeout(timer);
     }
   }
 
@@ -2259,11 +2789,22 @@ export class TranscriptRepository {
       // omitted by its response. Carry compatible preflight bodies and turns
       // into its write. Newer rows already include the reducer's version/richness
       // merge, so retain one object per key for admission and pending cleanup.
+      const outstandingReplacement = this.#uncommittedReplacementFrom;
+      // An inherited replacement must not outlive the authority of the read
+      // that produced it (#4651). Once a newer read has committed a
+      // replacement, the prior's floor is superseded: carrying it would delete
+      // the newer durable items and re-write the prior's stale payloads under
+      // this read's newer authority. Only the replacement still known to be
+      // uncommitted may travel.
+      const inheritableReplacement = (prior: Parameters<SessionEntryCache["commitBatch"]>[0]): boolean =>
+        prior.replacement === undefined ||
+        (outstandingReplacement !== undefined && comparePosition(outstandingReplacement, prior.replacement.from) === 0);
       const inherited = [...this.#preflightWrites]
         .filter(
           ([prior, entry]) =>
             entry.revision === this.#sourceRevision &&
-            (prior.coverage?.kind === "read" || prior.coverage?.kind === "suffix"),
+            (prior.coverage?.kind === "read" || prior.coverage?.kind === "suffix") &&
+            inheritableReplacement(prior),
         )
         .map(([prior]) => prior);
       if (inherited.length > 0) {
@@ -2581,10 +3122,20 @@ export class TranscriptRepository {
         if (!superseded && batch.coverage && outcome.coverage !== "not-extended") {
           this.#committedCoverage = { coverage: batch.coverage, revision: issuedRevision };
           this.#committedCoverageBoundary = batch.coverage.boundary;
-          this.#committedCoverageSnapshot = batch.coverage.representedSnapshot;
-          this.#committedCoverageReadId = batch.coverage.readId;
-          this.#committedCoverageContinuityId =
-            batch.coverage.kind === "suffix" ? batch.coverage.continuityId : undefined;
+          // A page certificate certifies an older range under its baseline
+          // authority; it is not the read certificate a reopened opening cut
+          // names. Overwriting the read id (and the snapshot/continuity paired
+          // with it) with the page's own request id made #coversOpeningCut ask
+          // the latest window for a read certificate no read ever carried, so
+          // a reopen reported recovery-needed despite persisted bodies and
+          // certificates (#4648). The page's authority was already validated
+          // at acceptance and by the cache's own authority fence.
+          if (batch.coverage.kind !== "page") {
+            this.#committedCoverageSnapshot = batch.coverage.representedSnapshot;
+            this.#committedCoverageReadId = batch.coverage.readId;
+            this.#committedCoverageContinuityId =
+              batch.coverage.kind === "suffix" ? batch.coverage.continuityId : undefined;
+          }
         }
         this.#admission.release(bodies, this);
         for (const row of batch.items) {
@@ -3015,7 +3566,9 @@ export class TranscriptRepository {
 
   #publish(): void {
     this.#reconcileHandoffOverlay();
-    if (this.#model) this.#model = hydratedDisplay(this.#model);
+    // Every publication passes here, so no path (a response-only field update
+    // included) can republish a resolved escalation.
+    if (this.#model) this.#model = this.#withoutResolvedEscalations(hydratedDisplay(this.#model));
     if (this.#readerCount > 0 && this.#model) {
       for (const turn of this.#model.turns) {
         for (const item of turn.items) {

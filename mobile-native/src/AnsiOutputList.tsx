@@ -3,7 +3,7 @@
 // scrolls smoothly.
 import { type ReactElement, useMemo } from "react";
 import { FlatList, type StyleProp, type ViewStyle } from "react-native";
-import type { AnsiLine } from "../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi";
+import type { AnsiLine } from "@evener/appwire-client";
 import { AnsiOutputLine } from "./AnsiOutputLine";
 import { parseOutputLines } from "./ansiOutputStyles";
 
@@ -28,8 +28,8 @@ export function AnsiOutputList({
 			// the list (a tree update that leaves the text alone) leaves them be.
 			strictMode
 			renderItem={renderLine}
-			ListHeaderComponent={header}
-			ListFooterComponent={footer}
+			ListHeaderComponent={header ?? undefined}
+			ListFooterComponent={footer ?? undefined}
 			contentContainerStyle={contentContainerStyle}
 		/>
 	);

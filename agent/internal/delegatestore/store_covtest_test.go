@@ -85,7 +85,7 @@ func TestStoreLoadOnClosedStore(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 	_, err = store.Load()
-	if err == nil || !strings.Contains(err.Error(), "closed") {
+	if !errors.Is(err, ErrStoreClosed) {
 		t.Fatalf("Load on closed store = %v, want closed error", err)
 	}
 }
@@ -102,7 +102,7 @@ func TestStoreAppendOnClosedStore(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 	_, _, err = store.AppendBatch(make(State), []Event{createdEvent("dlg_alpha", "")})
-	if err == nil || !strings.Contains(err.Error(), "closed") {
+	if !errors.Is(err, ErrStoreClosed) {
 		t.Fatalf("AppendBatch on closed store = %v, want closed error", err)
 	}
 }
@@ -128,7 +128,7 @@ func TestStoreAppendOnUnusableStore(t *testing.T) {
 	// latch, not a new sync error.
 	store.ops.sync = func(file *os.File) error { return file.Sync() }
 	_, _, err = store.AppendBatch(make(State), []Event{createdEvent("dlg_beta", "")})
-	if err == nil || !strings.Contains(err.Error(), "unusable") {
+	if !errors.Is(err, ErrStoreUnusable) {
 		t.Fatalf("AppendBatch on unusable store = %v, want unusable", err)
 	}
 }
@@ -167,7 +167,7 @@ func TestStoreRollbackTruncateFailure(t *testing.T) {
 	store.ops.write = func(file *os.File, data []byte) (int, error) { return file.Write(data) }
 	store.ops.truncate = func(file *os.File, size int64) error { return file.Truncate(size) }
 	_, _, err = store.AppendBatch(make(State), []Event{createdEvent("dlg_beta", "")})
-	if err == nil || !strings.Contains(err.Error(), "unusable") {
+	if !errors.Is(err, ErrStoreUnusable) {
 		t.Fatalf("AppendBatch after truncate failure = %v, want unusable", err)
 	}
 }
@@ -197,7 +197,7 @@ func TestStoreRollbackSyncFailureDirect(t *testing.T) {
 	store.ops.write = func(file *os.File, data []byte) (int, error) { return file.Write(data) }
 	store.ops.sync = func(file *os.File) error { return file.Sync() }
 	_, _, err = store.AppendBatch(make(State), []Event{createdEvent("dlg_beta", "")})
-	if err == nil || !strings.Contains(err.Error(), "unusable") {
+	if !errors.Is(err, ErrStoreUnusable) {
 		t.Fatalf("AppendBatch after rollback sync failure = %v, want unusable", err)
 	}
 }
@@ -715,7 +715,7 @@ func TestStoreAppendSingleError(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 	_, _, err = store.Append(make(State), createdEvent("dlg_alpha", ""))
-	if err == nil || !strings.Contains(err.Error(), "closed") {
+	if !errors.Is(err, ErrStoreClosed) {
 		t.Fatalf("Append on closed = %v, want closed error", err)
 	}
 }

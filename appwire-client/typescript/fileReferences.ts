@@ -13,14 +13,25 @@ export interface FileReference {
    * session's working directory, the only root this type knew before
    * artifacts were linkable. A retained-artifact reference names the
    * artifacts directory instead, so a caller holding both roots can tell
-   * which one to rebind against. */
-  readonly root?: "artifacts";
+   * which one to rebind against. "scratch" names the session's scratch
+   * directory the same way. */
+  readonly root?: "artifacts" | "scratch";
 }
 
 export interface FileReferenceSpan {
   readonly start: number;
   readonly end: number;
   readonly reference: FileReference;
+}
+
+/** ServedRoots names the session's retained roots the hub's document routes
+ * serve beside the working directory: the artifacts and scratch directories a
+ * thread snapshot advertises. An absolute path the working directory refuses
+ * may still bind against one of these, exactly as a file URL does through
+ * bindServedPath; an undefined property or a missing object names no root. */
+export interface ServedRoots {
+  readonly artifactsDir?: string;
+  readonly scratchDir?: string;
 }
 
 const WHITESPACE = /\s/u;
@@ -108,23 +119,38 @@ export function bindFilePath(path: string, cwd: string): FileReference | undefin
   };
 }
 
+/** bindRetainedPath binds a path to one of a session's retained root
+ * directories, exactly as bindFilePath does for the working directory, and
+ * marks the reference so a consumer holding the roots rebinds against the
+ * right one. A relative path never reaches a second root. */
+function bindRetainedPath(path: string, dir: string, root: "artifacts" | "scratch"): FileReference | undefined {
+  if (dir === "") return undefined;
+  const bound = bindFilePath(path, dir);
+  return bound === undefined ? undefined : { ...bound, root };
+}
+
 /** bindArtifactPath binds a path to a session's retained artifacts directory,
- * the second root the hub's document routes serve. It accepts a path relative
- * to that directory or an absolute path inside it, exactly as bindFilePath
- * does for the working directory, and marks the reference so a consumer
- * holding both roots rebinds against the right one. */
+ * the second root the hub's document routes serve. */
 export function bindArtifactPath(path: string, artifactsDir: string): FileReference | undefined {
-  if (artifactsDir === "") return undefined;
-  const bound = bindFilePath(path, artifactsDir);
-  return bound === undefined ? undefined : { ...bound, root: "artifacts" };
+  return bindRetainedPath(path, artifactsDir, "artifacts");
+}
+
+/** bindScratchPath binds a path to a session's named scratch directory, the
+ * third root the hub's document routes serve. */
+export function bindScratchPath(path: string, scratchDir: string): FileReference | undefined {
+  return bindRetainedPath(path, scratchDir, "scratch");
 }
 
 /** bindServedPath binds a destination to whichever of the session's served
  * roots contains it: the working directory first, then the retained artifacts
- * directory when the snapshot advertises one. A destination outside both
- * names no document the hub can serve. */
-export function bindServedPath(path: string, cwd: string, artifactsDir?: string): FileReference | undefined {
-  return bindFilePath(path, cwd) ?? (artifactsDir === undefined ? undefined : bindArtifactPath(path, artifactsDir));
+ * directory, then the scratch directory, each when the snapshot advertises
+ * it. A destination outside every root names no document the hub can serve. */
+export function bindServedPath(path: string, cwd: string, served?: ServedRoots): FileReference | undefined {
+  return (
+    bindFilePath(path, cwd) ??
+    bindArtifactPath(path, served?.artifactsDir ?? "") ??
+    bindScratchPath(path, served?.scratchDir ?? "")
+  );
 }
 
 interface LiteralSurface {
@@ -155,7 +181,12 @@ function hasAmbiguousLiteralPrefix(value: string): boolean {
   return DOMAIN_SEGMENT.test(firstSegment) || VERSION_SEGMENT.test(firstSegment);
 }
 
-function parseLiteral(value: string, kind: "prose" | "code", cwd: string): FileReference | undefined {
+function parseLiteral(
+  value: string,
+  kind: "prose" | "code",
+  cwd: string,
+  served?: ServedRoots,
+): FileReference | undefined {
   const surface = kind === "prose" ? proseSurface(value) : stripLocation(value);
   if (
     surface.path === "" ||
@@ -166,7 +197,11 @@ function parseLiteral(value: string, kind: "prose" | "code", cwd: string): FileR
     return undefined;
   }
 
-  const reference = bindFilePath(surface.path, cwd);
+  // bindFilePath returns any relative path bound to the working directory, so
+  // only an absolute path the working directory refuses reaches a served root
+  // (a screenshot in scratch, a report in artifacts): a bare name can never
+  // reach a second root.
+  const reference = bindServedPath(surface.path, cwd, served);
   if (!reference) return undefined;
 
   if (kind === "prose") {
@@ -175,7 +210,7 @@ function parseLiteral(value: string, kind: "prose" | "code", cwd: string): FileR
   return value.includes("/") || hasFilenameExtension(reference.path) ? reference : undefined;
 }
 
-function parseLink(value: string, cwd: string): FileReference | undefined {
+function parseLink(value: string, cwd: string, served?: ServedRoots): FileReference | undefined {
   if (
     value === "" ||
     WHITESPACE.test(value) ||
@@ -193,15 +228,22 @@ function parseLink(value: string, cwd: string): FileReference | undefined {
   if (surface.path === "" || /%(?:2f|5c)/iu.test(surface.path)) return undefined;
 
   try {
-    return bindFilePath(decodeURIComponent(surface.path), cwd);
+    // Same rule as a literal: only an absolute destination the working
+    // directory refuses can reach a served root.
+    return bindServedPath(decodeURIComponent(surface.path), cwd, served);
   } catch {
     return undefined;
   }
 }
 
-export function parseFileReference(value: string, kind: FileReferenceKind, cwd: string): FileReference | undefined {
+export function parseFileReference(
+  value: string,
+  kind: FileReferenceKind,
+  cwd: string,
+  served?: ServedRoots,
+): FileReference | undefined {
   if (cwd === "") return undefined;
-  return kind === "link" ? parseLink(value, cwd) : parseLiteral(value, kind, cwd);
+  return kind === "link" ? parseLink(value, cwd, served) : parseLiteral(value, kind, cwd, served);
 }
 
 function isTokenBoundary(character: string): boolean {
@@ -250,7 +292,7 @@ function bracketedCandidates(token: string): ProseCandidate[] | undefined {
   return candidates;
 }
 
-export function findFileReferences(text: string, cwd: string): FileReferenceSpan[] {
+export function findFileReferences(text: string, cwd: string, served?: ServedRoots): FileReferenceSpan[] {
   if (cwd === "") return [];
 
   const spans: FileReferenceSpan[] = [];
@@ -266,7 +308,7 @@ export function findFileReferences(text: string, cwd: string): FileReferenceSpan
     if (surrounded) {
       for (const bounds of surrounded) {
         const candidate = token.slice(bounds.start, bounds.end);
-        const reference = parseFileReference(candidate, "prose", cwd);
+        const reference = parseFileReference(candidate, "prose", cwd, served);
         if (!reference) continue;
         const surface = proseSurface(candidate);
         spans.push({
@@ -282,7 +324,7 @@ export function findFileReferences(text: string, cwd: string): FileReferenceSpan
     const withoutOpening = token.slice(opening);
     const closing = SURROUNDING_CLOSE_OR_PUNCTUATION.exec(withoutOpening)?.[0].length ?? 0;
     const candidate = withoutOpening.slice(0, withoutOpening.length - closing);
-    const reference = parseFileReference(candidate, "prose", cwd);
+    const reference = parseFileReference(candidate, "prose", cwd, served);
     if (!reference) continue;
 
     const surface = proseSurface(candidate);
@@ -296,10 +338,10 @@ export function findFileReferences(text: string, cwd: string): FileReferenceSpan
 }
 
 export function rebindFileReference(reference: FileReference, cwd: string): FileReference {
-  // An artifacts reference is not bound to the working directory, so a
+  // A retained-root reference is not bound to the working directory, so a
   // changed cwd leaves it alone: rebinding it would re-resolve a retained
   // path against a directory that never contained it.
-  if (reference.root === "artifacts") return reference;
+  if (reference.root !== undefined) return reference;
   return {
     ...reference,
     cwd,

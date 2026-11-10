@@ -6,50 +6,47 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 )
 
-// classTestFunc matches a top-level Go test definition: "func Name(t *testing.T)".
-var classTestFunc = regexp.MustCompile(`^func (\w+)\(t \*testing\.T\)`)
+// ceilingTestFunc matches a top-level Go test definition: "func Name(t *testing.T)".
+var ceilingTestFunc = regexp.MustCompile(`^func (\w+)\(t \*testing\.T\)`)
 
-// classMap reads testing-budget.json's perTestCeilingClasses as class name ->
-// member test names.
-func classMap(t *testing.T) map[string][]string {
+// ceilingMap reads testing-budget.json's perTestCeiling as test name -> ceiling
+// seconds.
+func ceilingMap(t *testing.T) map[string]float64 {
 	t.Helper()
 	raw, err := os.ReadFile("testing-budget.json")
 	if err != nil {
 		t.Fatalf("read testing-budget.json: %v", err)
 	}
 	var budget struct {
-		Classes map[string]struct {
-			Tests []string `json:"tests"`
-		} `json:"perTestCeilingClasses"` //nolint:tagliatelle // testing-budget.json's key, camelCase beside perTestCeilingSeconds
+		Ceilings map[string]float64 `json:"perTestCeiling"` //nolint:tagliatelle // testing-budget.json's key, camelCase beside perTestCeilingSeconds
 	}
 	if err := json.Unmarshal(raw, &budget); err != nil {
 		t.Fatalf("parse testing-budget.json: %v", err)
 	}
-	classes := make(map[string][]string, len(budget.Classes))
-	for name, class := range budget.Classes {
-		classes[name] = class.Tests
-	}
-	return classes
+	return budget.Ceilings
 }
 
-// classMapNames reads testing-budget.json's perTestCeilingClasses member names.
-func classMapNames(t *testing.T) []string {
+// ceilingMapNames reads testing-budget.json's per-test ceiling names.
+func ceilingMapNames(t *testing.T) []string {
 	t.Helper()
-	var names []string
-	for _, tests := range classMap(t) {
-		names = append(names, tests...)
+	ceilings := ceilingMap(t)
+	names := make([]string, 0, len(ceilings))
+	for name := range ceilings {
+		names = append(names, name)
 	}
 	if len(names) == 0 {
-		t.Fatal("testing-budget.json's perTestCeilingClasses names no members to check")
+		t.Fatal("testing-budget.json's perTestCeiling names no tests to check")
 	}
+	sort.Strings(names)
 	return names
 }
 
-// classDeclarations runs the audit's real git grep over the tracked *_test.go
+// ceilingDeclarations runs the audit's real git grep over the tracked *_test.go
 // files and returns, per class-member name, the set of files defining it.
 //
 // The audit forces git's output shape on the command line: a developer's
@@ -59,7 +56,7 @@ func classMapNames(t *testing.T) []string {
 // so either way every declaration would look missing. --no-color and the -c
 // overrides outrank a config file, and -n pins line numbers on regardless of
 // grep.lineNumber. extraEnv is the test seam that proves that override.
-func classDeclarations(t *testing.T, names, extraEnv []string) map[string]map[string]bool {
+func ceilingDeclarations(t *testing.T, names, extraEnv []string) map[string]map[string]bool {
 	t.Helper()
 	var alternates []string
 	for _, name := range names {
@@ -87,7 +84,7 @@ func classDeclarations(t *testing.T, names, extraEnv []string) map[string]map[st
 			continue
 		}
 		file, decl := parts[0], parts[2]
-		m := classTestFunc.FindStringSubmatch(decl)
+		m := ceilingTestFunc.FindStringSubmatch(decl)
 		if m == nil {
 			continue
 		}
@@ -99,8 +96,8 @@ func classDeclarations(t *testing.T, names, extraEnv []string) map[string]map[st
 	return defined
 }
 
-// TestTimingBudgetClassMapNamesMatchTheTree pins testing-budget.json's
-// perTestCeilingClasses against the tree it classifies (#4601). The map is
+// TestTimingBudgetCeilingNamesMatchTheTree pins testing-budget.json's
+// perTestCeiling against the tree it classifies (#4601). The map is
 // hand-edited and membership is by bare test name, so two silent failure modes
 // are possible and both are caught here:
 //
@@ -113,39 +110,39 @@ func classDeclarations(t *testing.T, names, extraEnv []string) map[string]map[st
 // git grep is a real external tool, not a faked one (the copy-only audits read
 // git the same way): it pins each name to the single *_test.go that defines it.
 func TestTimingBudgetClassMapNamesMatchTheTree(t *testing.T) {
-	names := classMapNames(t)
-	defined := classDeclarations(t, names, nil)
+	names := ceilingMapNames(t)
+	defined := ceilingDeclarations(t, names, nil)
 	for _, name := range names {
 		files := defined[name]
 		switch {
 		case len(files) == 0:
-			t.Errorf("testing-budget.json's perTestCeilingClasses lists %s, which no *_test.go defines; "+
+			t.Errorf("testing-budget.json's perTestCeiling names %s, which no *_test.go defines; "+
 				"a renamed or typo'd name silently drops that test's enforcement to the warn-only flat ceiling", name)
 		case len(files) > 1:
 			var paths []string
 			for path := range files {
 				paths = append(paths, path)
 			}
-			t.Errorf("testing-budget.json's perTestCeilingClasses lists %s, defined in %d files (%s); "+
+			t.Errorf("testing-budget.json's perTestCeiling names %s, defined in %d files (%s); "+
 				"membership is by bare name, so this classifies every package's test of that name", name, len(files), strings.Join(paths, ", "))
 		}
 	}
 }
 
-// TestTimingBudgetClassMapAuditIgnoresGrepFormattingConfig pins RoboRev's
+// TestTimingBudgetCeilingAuditIgnoresGrepFormattingConfig pins RoboRev's
 // findings on PR #4610: the audit must not read a developer's grep output
 // formatting. With grep.column=true a plain `git grep -n` prints
 // "<file>:<line>:<column>:<content>"; with color.grep=always it wraps the line
 // in ANSI escapes (color.ui=false does not override the more specific
 // color.grep). Either makes the file:line:content parser reject the line and
-// report every class member as missing, reddening a valid checkout. The audit
+// report every ceiling name as missing, reddening a valid checkout. The audit
 // disables both on the command line, which outranks a config file, so it finds
 // the same declarations with the settings on as off.
 func TestTimingBudgetClassMapAuditIgnoresGrepFormattingConfig(t *testing.T) {
-	names := classMapNames(t)
-	want := classDeclarations(t, names, nil)
+	names := ceilingMapNames(t)
+	want := ceilingDeclarations(t, names, nil)
 	if len(want) != len(names) {
-		t.Fatalf("fixture check: the audit found %d of %d class names with no formatting config", len(want), len(names))
+		t.Fatalf("fixture check: the audit found %d of %d ceiling names with no formatting config", len(want), len(names))
 	}
 	first := names[0]
 	if len(want[first]) != 1 {
@@ -161,7 +158,7 @@ func TestTimingBudgetClassMapAuditIgnoresGrepFormattingConfig(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			cfg := filepath.Join(t.TempDir(), "gitconfig")
 			writeAuditScriptFixture(t, cfg, cfgBody)
-			got := classDeclarations(t, names, []string{"GIT_CONFIG_GLOBAL=" + cfg, "GIT_CONFIG_NOSYSTEM=1"})
+			got := ceilingDeclarations(t, names, []string{"GIT_CONFIG_GLOBAL=" + cfg, "GIT_CONFIG_NOSYSTEM=1"})
 			if len(got) != len(want) {
 				t.Fatalf("with %s set the audit found %d of %d names; it is reading git's formatted output", name, len(got), len(want))
 			}
@@ -172,36 +169,48 @@ func TestTimingBudgetClassMapAuditIgnoresGrepFormattingConfig(t *testing.T) {
 	}
 }
 
-// TestTimingBudgetRunnerBoundClassesAreUnclassified pins the 2026-10-14 ruling
-// (issue #4615): four classes whose wall time tracks how busy the runner is, not
-// the code, were removed from perTestCeilingClasses so their members fall back to
-// the flat warn-only perTestCeilingSeconds. The kept classes are asserted too, so
-// this fails on an emptied or renamed map and not only on a re-added class.
-func TestTimingBudgetRunnerBoundClassesAreUnclassified(t *testing.T) {
-	classes := classMap(t)
+// TestTimingBudgetRunnerBoundTestsStayUnnamed pins the 2026-10-14 ruling (issue
+// #4615): four groups of tests whose wall time tracks how busy the runner is, not
+// the code, were removed from the ceiling map so they fall back to the flat
+// warn-only perTestCeilingSeconds. The kept names are asserted too, so this fails
+// on an emptied or renamed map and not only on a re-added runner-bound test.
+func TestTimingBudgetRunnerBoundTestsStayUnnamed(t *testing.T) {
+	ceilings := ceilingMap(t)
 	for _, tc := range []struct {
 		name   string
 		wantIn bool
 	}{
-		{name: "dev-tool compile/CLI"},
-		{name: "install"},
-		{name: "transcript large-fixture"},
-		{name: "gate-runner integration"},
-		{name: "delegate-attention & idle", wantIn: true},
-		{name: "deploy-host integration", wantIn: true},
-		{name: "session-activity", wantIn: true},
-		{name: "retirement", wantIn: true},
-		{name: "eval harness", wantIn: true},
-		{name: "plugin-git integration", wantIn: true},
-		{name: "live-stack E2E", wantIn: true},
+		// Runner-bound: removed by #4615, must stay unnamed.
+		{name: "TestCrossCompileWindows"},
+		{name: "TestServeDevUsageAndUnknownSubcommand"},
+		{name: "TestInstallHomeGeneratedHome"},
+		{name: "TestInstallFailsWhenABinaryCopyFails"},
+		{name: "TestAppendEntryByEntryMatchesTheReference"},
+		{name: "TestChangedSinceReturnsWhatLaterEntriesChanged"},
+		{name: "TestCorruptSidecarRebuilds"},
+		{name: "TestItemTurnsFromEntriesAvoidsFileScanAndDecode"},
+		{name: "TestModuleRunnerRunsSelectedModulesWithPrivateHomes"},
+		{name: "TestModuleRunnerRefusesAZeroTestRun"},
+		{name: "TestModuleRunnerPropagatesAModuleFailure"},
+		{name: "TestModuleRunnerHonorsWaveOverrides"},
+		{name: "TestModuleRunnerEnumerationHonorsTheCallersBuildFlags"},
+		{name: "TestModuleRunnerCapturesTheTimingRowsItAlreadyRan"},
+		// Kept: one representative per former class, so an emptied map fails.
+		{name: "TestAcceptedDelegateAttentionTriggerFoldsAwayOncePresented", wantIn: true},
+		{name: "TestHostDeployFilesystemSafety", wantIn: true},
+		{name: "TestSessionActivityReportCaptureBudgetPreservesPageContinuation", wantIn: true},
+		{name: "TestDaemonRetirementProcessDirectPositiveExits", wantIn: true},
+		{name: "TestMemoryEvalIsolation", wantIn: true},
+		{name: "TestGitCloneSurvivesAHookThatOrphansAPipeHolder", wantIn: true},
+		{name: "TestE2E_StopIsOfferedWheneverTheWireSaysActive", wantIn: true},
 	} {
-		_, ok := classes[tc.name]
+		_, ok := ceilings[tc.name]
 		switch {
 		case ok && !tc.wantIn:
-			t.Errorf("testing-budget.json's perTestCeilingClasses still lists the runner-bound class %q; "+
-				"the 2026-10-14 ruling (#4615) removed it so its members stay on the flat warn-only ceiling", tc.name)
+			t.Errorf("testing-budget.json's perTestCeiling still names the runner-bound test %q; "+
+				"the 2026-10-14 ruling (#4615) removed it so it stays on the flat warn-only ceiling", tc.name)
 		case !ok && tc.wantIn:
-			t.Errorf("testing-budget.json's perTestCeilingClasses no longer lists the kept class %q", tc.name)
+			t.Errorf("testing-budget.json's perTestCeiling no longer names the kept test %q", tc.name)
 		}
 	}
 }

@@ -5,7 +5,6 @@ package plugins
 import (
 	"context"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,16 +14,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-type coverageAtomicFile struct {
-	writeErr error
-	syncErr  error
-	closeErr error
-}
-
-func (f *coverageAtomicFile) Write(p []byte) (int, error) { return len(p), f.writeErr }
-func (f *coverageAtomicFile) Sync() error                 { return f.syncErr }
-func (f *coverageAtomicFile) Close() error                { return f.closeErr }
-
 type coverageLockFile struct{}
 
 func (*coverageLockFile) Fd() uintptr  { return 1 }
@@ -33,68 +22,14 @@ func (*coverageLockFile) Close() error { return nil }
 func FuzzAtomicGitCoverage(f *testing.F) {
 	f.Add(uint8(0))
 	f.Fuzz(func(t *testing.T, _ uint8) {
-		t.Run("atomic", coverageAtomicWrite)
 		t.Run("git", coverageGit)
 		t.Run("locks", coverageLocks)
 	})
 }
 
-func coverageAtomicWrite(t *testing.T) {
-	origMkdir, origEntropy := atomicMkdirAll, atomicReadEntropy
-	origOpen, origRemove := atomicOpenFile, atomicRemove
-	origRename, origOpenDir := atomicRename, atomicOpenDir
-	t.Cleanup(func() {
-		atomicMkdirAll, atomicReadEntropy = origMkdir, origEntropy
-		atomicOpenFile, atomicRemove = origOpen, origRemove
-		atomicRename, atomicOpenDir = origRename, origOpenDir
-	})
-	boom := errors.New("boom")
-	path := filepath.Join(t.TempDir(), "parent", "file")
-
-	atomicMkdirAll = func(string, os.FileMode) error { return boom }
-	if err := atomicWriteFile(path, nil, 0o600); err == nil {
-		t.Fatal("want mkdir error")
-	}
-	atomicMkdirAll = os.MkdirAll
-	atomicReadEntropy = func([]byte) (int, error) { return 0, boom }
-	if err := atomicWriteFile(path, nil, 0o600); err == nil {
-		t.Fatal("want entropy error")
-	}
-	atomicReadEntropy = func(p []byte) (int, error) { clear(p); return len(p), nil }
-	atomicOpenFile = func(string, int, os.FileMode) (atomicFile, error) { return nil, boom }
-	if err := atomicWriteFile(path, nil, 0o600); err == nil {
-		t.Fatal("want open error")
-	}
-
-	for name, af := range map[string]*coverageAtomicFile{
-		"write": {writeErr: boom}, "sync": {syncErr: boom}, "close": {closeErr: boom},
-	} {
-		t.Run(name, func(t *testing.T) {
-			atomicOpenFile = func(string, int, os.FileMode) (atomicFile, error) { return af, nil }
-			if err := atomicWriteFile(path, []byte("x"), 0o600); err == nil {
-				t.Fatal("want error")
-			}
-		})
-	}
-	atomicOpenFile = origOpen
-	atomicRename = func(string, string) error { return boom }
-	if err := atomicWriteFile(path, []byte("x"), 0o600); err == nil {
-		t.Fatal("want rename error")
-	}
-	atomicRename = origRename
-	atomicOpenDir = func(string) (atomicFile, error) { return nil, boom }
-	if err := atomicWriteFile(path, []byte("ok"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	atomicOpenDir = origOpenDir
-	if err := atomicWriteFile(path, []byte("ok"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func coverageGit(t *testing.T) {
-	origLook, origMkdir, origRun := gitLookPath, gitMkdirAll, gitRun
-	t.Cleanup(func() { gitLookPath, gitMkdirAll, gitRun = origLook, origMkdir, origRun })
+	origLook, origMkdir, origRun, origStdout := gitLookPath, gitMkdirAll, gitRun, gitStdout
+	t.Cleanup(func() { gitLookPath, gitMkdirAll, gitRun, gitStdout = origLook, origMkdir, origRun, origStdout })
 	boom := errors.New("boom")
 	gitLookPath = func(string) (string, error) { return "", boom }
 	if gitAvailable() {
@@ -115,6 +50,13 @@ func coverageGit(t *testing.T) {
 	gitRun = func(_ context.Context, dir string, args ...string) (string, error) {
 		calls = append(calls, dir+":"+strings.Join(args, " "))
 		return " abc \n", nil
+	}
+	gitStdout = func(_ context.Context, dir string, args ...string) (string, error) {
+		calls = append(calls, "stdout:"+dir+":"+strings.Join(args, " "))
+		if len(args) > 0 && args[0] == "cat-file" {
+			return "commit", nil
+		}
+		return "abc1234", nil
 	}
 	if err := gitClone(context.Background(), "url", dir, "", ""); err != nil {
 		t.Fatal(err)
@@ -245,5 +187,3 @@ func coverageLocks(t *testing.T) {
 		t.Fatalf("sleeps=%v", sleeps)
 	}
 }
-
-var _ io.Writer = (*coverageAtomicFile)(nil)

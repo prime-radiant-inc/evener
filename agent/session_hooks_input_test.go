@@ -20,9 +20,9 @@ func TestHookInput_SubagentIdentity(t *testing.T) {
 
 	// An unnamed spawn is the default subagent, so its agent_type is the
 	// resolved name "subagent" — never empty and never the "default" sentinel.
-	prepared, err := parent.prepareSubagentRun(context.Background(), "task", "", parent.currentEnv().WorkingDirectory(), 0, "", "", nil, nil)
+	prepared, err := prepareSubagentRunForTest(parent, "", parent.currentEnv().WorkingDirectory())
 	if err != nil {
-		t.Fatalf("prepareSubagentRun: %v", err)
+		t.Fatalf("prepare a subagent run: %v", err)
 	}
 	defer prepared.disposeUnadopted()
 
@@ -45,9 +45,9 @@ func TestHookInput_PluginAgentIdentity(t *testing.T) {
 		SystemPrompt: "you are a toolsmith",
 	}
 
-	prepared, err := parent.prepareSubagentRun(context.Background(), "task", "", parent.currentEnv().WorkingDirectory(), 0, "toolsmith:toolsmith", "", nil, nil)
+	prepared, err := prepareSubagentRunForTest(parent, "toolsmith:toolsmith", parent.currentEnv().WorkingDirectory())
 	if err != nil {
-		t.Fatalf("prepareSubagentRun: %v", err)
+		t.Fatalf("prepare a subagent run: %v", err)
 	}
 	defer prepared.disposeUnadopted()
 
@@ -73,4 +73,18 @@ func TestSubagentHookAgentType(t *testing.T) {
 			t.Errorf("subagentHookAgentType(%q,%q) = %q, want %q", c.requested, c.name, got, c.want)
 		}
 	}
+}
+
+// prepareSubagentRunForTest runs the same selection-then-prepare path a
+// delegate spawn takes, which is what exercises the agent-type computation in
+// prepareSubagentRunFromSelection. Main deleted the Session.prepareSubagentRun
+// convenience wrapper, so the two steps are joined here.
+func prepareSubagentRunForTest(parent *Session, agentType, workingDir string) (*preparedSubagentRun, error) {
+	selection, err := parent.selectSubagentModel(context.Background(), "", agentType)
+	if err != nil {
+		return nil, err
+	}
+	return parent.prepareSubagentRunFromSelection(
+		context.Background(), "task", workingDir, 0, agentType, "", nil, nil, selection, nil, nil,
+	)
 }

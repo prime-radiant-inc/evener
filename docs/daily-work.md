@@ -4,6 +4,32 @@ A useful Evener session ends with a result you can inspect, not just a convincin
 
 This guide assumes you have completed [provider setup](getting-started.md#connect-a-provider-in-new-session). The browser instructions use your hub, normally `http://127.0.0.1:9180`. The CLI runs one request at a time and resumes saved sessions explicitly. It does not offer the browser's interactive Send, Steer, and Stop controls.
 
+A session started as a **Manager** can manage sessions reachable through its own hub, including connected hosts and other Managers. It sends text or typed input with `delegate_send` and a source-qualified ref, input mode (`start`, `queue`, or `steer`), client mutation ID and target instance ID. The hub uses the same guarded send and retry path as your browser; a notification cannot answer a pending question. `session_control` takes one action and its typed `arguments`: approval, resume, fork, clear, model, vision model, reasoning effort, compact, drain queue, promote or cancel a queued message, rename, goal, human notes, remove URL, archive or unarchive, delete, pin, unpin, or mark seen or unread. New queued input still belongs to `delegate_send`, not queue editing. `job_stop` uses a `hub` mode for turn interruption, `delegate` (one `dlg_` run; children survive), `owned_delegate` (a `dlg_` subtree, including descendants), `job` (one `job_` shell job; `includeChildren` also stops its immediate shell children, not grandchildren), shutdown, or force-stop. A settled `owned_delegate` answers `already_stopped` without another stop. Ordinary human `job_stop` behavior remains unchanged. Deletion remains limited to ended or confirmed-crashed local sessions.
+
+Set `manager: true` in the AppWire `thread/start` parameters to start a Manager.
+Anyone authorized to start a session may set it. This immutable bit lives in
+session metadata and survives resume, process restart and Clear. Fresh roots
+and forks do not inherit it; a new Manager requires an explicit start parameter.
+An absent bit means false, and existing sessions stay ordinary without migration.
+
+Web **Session Details** and native **Session Info** show a read-only Manager
+indication from `thread.evener.manager`, which the daemon owns and the hub reads.
+A remotely hosted Manager uses its own host's hub. Losing transport does not
+remove its Manager schemas: calls may report unavailable while healthy ordinary
+work continues. See [Manager sessions](automation.md#manager-sessions).
+
+For an unattended local worker, have the Manager call `delegate` with
+`hub:{cwd,model,watch:{events:["question","approval"],completion:true}}`.
+It creates an independent worker, installs its watch before input, and reports
+creation, watch and input separately. The Manager can read the question or
+approval with `job_status`, answer via `delegate_send` or approve through
+`session_control`, and read accepted terminal history with `read_transcript`.
+This local approval path works without a browser subscriber. For an existing
+remote worker, attach `job_watch` with its source-qualified ref before sending
+input. Remote question/answer/completion uses the shared hub subscription path
+and needs no browser. Worker creation remains local-only; remote sandbox
+approval has not been exercised by a live remote prompt.
+
 ## Try a CLI continuation
 
 Use a fresh directory so the two files below cannot overwrite existing work. Replace `provider/model` with an available model from your configured provider:
@@ -86,7 +112,7 @@ Busy sessions expose Stop and, when supported, Steer. On the web, an empty draft
 
 With a draft, the submit button still says **Send** while the agent is busy; it does not become a separate Queue button. Messages waiting for a later turn appear in **Queued messages** beside the composer. A **Sending** or **Retrying** indicator means delivery is still in progress, not that the agent has already acted on the message.
 
-For a queued message, use **Remove from queue** to withdraw it before it runs, **Edit message** to bring it back for revision, or **Steer now** to send it into the current work. These controls appear only when the session supports them and may be disabled during recovery. Confirm that removal succeeded; an error means you must not assume the request was withdrawn. Removing a queued message cannot undo work the agent has already started. If a row says **Delivery uncertain**, let the session recover before submitting a duplicate.
+For a queued message, use **Remove from queue** to withdraw it before it runs, **Edit message** to bring it back for revision, or **Steer now** to send it into the current work. These controls appear only when the session supports them and may be disabled during recovery. Confirm that removal succeeded; an error means you must not assume the request was withdrawn. Removing a queued message cannot undo work the agent has already started. If a row says **Delivery uncertain**, **Remove from queue** clears it so later messages can move; a Retry asks the hub once more, and a resend under the same identity is safe, while typing the message again is not.
 
 On a failed turn, **Retry** sends a new `continue` message in the same
 conversation in both the browser and native app. The earlier prompt, images,
@@ -96,6 +122,17 @@ continuation stays available through the existing message-recovery controls;
 it does not replace an empty draft. Native keeps Resume and Sign in ahead of
 Retry when those actions are needed. Queued-message and delivery-uncertain
 retries keep their own recovery behavior.
+
+Retry appears only on the newest failed turn. Once a newer turn starts, even
+before it shows any item, the older failure keeps its message but loses the
+action; a newer failure offers its own. The canonical session store owns the
+newest-turn identity; the durable outbox owns unresolved submissions. Native
+views of the same session share one binding. Unknown or failed canonical or
+pending reads keep Retry inactive until fresh owner state is available.
+Retry stays inactive while that client has an unresolved send or queue until
+the outbox settles, including after a reload or remount. A repeated press
+while it is inactive sends nothing. Pressing an older action after the
+conversation has advanced does not submit either.
 
 A useful steering message is specific:
 
@@ -127,9 +164,11 @@ returning restores it.
 An approval is different: it gates one specific action. Outside a sandbox,
 `read_file`, `write_file`, and `edit_file` denials can be escalated to a card
 with **Allow** and **Deny**, and the tool call waits until you answer. The model
-cannot trigger, approve, or later see that decision. Shell and kernel denials,
-patches, and browse calls stay final, as they do without a UI. See
-[sandbox escalation](sandboxing.md) for exactly which denials are eligible.
+cannot approve its own request or later see that decision. A Manager
+session can act for it through `session_control`; that decision is attributed
+to the Manager. Shell and kernel denials, patches, and browse calls stay final,
+as they do without a UI. See [sandbox escalation](sandboxing.md) for exactly
+which denials are eligible.
 
 A pending question and a pending approval both raise the sidebar's attention
 badge and appear in the session's own attention, so you can leave a session and

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/llm"
@@ -89,7 +90,7 @@ func TestUntypedDelegatingSubagentUsesDelegatingRolePrompt(t *testing.T) {
 				}
 			}
 			childPromptSeen <- childPrompt
-			return finalResponse("done")
+			return agenttest.FinalResponse("done")
 		},
 	}})
 

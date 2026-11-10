@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
@@ -15,7 +16,9 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/memorypages"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
@@ -94,8 +97,9 @@ func (s *Session) memoryContextEnabled() bool {
 }
 
 // gardeningMemorySkillName is the bundled skill whose instructions correct
-// memory pages with memory_write, memory_edit and memory_delete.
-const gardeningMemorySkillName = "gardening-memory"
+// memory pages with memory_write, memory_edit and memory_delete. The shared
+// skill package owns the name and the availability mapping.
+const gardeningMemorySkillName = skill.GardeningMemorySkillName
 
 // skillAvailableToSession reports whether this session may advertise and load a
 // catalog skill. The gardening-memory skill corrects pages with the memory save
@@ -103,10 +107,14 @@ const gardeningMemorySkillName = "gardening-memory"
 // profile that denies a save tool) must neither see it in its catalog nor
 // activate it. Every other skill is available as the catalog advertises it.
 func (s *Session) skillAvailableToSession(name string) bool {
-	if name == gardeningMemorySkillName {
-		return s.memorySaveInstructionsEnabled()
-	}
-	return true
+	return s.skillAvailability().SkillAvailable(name)
+}
+
+// skillAvailability is the capability verdict this session's own registry
+// supports. skillAvailableToSession is its name-scoped form; the role-preload
+// filter computes it once for every name it checks.
+func (s *Session) skillAvailability() skill.SessionAvailability {
+	return skill.SessionAvailability{MemorySaveAvailable: s.memorySaveInstructionsEnabled()}
 }
 
 // memorySaveInstructionsEnabled gates text that tells the model to write or
@@ -123,12 +131,6 @@ func (s *Session) memorySaveInstructionsEnabled() bool {
 	}
 	return true
 }
-
-// memoryIndexFile is the scope's generated index, rendered from page
-// frontmatter; once a writing session migrates a scope, no file by this name
-// remains. memory_read renders the index for this name, the write tools
-// refuse it, and memory_search never searches a file by this name.
-const memoryIndexFile = "MEMORY.md"
 
 // memoryIndexBaseline is the index the session already knows for a scope:
 // the whole rendered index of a current scope, with the session's own page
@@ -192,9 +194,11 @@ type memoryEnvironmentFlight struct {
 // memory read ends a read parked on a stream.
 func (s *Session) renderMemoryScope(ctx context.Context, env *execenv.LocalExecutionEnvironment, p *memoryProjection) error {
 	if s.memorySaveInstructionsEnabled() {
-		_ = migrateMemoryScopeCtx(ctx, env)
+		if err := memorypages.MigrateScopeCtx(ctx, env); err != nil {
+			slog.Warn("memory migration failed; will retry on the next render", "session", s.ID(), "error", err)
+		}
 	}
-	pages, err := listMemoryPagesCtx(ctx, env)
+	pages, err := memorypages.ListPagesCtx(ctx, env)
 	if err != nil {
 		return err
 	}
@@ -203,7 +207,7 @@ func (s *Session) renderMemoryScope(ctx context.Context, env *execenv.LocalExecu
 		return nil
 	}
 	p.Status = "current"
-	p.Content, p.Index, p.Truncated = projectMemoryIndex(pages, memoryProjectionCap)
+	p.Content, p.Index, p.Truncated = memorypages.ProjectIndex(pages, memorypages.ProjectionCap)
 	return nil
 }
 
@@ -400,11 +404,6 @@ func (s *Session) closeMemoryEnvironments() {
 	}
 }
 
-func (s *Session) readMemoryIndex(scope string) memoryProjection {
-	p, _ := s.readMemoryScope(context.Background(), scope, nil)
-	return p
-}
-
 // readMemoryScope reads scope's index and, beneath the same environment
 // lease, the current record of each named page.
 // ctx is threaded to each page read.
@@ -483,7 +482,7 @@ func memoryPageRecordFrom(raw []byte, err error) (memoryPageRecord, bool) {
 // it knows: the written page's index line is patched into the scope's
 // baseline, and a page it read gets its new record. Neither is echoed back.
 // Both come from one read of the page at listed, the slash path the scope
-// lists it at (listedMemoryPagePath), which also keys its read record.
+// lists it at (memorypages.ListedPagePath), which also keys its read record.
 //
 // Only the written page is read back, so a page another session added,
 // changed or deleted since the last boundary stays out of the baseline and
@@ -493,7 +492,7 @@ func memoryPageRecordFrom(raw []byte, err error) (memoryPageRecord, bool) {
 // index in full; the race is accepted as rare and cheap.
 func (s *Session) recordOwnMemoryWrite(env *execenv.LocalExecutionEnvironment, scope, listed string) {
 	file := filepath.FromSlash(listed)
-	adopt := s.memoryOwnWriteSetsBaseline(scope) && isMemoryPagePath(listed)
+	adopt := s.memoryOwnWriteSetsBaseline(scope) && memorypages.IsPagePath(listed)
 	s.memoryMu.Lock()
 	_, tracked := s.memoryReadPages[scope][file]
 	s.memoryMu.Unlock()
@@ -509,8 +508,8 @@ func (s *Session) recordOwnMemoryWrite(env *execenv.LocalExecutionEnvironment, s
 	var line string
 	if ioErr == nil {
 		raw, readErr = env.ReadFileRaw(filepath.Join(env.WorkingDirectory(), file))
-		if page, exists := memoryPageFromRead(listed, raw, readErr, time.Time{}); exists {
-			line = memoryIndexLine(page)
+		if page, exists := memorypages.PageFromRead(listed, raw, readErr, time.Time{}); exists {
+			line = memorypages.IndexLine(page)
 		}
 	}
 	s.recordOwnMemoryIndex(scope, adopt, listed, line, ioErr)
@@ -551,7 +550,7 @@ func (s *Session) recordOwnMemoryIndex(scope string, adopt bool, rel, line strin
 		delete(s.memoryBaseline, scope)
 		return
 	}
-	index := patchMemoryIndex(s.memoryBaseline[scope].index, rel, line)
+	index := memorypages.PatchIndex(s.memoryBaseline[scope].index, rel, line)
 	if index == "" {
 		s.setMemoryBaselineLocked(scope, memoryIndexBaseline{status: "missing"})
 		return
@@ -811,7 +810,7 @@ func (s *Session) knownMemoryIndexSection(baseline memoryIndexBaseline, p memory
 // section would exceed memoryIndexDeltaCap is reported as a line count
 // instead.
 func memoryIndexDeltaSection(baseline string, p memoryProjection) string {
-	added := memoryIndexAddedLines(baseline, p.Index)
+	added := memorypages.IndexAddedLines(baseline, p.Index)
 	if len(added) == 0 {
 		return ""
 	}
@@ -819,37 +818,6 @@ func memoryIndexDeltaSection(baseline string, p memoryProjection) string {
 		return section
 	}
 	return apptranscript.MemoryIndexChangeCountsSection(p.Scope, len(added))
-}
-
-// memoryIndexAddedLines compares two indexes line by line as multisets,
-// comparing page lines only, and returns the lines of next not matched in
-// prior, in file order.
-func memoryIndexAddedLines(prior, next string) []string {
-	counts := make(map[string]int)
-	for _, line := range memoryIndexLines(prior) {
-		counts[line]++
-	}
-	var added []string
-	for _, line := range memoryIndexLines(next) {
-		if counts[line] > 0 {
-			counts[line]--
-			continue
-		}
-		added = append(added, line)
-	}
-	return added
-}
-
-// memoryIndexLines returns an index's page lines; the tag header and the
-// "Not shown" line are not page lines and never appear in a change section.
-func memoryIndexLines(index string) []string {
-	var lines []string
-	for line := range strings.SplitSeq(index, "\n") {
-		if strings.HasPrefix(line, "- ") {
-			lines = append(lines, line)
-		}
-	}
-	return lines
 }
 
 func (s *Session) resetMemoryProjectionAfterCompaction() {

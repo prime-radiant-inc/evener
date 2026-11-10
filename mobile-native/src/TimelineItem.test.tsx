@@ -28,8 +28,10 @@ vi.mock("react-native", async () => ({
 }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 vi.mock("react-native-enriched-markdown", () => ({ EnrichedMarkdownText: "EnrichedMarkdownText" }));
+vi.mock("react-native-gesture-handler", async () =>
+	(await import("./renderNative.testkit")).gestureDetectorModuleMock(),
+);
 vi.mock("expo-clipboard", () => ({ setStringAsync: native.setStringAsync }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 // Attachments are not under test here, and the image leaf drags in the
 // connection stack (expo-secure-store and the rest).
 vi.mock("./TranscriptImages", () => ({ TranscriptImages: () => null }));
@@ -115,6 +117,25 @@ function accessibilityActionsOf(root: ReactTestInstance) {
 	};
 }
 
+/** Holds the agent's message the way the long-press gesture does, by firing
+ * the hold gesture's onStart, and returns the menu it opened: its options,
+ * and a way to pick one the way ActionSheetIOS calls back. */
+function holdMessage(root: ReactTestInstance) {
+	const detector = root.findAllByType("GestureDetector" as never).at(-1);
+	const gesture = detector?.props.gesture as { handlers: { onStart?(): void } } | undefined;
+	if (!gesture?.handlers.onStart) throw new Error("the message has no hold gesture");
+	act(() => gesture.handlers.onStart?.());
+	const [options, pick] = native.showActionSheetWithOptions.mock.calls.at(-1) as [
+		{ options: string[]; cancelButtonIndex: number },
+		(index: number) => void,
+	];
+	return {
+		options: options.options,
+		cancelButtonIndex: options.cancelButtonIndex,
+		choose: (label: string) => act(() => pick(options.options.indexOf(label))),
+	};
+}
+
 describe("your message", () => {
 	const user = (over: Partial<Extract<MobileTimelineItem, { kind: "user" }>> = {}): MobileTimelineItem => ({
 		kind: "user",
@@ -122,6 +143,31 @@ describe("your message", () => {
 		text: "Ship it",
 		transcriptEntryIndex: 4,
 		...over,
+	});
+
+	it.each([undefined, "steered"] as const)("routes actor identity for input with origin %s", (origin) => {
+		const managerRef = "local:manager-origin";
+		const manager = render(
+			<TimelineItem
+				item={user({ origin, actor: { kind: "manager", managerRef } })}
+				hubId="hub"
+				sessionRef="local:worker"
+			/>,
+		);
+		expect(renderedText(manager)).toContain(managerRef);
+		const [managerAction] = manager.root.findAll((node) => typeof node.props.onLongPress === "function");
+		expect(managerAction?.props.accessibilityLabel).toContain(managerRef);
+		const human = render(
+			<TimelineItem
+				item={user({ origin, actor: { kind: "human", managerRef } })}
+				hubId="hub"
+				sessionRef="local:worker"
+			/>,
+		);
+		expect(renderedText(human)).not.toContain(managerRef);
+		const [humanAction] = human.root.findAll((node) => typeof node.props.onLongPress === "function");
+		expect(humanAction?.props.accessibilityLabel).toEqual(expect.any(String));
+		expect(humanAction?.props.accessibilityLabel).not.toContain(managerRef);
 	});
 
 	it("sits right-aligned in a bubble at most 85% wide with an 18pt continuous radius", () => {
@@ -248,14 +294,14 @@ describe("the agent's message", () => {
 		...over,
 	});
 
-	it("offers Copy, Quote in reply and Select text on touch and hold, in place of the selection menu", () => {
+	it("offers Copy, Quote in reply and Select text on touch and hold, and Quote quotes the text", () => {
 		const quote = vi.fn();
 		const tree = render(<TimelineItem item={reply()} hubId="hub" sessionRef="s" quote={quote} />);
 		const markdown = tree.root.findByType("EnrichedMarkdownText" as never);
 		expect(markdown.props.selectable).toBe(false);
-		expect(markdown.props.contextMenuItems).toBeUndefined();
-
-		const menu = longPress(tree.root);
+		// The menu rides on a hold gesture, so a tap on a link inside the prose
+		// still reaches that link instead of a wrapping pressable.
+		const menu = holdMessage(tree.root);
 		expect(menu.options).toEqual(["Copy", "Quote in reply", "Select text", "Cancel"]);
 		expect(menu.cancelButtonIndex).toBe(3);
 		menu.choose("Quote in reply");
@@ -264,7 +310,7 @@ describe("the agent's message", () => {
 
 	it("copies the markdown source", async () => {
 		const tree = render(<TimelineItem item={reply()} hubId="hub" sessionRef="s" />);
-		longPress(tree.root).choose("Copy");
+		holdMessage(tree.root).choose("Copy");
 		await vi.waitFor(() => expect(native.announceForAccessibility).toHaveBeenCalledWith("Copied"));
 		expect(native.setStringAsync).toHaveBeenCalledWith("Done. **All** tests pass.\nNext: ship.");
 	});
@@ -272,7 +318,7 @@ describe("the agent's message", () => {
 	it("opens the message as selectable serif text in a full-screen view, closed by Done", () => {
 		const tree = render(<TimelineItem item={reply()} hubId="hub" sessionRef="s" />);
 		expect(tree.root.findAllByType("Modal" as never)).toEqual([]);
-		longPress(tree.root).choose("Select text");
+		holdMessage(tree.root).choose("Select text");
 
 		const modal = tree.root.findByType("Modal" as never);
 		const text = modal.findAll(
@@ -287,6 +333,59 @@ describe("the agent's message", () => {
 		);
 		act(() => done[0].props.onPress());
 		expect(tree.root.findAllByType("Modal" as never)).toEqual([]);
+	});
+
+	// A Pressable around the markdown view becomes the touch responder, so the
+	// native text view never sees a tap and every file link in the prose is dead.
+	// It happened (issue #4839): the message menu wrapped the text, and a report
+	// link rendered as a blue link that did nothing when pressed.
+	it("adds no view above the prose that would take a tap before its links", () => {
+		const tree = render(<TimelineItem item={reply()} hubId="hub" sessionRef="s" />);
+		const markdown = tree.root.findByType("EnrichedMarkdownText" as never);
+		for (let ancestor = markdown.parent; ancestor; ancestor = ancestor.parent) {
+			expect(ancestor.props.onLongPress).toBeUndefined();
+			expect(ancestor.props.onStartShouldSetResponder).toBeUndefined();
+			expect(ancestor.props.onStartShouldSetResponderCapture).toBeUndefined();
+		}
+	});
+
+	// A reply that is only a diagram has no prose to select, but its message
+	// menu must still open from a hold on the diagram.
+	it("keeps the hold menu on a reply that is only a mermaid diagram", () => {
+		const tree = render(
+			<TimelineItem item={reply({ markdown: "```mermaid\ngraph TD; A-->B\n```" })} hubId="hub" sessionRef="s" />,
+		);
+		const menu = holdMessage(tree.root);
+		expect(menu.options).toEqual(["Copy", "Select text", "Cancel"]);
+	});
+
+	// A reply with a diagram between its prose renders several segments, and
+	// the hold must cover them all through one gesture. The detector attaches
+	// its native handler to the first native view of its single child, so the
+	// child must be one host View holding the whole message: a fragment or a
+	// component child never receives the attachment, and the hold would be
+	// dead on the device while the tests stay green.
+	it("covers every segment of a reply with a diagram between its prose with one hold", () => {
+		const tree = render(
+			<TimelineItem
+				item={reply({ markdown: "before\n\n```mermaid\ngraph TD; A-->B\n```\n\nafter" })}
+				hubId="hub"
+				sessionRef="s"
+			/>,
+		);
+		const detectors = tree.root.findAllByType("GestureDetector" as never);
+		expect(detectors).toHaveLength(1);
+		const [child] = detectors[0].children as unknown as ({ type: unknown } | null)[];
+		expect(child?.type).toBe("View");
+		for (const segment of tree.root.findAllByType("EnrichedMarkdownText" as never)) {
+			const covered = (() => {
+				for (let ancestor = segment.parent; ancestor; ancestor = ancestor.parent) {
+					if (ancestor.type === ("GestureDetector" as never)) return true;
+				}
+				return false;
+			})();
+			expect(covered).toBe(true);
+		}
 	});
 
 	it("gives VoiceOver the menu's items as actions on the message itself", () => {
@@ -739,7 +838,9 @@ describe("a settled thought", () => {
 		expect(rotation()).toBe("90deg");
 	});
 
-	it("reads a thought it can't show as one quiet line, with no rule", () => {
+	// A redacted thought the projector kept no text for stays one quiet line,
+	// with no rule and nothing to unfold.
+	it("reads a redacted thought with no text as one quiet line, with no rule", () => {
 		const row: TimelineRow = { kind: "failure", id: "r-2", title: "Thought not shown", detail: "", thought: true };
 		const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="thought-hidden" />);
 		expect(renderedText(tree)).toContain("Thought not shown");
@@ -747,6 +848,74 @@ describe("a settled thought", () => {
 		expect(texts(tree.root).find((node) => textOf(node) === "Thought not shown")?.props.style).toMatchObject({
 			color: INK_LOW,
 		});
+	});
+
+	// Ruling 2026-11-01: the neutral label stays the collapsed summary and the
+	// thought sits behind the fold - both for a failed thought and for an
+	// interrupted one. The text never renders while the row is folded.
+	it("unfolds a failed thought's text behind its neutral label", () => {
+		const row: TimelineRow = {
+			kind: "failure",
+			id: "r-3",
+			title: "Thought failed",
+			detail: "the failure reasoning",
+			thought: true,
+		};
+		const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="thought-failed" />);
+		expect(renderedText(tree)).toContain("Thought failed");
+		expect(renderedText(tree)).not.toContain("the failure reasoning");
+		const line = tree.root.findAll((node) => node.props.accessibilityRole === "button")[0];
+		act(() => line.props.onPress());
+		expect(renderedText(tree)).toContain("the failure reasoning");
+	});
+
+	it("unfolds an interrupted thought behind Thought not shown, following the thinking switch", () => {
+		const row: TimelineRow = {
+			kind: "failure",
+			id: "r-4",
+			title: "Thought not shown",
+			detail: "the interrupted reasoning",
+			thought: true,
+		};
+		const closed = render(<TimelineItem item={row} hubId="hub" sessionRef="thought-interrupted" />);
+		expect(renderedText(closed)).not.toContain("the interrupted reasoning");
+		const line = closed.root.findAll((node) => node.props.accessibilityRole === "button")[0];
+		act(() => line.props.onPress());
+		expect(renderedText(closed)).toContain("the interrupted reasoning");
+		act(() => closed.unmount());
+		// The switch opens it by default; the neutral label stays the summary.
+		const open = render(
+			<TimelineItem item={row} hubId="hub" sessionRef="thought-interrupted-open" thinkingOpenByDefault />,
+		);
+		expect(renderedText(open)).toContain("Thought not shown");
+		expect(renderedText(open)).toContain("the interrupted reasoning");
+	});
+
+	// Thinking rows follow their own "Open thinking by default" switch; every
+	// other activity keeps the expand-details posture (ruling 2026-11-01: at
+	// Activity, tool rows open while thinking rows stay collapsed).
+	it("follows the thinking switch for thought rows while tool rows keep expand-details", () => {
+		const toolRow: TimelineRow = {
+			kind: "activity",
+			id: "t-1",
+			label: "Tool",
+			family: "tool",
+			state: "completed",
+			detail: { description: "Ran ls" },
+		};
+		const collapsedTree = render(
+			<TimelineItem item={thought()} hubId="hub" sessionRef="thought-switch-off" expandByDefault />,
+		);
+		expect(renderedText(collapsedTree)).not.toContain("Weigh the options first.");
+		const openTree = render(
+			<TimelineItem item={thought()} hubId="hub" sessionRef="thought-switch-on" thinkingOpenByDefault />,
+		);
+		expect(renderedText(openTree)).toContain("Weigh the options first.");
+		const toolTree = render(<TimelineItem item={toolRow} hubId="hub" sessionRef="tool-expand-on" expandByDefault />);
+		const toolOpen = toolTree.root
+			.findAll((node) => node.props.accessibilityRole === "button")
+			.some((button) => button.props.accessibilityState?.expanded === true);
+		expect(toolOpen).toBe(true);
 	});
 });
 
@@ -835,7 +1004,8 @@ describe("a subagent", () => {
 		);
 		expect(renderedText(tree)).toContain("running · 1m");
 		tree.root.findAll((node) => node.props.accessibilityRole === "button")[0].props.onPress();
-		expect(openSubagent).toHaveBeenCalledWith("local:child-1", "Audit the store");
+		// The row hands its run start through, even when the fixture has none.
+		expect(openSubagent).toHaveBeenCalledWith("local:child-1", "Audit the store", undefined);
 	});
 });
 
@@ -979,12 +1149,18 @@ describe("an error", () => {
 		turnId,
 	});
 	const session = (resumeRequired = false) => ({
-		resumeRequired,
-		// The failed turn opened with the user's own input, which Retry re-sends.
-		turns: [
-			{ id: "turn_1" },
-			{ id: "turn_2", items: [{ id: "u-1", type: "userMessage", text: "my original question" }] },
-		] as never,
+		canonical: {
+			resumeRequired,
+			status: { type: "idle" },
+			// The failed turn opened with the user's own input, which Retry re-sends.
+			turns: [
+				{ id: "turn_1" },
+				{ id: "turn_2", items: [{ id: "u-1", type: "userMessage", text: "my original question" }] },
+			] as never,
+		},
+		displayedLatestTurnId: "turn_2",
+		pendingMutations: [],
+		pendingMutationsReady: true,
 	});
 	function show(row: TimelineRow, resumeRequired = false) {
 		const onErrorAction = vi.fn();
@@ -1017,14 +1193,19 @@ describe("an error", () => {
 	it("offers Sign in for an expired sign-in", () => {
 		const { buttons, onErrorAction } = show(failure("401 Unauthorized"));
 		expect(buttons.map((button) => button.props.accessibilityLabel)).toEqual(["Sign in"]);
+		expect(buttons[0].props.disabled).toBe(false);
+		expect(buttons[0].props.accessibilityState).toEqual({ disabled: false });
 		buttons[0].props.onPress();
-		expect(onErrorAction).toHaveBeenCalledWith("signIn");
+		expect(onErrorAction).toHaveBeenCalledWith({ kind: "signIn" });
 	});
 
-	it("offers Resume on a paused session", () => {
-		expect(show(failure("go test exited 1"), true).buttons.map((button) => button.props.accessibilityLabel)).toEqual([
-			"Resume",
-		]);
+	it("offers Retry on a paused session: Send is its recovery action", () => {
+		const { buttons, onErrorAction } = show(failure("go test exited 1"), true);
+		expect(buttons.map((button) => button.props.accessibilityLabel)).toEqual(["Retry"]);
+		expect(buttons[0].props.disabled).toBe(false);
+		buttons[0].props.onPress();
+		// The source turn travels with the action into activation.
+		expect(onErrorAction).toHaveBeenCalledWith({ kind: "retry", failedTurnId: "turn_2", disabled: false });
 	});
 
 	it("offers Retry under the latest turn only", () => {
@@ -1032,6 +1213,24 @@ describe("an error", () => {
 			"Retry",
 		]);
 		expect(show(failure("go test exited 1", "turn_1")).buttons).toEqual([]);
+	});
+
+	it("sets the retry's actual disabled and accessibility state together", () => {
+		const tree = render(
+			<TimelineItem
+				item={failure("go test exited 1")}
+				hubId="hub"
+				sessionRef="error"
+				errorActionFor={() => ({ kind: "retry", failedTurnId: "turn_2", disabled: true })}
+				onErrorAction={() => {}}
+			/>,
+		);
+		const button = tree.root.findAll(
+			(node) => node.props.accessibilityRole === "button" && typeof node.props.onPress === "function",
+		)[0];
+		expect(button.props.accessibilityLabel).toBe("Retry");
+		expect(button.props.disabled).toBe(true);
+		expect(button.props.accessibilityState).toEqual({ disabled: true });
 	});
 });
 
@@ -1054,7 +1253,7 @@ describe("a warning", () => {
 				}}
 				hubId="hub"
 				sessionRef="warning"
-				errorActionFor={() => "retry"}
+				errorActionFor={() => ({ kind: "retry", failedTurnId: "turn_2", disabled: false })}
 				onErrorAction={() => {}}
 			/>,
 		);
@@ -1073,7 +1272,16 @@ describe("a warning", () => {
 				hubId="hub"
 				sessionRef="warning"
 				errorActionFor={(failed) =>
-					errorAction(failed, { resumeRequired: true, turns: [{ id: "turn_1" }, { id: "turn_2" }] as never }, true)
+					errorAction(
+						failed,
+						{
+							canonical: { turns: [{ id: "turn_1" }, { id: "turn_2" }] as never, status: { type: "idle" } },
+							displayedLatestTurnId: "turn_2",
+							pendingMutations: [],
+							pendingMutationsReady: true,
+						} as never,
+						true,
+					)
 				}
 				onErrorAction={() => {}}
 			/>,

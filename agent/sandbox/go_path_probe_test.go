@@ -37,7 +37,7 @@ func (s goPathProbeSystem) readFile(path string) ([]byte, error) {
 // goPathEntries.
 func TestGoEnvValueFollowsTheGoCommandsPrecedence(t *testing.T) {
 	t.Parallel()
-	const config = "/home/u/.config"
+	const config = "/fixture-home/u/.config"
 	defaultFile := filepath.Join(config, "go", "env")
 	for _, tc := range []struct {
 		name  string
@@ -75,9 +75,9 @@ func TestGoPathEntriesApplyGosDefault(t *testing.T) {
 		host HostFacts
 		want []string
 	}{
-		{"configured", HostFacts{Home: "/home/u", GoPath: "/a" + sep + "relative" + sep + "/b"}, []string{"/a", "/b"}},
-		{"default", HostFacts{Home: "/home/u"}, []string{"/home/u/go"}},
-		{"only relative", HostFacts{Home: "/home/u", GoPath: "relative"}, []string{"/home/u/go"}},
+		{"configured", HostFacts{Home: "/fixture-home/u", GoPath: "/a" + sep + "relative" + sep + "/b"}, []string{"/a", "/b"}},
+		{"default", HostFacts{Home: "/fixture-home/u"}, []string{"/fixture-home/u/go"}},
+		{"only relative", HostFacts{Home: "/fixture-home/u", GoPath: "relative"}, []string{"/fixture-home/u/go"}},
 		{"no home", HostFacts{}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -93,7 +93,7 @@ func TestGoPathEntriesApplyGosDefault(t *testing.T) {
 // from the host process's environment, which a spawned child may not share.
 func TestProbeRecordsTheGoEnvFileSettingsApartFromTheEnvironment(t *testing.T) {
 	t.Parallel()
-	const config = "/home/u/.config"
+	const config = "/fixture-home/u/.config"
 	system := goPathProbeSystem{
 		env:       map[string]string{"GOMODCACHE": "/from/env"},
 		configDir: config,

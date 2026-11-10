@@ -164,13 +164,31 @@ export class LocationRepository {
 		else this.storage.removeItemSync(key);
 	}
 }
+/** A route these rules read: its name and params, and, for a stack with a
+ * navigator nested in it, that navigator's state. */
+interface SavedRoute {
+	name: string;
+	params?: unknown;
+	state?: unknown;
+}
+
+/** A focused route's nested navigator state, if it has one. */
+function nestedState(value: unknown): { index: number; routes: readonly SavedRoute[] } | null {
+	if (!isPlainObject(value) || typeof value.index !== "number" || !Array.isArray(value.routes)) return null;
+	return { index: value.index, routes: value.routes as readonly SavedRoute[] };
+}
+
 /** The route a relaunch reopens: the frontmost one that isn't a sheet. A
- * sheet is a moment over its screen, never a place to come back to. */
-export function routeToSave<Route extends { name: string }>(state: {
-	index: number;
-	routes: readonly Route[];
-}): Route | undefined {
-	return state.routes.slice(0, state.index + 1).findLast((route) => !isSheetRoute(route.name));
+ * sheet is a moment over its screen, never a place to come back to. The Duo
+ * split keeps the conversation in the focused Sessions route's detail stack,
+ * so the page on screen is the frontmost one there, not the Board behind it. */
+export function routeToSave(state: { index: number; routes: readonly SavedRoute[] }): SavedRoute | undefined {
+	const front = state.routes.slice(0, state.index + 1).findLast((route) => !isSheetRoute(route.name));
+	if (front?.name === "Sessions") {
+		const detail = nestedState(front.state);
+		if (detail) return routeToSave(detail) ?? front;
+	}
+	return front;
 }
 export function locationForRoute(
 	route: { name: string; params?: unknown },

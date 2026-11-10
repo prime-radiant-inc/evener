@@ -10,6 +10,7 @@ import (
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/cmdutil"
 )
 
 func FuzzSandboxHelpers(f *testing.F) {
@@ -21,23 +22,23 @@ func FuzzSandboxHelpers(f *testing.F) {
 		switch scenario % 11 {
 		case 0:
 			cfg := agent.SessionConfig{}
-			if err := configureSandbox(&cfg, "", ""); err != nil {
+			if err := cmdutil.ConfigureSandbox(&cfg, "", ""); err != nil {
 				t.Fatal(err)
 			}
 			if cfg.Sandbox != "" || cfg.SandboxNet != nil {
 				t.Fatalf("off carrier changed: %#v", cfg)
 			}
 		case 1:
-			if err := configureSandbox(&agent.SessionConfig{}, "invalid", "on"); err == nil {
+			if err := cmdutil.ConfigureSandbox(&agent.SessionConfig{}, "invalid", "on"); err == nil {
 				t.Fatal("invalid mode accepted")
 			}
 		case 2:
-			if err := configureSandbox(&agent.SessionConfig{}, "off", "invalid"); err == nil {
+			if err := cmdutil.ConfigureSandbox(&agent.SessionConfig{}, "off", "invalid"); err == nil {
 				t.Fatal("invalid network mode accepted")
 			}
 		case 3:
 			cfg := agent.SessionConfig{}
-			if err := configureSandbox(&cfg, " restricted ", " OFF "); err != nil {
+			if err := cmdutil.ConfigureSandbox(&cfg, " restricted ", " OFF "); err != nil {
 				t.Fatal(err)
 			}
 			if cfg.Sandbox != "restricted" || cfg.SandboxNet == nil || *cfg.SandboxNet {
@@ -77,17 +78,17 @@ func FuzzSandboxHelpers(f *testing.F) {
 		case 6:
 			cwd := t.TempDir()
 			env := execenv.NewLocalExecutionEnvironment(cwd)
-			if err := provisionSandboxWithHost(env, &agent.SessionConfig{Sandbox: "invalid"}, cwd, sandbox.HostFacts{}); err == nil {
+			if err := cmdutil.ProvisionSandboxWithHost(env, &agent.SessionConfig{Sandbox: "invalid"}, cwd, sandbox.HostFacts{}); err == nil {
 				t.Fatal("invalid persisted mode accepted")
 			}
-			if err := provisionSandboxWithHost(env, &agent.SessionConfig{}, cwd, sandbox.HostFacts{}); err != nil {
+			if err := cmdutil.ProvisionSandboxWithHost(env, &agent.SessionConfig{}, cwd, sandbox.HostFacts{}); err != nil {
 				t.Fatal(err)
 			}
 		case 7:
 			cwd := t.TempDir()
 			env := execenv.NewLocalExecutionEnvironment(cwd)
 			net := false
-			err := provisionSandboxWithHost(env, &agent.SessionConfig{Sandbox: "restricted", SandboxNet: &net}, cwd, sandbox.HostFacts{OS: "linux"})
+			err := cmdutil.ProvisionSandboxWithHost(env, &agent.SessionConfig{Sandbox: "restricted", SandboxNet: &net}, cwd, sandbox.HostFacts{OS: "linux"})
 			if !errors.As(err, new(*sandbox.RefusalError)) {
 				t.Fatalf("got %v, want refusal", err)
 			}

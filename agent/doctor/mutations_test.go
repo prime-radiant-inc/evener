@@ -1,7 +1,9 @@
 package doctor
 
 import (
+	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -100,6 +102,23 @@ const emptyStore = `{
   "budget_reservations": {},
   "pending_executions": {}
 }`
+
+func TestMutations_AcceptsPersistedActorWithoutDroppingStrictness(t *testing.T) {
+	actor := `"actor":{"kind":"manager","manager_ref":"local:manager"},`
+	body := strings.Replace(storeWithBothOutcomes, `"client_mutation_id": "cm-start"`, actor+`"client_mutation_id": "cm-start"`, 2)
+	body = strings.Replace(body, `"client_mutation_id": "cm-queued"`, actor+`"client_mutation_id": "cm-queued"`, 2)
+	start := strings.LastIndex(body, actor+`"client_mutation_id": "cm-start"`)
+	body = body[:start] + strings.Replace(body[start:], actor, `"actor":{"kind":"manager","managerRef":"local:manager"},`, 1)
+	report, err := decodeClientMutationStore([]byte(strings.ReplaceAll(body, "%SID%", sidA)), "mutation.json", sidA)
+	if err != nil || len(report.Journal) != 3 || len(report.InputQueue) != 1 {
+		t.Fatalf("actor-bearing store must decode: report=%+v err=%v", report, err)
+	}
+	body = strings.Replace(body, `"manager_ref":"local:manager"`, `"manager_ref":"local:manager","forged":"value"`, 1)
+	rejected, err := decodeClientMutationStore([]byte(strings.ReplaceAll(body, "%SID%", sidA)), "mutation.json", sidA)
+	if err == nil || !reflect.DeepEqual(rejected, clientMutationStoreFile{}) {
+		t.Fatalf("unknown actor field returned usable store: report=%+v err=%v", rejected, err)
+	}
+}
 
 func TestMutations_EmptyStoreIsPresentWithNoRecords(t *testing.T) {
 	base := t.TempDir()
@@ -308,5 +327,62 @@ func TestMutations_RenderSaysWhenThereIsNoStore(t *testing.T) {
 	}
 	if strings.Contains(out, "journal:") {
 		t.Errorf("render reports a journal for a session with no store:\n%s", out)
+	}
+}
+
+// One takes the noun as given; any other count takes a different, plural form,
+// the same for zero as for many.
+func TestPlural(t *testing.T) {
+	for _, noun := range []string{"mutation", "entry"} {
+		t.Run(noun, func(t *testing.T) {
+			if got := plural(1, noun); got != noun {
+				t.Errorf("plural(1, %q) = %q, want the noun itself", noun, got)
+			}
+			many := plural(2, noun)
+			if many == noun || plural(0, noun) != many {
+				t.Errorf("plural(2, %q) = %q, plural(0) = %q; want one plural form", noun, many, plural(0, noun))
+			}
+		})
+	}
+	if plural(2, "entry") == "entry"+"s" {
+		t.Error("entry takes the irregular plural, not a bare s")
+	}
+}
+
+// A mutation store path that exists but cannot be read is an error, not an
+// absent store.
+func TestDecodeClientMutationStore_ReadError(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	writeSession(t, bucket, sidA)
+	if err := os.MkdirAll(filepath.Join(bucket, "mutations", sidA+".json"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Mutations(base, sidA); err == nil {
+		t.Fatal("expected read error, got nil")
+	}
+}
+
+// Pending executions are listed in client mutation ID order.
+func TestMutations_SortPendingExecutions(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	sid := sidA
+	writeSession(t, bucket, sid)
+	storePath := filepath.Join(bucket, "mutations", sid+".json")
+	store := `{"version":1,"session_id":"` + sid + `","active_turn_id":"","accepted_turns":0,"queue_revision":0,"journal":{},"budget_reservations":{},"pending_executions":{
+		"mut_b":{"client_mutation_id":"mut_b","method":"test","execution_state":"pending","turn_id":"t2"},
+		"mut_a":{"client_mutation_id":"mut_a","method":"test","execution_state":"pending","turn_id":"t1"}
+	}}`
+	writeFile(t, storePath, store)
+	r, err := Mutations(base, sid)
+	if err != nil {
+		t.Fatalf("Mutations: %v", err)
+	}
+	if !r.Present || len(r.PendingExecutions) != 2 {
+		t.Fatalf("report = %+v, want two pending executions", r)
+	}
+	if r.PendingExecutions[0].ClientMutationID != "mut_a" || r.PendingExecutions[1].ClientMutationID != "mut_b" {
+		t.Errorf("pending executions not sorted: %v", r.PendingExecutions)
 	}
 }

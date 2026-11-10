@@ -79,7 +79,7 @@ with the vanilla frontend (`660376f78`).
   returns the identical list. Falsify: no `outputImages` after reload (the
   image was live-only — the regression); a duplicate entry appearing on the
   second read (enrichment not idempotent); a `url` containing `://`; or any
-  embedded bytes/base64 — `appwire.OutputImage` (`appwire/types.go:730-738`)
+  embedded bytes/base64 — `appwire.OutputImage` (`appwire/types_turn.go#OutputImage`)
   has no field to carry them, so that could only mean the wire type changed.
 - **Step 4 (bytes)**: 200 with an image `Content-Type`. `/doc/image` re-reads
   the file off disk inside the cwd boundary each time (`doc_serve.go:84-127`),
@@ -108,7 +108,7 @@ and `rm -rf` `$WORK` plus your own run dir. Leave any real hub untouched.
 - **The reload path needs the session's cwd.** `enrichThreadFileBackedOutputImages`
   returns the thread untouched when `thread.CWD` is empty
   (`app_threadread.go:524-527`), and `/doc/image` refuses a session whose cwd
-  it cannot resolve (`localSessionCWD`, `doc_serve.go#localSessionCWD`). A session
+  it cannot resolve (`sessionCWD`, `doc_serve.go#sessionCWD`). A session
   spawned with no `working_dir` cannot pass this card.
 - **`/doc/image` is LOCAL-session only** (`isLocalRouteID`, `doc_serve.go:133-135`).
   A source-qualified `remote:thread-id` ref gets no file-backed descriptor at

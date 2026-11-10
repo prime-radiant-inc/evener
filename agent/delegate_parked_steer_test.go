@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/llm"
 )
 
@@ -23,9 +24,9 @@ func TestDelegateSendParkedDelegateSteerIsConsumed(t *testing.T) {
 	// (the owned shell call and the interim result). Answer by request content so
 	// the assertion does not depend on the exact turn count: every turn here
 	// reports a result; the shell-completion turn reports its own.
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		respond2796, respond2796, respond2796, respond2796, respond2796, respond2796,
-	}
+	})
 
 	fixture.child.mu.Lock()
 	finalizing := fixture.child.finalizing
@@ -65,9 +66,9 @@ func TestDelegateSendParkedDelegateSteerIsConsumed(t *testing.T) {
 // exact number of turns.
 func respond2796(req llm.Request) llm.Response {
 	if requestContainsText(req, "child shell complete") {
-		return finalResponse("owned shell handled")
+		return agenttest.FinalResponse("owned shell handled")
 	}
-	return finalResponse("turn handled")
+	return agenttest.FinalResponse("turn handled")
 }
 
 // TestDelegateSendRunningDelegateSteerStaysSteered pins the other half of
@@ -79,15 +80,15 @@ func TestDelegateSendRunningDelegateSteerStaysSteered(t *testing.T) {
 	t.Parallel()
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	fixture := newColdStableDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			close(entered)
 			<-release
-			return finalResponse("first result")
+			return agenttest.FinalResponse("first result")
 		},
-		func(llm.Request) llm.Response { return finalResponse("continued after steer") },
-	}
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("continued after steer") },
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 
 	started := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "start", 0)

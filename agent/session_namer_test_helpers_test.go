@@ -36,7 +36,11 @@ func registerTestSessionNamer(client *llm.Client) {
 }
 
 // updateSessionTestConfig synchronizes post-construction test seam changes with
-// metadata snapshots taken by the asynchronous session namer.
+// metadata snapshots taken by the asynchronous session namer — and with the
+// production reads of the runtime-mutable seams, which take the same session
+// mutex around each read (the drives, the settle tails, and the idle-release
+// paths hold nothing across their seam reads, so the brief section is
+// deadlock-free).
 func updateSessionTestConfig(session *Session, update func(*testConfig)) {
 	session.mu.Lock()
 	defer session.mu.Unlock()

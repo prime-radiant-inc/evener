@@ -287,8 +287,8 @@ func TestProbeReadsNpmAndCargoCacheEnv(t *testing.T) {
 // must judge that directory (#4220).
 func TestProbeReadsTheLoginHome(t *testing.T) {
 	t.Parallel()
-	facts := probeHost(stubProbeSystem{loginHome: "/home/login"})
-	if facts.LoginHome != "/home/login" {
+	facts := probeHost(stubProbeSystem{loginHome: "/fixture-home/login"})
+	if facts.LoginHome != "/fixture-home/login" {
 		t.Errorf("probeHost LoginHome=%q, want the user database's home", facts.LoginHome)
 	}
 }
@@ -302,6 +302,98 @@ func TestProbeReadsNpmCacheEnvCaseInsensitively(t *testing.T) {
 	facts := probeHost(stubProbeSystem{env: map[string]string{"NPM_CONFIG_CACHE": "/custom/npm"}})
 	if facts.NpmConfigCache != "/custom/npm" {
 		t.Errorf("probeHost NpmConfigCache=%q, want the uppercase NPM_CONFIG_CACHE value", facts.NpmConfigCache)
+	}
+}
+
+// npm resolves its cache location from .npmrc files too, so a host that moves
+// it only there must still get the root overlaid (#4542). The probe reads the
+// user and global files; the project file is read at resolution.
+type npmrcProbeSystem struct {
+	stubProbeSystem
+	files map[string][]byte
+}
+
+func (s npmrcProbeSystem) readFile(path string) ([]byte, error) {
+	if data, ok := s.files[path]; ok {
+		return data, nil
+	}
+	return nil, errors.New("no such file")
+}
+
+func npmrcProbe(env map[string]string, files map[string][]byte) npmrcProbeSystem {
+	base := stubProbeSystem{env: env}
+	return npmrcProbeSystem{stubProbeSystem: base, files: files}
+}
+
+func TestProbeReadsNpmCacheFromConfigFiles(t *testing.T) {
+	t.Parallel()
+	const user, global = "/fixture-home/tester/npmrc-user", "/fixture-home/tester/npmrc-global"
+	facts := probeHost(npmrcProbe(
+		map[string]string{
+			"NPM_CONFIG_USERCONFIG":   user,
+			"npm_config_globalconfig": global,
+		},
+		map[string][]byte{
+			user:   []byte("# user config\ncache = /from/user/npm\n"),
+			global: []byte("[npm]\n; global config\ncache=\"/from/global/npm\"\n"),
+		},
+	))
+	if want := []string{"/from/user/npm", "/from/global/npm"}; !slices.Equal(facts.NpmrcCaches, want) {
+		t.Errorf("probeHost NpmrcCaches = %v, want %v", facts.NpmrcCaches, want)
+	}
+}
+
+func TestProbeReadsDefaultUserNpmrcAndPrefixGlobalNpmrc(t *testing.T) {
+	t.Parallel()
+	// stubProbeSystem's user home is /Users/tester; the global file follows a
+	// configured npm prefix.
+	facts := probeHost(npmrcProbe(
+		map[string]string{"npm_config_prefix": "/opt/node"},
+		map[string][]byte{
+			"/Users/tester/.npmrc": []byte("cache=/from/default/user\n"),
+			"/opt/node/etc/npmrc":  []byte("cache=/from/prefix/global\n"),
+		},
+	))
+	if want := []string{"/from/default/user", "/from/prefix/global"}; !slices.Equal(facts.NpmrcCaches, want) {
+		t.Errorf("probeHost NpmrcCaches = %v, want %v", facts.NpmrcCaches, want)
+	}
+	// A relative cache resolves against npm's working directory, so it names no
+	// stable root and is not served.
+	rel := probeHost(npmrcProbe(
+		map[string]string{"npm_config_userconfig": "/u/npmrc"},
+		map[string][]byte{"/u/npmrc": []byte("cache=relative/npm\n")},
+	))
+	if len(rel.NpmrcCaches) != 0 {
+		t.Errorf("a relative npmrc cache must add no root, got %v", rel.NpmrcCaches)
+	}
+}
+
+func TestProbeExpandsNpmrcVariables(t *testing.T) {
+	t.Parallel()
+	facts := probeHost(npmrcProbe(
+		map[string]string{
+			"npm_config_userconfig": "/fixture-home/u/.npmrc",
+			"HOME":                  "/fixture-home/u",
+		},
+		map[string][]byte{"/fixture-home/u/.npmrc": []byte("cache=${HOME}/.npm-cache\n")},
+	))
+	if want := []string{"/fixture-home/u/.npm-cache"}; !slices.Equal(facts.NpmrcCaches, want) {
+		t.Errorf("probeHost NpmrcCaches = %v, want the expanded %v", facts.NpmrcCaches, want)
+	}
+}
+
+// npm's config parser drops an unquoted inline comment. A comment left in the
+// value would make Evener overlay a directory npm never uses (#4542 review).
+func TestProbeStripsNpmrcInlineComments(t *testing.T) {
+	t.Parallel()
+	facts := probeHost(npmrcProbe(
+		map[string]string{"npm_config_userconfig": "/fixture-home/u/.npmrc"},
+		map[string][]byte{"/fixture-home/u/.npmrc": []byte(
+			"cache=/from/user/npm # shared cache\n" +
+				"cache=\"/quoted/path # not a comment\"\n")},
+	))
+	if want := []string{"/from/user/npm", "/quoted/path # not a comment"}; !slices.Equal(facts.NpmrcCaches, want) {
+		t.Errorf("probeHost NpmrcCaches = %v, want %v", facts.NpmrcCaches, want)
 	}
 }
 

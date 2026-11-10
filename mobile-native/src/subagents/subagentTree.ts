@@ -10,7 +10,7 @@ import {
 	acquireThreadSubscription,
 	type ThreadSubscriptionLease,
 } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 
 export interface SubagentTreeSnapshot {
 	tree: ActivityTree | null;

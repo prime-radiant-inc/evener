@@ -21,6 +21,9 @@ func hubUpgrade(ctx context.Context, params appwire.UpgradeParams) (appwire.Upgr
 	}
 	defer hubUpdateMu.Unlock()
 
+	if localBuildInstallRefused() {
+		return appwire.UpgradeResponse{}, errLocalBuildInstallTarget
+	}
 	prefix, binDir, shareBinDir := hubInstallDirs()
 	result, err := runHubSelfUpgradeWithTimeout(ctx, selfupdate.Options{
 		Requested:      params.Requested,

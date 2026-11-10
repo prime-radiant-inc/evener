@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/gittest"
 )
 
 // twoLanes builds a main repo with two linked worktrees and returns their
@@ -15,12 +16,12 @@ func twoLanes(t *testing.T) (laneA, laneB, home string) {
 	t.Helper()
 	base := t.TempDir()
 	main := filepath.Join(base, "main")
-	runGit(t, base, "init", "-q", "main")
-	runGit(t, main, "commit", "-q", "--allow-empty", "-m", "init")
+	gittest.Run(t, base, "init", "-q", "main")
+	gittest.Run(t, main, "commit", "-q", "--allow-empty", "-m", "init")
 	a := filepath.Join(base, "a")
 	b := filepath.Join(base, "b")
-	runGit(t, main, "worktree", "add", "-q", a, "-b", "fa")
-	runGit(t, main, "worktree", "add", "-q", b, "-b", "fb")
+	gittest.Run(t, main, "worktree", "add", "-q", a, "-b", "fa")
+	gittest.Run(t, main, "worktree", "add", "-q", b, "-b", "fb")
 	return evalSym(t, a), evalSym(t, b), t.TempDir()
 }
 
@@ -66,6 +67,42 @@ func TestWithWorkingDirectoryReRootsPolicy(t *testing.T) {
 	}
 }
 
+// TestWithWorkingDirectoryKeepsTheWrapperScratchsOwner: a re-rooted clone
+// shares its parent's kernel wrapper and writes into the scratch minted for
+// the parent, so the owner it reports stays the provisioning session even
+// though the clone's own mint identity names the child.
+func TestWithWorkingDirectoryKeepsTheWrapperScratchsOwner(t *testing.T) {
+	laneA, laneB, home := twoLanes(t)
+	rp, err := sandbox.Resolve(
+		sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite},
+		sandbox.HostFacts{OS: "linux", Home: home, BwrapCapable: true, BwrapPath: "/fixture/bwrap"},
+		laneA)
+	if err != nil {
+		t.Fatalf("Resolve at lane A: %v", err)
+	}
+	env := NewLocalExecutionEnvironment(laneA)
+	env.sandboxTmpBase = t.TempDir()
+	env.SetScratchIdentity("ROOTY", "PARENTY")
+	if err := env.EnableSandbox(&rp); err != nil {
+		t.Fatalf("EnableSandbox: %v", err)
+	}
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	child := env.WithWorkingDirectory(laneB)
+	if err := child.SandboxReRootError(); err != nil {
+		t.Fatalf("re-root to a sibling lane must succeed, got %v", err)
+	}
+	child.SetScratchIdentity("ROOTY", "CHILDY")
+	if got, want := child.SessionScratchDir(), env.SessionScratchDir(); got == "" || got != want {
+		t.Fatalf("the re-rooted clone writes into %q, want its parent's wrapper scratch %q", got, want)
+	}
+	if got := env.ScratchOwnerSession(); got != "PARENTY" {
+		t.Errorf("parent scratch owner = %q, want the provisioning session PARENTY", got)
+	}
+	if got := child.ScratchOwnerSession(); got != "PARENTY" {
+		t.Errorf("clone scratch owner = %q, want the provisioning session PARENTY", got)
+	}
+}
+
 // TestWithWorkingDirectoryReRootDepthInheritance: the policy must survive TWO
 // re-root hops (a depth-2 grandchild delegate) and anchor at the deepest lane —
 // proving the retained inputs propagate through each re-root rather than a
@@ -76,7 +113,7 @@ func TestWithWorkingDirectoryReRootDepthInheritance(t *testing.T) {
 	base := filepath.Dir(laneA)
 	main := filepath.Join(base, "main")
 	laneC := filepath.Join(base, "c")
-	runGit(t, main, "worktree", "add", "-q", laneC, "-b", "fc")
+	gittest.Run(t, main, "worktree", "add", "-q", laneC, "-b", "fc")
 	laneC = evalSym(t, laneC)
 
 	env := NewLocalExecutionEnvironment(laneA)

@@ -2,7 +2,7 @@
 // the path the Session or the Projects screen already takes for it (this
 // plan's "How the Board's actions reach the hub"). Stop is BoardStops.
 import { type ArchiveParams, errorText, type NavigationSessionSummary } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import type { NavigationActionCheckpoint } from "../navigationActionRepository";
 import type { NavigationActions } from "../navigationActions";
 import { localSessionId } from "../sessionDeletionResult";

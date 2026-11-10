@@ -1,21 +1,18 @@
-import type {
-  ConnectionState,
-  QueueState,
-  Thread,
-  ThreadCapabilities,
-  ThreadReadResponse,
-} from "@evener/appwire-client";
+import type { ConnectionState } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { connectionStore, useConnectionStore } from "./connection";
+import { connectFakeClient } from "../testing/connectionTestUtils";
+import { connectionStore, resetConnectionStoreForTests, useConnectionStore } from "./connection";
+import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { SessionEntryCache } from "./sessionEntryCache";
-import { resetThreadsStoreForTests, setProductionEntryCacheForTests } from "./threads";
+import { readResponse } from "./threadHydrationTestUtils";
+import { resetThreadsStoreForTests } from "./threads";
 
 let cache: SessionEntryCache;
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   cache = new SessionEntryCache({
     indexedDB: new IDBFactory(),
@@ -30,66 +27,6 @@ afterEach(() => {
   cache.close();
   vi.restoreAllMocks();
 });
-
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
-
-type TestThreadOverrides = Omit<Partial<Thread>, "evener"> & {
-  evener?: Omit<Thread["evener"], "queue"> & { queue: Partial<QueueState> };
-};
-
-function testThread(ref: string, overrides: TestThreadOverrides = {}): Thread {
-  const { evener, ...threadOverrides } = overrides;
-  const threadID = threadOverrides.id ?? `thr_${ref}`;
-  return {
-    id: threadID,
-    sessionId: `sess_${ref}`,
-    preview: "test",
-    ephemeral: false,
-    modelProvider: "anthropic/claude-sonnet-4-5",
-    createdAt: 1000,
-    updatedAt: 1000,
-    status: { type: "idle" },
-    cwd: "/tmp/project",
-    cliVersion: "1.0.0",
-    source: "evener",
-    evener: {
-      ref,
-      instanceId: threadID,
-      mutationStateAuthoritative: true,
-      capabilities: CAPABILITIES,
-      ...evener,
-      queue: { revision: 0, ...evener?.queue },
-    },
-    ...threadOverrides,
-  };
-}
-
-function readResponse(ref: string, overrides: TestThreadOverrides = {}): ThreadReadResponse {
-  return { thread: testThread(ref, overrides) };
-}
-
-// connectFakeClient wires a fresh FakeClient through useConnectionStore's
-// locked connect(client) entry point — the same path threads.ts's
-// requireClient() rides to reach the client (see connection.ts).
-function connectFakeClient(state: ConnectionState = "ready"): FakeClient {
-  const fake = new FakeClient(state);
-  connectionStore.getState().connect(fake);
-  return fake;
-}
 
 describe("FakeClient", () => {
   test("request() rejects while not ready, mirroring AppwireClient's own ready-gate, without recording the call", async () => {
@@ -106,18 +43,35 @@ describe("FakeClient", () => {
 describe("useConnectionStore", () => {
   // Counts BOTH halves of the listener lifecycle. A live-listener count alone
   // cannot tell "connect returned early" apart from "connect detached and
-  // re-attached" — both leave exactly one — so the idempotency check needs the
-  // registration and unsubscribe tallies to mean anything.
+  // re-attached" — both leave exactly one core listener — so the idempotency
+  // check needs the registration and unsubscribe tallies to mean anything.
+  // Connect installs two connection listeners: the core's and the shared
+  // thread-subscription registry's wired by threads.ts. The core's is the
+  // first, registered before the publication the registry reacts to, so the
+  // assertions below name it rather than counting both as one handler.
   class CountingClient extends FakeClient {
     registrations = 0;
     unsubscribes = 0;
+    readonly stateCallbacks: Array<(s: ConnectionState) => void> = [];
+    readonly detached = new Set<(s: ConnectionState) => void>();
     override onStateChange(cb: (s: ConnectionState) => void): () => void {
       this.registrations++;
+      this.stateCallbacks.push(cb);
       const detach = super.onStateChange(cb);
       return () => {
         this.unsubscribes++;
+        this.detached.add(cb);
         detach();
       };
+    }
+    /** The connection core's own listener: connect() registers it before it
+     * publishes, so stores reacting to that publication come after it. */
+    coreCallback(): ((s: ConnectionState) => void) | undefined {
+      return this.stateCallbacks[0];
+    }
+    coreDetached(): boolean {
+      const core = this.coreCallback();
+      return core !== undefined && this.detached.has(core);
     }
   }
 
@@ -140,13 +94,15 @@ describe("useConnectionStore", () => {
   test("connect is idempotent: a second call with the same client does not double-subscribe", () => {
     const fake = new CountingClient("idle");
     connectionStore.getState().connect(fake);
+    const registrationsAfterConnect = fake.registrations;
     connectionStore.getState().connect(fake); // second call, same client instance
 
     // Assert the early return itself. Counting live listeners (or setState
     // calls) cannot: once connect() detaches the previous listener before
     // wiring a replacement, dropping the early return still leaves exactly
     // one listener, and the assertion passes against the broken code.
-    expect(fake.registrations).toBe(1);
+    expect(registrationsAfterConnect).toBeGreaterThan(0);
+    expect(fake.registrations).toBe(registrationsAfterConnect);
     expect(fake.unsubscribes).toBe(0);
 
     const setStateSpy = vi.spyOn(connectionStore, "setState");
@@ -201,7 +157,10 @@ describe("useConnectionStore", () => {
     expect(outgoing.unsubscribes).toBe(0);
 
     connectionStore.getState().connect(new FakeClient("ready"));
-    expect(outgoing.unsubscribes).toBe(1);
+    expect(outgoing.coreDetached()).toBe(true);
+    // The registry wired by threads.ts releases its listener too: every
+    // connection listener this client registered is detached.
+    expect(outgoing.unsubscribes).toBe(outgoing.registrations);
   });
 
   // A subscriber can call connect() from inside the synchronous setState
@@ -224,7 +183,22 @@ describe("useConnectionStore", () => {
     // The outer frame must retire its own listener rather than clobber the
     // slot, so replacing inner later still detaches inner.
     connectionStore.getState().connect(new FakeClient("ready"));
-    expect(inner.unsubscribes).toBe(1);
+    expect(inner.coreDetached()).toBe(true);
+    expect(inner.unsubscribes).toBe(inner.registrations);
+  });
+
+  test("a client swap retires the outgoing client's thread-subscription registry", () => {
+    const outgoing = new CountingClient("ready");
+    connectionStore.getState().connect(outgoing);
+    // Connect wired the core's listener and the registry's; both are live.
+    expect(outgoing.stateCallbacks).toHaveLength(2);
+    expect(outgoing.detached.size).toBe(0);
+
+    connectionStore.getState().connect(new FakeClient("ready"));
+
+    // retireThreadSubscriptions from threads.ts's teardown detaches the
+    // registry's listener, not just the core's.
+    expect(outgoing.detached.size).toBe(2);
   });
 
   // The real client transitions synchronously inside connect()/close(), so a
@@ -249,17 +223,24 @@ describe("useConnectionStore", () => {
   // un-invoke it. The identity check has to stand without it.
   test("a late callback from a replaced client is ignored even when its unsubscribe does not detach", () => {
     class UndetachableClient extends FakeClient {
-      captured: ((s: ConnectionState) => void) | null = null;
+      readonly stateCallbacks: Array<(s: ConnectionState) => void> = [];
       override onStateChange(cb: (s: ConnectionState) => void): () => void {
-        this.captured = cb;
+        this.stateCallbacks.push(cb);
         return () => {};
+      }
+      /** The connection core's listener, registered before publication. */
+      coreCallback(): ((s: ConnectionState) => void) | undefined {
+        return this.stateCallbacks[0];
       }
     }
 
     const stale = new UndetachableClient("ready");
     connectionStore.getState().connect(stale);
-    const leaked = stale.captured;
-    expect(leaked).not.toBeNull();
+    const leaked = stale.coreCallback();
+    expect(leaked).toBeDefined();
+    // The registry's listener is registered later; firing the core's is what
+    // exercises the identity fence this test owns.
+    expect(stale.stateCallbacks.length).toBeGreaterThan(1);
 
     const current = new FakeClient("ready");
     connectionStore.getState().connect(current);

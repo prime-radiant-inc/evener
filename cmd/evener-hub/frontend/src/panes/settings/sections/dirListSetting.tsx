@@ -18,11 +18,10 @@
 // exactly like every other confirm-gated row in this settings cluster.
 
 import type { LaunchConfigLayer } from "@evener/appwire-client";
-import { friendlyErrorMessage } from "@evener/appwire-client";
+import { friendlyErrorMessage, LOCAL_HOST } from "@evener/appwire-client";
 import { useId, useLayoutEffect, useRef, useState } from "react";
 import { connectionStore } from "../../../stores/connection";
 import { extensionsStoreForHost, useExtensionsStoreForHost } from "../../../stores/extensions";
-import { LOCAL_HOST } from "../../../stores/hostRouting";
 import {
   type CollectionAddResult,
   CollectionEditor,

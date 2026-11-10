@@ -220,9 +220,9 @@ func TestRetirementAdmissionDirectEffects(t *testing.T) {
 			_, err := s.ProcessInput(context.Background(), "opaque-input", nil)
 			return err
 		}},
-		{"steer-kind", func(s *Session) error { return s.SteerKind("opaque-input", "") }},
-		{"steer-task", func(s *Session) error { return s.SteerTaskCompletion("opaque-input", nil) }},
-		{"steer-provenance", func(s *Session) error { return s.SteerWithProvenance("opaque-input", nil, "") }},
+		{"steer-kind", func(s *Session) error { return s.steerKind("opaque-input", "") }},
+		{"steer-task", func(s *Session) error { return s.steerTaskCompletion("opaque-input", nil) }},
+		{"steer-provenance", func(s *Session) error { return s.steerWithProvenance("opaque-input", nil, "") }},
 		{"steer-images", func(s *Session) error { return s.SteerWithImages("opaque-input", nil) }},
 		{"steer-user", func(s *Session) error { return s.SteerFromUser("opaque-input") }},
 		{"steer-user-images", func(s *Session) error { return s.SteerFromUserWithImages("opaque-input", nil) }},
@@ -439,7 +439,11 @@ func TestRetirementStartReplayExecutesOnce(t *testing.T) {
 	var once sync.Once
 	unblock := func() { once.Do(func() { close(resume) }) }
 	defer unblock()
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { close(entered); <-resume; return finalResponse("opaque-result") }}}
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response {
+		close(entered)
+		<-resume
+		return agenttest.FinalResponse("opaque-result")
+	}}}
 	root.client.Register(adapter)
 	root.profile = withTestSessionNamer(root.client, root.profile)
 	c, err := NewRetirementController(0, clock.Real())
@@ -595,27 +599,22 @@ func drainRetirementTestEvents(root *Session) []events.EventKind {
 	}
 }
 
-func TestRetirementAdmissionFollowUp(t *testing.T) {
+func TestRetirementAdmissionEnqueue(t *testing.T) {
 	t.Parallel()
 	root, _ := retirementRefusalRoot(t)
-	enqueue, ok := any(root).(interface{ FollowUp(string) error })
-	if !ok {
-		t.Fatal("FollowUp cannot report retirement refusal")
+	if err := root.Enqueue(t.Context(), "opaque-queued"); !errors.Is(err, ErrRetirementUnavailable) {
+		t.Fatalf("Enqueue error: %v", err)
 	}
-	before := append([]string(nil), root.followups...)
-	if err := enqueue.FollowUp("opaque-followup"); !errors.Is(err, ErrRetirementUnavailable) {
-		t.Fatalf("FollowUp error: %v", err)
-	}
-	if !reflect.DeepEqual(before, root.followups) {
-		t.Fatal("refused followup changed queue")
+	if got := root.queueDepth(); got != 0 {
+		t.Fatalf("refused enqueue changed queue depth to %d", got)
 	}
 }
 
-func TestRetirementAcceptedFollowUpBlocks(t *testing.T) {
+func TestRetirementAcceptedQueuedInputBlocks(t *testing.T) {
 	t.Parallel()
 	root := newQueuePersistTestSession(t, t.TempDir())
 	defer root.Close()
-	if err := root.FollowUp("opaque-followup"); err != nil {
+	if err := root.Enqueue(t.Context(), "opaque-queued"); err != nil {
 		t.Fatal(err)
 	}
 	c, err := NewRetirementController(0, clock.Real())
@@ -627,7 +626,7 @@ func TestRetirementAcceptedFollowUpBlocks(t *testing.T) {
 	}
 	claim, snapshot, err := c.TryClaim(true)
 	if err != nil || claim != nil || !slices.ContainsFunc(snapshot.Blockers, func(b RetirementBlocker) bool { return b.Category == "input" && b.SessionID == root.ID() }) {
-		t.Fatalf("accepted followup lost blocker: %v %+v", err, snapshot)
+		t.Fatalf("accepted queued input lost blocker: %v %+v", err, snapshot)
 	}
 }
 

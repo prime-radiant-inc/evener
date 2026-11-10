@@ -11,12 +11,15 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/execsupport/shellquote"
+	"primeradiant.com/evener/internal/hubendpoint"
 	"primeradiant.com/evener/internal/remoteinstall"
 )
 
@@ -277,7 +280,7 @@ func declaresEvenerModule(dir string) bool {
 	return false
 }
 
-// errControllerDirty marks a deploy refused because this controller was built
+// ErrControllerDirty marks a deploy refused because this controller was built
 // from a dirty tree and the configured deploy source is not the controller's own
 // executable. Such a build has no reproducible identity: the push path refuses
 // to compile a tree it cannot prove matches this process (verifyBuildRevision),
@@ -287,13 +290,13 @@ func declaresEvenerModule(dir string) bool {
 // is not an identity. Only a source whose bytes ARE this controller's build
 // (Options.OwnExecutable: the hub's own executable, the file this process was
 // started from) is not refused; its on-host identity is still judged
-// (errDeployUnstamped). The
+// (ErrDeployUnstamped). The
 // refusal is terminal rather than ErrDeploy: the same install can never succeed
 // by being retried, and a supervisor that retried it cross-compiled forever while
 // the host was never attached (round thirteen).
-var errControllerDirty = errors.New("sshconn: controller build is a dirty tree")
+var ErrControllerDirty = errors.New("sshconn: controller build is a dirty tree")
 
-// errDeployUnstamped marks a deploy that left the host reporting a build other
+// ErrDeployUnstamped marks a deploy that left the host reporting a build other
 // than the controller's. Unlike the dirty-tree refusal above, the controller HAD a
 // deploy path and used it; the freshly re-read launch contract still disagrees, so
 // the artifact that reached the host was not stamped by this controller — the one
@@ -308,7 +311,7 @@ var errControllerDirty = errors.New("sshconn: controller build is a dirty tree")
 // It is judged only where a deploy ran. A pass that merely started or restarted
 // the hub launched the build already on disk, and the host is allowed to keep that
 // build: the protocol, not the build label, decides whether it may attach.
-var errDeployUnstamped = errors.New("sshconn: deployed build is not stamped by this controller")
+var ErrDeployUnstamped = errors.New("sshconn: deployed build is not stamped by this controller")
 
 // deploy installs a matching build on the host. The cross-compile + push path is
 // primary when a build source is configured; otherwise the installer fallback
@@ -317,7 +320,7 @@ var errDeployUnstamped = errors.New("sshconn: deployed build is not stamped by t
 // run target. Both are non-empty on success, so the restart, health re-probe, and
 // attach paths address the binary that was actually installed instead of a bare
 // `evener` a fresh host's non-interactive PATH may not carry.
-func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight, beforeWrite func(string) error) (string, error) {
+func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight, beforeWrite func(string) error, retainedTarget *string) (string, error) {
 	// Deploying turned off wins over every deploy source: a hub started with
 	// -no-deploy installs nothing on a host, not even through the installer
 	// fallback a release or snapshot controller would otherwise use. The attach
@@ -325,7 +328,7 @@ func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight
 	// explicit host-deploy operation's answer: terminal, naming the remedy.
 	if m.opts.DeployDisabled {
 		return "", fmt.Errorf("%w: host %q: this controller was started with deploying disabled, so it will not install a build on any host; %s",
-			errDeployDisabled, host.Name, m.deployHelp())
+			ErrDeployDisabled, host.Name, m.deployHelp())
 	}
 	// A dirty controller cannot install a build it cannot reproduce. A dirty
 	// "<sha>-dirty" label is not an identity: another dirty checkout at the same
@@ -341,13 +344,13 @@ func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight
 	// to pin; and an operator-named artifact cannot be told apart from a foreign
 	// dirty build, because its "<sha>-dirty" label is shared by every dirty tree at
 	// that commit — the pre-push checks pass, and the post-deploy version
-	// comparison (errDeployUnstamped) cannot see the difference either, so the host
+	// comparison (ErrDeployUnstamped) cannot see the difference either, so the host
 	// would attach on code that is not this controller's.
 	//
 	// The accepted residual for the exempt source: its file is read at deploy
 	// time, so a hub whose executable is replaced under it deploys the
 	// replacement. A cross-commit replacement is caught after the push
-	// (errDeployUnstamped: the host reports a version this controller did not
+	// (ErrDeployUnstamped: the host reports a version this controller did not
 	// stamp); a replacement that is itself a dirty build at this controller's own
 	// commit reports the same "<sha>-dirty" and is not detectable. That corner —
 	// a locally built dirty controller whose executable is replaced while it runs
@@ -360,7 +363,7 @@ func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight
 	// and markDevDeployed was never reached.
 	if version := m.opts.controllerVersion(); isDirtyVersion(version) && !m.ownExecutableIsStagingPath() {
 		return "", fmt.Errorf("%w: host %q: this controller was built from a dirty tree (version %q), so it cannot install this build: a checkout cannot be proven to reproduce the dirty tree, the installer fallback has no published artifact to pin, and a named artifact cannot be told apart from a foreign dirty build (a %q version names a commit plus uncommitted changes, not the code); rebuild the controller from a clean checkout, or deploy the controller's own executable — the one source a dirty controller can install",
-			errControllerDirty, host.Name, version, version)
+			ErrControllerDirty, host.Name, version, version)
 	}
 	// The defaulted own executable is this process's build, so it can serve only
 	// hosts on this process's own target (runtime.GOOS/GOARCH). For a host on any
@@ -371,8 +374,22 @@ func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight
 	// this source, so the default does not shadow it; every other source keeps
 	// the push — -build-source cross-compiles, and an explicitly named artifact
 	// keeps its own terminal mismatch refusal, which names the flag to fix.
+	guardedWrite := func(target string) error {
+		if err := m.refuseNewerInstalledProtocol(ctx, host, target); err != nil {
+			return err
+		}
+		if beforeWrite != nil {
+			return beforeWrite(target)
+		}
+		return nil
+	}
 	if m.canBuild() && !m.ownExecutableCannotServe(facts) {
-		return m.deployPush(ctx, host, facts, beforeWrite)
+		return m.deployPush(ctx, host, facts, guardedWrite, retainedTarget)
+	}
+	if retainedTarget != nil {
+		// The installer writes a share directory and replaces the launch path
+		// with a symlink, so its run target cannot pin the retained write.
+		return "", fmt.Errorf("%w: host %q: installer layout cannot preserve recorded install target %q; %s", errRetainedInstaller, host.Name, *retainedTarget, m.installerRemedy())
 	}
 	if m.ownExecutableCannotServe(facts) {
 		// The only source is the own executable, the host runs another target, and
@@ -385,11 +402,27 @@ func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight
 		// while the host was never attached (round thirteen).
 		if _, err := installerRefFor(buildinfo.BuildChannel(), buildinfo.ReleaseTag, buildinfo.GitDirty, m.installerRemedy()); err != nil {
 			return "", fmt.Errorf("%w: host %q: this controller's own executable targets %s/%s but the host runs %s/%s, and the installer fallback has no published artifact to pin for this controller's build (a dev or dirty controller has none, and a release needs a stamped tag); %s",
-				errOwnExecutableCannotServe, host.Name, runtime.GOOS, runtime.GOARCH, facts.OS, facts.Arch, m.deployHelp())
+				ErrOwnExecutableCannotServe, host.Name, runtime.GOOS, runtime.GOARCH, facts.OS, facts.Arch, m.deployHelp())
 		}
-		return m.deployInstaller(ctx, host, facts, beforeWrite)
 	}
-	return m.deployInstaller(ctx, host, facts, beforeWrite)
+	return m.deployInstaller(ctx, host, facts, guardedWrite)
+}
+
+// refuseNewerInstalledProtocol re-reads the executable at target immediately
+// before a deploy writes over it. Preflight facts can age while a build stages,
+// and another controller may install a newer build in that window. The
+// executable's own contract is the only current evidence; a read failure,
+// including a missing target on a fresh install, is not proof of a newer
+// installation and leaves the existing deploy rules in charge.
+func (m *Manager) refuseNewerInstalledProtocol(ctx context.Context, host hostreg.Host, target string) error {
+	probeHost := host
+	probeHost.EvenerPath = target
+	described, _, err := m.describeLaunchContract(ctx, probeHost)
+	if err == nil && appwire.NewerProtocolVersion(described.Protocol) {
+		return fmt.Errorf("%w: host %q's installed executable speaks %q, newer than this controller's %q; update the controller instead of downgrading the host",
+			ErrHostProtocolNewer, host.Name, described.Protocol, appwire.ProtocolVersion)
+	}
+	return nil
 }
 
 // TargetMatches reports whether a build for buildOS/buildArch can serve a host
@@ -434,8 +467,16 @@ func (m *Manager) ownExecutableCannotServe(facts Preflight) bool {
 // on a fresh host that target is the installer default ~/.local/bin/evener, and
 // discarding it left the manager probing the literal `evener`, which the
 // non-interactive PATH cannot resolve.
-func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Preflight, beforeWrite func(string) error) (string, error) {
-	target, err := m.deployTarget(ctx, host, facts)
+func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Preflight, beforeWrite func(string) error, retainedTarget *string) (string, error) {
+	var target string
+	var err error
+	if retainedTarget != nil {
+		// Retained recovery has already resolved and checked this destination.
+		// Its beforeWrite callback repeats that proof after staging the binary.
+		target, err = m.resolveDeployOrCreateTarget(ctx, host, *retainedTarget)
+	} else {
+		target, err = m.deployTarget(ctx, host, facts)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -456,7 +497,7 @@ func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Prefl
 	}
 	if err := build(ctx, facts.OS, facts.Arch, stage); err != nil {
 		// A terminal refusal from the build seam — an operator-supplied
-		// -deploy-binary built for another platform (errDeployArtifactUnusable) —
+		// -deploy-binary built for another platform (ErrDeployArtifactUnusable) —
 		// names a permanent cause that retrying re-reads unchanged. Keep it out of
 		// the retryable ErrDeploy class so the sentinel's own classification, not
 		// ErrDeploy, is what the supervisor and the wire mapping see.
@@ -476,6 +517,33 @@ func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Prefl
 	if err != nil {
 		return "", fmt.Errorf("%w: host %q stat staged binary: %w", ErrDeploy, host.Name, err)
 	}
+	// Staging can take long enough for either launch intent or the recorded
+	// destination to be retargeted. Do not authorize a write with pre-build paths.
+	var launchTarget string
+	if retainedTarget != nil && facts.ExecutableMissing {
+		out, readErr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, resolveRetainedDeployCommand(host.EvenerPath)), nil)
+		if readErr != nil {
+			return "", errOwnerSelectionMismatch
+		}
+		launchTarget, err = ownerPathOutput(out)
+	} else {
+		launchTarget, err = m.deployTarget(ctx, host, facts)
+	}
+	if err != nil {
+		return "", err
+	}
+	if launchTarget != target {
+		return "", errOwnerSelectionMismatch
+	}
+	if retainedTarget != nil {
+		currentTarget, err := m.resolveDeployOrCreateTarget(ctx, host, *retainedTarget)
+		if err != nil {
+			return "", err
+		}
+		if currentTarget != *retainedTarget || currentTarget != target {
+			return "", errOwnerSelectionMismatch
+		}
+	}
 	if beforeWrite != nil {
 		if err := beforeWrite(target); err != nil {
 			return "", err
@@ -487,7 +555,7 @@ func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Prefl
 	return target, nil
 }
 
-// errRunTargetUnservable marks a deploy refused because the configured run
+// ErrRunTargetUnservable marks a deploy refused because the configured run
 // target is not the `evener` binary a host hub can serve — `evener-dev` (the
 // development tooling binary: no `hub` subcommand, no `launch-check`) or any
 // other basename. The refusal is terminal rather than ErrDeploy: a misconfigured
@@ -496,20 +564,20 @@ func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Prefl
 // re-refuse the same path forever and discard the cause, the basename to fix
 // (the identical mistake round thirteen records for the dirty-controller
 // refusal).
-var errRunTargetUnservable = errors.New("sshconn: run target cannot serve a hub")
+var ErrRunTargetUnservable = errors.New("sshconn: run target cannot serve a hub")
 
-// errDeployArtifactUnusable marks a deploy refused because the operator-supplied
+// ErrDeployArtifactUnusable marks a deploy refused because the operator-supplied
 // artifact (-deploy-binary) cannot serve the host: it was built for a different
 // GOOS/GOARCH, or it is a Go program that is not evener (the hub's
 // copyDeployBinary refuses both before anything is staged). The operator supplies
 // the artifact, so either defect is a permanent mistake — the same file is
 // re-read on every retry — and the refusal is terminal for the same reason
-// errRunTargetUnservable is: the supervisor would re-refuse it forever. deployPush
+// ErrRunTargetUnservable is: the supervisor would re-refuse it forever. deployPush
 // also keeps this sentinel out of the retryable ErrDeploy wrap, so terminal is the
 // class that reaches both the reconnect loop and the hub's attach handler.
-var errDeployArtifactUnusable = errors.New("sshconn: deploy artifact cannot serve the host")
+var ErrDeployArtifactUnusable = errors.New("sshconn: deploy artifact cannot serve the host")
 
-// errOwnExecutableCannotServe marks a deploy refused because the controller's
+// ErrOwnExecutableCannotServe marks a deploy refused because the controller's
 // only deploy source is its own executable, the host runs a different target,
 // and the installer fallback cannot pin a published artifact for this build (a
 // dev, dirty, or tag-less release controller has none). Such a controller can
@@ -519,11 +587,11 @@ var errDeployArtifactUnusable = errors.New("sshconn: deploy artifact cannot serv
 // the reconnect loop would retry it forever while the host was never attached
 // (the pattern round thirteen records). It arrives only from the defaulted
 // source: an explicitly named artifact keeps its own terminal mismatch refusal
-// (errDeployArtifactUnusable, which names the flag to fix), and a build source
+// (ErrDeployArtifactUnusable, which names the flag to fix), and a build source
 // cross-compiles.
-var errOwnExecutableCannotServe = errors.New("sshconn: this controller's own executable cannot serve the host's target")
+var ErrOwnExecutableCannotServe = errors.New("sshconn: this controller's own executable cannot serve the host's target")
 
-// errDeployDisabled marks a deploy refused because deploying is turned off for
+// ErrDeployDisabled marks a deploy refused because deploying is turned off for
 // this Manager (Options.DeployDisabled, the hub's -no-deploy). It is terminal
 // rather than ErrDeploy: the setting is a deliberate configuration, so a retry
 // re-refuses identically, and the refusal names the remedy through DeployHelp so
@@ -531,7 +599,10 @@ var errOwnExecutableCannotServe = errors.New("sshconn: this controller's own exe
 // false under the same option, so the attach ladder never reaches this refusal;
 // the explicit host-deploy operation does, which is why the sentinel exists at
 // all.
-var errDeployDisabled = errors.New("sshconn: deploying is disabled on this controller")
+var ErrDeployDisabled = errors.New("sshconn: deploying is disabled on this controller")
+
+// Retrying an installer cannot preserve the retained deployment's pinned target.
+var errRetainedInstaller = fmt.Errorf("%w: retained deployment cannot use the installer fallback", errOwnerSelectionMismatch)
 
 // checkRunTarget refuses a configured evener_path that cannot be the host hub's
 // run target. Only the shipped `evener` binary can serve a hub: `evener-dev` is
@@ -542,7 +613,7 @@ var errDeployDisabled = errors.New("sshconn: deploying is disabled on this contr
 // as the host's run target and probes, restarts, and attaches the binary at it.
 //
 // It is checked before the target is probed, pushed, or installed, and it is
-// terminal (errRunTargetUnservable) with no write. The ordering and the sentinel
+// terminal (ErrRunTargetUnservable) with no write. The ordering and the sentinel
 // are both the point: the refusal names a configuration defect the host cannot
 // recover from, so a retry could only re-refuse it forever, and discovering it
 // after the write would only leave the host holding a binary the controller can
@@ -552,11 +623,11 @@ func checkRunTarget(hostName, p string) error {
 	if installableEvenerBasename(p) {
 		return nil
 	}
-	base := path.Base(strings.TrimSpace(p))
+	base := path.Base(p)
 	if base == "evener-dev" {
-		return fmt.Errorf("%w: host %q evener_path %q names %q, the development tooling binary (cmd/evener-dev), which does not provide the hub command and has no launch-check, so it can never serve a hub; configure the evener binary", errRunTargetUnservable, hostName, p, base)
+		return fmt.Errorf("%w: host %q evener_path %q names %q, the development tooling binary (cmd/evener-dev), which does not provide the hub command and has no launch-check, so it can never serve a hub; configure the evener binary", ErrRunTargetUnservable, hostName, p, base)
 	}
-	return fmt.Errorf("%w: host %q evener_path %q has basename %q, which is not the evener binary that serves a hub; configure an evener-named run target", errRunTargetUnservable, hostName, p, base)
+	return fmt.Errorf("%w: host %q evener_path %q has basename %q, which is not the evener binary that serves a hub; configure an evener-named run target", ErrRunTargetUnservable, hostName, p, base)
 }
 
 // deployTarget resolves the absolute remote path the binary is installed to:
@@ -573,8 +644,8 @@ func checkRunTarget(hostName, p string) error {
 // restart a hub running a different binary, and the on-disk target already
 // matches — so the deploy/restart pair loops forever. deployInstaller preserves
 // the same location (existingInstallableEvener); this is the push path's half.
-func (m *Manager) deployTarget(ctx context.Context, host hostreg.Host, facts Preflight) (string, error) {
-	if p := strings.TrimSpace(host.EvenerPath); p != "" {
+func (m *Manager) deployTarget(ctx context.Context, host hostreg.Host, facts Preflight, checks ...func(string) error) (string, error) {
+	if p := host.EvenerPath; p != "" {
 		// Before even the directory probe: a run target that cannot serve a hub
 		// is refused with no remote command at all (checkRunTarget).
 		if err := checkRunTarget(host.Name, p); err != nil {
@@ -593,10 +664,6 @@ func (m *Manager) deployTarget(ctx context.Context, host hostreg.Host, facts Pre
 		return m.resolveDeployOrCreateTarget(ctx, host, p)
 	}
 
-	if p := m.currentHubExecutableName(ctx, host); installableEvenerBasename(p) {
-		return m.resolveDeployOrCreateTarget(ctx, host, p)
-	}
-
 	p, err := m.evenerOnPath(ctx, host)
 	if err != nil {
 		return "", err
@@ -606,7 +673,7 @@ func (m *Manager) deployTarget(ctx context.Context, host hostreg.Host, facts Pre
 		// back to the installer's own default location and create its directory,
 		// so a push deploy can still bring up a host that has no evener installed
 		// at all.
-		home := strings.TrimSpace(facts.Home)
+		home := facts.Home
 		if home == "" {
 			return "", fmt.Errorf("%w: host %q has no evener_path, no evener on PATH, and preflight found no HOME to resolve the installer default ~/.local/bin/evener; set evener_path", ErrDeploy, host.Name)
 		}
@@ -632,31 +699,14 @@ func (m *Manager) evenerOnPath(ctx context.Context, host hostreg.Host) (string, 
 	if err != nil {
 		return "", fmt.Errorf("%w: host %q resolve evener on PATH: %w: %s", ErrDeploy, host.Name, err, tail(out))
 	}
-	p := firstLine(string(out))
-	if p == "" || p == evenerPathMissingMarker {
+	if len(out) == 0 || string(out) == evenerPathMissingMarker+"\n" {
 		return "", nil
 	}
-	return p, nil
-}
-
-// probeInstallerDefaultExecutable reports the host's installer-default evener
-// path (~/.local/bin/evener) when a regular file exists there, and ok=false when
-// it does not. deployTarget falls back to that location to provision a fresh
-// host; preflight consults it too and records what it finds as the host's
-// resolved target, which expectedHubExecutable reads, so a host whose binary
-// already lives there but is absent from the non-interactive PATH is recognized
-// as running the controller's build rather than re-deployed to on every
-// reconnect. A probe failure is read as absent: this is best-effort discovery,
-// and the deploy path re-resolves (surfacing a real transport error) when
-// nothing is found.
-func (m *Manager) probeInstallerDefaultExecutable(ctx context.Context, host hostreg.Host) (string, bool) {
-	remote := `if [ -n "${HOME-}" ] && [ -f "${HOME-}/.local/bin/evener" ]; then printf '%s\n' "${HOME-}/.local/bin/evener"; fi`
-	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil)
+	p, err := commandPathOutput(out)
 	if err != nil {
-		return "", false
+		return "", fmt.Errorf("%w: host %q resolve evener on PATH: %w", ErrDeploy, host.Name, err)
 	}
-	p := firstLine(string(out))
-	return p, p != ""
+	return p, nil
 }
 
 // resolvePathScript is a POSIX-sh path resolver that prints the real path a file
@@ -670,29 +720,60 @@ func (m *Manager) probeInstallerDefaultExecutable(ctx context.Context, host host
 // directory and report success, leaving the real executable un-upgraded. The
 // traversal is bounded so a symlink cycle returns nonzero like ELOOP instead of
 // looping until the ssh command times out.
-const resolvePathScript = `evener_resolve() {
+// A sentinel protects command output from shell substitution's removal of all
+// trailing LFs. Strip exactly the command's one framing LF, and refuse pathname
+// LFs before a later substitution could turn them into a different path.
+const pathValueScript = `evener_path_value() {
+  evener_value=$("$@" && printf '.') || return 1
+  evener_value=${evener_value%.}
+  case "$evener_value" in
+    *'
+') evener_value=${evener_value%?} ;;
+    *) return 1 ;;
+  esac
+  case "$evener_value" in ''|*'
+'*) return 1 ;; esac
+  printf '%s\n' "$evener_value"
+}
+evener_directory() { CDPATH='' cd -P -- "$1" 2>/dev/null && pwd -P; }
+`
+
+const resolvePathPrefix = pathValueScript + `evener_resolve() {
   p=$1
   n=0
   while [ -L "$p" ]; do
     n=$((n+1))
     [ "$n" -le 40 ] || return 1
-    d=$(cd -P "$(dirname "$p")" 2>/dev/null && pwd) || return 1
-    t=$(readlink "$p") || return 1
+    d=$(evener_path_value dirname "$p") || return 1
+    d=$(evener_path_value evener_directory "$d") || return 1
+    t=$(evener_path_value readlink "$p") || return 1
     case $t in
       /*) p=$t ;;
       *) p=$d/$t ;;
     esac
   done
-  [ -f "$p" ] || return 1
-  d=$(cd -P "$(dirname "$p")" 2>/dev/null && pwd) || return 1
+`
+
+const resolvePathSuffix = `  d=$(evener_path_value dirname "$p") || return 1
+  d=$(evener_path_value evener_directory "$d") || return 1
   printf '%s\n' "$d/${p##*/}"
 }
 evener_resolve `
+
+const resolvePathScript = resolvePathPrefix + "  [ -f \"$p\" ] || return 1\n" + resolvePathSuffix
 
 // resolveDeployCommand builds the remote command that prints the real path p
 // names.
 func resolveDeployCommand(p string) string {
 	return resolvePathScript + shellquote.RemoteWord(p)
+}
+
+// Only retained recovery may resolve an absent final file. The caller must
+// compare the result with its recorded installTarget before every write.
+// Parent directories must exist, directories are refused, and the same bounded
+// symlink traversal and byte-preserving pathname framing apply as above.
+func resolveRetainedDeployCommand(p string) string {
+	return resolvePathPrefix + "  [ -f \"$p\" ] || [ ! -e \"$p\" ] || return 1\n" + resolvePathSuffix + shellquote.RemoteWord(p)
 }
 
 // resolveDeployTarget resolves p to the real file it names, so the atomic mv
@@ -707,8 +788,8 @@ func (m *Manager) resolveDeployTarget(ctx context.Context, host hostreg.Host, p 
 	if err != nil {
 		return "", fmt.Errorf("%w: host %q resolve install path %q: %w: %s", ErrDeploy, host.Name, p, err, tail(out))
 	}
-	resolved := firstLine(string(out))
-	if resolved == "" {
+	resolved, err := ownerPathOutput(out)
+	if err != nil {
 		return "", fmt.Errorf("%w: host %q install path %q does not resolve to a real file", ErrDeploy, host.Name, p)
 	}
 	return resolved, nil
@@ -735,8 +816,8 @@ func (m *Manager) resolveDeployOrCreateTarget(ctx context.Context, host hostreg.
 		// failed.
 		return "", fmt.Errorf("%w: host %q create install target %q: %w: %s", ErrDeploy, host.Name, p, cerr, tail(out))
 	}
-	created := firstLine(string(out))
-	if created == "" {
+	created, decodeErr := ownerPathOutput(out)
+	if decodeErr != nil {
 		return "", fmt.Errorf("%w: host %q install target %q cannot be created (the parent directory may not exist): %w", ErrDeploy, host.Name, p, err)
 	}
 	return created, nil
@@ -749,8 +830,9 @@ func (m *Manager) resolveDeployOrCreateTarget(ctx context.Context, host hostreg.
 // directory.
 func createTargetCommand(p string) string {
 	q := shellquote.RemoteWord(p)
-	return "p=" + q + "; if [ -e \"$p\" ] || [ -L \"$p\" ]; then exit 1; fi; " +
-		"d=$(cd -P \"$(dirname \"$p\")\" 2>/dev/null && pwd) || exit 1; " +
+	return pathValueScript + "p=" + q + "; if [ -e \"$p\" ] || [ -L \"$p\" ]; then exit 1; fi; " +
+		"d=$(evener_path_value dirname \"$p\") || exit 1; " +
+		"d=$(evener_path_value evener_directory \"$d\") || exit 1; " +
 		"printf '%s\\n' \"$d/${p##*/}\""
 }
 
@@ -849,9 +931,9 @@ func installerRefFor(channel, releaseTag, dirty, remedy string) (string, error) 
 // the installer installs the runtime binary as `evener`, so a path naming
 // anything else is a run target the installer cannot produce a hub for.
 func installerDirs(host hostreg.Host, facts Preflight) (bindir, shareBindir, runTarget string, err error) {
-	p := strings.TrimSpace(host.EvenerPath)
+	p := host.EvenerPath
 	if p == "" {
-		home := strings.TrimSpace(facts.Home)
+		home := facts.Home
 		if home == "" {
 			return "", "", "", fmt.Errorf("%w: host %q has no evener_path and preflight found no HOME to resolve the installer's default ~/.local/bin/evener; set evener_path", ErrDeploy, host.Name)
 		}
@@ -909,7 +991,7 @@ func (m *Manager) deployInstaller(ctx context.Context, host hostreg.Host, facts 
 	// hub it was meant to replace, while a supervisor keeps restarting the old
 	// executable — the upgrade never lands. installerDirs turns the preserved path
 	// into BINDIR so install.sh writes exactly there.
-	if strings.TrimSpace(host.EvenerPath) == "" {
+	if host.EvenerPath == "" {
 		if existing := m.existingInstallableEvener(ctx, host); existing != "" {
 			host.EvenerPath = existing
 		}
@@ -968,12 +1050,326 @@ func (m *Manager) deployInstaller(ctx context.Context, host hostreg.Host, facts 
 // on every upgrade. Canonical resolution is used elsewhere (hubExecutableMatches)
 // for identity; here the layout must be preserved.
 func (m *Manager) existingInstallableEvener(ctx context.Context, host hostreg.Host) string {
-	if exe := m.currentHubExecutableName(ctx, host); installableEvenerBasename(exe) {
-		return exe
-	}
 	p, err := m.evenerOnPath(ctx, host)
 	if err != nil || p == "" || !installableEvenerBasename(p) {
 		return ""
 	}
 	return p
+}
+
+// deployOpts carries the caller's authority and write-boundary hooks into
+// deploySelected.
+type deployOpts struct {
+	// realEndpointAuthority reads the live endpoint instead of the resolved one,
+	// which retained-deployment recovery needs.
+	realEndpointAuthority bool
+	// supersede, when set, replaces the prior operation's retained intent at the
+	// write boundary.
+	supersede func() error
+	// record runs at the write boundary with the install target.
+	record func(target string) error
+}
+
+func (m *Manager) deploySelected(ctx context.Context, host hostreg.Host, facts Preflight, opts deployOpts) (string, error) {
+	m.applyResolvedTarget(&host)
+	if m.opts.DeployDisabled || (isDirtyVersion(m.opts.controllerVersion()) && !m.ownExecutableIsStagingPath()) {
+		return m.deploy(ctx, host, facts, nil, nil)
+	}
+	retained := m.pendingRestart(host.Name)
+	retainedDeployment := opts.realEndpointAuthority && retained.deployment && retained.selected != nil
+	if retainedDeployment && (facts.ExecutableMissing || facts.HubEndpointSchema != 1) {
+		// A failed executable probe, not unreadable metadata, authorizes only the
+		// retained operation's original write. The post-write contract stays strict.
+		unusable, probeErr := m.recordedTargetUnusable(ctx, host)
+		if unusable {
+			return m.reinstallRetainedTarget(ctx, host, facts, retained, opts.record)
+		}
+		if probeErr != nil {
+			return "", probeErr
+		}
+	}
+	readEndpoint := m.resolveHostEndpoint
+	if opts.realEndpointAuthority {
+		readEndpoint = m.readHostEndpoint
+	}
+	var owner selectedOwner
+	if !facts.ExecutableMissing {
+		if host.EvenerPath == "" {
+			target, err := m.evenerOnPath(ctx, host)
+			if err != nil {
+				return "", err
+			}
+			if target == "" {
+				return "", fmt.Errorf("%w: installed executable no longer resolves", errOwnerEvidence)
+			}
+			host.EvenerPath = target
+			m.setResolvedTarget(host.Name, target)
+		}
+		var err error
+		owner, err = m.resolveOwnedEndpointUsing(ctx, host, facts, readEndpoint)
+		if err != nil {
+			return "", err
+		}
+	}
+	checkRetained := func(now selectedOwner) error {
+		if !retainedDeployment {
+			return nil
+		}
+		if err := m.checkEffectBinding(retained.binding); err != nil {
+			return err
+		}
+		prior := *retained.selected
+		if now.report.State == "stopped" {
+			if !hostreg.SameRegistrationAndPresence(now.host, prior.host) || now.report.ConfigPath != prior.report.ConfigPath || now.report.HubStateRoot != prior.report.HubStateRoot {
+				return errOwnerSelectionMismatch
+			}
+			if err := m.checkOwnerConfig(ctx, host, prior.argv, prior.cwd, prior.env, now.report); err != nil {
+				return err
+			}
+			if prior.supervisor.kind != supervisorNone {
+				return m.revalidateStoppedService(ctx, host, facts, prior)
+			}
+			if now.supervisor.kind != supervisorNone {
+				return errOwnerSelectionMismatch
+			}
+			return nil
+		}
+		if !sameOwner(now, prior) {
+			return errOwnerSelectionMismatch
+		}
+		// Health can be unavailable even though the independently inspected owner
+		// and original-image capability still match. Compare health when both exist.
+		current, before := now.report.Running, prior.report.Running
+		if current != nil && before != nil && (current.BootID != before.BootID || current.Version != before.Version || current.BackendGitSHA != before.BackendGitSHA) {
+			return errOwnerSelectionMismatch
+		}
+		return nil
+	}
+	if err := checkRetained(owner); err != nil {
+		return "", err
+	}
+	beforeWrite := func(target string) error {
+		if retainedDeployment && (retained.installTarget == "" || target != retained.installTarget) {
+			return errOwnerSelectionMismatch
+		}
+		previous := m.pendingRestart(host.Name)
+		var fresh pendingRestartState
+		if facts.ExecutableMissing {
+			probeHost := host
+			if target != "" {
+				probeHost.EvenerPath = target
+			}
+			_, err := m.probeLaunchCheck(ctx, probeHost)
+			if !errors.Is(err, ErrExecutableMissing) {
+				if err != nil {
+					return err
+				}
+				return fmt.Errorf("%w: executable appeared before fresh install", errOwnerEvidence)
+			}
+		} else {
+			current, err := m.revalidateOwnedEndpointUsing(ctx, host, facts, owner, readEndpoint)
+			if err != nil {
+				return err
+			}
+			if err := checkRetained(current); err != nil {
+				return err
+			}
+			if opts.supersede != nil {
+				fresh, err = m.selectedRestartIntentUsing(ctx, host, facts, owner, m.opts.controllerVersion(), snapshotPinGitSHA(), readEndpoint)
+				if err != nil {
+					return err
+				}
+			} else if m.pendingRestart(host.Name).selected == nil {
+				if _, err := m.prepareSelectedRestartUsing(ctx, host, facts, owner, m.opts.controllerVersion(), snapshotPinGitSHA(), readEndpoint); err != nil {
+					return err
+				}
+			}
+		}
+		if opts.supersede != nil {
+			if err := opts.supersede(); err != nil {
+				return err
+			}
+			m.storePendingRestart(host.Name, fresh)
+		}
+		if opts.record != nil {
+			if err := opts.record(target); err != nil {
+				m.storePendingRestart(host.Name, previous)
+				return err
+			}
+		}
+		if opts.supersede == nil && previous.command == "" {
+			m.mu.Lock()
+			pending := m.pendingRestarts[host.Name]
+			pending.command = ""
+			m.pendingRestarts[host.Name] = pending
+			m.mu.Unlock()
+		}
+		return nil
+	}
+	var retainedTarget *string
+	if retainedDeployment {
+		retainedTarget = &retained.installTarget
+	}
+	target, err := m.deploy(ctx, host, facts, beforeWrite, retainedTarget)
+	if err != nil {
+		return "", err
+	}
+	if !facts.ExecutableMissing {
+		return host.EvenerPath, nil
+	}
+	return target, nil
+}
+
+func (m *Manager) recordedTargetUnusable(ctx context.Context, host hostreg.Host) (bool, error) {
+	_, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "if test -x "+shellquote.RemoteWord(host.EvenerPath)+"; then exit 0; else exit 1; fi"), nil)
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return true, nil
+	}
+	return false, err
+}
+
+// reinstallRetainedTarget has no discovery or fresh-operation authority. It
+// writes only the already-recorded target after checking the retained binding
+// and owner context again at the write boundary.
+func (m *Manager) reinstallRetainedTarget(ctx context.Context, host hostreg.Host, facts Preflight, pending pendingRestartState, record func(string) error) (string, error) {
+	prior := *pending.selected
+	check := func(target string) error {
+		if pending.installTarget == "" || target != pending.installTarget || host.EvenerPath != prior.host.EvenerPath || pending.expectedVersion != m.opts.controllerVersion() || !hostreg.SameRegistrationAndPresence(host, prior.host) {
+			return errOwnerSelectionMismatch
+		}
+		if host.EvenerPath != pending.installTarget {
+			out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, resolveRetainedDeployCommand(host.EvenerPath)), nil)
+			if err != nil {
+				return errOwnerSelectionMismatch
+			}
+			resolved, err := ownerPathOutput(out)
+			if err != nil || resolved != pending.installTarget {
+				return errOwnerSelectionMismatch
+			}
+		}
+		current, ok := m.reg.Get(host.Name)
+		m.applyResolvedTarget(&current)
+		if !ok || !hostreg.SameRegistrationAndPresence(current, host) {
+			return errOwnerSelectionMismatch
+		}
+		if err := m.checkEffectBinding(pending.binding); err != nil {
+			return err
+		}
+		_, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "if test -x "+shellquote.RemoteWord(target)+"; then exit 0; else exit 1; fi"), nil)
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+			return fmt.Errorf("%w: retained target is no longer independently missing or nonexecutable", errOwnerEvidence)
+		}
+		if facts.OS == "darwin" {
+			return m.revalidateRetainedDarwin(ctx, host, facts, prior)
+		}
+		if prior.pid != "0" && facts.OS == "linux" {
+			generation, generationErr := m.ownerGeneration(ctx, host, prior.pid)
+			if generationErr == nil {
+				if generation != prior.generation {
+					return errOwnerSelectionMismatch
+				}
+				if err := m.checkHubOwner(ctx, host, prior.pid); err != nil {
+					return err
+				}
+				// This retained reinstall already proved the target unusable and
+				// bound this PID to the recorded owner. Match every recorded argv
+				// word, including the exact executable spelling, without resolving
+				// the deleted pathname. Ordinary recovery keeps its existing-file
+				// executable check; the live image is validated below via /proc.
+				argv, err := m.recoverHubArgvRaw(ctx, host, prior.pid)
+				if err != nil || !slices.Equal(argv, prior.argv) {
+					return errOwnerSelectionMismatch
+				}
+				cwdOut, err := m.ownerRead(ctx, host, "readlink /proc/"+prior.pid+"/cwd")
+				if err != nil {
+					return errOwnerSelectionMismatch
+				}
+				cwd, err := ownerPathOutput(cwdOut)
+				if err != nil || cwd != prior.cwd {
+					return errOwnerSelectionMismatch
+				}
+				env, err := m.ownerEnvironment(ctx, host, prior.pid)
+				if err != nil || !slices.Equal(env, prior.env) {
+					return errOwnerSelectionMismatch
+				}
+				sup, _, err := m.supervisorForOwner(ctx, host, prior.pid, argv, prior.cwd, prior.env, prior.report)
+				if err != nil || sup != prior.supervisor {
+					return errOwnerSelectionMismatch
+				}
+				if sup.kind != supervisorNone {
+					definition, err := m.serviceDefinition(ctx, host, sup)
+					if err != nil || definition != prior.definition {
+						return errOwnerSelectionMismatch
+					}
+				}
+				// Only now is this PID bound to the recorded owner. Its executable
+				// remains runnable after the recorded pathname is removed.
+				if err := m.checkOwnerConfigUsing(ctx, host, argv, prior.cwd, env, prior.report, "/proc/"+prior.pid+"/exe", func(report hubendpoint.Report) error {
+					now, before := report.Running, prior.report.Running
+					if now != nil && strconv.Itoa(now.PID) != prior.pid {
+						return errOwnerSelectionMismatch
+					}
+					if now != nil && before != nil && (now.BootID != before.BootID || now.Version != before.Version || now.BackendGitSHA != before.BackendGitSHA) {
+						return errOwnerSelectionMismatch
+					}
+					return nil
+				}); err != nil {
+					return fmt.Errorf("%w: %w", endpointMigration(host), err)
+				}
+				after, err := m.ownerGeneration(ctx, host, prior.pid)
+				if err != nil || after != generation {
+					return errOwnerSelectionMismatch
+				}
+				return nil
+			}
+			// A failed generation read is not process absence. Reuse the
+			// explicit exit probe, and preserve inconclusive generation errors.
+			out, err := m.ownerRead(ctx, host, processAliveRemote(prior.pid))
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(string(out)) != pidGoneMarker {
+				return generationErr
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if prior.supervisor.kind != supervisorNone {
+			return m.revalidateStoppedService(ctx, host, facts, prior)
+		}
+		sup, _, err := m.supervisorForOwner(ctx, host, "0", prior.argv, prior.cwd, prior.env, prior.report)
+		if err != nil || sup.kind != supervisorNone {
+			return errOwnerSelectionMismatch
+		}
+		return nil
+	}
+	if err := check(pending.installTarget); err != nil {
+		return "", err
+	}
+	_, err := m.deploy(ctx, host, facts, func(target string) error {
+		if err := check(target); err != nil {
+			return err
+		}
+		if record != nil {
+			return record(target)
+		}
+		return nil
+	}, &pending.installTarget)
+	if err != nil {
+		return "", err
+	}
+	after, err := m.reReadLaunchContract(ctx, host, facts)
+	if err != nil {
+		return "", err
+	}
+	if err := m.deployedBuildNotStamped(host.Name, after, pending.expectedVersion); err != nil {
+		return "", err
+	}
+	if err := m.checkOwnerConfig(ctx, host, prior.argv, prior.cwd, prior.env, prior.report); err != nil {
+		return "", fmt.Errorf("%w: %w", endpointMigration(host), err)
+	}
+	return prior.host.EvenerPath, nil
 }

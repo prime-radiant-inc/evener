@@ -15,7 +15,7 @@ import (
 
 // DefaultMaxLineBytes is the per-line cap ScanEvents/ScanEventsFrom apply
 // when a call leaves ScanLimits.MaxLineBytes at 0. 128 MiB matches
-// agent's transcriptJSONLMaxLineBytes: jobstore.Event carries only modest
+// agent's transcript.DefaultMaxLineBytes: jobstore.Event carries only modest
 // string fields (command, description, task, paths), so no legitimate line
 // is expected to come remotely close to this — it exists to bound a single
 // pathologically long or corrupt line's memory cost, independent of

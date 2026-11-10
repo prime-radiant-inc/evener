@@ -16,7 +16,7 @@ const bootGenerationSuffix = ".boot-generation"
 // BootGenerationPath is where the session's boot counter lives:
 // <dir>/sessions/<id>.boot-generation.
 func BootGenerationPath(dir, id string) string {
-	return filepath.Join(dir, sessionsSubdir, id+bootGenerationSuffix)
+	return filepath.Join(dir, SessionsSubdir, id+bootGenerationSuffix)
 }
 
 // NextBootGeneration increments the session's boot counter and returns the
@@ -33,12 +33,16 @@ func BootGenerationPath(dir, id string) string {
 // buffered transcript entries can never be followed by a start that reuses a
 // generation clients already hold. A counter that does not parse is an
 // error rather than a restart at 1, which would move the generation
-// backwards.
+// backwards. An empty dir is an error: the counter path would resolve
+// against the working directory.
 func NextBootGeneration(dir, id string, floor uint64) (uint64, error) {
+	if dir == "" {
+		return 0, errors.New("boot generation needs a state dir")
+	}
 	if err := ValidateSessionID(id); err != nil {
 		return 0, err
 	}
-	sessDir := filepath.Join(dir, sessionsSubdir)
+	sessDir := SessionsDir(dir)
 	if err := os.MkdirAll(sessDir, 0o755); err != nil {
 		return 0, fmt.Errorf("create sessions dir: %w", err)
 	}

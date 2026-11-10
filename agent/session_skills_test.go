@@ -13,6 +13,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm"
@@ -92,20 +93,17 @@ func TestUseSkill_ReturnsBody(t *testing.T) {
 	f := &fakeAdapter{
 		name: "anthropic",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(skill) },
-			func(req llm.Request) llm.Response { return toolCallResponse(comm) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(skill) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(comm) },
 		},
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(newAnthropicProfile("claude-test")), withDir(root), withConfig(SessionConfig{}))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "greet Jesse", nil)
+	_, err := sess.ProcessInput(ctx, "greet Jesse", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -150,16 +148,13 @@ func TestUseSkill_InlineMentionPreservesUserInput(t *testing.T) {
 	adapter := &fakeAdapter{
 		name: "anthropic",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(skillCall) },
-			func(req llm.Request) llm.Response { return toolCallResponse(comm) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(skillCall) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(comm) },
 		},
 	}
 	c.Register(adapter)
 
-	sess, err := NewSession(c, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(newAnthropicProfile("claude-test")), withDir(root), withConfig(SessionConfig{}))
 
 	var eventsSeen []events.SessionEvent
 	eventsDone := make(chan struct{})
@@ -265,10 +260,7 @@ func TestUseSkill_NotFound_ReturnsError(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "anthropic"})
 
-	sess, err := NewSession(c, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(newAnthropicProfile("claude-test")), withDir(root), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	res := sess.reg.ExecuteCall(context.Background(), sess.env, useSkillCall("s1", "nonexistent"))
@@ -293,16 +285,13 @@ func TestUseSkill_EmitsEvent(t *testing.T) {
 	f := &fakeAdapter{
 		name: "anthropic",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(skill) },
-			func(req llm.Request) llm.Response { return toolCallResponse(comm) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(skill) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(comm) },
 		},
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(newAnthropicProfile("claude-test")), withDir(root), withConfig(SessionConfig{}))
 
 	var evs []events.SessionEvent
 	evDone := make(chan struct{})
@@ -315,7 +304,7 @@ func TestUseSkill_EmitsEvent(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "deploy", nil)
+	_, err := sess.ProcessInput(ctx, "deploy", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -399,7 +388,7 @@ func TestOpenAI_PluginSkillCatalogUsesNamespacedName(t *testing.T) {
 		t.Fatalf("prompt skills = %+v, advertised the bare plugin skill name", data.Skills)
 	}
 	// The catalog must render the namespaced name: it is the key use_skill loads.
-	prompt, warning := sess.renderSystemPrompt(sess.currentEnv())
+	prompt, warning, _ := sess.renderSystemPrompt(sess.currentEnv())
 	if warning != "" {
 		t.Fatalf("renderSystemPrompt warning: %s", warning)
 	}
@@ -428,10 +417,7 @@ func TestOpenAIUseSkillToolExecutes(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(root), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	tool := sess.reg.Get("use_skill")
@@ -453,13 +439,13 @@ func TestOpenAIUseSkillToolExecutes(t *testing.T) {
 	}
 }
 
-func TestDiscoverSkills_PopulatedOnSession(t *testing.T) {
+func TestDiscover_NonGitDirectory(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	markGitRoot(t, root)
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nBody.\n")
 
-	// Verify DiscoverSkills actually works at the filesystem level — the session
+	// Verify discovery actually works at the filesystem level — the session
 	// field test is in TestUseSkill_SystemPromptContainsSkillList above.
 	// Also verify that a non-git directory (skill dir created manually) still works.
 	nonGit := t.TempDir()
@@ -470,7 +456,7 @@ func TestDiscoverSkills_PopulatedOnSession(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: manual\ndescription: \"Manual skill\"\n---\nManual.\n"), 0o644)
 
 	env := execenv.NewLocalExecutionEnvironment(nonGit)
-	skills := skill.DiscoverSkills(env)
+	skills := discoverProjectSkills(t, env)
 	if _, ok := skills["manual"]; !ok {
 		t.Errorf("expected skill 'manual' discovered in non-git directory")
 	}

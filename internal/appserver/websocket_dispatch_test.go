@@ -216,6 +216,14 @@ func TestServeWebSocketSlowJobsListDoesNotHoldOrderedRequests(t *testing.T) {
 	requireSlowMethodDoesNotHoldOrderedRequests(t, appwire.MethodEvenerJobsList, appwire.JobsListParams{Ref: "local:th_1"}, appwire.JobsListResponse{})
 }
 
+// TestServeWebSocketSlowUpgradeDoesNotHoldOrderedRequests pins why
+// evener/upgrade dispatches concurrently: the install downloads, verifies,
+// and writes the binary for up to the upgrade deadline, and the phone runs it
+// on the same connection its session sends ride.
+func TestServeWebSocketSlowUpgradeDoesNotHoldOrderedRequests(t *testing.T) {
+	requireSlowMethodDoesNotHoldOrderedRequests(t, appwire.MethodEvenerUpgrade, appwire.UpgradeParams{Requested: "snapshot"}, appwire.UpgradeResponse{})
+}
+
 // TestServeWebSocketRejectsRequestsBeforeInitialize pins the initialize
 // ordering invariant under concurrent dispatch over a real WebSocket: a
 // request that arrives before initialize completes is rejected ("initialize
@@ -373,6 +381,11 @@ func TestConcurrentDispatchMethodsAreExactlyTheSlowReads(t *testing.T) {
 		// lock fail a concurrent apply fast, and the restart waits on
 		// its own response flush rather than connection order.
 		appwire.MethodEvenerUpdateApply: true,
+		// evener/upgrade is the install-only half of the same operation:
+		// a multi-minute download, verify, and write under the upgrade
+		// deadline. Safe out of order because hubUpdateMu and the
+		// cross-process install lock make a concurrent install fail fast.
+		appwire.MethodEvenerUpgrade: true,
 		// evener/activity/read waits up to its per-host budget on each
 		// attached host; a phone polls it on the connection its sends ride
 		// (TestServeWebSocketSlowActivityReadDoesNotHoldOrderedRequests).
@@ -599,11 +612,11 @@ func TestServeWebSocketHydrationThenMutationDeliversEveryNotificationExactlyOnce
 
 func TestServeWebSocketReadAdmissionCanceledByFollowingUnsubscribe(t *testing.T) {
 	const threadID = "th_admission"
-	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local", SubscriptionAdmissionResolver: func(msg appwire.Message) (string, bool) {
+	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local", SubscriptionAdmissionResolver: func(msg appwire.Message) SubscriptionAdmissionResolution {
 		if msg.Request != nil && msg.Request.Method == appwire.MethodThreadRead {
-			return threadID, true
+			return SubscriptionAdmissionResolution{Key: threadID, Intent: SubscriptionAdmissionResolved}
 		}
-		return "", false
+		return SubscriptionAdmissionResolution{Intent: SubscriptionAdmissionNotSubscribe}
 	}})
 	notifier := NewNotifier(16)
 	entered := make(chan struct{})
@@ -615,9 +628,8 @@ func TestServeWebSocketReadAdmissionCanceledByFollowingUnsubscribe(t *testing.T)
 		<-release
 	}
 	HandleTyped(server.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		if !Subscribe(ctx, "th_unrelated") {
-			return appwire.ThreadReadResponse{}, nil
-		}
+		conn, _ := ctx.Value(connectionContextKey{}).(*Connection)
+		conn.Subscribe("th_unrelated")
 		if !CaptureSubscription(ctx, false, func() string { return params.ThreadID }, notifier.CurrentSequence, func() bool { return true }) {
 			return appwire.ThreadReadResponse{}, nil
 		}
@@ -679,11 +691,11 @@ func TestServeWebSocketUnsubscribeWaitsThroughSubscriptionRegistration(t *testin
 	captureResolved := make(chan error, 1)
 	server := NewServer(ServerConfig{
 		ServerName: "test-server", SourceID: "local",
-		SubscriptionAdmissionResolver: func(msg appwire.Message) (string, bool) {
+		SubscriptionAdmissionResolver: func(msg appwire.Message) SubscriptionAdmissionResolution {
 			if msg.Request != nil && msg.Request.Method == appwire.MethodThreadRead {
-				return threadID, true
+				return SubscriptionAdmissionResolution{Key: threadID, Intent: SubscriptionAdmissionResolved}
 			}
-			return "", false
+			return SubscriptionAdmissionResolution{Intent: SubscriptionAdmissionNotSubscribe}
 		},
 	})
 	server.beforeSubscriptionBeginBuffered = func() {

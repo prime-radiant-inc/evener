@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/internal/tool/repair"
 	"primeradiant.com/evener/agent/plugin"
@@ -75,7 +76,7 @@ func TestExecTool_RepairableMalformedArgsPreserveOriginalInEvents(t *testing.T) 
 	s := newSession(t, withoutGitSnapshot())
 	s.stateDir = t.TempDir()
 
-	s.RegisterTool("widget", "does a thing", map[string]any{
+	s.registerTool("widget", "does a thing", map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
 		"properties": map[string]any{
@@ -125,7 +126,7 @@ func TestExecTool_InvalidJSONWithValidLeadingMemberDivergesIntent(t *testing.T) 
 	s := newSession(t, withoutGitSnapshot())
 	s.stateDir = t.TempDir()
 
-	s.RegisterTool("widget", "does a thing", map[string]any{
+	s.registerTool("widget", "does a thing", map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
 		"properties": map[string]any{
@@ -181,7 +182,7 @@ func TestExecTool_OversizedValidJSONSuppressesIntent(t *testing.T) {
 	s := newSession(t, withoutGitSnapshot())
 	s.stateDir = t.TempDir()
 
-	s.RegisterTool("widget", "does a thing", map[string]any{
+	s.registerTool("widget", "does a thing", map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
 		"properties": map[string]any{
@@ -240,7 +241,7 @@ func TestExecTool_ValidNoncanonicalArgsCanonicalizeLikeTranscript(t *testing.T) 
 	s := newSession(t, withoutGitSnapshot())
 	s.stateDir = t.TempDir()
 
-	s.RegisterTool("widget", "does a thing", map[string]any{
+	s.registerTool("widget", "does a thing", map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
 		"properties": map[string]any{
@@ -284,14 +285,14 @@ func TestSession_RepairsAliasedArgAndEmitsEvent(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(aliasedCall) },
-			func(req llm.Request) llm.Response { return toolCallResponse(comm) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(aliasedCall) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(comm) },
 		},
 	}
 	sess := newSession(t, withAdapter(f))
 
 	var gotArgs map[string]any
-	sess.RegisterTool("widget", "does a thing", widgetSchema(), func(ctx context.Context, args any) (any, error) {
+	sess.registerTool("widget", "does a thing", widgetSchema(), func(ctx context.Context, args any) (any, error) {
 		gotArgs, _ = args.(map[string]any)
 		return "done", nil
 	})
@@ -334,14 +335,14 @@ func TestSession_RepairedThenDeniedCallStillEmitsRepairedEvent(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(aliasedCall) },
-			func(req llm.Request) llm.Response { return toolCallResponse(comm) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(aliasedCall) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(comm) },
 		},
 	}
 	sess := newSession(t, withAdapter(f))
 
 	var toolRan bool
-	sess.RegisterTool("widget", "does a thing", widgetSchema(), func(ctx context.Context, args any) (any, error) {
+	sess.registerTool("widget", "does a thing", widgetSchema(), func(ctx context.Context, args any) (any, error) {
 		toolRan = true
 		return "done", nil
 	})
@@ -419,8 +420,8 @@ func TestExecTool_RejectedCommunicateLiveVsReload(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(rejectedCall) },
-			func(req llm.Request) llm.Response { return toolCallResponse(recoveredCall) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(rejectedCall) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(recoveredCall) },
 		},
 	}
 	sess := newSession(t, withAdapter(f), withConfig(SessionConfig{

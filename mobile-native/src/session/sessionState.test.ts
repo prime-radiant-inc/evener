@@ -1,5 +1,6 @@
 import type { EvenerDelegateInfo, SandboxEscalationRequested, TurnModel } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
+import { boardState } from "../board/attention";
 import { contextChips, sessionStateLine, type StateSource } from "./sessionState";
 
 const counts = (total = 0, failed = 0) => ({ known: true, total, active: total - failed, failed, completed: 0 });
@@ -130,6 +131,41 @@ describe("the nav bar's state line (spec 8.1, 13.1)", () => {
 		[session("ended", { pendingEscalations: [escalation] }), "shutDown", "Shut down"],
 	] as const)("%#: %s", (input, state, text) => {
 		expect(sessionStateLine(input, NOW)).toEqual({ state, text });
+	});
+});
+
+describe("the state line and the Board", () => {
+	it("mark the same session the same way for every state and flag", () => {
+		const states = ["idle", "active", "awaiting", "warning", "restartRequired", "systemError", "notLoaded", "closed"];
+		for (const type of states) {
+			for (const askPending of [false, true]) {
+				for (const escalated of [false, true]) {
+					const line = sessionStateLine(
+						session(type, { askPending, pendingEscalations: escalated ? [escalation] : [] }),
+						NOW,
+					);
+					const row = {
+						ref: "s",
+						host_id: "local",
+						session_id: "s",
+						title: "s",
+						project: "evener",
+						state: type,
+						kind: "session" as const,
+						live: true,
+						children: [],
+						ask_pending: askPending,
+						approval_pending: escalated,
+					};
+					expect({ type, askPending, escalated, state: line.state }).toEqual({
+						type,
+						askPending,
+						escalated,
+						state: boardState(row, false),
+					});
+				}
+			}
+		}
 	});
 });
 

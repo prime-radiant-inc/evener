@@ -2,10 +2,11 @@
 // Run through TestBackgroundJobsBrowser. JSON stdin supplies an isolated real
 // hub and Go-owned producer barriers, never frontend state or RPC responses.
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Driver } from "../skillguard/run.mjs";
 import { evaluate, navigateTo } from "../browserGuardCdp.mjs";
+import { awaitProducerAcknowledgement } from "./acknowledgement.mjs";
 
 if (process.argv.includes("--help")) {
   console.log("Usage: go test -tags browserguard ./cmd/evener-hub -run '^TestBackgroundJobsBrowser$' -count=1 -v\nRun from the repository root after make build-web. The Go fixture supplies JSON stdin and retains browser evidence.");
@@ -129,13 +130,14 @@ function geometryExpr(jobId) {
     const body = document.querySelector(${q(viewport)});
     if (!body || rows.length !== 1) return null;
     const node = rows[0], r = node.getBoundingClientRect(), v = body.getBoundingClientRect();
-    // A plain ListRow with no trailing slot ends in its meta line.
-    const glyph = node.querySelector('[aria-hidden="true"]'), meta = node.querySelector(':scope > :last-child');
+    const glyph = node.querySelector('[aria-hidden="true"]');
+    const quietText = node.querySelector('[data-activity-meta], time[data-activity-time]');
+    if (!glyph || !quietText) throw new Error('terminal row lacks its glyph or quiet text');
     const first = [...body.querySelectorAll('[data-activity-anchor]')].find(n => n.getBoundingClientRect().bottom > v.top);
-    return { anchor: node.dataset.activityAnchor, text: node.textContent, offset: r.top - v.top,
+    return { anchor: node.dataset.activityAnchor, text: node.textContent, status: node.getAttribute('aria-description'), offset: r.top - v.top,
       row: {top:r.top,bottom:r.bottom,height:r.height}, viewport: {top:v.top,bottom:v.bottom,height:v.height},
       visible: r.bottom > v.top && r.top < v.bottom, scrollTop: body.scrollTop,
-      glyphColor: getComputedStyle(glyph).color, metaColor: getComputedStyle(meta).color,
+      glyphColor: getComputedStyle(glyph).color, metaColor: getComputedStyle(quietText).color,
       firstAnchor: first?.dataset.activityAnchor, count: rows.length };
   })()`;
 }
@@ -145,7 +147,7 @@ async function quiet(jobId, wording, visible = true) {
   assert.equal(state.count, 1);
   assert.equal(state.anchor, anchor(jobId));
   assert.equal(state.glyphColor, state.metaColor, "terminal glyph uses ordinary quiet text color");
-  assert.ok(state.text.includes(wording), `truthful outcome ${wording}: ${state.text}`);
+  assert.equal(state.status, wording, `truthful outcome ${wording}: ${state.text}`);
   if (visible) assert.ok(state.visible, "later-page row intersects the real activity viewport");
   return state;
 }
@@ -397,24 +399,23 @@ async function runOutputPagingJourney(fixture) {
     await waitFrames(() => outputCalls(after).some(request => page(request)?.totalBytes >= totalBytes && bytes(page(request)).includes(Buffer.from(marker))), `real latest contains ${marker}`);
   };
   let phase = 1;
+  let acknowledgedBytes = 0;
+  // The producer writes the phase payload to the oracle file before it flushes
+  // the same bytes to the job's stdout, so the oracle's current size tells us
+  // how much the hub still has to drain and the acknowledgement wait can be
+  // sized for it rather than for a fixed floor (#4632).
+  const emittedBytes = () => {
+    try { return statSync(fixture.outputOraclePath).size; } catch { return acknowledgedBytes; }
+  };
   const control = async command => {
     const ackPath = path.join(fixture.artifactDir, `phase-${String(++phase).padStart(2,'0')}.json`);
-    return new Promise((resolve, reject) => {
-      // Poll rather than fs.watch: the producer writes in place with os.WriteFile
-      // and macOS coalesces directory events, so the only event can arrive while
-      // the acknowledgement is still empty.
-      const poll = setInterval(check, 100);
-      const timer = setTimeout(() => finish(new Error(`producer did not acknowledge ${command}`)), 15000);
-      function finish(error, value) { clearInterval(poll); clearTimeout(timer); error ? reject(error) : resolve(value); }
-      function check() {
-        let value;
-        try { value = JSON.parse(readFileSync(ackPath,'utf8')); } catch { return; }
-        if (value.command !== command) { finish(new Error(`wrong producer acknowledgement ${q(value)}`)); return; }
-        finish(null,value);
-      }
-      driver.control(`output-${command}`);
-      check();
+    driver.control(`output-${command}`);
+    const acknowledgement = await awaitProducerAcknowledgement({
+      driver, ackPath, command,
+      pendingBytes: () => Math.max(0, emittedBytes() - acknowledgedBytes),
     });
+    acknowledgedBytes = acknowledgement.totalBytes;
+    return acknowledgement;
   };
   const assertAnchor = async baseline => {
     await wait(`(() => { const value=${stateExpr}; const row=value?.rows.find(row=>row.kind==='output' && row.start===${baseline.start}); return row?.visible && Math.abs(row.top-(${baseline.top}))<=2; })()`, 'same byte row stays within two pixels');
@@ -473,7 +474,9 @@ async function runOutputPagingJourney(fixture) {
   await wait(`document.querySelector(${q(row(fixture.outputJobId))}) !== null`, 'separate real output owner is listed');
   await driver.click(row(fixture.outputJobId));
   await latest('SPLIT_é_');
-  const initialGeometry = await state();
+  // The latest page lands on the wire before the list renders it and scrolls to
+  // its end; a wheel sent before that is undone by the pending restoration.
+  const initialGeometry = await wait(`(() => { const value=${stateExpr}; return value?.first && value.following ? value : null; })()`, 'opening latest renders its visible rows at the real bottom');
   const firstHistory = await backward();
   assert.ok(page(firstHistory).offsetBytes < page(outputCalls()[0]).offsetBytes);
   assert.equal(initialGeometry.following,true,'opening latest follows the real bottom');

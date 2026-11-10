@@ -105,9 +105,11 @@ func responsesContinuationDeltaIneligibleReason(anchor schema.Turn, delta []sche
 		if turn.Kind.TranscriptOnly() {
 			continue // never on the wire, so nothing a continuation must carry
 		}
-		switch turn.Kind {
-		case schema.TurnUserInput, schema.TurnEnvironment, schema.TurnNotesContext, schema.TurnMemoryContext:
-		case schema.TurnToolResults, schema.TurnTool:
+		switch {
+		case turn.Kind == schema.TurnUserInput || turn.Kind.HarnessContext():
+			// Conversation and harness context are eligible as they stand;
+			// the unsafe-content check below still applies.
+		case turn.Kind == schema.TurnToolResults || turn.Kind == schema.TurnTool:
 			if reason := responsesContinuationToolResultsIneligibleReason(turn.Message, anchorToolCallIDs); reason != "" {
 				return reason
 			}

@@ -144,7 +144,7 @@ func TestLatestAttemptStartsClampsAReopenBeforeTheRetainedWindow(t *testing.T) {
 		entry(schema.TurnSummary),
 		entry(schema.TurnToolResults),
 	}
-	if got := latestAttemptStarts(entries, nil)["t1"]; got != 0 {
+	if got := latestAttemptStarts(entries, nil, supersededDelegateAttentionIDs(entries))["t1"]; got != 0 {
 		t.Fatalf("latest attempt start = %d, want 0, the retained window's first turn", got)
 	}
 }

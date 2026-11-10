@@ -14,7 +14,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -110,7 +109,7 @@ func cycleSkillReloadSelection(s *Session) schema.SkillReloadSelection {
 // restart reconciles from, including pre-marker entries.
 func publicationReceiptsFromTranscript(t *testing.T, stateDir, id string) []schema.SkillCompactionReceipt {
 	t.Helper()
-	data, err := readTranscriptFull(transcriptPath(stateDir, id), "")
+	data, err := readTranscriptFull(context.Background(), transcriptPath(stateDir, id), "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
@@ -275,7 +274,7 @@ func TestSkillCompaction_DeferredAutomatic(t *testing.T) {
 		if op := s.pendingSkillCompactionSnapshot(); op == nil || op.Generation != first.Generation || op.Phase != "pending" {
 			t.Fatalf("an unchanged publication must leave the deferred intent pending, got %+v", op)
 		}
-		if got := s.PinnedNote(); got != "deferred-note" {
+		if got := s.pinnedNote(); got != "deferred-note" {
 			t.Fatalf("an unchanged publication must not consume the pinned note, got %q", got)
 		}
 
@@ -297,7 +296,7 @@ func TestSkillCompaction_DeferredAutomatic(t *testing.T) {
 		if n := countSteering(currentHistory(t, s), "deferred-note"); n != 1 {
 			t.Fatalf("deferred note handed off %d time(s), want exactly 1", n)
 		}
-		if got := s.PinnedNote(); got != "" {
+		if got := s.pinnedNote(); got != "" {
 			t.Fatalf("the claiming fold hands the note forward and consumes it, got %q", got)
 		}
 		// The cycle reopens for a fresh acceptance with a fresh generation.
@@ -384,7 +383,7 @@ func TestSkillCompaction_DeferredAutomatic(t *testing.T) {
 		if n := countSteering(currentHistory(t, s), "parked-note"); n != 1 {
 			t.Fatalf("the captured note's handoff steering must survive the publication, found %d", n)
 		}
-		if got := s.PinnedNote(); got != "" {
+		if got := s.pinnedNote(); got != "" {
 			t.Fatalf("the cleared note must stay cleared after the parked fold published, got %q", got)
 		}
 		// The supersession and the winner's reminder are both recorded as
@@ -456,7 +455,7 @@ func TestSkillCompaction_UnchangedPublication(t *testing.T) {
 	if op == nil || op.Generation != before.Generation || op.Phase != "pending" {
 		t.Fatalf("an unchanged publication must leave the intent untouched, got %+v (was %+v)", op, before)
 	}
-	if got := s.PinnedNote(); got != "unchanged-note" {
+	if got := s.pinnedNote(); got != "unchanged-note" {
 		t.Fatalf("an unchanged publication must not consume the note, got %q", got)
 	}
 	if sel := cycleSkillReloadSelection(s); sel.State != "valid" || len(sel.Names) != 1 || sel.Names[0] != "scope:probe" {
@@ -738,7 +737,7 @@ func TestSkillCompaction_ConcurrentSteering(t *testing.T) {
 	}
 	// The merged-back steering turn must be durably represented after the
 	// marker, so a restart keeps it.
-	data, err := readTranscriptFull(transcriptPath(stateDir, id), "")
+	data, err := readTranscriptFull(context.Background(), transcriptPath(stateDir, id), "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
@@ -901,7 +900,7 @@ func TestSkillCompaction_RestartAfterPublish(t *testing.T) {
 	}
 	// Snapshot the pre-publication metadata bytes — the stale state a crash
 	// between the winning publication and its metadata save would leave.
-	metaPath := filepath.Join(stateDir, sessionsSubdir, id+".meta.json")
+	metaPath := schema.SessionMetaPath(stateDir, id)
 	stale, err := os.ReadFile(metaPath)
 	if err != nil {
 		t.Fatalf("read stale metadata: %v", err)
@@ -1011,7 +1010,7 @@ func TestSkillCompaction_StaleSnapshot(t *testing.T) {
 		if err != nil {
 			t.Fatalf("requestSkillCompaction (second): %v", err)
 		}
-		metaPath := filepath.Join(stateDir, sessionsSubdir, id+".meta.json")
+		metaPath := schema.SessionMetaPath(stateDir, id)
 		stale, err := os.ReadFile(metaPath)
 		if err != nil {
 			t.Fatalf("read stale metadata: %v", err)
@@ -1064,7 +1063,7 @@ func TestSkillCompaction_StaleSnapshot(t *testing.T) {
 		// the selection of — a DIFFERENT generation's pending intent.
 		stateDir := t.TempDir()
 		id := identifier.MustNewSessionID()
-		if err := os.MkdirAll(filepath.Join(stateDir, sessionsSubdir), 0o755); err != nil {
+		if err := os.MkdirAll(schema.SessionsDir(stateDir), 0o755); err != nil {
 			t.Fatalf("mkdir sessions: %v", err)
 		}
 		writer, err := transcript.NewWriter(transcriptPath(stateDir, id), transcript.Header{SessionID: id, ProfileID: "openai", Model: "gpt-5.2"})
@@ -1133,7 +1132,7 @@ func TestSkillCompaction_StaleSnapshot(t *testing.T) {
 		// receipts show was already delivered — and consume its selection.
 		stateDir := t.TempDir()
 		id := identifier.MustNewSessionID()
-		if err := os.MkdirAll(filepath.Join(stateDir, sessionsSubdir), 0o755); err != nil {
+		if err := os.MkdirAll(schema.SessionsDir(stateDir), 0o755); err != nil {
 			t.Fatalf("mkdir sessions: %v", err)
 		}
 		writer, err := transcript.NewWriter(transcriptPath(stateDir, id), transcript.Header{SessionID: id, ProfileID: "openai", Model: "gpt-5.2"})
@@ -1265,7 +1264,7 @@ func TestSkillCompaction_IntermediateSaveWindowRestore(t *testing.T) {
 	}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: stateDir}))
 	id := s.Meta().ID
 	disableSessionNaming(s)
-	metaPath := filepath.Join(stateDir, sessionsSubdir, id+".meta.json")
+	metaPath := schema.SessionMetaPath(stateDir, id)
 	var windowBytes []byte
 	var windowSaves atomic.Int32
 	updateSessionTestConfig(s, func(cfg *testConfig) {

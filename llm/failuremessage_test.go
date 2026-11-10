@@ -3,6 +3,7 @@ package llm
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestProviderFailureMessage(t *testing.T) {
@@ -76,5 +77,26 @@ func TestProviderFailureMessageKeepsClassificationSignals(t *testing.T) {
 	err := ErrorFromHTTPStatus("anthropic", 400, msg, nil, nil)
 	if got := Kind(err); got != KindContextLength {
 		t.Fatalf("Kind = %v, want KindContextLength", got)
+	}
+}
+
+// A gateway's top-level {"message": ...} body yields the same failure text as
+// the nested {"error": {"message": ...}} shape.
+func TestProviderFailureMessageTopLevelMessage(t *testing.T) {
+	nested := ProviderFailureMessage("test", []byte(`{"error":{"message":"top-level error message"}}`))
+	topLevel := ProviderFailureMessage("test", []byte(`{"message":"top-level error message"}`))
+	if topLevel != nested {
+		t.Fatalf("top-level message = %q, want the same as the nested shape %q", topLevel, nested)
+	}
+}
+
+// Truncation backs off a rune split by the byte cut, keeping the valid prefix.
+func TestTruncateForMessageCutsOnARuneBoundary(t *testing.T) {
+	// 'é' is two bytes; placing it across the cut leaves its first byte at the
+	// last kept position.
+	ascii := strings.Repeat("x", maxFailureMessageBody-1)
+	got := truncateForMessage(ascii + "é" + strings.Repeat("y", 100))
+	if !utf8.ValidString(got) || !strings.HasPrefix(got, ascii) || strings.Contains(got, "y") || len(got) > maxFailureMessageBody+len("…") {
+		t.Fatalf("truncateForMessage kept %d bytes ending %q, want the valid ASCII prefix only", len(got), got[len(got)-10:])
 	}
 }

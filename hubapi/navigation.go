@@ -194,11 +194,18 @@ const NavigationFailureCrashed = "crashed"
 // from which a client composes the row's why line ("codex-jesse-fsck.com
 // sign-in expired (401)"). It never carries the failure's message, which can
 // quote a provider's error body.
+//
+// ResumesAt is set while a working session's model call waits out a
+// provider usage limit that named its reset time: when the call resumes by
+// itself (appwire.ThreadFailure.ResumesAt). A failure with it rides a
+// working row, not a Failed one. A client shows it only while it is still
+// ahead.
 type NavigationFailure struct {
-	Title     string `json:"title,omitempty"`
-	CauseKind string `json:"cause_kind,omitempty"`
-	Provider  string `json:"provider,omitempty"`
-	Status    int    `json:"status,omitempty"`
+	Title     string     `json:"title,omitempty"`
+	CauseKind string     `json:"cause_kind,omitempty"`
+	Provider  string     `json:"provider,omitempty"`
+	Status    int        `json:"status,omitempty"`
+	ResumesAt *time.Time `json:"resumes_at,omitempty"`
 }
 
 // NavigationQuestion is the first question of a live session's pending ask
@@ -277,10 +284,14 @@ type NavigationSessionSummary struct {
 	// appwire.SearchResult.Archived reports for a live hit). It sits BESIDE Live
 	// rather than replacing it: a session archived while it is still running
 	// stays reachable through a pin, and this flag lets a client suppress the
-	// row's unread dot for it (#4199). Absent when it is not, and from an
+	// row's unread dot for it. Absent when it is not, and from an
 	// older hub.
-	Archived      bool       `json:"archived,omitempty"`
-	UpdatedAt     *time.Time `json:"updated_at,omitempty"`
+	Archived  bool       `json:"archived,omitempty"`
+	UpdatedAt *time.Time `json:"updated_at,omitempty"`
+	// CreatedAt is when the session started. A project's rows are ordered by
+	// it, newest first, so a client that joins the Current and Recent tiers
+	// can keep that order across the tier boundary.
+	CreatedAt     *time.Time `json:"created_at,omitempty"`
 	MoreSubagents int        `json:"more_subagents,omitempty"`
 	// Subagents is a live root's whole-tree subagent tally, counted by its
 	// daemon (S3). Present only on a live root row whose tree has a subagent;

@@ -8,9 +8,14 @@
 // not-ready (null) / ready (rows) contract is pinned without a browser.
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { EventEmitter } from "node:events";
 import { rmSync } from "node:fs";
 
-import { CHROME_SOCKET_PATH_LIMIT, chromeSingletonSocketPath } from "../browserGuardProcess.mjs";
+import {
+  CHROME_ANNOUNCEMENT_DEADLINE_MS,
+  CHROME_SOCKET_PATH_LIMIT,
+  chromeSingletonSocketPath,
+} from "../browserGuardProcess.mjs";
 import { Driver, skillGuardChromeProfileDir } from "./run.mjs";
 
 const driver = new Driver({ url: "http://127.0.0.1/", artifactDir: "", controlPath: "", milestonePath: "" });
@@ -19,6 +24,23 @@ const driver = new Driver({ url: "http://127.0.0.1/", artifactDir: "", controlPa
 // where `document` resolves. jsdom supplies that global.
 function evaluateExpr(expr) {
   return new Function(`return (${expr});`)();
+}
+
+// A fresh driver with no browser; tests assign `page` or stub the methods they
+// exercise.
+function newDriver() {
+  return new Driver({ url: "http://127.0.0.1/", artifactDir: "", controlPath: "", milestonePath: "" });
+}
+
+// A fake CDP page: Runtime.evaluate runs the driver's own expression in jsdom
+// and returns the envelope `evaluate` unwraps.
+function fakePage() {
+  return {
+    send: async (method, params) => {
+      if (method !== "Runtime.evaluate") throw new Error(`unexpected CDP method ${method}`);
+      return { result: { result: { value: evaluateExpr(params.expression) } } };
+    },
+  };
 }
 
 function renderRail(refs) {
@@ -49,6 +71,100 @@ describe("railRowsExpr readiness predicate", () => {
 
   test("keeps the always-truthy { rows } shape when no minimum is given", () => {
     expect(evaluateExpr(driver.railRowsExpr())).toEqual({ rows: [] });
+  });
+});
+
+// settleExpression is the one consecutive-reads barrier: settleComposer's editor
+// state and cascadeguard's scroll geometry both delegate to it (#3686). These
+// cases drive the REAL expression through a fake CDP send, so the two-equal-read
+// contract, the null break, and the per-settle key scoping are pinned without a
+// browser.
+describe("settleExpression holds two consecutive equal readings", () => {
+  // The expressions consume the scripted window.__samples on each poll.
+  const script = (samples) => {
+    window.__samples = [...samples];
+  };
+
+  afterEach(() => {
+    Reflect.deleteProperty(window, "__samples");
+    Reflect.deleteProperty(window, "__driverSettleSamples");
+  });
+
+  test("returns the value two non-null polls agree on", async () => {
+    script([{ text: "a" }, { text: "a" }]);
+    const d = newDriver();
+    d.page = fakePage();
+    await expect(d.settleExpression("window.__samples.shift()", { timeoutMs: 2000, label: "sample" })).resolves.toEqual({
+      text: "a",
+    });
+    expect(window.__samples).toHaveLength(0);
+  });
+
+  test("a null poll between equal readings breaks the run", async () => {
+    script([{ text: "b" }, null, { text: "b" }, { text: "b" }]);
+    const d = newDriver();
+    d.page = fakePage();
+    await expect(d.settleExpression("window.__samples.shift()", { timeoutMs: 3000, label: "sample" })).resolves.toEqual({
+      text: "b",
+    });
+    expect(window.__samples).toHaveLength(0);
+  });
+
+  test("a second settle cannot reuse the first settle's sample", async () => {
+    script([{ text: "c" }, { text: "c" }, { text: "c" }, { text: "c" }]);
+    const d = newDriver();
+    d.page = fakePage();
+    await d.settleExpression("window.__samples.shift()", { timeoutMs: 2000, label: "sample" });
+    await d.settleExpression("window.__samples.shift()", { timeoutMs: 2000, label: "sample" });
+    // Each settle consumed two readings; an unscoped stamp would let the second
+    // settle confirm off the first, leaving one sample unread.
+    expect(window.__samples).toHaveLength(0);
+  });
+
+  test("false is a reading, not 'not ready'", async () => {
+    script([false, false]);
+    const d = newDriver();
+    d.page = fakePage();
+    await expect(d.settleExpression("window.__samples.shift()", { timeoutMs: 2000, label: "sample" })).resolves.toBe(
+      false,
+    );
+  });
+
+  test("rejects when the reading never repeats", async () => {
+    script(Array.from({ length: 40 }, (_, index) => ({ n: index })));
+    const d = newDriver();
+    d.page = fakePage();
+    await expect(
+      d.settleExpression("window.__samples.shift()", { timeoutMs: 300, label: "changing sample" }),
+    ).rejects.toBeInstanceOf(Error);
+  });
+});
+
+// composerState used to return null whenever a call site raced the mount, and
+// the next `.text` crashed with a TypeError under load (#3686). The read owns
+// its mount wait now, so it cannot hand a caller null.
+describe("composerState waits for the composer to mount", () => {
+  test("resolves with the state once the composer and its pane appear", async () => {
+    document.body.innerHTML = `<div data-pane-scaffold="session:ref_a"></div>`;
+    const d = newDriver();
+    d.page = fakePage();
+    const pending = d.composerState("ref_a", { timeoutMs: 2000 });
+    setTimeout(() => {
+      document.body.innerHTML = `<div><div data-pane-scaffold="session:ref_a"></div><div data-composer="ref_a"><div contenteditable="true" role="textbox" aria-label="Message">hello</div></div></div>`;
+    }, 60);
+    await expect(pending).resolves.toMatchObject({ text: "hello" });
+  });
+
+  test("the mount wait is not recorded as a reaction that widens later waits", async () => {
+    document.body.innerHTML = `<div data-pane-scaffold="session:ref_a"></div>`;
+    const d = newDriver();
+    d.page = fakePage();
+    const pending = d.composerState("ref_a", { timeoutMs: 2000 });
+    setTimeout(() => {
+      document.body.innerHTML = `<div><div data-pane-scaffold="session:ref_a"></div><div data-composer="ref_a"><div contenteditable="true" role="textbox" aria-label="Message">hello</div></div></div>`;
+    }, 60);
+    await expect(pending).resolves.toMatchObject({ text: "hello" });
+    expect(d.reactions.slowestMs).toBe(0);
   });
 });
 
@@ -278,6 +394,208 @@ describe("skillguard Chrome profile fits the singleton socket budget", () => {
       expect(dir.startsWith(ambient)).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// The transcript is a virtual list: a row exists in the DOM only while the
+// reader's position (plus a small overscan) keeps it mounted, and a reader
+// away from the bottom does not follow appends. A reply that arrived while the
+// guard was editing a newer draft was therefore rendered by the app yet absent
+// from every mounted turn-block, and the old wait polled those blocks until
+// its 25s timeout -- the failure reported as "timed out ... waiting for the
+// reply to PROSE_DELAY_14i ..." (#4823). waitForReply must put the tail in view
+// first, the reader's own jump-to-latest gesture, and only then look for the
+// turn. This scripts that exact virtual-list behaviour: the reply's row mounts
+// only once the transcript port is scrolled to the bottom.
+describe("waitForReply brings a virtualized transcript tail into view", () => {
+  const PROSE = "PROSE_DELAY_14i submitted then edited while held";
+
+  function renderVirtualTranscript({ atBottom }) {
+    document.body.innerHTML = `<div><div data-pane-scaffold="session:ref_a">
+      <section data-testid="transcript-virtual-list"><div id="port"></div></section>
+    </div></div>`;
+    const port = document.getElementById("port");
+    let scrollTopValue = atBottom ? 900 : 0;
+    const mountTailRow = () => {
+      if (scrollTopValue < 896) return;
+      if (document.querySelector("[data-testid='turn-block']")) return;
+      const row = document.createElement("div");
+      row.setAttribute("data-testid", "turn-block");
+      row.setAttribute("data-turn-id", "turn_m12");
+      row.textContent = `${PROSE} /pkg:probe skillguard turn complete`;
+      document.querySelector("[data-pane-scaffold='session:ref_a']").appendChild(row);
+    };
+    Object.defineProperty(port, "scrollHeight", { configurable: true, get: () => 1000 });
+    Object.defineProperty(port, "clientHeight", { configurable: true, get: () => 100 });
+    Object.defineProperty(port, "scrollTop", {
+      configurable: true,
+      get: () => scrollTopValue,
+      set: (value) => {
+        scrollTopValue = value;
+        mountTailRow();
+      },
+    });
+    if (atBottom) mountTailRow();
+    return port;
+  }
+
+  // The driver's waitPage loop, minus the clock: it re-evaluates the real
+  // expression until it reads non-null, as the real poll does once per tick.
+  function scriptWaitPage(d, { attempts = 20, delayMs = 0 } = {}) {
+    d.waitPage = async (exprSource, { label } = {}) => {
+      for (let attempt = 0; attempt < attempts; attempt += 1) {
+        const value = evaluateExpr(exprSource);
+        if (value !== null && value !== undefined && value !== false) return value;
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+      throw new Error(`timed out waiting for ${label}`);
+    };
+  }
+
+  test("the reply predicate alone cannot see the unmounted tail row", () => {
+    renderVirtualTranscript({ atBottom: false });
+    const replyExpr = `(() => ${driver.turnTextsExpr("ref_a")}.some((text) => text.includes(${JSON.stringify(PROSE)}) && text.includes("skillguard turn complete")) ? true : null)()`;
+    expect(evaluateExpr(replyExpr)).toBeNull();
+  });
+
+  test("waitForReply scrolls the tail into view, mounting and observing the reply", async () => {
+    const port = renderVirtualTranscript({ atBottom: false });
+    const d = new Driver({ url: "http://127.0.0.1/", artifactDir: "", controlPath: "", milestonePath: "" });
+    scriptWaitPage(d);
+    await expect(d.waitForReply("ref_a", PROSE)).resolves.toBeUndefined();
+    // The barrier moved the port to the end (the row mounted), it did not
+    // poll a row the reader's position never exposed.
+    expect(port.scrollTop).toBeGreaterThanOrEqual(896);
+    expect(document.querySelector("[data-testid='turn-block']")?.getAttribute("data-turn-id")).toBe("turn_m12");
+  });
+
+  test("an already-following transcript needs no scroll", async () => {
+    const port = renderVirtualTranscript({ atBottom: true });
+    const d = new Driver({ url: "http://127.0.0.1/", artifactDir: "", controlPath: "", milestonePath: "" });
+    scriptWaitPage(d);
+    await expect(d.waitForReply("ref_a", PROSE)).resolves.toBeUndefined();
+    expect(port.scrollTop).toBe(900);
+  });
+
+  // The app applies a retained-view restore only after its measurements and
+  // opening settlement, so the restore can land AFTER a one-shot barrier has
+  // already observed the bottom. This scripts that ordering: the restore fires
+  // 5ms into the wait, brings the reply with it, and scrolls back to the top.
+  // A barrier that resolved on the first bottom observation would leave the
+  // reply unmounted for the rest of the wait; correcting the tail on every
+  // poll brings it back and observes the reply.
+  test("a retained-view restore that lands after the first bottom observation is corrected", async () => {
+    document.body.innerHTML = `<div><div data-pane-scaffold="session:ref_a">
+      <section data-testid="transcript-virtual-list"><div id="port"></div></section>
+    </div></div>`;
+    const pane = document.querySelector("[data-pane-scaffold='session:ref_a']");
+    const port = document.getElementById("port");
+    const replyExpr = `(() => ${driver.turnTextsExpr("ref_a")}.some((text) => text.includes(${JSON.stringify(PROSE)}) && text.includes("skillguard turn complete")) ? true : null)()`;
+    let scrollTopValue = 0;
+    let replyReady = false;
+    let restoredAwayWithReplyUnseen = false;
+    const mountReplyIfReady = () => {
+      if (!replyReady || scrollTopValue < 896) return;
+      if (pane.querySelector("[data-testid='turn-block']")) return;
+      const row = document.createElement("div");
+      row.setAttribute("data-testid", "turn-block");
+      row.setAttribute("data-turn-id", "turn_m12");
+      row.textContent = `${PROSE} /pkg:probe skillguard turn complete`;
+      pane.appendChild(row);
+    };
+    Object.defineProperty(port, "scrollHeight", { configurable: true, get: () => 1000 });
+    Object.defineProperty(port, "clientHeight", { configurable: true, get: () => 100 });
+    Object.defineProperty(port, "scrollTop", {
+      configurable: true,
+      get: () => scrollTopValue,
+      set: (value) => {
+        scrollTopValue = value;
+        mountReplyIfReady();
+      },
+    });
+    const restore = setTimeout(() => {
+      replyReady = true;
+      scrollTopValue = 0;
+      for (const row of pane.querySelectorAll("[data-testid='turn-block']")) row.remove();
+      // At this instant the wait's own predicate cannot see the reply: the
+      // restore moved the reader away from the row the virtual list unmounted.
+      restoredAwayWithReplyUnseen = evaluateExpr(replyExpr) === null;
+    }, 5);
+    try {
+      const d = new Driver({ url: "http://127.0.0.1/", artifactDir: "", controlPath: "", milestonePath: "" });
+      // A timed-out wait dumps the page; with no CDP page, let that dump fail
+      // through its own catch instead of masking the timeout with a TypeError.
+      d.page = { send: () => Promise.reject(new Error("no page in this scripted test")) };
+      scriptWaitPage(d, { attempts: 200, delayMs: 1 });
+      await expect(d.waitForReply("ref_a", PROSE)).resolves.toBeUndefined();
+    } finally {
+      clearTimeout(restore);
+    }
+    expect(restoredAwayWithReplyUnseen).toBe(true);
+    expect(port.scrollTop).toBeGreaterThanOrEqual(896);
+    expect(document.querySelector("[data-testid='turn-block']")?.getAttribute("data-turn-id")).toBe("turn_m12");
+  });
+});
+
+// This driver starts Chrome itself. Its announcement wait used to be
+// CHILD_EXIT_GRACE_MS * 5 (10s) while every other guard used the shared
+// CHROME_ANNOUNCEMENT_DEADLINE_MS (120s), so a loaded runner that took longer
+// than 10s to print the DevTools line dropped a 5-PR merge-queue batch. The
+// fake browser below never announces; the faked clock makes the deadline the
+// only thing that decides when start() rejects.
+describe("Chrome DevTools announcement budget", () => {
+  class SilentChrome extends EventEmitter {
+    constructor() {
+      super();
+      this.stderr = new EventEmitter();
+      this.exitCode = null;
+      this.signalCode = null;
+    }
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test("keeps waiting past 10s and fails only at the shared 120s budget", async () => {
+    vi.useFakeTimers();
+    const spawned = [];
+    const d = new Driver({
+      url: "http://127.0.0.1/",
+      artifactDir: "",
+      controlPath: "",
+      milestonePath: "",
+      chromeBinary: "/fake/chrome",
+      spawnChrome: () => {
+        const child = new SilentChrome();
+        spawned.push(child);
+        return child;
+      },
+    });
+    let settled = false;
+    const started = d.start().then(
+      () => {
+        settled = true;
+        return null;
+      },
+      (error) => {
+        settled = true;
+        return error;
+      },
+    );
+    try {
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(CHROME_ANNOUNCEMENT_DEADLINE_MS - 10_000 - 1);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(started).resolves.toBeInstanceOf(Error);
+      expect(spawned).toHaveLength(1);
+    } finally {
+      for (const child of spawned) child.exitCode = 0;
+      vi.useRealTimers();
+      await d.lifecycle?.cleanup();
     }
   });
 });

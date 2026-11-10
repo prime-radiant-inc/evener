@@ -2,8 +2,10 @@ package plugin
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/frontmatter"
@@ -82,29 +84,35 @@ func ParseCommand(data []byte, name string, pluginName string) (Command, error) 
 // commandName is each file's basename with the .md extension stripped (a
 // frontmatter "name" field, if a plugin author includes one, is not read —
 // see ParseCommand).
-func discoverPluginCommands(pluginDir string, commandsOverride json.RawMessage, pluginName string) (map[string]Command, error) {
+//
+// A file that cannot be read or parsed is skipped and reported, so one bad file
+// leaves the plugin's other commands usable.
+func discoverPluginCommands(pluginDir string, commandsOverride json.RawMessage, pluginName string) (map[string]Command, []SkippedComponent, error) {
 	var override any
 	if len(commandsOverride) > 0 {
 		if err := json.Unmarshal(commandsOverride, &override); err != nil {
-			return nil, fmt.Errorf("parsing commands override: %w", err)
+			return nil, nil, fmt.Errorf("parsing commands override: %w", err)
 		}
 	}
 
 	files, err := componentMarkdownFiles(resolveComponentDirs(pluginDir, "commands", override))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	commands := map[string]Command{}
+	var skipped []SkippedComponent
 	for _, file := range files {
 		data, err := pluginReadFile(file)
 		if err != nil {
-			return nil, fmt.Errorf("reading command file %q: %w", filepath.Base(file), err)
+			skipped = append(skipped, SkippedComponent{Kind: "command", File: file, Reason: err.Error()})
+			continue
 		}
 		name := strings.TrimSuffix(filepath.Base(file), ".md")
 		command, err := ParseCommand(data, name, pluginName)
 		if err != nil {
-			return nil, fmt.Errorf("parsing command file %q: %w", filepath.Base(file), err)
+			skipped = append(skipped, SkippedComponent{Kind: "command", File: file, Reason: err.Error()})
+			continue
 		}
 		command.Source = "plugin"
 		command.File = file
@@ -112,25 +120,38 @@ func discoverPluginCommands(pluginDir string, commandsOverride json.RawMessage, 
 		commands[key] = command
 	}
 
-	return commands, nil
+	return commands, skipped, nil
 }
+
+// ErrCommandNotFound reports that no command matches the requested name.
+var ErrCommandNotFound = errors.New("command not found")
+
+// ErrAmbiguousCommand reports that an unqualified name matches more than one
+// plugin's command. The fully-qualified "plugin:command" form disambiguates.
+var ErrAmbiguousCommand = errors.New("ambiguous command")
 
 // ResolveCommand looks up a plugin command by name in a namespaced
 // ("plugin:command") map, such as the union of every loaded plugin's Commands.
 // It tries an exact match first (the fully-qualified "plugin:command" form the
 // map is keyed by), then falls back to matching name against the unqualified
-// suffix of each key — mirroring skill.ResolveSkillContent's bare-name lookup.
-// As with skill resolution, an unqualified name matching more than one
-// plugin's command resolves to whichever is found first in map iteration
-// order; the fully-qualified form disambiguates.
-func ResolveCommand(commands map[string]Command, name string) (Command, bool) {
+// suffix of each key. An unqualified name matching more than one plugin's
+// command returns ErrAmbiguousCommand; no match returns ErrCommandNotFound.
+func ResolveCommand(commands map[string]Command, name string) (Command, error) {
 	if cmd, ok := commands[name]; ok {
-		return cmd, true
+		return cmd, nil
 	}
-	for key, cmd := range commands {
+	var candidates []string
+	for key := range commands {
 		if _, unqualified, found := strings.Cut(key, ":"); found && unqualified == name {
-			return cmd, true
+			candidates = append(candidates, key)
 		}
 	}
-	return Command{}, false
+	switch len(candidates) {
+	case 0:
+		return Command{}, ErrCommandNotFound
+	case 1:
+		return commands[candidates[0]], nil
+	}
+	slices.Sort(candidates)
+	return Command{}, fmt.Errorf("%w %q: %s", ErrAmbiguousCommand, name, strings.Join(candidates, ", "))
 }

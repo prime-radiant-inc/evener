@@ -17,8 +17,8 @@ import (
 
 // This file fuzzes the compaction / context-management core of the contextmgr
 // package: the deterministic checkpoint distiller (collectCheckpointData +
-// formatCheckpoint), the LLM summarizer (summarizeWithLLMSteered), and the two
-// pluggable ManageContext strategies (CheckpointPredStrategy, SessionLogStrategy).
+// formatCheckpoint), the LLM summarizer (summarizeFold), and the
+// pluggable ManageContext strategy (SessionLogStrategy).
 //
 // All new top-level identifiers are prefixed with the lane token "ctxmgr_" so
 // this file never collides with a sibling fuzz lane editing the same package. It
@@ -101,7 +101,7 @@ func ctxmgr_buildHistory(r *ctxmgr_reader) []schema.Turn {
 			msg := r.str(200)
 			history = append(history,
 				schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
-					{Kind: llm.ContentToolCall, ToolCall: new(communicateCall(cid, msg))},
+					{Kind: llm.ContentToolCall, ToolCall: new(agenttest.CommunicateCall(cid, msg))},
 				}}),
 				schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(cid, "communicate", "ok", false)),
 			)
@@ -185,7 +185,7 @@ func ctxmgr_faultResponder(plan []byte) func(req llm.Request) error {
 
 // ctxmgr_scriptedClient builds an llm.Client whose single provider answers with
 // reply, failing calls per the fault plan. The provider name matches the
-// profile's own id so summarizeWithLLM's routes resolve to it.
+// profile's own id so summarizeFold's routes resolve to it.
 func ctxmgr_scriptedClient(provider, reply string, plan []byte) *llm.Client {
 	client := llm.NewClient()
 	client.Register(&agenttest.ScriptedAdapter{
@@ -250,8 +250,10 @@ func ctxmgr_countToolParts(history []schema.Turn, cutoff int) int {
 //     dropped or double-counted.
 //   - formatCheckpoint is deterministic and always emits the exact frame
 //     ("[CONTEXT CHECKPOINT]\n" … "[END CHECKPOINT]\n").
-//   - the never-shed metadata (files modified, per-tool counts, activated skills)
-//     survives into the rendered checkpoint verbatim.
+//   - the metadata (files modified, per-tool counts, activated skills) survives
+//     into the rendered checkpoint verbatim, unless it alone exceeds the budget:
+//     then the checkpoint carries the truncation marker and the transcript
+//     pointer stays at its head.
 func FuzzCtxmgrCheckpointData(f *testing.F) {
 	f.Add([]byte("\x00\x05hello\x03\x03cat\x05\x04msg1"), uint8(3), "sess-1", "skillA\nskillB")
 	f.Add([]byte("\x03\x00\x06/x/y.go\x06\x02ls\x040"), uint8(2), "", "")
@@ -301,26 +303,32 @@ func FuzzCtxmgrCheckpointData(f *testing.F) {
 		if !strings.HasSuffix(cp, "[END CHECKPOINT]\n") {
 			t.Fatalf("checkpoint missing closing frame: %q", cp[max(0, len(cp)-40):])
 		}
-		// Never-shed metadata survives verbatim into the rendered checkpoint.
-		for fpath := range got.fileWrites {
-			if !strings.Contains(cp, fpath) {
-				t.Fatalf("modified file %q missing from checkpoint", fpath)
+		// Metadata survives verbatim unless it alone exceeds the budget, in which
+		// case the cut is disclosed by the marker and the leading transcript
+		// pointer (when there is one) is kept.
+		if truncated := strings.Contains(cp, checkpointMetadataTruncated); !truncated {
+			for fpath := range got.fileWrites {
+				if !strings.Contains(cp, fpath) {
+					t.Fatalf("modified file %q missing from checkpoint", fpath)
+				}
 			}
-		}
-		for name := range got.toolCounts {
-			if !strings.Contains(cp, name) {
-				t.Fatalf("tool name %q missing from checkpoint", name)
+			for name := range got.toolCounts {
+				if !strings.Contains(cp, name) {
+					t.Fatalf("tool name %q missing from checkpoint", name)
+				}
 			}
-		}
-		for _, s := range skills {
-			if !strings.Contains(cp, s) {
-				t.Fatalf("activated skill %q missing from checkpoint", s)
+			for _, s := range skills {
+				if !strings.Contains(cp, s) {
+					t.Fatalf("activated skill %q missing from checkpoint", s)
+				}
 			}
+		} else if pointer := meta.compactionPointer("checkpoint"); pointer != "" && !strings.HasPrefix(cp, "[CONTEXT CHECKPOINT]\n"+pointer) {
+			t.Fatalf("truncated checkpoint lost its leading transcript pointer")
 		}
 	})
 }
 
-// FuzzCtxmgrSummarizeSteered drives summarizeWithLLMSteered against a scripted,
+// FuzzCtxmgrSummarizeSteered drives summarizeFold against a scripted,
 // fault-injected adapter so both the success path (a SUMMARY turn replaces the
 // old prefix) and the model-error path (every route fails → error returned) are
 // reached without any network call.
@@ -352,7 +360,7 @@ func FuzzCtxmgrSummarizeSteered(f *testing.F) {
 			client := ctxmgr_scriptedClient(profile.ID(), "## Progress\nhandoff summary body", faultPlan)
 			cm := NewManager(profile, client, cheapmodel.New(client))
 
-			result, err := cm.summarizeWithLLMSteered(context.Background(), history, preserve, instructions)
+			result, err := cm.summarizeFold(context.Background(), history, preserve, instructions, nil)
 			return result, history, err
 		}
 
@@ -370,7 +378,7 @@ func FuzzCtxmgrSummarizeSteered(f *testing.F) {
 		// A nil result is only legitimate when the input history was itself nil
 		// (the early no-op returns history unchanged).
 		if result == nil && len(history) > 0 {
-			t.Fatalf("summarizeWithLLMSteered returned nil result for non-empty history")
+			t.Fatalf("summarizeFold returned nil result for non-empty history")
 		}
 
 		// Preserved-suffix invariant.
@@ -401,7 +409,7 @@ func FuzzCtxmgrSummarizeSteered(f *testing.F) {
 			t.Fatalf("summarize nondeterministic error: run2 err=%v", err2)
 		}
 		if !reflect.DeepEqual(ctxmgr_fingerprints(result), ctxmgr_fingerprints(result2)) {
-			t.Fatalf("summarizeWithLLMSteered not deterministic")
+			t.Fatalf("summarizeFold not deterministic")
 		}
 	})
 }
@@ -419,55 +427,6 @@ func ctxmgr_manageThresholds(cm *Manager, sel uint8, preserveSel uint8) {
 		cm.SummarizeThreshold = 2.0
 	}
 	cm.PreserveRecentTurns = 1 + int(preserveSel)%8
-}
-
-// FuzzCtxmgrCheckpointPredManageContext drives CheckpointPredStrategy.ManageContext
-// end to end: observation masking, thinking clearing, predictive checkpoint (LLM,
-// falling back to the deterministic checkpoint on the fault-injected error), and
-// LLM summarization. The scripted adapter never hits the network.
-//
-// Oracles:
-//   - never panic; ManageContext returns nil.
-//   - compaction never grows history: len(after) <= len(before).
-//   - determinism: same input + same fault plan → same resulting history
-//     (compared by turn kind + message content).
-func FuzzCtxmgrCheckpointPredManageContext(f *testing.F) {
-	f.Add([]byte("\x00\x05hello\x02\x04work\x03\x06/a/b.go\x00\x03end\x02\x03more"), uint8(0x80), uint8(2), []byte(nil))
-	f.Add([]byte("\x05\x03hey\x06\x02ls\x040\x0a\x02t\x04tk"), uint8(0x03), uint8(3), []byte{0x00, 0x08})
-	f.Add([]byte{}, uint8(0), uint8(1), []byte(nil))
-	// Rich history + summarize-on + LLM success (nil fault plan): drives the
-	// predictive-checkpoint success path plus every prior masking layer.
-	f.Add(ctxmgr_richHistorySeed, uint8(0x80), uint8(2), []byte(nil))
-	// Same, but with an injected LLM fault so the deterministic-checkpoint
-	// fallback branch runs.
-	f.Add(ctxmgr_richHistorySeed, uint8(0x80), uint8(2), []byte{0x00, 0x00, 0x00})
-
-	f.Fuzz(func(t *testing.T, data []byte, thrSel uint8, preserveSel uint8, faultPlan []byte) {
-		run := func() []schema.Turn {
-			r := &ctxmgr_reader{b: data}
-			history := ctxmgr_buildHistory(r)
-
-			profile := testOpenAIProfileWithContextWindow(minSummarizingWindow)
-			client := ctxmgr_scriptedClient(profile.ID(), "## Progress\npredicted checkpoint body", faultPlan)
-			cm := NewManager(profile, client, cheapmodel.New(client))
-			ctxmgr_manageThresholds(cm, thrSel, preserveSel)
-
-			s := NewCheckpointPredStrategy(cm)
-			before := len(history)
-			if err := s.ManageContext(context.Background(), &history, int(thrSel), ctxmgr_noopEmit); err != nil {
-				t.Fatalf("ManageContext returned error: %v", err)
-			}
-			if len(history) > before {
-				t.Fatalf("compaction grew history: %d -> %d", before, len(history))
-			}
-			return history
-		}
-		a := run()
-		b := run()
-		if !reflect.DeepEqual(ctxmgr_fingerprints(a), ctxmgr_fingerprints(b)) {
-			t.Fatalf("CheckpointPredStrategy.ManageContext not deterministic")
-		}
-	})
 }
 
 // FuzzCtxmgrSessionLogManageContext drives SessionLogStrategy.ManageContext:

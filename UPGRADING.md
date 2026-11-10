@@ -4,47 +4,24 @@ Breaking changes and migration notes for evener.
 
 ## Before shutting down an older session
 
-**Saved session trees with legacy delegate lifecycle state or watches addressed
-through legacy delegate jobs cannot resume on the current runtime.** Preserve
-their history and workspace before shutting down the old daemon. A hub restart
-does not replace that daemon. `evener migrate` moves supported layouts and
-provider configuration; it does not convert this rejected runtime state.
+**Saved sessions that hold legacy delegate lifecycle state, or watches addressed
+through legacy delegate jobs, resume on the current runtime without that
+state.** The retired rows stay in the job journal and are ignored; the session
+reports a `legacy_delegate_state` warning when it starts. History, the workspace
+and every other saved record restore normally. Delegates that ran under the
+older runtime are not resumed: one that was still running is recorded as lost,
+like any job that did not survive a restart, and watches addressed through them
+end. Review their results in the transcript and start any remaining work as new
+delegates. `evener migrate` moves supported layouts and provider
+configuration; it does not convert this retired state.
 
-The refusal identifies `legacy_delegate_state` or
-`legacy_delegate_watch_state`. Keep the original state intact. Do not remove
-job or watch journals to bypass the check. Current-format saved sessions can
-restore, but readable history alone does not establish compatibility.
-
-1. Record the old build and effective state paths. Finish essential work on the
-   old runtime before the [maintenance shutdown](docs/evener-hub.md#upgrading-and-migrating-safely).
-2. Make a consistent private backup, then run the provider-free
-   [history restore rehearsal](docs/security.md#rehearse-history-restoration).
-   Inspect a copy, never the only surviving state.
-3. If restoration rejects legacy state, keep that copy for history. Review the
-   workspace and external job outcomes, then start a new task with a written
-   handoff: completed work, remaining work, relevant paths, and uncertain effects.
-   Do not use `--resume`, `--resume-last`, or `--resume-with` for this path.
-
-For CLI continuation, create a new private state directory outside the backup.
-Run this in Bash after setting `workspace` to the existing working directory and
-`model` to a configured model reference:
-
-```bash
-(
-  set -euo pipefail
-  umask 077
-  fresh_state=$(mktemp -d "${TMPDIR:-/tmp}/evener-continuation.XXXXXX")
-  printf 'Keep this new session state: %s\n' "$fresh_state"
-  evener --state-dir "$fresh_state" --dir "$workspace" --model "$model" \
-    'Review the preserved workspace and my handoff before continuing.'
-)
-```
-
-This starts a new session and can call the provider and run tools. It does not
-import the rejected session's history, jobs, delegates, watches, or queue. Keep
-the new state directory as well as the backup; move it into your backup policy
-before temporary-directory cleanup. Check the task's actual files and saved
-transcript before treating the continuation as successful.
+Finish essential work on the old runtime before the
+[maintenance shutdown](docs/evener-hub.md#upgrading-and-migrating-safely), make
+a consistent private backup, and run the provider-free
+[history restore rehearsal](docs/security.md#rehearse-history-restoration).
+A hub restart does not replace a session daemon. Do not remove job or watch
+journals to silence the warning: they are the only record of what the old
+delegates did.
 
 ## Unreleased — the `evener tui` subcommand is removed
 

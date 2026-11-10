@@ -26,6 +26,7 @@ import { rowRoleFor } from "./layoutRoles";
 import { TurnSeparator } from "./messages";
 import { ToolCallItem } from "./ToolCallItem";
 import { ToolRunGroup } from "./ToolRunGroup";
+import { TurnDoneEndCap } from "./TurnDoneEndCap";
 import { TurnFailureEndCap } from "./TurnFailureEndCap";
 import { toolRendererFor } from "./toolRenderers";
 import { foldTurnEntries, type ToolRun } from "./toolRuns";
@@ -196,8 +197,13 @@ export function ProjectedIntentGroup({
             ))}
           </div>
         </Disclosure>
+        {separatorTurn && separatorTurn.status === "completed" && !asTurnError(separatorTurn.error) && (
+          <div className={transcriptStyles.intentGroupItems} data-testid="turn-done-row">
+            <TurnDoneEndCap turn={separatorTurn} />
+          </div>
+        )}
+        {separatorTurn && <TurnSeparator turn={separatorTurn} />}
       </div>
-      {separatorTurn && <TurnSeparator turn={separatorTurn} />}
     </>
   );
 }
@@ -304,17 +310,22 @@ export function TurnBlock({
     const ItemRenderer = itemRendererFor(item.type);
     const opensExchange = exchangeOpeners?.has(item.id);
     const closesExchange = exchangeClosers?.has(item.id);
+    // One display key per entry: the row key, the renderer's stable identity
+    // and the anchor all share it.
+    const displayKey = entryDisplayKey(entry);
     const renderedItem = (
       <ItemRenderer
         item={item}
         turn={shownTurn}
         live={isItemLive(item)}
         sessionRef={sessionRef}
+        displayKey={displayKey}
         opensExchange={opensExchange}
         closesExchange={closesExchange}
         agentLabel={agentLabel}
         projectedSummary={entry.kind === "critical" ? entry.summary : undefined}
         contentFree={entry.kind === "thinking"}
+        contentFreeLive={entry.kind === "thinking" ? entry.live : undefined}
         redacted={entry.kind === "critical" && entry.redacted}
         renderContext={itemRenderContext}
         thread={thread}
@@ -327,18 +338,13 @@ export function TurnBlock({
     );
     if (rowRoleFor(item, { opensExchange }) === "speaker") {
       renderedEntries.push(
-        <div key={entryDisplayKey(entry)} {...viewAnchorFor(entry)}>
+        <div key={displayKey} {...viewAnchorFor(entry)}>
           {renderedItem}
         </div>,
       );
     } else {
       renderedEntries.push(
-        <div
-          key={entryDisplayKey(entry)}
-          className={CLASS.runContent}
-          data-testid="run-content"
-          {...viewAnchorFor(entry)}
-        >
+        <div key={displayKey} className={CLASS.runContent} data-testid="run-content" {...viewAnchorFor(entry)}>
           {renderedItem}
         </div>,
       );
@@ -354,7 +360,12 @@ export function TurnBlock({
         data-turn-status={displayStatus}
       >
         {renderedEntries}
-        {failure && <TurnFailureEndCap error={failure} sessionRef={sessionRef} />}
+        {failure && <TurnFailureEndCap error={failure} turnId={sourceTurn.id} sessionRef={sessionRef} />}
+        {!failure && displayStatus === "completed" && showTurnSeparator && (
+          <div className={CLASS.runContent} data-testid="turn-done-row">
+            <TurnDoneEndCap turn={sourceTurn} />
+          </div>
+        )}
         {showTurnSeparator && <TurnSeparator turn={sourceTurn} />}
       </div>
     </>

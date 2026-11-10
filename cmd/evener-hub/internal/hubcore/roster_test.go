@@ -375,8 +375,8 @@ func fuzzScenarioRoster_DefaultRunDir(t *testing.T) {
 	t.Setenv("HOME", "/tmp/fakehome")
 	t.Setenv("XDG_STATE_HOME", "")
 	want := filepath.Join("/tmp/fakehome", ".local", "state", "evener", "run") //nolint:gocritic // filepathJoin: base is a full home path; mirrors rendezvous.DefaultDir
-	if got := rendezvous.DefaultDir(); got != want {
-		t.Fatalf("DefaultDir: got %q want %q", got, want)
+	if got, err := rendezvous.DefaultDir(); err != nil || got != want {
+		t.Fatalf("DefaultDir: got %q, %v want %q", got, err, want)
 	}
 }
 
@@ -2430,5 +2430,13 @@ func TestRosterConfirmedReplacementOnAPIDAnnouncesTheOldSessionGone(t *testing.T
 	roster.Refresh()
 	if len(announced) != 1 {
 		t.Fatalf("the next refresh announced the departure again: %v", announced)
+	}
+}
+
+// An empty session ID names no child, so SubagentState never reports it live.
+func TestRosterSubagentStateEmptyID(t *testing.T) {
+	r := NewRoster("", nil)
+	if state, ok := r.SubagentState(""); ok || state != "" {
+		t.Fatalf("SubagentState(\"\") = %q, %v, want empty and not live", state, ok)
 	}
 }

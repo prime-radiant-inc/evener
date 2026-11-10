@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/goal"
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -404,7 +405,7 @@ func TestGoalHoldContinuationWaitsOnRunningDelegate(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t, withSteps(
 		func(req llm.Request) llm.Response {
-			return toolCallResponse(communicateCall("c1", "delegates still running"))
+			return agenttest.ToolCallResponse(communicateCall("c1", "delegates still running"))
 		},
 		func(req llm.Request) llm.Response {
 			t.Fatalf("reached a second LLM call: a held goal must not drive another continuation while dependents run")
@@ -438,9 +439,11 @@ func TestGoalHoldContinuationWaitsOnRunningDelegate(t *testing.T) {
 func TestGoalHoldNotificationTurnRearmsGoal(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t, withSteps(
-		func(req llm.Request) llm.Response { return toolCallResponse(communicateCall("c1", "waiting")) },
 		func(req llm.Request) llm.Response {
-			return toolCallResponse(communicateCall("c2", "batch adjudicated"))
+			return agenttest.ToolCallResponse(communicateCall("c1", "waiting"))
+		},
+		func(req llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(communicateCall("c2", "batch adjudicated"))
 		},
 	))
 	attachDelegateController(t, sess)
@@ -485,7 +488,7 @@ func TestGoalBreakerSystemTurnAppendedOnce(t *testing.T) {
 	steps := make([]func(req llm.Request) llm.Response, 0, goal.NeverProgressedLimit+1)
 	for i := range goal.NeverProgressedLimit {
 		steps = append(steps, func(req llm.Request) llm.Response {
-			return toolCallResponse(communicateCall(fmt.Sprintf("c%d", i), "poll"))
+			return agenttest.ToolCallResponse(communicateCall(fmt.Sprintf("c%d", i), "poll"))
 		})
 	}
 	steps = append(steps, func(req llm.Request) llm.Response {

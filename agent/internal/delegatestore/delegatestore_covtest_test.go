@@ -2,6 +2,7 @@ package delegatestore
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -32,7 +33,7 @@ func TestCovApplyDeliveryAcknowledged(t *testing.T) {
 		DelegateID:           "dlg_1",
 		DeliveryAcknowledged: &DeliveryAcknowledged{DeliveryID: "del_1"},
 	})
-	if err == nil || !strings.Contains(err.Error(), `delegate "dlg_1" does not exist`) {
+	if !errors.Is(err, ErrDelegateNotFound) {
 		t.Fatalf("missing aggregate error = %v", err)
 	}
 
@@ -97,7 +98,7 @@ func TestCovApplyAttentionChanged(t *testing.T) {
 		DelegateID:       "dlg_1",
 		AttentionChanged: &DelegateAttentionChanged{NeedsAttention: true},
 	})
-	if err == nil || !strings.Contains(err.Error(), `delegate "dlg_1" does not exist`) {
+	if !errors.Is(err, ErrDelegateNotFound) {
 		t.Fatalf("missing aggregate error = %v", err)
 	}
 

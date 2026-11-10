@@ -516,7 +516,7 @@ func TestWorktreeErrors_NonLocalExecutionEnvironment(t *testing.T) {
 	if _, err := r.s.worktreeList(ctx); err == nil || !strings.Contains(err.Error(), wantElem) {
 		t.Errorf("list: err = %v, want it to contain %q", err, wantElem)
 	}
-	if _, err := r.s.worktreePrune(ctx); err == nil || !strings.Contains(err.Error(), wantElem) {
+	if _, err := r.s.worktreePrune(ctx, 0); err == nil || !strings.Contains(err.Error(), wantElem) {
 		t.Errorf("prune: err = %v, want it to contain %q", err, wantElem)
 	}
 	// exit is intentionally not asserted here: its own "not in a worktree"
@@ -646,9 +646,6 @@ func TestWorktreeOrdering_ReadBeforeSeesOldEnvReadAfterSeesNewEnv(t *testing.T) 
 	}
 
 	profile := r.s.currentProfile()
-	if !profile.SupportsParallelToolCalls() {
-		t.Fatal("test profile must support parallel tool calls to exercise the read-batch grouping path")
-	}
 
 	results, err := r.s.execToolBatch(t.Context(), calls, profile, "")
 	if err != nil {

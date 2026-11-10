@@ -74,23 +74,26 @@ type probeFakeRunner struct {
 	stdio *probeFakeStdio
 }
 
-var probeGoodLaunchCheck = fmt.Sprintf(`{"protocol":%q,"version":"dev","launch_flags":["api-log"]}`, appwire.ProtocolVersion)
+var probeGoodLaunchCheck = fmt.Sprintf(`{"hub_endpoint_schema":1,"protocol":%q,"version":"dev","launch_flags":["api-log"]}`, appwire.ProtocolVersion)
 
-func (r *probeFakeRunner) Run(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-	joined := strings.Join(argv, " ")
-	switch {
-	case strings.HasSuffix(joined, "uname -s"):
+// Independently declared remote resolver data, not a translation of health output.
+const hostFixtureSelectedEndpoint = `{"schema_version":1,"state":"running","config_path":"/home/dev/.config/evener/hub.toml","hub_state_root":"/home/dev/.local/state/evener","configured_listen_addr":"0.0.0.0:0","listen_source":"config","running":{"schema_version":1,"boot_id":"host-fixture-boot","pid":4242,"started_at":"2026-10-15T00:00:00Z","config_path":"/home/dev/.config/evener/hub.toml","hub_state_root":"/home/dev/.local/state/evener","requested_listen_addr":"0.0.0.0:0","listen_source":"config","bound_addr":"0.0.0.0:19371","local_url":"http://127.0.0.1:19371","loopback_url":"http://127.0.0.1:19371","version":"dev"}}`
+
+func (r *probeFakeRunner) Run(ctx context.Context, argv []string, _ io.Reader) ([]byte, error) {
+	joined := strings.Join(argv[12:], " ")
+	switch joined {
+	case "uname -s":
 		return []byte("Linux\n"), nil
-	case strings.HasSuffix(joined, "uname -m"):
+	case "uname -m":
 		return []byte("x86_64\n"), nil
-	case strings.Contains(joined, "XDG_STATE_HOME"):
-		return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-	case strings.HasSuffix(joined, "id -u"):
+	case hostFixtureEnvironmentProbe:
+		return runHostFixtureEnvironmentProbe(ctx, joined, []string{"HOME=/home/dev", "XDG_STATE_HOME=", "XDG_CONFIG_HOME="})
+	case "id -u":
 		return []byte("1000\n"), nil
-	case strings.Contains(joined, "launch-check"):
+	case "evener launch-check --json":
 		return []byte(probeGoodLaunchCheck), nil
-	case strings.Contains(joined, "api/health"):
-		return []byte(`{"version":"dev","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+	case "evener hub endpoint --json":
+		return []byte(hostFixtureSelectedEndpoint), nil
 	default:
 		return nil, errors.New("unexpected remote command: " + joined)
 	}

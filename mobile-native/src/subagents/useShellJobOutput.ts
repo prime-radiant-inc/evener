@@ -5,7 +5,7 @@ import {
 	parseJobOutputPage,
 } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 
 /** A shell job's output as its detail shows it: still being read, not
  * readable (the read failed, or answered with a malformed page),

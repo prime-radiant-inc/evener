@@ -59,10 +59,8 @@ func TestConditionWatchNote_RidesTheFiredNotification(t *testing.T) {
 }
 
 // TestConditionWatchNote_LiteralEntityTextSurvivesTheBodyCodec proves the
-// watch-note lane composes into the "&"-first order the frontend card's
-// single full decode inverts exactly (RoboRev combined review of 5c202de,
-// MEDIUM): watchNotificationFromWatch pre-escapes "&", and
-// withNotificationNote's escapeNotificationBody then escapes "<", so a note
+// watch-note lane uses the central "&"-first body encoder and the client's
+// single two-entity decode inverts it exactly. A note
 // literally containing "&lt;" rides the wire as "&amp;lt;" — unambiguous
 // with a literal "<" (which rides as "&lt;"). Decoding "&amp;lt;" once
 // restores the literal "&lt;" text, never "<".

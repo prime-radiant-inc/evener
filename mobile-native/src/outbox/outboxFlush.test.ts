@@ -7,8 +7,6 @@ import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "../sqliteSync.t
 import { OutboxFlush, parseTargetKey } from "./outboxFlush";
 
 vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
-vi.mock("expo-crypto", () => ({ randomUUID: () => "test-uuid", getRandomValues: (array: Uint8Array) => array }));
-
 let database: SqliteDoubleDatabase | undefined;
 afterEach(() => {
 	database?.close();
@@ -54,6 +52,14 @@ function read(ref: string): ThreadReadResponse {
 			evener: { ref, capabilities: {}, queue: { clientMutationIds: [] }, mutationStateAuthoritative: true },
 		},
 	} as unknown as ThreadReadResponse;
+}
+
+/** The same read, from a session its own recovery fenced: the daemon reports
+ * that using it again requires a resume. */
+function fencedRead(ref: string): ThreadReadResponse {
+	const response = read(ref) as unknown as { thread: { evener: Record<string, unknown> } };
+	response.thread.evener = { ...response.thread.evener, resumeRequired: true };
+	return response as unknown as ThreadReadResponse;
 }
 
 function methods(client: FakeClient): string[] {
@@ -687,4 +693,109 @@ it("reads the hub and ref out of a composite target key", () => {
 	});
 	expect(parseTargetKey("local:thread-1")).toBeNull();
 	expect(parseTargetKey(JSON.stringify(["hub-1"]))).toBeNull();
+});
+
+// An identity-changing resume registers the resolved identity for the
+// runtime's lifetime. The runtime outlives an ordinary connection replacement,
+// so that entry can be left holding a client nobody serves. A registration is
+// not an owner when its client is gone: the replacement flush must claim the
+// target and deliver what is queued there, not skip it forever.
+it("claims a target whose registration belongs to a replaced client", async () => {
+	const outbox = runtime();
+	await outbox.submit(message());
+	const replaced = new FakeClient("closed");
+	const live = new FakeClient("ready");
+	live.on("thread/read", () => read("ref-1"));
+	live.on("turn/start", applied);
+
+	// The runtime holds the target for the dead client, as a stale resume
+	// registration would.
+	const release = outbox.registerTarget("hub-1", "ref-1", replaced);
+	try {
+		const flush = new OutboxFlush(() => outbox);
+		flush.bind("hub-1", live);
+		await vi.waitFor(() => expect(methods(live)).toContain("turn/start"));
+		flush.dispose();
+	} finally {
+		release();
+		await outbox.stop();
+	}
+});
+
+// A send whose attempt went out and whose outcome is unknown stays
+// "submitting"; Stop deliberately preserves it rather than canceling it,
+// because it may already be on the wire. That row is evidence of a delivery
+// in doubt, not a request to restart the session: reconnecting must not resume
+// a session the person force-stopped merely because the old row is still there.
+it("does not resume a fenced session for an attempted send the person already stopped", async () => {
+	const outbox = runtime();
+	await outbox.submit(message());
+	// The attempt reached the wire, so its outcome is unknown rather than never
+	// sent. Stop then keeps that row: it may already have been delivered.
+	await outbox.storage.markAttempted("mutation-1");
+	await outbox.submit({ ...message(), kind: "interrupt" });
+
+	const client = new FakeClient("ready");
+	// The session is fenced: the person force-stopped it, so the daemon reports
+	// a resume would be required to use it again.
+	client.on("thread/read", () => fencedRead("ref-1"));
+	client.on("thread/resume", () => read("ref-1"));
+	client.on("turn/start", applied);
+
+	const flush = new OutboxFlush(() => outbox);
+	flush.bind("hub-1", client);
+	await vi.waitFor(() => expect(methods(client)).toContain("thread/read"));
+	await flush.flush();
+
+	expect(methods(client)).not.toContain("thread/resume");
+	flush.dispose();
+	await outbox.stop();
+});
+
+// Declining the resume must not skip the read it already made. That read is
+// the only proof the flush gets about what landed: without reconciling it, an
+// attempted row stays "submitting" forever instead of surfacing as the
+// uncertain send it actually is.
+it("surfaces an uncertain attempted send when the resume is declined", async () => {
+	const outbox = runtime();
+	await outbox.submit(message());
+	await outbox.storage.markAttempted("mutation-1");
+
+	const client = new FakeClient("ready");
+	client.on("thread/read", () => fencedRead("ref-1"));
+	client.on("thread/start", applied);
+	const flush = new OutboxFlush(() => outbox);
+	flush.bind("hub-1", client);
+	await vi.waitFor(() => expect(methods(client)).toContain("thread/read"));
+	await flush.flush();
+
+	// The session stays fenced, so nothing dispatches, but the row must stop
+	// claiming to be in flight: its outcome is unknown, and that is what the
+	// recovery surface shows.
+	expect(await outbox.storage.getOutbox("mutation-1")).toMatchObject({ state: "blockedUnknown" });
+	flush.dispose();
+	await outbox.stop();
+});
+
+// The other side of that rule: a send the person pressed while the app was
+// offline was never attempted, so it is certainly still owed, and reconnecting
+// must resume the fenced session to deliver it.
+it("resumes a fenced session for a send that was never attempted", async () => {
+	const outbox = runtime();
+	await outbox.submit(message());
+
+	const client = new FakeClient("ready");
+	let fenced = true;
+	client.on("thread/read", () => (fenced ? fencedRead("ref-1") : read("ref-1")));
+	client.on("thread/resume", () => {
+		fenced = false;
+		return read("ref-1");
+	});
+	client.on("turn/start", applied);
+
+	const flush = new OutboxFlush(() => outbox);
+	flush.bind("hub-1", client);
+	await vi.waitFor(() => expect(methods(client)).toContain("thread/resume"));
+	flush.dispose();
+	await outbox.stop();
 });

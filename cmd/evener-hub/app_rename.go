@@ -53,7 +53,7 @@ func setThreadName(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 }
 
 func mutateThreadName(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, ref appwire.Ref, params appwire.ThreadNameSetParams, epoch uint64) (threadNameMutation, error) {
-	if ref.SourceID != "local" || threadNameIsLive(cfg, ref.ThreadID) || cfg.Past == nil {
+	if ref.SourceID != appwire.LocalSourceID || threadNameIsLive(cfg, ref.ThreadID) || cfg.Past == nil {
 		return renameLiveThread(ctx, cfg, sources, ref, params, epoch)
 	}
 	entry, ok := cfg.Past.Find(ref.ThreadID)
@@ -110,7 +110,7 @@ func renameLiveThread(ctx context.Context, cfg hubcore.WebConfig, sources *appso
 
 func refreshThreadNameMeta(cfg hubcore.WebConfig, ref appwire.Ref, name string) threadNameMutation {
 	mutation := threadNameMutation{}
-	if ref.SourceID != "local" || cfg.Past == nil {
+	if ref.SourceID != appwire.LocalSourceID || cfg.Past == nil {
 		return mutation
 	}
 	entry, ok := cfg.Past.Find(ref.ThreadID)

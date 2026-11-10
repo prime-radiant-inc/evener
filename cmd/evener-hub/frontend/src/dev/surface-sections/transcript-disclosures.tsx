@@ -79,7 +79,14 @@ function makeDisclosureModel(): ThreadModel {
 
 function config(expandByDefault: boolean) {
   return makeTranscriptDisplayConfig(
-    { kind: "custom", toolIntent: true, toolCalls: false, reasoning: true, expandByDefault },
+    {
+      kind: "custom",
+      toolIntent: true,
+      toolCalls: false,
+      reasoning: true,
+      expandByDefault,
+      thinkingOpenByDefault: expandByDefault,
+    },
     { systemEvents: true, promptEvents: true },
   );
 }

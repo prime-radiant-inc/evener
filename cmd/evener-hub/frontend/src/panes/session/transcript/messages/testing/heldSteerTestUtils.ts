@@ -10,9 +10,8 @@
 // writes to it; the ref option seeds a ref other than ref_a (the ref-change
 // baseline test needs ref_b's hold to predate its first observation), every
 // other caller takes the default.
-import type { ConnectionState, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { connectionStore } from "../../../../../stores/connection";
+import type { Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { MutationOutboxIndexedDB } from "../../../../../stores/mutationOutboxIndexedDB";
 import type { InputAttachment } from "../../../../../stores/threads";
 import { threadsStore } from "../../../../../stores/threads";
@@ -65,12 +64,6 @@ export function readResponse(ref: string, overrides: Partial<Thread> = {}): Thre
   return { thread: testThread(ref, overrides) };
 }
 
-export function connectFakeClient(state: ConnectionState = "ready"): FakeClient {
-  const fake = new FakeClient(state);
-  connectionStore.getState().connect(fake);
-  return fake;
-}
-
 export async function hydrate(fake: FakeClient, ref: string, overrides: Partial<Thread> = {}): Promise<void> {
   fake.on("thread/read", () => readResponse(ref, overrides));
   await threadsStore.getState().ensureThread(ref);
@@ -79,7 +72,7 @@ export async function hydrate(fake: FakeClient, ref: string, overrides: Partial<
 export async function seedHeld(
   method: PendingMethod,
   text: string,
-  opts: { ref?: string; skillNames?: string[]; attachments?: InputAttachment[] } = {},
+  opts: { ref?: string; skillNames?: string[]; attachments?: InputAttachment[]; attempted?: boolean } = {},
 ): Promise<string> {
   const ref = opts.ref ?? "ref_a";
   const wireMethod = {
@@ -115,6 +108,7 @@ export async function seedHeld(
     })),
     optimisticDisplay: { method: wireMethod, input },
   });
+  if (opts.attempted) await storage.markAttempted(outbox.clientMutationId);
   storage.close();
   await refreshPendingTurnsProjection(ref);
   await flushPendingTurnsProjectionForTests();

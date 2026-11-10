@@ -17,7 +17,7 @@ import { hostRow, type ScriptedFleet, scriptedFleet } from "../hosts/hostsTestUt
 import { Tag } from "../sheet/Grouped";
 import { HubHome } from "./HubHome";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider } from "./hubSheetContext";
-import { createPhoneHubUpdates, createReadiness, type PhoneHubUpdates } from "./hubUpdates";
+import { createPhoneHubUpdates, createReadiness, type PhoneHubUpdates, RESTART_RECHECK_MS } from "./hubUpdates";
 
 const status = { line: null as string | null };
 vi.mock("../board/connectionStatus", async (importOriginal) => ({
@@ -31,7 +31,6 @@ const connection = vi.hoisted(() => ({
 	value: { state: "ready", fatal: false, client: null, activeProfile: null } as Record<string, unknown>,
 }));
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => connection.value }));
-vi.mock("expo-crypto", () => ({ randomUUID: () => "fixture-uuid" }));
 vi.mock("@react-navigation/native", async () => {
 	const { useEffect } = await import("react");
 	return {
@@ -45,31 +44,58 @@ vi.mock("@react-navigation/native", async () => {
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("expo-application", () => ({ nativeApplicationVersion: "0.1.0", nativeBuildVersion: "5" }));
+
+const FIRST_START = "2026-10-21T12:00:00Z";
+const SECOND_START = "2026-10-21T12:00:01Z";
 
 const UP_TO_DATE: UpdateCheckResponse = {
 	channel: "release",
 	buildChannel: "release",
 	currentVersion: "0.9.412",
 	currentCommit: "abc1234",
+	latestTag: "v0.9.413",
+	latestCommit: "def5678ffffffff",
 	updateAvailable: false,
 	applicable: true,
+	onDiskCommit: "abc1234",
+	installAvailable: false,
+	restartPending: false,
+	startedAt: FIRST_START,
+	restartSupported: true,
+	installTargetMatchesLaunch: true,
 };
-const WAITING: UpdateCheckResponse = { ...UP_TO_DATE, updateAvailable: true, latestTag: "v0.9.413" };
+const WAITING: UpdateCheckResponse = { ...UP_TO_DATE, updateAvailable: true, installAvailable: true };
+const INSTALLED: UpdateCheckResponse = { ...UP_TO_DATE, onDiskCommit: "def5678", restartPending: true };
 
-/** A hub that answers update checks from `check` (or refuses them) and
- * restarts on apply. */
+/** A hub that answers update checks from `check` (or refuses them), installs
+ * on upgrade, and restarts on restart. */
 function hub(check: UpdateCheckResponse | Error) {
 	const calls: string[] = [];
-	const script = { failChecks: false };
+	const script = {
+		failChecks: false,
+		failUpgrade: false,
+		holdUpgrade: false,
+		releaseUpgrade: undefined as (() => void) | undefined,
+		startedAt: undefined as string | undefined,
+	};
 	const client = {
 		request: (async (method: string) => {
 			calls.push(method);
-			if (method === "evener/update/apply") return { restarting: true };
+			if (method === "evener/upgrade") {
+				if (script.failUpgrade) throw new Error("socket hung up");
+				if (script.holdUpgrade) {
+					return new Promise<void>((resolve) => {
+						script.releaseUpgrade = resolve;
+					});
+				}
+				return {};
+			}
+			if (method === "evener/hub/restart") return { restarting: true };
+			if (method === "evener/update/apply") return { restarting: false };
 			if (check instanceof Error) throw check;
 			if (script.failChecks) throw new Error("the hub is still starting");
-			return check;
+			return script.startedAt === undefined ? check : { ...check, startedAt: script.startedAt };
 		}) as never,
 	};
 	return { client, calls, script };
@@ -358,29 +384,131 @@ it("says the hub is up to date, and offers no update", async () => {
 	const { tree, find } = await mount({ check: UP_TO_DATE });
 	expect(connectionState(tree)).toEqual(["connected"]);
 	expect(renderedText(tree)).toContain("0.9.412");
-	expect(find("Update hub")).toBeNull();
+	expect(find("Install update")).toBeNull();
+	expect(find("Restart hub")).not.toBeNull();
 });
 
-it("offers a waiting update, confirms it, installs it, and says the hub is restarting", async () => {
-	const { tree, find, press, calls } = await mount({ check: WAITING });
-	expect(find("Update hub")).not.toBeNull();
-	press("Update hub");
+it("offers a waiting install, confirms it, and sends evener/upgrade without restarting", async () => {
+	const { find, press, calls } = await mount({ check: WAITING });
+	expect(find("Install update")).not.toBeNull();
+	press("Install update");
 	expect(alertRequests).toHaveLength(1);
 	expect(alertRequests[0]?.title).toContain("Work hub");
 	expect(alertRequests[0]?.message).toContain("v0.9.413");
-	expect(calls).not.toContain("evener/update/apply");
+	expect(calls).not.toContain("evener/upgrade");
 	await act(async () => {
-		alertRequests[0]?.buttons?.find((button) => button.text === "Update")?.onPress?.();
+		alertRequests[0]?.buttons?.find((button) => button.text === "Install")?.onPress?.();
 	});
-	expect(calls).toContain("evener/update/apply");
-	expect(find("Update hub")).toBeNull();
-	expect(updateReports(tree)).toEqual(["restarting"]);
-	expect(renderedText(tree)).toContain("v0.9.413");
+	expect(calls).toContain("evener/upgrade");
+	expect(calls).not.toContain("evener/hub/restart");
+});
+
+it("keeps the install row visible while the upgrade is pending", async () => {
+	const { find, press, script } = await mount({ check: WAITING });
+	script.holdUpgrade = true;
+	press("Install update");
+	await act(async () => {
+		alertRequests[0]?.buttons?.find((button) => button.text === "Install")?.onPress?.();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+	const row = find("Install update");
+	expect(row).not.toBeNull();
+	expect(row?.props.disabled).toBe(true);
+	await act(async () => {
+		script.releaseUpgrade?.();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
 });
 
 it("holds the update while the hub isn't ready", async () => {
 	const { find } = await mount({ check: WAITING, ready: false });
-	expect(find("Update hub")?.props.disabled).toBe(true);
+	expect(find("Install update")?.props.disabled).toBe(true);
+});
+
+it("hides Restart on a hub that does not report restart support", async () => {
+	const { find } = await mount({
+		check: { ...UP_TO_DATE, restartSupported: undefined as unknown as boolean },
+	});
+	expect(find("Restart hub")).toBeNull();
+});
+
+it("offers the combined update action on an older hub", async () => {
+	const { find, press, calls } = await mount({
+		check: {
+			...WAITING,
+			installAvailable: undefined as unknown as boolean,
+			restartSupported: undefined as unknown as boolean,
+		},
+	});
+	expect(find("Install update")).toBeNull();
+	expect(find("Restart hub")).toBeNull();
+	expect(find("Update and restart")).not.toBeNull();
+	press("Update and restart");
+	await act(async () => {
+		alertRequests[0]?.buttons?.find((button) => button.text === "Update")?.onPress?.();
+	});
+	expect(calls).toContain("evener/update/apply");
+});
+
+it("does not offer the combined action when a current hub reports restart disabled", async () => {
+	const { find, tree } = await mount({
+		check: {
+			...WAITING,
+			restartSupported: false,
+			installAvailable: false,
+			installTarget: "/opt/evener",
+			installTargetMatchesLaunch: false,
+		},
+	});
+	expect(find("Update and restart")).toBeNull();
+	expect(find("Restart hub")).toBeNull();
+	expect(renderedText(tree)).toContain("/opt/evener");
+});
+
+it("reconciles a lost install once the connection is ready", async () => {
+	const { script, calls } = await mount({ check: WAITING });
+	const before = calls.filter((method) => method === "evener/update/check").length;
+	script.failUpgrade = true;
+	await act(async () => {
+		await updates.controller.install();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+	expect(calls.filter((method) => method === "evener/update/check").length).toBeGreaterThan(before);
+	expect(updates.controller.getState().installReconcile).toBe(false);
+});
+
+it("shows the on-disk build and its probe error", async () => {
+	const { tree } = await mount({ check: UP_TO_DATE });
+	expect(renderedText(tree)).toContain("On disk abc1234");
+
+	const failed = await mount({
+		check: { ...UP_TO_DATE, onDiskCommit: undefined, onDiskError: "probe failed" },
+	});
+	expect(renderedText(failed.tree)).toContain("probe failed");
+});
+
+it("explains an install target that is not the running binary", async () => {
+	const { tree } = await mount({
+		check: { ...UP_TO_DATE, installTarget: "/opt/evener", installTargetMatchesLaunch: false },
+	});
+	expect(renderedText(tree)).toContain("/opt/evener");
+});
+
+it("does not warn about the install target on a build that cannot install", async () => {
+	const { tree } = await mount({
+		check: { ...UP_TO_DATE, applicable: false, installTarget: "/opt/evener", installTargetMatchesLaunch: false },
+	});
+	expect(tree.root.findAllByProps({ testID: "hub-update-install-target" })).toHaveLength(0);
+});
+
+it("shows a dirty running build in the pending and confirm text", async () => {
+	const { tree, press } = await mount({
+		check: { ...INSTALLED, currentVersion: "abc1234-dirty" },
+	});
+	expect(renderedText(tree)).toContain("running abc1234-dirty");
+
+	press("Restart hub");
+	expect(alertRequests[0]?.message).toContain("running abc1234-dirty");
 });
 
 it("shows a failed check as a line, with nothing to press", async () => {
@@ -391,29 +519,38 @@ it("shows a failed check as a line, with nothing to press", async () => {
 	expect(renderedText(tree)).toContain(updates.controller.getState().checkError ?? "");
 });
 
-it("sends no update confirmed after the connection went away", async () => {
-	const { press, calls, live } = await mount({ check: WAITING });
-	press("Update hub");
-	live.usable = false;
-	await act(async () => {
-		alertRequests[0]?.buttons?.find((button) => button.text === "Update")?.onPress?.();
+it("keeps Restart available when only the channel check fails", async () => {
+	const { tree, find } = await mount({
+		check: { ...UP_TO_DATE, checkError: "rate limit exceeded", restartSupported: true },
 	});
-	expect(calls).not.toContain("evener/update/apply");
+	expect(renderedText(tree)).toContain("rate limit");
+	expect(find("Restart hub")).not.toBeNull();
 });
 
-it("says so when the hub restarts without the update", async () => {
-	const { tree, press, readiness } = await mount({ check: WAITING });
-	press("Update hub");
+it("sends no update confirmed after the connection went away", async () => {
+	const { press, calls, live } = await mount({ check: WAITING });
+	press("Install update");
+	live.usable = false;
 	await act(async () => {
-		alertRequests[0]?.buttons?.find((button) => button.text === "Update")?.onPress?.();
+		alertRequests[0]?.buttons?.find((button) => button.text === "Install")?.onPress?.();
 	});
-	// The hub comes back on the version it had.
+	expect(calls).not.toContain("evener/upgrade");
+});
+
+it("confirms a restart and clears it when the hub returns on a new incarnation at the same version", async () => {
+	const { press, readiness, script, calls } = await mount({ check: INSTALLED });
+	press("Restart hub");
+	await act(async () => {
+		alertRequests[0]?.buttons?.find((button) => button.text === "Restart")?.onPress?.();
+	});
+	expect(calls).toContain("evener/hub/restart");
+	script.startedAt = SECOND_START;
 	await act(async () => {
 		readiness.set(false);
 		readiness.set(true);
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	});
-	expect(updateReports(tree)).toEqual(["not-taken"]);
+	expect(updates.controller.getState().restartTimedOut).toBe(false);
 });
 
 it("opens Display inside the sheet, valued with this phone's appearance", async () => {
@@ -423,11 +560,32 @@ it("opens Display inside the sheet, valued with this phone's appearance", async 
 	expect(sheet.navigate).toHaveBeenCalledWith("Display", { hubId: "hub-1" });
 });
 
-it("says the update couldn't be confirmed when the hub's first answer after the restart fails", async () => {
-	const { tree, press, readiness, script } = await mount({ check: WAITING });
-	press("Update hub");
+it("keeps waiting when a reconnect reaches the old process, then confirms the new one", async () => {
+	const { tree, press, readiness, script } = await mount({ check: INSTALLED });
+	press("Restart hub");
 	await act(async () => {
-		alertRequests[0]?.buttons?.find((button) => button.text === "Update")?.onPress?.();
+		alertRequests[0]?.buttons?.find((button) => button.text === "Restart")?.onPress?.();
+	});
+	await act(async () => {
+		readiness.set(false);
+		readiness.set(true);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+	expect(updates.controller.getState()).toMatchObject({ restarting: true, restartTimedOut: false });
+
+	script.startedAt = SECOND_START;
+	await act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, RESTART_RECHECK_MS + 50));
+	});
+	expect(updates.controller.getState()).toMatchObject({ restarting: false, restartTimedOut: false });
+	expect(updateReports(tree)).not.toContain("restart-timeout");
+});
+
+it("retries a failed answer in the restart window, then confirms the new incarnation", async () => {
+	const { tree, press, readiness, script } = await mount({ check: INSTALLED });
+	press("Restart hub");
+	await act(async () => {
+		alertRequests[0]?.buttons?.find((button) => button.text === "Restart")?.onPress?.();
 	});
 	script.failChecks = true;
 	await act(async () => {
@@ -435,5 +593,13 @@ it("says the update couldn't be confirmed when the hub's first answer after the 
 		readiness.set(true);
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	});
-	expect(updateReports(tree)).toEqual(["unconfirmed"]);
+	expect(updates.controller.getState()).toMatchObject({ restarting: true, restartTimedOut: false });
+
+	script.failChecks = false;
+	script.startedAt = SECOND_START;
+	await act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, RESTART_RECHECK_MS + 50));
+	});
+	expect(updates.controller.getState()).toMatchObject({ restarting: false, restartTimedOut: false });
+	expect(updateReports(tree)).not.toContain("restart-timeout");
 });

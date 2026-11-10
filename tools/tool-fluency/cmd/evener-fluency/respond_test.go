@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -17,13 +17,13 @@ import (
 // every field of an ask_user call -- multi_select, why, if_unanswered, and a
 // recommended option -- not just the question text and option labels (#3515).
 func TestRenderQuestionsForRespondShowsFullAskFields(t *testing.T) {
-	questions := []agent.AskUserQuestion{{
+	questions := []schema.AskUserQuestion{{
 		Header:       "Deploy",
 		Question:     "Which env?",
 		MultiSelect:  true,
 		Why:          "it decides the rollout",
 		IfUnanswered: "I will hold the release",
-		Options: []agent.AskUserOption{
+		Options: []schema.AskUserOption{
 			{Label: "staging", Detail: "safe", Recommended: true},
 			{Label: "prod"},
 		},

@@ -1,4 +1,5 @@
 import {
+	configFingerprint,
 	createKeybindingsStore,
 	createTranscriptDisplayStore,
 	type FeatureSet,
@@ -17,6 +18,8 @@ import {
 } from "@evener/appwire-client";
 
 type NativeFeatures = Pick<FeatureSet, "keybindingsSettings" | "transcriptDisplaySettings">;
+
+type NativeTranscriptLocalStorage = import("./nativePreferenceDrafts").NativeTranscriptLocalStorage;
 export interface PreferenceState<T> {
 	support: KeybindingsSupport;
 	loading: boolean;
@@ -50,7 +53,12 @@ export type KeybindingsPreferenceState = PreferenceState<ConfirmedKeybindings> &
 export type TranscriptMobilePreferenceState = PreferenceState<{
 	revision: number;
 	config: TranscriptDisplayConfigV1;
-}>;
+}> & {
+	/** The phone's local override for this hub, retained when an older hub
+	 * cannot store a divergent presentation preference. Effective over the
+	 * confirmed hub default. Absent on a snapshot built before it existed. */
+	local?: TranscriptDisplayConfigV1 | null;
+};
 
 export interface NativePreferencesSnapshot {
 	keybindings: KeybindingsPreferenceState;
@@ -123,12 +131,16 @@ function transcriptErrorMessage(state: TranscriptDisplayStoreState): string | nu
 	return state.hubError !== null || state.writeUncertain ? HUB_UNCONFIRMED_MESSAGE : null;
 }
 
-function transcriptDomain(state: TranscriptDisplayStoreState): TranscriptMobilePreferenceState {
+function transcriptDomain(
+	state: TranscriptDisplayStoreState,
+	local: TranscriptDisplayConfigV1 | null,
+): TranscriptMobilePreferenceState {
 	return {
 		support: state.hubSupport,
 		loading: state.hubLoading,
 		saving: state.saving,
 		confirmed: state.hub.mobile ?? null,
+		local,
 		draft:
 			state.draft === null || state.draft.layout !== "mobile"
 				? null
@@ -143,6 +155,8 @@ function transcriptDomain(state: TranscriptDisplayStoreState): TranscriptMobileP
 
 export class NativePreferences {
 	private state: NativePreferencesSnapshot;
+	private readonly transcriptLocalStorage: NativeTranscriptLocalStorage | undefined;
+	private transcriptLocal: TranscriptDisplayConfigV1 | null;
 	private readonly listeners = new Set<() => void>();
 	private readonly keybindings: KeybindingsStore;
 	private readonly transcripts: ReturnType<typeof createTranscriptDisplayStore>;
@@ -155,6 +169,7 @@ export class NativePreferences {
 		features: NativeFeatures,
 		transcriptStorage?: TranscriptDraftStorage,
 		keybindingStorage?: KeybindingDraftStorage,
+		transcriptLocalStorage?: NativeTranscriptLocalStorage,
 	) {
 		// One store per model, like one model per ready connection: the
 		// features are the handshake's, so support is final and the one ready
@@ -175,15 +190,17 @@ export class NativePreferences {
 		});
 		this.transcripts.setSupport(transcriptDisplaySupport(features));
 		this.transcripts.beginReadyGeneration();
+		this.transcriptLocalStorage = transcriptLocalStorage;
+		this.transcriptLocal = transcriptLocalStorage?.load() ?? null;
 		this.state = {
 			keybindings: keybindingsDomain(this.keybindings.getState()),
-			transcriptMobile: transcriptDomain(this.transcripts.getState()),
+			transcriptMobile: transcriptDomain(this.transcripts.getState(), this.transcriptLocal),
 		};
 		this.unsubscribeKeybindings = this.keybindings.subscribe((state) =>
 			this.publish({ keybindings: keybindingsDomain(state) }),
 		);
 		this.unsubscribeTranscripts = this.transcripts.subscribe((state) =>
-			this.publish({ transcriptMobile: transcriptDomain(state) }),
+			this.publish({ transcriptMobile: transcriptDomain(state, this.transcriptLocal) }),
 		);
 	}
 
@@ -232,7 +249,46 @@ export class NativePreferences {
 	async saveTranscript(
 		config?: TranscriptDisplayConfigV1,
 	): Promise<{ revision: number; config: TranscriptDisplayConfigV1 }> {
-		return this.transcripts.getState().saveDraft("mobile", config);
+		// The requested config survives the save only as the acknowledged one;
+		// read it before saveDraft settles and clears the draft.
+		const requested = config ?? this.transcripts.getState().draft?.config ?? null;
+		const acknowledged = await this.transcripts.getState().saveDraft("mobile", config);
+		this.recordTranscriptOverrides(requested, acknowledged.config);
+		return acknowledged;
+	}
+
+	/** A hub that predates thinkingOpenByDefault acknowledges a divergent
+	 * custom with its four-field reading, so the presentation preference
+	 * survives only as this phone's local override - never silently reset.
+	 * A hub that carries the field acknowledges the request exactly, which
+	 * clears the override. */
+	private recordTranscriptOverrides(
+		requested: TranscriptDisplayConfigV1 | null,
+		acknowledged: TranscriptDisplayConfigV1,
+	): void {
+		if (requested === null) return;
+		if (configFingerprint(requested) === configFingerprint(acknowledged)) {
+			this.setTranscriptLocal(null);
+			return;
+		}
+		const requestedCustom = requested.content.kind === "custom" ? requested.content : null;
+		const acknowledgedCustom = acknowledged.content.kind === "custom" ? acknowledged.content : null;
+		if (
+			requestedCustom !== null &&
+			acknowledgedCustom !== null &&
+			requestedCustom.thinkingOpenByDefault !== acknowledgedCustom.thinkingOpenByDefault
+		) {
+			this.setTranscriptLocal(requested);
+		}
+	}
+
+	private setTranscriptLocal(config: TranscriptDisplayConfigV1 | null): void {
+		if (this.transcriptLocal === null && config === null) return;
+		this.transcriptLocal = config;
+		this.transcriptLocalStorage?.save(config);
+		this.publish({
+			transcriptMobile: transcriptDomain(this.transcripts.getState(), this.transcriptLocal),
+		});
 	}
 
 	async editTranscript(config: TranscriptDisplayConfigV1): Promise<void> {

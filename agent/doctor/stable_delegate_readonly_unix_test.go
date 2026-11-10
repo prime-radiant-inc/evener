@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-func TestDoctorStableDelegateReadOnlyDoesNotMutateState(t *testing.T) {
+func TestDoctorDelegateReadOnlyDoesNotMutateState(t *testing.T) {
 	base, sid, jobsPath, delegatesPath := stableDoctorFixture(t)
 	beforeJobs := stableDoctorFileStateOf(t, jobsPath)
 	beforeDelegates := stableDoctorFileStateOf(t, delegatesPath)

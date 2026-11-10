@@ -2,10 +2,40 @@ package hubtestenv
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestRedirectClearsRetiredHubAddr(t *testing.T) {
+	const helper = "EVENER_HUB_TEST_RETIRED_ENV_HELPER"
+	if os.Getenv(helper) == "1" {
+		if _, ok := os.LookupEnv("EVENER_HUB_ADDR"); !ok {
+			t.Fatal("retired setting was not inherited")
+		}
+		env := Redirect("evener-hub-retired-env-test-")
+		defer env.Discard()
+		if _, ok := os.LookupEnv("EVENER_HUB_ADDR"); ok {
+			t.Fatal("retired EVENER_HUB_ADDR survived isolation")
+		}
+		return
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(t.Context(), exe, "-test.run=^TestRedirectClearsRetiredHubAddr$")
+	for _, entry := range os.Environ() {
+		if !strings.HasPrefix(entry, "EVENER_HUB_ADDR=") && !strings.HasPrefix(entry, RootVar+"=") && !strings.HasPrefix(entry, helper+"=") {
+			cmd.Env = append(cmd.Env, entry)
+		}
+	}
+	cmd.Env = append(cmd.Env, "EVENER_HUB_ADDR=127.0.0.1:19371", RootVar+"="+t.TempDir(), helper+"=1")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("retired setting isolation: %v\n%s", err, out)
+	}
+}
 
 // TestContainedInResolvesSymlinksAndTraversal pins the containment test every
 // package's guard relies on: it must see through a symlinked root (a macOS temp

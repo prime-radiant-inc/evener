@@ -33,6 +33,71 @@ export function formatDurationMs(ms: number): string {
   return `${Math.round(rounded / 1000)}s`;
 }
 
+export type DurationUnit = "second" | "minute" | "hour" | "day";
+
+export const DURATION_UNIT_MS: Record<DurationUnit, number> = {
+  second: 1_000,
+  minute: 60_000,
+  hour: 3_600_000,
+  day: 86_400_000,
+};
+
+// A duration in its one largest whole unit, rounded down. Negative (clock
+// skew) and non-finite input read as zero seconds.
+export function durationParts(ms: number): { count: number; unit: DurationUnit } {
+  const seconds = Number.isFinite(ms) ? Math.max(0, Math.floor(ms / 1000)) : 0;
+  if (seconds < 60) return { count: seconds, unit: "second" };
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return { count: minutes, unit: "minute" };
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return { count: hours, unit: "hour" };
+  return { count: Math.floor(hours / 24), unit: "day" };
+}
+
+// The compact stamp for a duration or age: 40s, 12m, 3h, 2d.
+export function compactDuration(ms: number): string {
+  const { count, unit } = durationParts(ms);
+  return `${count}${unit[0]}`;
+}
+
+// The same duration as a screen reader should say it: "3 minutes", "1 day".
+export function spokenDuration(ms: number): string {
+  const { count, unit } = durationParts(ms);
+  return `${count} ${unit}${count === 1 ? "" : "s"}`;
+}
+
+// A caller-supplied span of seconds in the units a person would say it in.
+// Sub-minute stays in seconds ("45s", fractional "1.5s" for sub-second
+// producer precision such as progress_interval_ms 1500); whole minutes
+// collapse ("5m"); leftover seconds are kept ("1m30s", never a lossy "1m");
+// an hour or more names hours and leftover minutes ("1h05m"). Rounding
+// happens FIRST, so a 60s carry can never surface ("1m60s"): the seconds path
+// runs iff the rounded value is below 60, and the minute path divides the
+// rounded value, whose remainder is always below 60.
+export function formatSpan(totalSeconds: number): string {
+  const rounded = Math.round(totalSeconds);
+  if (rounded < 60) {
+    if (Number.isInteger(totalSeconds)) return `${rounded}s`;
+    return `${(Math.round(totalSeconds * 10) / 10).toString()}s`;
+  }
+  const totalMinutes = Math.floor(rounded / 60);
+  const leftoverSeconds = rounded % 60;
+  if (totalMinutes < 60) {
+    return leftoverSeconds === 0 ? `${totalMinutes}m` : `${totalMinutes}m${String(leftoverSeconds).padStart(2, "0")}s`;
+  }
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes === 0 ? `${hours}h` : `${hours}h${String(minutes).padStart(2, "0")}m`;
+}
+
+// Epoch milliseconds of an ISO timestamp; a missing or malformed one stays
+// absent.
+export function parseTimestampMs(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? undefined : parsed;
+}
+
 // Returns a clipped first non-blank line.
 export function firstLine(text: string, maxLen: number): string {
   const line = text
@@ -59,17 +124,6 @@ export function formatClockTime(iso: string | undefined): string | undefined {
   const hours = String(parsed.getHours()).padStart(2, "0");
   const minutes = String(parsed.getMinutes()).padStart(2, "0");
   return `${hours}:${minutes}`;
-}
-
-// Seconds-carrying local time for card activity.
-export function formatClockTimeSeconds(iso: string | undefined): string | undefined {
-  if (iso === undefined) return undefined;
-  const parsed = new Date(iso);
-  if (Number.isNaN(parsed.getTime())) return undefined;
-  const hours = String(parsed.getHours()).padStart(2, "0");
-  const minutes = String(parsed.getMinutes()).padStart(2, "0");
-  const seconds = String(parsed.getSeconds()).padStart(2, "0");
-  return `${hours}:${minutes}:${seconds}`;
 }
 
 // Compact elapsed clock; negative skew clamps to zero.

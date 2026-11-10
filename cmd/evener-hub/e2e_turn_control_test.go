@@ -20,6 +20,7 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/devtool/shardrun"
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
@@ -41,19 +42,7 @@ import (
 // no credential, no network (AGENTS.md: evener plumbing gets a scripted
 // provider; only model behaviour stays live).
 func TestE2E_TurnControlReachesTheSession(t *testing.T) {
-	e2ecap.RequireLoopbackBind(t)
-	e2ecap.RequireProcessInspect(t)
-	if testing.Short() {
-		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
-	}
-
-	provider, err := fakellm.New()
-	if err != nil {
-		t.Fatalf("start fake provider: %v", err)
-	}
-	t.Cleanup(provider.Close)
-
-	stack := startHubStack(t, provider)
+	stack, provider := startE2EHubStack(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -189,19 +178,7 @@ func TestE2E_TurnControlReachesTheSession(t *testing.T) {
 // turn_m<n>, so steer and stop came back Conflict("turn is not active") and
 // the composer showed nothing at all.
 func TestE2E_TurnControlReachesAnAgentStartedTurn(t *testing.T) {
-	e2ecap.RequireLoopbackBind(t)
-	e2ecap.RequireProcessInspect(t)
-	if testing.Short() {
-		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
-	}
-
-	provider, err := fakellm.New()
-	if err != nil {
-		t.Fatalf("start fake provider: %v", err)
-	}
-	t.Cleanup(provider.Close)
-
-	stack := startHubStack(t, provider)
+	stack, provider := startE2EHubStack(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -312,19 +289,7 @@ func TestE2E_TurnControlReachesAnAgentStartedTurn(t *testing.T) {
 // boundary lands (kata c2ty keeps that window open deliberately), and steering
 // against that id is the bug, not the test.
 func TestE2E_TurnControlReachesANotificationTurn(t *testing.T) {
-	e2ecap.RequireLoopbackBind(t)
-	e2ecap.RequireProcessInspect(t)
-	if testing.Short() {
-		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
-	}
-
-	provider, err := fakellm.New()
-	if err != nil {
-		t.Fatalf("start fake provider: %v", err)
-	}
-	t.Cleanup(provider.Close)
-
-	stack := startHubStack(t, provider)
+	stack, provider := startE2EHubStack(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -538,7 +503,7 @@ func (s hubStack) dialRPC(ctx context.Context, t *testing.T) *appwire.Client {
 	if err != nil {
 		t.Fatalf("dial hub rpc: %v", err)
 	}
-	client := appwire.NewClient(transport)
+	client := appwire.NewClient(withoutClientKeepalive{transport})
 	// Registered before any thread exists, so the LIFO cleanup order leaves
 	// the socket open for the thread/shutdown the test registers later.
 	t.Cleanup(func() { _ = client.Close() })
@@ -554,8 +519,45 @@ func (s hubStack) dialRPC(ctx context.Context, t *testing.T) *appwire.Client {
 	return client
 }
 
-// liveStackBinaries builds evener and evener-hub once per test binary and hands
-// every stack the same directory. Each `go build` is a heavy compile running
+// withoutClientKeepalive hides an AppWire transport's Ping capability from
+// appwire.NewClient, so the client runs no keepalive goroutine.
+//
+// The production client keepalive exists to bound a silently dropped peer, but
+// it is also wall-clock scheduling: it closes the socket when a pong does not
+// arrive within 10s of a 15s ping. A hub process starved for ~25s under
+// concurrent full-gate load therefore tears the socket down while it is still
+// alive, and every later request fails with "use of closed network connection"
+// (issue #154). These e2e clients bound every request with a context, so they
+// do not need a second wall-clock detector to fail a hung hub; leaving it on
+// makes unrelated assertions fail on host load instead of on the behavior they
+// name. The keepalive itself stays covered by the appwire unit tests. This is
+// the opt-out internal/sshconn's lossWatchingTransport already takes, where
+// SSH's own ServerAlive keeps the link honest.
+type withoutClientKeepalive struct {
+	appwire.Transport
+}
+
+// pingingTransport is an appwire.Transport that also advertises Pinger, the
+// capability a WebSocket transport carries.
+type pingingTransport struct{ appwire.Transport }
+
+func (pingingTransport) Ping(context.Context) error { return nil }
+
+// TestHubStackControlClientSkipsTheClientKeepalive pins that the e2e control
+// transport does not advertise Ping, the capability appwire.Client keys its
+// keepalive on (appwire/client.go's startWithKeepalive). See
+// withoutClientKeepalive for why the harness opts out.
+func TestHubStackControlClientSkipsTheClientKeepalive(t *testing.T) {
+	if _, ok := any(pingingTransport{}).(appwire.Pinger); !ok {
+		t.Fatal("the test transport does not implement appwire.Pinger, so the wrapper assertion would be vacuous")
+	}
+	if _, ok := any(withoutClientKeepalive{pingingTransport{}}).(appwire.Pinger); ok {
+		t.Fatal("the e2e control transport advertises Ping, so appwire.NewClient runs the keepalive")
+	}
+}
+
+// liveStackBinaries builds evener once per test binary and hands every stack
+// the same directory. The `go build` is a heavy compile running
 // inside an already-parallel `go test ./...`; doing it per test spiked the
 // load enough to starve an unrelated package's FIFO handshake into its
 // 10-minute package timeout. The binaries are read-only to their users, so
@@ -611,9 +613,20 @@ func liveStackBinaries(t *testing.T, repoRoot string) string {
 	return liveStackBuild.dir
 }
 
-// liveStackBinariesBuild is the once-guarded build both entry points use.
+// liveStackBinariesBuild is the once-guarded build both entry points use. A
+// shard runner that builds the binaries for the whole run exports them through
+// liveStackBinEnv; this process then uses that directory instead of compiling
+// a second copy.
 func liveStackBinariesBuild(repoRoot string) {
 	liveStackBuild.once.Do(func() {
+		if dir := os.Getenv(liveStackBinEnv); dir != "" {
+			if _, err := os.Stat(filepath.Join(dir, shardrun.PrebuiltBinName)); err != nil {
+				liveStackBuild.err = fmt.Errorf("%s names %q: %w", liveStackBinEnv, dir, err)
+				return
+			}
+			liveStackBuild.dir = dir
+			return
+		}
 		// Under TestMain's root, so its Discard is the only cleanup path.
 		dir := filepath.Join(testEnv.Root, "live-stack-bin")
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -621,13 +634,10 @@ func liveStackBinariesBuild(repoRoot string) {
 			return
 		}
 		liveStackBuild.dir = dir
-		for _, target := range []string{"./cmd/evener/"} {
-			build := exec.Command("go", "build", "-o", filepath.Join(dir, filepath.Base(target)), target)
-			build.Dir = repoRoot
-			if out, buildErr := build.CombinedOutput(); buildErr != nil {
-				liveStackBuild.err = fmt.Errorf("build %s: %w\n%s", target, buildErr, out)
-				return
-			}
+		build := exec.Command("go", "build", "-o", filepath.Join(dir, shardrun.PrebuiltBinName), shardrun.PrebuiltBinTarget)
+		build.Dir = repoRoot
+		if out, buildErr := build.CombinedOutput(); buildErr != nil {
+			liveStackBuild.err = fmt.Errorf("build %s: %w\n%s", shardrun.PrebuiltBinTarget, buildErr, out)
 		}
 	})
 }
@@ -642,6 +652,32 @@ base     = "openai-compatible"
 base_url = %q
 api_key  = "fakellm-not-a-secret"
 `, provider.BaseURL()), "fake/"+fakellm.ModelID)
+}
+
+// newFakeLLMProvider starts a fake LLM provider server closed at test end.
+func newFakeLLMProvider(t *testing.T) *fakellm.Server {
+	t.Helper()
+	provider, err := fakellm.New()
+	if err != nil {
+		t.Fatalf("start fake provider: %v", err)
+	}
+	t.Cleanup(provider.Close)
+	return provider
+}
+
+// startE2EHubStack runs the standard live-stack e2e prologue: the loopback and
+// process-inspection prerequisites, the -short skip, a fake LLM provider
+// closed at test end, and the hub stack over that provider. Tests that need a
+// differently-configured stack or provider build the preamble inline.
+func startE2EHubStack(t *testing.T) (hubStack, *fakellm.Server) {
+	t.Helper()
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
+	if testing.Short() {
+		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
+	}
+	provider := newFakeLLMProvider(t)
+	return startHubStack(t, provider), provider
 }
 
 // startHubStackOnProvider is startHubStack with the provider left to the
@@ -672,6 +708,17 @@ func startHubStackOnProviderWithEvener(t *testing.T, providersTOML, model, evene
 }
 
 type hubStackOptions struct{ ChildEnv []string }
+
+func browserFixtureEnv(origin string) []string {
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if key != "EVENER_HUB_ADDR" && key != "EVENER_HUB_URL" {
+			env = append(env, entry)
+		}
+	}
+	return append(env, "EVENER_HUB_URL="+origin)
+}
 
 func startHubStackWithOptions(t *testing.T, providersTOML, model, evenerBin string, opts hubStackOptions, extraHubArgs ...string) hubStack {
 	t.Helper()
@@ -772,6 +819,7 @@ func startHubStackWithOptions(t *testing.T, providersTOML, model, evenerBin stri
 		}
 		if t.Failed() && readErr == nil {
 			t.Logf("hub log:\n%s", redactHubStackLog(body))
+			logDaemonLogs(t, string(body))
 		}
 	})
 
@@ -797,6 +845,40 @@ func startHubStackWithOptions(t *testing.T, providersTOML, model, evenerBin stri
 // daemonPIDPattern matches the hub's own spawn line, e.g.
 // "[hub] daemon session=0348... pid=51030 log=...".
 var daemonPIDPattern = regexp.MustCompile(`\bdaemon session=\S+ pid=(\d+)\b`)
+
+// daemonLogPathPattern matches the hub's daemon spawn line's log path. A
+// failure that stalls inside a daemon leaves its evidence only in that file,
+// which the test's temp root removes at cleanup.
+var daemonLogPathPattern = regexp.MustCompile(`\bdaemon session=\S+ pid=\d+ log=(\S+)`)
+
+// maxDaemonLogBytes bounds each dumped daemon log. A stalled daemon's log is
+// short; a busy one can hold a whole session, and the test log is not the place
+// for it.
+const maxDaemonLogBytes = 64 << 10
+
+// logDaemonLogs dumps every daemon log the hub announced when the enclosing
+// test failed. The hub log names the paths; reading them here races the temp
+// root's removal, which is the only other place they exist.
+func logDaemonLogs(t *testing.T, hubLog string) {
+	t.Helper()
+	seen := map[string]bool{}
+	for _, match := range daemonLogPathPattern.FindAllStringSubmatch(hubLog, -1) {
+		path := match[1]
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Logf("daemon log %s: %v", path, err)
+			continue
+		}
+		if len(body) > maxDaemonLogBytes {
+			body = body[len(body)-maxDaemonLogBytes:]
+		}
+		t.Logf("daemon log %s:\n%s", path, redactHubStackLog(body))
+	}
+}
 
 func reapDaemons(t *testing.T, hubLog string) {
 	t.Helper()

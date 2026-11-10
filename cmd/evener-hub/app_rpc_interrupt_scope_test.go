@@ -52,17 +52,12 @@ func TestHubRPCRelaysSessionScopedInterrupt(t *testing.T) {
 	})
 	roster := hubcore.NewRoster(runDir, nil)
 	roster.Refresh()
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 		RunDir: runDir,
 		Roster: roster,
-		Past:   hubcore.NewPastIndex(""),
-	})
+	}))
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 
 	var stopped appwire.TurnInterruptResponse
 	if err := client.Request(context.Background(), appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{

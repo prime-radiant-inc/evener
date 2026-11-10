@@ -82,6 +82,11 @@ factory.
   from the live registry (the override alone when one is applied, else
   every non-twin default entry). Both UIs read this module so no
   hand-maintained copy can go stale.
+  The command palette's shortcut legend (`shell/palette/helpRows.tsx`) reads
+  `displayBindingsFor` too for its app-global rows (palette, sidebar,
+  composer focus, next needs-you, quote), so a rebound chord shows there and
+  an unbound action drops out; its remaining rows are chords owned by the
+  palette, composer and ask dock's own key handling.
 
 The one wiring point that touches React and the app's stores is
 `src/shell/installKeybindings.ts`: an idempotent per-window installer that
@@ -151,7 +156,7 @@ is on (see the cheatsheet section below).
 | ⌘K / Ctrl+K | `palette.open` | global | `allowInEditable`, `allowInModal` | Open the command palette |
 | ⌘B / Ctrl+B | `rail.toggle` | global | `allowInModal`, `ignoreIfDefaultPrevented: false` | Toggle the sidebar |
 | ⌘I / Ctrl+I | `composer.focus` | global | `allowInEditable` | Focus the composer |
-| ⌘J / Ctrl+J | `next-needs-you` | global | `allowInEditable` | Go to the next session needing you |
+| ⌘J / Ctrl+J | `next-needs-you` | global | `allowInEditable` | Go to the next session needing you — one shell-wide needs-you controller reads the shared `needs_you` section, demands at most one page and owns cancellation |
 | ⌘' / Ctrl+' | `selection.quote` | global | `allowInEditable`, `allowInModal` | Quote the selection into the composer |
 | ⌘, / Ctrl+, | `settings` | global | `allowInEditable` | Open settings (the action id IS the palette's `settings` command id) |
 | Alt+ArrowRight | `session.next` | global | — | Focus the next session pane |

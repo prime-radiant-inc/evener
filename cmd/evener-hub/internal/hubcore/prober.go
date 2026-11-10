@@ -5,12 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"sort"
 	"strings"
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/execsupport/componentlog"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -27,7 +27,7 @@ type StatusProber struct {
 // labelled like every other hub diagnostic (past.go, roster.go) — is a safe
 // destination, unlike the TUI's stderr (issue #783).
 func hubConnectionLogf(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "[hub] "+format+"\n", args...)
+	componentlog.New("hub").Info(fmt.Sprintf(format, args...))
 }
 
 // Probe implements Prober.
@@ -89,6 +89,7 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	var runningSubagentIDs []string
 	var runningSubagentStates map[string]string
 	var childWatches map[string][]appwire.EvenerWatchInfo
+	var childQuotaWaits map[string]*appwire.ThreadFailure
 	for i := range listResponse.Data {
 		thread := listResponse.Data[i]
 		if statusThreadID(thread) == rootID && strings.TrimSpace(thread.ID) != "" {
@@ -122,15 +123,27 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 			}
 			childWatches[id] = append([]appwire.EvenerWatchInfo(nil), watches...)
 		}
+		// A child whose model call waits out a usage limit carries the
+		// limit's summary with its resume time (the daemon attaches it to the
+		// child's list row).
+		if failure := thread.Evener.Failure; failure != nil && failure.ResumesAt > 0 {
+			if childQuotaWaits == nil {
+				childQuotaWaits = make(map[string]*appwire.ThreadFailure)
+			}
+			childQuotaWaits[id] = appwire.CloneThreadFailure(failure)
+		}
 	}
 	if listedRoot == nil {
 		return ProbeResult{}
 	}
 	root := *listedRoot
 
-	idleStableDelegateChildren := idleStableDelegateChildIDs(root.Evener.Diagnostics)
+	delegateStates := subagentStatesFromDelegates(root.Evener.Diagnostics)
 	for _, id := range runningSubagentIDs {
-		if _, quiesced := idleStableDelegateChildren[id]; quiesced {
+		// A finished delegate whose notification turn waits out a usage limit
+		// is working although its lifecycle reads idle: its quota summary
+		// says so, and its row keeps its own active status.
+		if delegateStates[id] == appwire.ThreadStatusIdle && childQuotaWaits[id] == nil {
 			if runningSubagentStates == nil {
 				runningSubagentStates = make(map[string]string)
 			}
@@ -148,6 +161,7 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	result.RunningSubagentIDs = runningSubagentIDs
 	result.RunningSubagentStates = runningSubagentStates
 	result.ChildWatches = childWatches
+	result.ChildQuotaWaits = childQuotaWaits
 	result.Lifecycle = lifecycle
 	result.LifecycleFresh = lifecycleFresh
 	result.OK = true
@@ -169,14 +183,18 @@ func ProbeResultFromThread(root appwire.Thread) ProbeResult {
 	}
 	runningJobs, completedJobs := splitNonAgentJobs(root.Evener.Diagnostics)
 	return ProbeResult{
-		SessionID:          statusThreadID(root),
-		Status:             root.Status.Type,
-		ActiveFlags:        append([]string(nil), root.Status.ActiveFlags...),
-		PendingAsk:         root.Evener.AskPending,
-		PendingEscalation:  len(root.Evener.PendingEscalations) > 0,
-		PendingEscalations: root.Evener.PendingEscalations,
-		PendingQuestion:    root.Evener.PendingQuestion,
-		Failure:            root.Evener.Failure,
+		SessionID:           statusThreadID(root),
+		Status:              root.Status.Type,
+		ActiveFlags:         append([]string(nil), root.Status.ActiveFlags...),
+		ActiveTurnID:        root.Evener.ActiveTurnID,
+		ActiveTurnStartedAt: root.Evener.ActiveTurnStartedAt,
+		PendingAsk:          root.Evener.AskPending,
+		Manager:             root.Evener.Manager,
+		PendingEscalation:   len(root.Evener.PendingEscalations) > 0,
+		PendingEscalations:  root.Evener.PendingEscalations,
+		PendingQuestion:     root.Evener.PendingQuestion,
+		PendingAskState:     appwire.ClonePendingAsk(root.Evener.PendingAsk),
+		Failure:             root.Evener.Failure,
 		// Both callers read a current-protocol daemon's own thread projection,
 		// which stamps the capability set beside the status, so the caps are the
 		// daemon's answer — not an approximation.
@@ -205,9 +223,11 @@ func ProbeResultFromThread(root appwire.Thread) ProbeResult {
 func LiveEntryThreadFacts(in LiveEntry, r ProbeResult) LiveEntry {
 	in.Status = r.Status
 	in.PendingAsk = r.PendingAsk
+	in.Manager = r.Manager
 	in.PendingEscalation = r.PendingEscalation
 	in.PendingEscalations = r.PendingEscalations
 	in.PendingQuestion = r.PendingQuestion
+	in.PendingAskState = r.PendingAskState
 	in.Failure = r.Failure
 	in.RunningJobs = r.RunningJobs
 	in.CompletedJobs = r.CompletedJobs
@@ -269,26 +289,37 @@ func statusThreadID(thread appwire.Thread) string {
 	return strings.TrimSpace(thread.ID)
 }
 
-// idleStableDelegateChildIDs identifies retained stable delegates with no
-// current run. Their child thread can retain an older active projection while
-// the runtime is kept for a later resume, so the durable delegate lifecycle is
-// authoritative for the parent-side navigation state.
-func idleStableDelegateChildIDs(diagnostics *appwire.EvenerDiagnostics) map[string]struct{} {
+// subagentStatesFromDelegates maps each retained delegate's child session to
+// the status its durable lifecycle implies: idle, active (awaiting when the
+// delegate needs attention), or "" for a lifecycle the navigation has no
+// status for. Closed delegates are absent. A stable delegate's child thread can
+// retain an older active projection while the runtime is kept for a later
+// resume, so the delegate lifecycle is authoritative for an idle child. It
+// returns nil when there are no diagnostics.
+func subagentStatesFromDelegates(diagnostics *appwire.EvenerDiagnostics) map[string]string {
 	if diagnostics == nil {
 		return nil
 	}
-	var ids map[string]struct{}
+	states := make(map[string]string)
 	for _, delegate := range diagnostics.Delegates {
 		childID := strings.TrimSpace(delegate.ChildSessionID)
-		if childID == "" || strings.TrimSpace(delegate.Lifecycle) != "idle" {
+		lifecycle := strings.TrimSpace(delegate.Lifecycle)
+		if childID == "" || lifecycle == "closed" {
 			continue
 		}
-		if ids == nil {
-			ids = make(map[string]struct{})
+		state := ""
+		switch lifecycle {
+		case "idle":
+			state = appwire.ThreadStatusIdle
+		case "running":
+			state = appwire.ThreadStatusActive
+			if delegate.NeedsAttention {
+				state = appwire.ThreadStatusAwaiting
+			}
 		}
-		ids[childID] = struct{}{}
+		states[childID] = state
 	}
-	return ids
+	return states
 }
 
 func splitNonAgentJobs(diagnostics *appwire.EvenerDiagnostics) ([]appwire.EvenerJobInfo, []appwire.EvenerJobInfo) {
@@ -329,10 +360,5 @@ func SplitNonAgentJobs(jobs []appwire.EvenerJobInfo) ([]appwire.EvenerJobInfo, [
 }
 
 func terminalJobStatus(status string) bool {
-	switch strings.TrimSpace(status) {
-	case "completed", "failed", "cancelled", "stopped", "exhausted", "command_exited_nonzero", "command_killed":
-		return true
-	default:
-		return false
-	}
+	return appwire.JobStatus(strings.TrimSpace(status)).IsTerminal()
 }

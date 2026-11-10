@@ -26,7 +26,7 @@ func TestClientMutationProjection_QueueEntrySkillNames(t *testing.T) {
 	root := t.TempDir()
 	writeSkillMD(t, root, "probe", "---\nname: probe\ndescription: fixture\n---\nBODY_queue_projection")
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSkillSelectionSession(t, root, adapter)
 	// The captureEvents helper's slice is only safe to read after its drain,

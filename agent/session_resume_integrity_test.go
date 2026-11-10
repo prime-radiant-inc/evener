@@ -20,7 +20,7 @@ func TestRestoreSessionRejectsCorruptTranscriptWithoutMutation(t *testing.T) {
 	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
 		t.Fatalf("SaveSessionMeta: %v", err)
 	}
-	path := filepath.Join(stateDir, sessionsSubdir, sessionID+".transcript.jsonl")
+	path := schema.SessionTranscriptPath(stateDir, sessionID)
 	body := `{"kind":"header","format_version":2,"session_id":"` + sessionID + `"}` + "\n{malformed}\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("WriteFile transcript: %v", err)
@@ -47,7 +47,7 @@ func TestRestoreSessionRejectsTranscriptSessionMismatchWithoutMutation(t *testin
 	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
 		t.Fatalf("SaveSessionMeta: %v", err)
 	}
-	path := filepath.Join(stateDir, sessionsSubdir, requestedID+".transcript.jsonl")
+	path := schema.SessionTranscriptPath(stateDir, requestedID)
 	body := `{"kind":"header","format_version":2,"session_id":"02wMz5Txv2enqVTitaig6F"}` + "\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("WriteFile transcript: %v", err)
@@ -79,7 +79,7 @@ func TestRestoreSessionRejectsSymlinkTranscriptWithoutMutation(t *testing.T) {
 	if err := os.WriteFile(target, []byte(body), 0o600); err != nil {
 		t.Fatalf("WriteFile target: %v", err)
 	}
-	path := filepath.Join(stateDir, sessionsSubdir, sessionID+".transcript.jsonl")
+	path := schema.SessionTranscriptPath(stateDir, sessionID)
 	if err := os.Symlink(target, path); err != nil {
 		t.Fatalf("Symlink: %v", err)
 	}

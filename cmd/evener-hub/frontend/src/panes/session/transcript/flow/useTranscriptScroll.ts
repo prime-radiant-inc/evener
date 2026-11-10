@@ -17,29 +17,27 @@
 // a freshly-opened session mid-transcript (or mis-time a yank). Doing both
 // would double-compensate every prepend.
 //
-// Design notes (see this task's report for the fuller reasoning):
+// Design notes:
 //  - "At bottom before the mutation" is measured continuously by the native
 //    scroll listener into wasAtBottomRef, NOT re-measured inside the
 //    content-changed effect (which runs AFTER the DOM already committed the
 //    new turns/items) - the ref always reflects the last REAL scroll
 //    position, which is inherently "pre-mutation" relative to whatever
 //    content change happens next.
-//  - `measure` is the injectable seam this wave's binding constraints call
-//    for (jsdom performs no real layout - see scrollMetrics.ts and
-//    VirtualList's own test suite doc comment); production defaults to
-//    reading the real DOM, tests substitute a controlled fake.
+//  - `measure` is the injectable seam for geometry (jsdom performs no real
+//    layout - see scrollMetrics.ts and VirtualList's own test suite doc
+//    comment); production defaults to reading the real DOM, tests
+//    substitute a controlled fake.
 //  - A prepend is detected by diffing the FIRST turn's id across renders,
 //    not an out-of-band "a loadOlder call is in flight" flag: a live append
 //    can land while a loadOlder request is still in flight, and diffing the
 //    data's own shape stays correct regardless of that interleaving.
 
-import type { ThreadModel, TurnModel } from "@evener/appwire-client";
-import { type RefObject, useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
+import type { ThreadModel } from "@evener/appwire-client";
+import { type RefObject, useCallback, useLayoutEffect, useRef, useState } from "react";
 import { useStore } from "zustand";
-import { isEditableTarget, isIMECompositionKeydown } from "../../../../keybindings/dispatcher";
-import { isEntryTranscriptLocalOpening, threadsStore } from "../../../../stores/threads";
+import { threadsStore } from "../../../../stores/threads";
 import type { CommittedVirtualListLayout, VirtualListHandle } from "../../../../widgets";
-import type { TranscriptReadView } from "../transcriptReadView";
 import { isDormantTranscript } from "../transcriptVisibility";
 import {
   contentGrewBelowViewport,
@@ -52,13 +50,18 @@ import {
   type ScrollMetrics,
   shouldAutoLoadOlder,
 } from "./scrollMetrics";
+import { failedTurnCount, isAttentionWorthy, isFailedTurn, totalItemCount } from "./scrollPredicates";
+import { type CapturedTranscriptView, retainTranscriptView } from "./transcriptViewRegistry";
+import { useReaderGestures } from "./useReaderGestures";
 import {
-  type CapturedTranscriptView,
-  completeTranscriptViewRestore,
-  registerTranscriptView,
-  retainedTranscriptCapture,
-  retainTranscriptView,
-} from "./transcriptViewRegistry";
+  captureTopAnchor,
+  type PendingViewAnchor,
+  readAnchorPositions,
+  restoreTopAnchor,
+  retainedPlacements,
+  topVisiblePosition,
+  type ViewAnchorPosition,
+} from "./viewAnchor";
 
 export interface UseTranscriptScrollOptions {
   ref: string;
@@ -122,753 +125,11 @@ export interface UseTranscriptScrollOptions {
   heldEpoch?: number;
 }
 
-export interface ViewAnchorPosition {
-  id: string;
-  /** Item position in the unfiltered transcript; shared across every representation. */
-  sourceIndex: number;
-  /** VirtualList row containing this entry. */
-  index: number;
-  /** Row top relative to the scroll viewport top. */
-  offset: number;
-  /** Measured entry height; used to identify content crossing the viewport top. */
-  height?: number;
-  /** User/agent content survives every focused representation. */
-  isMessage: boolean;
-  /** For a folded tool run (toolRuns.ts): the entry ids it stands in for. A
-   * capture on any of them resolves to this anchor. */
-  members?: readonly string[];
-}
-
-export interface ViewAnchor {
-  id: string;
-  sourceIndex: number;
-  offset: number;
-  isMessage: boolean;
-}
-
-export interface RestoredViewAnchor {
-  id: string;
-  index: number;
-  offset: number;
-}
-
 // The end-anchored VirtualList owns the transcript's position; this is the one
 // call that tells it "the end". The mount landing, an append's follow, and a
 // leading-edge change's re-target all make exactly this request.
 function scrollToLastRow(listRef: RefObject<VirtualListHandle | null>, count: number): void {
   if (count > 0) listRef.current?.scrollToIndex(count - 1, { align: "end" });
-}
-
-export function captureTopAnchor(position: ViewAnchorPosition): ViewAnchor {
-  return {
-    id: position.id,
-    sourceIndex: position.sourceIndex,
-    offset: position.offset,
-    isMessage: position.isMessage,
-  };
-}
-
-// The rendered position that stands for a captured anchor's source item. One
-// source item wears a different id per view - intent:<id> in Intent, <id> in
-// Tools/Full, tools:<id>:… for a summary, run:<id> once it folds - so after
-// the literal id, match the source identity (sourceIdentity strips the view
-// prefixes) with the source index agreeing where the capture carries one,
-// then a folded run whose members carry the item (roborev on PR #947).
-function positionForAnchor(
-  anchor: { id: string; sourceIndex?: number },
-  positions: readonly ViewAnchorPosition[],
-): ViewAnchorPosition | undefined {
-  const exact = positions.find((position) => position.id === anchor.id);
-  if (exact) return exact;
-  const identity = sourceIdentity(anchor.id);
-  const sameSource = positions.find(
-    (position) =>
-      sourceIdentity(position.id) === identity &&
-      (anchor.sourceIndex === undefined || position.sourceIndex === anchor.sourceIndex),
-  );
-  if (sameSource) return sameSource;
-  return positions.find((position) =>
-    position.members?.some((member) => member === anchor.id || sourceIdentity(member) === identity),
-  );
-}
-
-export function restoreTopAnchor(
-  anchor: ViewAnchor,
-  positions: readonly ViewAnchorPosition[],
-): RestoredViewAnchor | undefined {
-  const same = positionForAnchor(anchor, positions);
-  if (same) return { id: same.id, index: same.index, offset: anchor.offset };
-
-  const nearest = positions
-    .filter((position) => position.isMessage)
-    .sort((a, b) => {
-      const distance = Math.abs(a.sourceIndex - anchor.sourceIndex) - Math.abs(b.sourceIndex - anchor.sourceIndex);
-      // Equal-distance ties resolve to the preceding message, keeping the
-      // content the reader just passed rather than skipping forward.
-      return distance || a.sourceIndex - b.sourceIndex;
-    })[0];
-  return nearest ? { id: nearest.id, index: nearest.index, offset: anchor.offset } : undefined;
-}
-
-function readAnchorPositions(el: HTMLElement): ViewAnchorPosition[] {
-  const viewportTop = el.getBoundingClientRect().top;
-  return Array.from(el.querySelectorAll<HTMLElement>("[data-view-anchor-id]")).map((row, renderedIndex) => {
-    const rect = (closedGroupSummary(row) ?? row).getBoundingClientRect();
-    const sourceIndex = Number(row.dataset.viewAnchorSourceIndex ?? renderedIndex);
-    const members = row.dataset.viewAnchorMembers;
-    return {
-      id: row.dataset.viewAnchorId ?? "",
-      sourceIndex,
-      index: Number(row.dataset.viewAnchorIndex ?? sourceIndex),
-      offset: rect.top - viewportTop,
-      height: rect.height,
-      isMessage: row.dataset.viewAnchorMessage === "true",
-      ...(members ? { members: members.split(",") } : {}),
-    };
-  });
-}
-
-function topVisiblePosition(positions: readonly ViewAnchorPosition[]): ViewAnchorPosition | undefined {
-  // Overscan entries are rendered above the viewport. The anchor is the entry
-  // whose measured box actually crosses the viewport top, not the first DOM
-  // entry and not merely the first entry whose top happens to be nonnegative.
-  const crossing = positions
-    .filter((position) => position.offset <= 0 && position.offset + (position.height ?? 0) > 0)
-    .sort((a, b) => b.offset - a.offset)[0];
-  if (crossing) return crossing;
-  return positions.filter((position) => position.offset >= 0).sort((a, b) => a.offset - b.offset)[0];
-}
-
-interface CapturedFocusMetadata {
-  readonly anchorId: string;
-  readonly sourceIdentity: string;
-  readonly sourceIndex?: number;
-  readonly descendantPath: readonly number[];
-  readonly element: HTMLElement;
-}
-
-const capturedAnchorMetadata = new WeakMap<CapturedTranscriptView, ViewAnchor>();
-const capturedFocusMetadata = new WeakMap<CapturedTranscriptView, CapturedFocusMetadata>();
-const retainedPlacements = new WeakMap<HTMLElement, { logicalRef?: string; captured: CapturedTranscriptView }>();
-
-function sourceIdentity(id: string): string {
-  if (id.startsWith("intent:")) return id.slice("intent:".length);
-  // A folded tool run's anchor is its first entry's id under the run prefix
-  // (toolRuns.ts): a focus captured on that entry before the turn settled
-  // still resolves to the run it folded into.
-  if (id.startsWith("run:")) return id.slice("run:".length);
-  if (id.startsWith("tools:")) return id.slice("tools:".length).split(":")[0] ?? id;
-  return id;
-}
-
-function descendantPath(root: HTMLElement, element: HTMLElement): readonly number[] {
-  const path: number[] = [];
-  let current: HTMLElement = element;
-  while (current !== root) {
-    const parent = current.parentElement;
-    if (!parent) return [];
-    const index = Array.from(parent.children).indexOf(current);
-    if (index < 0) return [];
-    path.unshift(index);
-    current = parent;
-  }
-  return path;
-}
-
-function descendantAtPath(root: HTMLElement, path: readonly number[]): HTMLElement | undefined {
-  let current: HTMLElement = root;
-  for (const index of path) {
-    const next = current.children[index];
-    if (!next) return undefined;
-    if (!(next instanceof HTMLElement)) return undefined;
-    current = next;
-  }
-  return current;
-}
-
-function isFocusableDescendant(element: HTMLElement): boolean {
-  return element.matches("button, a[href], input, select, textarea, [tabindex]");
-}
-
-function sourceIndexFromDataset(element: HTMLElement): number | undefined {
-  const value = Number(element.dataset.viewAnchorSourceIndex);
-  return Number.isSafeInteger(value) ? value : undefined;
-}
-
-function focusMetadataFor(el: HTMLElement): CapturedFocusMetadata | undefined {
-  const active = el.ownerDocument.activeElement;
-  if (!(active instanceof HTMLElement)) return undefined;
-  const anchor = Array.from(el.querySelectorAll<HTMLElement>("[data-view-anchor-id]")).find(
-    (candidate) => candidate === active || candidate.contains(active),
-  );
-  const anchorId = anchor?.dataset.viewAnchorId;
-  if (!anchor || !anchorId) return undefined;
-  return {
-    anchorId,
-    sourceIdentity: sourceIdentity(anchorId),
-    sourceIndex: sourceIndexFromDataset(anchor),
-    descendantPath: descendantPath(anchor, active),
-    element: active,
-  };
-}
-
-/** Capture the state that must survive a projected transcript replacement. */
-export function captureTranscriptView(
-  el: HTMLElement,
-  measure: (element: HTMLElement) => ScrollMetrics = readScrollMetrics,
-  measureAnchors: (element: HTMLElement) => ViewAnchorPosition[] = readAnchorPositions,
-  positioningRevision?: number,
-): CapturedTranscriptView {
-  const metrics = measure(el);
-  const scrollable = Math.max(0, metrics.scrollHeight - metrics.clientHeight);
-  const firstVisible = topVisiblePosition(measureAnchors(el));
-  const focusMetadata = focusMetadataFor(el);
-  const captured: CapturedTranscriptView = {
-    anchorId: firstVisible?.id,
-    anchorOffset: firstVisible?.offset ?? 0,
-    normalizedOffset: scrollable > 0 ? metrics.scrollTop / scrollable : 0,
-    followingBottom: isAtBottom(metrics),
-    focusedEntryId: focusMetadata?.anchorId,
-    ...(positioningRevision !== undefined ? { positioningRevision } : {}),
-    ...(firstVisible?.height && firstVisible.height > 0 && el.clientWidth > 0 && el.clientHeight > 0
-      ? {
-          readingPoint: {
-            entryHeight: firstVisible.height,
-            viewportHeight: el.clientHeight,
-            viewportWidth: el.clientWidth,
-          },
-        }
-      : {}),
-  };
-  if (firstVisible) capturedAnchorMetadata.set(captured, captureTopAnchor(firstVisible));
-  if (focusMetadata) capturedFocusMetadata.set(captured, focusMetadata);
-  return captured;
-}
-
-function captureTranscriptFocus(el: HTMLElement, captured: CapturedTranscriptView): CapturedTranscriptView {
-  const focusMetadata = focusMetadataFor(el);
-  // Pending geometry preserves the reading point, but focus can move in the rendered view.
-  const next = { ...captured, focusedEntryId: focusMetadata?.anchorId };
-  const anchorMetadata = capturedAnchorMetadata.get(captured);
-  if (anchorMetadata) capturedAnchorMetadata.set(next, anchorMetadata);
-  if (focusMetadata) capturedFocusMetadata.set(next, focusMetadata);
-  return next;
-}
-
-export function readingPointOffset(
-  captured: CapturedTranscriptView,
-  entryHeight: number,
-  viewportHeight: number,
-  viewportWidth: number,
-): number {
-  const point = captured.readingPoint;
-  if (!point || captured.anchorOffset > 0) return captured.anchorOffset;
-  // A viewport-height-only change leaves the entry as it was, so the reading
-  // line stays exactly where it was. An entry that changed height at the same
-  // width (a disclosure, say) still takes the bounded rules below.
-  if (point.viewportWidth === viewportWidth && point.entryHeight === entryHeight) return captured.anchorOffset;
-  const oldDepth = Math.max(0, point.entryHeight - point.viewportHeight);
-  if (-captured.anchorOffset > oldDepth) {
-    // The entry's top is above the viewport and its tail is showing, so the
-    // reader is reading where it ends: keep that end where it was rather than
-    // filling the pane with the entry.
-    const tail = point.entryHeight + captured.anchorOffset;
-    return Math.min(0, tail - entryHeight);
-  }
-  const progress = oldDepth === 0 ? 0 : -captured.anchorOffset / oldDepth;
-  const newDepth = Math.max(0, entryHeight - viewportHeight);
-  return progress === 0 || newDepth === 0 ? 0 : -progress * newDepth;
-}
-
-function anchorFromCapture(
-  captured: CapturedTranscriptView,
-  candidates: readonly ViewAnchorPosition[],
-): ViewAnchor | undefined {
-  const metadata = capturedAnchorMetadata.get(captured);
-  if (metadata) return metadata;
-  if (captured.anchorId === undefined) return undefined;
-  const source = positionForAnchor({ id: captured.anchorId }, candidates);
-  if (!source) return undefined;
-  return captureTopAnchor({ ...source, offset: captured.anchorOffset });
-}
-
-// A folded run's anchor answers for every entry it folded (its members): a
-// focus captured on the third call of a run that has since folded restores to
-// the run - its summary when closed, the row itself when open.
-function membersMatch(members: readonly string[] | undefined, metadata: CapturedFocusMetadata): boolean {
-  return (
-    members?.some((member) => member === metadata.anchorId || sourceIdentity(member) === metadata.sourceIdentity) ??
-    false
-  );
-}
-
-function focusCandidateMatches(candidate: ViewAnchorPosition, metadata: CapturedFocusMetadata): boolean {
-  if (candidate.id === metadata.anchorId) return true;
-  if (membersMatch(candidate.members, metadata)) return true;
-  if (sourceIdentity(candidate.id) !== metadata.sourceIdentity) return false;
-  return metadata.sourceIndex === undefined || candidate.sourceIndex === metadata.sourceIndex;
-}
-
-function focusNodeMatches(candidate: HTMLElement, metadata: CapturedFocusMetadata): boolean {
-  if (candidate.dataset.viewAnchorId === metadata.anchorId) return true;
-  if (membersMatch(candidate.dataset.viewAnchorMembers?.split(","), metadata)) return true;
-  if (sourceIdentity(candidate.dataset.viewAnchorId ?? "") !== metadata.sourceIdentity) return false;
-  const sourceIndex = sourceIndexFromDataset(candidate);
-  return metadata.sourceIndex === undefined || sourceIndex === undefined || sourceIndex === metadata.sourceIndex;
-}
-
-// A closed disclosure that owns the anchor: a folded tool run and an intent
-// group each wrap their own <details> in one anchor that lists its members
-// (TurnBlock's foldedAnchorFor), and their entries mount only while open, so
-// while closed the summary is the thing to measure and focus.
-function closedGroupSummary(anchor: HTMLElement): HTMLElement | undefined {
-  const summary = anchor.querySelector(
-    ':scope > details:is([data-testid="tool-run"], [data-testid="intent-group"]):not([open]) > summary',
-  );
-  return summary instanceof HTMLElement ? summary : undefined;
-}
-
-function focusAnchor(anchor: HTMLElement, metadata: CapturedFocusMetadata): boolean {
-  const summary = closedGroupSummary(anchor);
-  if (summary) {
-    summary.focus();
-    if (summary.ownerDocument.activeElement === summary) return true;
-  }
-  if (metadata.element.isConnected && anchor.contains(metadata.element)) {
-    metadata.element.focus();
-    if (metadata.element.ownerDocument.activeElement === metadata.element) return true;
-  }
-  const descendant = descendantAtPath(anchor, metadata.descendantPath);
-  if (descendant && isFocusableDescendant(descendant)) {
-    descendant.focus();
-    if (descendant.ownerDocument.activeElement === descendant) return true;
-  }
-  // Production anchors are divs. Make only this programmatic fallback
-  // focusable; tab order remains unchanged because -1 is not tabbable.
-  anchor.tabIndex = -1;
-  anchor.focus();
-  return anchor.ownerDocument.activeElement === anchor;
-}
-
-type FocusRestoreResult = "not-focused" | "restored" | "waiting" | "missing";
-
-function focusCapturedEntry(
-  el: HTMLElement,
-  captured: CapturedTranscriptView,
-  candidates: readonly ViewAnchorPosition[],
-  listRef: RefObject<VirtualListHandle | null> | undefined,
-  pending: PendingTranscriptViewRestore,
-): FocusRestoreResult {
-  if (captured.focusedEntryId === undefined) return "not-focused";
-  const metadata =
-    capturedFocusMetadata.get(captured) ??
-    ({
-      anchorId: captured.focusedEntryId,
-      sourceIdentity: sourceIdentity(captured.focusedEntryId),
-      descendantPath: [],
-      element: el.ownerDocument.activeElement instanceof HTMLElement ? el.ownerDocument.activeElement : el,
-    } satisfies CapturedFocusMetadata);
-  const focused = Array.from(el.querySelectorAll<HTMLElement>("[data-view-anchor-id]")).find((candidate) =>
-    focusNodeMatches(candidate, metadata),
-  );
-  if (focused) {
-    return focusAnchor(focused, metadata) ? "restored" : "missing";
-  }
-
-  const logicalFocus = candidates.find((candidate) => focusCandidateMatches(candidate, metadata));
-  if (logicalFocus) {
-    if (!pending.focusScrollRequested && listRef?.current) {
-      pending.focusScrollRequested = true;
-      listRef.current.scrollToIndex(logicalFocus.index, { align: "start" });
-      return "waiting";
-    }
-    return pending.focusScrollRequested ? "waiting" : "missing";
-  }
-  return "missing";
-}
-
-export interface UseTranscriptViewRegistrationOptions {
-  enabled: boolean;
-  id: string;
-  logicalRef?: string;
-  layout?: string;
-  viewKey?: string;
-  initialViewCapture?: CapturedTranscriptView;
-  readView?: TranscriptReadView;
-  listRef?: RefObject<VirtualListHandle | null>;
-  measure?: (el: HTMLElement) => ScrollMetrics;
-  measureAnchors?: (el: HTMLElement) => ViewAnchorPosition[];
-  anchorEntries?: readonly Omit<ViewAnchorPosition, "offset" | "height">[];
-  renderedRowCount?: number;
-  /** Restore DOM focus only while this view still owns workspace focus. */
-  canRestoreFocus?: () => boolean;
-  focusFallback?: () => void;
-  announce?: (summary: string) => void;
-}
-
-export interface UseTranscriptViewRegistrationResult {
-  restoreAfterMeasurement(): void;
-  hasRetainedPlacement(): boolean;
-  restoreAfterLayout(layout: CommittedVirtualListLayout): void;
-}
-
-interface PendingTranscriptViewRestore {
-  readonly captured: CapturedTranscriptView;
-  readonly readView?: TranscriptReadView;
-  readonly positioningRevision?: number;
-  readonly restoreFocus: boolean;
-  target?: RestoredViewAnchor;
-  scrollRequested: boolean;
-  anchorRestored: boolean;
-  focusScrollRequested: boolean;
-  viewportReflow: boolean;
-}
-
-function captureIsCurrent(captured: CapturedTranscriptView, readView?: TranscriptReadView): boolean {
-  return (
-    !readView ||
-    (readView.alive &&
-      (captured.positioningRevision === undefined || captured.positioningRevision === readView.positioningRevision))
-  );
-}
-
-function viewportChanged(captured: CapturedTranscriptView | undefined, el: HTMLElement): boolean {
-  const point = captured?.readingPoint;
-  return !!point && (point.viewportWidth !== el.clientWidth || point.viewportHeight !== el.clientHeight);
-}
-
-/**
- * Registers the shared body with the transition registry without taking
- * ownership of ordinary append/prepend scrolling. The body calls the result
- * from VirtualList's measurement callback; the view-key layout effect covers
- * hosts whose row measurement callback does not fire for a config commit.
- */
-export function useTranscriptViewRegistration(
-  options: UseTranscriptViewRegistrationOptions,
-): UseTranscriptViewRegistrationResult {
-  const { enabled, id, logicalRef, layout, readView } = options;
-  const [, retryOpeningPlacement] = useReducer((revision: number) => revision + 1, 0);
-  const optionsRef = useRef(options);
-  optionsRef.current = options;
-  const latestCaptureRef = useRef<CapturedTranscriptView | undefined>(undefined);
-  const committedLayoutRef = useRef<CommittedVirtualListLayout | undefined>(undefined);
-  const pendingRef = useRef<PendingTranscriptViewRestore | null>(
-    options.initialViewCapture && captureIsCurrent(options.initialViewCapture, readView)
-      ? {
-          captured: options.initialViewCapture,
-          readView,
-          positioningRevision: readView?.positioningRevision,
-          restoreFocus: true,
-          scrollRequested: false,
-          anchorRestored: false,
-          focusScrollRequested: false,
-          viewportReflow: false,
-        }
-      : null,
-  );
-  const placementIdentityRef = useRef({ id, logicalRef });
-  if (placementIdentityRef.current.id !== id || placementIdentityRef.current.logicalRef !== logicalRef) {
-    // Child measurement effects run before registration effects. A reused
-    // pane must discard the old demand before those children can consume it.
-    pendingRef.current = null;
-    latestCaptureRef.current = undefined;
-    committedLayoutRef.current = undefined;
-    // Completed placement is also owned by that identity, not by the reused
-    // DOM port. Keep it for same-view child-to-parent initialization only.
-    const el = options.listRef?.current?.getScrollElement();
-    if (el) retainedPlacements.delete(el);
-    placementIdentityRef.current = { id, logicalRef };
-  }
-
-  const restoreAfterMeasurement = useCallback(() => {
-    const pending = pendingRef.current;
-    if (!pending) return;
-    const currentOptions = optionsRef.current;
-    const el = currentOptions.listRef?.current?.getScrollElement();
-    const committed = committedLayoutRef.current;
-    if (
-      pending.readView !== currentOptions.readView ||
-      pending.positioningRevision !== currentOptions.readView?.positioningRevision ||
-      !captureIsCurrent(pending.captured, currentOptions.readView)
-    ) {
-      pendingRef.current = null;
-      latestCaptureRef.current = undefined;
-      if (el && committed?.virtualizer.scrollElement === el) committed.cancelPendingScroll();
-      return;
-    }
-    if (!currentOptions.enabled || !el || !committed?.isCurrent() || committed.virtualizer.scrollElement !== el) return;
-    if (currentOptions.logicalRef !== undefined && isEntryTranscriptLocalOpening(currentOptions.logicalRef)) return;
-
-    const confirmScrollOffset = () => {
-      if (Math.abs(el.scrollTop - (committed.virtualizer.scrollOffset ?? 0)) > 1.5) {
-        committed.cancelPendingScroll();
-      }
-      return committed.isCurrent() && Math.abs(el.scrollTop - (committed.virtualizer.scrollOffset ?? 0)) <= 1.5;
-    };
-    const measure = currentOptions.measure ?? readScrollMetrics;
-    const measureAnchors = currentOptions.measureAnchors ?? readAnchorPositions;
-    const measured = measureAnchors(el);
-    const candidates = currentOptions.anchorEntries?.map((entry) => ({ ...entry, offset: 0 })) ?? measured;
-    if (pending.captured.followingBottom) {
-      const count = currentOptions.renderedRowCount ?? 0;
-      if (count > 0 && !pending.scrollRequested) {
-        pending.scrollRequested = true;
-        currentOptions.listRef?.current?.scrollToIndex(count - 1, { align: "end" });
-      }
-      if (!committed.isCurrent() || !isAtBottom(measure(el))) return;
-      if (!confirmScrollOffset()) return;
-      if (pending.restoreFocus && currentOptions.canRestoreFocus?.() !== false) {
-        const focusResult = focusCapturedEntry(el, pending.captured, candidates, currentOptions.listRef, pending);
-        if (focusResult === "waiting") return;
-        if (focusResult === "missing") currentOptions.focusFallback?.();
-      }
-      pendingRef.current = null;
-      latestCaptureRef.current = captureTranscriptView(
-        el,
-        measure,
-        measureAnchors,
-        currentOptions.readView?.positioningRevision,
-      );
-      completeTranscriptViewRestore(currentOptions.id, currentOptions.logicalRef);
-      return;
-    }
-
-    const anchor = anchorFromCapture(pending.captured, candidates);
-    if (!pending.anchorRestored) {
-      const pendingTargetStillExists =
-        pending.target === undefined || candidates.some((candidate) => candidate.id === pending.target?.id);
-      if (!pendingTargetStillExists) {
-        pending.target = undefined;
-        pending.scrollRequested = false;
-      }
-      const restored = pending.target ?? (anchor ? restoreTopAnchor(anchor, candidates) : undefined);
-      if (!restored) {
-        const metrics = measure(el);
-        const scrollable = Math.max(0, metrics.scrollHeight - metrics.clientHeight);
-        const offset = Math.max(0, Math.min(1, pending.captured.normalizedOffset)) * scrollable;
-        if (Math.abs(el.scrollTop - offset) > 1.5) {
-          committed.scrollToOffset(offset);
-          return;
-        }
-        if (!confirmScrollOffset()) return;
-        pending.anchorRestored = true;
-      } else {
-        const current = measured.find((position) => position.id === restored.id);
-        if (current) {
-          if (!current.height || current.height <= 0) return;
-          const sameSource = anchor && positionForAnchor(anchor, candidates)?.id === restored.id;
-          let desired: number;
-          if (!pending.viewportReflow) {
-            desired = restored.offset;
-          } else if (sameSource) {
-            desired = readingPointOffset(pending.captured, current.height, el.clientHeight, el.clientWidth);
-          } else {
-            desired = Math.max(restored.offset, -Math.max(0, current.height - el.clientHeight));
-          }
-          const offset = Math.max(
-            0,
-            Math.min(el.scrollTop + current.offset - desired, el.scrollHeight - el.clientHeight),
-          );
-          if (Math.abs(el.scrollTop - offset) > 1.5) {
-            committed.scrollToOffset(offset);
-            return;
-          }
-          if (current.offset >= el.clientHeight || current.offset + current.height <= 0) return;
-          if (!confirmScrollOffset()) return;
-          pending.anchorRestored = true;
-        } else if (!pending.scrollRequested) {
-          pending.target = restored;
-          pending.scrollRequested = true;
-          currentOptions.listRef?.current?.scrollToIndex(restored.index, { align: "start" });
-          return;
-        } else {
-          return;
-        }
-      }
-    }
-
-    if (pending.restoreFocus && currentOptions.canRestoreFocus?.() !== false) {
-      const focusResult = focusCapturedEntry(el, pending.captured, candidates, currentOptions.listRef, pending);
-      if (focusResult === "waiting") return;
-      if (focusResult === "missing") currentOptions.focusFallback?.();
-    }
-    pendingRef.current = null;
-    latestCaptureRef.current = captureTranscriptView(
-      el,
-      measure,
-      measureAnchors,
-      currentOptions.readView?.positioningRevision,
-    );
-    completeTranscriptViewRestore(currentOptions.id, currentOptions.logicalRef);
-  }, []);
-
-  const capture = useCallback((): CapturedTranscriptView => {
-    const currentOptions = optionsRef.current;
-    const el = currentOptions.listRef?.current?.getScrollElement();
-    if (pendingRef.current)
-      return el ? captureTranscriptFocus(el, pendingRef.current.captured) : pendingRef.current.captured;
-    const before = latestCaptureRef.current;
-    const committed = committedLayoutRef.current;
-    const valid = !!el && !!committed?.isCurrent() && committed.virtualizer.scrollElement === el;
-    if (before && (!valid || viewportChanged(before, el))) return el ? captureTranscriptFocus(el, before) : before;
-    if (!el || !valid) return { anchorOffset: 0, normalizedOffset: 0, followingBottom: false };
-    const next = captureTranscriptView(
-      el,
-      currentOptions.measure,
-      currentOptions.measureAnchors,
-      currentOptions.readView?.positioningRevision,
-    );
-    latestCaptureRef.current = next;
-    return next;
-  }, []);
-
-  const restoreAfterLayout = useCallback(
-    (committed: CommittedVirtualListLayout) => {
-      const currentOptions = optionsRef.current;
-      const el = currentOptions.listRef?.current?.getScrollElement();
-      if (
-        !currentOptions.enabled ||
-        currentOptions.readView?.alive === false ||
-        !el ||
-        !committed.isCurrent() ||
-        committed.virtualizer.scrollElement !== el
-      )
-        return;
-      committedLayoutRef.current = committed;
-      const before = pendingRef.current?.captured ?? latestCaptureRef.current;
-      if (before && viewportChanged(before, el)) {
-        if (pendingRef.current) pendingRef.current.viewportReflow = true;
-        else
-          pendingRef.current = {
-            captured: before,
-            readView: currentOptions.readView,
-            positioningRevision: currentOptions.readView?.positioningRevision,
-            restoreFocus: false,
-            scrollRequested: false,
-            anchorRestored: false,
-            focusScrollRequested: false,
-            viewportReflow: true,
-          };
-      }
-      restoreAfterMeasurement();
-      if (!pendingRef.current) capture();
-    },
-    [capture, restoreAfterMeasurement],
-  );
-
-  const restore = useCallback((captured: CapturedTranscriptView): void => {
-    const readView = optionsRef.current.readView;
-    if (!captureIsCurrent(captured, readView)) return;
-    pendingRef.current = {
-      captured,
-      readView,
-      positioningRevision: readView?.positioningRevision,
-      restoreFocus: true,
-      scrollRequested: false,
-      anchorRestored: false,
-      focusScrollRequested: false,
-      viewportReflow: false,
-    };
-    const currentOptions = optionsRef.current;
-    const el = currentOptions.listRef?.current?.getScrollElement();
-    if (el) retainedPlacements.set(el, { logicalRef: currentOptions.logicalRef, captured });
-  }, []);
-
-  const announce = useCallback((summary: string) => {
-    optionsRef.current.announce?.(summary);
-  }, []);
-
-  useLayoutEffect(() => {
-    if (!enabled) return;
-    const unregister = registerTranscriptView({
-      id,
-      logicalRef,
-      layout,
-      capture,
-      restore: (captured) => {
-        if (optionsRef.current.id === id && optionsRef.current.readView === readView) restore(captured);
-      },
-      announce,
-    });
-    return unregister;
-  }, [announce, capture, enabled, id, logicalRef, layout, readView, restore]);
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: id replaces the exact live port subscription
-  useLayoutEffect(() => {
-    if (!enabled || !readView) return;
-    const el = optionsRef.current.listRef?.current?.getScrollElement();
-    if (!el) return;
-    let revision = readView.positioningRevision;
-    return readView.subscribe((beforeOffset) => {
-      const currentOptions = optionsRef.current;
-      if (currentOptions.readView !== readView || currentOptions.listRef?.current?.getScrollElement() !== el) return;
-      const committed = committedLayoutRef.current;
-      if (!readView.alive || revision !== readView.positioningRevision) {
-        revision = readView.positioningRevision;
-        pendingRef.current = null;
-        latestCaptureRef.current = undefined;
-        if (committed?.virtualizer.scrollElement === el) committed.cancelPendingScroll();
-      } else if (
-        beforeOffset !== undefined &&
-        Number.isFinite(beforeOffset) &&
-        committed?.virtualizer.scrollElement === el
-      ) {
-        committed.syncReaderMovement(beforeOffset);
-        // The reader can choose visible content before its new size is committed.
-        latestCaptureRef.current = captureTranscriptView(
-          el,
-          currentOptions.measure,
-          currentOptions.measureAnchors,
-          readView.positioningRevision,
-        );
-      }
-    });
-  }, [capture, enabled, id, readView]);
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: id is trigger-only, a reader identity change replaces its port listener
-  useLayoutEffect(() => {
-    if (!enabled) return;
-    const el = optionsRef.current.listRef?.current?.getScrollElement();
-    if (!el) return;
-    const observeStablePosition = () => {
-      const committed = committedLayoutRef.current;
-      if (!committed?.isCurrent() || committed.virtualizer.scrollElement !== el) return;
-      if (pendingRef.current) restoreAfterMeasurement();
-      if (pendingRef.current) return;
-      if (viewportChanged(latestCaptureRef.current, el)) return;
-      capture();
-    };
-    el.addEventListener("scroll", observeStablePosition);
-    return () => el.removeEventListener("scroll", observeStablePosition);
-  }, [capture, enabled, id, restoreAfterMeasurement]);
-
-  // Retry settlement through React's accepted projection, not synchronously
-  // against the previous DOM in the store publication callback. Only pending
-  // placement reads the current opening authority, keeping snapshot rendering
-  // independent of store reads. Child layouts before this subscription and
-  // settlement before subscription are covered by the current-state check in
-  // restoreAfterMeasurement and the unconditional commit retry below.
-  useLayoutEffect(() => {
-    if (!enabled || logicalRef === undefined) return;
-    return threadsStore.subscribe((state, previous) => {
-      if (state.localOpenings.has(logicalRef) !== previous.localOpenings.has(logicalRef)) retryOpeningPlacement();
-    });
-  }, [enabled, logicalRef]);
-
-  // A virtualizer notification can precede its sizer's DOM commit. Retry
-  // after each commit as well as from the actual measurement callback.
-  useLayoutEffect(() => {
-    restoreAfterMeasurement();
-  });
-
-  return {
-    restoreAfterMeasurement,
-    restoreAfterLayout,
-    hasRetainedPlacement: () => {
-      const captured = pendingRef.current?.captured ?? retainedTranscriptCapture(id, logicalRef);
-      return captured !== undefined && !captured.followingBottom;
-    },
-  };
 }
 
 export interface UseTranscriptScrollResult {
@@ -917,163 +178,7 @@ export interface UseTranscriptScrollResult {
   /** Capture the top stable row immediately before changing view mode. */
   captureViewAnchor: () => void;
   /** Finish a pending restore after VirtualList reports new measurements. */
-  restoreViewAnchorAfterMeasurement: () => void;
-}
-
-function totalItemCount(model: ThreadModel | undefined): number {
-  if (!model) return 0;
-  let total = 0;
-  for (const turn of model.turns) total += turn.items.length;
-  return total;
-}
-
-// Attention follows liveness.ts's raw-status mapping to needs-you.
-// shell/sessionStatus.ts maps normalized navigation summaries.
-// askPending is independent because it need not coincide with status.type.
-function isAttentionWorthy(model: ThreadModel | undefined): boolean {
-  if (!model) return false;
-  return (
-    model.askPending ||
-    model.status.type === "awaiting" ||
-    model.status.type === "warning" ||
-    model.status.type === "restartRequired"
-  );
-}
-
-// The error-anchor's failure signal is TURN-level (this rewrite's own
-// TurnModel.status/error, stamped by turn/completed - see reducer.test.ts's
-// EventError-shape tests), not legacy's tool-call-level "did this one call
-// fail" (contracts-transcript-scroll-liveness.md §5 line 114 talks about a
-// finalized tool call; the w4 fix-round report's item-9 writeup already
-// established turn.status === "failed" as this rewrite's equivalent
-// signal, confirmed against appwire/types.go's TurnStatusFailed). error is
-// `unknown` on TurnModel, so this only ever checks presence, never shape.
-function isFailedTurn(turn: TurnModel): boolean {
-  return turn.status === "failed" || turn.error !== undefined;
-}
-
-// A COUNT (not a boolean, not "the first failed turn's index/id") - failed-
-// ness is terminal (a turn never un-fails) and turns only ever append or
-// get prepended, never removed, so this only ever goes UP. Deliberately a
-// count rather than the first-failed index: a turn's own failure can be
-// resolved (seen live at the bottom, or anchored-then-cleared) while an
-// EARLIER-index turn stays the "first" failed one by array position -
-// pinning the dependency to "the first index" would then never change
-// again and a genuinely new, later failure would never get a chance to be
-// evaluated. Recomputed every render (same O(turns) cost class as
-// totalItemCount above) but its VALUE is identical across a pure streaming
-// delta (which touches item text/pendingText, never turn.status/error), so
-// it doesn't defeat the "per-delta work never re-runs the content-changed
-// effect" property - see that effect's own dependency-array comment.
-function failedTurnCount(model: ThreadModel | undefined): number {
-  if (!model) return 0;
-  let n = 0;
-  for (const turn of model.turns) if (isFailedTurn(turn)) n++;
-  return n;
-}
-
-/**
- * The scrollTop change a vertical input asks for: 1 toward the bottom, -1 toward
- * the top. A wheel with positive deltaY and a finger moving UP both push content
- * down, so both are 1.
- */
-type ScrollDirection = 1 | -1;
-
-/** PointerEvent.buttons bits. A drag is only ever begun for these two. */
-const PRIMARY_BUTTON_BIT = 1;
-const MIDDLE_BUTTON_BIT = 4;
-const DRAG_BUTTON_BITS = PRIMARY_BUTTON_BIT | MIDDLE_BUTTON_BIT;
-
-/**
- * Can the PORT still move that way? Uses the same at-bottom band the rest of the
- * hook decides by, so this agrees with what wasAtBottom will say. The band's
- * error here is safe: a port within the band of its bottom reads as "cannot
- * move", so a downward input goes unmarked.
- */
-function portCanScroll(metrics: ScrollMetrics, direction: ScrollDirection): boolean {
-  if (direction === -1) return metrics.scrollTop > 0;
-  return !isAtBottom(metrics);
-}
-
-/**
- * Has this element any room left that way, EXACTLY - no tolerance band.
- *
- * The band's error inverts for a nested candidate: a scroller three pixels from
- * its own bottom would read as "at its limit", the walk below would let the
- * input through, the port would mark - and then that scroller would eat the
- * wheel and the port would never move. That is precisely the false veto this
- * predicate must never produce, so the nested question is asked exactly.
- */
-function hasRoomToScroll(el: Element, direction: ScrollDirection): boolean {
-  if (direction === -1) return el.scrollTop > 0;
-  return el.scrollHeight - el.scrollTop - el.clientHeight > 0;
-}
-
-/** An element that scrolls vertically on its own, independently of the port. */
-function isIndependentVerticalScroller(el: Element): boolean {
-  if (el.scrollHeight <= el.clientHeight) return false;
-  const overflowY = getComputedStyle(el).overflowY;
-  return overflowY === "auto" || overflowY === "scroll";
-}
-
-/**
- * Can a vertical input landing on `target` actually move `port`? Two ways it
- * cannot:
- *
- * The port's own geometry arrives as `portMetrics` rather than being read off
- * the element: the at-bottom decision goes through this hook's injectable
- * measurement seam everywhere else, for the reason scrollMetrics.ts states (a
- * jsdom element's layout is all zeroes, so a helper that takes the element
- * cannot be tested honestly). The nested walk below has no such seam and reads
- * the DOM directly - there is nothing it could be measured through, and its
- * answer is about elements this hook never otherwise looks at.
- *
- *   the port is already at that limit; or
- *   something between the target and the port is an independent vertical
- *   scroller with room left in that direction, so IT answers the input and the
- *   event merely bubbles past (the sandbox-escalation panel is overflow-y:auto
- *   inside the transcript).
- *
- * Both are read from state that exists BEFORE the browser scrolls, which is a
- * plain read of the present - not the after-the-fact geometry inference this
- * design replaced. A nested scroller with NO room that way passes the input on,
- * so that case still counts as a gesture.
- *
- * Marking therefore implies the port has room beyond the at-bottom band AND
- * nothing on the way to it has any room to answer the input first - so a mark
- * is a scroll the port will really feel, and being wrong costs an unmarked real
- * scroll rather than a false veto. That matters because a false veto disarms the
- * bottom-hold correction until the reader returns to the bottom, where an
- * unmarked scroll costs a single frame.
- *
- * A nested scroller with LESS room than the input's delta does not split it:
- * Chrome scrolls that element to its own limit and keeps the remainder, chaining
- * to the port only on a LATER event, which then finds no room here and marks.
- * Measured in the browser guards' own headless Chrome 153.0.8010.36 - a 120px
- * wheel over a scroller with 3px left moved the scroller 3px and the port not at
- * all - so "has any room" is the right question to ask, not "has room enough".
- * Latching is browser-defined; an engine that split the delta instead would make
- * this under-mark, which is the safe direction.
- *
- * The one band left: an ancestor with overscroll-behavior other than `auto`
- * refuses to chain the input onward when it reaches its own limit, so it can
- * swallow an input this says will reach the port. Not modelled - computing it
- * would mean reading a second property per ancestor for a case the transcript
- * does not currently build.
- */
-function verticalInputCanMovePort(
-  port: HTMLElement,
-  portMetrics: ScrollMetrics,
-  target: EventTarget | null,
-  direction: ScrollDirection,
-): boolean {
-  if (!portCanScroll(portMetrics, direction)) return false;
-  let node = target instanceof Element ? target : null;
-  while (node !== null && node !== port) {
-    if (isIndependentVerticalScroller(node) && hasRoomToScroll(node, direction)) return false;
-    node = node.parentElement;
-  }
-  return true;
+  restoreViewAnchorAfterMeasurement: (layout?: CommittedVirtualListLayout) => void;
 }
 
 export function useTranscriptScroll({
@@ -1132,6 +237,8 @@ export function useTranscriptScroll({
   const [awayFromBottom, setAwayFromBottom] = useState(false);
 
   const wasAtBottomRef = useRef(true);
+  const pendingInitialEndRef = useRef<string | null>(null);
+  const pendingViewAnchorRef = useRef<PendingViewAnchor | null>(null);
   // Reader-gesture state for the bottom-hold correction (see the scroll
   // listener). Hook-level rather than effect-local so markGesture can be handed
   // out with a stable identity.
@@ -1147,301 +254,47 @@ export function useTranscriptScroll({
   // Frames the pending marker has left before its clearing frame clears it; a
   // marker is pending while this is above zero.
   const gestureFramesLeftRef = useRef(0);
-  const gestureClearFrameRef = useRef<number | null>(null);
-  const pointerDraggingRef = useRef(false);
-  const middleButtonHeldRef = useRef(false);
-  const lastTouchYRef = useRef<number | null>(null);
   const readerGestureRef = useRef<{ beforeOffset: number; admitted: boolean } | undefined>(undefined);
+  const readerCallbacksRef = useRef({ onReaderIntent, onReaderMovement });
+  readerCallbacksRef.current = { onReaderIntent, onReaderMovement };
   const pendingBottomJumpRef = useRef<{
     element: HTMLElement;
     scrollHeight: number;
     clientHeight: number;
   } | null>(null);
-  const readerCallbacksRef = useRef({ onReaderIntent, onReaderMovement });
-  readerCallbacksRef.current = { onReaderIntent, onReaderMovement };
   // The geometry the previous measurement saw. Read only to classify the NEXT
   // scroll event (see handleScroll). Deliberately NOT reset alongside the other
   // per-ref state below: the mount block reseeds it from a fresh measurement in
   // the same effect pass, before the scroll listener is attached, so no handler
   // can ever read the previous session's geometry.
   const lastScrollGeometryRef = useRef<ScrollMetrics>({ scrollTop: 0, scrollHeight: 0, clientHeight: 0 });
-  // Announce that the reader is moving the transcript right now. Cleared on the
-  // next animation frame, which is exactly "this frame": a frame's scroll steps
-  // run BEFORE its requestAnimationFrame callbacks, so every scroll event the
-  // gesture can be responsible for is delivered while the flag is up, and none
-  // of the next frame's corrections see it.
-  //
-  // That frame may never arrive - requestAnimationFrame does not run while the
-  // tab is hidden, and the first frame after it becomes visible again can be
-  // arbitrarily far away - so the scroll listener also CONSUMES the flag on the
-  // event it explains (one whose content and viewport heights held), and the
-  // document going hidden clears it outright. Between the three, a gesture
-  // vetoes the event it caused and, within its frames, the measurement
-  // corrections that land before that event - nothing later.
-  //
-  // Over-marking is the dangerous direction, not under-marking. A veto falls
-  // through to the ordinary path below, which records the reader as away from
-  // the bottom, so the at-bottom clause fails for every later correction until
-  // the reader actually returns to the bottom: one false veto reinstates the
-  // mount strand permanently, rather than costing a single frame.
-  //
-  // A native scrolling key's marker lasts three frames. The browser's smooth
-  // scroll for the key starts a frame or two after it, so its first scroll
-  // event arrives after one or two frame clears (Chrome: usually 20ms after
-  // Shift-Space's keydown, #3880, and sometimes 37.8ms, #4065). An instant key
-  // scroll consumes the marker in the first frame.
-  const markGesture = useCallback(
-    (readerIntent = true, beforeOffset?: number, frames = 1) => {
-      const el = listRef.current?.getScrollElement();
-      if (readerIntent && el) {
-        pendingViewAnchorRef.current = null;
-        pendingBottomJumpRef.current = null;
-        readerCallbacksRef.current.onReaderIntent?.();
-        if (beforeOffset !== undefined && Number.isFinite(beforeOffset) && el.scrollTop !== beforeOffset)
-          readerCallbacksRef.current.onReaderMovement?.(beforeOffset);
-        readerGestureRef.current = { beforeOffset: el.scrollTop, admitted: true };
-      }
-      pendingInitialEndRef.current = null;
-      gestureFramesLeftRef.current = Math.max(gestureFramesLeftRef.current, frames);
-      if (gestureClearFrameRef.current !== null) return;
-      const clearOnFrame = () => {
-        gestureClearFrameRef.current = requestAnimationFrame(() => {
-          gestureFramesLeftRef.current -= 1;
-          if (gestureFramesLeftRef.current > 0) return clearOnFrame();
-          gestureFramesLeftRef.current = 0;
-          gestureClearFrameRef.current = null;
-          readerGestureRef.current = undefined;
-        });
-      };
-      clearOnFrame();
-    },
-    [listRef],
-  );
-  // Drops a pending marker and its clearing frame, for when no scroll it could
-  // explain is still to come: the document went hidden, or the session changed.
-  const forgetPendingMarker = useCallback(() => {
-    gestureFramesLeftRef.current = 0;
-    readerGestureRef.current = undefined;
-    if (gestureClearFrameRef.current !== null) {
-      cancelAnimationFrame(gestureClearFrameRef.current);
-      gestureClearFrameRef.current = null;
-    }
-  }, []);
-  // How exact each marker is, since over-marking is the harmful direction:
-  //
-  //   scroll chords - EXACT. useTranscriptScrollKeys writes the offset itself
-  //     and marks only when the write moved it (its scrollPortBy).
-  //   wheel         - a sideways wheel scrolls nothing here and never marks,
-  //     whether it says so with a zero deltaY or with shiftKey; nor does a zoom
-  //     gesture (ctrl-wheel) or one a descendant has already claimed via
-  //     preventDefault. A vertical one marks only when
-  //     verticalInputCanMovePort says it can reach and move the port: not into a
-  //     limit the port is already at, and not when a nested scroller will answer
-  //     it instead.
-  //   touch         - the same predicate, on real vertical movement only, so a
-  //     sideways swipe and a swipe a nested scroller answers are both ignored.
-  //   native keys   - the wheel's predicate, by key direction. The one marker
-  //     that lasts three frames, since the key's smooth scroll starts a frame or
-  //     two late, so a key whose scroll never starts can veto a correction in
-  //     each of them.
-  //   pointer drag  - the LEAST exact, and deliberately kept: a selection drag
-  //     that moves without scrolling marks a gesture, which no handler can tell
-  //     from a scrollbar drag that does scroll. The PRIMARY button marks only
-  //     while the pointer moves, so a held one is never a standing veto; a held
-  //     MIDDLE button is an autoscroll in progress and vetoes for as long as it
-  //     is down, stationary pointer included. Ruled out are a finger (it has the
-  //     touch path, which is more exact), a secondary button, a drag that is
-  //     over (no button held), and one that has left the port.
-  const startPointerDrag = useCallback((event: PointerEvent) => {
-    // A finger produces BOTH event streams. The touch path knows about
-    // direction and nested scrollers; adopting the same finger here as a drag
-    // would mark every sideways swipe and undo that exactness.
-    //
-    // The primary button drags a scrollbar or a selection; the middle button is
-    // native autoscroll, which scrolls the port continuously for as long as it
-    // is held - so leaving it out costs a re-pin on every correction that lands
-    // while it is moving, not a single frame. The secondary button opens a menu
-    // and never scrolls. Where the middle button does nothing at all, this marks
-    // a drag that moves nothing: the same trade the path already makes for a
-    // selection drag.
-    //
-    // The two buttons are tracked differently, because their held states mean
-    // opposite things.
-    //
-    // A mark comes from pointermove and lasts one frame, which is the whole
-    // story for the PRIMARY button: a selection drag holds it for as long as the
-    // reader is choosing text and scrolls nothing while they pause, so a held
-    // primary button must never be a standing veto - that is the permanent false
-    // veto this design treats as the harmful direction.
-    //
-    // A held MIDDLE button is the opposite: native autoscroll scrolls the port
-    // continuously while the pointer sits still, producing a stream of scroll
-    // events with no pointermove to mark any of them. So it is tracked as a
-    // state rather than an event, and the scroll listener reads it. Being a
-    // state, it is bounded by its clears rather than by any clock: the button
-    // coming up, a move without it, the pointer leaving the port, the pane
-    // switching session, and focus or visibility going away.
-    //
-    // Two trades come with it. On a platform where a middle-button hold does
-    // nothing at all it is a standing veto over a transcript that is not moving,
-    // which needs the reader to press and hold the middle button over the
-    // transcript while content grows. And because pointerleave is one of the
-    // clears, an autoscroll that carries on with the cursor outside the port
-    // goes unmarked from then on - under-marking, the safe side, and the same
-    // trade pointerleave already makes for a drag.
-    if (event.pointerType === "touch") return;
-    if ((event.button !== 0 && event.button !== 1) || !event.isPrimary) return;
-    if (event.button === 1) middleButtonHeldRef.current = true;
-    pointerDraggingRef.current = true;
-    const port = event.currentTarget;
-    if (port instanceof HTMLElement) readerGestureRef.current = { beforeOffset: port.scrollTop, admitted: false };
-  }, []);
-  // A mouse pointer gets no implicit capture, so a drag released outside the
-  // port never delivers pointerup to it, and a drag that started elsewhere can
-  // wander in with its button still down. Two answers, neither alone complete:
-  // the held button ends a drag wherever it was released, and leaving the port
-  // ends it too, so a foreign drag entering later is not adopted. The trade is
-  // that a drag which leaves the port and returns - an edge auto-scroll - stops
-  // marking; under-marking is the safe direction here.
-  const continuePointerDrag = useCallback(
-    (event: PointerEvent) => {
-      // Ahead of both reading AND writing the flag: a finger must neither mark
-      // a mouse drag nor end one.
-      if (event.pointerType === "touch") return;
-      // The middle bit going away ends the autoscroll even when another button
-      // is still down, and even when the release never reaches this port.
-      if ((event.buttons & MIDDLE_BUTTON_BIT) === 0) middleButtonHeldRef.current = false;
-      // A move carrying neither button a drag is begun for ends the drag rather
-      // than continuing it. Testing the mask, not just "some button is down",
-      // is what stops a secondary drag inheriting a primary one the port never
-      // saw end: the flag survives a blur, and every later right-button move
-      // would otherwise mark from a button the drag path never accepted.
-      if ((event.buttons & DRAG_BUTTON_BITS) === 0) {
-        pointerDraggingRef.current = false;
-        return;
-      }
-      if (pointerDraggingRef.current) markGesture(false);
-    },
-    [markGesture],
-  );
-  // Deliberately NOT filtered by pointerType, unlike the two above: ending a
-  // drag is the under-marking direction, so a stray touch pointerup clearing a
-  // mouse drag costs an unmarked scroll. Ignoring it would keep the drag marked
-  // only until the mouse's own pointerup, its next button-free move, or a
-  // pointerleave - a short window, not a latch, but still the over-marking side
-  // of the trade.
-  const endPointerDrag = useCallback(() => {
-    pointerDraggingRef.current = false;
-    middleButtonHeldRef.current = false;
-  }, []);
-  // The autoscroll state is the only gesture state with no clock and nothing to
-  // consume it, so everything that ends it has to be named. A middle press over
-  // the transcript can be released anywhere - once focus leaves, the port sees
-  // no pointerup at all - and until something says otherwise this would keep
-  // vetoing, with every vetoed correction disarming the re-pin. Losing focus and
-  // going hidden are both "the release, wherever it happens, is not ours to
-  // see". pointerDraggingRef needs no equivalent: it only acts on a later
-  // pointermove, which carries its own buttons.
-  const endAutoscrollOnFocusLoss = useCallback(() => {
-    middleButtonHeldRef.current = false;
-  }, []);
-  // A hidden document stops the clearing frame as well as hiding the scroll, so
-  // it bounds the pending MARKER too, not just the autoscroll: a drag marks
-  // without producing any scroll event of its own, and that marker would
-  // otherwise survive until the first scroll after return - which, if content
-  // grew meanwhile, is the measurement correction it would then veto. Blur needs
-  // no equivalent: a blurred window is still rendering, so the frame boundary is
-  // still the marker's bound there.
-  const forgetGesturesWhenHidden = useCallback(() => {
-    if (document.visibilityState !== "hidden") return;
-    middleButtonHeldRef.current = false;
-    forgetPendingMarker();
-  }, [forgetPendingMarker]);
-  const markWheel = useCallback(
-    (event: WheelEvent) => {
-      // None of these move this port. ctrl-wheel is the browser's zoom gesture,
-      // and a macOS trackpad pinch arrives as one. shift-wheel is horizontal,
-      // and the port is overflow-x:clip (virtuallist.module.css) so it pans in
-      // no engine - engines disagree on whether they zero deltaY or leave it set
-      // while scrolling sideways, and reading shiftKey needs no such guess. A
-      // wheel a descendant already claimed will not reach the port either.
-      if (event.ctrlKey || event.shiftKey || event.defaultPrevented) return;
-      if (event.deltaY === 0) return;
-      const port = event.currentTarget;
-      if (!(port instanceof HTMLElement)) return;
-      if (!verticalInputCanMovePort(port, measure(port), event.target, event.deltaY > 0 ? 1 : -1)) return;
-      markGesture(true, lastScrollGeometryRef.current.scrollTop);
-    },
-    [markGesture, measure],
-  );
-  const startTouch = useCallback((event: TouchEvent) => {
-    lastTouchYRef.current = event.touches[0]?.clientY ?? null;
-  }, []);
-  const continueTouch = useCallback(
-    (event: TouchEvent) => {
-      const y = event.touches[0]?.clientY ?? null;
-      const last = lastTouchYRef.current;
-      lastTouchYRef.current = y;
-      // A first move with no recorded start (the touch began outside the port)
-      // is not marked; the next one with real movement is.
-      if (y === null || last === null || y === last) return;
-      const port = event.currentTarget;
-      if (!(port instanceof HTMLElement)) return;
-      // A finger moving UP - clientY decreasing - pushes content down.
-      if (!verticalInputCanMovePort(port, measure(port), event.target, y < last ? 1 : -1)) return;
-      markGesture();
-    },
-    [markGesture, measure],
-  );
-  // A finished touch has to clear the recorded Y, or the "no recorded start"
-  // guard above is true exactly once per mount and every later outside-start
-  // move compares against a stale value.
-  const endTouch = useCallback(() => {
-    lastTouchYRef.current = null;
-  }, []);
-  const markNativeKey = useCallback(
-    (event: KeyboardEvent) => {
-      const space = event.key === " ";
-      if (
-        event.defaultPrevented ||
-        event.altKey ||
-        event.ctrlKey ||
-        event.metaKey ||
-        (event.shiftKey && !space) ||
-        isIMECompositionKeydown(event) ||
-        isEditableTarget(event.target) ||
-        (space && event.target instanceof Element && event.target.closest("button, summary"))
-      )
-        return;
-      let direction: -1 | 1 | undefined;
-      if (space) {
-        direction = event.shiftKey ? -1 : 1;
-      } else if (event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home") {
-        direction = -1;
-      } else if (event.key === "ArrowDown" || event.key === "PageDown" || event.key === "End") {
-        direction = 1;
-      }
-      const port = event.currentTarget;
-      if (
-        direction === undefined ||
-        !(port instanceof HTMLElement) ||
-        !verticalInputCanMovePort(port, measure(port), event.target, direction)
-      )
-        return;
-      markGesture(true, undefined, 3);
-      // markGesture's reader intent supersedes the pending capture - and, with
-      // it, the movement record - so the key's own backward direction has to be
-      // armed AFTER it. A forward key keeps waiting for its event, as before.
-      if (direction === -1 && listRef.current?.getScrollElement() === port) listRef.current.noteBackwardMovement?.();
-    },
-    [listRef, markGesture, measure],
-  );
-  useEffect(
-    () => () => {
-      if (gestureClearFrameRef.current !== null) cancelAnimationFrame(gestureClearFrameRef.current);
-    },
-    [],
-  );
+  const {
+    pointerDraggingRef,
+    middleButtonHeldRef,
+    lastTouchYRef,
+    markGesture,
+    forgetPendingMarker,
+    markNativeKey,
+    markWheel,
+    startTouch,
+    continueTouch,
+    endTouch,
+    startPointerDrag,
+    continuePointerDrag,
+    endPointerDrag,
+    endAutoscrollOnFocusLoss,
+    forgetGesturesWhenHidden,
+  } = useReaderGestures({
+    listRef,
+    measure,
+    gestureFramesLeftRef,
+    readerGestureRef,
+    readerCallbacksRef,
+    lastScrollGeometryRef,
+    pendingViewAnchorRef,
+    pendingBottomJumpRef,
+    pendingInitialEndRef,
+  });
 
   const firstTurnIdRef = useRef<string | undefined>(undefined);
   const baselineItemCountRef = useRef(0);
@@ -1459,13 +312,10 @@ export function useTranscriptScroll({
   // detects the change and re-initializes every per-ref piece of state so
   // the new session is treated as a fresh open (always land at the bottom).
   const refForInitRef = useRef<string | undefined>(ref);
-  const pendingInitialEndRef = useRef<string | null>(null);
-  const pendingViewAnchorRef = useRef<{
-    anchor: ViewAnchor | undefined;
-    proportion: number;
-    target?: RestoredViewAnchor;
-    scrollRequested?: boolean;
-  } | null>(null);
+  // True while the end position we asked for is still the reader's wish. A
+  // reader's own scroll replaces it; an index target the caller asked for (a
+  // failed-turn jump) is never replaced by this flag.
+  const pendingEndTargetRef = useRef(false);
   // Turn IDs whose failure (if any) has already been accounted for - seen
   // live while at the bottom, already anchored-and-cleared, or currently
   // the active anchor (added the moment it's chosen - see the
@@ -1570,6 +420,32 @@ export function useTranscriptScroll({
     pending: openingPending,
   });
 
+  const resumeOpening = useCallback(
+    (layout?: CommittedVirtualListLayout) => {
+      const list = listRef.current;
+      const port = list?.getScrollElement();
+      const previous = openingTransitionRef.current;
+      if (!port || openingPendingRef.current || previous.ref !== ref || previous.port !== port || !previous.pending)
+        return;
+      // Real readers resume only after child registration and our own placement.
+      // Older handles without committed geometry retain their immediate check.
+      if (
+        list?.isMeasurementReady &&
+        (!layout?.isCurrent() ||
+          layout.virtualizer.scrollElement !== port ||
+          pendingInitialEndRef.current === ref ||
+          pendingViewAnchorRef.current !== null)
+      )
+        return;
+      openingTransitionRef.current = { ref, port, pending: false };
+      port.removeAttribute("data-opening-hold");
+      const metrics = measure(port);
+      if (isNearTop(metrics.scrollTop) && !contentIsUnmeasured(port)) loadOlderRef.current().catch(() => {});
+      else if (shouldAutoLoadOlder(port)) loadOlderRef.current().catch(() => {});
+    },
+    [ref, listRef, measure],
+  );
+
   // While the recorded opening is pending, hold BOTH paging triggers: stamp the
   // scroll port so the short-page row's own geometry check holds (that row owns
   // its own observer), and gate the near-top trigger above. When the opening
@@ -1593,15 +469,11 @@ export function useTranscriptScroll({
       openingTransitionRef.current = { ref, port, pending: true };
       return;
     }
-    port.removeAttribute("data-opening-hold");
-    if (!previous.pending) return;
-    openingTransitionRef.current = { ref, port, pending: false };
-    // Resume only through the SAME readiness gates the normal triggers keep:
-    // near-top demand still requires measured content, and short-page demand
-    // still goes through shouldAutoLoadOlder (whose own guards apply).
-    const metrics = measure(port);
-    if (isNearTop(metrics.scrollTop) && !contentIsUnmeasured(port)) loadOlderRef.current().catch(() => {});
-    else if (shouldAutoLoadOlder(port)) loadOlderRef.current().catch(() => {});
+    if (!previous.pending) {
+      port.removeAttribute("data-opening-hold");
+      return;
+    }
+    resumeOpening();
   });
 
   const rowIndexForTurn = useCallback((turnId: string, sourceIndex: number): number => {
@@ -1697,6 +569,7 @@ export function useTranscriptScroll({
         // in that window increments the pill instead of auto-sticking on an
         // unconfirmed jump, and a landing that later corrections leave short
         // keeps the pill on offer.
+        pendingEndTargetRef.current = false;
         if (count > 0) listRef.current?.scrollToIndex(count - 1, { align: "end" });
         if (el) {
           // Pin from LIVE geometry, re-measured after scrollToIndex: the
@@ -1731,52 +604,64 @@ export function useTranscriptScroll({
     };
   }, [listRef, measure, measureAnchors]);
 
-  const restoreViewAnchorAfterMeasurement = useCallback(() => {
-    if (pendingInitialEndRef.current === ref) {
-      const list = listRef.current;
-      const el = list?.getScrollElement();
-      if (!el || list?.isMeasurementReady?.() === false) return;
-      pendingInitialEndRef.current = null;
-      // An end request made against the initial sizer can be clamped to zero.
-      // Finish that fresh-open default once the real measured sizer commits.
-      const retained = retainedPlacements.get(el);
-      if (retained?.logicalRef !== ref && gestureFramesLeftRef.current <= 0) {
-        scrollToLastRow(listRef, renderedRowCountRef.current);
-        const metrics = measure(el);
-        el.scrollTop = Math.max(0, metrics.scrollHeight - metrics.clientHeight);
+  const restorePendingViewAnchor = useCallback(
+    (layout?: CommittedVirtualListLayout) => {
+      if (pendingInitialEndRef.current === ref) {
+        const list = listRef.current;
+        const el = list?.getScrollElement();
+        if (!el || (list?.isMeasurementReady?.() === false && !layout?.isCurrent())) return;
+        pendingInitialEndRef.current = null;
+        // An end request made against the initial sizer can be clamped to zero.
+        // Finish that fresh-open default once the real measured sizer commits.
+        const retained = retainedPlacements.get(el);
+        if (retained?.logicalRef !== ref && gestureFramesLeftRef.current <= 0) {
+          pendingEndTargetRef.current = true;
+          scrollToLastRow(listRef, renderedRowCountRef.current);
+          const metrics = measure(el);
+          el.scrollTop = Math.max(0, metrics.scrollHeight - metrics.clientHeight);
+        }
       }
-    }
-    const pending = pendingViewAnchorRef.current;
-    if (!pending) return;
-    const el = listRef.current?.getScrollElement();
-    if (!el) return;
+      const pending = pendingViewAnchorRef.current;
+      if (!pending) return;
+      const el = listRef.current?.getScrollElement();
+      if (!el) return;
 
-    const measured = measureAnchors(el);
-    const positions = anchorEntries?.map((entry) => ({ ...entry, offset: 0 })) ?? measured;
-    const restored = pending.target ?? (pending.anchor ? restoreTopAnchor(pending.anchor, positions) : undefined);
-    if (!restored) {
-      const m = measure(el);
-      el.scrollTop = pending.proportion * Math.max(0, m.scrollHeight - m.clientHeight);
-      pendingViewAnchorRef.current = null;
-      return;
-    }
+      const measured = measureAnchors(el);
+      const positions = anchorEntries?.map((entry) => ({ ...entry, offset: 0 })) ?? measured;
+      const restored = pending.target ?? (pending.anchor ? restoreTopAnchor(pending.anchor, positions) : undefined);
+      if (!restored) {
+        const m = measure(el);
+        el.scrollTop = pending.proportion * Math.max(0, m.scrollHeight - m.clientHeight);
+        pendingViewAnchorRef.current = null;
+        return;
+      }
 
-    const current = measured.find((position) => position.id === restored.id);
-    if (current) {
-      el.scrollTop += current.offset - restored.offset;
-      pendingViewAnchorRef.current = null;
-      return;
-    }
+      const current = measured.find((position) => position.id === restored.id);
+      if (current) {
+        el.scrollTop += current.offset - restored.offset;
+        pendingViewAnchorRef.current = null;
+        return;
+      }
 
-    // Keep the target and desired offset pending. VirtualList's onChange seam
-    // calls this function again after scrollToIndex renders/measures the row.
-    // Mark first because react-virtual can notify synchronously from the call.
-    if (!pending.scrollRequested) {
-      pending.target = restored;
-      pending.scrollRequested = true;
-      listRef.current?.scrollToIndex(restored.index, { align: "start" });
-    }
-  }, [ref, listRef, measure, measureAnchors, anchorEntries]);
+      // Keep the target and desired offset pending. VirtualList's onChange seam
+      // calls this function again after scrollToIndex renders/measures the row.
+      // Mark first because react-virtual can notify synchronously from the call.
+      if (!pending.scrollRequested) {
+        pending.target = restored;
+        pending.scrollRequested = true;
+        listRef.current?.scrollToIndex(restored.index, { align: "start" });
+      }
+    },
+    [ref, listRef, measure, measureAnchors, anchorEntries],
+  );
+
+  const restoreViewAnchorAfterMeasurement = useCallback(
+    (layout?: CommittedVirtualListLayout) => {
+      restorePendingViewAnchor(layout);
+      if (layout) resumeOpening(layout);
+    },
+    [restorePendingViewAnchor, resumeOpening],
+  );
 
   // Mount / (re)attach. Guarded by initializedRef so the one-time restore-
   // or-default-to-bottom positioning and baseline recording happen exactly
@@ -1840,6 +725,7 @@ export function useTranscriptScroll({
       const retained = retainedPlacements.get(el);
       const captured = retained?.logicalRef === ref ? retained.captured : undefined;
       if (!captured && (!initialViewCapture || initialViewCapture.followingBottom)) {
+        pendingEndTargetRef.current = true;
         scrollToLastRow(listRef, renderedRowCountRef.current);
         pendingInitialEndRef.current = listRef.current?.isMeasurementReady?.() === false ? ref : null;
       }
@@ -1947,6 +833,18 @@ export function useTranscriptScroll({
         readerGestureRef.current = { beforeOffset: m.scrollTop, admitted: true };
       }
       lastScrollGeometryRef.current = m;
+      // A reader's own movement replaces an END target the virtualizer is still
+      // reconciling. A mount's or a restore's scrollToIndex lands a frame or two
+      // later (react-virtual reconciles in an animation frame), and re-applying
+      // it would throw away the position the reader just took. Only end targets
+      // are replaced: an index target the caller asked for (a failed-turn jump)
+      // must still land on its row.
+      if (isAtBottom(m)) {
+        pendingEndTargetRef.current = false;
+      } else if (pendingEndTargetRef.current && m.scrollTop !== previous.scrollTop) {
+        pendingEndTargetRef.current = false;
+        listRef.current?.scrollToOffset?.(m.scrollTop);
+      }
       if (!gestured && wasAtBottomRef.current && contentGrewBelowViewport(previous, m)) {
         el.scrollTop = Math.max(0, m.scrollHeight - m.clientHeight);
         return;
@@ -2295,6 +1193,7 @@ export function useTranscriptScroll({
       // the bottom, re-issuing the end target with the NEW last row keeps that
       // loop pointed at the bottom; a reader scrolled away is left alone.
       if (wasAtBottomRef.current) {
+        pendingEndTargetRef.current = true;
         scrollToLastRow(listRef, renderedRowCountRef.current);
       }
     } else {
@@ -2331,6 +1230,7 @@ export function useTranscriptScroll({
       const unseen = itemCount - baselineItemCountRef.current;
       if (unseen > 0) {
         if (wasAtBottomRef.current) {
+          pendingEndTargetRef.current = true;
           scrollToLastRow(listRef, renderedRowCountRef.current);
           wasAtBottomRef.current = true;
           baselineItemCountRef.current = itemCount;

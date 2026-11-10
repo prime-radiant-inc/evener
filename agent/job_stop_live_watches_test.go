@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/agent/events"
 	toolpkg "primeradiant.com/evener/agent/internal/tool"
 )
 
@@ -548,7 +547,7 @@ func attachNestedWatchHolder(t *testing.T, f *stableWatchRuntimeFixture, parent 
 		state:                 SessionIdle,
 	}
 	if parent.subagents == nil {
-		parent.subagents = newSubagentManager(func(events.EventKind, events.EventData) {}, 4)
+		parent.subagents = newSubagentManager(4)
 	}
 	parent.subagents.mu.Lock()
 	parent.subagents.subs[sessionID] = &subagent{id: sessionID, sess: nested, running: true}
@@ -786,6 +785,43 @@ func TestJobWatchClearSessionKeyedNearestDelegate(t *testing.T) {
 	}
 	if _, _, found := f.rootJM.watchReceiverIdentity(watchID); found {
 		t.Fatal("watch survived the nearest delegate's clear")
+	}
+}
+
+// TestJobWatchClearSessionKeyedDescendantCannotClearAncestor pins the other
+// direction of the topology rule: a descendant delegate may not clear a
+// session-keyed watch that delivers to its ancestor's session, and the watch
+// stays armed for the ancestor, which can still clear it.
+func TestJobWatchClearSessionKeyedDescendantCannotClearAncestor(t *testing.T) {
+	f := newStableWatchRuntimeBase(t, nil)
+	seedDelegateControllerRunning(t, f.controller, "dlg_a", "")
+	a := attachNestedWatchHolder(t, f, f.root, "child-dlg_a")
+	bindDelegateRuntime(t, f.controller, "dlg_a", a)
+	seedDelegateControllerRunning(t, f.controller, "dlg_b", "dlg_a")
+	b := attachNestedWatchHolder(t, f, a, "child-dlg_b")
+	bindDelegateRuntime(t, f.controller, "dlg_b", b)
+	watchID := installSessionKeyedWatch(t, f.rootJM, "child-dlg_a")
+
+	descendant := runtimeSessionFor(f, "child-dlg_b", "dlg_b")
+	if _, err := jobWatchToolWithContext(context.Background(), descendant, map[string]any{
+		"operation": "clear",
+		"watch_id":  watchID,
+	}, 4096); err == nil {
+		t.Fatal("descendant cleared its ancestor's session-keyed watch")
+	}
+	if _, _, found := f.rootJM.watchReceiverIdentity(watchID); !found {
+		t.Fatal("ancestor's session-keyed watch did not survive the descendant's refused clear")
+	}
+
+	ancestor := runtimeSessionFor(f, "child-dlg_a", "dlg_a")
+	if _, err := jobWatchToolWithContext(context.Background(), ancestor, map[string]any{
+		"operation": "clear",
+		"watch_id":  watchID,
+	}, 4096); err != nil {
+		t.Fatalf("ancestor clear: %v", err)
+	}
+	if _, _, found := f.rootJM.watchReceiverIdentity(watchID); found {
+		t.Fatal("watch survived the receiver session's own clear")
 	}
 }
 

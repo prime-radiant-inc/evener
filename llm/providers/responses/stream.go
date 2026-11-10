@@ -311,10 +311,19 @@ var responsesAPIEventTypes = map[string]struct{}{
 	"response.output_item.added":             {},
 	"response.output_item.done":              {},
 	"response.output_text.delta":             {},
+	"response.output_text.done":              {},
 	"response.reasoning_summary_part.added":  {},
 	"response.reasoning_summary_text.delta":  {},
+	"response.reasoning_summary_text.done":   {},
 	"response.reasoning_part.added":          {},
 	"response.reasoning_text.delta":          {},
+	"response.reasoning_text.done":           {},
+	"response.refusal.delta":                 {},
+	"response.refusal.done":                  {},
+	"response.output_audio.delta":            {},
+	"response.output_audio.done":             {},
+	"response.output_audio_transcript.delta": {},
+	"response.output_audio_transcript.done":  {},
 	"response.function_call_arguments.delta": {},
 	"response.function_call_arguments.done":  {},
 	"response.completed":                     {},
@@ -336,7 +345,6 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 	textStarted := false
 	reasoningStarted := false
 	finished := false
-	var finalEvent *llm.StreamEvent
 	// sawResponsesEvent records an event this decoder recognizes as belonging
 	// to the Responses API. It is the whole evidence the empty-stream sentinel
 	// rests on: an endpoint that does not implement the API cannot produce one,
@@ -345,13 +353,14 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 	sawResponsesEvent := false
 	acc := newResponsesOutputAccumulator()
 
-	runner := &transport.StreamRunner{
+	var runner *transport.StreamRunner
+	runner = &transport.StreamRunner{
 		Provider:   res.Instance,
 		Resp:       resp,
 		Stream:     s,
 		Attempt:    attempt,
 		StatusCode: resp.StatusCode,
-		FinalEvent: func() *llm.StreamEvent { return finalEvent },
+		Cancel:     cancel,
 		// HTTP response-byte idle is owned by ClientWithAdapterTimeout, below gzip decoding.
 		Finished: &finished,
 		// This transport has four ways to end without completing, and the
@@ -455,7 +464,7 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 				st, delta, ok := acc.HandleFunctionCallArgumentsDelta(payload)
 				if !ok {
 					// Can't map reliably; pass through.
-					s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
+					s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload, ContentBearing: true})
 					return nil
 				}
 				if !st.started {
@@ -467,7 +476,7 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 				s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallDelta, ToolCall: &tc})
 			case "response.function_call_arguments.done":
 				if _, ok := acc.HandleFunctionCallArgumentsDone(payload); !ok {
-					s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
+					s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload, ContentBearing: true})
 				}
 			case "response.output_item.done":
 				rawItem, st, argsStr, ok := acc.HandleOutputItemDone(payload)
@@ -489,7 +498,7 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 				default:
 					if it, _ := rawItem["type"].(string); it == "function_call" {
 						// function_call with no resolvable call_id.
-						s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
+						s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload, ContentBearing: true})
 					} else if textStarted {
 						// Best-effort: treat as end-of-text.
 						s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: textID})
@@ -512,16 +521,7 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 					s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: textID})
 					textStarted = false
 				}
-				rp := built
-				event := llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &built.Finish, Usage: &built.Usage, Response: &rp}
-				if attempt.Active() {
-					finalEvent = &event
-				} else {
-					s.Send(event)
-				}
-				// Stop parsing after finish.
-				finished = true
-				cancel()
+				runner.Finish(built)
 			case "error", "response.failed":
 				// The Responses API reports a mid-stream failure either as a flat
 				// "error" event or as an error nested in the response object of
@@ -552,10 +552,35 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 						return &transport.FatalStreamError{Err: llm.RewriteErrorProvider(inband, res.Instance)}
 					}
 				}
-				s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
+				s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload, ContentBearing: responsesContentBearingPassthrough(typ)})
 			}
 			return nil
 		},
 	}
 	runner.Run(sctx)
+}
+
+// responsesContentBearingPassthrough reports whether a Responses event the
+// decoder did not normalize into a typed stream event carries model output the
+// caller renders. The adapter owns this classification because only it knows
+// which event types are content rather than lifecycle: response.refusal.delta
+// carries refusal text, audio/transcript deltas carry output bytes, and the
+// .done siblings carry the same content in one frame. Lifecycle frames
+// (response.created, response.in_progress, …) and unknown types stay
+// unclassified, so a control-only stream that truncates still retries.
+//
+// This is a built-in-adapter contract, not a guarantee for arbitrary custom
+// adapters: one that emits its own Raw payload must set
+// StreamEvent.ContentBearing itself (#4941).
+func responsesContentBearingPassthrough(typ string) bool {
+	switch typ {
+	case "response.refusal.delta", "response.refusal.done",
+		"response.output_text.done",
+		"response.output_audio.delta", "response.output_audio.done",
+		"response.output_audio_transcript.delta", "response.output_audio_transcript.done",
+		"response.reasoning_summary_text.done", "response.reasoning_text.done":
+		return true
+	default:
+		return false
+	}
 }

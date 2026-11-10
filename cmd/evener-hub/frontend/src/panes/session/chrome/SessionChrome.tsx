@@ -12,8 +12,9 @@
 // width (there are no inline triggers and no narrow-collapse - the status
 // row's container-query variants own compression inside .body instead),
 // followed by Rename, the tree-gated Pin/Archive/Delete organization group,
-// and Shut down. The composer placement alone can also lead with the
-// narrow-layout turn verbs (Stop/Steer - SessionMenuProps.turnVerbs). The
+// and Shut down. The composer's row mounts can also lead with the
+// narrow-layout turn verbs (Stop/Steer - SessionMenuProps.turnVerbs): the
+// engaged inline chrome and the phone's collapsed-row menu. The
 // Overview count adds the subagents running at every depth
 // (useSubagentCounts) to the session summary's running jobs. The hidden
 // ActivityPanel retains discovery and refresh wiring. Overview opens the
@@ -46,16 +47,18 @@ import { assignSessionPin, deleteSession, setArchived, unpinSession } from "../.
 import { isConfirmedCrashedSession } from "../../../shell/rail/sessionKind";
 import { navigate, paneToURL, refParam } from "../../../shell/routing";
 import { SessionMenu, type SessionMenuProps, type SessionMenuTurnVerbs } from "../../../shell/sessionMenu/SessionMenu";
+import { cadenceStateFor } from "../../../shell/sessionStatus";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { useWorkspaceStore, workspaceStore } from "../../../shell/workspace";
 import { selectLocation } from "../../../stores/navigation/selectors";
 import { buildShutdownConvergence } from "../../../stores/navigation/shutdownConvergence";
 import { navigationStore, useNavigationStore } from "../../../stores/navigation/store";
+import { ownerRetainedRef } from "../../../stores/recoveryFence";
 import { useSessionActivity, useSubagentCounts } from "../../../stores/sessionActivity";
-import { ownerRetainedRef, threadsStore, useThreadsStore } from "../../../stores/threads";
+import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Cadence, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "../liveness";
+import { NOW_TICK_MS, useNowTick } from "../liveness";
 import { navigationSummaryFor } from "../threadTitle";
 import { TranscriptDetailControl } from "../transcript/TranscriptDetailControl";
 import { ActivityPanel } from "./ActivityPanel";
@@ -82,17 +85,30 @@ export interface SessionChromeProps {
   discoveryOnly?: boolean;
   /**
    * Turn verbs for the session menu, offered by the composer's narrow
-   * layout (Jesse's 2026-09-28 ruling on the #1339 phone-width wrap). Only
-   * the composer placement forwards them: the footer and menu-only mounts
-   * share SessionMenu with the rail, where no draft exists for Steer to
-   * send. Composer.tsx owns presence, disablement, and the press handlers.
+   * layout (Jesse's 2026-09-28 ruling on the #1339 phone-width wrap). The
+   * composer's two row mounts forward them - the engaged inline chrome and
+   * the phone's collapsed-row menu, which is the phone's only session menu
+   * while the composer rests. The footer mount and the notLoaded menu mount
+   * (which passes no turnVerbs) share SessionMenu with the rail, where no
+   * draft exists for Steer to send. Composer.tsx owns presence,
+   * disablement, and the press handlers.
    */
   turnVerbs?: SessionMenuTurnVerbs;
+  /**
+   * The composer's leading slot mounts this chrome on one horizontal line it
+   * shares with attach and the activity strip, where it must carry its
+   * measured compact rung as the flex basis (its container-contained .body
+   * cannot report one) or the row starves the model picker. The standalone
+   * pending-question mount passes nothing: the composer's column there is
+   * vertical, and a 200px basis would inflate the chrome's height instead.
+   */
+  compactRung?: boolean;
 }
 
 const CLASS = {
   chrome: requireClass(styles.chrome, "sessionchrome.module.css", "chrome"),
   inline: requireClass(styles.inline, "sessionchrome.module.css", "inline"),
+  inlineRung: requireClass(styles.inlineRung, "sessionchrome.module.css", "inlineRung"),
   body: requireClass(styles.body, "sessionchrome.module.css", "body"),
   cadenceSlot: requireClass(styles.cadenceSlot, "sessionchrome.module.css", "cadenceSlot"),
   right: requireClass(styles.right, "sessionchrome.module.css", "right"),
@@ -110,6 +126,7 @@ export function SessionChrome({
   discoverActivity = false,
   discoveryOnly = false,
   turnVerbs,
+  compactRung = false,
 }: SessionChromeProps) {
   const client = useClient();
   const model = useThreadsStore((s) => s.threads.get(sessionRef));
@@ -307,7 +324,9 @@ export function SessionChrome({
           own chrome for exactly this state, so there is no status body to
           compress and no second menu to dedupe against. */}
       <div
-        className={placement === "composer" ? CLASS.inline : CLASS.chrome}
+        className={
+          placement === "composer" ? (compactRung ? `${CLASS.inline} ${CLASS.inlineRung}` : CLASS.inline) : CLASS.chrome
+        }
         data-testid={
           placement === "composer"
             ? "session-chrome-inline"
@@ -331,7 +350,7 @@ export function SessionChrome({
            .right - and with it the "..." menu - always shares this one line. */
           <div className={CLASS.body} data-testid="session-chrome-body">
             <span className={CLASS.cadenceSlot} data-testid="session-chrome-cadence">
-              <Cadence state={cadenceStateForStatus(model.status.type)} frameTimes={frameTimes} now={now} />
+              <Cadence state={cadenceStateFor(model.status.type)} frameTimes={frameTimes} now={now} />
             </span>
             <StatusRow sessionRef={sessionRef} model={model} now={now} />
           </div>
@@ -350,9 +369,12 @@ export function SessionChrome({
             overviewOpen={sidebarOpenHere}
             overviewLabel={overviewLabel}
             onOpenVerbosity={() => setVerbosityOpen(true)}
-            // Composer placement only: the header comment on the prop says
-            // why the other placements must never carry turn verbs.
-            turnVerbs={placement === "composer" ? turnVerbs : undefined}
+            // The composer's two row mounts carry the turn verbs (the
+            // header comment on the prop says why the footer and rail
+            // mounts must never): the engaged inline chrome, and the
+            // phone's collapsed row, whose menu is the phone's only
+            // session menu while the composer rests.
+            turnVerbs={placement === "footer" ? undefined : turnVerbs}
             actions={{
               onOpenOverview: openOverview,
               onRename: async (name) => {

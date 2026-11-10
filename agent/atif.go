@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -22,11 +23,11 @@ func exportATIF(transcriptPath, outPath, providerHandleMode string) error {
 	if err != nil {
 		return err
 	}
-	transcriptData, err := readTranscriptFull(transcriptPath, filepath.Dir(filepath.Dir(transcriptPath)))
+	transcriptData, err := readTranscriptFull(context.Background(), transcriptPath, filepath.Dir(filepath.Dir(transcriptPath)))
 	if err != nil {
 		return fmt.Errorf("read transcript: %w", err)
 	}
-	traj := atif.ConvertTranscriptWithOptions(transcriptData.Header, transcriptData.Entries, atif.Options{ProviderHandles: mode})
+	traj := atif.Convert(transcriptData.Header, transcriptData.Entries, atif.Options{ProviderHandles: mode})
 	data, err := atifMarshalIndent(traj, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal ATIF: %w", err)

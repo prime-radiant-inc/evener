@@ -9,36 +9,21 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
-func TestHandleAppThreadModelSet_RejectsWhileProcessing(t *testing.T) {
+// While a turn runs, the protocol layer must NOT refuse a model switch: the
+// session's SetModel queues it for the turn boundary (the composer's pick-
+// mid-turn contract), so the handler relays to the hook and succeeds. The
+// session owns the now-versus-boundary decision.
+func TestHandleAppThreadModelSet_WhileProcessingReachesTheHook(t *testing.T) {
 	s := NewServer(ServerConfig{})
 	called := false
 	s.SetModelFunc(func(string) error { called = true; return nil })
 	s.SetProcessing(true)
 
-	if _, err := s.handleAppThreadModelSet(context.Background(), appwire.ThreadModelSetParams{Model: "claude-x"}); err == nil {
-		t.Fatal("expected an error while a turn is processing")
+	if _, err := s.handleAppThreadModelSet(context.Background(), appwire.ThreadModelSetParams{Model: "claude-x"}); err != nil {
+		t.Fatalf("a mid-turn switch must not error at the protocol layer: %v", err)
 	}
-	if called {
-		t.Fatal("model hook must not be invoked while a turn is active")
-	}
-}
-
-func TestHandleAppThreadModelSet_RejectsWhileTurnReserved_NamesTurnID(t *testing.T) {
-	s := NewServer(ServerConfig{})
-	called := false
-	s.SetModelFunc(func(string) error { called = true; return nil })
-	s.appActiveTurnID = "turn_abc123"
-	s.appReservedTurnID = "turn_abc123"
-
-	_, err := s.handleAppThreadModelSet(context.Background(), appwire.ThreadModelSetParams{Model: "claude-x"})
-	if err == nil {
-		t.Fatal("expected an error while a turn is reserved")
-	}
-	if called {
-		t.Fatal("model hook must not be invoked while a turn is reserved")
-	}
-	if !strings.Contains(err.Error(), "turn_abc123") {
-		t.Fatalf("error should name the active turn id, got: %v", err)
+	if !called {
+		t.Fatal("model hook must be invoked while a turn is active")
 	}
 }
 
@@ -95,7 +80,7 @@ func TestHandleAppThreadModelSet_JoinsSlashedModelUnconditionally(t *testing.T) 
 
 func TestHandleAppThreadModelSet_ThreadReadReflectsNewModelWithNoInterveningTurn(t *testing.T) {
 	s := NewServer(ServerConfig{})
-	s.SetStatus(StatusInfo{SessionID: "s1", Model: "gpt-5.4", Profile: "openai"})
+	seedStatus(s, StatusInfo{SessionID: "s1", Model: "gpt-5.4", Profile: "openai"})
 	s.SetModelFunc(func(m string) error {
 		// Mirrors serve.go: the hook itself refreshes the cached session info
 		// synchronously after a successful switch, rather than waiting for the

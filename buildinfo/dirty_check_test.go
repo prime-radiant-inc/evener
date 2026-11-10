@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/gittest"
 )
 
 // make/building.mk stamps the GitDirty link flag by shelling out to git at
@@ -56,55 +56,14 @@ func dirtyCommandFromMakefile(t *testing.T) string {
 	return strings.ReplaceAll(command, "$$", "$")
 }
 
-// gitConfigEnvironment names the git-config environment keys hermeticGitEnv
-// strips before setting its own, so an ambient value cannot win by position:
-// the file-selection variables (whose isolated replacements are set below)
-// and the config-injection variables, which can carry configuration such as
-// commit.gpgsign from the surrounding machine into the scratch repos.
-var gitConfigEnvironment = []string{
-	"GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM",
-	"GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS",
-}
-
-// gitConfigEnvironmentPrefixes names the key prefixes the same loop strips:
-// the numbered GIT_CONFIG_KEY_n / GIT_CONFIG_VALUE_n pairs GIT_CONFIG_COUNT
-// injects.
-var gitConfigEnvironmentPrefixes = []string{"GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"}
-
 // hermeticGitEnv returns the environment the tests' git and sh subprocesses
-// run with: identifier.FilteredGitEnvironment's repository-selection
-// variables removed, global and system git config pointed at nothing, and
-// repository discovery ceilinged at dir's parent — so ambient developer
-// config (commit.gpgsign, core.hooksPath, init templates) cannot decide
-// whether the scratch repo's commits succeed, and a scratch dir whose .git
-// is gone cannot walk up into an ancestor repository the way it could when
-// dir sits inside one (git refuses to enter the ceiling while climbing, so
-// the ceiling sits one above the working dir). The same isolation
-// hooks_test.go and app_git_head_test.go use, plus the ceiling.
+// run with: gittest.Env's isolated config, plus repository discovery ceilinged
+// at dir's parent, so a scratch dir whose .git is gone cannot walk up into an
+// ancestor repository the way it could when dir sits inside one (git refuses to
+// enter the ceiling while climbing, so the ceiling sits one above the working
+// dir).
 func hermeticGitEnv(dir string) []string {
-	base := identifier.FilteredGitEnvironment(os.Environ())
-	env := make([]string, 0, len(base)+4)
-outer:
-	for _, entry := range base {
-		key, _, _ := strings.Cut(entry, "=")
-		for _, banned := range gitConfigEnvironment {
-			if key == banned {
-				continue outer
-			}
-		}
-		for _, prefix := range gitConfigEnvironmentPrefixes {
-			if strings.HasPrefix(key, prefix) {
-				continue outer
-			}
-		}
-		env = append(env, entry)
-	}
-	return append(env,
-		"GIT_CONFIG_GLOBAL="+os.DevNull,
-		"GIT_CONFIG_SYSTEM="+os.DevNull,
-		"GIT_CONFIG_NOSYSTEM=1",
-		"GIT_CEILING_DIRECTORIES="+filepath.Dir(dir),
-	)
+	return append(gittest.Env(), "GIT_CEILING_DIRECTORIES="+filepath.Dir(dir))
 }
 
 // runGit runs git in dir with the hermetic environment.

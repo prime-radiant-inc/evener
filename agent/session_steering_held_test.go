@@ -259,14 +259,14 @@ func TestTurnStartClearMutation(t *testing.T) {
 	}
 }
 
-// TestASecondSteerWhileHeldStaysParked is the RCA's named trap (#146
-// Option C, "the one a naive implementation gets wrong"): a naive "clear
-// SteeringHeld everywhere QueueHeld is cleared" reading would clear it on
-// clientMutationSteer's own accept path, and that path calls
-// wakeForPendingSteering unconditionally -- reproducing the #146 restart,
-// retriggered by a second steer instead of by Stop. A steer arriving while
-// held must append to SteeringOrder and stay parked with the rest.
-func TestASecondSteerWhileHeldStaysParked(t *testing.T) {
+// TestASecondSteerReleasesThePark pins the lifecycle ruling of 2026-11-09
+// (issue #191): any new user activity re-engages a held or parked turn. The
+// #146 RCA called a clear on AcceptClientMutationSteer's accept path a trap,
+// because a steer arriving while a Stop's hold was set would wake the rail and
+// deliver the steer the user had just stopped. The ruling settles that trade
+// the other way: the second steer IS the user speaking again, so it releases
+// both holds and the wake delivers the steering they asked to send.
+func TestASecondSteerReleasesThePark(t *testing.T) {
 	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
@@ -284,9 +284,24 @@ func TestASecondSteerWhileHeldStaysParked(t *testing.T) {
 	}, func() {}); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
-	if !sess.clientMutations.steeringHeld() {
-		t.Fatal("precondition: Stop did not set SteeringHeld")
+	if !sess.clientMutations.steeringHeld() || !sess.clientMutations.queueHeld() {
+		t.Fatal("precondition: Stop did not park both the steering and the queue")
 	}
+
+	var mu sync.Mutex
+	wakes := 0
+	sess.SetPendingUserInputWakeFunc(func() {
+		mu.Lock()
+		wakes++
+		mu.Unlock()
+	})
+	// Installing the wake while both holds are set must not fire: a parked
+	// rail waits on the user, not on the daemon.
+	mu.Lock()
+	if wakes != 0 {
+		t.Fatalf("installing the pending-input wake fired %d time(s) while the Stop's holds were set", wakes)
+	}
+	mu.Unlock()
 
 	if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
 		ClientMutationID: "steer-two",
@@ -295,12 +310,17 @@ func TestASecondSteerWhileHeldStaysParked(t *testing.T) {
 		t.Fatalf("second steer: %v", err)
 	}
 
-	if !sess.clientMutations.steeringHeld() {
-		t.Fatal("a second steer accepted while held cleared SteeringHeld: this re-triggers the #146 restart bug via a second steer instead of Stop")
+	if sess.clientMutations.steeringHeld() {
+		t.Fatal("a second steer left SteeringHeld set: the user spoke again and the parked steering still waits on them")
 	}
-	if claimedID, ok := sess.claimSteeringCarrierTurn(); ok {
-		t.Fatalf("claimSteeringCarrierTurn claimed turn %q after a second steer arrived while held", claimedID)
+	if sess.clientMutations.queueHeld() {
+		t.Fatal("a second steer left QueueHeld set: the message the Stop parked stays parked after the user re-engaged")
 	}
+	mu.Lock()
+	if wakes == 0 {
+		t.Fatal("the second steer did not wake the runnable steering; the user's re-engagement would sit undelivered")
+	}
+	mu.Unlock()
 }
 
 // TestDrainAsSteerReleasesTheParkedSteer is drainAsSteer's half of "sending

@@ -26,7 +26,7 @@ import (
 // and it cannot change under the controller's feet.
 //
 // The copy is kept honest by TestEmbeddedScriptMatchesReviewedInstallers and by
-// sshconn's TestRound11EmbeddedInstallerMatchesTheReviewedScript, which fail
+// sshconn's TestEmbeddedInstallerMatchesTheReviewedScript, which fail
 // whenever it drifts from the repository's install.sh; the fix for a failure is
 // to re-copy the reviewed script, never to loosen the check.
 //

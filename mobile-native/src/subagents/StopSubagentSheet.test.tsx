@@ -26,7 +26,6 @@ import { forgetSubagentTrees } from "./subagentTree";
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
 	runtime: null as unknown,
-	uuid: 0,
 	kv: new Map<string, string>(),
 }));
 const sheetNavigation = vi.hoisted(() => ({
@@ -40,7 +39,6 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 	TextInput: "TextInput",
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("@react-navigation/native", () => ({
 	useNavigation: () => sheetNavigation,
 	usePreventRemove: (prevent: boolean, onPrevent: (event: { data: { action: unknown } }) => void) => {
@@ -55,13 +53,6 @@ vi.mock("expo-sqlite/kv-store", () => ({
 		setItemSync: (key: string, value: string) => void harness.kv.set(key, value),
 		removeItemSync: (key: string) => void harness.kv.delete(key),
 	},
-}));
-vi.mock("expo-crypto", () => ({
-	randomUUID: () => {
-		harness.uuid += 1;
-		return `stop-uuid-${harness.uuid}`;
-	},
-	getRandomValues: (array: Uint8Array) => array,
 }));
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => harness.connection }));
 // The app's one runtime is a module singleton; each test gets its own.

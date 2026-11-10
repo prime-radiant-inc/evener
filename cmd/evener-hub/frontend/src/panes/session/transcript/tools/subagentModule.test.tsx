@@ -18,7 +18,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { DockviewApi } from "dockview-core";
 import { registerPaneForTests } from "../../../../shell/paneRegistry";
 import { registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
-import { connectionStore } from "../../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
 import { SessionNowContext } from "../../liveness";
 
@@ -51,7 +51,7 @@ afterAll(
 );
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
 });
 

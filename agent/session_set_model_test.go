@@ -360,6 +360,17 @@ func documentTurn() schema.Turn {
 	})
 }
 
+// urlDocumentTurn builds a user-role Turn carrying a document part with a
+// source URL and no bytes, for targets whose wire has no URL file mechanism.
+func urlDocumentTurn() schema.Turn {
+	return schema.NewTurn(schema.TurnUserInput, llm.Message{
+		Role: llm.RoleUser,
+		Content: []llm.ContentPart{
+			{Kind: llm.ContentDocument, Document: &llm.DocumentData{URL: "https://example.com/doc.pdf", MediaType: "application/pdf"}},
+		},
+	})
+}
+
 func audioTurn() schema.Turn {
 	return schema.NewTurn(schema.TurnUserInput, llm.Message{
 		Role: llm.RoleUser,
@@ -369,15 +380,19 @@ func audioTurn() schema.Turn {
 	})
 }
 
-// TestSetModel_DocumentInHistory_RejectedForHardErrorAndCompatTargets verifies
-// (c): a document in history rejects a switch to google and openai-compat
-// targets, naming the "document" kind. Anthropic-family targets are accepted
-// now that the Anthropic builder writes a document content block (#4209).
-func TestSetModel_DocumentInHistory_RejectedForGoogleAndCompatTargets(t *testing.T) {
+// Google and Chat Completions carry user documents, but not assistant
+// documents. Both unsupported cases reject the switch.
+func TestSetModel_DocumentInHistory_RejectedForUnsupportedTargetsAndRoles(t *testing.T) {
 	t.Parallel()
-	targets := []string{"google/gemini-3-pro", "kimi/kimi-k3"}
-	for _, target := range targets {
-		t.Run(target, func(t *testing.T) {
+	cases := []struct {
+		target string
+		role   llm.Role
+	}{
+		{"google/gemini-3-pro", llm.RoleAssistant},
+		{"kimi/kimi-k3", llm.RoleAssistant},
+	}
+	for _, tc := range cases {
+		t.Run(tc.target, func(t *testing.T) {
 			t.Parallel()
 			sess := newSession(t,
 				withProfile(NewOpenAIProfile("gpt-5.4")),
@@ -390,16 +405,54 @@ func TestSetModel_DocumentInHistory_RejectedForGoogleAndCompatTargets(t *testing
 					testOnly:       testConfig{skipGitSnapshot: true},
 				}),
 			)
-			sess.appendTurn(schema.TurnUserInput, documentTurn().Message)
+			msg := documentTurn().Message
+			msg.Role = tc.role
+			kind := schema.TurnUserInput
+			if tc.role == llm.RoleAssistant {
+				kind = schema.TurnAssistant
+			}
+			sess.appendTurn(kind, msg)
 
-			err := sess.SetModel(target)
+			err := sess.SetModel(tc.target)
 			if err == nil {
-				t.Fatalf("SetModel(%q) with document in history = nil error, want non-nil", target)
+				t.Fatalf("SetModel(%q) with %s document in history = nil error, want non-nil", tc.target, tc.role)
 			}
 			if !strings.Contains(err.Error(), "document") {
 				t.Fatalf("error = %q, want it to name the document kind", err.Error())
 			}
 		})
+	}
+}
+
+func TestSetModel_DocumentInHistory_AcceptedForGoogleTarget(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t,
+		withProfile(NewOpenAIProfile("gpt-5.4")),
+		withAdapter(&fakeAdapter{name: "openai"}),
+		withAdapter(&fakeAdapter{name: "google"}),
+		withConfig(SessionConfig{
+			ResolveProfile: testResolver,
+			testOnly:       testConfig{skipGitSnapshot: true},
+		}),
+	)
+	sess.appendTurn(schema.TurnUserInput, documentTurn().Message)
+	beforeLen := len(sess.history)
+	before := mustJSON(t, sess.history)
+
+	if err := sess.SetModel("google/gemini-2.5-flash"); err != nil {
+		t.Fatalf("SetModel Google target with user document in history: %v", err)
+	}
+	profile := sess.currentProfile()
+	doc := documentTurn().Message.Content[0].Document
+	if profile.ID() != "google" || profile.Model() != "gemini-2.5-flash" || !profile.AcceptsDocumentInput(doc) {
+		t.Fatalf("switched profile = %s/%s, accepts documents = %v", profile.ID(), profile.Model(), profile.AcceptsDocumentInput(doc))
+	}
+	if len(sess.history) != beforeLen+1 {
+		t.Fatalf("history length = %d, want %d existing turns plus one model-switch marker", len(sess.history), beforeLen)
+	}
+	after := mustJSON(t, sess.history[:beforeLen])
+	if before != after {
+		t.Fatal("model switch changed existing history or document bytes")
 	}
 }
 
@@ -441,6 +494,55 @@ func TestSetModel_DocumentInHistory_AcceptedForAnthropicTarget(t *testing.T) {
 
 	if err := sess.SetModel("anthropic/claude-opus-4-6"); err != nil {
 		t.Fatalf("SetModel cross-provider (Anthropic) switch with document in history: %v", err)
+	}
+}
+
+// TestSetModel_DocumentInHistory_AcceptedForChatTarget verifies the
+// counterpart for the Chat Completions protocol: once the Chat builder writes
+// a file part (#5472), a document in history switches into an openai-compat
+// target instead of being refused.
+func TestSetModel_DocumentInHistory_AcceptedForChatTarget(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t,
+		withProfile(NewOpenAIProfile("gpt-5.4")),
+		withAdapter(&fakeAdapter{name: "openai"}),
+		withAdapter(&fakeAdapter{name: "kimi"}),
+		withConfig(SessionConfig{
+			ResolveProfile: testResolver,
+			testOnly:       testConfig{skipGitSnapshot: true},
+		}),
+	)
+	sess.appendTurn(schema.TurnUserInput, documentTurn().Message)
+
+	if err := sess.SetModel("kimi/kimi-k3"); err != nil {
+		t.Fatalf("SetModel openai-compat (Chat) switch with document in history: %v", err)
+	}
+}
+
+// TestSetModel_UrlOnlyDocumentInHistory_RejectedForChatTarget pins the
+// payload boundary of the Chat flip: the Chat builder carries inline bytes
+// only (base64 file_data; chat has no URL file mechanism), so a URL-only
+// user document must still count as unrepresentable and refuse the switch —
+// accepting it would let every subsequent request silently omit the PDF.
+func TestSetModel_UrlOnlyDocumentInHistory_RejectedForChatTarget(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t,
+		withProfile(NewOpenAIProfile("gpt-5.4")),
+		withAdapter(&fakeAdapter{name: "openai"}),
+		withAdapter(&fakeAdapter{name: "kimi"}),
+		withConfig(SessionConfig{
+			ResolveProfile: testResolver,
+			testOnly:       testConfig{skipGitSnapshot: true},
+		}),
+	)
+	sess.appendTurn(schema.TurnUserInput, urlDocumentTurn().Message)
+
+	err := sess.SetModel("kimi/kimi-k3")
+	if err == nil {
+		t.Fatal("SetModel(\"kimi/kimi-k3\") with URL-only user document in history = nil error, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "document") {
+		t.Fatalf("error = %q, want it to name the document kind", err.Error())
 	}
 }
 
@@ -673,8 +775,10 @@ func TestSetModel_RejectionLeavesProfileMetaAndHistoryUnchanged(t *testing.T) {
 	}{
 		{name: "unknown-instance", setup: func(sess *Session) {}, model: "bogus/some-model"},
 		{name: "unknown-model-on-enumerable-instance", setup: func(sess *Session) {}, model: "google/not-a-real-model"},
-		{name: "unrepresentable-document", setup: func(sess *Session) {
-			sess.appendTurn(schema.TurnUserInput, documentTurn().Message)
+		{name: "unrepresentable-assistant-document", setup: func(sess *Session) {
+			msg := documentTurn().Message
+			msg.Role = llm.RoleAssistant
+			sess.appendTurn(schema.TurnAssistant, msg)
 		}, model: "google/gemini-3-pro"},
 	}
 

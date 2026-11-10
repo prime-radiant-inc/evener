@@ -73,12 +73,7 @@ func (c *delegateTreeController) AbortShellWork(token delegateWorkToken) error {
 		return errDelegateStaleLease
 	}
 	delete(c.work, token.processID)
-	if c.stop != nil {
-		if _, tracked := c.stop.work[token]; tracked {
-			delete(c.stop.work, token)
-			c.signalStopProgressLocked()
-		}
-	}
+	untrackStopLocked(c, func(s *delegateStopState) map[delegateWorkToken]string { return s.work }, token)
 	c.evidenceVersion++
 	return nil
 }
@@ -92,12 +87,7 @@ func (c *delegateTreeController) ReportShellFinished(token delegateWorkToken, sh
 		return delegateMutationPlans{}, errDelegateStaleLease
 	}
 	delete(c.work, token.processID)
-	if c.stop != nil {
-		if _, tracked := c.stop.work[token]; tracked {
-			delete(c.stop.work, token)
-			c.signalStopProgressLocked()
-		}
-	}
+	untrackStopLocked(c, func(s *delegateStopState) map[delegateWorkToken]string { return s.work }, token)
 	c.evidenceVersion++
 	return delegateMutationPlans{}, nil
 }

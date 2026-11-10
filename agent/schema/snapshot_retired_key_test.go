@@ -3,7 +3,6 @@ package schema
 import (
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -17,7 +16,7 @@ func TestLoadSessionMetaIgnoresTheRetiredNoProjectPromptsKey(t *testing.T) {
 	if err := SaveSessionMeta(dir, SessionMeta{ID: id, Config: ConfigSnapshot{NonInteractive: true}}); err != nil {
 		t.Fatalf("SaveSessionMeta: %v", err)
 	}
-	path := filepath.Join(dir, sessionsSubdir, id+".meta.json")
+	path := SessionMetaPath(dir, id)
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)

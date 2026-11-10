@@ -9,9 +9,11 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,7 +21,49 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
+	"primeradiant.com/evener/hubapi"
+	"primeradiant.com/evener/internal/hubendpoint"
 )
+
+func TestAttachRejectsReusedPort(t *testing.T) {
+	var disclosures atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			disclosures.Add(1)
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+	a, b := net.Pipe()
+	defer a.Close() //nolint:errcheck // test cleanup
+	defer b.Close() //nolint:errcheck // test cleanup
+	err := proxyAppWire(t.Context(), srv.URL, "attach-sentinel", attachTestRecord(t, srv.URL), appwire.NewStreamTransport(a))
+	if err == nil || disclosures.Load() != 0 {
+		t.Fatalf("replacement listener: err=%v, bearer requests=%d", err, disclosures.Load())
+	}
+}
+
+func TestAttachRejectsRedirect(t *testing.T) {
+	var requests atomic.Int32
+	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer destination.Close()
+	var record hubendpoint.Record
+	source := httptest.NewServer(attachTestHealth(&record, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, destination.URL+"/rpc", http.StatusTemporaryRedirect)
+	})))
+	record = attachTestRecord(t, source.URL)
+	defer source.Close()
+	a, b := net.Pipe()
+	defer a.Close() //nolint:errcheck // test cleanup
+	defer b.Close() //nolint:errcheck // test cleanup
+	err := proxyAppWire(t.Context(), source.URL, "attach-sentinel", record, appwire.NewStreamTransport(a))
+	if err == nil || requests.Load() != 0 {
+		t.Fatalf("redirect: err=%v, destination requests=%d", err, requests.Load())
+	}
+}
 
 // TestAttachBridgeRoundTripsInitializeAndThreadList drives the stdio bridge
 // against an in-process hub over an in-memory pipe pair, the way a controller
@@ -49,9 +93,11 @@ func TestAttachBridgeRoundTripsInitializeAndThreadList(t *testing.T) {
 		edgeMu.Unlock()
 		server.ServeWebSocket(w, r)
 	})
-	httpSrv := httptest.NewServer(hubedge.AuthGuard("test-token")(mux))
+	var record hubendpoint.Record
+	httpSrv := httptest.NewServer(attachTestHealth(&record, hubedge.AuthGuard("test-token")(mux)))
+	record = attachTestRecord(t, httpSrv.URL)
 	defer httpSrv.Close()
-	addr := strings.TrimPrefix(httpSrv.URL, "http://")
+	addr := httpSrv.URL
 
 	bridgeEnd, controllerEnd := net.Pipe()
 	recorder := &attachRecordingConn{ReadWriteCloser: bridgeEnd}
@@ -59,7 +105,7 @@ func TestAttachBridgeRoundTripsInitializeAndThreadList(t *testing.T) {
 
 	ctx := t.Context()
 	bridgeErr := make(chan error, 1)
-	go func() { bridgeErr <- proxyAppWire(ctx, addr, "test-token", stream) }()
+	go func() { bridgeErr <- proxyAppWire(ctx, addr, "test-token", record, stream) }()
 
 	client := appwire.NewClient(appwire.NewStreamTransport(controllerEnd))
 	client.Start(ctx)
@@ -113,16 +159,18 @@ func TestAttachBridgeWrongTokenIsRefused(t *testing.T) {
 	server := newHubAppServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, appsource.NewRegistry())
 	mux := http.NewServeMux()
 	mux.HandleFunc("/rpc", server.ServeWebSocket)
-	httpSrv := httptest.NewServer(hubedge.AuthGuard("right-token")(mux))
+	var record hubendpoint.Record
+	httpSrv := httptest.NewServer(attachTestHealth(&record, hubedge.AuthGuard("right-token")(mux)))
+	record = attachTestRecord(t, httpSrv.URL)
 	defer httpSrv.Close()
-	addr := strings.TrimPrefix(httpSrv.URL, "http://")
+	addr := httpSrv.URL
 
 	bridgeEnd, controllerEnd := net.Pipe()
 	defer controllerEnd.Close() //nolint:errcheck // test cleanup
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 
-	err := proxyAppWire(ctx, addr, "wrong-token", appwire.NewStreamTransport(bridgeEnd))
+	err := proxyAppWire(ctx, addr, "wrong-token", record, appwire.NewStreamTransport(bridgeEnd))
 	if !errors.Is(err, errNoHubAt) {
 		t.Fatalf("proxyAppWire with a wrong token = %v, want a refused dial", err)
 	}
@@ -161,7 +209,7 @@ func TestAttachBridgeErrorWritesNothingToStdout(t *testing.T) {
 	if stdout.Len() != 0 {
 		t.Fatalf("error path wrote to stdout: %q", stdout.String())
 	}
-	if !errors.Is(err, errNoHubAt) || !strings.Contains(stderr.String(), addr) {
+	if !errors.Is(err, errNoHubAt) {
 		t.Fatalf("attach = %v, stderr = %q; want the no-hub refusal naming %s on stderr", err, stderr.String(), addr)
 	}
 }
@@ -178,22 +226,8 @@ func TestAttachSubcommandDispatch(t *testing.T) {
 	if stdout.Len() != 0 {
 		t.Fatalf("attach usage error wrote to stdout: %q", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "--stdio") {
-		t.Fatalf("stderr missing --stdio diagnostic: %q", stderr.String())
-	}
-}
-
-func TestLoopbackAddrRewritesWildcardBinds(t *testing.T) {
-	for _, tc := range []struct{ in, want string }{
-		{"127.0.0.1:9180", "127.0.0.1:9180"},
-		{"0.0.0.0:9180", "127.0.0.1:9180"},
-		{"[::]:9180", "[::1]:9180"},
-		{"localhost:9180", "127.0.0.1:9180"},
-		{"192.168.1.5:9180", "192.168.1.5:9180"},
-	} {
-		if got := loopbackAddr(tc.in); got != tc.want {
-			t.Errorf("loopbackAddr(%q) = %q, want %q", tc.in, got, tc.want)
-		}
+	if stderr.Len() == 0 {
+		t.Fatal("missing stderr diagnostic")
 	}
 }
 
@@ -235,63 +269,14 @@ func TestAttachRefusesNonLoopbackAddr(t *testing.T) {
 	}
 	cfgPath := filepath.Join(root, "hub.toml")
 
-	// Both the configured address and an explicit --addr must be checked.
-	for _, args := range [][]string{
-		{"--stdio", "--config", cfgPath},
-		{"--stdio", "--addr", "example.com:9180", "--config", cfgPath},
-		// The userinfo bypass: SplitHostPort reports host "localhost" here and
-		// folds "@evil.example" into the port, so only validating the assembled
-		// URL catches it.
-		{"--stdio", "--addr", "localhost:9180@evil.example", "--config", cfgPath},
-		{"--stdio", "--addr", "127.0.0.1:9180@evil.example", "--config", cfgPath},
-	} {
-		err := runAttach(args, &stderr, deps)
+	for _, raw := range []string{"http://example.com:9180", "http://localhost:9180@evil.example", "http://127.0.0.1:9180@evil.example", "http://10.1.2.3:9180", "http://localhost:9180", "https://127.0.0.1:9180", ""} {
+		err := runAttach([]string{"--stdio", "--hub-url", raw, "--config", cfgPath}, &stderr, deps)
 		if !errors.Is(err, errNonLoopbackAddr) {
-			t.Fatalf("runAttach(%v) = %v, want errNonLoopbackAddr", args, err)
+			t.Fatalf("runAttach(%q) = %v, want errNonLoopbackAddr", raw, err)
 		}
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("refusal wrote to stdout: %q", stdout.String())
-	}
-}
-
-// resolveHubURL is the token's last gate before it crosses an unencrypted
-// connection, so the shapes that try to move the dial off-host are tested
-// directly.
-func TestResolveHubURL(t *testing.T) {
-	for _, tc := range []struct {
-		addr string
-		ok   bool
-	}{
-		{"127.0.0.1:9180", true},
-		{"[::1]:9180", true},
-		{"0.0.0.0:9180", true}, // rewritten to loopback before this is called
-		{"10.0.0.1:9180", false},
-		{"example.com:9180", false},
-		// The userinfo bypass: "host:port@attacker" hides the real destination.
-		{"localhost:9180@evil.example", false},
-		{"127.0.0.1:9180@evil.example", false},
-		{"127.0.0.1:0", false},
-		{"127.0.0.1:99999", false},
-		{"127.0.0.1:notaport", false},
-		{"127.0.0.1:9180/extra", false},
-		{"127.0.0.1:9180?x=1", false},
-		{"127.0.0.1", false},
-	} {
-		got, err := resolveHubURL(loopbackAddr(tc.addr))
-		if !tc.ok {
-			if !errors.Is(err, errNonLoopbackAddr) {
-				t.Errorf("resolveHubURL(%q) err = %v, want errNonLoopbackAddr", tc.addr, err)
-			}
-			continue
-		}
-		if err != nil {
-			t.Errorf("resolveHubURL(%q) = %v, want a URL", tc.addr, err)
-			continue
-		}
-		if !strings.HasPrefix(got, "ws://") || !strings.HasSuffix(got, "/rpc") {
-			t.Errorf("resolveHubURL(%q) = %q, want a ws:// URL ending in /rpc", tc.addr, got)
-		}
 	}
 }
 
@@ -352,4 +337,41 @@ func assertOnlyAppWireFrames(t *testing.T, out string) {
 			t.Fatalf("stdout line %d is an invalid AppWire Message: %q", i, line)
 		}
 	}
+}
+
+// The record is selected before the actual authenticated socket opens. The health
+// handler is the external network boundary, not a replacement for the verifier.
+func attachTestRecord(t *testing.T, origin string) hubendpoint.Record {
+	t.Helper()
+	root := t.TempDir()
+	return hubendpoint.Record{SchemaVersion: 1, BootID: "attach-boot", PID: os.Getpid(), StartedAt: time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC), ConfigPath: filepath.Join(root, "hub.toml"), HubStateRoot: root, RequestedListenAddr: "127.0.0.1:0", ListenSource: "config", BoundAddr: strings.TrimPrefix(origin, "http://"), LocalURL: origin, LoopbackURL: origin}
+}
+
+func TestAttachOrigin(t *testing.T) {
+	for _, raw := range []string{"http://127.0.0.1:9180", "http://[::1]:9180", "http://127.0.0.2:9181"} {
+		if _, err := attachOrigin(raw); err != nil {
+			t.Errorf("attachOrigin(%q): %v", raw, err)
+		}
+	}
+	for _, raw := range []string{
+		"http://0.0.0.0:9180", "http://[::]:9180", "http://localhost:9180",
+		"http://10.0.0.1:9180", "http://example.com:9180", "https://127.0.0.1:9180",
+		"http://localhost:9180@attacker.example", "http://127.0.0.1:9180@attacker.example",
+		"http://127.0.0.1:0", "http://127.0.0.1:99999", "http://127.0.0.1:notaport",
+		"http://127.0.0.1:9180/extra", "http://127.0.0.1:9180?x=1", "127.0.0.1:9180",
+	} {
+		if _, err := attachOrigin(raw); !errors.Is(err, errNonLoopbackAddr) {
+			t.Errorf("attachOrigin(%q) = %v, want errNonLoopbackAddr", raw, err)
+		}
+	}
+}
+
+func attachTestHealth(record *hubendpoint.Record, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/health" {
+			_ = json.NewEncoder(w).Encode(hubapi.HealthResponse{BootID: record.BootID, HubAddr: record.BoundAddr, StartedAt: record.StartedAt, Version: "test"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }

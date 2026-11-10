@@ -31,7 +31,7 @@ func FuzzSessionStateGoalExactCoverage(f *testing.F) {
 		fuzzExactState(t)
 		fuzzExactRepair(t)
 		fuzzExactNamer(t)
-		if predictionMessage(true, 0.1) == predictionMessage(false, 0.9) {
+		if predictionMessage(true) == predictionMessage(false) {
 			t.Fatal("compact predictions collapsed")
 		}
 	})
@@ -84,7 +84,7 @@ func fuzzExactState(t *testing.T) {
 	if cumulativeUsageSnapshot(llm.Usage{CacheReadTokens: &cache}).CacheReadTokens != 3 {
 		t.Fatal("cache usage missing")
 	}
-	if (&Session{}).ContextPressure() != 0 {
+	if (&Session{}).contextPressure() != 0 {
 		t.Fatal("nil context pressure nonzero")
 	}
 	closed := &Session{closing: true}
@@ -211,7 +211,7 @@ func fuzzExactNamer(t *testing.T) {
 	s.reportSessionNamerLogAppend(errors.New("append"))
 	openDir := t.TempDir()
 	s.stateDir, s.id = openDir, "open"
-	logPath := filepath.Join(openDir, sessionsSubdir, "open.log.jsonl")
+	logPath := filepath.Join(openDir, schema.SessionsSubdir, "open.log.jsonl")
 	if err := os.MkdirAll(logPath, 0o755); err != nil {
 		t.Fatal(err)
 	}

@@ -56,7 +56,13 @@ func (s *Session) expandSlashCommand(ctx context.Context, input string) slashInp
 	if name == "" {
 		return slashInputResult{Text: input}
 	}
-	if cmd, ok := plugin.ResolveCommand(s.pluginCommands, name); ok {
+	cmd, cmdErr := plugin.ResolveCommand(s.pluginCommands, name)
+	if errors.Is(cmdErr, plugin.ErrAmbiguousCommand) {
+		// Two plugins define this bare name: report the candidates rather than
+		// guess, like an ambiguous skill suffix. The qualified form disambiguates.
+		return slashInputResult{Text: input, Handled: true, Err: cmdErr}
+	}
+	if cmdErr == nil {
 		if cmd.Source != "plugin" {
 			// Evener-wide commands expand inert: arguments substitute as text,
 			// nothing executes or reads (docs/skills.md).
@@ -70,7 +76,7 @@ func (s *Session) expandSlashCommand(ctx context.Context, input string) slashInp
 			// indication their command never expanded. Still fall back to that
 			// literal-text submission (unhandled) — surfacing the failure doesn't
 			// mean blocking the input — but now with a visible warning.
-			s.emit(events.EventWarning, events.WarningData{
+			s.emit(events.WarningData{
 				Message: fmt.Sprintf("expanding slash command /%s failed: %v", name, err),
 			})
 			return slashInputResult{Text: input}

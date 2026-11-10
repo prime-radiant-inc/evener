@@ -1,14 +1,16 @@
-import type { HostRow } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { connectionStore } from "../../../stores/connection";
+import { afterEach, beforeEach, expect, test } from "vitest";
+import { resetConnectionStoreForTests } from "../../../stores/connection";
 import { resetExtensionsStoreForTests } from "../../../stores/extensions";
 import { hostsStore } from "../../../stores/hosts";
+import { hostRow } from "../../../stores/hostsTestUtils";
 import { resetSettingsHostForTests, setSettingsHost } from "../../../stores/settingsHost";
+import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
-import { McpSectionHostScope, type SettingsOverviewLike } from "./mcp";
+import { McpSectionHostScope } from "./mcp";
+import { overviewHook } from "./mcpTestUtils";
 
 // The MCP settings surface's host scope (component 07b): the shared HostPicker
 // over the selected host, whose own global launch layer both shows and changes
@@ -17,35 +19,6 @@ import { McpSectionHostScope, type SettingsOverviewLike } from "./mcp";
 // - so it is host-scoped for the same reason they are. Local is today's
 // plain-call section; a remote selection routes every read and write through
 // evener/host/request and never touches the controller's launch layer.
-
-function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
-  return {
-    generation: 1,
-    incarnationId: "inc-1",
-    origin: "hub.toml",
-    attached: false,
-    midAttach: false,
-    removed: false,
-    ...overrides,
-  };
-}
-
-function overviewHook(overrides: Partial<SettingsOverviewLike> = {}): () => SettingsOverviewLike {
-  const state: SettingsOverviewLike = {
-    data: null,
-    loading: false,
-    error: null,
-    fetch: vi.fn(async () => {}),
-    ...overrides,
-  };
-  return () => state;
-}
-
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
 
 /** The calls this section makes about the launch layer and the path helpers it
  * uses to validate an entry - the controller's own, i.e. NOT via the proxy. */
@@ -56,7 +29,7 @@ function controllerLayerCalls(fake: FakeClient): string[] {
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetExtensionsStoreForTests();
   resetToastStoreForTests();
   hostsStore.getState().resetForTests();
@@ -67,12 +40,12 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   window.history.pushState({}, "", "/");
 });
 
 test("with this hub selected the section issues the plain MCP calls and never the proxy", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/launch/getLayer", () => ({ mcpConfigs: ["/controller/mcp.json"], mcps: [] }));
   fake.on("evener/host/request", () => {
@@ -87,7 +60,7 @@ test("with this hub selected the section issues the plain MCP calls and never th
 });
 
 test("a remote selection shows THAT host's own MCP lists, never this hub's", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   // The controller's own handlers are booby-trapped: reaching any of them while
   // beta is selected is a host-scoping bug.
@@ -125,7 +98,7 @@ test("a remote selection shows THAT host's own MCP lists, never this hub's", asy
 });
 
 test("a remote MCP write goes through the proxy, never this hub's setLaunchLayer", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/launch/setLayer", () => {
     throw new Error("a remote selection must not write this hub's launch layer");

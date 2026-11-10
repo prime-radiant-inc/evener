@@ -27,7 +27,7 @@ func applyScheme(t *testing.T, scheme string, res registry.Resolved) (*http.Requ
 
 func TestTrivialAuthenticators(t *testing.T) {
 	withKey := registry.Resolved{Instance: "groq", Credential: registry.Credential{Value: "k-1", Source: "env:GROQ_API_KEY"}}
-	noKey := registry.Resolved{Instance: "groq", Warnings: []string{"no credential (GROQ_API_KEY unset)"}}
+	noKey := registry.Resolved{Instance: "groq", Credential: registry.Credential{Source: "none", MissingReason: "GROQ_API_KEY unset"}}
 
 	req, err := applyScheme(t, registry.AuthBearer, withKey)
 	if err != nil || req.Header.Get("Authorization") != "Bearer k-1" {
@@ -103,13 +103,10 @@ func TestCredentialHeaderWinsOverDerivedAuth(t *testing.T) {
 	}
 }
 
-// The resolve path reports a failed auth-header expression as the header's
-// own warning and suppresses the duplicate "no credential" wording, because
-// the header form carries the diagnosis — the command's timeout, its stderr,
-// the missing variable. The request-time error must repeat that warning: a
-// generic no-credential message would name exactly nothing the user can act
-// on. The header name may also be authored in a different case than the
-// transport's, so the recognition folds case like every other header match.
+// The request-time error carries the credential's typed MissingReason, so a
+// missing credential names what the user can act on (the command's timeout,
+// the unset variable). The diagnosis is read from the field, not recovered
+// from the wording of Warnings, whatever those say.
 func TestMissingCredentialCarriesTheAuthHeaderFailure(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -119,9 +116,10 @@ func TestMissingCredentialCarriesTheAuthHeaderFailure(t *testing.T) {
 		{
 			name: "bearer",
 			res: registry.Resolved{
-				Instance:  "gw",
-				Transport: registry.Transport{Auth: registry.AuthBearer},
-				Warnings:  []string{`credential header "Authorization": command expression failed: command timed out`},
+				Instance:   "gw",
+				Transport:  registry.Transport{Auth: registry.AuthBearer},
+				Warnings:   []string{"unrelated wording that no caller may parse"},
+				Credential: registry.Credential{Source: "none", MissingReason: "command expression failed: command timed out"},
 			},
 			apply: func(req *http.Request, res registry.Resolved) error {
 				return bearerAuth{}.Apply(context.Background(), req, res)
@@ -130,9 +128,9 @@ func TestMissingCredentialCarriesTheAuthHeaderFailure(t *testing.T) {
 		{
 			name: "header with a case-variant key",
 			res: registry.Resolved{
-				Instance:  "gw",
-				Transport: registry.Transport{Auth: registry.AuthHeader, AuthHeader: "X-K"},
-				Warnings:  []string{`credential header "x-k": command expression failed: command timed out`},
+				Instance:   "gw",
+				Transport:  registry.Transport{Auth: registry.AuthHeader, AuthHeader: "X-K"},
+				Credential: registry.Credential{Source: "none", MissingReason: "command expression failed: command timed out"},
 			},
 			apply: func(req *http.Request, res registry.Resolved) error {
 				return headerAuth{}.Apply(context.Background(), req, res)
@@ -145,7 +143,7 @@ func TestMissingCredentialCarriesTheAuthHeaderFailure(t *testing.T) {
 			if err == nil {
 				t.Fatal("an instance whose credential slot resolved to nothing must fail the request")
 			}
-			if !strings.Contains(err.Error(), tt.res.Warnings[0]) {
+			if !strings.Contains(err.Error(), tt.res.Credential.MissingReason) {
 				t.Fatalf("err = %q; want the auth header's own failure wording carried into the error", err)
 			}
 		})

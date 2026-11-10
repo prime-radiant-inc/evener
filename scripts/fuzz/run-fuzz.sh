@@ -37,7 +37,7 @@ done < "$registry_file"
 # a live target as stale.
 if [ "$(go env GOOS)" = "linux" ]; then
 	TARGETS+=("native:agent:./execenv:FuzzSecurePathEdgeContractProgram::")
-	TARGETS+=("native:agent:./execenv:FuzzRuntimeBoundaryEdges::command_runtime.go;local.go;securepath.go")
+	TARGETS+=("native:agent:./execenv:FuzzRuntimeBoundaryEdges::command_runtime.go;local_exec.go;securepath.go")
 fi
 
 duration="60s"

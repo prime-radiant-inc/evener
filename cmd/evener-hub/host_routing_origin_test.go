@@ -43,9 +43,7 @@ func TestServeAppWireRPCStampsBridgeOrigin(t *testing.T) {
 		client := appwire.NewClient(transport)
 		client.Start(t.Context())
 		t.Cleanup(func() { _ = client.Close() })
-		if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-			t.Fatalf("initialize: %v", err)
-		}
+		mustInitializeHubClient(t, client)
 		var out string
 		if err := client.Request(t.Context(), "test/origin", struct{}{}, &out); err != nil {
 			t.Fatalf("test/origin: %v", err)
@@ -128,7 +126,7 @@ func TestRemoteOriginatedRequestStillReadsCachedSnapshotRows(t *testing.T) {
 	// background subscription has nothing to do with this assertion.
 	web := &WebServer{cfg: cfg}
 
-	rows := web.remoteTreeThreads(withHostRoutingOrigin(context.Background(), hostRoutingOriginBridge))
+	rows := web.remoteThreadFetch(withHostRoutingOrigin(context.Background(), hostRoutingOriginBridge)).threads
 	if len(rows) != 1 || rows[0].ID != "alpha-thread" {
 		t.Fatalf("cached snapshot rows = %+v, want the cached host row", rows)
 	}

@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/modelavailability"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
@@ -219,8 +220,9 @@ func TestDefDelegateParamsAndEnum(t *testing.T) {
 	}
 
 	effortEnum := props["reasoning_effort"].(map[string]any)["enum"].([]string)
-	if len(effortEnum) != 3 || effortEnum[0] != "low" || effortEnum[1] != "medium" || effortEnum[2] != "high" {
-		t.Errorf("reasoning_effort enum = %v, want [low medium high]", effortEnum)
+	wantEffortEnum := []string{"minimal", "low", "medium", "high", "xhigh", "max", "none"}
+	if !reflect.DeepEqual(effortEnum, wantEffortEnum) {
+		t.Errorf("reasoning_effort enum = %v, want %v", effortEnum, wantEffortEnum)
 	}
 
 	if !strings.Contains(def.Description, "delegate_id") {
@@ -410,6 +412,29 @@ func TestDefTaskListEffortEnumIncludesInherit(t *testing.T) {
 	}
 }
 
+// The delegate tool must advertise every effort level its handler accepts.
+// A schema narrower than the handler rejected a spawn at "max" at argument
+// validation even though createDelegate validates against the full vocabulary.
+func TestDefDelegateEffortEnumMatchesHandlerVocabulary(t *testing.T) {
+	def := DefDelegate(nil)
+	props := def.Parameters["properties"].(map[string]any)
+	want := llm.AcceptedReasoningEfforts()
+
+	enum := props["reasoning_effort"].(map[string]any)["enum"].([]string)
+	if !reflect.DeepEqual(enum, want) {
+		t.Fatalf("reasoning_effort enum = %v, want %v", enum, want)
+	}
+
+	item := props["task_list"].(map[string]any)["items"].(map[string]any)
+	taskEnum := item["properties"].(map[string]any)["reasoning_effort"].(map[string]any)["enum"].([]string)
+	// A seeded task item also offers the "inherit" sentinel, exactly as the
+	// session task_list tool does.
+	wantTaskEnum := append(slices.Clone(want), "inherit")
+	if !reflect.DeepEqual(taskEnum, wantTaskEnum) {
+		t.Fatalf("task_list reasoning_effort enum = %v, want %v", taskEnum, wantTaskEnum)
+	}
+}
+
 func TestDefUpdateGoalShape(t *testing.T) {
 	def := DefUpdateGoal()
 	if def.Name != "update_goal" {
@@ -462,6 +487,13 @@ func TestDefJobListAdvertisesCommandOutcomeStatuses(t *testing.T) {
 	// outcomes is rejected before the handler ever runs.
 	if !got["command_exited_nonzero"] || !got["command_killed"] {
 		t.Fatalf("job_list status enum = %v, want command_exited_nonzero and command_killed", enum)
+	}
+	want := map[string]bool{}
+	for _, name := range appwire.JobListStatusFilterNames() {
+		want[name] = true
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("job_list status enum = %v, want the declared filter set %v", enum, appwire.JobListStatusFilterNames())
 	}
 	if !strings.Contains(def.Description, "command_exited_nonzero") || !strings.Contains(def.Description, "command_killed") {
 		t.Fatalf("job_list description must name the command-outcome statuses: %q", def.Description)
@@ -950,15 +982,13 @@ func TestDefGrepMaxResultsParam(t *testing.T) {
 		t.Errorf("max_results type = %v, want integer", mr["type"])
 	}
 	desc, _ := mr["description"].(string)
-	// Pin the cap's contract the way TestDefGrepContextLinesParam pins its
-	// range and default: what the field limits, and the default the
-	// implementation falls back to. Deriving the pin from
+	// Pin the default the way TestDefGrepContextLinesParam pins its range
+	// and default. Deriving the pin from
 	// execenv.DefaultGrepMaxResults — the constant every implementation site
 	// shares — keeps the advertised prose from drifting off the enforced
-	// default.
-	if !strings.Contains(desc, "Maximum number") {
-		t.Errorf("max_results description should state the results cap, got: %q", desc)
-	}
+	// default. The cap's own wording is prompt prose: it is pinned whole, as
+	// the memory_search description built from DefGrep, by the memoryprompt
+	// goldens, and never by substring here.
 	if !descriptionMentions(desc, execenv.DefaultGrepMaxResults) {
 		t.Errorf("max_results description should document the default of %d, got: %q", execenv.DefaultGrepMaxResults, desc)
 	}

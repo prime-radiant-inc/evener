@@ -5,13 +5,19 @@ on:
   # channel that binaries.yml refreshes on every green main build is not a
   # release and does not match `v[0-9]*`. The pattern admits any tag starting
   # with `v` and a digit (`v1.2.3`, but also `v1.2.3-rc1` and `v1hotfix`); the
-  # strongest guard is the archive job's check that the tag's commit is on main.
+  # archive job requires the tag's commit to be on main and its name to be a
+  # numeric marketing version.
   push:
     tags: ["v[0-9]*"]
   workflow_dispatch:
     inputs:
       build_number:
         description: "Required for a new archive; leave blank for recovery"
+        required: false
+        type: string
+
+      marketing_version:
+        description: "Marketing version for a manual archive; blank uses the release tag on a tag push, or app.config.js on a manual run"
         required: false
         type: string
 
@@ -33,7 +39,9 @@ concurrency:
 env:
   NODE_VERSION: "22.13.1"
   RUBY_VERSION: "3.3.6"
-  XCODE_VERSION: "26.6"
+  # The xcode-27 preview image carries Xcode 27.1 at
+  # /Applications/Xcode_27.1.app; the select step below switches to it.
+  XCODE_VERSION: "27.1"
   IOS_BUNDLE_IDENTIFIER: com.primeradiant.evener.native
 
 jobs:
@@ -49,7 +57,7 @@ jobs:
 
   archive-and-upload:
     if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.recovery_run_id == '' && github.ref == 'refs/heads/main')
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 90
     steps:
       - name: Check out source
@@ -78,13 +86,13 @@ jobs:
           xcodebuild -version
           test "$(xcodebuild -version | awk '/^Xcode / { print $2 }')" = "$XCODE_VERSION"
       - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: mobile-native/package-lock.json
       - name: Set up Ruby and cached gems
-        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
+        uses: ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94 # v1
         with:
           ruby-version: ${{ env.RUBY_VERSION }}
           bundler: "2.7.2"
@@ -110,13 +118,27 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
-            # A tag-push run carries no manual input: take the next build
-            # number from App Store Connect for the current marketing version.
-            IOS_MARKETING_VERSION="$(node -p 'require("./app.config.js").expo.version')" \
-              bundle exec fastlane ios next_build_number
-            build_number="$(cat "$IOS_BUILD_NUMBER_OUTPUT")"
+            # A release tag names the marketing version. The v prefix is the
+            # repository's, not Apple's.
+            version="${GITHUB_REF_NAME#v}"
           else
+            version="${{ inputs.marketing_version }}"
+            if [[ -z "$version" ]]; then
+              version="$(node -p 'require("./app.config.js").expo.version')"
+            fi
+          fi
+          [[ "$version" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || {
+            echo "marketing version must be one to three numeric components: $version" >&2
+            exit 1
+          }
+          echo "IOS_MARKETING_VERSION=$version" >> "$GITHUB_ENV"
+          if [[ -n "$IOS_BUILD_NUMBER_INPUT" ]]; then
             build_number="$IOS_BUILD_NUMBER_INPUT"
+          else
+            # A tag push and a manual archive without a number both take the
+            # next build number from App Store Connect for this version.
+            IOS_MARKETING_VERSION="$version" bundle exec fastlane ios next_build_number
+            build_number="$(cat "$IOS_BUILD_NUMBER_OUTPUT")"
           fi
           [[ "$build_number" =~ ^[1-9][0-9]{0,3}(\.[0-9]{1,2}(\.[0-9]{1,2})?)?$ ]] || {
             echo "build_number must be Apple-compatible: 1-4 digit major, optional 1-2 digit minor and patch components" >&2
@@ -150,7 +172,6 @@ jobs:
           npx expo prebuild --platform ios --no-install
           cp Podfile.lock ios/Podfile.lock
           bundle exec pod install --deployment --project-directory=ios
-          printf 'IOS_MARKETING_VERSION=%s\n' "$(node -p 'require("./app.config.js").expo.version')" >> "$GITHUB_ENV"
       - name: Reject duplicate App Store Connect build
         working-directory: mobile-native
         env:
@@ -159,8 +180,7 @@ jobs:
           APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
           APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
         run: |
-          IOS_MARKETING_VERSION="$(node -p 'require("./app.config.js").expo.version')" \
-            bundle exec fastlane ios preflight
+          bundle exec fastlane ios preflight
       - name: Import distribution signing assets
         working-directory: mobile-native
         env:
@@ -228,11 +248,14 @@ jobs:
           set -euo pipefail
           mkdir -p build
           build_number="$IOS_BUILD_NUMBER"
+          version="$IOS_MARKETING_VERSION"
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $build_number" ios/Evener/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" ios/Evener/Info.plist
           # The extension is a bundle of its own, so the app's version alone does
-          # not reach it: the command-line setting applies to every target in
-          # the scheme, keeping the app and its extension on one build number.
-          xcodebuild -workspace ios/Evener.xcworkspace -scheme Evener -configuration Release -sdk iphoneos -destination generic/platform=iOS CURRENT_PROJECT_VERSION="$build_number" archive -archivePath "$PWD/build/Evener.xcarchive" | tee build/xcodebuild-archive.log
+          # not reach it: the command-line settings apply to every target in the
+          # scheme, keeping the app and its extension on one version and build
+          # number.
+          xcodebuild -workspace ios/Evener.xcworkspace -scheme Evener -configuration Release -sdk iphoneos -destination generic/platform=iOS CURRENT_PROJECT_VERSION="$build_number" MARKETING_VERSION="$version" archive -archivePath "$PWD/build/Evener.xcarchive" | tee build/xcodebuild-archive.log
           xcodebuild -exportArchive -archivePath "$PWD/build/Evener.xcarchive" -exportOptionsPlist build/ExportOptions.plist -exportPath build/export | tee build/xcodebuild-export.log
           shopt -s nullglob
           exported_ipas=(build/export/*.ipa)
@@ -241,9 +264,14 @@ jobs:
             exit 1
           fi
           mv "${exported_ipas[0]}" build/Evener.ipa
-          # The embedded extension must carry the same build number as the app.
-          extension_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "build/Evener.xcarchive/Products/Applications/Evener.app/PlugIns/EvenerShareExtension.appex/Info.plist")"
-          test "$extension_version" = "$build_number" || { echo "Extension build version $extension_version does not match $build_number" >&2; exit 1; }
+          # The embedded extension must carry the same version and build number
+          # as the app.
+          extension_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "build/Evener.xcarchive/Products/Applications/Evener.app/PlugIns/EvenerShareExtension.appex/Info.plist")"
+          test "$extension_build" = "$build_number" || { echo "Extension build version $extension_build does not match $build_number" >&2; exit 1; }
+          app_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "build/Evener.xcarchive/Products/Applications/Evener.app/Info.plist")"
+          test "$app_version" = "$version" || { echo "App marketing version $app_version does not match $version" >&2; exit 1; }
+          extension_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "build/Evener.xcarchive/Products/Applications/Evener.app/PlugIns/EvenerShareExtension.appex/Info.plist")"
+          test "$extension_version" = "$version" || { echo "Extension marketing version $extension_version does not match $version" >&2; exit 1; }
       - name: Record artifact identity
         working-directory: mobile-native
         run: |
@@ -261,11 +289,10 @@ jobs:
           IOS_RECEIPT_PATH: ${{ github.workspace }}/mobile-native/build/testflight-receipt.json
           IOS_IPA_PATH: ${{ github.workspace }}/mobile-native/build/Evener.ipa
         run: |
-          IOS_MARKETING_VERSION="$(node -p 'require("./app.config.js").expo.version')" \
-            bundle exec fastlane ios testflight
+          bundle exec fastlane ios testflight
       - name: Upload archive and diagnostics
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: evener-ios-testflight-${{ github.run_id }}
           path: |
@@ -315,7 +342,7 @@ jobs:
 
   verify-upload:
     if: github.event_name == 'workflow_dispatch' && inputs.recovery_run_id != '' && github.ref == 'refs/heads/main'
-    runs-on: macos-26
+    runs-on: xcode-27
     permissions:
       contents: read
       actions: read
@@ -323,7 +350,7 @@ jobs:
       - name: Check out verification lane
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Set up Ruby and cached gems
-        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
+        uses: ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94 # v1
         with:
           ruby-version: ${{ env.RUBY_VERSION }}
           bundler: "2.7.2"
@@ -397,7 +424,7 @@ jobs:
         run: bundle exec fastlane ios verify_testflight
       - name: Save recovered TestFlight receipt
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: evener-ios-testflight-verification-${{ github.run_id }}
           path: |

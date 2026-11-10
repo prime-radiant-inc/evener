@@ -1,14 +1,17 @@
 package doctor
 
 import (
+	"context"
 	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -189,7 +192,7 @@ func healthFixture(t *testing.T) (base, sid string) {
 
 func TestTranscriptHealth_ToolCallsAndErrorClasses(t *testing.T) {
 	base, sid := healthFixture(t)
-	h, err := TranscriptHealth(base, sid)
+	h, err := TranscriptHealth(context.Background(), base, sid)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +226,7 @@ func TestTranscriptHealth_ToolCallsAndErrorClasses(t *testing.T) {
 
 func TestTranscriptHealth_LongestIdenticalRun(t *testing.T) {
 	base, sid := healthFixture(t)
-	h, err := TranscriptHealth(base, sid)
+	h, err := TranscriptHealth(context.Background(), base, sid)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +244,7 @@ func TestTranscriptHealth_LongestIdenticalRun(t *testing.T) {
 
 func TestTranscriptHealth_TruncationWarnings(t *testing.T) {
 	base, sid := healthFixture(t)
-	h, err := TranscriptHealth(base, sid)
+	h, err := TranscriptHealth(context.Background(), base, sid)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +255,7 @@ func TestTranscriptHealth_TruncationWarnings(t *testing.T) {
 
 func TestTranscriptHealth_SteeringByKind(t *testing.T) {
 	base, sid := healthFixture(t)
-	h, err := TranscriptHealth(base, sid)
+	h, err := TranscriptHealth(context.Background(), base, sid)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +269,7 @@ func TestTranscriptHealth_SteeringByKind(t *testing.T) {
 
 func TestTranscriptHealth_Jobs(t *testing.T) {
 	base, sid := healthFixture(t)
-	h, err := TranscriptHealth(base, sid)
+	h, err := TranscriptHealth(context.Background(), base, sid)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +283,7 @@ func TestTranscriptHealth_Jobs(t *testing.T) {
 
 func TestTranscriptHealth_StaleNotificationsAndUserCorrections(t *testing.T) {
 	base, sid := healthFixture(t)
-	h, err := TranscriptHealth(base, sid)
+	h, err := TranscriptHealth(context.Background(), base, sid)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +301,7 @@ func TestTranscriptHealth_StaleNotificationsAndUserCorrections(t *testing.T) {
 
 func TestTranscriptHealth_JSONFields(t *testing.T) {
 	base, sid := healthFixture(t)
-	h, err := TranscriptHealth(base, sid)
+	h, err := TranscriptHealth(context.Background(), base, sid)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +325,7 @@ func TestTranscriptHealth_JSONFields(t *testing.T) {
 
 func TestRenderHealth_CompactTable(t *testing.T) {
 	base, sid := healthFixture(t)
-	h, err := TranscriptHealth(base, sid)
+	h, err := TranscriptHealth(context.Background(), base, sid)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +357,7 @@ func TestTranscriptHealth_NoResultToolCall(t *testing.T) {
 	jobsPath := filepath.Join(bucket, "sessions", sid, "jobs.jsonl")
 	writeFile(t, jobsPath, "")
 
-	h, err := TranscriptHealth(base, sid)
+	h, err := TranscriptHealth(context.Background(), base, sid)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,7 +376,7 @@ func TestTranscriptHealth_UnreadableTranscriptIsLoudError(t *testing.T) {
 	base := t.TempDir()
 	bucket := stateHomeBucket(base, hash1)
 	writeFile(t, filepath.Join(bucket, "sessions", sidA+".transcript.jsonl"), "not valid json\n")
-	_, err := TranscriptHealth(base, sidA)
+	_, err := TranscriptHealth(context.Background(), base, sidA)
 	if err == nil {
 		t.Fatal("want error for unparseable transcript, got nil")
 	}
@@ -417,7 +420,7 @@ func TestTranscriptHealth_RejectedCallsDistinctSignatures(t *testing.T) {
 		}}),
 	}
 	base, sid := rejectedSignatureFixture(t, turns)
-	h, err := TranscriptHealth(base, sid)
+	h, err := TranscriptHealth(context.Background(), base, sid)
 	if err != nil {
 		t.Fatalf("TranscriptHealth: %v", err)
 	}
@@ -436,4 +439,101 @@ func rejectedSignatureFixture(t *testing.T, turns []schema.Turn) (base, sid stri
 	sid = sidA
 	writeRichSession(t, bucket, sid, turns, nil, schema.SessionMeta{})
 	return base, sid
+}
+
+// A result call's end_turn counts only when its arguments parse and say so.
+func TestCallArgsEndTurn(t *testing.T) {
+	if callArgsEndTurn(json.RawMessage(`{not json`)) {
+		t.Error("callArgsEndTurn(malformed) = true, want false")
+	}
+	if !callArgsEndTurn(json.RawMessage(`{"end_turn":true}`)) {
+		t.Error("callArgsEndTurn(true) = false, want true")
+	}
+	if callArgsEndTurn(json.RawMessage(`{"end_turn":false}`)) {
+		t.Error("callArgsEndTurn(false) = true, want false")
+	}
+}
+
+// A steering turn with no recorded kind is counted under the unknown kind.
+func TestTranscriptHealth_SteeringKindUnknown(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	writeSessionsFixtureSession(t, bucket, sidA,
+		transcript.Header{CreatedAt: time.Unix(1, 0).UTC()},
+		[]schema.Turn{
+			schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("hi")}}),
+			schema.NewTurn(schema.TurnSteering, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("steer")}}),
+		},
+		schema.SessionMeta{TurnCount: 2},
+		nil,
+		time.Unix(2, 0).UTC(),
+	)
+	r, err := TranscriptHealth(context.Background(), base, sidA)
+	if err != nil {
+		t.Fatalf("TranscriptHealth: %v", err)
+	}
+	if r.Steering["unknown"] != 1 {
+		t.Errorf("Steering = %v, want one unknown-kind turn", r.Steering)
+	}
+}
+
+// Tool-call and tool-result parts with no payload are skipped, not counted.
+func TestTranscriptHealth_NilToolCallAndResult(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	writeSessionsFixtureSession(t, bucket, sidA,
+		transcript.Header{CreatedAt: time.Unix(1, 0).UTC()},
+		[]schema.Turn{
+			schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentToolCall, ToolCall: nil},
+				{Kind: llm.ContentToolResult, ToolResult: nil},
+			}}),
+		},
+		schema.SessionMeta{TurnCount: 1},
+		nil,
+		time.Unix(2, 0).UTC(),
+	)
+	r, err := TranscriptHealth(context.Background(), base, sidA)
+	if err != nil {
+		t.Fatalf("TranscriptHealth: %v", err)
+	}
+	if len(r.ToolCalls) != 0 {
+		t.Errorf("expected 0 tool calls, got %v", r.ToolCalls)
+	}
+}
+
+// The jobs summary counts terminal jobs only: each terminal reason, and the
+// terminal jobs that produced no output. A job still running is neither.
+func TestTranscriptHealth_JobsTerminalReasons(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	exitOK := 0
+	ended := time.Unix(10, 0).UTC()
+	writeSessionsFixtureSession(t, bucket, sidA,
+		transcript.Header{CreatedAt: time.Unix(1, 0).UTC()},
+		[]schema.Turn{
+			schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("hi")}}),
+		},
+		schema.SessionMeta{TurnCount: 1},
+		[]jobstore.Event{
+			{Kind: jobstore.EventJobStarted, JobID: "job_h1", Type: jobstore.JobShell, Command: "true"},
+			{Kind: jobstore.EventJobFinished, JobID: "job_h1", Status: jobstore.StatusCompleted,
+				ExitCode: &exitOK, EndedAt: &ended, OutputBytes: 0, Reason: ""},
+			{Kind: jobstore.EventJobStarted, JobID: "job_h2", Type: jobstore.JobShell, Command: "false"},
+			{Kind: jobstore.EventJobFinished, JobID: "job_h2", Status: jobstore.StatusStopped,
+				ExitCode: &exitOK, EndedAt: &ended, OutputBytes: 10, Reason: "run_timeout"},
+			{Kind: jobstore.EventJobStarted, JobID: "job_h3", Type: jobstore.JobShell, Command: "sleep 100"},
+		},
+		time.Unix(2, 0).UTC(),
+	)
+	r, err := TranscriptHealth(context.Background(), base, sidA)
+	if err != nil {
+		t.Fatalf("TranscriptHealth: %v", err)
+	}
+	if r.Jobs.ByTerminalReason["run_timeout"] != 1 || len(r.Jobs.ByTerminalReason) != 1 {
+		t.Errorf("ByTerminalReason = %v, want one run_timeout", r.Jobs.ByTerminalReason)
+	}
+	if r.Jobs.ZeroOutputTerminal != 1 {
+		t.Errorf("ZeroOutputTerminal = %d, want 1 (the running job is not terminal)", r.Jobs.ZeroOutputTerminal)
+	}
 }

@@ -86,12 +86,12 @@ func qlifRunProgram(t *testing.T, data []byte) string {
 					t.Fatal("EnqueueWithImages retained caller image storage")
 				}
 			}
-			fmt.Fprintf(&trace, "e:%v:%d;", err != nil, s.QueueDepth())
+			fmt.Fprintf(&trace, "e:%v:%d;", err != nil, s.queueDepth())
 		case 2:
 			if err := s.pushQueueHead(queuedInput{Text: text, Images: qlifImages(imageCount), Provenance: qlifQueueProvenance()}); err != nil {
 				t.Fatal(err)
 			}
-			fmt.Fprintf(&trace, "h:%d;", s.QueueDepth())
+			fmt.Fprintf(&trace, "h:%d;", s.queueDepth())
 		case 3:
 			entry := s.popQueueHead()
 			fmt.Fprintf(&trace, "p:%q:%d;", entry.Text, len(entry.Images))
@@ -111,11 +111,6 @@ func qlifRunProgram(t *testing.T, data []byte) string {
 			drained := s.drainSteering()
 			s.prependSteering(drained)
 			fmt.Fprintf(&trace, "d:%d;", len(drained))
-		case 6:
-			if err := s.FollowUp(text); err != nil {
-				t.Fatal(err)
-			}
-			fmt.Fprintf(&trace, "f:%q;", s.popFollowUp())
 		case 7:
 			preview := s.QueuePreview()
 			if len(preview) > 0 {
@@ -231,7 +226,7 @@ func qlifExerciseQueueHelpers(t *testing.T, s *Session) {
 		t.Fatal("new session unexpectedly has pending steering")
 	}
 	s.Steer("plain")
-	s.SteerWithProvenance("provenance", qlifQueueProvenance(), "")
+	s.steerWithProvenance("provenance", qlifQueueProvenance(), "")
 	if !s.trySteerWithProvenanceAndNotify("notify", qlifQueueProvenance(), "") {
 		t.Fatal("open session rejected steering with notify")
 	}

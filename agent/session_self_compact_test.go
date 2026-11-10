@@ -22,11 +22,11 @@ func TestSetPinnedNote_AndClear(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
 	s.setPinnedNote("remember the API signature")
-	if got := s.PinnedNote(); got != "remember the API signature" {
+	if got := s.pinnedNote(); got != "remember the API signature" {
 		t.Fatalf("note not stored: %q", got)
 	}
 	s.setPinnedNote("")
-	if got := s.PinnedNote(); got != "" {
+	if got := s.pinnedNote(); got != "" {
 		t.Fatalf("empty note should clear: %q", got)
 	}
 }
@@ -120,15 +120,15 @@ func TestRunPreCompactHook_HandsOffNoteBeforeObjective(t *testing.T) {
 	if noteIdx > goalIdx {
 		t.Fatal("note must precede the goal objective (objective stays trailing)")
 	}
-	if s.PinnedNote() == "" {
+	if s.pinnedNote() == "" {
 		t.Fatal("note must NOT be cleared before commit runs — a losing fold must be able to leave it intact")
 	}
 	if commit == nil {
 		t.Fatal("expected a non-nil commit: the hook consumed a pinned note, so there's a deferred side effect to commit")
 	}
 	commit()
-	if s.PinnedNote() != "" {
-		t.Fatalf("note must be cleared once commit runs (the one-shot handoff), still have %q", s.PinnedNote())
+	if s.pinnedNote() != "" {
+		t.Fatalf("note must be cleared once commit runs (the one-shot handoff), still have %q", s.pinnedNote())
 	}
 }
 
@@ -190,7 +190,7 @@ func TestRunPreCompactHook_StampsEachSourceItsOwnKind(t *testing.T) {
 // only on the steeringTurnRecord.kind round 1 added for the live emit — so a
 // reload labels a pre-compact steering turn the same way the live transcript
 // did (review round 2: this direct-append site bypasses the
-// SteerKind/consumeSteeringMessage queue path that already persisted its
+// steerKind/consumeSteeringMessage queue path that already persisted its
 // kind).
 func TestRunPreCompactHook_PersistsKindOnTheTurn(t *testing.T) {
 	t.Parallel()
@@ -352,8 +352,8 @@ func TestApplyPendingForceCompact_CompactsWithNote(t *testing.T) {
 	if countSteering(h, noteHandoffPrefix) != 1 || indexOfSteering(h, "REMEMBER: API is Foo(ctx, id)") < 0 {
 		t.Fatal("pinned note not handed off exactly once after force compaction")
 	}
-	if s.PinnedNote() != "" {
-		t.Fatalf("note must be cleared after the compaction consumed it, still have %q", s.PinnedNote())
+	if s.pinnedNote() != "" {
+		t.Fatalf("note must be cleared after the compaction consumed it, still have %q", s.pinnedNote())
 	}
 }
 
@@ -821,7 +821,7 @@ func TestFoldConflict_LosingAttemptDoesNotConsumeSideEffects(t *testing.T) {
 
 	// Nothing has published yet -- this attempt's side effects must still be
 	// staged, not committed.
-	if s.PinnedNote() == "" {
+	if s.pinnedNote() == "" {
 		t.Fatal("the pinned note was cleared before any fold won publication -- a losing attempt's side effects must not commit eagerly")
 	}
 	if n := transcriptWrites.Load(); n != 0 {
@@ -847,11 +847,11 @@ func TestFoldConflict_LosingAttemptDoesNotConsumeSideEffects(t *testing.T) {
 	}
 
 	// The winning retry -- not the losing first attempt -- must be what
-	// consumed the note, exactly once: gone from s.PinnedNote(), handed off
+	// consumed the note, exactly once: gone from s.pinnedNote(), handed off
 	// exactly once into the published history, and written to the
 	// transcript exactly once.
-	if s.PinnedNote() != "" {
-		t.Fatalf("note must be consumed by the winning retry, still have %q", s.PinnedNote())
+	if s.pinnedNote() != "" {
+		t.Fatalf("note must be consumed by the winning retry, still have %q", s.pinnedNote())
 	}
 	if n := countSteering(currentHistory(t, s), noteHandoffPrefix); n != 1 {
 		t.Fatalf("expected exactly one note handoff turn in the published history, got %d", n)
@@ -1022,7 +1022,7 @@ func TestPinnedNote_SurvivesResume(t *testing.T) {
 	}
 	defer restored.Close()
 
-	if got := restored.PinnedNote(); got != "REMEMBER: resume me" {
+	if got := restored.pinnedNote(); got != "REMEMBER: resume me" {
 		t.Fatalf("PinnedNote after resume = %q, want %q", got, "REMEMBER: resume me")
 	}
 }
@@ -1036,7 +1036,7 @@ func TestMaybeElicitNoteBeforeCompaction_FiresWhenEnabledAndHighPressure(t *test
 	forcePressureAbove(t, s, s.contextMgr.CheckpointThreshold)
 
 	s.maybeElicitNoteBeforeCompaction(context.Background(), currentHistory(t, s), 0)
-	if got := s.PinnedNote(); got != "STUB elicited note" {
+	if got := s.pinnedNote(); got != "STUB elicited note" {
 		t.Fatalf("expected elicited note pinned, got %q", got)
 	}
 }
@@ -1050,7 +1050,7 @@ func TestMaybeElicitNoteBeforeCompaction_NoopWhenLowPressure(t *testing.T) {
 	// low pressure (below CheckpointThreshold) — no compaction imminent
 	s.contextMgr.RecordInputTokens(1, len(currentHistory(t, s))) // ~0 pressure
 	s.maybeElicitNoteBeforeCompaction(context.Background(), currentHistory(t, s), 0)
-	if s.PinnedNote() != "" {
+	if s.pinnedNote() != "" {
 		t.Fatal("low pressure: no compaction imminent, should not elicit")
 	}
 }
@@ -1099,7 +1099,7 @@ func TestMaybeElicitNoteBeforeCompaction_SkipsWhenNoteAlreadySet(t *testing.T) {
 	if called {
 		t.Fatal("elicitor must not be called when a note is already set")
 	}
-	if got := s.PinnedNote(); got != "AGENT'S OWN NOTE" {
+	if got := s.pinnedNote(); got != "AGENT'S OWN NOTE" {
 		t.Fatalf("agent note must be preserved, got %q", got)
 	}
 }

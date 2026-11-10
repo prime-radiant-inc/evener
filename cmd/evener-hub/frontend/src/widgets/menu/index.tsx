@@ -11,6 +11,8 @@ import {
 import { createPortal } from "react-dom";
 import { FocusScope } from "../focusscope";
 import { requireClass } from "../internal/requireClass";
+import { useOwnedDocument } from "../internal/useOwnedDocument";
+import { watchViewport } from "../internal/viewportWatch";
 // Flip-then-clamp overlay placement, shared verbatim with the Popover
 // primitive (§3.4). computeMenuPosition/resolveAxis/EDGE_MARGIN/TRIGGER_GAP
 // were extracted from here into widgets/popover/computePosition.ts so Menu
@@ -151,7 +153,8 @@ function stepEnabledIndex(items: MenuEntry[], from: number, delta: 1 | -1): numb
  * intended navigation, matching the task's "typeahead NOT required" YAGNI
  * call for the rest of this widget's scope). No typeahead.
  *
- * The popup itself renders through a portal to document.body, position:
+ * The popup itself renders through a portal to the body of the document the
+ * menu lives in (the opener's; a Dockview popout's when mounted there), position:
  * fixed off the trigger's own getBoundingClientRect() (see
  * computeMenuPosition above), instead of as a normal absolutely-positioned
  * child - a Menu nested anywhere with a clipping ancestor (a rail row's own
@@ -171,6 +174,9 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   const [activeIndex, setActiveIndex] = useState(() => firstEnabledIndex(items));
   const [position, setPosition] = useState<MenuPosition | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  // Follows Dockview moving this menu's DOM between windows without a render,
+  // so the portal, listeners and placement rebind to the window it is in now.
+  const ownerDocument = useOwnedDocument(rootRef, isOpen);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popupRef = useRef<HTMLUListElement>(null);
   const itemRefs = useRef<(HTMLLIElement | null)[]>([]);
@@ -220,8 +226,16 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     const triggerEl = triggerRef.current;
     const popupEl = popupRef.current;
     if (!triggerEl || !popupEl) return;
-    setPosition(computeMenuPosition(triggerEl.getBoundingClientRect(), popupEl.getBoundingClientRect()));
-  }, [isOpen]);
+    // The trigger's own viewport: a menu in a Dockview popout must flip and
+    // clamp against that window's edges, not the opener's.
+    const ownerWindow = ownerDocument.defaultView ?? window;
+    setPosition(
+      computeMenuPosition(triggerEl.getBoundingClientRect(), popupEl.getBoundingClientRect(), {
+        width: ownerWindow.innerWidth,
+        height: ownerWindow.innerHeight,
+      }),
+    );
+  }, [isOpen, ownerDocument]);
 
   function focusIndex(index: number) {
     if (index === -1) return;
@@ -323,9 +337,9 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
       if (rootRef.current?.contains(target) || popupRef.current?.contains(target)) return;
       closeMenu();
     }
-    document.addEventListener("mousedown", onDocumentMouseDown);
-    return () => document.removeEventListener("mousedown", onDocumentMouseDown);
-  }, [isOpen, closeMenu]);
+    ownerDocument.addEventListener("mousedown", onDocumentMouseDown);
+    return () => ownerDocument.removeEventListener("mousedown", onDocumentMouseDown);
+  }, [isOpen, closeMenu, ownerDocument]);
 
   // A scroll that can move the trigger out from under the fixed popup
   // closes the menu; a scroll anywhere else leaves it open (see this
@@ -335,27 +349,29 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   // scrolled, so one window listener sees every scroller.
   useEffect(() => {
     if (!isOpen) return;
+    // The widget's own window: a popout's scrolls and resizes never reach the
+    // opener's window.
+    const ownerWindow = ownerDocument.defaultView ?? window;
     function onScrollCapture(event: Event) {
       const target = event.target;
+      if (target === null) return;
+      // nodeType, not instanceof: an element in another realm keeps that
+      // realm's prototype, so the opener's Element/Document reject it.
+      const nodeType = (target as Node).nodeType;
       // The whole document/window scrolling moves every trigger; a
       // container scrolling moves the trigger only when the trigger lives
       // inside it. Anything else (e.g. the session transcript beside this
       // menu's chrome) can't move the popup's anchor, so the menu stays.
       if (
-        target instanceof Document ||
-        target === window ||
-        (target instanceof Element && rootRef.current !== null && target.contains(rootRef.current))
+        nodeType === 9 ||
+        target === ownerWindow ||
+        (nodeType === 1 && rootRef.current !== null && (target as Element).contains(rootRef.current))
       ) {
         closeMenu();
       }
     }
-    window.addEventListener("scroll", onScrollCapture, true);
-    window.addEventListener("resize", closeMenu);
-    return () => {
-      window.removeEventListener("scroll", onScrollCapture, true);
-      window.removeEventListener("resize", closeMenu);
-    };
-  }, [isOpen, closeMenu]);
+    return watchViewport(rootRef.current, onScrollCapture, closeMenu);
+  }, [isOpen, closeMenu, ownerDocument]);
 
   const iconOnly = label !== undefined;
   const triggerClassName = [
@@ -440,7 +456,8 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
               )}
             </ul>
           </FocusScope>,
-          document.body,
+          // The owning document's body: a popout is a separate document.
+          ownerDocument.body,
         )}
     </div>
   );

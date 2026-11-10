@@ -1,6 +1,7 @@
 package hubcore
 
 import (
+	"maps"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -328,7 +329,7 @@ func favoriteStoreRow(t *testing.T, store *FavoriteStore, key ArchiveKey) (int, 
 
 func favoriteSessionAuthoritiesFromMetas(t *testing.T, metas []schema.SessionMeta, complete bool) []FavoriteSessionAuthority {
 	t.Helper()
-	topLevel := TopLevelSessionIDs(metas)
+	roots := NewRootIndex(metas)
 	out := make([]FavoriteSessionAuthority, 0, len(metas))
 	for _, meta := range metas {
 		aliases := []string{meta.ID}
@@ -339,11 +340,10 @@ func favoriteSessionAuthoritiesFromMetas(t *testing.T, metas []schema.SessionMet
 		if complete {
 			quality = FavoriteAuthorityComplete
 		}
-		_, isTopLevel := topLevel[meta.ID]
 		out = append(out, FavoriteSessionAuthority{
 			ID:       meta.ID,
 			Aliases:  aliases,
-			TopLevel: isTopLevel,
+			TopLevel: roots.TopLevel(meta.ID),
 			Lineage:  quality,
 			Source:   quality,
 		})
@@ -359,5 +359,148 @@ func assertFavoriteClassification(t *testing.T, got FavoriteRevalidation, key Ar
 	}
 	if classification.State != want {
 		t.Fatalf("classification for %v = %q, want %q", key, classification.State, want)
+	}
+}
+
+// TestClassifyFavoriteSession pins how one session favorite resolves against
+// the authority index: only a single, unambiguous, fully known top-level
+// session is valid; a known non-top-level session is confirmed invalid; every
+// other shape stays dormant, keeping its canonical key when one is known.
+func TestClassifyFavoriteSession(t *testing.T) {
+	complete := FavoriteAuthorityComplete
+	incomplete := FavoriteAuthorityIncomplete
+	single := func(authority FavoriteSessionAuthority) favoriteSessionIndex {
+		return favoriteSessionIndex{
+			byAlias: map[string][]string{"s1": {"a"}},
+			byID:    map[string][]FavoriteSessionAuthority{"a": {authority}},
+		}
+	}
+	// validExcept starts from an index under which s1 is valid, so each
+	// ambiguity below is the only reason it stays dormant.
+	validExcept := func(ambiguity func(*favoriteSessionIndex)) favoriteSessionIndex {
+		index := single(FavoriteSessionAuthority{ID: "a", Lineage: complete, Source: complete, TopLevel: true})
+		ambiguity(&index)
+		return index
+	}
+	for _, tc := range []struct {
+		name          string
+		keyID         string
+		sessions      favoriteSessionIndex
+		wantState     FavoriteDecisionState
+		wantCanonical string
+	}{
+		{name: "ambiguous alias", keyID: "s1", sessions: validExcept(func(index *favoriteSessionIndex) {
+			index.ambiguousAlias = map[string]bool{"s1": true}
+		}), wantState: FavoriteDecisionDormant},
+		{name: "unknown alias that is not a ref", keyID: "not-a-ref", sessions: favoriteSessionIndex{byAlias: map[string][]string{}}, wantState: FavoriteDecisionDormant},
+		{name: "unknown local ref canonicalizes to its session", keyID: "local:02wMz5Txv1C3Hut0M8GCeB", sessions: favoriteSessionIndex{byAlias: map[string][]string{}}, wantState: FavoriteDecisionDormant, wantCanonical: "02wMz5Txv1C3Hut0M8GCeB"},
+		{name: "alias naming several sessions", keyID: "s1", sessions: validExcept(func(index *favoriteSessionIndex) {
+			index.byAlias["s1"] = []string{"a", "b"}
+		}), wantState: FavoriteDecisionDormant},
+		{name: "ambiguous session ID", keyID: "s1", sessions: validExcept(func(index *favoriteSessionIndex) {
+			index.ambiguousIDs = map[string]bool{"a": true}
+		}), wantState: FavoriteDecisionDormant},
+		{name: "several authorities for the session", keyID: "s1", sessions: favoriteSessionIndex{
+			byAlias: map[string][]string{"s1": {"a"}},
+			byID: map[string][]FavoriteSessionAuthority{"a": {
+				{ID: "a", Lineage: complete, Source: complete, TopLevel: true},
+				{ID: "a", Lineage: complete, Source: complete, TopLevel: true},
+			}},
+		}, wantState: FavoriteDecisionDormant},
+		{name: "incomplete lineage", keyID: "s1", sessions: single(FavoriteSessionAuthority{ID: "a", Lineage: incomplete, Source: complete, TopLevel: true}), wantState: FavoriteDecisionDormant, wantCanonical: "a"},
+		{name: "incomplete source", keyID: "s1", sessions: single(FavoriteSessionAuthority{ID: "a", Lineage: complete, Source: incomplete, TopLevel: true}), wantState: FavoriteDecisionDormant, wantCanonical: "a"},
+		{name: "not top level", keyID: "s1", sessions: single(FavoriteSessionAuthority{ID: "a", Lineage: complete, Source: complete}), wantState: FavoriteDecisionConfirmedInvalid, wantCanonical: "a"},
+		{name: "valid", keyID: "s1", sessions: single(FavoriteSessionAuthority{ID: "a", Lineage: complete, Source: complete, TopLevel: true}), wantState: FavoriteDecisionValid, wantCanonical: "a"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classifyFavoriteSession(ArchiveKey{Kind: "session", ID: tc.keyID}, tc.sessions)
+			if got.State != tc.wantState || got.CanonicalKey.ID != tc.wantCanonical {
+				t.Fatalf("classifyFavoriteSession(%q) = %+v, want state %v canonical %q", tc.keyID, got, tc.wantState, tc.wantCanonical)
+			}
+		})
+	}
+}
+
+// TestClassifyFavoriteProject pins how one project favorite resolves: only a
+// single, unambiguous, completely known project authority is valid; anything
+// else stays dormant.
+func TestClassifyFavoriteProject(t *testing.T) {
+	key := projectDecisionKey{id: "/some/path"}
+	authority := func(quality FavoriteAuthorityQuality) []FavoriteProjectAuthority {
+		return []FavoriteProjectAuthority{{ID: "/some/path", Quality: quality}}
+	}
+	for _, tc := range []struct {
+		name      string
+		projects  favoriteProjectIndex
+		wantState FavoriteDecisionState
+	}{
+		{name: "no authority", projects: favoriteProjectIndex{byKey: map[projectDecisionKey][]FavoriteProjectAuthority{}}, wantState: FavoriteDecisionDormant},
+		{name: "ambiguous authority", projects: favoriteProjectIndex{
+			byKey:         map[projectDecisionKey][]FavoriteProjectAuthority{key: authority(FavoriteAuthorityComplete)},
+			ambiguousKeys: map[projectDecisionKey]bool{key: true},
+		}, wantState: FavoriteDecisionDormant},
+		{name: "incomplete authority", projects: favoriteProjectIndex{byKey: map[projectDecisionKey][]FavoriteProjectAuthority{key: authority(FavoriteAuthorityIncomplete)}}, wantState: FavoriteDecisionDormant},
+		{name: "valid", projects: favoriteProjectIndex{byKey: map[projectDecisionKey][]FavoriteProjectAuthority{key: authority(FavoriteAuthorityComplete)}}, wantState: FavoriteDecisionValid},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classifyFavoriteProject(ArchiveKey{Kind: "project", ID: "/some/path"}, tc.projects)
+			if got.State != tc.wantState {
+				t.Fatalf("classifyFavoriteProject = %+v, want state %v", got, tc.wantState)
+			}
+		})
+	}
+}
+
+func TestClassifyFavoriteDecisionOfAnUnknownKindIsDormant(t *testing.T) {
+	result := classifyFavoriteDecision(ArchiveKey{Kind: "unknown", ID: "x"}, favoriteSessionIndex{}, favoriteProjectIndex{})
+	if result.State != FavoriteDecisionDormant {
+		t.Fatalf("state = %v, want dormant", result.State)
+	}
+}
+
+// TestIndexFavoriteSessions pins the session authority index: authorities
+// with no ID and empty aliases are left out, and an ID claimed by more than
+// one authority is ambiguous.
+func TestIndexFavoriteSessions(t *testing.T) {
+	index := indexFavoriteSessions([]FavoriteSessionAuthority{
+		{ID: ""},
+		{ID: "session-1", Aliases: []string{"", "alias-1"}},
+		{ID: "session-2"},
+		{ID: "session-2"},
+	})
+	if got := slices.Sorted(maps.Keys(index.byID)); !slices.Equal(got, []string{"session-1", "session-2"}) {
+		t.Fatalf("byID keys = %v, want session-1 and session-2", got)
+	}
+	if got := slices.Sorted(maps.Keys(index.byAlias)); !slices.Equal(got, []string{"alias-1", "session-1", "session-2"}) {
+		t.Fatalf("byAlias keys = %v, want alias-1, session-1 and session-2", got)
+	}
+	if !index.ambiguousIDs["session-2"] || index.ambiguousIDs["session-1"] {
+		t.Fatalf("ambiguousIDs = %v, want only session-2", index.ambiguousIDs)
+	}
+}
+
+// TestIndexFavoriteProjects pins the project authority index: authorities with
+// no ID are left out, and several authorities for one key are ambiguous when
+// their claim keys differ or any of them carries none.
+func TestIndexFavoriteProjects(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		authorities   []FavoriteProjectAuthority
+		wantKeys      int
+		wantAmbiguous bool
+	}{
+		{name: "empty ID left out", authorities: []FavoriteProjectAuthority{{ID: ""}, {ID: "project-1"}}, wantKeys: 1},
+		{name: "different claim keys", authorities: []FavoriteProjectAuthority{{ID: "project-1", ClaimKey: "a"}, {ID: "project-1", ClaimKey: "b"}}, wantKeys: 1, wantAmbiguous: true},
+		{name: "an empty claim key", authorities: []FavoriteProjectAuthority{{ID: "project-1", ClaimKey: ""}, {ID: "project-1", ClaimKey: "a"}}, wantKeys: 1, wantAmbiguous: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			index := indexFavoriteProjects(tc.authorities)
+			if len(index.byKey) != tc.wantKeys {
+				t.Fatalf("byKey = %v, want %d keys", index.byKey, tc.wantKeys)
+			}
+			if got := index.ambiguousKeys[projectDecisionKey{id: "project-1"}]; got != tc.wantAmbiguous {
+				t.Fatalf("project-1 ambiguous = %t, want %t", got, tc.wantAmbiguous)
+			}
+		})
 	}
 }

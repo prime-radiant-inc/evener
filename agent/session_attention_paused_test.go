@@ -188,7 +188,7 @@ func TestPausedRootAttentionIsNotAutonomousWork(t *testing.T) {
 	if wake, retryActive, pending := attentionRailState(s); wake || retryActive || pending != 1 {
 		t.Fatalf("after the permanent failure: wake=%t retry=%t pending=%d, want deferred attention (false, false, 1)", wake, retryActive, pending)
 	}
-	if got := s.RestingWireState(); got != appwire.ThreadStatusSystemError {
+	if got := s.restingWireState(); got != appwire.ThreadStatusSystemError {
 		t.Fatalf("RestingWireState after the paused attention turn = %q, want %q", got, appwire.ThreadStatusSystemError)
 	}
 	if got := s.WireState(); got != appwire.ThreadStatusSystemError {
@@ -250,10 +250,7 @@ func TestModelSwitchDoesNotReopenAStopParkedRail(t *testing.T) {
 	s, _, _, _ := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 401, "unauthorized", nil, nil))
 	// Unserved, as TestStopParksRootDelegateAttentionUntilReEngagement keeps
 	// it, so nothing claims the parked queue behind the test's back.
-	go func() {
-		for range s.Events() {
-		}
-	}()
+	drainSessionEvents(s)
 	queueOneMutation(t, s, "queue-behind-stop", "please still run me")
 	armOneRootAttention(t, s, "dlg_stop", "delegate:dlg_stop/delivery/1")
 	_, _ = s.ProcessInputKind(context.Background(), "", nil, EntryNotification)

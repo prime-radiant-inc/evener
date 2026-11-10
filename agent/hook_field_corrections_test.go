@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
@@ -140,7 +141,7 @@ func TestStop_CancelledCallKeepsStopHookActive(t *testing.T) {
 			},
 		},
 	}))
-	sess.RegisterTool("probe", "probe", map[string]any{"type": "object"},
+	sess.registerTool("probe", "probe", map[string]any{"type": "object"},
 		func(context.Context, any) (any, error) { return "ran", nil })
 	sess.stopHookActive.Store(true)
 
@@ -186,7 +187,7 @@ func TestStop_StopHookActiveResetsWithTheTurn(t *testing.T) {
 		func(llm.Request) llm.Response {
 			active := sess.stopHookActive.Load()
 			flagAtSecondTurnStart = &active
-			return toolCallResponse(communicateCall("c1", "turn two reply"))
+			return agenttest.ToolCallResponse(communicateCall("c1", "turn two reply"))
 		},
 	))
 	sess.hookRunner = runner
@@ -258,7 +259,7 @@ func TestSubagentStop_MatchesAgentTypeAndCarriesClosingText(t *testing.T) {
 	agentMatched := filepath.Join(dir, "subagent-matched")
 	otherMatched := filepath.Join(dir, "other-matched")
 
-	child := newSession(t, withSteps(func(llm.Request) llm.Response { return finalResponse("ok") }))
+	child := newSession(t, withSteps(func(llm.Request) llm.Response { return agenttest.FinalResponse("ok") }))
 	child.mu.Lock()
 	child.history = append(child.history, schema.NewTurn(schema.TurnAssistant, llm.Assistant("the child's closing text")))
 	child.mu.Unlock()
@@ -428,7 +429,7 @@ func TestNotification_CarriesTypeAndTitle(t *testing.T) {
 	sess.hookRunner = runner
 	drainSessionEvents(sess)
 
-	sess.emit(events.EventWarning, events.WarningData{
+	sess.emit(events.WarningData{
 		Source:  "evener",
 		Title:   "Context warning",
 		Message: "the context window is filling up",
@@ -557,13 +558,13 @@ func TestSessionEnd_PromptInputExitNeedsAnIdleShutdown(t *testing.T) {
 			f := &fakeAdapter{
 				name: "openai",
 				steps: []func(llm.Request) llm.Response{
-					func(llm.Request) llm.Response { return toolCallResponse(trigger) },
+					func(llm.Request) llm.Response { return agenttest.ToolCallResponse(trigger) },
 				},
 			}
 			s.client.Register(f)
 
 			ctx, cancel := context.WithCancel(context.Background())
-			s.RegisterTool("trigger_interrupt", "cancels the test's ProcessInput context mid-turn",
+			s.registerTool("trigger_interrupt", "cancels the test's ProcessInput context mid-turn",
 				map[string]any{"type": "object", "properties": map[string]any{}},
 				func(context.Context, any) (any, error) {
 					cancel()

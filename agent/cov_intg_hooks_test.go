@@ -36,7 +36,7 @@ func intg_hookSession(t *testing.T, hooksJSON string) (*Session, *atomic.Int32) 
 	}
 
 	var ran atomic.Int32
-	sess.RegisterTool("intg_probe", "records that it ran and echoes its path arg",
+	sess.registerTool("intg_probe", "records that it ran and echoes its path arg",
 		map[string]any{
 			"type":       "object",
 			"properties": map[string]any{"path": map[string]any{"type": "string"}},

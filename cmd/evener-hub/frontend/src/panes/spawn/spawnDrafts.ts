@@ -25,13 +25,24 @@ interface DraftFields {
   selectionRestoreRevision: number;
   harness: string;
   model: string;
+  /** How many explicit model choices this draft has recorded. A draft starts at
+   * 1 when its model came from saved defaults and at 0 otherwise; every
+   * explicit choice - even one that repeats the current value or clears it -
+   * increments it. Automatic discovery/fallback never does. Comparing this
+   * revision, rather than the model string, is what lets an onboarding
+   * completion tell a preserved choice from an untouched first run. */
+  modelChoiceRevision: number;
+  /** The source/harness/cwd scope in which this draft entered provider setup.
+   * It suppresses the uncredentialed-default fallback for that exact scope and
+   * asks for an explicit model there. Draft-owned so it survives a pane
+   * remount, and never persisted: it is not an onboarding-completed flag. */
+  providerConnectionScope: { source: string; harness: string; cwd: string } | null;
   /** The model value the uncredentialed-default fallback installed into `model`
    * for THIS draft, or null when `model` did not come from it. Provenance is a
    * property of the draft, not of the mounted form: SpawnForm is a singleton
    * reused across drafts (no key) and is unmounted/remounted with the pane, so
    * a form-local marker leaked one draft's provenance onto an identical model
-   * string in another draft and vanished on remount (Component 06b review,
-   * round eight). */
+   * string in another draft and vanished on remount. */
   defaultModelFallback: string | null;
   staleModelNotice: string | null;
   reasoningEffort: string;
@@ -39,6 +50,10 @@ interface DraftFields {
   /** Launch source id for this draft (Component 06b's host picker). "local"
    * is the default and is omitted from the wire by startThread. */
   source: string;
+  /** Start this session as a Manager of the sessions its hub can reach. A
+   * start-time property (the daemon persists it; nothing turns it off), so it
+   * belongs to the launch draft and is omitted from the wire when false. */
+  manager: boolean;
   advancedOverrides: LaunchConfigLayer;
   advancedValues: AdvancedValues;
   pluginSelection: PluginSelectionState;
@@ -51,7 +66,7 @@ interface DraftFields {
   busy: boolean;
   busyStartedAt: number | null;
   /** The pending "Create directory and start?" confirmation, and the host that
-   * PREFLIGHTED the path it names (component 07b review, round seven). The two
+   * PREFLIGHTED the path it names. The two
    * travel together because the confirmation is an action against one host:
    * the dialog can outlive the selection that opened it (the manifest's
    * `online` flag is live), and a confirm that fires against a different host
@@ -64,6 +79,7 @@ interface DraftFields {
 
 function createDraft(cwd: string) {
   const defaults = resolveInitialDefaults({ serverPrefillDir: cwd });
+  const savedModel = defaults.model ?? "";
   return {
     cwd,
     fields: createStore<DraftFields>(() => ({
@@ -73,12 +89,15 @@ function createDraft(cwd: string) {
       promptRevision: 0,
       selectionRestoreRevision: 0,
       harness: defaults.harness ?? "",
-      model: defaults.model ?? "",
+      model: savedModel,
+      modelChoiceRevision: savedModel.trim() === "" ? 0 : 1,
+      providerConnectionScope: null,
       defaultModelFallback: null,
       staleModelNotice: null,
       reasoningEffort: defaults.reasoningEffort ?? "",
       accessMode: defaults.accessMode ?? "",
       source: "local",
+      manager: false,
       advancedOverrides: {},
       advancedValues: {},
       pluginSelection: { mode: "default" },
@@ -200,6 +219,13 @@ export function setDraftField<K extends keyof DraftFields>(
       ? { promptRevision: state.promptRevision + 1 }
       : {}),
   });
+}
+
+/** Records an explicit model choice on the draft. Increments even when the
+ * caller re-chooses the current value or chooses empty, because the value the
+ * person picked is not what identifies the choice - the act is. */
+export function markModelChoice(draft: SpawnDraft): void {
+  setDraftField(draft, "modelChoiceRevision", (revision) => revision + 1);
 }
 
 export function useDraftField<K extends keyof DraftFields>(

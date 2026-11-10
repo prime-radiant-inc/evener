@@ -1,8 +1,8 @@
 import type { AnyNotification, AuthStatusResponse } from "@evener/appwire-client";
-import { AUTH_STATUSES_REFETCH_DEBOUNCE_MS } from "@evener/appwire-client/state/credentials";
+import { REFETCH_DEBOUNCE_MS } from "@evener/appwire-client/state/credentials";
 import { act } from "react-test-renderer";
 import { afterEach, expect, it, vi } from "vitest";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { renderHook, unmountMountedTrees } from "../renderNative.testkit";
 import { AUTH_RETRY_MAX_MS, AUTH_RETRY_MS, useAuthStatuses } from "./useAuthStatuses";
 
@@ -49,7 +49,7 @@ const renewed = { provider: "codex-jesse-fsck.com", needsLogin: false } as AuthS
 /** Runs the shared store's evener/auth/updated debounce out. */
 async function afterDebounce() {
 	await act(async () => {
-		await vi.advanceTimersByTimeAsync(AUTH_STATUSES_REFETCH_DEBOUNCE_MS);
+		await vi.advanceTimersByTimeAsync(REFETCH_DEBOUNCE_MS);
 	});
 }
 
@@ -91,7 +91,7 @@ it("reads again on evener/auth/updated", async () => {
 
 // The read is the package's shared createAuthStatusesStore
 // (state/credentials/authStatuses.ts), whose evener/auth/updated follow
-// coalesces a burst through AUTH_STATUSES_REFETCH_DEBOUNCE_MS rather than
+// coalesces a burst through REFETCH_DEBOUNCE_MS rather than
 // reading once per frame.
 it("coalesces a burst of evener/auth/updated through the shared store's debounce", async () => {
 	vi.useFakeTimers();
@@ -102,7 +102,7 @@ it("coalesces a burst of evener/auth/updated through the shared store's debounce
 	fake.notify("evener/auth/updated");
 	fake.notify("evener/auth/updated");
 	await act(async () => {
-		await vi.advanceTimersByTimeAsync(AUTH_STATUSES_REFETCH_DEBOUNCE_MS - 1);
+		await vi.advanceTimersByTimeAsync(REFETCH_DEBOUNCE_MS - 1);
 	});
 	expect(fake.methods).toHaveLength(1);
 	await act(async () => {

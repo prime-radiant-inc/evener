@@ -326,7 +326,7 @@ func TestClientMutation_QueueRejectionIsRecordedDurably(t *testing.T) {
 		Input:            []appwire.InputItem{{Type: "text", Text: "must not queue"}},
 	}
 
-	_, firstErr := sess.clientMutationQueue(params)
+	_, firstErr := sess.AcceptClientMutationQueue(params)
 	assertClientMutationConflict(t, firstErr)
 
 	snapshot := sess.clientMutations.snapshot()
@@ -344,10 +344,151 @@ func TestClientMutation_QueueRejectionIsRecordedDurably(t *testing.T) {
 	// Clear the fence first: the retry must return the STORED rejection, and
 	// with the precondition still live it would be refused again either way.
 	disarmTestInterruptFence(t, sess)
-	_, replayErr := sess.clientMutationQueue(params)
+	_, replayErr := sess.AcceptClientMutationQueue(params)
 	assertClientMutationConflict(t, replayErr)
 	if got := sess.clientMutations.snapshot(); len(got.InputQueue) != 0 || got.QueueRevision != 0 {
 		t.Fatalf("replayed rejection changed queue: depth=%d revision=%d", len(got.InputQueue), got.QueueRevision)
+	}
+}
+
+// TestClientMutation_RejectionCarriesJournaledRejectionCause pins the
+// round-14 positive stamp: a journaled rejection is the ONLY refusal a client
+// may treat as certain for the wire, so the choke point that creates it -
+// rejectClientMutation, inside the same snapshot save that journals the
+// record - stamps Cause journaledRejection into the rejection's data. Both
+// the in-band response and a journal replay of the record carry the stamp,
+// because both rebuild from record.Rejection.
+func TestClientMutation_RejectionCarriesJournaledRejectionCause(t *testing.T) {
+	t.Parallel()
+	sess := newTestSession(t)
+	armTestInterruptFence(t, sess, "interrupt-in-flight")
+	params := appwire.TurnQueueParams{
+		ClientMutationID: "mutation-stamped",
+		Input:            []appwire.InputItem{{Type: "text", Text: "must not queue"}},
+	}
+
+	_, firstErr := sess.AcceptClientMutationQueue(params)
+	assertClientMutationConflict(t, firstErr)
+	var wireErr appwire.WireError
+	if !errors.As(firstErr, &wireErr) {
+		t.Fatalf("first error is not a wire error: %v", firstErr)
+	}
+	data, ok := appwire.ErrorDataOf(wireErr.Data)
+	if !ok {
+		t.Fatal("in-band rejection carries no readable error data")
+	}
+	if data.Cause != "journaledRejection" {
+		t.Fatalf("in-band cause = %q, want journaledRejection", data.Cause)
+	}
+
+	snapshot := sess.clientMutations.snapshot()
+	record, ok := snapshot.Journal[params.ClientMutationID]
+	if !ok {
+		t.Fatal("rejection was not recorded durably")
+	}
+	if record.OperationState != clientMutationOperationRejected {
+		t.Fatalf("operation state = %q, want rejected", record.OperationState)
+	}
+	journalData, ok := appwire.ErrorDataOf(record.Rejection.Data)
+	if !ok {
+		t.Fatal("journaled rejection carries no readable error data")
+	}
+	if journalData.Cause != "journaledRejection" {
+		t.Fatalf("journal cause = %q, want journaledRejection", journalData.Cause)
+	}
+
+	// The replay returns the STORED rejection - stamp included.
+	disarmTestInterruptFence(t, sess)
+	_, replayErr := sess.AcceptClientMutationQueue(params)
+	assertClientMutationConflict(t, replayErr)
+	var replayWire appwire.WireError
+	if !errors.As(replayErr, &replayWire) {
+		t.Fatalf("replay error is not a wire error: %v", replayErr)
+	}
+	replayData, ok := appwire.ErrorDataOf(replayWire.Data)
+	if !ok {
+		t.Fatal("replayed rejection carries no readable error data")
+	}
+	if replayData.Cause != "journaledRejection" {
+		t.Fatalf("replay cause = %q, want journaledRejection", replayData.Cause)
+	}
+}
+
+// TestClientMutation_PreUpgradeRejectionReplayCarriesTheStamp pins the
+// round-15 migration corner: a rejection PERSISTED by pre-upgrade code
+// carries Rejection.Data without the cause, executeAtomic's replay switch
+// returns the recorded record without calling rejectClientMutation, and the
+// render path must not trust the persisted bytes - it KNOWS it renders a
+// journal-held rejection, so the stamp is set at render, covering pre-upgrade
+// and restored records by construction. RED pre-fix: the replay rendered
+// verbatim with no cause, and the flipped dispatcher would classify the wire
+// delivery-uncertain - an unchanged resend inheriting the rejected id would
+// replay the same recorded rejection forever, wedged even after the original
+// conflict cleared.
+func TestClientMutation_PreUpgradeRejectionReplayCarriesTheStamp(t *testing.T) {
+	t.Parallel()
+	sess := newTestSession(t)
+	armTestInterruptFence(t, sess, "interrupt-in-flight")
+	params := appwire.TurnQueueParams{
+		ClientMutationID: "mutation-preupgrade",
+		Input:            []appwire.InputItem{{Type: "text", Text: "must not queue"}},
+	}
+
+	// Create the journaled rejection through the real pipeline, then strip
+	// the persisted record's cause: the pre-upgrade on-disk shape.
+	_, firstErr := sess.AcceptClientMutationQueue(params)
+	assertClientMutationConflict(t, firstErr)
+	if err := sess.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		record, ok := snapshot.Journal[params.ClientMutationID]
+		if !ok {
+			return errors.New("rejection was not recorded durably")
+		}
+		data, ok := appwire.ErrorDataOf(record.Rejection.Data)
+		if !ok {
+			return errors.New("persisted rejection carries unreadable data")
+		}
+		data.Cause = ""
+		record.Rejection.Data = data
+		snapshot.Journal[params.ClientMutationID] = record
+		return nil
+	}); err != nil {
+		t.Fatalf("stripping the persisted cause: %v", err)
+	}
+
+	// The replay must render the stamp regardless of the persisted bytes.
+	disarmTestInterruptFence(t, sess)
+	_, replayErr := sess.AcceptClientMutationQueue(params)
+	assertClientMutationConflict(t, replayErr)
+	var replayWire appwire.WireError
+	if !errors.As(replayErr, &replayWire) {
+		t.Fatalf("replay error is not a wire error: %v", replayErr)
+	}
+	replayData, ok := appwire.ErrorDataOf(replayWire.Data)
+	if !ok {
+		t.Fatal("replayed rejection carries no readable error data")
+	}
+	if replayData.Cause != appwire.JournaledRejectionCause {
+		t.Fatalf("replay cause = %q, want journaledRejection (the render path must stamp pre-upgrade records)", replayData.Cause)
+	}
+}
+
+// The stamp must not ride on absence: an error that already carries a cause
+// (the producer set of refusal arms grows with main) is overwritten, or a
+// stale cause would reclassify a journaled rejection on the client.
+func TestClientMutation_RejectionCauseOverwritesInheritedCause(t *testing.T) {
+	t.Parallel()
+	record := &clientMutationRecord{ClientMutationID: "mutation-overwrite"}
+	rejectClientMutation(record, appwire.WireError{
+		Code:    appwire.CodeConflict,
+		Message: "refused",
+		Data:    appwire.ErrorData{Cause: "someInheritedCause"},
+	})
+	data, ok := appwire.ErrorDataOf(record.Rejection.Data)
+	if !ok {
+		t.Fatal("rejection carries no readable error data")
+	}
+	if data.Cause != "journaledRejection" {
+		t.Fatalf("cause = %q, want journaledRejection (the inherited cause must be overwritten)", data.Cause)
 	}
 }
 
@@ -363,7 +504,7 @@ func TestClientMutation_QueueRejectedImagePayloadIsCompactedAndReplayable(t *tes
 			Data:      []byte("large-rejected-image-payload"),
 		}},
 	}
-	if _, err := sess.clientMutationQueue(params); err == nil {
+	if _, err := sess.AcceptClientMutationQueue(params); err == nil {
 		t.Fatal("refused image queue unexpectedly succeeded")
 	}
 	record := sess.clientMutations.snapshot().Journal[params.ClientMutationID]
@@ -371,12 +512,12 @@ func TestClientMutation_QueueRejectedImagePayloadIsCompactedAndReplayable(t *tes
 		t.Fatalf("rejected compacted record payload=%d hash=%q rejection=%#v", len(record.Payload), record.PayloadHash, record.Rejection)
 	}
 	disarmTestInterruptFence(t, sess)
-	if _, err := sess.clientMutationQueue(params); err == nil {
+	if _, err := sess.AcceptClientMutationQueue(params); err == nil {
 		t.Fatal("identical rejected replay unexpectedly succeeded")
 	}
 	mismatch := params
 	mismatch.Input[0].Data = []byte("different")
-	if _, err := sess.clientMutationQueue(mismatch); !errors.Is(err, errClientMutationMismatch) {
+	if _, err := sess.AcceptClientMutationQueue(mismatch); !errors.Is(err, errClientMutationMismatch) {
 		t.Fatalf("rejected mismatch error = %v, want %v", err, errClientMutationMismatch)
 	}
 }
@@ -390,11 +531,11 @@ func TestClientMutation_QueueReplayDoesNotDuplicateEffect(t *testing.T) {
 		Input:            []appwire.InputItem{{Type: "text", Text: "once"}},
 	}
 
-	first, err := sess.clientMutationQueue(params)
+	first, err := sess.AcceptClientMutationQueue(params)
 	if err != nil {
 		t.Fatalf("first queue: %v", err)
 	}
-	replayed, err := sess.clientMutationQueue(params)
+	replayed, err := sess.AcceptClientMutationQueue(params)
 	if err != nil {
 		t.Fatalf("replayed queue: %v", err)
 	}
@@ -425,7 +566,7 @@ func TestClientMutation_BudgetSerializesConcurrentFinalSlot(t *testing.T) {
 	for _, id := range []string{"mutation-a", "mutation-b"} {
 		wg.Go(func() {
 			<-start
-			_, err := sess.clientMutationQueue(appwire.TurnQueueParams{
+			_, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
 				ClientMutationID: id,
 				Input:            []appwire.InputItem{{Type: "text", Text: id}},
 			})
@@ -459,7 +600,7 @@ func TestClientMutation_BudgetSerializesConcurrentFinalSlot(t *testing.T) {
 		if record.OperationState != clientMutationOperationRejected {
 			continue
 		}
-		_, replayErr := sess.clientMutationQueue(appwire.TurnQueueParams{
+		_, replayErr := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
 			ClientMutationID: id,
 			Input:            []appwire.InputItem{{Type: "text", Text: id}},
 		})
@@ -490,7 +631,7 @@ func TestClientMutation_BudgetSerializesDirectTurnAgainstQueuedFinalSlot(t *test
 	}()
 	go func() {
 		<-start
-		_, err := sess.clientMutationQueue(appwire.TurnQueueParams{
+		_, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
 			ClientMutationID: "queue-final-slot",
 			Input:            []appwire.InputItem{{Type: "text", Text: "queued"}},
 		})
@@ -616,7 +757,7 @@ func TestClientMutation_DrainRejectsStaleQueueRevisionDurably(t *testing.T) {
 		t.Fatalf("Enqueue: %v", err)
 	}
 
-	_, err := sess.clientMutationDrain(appwire.TurnDrainAsSteerParams{
+	_, err := sess.AcceptClientMutationDrainAsSteer(appwire.TurnDrainAsSteerParams{
 		ClientMutationID:      "drain-stale",
 		ExpectedQueueRevision: 0,
 	})
@@ -642,13 +783,13 @@ func TestClientMutation_DrainPreservesMessageBoundaries(t *testing.T) {
 	}
 	revision := sess.clientMutations.snapshot().QueueRevision
 
-	_, err := sess.clientMutationDrain(appwire.TurnDrainAsSteerParams{
+	_, err := sess.AcceptClientMutationDrainAsSteer(appwire.TurnDrainAsSteerParams{
 		ClientMutationID:      "drain-boundaries",
 		ExpectedQueueRevision: revision,
 		Input:                 []appwire.InputItem{{Type: "text", Text: "charlie"}},
 	})
 	if err != nil {
-		t.Fatalf("clientMutationDrain: %v", err)
+		t.Fatalf("AcceptClientMutationDrainAsSteer: %v", err)
 	}
 	pending := sess.clientMutations.snapshot().PendingExecutions["drain-boundaries"]
 	queued := queuedInputFromClientMutation(clientMutationQueueEntry{Input: pending.Input})
@@ -678,13 +819,13 @@ func TestClientMutation_DrainEmitsConsumedClientMutationIDs(t *testing.T) {
 	}
 
 	evs, stop := captureEvents(sess)
-	_, err := sess.clientMutationDrain(appwire.TurnDrainAsSteerParams{
+	_, err := sess.AcceptClientMutationDrainAsSteer(appwire.TurnDrainAsSteerParams{
 		ClientMutationID:      "drain-consumed",
 		ExpectedQueueRevision: snapshot.QueueRevision,
 	})
 	stop()
 	if err != nil {
-		t.Fatalf("clientMutationDrain: %v", err)
+		t.Fatalf("AcceptClientMutationDrainAsSteer: %v", err)
 	}
 
 	var latest *events.QueueChangedData
@@ -728,17 +869,17 @@ func TestClientMutation_DrainReplayCarriesConsumedClientMutationIDs(t *testing.T
 		ExpectedQueueRevision: snapshot.QueueRevision,
 	}
 
-	first, err := sess.clientMutationDrain(params)
+	first, err := sess.AcceptClientMutationDrainAsSteer(params)
 	if err != nil {
-		t.Fatalf("clientMutationDrain: %v", err)
+		t.Fatalf("AcceptClientMutationDrainAsSteer: %v", err)
 	}
 	if !slices.Equal(first.Receipt.ConsumedClientMutationIDs, wantConsumed) {
 		t.Fatalf("first receipt ConsumedClientMutationIDs = %v, want %v", first.Receipt.ConsumedClientMutationIDs, wantConsumed)
 	}
 
-	replayed, err := sess.clientMutationDrain(params)
+	replayed, err := sess.AcceptClientMutationDrainAsSteer(params)
 	if err != nil {
-		t.Fatalf("clientMutationDrain (replay): %v", err)
+		t.Fatalf("AcceptClientMutationDrainAsSteer (replay): %v", err)
 	}
 	if replayed.Receipt.Disposition != appwire.MutationDispositionReplayed {
 		t.Fatalf("replay disposition = %q, want replayed", replayed.Receipt.Disposition)
@@ -763,7 +904,7 @@ func TestClientMutation_PromoteRejectsShiftedEntryDurably(t *testing.T) {
 		t.Fatalf("CancelQueued: %v", err)
 	}
 
-	_, err := sess.clientMutationPromote(appwire.TurnPromoteQueuedAsSteerParams{
+	_, err := sess.AcceptClientMutationPromoteQueuedAsSteer(appwire.TurnPromoteQueuedAsSteerParams{
 		Index:            0,
 		ClientMutationID: "promote-stale",
 		ExpectedEntryID:  staleID,
@@ -772,6 +913,33 @@ func TestClientMutation_PromoteRejectsShiftedEntryDurably(t *testing.T) {
 	snapshot := sess.clientMutations.snapshot()
 	if len(snapshot.InputQueue) != 1 || queuedInputFromClientMutation(snapshot.InputQueue[0]).Text != "bravo" {
 		t.Fatalf("shifted promote changed queue: %#v", snapshot.InputQueue)
+	}
+}
+
+func TestClientMutation_PromoteSteeringUsesQueuedAuthor(t *testing.T) {
+	t.Parallel()
+	sess := newTestSession(t)
+	setTestClientMutationActiveTurn(t, sess, "turn-1")
+	queuedBy := schema.SessionActor{Kind: "human"}
+	promotedBy := schema.SessionActor{Kind: "manager", ManagerRef: "local:manager"}
+	queued, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
+		ClientMutationID: "queue-authored",
+		Input:            []appwire.InputItem{{Type: "text", Text: "authored input"}},
+	})
+	if err != nil {
+		t.Fatalf("AcceptClientMutationQueueAs: %v", err)
+	}
+	if _, err := sess.AcceptClientMutationPromoteQueuedAsSteerAs(appwire.TurnPromoteQueuedAsSteerParams{
+		Index:            0,
+		ClientMutationID: "promote-authored",
+		ExpectedEntryID:  queued.Receipt.QueueEntryIDs[0],
+	}, promotedBy); err != nil {
+		t.Fatalf("AcceptClientMutationPromoteQueuedAsSteerAs: %v", err)
+	}
+	pending := sess.clientMutations.snapshot().PendingExecutions["promote-authored"]
+	want := wireSessionActor(queuedBy)
+	if pending.Actor != want {
+		t.Fatalf("pending steering actor = %#v, want queued author %#v", pending.Actor, want)
 	}
 }
 
@@ -784,27 +952,27 @@ func TestClientMutation_QueueReplayReportsRemovedAfterTransform(t *testing.T) {
 				ClientMutationID: "queue-source-" + transform,
 				Input:            []appwire.InputItem{{Type: "text", Text: "source payload"}},
 			}
-			queued, err := sess.clientMutationQueue(queueParams)
+			queued, err := sess.AcceptClientMutationQueue(queueParams)
 			if err != nil {
-				t.Fatalf("clientMutationQueue: %v", err)
+				t.Fatalf("AcceptClientMutationQueue: %v", err)
 			}
 			entryID := queued.Receipt.QueueEntryIDs[0]
 
 			switch transform {
 			case "cancel":
-				_, err = sess.clientMutationCancel(appwire.TurnCancelQueuedParams{
+				_, err = sess.AcceptClientMutationCancelQueued(appwire.TurnCancelQueuedParams{
 					Index:            0,
 					ClientMutationID: "cancel-transform",
 					ExpectedEntryID:  entryID,
 				})
 			case "promote":
-				_, err = sess.clientMutationPromote(appwire.TurnPromoteQueuedAsSteerParams{
+				_, err = sess.AcceptClientMutationPromoteQueuedAsSteer(appwire.TurnPromoteQueuedAsSteerParams{
 					Index:            0,
 					ClientMutationID: "promote-transform",
 					ExpectedEntryID:  entryID,
 				})
 			case "drain":
-				_, err = sess.clientMutationDrain(appwire.TurnDrainAsSteerParams{
+				_, err = sess.AcceptClientMutationDrainAsSteer(appwire.TurnDrainAsSteerParams{
 					ClientMutationID:      "drain-transform",
 					ExpectedQueueRevision: 1,
 				})
@@ -813,7 +981,7 @@ func TestClientMutation_QueueReplayReportsRemovedAfterTransform(t *testing.T) {
 				t.Fatalf("%s transform: %v", transform, err)
 			}
 
-			replayed, err := sess.clientMutationQueue(queueParams)
+			replayed, err := sess.AcceptClientMutationQueue(queueParams)
 			if err != nil {
 				t.Fatalf("replay source queue: %v", err)
 			}
@@ -858,7 +1026,7 @@ func TestClientMutation_PromoteSerializerSpansValidationAndEffect(t *testing.T) 
 		return nil
 	}
 
-	if _, err := sess.clientMutationPromote(appwire.TurnPromoteQueuedAsSteerParams{
+	if _, err := sess.AcceptClientMutationPromoteQueuedAsSteer(appwire.TurnPromoteQueuedAsSteerParams{
 		Index:            0,
 		ClientMutationID: "promote-first",
 		ExpectedEntryID:  firstID,
@@ -868,7 +1036,7 @@ func TestClientMutation_PromoteSerializerSpansValidationAndEffect(t *testing.T) 
 	if !checkedSerializer {
 		t.Fatal("effect-commit serializer seam was not reached")
 	}
-	_, secondErr := sess.clientMutationPromote(appwire.TurnPromoteQueuedAsSteerParams{
+	_, secondErr := sess.AcceptClientMutationPromoteQueuedAsSteer(appwire.TurnPromoteQueuedAsSteerParams{
 		Index:            0,
 		ClientMutationID: "promote-second",
 		ExpectedEntryID:  firstID,
@@ -923,13 +1091,13 @@ func TestClientMutation_QueueCrashBoundariesDoNotDuplicateEffect(t *testing.T) {
 				Input:            []appwire.InputItem{{Type: "text", Text: "once"}},
 			}
 
-			if _, err := sess.clientMutationQueue(params); err == nil {
+			if _, err := sess.AcceptClientMutationQueue(params); err == nil {
 				t.Fatal("first queue unexpectedly succeeded")
 			}
 			if depth := len(sess.clientMutations.snapshot().InputQueue); depth != tt.firstDepth {
 				t.Fatalf("depth after injected crash = %d, want %d", depth, tt.firstDepth)
 			}
-			if _, err := sess.clientMutationQueue(params); err != nil {
+			if _, err := sess.AcceptClientMutationQueue(params); err != nil {
 				t.Fatalf("retry queue: %v", err)
 			}
 			snapshot := sess.clientMutations.snapshot()
@@ -959,11 +1127,11 @@ func TestClientMutation_QueueRecoveryRunsAfterReservationSeamOnTakeover(t *testi
 	}
 
 	for attempt := 1; attempt <= 2; attempt++ {
-		if _, err := sess.clientMutationQueue(params); err == nil {
+		if _, err := sess.AcceptClientMutationQueue(params); err == nil {
 			t.Fatalf("attempt %d unexpectedly succeeded", attempt)
 		}
 	}
-	if _, err := sess.clientMutationQueue(params); err != nil {
+	if _, err := sess.AcceptClientMutationQueue(params); err != nil {
 		t.Fatalf("third attempt: %v", err)
 	}
 	if calls != 3 {
@@ -990,11 +1158,11 @@ func TestClientMutation_TransformTakeoverTargetsReservedEntryIDs(t *testing.T) {
 				ClientMutationID: "bravo-" + transform,
 				Input:            []appwire.InputItem{{Type: "text", Text: "bravo"}},
 			}
-			alphaResponse, err := sess.clientMutationQueue(alpha)
+			alphaResponse, err := sess.AcceptClientMutationQueue(alpha)
 			if err != nil {
 				t.Fatalf("queue alpha: %v", err)
 			}
-			bravoResponse, err := sess.clientMutationQueue(bravo)
+			bravoResponse, err := sess.AcceptClientMutationQueue(bravo)
 			if err != nil {
 				t.Fatalf("queue bravo: %v", err)
 			}
@@ -1015,7 +1183,7 @@ func TestClientMutation_TransformTakeoverTargetsReservedEntryIDs(t *testing.T) {
 					ExpectedQueueRevision: 2,
 				}
 				retry = func() error {
-					_, err := sess.clientMutationDrain(params)
+					_, err := sess.AcceptClientMutationDrainAsSteer(params)
 					return err
 				}
 			case "promote":
@@ -1025,7 +1193,7 @@ func TestClientMutation_TransformTakeoverTargetsReservedEntryIDs(t *testing.T) {
 					ExpectedEntryID:  bravoResponse.Receipt.QueueEntryIDs[0],
 				}
 				retry = func() error {
-					_, err := sess.clientMutationPromote(params)
+					_, err := sess.AcceptClientMutationPromoteQueuedAsSteer(params)
 					return err
 				}
 			case "cancel":
@@ -1035,7 +1203,7 @@ func TestClientMutation_TransformTakeoverTargetsReservedEntryIDs(t *testing.T) {
 					ExpectedEntryID:  bravoResponse.Receipt.QueueEntryIDs[0],
 				}
 				retry = func() error {
-					_, err := sess.clientMutationCancel(params)
+					_, err := sess.AcceptClientMutationCancelQueued(params)
 					return err
 				}
 			}
@@ -1044,7 +1212,7 @@ func TestClientMutation_TransformTakeoverTargetsReservedEntryIDs(t *testing.T) {
 			}
 
 			if transform == "drain" {
-				if _, err := sess.clientMutationCancel(appwire.TurnCancelQueuedParams{
+				if _, err := sess.AcceptClientMutationCancelQueued(appwire.TurnCancelQueuedParams{
 					Index:            0,
 					ClientMutationID: "overlap-cancel-drain",
 					ExpectedEntryID:  alphaResponse.Receipt.QueueEntryIDs[0],
@@ -1054,21 +1222,21 @@ func TestClientMutation_TransformTakeoverTargetsReservedEntryIDs(t *testing.T) {
 				if popped := sess.popQueueHead(); popped.ClientMutationID != "" {
 					t.Fatalf("pop claimed drain-reserved head: %#v", popped)
 				}
-				if _, err := sess.clientMutationQueue(appwire.TurnQueueParams{
+				if _, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
 					ClientMutationID: "charlie-drain",
 					Input:            []appwire.InputItem{{Type: "text", Text: "charlie"}},
 				}); err != nil {
 					t.Fatalf("intervening queue: %v", err)
 				}
 			} else {
-				if _, err := sess.clientMutationCancel(appwire.TurnCancelQueuedParams{
+				if _, err := sess.AcceptClientMutationCancelQueued(appwire.TurnCancelQueuedParams{
 					Index:            1,
 					ClientMutationID: "overlap-cancel-" + transform,
 					ExpectedEntryID:  bravoResponse.Receipt.QueueEntryIDs[0],
 				}); err == nil {
 					t.Fatal("overlapping cancel took reserved target")
 				}
-				if _, err := sess.clientMutationCancel(appwire.TurnCancelQueuedParams{
+				if _, err := sess.AcceptClientMutationCancelQueued(appwire.TurnCancelQueuedParams{
 					Index:            0,
 					ClientMutationID: "intervening-cancel-" + transform,
 					ExpectedEntryID:  alphaResponse.Receipt.QueueEntryIDs[0],
@@ -1078,7 +1246,7 @@ func TestClientMutation_TransformTakeoverTargetsReservedEntryIDs(t *testing.T) {
 				if popped := sess.popQueueHead(); popped.ClientMutationID != "" {
 					t.Fatalf("pop claimed reserved shifted head: %#v", popped)
 				}
-				if _, err := sess.clientMutationQueue(appwire.TurnQueueParams{
+				if _, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
 					ClientMutationID: "charlie-" + transform,
 					Input:            []appwire.InputItem{{Type: "text", Text: "charlie"}},
 				}); err != nil {
@@ -1115,9 +1283,9 @@ func TestClientMutation_QueueClaimAndTranscriptIncorporationRetainsRunnableIdent
 		ClientMutationID: "queue-claim",
 		Input:            []appwire.InputItem{{Type: "text", Text: "run me"}},
 	}
-	response, err := sess.clientMutationQueue(params)
+	response, err := sess.AcceptClientMutationQueue(params)
 	if err != nil {
-		t.Fatalf("clientMutationQueue: %v", err)
+		t.Fatalf("AcceptClientMutationQueue: %v", err)
 	}
 
 	queued := sess.popQueueHead()
@@ -1169,15 +1337,15 @@ func TestClientMutation_QueueReplayStaysPendingWhileClaimed(t *testing.T) {
 		ClientMutationID: "queue-claimed-reflection",
 		Input:            []appwire.InputItem{{Type: "text", Text: "run me"}},
 	}
-	if _, err := sess.clientMutationQueue(params); err != nil {
-		t.Fatalf("clientMutationQueue: %v", err)
+	if _, err := sess.AcceptClientMutationQueue(params); err != nil {
+		t.Fatalf("AcceptClientMutationQueue: %v", err)
 	}
 	claimed := sess.popQueueHead()
 	if claimed.ClientMutationID != params.ClientMutationID {
 		t.Fatalf("claimed mutation ID = %q, want %q", claimed.ClientMutationID, params.ClientMutationID)
 	}
 
-	replayed, err := sess.clientMutationQueue(params)
+	replayed, err := sess.AcceptClientMutationQueue(params)
 	if err != nil {
 		t.Fatalf("replay claimed queue mutation: %v", err)
 	}
@@ -1198,8 +1366,8 @@ func TestClientMutation_CompletedQueueReplayStaysReflectedByTranscript(t *testin
 		ClientMutationID: "queue-terminal-reflection",
 		Input:            []appwire.InputItem{{Type: "text", Text: "complete me"}},
 	}
-	if _, err := sess.clientMutationQueue(params); err != nil {
-		t.Fatalf("clientMutationQueue: %v", err)
+	if _, err := sess.AcceptClientMutationQueue(params); err != nil {
+		t.Fatalf("AcceptClientMutationQueue: %v", err)
 	}
 	queued := sess.popQueueHead()
 	if err := sess.acceptUserInput(withQueuedClientMutation(context.Background(), queued), queued.Text, nil, nil, false); err != nil {
@@ -1220,7 +1388,7 @@ func TestClientMutation_CompletedQueueReplayStaysReflectedByTranscript(t *testin
 	if _, ok := snapshot.PendingExecutions[params.ClientMutationID]; ok {
 		t.Fatal("completed queue mutation remained pending")
 	}
-	replayed, err := sess.clientMutationQueue(params)
+	replayed, err := sess.AcceptClientMutationQueue(params)
 	if err != nil {
 		t.Fatalf("replay completed queue mutation: %v", err)
 	}
@@ -1237,8 +1405,8 @@ func TestClientMutation_QueueAppendFailureReturnsSameIdentityRunnable(t *testing
 		ClientMutationID: "queue-append-failure",
 		Input:            []appwire.InputItem{{Type: "text", Text: "retry me"}},
 	}
-	if _, err := sess.clientMutationQueue(params); err != nil {
-		t.Fatalf("clientMutationQueue: %v", err)
+	if _, err := sess.AcceptClientMutationQueue(params); err != nil {
+		t.Fatalf("AcceptClientMutationQueue: %v", err)
 	}
 	queued := sess.popQueueHead()
 	sess.clientMutationTranscriptAppend = func(schema.Turn) error {
@@ -1279,9 +1447,9 @@ func TestClientMutation_SteerStaysAcceptedUntilDurableAppend(t *testing.T) {
 		ClientMutationID: "steer-claim",
 		Input:            []appwire.InputItem{{Type: "text", Text: "look here"}},
 	}
-	response, err := sess.clientMutationSteer(params)
+	response, err := sess.AcceptClientMutationSteer(params)
 	if err != nil {
-		t.Fatalf("clientMutationSteer: %v", err)
+		t.Fatalf("AcceptClientMutationSteer: %v", err)
 	}
 	if pending, ok := projectedClientMutation(sess, params.ClientMutationID); !ok || pending.ExecutionState != "accepted" {
 		t.Fatalf("accepted steering projection = %#v, ok=%v", pending, ok)
@@ -1336,9 +1504,9 @@ func TestClientMutation_SteerAppendFailureReturnsSameIdentityRunnable(t *testing
 		ClientMutationID: "steer-append-failure",
 		Input:            []appwire.InputItem{{Type: "text", Text: "retry steer"}},
 	}
-	response, err := sess.clientMutationSteer(params)
+	response, err := sess.AcceptClientMutationSteer(params)
 	if err != nil {
-		t.Fatalf("clientMutationSteer: %v", err)
+		t.Fatalf("AcceptClientMutationSteer: %v", err)
 	}
 	msg, ok := sess.popSteeringHead()
 	if !ok {
@@ -1371,8 +1539,8 @@ func TestClientMutation_SteeringClaimRestoreDoesNotConsumeTurnBudget(t *testing.
 		ClientMutationID: "steer-claimed-budget-restore",
 		Input:            []appwire.InputItem{{Type: "text", Text: "restore steering"}},
 	}
-	if _, err := sess.clientMutationSteer(params); err != nil {
-		t.Fatalf("clientMutationSteer: %v", err)
+	if _, err := sess.AcceptClientMutationSteer(params); err != nil {
+		t.Fatalf("AcceptClientMutationSteer: %v", err)
 	}
 	if _, ok := sess.popSteeringHead(); !ok {
 		t.Fatal("popSteeringHead returned empty")
@@ -1414,9 +1582,9 @@ func TestClientMutation_CommunicateEndTurnDefersClientSteering(t *testing.T) {
 			clientImage,
 		},
 	}
-	_, err := sess.clientMutationSteer(params)
+	_, err := sess.AcceptClientMutationSteer(params)
 	if err != nil {
-		t.Fatalf("clientMutationSteer: %v", err)
+		t.Fatalf("AcceptClientMutationSteer: %v", err)
 	}
 	daemonImage := ImageAttachment{MediaType: "image/png", Data: []byte("daemon-image"), Name: "daemon.png"}
 	if ok, err := sess.trySteerWithImages("daemon reminder", []ImageAttachment{daemonImage}); err != nil || !ok {
@@ -1488,15 +1656,15 @@ func TestClientMutation_SteeringProducerReplayStaysReflectedAfterTranscriptIncor
 					ClientMutationID: mutationID,
 					Input:            []appwire.InputItem{{Type: "text", Text: "steer text"}},
 				}
-				if _, err := sess.clientMutationSteer(params); err != nil {
-					t.Fatalf("clientMutationSteer: %v", err)
+				if _, err := sess.AcceptClientMutationSteer(params); err != nil {
+					t.Fatalf("AcceptClientMutationSteer: %v", err)
 				}
 				replay = func() (appwire.MutationReceipt, error) {
-					response, err := sess.clientMutationSteer(params)
+					response, err := sess.AcceptClientMutationSteer(params)
 					return response.Receipt, err
 				}
 			case "drain":
-				if _, err := sess.clientMutationQueue(appwire.TurnQueueParams{
+				if _, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
 					ClientMutationID: "drain-source",
 					Input:            []appwire.InputItem{{Type: "text", Text: "drain text"}},
 				}); err != nil {
@@ -1506,15 +1674,15 @@ func TestClientMutation_SteeringProducerReplayStaysReflectedAfterTranscriptIncor
 					ClientMutationID:      mutationID,
 					ExpectedQueueRevision: sess.clientMutations.snapshot().QueueRevision,
 				}
-				if _, err := sess.clientMutationDrain(params); err != nil {
-					t.Fatalf("clientMutationDrain: %v", err)
+				if _, err := sess.AcceptClientMutationDrainAsSteer(params); err != nil {
+					t.Fatalf("AcceptClientMutationDrainAsSteer: %v", err)
 				}
 				replay = func() (appwire.MutationReceipt, error) {
-					response, err := sess.clientMutationDrain(params)
+					response, err := sess.AcceptClientMutationDrainAsSteer(params)
 					return response.Receipt, err
 				}
 			case "promote":
-				queued, err := sess.clientMutationQueue(appwire.TurnQueueParams{
+				queued, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
 					ClientMutationID: "promote-source",
 					Input:            []appwire.InputItem{{Type: "text", Text: "promote text"}},
 				})
@@ -1526,11 +1694,11 @@ func TestClientMutation_SteeringProducerReplayStaysReflectedAfterTranscriptIncor
 					ClientMutationID: mutationID,
 					ExpectedEntryID:  queued.Receipt.QueueEntryIDs[0],
 				}
-				if _, err := sess.clientMutationPromote(params); err != nil {
-					t.Fatalf("clientMutationPromote: %v", err)
+				if _, err := sess.AcceptClientMutationPromoteQueuedAsSteer(params); err != nil {
+					t.Fatalf("AcceptClientMutationPromoteQueuedAsSteer: %v", err)
 				}
 				replay = func() (appwire.MutationReceipt, error) {
-					response, err := sess.clientMutationPromote(params)
+					response, err := sess.AcceptClientMutationPromoteQueuedAsSteer(params)
 					return response.Receipt, err
 				}
 			}
@@ -1569,8 +1737,8 @@ func TestClientMutation_QueueRecoveryUsesFullTranscriptIdentityAfterCompaction(t
 		ClientMutationID: "queue-compacted-identity",
 		Input:            []appwire.InputItem{{Type: "text", Text: "already appended"}},
 	}
-	if _, err := sess.clientMutationQueue(params); err != nil {
-		t.Fatalf("clientMutationQueue: %v", err)
+	if _, err := sess.AcceptClientMutationQueue(params); err != nil {
+		t.Fatalf("AcceptClientMutationQueue: %v", err)
 	}
 	queued := sess.popQueueHead()
 	sess.history = []schema.Turn{schema.NewTurn(schema.TurnSummary, llm.Assistant("compacted context"))}
@@ -1607,7 +1775,7 @@ func TestClientMutation_QueueRestoreFencesPreRestartRevision(t *testing.T) {
 		t.Fatalf("restored queue revision = %d, want %d", snapshot.QueueRevision, preRestartRevision+1)
 	}
 	setTestClientMutationActiveTurn(t, restored, "turn-1")
-	_, err := restored.clientMutationDrain(appwire.TurnDrainAsSteerParams{
+	_, err := restored.AcceptClientMutationDrainAsSteer(appwire.TurnDrainAsSteerParams{
 		ClientMutationID:      "stale-pre-restart-drain",
 		ExpectedQueueRevision: preRestartRevision,
 	})
@@ -1644,22 +1812,22 @@ func TestClientMutation_CancelCompactsImagePayloadButKeepsHashReplay(t *testing.
 			Name:      "capture.png",
 		}},
 	}
-	response, err := sess.clientMutationQueue(params)
+	response, err := sess.AcceptClientMutationQueue(params)
 	if err != nil {
-		t.Fatalf("clientMutationQueue: %v", err)
+		t.Fatalf("AcceptClientMutationQueue: %v", err)
 	}
-	if _, err := sess.clientMutationCancel(appwire.TurnCancelQueuedParams{
+	if _, err := sess.AcceptClientMutationCancelQueued(appwire.TurnCancelQueuedParams{
 		Index:            0,
 		ClientMutationID: "cancel-image-payload",
 		ExpectedEntryID:  response.Receipt.QueueEntryIDs[0],
 	}); err != nil {
-		t.Fatalf("clientMutationCancel: %v", err)
+		t.Fatalf("AcceptClientMutationCancelQueued: %v", err)
 	}
 	record := sess.clientMutations.snapshot().Journal[params.ClientMutationID]
 	if len(record.Payload) != 0 || record.PayloadHash == "" || len(record.Result) == 0 {
 		t.Fatalf("compacted record payload=%d hash=%q result=%d", len(record.Payload), record.PayloadHash, len(record.Result))
 	}
-	replayed, err := sess.clientMutationQueue(params)
+	replayed, err := sess.AcceptClientMutationQueue(params)
 	if err != nil {
 		t.Fatalf("identical replay: %v", err)
 	}
@@ -1669,7 +1837,7 @@ func TestClientMutation_CancelCompactsImagePayloadButKeepsHashReplay(t *testing.
 	}
 	mismatch := params
 	mismatch.Input[0].Data = []byte("different-image")
-	if _, err := sess.clientMutationQueue(mismatch); !errors.Is(err, errClientMutationMismatch) {
+	if _, err := sess.AcceptClientMutationQueue(mismatch); !errors.Is(err, errClientMutationMismatch) {
 		t.Fatalf("mismatched compacted replay error = %v, want %v", err, errClientMutationMismatch)
 	}
 }
@@ -1677,7 +1845,7 @@ func TestClientMutation_CancelCompactsImagePayloadButKeepsHashReplay(t *testing.
 func TestClientMutation_CancelOperationIsCompactRemovedTombstone(t *testing.T) {
 	t.Parallel()
 	sess := newTestSession(t)
-	queued, err := sess.clientMutationQueue(appwire.TurnQueueParams{
+	queued, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
 		ClientMutationID: "cancel-operation-source",
 		Input: []appwire.InputItem{{
 			Type:      "image",
@@ -1687,16 +1855,16 @@ func TestClientMutation_CancelOperationIsCompactRemovedTombstone(t *testing.T) {
 		}},
 	})
 	if err != nil {
-		t.Fatalf("clientMutationQueue: %v", err)
+		t.Fatalf("AcceptClientMutationQueue: %v", err)
 	}
 	params := appwire.TurnCancelQueuedParams{
 		Index:            0,
 		ClientMutationID: "cancel-operation",
 		ExpectedEntryID:  queued.Receipt.QueueEntryIDs[0],
 	}
-	initial, err := sess.clientMutationCancel(params)
+	initial, err := sess.AcceptClientMutationCancelQueued(params)
 	if err != nil {
-		t.Fatalf("clientMutationCancel: %v", err)
+		t.Fatalf("AcceptClientMutationCancelQueued: %v", err)
 	}
 	if initial.Receipt.Disposition != appwire.MutationDispositionApplied ||
 		initial.Receipt.ProjectionState != appwire.MutationProjectionRemoved ||
@@ -1714,7 +1882,7 @@ func TestClientMutation_CancelOperationIsCompactRemovedTombstone(t *testing.T) {
 		t.Fatalf("cancel operation record = %#v, want compact terminal removed tombstone", record)
 	}
 
-	replayed, err := sess.clientMutationCancel(params)
+	replayed, err := sess.AcceptClientMutationCancelQueued(params)
 	if err != nil {
 		t.Fatalf("replay cancel operation: %v", err)
 	}
@@ -1726,7 +1894,7 @@ func TestClientMutation_CancelOperationIsCompactRemovedTombstone(t *testing.T) {
 
 	mismatch := params
 	mismatch.ExpectedEntryID = "different-entry"
-	if _, err := sess.clientMutationCancel(mismatch); !errors.Is(err, errClientMutationMismatch) {
+	if _, err := sess.AcceptClientMutationCancelQueued(mismatch); !errors.Is(err, errClientMutationMismatch) {
 		t.Fatalf("mismatched compacted cancel error = %v, want %v", err, errClientMutationMismatch)
 	}
 }
@@ -1740,8 +1908,8 @@ func TestClientMutation_QueueRestoreKeepsIncorporatedTurnWithoutDuplicateInput(t
 		ClientMutationID: "queue-incorporated-restore",
 		Input:            []appwire.InputItem{{Type: "text", Text: "resume work"}},
 	}
-	if _, err := sess.clientMutationQueue(params); err != nil {
-		t.Fatalf("clientMutationQueue: %v", err)
+	if _, err := sess.AcceptClientMutationQueue(params); err != nil {
+		t.Fatalf("AcceptClientMutationQueue: %v", err)
 	}
 	queued := sess.popQueueHead()
 	if err := sess.acceptUserInput(withQueuedClientMutation(context.Background(), queued), queued.Text, nil, nil, false); err != nil {
@@ -1764,7 +1932,7 @@ func TestClientMutation_QueueRestoreKeepsIncorporatedTurnWithoutDuplicateInput(t
 	if pending.ProjectionState != appwire.MutationProjectionReflected {
 		t.Fatalf("restored incorporated projection = %q, want reflected", pending.ProjectionState)
 	}
-	replayed, err := restored.clientMutationQueue(params)
+	replayed, err := restored.AcceptClientMutationQueue(params)
 	if err != nil {
 		t.Fatalf("replay incorporated queue mutation: %v", err)
 	}
@@ -1831,8 +1999,8 @@ func TestClientMutation_QueueClaimedWithoutTranscriptRestoresPendingOnRequeue(t 
 		ClientMutationID: "queue-claimed-recovery",
 		Input:            []appwire.InputItem{{Type: "text", Text: "resume claimed queue"}},
 	}
-	if _, err := sess.clientMutationQueue(params); err != nil {
-		t.Fatalf("clientMutationQueue: %v", err)
+	if _, err := sess.AcceptClientMutationQueue(params); err != nil {
+		t.Fatalf("AcceptClientMutationQueue: %v", err)
 	}
 	claimed := sess.popQueueHead()
 	if claimed.ClientMutationID != params.ClientMutationID {
@@ -2021,7 +2189,7 @@ func TestClientMutation_SkillSelectionStartConsumesAtTurnBoundary(t *testing.T) 
 	source := writeSkillMDAndReturn(t, root, "probe", body)
 	mutationID := "skill-selection-start"
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSkillSelectionSession(t, root, adapter)
 	evs, stop := captureEvents(s)
@@ -2085,7 +2253,7 @@ func TestClientMutation_InlineSkillReferencesReachProviderAndTranscript(t *testi
 	const original = "Run /skill-1 and then /skill-2"
 	const mutationID = "inline-skill-references"
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-		return toolCallResponse(communicateCall("done-inline", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-inline", "ok"))
 	}}
 	s := newSkillSelectionSession(t, root, adapter)
 	evs, stop := captureEvents(s)
@@ -2150,7 +2318,7 @@ func TestClientMutation_SkillSelectionOnlyStartIsContent(t *testing.T) {
 	source := writeSkillMDAndReturn(t, root, "probe", body)
 	mutationID := "skill-selection-only-start"
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSkillSelectionSession(t, root, adapter)
 
@@ -2182,7 +2350,7 @@ func TestClientMutation_SkillSelectionQueueConsumesCurrentDiskBytes(t *testing.T
 	source := writeSkillMDAndReturn(t, root, "probe", firstBody)
 	mutationID := "skill-selection-queue"
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSkillSelectionSession(t, root, adapter)
 
@@ -2225,7 +2393,7 @@ func TestClientMutation_SkillSelectionMissingSecondNameFailsVisible(t *testing.T
 	writeSkillMDAndReturn(t, root, "probe", body)
 	mutationID := "skill-selection-missing-second"
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSkillSelectionSession(t, root, adapter)
 	evs, stop := captureEvents(s)
@@ -2298,9 +2466,9 @@ func skillSteerMidTurnSession(t *testing.T, steer func() error) (*Session, *agen
 		calls++
 		if calls == 1 {
 			steerOnce.Do(func() { _ = steer() })
-			return toolCallResponse(communicateCallArgs("hold-1", map[string]any{"message": "hold", "end_turn": false}))
+			return agenttest.ToolCallResponse(communicateCallArgs("hold-1", map[string]any{"message": "hold", "end_turn": false}))
 		}
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSkillSelectionSession(t, root, adapter)
 	if _, err := s.AcceptClientMutationStart(appwire.TurnStartParams{
@@ -2450,7 +2618,7 @@ func TestClientMutation_SkillSelectionDrainCombinesQueueAndExtraSelections(t *te
 	probeSource := writeSkillMDAndReturn(t, root, "probe", probeBody)
 	probe2Source := writeSkillMDAndReturn(t, root, "probe2", probe2Body)
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSkillSelectionSession(t, root, adapter)
 
@@ -2517,7 +2685,7 @@ func TestClientMutation_SkillSelectionCancelThenDrainUsesRemainingSelection(t *t
 	writeSkillMDAndReturn(t, root, "probe", probeBody)
 	writeSkillMDAndReturn(t, root, "probe2", probe2Body)
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSkillSelectionSession(t, root, adapter)
 
@@ -2582,7 +2750,7 @@ func TestClientMutation_SkillSelectionQueueReturnKeepsSelectionRunnable(t *testi
 	writeSkillMDAndReturn(t, root, "probe", body)
 	mutationID := "skill-selection-queue-return"
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSkillSelectionSession(t, root, adapter)
 
@@ -2649,7 +2817,7 @@ func TestClientMutation_SkillSelectionSurvivesRestartBeforeClaim(t *testing.T) {
 	writeSkillMDAndReturn(t, dir, "probe", body)
 	mutationID := "skill-selection-restart-before-claim"
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	sess := newSkillSelectionDiskSession(t, dir, adapter)
 	response, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
@@ -2689,7 +2857,7 @@ func TestClientMutation_SkillSelectionRestartAfterClaimRequeuesSelection(t *test
 	writeSkillMDAndReturn(t, dir, "probe", body)
 	mutationID := "skill-selection-restart-after-claim"
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	sess := newSkillSelectionDiskSession(t, dir, adapter)
 	if _, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{

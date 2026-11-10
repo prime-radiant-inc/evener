@@ -4,7 +4,7 @@ import { memoryNavigationPersistence } from "@evener/appwire-client/testing/navi
 import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { sessionActivitySnapshot } from "../../stores/sessionActivity";
 import {
   activityClient,
@@ -15,6 +15,7 @@ import {
   activitySummary,
   activityWatch,
 } from "../../stores/sessionActivityTestUtils";
+import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
 import { deriveScope } from "../statusbar/statusScope";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { AgentsTab } from "./AgentsTab";
@@ -29,10 +30,13 @@ beforeEach(() => resetWorkspaceStoreForTests());
 
 afterEach(() => {
   cleanup();
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
   resetWorkspaceStoreForTests();
+  resetDisclosureStoreForTests();
   vi.restoreAllMocks();
 });
+const NOW = Date.parse("2026-10-05T00:00:00Z");
+
 const scope = () =>
   deriveScope(
     createNavigationStore({ persistence: memoryNavigationPersistence() }).getState(),
@@ -57,7 +61,7 @@ it("shows incomplete empty as progress then drills the exact stable delegate chi
   connectionStore.getState().connect(client);
   const root = workspaceStore.getState().openPane("session", { ref: "remote:owner" });
   const source = workspaceStore.getState().mainPane();
-  render(<AgentsTab scope={scope()} />);
+  render(<AgentsTab now={NOW} scope={scope()} />);
   expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
   expect(screen.queryByText(/No subagents/)).toBeNull();
   await waitFor(() => expect(finish).toBeTypeOf("function"));
@@ -88,7 +92,7 @@ it("opens job output using the supplied job transcript ref and raw owner", async
     page: { complete: true, issues: [] },
   }));
   connectionStore.getState().connect(client);
-  render(<JobsTab scope={scope()} />);
+  render(<JobsTab now={NOW} scope={scope()} />);
   fireEvent.click(await screen.findByRole("button", { name: /run checks/ }));
   const opened = workspaceStore.getState().panes.find((pane) => pane.type === "transcript");
   expect(opened).toMatchObject({
@@ -139,7 +143,7 @@ it("visible page-boundary demand heals a failed continuation while the actual ta
     connectionStore.getState().connect(client);
     let view: ReturnType<typeof render> | undefined;
     await act(async () => {
-      view = render(<AgentsTab scope={scope()} />);
+      view = render(<AgentsTab now={NOW} scope={scope()} />);
     });
     expect(screen.getByRole("button", { name: /first loaded/ })).toBeTruthy();
     expect(observerCount).toBe(1);
@@ -171,11 +175,86 @@ it("definitive unavailable jobs never claim empty or remain a loading promise", 
     throw new WireError("deleted", -32012, { evenerErrorInfo: "resourceNotFound" });
   });
   connectionStore.getState().connect(client);
-  render(<JobsTab scope={scope()} />);
+  render(<JobsTab now={NOW} scope={scope()} />);
   expect(await screen.findByText("Jobs unavailable for this session.")).toBeTruthy();
   expect(screen.queryByText("No jobs at this level.")).toBeNull();
   expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
   expect(screen.queryByRole("button", { name: /retry|repair/i })).toBeNull();
+});
+
+it("inactive subagents disclosure publishes its expansion state and controlled list", async () => {
+  const client = activityClient();
+  client.on("evener/thread/delegates/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    delegates: [
+      activityDelegate({
+        delegateId: "first",
+        childRef: "remote:first",
+        description: "first inactive",
+        terminal: true,
+        status: "completed",
+        lifecycle: "idle",
+      }),
+    ],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  render(<AgentsTab now={NOW} scope={scope()} />);
+  const fold = await screen.findByRole("button", { name: "Inactive subagents (1)" });
+  expect(fold.getAttribute("aria-expanded")).toBe("false");
+  fireEvent.click(fold);
+  expect(fold.getAttribute("aria-expanded")).toBe("true");
+  const controls = fold.getAttribute("aria-controls");
+  expect(controls).toBeTruthy();
+  expect(document.getElementById(controls as string)).toBeTruthy();
+});
+
+it("two activity surfaces for one session publish distinct inactive-list ids", async () => {
+  const client = activityClient();
+  client.on("evener/thread/delegates/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    delegates: [
+      activityDelegate({
+        delegateId: "first",
+        childRef: "remote:first",
+        description: "first inactive",
+        terminal: true,
+        status: "completed",
+        lifecycle: "idle",
+      }),
+    ],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  // The sidebar and an ActivityPeek render the same body for the same ref.
+  render(
+    <>
+      <section data-testid="sidebar">
+        <AgentsTab now={NOW} scope={scope()} />
+      </section>
+      <section data-testid="peek">
+        <AgentsTab now={NOW} scope={scope()} />
+      </section>
+    </>,
+  );
+  const folds = await screen.findAllByRole("button", { name: "Inactive subagents (1)" });
+  expect(folds).toHaveLength(2);
+  // The fold state is keyed by ref and therefore shared; the controlled list
+  // id must still be unique per rendered surface.
+  fireEvent.click(folds[0]!);
+  const controls = folds.map((fold) => fold.getAttribute("aria-controls"));
+  expect(controls[0]).toBeTruthy();
+  expect(controls[1]).toBeTruthy();
+  expect(controls[0]).not.toBe(controls[1]);
+  const sidebar = screen.getByTestId("sidebar");
+  const peek = screen.getByTestId("peek");
+  for (const [index, id] of controls.entries()) {
+    expect(document.querySelectorAll(`[id="${id}"]`)).toHaveLength(1);
+    const surface = index === 0 ? sidebar : peek;
+    expect(surface.contains(document.getElementById(id as string))).toBe(true);
+  }
 });
 
 it("closed inactive history does not scan, and disclosed rows page only near the visible boundary", async () => {
@@ -214,7 +293,7 @@ it("closed inactive history does not scan, and disclosed rows page only near the
   try {
     connectionStore.getState().connect(client);
     await act(async () => {
-      render(<AgentsTab scope={scope()} />);
+      render(<AgentsTab now={NOW} scope={scope()} />);
     });
     expect(observations).toBe(0);
     expect(client.calls.filter((c) => c.method === "evener/thread/delegates/list")).toHaveLength(1);
@@ -253,7 +332,7 @@ it.each([
       page: { complete: true, issues: [] },
     }));
     connectionStore.getState().connect(client);
-    render(<Body scope={scope()} />);
+    render(<Body scope={scope()} now={NOW} />);
     await screen.findByText(text);
     const method =
       resource === "delegates"
@@ -300,7 +379,7 @@ it("each positive page needs fresh visible boundary evidence instead of draining
   try {
     connectionStore.getState().connect(client);
     await act(async () => {
-      render(<JobsTab scope={scope()} />);
+      render(<JobsTab now={NOW} scope={scope()} />);
     });
     expect(client.calls.filter((c) => c.method === "evener/thread/jobs/list")).toHaveLength(1);
     await act(async () => intersections[0]?.(true));
@@ -338,7 +417,7 @@ it("a pushed delegate frame patches a loaded row with zero collection reads when
     page: { complete: true, issues: [] },
   }));
   connectionStore.getState().connect(client);
-  render(<AgentsTab scope={scope()} />);
+  render(<AgentsTab now={NOW} scope={scope()} />);
   await screen.findByRole("button", { name: /inspect/ });
   const before = delegateReads(client);
   await act(async () => {
@@ -381,7 +460,7 @@ it("a pushed delegate frame patches a loaded row with zero collection reads when
 it("a source without the preview capability keeps reading delegates on an invalidation", async () => {
   const client = activityClient();
   connectionStore.getState().connect(client);
-  render(<AgentsTab scope={scope()} />);
+  render(<AgentsTab now={NOW} scope={scope()} />);
   await screen.findByRole("button", { name: /inspect/ });
   const before = delegateReads(client);
   await act(async () => {

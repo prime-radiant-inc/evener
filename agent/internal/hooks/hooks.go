@@ -152,25 +152,13 @@ func newRunner(client promptHookClient, model string) *Runner {
 	}
 }
 
-// Summary returns the number of registered hooks per event.
-// Events with zero hooks are omitted.
-func (r *Runner) Summary() map[plugin.HookEvent]int {
-	out := make(map[plugin.HookEvent]int)
-	for event, hooks := range r.hooks {
-		if len(hooks) > 0 {
-			out[event] = len(hooks)
-		}
-	}
-	return out
-}
-
 // SupportedSummary returns, per event, the number of registered hooks that can
 // ACTUALLY run — i.e. their handler type is one runHook executes (command/prompt)
 // AND their matcher is a valid regex (MatchHooks does not skip it). Hooks with an
 // unsupported handler type or an invalid matcher are dispatch-time dead and are
 // excluded. An event without a matcher (see eventUsesMatcher) consults only its
 // handler type. Events with zero runnable hooks are omitted. This backs the AppWire
-// "active supported hooks" count; Summary (above) counts every registered hook.
+// "active supported hooks" count.
 func (r *Runner) SupportedSummary() map[plugin.HookEvent]int {
 	out := make(map[plugin.HookEvent]int)
 	for event, hooks := range r.hooks {
@@ -399,12 +387,42 @@ type parsedHookOutput struct {
 	UserFacing bool
 }
 
+// decodeHookUpdatedInput leaves ordinary envelope decoding and fallback in
+// charge. Only a successfully decoded, opted-in update leaves the default view.
+func decodeHookUpdatedInput(raw []byte, unmarshalArgs func([]byte, *map[string]any) error) ([]byte, map[string]any) {
+	if unmarshalArgs == nil {
+		return raw, nil
+	}
+	var envelope, fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return raw, nil
+	}
+	if err := json.Unmarshal(envelope["hookSpecificOutput"], &fields); err != nil {
+		return raw, nil
+	}
+	var updated map[string]any
+	if err := unmarshalArgs(fields["updatedInput"], &updated); err != nil || updated == nil {
+		return raw, nil
+	}
+	delete(fields, "updatedInput")
+	hookRaw, err := json.Marshal(fields)
+	if err != nil {
+		return raw, nil
+	}
+	envelope["hookSpecificOutput"] = hookRaw
+	ordinaryRaw, err := json.Marshal(envelope)
+	if err != nil {
+		return raw, nil
+	}
+	return ordinaryRaw, updated
+}
+
 // parseHookOutput interprets hook stdout and exit code into structured output.
 // For command hooks, JSON is parsed only when exitCode == 0; on exit 2 the
 // caller should pass the stderr content as stdout and JSON is not attempted.
 // This function is event-agnostic: blocking decisions are made by the callers
 // that consult exitBehavior(event).BlockOnExit2.
-func parseHookOutput(stdout string, exitCode int) parsedHookOutput {
+func parseHookOutput(stdout string, exitCode int, unmarshalArgs func([]byte, *map[string]any) error) parsedHookOutput {
 	result := parsedHookOutput{Continue: true, RawExitCode: exitCode}
 
 	if exitCode != 0 {
@@ -419,11 +437,15 @@ func parseHookOutput(stdout string, exitCode int) parsedHookOutput {
 	}
 
 	// Try JSON parse
+	ordinaryRaw, updated := decodeHookUpdatedInput([]byte(stdout), unmarshalArgs)
 	var parsed map[string]any
-	if err := json.Unmarshal([]byte(stdout), &parsed); err != nil {
+	if err := json.Unmarshal(ordinaryRaw, &parsed); err != nil {
 		// Plain text: treat as system message
 		result.SystemMessage = stdout
 		return result
+	}
+	if updated != nil {
+		parsed["hookSpecificOutput"].(map[string]any)["updatedInput"] = updated
 	}
 
 	// Extract standard fields
@@ -494,7 +516,7 @@ func (r *Runner) runHook(ctx context.Context, hook plugin.RegisteredHook, event 
 
 	switch hook.Type {
 	case "command":
-		hr, err = executeCommandHookWithRuntime(ctx, hook, input, r.commandHookRuntime, r.sandboxWrapper)
+		hr, err = executeCommandHook(ctx, hook, input, r.commandHookRuntime, r.sandboxWrapper)
 	case "prompt":
 		if r.client == nil {
 			return parsedHookOutput{Continue: true, SystemMessage: "prompt hook skipped: no LLM client"}
@@ -529,7 +551,7 @@ func (r *Runner) runHook(ctx context.Context, hook plugin.RegisteredHook, event 
 	if summarizesHookFailure(event) && hr.ExitCode != 0 {
 		return hookFailureWarning(event, hook, output, hr.ExitCode)
 	}
-	return parseHookOutput(output, hr.ExitCode)
+	return parseHookOutput(output, hr.ExitCode, input.UnmarshalToolArguments)
 }
 
 // maxHookFailureDetail bounds the excerpt of a failed hook's output carried on
@@ -821,11 +843,6 @@ func (r *Runner) runStopEventFor(ctx context.Context, event plugin.HookEvent, in
 func (r *Runner) RunUserPromptSubmit(ctx context.Context, input Input) RunResult {
 	outputs := r.runEvent(ctx, plugin.HookUserPromptSubmit, "", input)
 	return collectSystemMessages(plugin.HookUserPromptSubmit, outputs)
-}
-
-// RunSessionStart dispatches startup SessionStart hooks.
-func (r *Runner) RunSessionStart(ctx context.Context, input Input) RunResult {
-	return r.RunSessionStartFor(ctx, input, plugin.SessionStartKindStartup)
 }
 
 // RunSessionStartFor dispatches SessionStart hooks for a specific startup kind.

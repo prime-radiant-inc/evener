@@ -4,10 +4,12 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/fuzz/schemagen"
 )
 
@@ -60,7 +62,7 @@ func FuzzTranscriptReplayStructured(f *testing.F) {
 		if err := os.WriteFile(inPath, raw, 0o644); err != nil {
 			t.Fatalf("write input transcript: %v", err)
 		}
-		d, err := readTranscriptFull(inPath, "")
+		d, err := readTranscriptFull(context.Background(), inPath, "")
 		if err != nil {
 			return // no header / unreadable: no-panic floor proven, stop
 		}
@@ -69,9 +71,9 @@ func FuzzTranscriptReplayStructured(f *testing.F) {
 		assertResumeHistoryIdempotent(t, d.Entries)
 
 		sid := d.Header.SessionID
-		_, _ = readStrictChildTranscript(inPath, "", sid, transcriptJSONLMaxLineBytes)
-		_, _ = validateStrictChildTranscript(inPath, "", sid, transcriptJSONLMaxLineBytes)
-		_, _ = readStrictChildTranscript(inPath, "", sid+"_mismatch", transcriptJSONLMaxLineBytes)
+		_, _ = readStrictChildTranscript(inPath, "", sid, transcript.DefaultMaxLineBytes)
+		_, _ = validateStrictChildTranscript(inPath, "", sid, transcript.DefaultMaxLineBytes)
+		_, _ = readStrictChildTranscript(inPath, "", sid+"_mismatch", transcript.DefaultMaxLineBytes)
 		_, _ = readStrictChildTranscript(inPath, "", sid, 4)
 	})
 }

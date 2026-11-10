@@ -339,7 +339,7 @@ func TestLoadSessionJobGetRejectsUnsafeSessionID(t *testing.T) {
 // (finalizeJob, stampLastActivityLocked, noteJobActivity), so handing out the
 // live pointer is a data race the -race lane can flag and can yield a torn
 // snapshot. Every other live-record reader in jobs.go clones under the lock
-// (liveJobRecords, cloneJobRecord).
+// (liveJobRecords, JobRecord.Clone).
 func TestRecordForReadSnapshotsTheLiveRecord(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)

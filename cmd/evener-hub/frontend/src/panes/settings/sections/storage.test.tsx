@@ -1,27 +1,21 @@
 import { friendlyErrorMessage, type SettingsOverviewResponse, WireError } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test } from "vitest";
-import { connectionStore } from "../../../stores/connection";
+import { resetConnectionStoreForTests } from "../../../stores/connection";
 import { resetSettingsOverviewStoreForTests } from "../../../stores/settingsOverview";
+import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { statusReasons } from "./reasonTestUtils";
 import { settingsFieldHelp, settingsFieldIds, settingsFieldValue } from "./settingsFieldTestUtils";
 import { StorageSection } from "./storage";
 
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
-
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetSettingsOverviewStoreForTests();
 });
 
 test("renders State dir (from storage, not hub), Run dir (from hub), and the static hub.toml row", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   const response: SettingsOverviewResponse = {
     hub: { runDir: "/tmp/evener-run", daemonIdleTimeoutMillis: 3600000 },
     storage: { stateDir: "/home/user/.evener" },
@@ -39,7 +33,7 @@ test("renders State dir (from storage, not hub), Run dir (from hub), and the sta
 });
 
 test("Hub config renders its path without a separate value hint", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/settings/overview", () => ({ hub: {}, storage: {} }) as SettingsOverviewResponse);
 
   render(<StorageSection />);
@@ -52,7 +46,7 @@ test("Hub config renders its path without a separate value hint", async () => {
 });
 
 test("omits the Past index row entirely when pastIndex is absent (no configured past-session index)", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/settings/overview", () => ({ hub: {}, storage: {} }) as SettingsOverviewResponse);
 
   render(<StorageSection />);
@@ -62,7 +56,7 @@ test("omits the Past index row entirely when pastIndex is absent (no configured 
 });
 
 test("renders the Past index row with its size and a pluralized live session count when present", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   const response: SettingsOverviewResponse = {
     hub: {
       pastIndex: { path: "~/.evener/past.db", size: "size-from-hub", perPage: 20, count: 3 },
@@ -82,7 +76,7 @@ test("renders the Past index row with its size and a pluralized live session cou
 });
 
 test("pluralizes 'session' (not 'sessions') when the count is exactly 1", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   const response: SettingsOverviewResponse = {
     hub: {
       pastIndex: { path: "~/.evener/past.db", perPage: 20, count: 1 },
@@ -99,7 +93,7 @@ test("pluralizes 'session' (not 'sessions') when the count is exactly 1", async 
 });
 
 test("a load failure is a polite danger notice whose Retry re-requests the overview", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/settings/overview", () => {
     throw new Error("raw-overview-failure");
   });
@@ -121,7 +115,7 @@ test("a load failure is a polite danger notice whose Retry re-requests the overv
 });
 
 test("a hub-reported WireError shows that error's friendly form", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   const err = new WireError("overview index is rebuilding", -32000);
   fake.on("evener/settings/overview", () => {
     throw err;
@@ -134,7 +128,7 @@ test("a hub-reported WireError shows that error's friendly form", async () => {
 });
 
 test("preserves the wire zero default when an existing index omits its per-page counter", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/settings/overview", () => ({
     hub: { daemonIdleTimeoutMillis: 3600000, pastIndex: { path: "/fixture/past.db" } },
   }));
@@ -145,7 +139,7 @@ test("preserves the wire zero default when an existing index omits its per-page 
 });
 
 test("storage paths start folded while the browser cache stays available", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/settings/overview", () => ({
     hub: { runDir: "/fixture/run", daemonIdleTimeoutMillis: 3600000 },
     storage: { stateDir: "/fixture/state" },

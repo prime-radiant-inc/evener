@@ -49,14 +49,14 @@ func TestNextBootGenerationSurvivesACrashedWrite(t *testing.T) {
 	if generation != 2 {
 		t.Fatalf("generation after a crashed write = %d, want 2", generation)
 	}
-	if filepath.Dir(path) != filepath.Join(dir, sessionsSubdir) {
+	if filepath.Dir(path) != filepath.Join(dir, SessionsSubdir) {
 		t.Fatalf("counter %s is not beside the session's meta", path)
 	}
 }
 
 func TestNextBootGenerationRefusesACorruptCounter(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, sessionsSubdir), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, SessionsSubdir), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(BootGenerationPath(dir, "S1"), []byte("not a number"), 0o644); err != nil {
@@ -92,5 +92,22 @@ func TestNextBootGenerationStartsAboveTheFloor(t *testing.T) {
 	}
 	if generation != 7 {
 		t.Fatalf("generation = %d, want 7", generation)
+	}
+}
+
+// An empty state dir would resolve the counter path against the working
+// directory; the counter must refuse rather than write there.
+func TestNextBootGenerationRefusesEmptyDirWithoutWriting(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	if _, err := NextBootGeneration("", "S1", 0); err == nil {
+		t.Fatal("NextBootGeneration with an empty dir succeeded")
+	}
+	entries, err := os.ReadDir(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("working directory gained %d entries", len(entries))
 	}
 }

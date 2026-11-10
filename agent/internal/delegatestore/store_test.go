@@ -341,7 +341,7 @@ func TestStoreSyncFailureRollsBackWholeBatch(t *testing.T) {
 		}
 		store.ops.sync = func(file *os.File) error { return file.Sync() }
 		_, _, err = store.AppendBatch(make(State), []Event{createdEvent("dlg_alpha", "")})
-		if err == nil || !strings.Contains(err.Error(), "unusable") {
+		if !errors.Is(err, ErrStoreUnusable) {
 			t.Fatalf("AppendBatch after rollback failure = %v, want unusable latch", err)
 		}
 	})

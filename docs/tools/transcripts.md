@@ -12,7 +12,7 @@ takes filters and hands back session refs; it is never given a session to read â
 hand that to `read`. `read` always takes one ref. They replace the old `recall` tool.
 This document is the canonical design (workshopped with agent consumers for the
 simplest, easiest surface). The historical decision record is
-`docs/specs/session-transcript-tools.md`; the agent-facing prompt steer is
+`docs/superpowers/specs/2026-08-09-read-transcript-tools-design.md`; the agent-facing prompt steer is
 the transcripts guidance in `agent/prompts/system.md.tmpl`.
 
 ## The one rule worth memorizing
@@ -167,6 +167,28 @@ bounded retained output of a shell `job:<job_id>` ref, or reads an exact
 truncated-result `artifact:<id>` capability. A delegate is not a job: use the
 stable delegate's session `transcript_ref` from `delegate`, `job_status`, or
 `job_list` to read its conversation.
+
+**Manager hub projection.** With Manager enabled, `read_transcript` also accepts
+`hub:{ref,itemLimit}` for a bounded page of the selected session's turns, with
+`hub:{ref,cursor,itemLimit}` for older pages. These are the hub's typed turn
+records, not a local `.transcript.jsonl` rendering. `hub:{ref,jobId,maxBytes}`
+reads retained job output; use its returned `followUps` with `beforeBytes` to
+page backward in lifetime bytes. A job's handle always contains its canonical
+owner ref and job ID; a coincidentally named job in another source cannot be
+read through this handle. The hub rejects local-only `format`, `range`,
+`expand_turn`, `offset_bytes`, `output_match`, artifact refs and other ordinary
+arguments in the same projected call. Pages remain below the result cap and
+report their continuation; an output page never starts before its retained
+start. Ordinary local reads below retain their existing format and behavior.
+
+Manager input and approval decisions use the existing human mutation owners
+and persist `actor.kind: "manager"` and the Manager's ref on the target's
+history items. A watch notification is not an answer to a question, and its
+text is not proof of completion: inspect the worker's recorded
+`observation.terminalAccepted`, `endTurn` and `endReason` for accepted terminal
+evidence. If a local Manager watch is interrupted, read retained history to
+recover missed evidence before re-registering an ended watch. This does not
+establish remote `job_watch` support.
 
 **Parameters:**
 

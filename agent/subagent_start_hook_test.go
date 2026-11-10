@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -41,7 +43,7 @@ type subagentStartFixture struct {
 func newSubagentStartFixture(t *testing.T, specs ...subagentStartHookSpec) subagentStartFixture {
 	t.Helper()
 	return newSubagentStartFixtureWithResponder(t, func(llm.Request) llm.Response {
-		return finalResponse("child done")
+		return agenttest.FinalResponse("child done")
 	}, specs...)
 }
 
@@ -133,7 +135,7 @@ func (c *subagentStartWarnings) snapshot() []events.WarningData {
 
 // createDelegateThroughTheTool drives the `delegate` tool the model calls, not
 // the legacy spawnAgent path, and returns the tool's decoded creation result.
-func (f subagentStartFixture) createDelegateThroughTheTool(t *testing.T) stableDelegateCreateResult {
+func (f subagentStartFixture) createDelegateThroughTheTool(t *testing.T) delegateCreateResult {
 	t.Helper()
 	res := f.root.execTool(context.Background(), llm.ToolCallData{
 		ID:        "subagent-start-create",
@@ -143,7 +145,7 @@ func (f subagentStartFixture) createDelegateThroughTheTool(t *testing.T) stableD
 	if res.IsError {
 		t.Fatalf("delegate tool failed: %s", res.Output)
 	}
-	var created stableDelegateCreateResult
+	var created delegateCreateResult
 	if err := json.Unmarshal([]byte(res.Output), &created); err != nil {
 		t.Fatalf("decode delegate tool result: %v (%s)", err, res.Output)
 	}
@@ -633,7 +635,7 @@ func TestSubagentStart_ContinueFalseOnAResumedChildReportsTheStopReason(t *testi
 	)
 	marker := filepath.Join(t.TempDir(), "stop-second-launch")
 	fixture := newSubagentStartFixtureWithResponder(t, func(llm.Request) llm.Response {
-		return communicateResponse(true, firstReply)
+		return agenttest.CommunicateResponse(true, firstReply)
 	}, hookStopSpec(stopReason, marker))
 
 	created := fixture.createDelegateThroughTheTool(t)
@@ -685,5 +687,61 @@ func TestSubagentStart_ContinueFalseOnAResumedChildReportsTheStopReason(t *testi
 	}
 	if got := second.LatestOutcome.Status; got != delegatestore.OutcomeCompleted {
 		t.Errorf("durable outcome = %q, want completed", got)
+	}
+}
+
+// startOrSteerSubagentRun starts a new run on an idle child, or steers the input
+// into the run already in flight. The production paths that own steer-or-start
+// are the controller ones (delegate_send, drive); main deleted the Session
+// helper these hook tests were written against, so it lives here as the test
+// seam that starts a fixed-up second run.
+func (s *Session) startOrSteerSubagentRun(sub *subagent, input string) (bool, error) {
+	sub.mu.Lock()
+	if sub.finalizing || (sub.fatalRunGated && (sub.running || sub.driving)) {
+		sub.mu.Unlock()
+		return false, fmt.Errorf("target_busy: delegate %q is completing its current run; retry", sub.id)
+	}
+	if sub.running || sub.driving {
+		subSess := sub.sess
+		sub.mu.Unlock()
+		// A mid-drive child is in flight just like a running one: the drive turn
+		// absorbs the steered input at its tool-round boundary (spec §3, A7
+		// steer-into-drive) instead of launching a second concurrent run.
+		return false, subSess.steerKind(input, events.SteeringKindNoteHandoff)
+	}
+
+	// Agent is idle: start a new ProcessInput round. Enroll the resumed run in
+	// sendersWG under s.mu (gated on closing) so it joins the same teardown
+	// barrier as the initial spawn.
+	runCtx, runCancel := context.WithCancel(context.Background())
+	resumeTime := s.sclock().Now()
+	s.mu.Lock()
+	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
+		sub.mu.Unlock()
+		runCancel()
+		return false, errors.New("session is closed")
+	}
+	s.sendersWG.Add(1)
+	s.mu.Unlock()
+
+	sub.fatalRunGated = false
+	resetSubagentForRunLocked(sub, runCancel, resumeTime)
+	sub.mu.Unlock()
+
+	s.launchSubagentRun(runCtx, sub, runCancel, input, s.activeCausalProvenance())
+	return true, nil
+}
+
+// abortUnpersistedStableDelegateOutcome releases the delivery commit of a
+// terminal inline delegate outcome the test only inspected, so the send path's
+// durable state does not leak into the next test.
+func abortUnpersistedStableDelegateOutcome(t *testing.T, outcome delegateSendOutcome) {
+	t.Helper()
+	if outcome.commit == nil {
+		t.Fatal("terminal inline delegate outcome has no delivery commit")
+	}
+	if _, err := outcome.commit.Complete(false); err != nil {
+		t.Fatalf("abort unpersisted inline delegate outcome: %v", err)
 	}
 }

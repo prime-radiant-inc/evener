@@ -356,8 +356,9 @@ func geminiImagePart(p llm.ContentPart) (map[string]any, error) {
 				mt = llm.InferMimeTypeFromPath(path)
 			}
 		}
-		if mt == "" {
-			mt = "image/png"
+		b, mt, err = googleInlineImageBytes(b, mt)
+		if err != nil {
+			return nil, err
 		}
 		return map[string]any{
 			"inlineData": map[string]any{
@@ -378,6 +379,62 @@ func geminiImagePart(p llm.ContentPart) (map[string]any, error) {
 		}, nil
 	}
 	return nil, nil
+}
+
+// googleInlineImageMediaType returns the canonical media type Gemini accepts
+// for an inline image, or "" when v is outside that set. Gemini accepts
+// png/jpeg/webp/heic/heif inline; unlike the Anthropic and OpenAI image blocks,
+// it does not accept gif.
+func googleInlineImageMediaType(v string) string {
+	switch mt := llm.ImageBlockMediaType(v); mt {
+	case "image/png", "image/jpeg", "image/webp":
+		return mt
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "heic", "image/heic":
+		return "image/heic"
+	case "heif", "image/heif":
+		return "image/heif"
+	default:
+		return ""
+	}
+}
+
+// googleInlineImageBytes returns bytes and a media type Gemini accepts in
+// inlineData. A claimed type already in the set keeps its bytes: Gemini
+// validates them, and the local decoder cannot read every raster the wire
+// accepts. Any other type is decoded and re-encoded as PNG (BMP and TIFF reads,
+// and GIF attachments, would otherwise be rejected and fail the whole turn,
+// #4584); bytes that are not a decodable raster are refused loudly.
+func googleInlineImageBytes(data []byte, claimedMediaType string) ([]byte, string, error) {
+	return llm.NormalizeImageForWire(
+		data,
+		claimedMediaType,
+		googleInlineImageMediaType,
+		fmt.Sprintf("google inline image %q is not a decodable raster", claimedMediaType),
+	)
+}
+
+// geminiDocumentPart represents user document input without fetching or
+// rewriting it. FileName is not part of Gemini's media-part schema.
+func geminiDocumentPart(doc *llm.DocumentData) map[string]any {
+	if doc == nil {
+		return nil
+	}
+	mt := strings.TrimSpace(doc.MediaType)
+	if mt == "" {
+		mt = "application/pdf"
+	}
+	if len(doc.Data) > 0 {
+		return map[string]any{"inlineData": map[string]any{
+			"mimeType": mt,
+			"data":     base64.StdEncoding.EncodeToString(doc.Data),
+		}}
+	}
+	if u := strings.TrimSpace(doc.URL); u != "" {
+		return map[string]any{"fileData": map[string]any{"mimeType": mt, "fileUri": u}}
+	}
+	return nil
 }
 
 func toGeminiContents(model string, msgs []llm.Message, multimodalToolResults bool) (system string, contents []map[string]any, _ error) {
@@ -431,7 +488,11 @@ func toGeminiContents(model string, msgs []llm.Message, multimodalToolResults bo
 					if part != nil {
 						parts = append(parts, part)
 					}
-				case llm.ContentAudio, llm.ContentDocument:
+				case llm.ContentDocument:
+					if part := geminiDocumentPart(p.Document); part != nil {
+						parts = append(parts, part)
+					}
+				case llm.ContentAudio:
 					return "", nil, &llm.ConfigurationError{Message: fmt.Sprintf("unsupported content kind for google: %s", p.Kind)}
 				default:
 					// ignore
@@ -479,7 +540,10 @@ func toGeminiContents(model string, msgs []llm.Message, multimodalToolResults bo
 						part["thoughtSignature"] = sig
 					}
 					parts = append(parts, part)
-				case llm.ContentAudio, llm.ContentDocument:
+				case llm.ContentDocument:
+					// Document input is user-only, not generated-document replay.
+					return "", nil, &llm.ConfigurationError{Message: "unsupported assistant document content for google"}
+				case llm.ContentAudio:
 					return "", nil, &llm.ConfigurationError{Message: fmt.Sprintf("unsupported content kind for google: %s", p.Kind)}
 				default:
 					// ignore
@@ -521,22 +585,28 @@ func toGeminiContents(model string, msgs []llm.Message, multimodalToolResults bo
 					"name":     name,
 					"response": respObj,
 				}
+				// Documents take the describing side-channel as user-message
+				// documents. Sending them here too would duplicate their delivery
+				// (llm.DeliversToolResultMedia deliberately remains image-only).
 				if len(p.ToolResult.ImageData) > 0 {
-					if !multimodalToolResults {
-						return "", nil, &llm.ConfigurationError{Message: fmt.Sprintf("google model %q does not support tool-result images: multimodal function responses require a Gemini 3 series model", model)}
+					mediaType := strings.ToLower(strings.TrimSpace(p.ToolResult.ImageMediaType))
+					if mediaType == "" || strings.HasPrefix(mediaType, "image/") {
+						if !multimodalToolResults {
+							return "", nil, &llm.ConfigurationError{Message: fmt.Sprintf("google model %q does not support tool-result images: multimodal function responses require a Gemini 3 series model", model)}
+						}
+						imageBytes, imageType, err := googleInlineImageBytes(p.ToolResult.ImageData, p.ToolResult.ImageMediaType)
+						if err != nil {
+							return "", nil, err
+						}
+						// Media belongs inside the functionResponse it came from; a sibling
+						// content part would leave the image unassociated with the tool call.
+						funcResp["parts"] = []map[string]any{{
+							"inlineData": map[string]any{
+								"mimeType": imageType,
+								"data":     base64.StdEncoding.EncodeToString(imageBytes),
+							},
+						}}
 					}
-					mt := p.ToolResult.ImageMediaType
-					if mt == "" {
-						mt = "image/png"
-					}
-					// Media belongs inside the functionResponse it came from; a sibling
-					// content part would leave the image unassociated with the tool call.
-					funcResp["parts"] = []map[string]any{{
-						"inlineData": map[string]any{
-							"mimeType": mt,
-							"data":     base64.StdEncoding.EncodeToString(p.ToolResult.ImageData),
-						},
-					}}
 				}
 				parts = append(parts, map[string]any{"functionResponse": funcResp})
 			}

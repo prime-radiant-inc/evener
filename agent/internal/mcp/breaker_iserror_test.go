@@ -114,7 +114,7 @@ func TestMCPBreaker_IdenticalBodiesNudgeWithoutIsError(t *testing.T) {
 	// The nudge counts the actual streak (Jesse ruling 2026-08-07), so each
 	// call expects its own number.
 	nudgeAt := func(count int) string {
-		return fmt.Sprintf("You have now made this same call and received the identical result %d times in a row. Repeating it will not change the answer — use the result you already have, or change your approach.", count)
+		return fmt.Sprintf("You have now made this same call and received the identical result %d times in a row. Repeating it will not change the answer — use the result you already have, or change your approach. If you are repeating it to wait for something, end your turn with your result tool: the completion wakes you, and to wake on a condition you set a job_watch with output_match.", count)
 	}
 
 	first := reg.ExecuteCall(ctx, env, call)

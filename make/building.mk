@@ -1,4 +1,4 @@
-.PHONY: build build-runtime build-go build-hub web-preflight build-web build-dev build-all build-linux build-llmcall dist install install-home install-system test-install
+.PHONY: build build-runtime build-go build-hub web-preflight build-web build-dev build-all build-linux build-llmcall dist install install-home install-system 
 
 # GitDirty is content-true: status compares content, not index stats,
 # because the build path byte-identically rewrites tracked files —
@@ -154,12 +154,6 @@ install-home: install
 install-system: PREFIX := /usr/local
 ## Install into the system prefix (/usr/local).
 install-system: install
-
-## Integration-test the install path end to end: copy the tracked working
-## tree into a fixture, run the install target with a synthetic HOME, and
-## verify the installed binaries and symlinks. Skipped under -short.
-test-install:
-	go test -count=1 -run '^TestInstallHomeGeneratedHome$$' .
 
 # build-go compiles every non-fuzz Go workspace module. Keep it separate from
 # build: the runtime binary owns the embedded frontend, while this target

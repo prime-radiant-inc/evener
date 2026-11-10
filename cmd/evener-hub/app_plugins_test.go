@@ -123,6 +123,31 @@ func TestPlugins_Marketplace_AddListRemove(t *testing.T) {
 	}
 }
 
+// The add form must not toast success on an overwrite: a second add whose
+// catalog name is already registered is the caller's Conflict, and the first
+// registration stays in place (#1047).
+func TestPlugins_Marketplace_AddRefusesATakenName(t *testing.T) {
+	ctl := newTestPluginsController(t)
+	first := t.TempDir()
+	writeTestMarketplace(t, first)
+	addTestMarketplace(t, ctl, first)
+
+	second := t.TempDir()
+	writeTestMarketplace(t, second)
+	_, err := ctl.AddMarketplace(context.Background(), appwire.MarketplaceAddParams{
+		Source: appwire.MarketplaceSourceInput{Kind: "directory", Path: second},
+	})
+	requireWireError(t, err, appwire.CodeConflict)
+
+	list, err := ctl.ListMarketplaces(context.Background())
+	if err != nil {
+		t.Fatalf("ListMarketplaces: %v", err)
+	}
+	if len(list.Marketplaces) != 1 || list.Marketplaces[0].Source.Path != first {
+		t.Fatalf("marketplaces after refused add = %+v, want only the first directory", list.Marketplaces)
+	}
+}
+
 func TestPlugins_Marketplace_AddInvalidKind_Errors(t *testing.T) {
 	ctl := newTestPluginsController(t)
 	_, err := ctl.AddMarketplace(context.Background(), appwire.MarketplaceAddParams{
@@ -131,6 +156,31 @@ func TestPlugins_Marketplace_AddInvalidKind_Errors(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error for unknown source kind, got nil")
+	}
+}
+
+func TestPlugins_Marketplace_AddDirectoryWithPin_Errors(t *testing.T) {
+	ctl := newTestPluginsController(t)
+	dir := t.TempDir()
+	writeTestMarketplace(t, dir)
+	_, err := ctl.AddMarketplace(context.Background(), appwire.MarketplaceAddParams{
+		Name:   "pinned-dir",
+		Source: appwire.MarketplaceSourceInput{Kind: "directory", Path: dir, Ref: "main"},
+	})
+	wire, ok := errors.AsType[appwire.WireError](err)
+	if !ok || wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("AddMarketplace with a pinned directory error = %v, want InvalidParams", err)
+	}
+}
+
+func TestPlugins_Marketplace_AddQualifiedRef_Errors(t *testing.T) {
+	ctl := newTestPluginsController(t)
+	_, err := ctl.AddMarketplace(context.Background(), appwire.MarketplaceAddParams{
+		Source: appwire.MarketplaceSourceInput{Kind: "url", URL: "https://example.invalid/x.git", Ref: "refs/heads/main"},
+	})
+	wire, ok := errors.AsType[appwire.WireError](err)
+	if !ok || wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("AddMarketplace with a qualified ref error = %v, want InvalidParams", err)
 	}
 }
 
@@ -452,10 +502,7 @@ func TestPlugins_Marketplace_EditRefusalsAreWireErrors(t *testing.T) {
 	}
 
 	_, err := ctl.EditMarketplace(context.Background(), appwire.MarketplaceEditParams{Name: "acme", NewName: "beta"})
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
-		t.Fatalf("rename onto a taken name = %v, want a Conflict wire error", err)
-	}
+	wire := requireWireError(t, err, appwire.CodeConflict)
 	_, err = ctl.EditMarketplace(context.Background(), appwire.MarketplaceEditParams{Name: "nope", NewName: "x"})
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
 		t.Fatalf("unknown marketplace = %v, want an InvalidParams wire error", err)
@@ -486,6 +533,14 @@ func TestPlugins_Marketplace_EditRefusalsAreWireErrors(t *testing.T) {
 	})
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
 		t.Fatalf("a source in the store's scratch directory = %v, want an InvalidParams wire error", err)
+	}
+	_, err = ctl.EditMarketplace(context.Background(), appwire.MarketplaceEditParams{
+		Name:   "acme",
+		Source: &appwire.MarketplaceSourceInput{Kind: "url", URL: "https://example.invalid/x.git", Ref: "refs/heads/main"},
+	})
+	var qualifiedWire appwire.WireError
+	if !errors.As(err, &qualifiedWire) || qualifiedWire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("a qualified source ref = %v, want an InvalidParams wire error", err)
 	}
 	// A clone a removed marketplace left behind still occupies gamma, so that
 	// name is taken on disk though no marketplace records it.

@@ -4,6 +4,8 @@ import (
 	"errors"
 	"path/filepath"
 	"slices"
+
+	"primeradiant.com/evener/identifier"
 )
 
 // TestingT is the subset of *testing.T the contract harness needs. Depending on
@@ -56,7 +58,7 @@ type ContractCase struct {
 // tier. It is data-only (no resolver call) so downstream backends can import the
 // cases directly.
 func ContractCases() []ContractCase {
-	const home = "/home/contract"
+	const home = "/fixture-home/contract"
 	bwrap := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
 	bwrapNoOverlay := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: false}
 	bare := HostFacts{OS: "linux", Home: home}
@@ -276,7 +278,7 @@ func assertResolution(t TestingT, tc ContractCase, rp ResolvedPolicy, cwd, home 
 		// the worktree (the model browses only the worktree, never "/" or a parent).
 		// An exact-root check would miss a resolver returning ReadRoots ["/"].
 		for _, r := range rp.FileTool.ReadRoots {
-			if r != cwd && pathUnder(cwd, r) {
+			if r != cwd && identifier.PathUnder(cwd, r) {
 				t.Errorf("case %s: restricted FileTool.ReadRoots contains over-broad parent %q of worktree %q: %v", tc.Name, r, cwd, rp.FileTool.ReadRoots)
 			}
 		}
@@ -296,7 +298,7 @@ func assertResolution(t TestingT, tc ContractCase, rp ResolvedPolicy, cwd, home 
 // grant (e.g. WriteRoots ["/"]) is detected rather than passing unnoticed.
 func rootGrants(roots []string, target string) bool {
 	for _, r := range roots {
-		if r == target || pathUnder(target, r) {
+		if r == target || identifier.PathUnder(target, r) {
 			return true
 		}
 	}
@@ -324,7 +326,7 @@ type ReRootCase struct {
 // tier) cell, so a backend's re-root path is pinned to the same re-anchoring
 // semantics M4 established. Data-only (no ReRoot call).
 func ReRootCases() []ReRootCase {
-	const home = "/home/contract"
+	const home = "/fixture-home/contract"
 	bwrap := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
 	seatbelt := HostFacts{OS: "darwin", Home: "/Users/contract", SandboxExecPath: "/usr/bin/sandbox-exec"}
 	var cases []ReRootCase
@@ -361,7 +363,7 @@ func assertReRootWith(t TestingT, cases []ReRootCase, materialize contractReRoot
 	for _, tc := range cases {
 		host := tc.Host
 		if host.Home == "" {
-			host.Home = "/home/contract"
+			host.Home = "/fixture-home/contract"
 		}
 		net := tc.Net
 		rp, err := Resolve(SandboxPolicy{Mode: tc.Mode, Network: &net}, host, laneA)
@@ -445,15 +447,15 @@ func materializeReRootLanes(t TestingT) (main, laneA, laneB string) {
 
 func materializeReRootLanesWith(t TestingT, run contractGitRunner) (main, laneA, laneB string) {
 	t.Helper()
-	main = resolveCleanPath(t.TempDir())
+	main = identifier.ResolveClean(t.TempDir())
 	run(t, main, "init", "-q")
 	run(t, main, "commit", "-q", "--allow-empty", "-m", "init")
 	laneA = main + "-a"
 	laneB = main + "-b"
 	run(t, main, "worktree", "add", "-q", laneA)
 	run(t, main, "worktree", "add", "-q", laneB)
-	laneA = resolveCleanPath(laneA)
-	laneB = resolveCleanPath(laneB)
+	laneA = identifier.ResolveClean(laneA)
+	laneB = identifier.ResolveClean(laneB)
 	return main, laneA, laneB
 }
 
@@ -479,20 +481,20 @@ func materializeWorkspaceWith(t TestingT, kind WorkspaceKind, run contractGitRun
 	t.Helper()
 	switch kind {
 	case NonGit:
-		return resolveCleanPath(t.TempDir())
+		return identifier.ResolveClean(t.TempDir())
 	case MainCheckout:
-		root := resolveCleanPath(t.TempDir())
+		root := identifier.ResolveClean(t.TempDir())
 		run(t, root, "init", "-q")
 		return root
 	case LinkedWorktree:
-		main := resolveCleanPath(t.TempDir())
+		main := identifier.ResolveClean(t.TempDir())
 		run(t, main, "init", "-q")
 		run(t, main, "commit", "-q", "--allow-empty", "-m", "init")
 		// A sibling path derived from the unique temp `main`, so repeated
 		// LinkedWorktree materializations in one run never collide.
 		wt := main + "-wt"
 		run(t, main, "worktree", "add", "-q", wt)
-		return resolveCleanPath(wt)
+		return identifier.ResolveClean(wt)
 	default:
 		t.Fatalf("MaterializeWorkspace: unsupported kind %v", kind)
 		return ""

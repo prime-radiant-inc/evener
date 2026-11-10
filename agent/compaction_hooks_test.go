@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/execsupport/shellquote"
@@ -30,7 +31,7 @@ type compactionHookSession struct {
 
 // doneResponder is the one text reply this fixture's scripted model gives every
 // round, named once so the fixture's repeated steps read as deliberate.
-func doneResponder(llm.Request) llm.Response { return finalResponse("done") }
+func doneResponder(llm.Request) llm.Response { return agenttest.FinalResponse("done") }
 
 // newCompactionHookSession builds the fixture around strategy, which decides
 // whether a request-time fold reports a real compaction. A capture file that the
@@ -174,7 +175,7 @@ func TestPreCompact_CarriesTriggerAndInstructions(t *testing.T) {
 
 	const instructions = "condense the API notes"
 	steered := newCompactionHookSession(t, compactionEventStrategy{emitCompaction: true})
-	if ok, refusal := steered.sess.foldWithForceCompact(context.Background(), instructions, nil, triggerAuto); !ok {
+	if ok, refusal := steered.sess.foldWithForceCompact(context.Background(), instructions, nil, triggerAuto, false); !ok {
 		t.Fatalf("fold with instructions lost publication: %v", refusal)
 	}
 	pre = readCompactionHookInputs(t, steered.pre)
@@ -191,7 +192,7 @@ func TestPreCompact_CarriesTriggerAndInstructions(t *testing.T) {
 	// Whitespace alone is absence, not an instruction: Claude's null means the
 	// user passed nothing.
 	blank := newCompactionHookSession(t, compactionEventStrategy{emitCompaction: true})
-	if ok, refusal := blank.sess.foldWithForceCompact(context.Background(), "   ", nil, triggerAuto); !ok {
+	if ok, refusal := blank.sess.foldWithForceCompact(context.Background(), "   ", nil, triggerAuto, false); !ok {
 		t.Fatalf("fold with whitespace instructions lost publication: %v", refusal)
 	}
 	pre = readCompactionHookInputs(t, blank.pre)

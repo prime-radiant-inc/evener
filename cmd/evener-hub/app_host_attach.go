@@ -264,6 +264,7 @@ func classifyHostAttachError(sources *appsource.Registry, host string, err error
 func hostAttachWireError(err error) error {
 	switch {
 	case errors.Is(err, sshconn.ErrProtocolIncompatible),
+		errors.Is(err, sshconn.ErrHostProtocolNewer),
 		errors.Is(err, sshconn.ErrUnsupportedHost),
 		errors.Is(err, sshconn.ErrLaunchContract),
 		errors.Is(err, sshconn.ErrPreflightDecode),

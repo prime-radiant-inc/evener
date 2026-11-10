@@ -99,14 +99,9 @@ func runSecurePathEdgeContractProgram(t *testing.T, program []byte) securePathEd
 	defer s.close()
 	trace := securePathEdgeTrace{}
 
-	// The audit sink receives only redacted paths. These calls drive all typed
-	// denial reasons, including the less common root-target and escape cases.
-	originalSink := auditSink
-	defer func() { auditSink = originalSink }()
-	auditSink = nil
-	auditDenial(policy.Mode, "read", "relative", denyReasonOutsideRead)
-	var records []AuditRecord
-	auditSink = func(record AuditRecord) { records = append(records, record) }
+	// Redacted() yields only audit-safe paths, from the single rule in
+	// sandbox.DeniedError. These calls drive all typed denial reasons, including
+	// the less common root-target and escape cases.
 	denialCases := []struct {
 		reason string
 		path   string
@@ -117,7 +112,7 @@ func runSecurePathEdgeContractProgram(t *testing.T, program []byte) securePathEd
 		{denyReasonOutsideWrite, "relative.txt", sandbox.DenialOutsideWriteRoots, "relative.txt"},
 		{denyReasonWriteDenied, filepath.Join(base, "readonly.txt"), sandbox.DenialWritesDisabled, "readonly.txt"},
 		{denyReasonMasked, filepath.Join(masked, "secret.txt"), sandbox.DenialMasked, "<denied>"},
-		{denyReasonProtected, protected, sandbox.DenialGitProtected, "<denied>"},
+		{denyReasonProtected, protected, sandbox.DenialGitProtected, "config"},
 		{denyReasonSymlink, filepath.Join(worktree, "link"), sandbox.DenialSymlink, "link"},
 		{denyReasonEscape, filepath.Join(worktree, "escape"), sandbox.DenialEscape, "escape"},
 		{denyReasonRootTarget, worktree, sandbox.DenialRootTarget, "worktree"},
@@ -132,18 +127,17 @@ func runSecurePathEdgeContractProgram(t *testing.T, program []byte) securePathEd
 			t.Fatalf("masked denial was not sensitive: %+v", denied)
 		}
 		trace.Denials = append(trace.Denials, denied.ReasonKind)
-	}
-	if len(records) != len(denialCases) {
-		t.Fatalf("audit records=%d, want %d", len(records), len(denialCases))
-	}
-	for i, tc := range denialCases {
-		if records[i].Path != tc.want || records[i].Reason != tc.reason || records[i].Tool != "edge" {
-			t.Fatalf("audit record %d=%+v, want redacted path %q", i, records[i], tc.want)
+		redacted := denied.Redacted()
+		if redacted != tc.want {
+			t.Fatalf("denial %q Redacted()=%q, want %q", tc.reason, redacted, tc.want)
 		}
-		trace.Redacted = append(trace.Redacted, records[i].Path)
-	}
-	if got := redactAuditPath("", denyReasonOutsideRead); got != "" {
-		t.Fatalf("empty audit path = %q", got)
+		if denied.Tool != "edge" {
+			t.Fatalf("denial %q tool=%q, want edge", tc.reason, denied.Tool)
+		}
+		// Reason is human-facing prose (deny() appends an immutable-policy clause,
+		// and a symlink denial may append a diagnostic), so it is never asserted
+		// here: a presentation-only edit must not turn the fuzz harness red.
+		trace.Redacted = append(trace.Redacted, redacted)
 	}
 
 	// Resolver error mapping must reveal a safe typed denial, never raw path-walk
@@ -403,9 +397,6 @@ func runSecurePathEdgeContractProgram(t *testing.T, program []byte) securePathEd
 	if rel, ok := relUnderRealAncestor(aliasRoot, realRoot); !ok || rel != "." {
 		t.Fatalf("exact ancestor alias relation = (%q,%t), want (.,true)", rel, ok)
 	}
-	if !pathUnder(filepath.Join(worktree, "inside"), worktree) || pathUnder(filepath.Join(base, "outside"), worktree) || !pathUnder(worktree, worktree) {
-		t.Fatal("pathUnder containment contract failed")
-	}
 	if dir, leaf := splitLeaf("nested/file.txt"); dir != "nested" || leaf != "file.txt" {
 		t.Fatalf("splitLeaf = (%q,%q)", dir, leaf)
 	}
@@ -414,9 +405,6 @@ func runSecurePathEdgeContractProgram(t *testing.T, program []byte) securePathEd
 	}
 	if _, _, ok := containingRoot([]string{"relative/root"}, filepath.Join(base, "absolute")); ok {
 		t.Fatal("mixed relative/absolute roots unexpectedly matched")
-	}
-	if pathUnder(filepath.Join(base, "absolute"), "relative/root") {
-		t.Fatal("mixed relative/absolute pathUnder unexpectedly matched")
 	}
 	if _, ok := relUnderRealAncestor(filepath.Join(base, "missing-real-root"), worktree); ok {
 		t.Fatal("missing real ancestor unexpectedly matched")

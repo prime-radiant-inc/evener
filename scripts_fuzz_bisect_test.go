@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/gittest"
 )
 
 // TestFuzzBisectFindsTheIntroducingCommit is the integration contract for
@@ -26,9 +28,9 @@ func TestFuzzBisectFindsTheIntroducingCommit(t *testing.T) {
 	requireFuzzScriptTools(t)
 
 	repo := t.TempDir()
-	runGit(t, repo, "init", "-q")
-	runGit(t, repo, "config", "user.email", "fuzzbisect-test@example.com")
-	runGit(t, repo, "config", "user.name", "fuzzbisect-test")
+	gittest.Run(t, repo, "init", "-q")
+	gittest.Run(t, repo, "config", "user.email", "fuzzbisect-test@example.com")
+	gittest.Run(t, repo, "config", "user.name", "fuzzbisect-test")
 
 	writeAuditScriptFixture(t, filepath.Join(repo, "go.mod"), "module example.com/bisecttest\n\ngo 1.25.0\n")
 	docGo := "package bisecttest\n"
@@ -62,8 +64,8 @@ func FuzzBoom(f *testing.F) {
 	writeTarget("_ = b")
 	writeAuditScriptFixture(t, filepath.Join(repo, "testdata", "fuzz", "FuzzBoom", "sibling_tripwire"),
 		"go test fuzz v1\n[]byte(\"tripwire\")\n")
-	runGit(t, repo, "add", "-A")
-	runGit(t, repo, "commit", "-q", "-m", "base: harmless fuzz target + tripwire sibling")
+	gittest.Run(t, repo, "add", "-A")
+	gittest.Run(t, repo, "commit", "-q", "-m", "base: harmless fuzz target + tripwire sibling")
 	good := gitOutput(t, repo, "rev-parse", "HEAD")
 
 	// The crash message deliberately contains "unknown" -- an old, over-broad
@@ -73,20 +75,20 @@ func FuzzBoom(f *testing.F) {
 	// the bracket-confirmation step misjudges the bad end -- a real
 	// regression this guards.
 	writeTarget(`if string(b) == "boom" { panic("unknown message type: boom") }`)
-	runGit(t, repo, "add", "-A")
-	runGit(t, repo, "commit", "-q", "-m", "introduce the boom crash")
+	gittest.Run(t, repo, "add", "-A")
+	gittest.Run(t, repo, "commit", "-q", "-m", "introduce the boom crash")
 	culprit := gitOutput(t, repo, "rev-parse", "HEAD")
 
 	// A couple of later, innocent commits so the bad end is not the culprit itself.
 	docGo += "// later\n"
 	writeAuditScriptFixture(t, filepath.Join(repo, "doc.go"), docGo)
-	runGit(t, repo, "add", "-A")
-	runGit(t, repo, "commit", "-q", "-m", "later: unrelated change")
+	gittest.Run(t, repo, "add", "-A")
+	gittest.Run(t, repo, "commit", "-q", "-m", "later: unrelated change")
 
 	docGo += "// later2\n"
 	writeAuditScriptFixture(t, filepath.Join(repo, "doc.go"), docGo)
-	runGit(t, repo, "add", "-A")
-	runGit(t, repo, "commit", "-q", "-m", "later2: unrelated change")
+	gittest.Run(t, repo, "add", "-A")
+	gittest.Run(t, repo, "commit", "-q", "-m", "later2: unrelated change")
 
 	// The crasher corpus file (the boom input), in Go's fuzz format.
 	crasherDir := t.TempDir()

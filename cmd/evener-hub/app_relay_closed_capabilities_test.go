@@ -18,7 +18,7 @@ import (
 // A daemon stamps every status frame with the action set that goes with the
 // status it announces — except its own close, which it cannot describe: what a
 // thread can still be asked to do once its daemon is gone is the hub's answer,
-// not the corpse's (server/appwire_runtime.go's stampCapabilitiesOnStatusChange
+// not the corpse's (server/appwire_status_stamps.go's stampCapabilitiesOnStatusChange
 // and kata 06t8). This is the hub giving that answer on the way past.
 func TestRelayedCloseFrameCarriesTheHubsCapabilitiesForTheEndedThread(t *testing.T) {
 	thread := appwire.Thread{
@@ -282,18 +282,14 @@ func TestHubRelayRelayKeyImageMetadata(t *testing.T) {
 	}
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	appServer := newHubAppServer(hubcore.WebConfig{
-		HubStateRoot: t.TempDir(),
-		StateDir:     t.TempDir(),
-		Past:         hubcore.NewPastIndex(""),
-	}, sources)
+	appServer := newHubAppServer(testWebConfig(t, hubcore.WebConfig{
+		StateDir: t.TempDir(),
+	}), sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
-	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("initialize client: %v", err)
-	}
+	mustInitializeHubClient(t, client)
 	for _, ref := range []string{rootRef, childRef, missingRef} {
 		if _, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: ref, Subscribe: true}); err != nil {
 			t.Fatalf("subscribe client to %s: %v", ref, err)
@@ -365,11 +361,9 @@ func relayedNotificationClient(
 	}
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	cfg := hubcore.WebConfig{
-		HubStateRoot: t.TempDir(),
-		StateDir:     t.TempDir(),
-		Past:         hubcore.NewPastIndex(""),
-	}
+	cfg := testWebConfig(t, hubcore.WebConfig{
+		StateDir: t.TempDir(),
+	})
 	for _, configureConfig := range configure {
 		configureConfig(&cfg)
 	}
@@ -378,9 +372,7 @@ func relayedNotificationClient(
 	t.Cleanup(hub.Close)
 	client := dialHubRPC(t, hub)
 	t.Cleanup(func() { _ = client.Close() })
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	mustInitializeHubClient(t, client)
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
 		Ref:       thread.Evener.Ref,
 		Subscribe: true,

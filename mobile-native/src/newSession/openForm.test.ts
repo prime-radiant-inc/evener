@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { type ConversationClientLike, createNewSessionService } from "../../../mobile/src/services/newSession";
+import { type ConversationClientLike, createNewSessionService } from "../conversation/services/newSession";
 import type { CreationDraft } from "../creationDraftRepository";
 import { createNewSessionStore } from "../newSession";
 import type { LaunchSetup } from "./launchSetup";

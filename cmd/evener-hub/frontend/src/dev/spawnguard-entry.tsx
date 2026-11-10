@@ -507,6 +507,9 @@ async function directoryElement<T extends HTMLElement>(selector: string): Promis
 // Exercise the production picker with a long path and enough children to
 // scroll. Geometry must keep the confirmation visible even with a keyboard.
 async function exerciseDirectoryPicker() {
+  // Path reads go through the launch-config store, which speaks through the
+  // connected client, as it does once the shell has connected.
+  connectionStore.getState().connect(fake);
   const mobile = window.innerWidth <= 899;
   const trigger = await directoryElement<HTMLButtonElement>(
     mobile ? '[data-label="Working directory"] button' : "#spawn-cwd",
@@ -667,17 +670,28 @@ async function exerciseDirectoryField() {
 
 window.exerciseDirectoryField = exerciseDirectoryField;
 
-async function onboardingButton(name: string): Promise<HTMLButtonElement> {
+async function onboardingButton(name: string, { last = false } = {}): Promise<HTMLButtonElement> {
   const deadline = performance.now() + 10_000;
   for (;;) {
-    const button = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
+    const matches = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).filter(
       (candidate) =>
         (candidate.getAttribute("aria-label") ?? candidate.textContent?.trim()) === name &&
         isElementVisible(candidate) &&
         !candidate.disabled,
     );
+    const button = last ? matches.at(-1) : matches[0];
     if (button) return button;
     if (performance.now() > deadline) throw new Error(`Onboarding did not expose ${name}`);
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  }
+}
+
+async function onboardingDialogClosed(): Promise<void> {
+  const deadline = performance.now() + 10_000;
+  for (;;) {
+    const dialog = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"]')).find(isElementVisible);
+    if (!dialog) return;
+    if (performance.now() > deadline) throw new Error("Provider setup dialog did not close automatically");
     await new Promise((resolve) => requestAnimationFrame(resolve));
   }
 }
@@ -693,14 +707,16 @@ async function exerciseProviderOnboarding(): Promise<string[]> {
   const key = await directoryElement<HTMLInputElement>("#provider-credential");
   if (key.type !== "password") failures.push("credential is not masked");
   const advanced = Array.from(document.querySelectorAll("details")).find(
-    (element) => element.querySelector("summary")?.textContent === "Advanced settings",
+    (element) => element.querySelector("summary")?.textContent === "All connection settings",
   );
   if (!advanced || advanced.open) failures.push("advanced settings not collapsed");
-  (await onboardingButton("Save and check")).click();
+  (await onboardingButton("Save and test")).click();
   await directoryElement("#provider-credential-error");
   if (document.activeElement !== key) failures.push("missing-key error did not focus the key");
   failures.push(...scanHorizontalOverflow());
-  (await onboardingButton("Cancel")).click();
+  // Two controls are named Cancel while the key row is open: the row's edit
+  // cancel and the dialog footer's. The footer's is LAST in the dialog.
+  (await onboardingButton("Cancel", { last: true })).click();
   (await onboardingButton("Connect provider")).click();
   (await onboardingButton("OpenAI")).click();
   const freshKey = await directoryElement<HTMLInputElement>("#provider-credential");
@@ -710,11 +726,20 @@ async function exerciseProviderOnboarding(): Promise<string[]> {
   setter.call(freshKey, "fixture-not-a-real-key");
   freshKey.dispatchEvent(new Event("input", { bubbles: true }));
   await new Promise((resolve) => requestAnimationFrame(resolve));
-  (await onboardingButton("Save and check")).click();
-  const continuation = await onboardingButton("Choose model");
+  (await onboardingButton("Save and test")).click();
+  // A successful check closes the guided dialog and returns to the preserved
+  // draft on its own: there is no success continuation, and it must not force
+  // the model picker open. The model choice below is the deliberate regular-UI
+  // interaction, not a required handoff.
+  await onboardingDialogClosed();
+  if (prompt.textContent !== "onboarding-draft") failures.push("completion lost the prompt draft");
+  const forcedPicker = Array.from(document.querySelectorAll<HTMLElement>('[role="listbox"][aria-label="Model"]')).some(
+    isElementVisible,
+  );
+  if (forcedPicker) failures.push("completion forced the model picker open");
   if (fake.calls.some((call) => call.method === "thread/start")) failures.push("save started a session");
   failures.push(...scanHorizontalOverflow());
-  continuation.click();
+  (await directoryElement<HTMLButtonElement>('[data-testid="spawn-model-trigger"]')).click();
   const deadline = performance.now() + 10_000;
   let option: HTMLElement | undefined;
   while (!option) {
@@ -725,7 +750,7 @@ async function exerciseProviderOnboarding(): Promise<string[]> {
     if (!option) await new Promise((resolve) => requestAnimationFrame(resolve));
   }
   failures.push(...scanHorizontalOverflow());
-  if (fake.calls.some((call) => call.method === "thread/start")) failures.push("continuation started a session");
+  if (fake.calls.some((call) => call.method === "thread/start")) failures.push("model selection started a session");
   option.click();
   (await onboardingButton("Start")).click();
   while (!fake.calls.some((call) => call.method === "thread/start")) {

@@ -139,6 +139,15 @@ func (m *Manager) stampRefreshed(mk Marketplaces, name string, ref MarketplaceRe
 	return nil
 }
 
+// refuseDirectoryPin rejects a ref or sha on a directory source, which is read
+// in place and has no remote to check one out from.
+func refuseDirectoryPin(src Source) error {
+	if !src.Kind.HasRemote() && (src.Ref != "" || src.Sha != "") {
+		return ErrMarketplaceSourcePinned
+	}
+	return nil
+}
+
 // fetchMarketplaceContainer clones/references src into destDir and returns the
 // directory that contains .claude-plugin/marketplace.json.
 func (m *Manager) fetchMarketplaceContainer(ctx context.Context, src Source, destDir string) (string, error) {
@@ -207,10 +216,27 @@ func (m *Manager) ensureFetched(ctx context.Context, name string) (MarketplaceRe
 // AddMarketplace fetches src, reads its marketplace.json for the name (unless
 // name is given), and records it. Returns the stored ref.
 //
-// There is no refusal for an already-registered name, so calling it again with
-// the same name and a different source re-sources that marketplace in place; a
-// failed save leaves the previously recorded clone as it was.
+// A name that is already registered is refused with ErrMarketplaceExists:
+// before the fetch when name is explicit, and before the clone is installed
+// when the catalog supplies it. ReplaceMarketplace is the explicit re-source
+// path.
 func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (MarketplaceRef, error) {
+	return m.addMarketplace(ctx, name, src, false)
+}
+
+// ReplaceMarketplace is AddMarketplace with an explicit request to re-source
+// an already-registered name. The old clone is renamed aside before the fresh
+// one lands and restored when the save fails, exactly as AddMarketplace's
+// replacement path always did; callers must ask for the replacement on
+// purpose.
+func (m *Manager) ReplaceMarketplace(ctx context.Context, name string, src Source) (MarketplaceRef, error) {
+	return m.addMarketplace(ctx, name, src, true)
+}
+
+func (m *Manager) addMarketplace(ctx context.Context, name string, src Source, replace bool) (MarketplaceRef, error) {
+	if err := refuseDirectoryPin(src); err != nil {
+		return MarketplaceRef{}, err
+	}
 	release, err := m.lockStore(ctx, marketplaceAcquireLock, 30*time.Second)
 	if err != nil {
 		return MarketplaceRef{}, err
@@ -233,6 +259,13 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 	mk, err := m.loadMarketplaces()
 	if err != nil {
 		return MarketplaceRef{}, err
+	}
+	if !replace && name != "" {
+		// Only an explicit name is known before the fetch; a catalog-supplied
+		// one is checked again below, after the fetch resolves it.
+		if err := refuseRegisteredName(mk, name); err != nil {
+			return MarketplaceRef{}, err
+		}
 	}
 
 	// Fetch into a staging dir first so a bad marketplace never half-registers.
@@ -259,11 +292,27 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 		_ = marketplaceRemoveAll(staging)
 		return MarketplaceRef{}, err
 	}
+	if !replace {
+		if err := refuseRegisteredName(mk, name); err != nil {
+			_ = marketplaceRemoveAll(staging)
+			return MarketplaceRef{}, err
+		}
+	}
+	oldRef, hadOld := mk[name]
 
 	installLoc := src.Path // directory source: in place
 	aside := ""
 	if src.Kind != SourceDirectory {
 		installLoc = m.marketplaceDir(name)
+		// The swap replaces installLoc and then deletes what was there. If
+		// another record still records a directory source beneath it - a
+		// supported legacy shape - that source would go with the old clone, so
+		// refuse before touching it. The record being replaced is excluded:
+		// its own old clone is exactly what the replacement replaces.
+		if _, protect := m.sweepDestroysSource(marketplaceProtectionPaths(mk, name), installLoc); protect {
+			_ = marketplaceRemoveAll(staging)
+			return MarketplaceRef{}, fmt.Errorf("marketplace %q: the install location holds a directory source another marketplace records", name)
+		}
 		old, err := m.swapInClone(staging, installLoc)
 		if err != nil {
 			_ = marketplaceRemoveAll(staging)
@@ -293,7 +342,28 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 	if aside != "" {
 		_ = marketplaceRemoveAll(aside)
 	}
+	if replace && src.Kind == SourceDirectory && hadOld && oldRef.Source.Kind != SourceDirectory {
+		// The new directory source makes the old git clone redundant, but it
+		// sits under the marketplace's own directory where nothing else will
+		// remove it. Keep any source another record (or the incoming directory
+		// itself) still needs, exactly as EditMarketplace's re-source does.
+		clone := m.marketplaceDir(name)
+		sources := append(marketplaceProtectionPaths(mk, name), src.Path)
+		if present, protect := m.sweepDestroysSource(sources, clone); present && !protect {
+			_ = m.withClone(context.Background(), clone, func() error { return marketplaceRemoveAll(clone) })
+		}
+	}
 	return ref, nil
+}
+
+// refuseRegisteredName refuses a name the marketplace store already records.
+// The add paths call it before the fetch for an explicit name and after the
+// fetch for a catalog-supplied one, so both spell this rule once.
+func refuseRegisteredName(mk Marketplaces, name string) error {
+	if _, exists := mk[name]; exists {
+		return fmt.Errorf("marketplace %q: %w", name, ErrMarketplaceExists)
+	}
+	return nil
 }
 
 // saveFailed scrubs a save failure's absolute plugin-store path -
@@ -381,6 +451,8 @@ func editFailureIdentity(err error) error {
 		context.Canceled,
 		context.DeadlineExceeded,
 		ErrMarketplaceSourceInStore,
+		ErrMarketplaceSourcePinned,
+		ErrSourceRefQualified,
 		ErrMarketplaceExists,
 		ErrMarketplaceNotFound,
 		ErrInvalidName,
@@ -835,6 +907,9 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 		}
 	}
 	if resourcing {
+		if err := refuseDirectoryPin(*src); err != nil {
+			return MarketplaceRef{}, err
+		}
 		if src.Kind == SourceDirectory {
 			// Before the staging directory is cleared, which is itself one of
 			// the paths this refuses.

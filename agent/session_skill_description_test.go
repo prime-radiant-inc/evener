@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/llm"
 )
 
@@ -32,9 +33,11 @@ func TestSkillDescriptionSessionJourney(t *testing.T) {
 	writeSkillMD(t, root, "shadowed", "---\nname: recovery-plugin:healthy\ndescription: shadowed fixture\n---\nSHADOWED_752\n")
 	adapter := &fakeAdapter{name: "anthropic", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
-			return toolCallResponse(useSkillCall("skill-752", "recovery-plugin:recovered"))
+			return agenttest.ToolCallResponse(useSkillCall("skill-752", "recovery-plugin:recovered"))
 		},
-		func(llm.Request) llm.Response { return toolCallResponse(communicateCall("done-752", "DONE_752")) },
+		func(llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(communicateCall("done-752", "DONE_752"))
+		},
 	}}
 	client := llm.NewClient()
 	client.Register(adapter)

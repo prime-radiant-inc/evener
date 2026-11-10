@@ -101,7 +101,7 @@ func TestPostToolUseFailure_FiresForExecutedFailureOnly(t *testing.T) {
 	// The probe shadows edit_file, whose default limit is 10 000 chars, so the
 	// 25 000-char error truncates. The name also maps to Claude's "Edit", which
 	// is what the tool_name assertion checks.
-	sess.RegisterTool("edit_file", "fails with a long error",
+	sess.registerTool("edit_file", "fails with a long error",
 		map[string]any{
 			"type":       "object",
 			"properties": map[string]any{"payload": map[string]any{"type": "string"}},

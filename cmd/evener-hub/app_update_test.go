@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -53,6 +54,15 @@ func setBuild(t *testing.T, sha, channel string) {
 	// hubUpdateApply deliberately leaves hubUpdateMu locked after a
 	// successful apply; reset it so tests stay independent of run order.
 	hubUpdateMu = sync.Mutex{}
+	// The launch path and its install layout are process state; a test that
+	// ran runMain must not leave them behind for a check or restart test.
+	hubLaunchEntrypoint = ""
+	errHubLaunchEntrypoint = nil
+	hubLaunchShareBinDir = ""
+	hubLaunchBinarySHA256 = ""
+	launchDigestMu.Lock()
+	launchDigestInfo, launchDigest = nil, ""
+	launchDigestMu.Unlock()
 	// Default the check seam to an offline "update available" stub so
 	// hubUpdateApply's pre-install guard never hits live GitHub (AGENTS.md
 	// forbids network in default tests). Tests that need a specific check
@@ -157,26 +167,180 @@ func stubScheduleRestart(t *testing.T) *[]restartCall {
 	return &calls
 }
 
-func TestHubUpdateCheckDevBuildIsNotApplicable(t *testing.T) {
-	setBuild(t, "", "")
-	calls := stubUpdateCheck(t, func(context.Context, selfupdate.CheckOptions) (selfupdate.CheckResult, error) {
-		t.Fatal("dev build must not call Check")
-		return selfupdate.CheckResult{}, nil
+// A locally built hub is an ordinary update client: it asks the selected
+// channel what it publishes and can install it into the managed installation
+// it was launched from.
+func TestHubUpdateCheckLocalBuildChecksChannel(t *testing.T) {
+	setBuild(t, "abc1234", "")
+	setManagedRestartProbe(t, "echo 'evener abc1234 (2026-10-21T00:00:00Z)'")
+	var gotOpts selfupdate.CheckOptions
+	calls := stubUpdateCheck(t, func(_ context.Context, opts selfupdate.CheckOptions) (selfupdate.CheckResult, error) {
+		gotOpts = opts
+		return selfupdate.CheckResult{
+			Channel:         opts.Channel,
+			LatestTag:       "release",
+			LatestCommit:    "def5678" + strings.Repeat("f", 33),
+			UpdateAvailable: true,
+		}, nil
 	})
+
 	got, err := hubUpdateCheck(context.Background(), appwire.UpdateCheckParams{})
 	if err != nil {
 		t.Fatalf("hubUpdateCheck: %v", err)
 	}
-	if got.Applicable || got.UpdateAvailable || got.BuildChannel != "dev" || got.CurrentVersion != "dev" {
+	if *calls != 1 {
+		t.Fatalf("Check called %d times, want 1", *calls)
+	}
+	if gotOpts.Channel != "release" || gotOpts.CurrentSHA != "abc1234" {
+		t.Fatalf("opts = %+v", gotOpts)
+	}
+	if got.BuildChannel != "dev" {
+		t.Fatalf("BuildChannel = %q, want dev", got.BuildChannel)
+	}
+	if !got.Applicable || !got.UpdateAvailable || !got.InstallAvailable {
+		t.Fatalf("applicable=%v updateAvailable=%v installAvailable=%v, want all true", got.Applicable, got.UpdateAvailable, got.InstallAvailable)
+	}
+	if got.LatestCommit == "" || got.InstallTarget == "" {
 		t.Fatalf("got %+v", got)
 	}
-	if *calls != 0 {
-		t.Fatalf("Check called %d times", *calls)
+}
+
+// A local build at the channel's current commit is still not the channel's
+// published build, so Install can replace it. Once the installed build is on
+// disk (restart pending), Install turns off until the hub restarts.
+func TestHubUpdateCheckLocalBuildCanReplaceSameCommit(t *testing.T) {
+	setBuild(t, "abc1234", "")
+	setManagedRestartProbe(t, "echo 'evener abc1234 (2026-10-21T00:00:00Z)'")
+	stubUpdateCheck(t, func(_ context.Context, opts selfupdate.CheckOptions) (selfupdate.CheckResult, error) {
+		return selfupdate.CheckResult{
+			Channel:         opts.Channel,
+			LatestTag:       "release",
+			LatestCommit:    "abc1234" + strings.Repeat("f", 33),
+			UpdateAvailable: false,
+		}, nil
+	})
+
+	resp, err := hubUpdateCheck(context.Background(), appwire.UpdateCheckParams{})
+	if err != nil {
+		t.Fatalf("hubUpdateCheck: %v", err)
+	}
+	if resp.UpdateAvailable {
+		t.Fatal("updateAvailable = true although the local build is at the channel's commit")
+	}
+	if !resp.InstallAvailable {
+		t.Fatal("installAvailable = false, so a local build at the channel's commit cannot be replaced")
+	}
+}
+
+func TestHubUpdateCheckLocalBuildOutsideInstallationReportsMismatch(t *testing.T) {
+	setBuild(t, "abc1234", "")
+	setRestartProbe(t, "echo 'evener abc1234 (2026-10-21T00:00:00Z)'")
+	stubUpdateCheck(t, func(_ context.Context, opts selfupdate.CheckOptions) (selfupdate.CheckResult, error) {
+		return selfupdate.CheckResult{
+			Channel:         opts.Channel,
+			LatestTag:       "release",
+			LatestCommit:    "def5678" + strings.Repeat("f", 33),
+			UpdateAvailable: true,
+		}, nil
+	})
+
+	resp, err := hubUpdateCheck(context.Background(), appwire.UpdateCheckParams{})
+	if err != nil {
+		t.Fatalf("hubUpdateCheck: %v", err)
+	}
+	if resp.InstallTargetMatchesLaunch {
+		t.Fatal("installTargetMatchesLaunch = true for a worktree binary started in place")
+	}
+	if resp.InstallAvailable {
+		t.Fatal("installAvailable = true for a worktree binary started in place")
+	}
+}
+
+func TestHubUpdateCheckUnsupportedPlatformHasNoInstall(t *testing.T) {
+	setBuild(t, "abc1234", "")
+	setManagedRestartProbe(t, "echo 'evener abc1234 (2026-10-21T00:00:00Z)'")
+	previousGOOS, previousGOARCH := hubUpgradeGOOS, hubUpgradeGOARCH
+	hubUpgradeGOOS, hubUpgradeGOARCH = "linux", "arm64"
+	t.Cleanup(func() { hubUpgradeGOOS, hubUpgradeGOARCH = previousGOOS, previousGOARCH })
+	stubUpdateCheck(t, func(_ context.Context, opts selfupdate.CheckOptions) (selfupdate.CheckResult, error) {
+		return selfupdate.CheckResult{
+			Channel:         opts.Channel,
+			LatestTag:       "release",
+			LatestCommit:    "def5678" + strings.Repeat("f", 33),
+			UpdateAvailable: true,
+		}, nil
+	})
+
+	resp, err := hubUpdateCheck(context.Background(), appwire.UpdateCheckParams{})
+	if err != nil {
+		t.Fatalf("hubUpdateCheck: %v", err)
+	}
+	if resp.InstallAvailable {
+		t.Fatal("installAvailable = true on a platform with no published archive")
+	}
+}
+
+func TestHubUpdateCheckLocalBuildStopsOfferingInstallOnceChannelBuildIsOnDisk(t *testing.T) {
+	setBuild(t, "abc1234", "")
+	setManagedRestartProbe(t, "echo 'evener def5678 (2026-10-21T00:00:00Z)'")
+	stubUpdateCheck(t, func(_ context.Context, opts selfupdate.CheckOptions) (selfupdate.CheckResult, error) {
+		return selfupdate.CheckResult{
+			Channel:         opts.Channel,
+			LatestTag:       "release",
+			LatestCommit:    "def5678" + strings.Repeat("f", 33),
+			UpdateAvailable: true,
+		}, nil
+	})
+
+	resp, err := hubUpdateCheck(context.Background(), appwire.UpdateCheckParams{})
+	if err != nil {
+		t.Fatalf("hubUpdateCheck: %v", err)
+	}
+	if resp.InstallAvailable {
+		t.Fatal("installAvailable = true although the channel build is already on disk")
+	}
+	if !resp.RestartPending {
+		t.Fatal("restartPending = false although the installed build differs from the running build")
+	}
+}
+
+// A same-commit install changes no version string, so restartPending depends
+// on the launch binary's digest changing. Once it does, Install is off.
+func TestHubUpdateCheckLocalBuildAfterSameCommitInstallIsRestartPending(t *testing.T) {
+	setBuild(t, "abc1234", "")
+	setManagedRestartProbe(t, "echo 'evener abc1234 (2026-10-21T00:00:00Z)'")
+	pin, err := pinInstalledBinary(hubLaunchEntrypoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hubLaunchBinarySHA256 = pin.sha256Hex
+	if err := os.WriteFile(hubLaunchEntrypoint, []byte("#!/bin/sh\necho 'evener abc1234 (2026-10-21T00:00:00Z)'\n# installed\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stubUpdateCheck(t, func(_ context.Context, opts selfupdate.CheckOptions) (selfupdate.CheckResult, error) {
+		return selfupdate.CheckResult{
+			Channel:         opts.Channel,
+			LatestTag:       "release",
+			LatestCommit:    "abc1234" + strings.Repeat("f", 33),
+			UpdateAvailable: false,
+		}, nil
+	})
+
+	resp, err := hubUpdateCheck(context.Background(), appwire.UpdateCheckParams{})
+	if err != nil {
+		t.Fatalf("hubUpdateCheck: %v", err)
+	}
+	if resp.InstallAvailable {
+		t.Fatal("installAvailable = true although the installed build is already on disk")
+	}
+	if !resp.RestartPending {
+		t.Fatal("restartPending = false although the launched binary changed")
 	}
 }
 
 func TestHubUpdateCheckDefaultsToBuildChannelAndFillsCurrent(t *testing.T) {
 	setBuild(t, "3b1c5f8", "snapshot")
+	setManagedRestartProbe(t, "echo 'evener 3b1c5f8 (2026-10-21T00:00:00Z)'")
 	var gotOpts selfupdate.CheckOptions
 	stubUpdateCheck(t, func(_ context.Context, opts selfupdate.CheckOptions) (selfupdate.CheckResult, error) {
 		gotOpts = opts
@@ -189,9 +353,12 @@ func TestHubUpdateCheckDefaultsToBuildChannelAndFillsCurrent(t *testing.T) {
 	if gotOpts.Channel != "snapshot" || gotOpts.CurrentSHA != "3b1c5f8" {
 		t.Fatalf("opts = %+v", gotOpts)
 	}
+	wantTarget, _ := hubInstallTarget()
 	want := appwire.UpdateCheckResponse{
 		Channel: "snapshot", BuildChannel: "snapshot", CurrentVersion: "3b1c5f8", CurrentCommit: "3b1c5f8",
 		LatestTag: "snapshot", LatestCommit: "be70029abc", UpdateAvailable: true, Applicable: true,
+		OnDiskCommit: "3b1c5f8", InstallAvailable: true, StartedAt: hubProcessStartedAt, RestartSupported: true,
+		InstallTarget: wantTarget, InstallTargetMatchesLaunch: true,
 	}
 	if got != want {
 		t.Fatalf("got %+v, want %+v", got, want)
@@ -214,34 +381,83 @@ func TestHubUpdateCheckHonoursRequestedChannel(t *testing.T) {
 	}
 }
 
-func TestHubUpdateCheckPropagatesError(t *testing.T) {
+func TestHubUpdateCheckReportsChannelError(t *testing.T) {
 	setBuild(t, "3b1c5f8", "release")
 	stubUpdateCheck(t, func(context.Context, selfupdate.CheckOptions) (selfupdate.CheckResult, error) {
 		return selfupdate.CheckResult{}, errors.New("GET x: 403 Forbidden: API rate limit exceeded")
 	})
-	_, err := hubUpdateCheck(context.Background(), appwire.UpdateCheckParams{})
-	if err == nil || !strings.Contains(err.Error(), "rate limit") {
-		t.Fatalf("err = %v", err)
+	resp, err := hubUpdateCheck(context.Background(), appwire.UpdateCheckParams{})
+	if err != nil {
+		t.Fatalf("hubUpdateCheck: %v", err)
+	}
+	if !strings.Contains(resp.CheckError, "rate limit") {
+		t.Fatalf("check error = %q, want the channel failure", resp.CheckError)
 	}
 }
 
-func TestHubUpdateApplyDevBuildRefused(t *testing.T) {
-	setBuild(t, "", "")
+func TestHubUpdateApplyReportsChannelFailure(t *testing.T) {
+	setBuild(t, "3b1c5f8", "snapshot")
+	stubUpdateCheck(t, func(context.Context, selfupdate.CheckOptions) (selfupdate.CheckResult, error) {
+		return selfupdate.CheckResult{}, errors.New("GET x: 403 Forbidden: API rate limit exceeded")
+	})
 	upgrades := stubHubSelfUpgrade(t, func(context.Context, selfupdate.Options) (selfupdate.Result, error) {
+		t.Fatal("apply installed after a failed channel check")
+		return selfupdate.Result{}, nil
+	})
+	if _, err := hubUpdateApply(context.Background(), appwire.UpdateApplyParams{}); err == nil || !strings.Contains(err.Error(), "rate limit") {
+		t.Fatalf("hubUpdateApply error = %v, want the channel failure", err)
+	}
+	if *upgrades != 0 {
+		t.Fatalf("upgrades = %d, want 0", *upgrades)
+	}
+}
+
+func TestHubUpdateApplyLocalBuildInstallsThenRestarts(t *testing.T) {
+	setBuild(t, "abc1234", "")
+	setManagedRestartProbe(t, "echo 'evener abc1234 (2026-10-21T00:00:00Z)'")
+	stubUpdateAvailable(t)
+	upgrades := stubHubSelfUpgrade(t, func(_ context.Context, opts selfupdate.Options) (selfupdate.Result, error) {
+		if opts.Requested != "release" || opts.CurrentChannel != "release" {
+			t.Fatalf("opts = %+v", opts)
+		}
+		return stubInstalledResult(t, "evener"), nil
+	})
+	restarts := stubScheduleRestart(t)
+
+	got, err := hubUpdateApply(context.Background(), appwire.UpdateApplyParams{})
+	if err != nil {
+		t.Fatalf("hubUpdateApply: %v", err)
+	}
+	if !got.Restarting {
+		t.Fatalf("got %+v, want a scheduled restart", got)
+	}
+	if *upgrades != 1 || len(*restarts) != 1 {
+		t.Fatalf("upgrades=%d restarts=%d, want one of each", *upgrades, len(*restarts))
+	}
+}
+
+func TestHubUpdateApplyLocalBuildOutsideInstallationRefused(t *testing.T) {
+	setBuild(t, "abc1234", "")
+	setRestartProbe(t, "echo 'evener abc1234 (2026-10-21T00:00:00Z)'")
+	stubUpdateAvailable(t)
+	upgrades := stubHubSelfUpgrade(t, func(context.Context, selfupdate.Options) (selfupdate.Result, error) {
+		t.Fatal("a local build outside its install target must not install")
 		return selfupdate.Result{}, nil
 	})
 	restarts := stubScheduleRestart(t)
+
 	_, err := hubUpdateApply(context.Background(), appwire.UpdateApplyParams{})
-	if !errors.Is(err, errDevBuildUpdate) {
-		t.Fatalf("err = %v", err)
+	if !errors.Is(err, errLocalBuildInstallTarget) {
+		t.Fatalf("hubUpdateApply err = %v, want errLocalBuildInstallTarget", err)
 	}
 	if *upgrades != 0 || len(*restarts) != 0 {
-		t.Fatalf("upgrades=%d restarts=%d", *upgrades, len(*restarts))
+		t.Fatalf("upgrades=%d restarts=%d, want none", *upgrades, len(*restarts))
 	}
 }
 
 func TestHubUpdateApplyInstallsThenSchedulesRestartWithHubArgs(t *testing.T) {
 	setBuild(t, "3b1c5f8", "snapshot")
+	resetHubRestartAddr(t)
 	stubUpdateAvailable(t)
 	previousArgs := hubProcessArgs
 	hubProcessArgs = func() []string { return []string{"/old/evener", "hub", "-addr", "0.0.0.0:9180"} }
@@ -509,19 +725,12 @@ func TestHubUpdateApplyRestartsAfterTheResponseIsWritten(t *testing.T) {
 
 	// A real appserver round trip: only that gives the handler a context
 	// carrying the connection AfterResponseWritten needs.
-	appServer := newHubAppServer(hubcore.WebConfig{
-		HubStateRoot: t.TempDir(),
-		Past:         hubcore.NewPastIndex(""),
-	}, appsource.NewRegistry())
+	appServer := newHubAppServer(testWebConfig(t, hubcore.WebConfig{}), appsource.NewRegistry())
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 
-	resp, err := client.UpdateApply(t.Context(), appwire.UpdateApplyParams{Channel: "snapshot"})
+	resp, err := appwiretest.UpdateApply(t.Context(), client, appwire.UpdateApplyParams{Channel: "snapshot"})
 	if err != nil {
 		t.Fatalf("UpdateApply: %v", err)
 	}

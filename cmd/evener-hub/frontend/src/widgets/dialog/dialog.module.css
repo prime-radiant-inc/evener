@@ -46,6 +46,9 @@
   line-height: var(--line-height-body);
   color: var(--ink-hi);
   overflow: auto;
+  /* Focus-scrolling stops this far from the scrollport edges so a focused
+   * control's outline paints inside the dialog instead of under the edge. */
+  scroll-padding-block: var(--space-2);
 }
 
 .footer {
@@ -53,6 +56,7 @@
   background: var(--surface-inset);
   border-top: 1px solid var(--edge);
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: var(--space-2);
 }

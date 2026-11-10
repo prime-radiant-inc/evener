@@ -46,6 +46,15 @@ it("round trips one typed checkpoint and recovers after recreation", () => {
 	expect(first.load()).toBeNull();
 });
 
+it("finishes a checkpoint whose keys arrive in a different order", () => {
+	const b = backend();
+	const actions = nativeNavigationActions("hub-a", b.store);
+	const checkpoint = actions.begin(operation);
+	const reordered = { receipt: checkpoint.receipt, operation: checkpoint.operation, id: checkpoint.id };
+	expect(actions.finish(reordered)).toBe(true);
+	expect(actions.load()).toBeNull();
+});
+
 it("fences duplicate begin, stale acknowledgement, and stale finish", () => {
 	const b = backend();
 	const actions = nativeNavigationActions("hub-a", b.store);

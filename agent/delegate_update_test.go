@@ -15,6 +15,7 @@ import (
 
 	"github.com/spf13/afero"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	toolpkg "primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
@@ -138,12 +139,14 @@ func TestDelegateControllerPostUpdateRefusals(t *testing.T) {
 // caller-route WIP test 6f67c3f327.)
 func TestDelegateUpdateWakesAnIdleRoot(t *testing.T) {
 	t.Parallel()
-	fixture := newColdStableDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return communicateResponse(false, "need the heading from you") },
-		func(llm.Request) llm.Response { return finalResponse("summary written") },
-		func(llm.Request) llm.Response { return finalResponse("noted") },
-	}
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			return agenttest.CommunicateResponse(false, "need the heading from you")
+		},
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("summary written") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("noted") },
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
 	wakes := make(chan struct{}, 1)
 	root.SetNotifyFunc(func() {
@@ -152,7 +155,7 @@ func TestDelegateUpdateWakesAnIdleRoot(t *testing.T) {
 		default:
 		}
 	})
-	warmStableDelegateUnservedRoot(t, root, fixture)
+	warmDelegateUnservedRoot(t, root, fixture)
 
 	pending := rootPendingAttention(root)
 	if len(pending) != 1 || !strings.HasPrefix(pending[0], delegateAttentionID(fixture.delegateID+"/update/")) {
@@ -184,8 +187,7 @@ func TestDelegateUpdateWakesAnIdleRoot(t *testing.T) {
 	}
 
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := root.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
 		t.Fatalf("root notification turn: %v", err)
 	}
@@ -241,9 +243,13 @@ func TestDelegateUpdateNotDeliveredStillSucceeds(t *testing.T) {
 			if err != nil {
 				t.Fatalf("communicate: %v", err)
 			}
+			typed, isTyped := out.(toolpkg.StateResult)
+			if !isTyped {
+				t.Fatalf("communicate result = %#v, want typed state result", out)
+			}
 			var result map[string]any
-			if err := json.Unmarshal([]byte(fmt.Sprint(out)), &result); err != nil {
-				t.Fatalf("decode result %v: %v", out, err)
+			if err := json.Unmarshal([]byte(typed.Output), &result); err != nil {
+				t.Fatalf("decode result %v: %v", typed.Output, err)
 			}
 			if result["accepted"] != true || result["delivery"] != "not_delivered" {
 				t.Fatalf("result = %v, want accepted and not_delivered", result)
@@ -280,7 +286,7 @@ func TestDelegateUpdateReachesARunningRootAtItsNextModelBoundary(t *testing.T) {
 			if !requestContainsText(req, `kind="update"`) || !requestContainsText(req, "RUNNING_UPDATE") {
 				t.Error("the root's next request does not present the update")
 			}
-			return finalResponse("root done")
+			return agenttest.FinalResponse("root done")
 		},
 	)
 	adapter.script("WORKER-BRIEF",
@@ -288,7 +294,7 @@ func TestDelegateUpdateReachesARunningRootAtItsNextModelBoundary(t *testing.T) {
 			awaitSignal(t, release, "the root's second request")
 			return updateResponse("upd", "RUNNING_UPDATE: which table holds the drain cursor?")
 		},
-		func(llm.Request) llm.Response { return finalResponse("worker done") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("worker done") },
 	)
 	root = newMessagingRoot(t, adapter, func(cfg *SessionConfig) {
 		cfg.testOnly.delegateDeliveryClassified = func(s *Session, isDeferred bool) {
@@ -298,8 +304,7 @@ func TestDelegateUpdateReachesARunningRootAtItsNextModelBoundary(t *testing.T) {
 		}
 	})
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := root.ProcessInput(ctx, "start", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -346,20 +351,20 @@ func TestDelegateSendWaitCarriesAnUpdateAheadOfTheReport(t *testing.T) {
 		func(req llm.Request) llm.Response {
 			sendReply <- lastToolResultText(req.Messages)
 			nextRequest <- deferredHeadToolResults(req.Messages) + messagesText(req.Messages)
-			return finalResponse("root done")
+			return agenttest.FinalResponse("root done")
 		},
 	)
 	adapter.script("WORKER-BRIEF",
 		func(llm.Request) llm.Response {
 			awaitSignal(t, releaseFirst, "the root's second request")
-			return finalResponse("GEN1_READY")
+			return agenttest.FinalResponse("GEN1_READY")
 		},
 		func(llm.Request) llm.Response {
 			return updateResponse("upd", "UPDATE_ONE: which table holds the drain cursor?")
 		},
 		func(req llm.Request) llm.Response {
 			updateResult <- lastToolResultText(req.Messages)
-			return finalResponse("GEN2_REPORT")
+			return agenttest.FinalResponse("GEN2_REPORT")
 		},
 	)
 	root = newMessagingRoot(t, adapter, func(cfg *SessionConfig) {
@@ -370,8 +375,7 @@ func TestDelegateSendWaitCarriesAnUpdateAheadOfTheReport(t *testing.T) {
 		}
 	})
 	// TRIPWIRE: half the send's wait; a send that sits out its wait fails here.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := root.ProcessInput(ctx, "start", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -415,21 +419,22 @@ func TestDelegateUpdateWaitsForTheAnswerToAPendingQuestion(t *testing.T) {
 		func(llm.Request) llm.Response {
 			return delegateToolResponse("create", "WORKER-BRIEF: ask your parent which database to use.")
 		},
-		func(llm.Request) llm.Response { return toolCallResponse(askUserCall("ask1", askUserArgsValid())) },
-		func(llm.Request) llm.Response { return finalResponse("going with Postgres") },
-		func(llm.Request) llm.Response { return finalResponse("noted the worker") },
+		func(llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(askUserCall("ask1", askUserArgsValid()))
+		},
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("going with Postgres") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("noted the worker") },
 	)
 	adapter.script("WORKER-BRIEF",
 		func(llm.Request) llm.Response {
 			awaitSignal(t, release, "the root awaiting its question")
 			return updateResponse("upd", "ASK_UPDATE: Postgres or SQLite?")
 		},
-		func(llm.Request) llm.Response { return finalResponse("ASK_REPORT") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("ASK_REPORT") },
 	)
 	root := newMessagingRoot(t, adapter, nil)
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := root.ProcessInput(ctx, "pick a database", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -478,16 +483,16 @@ func TestDelegateUpdateWaitsForTheAnswerToAPendingQuestion(t *testing.T) {
 // report, and an idle parent takes all three in one notification turn.
 func TestDelegateUpdatesArriveInOrderBeforeTheReportInOneTurn(t *testing.T) {
 	t.Parallel()
-	fixture := newColdStableDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("warm") },
-		func(llm.Request) llm.Response { return communicateResponse(false, "FIRST_UPDATE") },
-		func(llm.Request) llm.Response { return communicateResponse(false, "SECOND_UPDATE") },
-		func(llm.Request) llm.Response { return finalResponse("THE_REPORT") },
-		func(llm.Request) llm.Response { return finalResponse("noted all three") },
-	}
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm") },
+		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(false, "FIRST_UPDATE") },
+		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(false, "SECOND_UPDATE") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("THE_REPORT") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("noted all three") },
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
-	warmStableDelegateUnservedRoot(t, root, fixture)
+	warmDelegateUnservedRoot(t, root, fixture)
 	if outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "go on", 0); outcome.result.Err != nil {
 		t.Fatalf("send: %v", outcome.result.Err)
 	}
@@ -503,8 +508,7 @@ func TestDelegateUpdatesArriveInOrderBeforeTheReportInOneTurn(t *testing.T) {
 	}
 	before := len(fixture.adapter.Requests())
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := root.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
 		t.Fatalf("root notification turn: %v", err)
 	}
@@ -537,16 +541,16 @@ func TestDelegateUpdateWakesAnIdleParentDelegate(t *testing.T) {
 		func(llm.Request) llm.Response {
 			return delegateToolResponse("coord", "COORD-BRIEF: start one worker delegate, then end your turn and wait for it.")
 		},
-		func(llm.Request) llm.Response { return finalResponse("waiting on the coordinator") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("waiting on the coordinator") },
 	)
 	adapter.script("COORD-BRIEF",
 		func(llm.Request) llm.Response {
 			return delegateToolResponse("worker", "WORKER-BRIEF: ask your parent which table holds the drain cursor.")
 		},
-		func(llm.Request) llm.Response { return finalResponse("waiting on the worker") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("waiting on the worker") },
 		func(req llm.Request) llm.Response {
 			presented <- messagesText(req.Messages)
-			return finalResponse("told the worker")
+			return agenttest.FinalResponse("told the worker")
 		},
 	)
 	adapter.script("WORKER-BRIEF",
@@ -556,14 +560,13 @@ func TestDelegateUpdateWakesAnIdleParentDelegate(t *testing.T) {
 		},
 		func(llm.Request) llm.Response {
 			awaitSignal(t, reportGate, "the coordinator's turn presenting the update")
-			return finalResponse("worker done")
+			return agenttest.FinalResponse("worker done")
 		},
 	)
 	root := newMessagingRoot(t, adapter, nil)
 	serveSupervisionRootWakes(t, root)
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := root.ProcessInput(ctx, "start", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -614,20 +617,22 @@ func TestDelegateUpdateFromADrainTurnReachesTheRootBeforeTheReport(t *testing.T)
 		func(llm.Request) llm.Response {
 			return delegateToolResponse("coord", "COORD-BRIEF: start one worker delegate, then report and wait for it.")
 		},
-		func(llm.Request) llm.Response { return finalResponse("waiting on the coordinator") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("waiting on the coordinator") },
 	)
 	adapter.script("COORD-BRIEF",
 		func(llm.Request) llm.Response {
 			return delegateToolResponse("worker", "WORKER-BRIEF: ask your parent which table holds the drain cursor.")
 		},
-		func(llm.Request) llm.Response { return communicateResponse(true, "COORD_FINAL: waiting on the worker") },
+		func(llm.Request) llm.Response {
+			return agenttest.CommunicateResponse(true, "COORD_FINAL: waiting on the worker")
+		},
 		func(llm.Request) llm.Response {
 			return updateResponse("relay", "COORD_RELAY: the worker needs the drain cursor table")
 		},
 		func(req llm.Request) llm.Response {
 			relayResult <- lastToolResultText(req.Messages)
 			releaseReport()
-			return finalResponse("relayed")
+			return agenttest.FinalResponse("relayed")
 		},
 	)
 	adapter.script("WORKER-BRIEF",
@@ -637,14 +642,13 @@ func TestDelegateUpdateFromADrainTurnReachesTheRootBeforeTheReport(t *testing.T)
 		},
 		func(llm.Request) llm.Response {
 			awaitSignal(t, reportGate, "the coordinator's relay")
-			return finalResponse("worker done")
+			return agenttest.FinalResponse("worker done")
 		},
 	)
 	root := newMessagingRoot(t, adapter, nil)
 	serveSupervisionRootWakes(t, root)
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := root.ProcessInput(ctx, "start", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -713,23 +717,23 @@ func drainingCoordinatorWaitsForAnUpdate(t *testing.T, failedMarkerWrites int) {
 		func(llm.Request) llm.Response {
 			return delegateToolResponse("coord", "COORD-BRIEF: start two worker delegates, then end your turn and wait for them.")
 		},
-		func(llm.Request) llm.Response { return finalResponse("waiting on the coordinator") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("waiting on the coordinator") },
 	)
 	adapter.script("COORD-BRIEF",
 		func(llm.Request) llm.Response { return delegateToolResponse("a", "WORKER-A: report the cursor table.") },
 		func(llm.Request) llm.Response {
 			return delegateToolResponse("b", "WORKER-B: ask your parent which table holds the drain cursor.")
 		},
-		func(llm.Request) llm.Response { return finalResponse("waiting on both workers") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("waiting on both workers") },
 		func(req llm.Request) llm.Response {
 			presented <- messagesText(req.Messages)
-			return finalResponse("told worker b")
+			return agenttest.FinalResponse("told worker b")
 		},
 	)
 	adapter.script("WORKER-A",
 		func(llm.Request) llm.Response {
 			awaitSignal(t, coordinatorIdle, "the coordinator to end its turn")
-			return finalResponse("SIBLING_REPORT: drain_cursor")
+			return agenttest.FinalResponse("SIBLING_REPORT: drain_cursor")
 		},
 	)
 	adapter.script("WORKER-B",
@@ -739,7 +743,7 @@ func drainingCoordinatorWaitsForAnUpdate(t *testing.T, failedMarkerWrites int) {
 		},
 		func(llm.Request) llm.Response {
 			awaitSignal(t, reportGate, "the coordinator's turn presenting the update")
-			return finalResponse("worker b done")
+			return agenttest.FinalResponse("worker b done")
 		},
 	)
 	root := newMessagingRoot(t, adapter, nil)
@@ -837,7 +841,7 @@ func TestDelegateUpdateArrivingMidTurnIsNotRerunWhenTheMarkerCannotBeWritten(t *
 		func(llm.Request) llm.Response {
 			return delegateToolResponse("coord", "COORD-BRIEF: start two worker delegates, then end your turn and wait for them.")
 		},
-		func(llm.Request) llm.Response { return finalResponse("waiting on the coordinator") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("waiting on the coordinator") },
 	)
 	adapter.script("COORD-BRIEF",
 		func(llm.Request) llm.Response {
@@ -846,7 +850,7 @@ func TestDelegateUpdateArrivingMidTurnIsNotRerunWhenTheMarkerCannotBeWritten(t *
 		func(llm.Request) llm.Response {
 			return delegateToolResponse("b", "WORKER-B: send an update, then finish.")
 		},
-		func(llm.Request) llm.Response { return finalResponse("waiting on both workers") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("waiting on both workers") },
 		// Worker A's update turn: hold the tool round until worker B has
 		// posted its update, which a running coordinator receives at its next
 		// model boundary, so the next request presents both.
@@ -855,7 +859,7 @@ func TestDelegateUpdateArrivingMidTurnIsNotRerunWhenTheMarkerCannotBeWritten(t *
 			adapter.waitForRequests(t, "WORKER-B", 2)
 			return jobListResponse("hold")
 		},
-		func(llm.Request) llm.Response { return finalResponse("told both workers") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("told both workers") },
 	)
 	adapter.script("WORKER-A",
 		func(llm.Request) llm.Response {
@@ -864,7 +868,7 @@ func TestDelegateUpdateArrivingMidTurnIsNotRerunWhenTheMarkerCannotBeWritten(t *
 		},
 		func(llm.Request) llm.Response {
 			awaitSignal(t, reportGate, "the marker writes to fail")
-			return finalResponse("worker a done")
+			return agenttest.FinalResponse("worker a done")
 		},
 	)
 	adapter.script("WORKER-B",
@@ -874,14 +878,13 @@ func TestDelegateUpdateArrivingMidTurnIsNotRerunWhenTheMarkerCannotBeWritten(t *
 		},
 		func(llm.Request) llm.Response {
 			awaitSignal(t, reportGate, "the marker writes to fail")
-			return finalResponse("worker b done")
+			return agenttest.FinalResponse("worker b done")
 		},
 	)
 	root := newMessagingRoot(t, adapter, nil)
 	serveSupervisionRootWakes(t, root)
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := root.ProcessInput(ctx, "start", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -925,7 +928,7 @@ func TestDelegateUpdateReachesARunningParentDelegate(t *testing.T) {
 		func(llm.Request) llm.Response {
 			return delegateToolResponse("coord", "COORD-BRIEF: start one worker delegate and keep working.")
 		},
-		func(llm.Request) llm.Response { return finalResponse("waiting on the coordinator") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("waiting on the coordinator") },
 	)
 	adapter.script("COORD-BRIEF",
 		func(llm.Request) llm.Response {
@@ -938,7 +941,7 @@ func TestDelegateUpdateReachesARunningParentDelegate(t *testing.T) {
 		},
 		func(req llm.Request) llm.Response {
 			presented <- messagesText(req.Messages)
-			return finalResponse("coordinator done")
+			return agenttest.FinalResponse("coordinator done")
 		},
 	)
 	adapter.script("WORKER-BRIEF",
@@ -946,7 +949,7 @@ func TestDelegateUpdateReachesARunningParentDelegate(t *testing.T) {
 			awaitSignal(t, release, "the coordinator's second request")
 			return updateResponse("upd", "RUNNING_PARENT_UPDATE: which table holds the drain cursor?")
 		},
-		func(llm.Request) llm.Response { return finalResponse("worker done") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("worker done") },
 	)
 	root = newMessagingRoot(t, adapter, func(cfg *SessionConfig) {
 		// Only the coordinator receives anything besides the root.
@@ -963,8 +966,7 @@ func TestDelegateUpdateReachesARunningParentDelegate(t *testing.T) {
 	})
 	serveSupervisionRootWakes(t, root)
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := root.ProcessInput(ctx, "start", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -1016,7 +1018,7 @@ func updateAttentionConsumedFor(t *testing.T, sess *Session) uint64 {
 
 // appendColdFixtureEvents appends events to the fixture's delegate journal
 // before any root opens it, the way a process that crashed left it.
-func appendColdFixtureEvents(t *testing.T, fixture coldStableDelegateFixture, events ...delegatestore.Event) []delegatestore.Event {
+func appendColdFixtureEvents(t *testing.T, fixture coldDelegateFixture, events ...delegatestore.Event) []delegatestore.Event {
 	t.Helper()
 	path := delegateResourceStorePath(fixture.stateDir, fixture.meta.ID)
 	stored, err := delegatestore.ReadEvents(path)
@@ -1050,7 +1052,7 @@ func TestDelegateUpdateSurvivesRestart(t *testing.T) {
 	// then that report, once each.
 	t.Run("posted while the run was still going", func(t *testing.T) {
 		t.Parallel()
-		fixture := newColdStableDelegateFixture(t, "")
+		fixture := newColdDelegateFixture(t, "")
 		startedAt := time.Unix(1_700_000_300, 0).UTC()
 		appended := appendColdFixtureEvents(t, fixture,
 			delegatestore.Event{Kind: delegatestore.EventDelegateRunStarted, TS: startedAt, DelegateID: fixture.delegateID,
@@ -1060,9 +1062,9 @@ func TestDelegateUpdateSurvivesRestart(t *testing.T) {
 		)
 		updateID := delegateAttentionID(delegatestore.UpdateDeliveryID(fixture.delegateID, appended[1].Seq))
 		reportID := delegateAttentionID(delegateDeliveryID(fixture.delegateID, 1))
-		fixture.adapter.steps = []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response { return finalResponse("noted after the restart") },
-		}
+		fixture.adapter.setSteps([]func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("noted after the restart") },
+		})
 		root := restoreSupervisionRoot(t, fixture, nil)
 		pending := waitForRootAttention(t, root, 2)
 		if !slices.Equal(pending, []string{updateID, reportID}) {
@@ -1085,14 +1087,16 @@ func TestDelegateUpdateSurvivesRestart(t *testing.T) {
 	})
 	t.Run("delivered but not yet read", func(t *testing.T) {
 		t.Parallel()
-		fixture := newColdStableDelegateFixture(t, "")
-		fixture.adapter.steps = []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response { return communicateResponse(false, "UNREAD_UPDATE: which table?") },
-			func(llm.Request) llm.Response { return finalResponse("summary written") },
-			func(llm.Request) llm.Response { return finalResponse("noted after the restart") },
-		}
+		fixture := newColdDelegateFixture(t, "")
+		fixture.adapter.setSteps([]func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				return agenttest.CommunicateResponse(false, "UNREAD_UPDATE: which table?")
+			},
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("summary written") },
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("noted after the restart") },
+		})
 		root := restoreSupervisionRoot(t, fixture, nil)
-		warmStableDelegateUnservedRoot(t, root, fixture)
+		warmDelegateUnservedRoot(t, root, fixture)
 		pending := rootPendingAttention(root)
 		if len(pending) != 1 {
 			t.Fatalf("root attention before restart = %v, want the update", pending)
@@ -1127,12 +1131,12 @@ func TestDelegateUpdateSurvivesRestart(t *testing.T) {
 // stands down; the delegate's own leased turn is admitted.
 func TestDelegateUpdateAdmitsOnlyATurnThatConsumesIt(t *testing.T) {
 	t.Parallel()
-	fixture := newColdStableDelegateFixture(t, "")
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("warm result") },
-	}
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
+	})
 	root := restoreSupervisionRoot(t, fixture, nil)
-	sub := warmStableDelegateUnservedRoot(t, root, fixture)
+	sub := warmDelegateUnservedRoot(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	updateID := delegateAttentionID(delegatestore.UpdateDeliveryID(fixture.delegateID, 1))
 	if appended, err := sub.sess.appendDelegateNotificationDurably(updateID, "ADMISSION_UPDATE: which table?"); err != nil || !appended {
@@ -1196,20 +1200,22 @@ func drainingCoordinatorReport(t *testing.T, undisposedJob bool, drainTurns ...f
 		func(llm.Request) llm.Response {
 			return delegateToolResponse("coord", "COORD-BRIEF: start one worker delegate, then report and wait for it.")
 		},
-		func(llm.Request) llm.Response { return finalResponse("waiting on the coordinator") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("waiting on the coordinator") },
 	)
 	startWork := func(llm.Request) llm.Response {
 		return delegateToolResponse("worker", "WORKER-BRIEF: ask your parent which table holds the drain cursor.")
 	}
 	if undisposedJob {
 		startWork = func(llm.Request) llm.Response {
-			args, _ := json.Marshal(map[string]any{"command": "sleep 600", "mode": "background"})
-			return toolCallResponse(llm.ToolCallData{ID: "job", Name: "shell", Arguments: args, Type: "function"})
+			args, _ := json.Marshal(map[string]any{"command": idleShellCommand, "mode": "background"})
+			return agenttest.ToolCallResponse(llm.ToolCallData{ID: "job", Name: "shell", Arguments: args, Type: "function"})
 		}
 	}
 	coordinatorSteps := []func(llm.Request) llm.Response{
 		startWork,
-		func(llm.Request) llm.Response { return communicateResponse(true, "REPORT_A: waiting on the worker") },
+		func(llm.Request) llm.Response {
+			return agenttest.CommunicateResponse(true, "REPORT_A: waiting on the worker")
+		},
 	}
 	for _, drainTurn := range drainTurns {
 		coordinatorSteps = append(coordinatorSteps, func(req llm.Request) llm.Response {
@@ -1225,7 +1231,7 @@ func drainingCoordinatorReport(t *testing.T, undisposedJob bool, drainTurns ...f
 		},
 		func(llm.Request) llm.Response {
 			awaitSignal(t, reportGate, "the coordinator's drain turn")
-			return finalResponse("worker done")
+			return agenttest.FinalResponse("worker done")
 		},
 	)
 	// The worker's own report can start another coordinator generation, which
@@ -1296,7 +1302,7 @@ func bareTextDrainTurn(llm.Request) llm.Response {
 func TestDelegateDrainTurnReportReplacesTheEarlierReport(t *testing.T) {
 	t.Parallel()
 	frame, preview, transcript, _ := drainingCoordinatorReport(t, false, func(llm.Request) llm.Response {
-		return communicateResponse(true, "REPORT_B: told the worker to use the v2 schema")
+		return agenttest.CommunicateResponse(true, "REPORT_B: told the worker to use the v2 schema")
 	})
 	if !strings.Contains(frame, "REPORT_B") || strings.Contains(frame, "REPORT_A") {
 		t.Fatalf("the root's report frame = %q, want the drain turn's report B and not A", frame)
@@ -1351,13 +1357,45 @@ func TestDelegateDrainTurnWithoutAReportKeepsTheEarlierReport(t *testing.T) {
 func TestDelegateDrainAnnouncementReportReplacesTheEarlierReport(t *testing.T) {
 	t.Parallel()
 	frame, preview, _, _ := drainingCoordinatorReport(t, true,
-		func(llm.Request) llm.Response { return communicateResponse(true, "REPORT_B: left the job running") },
-		func(llm.Request) llm.Response { return communicateResponse(true, "REPORT_C: detached the job") },
+		func(llm.Request) llm.Response {
+			return agenttest.CommunicateResponse(true, "REPORT_B: left the job running")
+		},
+		func(llm.Request) llm.Response {
+			return agenttest.CommunicateResponse(true, "REPORT_C: detached the job")
+		},
 	)
 	if !strings.Contains(frame, "REPORT_C") || strings.Contains(frame, "REPORT_A") {
 		t.Fatalf("the root's report frame = %q, want the latest announcement turn's report C alone", frame)
 	}
 	if preview != "REPORT_C: detached the job" {
 		t.Fatalf("reportPreview = %q, want report C", preview)
+	}
+}
+
+// isDelegateUpdateAttentionID must keep classifying a reopened update row as
+// an update: a failed presentation start re-delivers the consumed update
+// under a fresh reopened identity, and the finalization drain's update wake
+// keys on this classification — a reopened row that drops it leaves the
+// child's mid-work question waiting for the generation's end.
+func TestIsDelegateUpdateAttentionIDClassifiesReopenedRows(t *testing.T) {
+	t.Parallel()
+	update := delegateAttentionID(delegatestore.UpdateDeliveryID("dlg_worker", 7))
+	report := delegateAttentionID(delegateDeliveryID("dlg_worker", 3))
+	cases := []struct {
+		attentionID string
+		want        bool
+	}{
+		{update, true},
+		{delegateAttentionReopenID(update, 1), true},
+		{delegateAttentionReopenID(delegateAttentionReopenID(update, 1), 1), true},
+		{report, false},
+		{delegateAttentionReopenID(report, 1), false},
+		{delegateAttentionReopenID(delegateAttentionReopenID(report, 1), 1), false},
+		{delegateAttentionID("dlg_worker/update/7/reopened/not-a-generation"), false},
+	}
+	for _, tc := range cases {
+		if got := isDelegateUpdateAttentionID(tc.attentionID); got != tc.want {
+			t.Errorf("isDelegateUpdateAttentionID(%q) = %t, want %t", tc.attentionID, got, tc.want)
+		}
 	}
 }

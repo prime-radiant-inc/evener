@@ -51,3 +51,12 @@ func goalStateView(snap goal.Snapshot) map[string]any {
 		"stopReason": snap.StopReason,
 	}
 }
+
+// getOrCreateGoalStore returns the session's goal store, initializing it lazily
+// on first call. The store has its own mutex and is goroutine-safe.
+func (s *Session) getOrCreateGoalStore() *goal.Store {
+	s.goalStoreOnce.Do(func() {
+		s.goalStore = goal.NewStore()
+	})
+	return s.goalStore
+}

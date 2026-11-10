@@ -2,6 +2,7 @@
 // format: the verdict, each comment under the line it quotes, then the
 // overall note. A comment always quotes the words it was left on, so it
 // reads right even after its paragraph changed (ruling 14).
+import { namedFileTarget } from "./markdownFileReferences";
 
 export type Verdict = "approve" | "requestChanges" | "commentOnly";
 
@@ -20,6 +21,10 @@ export function quoteLine(text: string, max = 160): string {
 	const space = cut.lastIndexOf(" ");
 	return `${(space > max * 0.6 ? cut.slice(0, space) : cut).trimEnd()}…`;
 }
+
+/** How a review names the document it is about: the file that was reviewed,
+ * rather than a relative path that could name a folder file of the same name. */
+export const reviewDocumentName = namedFileTarget;
 
 export function reviewMessage(
 	path: string,

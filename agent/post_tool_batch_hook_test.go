@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/plugin"
@@ -139,9 +140,9 @@ func TestPostToolBatch_ContextReachesTheSameNextRequest(t *testing.T) {
 	f := newPostToolBatchFixture(t, mats, func(round int, req llm.Request) llm.Response {
 		switch round {
 		case 0, 1:
-			return toolCallResponse(batchShellCall(fmt.Sprintf("shell-%d", round)))
+			return agenttest.ToolCallResponse(batchShellCall(fmt.Sprintf("shell-%d", round)))
 		default:
-			return finalResponse("done")
+			return agenttest.FinalResponse("done")
 		}
 	})
 
@@ -184,7 +185,7 @@ func TestPostToolBatch_BlockDoesNotSwallowCommunicateReply(t *testing.T) {
 		if round > 0 {
 			t.Fatalf("a communicate round must end the turn; reached request %d", round)
 		}
-		return toolCallResponse(batchShellCall("shell-0"), communicateCall("c1", reply))
+		return agenttest.ToolCallResponse(batchShellCall("shell-0"), communicateCall("c1", reply))
 	})
 
 	// TRIPWIRE: a scripted in-process adapter, so only a genuine hang reaches 30s.
@@ -214,7 +215,7 @@ func TestPostToolBatch_BlockDoesNotStrandPendingAsk(t *testing.T) {
 		if round > 0 {
 			t.Fatalf("an ask round must end the turn; reached request %d", round)
 		}
-		return toolCallResponse(askUserCall("ask1", askUserArgsValid()))
+		return agenttest.ToolCallResponse(askUserCall("ask1", askUserArgsValid()))
 	})
 
 	// TRIPWIRE: a scripted in-process adapter, so only a genuine hang reaches 30s.
@@ -243,7 +244,7 @@ func TestPostToolBatch_BlockEndsTheLoopWhenNothingElseDoes(t *testing.T) {
 		if round > 0 {
 			t.Fatalf("the batch block must end the loop; reached request %d", round)
 		}
-		return toolCallResponse(batchShellCall("shell-0"))
+		return agenttest.ToolCallResponse(batchShellCall("shell-0"))
 	})
 
 	var warnings []events.WarningData
@@ -307,7 +308,7 @@ func TestPostToolBatch_NoCallsMeansNoHook(t *testing.T) {
 
 	f := newPostToolBatchFixture(t, mats, func(round int, req llm.Request) llm.Response {
 		if round == 0 {
-			return toolCallResponse(batchShellCall("shell-0"))
+			return agenttest.ToolCallResponse(batchShellCall("shell-0"))
 		}
 		return textResponse("bare text, no tool call")
 	})
@@ -334,7 +335,7 @@ func TestPostToolBatch_RunnerIsWired(t *testing.T) {
 		"type": "command", "timeout": 5,
 		"command": `printf '%s' '{"hookSpecificOutput":{"hookEventName":"PostToolBatch","additionalContext":"wired"}}'`,
 	}}}}
-	f := newPostToolBatchFixture(t, mats, func(round int, req llm.Request) llm.Response { return finalResponse("done") })
+	f := newPostToolBatchFixture(t, mats, func(round int, req llm.Request) llm.Response { return agenttest.FinalResponse("done") })
 	res := f.sess.hookRunner.RunPostToolBatch(context.Background(), hooks.Input{HookEventName: string(plugin.HookPostToolBatch)})
 	if len(res.ModelContext) != 1 || res.ModelContext[0] != "wired" {
 		t.Fatalf("RunPostToolBatch = %+v, want the hook's context despite its Bash matcher", res)
@@ -358,11 +359,11 @@ func TestPostToolBatch_ToolCallsCarryClaudeNameAndModelOutput(t *testing.T) {
 
 	f := newPostToolBatchFixture(t, mats, func(round int, req llm.Request) llm.Response {
 		if round == 0 {
-			return toolCallResponse(batchShellCall("shell-0"))
+			return agenttest.ToolCallResponse(batchShellCall("shell-0"))
 		}
-		return finalResponse("done")
+		return agenttest.FinalResponse("done")
 	})
-	f.sess.RegisterTool("read_file", "returns distinct model and event text",
+	f.sess.registerTool("read_file", "returns distinct model and event text",
 		map[string]any{
 			"type":       "object",
 			"properties": map[string]any{"file_path": map[string]any{"type": "string"}},

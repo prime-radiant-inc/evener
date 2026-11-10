@@ -11,15 +11,21 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/mcpconfig"
 	"primeradiant.com/evener/agent/skill"
 )
 
 var (
-	pluginAbs              = filepath.Abs
-	pluginReadFile         = os.ReadFile
+	pluginAbs = filepath.Abs
+	// pluginReadFile is the single whole-file read the loaders in this package
+	// go through (manifests, hooks files, .mcp.json, plugin and evener-wide
+	// component files). It must refuse a FIFO or device instead of parking the
+	// load on it.
+	pluginReadFile         = execenv.ReadFileCapped
 	pluginReadDir          = os.ReadDir
 	pluginStat             = os.Stat
 	pluginDiscoverAgents   = discoverPluginAgents
@@ -27,6 +33,13 @@ var (
 	pluginDiscoverHooks    = discoverPluginHooksDiag
 	pluginDiscoverMCP      = discoverPluginMCPConfigs
 )
+
+// SkippedComponent names a command or agent file a plugin load skipped and why.
+type SkippedComponent struct {
+	Kind   string // "command" or "agent"
+	File   string // absolute path of the skipped file
+	Reason string
+}
 
 // Manifest represents a parsed plugin.json file.
 // Fields like Author, Commands, Agents, Hooks, and MCPServers use
@@ -113,6 +126,10 @@ type Instance struct {
 	// inline mcpServers JSON, or an inline entry that fails validation): the
 	// affected layer is skipped, but the plugin's skills/agents/hooks still load.
 	MCPConfigWarnings []string
+	// SkippedComponents lists the command and agent files that could not be
+	// read or parsed. Each costs only itself: the plugin's other commands,
+	// agents, skills, hooks and MCP servers still load.
+	SkippedComponents []SkippedComponent
 
 	// UnsupportedHooks is the set of Claude-recognized events declared by this
 	// plugin that evener does not currently fire (tier: reserved-placeholder).
@@ -259,17 +276,18 @@ func Load(dir string) (Instance, error) {
 	lp := Instance{Manifest: manifest, Dir: resolved, ManifestFlavor: flavor, ManifestPath: manifestPath}
 	lp.Skills = discoverPluginSkills(resolved, manifest.Name)
 
-	agents, err := pluginDiscoverAgents(resolved, manifest.Agents, manifest.Name)
+	agents, skippedAgents, err := pluginDiscoverAgents(resolved, manifest.Agents, manifest.Name)
 	if err != nil {
 		return Instance{}, fmt.Errorf("in plugin at %q: %w", resolved, err)
 	}
 	lp.Agents = agents
 
-	commands, err := pluginDiscoverCommands(resolved, manifest.Commands, manifest.Name)
+	commands, skippedCommands, err := pluginDiscoverCommands(resolved, manifest.Commands, manifest.Name)
 	if err != nil {
 		return Instance{}, fmt.Errorf("in plugin at %q: %w", resolved, err)
 	}
 	lp.Commands = commands
+	lp.SkippedComponents = slices.Concat(skippedAgents, skippedCommands)
 
 	hooks, unsupportedHooks, unknownHooks, err := pluginDiscoverHooks(resolved, manifest.Hooks, manifest.Name)
 	if err != nil {
@@ -321,27 +339,6 @@ func ManifestName(dir string) (string, error) {
 	return manifest.Name, nil
 }
 
-// LoadAll loads plugins from multiple directories and checks for
-// duplicate plugin names.
-func LoadAll(dirs []string) ([]Instance, error) {
-	plugins := make([]Instance, 0, len(dirs))
-	seen := make(map[string]string) // name -> dir
-
-	for _, dir := range dirs {
-		lp, err := Load(dir)
-		if err != nil {
-			return nil, err
-		}
-		if prevDir, ok := seen[lp.Manifest.Name]; ok {
-			return nil, fmt.Errorf("duplicate plugin name %q: found in %q and %q",
-				lp.Manifest.Name, prevDir, lp.Dir)
-		}
-		seen[lp.Manifest.Name] = lp.Dir
-		plugins = append(plugins, lp)
-	}
-	return plugins, nil
-}
-
 // SkippedPlugin describes a plugin directory LoadAllFailSoft skipped instead
 // of failing the whole batch, and why.
 type SkippedPlugin struct {
@@ -350,18 +347,14 @@ type SkippedPlugin struct {
 	Reason string // human-readable reason, suitable for a user-facing warning
 }
 
-// LoadAllFailSoft loads each directory in dirs independently, the same way
-// LoadAll does, but never aborts the batch: a directory that fails to load or
-// duplicates an already-selected plugin manifest name is recorded in the
+// LoadAllFailSoft loads each directory in dirs independently and never aborts
+// the batch: a directory that fails to load or duplicates an already-selected plugin manifest name is recorded in the
 // returned skipped slice and passed over, instead of failing every other
 // directory too. Duplicate selection is first-manifest-wins, even when that
 // first plugin later fails an unrelated component load; this gives all batch
 // callers a deterministic selection policy that skill-only readers can share.
 // Use this in batch contexts — session init, the hub's command catalog —
-// where one broken or duplicate directory must not brick everything else;
-// callers that want LoadAll's fail-hard, abort-on-first-error behavior (e.g.
-// an explicit single-plugin install/validate operation) should keep using
-// LoadAll.
+// where one broken or duplicate directory must not brick everything else.
 func LoadAllFailSoft(dirs []string) ([]Instance, []SkippedPlugin) {
 	plugins := make([]Instance, 0, len(dirs))
 	seen := make(map[string]string) // plugin name -> dir already loaded

@@ -80,6 +80,9 @@ func TestHostRestartSettlesCompletedEffectWithUnusableContract(t *testing.T) {
 						t.Fatal(err)
 					}
 					m.cfg.opsWG.Wait()
+					// A restart that drops the channel leaves its supervisor reconnecting
+					// under the gate; the next fail-fast Restart must not race that hold.
+					synctest.Wait()
 					assertRestartRecoveryRecord(t, store, op.ID, want)
 					return op.ID
 				}
@@ -100,7 +103,7 @@ func TestHostRestartSettlesCompletedEffectWithUnusableContract(t *testing.T) {
 				if scenario.incompatible {
 					protocol, flags = "other-protocol", `["api-log"]`
 				}
-				runner.launchResponse = fmt.Appendf(nil, `{"protocol":%q,"version":%q,"launch_flags":%s}`, protocol, restartBuildB, flags)
+				runner.launchResponse = fmt.Appendf(nil, `{"hub_endpoint_schema":1,"protocol":%q,"version":%q,"launch_flags":%s}`, protocol, restartBuildB, flags)
 				version, started := restartBuildB, restartStartB
 				switch scenario.control {
 				case "predecessor":

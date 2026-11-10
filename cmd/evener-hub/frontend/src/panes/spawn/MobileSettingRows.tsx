@@ -7,13 +7,14 @@
 // model and an effort look and behave the same wherever they happen, instead
 // of being bespoke sheets on this surface and different controls on every
 // other.
+
+import type { AppwireClientLike, PluginPreviewLoadState } from "@evener/appwire-client";
 import { type PluginSelectionState, selectedPluginNames } from "@evener/appwire-client";
 import { useEffect, useRef, useState } from "react";
 import { Button, Chevron, DirectoryPicker, type DirectoryPickerProps, InlineNotice, Sheet } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./MobileSettingRows.module.css";
 import { PluginSelectionPanel } from "./PluginSelectionPanel";
-import type { PluginPreviewLoadState } from "./usePluginPreview";
 
 export interface MobilePickerOption {
   value: string;
@@ -38,6 +39,10 @@ export interface MobileSettingRowsProps {
   onAccessChange: (value: string) => void;
   pluginPreview: PluginPreviewLoadState;
   pluginSelection: PluginSelectionState;
+  /** The client a Details-opened plugin sheet reads component inventories through. */
+  pluginClient: Pick<AppwireClientLike, "request">;
+  /** The launch source the preview resolved against; the sheet's read follows it. */
+  pluginHost?: string;
   pluginsSupported?: boolean;
   onPluginSelectionChange: (next: PluginSelectionState) => void;
   onPluginRetry: () => void;
@@ -173,6 +178,8 @@ export function MobileSettingRows({
   onAccessChange,
   pluginPreview,
   pluginSelection,
+  pluginClient,
+  pluginHost,
   pluginsSupported = true,
   onPluginSelectionChange,
   onPluginRetry,
@@ -323,6 +330,8 @@ export function MobileSettingRows({
           <PluginSelectionPanel
             preview={pluginResponse ?? { plugins: [] }}
             selection={pluginDraft}
+            client={pluginClient}
+            host={pluginHost}
             removeOnly={pluginPreview.status === "error"}
             onSelectionChange={setPluginDraft}
             onRetry={onPluginRetry}

@@ -44,6 +44,8 @@ import (
 	"fmt"
 	"time"
 	"unicode/utf8"
+
+	"primeradiant.com/evener/appwire"
 )
 
 // MaxClientOperationIDBytes is spec §1's bound on a client operation ID: an
@@ -78,55 +80,31 @@ const (
 // Valid reports whether k is one of the kinds this store records.
 func (k Kind) Valid() bool { return k == KindDeploy || k == KindRestart }
 
-// State is a record's durable lifecycle state (spec §4). The set is closed: a
-// state outside it never enters the store.
-type State string
+// State is a record's durable lifecycle state (spec §4). The set is closed and
+// declared by the host operation machine in appwire, which the wire's
+// OperationState also uses, so the store and the client cannot name different
+// states. Valid, Terminal and InFlight come from that declaration.
+type State = appwire.OperationState
 
 const (
 	// StatePending is a created record whose worker has not started: the
 	// consume-and-create write lands here (§6 step 4).
-	StatePending State = "pending"
+	StatePending = appwire.OperationStatePending
 	// StateRunning is a record whose worker was launched.
-	StateRunning State = "running"
+	StateRunning = appwire.OperationStateRunning
 	// StateComplete is a terminal success.
-	StateComplete State = "complete"
+	StateComplete = appwire.OperationStateComplete
 	// StateFailed is a terminal failure.
-	StateFailed State = "failed"
+	StateFailed = appwire.OperationStateFailed
 	// StateInterrupted is a terminal unknown outcome: a crash left the record
 	// pending/running and boot moved it here (§7).
-	StateInterrupted State = "interrupted"
+	StateInterrupted = appwire.OperationStateInterrupted
 	// StateOrphanUnverified is the durable per-record state prior fencing builds
 	// left on an unresolved boundary (spec §7). This build neither creates nor
 	// resolves it: it is carried as data so a prior-build record — or a
 	// custody import — keeps its recorded state verbatim.
-	StateOrphanUnverified State = "orphan-unverified"
+	StateOrphanUnverified = appwire.OperationStateOrphanUnverified
 )
-
-// Valid reports whether s is one of the states this store records.
-func (s State) Valid() bool {
-	switch s {
-	case StatePending, StateRunning, StateComplete, StateFailed, StateInterrupted, StateOrphanUnverified:
-		return true
-	}
-	return false
-}
-
-// Terminal reports whether moving a record into s is one of the transitions
-// spec §4's state-transition sequence counts: the terminal states
-// `complete`/`failed`/`interrupted`. StateOrphanUnverified is itself not
-// terminal, so boot leaves it alone (§7).
-func (s State) Terminal() bool {
-	switch s {
-	case StateComplete, StateFailed, StateInterrupted:
-		return true
-	}
-	return false
-}
-
-// InFlight reports whether a state is one boot's interrupted transition owns: a
-// record still `pending`/`running` when the controller came up (spec §7). Every
-// other state is not boot's to move.
-func (s State) InFlight() bool { return s == StatePending || s == StateRunning }
 
 // ProgressEntry is one timestamped progress line on a record (spec §10). The
 // per-record bound on the list is owned by the deploy slice, which is what
@@ -284,16 +262,9 @@ func validateRecord(record Record) error {
 	// The loader refuses a file that names any key twice, so the write path must
 	// refuse a raw field that does: writing one would brick the store on the next
 	// boot — the file the store just committed would fail its own load.
-	for _, field := range []struct {
-		raw  json.RawMessage
-		what string
-	}{
-		{record.FencingEpoch, "fencing epoch"},
-	} {
-		if err := validateRawFieldKeys(field.raw); err != nil {
-			return fmt.Errorf("%w: record %q carries a %s that names a key twice: %w",
-				ErrInvalidRecord, record.ID, field.what, err)
-		}
+	if err := validateRawFieldKeys(record.FencingEpoch); err != nil {
+		return fmt.Errorf("%w: record %q carries a fencing epoch that names a key twice: %w",
+			ErrInvalidRecord, record.ID, err)
 	}
 	if len(record.FencingEpoch) > 0 && !jsonFieldIsObject(record.FencingEpoch) {
 		return fmt.Errorf("%w: record %q carries a fencing epoch that is not an object", ErrInvalidRecord, record.ID)

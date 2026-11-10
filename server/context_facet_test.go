@@ -63,7 +63,7 @@ type contextFacetFixtureRequest struct {
 // contextFacetScriptedAdapter is the LLM boundary. It records every request and
 // returns one fixed assistant message with zero usage. The message carries a
 // fixed 1024-char text part plus one communicate call: production retries bare
-// text until the result tool is called (agent/session_tool_round.go:109-123), so
+// text until the result tool is called, so
 // the result call is forced by the production contract and is not a fixture
 // choice. The round then appends the assistant turn and one tool-result turn.
 type contextFacetScriptedAdapter struct {
@@ -303,14 +303,14 @@ func contextFacetTranscriptCharsOver4(t testing.TB, dir, wantResult string) int 
 	defer f.Close() //nolint:errcheck // read-only
 
 	reader := bufio.NewReaderSize(f, 1<<20)
-	if _, err := transcript.ReadHeader(context.Background(), reader, appTranscriptMaxLineBytes); err != nil {
+	if _, err := transcript.ReadHeader(context.Background(), reader, transcript.DefaultMaxLineBytes); err != nil {
 		t.Fatalf("read transcript header: %v", err)
 	}
 
 	chars := 0
 	sawResult := false
 	for {
-		line, complete, _, err := transcript.ReadLine(reader, appTranscriptMaxLineBytes)
+		line, complete, _, err := transcript.ReadLine(reader, transcript.DefaultMaxLineBytes)
 		if err != nil {
 			t.Fatalf("read transcript: %v", err)
 		}

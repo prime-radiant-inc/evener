@@ -317,7 +317,7 @@ func TestDelegateControllerInputAndCompensatingFinishFailureKeepsExactBinding(t 
 		t.Fatalf("Close store: %v", err)
 	}
 	plan, err := c.AdmitStartInput(started.lease, func() error { return inputErr })
-	if !errors.Is(err, inputErr) || !strings.Contains(err.Error(), "store is closed") {
+	if !errors.Is(err, inputErr) || !errors.Is(err, delegatestore.ErrStoreClosed) {
 		t.Fatalf("AdmitStartInput error = %v, want input and compensating append failures", err)
 	}
 	if row := plan.updates[0].rows[0]; row.lifecycle != delegateLifecycleRunning || row.lastOutcome != nil {
@@ -473,7 +473,7 @@ func TestDelegateControllerInputPersistFinishAppendFailureDoesNotClaimWaiter(t *
 	}
 	inputErr := errors.New("injected input persistence failure")
 	plans, err := c.AdmitStartInput(started.lease, func() error { return inputErr })
-	if !errors.Is(err, inputErr) || !strings.Contains(err.Error(), "store is closed") {
+	if !errors.Is(err, inputErr) || !errors.Is(err, delegatestore.ErrStoreClosed) {
 		t.Fatalf("AdmitStartInput error = %v, want input and append failures", err)
 	}
 	if len(plans.deliveries) != 0 {

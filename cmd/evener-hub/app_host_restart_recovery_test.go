@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -21,6 +22,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
+	"primeradiant.com/evener/internal/hubendpoint"
 )
 
 const (
@@ -205,6 +207,9 @@ func TestHostRestartPreservesCompatibleHubWithUnusableExecutable(t *testing.T) {
 func assertRestartRecoveryRecord(t *testing.T, store *hostops.Store, id string, want hostops.State) {
 	t.Helper()
 	record, ok := store.Record(id)
+	if record.Result != nil && !record.Result.OK {
+		t.Logf("operation %q failure: %+v", id, record.Result)
+	}
 	if !ok || record.State != want || record.Result == nil || record.Result.OK != (want == hostops.StateComplete) {
 		t.Fatalf("operation %q: state=%s result=%+v, want %s", id, record.State, record.Result, want)
 	}
@@ -436,6 +441,11 @@ func TestHostDeployEntryBindingSupersession(t *testing.T) {
 				}
 				first := deploy("unfinished-original")
 				assertRestartRecoveryRecord(t, store, first.ID, hostops.StateFailed)
+				prior, _ := store.Record(first.ID)
+				priorBytes, err := json.Marshal(prior)
+				if err != nil {
+					t.Fatal(err)
+				}
 				entry := host
 				entry.SSH = "new-confirmed-entry.example"
 				if err := os.WriteFile(m.cfg.configPath, []byte(planTestHubTOML([]hostreg.Host{entry})), 0o600); err != nil {
@@ -450,6 +460,26 @@ func TestHostDeployEntryBindingSupersession(t *testing.T) {
 				runner.mu.Unlock()
 				second := deploy("new-confirmed-deploy")
 				assertRestartRecoveryRecord(t, store, second.ID, hostops.StateFailed)
+				unchanged, _ := store.Record(first.ID)
+				unchangedBytes, err := json.Marshal(unchanged)
+				if err != nil || !bytes.Equal(unchangedBytes, priorBytes) {
+					t.Fatalf("supersession rewrote prior terminal record: before=%s after=%s err=%v", priorBytes, unchangedBytes, err)
+				}
+				current, _ := store.Record(second.ID)
+				wantNote := fmt.Sprintf("supersedes pending intent: priorOperationId=%s host=%q generation=%d incarnationId=%q", prior.ID, prior.Host, prior.Generation, prior.IncarnationID)
+				notes := 0
+				for _, progress := range current.Progress {
+					if progress.Message == wantNote {
+						notes++
+					}
+				}
+				wantNotes := 1
+				if sourceFails {
+					wantNotes = 0
+				}
+				if notes != wantNotes {
+					t.Fatalf("supersession notes=%d want=%d prior=%s current=%+v", notes, wantNotes, prior.ID, current)
+				}
 				wantWrites, wantRestarts := 2, 1
 				if sourceFails {
 					wantWrites, wantRestarts = 1, 0
@@ -862,6 +892,7 @@ func TestHostRestartStartsStoppedDeployOnlyInstallation(t *testing.T) {
 			switch scenario {
 			case "occupied-port", "unknown-port":
 				runner.portState = scenario
+				runner.selectedFault = scenario
 			case "start-retry", "known-predecessor-start-retry", "start-retry-occupied-port", "start-retry-unknown-port":
 				runner.failStart = true
 			case "identity-failed", "identity-missing", "retry-identity-failed", "retry-identity-missing":
@@ -908,7 +939,7 @@ func TestHostRestartStartsStoppedDeployOnlyInstallation(t *testing.T) {
 				assertRestartRecoveryRecord(t, store, restart.ID, hostops.StateFailed)
 				runner.mu.Lock()
 				starts, writes := runner.starts, runner.writes
-				runner.portState, runner.failStart = "", false
+				runner.selectedFault, runner.failStart = "", false
 				if scenario == "wrong-build" || scenario == "wrong-pin" {
 					// The owned start is already running. Repair its response and
 					// settle it without launching or replacing another process.
@@ -916,11 +947,14 @@ func TestHostRestartStartsStoppedDeployOnlyInstallation(t *testing.T) {
 				}
 				runner.mu.Unlock()
 				failedStarts := 1
-				if scenario == "occupied-port" || scenario == "unknown-port" {
+				if scenario == "unknown-port" {
 					failedStarts = 0
 				}
 				if starts != failedStarts || writes != 1 {
 					t.Fatalf("failed recovery effects: starts=%d writes=%d, want %d/1", starts, writes, failedStarts)
+				}
+				if scenario == "occupied-port" || scenario == "unknown-port" {
+					assertPublicRecoveryEffects(t, runner, 1, 1, 0, "", "")
 				}
 				if retryStart {
 					buildinfo.GitSHA = restartBuildA
@@ -928,6 +962,7 @@ func TestHostRestartStartsStoppedDeployOnlyInstallation(t *testing.T) {
 				if strings.HasPrefix(scenario, "start-retry-") {
 					runner.mu.Lock()
 					runner.portState = strings.TrimPrefix(scenario, "start-retry-")
+					runner.selectedFault = runner.portState
 					runner.mu.Unlock()
 					params.OperationID = "retry-start-blocked-port"
 					blocked, err := m.Restart(t.Context(), params)
@@ -939,10 +974,14 @@ func TestHostRestartStartsStoppedDeployOnlyInstallation(t *testing.T) {
 					assertPublicRecoveryEffects(t, runner, 1, 1, 0, "", "")
 					runner.mu.Lock()
 					starts = runner.starts
-					runner.portState = ""
+					runner.selectedFault = ""
 					runner.mu.Unlock()
-					if starts != 1 {
-						t.Fatalf("blocked recorded startup ran again: starts=%d", starts)
+					blockedStarts := 1
+					if scenario == "start-retry-occupied-port" {
+						blockedStarts++ // The new hub's own lock refuses the cold start.
+					}
+					if starts != blockedStarts {
+						t.Fatalf("blocked recorded startup attempts=%d, want %d", starts, blockedStarts)
 					}
 				}
 				params.OperationID = "retry-start-deployed-installation"
@@ -953,6 +992,9 @@ func TestHostRestartStartsStoppedDeployOnlyInstallation(t *testing.T) {
 				m.cfg.opsWG.Wait()
 				if retryStart {
 					wantStarts = 2
+				}
+				if scenario == "occupied-port" || scenario == "start-retry-occupied-port" {
+					wantStarts++
 				}
 			}
 			if strings.Contains(scenario, "identity-") {
@@ -1007,7 +1049,15 @@ func TestHostRestartStartsStoppedDeployOnlyInstallation(t *testing.T) {
 			assertPublicRecoveryEffects(t, runner, wantWrites, wantWrites, 0, target, wantStart)
 			runner.mu.Lock()
 			starts, epochs := runner.starts, append([]appwire.FencingEpoch(nil), runner.probeEpochs...)
+			kills, lockRefusals := runner.kills, runner.startLockRefusals
 			runner.mu.Unlock()
+			wantLockRefusals := 0
+			if scenario == "occupied-port" || scenario == "start-retry-occupied-port" {
+				wantLockRefusals = 1
+			}
+			if kills != 0 || lockRefusals != wantLockRefusals {
+				t.Fatalf("stopped startup: kills=%d lock refusals=%d, want 0/%d", kills, lockRefusals, wantLockRefusals)
+			}
 			record, _ := store.Record(restart.ID)
 			if starts != wantStarts || len(epochs) == 0 || epochs[len(epochs)-1] != epochOf(record) {
 				t.Fatalf("startup/epoch: starts=%d epochs=%v record=%+v", starts, epochs, record)
@@ -1075,31 +1125,33 @@ func TestHostRestartRenewsStoppedReplacementCommand(t *testing.T) {
 				if mode == "systemd" {
 					wantKills, wantRestarts = 0, 1
 				}
-				assertStopped := func() {
+				assertStopped := func(wantStarts int) {
 					t.Helper()
 					assertPublicRecoveryEffects(t, runner, 0, 0, wantRestarts, "", "")
 					runner.mu.Lock()
 					defer runner.mu.Unlock()
-					if runner.kills != wantKills || runner.starts != 0 {
+					if runner.kills != wantKills || runner.starts != wantStarts {
 						t.Fatalf("stopped effect: kills=%d starts=%d", runner.kills, runner.starts)
 					}
 				}
-				assertStopped()
+				assertStopped(0)
 				if err := ch.Close(); err != nil {
 					t.Fatal(err)
 				}
 				waitPublicRecoveryEvent(t, events, sshconn.EventFailed)
-				assertStopped() // Automatic recovery must retain the original entry binding.
+				assertStopped(0) // Automatic recovery must retain the original entry binding.
 				buildinfo.GitSHA = restartBuildB
 				runner.mu.Lock()
 				runner.afterStop, runner.failRestart = nil, false
 				switch check {
 				case "occupied-port", "unknown-port":
 					runner.portState = check
+					runner.selectedFault = check
 				case "wrong-pin":
 					runner.healthPin = restartBuildB
 				case "old-process":
 					runner.startTime = restartStartA
+					runner.retainSelectedPredecessor = true
 				case "wrong-probe-process":
 					runner.probeStart = restartStartA
 				}
@@ -1113,14 +1165,21 @@ func TestHostRestartRenewsStoppedReplacementCommand(t *testing.T) {
 				if check != "matching" {
 					assertRestartRecoveryRecord(t, store, restart.ID, hostops.StateFailed)
 				}
-				if check == "occupied-port" || check == "unknown-port" {
-					assertStopped()
+				wantStarts := 1
+				switch check {
+				case "occupied-port":
+					// A cold start cannot stop another owner. The new hub's own
+					// lock rejects this attempt before it publishes an incarnation.
+					assertStopped(1)
+					wantStarts++
+				case "unknown-port":
+					assertStopped(0)
 				}
 				if check != "matching" && check != "wrong-probe-process" {
 					// Clear only the injected observation. Recovery must retain the
 					// saved command, pin and predecessor, and never stop another hub.
 					runner.mu.Lock()
-					runner.portState, runner.healthPin = "", ""
+					runner.selectedFault, runner.healthPin = "", ""
 					if check == "old-process" {
 						runner.startedAt = restartStartB
 					}
@@ -1143,12 +1202,24 @@ func TestHostRestartRenewsStoppedReplacementCommand(t *testing.T) {
 				record, _ := store.Record(restart.ID)
 				runner.mu.Lock()
 				defer runner.mu.Unlock()
-				wantCommand := "systemctl restart evener-hub.service"
+				wantCommand := "systemctl start evener-hub.service"
 				if mode == "bare" {
-					wantCommand = "nohup /opt/evener/bin/evener hub -addr 127.0.0.1:9180 -config /srv/recovered.toml >>/srv/recovered.log 2>&1 </dev/null &"
+					wantCommand = "CDPATH='' cd -P -- /home/ops || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/ops; nohup /opt/evener/bin/evener hub -addr 127.0.0.1:9180 -config /srv/recovered.toml >>/srv/recovered.log 2>&1 </dev/null &"
 				}
-				if runner.kills != wantKills || runner.starts != 1 || len(runner.launchCommands) != 1 || runner.launchCommands[0] != wantCommand {
+				if runner.kills != wantKills || runner.starts != wantStarts || len(runner.launchCommands) != wantStarts {
 					t.Fatalf("saved replacement replay: kills=%d starts=%d commands=%q", runner.kills, runner.starts, runner.launchCommands)
+				}
+				for _, command := range runner.launchCommands {
+					if command != wantCommand {
+						t.Fatalf("saved replacement command: got %q, want %q", command, wantCommand)
+					}
+				}
+				wantLockRefusals := 0
+				if check == "occupied-port" {
+					wantLockRefusals = 1
+				}
+				if runner.startLockRefusals != wantLockRefusals {
+					t.Fatalf("start lock refusals=%d, want %d", runner.startLockRefusals, wantLockRefusals)
 				}
 				if len(runner.probeEpochs) == 0 || runner.probeEpochs[len(runner.probeEpochs)-1] != epochOf(record) || runner.afterProbes != 1 {
 					t.Fatalf("replacement process proof: epochs=%v probes=%d record=%+v", runner.probeEpochs, runner.afterProbes, record)
@@ -1159,6 +1230,12 @@ func TestHostRestartRenewsStoppedReplacementCommand(t *testing.T) {
 }
 
 func TestHostRestartDisconnectedWithoutDeploymentDoesNotInstall(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		restartDisconnectedWithoutDeployment(t)
+	})
+}
+
+func restartDisconnectedWithoutDeployment(t *testing.T) {
 	runner := &restartRecoveryRunner{diskVersion: restartBuildA, runningVersion: restartBuildA, startedAt: restartStartA}
 	m, manager, store, host, _ := publicRecoveryHub(t, runner, restartBuildB)
 	ch, err := manager.Ensure(t.Context(), host.Name)
@@ -1176,6 +1253,9 @@ func TestHostRestartDisconnectedWithoutDeploymentDoesNotInstall(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.cfg.opsWG.Wait()
+	// The dropped channel's supervisor takes the gate once the operation
+	// releases it; the next Restart must not race that hold.
+	synctest.Wait()
 	assertRestartRecoveryRecord(t, store, restart.ID, hostops.StateFailed)
 	assertPublicRecoveryEffects(t, runner, 0, 0, 0, restartBuildA, restartStartA)
 	runner.mu.Lock()
@@ -1197,6 +1277,12 @@ func TestHostRestartDisconnectedWithoutDeploymentDoesNotInstall(t *testing.T) {
 }
 
 func TestHostDeployRestartAfterFreshProvisioningDoesNotRepush(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		restartAfterFreshProvisioning(t)
+	})
+}
+
+func restartAfterFreshProvisioning(t *testing.T) {
 	sha, dirty, channel := buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel
 	t.Cleanup(func() { buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel = sha, dirty, channel })
 	buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel = "", "", ""
@@ -1220,6 +1306,9 @@ func TestHostDeployRestartAfterFreshProvisioningDoesNotRepush(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.cfg.opsWG.Wait()
+	// The channel's supervisor takes the gate once the deploy releases it; the
+	// next Restart must not race that hold.
+	synctest.Wait()
 	assertRestartRecoveryRecord(t, store, deploy.ID, hostops.StateComplete)
 	assertPublicRecoveryEffects(t, runner, 2, 2, 1, "dev", restartStartB)
 	restart, err := m.Restart(t.Context(), appwire.HostRestartParams{Name: host.Name, Generation: host.Generation, IncarnationID: host.IncarnationID, OperationID: "standalone-after-provisioning"})
@@ -1335,6 +1424,7 @@ type restartRecoveryRunner struct {
 	delayBridgeExit               bool
 	writes, restarts, afterProbes int
 	builds, starts                int
+	startLockRefusals             int
 	buildVersion                  string
 	buildError                    error
 	acknowledgeFirstWrite         bool
@@ -1351,6 +1441,8 @@ type restartRecoveryRunner struct {
 	launchCommands                []string
 	supervisor                    string
 	portState, startVersion       string
+	selectedFault                 string
+	retainSelectedPredecessor     bool
 	startTime                     string
 	healthPin                     string
 	failStart, omitProbeStart     bool
@@ -1363,10 +1455,13 @@ type restartRecoveryRunner struct {
 	streams                       []*probeFakeStdio
 }
 
-func (r *restartRecoveryRunner) Run(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+func (r *restartRecoveryRunner) Run(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	command := strings.Join(argv, " ")
+	if out, handled, err := r.selectedEvidenceLocked(strings.Join(argv[12:], " ")); handled {
+		return out, err
+	}
 	switch {
 	case strings.HasSuffix(command, "uname -s"):
 		if r.supervisor == "launchd" {
@@ -1378,8 +1473,8 @@ func (r *restartRecoveryRunner) Run(_ context.Context, argv []string, stdin io.R
 			return []byte("arm64\n"), nil
 		}
 		return []byte("x86_64\n"), nil
-	case strings.Contains(command, "XDG_STATE_HOME"):
-		return []byte("HOME=/home/ops\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
+	case strings.Join(argv[12:], " ") == hostFixtureEnvironmentProbe:
+		return runHostFixtureEnvironmentProbe(ctx, strings.Join(argv[12:], " "), []string{"HOME=/home/ops", "XDG_STATE_HOME=", "XDG_CONFIG_HOME="})
 	case strings.HasSuffix(command, "id -u"):
 		return []byte("1000\n"), nil
 	case strings.Contains(command, "launch-check"):
@@ -1392,8 +1487,8 @@ func (r *restartRecoveryRunner) Run(_ context.Context, argv []string, stdin io.R
 		if r.launchResponse != nil {
 			return r.launchResponse, nil
 		}
-		return fmt.Appendf(nil, `{"protocol":%q,"version":%q,"launch_flags":["api-log"]}`, appwire.ProtocolVersion, r.diskVersion), nil
-	case strings.Contains(command, "if test -x"):
+		return fmt.Appendf(nil, `{"hub_endpoint_schema":1,"protocol":%q,"version":%q,"launch_flags":["api-log"]}`, appwire.ProtocolVersion, r.diskVersion), nil
+	case strings.Contains(command, "if test -x"), strings.Contains(command, "if test -e"):
 		if r.missing {
 			return nil, r.missingError
 		}
@@ -1402,10 +1497,15 @@ func (r *restartRecoveryRunner) Run(_ context.Context, argv []string, stdin io.R
 		return nil, nil
 	case strings.Contains(command, "command -v evener"):
 		return []byte("/opt/evener/bin/evener\n"), nil
+	case strings.Contains(command, `"${HOME-}/.local/bin/evener"`):
+		return nil, nil
 	case strings.Contains(command, "evener_resolve"):
 		return []byte("/opt/evener/bin/evener\n"), nil
 	case strings.Contains(command, "list-units"):
 		if r.noSupervisor || r.supervisor == "systemd-user" && !strings.Contains(command, "--user") {
+			return nil, nil
+		}
+		if strings.Contains(command, "--user") && r.supervisor != "systemd-user" {
 			return nil, nil
 		}
 		if r.runningVersion == "" {
@@ -1429,9 +1529,9 @@ func (r *restartRecoveryRunner) Run(_ context.Context, argv []string, stdin io.R
 			return []byte("4242\n"), nil
 		}
 		if r.portState == "occupied-port" || r.noSupervisor && r.runningVersion != "" {
-			return []byte(sshconn.ListenerPresentMarker), nil
+			return []byte(hostListenerPresentMarker), nil
 		}
-		return []byte(sshconn.NoListenerMarker), nil
+		return []byte(hostNoListenerMarker), nil
 	case r.bareProcess && strings.Contains(command, "/proc/4242/cmdline"):
 		return []byte("/opt/evener/bin/evener\x00hub\x00-addr\x00127.0.0.1:9180\x00-config\x00/srv/recovered.toml\x00"), nil
 	case r.bareProcess && strings.Contains(command, "lsof -nP -p 4242"):
@@ -1440,8 +1540,6 @@ func (r *restartRecoveryRunner) Run(_ context.Context, argv []string, stdin io.R
 		return []byte("ops\n"), nil
 	case r.bareProcess && strings.Contains(command, "lsof -p 4242 -a -d 1,2"):
 		return []byte("evener 4242 ops 1w REG 8,1 123 456 /srv/recovered.log\nevener 4242 ops 2w REG 8,1 123 456 /srv/recovered.log\n"), nil
-	case r.bareProcess && strings.Contains(command, "kill -s 0 -- 4242"):
-		return []byte("__sshconn_pid_gone__\n"), nil
 	case r.bareProcess && strings.Contains(command, "kill -- 4242"):
 		if r.observeMutation != nil {
 			r.observeMutation()
@@ -1459,6 +1557,10 @@ func (r *restartRecoveryRunner) Run(_ context.Context, argv []string, stdin io.R
 		}
 		r.starts++
 		r.launchCommands = append(r.launchCommands, argv[len(argv)-1])
+		if r.selectedFault == "occupied-port" {
+			r.startLockRefusals++
+			return nil, errors.New("new hub refused occupied selected root")
+		}
 		if r.failStart {
 			return nil, errors.New("startup interrupted")
 		}
@@ -1544,6 +1646,130 @@ func (r *restartRecoveryRunner) Run(_ context.Context, argv []string, stdin io.R
 	default:
 		return nil, fmt.Errorf("unexpected remote command: %v", argv)
 	}
+}
+
+// selectedEvidenceLocked extends the existing declared remote process model at
+// the same command boundary as health. Endpoint data and the independent lock,
+// process and supervisor observations still pass through production validation.
+func (r *restartRecoveryRunner) selectedEvidenceLocked(command string) ([]byte, bool, error) {
+	pid, ticks := "4242", "12500"
+	if r.startedAt != "" && (r.startedAt != restartStartA || r.starts > 0 && r.startTime == restartStartA && !r.retainSelectedPredecessor) {
+		pid, ticks = "4343", "13500"
+		if r.restarts > 1 {
+			pid, ticks = strconv.Itoa(4242+101*r.restarts), strconv.Itoa(12500+1000*r.restarts)
+		}
+	}
+	config := "/home/ops/.config/evener/hub.toml"
+	if r.bareProcess {
+		config = "/srv/recovered.toml"
+	}
+	for _, probePID := range []string{"4242", pid} {
+		if command == "if kill -s 0 -- "+probePID+" 2>/dev/null; then echo __sshconn_pid_alive__; else echo __sshconn_pid_gone__; fi" {
+			if r.runningVersion != "" && probePID == pid {
+				return []byte("__sshconn_pid_alive__\n"), true, nil
+			}
+			return []byte("__sshconn_pid_gone__\n"), true, nil
+		}
+	}
+	switch {
+	case strings.Contains(command, " hub endpoint --json"):
+		if r.interruptRestartVerification && r.restarts > 0 {
+			return nil, true, errors.New("replacement health observation interrupted")
+		}
+		if r.runningVersion == "" && r.selectedFault == "unknown-port" {
+			return nil, true, errors.New("selected endpoint observation interrupted")
+		}
+		startedAt := r.startedAt
+		if startedAt == "" && r.runningVersion == "dev" {
+			startedAt = restartStartA
+		}
+		// Config-context endpoint probes do not consume the final identity fault.
+		// Count only the selected endpoint observations, first readiness then identity.
+		if r.starts > 0 && r.runningVersion != "" && !strings.HasPrefix(command, "CDPATH='' cd -P -- ") {
+			r.healthAfterStart++
+			if r.healthAfterStart >= 2 {
+				switch r.startupIdentityFault {
+				case "identity-failed":
+					return nil, true, errors.New("startup identity observation interrupted")
+				case "identity-missing":
+					startedAt = ""
+				}
+			}
+		}
+		var report hubendpoint.Report
+		if err := json.Unmarshal([]byte(hostFixtureSelectedEndpoint), &report); err != nil {
+			return nil, true, err
+		}
+		report.ConfigPath, report.HubStateRoot = config, "/home/ops/.local/state/evener"
+		report.ConfiguredListenAddr = "127.0.0.1:9180"
+		report.Running.ConfigPath, report.Running.HubStateRoot = report.ConfigPath, report.HubStateRoot
+		report.Running.RequestedListenAddr, report.Running.BoundAddr = report.ConfiguredListenAddr, report.ConfiguredListenAddr
+		report.Running.LocalURL, report.Running.LoopbackURL = "http://127.0.0.1:9180", "http://127.0.0.1:9180"
+		report.Running.PID, _ = strconv.Atoi(pid)
+		report.Running.BootID = "public-recovery-" + ticks
+		report.Running.Version, report.Running.BackendGitSHA = r.runningVersion, r.runningVersion
+		if r.healthPin != "" {
+			report.Running.BackendGitSHA = r.healthPin
+		}
+		report.Running.StartedAt, _ = time.Parse(time.RFC3339, startedAt)
+		if r.runningVersion == "" {
+			report.State, report.Running = "stopped", nil
+			if r.selectedFault == "occupied-port" {
+				report.State, report.Reason = "starting", "selected lock contended"
+			}
+		}
+		out, err := json.Marshal(report)
+		return out, true, err
+	case strings.HasPrefix(command, "lock=/home/ops/.local/state/evener/hub.lock;"):
+		if r.runningVersion == "" {
+			if r.selectedFault == "occupied-port" {
+				return []byte("9999\n"), true, nil
+			}
+			return nil, true, nil
+		}
+		return []byte(pid + "\n"), true, nil
+	case strings.HasPrefix(command, "cat /proc/sys/kernel/random/boot_id && s=$(cat /proc/"):
+		return []byte("public-kernel-boot\n" + ticks + "\n"), true, nil
+	case command == "id -un", command == "ps -o user= -p "+pid:
+		return []byte("ops\n"), true, nil
+	case command == "if [ -r /proc/"+pid+"/cmdline ]; then cat /proc/"+pid+"/cmdline; fi":
+		args := []string{"/opt/evener/bin/evener", "hub"}
+		if r.bareProcess {
+			args = append(args, "-addr", "127.0.0.1:9180", "-config", config)
+		}
+		return []byte(strings.Join(args, "\x00") + "\x00"), true, nil
+	case command == "readlink /proc/"+pid+"/cwd", command == "pwd", command == "CDPATH='' cd -P -- /home/ops && pwd -P":
+		return []byte("/home/ops\n"), true, nil
+	case strings.HasPrefix(command, "(exec 3< /proc/"+pid+"/environ"), strings.HasPrefix(command, `if [ "${HOME+x}" = x ];`), strings.HasPrefix(command, "values=$(systemctl --user show-environment)"):
+		return []byte("HOME=/home/ops\x00"), true, nil
+	case command == "cat /proc/"+pid+"/cgroup":
+		return []byte("0::/user.slice/session.scope\n"), true, nil
+	case strings.Contains(command, "show --property=Id,MainPID,User,ExecStart,WorkingDirectory -- evener-hub.service"):
+		if r.runningVersion == "" {
+			pid = "0"
+		}
+		return []byte("Id=evener-hub.service\nMainPID=" + pid + "\nUser=ops\nExecStart={ path=/opt/evener/bin/evener ; argv[]=/opt/evener/bin/evener hub ; ignore_errors=no ; }\nWorkingDirectory=/home/ops\n"), true, nil
+	case strings.HasPrefix(command, "definition=$(systemctl"):
+		return []byte("1234 567\n"), true, nil
+	case strings.Contains(command, "show --property=User,EnvironmentFiles,PassEnvironment,UnsetEnvironment,SetLoginEnvironment -- evener-hub.service"):
+		return []byte("User=ops\nEnvironmentFiles=\nPassEnvironment=\nUnsetEnvironment=\nSetLoginEnvironment=yes\n"), true, nil
+	case strings.HasPrefix(command, "values=$(systemctl") && strings.Contains(command, "--property=Environment --value"):
+		return nil, true, nil
+	case strings.HasPrefix(command, "launchctl print gui/1000/com.example.evener-hub | awk "):
+		if r.runningVersion == "" {
+			pid = "0"
+		}
+		return []byte("pid = " + pid + "\nprogram = /opt/evener/bin/evener\nworking directory = /home/ops\narguments = {\n/opt/evener/bin/evener\nhub\n}\nHOME => /home/ops\n"), true, nil
+	case command == "ps -p "+pid+" -o lstart=":
+		return []byte("Fri Oct 16 10:00:" + ticks + " 2026\n"), true, nil
+	case command == "lsof -a -p "+pid+" -d cwd -Fn":
+		return []byte("p" + pid + "\nfcwd\nn/home/ops\n"), true, nil
+	case strings.HasPrefix(command, "ps eww -p "+pid+" -o command= | awk "):
+		return []byte("HOME=/home/ops\x00"), true, nil
+	case command == "getent passwd ops | cut -d: -f6":
+		return []byte("/home/ops\n"), true, nil
+	}
+	return nil, false, nil
 }
 
 func (r *restartRecoveryRunner) Start(context.Context, []string, io.Writer) (sshconn.Stdio, error) {

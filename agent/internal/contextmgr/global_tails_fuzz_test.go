@@ -54,10 +54,10 @@ func gctPureTails(t *testing.T, token string) {
 	if !end || msg != "fallback" {
 		t.Fatalf("output fallback = %v, %q", end, msg)
 	}
-	_ = summarizeToolResult("unknown", token, []byte(`{}`))
-	_ = summarizeToolResult("read_file", token, []byte(`{}`))
-	_ = summarizeToolResult("shell", token, []byte(`{"command":"`+strings.Repeat("x", 61)+`"}`))
-	_ = summarizeToolResult("delegate", token, []byte(`{}`))
+	_ = summarizeToolResult("unknown", token, false, []byte(`{}`))
+	_ = summarizeToolResult("read_file", token, false, []byte(`{}`))
+	_ = summarizeToolResult("shell", token, false, []byte(`{"command":"`+strings.Repeat("x", 61)+`"}`))
+	_ = summarizeToolResult("delegate", token, false, []byte(`{}`))
 	clearThinking(nil, 0)
 	clearThinking([]schema.Turn{schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 		{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "[thinking: 1 chars]"}},
@@ -134,7 +134,7 @@ func gctManagerTails(t *testing.T, token string) {
 		schema.NewTurn(schema.TurnSteering, llm.User("steer")),
 		schema.NewTurn(schema.TurnUserInput, llm.User("recent")),
 	}
-	if _, err := cm.summarizeWithLLMSteered(ctx, history, 1, token); err == nil {
+	if _, err := cm.summarizeFold(ctx, history, 1, token, nil); err == nil {
 		t.Fatal("scripted summarization failure was swallowed")
 	}
 	if got := renderHistoryForElicit([]schema.Turn{{}}, 20); got != "" {
@@ -156,57 +156,6 @@ func gctStrategyTails(t *testing.T, token string) {
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant(strings.Repeat("analysis", 100))),
 		schema.NewTurn(schema.TurnUserInput, llm.User("recent")),
 	}
-
-	cpCM := NewManager(profile, client, cheapmodel.New(client))
-	cpCM.PreserveRecentTurns = 1
-	cpCM.ObservationMaskThreshold = 0
-	cpCM.ThinkingClearThreshold = 0
-	cpCM.CheckpointThreshold = 0
-	cpCM.SummarizeThreshold = 0
-	cpCallbacks := 0
-	cpCM.OnCompactionTurn = func(schema.Turn) { cpCallbacks++ }
-	cpHistory := append([]schema.Turn(nil), longHistory...)
-	if err := NewCheckpointPredStrategy(cpCM).ManageContext(ctx, &cpHistory, 0, ctxmgr_noopEmit); err != nil || cpCallbacks == 0 {
-		t.Fatalf("checkpoint strategy callbacks=%d err=%v", cpCallbacks, err)
-	}
-
-	obsCM := NewManager(profile, nil, cheapmodel.New(nil))
-	obsCM.PreserveRecentTurns = 1
-	obsCM.ObservationMaskThreshold = 0
-	obsCM.CheckpointThreshold = 0
-	obsCallbacks := 0
-	obsCM.OnCompactionTurn = func(schema.Turn) { obsCallbacks++ }
-	obsHistory := append([]schema.Turn(nil), longHistory...)
-	if err := NewObsMaskStrategy(obsCM).ManageContext(ctx, &obsHistory, 0, ctxmgr_noopEmit); err != nil || obsCallbacks == 0 {
-		t.Fatalf("obs strategy callbacks=%d err=%v", obsCallbacks, err)
-	}
-
-	rd := NewRecursiveDistillStrategy(NewManager(profile, client, cheapmodel.New(client)))
-	rd.microSummaries = []string{"micro"}
-	if _, err := rd.microSummarize(ctx, append(longHistory, schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("id", "shell", strings.Repeat("x", 101), false)))); err != nil {
-		t.Fatalf("micro summarize: %v", err)
-	}
-	if _, err := rd.macroSummarize(ctx, []string{strings.Repeat("m", 501)}); err != nil {
-		t.Fatalf("macro summarize: %v", err)
-	}
-	failing := llm.NewClient()
-	failing.Register(&agenttest.ScriptedAdapter{Provider: profile.ID(), FaultResponder: func(llm.Request) error { return errors.New("distill failure") }})
-	failingRD := NewRecursiveDistillStrategy(NewManager(profile, failing, cheapmodel.New(failing)))
-	if _, err := failingRD.microSummarize(ctx, longHistory); err == nil {
-		t.Fatal("micro summarization failure was swallowed")
-	}
-	if _, err := failingRD.macroSummarize(ctx, []string{"micro"}); err == nil {
-		t.Fatal("macro summarization failure was swallowed")
-	}
-
-	largePrediction := make([]schema.Turn, 0, 110)
-	for i := 0; i < 110; i++ {
-		largePrediction = append(largePrediction, schema.NewTurn(schema.TurnAssistant, llm.Assistant(strings.Repeat("p", 300))))
-	}
-	if _, err := NewCheckpointPredStrategy(NewManager(profile, client, cheapmodel.New(client))).predictiveCheckpoint(ctx, largePrediction, 0); err != nil {
-		t.Fatalf("large predictive checkpoint: %v", err)
-	}
-	aggressiveMaskObservations([]schema.Turn{schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("error", "shell", "keep", true))}, 0)
 
 	goodHost := &fakeStrategyHost{stateDir: t.TempDir(), id: "good", profile: profile}
 	sls, err := NewSessionLogStrategy(NewManager(profile, client, cheapmodel.New(client)), goodHost)

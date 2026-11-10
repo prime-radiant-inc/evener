@@ -34,14 +34,19 @@
 // just a historical one - and the card then degrades to exactly its
 // argument-only rendering: the window cannot be derived from state it
 // doesn't have, so the body falls back to one row per touched task with
-// "#<id>" labels, and no fabricated auto-start (the contract of the AppWire
-// package's taskListStep.ts).
+// "#<id>" labels, plus one row per status-less fresh note (Jesse's ruling on
+// #2257: that note has no slot to ride and must not be lost), and no
+// fabricated auto-start (the contract of the AppWire package's
+// taskListStep.ts).
 import type { ItemModel, TaskRow, TouchedRow } from "@evener/appwire-client";
 import {
   freshNotes,
   mutationRows,
+  parseArgs,
   parseTaskListData,
+  str,
   taskAggregateLabel,
+  taskLabel,
   taskMutationRecap,
   taskMutationSummary,
   taskSettledCount,
@@ -51,7 +56,7 @@ import { Meter, OpenButton, VisuallyHidden } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer, toolCallFailed } from "../toolRenderers";
-import { STATUS_TOUCH, TaskCheck, TOUCH_WORD } from "./taskCheck";
+import { TaskCheck, TOUCH_WORD, taskStatusTouch, taskStatusWord } from "./taskCheck";
 import styles from "./taskcard.module.css";
 
 const CLASS = {
@@ -65,6 +70,7 @@ const CLASS = {
   descNow: requireClass(styles.descNow, "taskcard.module.css", "descNow"),
   descNext: requireClass(styles.descNext, "taskcard.module.css", "descNext"),
   note: requireClass(styles.note, "taskcard.module.css", "note"),
+  noteMark: requireClass(styles.noteMark, "taskcard.module.css", "noteMark"),
   progress: requireClass(styles.progress, "taskcard.module.css", "progress"),
   spined: requireClass(styles.spined, "taskcard.module.css", "spined"),
 };
@@ -104,9 +110,55 @@ export function parseProgress(output: string | undefined): Progress | undefined 
 }
 
 // isTaskMutation is the non-suppression predicate: a valid append/update that
-// actually changed at least one task status is the only thing that renders.
+// actually changed at least one task status renders, and so does one that left
+// a fresh note on a status-less task (Jesse's ruling on #2257: the note must
+// not be lost, even when it is the call's only news).
 function isTaskMutation(item: ItemModel): boolean {
-  return (mutationRows(item) ?? []).length > 0;
+  return (mutationRows(item) ?? []).length > 0 || statuslessNoteRows(item).length > 0;
+}
+
+// A note THIS call added to a task without giving that task any status word.
+// A note riding a status word is already carried by that row (updateRows
+// merges it and freshNotes hands it to the window slot), so only these can
+// vanish. Update-shaped calls carry notes per update; append-shaped calls mint
+// no visible ids, so the same degradation as before remains there.
+interface NoteRow {
+  id: number;
+  note: string;
+}
+
+const statuslessNoteRowsCache = new WeakMap<ItemModel, NoteRow[]>();
+
+// One derivation per item, like mutationRows: the folded summary, the recap,
+// suppress(), and the body all ask for the same rows from one
+// argumentsJSON/raw pair, and ItemModels are immutable snapshots.
+function statuslessNoteRows(item: ItemModel): NoteRow[] {
+  const cached = statuslessNoteRowsCache.get(item);
+  if (cached) return cached;
+  const args = parseArgs(item.argumentsJSON);
+  const action = str(args, "action") ?? "";
+  const updates = action === "update" ? args.updates : action === "" ? args.update : undefined;
+  const statused = new Set<number>();
+  for (const update of Array.isArray(updates) ? updates : []) {
+    if (typeof update !== "object" || update === null || Array.isArray(update)) continue;
+    const record = update as Record<string, unknown>;
+    const id = typeof record.id === "number" ? record.id : undefined;
+    if (id !== undefined && str(record, "status")) statused.add(id);
+  }
+  const rows = [...freshNotes(item)].filter(([id]) => !statused.has(id)).map(([id, note]) => ({ id, note }));
+  statuslessNoteRowsCache.set(item, rows);
+  return rows;
+}
+
+// The folded line for a call whose only news is a status-less note: the
+// shared summary and recap are mutation-only, so name the noted task with the
+// same label its row uses. The note mark keeps the card's mark + label
+// grammar without inventing prose. Jesse's ruling on #2257.
+const NOTE_MARK = "✎";
+
+function taskNoteSummary(item: ItemModel): string {
+  const row = statuslessNoteRows(item).at(-1);
+  return row ? `${NOTE_MARK} ${taskLabel(parseTaskListData(item.raw), row.id)}` : "";
 }
 
 // ---- the window: settled, working, next -------------------------------
@@ -200,12 +252,12 @@ const SLOT_DESC_CLASS: Record<SlotKind, string> = {
 // the same map the tasks pane's rows use; stateWindow guarantees a slot's
 // kind and its task's status agree.
 function TaskWindowRow({ task, kind, note }: { task: TaskRow; kind: SlotKind; note?: string }) {
-  const touch = STATUS_TOUCH[task.status];
+  const touch = taskStatusTouch(task.status);
   return (
     <div className={`${CLASS.row} ${CLASS.spined}`} data-testid="task-card-row" data-kind={kind}>
       <TaskCheck touch={touch} />
       <div className={CLASS.rowText}>
-        <VisuallyHidden>{TOUCH_WORD[touch]}</VisuallyHidden>
+        <VisuallyHidden>{taskStatusWord(task.status)}</VisuallyHidden>
         <span className={SLOT_DESC_CLASS[kind]}>{task.description}</span>
         {note && <span className={CLASS.note}>{note}</span>}
       </div>
@@ -224,6 +276,21 @@ function TaskFallbackRow({ row }: { row: TouchedRow }) {
         <VisuallyHidden>{TOUCH_WORD[row.touch]}</VisuallyHidden>
         <span className={struck ? CLASS.descStruck : CLASS.desc}>{row.label}</span>
         {row.note && <span className={CLASS.note}>{row.note}</span>}
+      </div>
+    </div>
+  );
+}
+
+// A status-less note's own row: the task's label and the note. No TaskCheck
+// glyph - a note is not a status touch - but the empty mark keeps the text
+// column aligned with the mutation rows above it. Jesse's ruling on #2257.
+function TaskNoteRow({ row, label }: { row: NoteRow; label: string }) {
+  return (
+    <div className={CLASS.row} data-testid="task-card-row" data-kind="note">
+      <span className={CLASS.noteMark} aria-hidden="true" />
+      <div className={CLASS.rowText}>
+        <span className={CLASS.desc}>{label}</span>
+        <span className={CLASS.note}>{row.note}</span>
       </div>
     </div>
   );
@@ -256,35 +323,50 @@ function TaskCardBody({ item, sessionRef }: ToolRenderProps) {
   const settledTouch = touched.filter((row) => row.touch === "done" || row.touch === "cancelled").at(-1);
   const win = stateWindow(state, settledTouch?.id);
   const fresh = freshNotes(item);
+  // A status-less note on a task the window already shows is not lost, so it
+  // must not get a second row.
+  const covered = new Set<number>();
+  for (const task of [win.settled, win.current, win.next]) if (task) covered.add(task.id);
+  const notes = statuslessNoteRows(item).filter((row) => !covered.has(row.id));
   return (
     <div className={CLASS.card} data-testid="task-card">
       {state !== null ? (
         <div className={CLASS.rows}>
-          {win.settled && (
-            <TaskWindowRow
-              key={`settled_${win.settled.id}`}
-              task={win.settled}
-              kind="settled"
-              note={fresh.get(win.settled.id)}
-            />
-          )}
-          {win.current && (
-            <TaskWindowRow
-              key={`current_${win.current.id}`}
-              task={win.current}
-              kind="current"
-              note={fresh.get(win.current.id)}
-            />
-          )}
-          {win.next && (
-            <TaskWindowRow key={`next_${win.next.id}`} task={win.next} kind="next" note={fresh.get(win.next.id)} />
-          )}
+          {/* The window is its own rows container so the spine ends at the last
+              slot; a note row appended after it must not extend the hairline. */}
+          <div className={CLASS.rows}>
+            {win.settled && (
+              <TaskWindowRow
+                key={`settled_${win.settled.id}`}
+                task={win.settled}
+                kind="settled"
+                note={fresh.get(win.settled.id)}
+              />
+            )}
+            {win.current && (
+              <TaskWindowRow
+                key={`current_${win.current.id}`}
+                task={win.current}
+                kind="current"
+                note={fresh.get(win.current.id)}
+              />
+            )}
+            {win.next && (
+              <TaskWindowRow key={`next_${win.next.id}`} task={win.next} kind="next" note={fresh.get(win.next.id)} />
+            )}
+          </div>
+          {notes.map((row) => (
+            <TaskNoteRow key={row.id} row={row} label={taskLabel(state, row.id)} />
+          ))}
         </div>
       ) : (
-        touched.length > 0 && (
+        (touched.length > 0 || notes.length > 0) && (
           <div className={CLASS.rows}>
             {touched.map((row) => (
               <TaskFallbackRow key={row.key} row={row} />
+            ))}
+            {notes.map((row) => (
+              <TaskNoteRow key={row.id} row={row} label={taskLabel(null, row.id)} />
             ))}
           </div>
         )
@@ -335,8 +417,11 @@ registerToolRenderer({
   match: "task_list",
   fold: "never", // the plan card stays visible
   icon: "tasks",
-  summary: taskMutationSummary,
-  summaryWhenExpanded: taskMutationRecap,
+  // The shared summary and recap name mutation rows only. A call whose only
+  // news is a status-less note falls back to the note's task label, so the
+  // folded line is never blank and the reader has a cue to open the row.
+  summary: (item) => taskMutationSummary(item) || taskNoteSummary(item),
+  summaryWhenExpanded: (item) => taskMutationRecap(item) || taskNoteSummary(item),
   body: TaskCardBody,
   // Settle folded at EVERY verbosity level (activity/full force-expand every
   // other body through the level default): the folded line already carries
@@ -345,8 +430,9 @@ registerToolRenderer({
   // explicit store entry beats any fallback).
   foldByDefault: true,
   // A read (view), a malformed non-mutation, or a status-unchanged update
-  // renders nothing; a failed call is never suppressed so its failure still
-  // surfaces (ToolCallItem generic path) - for every failure shape the
-  // shared predicate recognizes, not just error text.
+  // with no status-less note renders nothing; a failed call is never
+  // suppressed so its failure still surfaces (ToolCallItem generic path) -
+  // for every failure shape the shared predicate recognizes, not just error
+  // text.
   suppress: (item) => !toolCallFailed(item) && !isTaskMutation(item),
 });

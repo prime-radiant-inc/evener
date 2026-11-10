@@ -1,5 +1,5 @@
 import type { AppwireClientLike, ThreadReadResponse } from "@evener/appwire-client";
-import type { ConversationMutationSubmitter } from "../../mobile/src/state/conversationMutation";
+import type { ConversationMutationSubmitter } from "./conversation/state/conversationMutation";
 import { NativeMutationRuntime, type NativeMutationReadLease } from "./nativeMutationRuntime";
 
 // One conversation screen's durable-mutation binding to the process-lifetime

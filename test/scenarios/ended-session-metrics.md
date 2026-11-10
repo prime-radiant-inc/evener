@@ -44,7 +44,7 @@ replaces them is one AppWire thread object and one React panel — see steps 3 a
    ```
    Read `result.thread.status.type` and the fields on `result.thread.evener`.
    Their wire names come from `appwire.EvenerThread`
-   (`appwire/types.go#EvenerThread`): `workMillis`,
+   (`appwire/types_thread.go#EvenerThread`): `workMillis`,
    `usage.{inputTokens,outputTokens,cacheReadTokens,totalTokens}`, and the
    server-formatted `cost` string. The web displays that cost verbatim (no
    client-side formatter; the pricing table is Go-side).

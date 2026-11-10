@@ -55,6 +55,8 @@ func (s *Session) beginExecution(name string) {
 	turnID := executionTurnID(name)
 	s.mu.Lock()
 	announced := s.sessionStarted
+	s.conversation.generation++
+	s.conversation.active = nil
 	s.execution = executionState{running: true, turnID: turnID, announced: announced, startedAt: s.sclock().Now()}
 	// A turn already recorded runs again only when recovery reclaims it: it
 	// reopens, and stays open until its next completion.
@@ -65,7 +67,7 @@ func (s *Session) beginExecution(name string) {
 		if started != nil {
 			started(turnID)
 		}
-		s.emit(events.EventExecutionStarted, events.ExecutionStartedData{TurnID: turnID})
+		s.emit(events.ExecutionStartedData{TurnID: turnID})
 		// A new execution clears the reported line, the root meter's own
 		// boundary: a row names this turn's work, not the words of a turn
 		// that already finished.
@@ -115,7 +117,7 @@ func (s *Session) completeExecution(status schema.TurnCompletionStatus) {
 		}
 	}
 	if execution.announced {
-		s.emit(events.EventExecutionEnded, events.ExecutionEndedData{TurnID: execution.turnID, Status: string(ended)})
+		s.emit(events.ExecutionEndedData{TurnID: execution.turnID, Status: string(ended)})
 	}
 }
 
@@ -131,6 +133,7 @@ func (s *Session) noteRecordedLocked(rec transcript.Record) {
 		// execution running when the copy is written.
 		return
 	}
+	s.noteConversationTurnLocked(rec.Turn)
 	if rec.Turn.TurnKind == schema.TurnSpanExecution {
 		s.noteRecordedExecutionLocked(rec.Turn.TurnID)
 	}
@@ -183,6 +186,7 @@ func (s *Session) recordedUserInputTurn(fallback int) int {
 // it: a closed round has ended only once the next one opens, because its
 // tools and hooks run between the two.
 func (s *Session) roundIDForModelCall() string {
+	author := s.transcriptAuthor()
 	s.mu.Lock()
 	if s.roundID != "" {
 		defer s.mu.Unlock()
@@ -193,13 +197,14 @@ func (s *Session) roundIDForModelCall() string {
 		previous = ""
 	}
 	s.roundID = identifier.MustNewRoundID()
+	s.roundAuthorship = &schema.TranscriptAuthorship{Author: author}
 	s.lastRoundID, s.lastRoundEnded = s.roundID, false
 	roundID := s.roundID
 	s.mu.Unlock()
 	if previous != "" {
-		s.emit(events.EventRoundEnded, events.RoundEndedData{RoundID: previous})
+		s.emit(events.RoundEndedData{RoundID: previous})
 	}
-	s.emit(events.EventRoundStarted, events.RoundStartedData{RoundID: roundID})
+	s.emit(events.RoundStartedData{RoundID: roundID, Authorship: s.roundTranscriptAuthorship()})
 	return roundID
 }
 
@@ -212,7 +217,7 @@ func (s *Session) endLastRound() {
 	s.lastRoundEnded = true
 	s.mu.Unlock()
 	if roundID != "" && !ended {
-		s.emit(events.EventRoundEnded, events.RoundEndedData{RoundID: roundID})
+		s.emit(events.RoundEndedData{RoundID: roundID})
 	}
 }
 
@@ -259,12 +264,12 @@ func (s *Session) TranscriptRecordedLength() int64 {
 	return s.attachedTranscript().RecordedLength()
 }
 
-// SetDescendantRecordedFunc installs fn on every descendant session this
+// setDescendantRecordedFunc installs fn on every descendant session this
 // session spawns, now and later (inherited like the descendant event func):
 // fn(sessionID, record) under that child's append lock. The constraints of
 // SetTranscriptRecordedFunc apply: fn must not call back into any session of
 // the tree or take a lock an appender or a session holds.
-func (s *Session) SetDescendantRecordedFunc(fn func(sessionID string, rec transcript.Record)) {
+func (s *Session) setDescendantRecordedFunc(fn func(sessionID string, rec transcript.Record)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cfg.spawn.descendantRecorded = fn
@@ -427,7 +432,7 @@ func (s *Session) recordTranscriptOnlyThrough(turn schema.Turn, door transcript.
 		return s.recordTranscriptLocked(turn, door, place)
 	}()
 	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 	s.surfaceTranscriptWarnings()
 	return rec, err
@@ -440,7 +445,7 @@ func (s *Session) recordTranscriptOnlyThrough(turn schema.Turn, door transcript.
 // drop the mismatch silently.
 func (s *Session) recordNotice(notice schema.NoticeInfo) {
 	if err := notice.Validate(); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("invalid notice not recorded: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("invalid notice not recorded: %v", err)})
 		return
 	}
 	_ = s.recordTranscriptOnlyAt(schema.Turn{Kind: schema.TurnNotice, Notice: &notice}, transcript.PlaceSession)
@@ -461,7 +466,8 @@ func (s *Session) deliverCommunicate(data events.CommunicateData) error {
 		s.announceFailClosed()
 		return refusal
 	}
-	rec, err := s.recordTranscriptOnlyThrough(schema.Turn{Kind: schema.TurnCommunicate, Communicate: &schema.CommunicateInfo{CallID: data.CallID, EndTurn: data.EndTurn, Message: data.Message, EndReason: data.EndReason}}, transcript.DoorSynced, transcript.PlaceSession)
+	causal := s.activeCausalProvenance()
+	rec, err := s.recordTranscriptOnlyThrough(schema.Turn{Kind: schema.TurnCommunicate, ConversationProvenance: s.activeConversationProvenance(), CausalKnown: true, Causal: causal, Authorship: s.roundTranscriptAuthorship(), Communicate: &schema.CommunicateInfo{CallID: data.CallID, EndTurn: data.EndTurn, Message: data.Message, EndReason: data.EndReason}}, transcript.DoorSynced, transcript.PlaceSession)
 	if !rec.Recorded && s.servedByDaemon() {
 		switch writer := s.attachedTranscript(); {
 		case writer != nil && writer.Closed():
@@ -489,8 +495,13 @@ func (s *Session) deliverCommunicate(data events.CommunicateData) error {
 	}
 	s.mu.Lock()
 	s.noteAgentMessageLocked(data.Message)
+	if !data.EndTurn {
+		// A non-terminal update is not a result, but the delegate did reach its
+		// parent; the missing-report reminder must not claim otherwise (#3734).
+		s.comm.updated = true
+	}
 	s.mu.Unlock()
-	s.emit(events.EventCommunicate, data)
+	s.emitWithProvenance(data, causal)
 	return nil
 }
 

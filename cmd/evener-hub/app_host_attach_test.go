@@ -367,6 +367,12 @@ func TestHostAttachTerminalFailuresAreTypedWireErrors(t *testing.T) {
 			info:      appwire.ErrorActionUnavailable,
 		},
 		{
+			name:      "host protocol newer than controller",
+			attachErr: fmt.Errorf("%w: host %q protocol %q", sshconn.ErrHostProtocolNewer, "alpha", "x"),
+			code:      appwire.CodeUnavailable,
+			info:      appwire.ErrorActionUnavailable,
+		},
+		{
 			name:      "unsupported host",
 			attachErr: fmt.Errorf("%w: host %q", sshconn.ErrUnsupportedHost, "alpha"),
 			code:      appwire.CodeUnavailable,

@@ -69,21 +69,28 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 	case StreamEventToolCallStart:
 		if ev.ToolCall != nil && ev.ToolCall.ID != "" {
 			tc := &ToolCallData{
-				ID:     ev.ToolCall.ID,
-				ItemID: ev.ToolCall.ItemID,
-				Name:   ev.ToolCall.Name,
-				Type:   ev.ToolCall.Type,
+				ID:               ev.ToolCall.ID,
+				ItemID:           ev.ToolCall.ItemID,
+				Name:             ev.ToolCall.Name,
+				Type:             ev.ToolCall.Type,
+				ThoughtSignature: ev.ToolCall.ThoughtSignature,
 			}
 			a.toolCalls[ev.ToolCall.ID] = tc
 			a.toolCallOrder = append(a.toolCallOrder, ev.ToolCall.ID)
+			a.dirty = true
 		}
 	case StreamEventToolCallDelta:
 		if ev.ToolCall != nil && ev.ToolCall.ID != "" {
 			tc, ok := a.toolCalls[ev.ToolCall.ID]
 			if !ok {
-				tc = &ToolCallData{ID: ev.ToolCall.ID, ItemID: ev.ToolCall.ItemID}
+				tc = &ToolCallData{
+					ID:               ev.ToolCall.ID,
+					ItemID:           ev.ToolCall.ItemID,
+					ThoughtSignature: ev.ToolCall.ThoughtSignature,
+				}
 				a.toolCalls[ev.ToolCall.ID] = tc
 				a.toolCallOrder = append(a.toolCallOrder, ev.ToolCall.ID)
+				a.dirty = true
 			}
 			if tc.Name == "" && ev.ToolCall.Name != "" {
 				tc.Name = ev.ToolCall.Name
@@ -93,6 +100,10 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 			}
 			if tc.Type == "" && ev.ToolCall.Type != "" {
 				tc.Type = ev.ToolCall.Type
+			}
+			if tc.ThoughtSignature == "" && ev.ToolCall.ThoughtSignature != "" {
+				tc.ThoughtSignature = ev.ToolCall.ThoughtSignature
+				a.dirty = true
 			}
 			if len(ev.ToolCall.Arguments) > 0 {
 				tc.Arguments = append(tc.Arguments, ev.ToolCall.Arguments...)
@@ -103,9 +114,14 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 		if ev.ToolCall != nil && ev.ToolCall.ID != "" {
 			tc, ok := a.toolCalls[ev.ToolCall.ID]
 			if !ok {
-				tc = &ToolCallData{ID: ev.ToolCall.ID, ItemID: ev.ToolCall.ItemID}
+				tc = &ToolCallData{
+					ID:               ev.ToolCall.ID,
+					ItemID:           ev.ToolCall.ItemID,
+					ThoughtSignature: ev.ToolCall.ThoughtSignature,
+				}
 				a.toolCalls[ev.ToolCall.ID] = tc
 				a.toolCallOrder = append(a.toolCallOrder, ev.ToolCall.ID)
+				a.dirty = true
 			}
 			if tc.Name == "" && ev.ToolCall.Name != "" {
 				tc.Name = ev.ToolCall.Name
@@ -115,6 +131,10 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 			}
 			if tc.Type == "" && ev.ToolCall.Type != "" {
 				tc.Type = ev.ToolCall.Type
+			}
+			if tc.ThoughtSignature == "" && ev.ToolCall.ThoughtSignature != "" {
+				tc.ThoughtSignature = ev.ToolCall.ThoughtSignature
+				a.dirty = true
 			}
 			if len(ev.ToolCall.Arguments) > 0 {
 				tc.Arguments = append(tc.Arguments[:0], ev.ToolCall.Arguments...)

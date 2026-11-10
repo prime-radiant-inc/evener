@@ -72,6 +72,11 @@ func FuzzTokenEstimators(f *testing.F) {
 		if got := estimateImageTokens(targetFromNames(provider, model), img); got < 0 {
 			t.Fatalf("estimateImageTokens negative: %d", got)
 		}
+		// A part the walker cannot populate (no ImageData at all) bills zero,
+		// never panics: the dispatcher owns the nil guard.
+		if got := estimateImageTokens(targetFromNames(provider, model), nil); got != 0 {
+			t.Fatalf("estimateImageTokens(nil) = %d, want 0: no image, no media tokens", got)
+		}
 	})
 }
 

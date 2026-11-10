@@ -18,6 +18,7 @@ import {
   type HubUpdateController,
   type HubUpdateState,
   INITIAL_HUB_UPDATE_STATE,
+  type RestartBaseline,
   type UpdateChannel,
 } from "@evener/appwire-client";
 import { useStore } from "zustand";
@@ -34,6 +35,8 @@ export const RESTART_TIMEOUT_MS = 30_000;
 export interface HubUpdateStoreState extends HubUpdateState {
   setChannel(channel: UpdateChannel): void;
   runCheck(): Promise<void>;
+  install(): Promise<void>;
+  restart(): Promise<void>;
   apply(): Promise<void>;
 }
 
@@ -46,9 +49,9 @@ let deps: Deps = { fetchImpl: (...args) => fetch(...args), reload: reloadPage };
 
 const { requireClient } = connectedClientPort("hubUpdate");
 
-// healthVersion gives up after timeoutMs so a hub that accepts the
+// healthIdentity gives up after timeoutMs so a hub that accepts the
 // connection and then never answers cannot outlive RESTART_TIMEOUT_MS.
-async function healthVersion(timeoutMs: number): Promise<string | null> {
+async function healthIdentity(timeoutMs: number): Promise<{ version: string | null; startedAt: string | null } | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -58,8 +61,11 @@ async function healthVersion(timeoutMs: number): Promise<string | null> {
       signal: controller.signal,
     });
     if (!response.ok) return null;
-    const body = (await response.json()) as { version?: string };
-    return typeof body.version === "string" ? body.version : null;
+    const body = (await response.json()) as { version?: string; started_at?: string };
+    return {
+      version: typeof body.version === "string" ? body.version : null,
+      startedAt: typeof body.started_at === "string" ? body.started_at : null,
+    };
   } catch {
     return null; // the hub is mid-restart or the attempt timed out; keep polling
   } finally {
@@ -67,15 +73,20 @@ async function healthVersion(timeoutMs: number): Promise<string | null> {
   }
 }
 
-// waitForNewHub is the web's restart wait: it polls until /api/health
-// reports a version other than previous, then reloads and resolves true, or
-// resolves false after RESTART_TIMEOUT_MS.
-async function waitForNewHub(previous: string | null): Promise<boolean> {
+// waitForNewHub is the web's restart wait. It compares the process incarnation
+// when the hub supplied one, so a rebuild at the same commit still reloads. An
+// older hub that only has the deprecated apply path falls back to the version.
+async function waitForNewHub(previous: RestartBaseline): Promise<boolean> {
   const deadline = Date.now() + RESTART_TIMEOUT_MS;
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, RESTART_POLL_MS));
-    const version = await healthVersion(Math.max(0, deadline - Date.now()));
-    if (version !== null && version !== previous) {
+    const identity = await healthIdentity(Math.max(0, deadline - Date.now()));
+    if (identity === null) continue;
+    const changed =
+      previous.incarnation !== null
+        ? identity.startedAt !== null && identity.startedAt !== previous.incarnation
+        : identity.version !== null && identity.version !== previous.version;
+    if (changed) {
       deps.reload();
       return true;
     }
@@ -91,11 +102,23 @@ export const hubUpdateStore = createStore<HubUpdateStoreState>(() => ({
   ...INITIAL_HUB_UPDATE_STATE,
   setChannel: (channel) => controller.setChannel(channel),
   runCheck: () => controller.runCheck(),
+  install: () => controller.install(),
+  restart: () => controller.restart(),
   apply: () => controller.apply(),
 }));
 
 function createController(): HubUpdateController {
-  return createHubUpdateController({ client: requireClient, awaitRestart: waitForNewHub }, hubUpdateStore);
+  return createHubUpdateController(
+    {
+      client: requireClient,
+      awaitRestart: waitForNewHub,
+      currentIncarnation: async () => {
+        const identity = await healthIdentity(RESTART_TIMEOUT_MS);
+        return identity?.startedAt ?? null;
+      },
+    },
+    hubUpdateStore,
+  );
 }
 
 controller = createController();

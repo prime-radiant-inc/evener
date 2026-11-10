@@ -1,0 +1,93 @@
+package agent
+
+import (
+	"crypto/sha256"
+	"encoding/json"
+	"os"
+	"time"
+
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/tool"
+)
+
+// readStamp identifies the state of a file at the moment it was read.
+type readStamp struct {
+	size  int64
+	mtime time.Time
+}
+
+// priorRead is a read_file call a session has already made: the file's state
+// when it was read and the turn that read happened in.
+type priorRead struct {
+	stamp readStamp
+	// content hashes the text the read returned (RecoverableOutput, which the
+	// breaker's repeat nudge never touches), so a rewrite that keeps the size
+	// and mtime still reads as changed.
+	content [sha256.Size]byte
+	turn    int
+}
+
+// readRangeKey names one path and the normalized line range read from it.
+type readRangeKey struct {
+	path          string
+	offset, limit int
+}
+
+// readFileKey returns the key for a read_file call, or false when the call's
+// arguments do not name a path.
+func (s *Session) readFileKey(call []byte) (readRangeKey, bool) {
+	var args map[string]any
+	if json.Unmarshal(call, &args) != nil {
+		return readRangeKey{}, false
+	}
+	path, _ := args["file_path"].(string)
+	if path == "" {
+		return readRangeKey{}, false
+	}
+	// Defaults and non-positive values normalize as NumberLines reads them, so
+	// an omitted offset and offset=1 name the same range.
+	key := readRangeKey{path: s.resolveFilePath(path), offset: 1, limit: execenv.DefaultReadLines}
+	if v := optionalIntArg(args, "offset"); v != nil && *v > 0 {
+		key.offset = *v
+	}
+	if v := optionalIntArg(args, "limit"); v != nil && *v > 0 {
+		key.limit = *v
+	}
+	return key, true
+}
+
+// statReadStamp stats path on the host filesystem. That is the file the read
+// sees only because LocalExecutionEnvironment is the sole ExecutionEnvironment;
+// an environment whose files live elsewhere must not reuse this stat.
+func statReadStamp(path string) (readStamp, bool) {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return readStamp{}, false
+	}
+	return readStamp{size: info.Size(), mtime: info.ModTime()}, true
+}
+
+// noteReadFileRepeat marks a successful read_file result as unchanged when this
+// session already read the same path and range from a file whose size and
+// mtime still match, then records this read. before is the file's stamp taken
+// ahead of the read, so a write racing the read invalidates the next compare
+// instead of being hidden by it.
+func (s *Session) noteReadFileRepeat(key readRangeKey, before readStamp, res *tool.ExecResult) {
+	s.mu.Lock()
+	turn := s.totalRounds
+	s.mu.Unlock()
+
+	s.readFilesMu.Lock()
+	prior, seen := s.priorReads[key]
+	if s.priorReads == nil {
+		s.priorReads = map[readRangeKey]priorRead{}
+	}
+	now := priorRead{stamp: before, content: sha256.Sum256([]byte(res.RecoverableOutput)), turn: turn}
+	s.priorReads[key] = now
+	s.readFilesMu.Unlock()
+
+	if seen && prior.stamp.size == before.size && prior.stamp.mtime.Equal(before.mtime) && prior.content == now.content {
+		res.UnchangedSinceTurn = &prior.turn
+		res.Output += "\n[Unchanged since your earlier read: same file, same range.]"
+	}
+}

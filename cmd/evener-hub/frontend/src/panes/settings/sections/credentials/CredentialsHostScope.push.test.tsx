@@ -1,17 +1,20 @@
-import type { HostPushCredentialsResponse, HostRow, InstanceEntry } from "@evener/appwire-client";
+import type { HostPushCredentialsResponse } from "@evener/appwire-client";
 import { RequestTimeoutError, WireError } from "@evener/appwire-client";
 import { deferRequest, FakeClient, gateSettlements } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { connectionStore } from "../../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
 import { resetCredentialsStoreForTests, resetHostInstancesForTests } from "../../../../stores/credentials";
 import { HOST_GATE_TIMEOUT_MS, hostsStore } from "../../../../stores/hosts";
+import { hostRow } from "../../../../stores/hostsTestUtils";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { resetSettingsHostForTests, settingsHostStore } from "../../../../stores/settingsHost";
+import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { shownReasons, statusReasons } from "../reasonTestUtils";
 import { CredentialsHostScope } from "./CredentialsHostScope";
+import { instance } from "./credentialsTestUtils";
 
 // What the push action and the listing above it say, read by reason rather
 // than by their words.
@@ -26,31 +29,6 @@ const reasonShown = (reason: string): boolean => document.querySelector(`[data-r
 // an action string the four-value doc comment does not list renders exactly as
 // the host sent it rather than being mapped onto a known label.
 
-function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
-  return {
-    protocol: "openai-chat",
-    auth: "bearer",
-    implicit: false,
-    isDefault: false,
-    activeSource: "none",
-    hasStoredOAuth: false,
-    credentialRequired: true,
-    ...overrides,
-  };
-}
-
-function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
-  return {
-    generation: 1,
-    incarnationId: "inc-1",
-    origin: "hub.toml",
-    attached: false,
-    midAttach: false,
-    removed: false,
-    ...overrides,
-  };
-}
-
 const CONTROLLER_ROW = instance({ name: "controller-only", providerId: "anthropic", authModes: ["apiKey"] });
 const HOST_ROW = instance({ name: "on-beta", providerId: "anthropic", authModes: ["apiKey"] });
 
@@ -63,14 +41,8 @@ const GAMMA_LIST = {
   availableProviders: [],
 };
 
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
-
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetCredentialsStoreForTests();
   resetHostInstancesForTests();
   resetToastStoreForTests();
@@ -82,12 +54,12 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   window.history.pushState({}, "", "/");
 });
 
 test("this hub is offered no push affordance and issues no push call", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => {
@@ -106,7 +78,7 @@ test("this hub is offered no push affordance and issues no push call", async () 
 });
 
 test("the push targets the route-selected host, not the controller", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => HOST_LIST);
@@ -134,7 +106,7 @@ test("the push targets the route-selected host, not the controller", async () =>
 });
 
 test("a mixed report renders one row per entry, never one aggregate success", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => HOST_LIST);
@@ -168,7 +140,7 @@ test("a mixed report renders one row per entry, never one aggregate success", as
 });
 
 test("an unrecognised action string renders exactly as the host sent it", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => HOST_LIST);
@@ -194,7 +166,7 @@ test("an unrecognised action string renders exactly as the host sent it", async 
 });
 
 test("a result with no reason renders without an empty label or a stray separator", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => HOST_LIST);
@@ -220,7 +192,7 @@ test("a result with no reason renders without an empty label or a stray separato
 });
 
 test("no report renders until the push response lands", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => HOST_LIST);
@@ -243,7 +215,7 @@ test("no report renders until the push response lands", async () => {
 });
 
 test("an unattached host surfaces a real error, not an empty report", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: false })] }));
   fake.on("evener/host/request", () => {
@@ -267,7 +239,7 @@ test("an unattached host surfaces a real error, not an empty report", async () =
 });
 
 test("a refused push surfaces a real error rather than an empty report", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => HOST_LIST);
@@ -292,7 +264,7 @@ test("a refused push surfaces a real error rather than an empty report", async (
 // used to keep the previous host's report on screen, because PushCredentials was
 // rendered without a key and its useState outlived the host prop.
 test("a push report does not carry over when the selected host changes", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({
     hosts: [hostRow({ name: "beta", attached: true }), hostRow({ name: "gamma", attached: true })],
@@ -328,7 +300,7 @@ test("a push report does not carry over when the selected host changes", async (
 // and the push then fails. The old code interpolated the CURRENT host prop into
 // the failure, so beta's failure rendered as though gamma had produced it.
 test("a push failure that lands after a host switch is not rendered for the new host", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({
     hosts: [hostRow({ name: "beta", attached: true }), hostRow({ name: "gamma", attached: true })],
@@ -368,7 +340,7 @@ test("a push failure that lands after a host switch is not rendered for the new 
 // below), and the listing's own state already says why the button waits.
 
 test("the push action is held while the host is unverifiable", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => {
     throw new WireError("registry unavailable", -32000);
@@ -400,7 +372,7 @@ test("the push action is held while the host is unverifiable", async () => {
 // have landed - and, once the registry recovered, a fresh live button inviting
 // the blind re-push this feature's unknown-outcome state exists to prevent.
 test("a push report survives a registry read that fails under it", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   // The host's own listing cannot be read - but the push does not need it: the
@@ -441,7 +413,7 @@ test("a push report survives a registry read that fails under it", async () => {
 // registry recovered offered a fresh, live button as if nothing had happened,
 // the blind retry over a mutation that may already have landed.
 test("a push in flight when the registry read fails still lands its report", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   // The listing read hangs for the whole test, so nothing is verified against
@@ -477,7 +449,7 @@ test("a push in flight when the registry read fails still lands its report", asy
 // the host: absent is not enough, it must have answered.
 
 test("the push action is held until the registry's own listing names the host", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   const registry = deferRequest<unknown>(fake, "evener/host/list");
   fake.on("evener/host/request", () => HOST_LIST);
@@ -513,7 +485,7 @@ test("the push action is held until the registry's own listing names the host", 
 // they always were - and the write is what waits for the registry to answer
 // again, rather than a stale answer being treated as a live confirmation.
 test("a verified listing that outlives a failed registry read keeps its rows, with the push held", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => HOST_LIST);
@@ -543,7 +515,7 @@ test("a verified listing that outlives a failed registry read keeps its rows, wi
 // longer bound exists to prevent, which equality with the constant alone cannot
 // catch: a constant edited down to 30s would satisfy it).
 test("the push call passes the host-mutation timeout, not the client's 30s default", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => HOST_LIST);
@@ -581,7 +553,7 @@ test("the push call passes the host-mutation timeout, not the client's 30s defau
 const TIMED_OUT = 'AppwireClient: "evener/host/pushCredentials" timed out after 2100000ms';
 
 test("a push that times out reads as an unknown outcome, not as the host's refusal", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => HOST_LIST);
@@ -617,7 +589,7 @@ test("a push that times out reads as an unknown outcome, not as the host's refus
 // pushes, and a real answer replaces the warning - so the guard above cannot
 // pass by leaving the keys unsendable forever.
 test("the deliberate re-send after a timeout pushes again and its own report lands", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => HOST_LIST);
@@ -649,7 +621,7 @@ test("the deliberate re-send after a timeout pushes again and its own report lan
 // empty Results when this hub holds no local keys), and every other report shape
 // is pinned. It must render its own status and no rows.
 test("a zero-result report says there is nothing to push and renders no rows", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => HOST_LIST);
@@ -669,7 +641,7 @@ test("a zero-result report says there is nothing to push and renders no rows", a
 });
 
 test("a host re-registered under the same name does not keep the previous registration's report", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({
     hosts: [hostRow({ name: "beta", attached: true, address: "old.example" })],
@@ -722,7 +694,7 @@ function connectReplacementClient(): FakeClient {
 }
 
 test("a push in flight when the connection is replaced is not reported as the new connection's outcome", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => HOST_LIST);
@@ -768,7 +740,7 @@ test("a push in flight when the connection is replaced is not reported as the ne
 });
 
 test("a push failure that lands on a replaced connection is not rendered as the new connection's failure", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => HOST_LIST);
@@ -797,7 +769,7 @@ test("a push failure that lands on a replaced connection is not rendered as the 
 });
 
 test("the connection that issued a push still renders that push's own report", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => HOST_LIST);
@@ -856,7 +828,7 @@ test("the connection that issued a push still renders that push's own report", a
 // withheld, with the reason said out loud.
 
 test("a report on screen is withheld once the connection it described is replaced", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => HOST_LIST);

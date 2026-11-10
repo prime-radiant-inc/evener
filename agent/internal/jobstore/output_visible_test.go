@@ -37,7 +37,7 @@ func TestOutputPathReadersNeverReturnBytesBeforeTheVisibleStart(t *testing.T) {
 	want := []byte("new-1\nnew-2\n")
 
 	for _, fromHead := range []bool{true, false} {
-		snapshot, err := ReadOutputSnapshot(path, 1024, fromHead)
+		snapshot, err := readOutputSnapshotAtPath(path, 1024, fromHead)
 		if err != nil {
 			t.Fatalf("snapshot fromHead=%v: %v", fromHead, err)
 		}
@@ -46,7 +46,7 @@ func TestOutputPathReadersNeverReturnBytesBeforeTheVisibleStart(t *testing.T) {
 		}
 	}
 
-	page, err := ReadOutputPageSnapshot(path, nil, 1024)
+	page, err := readOutputPageSnapshotAtPath(path, nil, 1024)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,10 +54,10 @@ func TestOutputPathReadersNeverReturnBytesBeforeTheVisibleStart(t *testing.T) {
 		t.Fatalf("latest page = %+v, want %q from %d", page, want, visibleStart)
 	}
 	before := visibleStart - 1
-	if _, err := ReadOutputPageSnapshot(path, &before, 1024); !errors.Is(err, ErrOutputPruned) {
+	if _, err := readOutputPageSnapshotAtPath(path, &before, 1024); !errors.Is(err, ErrOutputPruned) {
 		t.Fatalf("page before the visible start: err = %v, want ErrOutputPruned", err)
 	}
-	if _, err := ReadOutputWindowSnapshot(path, visibleStart-1, 1024); !errors.Is(err, ErrOutputPruned) {
+	if _, err := readOutputWindowSnapshotAtPath(path, visibleStart-1, 1024); !errors.Is(err, ErrOutputPruned) {
 		t.Fatalf("window before the visible start: err = %v, want ErrOutputPruned", err)
 	}
 
@@ -181,7 +181,7 @@ func TestOutputVisibleStartOnlyMovesForwardAndIsRecordedForReaders(t *testing.T)
 	if err := o.persistMetaLocked(); err != nil {
 		t.Fatal(err)
 	}
-	page, err := ReadOutputPageSnapshot(o.path, nil, 1024)
+	page, err := readOutputPageSnapshotAtPath(o.path, nil, 1024)
 	if err != nil || page.RetainedStart != 9 || !page.RetainedStartPartial || string(page.Content) != "hree\n" {
 		t.Fatalf("path page = %+v, %v; want \"hree\\n\" from 9, partial", page, err)
 	}
@@ -295,7 +295,7 @@ func TestPendingCompactionNeverMovesTheVisibleStartBack(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	page, err := ReadOutputPageSnapshot(path, nil, 1024)
+	page, err := readOutputPageSnapshotAtPath(path, nil, 1024)
 	if err != nil {
 		t.Fatal(err)
 	}

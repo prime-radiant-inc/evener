@@ -96,9 +96,8 @@ var embeddedSkillsRetryInterval = 30 * time.Second
 // remove it while the process lives, and a dangling path would silently cost
 // every later resolution its skills.
 var (
-	processSkillsMu   sync.Mutex
-	processSkillsDir  string
-	processSkillsMeta map[string]SkillMeta
+	processSkillsMu  sync.Mutex
+	processSkillsDir string
 )
 
 // processSkillsTempPattern names the process-lifetime extraction. It is
@@ -115,7 +114,7 @@ var bundledSkillsDigest = sync.OnceValues(func() (string, error) {
 
 // embeddedProcessSkillsDir returns the process-lifetime private extraction,
 // creating or recreating it as needed. It extracts through the same
-// implementation as ExtractEmbeddedSkills, under its own temp name so the copy
+// implementation as the shared cache, under its own temp name so the copy
 // that outlives every caller is not confused with the staging directories the
 // cache reaps by age, and only into a temp root the shared cache would accept:
 // the degraded path must not read skill content out of a root that was just
@@ -124,14 +123,6 @@ var bundledSkillsDigest = sync.OnceValues(func() (string, error) {
 func embeddedProcessSkillsDir() (string, error) {
 	processSkillsMu.Lock()
 	defer processSkillsMu.Unlock()
-	return embeddedProcessSkillsDirLocked()
-}
-
-// embeddedProcessSkillsDirLocked is embeddedProcessSkillsDir for a caller that
-// already holds processSkillsMu, so one caller can hold the mutex across the
-// directory selection and the metadata scan that belongs to the directory it
-// selected. The caller must hold the mutex.
-func embeddedProcessSkillsDirLocked() (string, error) {
 	digest, err := bundledSkillsDigest()
 	if err != nil {
 		return "", err
@@ -158,44 +149,7 @@ func embeddedProcessSkillsDirLocked() (string, error) {
 		return "", err
 	}
 	processSkillsDir = dir
-	processSkillsMeta = nil
 	return dir, nil
-}
-
-// embeddedProcessSkills returns the metadata of the process-lifetime extraction,
-// caching the scan so later callers reuse it. The mutex is held across the
-// directory selection and the scan: the selection clears processSkillsMeta
-// whenever it replaces the directory, so a scan that ran after the selection
-// released the mutex could cache an empty or partial map of the copy that just
-// went away, and no later call would refresh it.
-func embeddedProcessSkills() (map[string]SkillMeta, error) {
-	processSkillsMu.Lock()
-	defer processSkillsMu.Unlock()
-	// Holding the mutex makes the re-check below unreachable, because nothing
-	// else can replace the directory under the scan. It is kept anyway: a map
-	// scanned from a copy that is no longer this process's own must never be
-	// stored against the copy that replaced it, so such a scan is taken again,
-	// and one that keeps losing its directory is handed back uncached.
-	const scanAttempts = 3
-	for attempt := 0; ; attempt++ {
-		dir, err := embeddedProcessSkillsDirLocked()
-		if err != nil {
-			return nil, err
-		}
-		if processSkillsMeta != nil {
-			return cloneSkillMetaMap(processSkillsMeta), nil
-		}
-		scanned := make(map[string]SkillMeta)
-		ScanSkillsDir(dir, scanned)
-		if processSkillsDir != dir {
-			if attempt < scanAttempts-1 {
-				continue
-			}
-			return cloneSkillMetaMap(scanned), nil
-		}
-		processSkillsMeta = scanned
-		return cloneSkillMetaMap(processSkillsMeta), nil
-	}
 }
 
 // EmbeddedSkillsDir returns a directory holding the bundled skills, published
@@ -218,33 +172,6 @@ func EmbeddedSkillsDir() (string, error) {
 		return "", fmt.Errorf("bundled skills cache unavailable (last: %w): %w", cacheErr, processErr)
 	}
 	return processDir, nil
-}
-
-// ExtractEmbeddedSkills writes the embedded skills to a fresh temporary
-// directory and returns the path. The caller owns the directory and is
-// responsible for cleanup (os.RemoveAll). The returned directory contains skill
-// subdirectories (e.g. test-driven-development/SKILL.md) and is suitable for use
-// as an extraDirs argument to DiscoverSkills. Use EmbeddedSkillsDir for the
-// shared, content-addressed copy.
-func ExtractEmbeddedSkills() (string, error) {
-	return extractEmbeddedSkills(bundled.Skills(), os.MkdirTemp)
-}
-
-// EmbeddedSkills returns the bundled skills as filesystem-backed metadata, from
-// the same shared content-addressed copy EmbeddedSkillsDir returns.
-func EmbeddedSkills() (map[string]SkillMeta, error) {
-	embeddedSkillsCache.mu.Lock()
-	_, cacheErr := ensureEmbeddedSkillsLocked()
-	skills := cloneSkillMetaMap(embeddedSkillsCache.skills)
-	embeddedSkillsCache.mu.Unlock()
-	if cacheErr == nil {
-		return skills, nil
-	}
-	processSkills, processErr := embeddedProcessSkills()
-	if processErr != nil {
-		return nil, fmt.Errorf("bundled skills cache unavailable (last: %w): %w", cacheErr, processErr)
-	}
-	return processSkills, nil
 }
 
 // ensureEmbeddedSkillsLocked publishes the bundled skills when the cached copy
@@ -505,6 +432,18 @@ func ensureTrustedProcessRoot(root string) error {
 // is accepted, unlike for the root itself, because the platform's temp chain
 // above a user's own directory is normally root-owned. Ancestors are resolved
 // through symlinks the way path lookup resolves them.
+//
+// The filesystem root is accepted when it is on a read-only mount, whatever its
+// owner: the mount pins that inode, no parent directory holds its name, and the
+// mount refuses writes through this namespace, so no other user can replace the
+// root itself. A sandbox's read-only root bind is exactly that shape, and in a
+// user namespace that does not map host root it appears owned by the overflow
+// uid, which the ownership rule must otherwise refuse (issue #4226). Its mode
+// still has to keep other users from replacing names inside it through a
+// writable host mount. An ordinary ancestor gets no exemption at all, even on a
+// read-only mount: the mount only refuses writes through this namespace, while
+// another user with a writable mount of the same host filesystem can rename the
+// directory and replace its subtree, which path lookup here then follows.
 func ensureTrustedAncestors(root string) error {
 	for dir := filepath.Dir(root); ; {
 		parent := filepath.Dir(dir)
@@ -515,7 +454,14 @@ func ensureTrustedAncestors(root string) error {
 		if !info.IsDir() {
 			return fmt.Errorf("skill cache ancestor %s is not a directory", dir)
 		}
-		if !ancestorDirTrusted(info) {
+		trusted := ancestorDirTrusted(info)
+		if !trusted && parent == dir {
+			// Only the filesystem root consults the mount table, and only when
+			// its ownership check failed, so read it once there rather than on
+			// every chain that never needs it.
+			trusted = readOnlyFilesystemRoot(info, parseMountPoints(string(readMountInfo())), dir)
+		}
+		if !trusted {
 			return fmt.Errorf("skill cache ancestor %s can be replaced by other users", dir)
 		}
 		if parent == dir {
@@ -523,6 +469,26 @@ func ensureTrustedAncestors(root string) error {
 		}
 		dir = parent
 	}
+}
+
+// readOnlyFilesystemRoot reports whether dir is the root of the filesystem tree
+// this process sees, the namespace's root mount refuses writes, and the root's
+// mode keeps other users from replacing the names in it. Its owner check is
+// waived because host root can appear as the unmapped overflow uid. The mount
+// pins the source dentry, so the pathname that names it on the host cannot be
+// swapped; the mountinfo fsRoot may be "/" or a subvolume path such as "/@"
+// (Btrfs), so it is deliberately not required to be "/". The mode still decides
+// who else may rename a directory beneath the root through a writable host
+// mount.
+func readOnlyFilesystemRoot(info fs.FileInfo, mounts []mountPoint, dir string) bool {
+	if filepath.Clean(dir) != string(filepath.Separator) {
+		return false
+	}
+	root, ok := mountRoot(mounts)
+	if !ok || filepath.Clean(root.path) != string(filepath.Separator) || !root.readOnly {
+		return false
+	}
+	return info.Mode()&os.ModeSticky != 0 || info.Mode().Perm()&0o022 == 0
 }
 
 // ensurePrivateCacheDir creates dir mode 0700 if it is absent and verifies that

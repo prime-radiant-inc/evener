@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useRef } from "react";
 import { chromeStore } from "../../shell/chromeStore";
 import { cancelPaneFocus, consumePaneFocus } from "../../shell/workspace";
 import { requireClass } from "../internal/requireClass";
@@ -36,6 +36,7 @@ const CLASS = {
   body: requireClass(styles.body, "panescaffold.module.css", "body"),
   bodyNoScroll: requireClass(styles.bodyNoScroll, "panescaffold.module.css", "bodyNoScroll"),
   footer: requireClass(styles.footer, "panescaffold.module.css", "footer"),
+  footerBeforeEdge: requireClass(styles.footerBeforeEdge, "panescaffold.module.css", "footerBeforeEdge"),
   edgeFooter: requireClass(styles.edgeFooter, "panescaffold.module.css", "edgeFooter"),
 };
 
@@ -90,6 +91,21 @@ export function PaneScaffold({
 
   const paneRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+  // The document this pane lives in, published for shell-level observers that
+  // must watch the reader's own window (a Dockview popout is a separate one).
+  // Re-published every render because adoption changes ownerDocument without
+  // re-rendering on its own; the store no-ops when it is unchanged.
+  useLayoutEffect(() => {
+    if (paneId === undefined) return;
+    chromeStore.getState().setPaneDocumentFor(paneId, paneRef.current?.ownerDocument ?? null);
+  });
+  // Layout cleanup, not passive: a replacement under the same pane id runs
+  // this teardown too, and a passive one would land after the replacement's
+  // own publication and erase it.
+  useLayoutEffect(() => {
+    if (paneId === undefined) return;
+    return () => chromeStore.getState().setPaneDocumentFor(paneId, null);
+  }, [paneId]);
   useEffect(() => {
     if (paneId === undefined) return;
     if (!focused) {
@@ -141,7 +157,10 @@ export function PaneScaffold({
         {children}
       </div>
       {footer !== undefined && (
-        <div className={CLASS.footer} data-testid="pane-footer">
+        <div
+          className={edgeFooter === undefined ? CLASS.footer : `${CLASS.footer} ${CLASS.footerBeforeEdge}`}
+          data-testid="pane-footer"
+        >
           {footer}
         </div>
       )}

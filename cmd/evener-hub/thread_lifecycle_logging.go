@@ -30,12 +30,29 @@ type threadLifecycleLogKey struct{}
 
 var threadLifecycleSequence atomic.Uint64
 
+// hubDiagnosticSink, when set, receives the hub's own diagnostic lines: the
+// lifecycle records below and the roster-refresh failure that follows a spawn.
+// It is nil in production, where hubDiagnosticOutput resolves os.Stderr at each
+// call exactly as before — tests that redirect os.Stderr to capture a trace
+// keep working. A test sets it to own the diagnostics a failure-injection
+// fixture provokes, and restores it when the test ends.
+var hubDiagnosticSink io.Writer
+
+// hubDiagnosticOutput is where the hub's own diagnostic lines go: a test's sink
+// when one is installed, otherwise os.Stderr.
+func hubDiagnosticOutput() io.Writer {
+	if hubDiagnosticSink != nil {
+		return hubDiagnosticSink
+	}
+	return os.Stderr
+}
+
 func withThreadLifecycleLog(ctx context.Context, operation, sessionID string, writer io.Writer) (context.Context, *threadLifecycleLog) {
 	if trace, ok := ctx.Value(threadLifecycleLogKey{}).(*threadLifecycleLog); ok {
 		return ctx, trace
 	}
 	if writer == nil {
-		writer = os.Stderr
+		writer = hubDiagnosticOutput()
 	}
 	now := time.Now()
 	trace := &threadLifecycleLog{

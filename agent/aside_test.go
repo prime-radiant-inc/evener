@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -44,6 +45,36 @@ func TestRemoveSessionArtifactsRemovesLock(t *testing.T) {
 	}
 }
 
+// TestRemoveSessionArtifactsRemovesEveryListedSuffix pins that the removal
+// iterates the schema layout's artifact list, so a file kind added there is
+// removed with the session.
+func TestRemoveSessionArtifactsRemovesEveryListedSuffix(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	id, err := identifier.NewSessionID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(schema.SessionsDir(stateDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range schema.SessionArtifactSuffixes {
+		if err := os.WriteFile(filepath.Join(schema.SessionsDir(stateDir), id+suffix), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := RemoveSessionArtifacts(stateDir, id); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(schema.SessionsDir(stateDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("session files left behind: %v", entries)
+	}
+}
+
 // buildAsideParentSession creates a parent session with a 4-entry transcript
 // (USER, ASSISTANT, USER, ASSISTANT) and a meta carrying a distinctive config
 // (sandbox mode + tool-round cap) so tests can assert the aside child inherits
@@ -84,8 +115,8 @@ func TestAsideSession_CopiesFullTranscriptAtTip(t *testing.T) {
 
 	// Child transcript is the full parent transcript: 4 entries ending on the
 	// final ASSISTANT turn.
-	childTranscriptPath := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
-	header, entries, _, err := readTranscript(childTranscriptPath, "")
+	childTranscriptPath := schema.SessionTranscriptPath(stateDir, childID)
+	header, entries, _, err := readTranscript(context.Background(), childTranscriptPath, "")
 	if err != nil {
 		t.Fatalf("readTranscript(child): %v", err)
 	}
@@ -256,7 +287,7 @@ func TestAsideSession_EmptyParentTranscript(t *testing.T) {
 	stateDir := t.TempDir()
 	parentID := "01PARENTEMPTY0000000000AS"
 
-	tw, err := transcript.NewWriter(filepath.Join(stateDir, sessionsSubdir, parentID+".transcript.jsonl"), transcript.Header{
+	tw, err := transcript.NewWriter(schema.SessionTranscriptPath(stateDir, parentID), transcript.Header{
 		SessionID:  parentID,
 		CreatedAt:  time.Now().UTC(),
 		ProfileID:  "openai",
@@ -306,7 +337,7 @@ func TestAsideSession_RejectsMissingParent(t *testing.T) {
 	if childID != "" {
 		t.Errorf("AsideSession child id = %q, want empty on error", childID)
 	}
-	if entries, _ := os.ReadDir(filepath.Join(stateDir, sessionsSubdir)); len(entries) != 0 {
+	if entries, _ := os.ReadDir(schema.SessionsDir(stateDir)); len(entries) != 0 {
 		t.Errorf("aside created artifacts for a missing parent: %v", entries)
 	}
 }

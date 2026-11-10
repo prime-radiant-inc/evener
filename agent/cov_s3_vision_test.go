@@ -24,10 +24,7 @@ func TestVisionPromptContractIsUnconditional(t *testing.T) {
 	}
 	client := llm.NewClient()
 	client.Register(adapter)
-	sess, err := NewSession(client, NewOpenAIProfile("m"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(client), withProfile(NewOpenAIProfile("m")), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
 	t.Cleanup(func() { sess.Close() })
 	go func() {
 		for range sess.Events() {
@@ -149,10 +146,7 @@ func TestS3Cov_DescribeImage_ErrorReturnsEmpty(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&errAdapter{name: "openai", err: errors.New("vision boom")})
-	sess, err := NewSession(c, NewOpenAIProfile("m"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("m")), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
 	t.Cleanup(func() { sess.Close() })
 	go func() {
 		for range sess.Events() {

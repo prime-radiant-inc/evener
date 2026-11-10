@@ -13,7 +13,6 @@ vi.mock("react-native", async () => ({
 	useColorScheme: () => mode.scheme,
 	useWindowDimensions: () => ({ fontScale: mode.fontScale, scale: 2, width: 390, height: 844 }),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 // The Dynamic Type case below sets a non-default fontScale; reset it so a
 // later test never inherits it.

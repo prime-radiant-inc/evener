@@ -72,31 +72,34 @@ func TestDiscoverTranscriptsWalkError(t *testing.T) {
 	}
 }
 
-// TestInspectTranscriptHeaderStatError covers the stat error path. We simulate
-// this by creating a file and then removing it between Open and Stat — but that's
-// racy. Instead, we test with a path that Open succeeds but Stat fails, which is
-// hard to do portably. Skip if we can't create the condition.
-func TestInspectTranscriptHeaderStatError(t *testing.T) {
-	// On Unix, opening /dev/null succeeds but Stat returns a valid FileInfo.
-	// Instead, use a FIFO or a deleted file. The simplest portable approach:
-	// create a temp file, open it, then test with a path that can be opened
-	// but not stated. This is hard, so we skip this test.
-	t.Skip("stat error after successful open is not portable to test")
+// writeOversizedLineFile returns a file whose first line exceeds
+// transcript.DefaultMaxLineBytes. It is sparse: the reader needs the length, not
+// 128 MiB of written bytes, which cost seconds on a loaded runner.
+func writeOversizedLineFile(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "oversized.jsonl")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const size = transcript.DefaultMaxLineBytes + 10
+	if err := file.Truncate(size); err != nil {
+		t.Fatal(err)
+	}
+	// The reader reports the overlong line once it reaches the newline.
+	if _, err := file.WriteAt([]byte{'\n'}, size-1); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 // TestInspectTranscriptHeaderReadError covers the ReadLine error path in
 // inspectTranscriptHeader by providing a file with an oversized line.
 func TestInspectTranscriptHeaderReadError(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "oversized.jsonl")
-	// Write a line that exceeds DefaultMaxLineBytes.
-	big := make([]byte, transcript.DefaultMaxLineBytes+10)
-	for i := range big {
-		big[i] = 'x'
-	}
-	big[len(big)-1] = '\n'
-	if err := os.WriteFile(path, big, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	path := writeOversizedLineFile(t)
 	_, _, err := inspectTranscriptHeader(path)
 	if err == nil {
 		t.Fatalf("inspectTranscriptHeader with oversized line should error")
@@ -122,23 +125,9 @@ func TestInspectTranscriptHeaderCurrentVersionDecodeError(t *testing.T) {
 	}
 }
 
-// TestPrepareTranscriptStatError covers the stat error path in prepareTranscript.
-func TestPrepareTranscriptStatError(t *testing.T) {
-	// Similar to inspectTranscriptHeaderStatError — hard to test portably.
-	t.Skip("stat error after successful open is not portable to test")
-}
-
 // TestPrepareTranscriptReadError covers the ReadLine error path.
 func TestPrepareTranscriptReadError(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "oversized.jsonl")
-	big := make([]byte, transcript.DefaultMaxLineBytes+10)
-	for i := range big {
-		big[i] = 'x'
-	}
-	big[len(big)-1] = '\n'
-	if err := os.WriteFile(path, big, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	path := writeOversizedLineFile(t)
 	_, err := prepareTranscript(path)
 	if err == nil {
 		t.Fatalf("prepareTranscript with oversized line should error")
@@ -500,14 +489,6 @@ func TestConvertHeaderSuccess(t *testing.T) {
 	if header.FormatVersion != transcript.FormatVersion {
 		t.Fatalf("format version = %d, want %d", header.FormatVersion, transcript.FormatVersion)
 	}
-}
-
-// TestConvertHeaderDecodeFieldsError covers the json.Unmarshal error for the
-// fields map. This is hard to trigger because the first Unmarshal succeeds —
-// the second Unmarshal of the same bytes should also succeed. This branch may
-// be unreachable in practice.
-func TestConvertHeaderDecodeFieldsErrorUnreachable(t *testing.T) {
-	t.Skip("the second json.Unmarshal in convertHeader always succeeds if the first did")
 }
 
 // TestRunUsageOutput covers the flag usage output path.

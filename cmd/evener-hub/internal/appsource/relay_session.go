@@ -3,6 +3,7 @@ package appsource
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"sync"
 	"time"
 
@@ -27,10 +28,11 @@ type relaySession struct {
 	// waiting for downstream acknowledgement. Revocation closes the epoch's
 	// fence before taking the write side so a blocked send can be interrupted
 	// without allowing a revoked epoch to enter a listener after replacement.
-	publishBoundary  sync.RWMutex
-	publishEntryHook func()
-	publicationEpoch uint64
-	publicationFence *relayPublicationFence
+	publishBoundary          sync.RWMutex
+	publishEntryHook         func()
+	invalidateConnectionHook func(*relaySession)
+	publicationEpoch         uint64
+	publicationFence         *relayPublicationFence
 
 	mu             sync.Mutex
 	epoch          uint64
@@ -108,6 +110,16 @@ type relaySessionLease struct {
 	session *relaySession
 	id      uint64
 	once    sync.Once
+	// subscribedRefs records the params of every read that asked the daemon
+	// to subscribe this ref. Recovery re-subscribes the canonical feed only
+	// while some live lease holds demand, and releasing the last demanding
+	// lease withdraws the subscription: a binding-retention lease that never
+	// asked must not keep the daemon counting a consumer that either left
+	// or never existed. The params are kept, not just the ref, because
+	// recovery must re-issue each demanded read; the last reader's params
+	// alone cannot rebuild a subscription a later snapshot read overwrote.
+	// Guarded by session.mu.
+	subscribedRefs map[string]appwire.ThreadReadParams
 }
 
 type relayHandoff struct {
@@ -153,7 +165,7 @@ func (l *relaySessionLease) Read(ctx context.Context, params appwire.ThreadReadP
 	if l == nil || l.session == nil {
 		return RelayReadResult{}, appwire.SessionUnavailable("relay session is unavailable")
 	}
-	return l.session.read(ctx, params)
+	return l.session.read(ctx, l, params)
 }
 
 func (l *relaySessionLease) ReadWithRoutePublication(
@@ -164,7 +176,7 @@ func (l *relaySessionLease) ReadWithRoutePublication(
 	if l == nil || l.session == nil {
 		return RelayReadResult{}, appwire.SessionUnavailable("relay session is unavailable")
 	}
-	return l.session.readWithRoutePublication(ctx, params, routes)
+	return l.session.readWithRoutePublication(ctx, l, params, routes)
 }
 
 func (l *relaySessionLease) Listen(ctx context.Context) (<-chan RelayDelivery, error) {
@@ -172,6 +184,27 @@ func (l *relaySessionLease) Listen(ctx context.Context) (<-chan RelayDelivery, e
 		return nil, appwire.SessionUnavailable("relay session is unavailable")
 	}
 	return l.session.listen(ctx, l.id)
+}
+
+// SessionToolsSupported reports the feature negotiated on the current serving
+// daemon connection. known is false until a connection has been established.
+func (s *relaySession) SessionToolsSupported() (supported, known bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.connection == nil || s.connection.disconnected {
+		return false, false
+	}
+	return s.connection.client.Features().SessionTools, true
+}
+
+// connectionEpochLive reports whether epoch still names the relay's connected
+// daemon link. The daemon cancels a session-tools binding when its connection
+// closes, so a binding cached under a dead epoch must not vouch for Manager
+// input: only the connected epoch's binding is still honored.
+func (s *relaySession) connectionEpochLive(epoch uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.connection != nil && s.connection.epoch == epoch && !s.connection.disconnected
 }
 
 func (l *relaySessionLease) Close() {
@@ -238,12 +271,13 @@ func (l *relayListener) close() {
 	})
 }
 
-func (s *relaySession) read(ctx context.Context, params appwire.ThreadReadParams) (RelayReadResult, error) {
-	return s.readWithRoutePublication(ctx, params, nil)
+func (s *relaySession) read(ctx context.Context, lease *relaySessionLease, params appwire.ThreadReadParams) (RelayReadResult, error) {
+	return s.readWithRoutePublication(ctx, lease, params, nil)
 }
 
 func (s *relaySession) readWithRoutePublication(
 	ctx context.Context,
+	lease *relaySessionLease,
 	params appwire.ThreadReadParams,
 	routes *RelayRoutePublication,
 ) (RelayReadResult, error) {
@@ -266,7 +300,26 @@ func (s *relaySession) readWithRoutePublication(
 		return RelayReadResult{}, appwire.SessionUnavailable("relay session is closed")
 	}
 	s.commandOwners++
+	if lease == nil && params.Subscribe {
+		// A recovery read re-subscribes on behalf of the leases that demanded
+		// the ref when the recovery plan was built. A demanding lease can
+		// release while an earlier plan read holds the command gate: the
+		// release queues an orphaned-subscription withdrawal on this gate, but
+		// replaying the plan's stale Subscribe would re-create the
+		// subscription after the withdrawal ran, and nothing would withdraw it
+		// again — the daemon would count a consumer that left forever.
+		// Recompute demand here, under the gate, so a released ref is read
+		// without re-subscribing it; a lease that releases after this point
+		// queues a withdrawal behind this read that still covers it.
+		params.Subscribe = s.refDemandedLocked(params.Ref)
+	}
 	s.readParams = params
+	if lease != nil && params.Subscribe {
+		if lease.subscribedRefs == nil {
+			lease.subscribedRefs = map[string]appwire.ThreadReadParams{}
+		}
+		lease.subscribedRefs[params.Ref] = params
+	}
 	s.mu.Unlock()
 
 	connection, err := s.ensureConnection(ctx)
@@ -297,9 +350,12 @@ func (s *relaySession) readWithRoutePublication(
 	if routes != nil && routes.Begin != nil {
 		routes.Begin()
 	}
-	readParams := params
-	readParams.Subscribe = true
-	response, err := connection.client.ThreadRead(ctx, readParams)
+	// The caller owns the subscription, not the relay: consumers (the hub's
+	// relayed thread/read, every SubscribeThread) pass Subscribe true, while
+	// a binding-retention read passes false so an unwatched session does not
+	// count a subscriber that cannot answer its approval cards. Recovery
+	// derives its own demand from the leases rather than these params.
+	response, err := connection.client.ThreadRead(ctx, params)
 	if err != nil {
 		s.cancelCapture(capture)
 		if callerErr := ctx.Err(); callerErr != nil {
@@ -320,7 +376,7 @@ func (s *relaySession) readWithRoutePublication(
 		s.mu.Unlock()
 		if !valid {
 			s.cancelCapture(capture)
-			return RelayReadResult{}, appwire.SessionUnavailable("relay connection ended before route publication")
+			return RelayReadResult{}, appwire.RetryableSessionUnavailable("relay connection ended before route publication")
 		}
 		publicationErr := routes.Publish(ctx, response.Thread)
 		if publicationErr != nil {
@@ -344,7 +400,7 @@ func (s *relaySession) readWithRoutePublication(
 	s.mu.Unlock()
 	if !valid {
 		s.cancelCapture(capture)
-		return RelayReadResult{}, appwire.SessionUnavailable("relay connection ended during thread rejoin")
+		return RelayReadResult{}, appwire.RetryableSessionUnavailable("relay connection ended during thread rejoin")
 	}
 
 	return RelayReadResult{
@@ -390,7 +446,7 @@ func (s *relaySession) ensureConnection(ctx context.Context) (*relayConnection, 
 	if s.closed || s.epoch != epoch || s.connection != nil {
 		s.mu.Unlock()
 		_ = transport.Close()
-		return nil, appwire.SessionUnavailable("relay connection was superseded")
+		return nil, appwire.RetryableSessionUnavailable("relay connection was superseded")
 	}
 	s.connection = connection
 	s.mu.Unlock()
@@ -486,6 +542,34 @@ func (s *relaySession) disconnect(epoch uint64) {
 	}
 }
 
+// invalidateConnection drops the current daemon link so the next command
+// redials through the source's current roster route. It is the transport-loss
+// path: listeners get the pending resync and recovery, and an in-flight
+// capture is revoked. A relay session is keyed by the canonical ref, so a
+// replacement daemon reuses the same session and must not inherit the
+// superseded daemon's socket.
+func (s *relaySession) invalidateConnection() {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	connection := s.connection
+	if connection == nil {
+		// Advance the epoch under this lock. A dial that resolved the
+		// pre-replacement route installs under the same lock, so it observes
+		// the revocation and cannot leave a stale connection installed.
+		s.advanceEpochLocked()
+	}
+	s.mu.Unlock()
+	if hook := s.invalidateConnectionHook; hook != nil {
+		hook(s)
+	}
+	if connection != nil {
+		s.disconnect(connection.epoch)
+	}
+}
+
 // publishPendingResync tells listeners to re-read once, before any frame from
 // the connection that just replaced an interrupted one reaches them.
 //
@@ -569,23 +653,49 @@ func (s *relaySession) recoverCanonicalFeed() {
 			s.mu.Unlock()
 			return
 		}
-		params := s.readParams
+		plan := s.recoveryReadPlanLocked()
 		s.mu.Unlock()
 
-		result, err := s.read(s.ctx, params)
-		if err == nil {
+		backoff := false
+		recovered := true
+		for _, params := range plan {
+			s.mu.Lock()
+			pending := s.resyncPending
+			s.mu.Unlock()
+
+			result, err := s.read(s.ctx, nil, params)
+			if err != nil {
+				backoff = true
+				recovered = false
+				break
+			}
 			handoffResolved := result.Handoff.Abort()
 			s.mu.Lock()
 			live := handoffResolved &&
 				s.connection != nil &&
 				!s.connection.disconnected
-			if live {
-				s.recovering = false
-			}
 			s.mu.Unlock()
-			if live {
-				return
+			if !live {
+				recovered = false
+				break
 			}
+			// The connection-wide pending resync is consumed by whichever
+			// read lands first, here or on a racing command-path read, so
+			// each ref whose listeners stayed behind still owes them its
+			// own resync once that flag is spent.
+			if !pending {
+				s.mu.Lock()
+				s.queueResyncLocked(params)
+				s.mu.Unlock()
+			}
+		}
+		if recovered {
+			s.mu.Lock()
+			s.recovering = false
+			s.mu.Unlock()
+			return
+		}
+		if !backoff {
 			continue
 		}
 
@@ -608,6 +718,53 @@ func (s *relaySession) recoverCanonicalFeed() {
 			return
 		}
 	}
+}
+
+// recoveryReadPlanLocked returns the reads recovery must issue, in order:
+// the last reader's ref first, then every other ref a live lease still
+// demands. The stored params are the LAST reader's, so their Subscribe flag
+// can misstate current demand in both directions: a retention read stores
+// false while a consumer is live, and a departed consumer leaves a stale
+// true behind. Ask the live leases instead — and keep every demanded ref in
+// the plan, because a later snapshot read of some other ref overwrites
+// readParams, and recovery that only re-read the last ref would leave the
+// overwritten subscription unrestored and its listeners never told to
+// re-read. Guarded by s.mu.
+func (s *relaySession) recoveryReadPlanLocked() []appwire.ThreadReadParams {
+	params := s.readParams
+	params.Subscribe = s.refDemandedLocked(params.Ref)
+	plan := []appwire.ThreadReadParams{params}
+
+	refs := make([]string, 0, 4)
+	demanded := make(map[string]appwire.ThreadReadParams, 4)
+	for _, lease := range s.leases {
+		for ref, readParams := range lease.subscribedRefs {
+			if ref != params.Ref {
+				demanded[ref] = readParams
+			}
+		}
+	}
+	for ref := range demanded {
+		refs = append(refs, ref)
+	}
+	sort.Strings(refs)
+	for _, ref := range refs {
+		readParams := demanded[ref]
+		readParams.Subscribe = true
+		plan = append(plan, readParams)
+	}
+	return plan
+}
+
+// refDemandedLocked reports whether any live lease still asks the daemon for
+// this ref's subscription. Guarded by s.mu.
+func (s *relaySession) refDemandedLocked(ref string) bool {
+	for _, lease := range s.leases {
+		if _, ok := lease.subscribedRefs[ref]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *relaySession) cancelCapture(capture *relayCapture) {
@@ -944,7 +1101,8 @@ func (s *relaySession) removeListener(id uint64) {
 
 func (s *relaySession) releaseLease(id uint64) {
 	s.mu.Lock()
-	if s.leases[id] == nil {
+	lease := s.leases[id]
+	if lease == nil {
 		s.mu.Unlock()
 		return
 	}
@@ -955,8 +1113,61 @@ func (s *relaySession) releaseLease(id uint64) {
 			listener.close()
 		}
 	}
+	// A subscription whose demanding lease just released must not outlive it
+	// on a connection that other leases keep open: a session-tools binding
+	// retains the canonical relay forever, and a leftover subscription would
+	// keep the daemon counting a consumer that left (an unwatched session's
+	// approval cards would block with nobody to answer them). The last lease
+	// needs no withdrawal: maybeIdle below closes the connection itself.
+	var orphaned []string
+	if len(lease.subscribedRefs) != 0 && len(s.leases) != 0 && !s.closed {
+		for ref := range lease.subscribedRefs {
+			if !s.refDemandedLocked(ref) {
+				orphaned = append(orphaned, ref)
+			}
+		}
+	}
 	s.mu.Unlock()
+	if len(orphaned) != 0 {
+		go s.dropOrphanedSubscriptions(orphaned)
+	}
 	s.maybeIdle()
+}
+
+// relayUnsubscribeTimeout bounds one subscription withdrawal. It only guards
+// a stuck daemon: the gate serializes this against reads, so a slow
+// unsubscribe delays the next read by at most this long.
+const relayUnsubscribeTimeout = 2 * time.Second
+
+// dropOrphanedSubscriptions withdraws subscriptions no live lease demands.
+// It takes the command gate so it cannot interleave a read establishing a new
+// subscription: a read that subscribed after the orphan check either holds
+// the gate (this waits for it) or already marked its lease (the recheck skips
+// its ref).
+func (s *relaySession) dropOrphanedSubscriptions(refs []string) {
+	select {
+	case <-s.ctx.Done():
+		return
+	case <-s.commandGate:
+	}
+	s.mu.Lock()
+	s.commandOwners++
+	connection := s.connection
+	keep := refs[:0]
+	if !s.closed && connection != nil && !connection.disconnected {
+		for _, ref := range refs {
+			if !s.refDemandedLocked(ref) {
+				keep = append(keep, ref)
+			}
+		}
+	}
+	s.mu.Unlock()
+	defer s.releaseCommand()
+	for _, ref := range keep {
+		ctx, cancel := context.WithTimeout(s.ctx, relayUnsubscribeTimeout)
+		_, _ = connection.client.ThreadUnsubscribe(ctx, appwire.ThreadUnsubscribeParams{Ref: ref})
+		cancel()
+	}
 }
 
 func (s *relaySession) releaseCommand() {

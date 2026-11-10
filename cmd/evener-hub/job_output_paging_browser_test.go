@@ -19,6 +19,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"golang.org/x/sys/unix"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
@@ -54,6 +55,14 @@ func TestJobOutputPagingProducerProcess(t *testing.T) {
 	if !pagingProducerEnabled {
 		t.Skip("only the real shell fixture opts into this subprocess")
 	}
+	runJobOutputPagingProducer(t)
+	// The shell output is the oracle alone, without the test runner's PASS.
+	// The producer helper has returned, so its file cleanup has already run.
+	os.Exit(0)
+}
+
+func runJobOutputPagingProducer(t *testing.T) {
+	t.Helper()
 	oracle, err := os.Create(os.Getenv("PAGING_ORACLE"))
 	if err != nil {
 		t.Fatal(err)
@@ -113,8 +122,7 @@ func TestJobOutputPagingProducerProcess(t *testing.T) {
 			if err := oracle.Close(); err != nil {
 				t.Fatal(err)
 			}
-			// The shell output is the oracle alone, without the test runner's PASS.
-			os.Exit(0)
+			return
 		default:
 			t.Fatalf("unknown producer command %q", command)
 		}
@@ -161,9 +169,9 @@ func pagingAwaitFile(ctx context.Context, watcher *fsnotify.Watcher, name string
 	}
 }
 
-func runJobOutputPagingJourney(t *testing.T, ctx context.Context, stack *hubStack, provider *fakellm.Server) {
+func runJobOutputPagingJourney(ctx context.Context, t *testing.T, stack *hubStack, provider *fakellm.Server) {
 	t.Helper()
-	artifacts, err := os.MkdirTemp(backgroundJobsArtifactRoot, "joboutputpagingguard-")
+	artifacts, err := os.MkdirTemp(backgroundJobsEvidenceRoot(), "joboutputpagingguard-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +200,7 @@ func runJobOutputPagingJourney(t *testing.T, ctx context.Context, stack *hubStac
 	}
 	client := stack.dialRPC(ctx, t)
 	rounds := 20
-	started, err := client.ThreadStart(ctx, appwire.ThreadStartParams{
+	started, err := appwiretest.ThreadStart(ctx, client, appwire.ThreadStartParams{
 		Harness: "evener", CWD: stack.workDir, Model: stack.model,
 		Input:           []appwire.InputItem{{Type: "text", Text: "JOB_OUTPUT_PAGING_PRODUCER"}},
 		LaunchOverrides: &appwire.LaunchConfigLayer{Sandbox: "off", MaxRounds: &rounds},
@@ -334,7 +342,7 @@ func runJobOutputPagingJourney(t *testing.T, ctx context.Context, stack *hubStac
 		t.Fatal(err)
 	}
 	seenMilestones := make(map[string]bool)
-	for _, line := range strings.Split(string(milestones), "\n") {
+	for line := range strings.SplitSeq(string(milestones), "\n") {
 		var entry struct {
 			Milestone string `json:"milestone"`
 		}

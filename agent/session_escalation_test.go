@@ -192,7 +192,7 @@ func TestEscalation_OnlyCurableContainmentDenialsEscalate(t *testing.T) {
 func TestEscalation_HasAndListPending(t *testing.T) {
 	t.Parallel()
 	s := escalatableSession(t)
-	if s.HasPendingEscalations() {
+	if s.hasPendingEscalations() {
 		t.Fatal("no escalation should be pending initially")
 	}
 	res, _ := deniedResult("/etc/hosts")
@@ -201,7 +201,7 @@ func TestEscalation_HasAndListPending(t *testing.T) {
 		done <- s.escalateOnSandboxDenial(context.Background(), "read_file", res, func(context.Context) tool.ExecResult { return succeededResult() })
 	}()
 	ids := awaitPending(t, s, 1)
-	if !s.HasPendingEscalations() {
+	if !s.hasPendingEscalations() {
 		t.Fatal("HasPendingEscalations must be true while blocked (drives the cross-session attention flag)")
 	}
 	list := s.PendingEscalations()
@@ -212,7 +212,7 @@ func TestEscalation_HasAndListPending(t *testing.T) {
 		t.Fatalf("resolve: %v", err)
 	}
 	<-done
-	if s.HasPendingEscalations() || len(s.PendingEscalations()) != 0 {
+	if s.hasPendingEscalations() || len(s.PendingEscalations()) != 0 {
 		t.Fatal("pending escalation state must clear after resolve")
 	}
 }
@@ -587,7 +587,7 @@ func TestEscalation_EmitsResolvedEventOnTurnInterrupt(t *testing.T) {
 // guarantees. Unlike resolve/interrupt (paths 1-2 above, where the session
 // outlives the emit and exactly-once delivery is deterministic), close races
 // the convergence defer against its own teardown: cancelAllEscalations
-// unblocks the waiter (session_lifecycle.go:180) and Close then proceeds to
+// unblocks the waiter and Close then proceeds to
 // close the event stream, so the defer's emit lands only if it reaches
 // sendEvent before eventsClosed flips — sendEvent drops post-close sends by
 // design (best-effort, accepted at review). This test's escalation goroutine

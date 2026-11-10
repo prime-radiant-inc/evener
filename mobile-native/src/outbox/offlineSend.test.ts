@@ -19,3 +19,12 @@ it("starts or resumes a session with a send, fenced the same way", () => {
 	expect(offlineRequest(target, "send", input)).toMatchObject({ kind: "send", instanceId: "instance-7" });
 	expect(offlineRequest(target, "resume", input)).toMatchObject({ kind: "send", instanceId: "instance-7" });
 });
+
+it.each(["send", "queue", "resume"] as const)("forwards %s context without altering encoded input", (action) => {
+	const context = { composer: { text: "original [image 3]", attachments: [] }, recoverySourceIds: ["source-1"] };
+	const request = offlineRequest(target, action, input, context);
+	expect(request.composer).toBe(context.composer);
+	expect(request.recoverySourceIds).toBe(context.recoverySourceIds);
+	expect(request.input).toBe(input);
+	expect(request).not.toHaveProperty("context");
+});

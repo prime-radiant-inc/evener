@@ -12,7 +12,7 @@ import (
 	"primeradiant.com/evener/internal/e2ecap"
 )
 
-// TestCovMintToolCallID covers mintToolCallID (fakellm.go:90), which mints
+// TestCovMintToolCallID covers mintToolCallID, which mints
 // a unique tool-call id from an atomic counter.
 func TestCovMintToolCallID(t *testing.T) {
 	id1 := mintToolCallID()
@@ -34,7 +34,7 @@ func TestCovMintToolCallID(t *testing.T) {
 	}
 }
 
-// TestCovNew covers New (fakellm.go:93), which starts a fake provider on
+// TestCovNew covers New, which starts a fake provider on
 // a kernel-assigned loopback port. NewOn is already 100% covered; New is
 // the convenience wrapper.
 func TestCovNew(t *testing.T) {
@@ -82,8 +82,7 @@ func TestCovNew(t *testing.T) {
 	}
 }
 
-// TestCovCallAccessors covers Cancelled, AffinityHeader, and ToolCallID
-// (fakellm.go:69, 74, 167), which are simple field accessors on Call.
+// TestCovCallAccessors covers Cancelled, AffinityHeader, and ToolCallID, which are simple field accessors on Call.
 func TestCovCallAccessors(t *testing.T) {
 	cancelled := make(chan struct{})
 	close(cancelled)
@@ -113,7 +112,7 @@ func TestCovCallAccessors(t *testing.T) {
 	}
 }
 
-// TestCovRespondText covers RespondText (fakellm.go:153), which finishes
+// TestCovRespondText covers RespondText, which finishes
 // a round with an assistant message and finish_reason "stop".
 func TestCovRespondText(t *testing.T) {
 	c := &Call{reply: make(chan reply, 1)}
@@ -132,7 +131,7 @@ func TestCovRespondText(t *testing.T) {
 	}
 }
 
-// TestCovRespondToolCall covers RespondToolCall (fakellm.go:160), which
+// TestCovRespondToolCall covers RespondToolCall, which
 // finishes a round with a single tool call.
 func TestCovRespondToolCall(t *testing.T) {
 	c := &Call{reply: make(chan reply, 1), toolCallID: "call_tc_1"}
@@ -158,7 +157,7 @@ func TestCovRespondToolCall(t *testing.T) {
 	}
 }
 
-// TestCovRespondOnce covers the sync.Once guard in respond (fakellm.go:169):
+// TestCovRespondOnce covers the sync.Once guard in respond:
 // a second call is a no-op and does not block.
 func TestCovRespondOnce(t *testing.T) {
 	c := &Call{reply: make(chan reply, 1)}

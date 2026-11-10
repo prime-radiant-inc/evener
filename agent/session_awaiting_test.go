@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
@@ -88,7 +89,7 @@ func endReasonResponse(message, reason string) llm.Response {
 	if reason != "" {
 		args["end_reason"] = reason
 	}
-	return toolCallResponse(communicateCallArgs("communicate_test_call", args))
+	return agenttest.ToolCallResponse(communicateCallArgs("communicate_test_call", args))
 }
 
 // A clean completion rests by the reason its communicate gave: awaiting only
@@ -114,6 +115,11 @@ func TestProcessInput_CleanCompletionRestsByEndReason(t *testing.T) {
 			sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{testOnly: immediateRestConfig()})
 			if err != nil {
 				t.Fatal(err)
+			}
+			if tc.reason == "waiting_on_work" {
+				if _, err := sess.jobManager.configureWatch(watchArgs{Target: runtimeMessageAliasCaller, Source: "self", AfterSeconds: 3600}); err != nil {
+					t.Fatal(err)
+				}
 			}
 			eventsPtr, mu, doneCh := collectEvents(sess)
 			// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
@@ -150,12 +156,9 @@ func TestProcessInput_InterruptStaysIdle(t *testing.T) {
 	c := llm.NewClient()
 	blocker := make(chan struct{})
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { <-blocker; return finalResponse("late") },
+		func(req llm.Request) llm.Response { <-blocker; return agenttest.FinalResponse("late") },
 	}})
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model")), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { _, _ = sess.ProcessInput(ctx, "hello", nil); close(done) }()
@@ -179,9 +182,7 @@ func TestProcessInput_NextInputClearsAwaiting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "first", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -267,9 +268,7 @@ func TestProcessInput_NeedsResponseWithWarmIdleChildRestsAwaiting(t *testing.T) 
 	sess := newSession(t, withSteps(func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") }), withImmediateRest())
 	child := newTestSessionForState(t)
 	sess.subagents.track(&subagent{id: child.ID(), sess: child})
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -319,9 +318,7 @@ func TestWireState_AwaitingOutranksAutonomy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -353,6 +350,11 @@ func TestRestore_RestsByEndReason(t *testing.T) {
 			_, restored := restoreAfter(t, []func(llm.Request) llm.Response{
 				func(llm.Request) llm.Response { return endReasonResponse("answer", tc.reason) },
 			}, func(ctx context.Context, sess *Session) {
+				if tc.reason == "waiting_on_work" {
+					if _, err := sess.jobManager.configureWatch(watchArgs{Target: runtimeMessageAliasCaller, Source: "self", AfterSeconds: 3600}); err != nil {
+						t.Fatal(err)
+					}
+				}
 				if _, err := sess.ProcessInput(ctx, "question", nil); err != nil {
 					t.Fatal(err)
 				}
@@ -378,7 +380,7 @@ func TestRestore_UserLastTurnStaysIdle(t *testing.T) {
 	blocker := make(chan struct{})
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return endReasonResponse("Merge it?", "needs_response") },
-		func(req llm.Request) llm.Response { <-blocker; return finalResponse("late") },
+		func(req llm.Request) llm.Response { <-blocker; return agenttest.FinalResponse("late") },
 	}})
 	dir := t.TempDir()
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: immediateRestConfig()})
@@ -436,7 +438,7 @@ func TestSettleAndRestoreReadTheAcceptedCommunicate(t *testing.T) {
 			t.Parallel()
 			live, restored := restoreAfter(t, []func(llm.Request) llm.Response{
 				func(llm.Request) llm.Response {
-					return toolCallResponse(
+					return agenttest.ToolCallResponse(
 						communicateCallArgs("c1", map[string]any{"message": "one", "end_reason": tc.first}),
 						communicateCallArgs("c2", map[string]any{"message": "two", "end_reason": tc.second}),
 					)
@@ -461,18 +463,13 @@ func TestProcessInput_NeedsResponseWithLiveChildRestsIdle(t *testing.T) {
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") },
 	}})
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model")), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	defer sess.Close()
 	child := newTestSessionForState(t)
 	sess.subagents.mu.Lock()
 	sess.subagents.subs[child.ID()] = &subagent{id: child.ID(), sess: child, running: true}
 	sess.subagents.mu.Unlock()
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -589,7 +586,7 @@ func TestExecTool_HookContextFailureKeepsToolState(t *testing.T) {
 		}
 	}`)
 	defer sess.Close()
-	sess.RegisterTool("stateful_probe", "returns tool state", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
+	sess.registerTool("stateful_probe", "returns tool state", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
 		return tool.StateResult{Output: "ok", State: communicateEndState{EndReason: "needs_response"}}, nil
 	})
 	// A retiring session refuses the hook context's steering.
@@ -621,9 +618,7 @@ func TestArmAwaitingAtSettle_PendingDelegateReportRestsIdle(t *testing.T) {
 		func(req llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") },
 	}}
 	sess := newSession(t, withDir(stateDir), withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}), withAdapter(f))
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}

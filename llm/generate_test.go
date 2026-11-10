@@ -1739,3 +1739,69 @@ func TestExecuteToolCalls_UnknownToolDefaultsNonReadOnly(t *testing.T) {
 		t.Errorf("expected records[0] to be read1, got %q", r1.name)
 	}
 }
+
+// TestParseAndValidateArgs covers the malformed-JSON, nil-schema, and
+// schema-validation-failure arms of parseAndValidateArgs.
+func TestParseAndValidateArgs(t *testing.T) {
+	if _, err := parseAndValidateArgs(nil, json.RawMessage("{not json")); err == nil {
+		t.Fatal("parseAndValidateArgs(bad json) error = nil, want unmarshal failure")
+	}
+
+	v, err := parseAndValidateArgs(nil, json.RawMessage(`{"a":1}`))
+	if err != nil {
+		t.Fatalf("parseAndValidateArgs(nil schema) error = %v", err)
+	}
+	if m, ok := v.(map[string]any); !ok || m["a"] != float64(1) {
+		t.Fatalf("parseAndValidateArgs(nil schema) = %v", v)
+	}
+
+	schema, err := compileSchema(map[string]any{
+		"type":     "object",
+		"required": []any{"name"},
+		"properties": map[string]any{
+			"name": map[string]any{"type": "string"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("compileSchema() error = %v", err)
+	}
+	if _, err := parseAndValidateArgs(schema, json.RawMessage(`{}`)); err == nil {
+		t.Fatal("parseAndValidateArgs(missing required) error = nil, want validation failure")
+	}
+}
+
+// TestPrepareGenerationInputValidation covers prepareGeneration's request-shape
+// guards using an explicit client so the DefaultClient path is skipped, and
+// that a system prompt leads the prepared history.
+func TestPrepareGenerationInputValidation(t *testing.T) {
+	c := NewClient()
+	prompt := "hi"
+
+	if _, err := prepareGeneration(GenerateOptions{Client: c}); err == nil {
+		t.Fatal("prepareGeneration(no model) error = nil, want validation failure")
+	}
+
+	both := GenerateOptions{Client: c, Model: "m", Prompt: &prompt, Messages: []Message{User("x")}}
+	if _, err := prepareGeneration(both); err == nil {
+		t.Fatal("prepareGeneration(prompt+messages) error = nil, want mutual-exclusion failure")
+	}
+
+	if _, err := prepareGeneration(GenerateOptions{Client: c, Model: "m"}); err == nil {
+		t.Fatal("prepareGeneration(no prompt/messages) error = nil, want required failure")
+	}
+
+	badTool := GenerateOptions{Client: c, Model: "m", Prompt: &prompt, Tools: []Tool{{Definition: ToolDefinition{Name: ""}}}}
+	if _, err := prepareGeneration(badTool); err == nil {
+		t.Fatal("prepareGeneration(bad tool) error = nil, want tool-preparation failure")
+	}
+
+	sys := "be terse"
+	state, err := prepareGeneration(GenerateOptions{Client: c, Model: "m", System: &sys, Prompt: &prompt})
+	if err != nil {
+		t.Fatalf("prepareGeneration(system+prompt) error = %v, want success", err)
+	}
+	if len(state.history) != 2 || state.history[0].Role != RoleSystem || state.history[0].Text() != sys ||
+		state.history[1].Role != RoleUser || state.history[1].Text() != prompt {
+		t.Fatalf("prepared history = %+v, want the system prompt then the user prompt", state.history)
+	}
+}

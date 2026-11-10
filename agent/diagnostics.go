@@ -54,6 +54,14 @@ func warningDataFromError(label string, err error) events.WarningData {
 	return data
 }
 
+// warningDataFromErrorCode is warningDataFromError with a stable structured
+// code clients can key on instead of the human-readable label.
+func warningDataFromErrorCode(code, label string, err error) events.WarningData {
+	data := warningDataFromError(label, err)
+	data.Code = code
+	return data
+}
+
 // bareWarningDataFromError is warningDataFromError without the error's text
 // in the message, for an error from a model call: a provider's error body can
 // echo the user's own request, which would otherwise reach Notification
@@ -69,30 +77,12 @@ func bareWarningDataFromError(label string, err error) events.WarningData {
 	}
 }
 
-func enrichDiagnosticData(kind events.EventKind, data events.EventData) events.EventData {
-	switch kind {
-	case events.EventWarning:
-		switch d := data.(type) {
-		case events.WarningData:
-			return enrichWarningData(d)
-		case *events.WarningData:
-			if d == nil {
-				return data
-			}
-			enriched := enrichWarningData(*d)
-			return &enriched
-		}
-	case events.EventError:
-		switch d := data.(type) {
-		case events.ErrorData:
-			return enrichErrorData(d)
-		case *events.ErrorData:
-			if d == nil {
-				return data
-			}
-			enriched := enrichErrorData(*d)
-			return &enriched
-		}
+func enrichDiagnosticData(data events.EventData) events.EventData {
+	switch d := data.(type) {
+	case events.WarningData:
+		return enrichWarningData(d)
+	case events.ErrorData:
+		return enrichErrorData(d)
 	}
 	return data
 }

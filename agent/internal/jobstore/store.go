@@ -396,6 +396,51 @@ func (s *Store) readAll() ([]Event, error) {
 // only the bytes appended since the previous call, replaying the rest from the
 // tail cursor; the result is what a full reread of the file would produce.
 func (s *Store) readAllLocked() ([]Event, error) {
+	tail, err := s.refreshCursorLocked()
+	if err != nil {
+		return nil, err
+	}
+	if len(s.cursor.events) == 0 && len(tail) == 0 {
+		return nil, nil
+	}
+	events := make([]Event, 0, len(s.cursor.events)+len(tail))
+	for _, e := range s.cursor.events {
+		events = append(events, cloneEvent(e))
+	}
+	for _, e := range tail {
+		events = append(events, cloneEvent(e))
+	}
+	return events, nil
+}
+
+// HasEvent reports whether any durable event satisfies match. It reads the same
+// bytes LoadEvents would but visits the cached events in place instead of
+// cloning the journal, so match must not retain or mutate the event.
+func (s *Store) HasEvent(match func(*Event) bool) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureOpenLocked(); err != nil {
+		return false, err
+	}
+	tail, err := s.refreshCursorLocked()
+	if err != nil {
+		return false, err
+	}
+	for _, events := range [][]Event{s.cursor.events, tail} {
+		for i := range events {
+			if match(&events[i]) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// refreshCursorLocked brings the tail cursor up to the end of the file, reading
+// and decoding only the bytes appended since the previous call. Afterward
+// cursor.events plus the returned unterminated trailing events hold every
+// durable event, exactly what a full reread would produce.
+func (s *Store) refreshCursorLocked() ([]Event, error) {
 	if err := s.recoverTrailingPartialLineLocked(); err != nil {
 		return nil, err
 	}
@@ -438,17 +483,7 @@ func (s *Store) readAllLocked() ([]Event, error) {
 	s.cursor.size = info.Size()
 	s.cursor.mod = info.ModTime()
 	s.cursor.valid = true
-	if len(s.cursor.events) == 0 && len(tail) == 0 {
-		return nil, nil
-	}
-	events := make([]Event, 0, len(s.cursor.events)+len(tail))
-	for _, e := range s.cursor.events {
-		events = append(events, cloneEvent(e))
-	}
-	for _, e := range tail {
-		events = append(events, cloneEvent(e))
-	}
-	return events, nil
+	return tail, nil
 }
 
 // cursorTrustedLocked reports whether the file is still the one the cursor was
@@ -948,19 +983,7 @@ func cloneFoldJobs(in map[string]*JobRecord) map[string]*JobRecord {
 	}
 	out := make(map[string]*JobRecord, len(in))
 	for k, r := range in {
-		if r == nil {
-			out[k] = nil
-			continue
-		}
-		c := *r
-		c.LastActivity = clonePtr(r.LastActivity)
-		c.EndedAt = clonePtr(r.EndedAt)
-		c.ExitCode = clonePtr(r.ExitCode)
-		c.StructuredResult = cloneJSONValue(r.StructuredResult)
-		c.StructuredResultValid = clonePtr(r.StructuredResultValid)
-		c.Provenance = cloneCausal(r.Provenance)
-		c.NotificationProvenance = cloneCausal(r.NotificationProvenance)
-		out[k] = &c
+		out[k] = r.Clone()
 	}
 	return out
 }
@@ -971,18 +994,7 @@ func cloneFoldOrdered(in []*JobRecord) []*JobRecord {
 	}
 	out := make([]*JobRecord, len(in))
 	for i, r := range in {
-		if r == nil {
-			continue
-		}
-		c := *r
-		c.LastActivity = clonePtr(r.LastActivity)
-		c.EndedAt = clonePtr(r.EndedAt)
-		c.ExitCode = clonePtr(r.ExitCode)
-		c.StructuredResult = cloneJSONValue(r.StructuredResult)
-		c.StructuredResultValid = clonePtr(r.StructuredResultValid)
-		c.Provenance = cloneCausal(r.Provenance)
-		c.NotificationProvenance = cloneCausal(r.NotificationProvenance)
-		out[i] = &c
+		out[i] = r.Clone()
 	}
 	return out
 }

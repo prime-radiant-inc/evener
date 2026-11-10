@@ -128,11 +128,7 @@ func (m *Manager) PreviewForLaunch(ctx context.Context, explicitDirs []string, e
 		return bundledCandidate{loadPath: staging.payload, path: dest, warnings: warnings}, nil
 	})
 	for _, dir := range scratch {
-		if cleanupErr := os.RemoveAll(dir); cleanupErr != nil {
-			// A removal that fails partway takes the marker with it, and an
-			// unmarked orphan is one no sweep will ever collect. Marking it
-			// again is what leaves a later launch able to reclaim it.
-			_ = os.WriteFile(filepath.Join(dir, stagingMarker), nil, 0o600)
+		if cleanupErr := removeBundledPreview(dir); cleanupErr != nil {
 			// A diagnostic rather than an error: the inventory the caller
 			// asked for is complete, and failing the whole preview over the
 			// cleanup after it would leave the caller with nothing to show.
@@ -144,6 +140,17 @@ func (m *Manager) PreviewForLaunch(ctx context.Context, explicitDirs []string, e
 		}
 	}
 	return resolution, err
+}
+
+func removeBundledPreview(dir string) error {
+	if err := os.RemoveAll(dir); err != nil {
+		// A removal that fails partway takes the marker with it, and an
+		// unmarked orphan is one no sweep will ever collect. Marking it
+		// again is what leaves a later launch able to reclaim it.
+		_ = os.WriteFile(filepath.Join(dir, stagingMarker), nil, 0o600)
+		return err
+	}
+	return nil
 }
 
 // bundledCandidate is where a requested bundled plugin can be loaded from, the
@@ -220,6 +227,11 @@ func (m *Manager) resolveForLaunch(ctx context.Context, explicitDirs []string, e
 		}
 
 		name := instance.Manifest.Name
+		for _, skipped := range instance.SkippedComponents {
+			resolution.Diagnostics = append(resolution.Diagnostics, LaunchPluginDiagnostic{
+				Name: name, Path: skipped.File, Message: skipped.Kind + " skipped: " + skipped.Reason, Source: source,
+			})
+		}
 		if prior := competing[name]; len(prior) > 0 {
 			paths := append(slices.Clone(prior), path)
 			competing[name] = paths

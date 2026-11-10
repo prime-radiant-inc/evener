@@ -27,12 +27,23 @@ func TestStoppedDeploymentRecovery(t *testing.T) {
 				if !present {
 					return nil, interrupted
 				}
-				return []byte(fmt.Sprintf(`{"version":%q,"backend_git_sha":%q,"mobile_api_version":1,"hub_addr":"127.0.0.1:9180","started_at":"2026-01-01T00:00:00Z"}`, running, sha)), nil
+				started := "2026-01-01T00:00:00Z"
+				if starts > 0 {
+					started = "2026-01-02T00:00:00Z"
+				}
+				return []byte(fmt.Sprintf(`{"version":%q,"backend_git_sha":%q,"mobile_api_version":1,"hub_addr":"127.0.0.1:9180","started_at":%q}`, running, sha, started)), nil
 			})
 			run := fr.runFn
 			fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 				command := strings.Join(argv, " ")
 				switch {
+				case !present && strings.Contains(command, "hub endpoint --json") && (scenario == "occupied-port" || scenario == "unknown-port"):
+					// Legacy port fixtures remain below, but selected inspection is
+					// the authority for refusing to launch over an unverified owner.
+					if scenario == "occupied-port" {
+						return []byte("selected root owner cannot be verified"), &RunError{Err: exitStatus(t, 1)}
+					}
+					return nil, interrupted
 				case strings.Contains(command, "cat >"):
 					writes++
 					disk = "snapshot"
@@ -77,7 +88,7 @@ func TestStoppedDeploymentRecovery(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, _, err := m.DeployForOperation(t.Context(), host, facts, true, nil); !errors.Is(err, interrupted) {
+			if _, _, err := m.DeployForOperation(t.Context(), registeredTestHost(t, m, host), facts, true, nil, nil); !errors.Is(err, interrupted) {
 				t.Fatalf("deployment interruption: %v", err)
 			}
 			if pending := m.pendingRestart(host.Name); !pending.deployment || !pending.restart || pending.command != "" {

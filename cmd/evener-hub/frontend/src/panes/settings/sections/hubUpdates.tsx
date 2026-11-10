@@ -1,10 +1,12 @@
+import type { UpdateCheckResponse } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
+import { useConnectionStore } from "../../../stores/connection";
 import { hubUpdateStore, RESTART_TIMEOUT_MS, type UpdateChannel, useHubUpdateStore } from "../../../stores/hubUpdate";
 import { useSettingsOverviewStore } from "../../../stores/settingsOverview";
 import { Button, ConfirmDialog, InlineNotice, Loader, RadioGroup } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./hubUpdates.module.css";
-import { Code, FieldDim } from "./settingsField";
+import { FieldDim } from "./settingsField";
 
 const CLASS = {
   root: requireClass(styles.root, "hubUpdates.module.css", "root"),
@@ -22,19 +24,41 @@ function isChannel(value: string | undefined): value is UpdateChannel {
   return value === "release" || value === "snapshot";
 }
 
-function shortCommit(sha: string): string {
-  return sha.slice(0, 7);
+function defaultChannel(buildChannel: string | undefined): UpdateChannel | null {
+  if (isChannel(buildChannel)) return buildChannel;
+  // A local build has no channel of its own; Release matches the hub's own
+  // default for an empty channel request.
+  if (buildChannel === "dev") return "release";
+  return null;
+}
+
+function displayBuild(version: string | undefined): string {
+  if (version === undefined || version === "") return "unknown";
+  const dirty = version.endsWith("-dirty");
+  const sha = dirty ? version.slice(0, -"-dirty".length) : version;
+  return sha.slice(0, 7) + (dirty ? "-dirty" : "");
+}
+
+function updateStatusText(check: UpdateCheckResponse, localBuild: boolean): string {
+  if (check.updateAvailable) {
+    return `Update available: ${check.channel} ${displayBuild(check.latestCommit)}, running ${displayBuild(check.currentVersion)}`;
+  }
+  if (localBuild && check.installAvailable) {
+    return `Local build at ${check.channel} ${displayBuild(check.latestCommit)}. Install the published build.`;
+  }
+  return `Up to date on ${check.channel} (${displayBuild(check.latestCommit)})`;
 }
 
 /**
- * Settings -> Hub -> Updates. Seeds the channel from the overview's
- * buildChannel (release/snapshot builds only), checks on mount and on
- * channel change, and gates "Update and restart" behind a confirm dialog.
- * Dev builds get a note instead of controls: a worktree build must never be
- * silently replaced by a release binary. If buildChannel hasn't arrived yet
- * (channel still null - older overview responses, or a value this UI
- * doesn't recognize), the block shows only the running-build line and no
- * controls: there is nothing to check or select yet.
+ * Settings -> Hub -> Updates. Install and Restart are separate actions:
+ * Install writes a verified artifact without touching the running process;
+ * Restart execs the binary already on disk. A locally built hub shows the
+ * same controls; Install replaces its binary with the selected channel's
+ * published build.
+ *
+ * The check carries the on-disk build, the process incarnation, and whether
+ * this hub supports restart. The host confirms a restart by comparing the
+ * incarnation, not the version, so a rebuild at the same commit still reloads.
  */
 export function HubUpdates() {
   const hub = useSettingsOverviewStore((s) => s.data?.hub);
@@ -42,30 +66,57 @@ export function HubUpdates() {
   const check = useHubUpdateStore((s) => s.check);
   const checking = useHubUpdateStore((s) => s.checking);
   const checkError = useHubUpdateStore((s) => s.checkError);
+  const installing = useHubUpdateStore((s) => s.installing);
+  const installError = useHubUpdateStore((s) => s.installError);
+  const installReconcile = useHubUpdateStore((s) => s.installReconcile);
   const applying = useHubUpdateStore((s) => s.applying);
   const applyError = useHubUpdateStore((s) => s.applyError);
   const restarting = useHubUpdateStore((s) => s.restarting);
+  const restartError = useHubUpdateStore((s) => s.restartError);
   const restartTimedOut = useHubUpdateStore((s) => s.restartTimedOut);
   const [confirming, setConfirming] = useState(false);
 
   const buildChannel = hub?.buildChannel;
-  const isDev = buildChannel === "dev";
+  const localBuild = buildChannel === "dev";
+  const connectionState = useConnectionStore((s) => s.state);
+  const seededChannel = defaultChannel(buildChannel);
 
   // Seed the selector from the running binary once the overview is here.
   useEffect(() => {
-    if (channel === null && isChannel(buildChannel)) {
-      hubUpdateStore.getState().setChannel(buildChannel);
+    if (channel === null && seededChannel !== null) {
+      hubUpdateStore.getState().setChannel(seededChannel);
     }
-  }, [channel, buildChannel]);
+  }, [channel, seededChannel]);
 
-  // Check whenever a channel is selected (mount and every change).
+  // Check whenever a channel is selected (mount and every change), and when
+  // the connection becomes ready again: the cached answer belongs to the
+  // previous connection and may name a different hub's build.
   useEffect(() => {
-    if (channel !== null) void hubUpdateStore.getState().runCheck();
-  }, [channel]);
+    if (channel !== null && connectionState === "ready") void hubUpdateStore.getState().runCheck();
+  }, [channel, connectionState]);
+
+  // A lost install response is reconciled once the socket is ready again.
+  useEffect(() => {
+    if (installReconcile && connectionState === "ready") void hubUpdateStore.getState().runCheck();
+  }, [installReconcile, connectionState]);
 
   if (!hub) return null;
 
-  // Which message the status line below is showing, as its `data-state`.
+  const running = check?.currentVersion ?? hub.commit;
+  const onDisk = check?.onDiskCommit;
+  const channelError = check?.checkError ?? null;
+  const restartSupported = check?.restartSupported === true;
+  // An older hub omits the field entirely; a current hub that cannot restart
+  // sends false. The generated type requires the field, so read it as optional
+  // to tell those two cases apart. Only the absence means the deprecated
+  // combined action.
+  const restartCapabilityPresent =
+    check !== null && (check as { restartSupported?: boolean }).restartSupported !== undefined;
+  const installAvailable = check?.installAvailable ?? check?.updateAvailable ?? false;
+  const legacyApply =
+    check !== null && !restartCapabilityPresent && (check.applicable ?? false) && (check.updateAvailable ?? false);
+  const busy = checking || installing || applying || restarting;
+
   const updateState = restarting
     ? "restarting"
     : restartTimedOut
@@ -74,11 +125,32 @@ export function HubUpdates() {
         ? "checking"
         : checkError !== null
           ? "check-failed"
-          : check === null
-            ? undefined
-            : check.updateAvailable
-              ? "update-available"
-              : "up-to-date";
+          : channelError !== null
+            ? "check-failed"
+            : check === null
+              ? undefined
+              : check.updateAvailable
+                ? "update-available"
+                : "up-to-date";
+
+  const restartDialog = (
+    <ConfirmDialog
+      open={confirming}
+      title={legacyApply ? "Update and restart the hub?" : "Restart the hub?"}
+      confirmLabel={legacyApply ? "Yes, update and restart" : "Yes, restart"}
+      busy={legacyApply ? applying : restarting}
+      onConfirm={() => {
+        setConfirming(false);
+        if (legacyApply) void hubUpdateStore.getState().apply();
+        else void hubUpdateStore.getState().restart();
+      }}
+      onCancel={() => setConfirming(false)}
+    >
+      {legacyApply
+        ? "The hub installs the update and restarts. Open panes reconnect; running sessions keep going."
+        : `The hub restarts into ${displayBuild(onDisk ?? running)} (running ${displayBuild(running)}). Open panes reconnect; running sessions keep going.`}
+    </ConfirmDialog>
+  );
 
   return (
     <section className={CLASS.root} aria-labelledby="hub-updates-heading">
@@ -86,20 +158,41 @@ export function HubUpdates() {
         Updates
       </h3>
       <p className={CLASS.status}>
-        Running {hub.version ?? "unknown"}
-        {hub.commit !== undefined && <FieldDim> ({hub.commit})</FieldDim>}
+        Running {displayBuild(running)}
         {buildChannel !== undefined && <FieldDim> · {buildChannel}</FieldDim>}
       </p>
+      {check !== null && (
+        <p className={CLASS.status} data-testid="hub-on-disk-build">
+          On disk {displayBuild(onDisk)}
+          {check.restartPending && <FieldDim> · restart pending</FieldDim>}
+        </p>
+      )}
+      {check?.onDiskError !== undefined && (
+        <InlineNotice tone="danger">Can't read the on-disk build: {check.onDiskError}</InlineNotice>
+      )}
 
-      {isDev && (
+      {check?.applicable === true &&
+        check.installTargetMatchesLaunch === false &&
+        check.installTarget !== undefined && (
+          <InlineNotice tone="danger" data-testid="hub-install-target-mismatch">
+            Install is unavailable: it would write {check.installTarget}, but this hub runs from a different binary. Use
+            the managed installation.
+          </InlineNotice>
+        )}
+
+      {check?.restartPending === true && (
+        <InlineNotice data-testid="hub-restart-pending">
+          Installed {displayBuild(onDisk)}, running {displayBuild(running)}. Restart to apply.
+        </InlineNotice>
+      )}
+
+      {localBuild && (
         <p className={CLASS.status} data-testid="hub-update-dev-note">
-          <FieldDim>
-            Dev build. Rebuild with <Code>make build-hub</Code> to update.
-          </FieldDim>
+          <FieldDim>Local build. Install replaces it with the selected channel's published build.</FieldDim>
         </p>
       )}
 
-      {!isDev && channel !== null && (
+      {channel !== null && (
         <>
           <RadioGroup
             label="Channel"
@@ -108,7 +201,7 @@ export function HubUpdates() {
               if (isChannel(value)) hubUpdateStore.getState().setChannel(value);
             }}
             options={CHANNEL_OPTIONS}
-            disabled={applying || restarting}
+            disabled={busy}
           />
 
           <InlineNotice data-testid="hub-update-status" data-state={updateState}>
@@ -120,49 +213,51 @@ export function HubUpdates() {
             {!restarting && !restartTimedOut && !checking && checkError !== null && (
               <>Couldn't check for updates: {checkError}</>
             )}
+            {!restarting && !restartTimedOut && !checking && checkError === null && channelError !== null && (
+              <>Couldn't check for updates: {channelError}</>
+            )}
             {!restarting &&
               !restartTimedOut &&
               !checking &&
               checkError === null &&
+              channelError === null &&
               check !== null &&
-              (check.updateAvailable
-                ? `Update available: ${check.channel} ${shortCommit(check.latestCommit ?? "")}, running ${check.currentVersion}`
-                : `Up to date on ${check.channel} (${shortCommit(check.latestCommit ?? "")})`)}
+              updateStatusText(check, localBuild)}
           </InlineNotice>
+          {installing && <Loader label="Installing update" />}
+          {installError !== null && <InlineNotice tone="danger">Install failed: {installError}</InlineNotice>}
           {applyError !== null && <InlineNotice tone="danger">Update failed: {applyError}</InlineNotice>}
+          {restartError !== null && <InlineNotice tone="danger">Restart failed: {restartError}</InlineNotice>}
 
           <div className={CLASS.actions}>
-            <Button
-              size="sm"
-              onClick={() => void hubUpdateStore.getState().runCheck()}
-              disabled={checking || applying || restarting}
-            >
+            <Button size="sm" onClick={() => void hubUpdateStore.getState().runCheck()} disabled={busy}>
               Check for updates
             </Button>
-            <Button
-              size="sm"
-              onClick={() => setConfirming(true)}
-              disabled={!(check?.updateAvailable ?? false) || checking || applying || restarting}
-            >
-              Update and restart
-            </Button>
+            {legacyApply ? (
+              <Button size="sm" onClick={() => setConfirming(true)} disabled={busy}>
+                Update and restart
+              </Button>
+            ) : (
+              <>
+                <Button
+                  size="sm"
+                  onClick={() => void hubUpdateStore.getState().install()}
+                  disabled={!installAvailable || busy}
+                >
+                  Install update
+                </Button>
+                {restartSupported && (
+                  <Button size="sm" onClick={() => setConfirming(true)} disabled={busy}>
+                    Restart hub
+                  </Button>
+                )}
+              </>
+            )}
           </div>
-
-          <ConfirmDialog
-            open={confirming}
-            title="Update and restart the hub?"
-            confirmLabel="Yes, update and restart"
-            busy={applying}
-            onConfirm={() => {
-              setConfirming(false);
-              void hubUpdateStore.getState().apply();
-            }}
-            onCancel={() => setConfirming(false)}
-          >
-            The hub goes offline for a few seconds while the new binary starts. Running sessions keep going.
-          </ConfirmDialog>
         </>
       )}
+
+      {restartDialog}
     </section>
   );
 }

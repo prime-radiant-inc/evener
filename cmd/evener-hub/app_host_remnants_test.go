@@ -63,7 +63,7 @@ func newRemnantFixture(t *testing.T, declared ...hostreg.Host) (*hubHostManager,
 	if err := writeHubTOMLHosts(configPath, seed); err != nil {
 		t.Fatalf("seed hub.toml: %v", err)
 	}
-	cfg, err := LoadConfig(configPath)
+	cfg, err := loadWithRecords(configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestHostRemoveTeardownFailureCommitsWithRemnant(t *testing.T) {
 		t.Fatal("the removal's tombstone is not durable")
 	}
 	// The file carries the open remnant and the tombstone across a reload.
-	reloaded, err := LoadConfig(configPath)
+	reloaded, err := loadWithRecords(configPath)
 	if err != nil {
 		t.Fatalf("reload hub.toml: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestHostRemoveTeardownFailureCommitsWithRemnant(t *testing.T) {
 		t.Fatalf("resolved replay = %+v, want the committed arm", resolved)
 	}
 	// In a fresh process, the same id still reads `already-cleared`.
-	restarted, err := LoadConfig(configPath)
+	restarted, err := loadWithRecords(configPath)
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
@@ -375,7 +375,7 @@ func TestHostTeardownRecoverRequiresTheAttestation(t *testing.T) {
 		t.Fatal("the fence still stands after the clearance")
 	}
 	// The record carries the attestation and survives a reload.
-	reloaded, err := LoadConfig(configPath)
+	reloaded, err := loadWithRecords(configPath)
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
@@ -603,7 +603,7 @@ started_at = "2026-09-27T12:00:00Z"
 			if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
 				t.Fatalf("write hub.toml: %v", err)
 			}
-			if _, err := LoadConfig(configPath); err == nil {
+			if _, err := loadWithRecords(configPath); err == nil {
 				t.Fatal("LoadConfig accepted a teardown-repair record this build cannot decode")
 			} else if !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("LoadConfig error = %q, want it to mention %q", err, tc.want)
@@ -676,7 +676,7 @@ func TestHostMutationCollisionDroppedAdoptsTheHandEdit(t *testing.T) {
 		t.Fatalf("arm = %+v, want the winning live row for the hand edit", arm)
 	}
 	// The file keeps the hand edit — the adopted bytes, never the staged entry.
-	cfg, err := LoadConfig(configPath)
+	cfg, err := loadWithRecords(configPath)
 	if err != nil {
 		t.Fatalf("load hub.toml: %v", err)
 	}
@@ -817,7 +817,7 @@ func TestHostStagedCompensationLeavesNoMarkerOrReceipt(t *testing.T) {
 		t.Fatalf("store still holds receipts: %+v", receipts)
 	}
 	// ...and nothing staged survives on disk, for a reader that reloads it.
-	cfg, err := LoadConfig(configPath)
+	cfg, err := loadWithRecords(configPath)
 	if err != nil {
 		t.Fatalf("load hub.toml: %v", err)
 	}
@@ -911,7 +911,7 @@ func TestHostRemnantFenceGatesRetentionFromTheRealRecords(t *testing.T) {
 	}
 	// hub.toml still carries both records, so a restart cannot lose the repair
 	// handle either.
-	reloaded, err := LoadConfig(configPath)
+	reloaded, err := loadWithRecords(configPath)
 	if err != nil {
 		t.Fatalf("reload hub.toml: %v", err)
 	}
@@ -1082,11 +1082,7 @@ presence_epoch = 1
 	cfg, _, _ := hostManageWiringConfig(t, configPath, []hostreg.Host{{Name: "m4", SSH: "m4.example"}}, &dialRecordingRunner{})
 	hub, _ := newHubRPCTestServerWithWeb(t, cfg)
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 
 	err := client.Request(context.Background(), appwire.MethodEvenerHostAttach, appwire.HostAttachParams{Host: "m4"}, nil)
 	if err == nil {
@@ -1128,7 +1124,7 @@ func TestHostMarkerFinalizationReleasesTheGateForThePinnedTeardown(t *testing.T)
 	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "side", SSH: "side.example"}}); err != nil {
 		t.Fatalf("seed hub.toml: %v", err)
 	}
-	cfg, err := LoadConfig(configPath)
+	cfg, err := loadWithRecords(configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
@@ -1334,7 +1330,7 @@ func TestHostUpdateRemnantRepairsThroughRetryAndRecover(t *testing.T) {
 	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "side", SSH: "side.example"}}); err != nil {
 		t.Fatalf("seed hub.toml: %v", err)
 	}
-	cfg, err := LoadConfig(configPath)
+	cfg, err := loadWithRecords(configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
@@ -1514,7 +1510,7 @@ func TestHostMutationFinalizeKeepsAConcurrentSiblingCommit(t *testing.T) {
 		}
 		// The FILE is the authority here: reopen it and assert the sibling's
 		// commit is still there.
-		reopened, err := LoadConfig(configPath)
+		reopened, err := loadWithRecords(configPath)
 		if err != nil {
 			t.Fatalf("reload hub.toml: %v", err)
 		}
@@ -1566,7 +1562,7 @@ func TestHostMutationFinalizeKeepsAConcurrentSiblingCommit(t *testing.T) {
 		if err := <-outer; err != nil {
 			t.Fatalf("outer Remove(side): %v", err)
 		}
-		reopened, err := LoadConfig(configPath)
+		reopened, err := loadWithRecords(configPath)
 		if err != nil {
 			t.Fatalf("reload hub.toml: %v", err)
 		}
@@ -1667,7 +1663,7 @@ func TestHostTeardownRetryRetiresTheRemovedHostsDerivedState(t *testing.T) {
 	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "side", SSH: "side.example"}}); err != nil {
 		t.Fatalf("seed hub.toml: %v", err)
 	}
-	cfg, err := LoadConfig(configPath)
+	cfg, err := loadWithRecords(configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
@@ -1751,7 +1747,7 @@ func TestHostTeardownRetryDeadlineInterruptsAWedgedManager(t *testing.T) {
 	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "side", SSH: "side.example"}}); err != nil {
 		t.Fatalf("seed hub.toml: %v", err)
 	}
-	cfg, err := LoadConfig(configPath)
+	cfg, err := loadWithRecords(configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
@@ -1879,7 +1875,7 @@ func TestHostTeardownRecoverRetiresTheClearedRemovalsDerivedState(t *testing.T) 
 	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "side", SSH: "side.example"}}); err != nil {
 		t.Fatalf("seed hub.toml: %v", err)
 	}
-	cfg, err := LoadConfig(configPath)
+	cfg, err := loadWithRecords(configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
@@ -2245,5 +2241,33 @@ func TestHostUpdateRepairKeepsTheCommittedGeneration(t *testing.T) {
 	}
 	if replay.HostMutationCommitted == nil && replay.HostMutationTeardownFailure == nil {
 		t.Fatalf("replay = %+v, want the recorded outcome", replay)
+	}
+}
+
+// TestClaimTeardownAttemptFencesAnOpenPriorAttempt pins the claim both retry
+// and recover persist: a fresh open attempt stamped with this boot, plus the
+// fenced-closed mark of a prior open attempt only when one stands.
+func TestClaimTeardownAttemptFencesAnOpenPriorAttempt(t *testing.T) {
+	m, _, _ := newRemnantFixture(t)
+	now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	prior := HostTeardownAttempt{RemnantID: "r1", State: hostAttemptStateOpen, StartedAt: "2026-09-27T11:00:00Z"}
+
+	attemptID, attempt, change := m.claimTeardownAttempt("r1", now, "prior-id", prior, true)
+	if attempt.State != hostAttemptStateOpen || attempt.RemnantID != "r1" || attempt.FencingEpochBoot != m.cfg.bootID {
+		t.Fatalf("claimed attempt = %+v, want an open attempt for r1 on this boot", attempt)
+	}
+	if change.attempt == nil || change.attempt.AttemptID != attemptID || change.attempt.Attempt != attempt {
+		t.Fatalf("claim change = %+v, want the new attempt under %q", change.attempt, attemptID)
+	}
+	if change.fencedAttempt == nil || change.fencedAttempt.AttemptID != "prior-id" {
+		t.Fatalf("fenced change = %+v, want the prior attempt", change.fencedAttempt)
+	}
+	if got := change.fencedAttempt.Attempt; got.State != hostAttemptStateFencedClosed || got.FencedAt != hostInstant(now) {
+		t.Fatalf("prior attempt = %+v, want fenced-closed at the claim instant", got)
+	}
+
+	_, _, change = m.claimTeardownAttempt("r1", now, "", HostTeardownAttempt{}, false)
+	if change.fencedAttempt != nil {
+		t.Fatalf("no prior attempt stood, but the claim fenced %+v", change.fencedAttempt)
 	}
 }

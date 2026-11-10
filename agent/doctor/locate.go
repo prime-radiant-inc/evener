@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/bucketref"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/identifier"
 )
@@ -166,17 +167,16 @@ func globBuckets(projects string) ([]bucket, error) {
 // suffix on the transcript path. The client-mutation store is a third shape
 // again: a flat <sid>.json under a bucket-level mutations/ dir beside sessions/.
 func pathsFor(b bucket, sid string) Paths {
-	sess := filepath.Join(b.dir, "sessions")
 	return Paths{
 		SessionID:      sid,
 		TranscriptRef:  refFor(b.projectID, sid),
 		ProjectID:      b.projectID,
 		BucketDir:      b.dir,
-		TranscriptPath: filepath.Join(sess, sid+".transcript.jsonl"),
-		APILogPath:     filepath.Join(sess, sid+".api.jsonl"),
-		MetaPath:       filepath.Join(sess, sid+".meta.json"),
-		JobsPath:       filepath.Join(sess, sid, "jobs.jsonl"),
-		DelegatesPath:  filepath.Join(sess, sid, "delegates.jsonl"),
+		TranscriptPath: schema.SessionTranscriptPath(b.dir, sid),
+		APILogPath:     schema.SessionAPILogPath(b.dir, sid),
+		MetaPath:       schema.SessionMetaPath(b.dir, sid),
+		JobsPath:       filepath.Join(schema.SessionWorkDir(b.dir, sid), "jobs.jsonl"),
+		DelegatesPath:  schema.SessionDelegateJournalPath(b.dir, sid),
 		MutationsPath:  filepath.Join(b.dir, "mutations", sid+".json"),
 	}
 }
@@ -215,7 +215,7 @@ func sessionInBucket(b bucket, sid string) bool {
 	if identifier.ValidateSessionID(sid) != nil {
 		return false
 	}
-	return fileExists(filepath.Join(b.dir, "sessions", sid+".transcript.jsonl"))
+	return fileExists(schema.SessionTranscriptPath(b.dir, sid))
 }
 
 func isDir(path string) bool {

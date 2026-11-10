@@ -10,14 +10,25 @@ package hubapi
 // normalized state, except that a pending approval (a sandbox escalation, M7)
 // reads as "awaiting". The escalation blocks mid-turn, so the session keeps
 // reporting "active" while it waits on a person the way a question does. A
-// failure still outranks it: "errored" stays "errored". Rank and level a
-// session through this, never through its reported state alone, which stays
-// unchanged on every row.
+// failure, a session that needs a restart and one that has ended or never
+// loaded still outrank it: an approval cannot answer them, so a stale
+// escalation never masks them. Rank and level a session through this, never
+// through its reported state alone, which stays unchanged on every row.
+// appwire-client's approvalWaiting states the same rule; testdata/attention
+// holds the cases both run.
 func AttentionState(state string, approvalPending bool) string {
-	if approvalPending && state != "errored" {
+	if approvalPending && !outranksApproval(state) {
 		return "awaiting"
 	}
 	return state
+}
+
+func outranksApproval(state string) bool {
+	switch state {
+	case "errored", "restartRequired", "ended", "notLoaded":
+		return true
+	}
+	return false
 }
 
 // AttentionRank maps a normalized state to a sort key for live-session
@@ -67,36 +78,6 @@ func NeedsResponse(state string, askPending bool) bool {
 	return state == "awaiting" && !askPending
 }
 
-// StateWord returns the display word for a normalized attention state, used by
-// clients. askPending selects the word for awaiting:
-// "Question waiting" for a pending question, "Needs you" for a turn that
-// ended on needs_response (#4093). It is ignored for every other state.
-func StateWord(state string, askPending bool) string {
-	switch state {
-	case "errored":
-		return "Error"
-	case "awaiting":
-		if NeedsResponse(state, askPending) {
-			return "Needs you"
-		}
-		return "Question waiting"
-	case "active":
-		return "Working"
-	case "restartRequired":
-		return "Restart required"
-	case "warning":
-		return "Warning"
-	case "idle":
-		return "Idle"
-	case "ended", "closed":
-		return "Ended"
-	case "notLoaded":
-		return "Not loaded"
-	default:
-		return state
-	}
-}
-
 // NeedsYouBand ranks a needs-you row into one of three ordering bands:
 // errored (2, "broken beats blocked"), blocked on a person (1: a question, an
 // approval, or an awaiting turn that ended on needs_response, #4093), or
@@ -108,12 +89,13 @@ func StateWord(state string, askPending bool) string {
 // blocks mid-turn, so its session still reports "active" and only
 // approvalPending can place it; pass false where the caller has no approval
 // information. Both flags are ignored when state is "errored" (errored
-// always wins regardless).
+// always wins regardless), and approvalPending counts only where
+// AttentionState lets it escalate.
 func NeedsYouBand(state string, askPending, approvalPending bool) int {
 	switch {
 	case state == "errored":
 		return 2
-	case state == "awaiting" || askPending || approvalPending:
+	case state == "awaiting" || askPending || AttentionState(state, approvalPending) == "awaiting":
 		return 1
 	default:
 		return 0

@@ -1,9 +1,12 @@
 package appwire
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
+	"slices"
 )
 
 const (
@@ -25,20 +28,25 @@ const (
 	// way HostEntry's json tags spell it). It shares CodeInvalidParams with
 	// plain validation refusals, so a client that wants to place a message on
 	// an input must match this discriminant, never the code.
-	ErrorInvalidHostField           ErrorInfo = "invalidHostField"
-	ErrorResourceNotFound           ErrorInfo = "resourceNotFound"
-	ErrorMethodNotFound             ErrorInfo = "methodNotFound"
-	ErrorProviderUnavailable        ErrorInfo = "providerUnavailable"
-	ErrorSessionUnavailable         ErrorInfo = "sessionUnavailable"
-	ErrorConflict                   ErrorInfo = "conflict"
-	ErrorActionUnavailable          ErrorInfo = "actionUnavailable"
-	ErrorHubLaunch                  ErrorInfo = "hubLaunch"
-	ErrorQueuedDrainPartial         ErrorInfo = "queuedDrainPartial"
-	ErrorMutationOutcomeUnknown     ErrorInfo = "mutationOutcomeUnknown"
-	ErrorTranscriptItemCursorStale  ErrorInfo = "transcriptItemCursorStale"
-	ErrorSessionActivityCursorStale ErrorInfo = "sessionActivityCursorStale"
-	ErrorJobOutputPruned            ErrorInfo = "jobOutputPruned"
-	ErrorInternal                   ErrorInfo = "internal"
+	ErrorInvalidHostField    ErrorInfo = "invalidHostField"
+	ErrorResourceNotFound    ErrorInfo = "resourceNotFound"
+	ErrorMethodNotFound      ErrorInfo = "methodNotFound"
+	ErrorProviderUnavailable ErrorInfo = "providerUnavailable"
+	ErrorSessionUnavailable  ErrorInfo = "sessionUnavailable"
+	ErrorConflict            ErrorInfo = "conflict"
+	// ErrorAskFenceMismatch refuses an answer or page against a changed ask set.
+	ErrorAskFenceMismatch ErrorInfo = "ask-fence-mismatch"
+	// ErrorAskFenceUnsupportedOnDaemon refuses fenced work before forwarding it
+	// to a daemon that cannot enforce the expected pair.
+	ErrorAskFenceUnsupportedOnDaemon ErrorInfo = "ask-fence-unsupported-on-daemon"
+	ErrorActionUnavailable           ErrorInfo = "actionUnavailable"
+	ErrorHubLaunch                   ErrorInfo = "hubLaunch"
+	ErrorQueuedDrainPartial          ErrorInfo = "queuedDrainPartial"
+	ErrorMutationOutcomeUnknown      ErrorInfo = "mutationOutcomeUnknown"
+	ErrorTranscriptItemCursorStale   ErrorInfo = "transcriptItemCursorStale"
+	ErrorSessionActivityCursorStale  ErrorInfo = "sessionActivityCursorStale"
+	ErrorJobOutputPruned             ErrorInfo = "jobOutputPruned"
+	ErrorInternal                    ErrorInfo = "internal"
 	// ErrorTranscriptHistoryFailed marks a read of a thread whose history
 	// entered its failed state: its projection or rebuild failed for a reason
 	// outside the entries (I/O, a corrupt index) three times in a row, and a
@@ -525,6 +533,66 @@ type ErrorData struct {
 	Cause            string           `json:"cause,omitempty"`
 }
 
+// ThreadStartPartialErrorData names a session that a failed thread/start
+// already spawned. It retains the original refusal's classification and any
+// additional data, so the caller can reconcile the created session rather
+// than repeat a start whose outcome is known.
+type ThreadStartPartialErrorData struct {
+	ErrorData
+	CreatedRef        string `json:"createdRef"`
+	CreatedInstanceID string `json:"createdInstanceId"`
+	extra             map[string]json.RawMessage
+}
+
+func (d ThreadStartPartialErrorData) MarshalJSON() ([]byte, error) {
+	type fields ThreadStartPartialErrorData
+	base, err := json.Marshal(fields(d))
+	if err != nil {
+		return nil, err
+	}
+	if len(d.extra) == 0 {
+		return base, nil
+	}
+	var combined map[string]json.RawMessage
+	if err := json.Unmarshal(base, &combined); err != nil {
+		return nil, err
+	}
+	for key, value := range d.extra {
+		if _, standard := combined[key]; !standard {
+			combined[key] = value
+		}
+	}
+	return json.Marshal(combined)
+}
+
+// WithThreadStartPartial keeps the original wire error intact while placing
+// the spawned identity inside its Data: router dispatch discards a result
+// returned beside an error. Automatic retry is unsafe after a real spawn.
+func (e WireError) WithThreadStartPartial(ref, instanceID string) WireError {
+	var raw map[string]json.RawMessage
+	if encoded, err := json.Marshal(e.Data); err == nil {
+		_ = json.Unmarshal(encoded, &raw)
+	}
+	var data ThreadStartPartialErrorData
+	if encoded, err := json.Marshal(raw); err == nil {
+		_ = json.Unmarshal(encoded, &data)
+	}
+	if data.RetryDisposition == RetryDispositionAutomatic {
+		data.RetryDisposition = RetryDispositionBlocked
+	}
+	data.CreatedRef, data.CreatedInstanceID = ref, instanceID
+	delete(raw, "evenerErrorInfo")
+	delete(raw, "clientMutationId")
+	delete(raw, "mutationOutcome")
+	delete(raw, "retryDisposition")
+	delete(raw, "cause")
+	delete(raw, "createdRef")
+	delete(raw, "createdInstanceId")
+	data.extra = raw
+	e.Data = data
+	return e
+}
+
 // HostFieldErrorData is a host mutation's validation-refusal data (component 08
 // slice 2): the standard ErrorData plus the input the refusal blames, spelled
 // the way the wire names that input (HostEntry's json tags) so a dialog places
@@ -792,6 +860,14 @@ func MutationNotAccepted(clientMutationID, message string) WireError {
 			ClientMutationID: clientMutationID,
 			MutationOutcome:  MutationOutcomeNotAccepted,
 			RetryDisposition: RetryDispositionNone,
+			// Every caller refuses the mutation BEFORE the daemon's journal
+			// can hold a record for it (server admission, a clear in
+			// progress), so no journal can vouch for the wire. No cause is
+			// stamped: clients split wire certainty on the POSITIVE
+			// journaledRejection stamp that only the daemon's own journaled
+			// rejections carry (JournaledRejectionCause), and treat an
+			// absent cause as delivery-uncertain - the safe default, since
+			// an outstanding attempt of the same wire can still apply.
 		},
 	}
 }
@@ -826,6 +902,63 @@ func ErrorDataOf(data any) (ErrorData, bool) {
 		return ErrorData{}, false
 	}
 	return field.Interface().(ErrorData), true
+}
+
+// DecodedErrorData is the standard data an error's Data carries in whichever
+// shape it arrived: ErrorData itself, a struct embedding it, or the generic map
+// a wire client decodes JSON into. Fields a map lacks or holds as another type
+// read as empty.
+func DecodedErrorData(data any) (ErrorData, bool) {
+	if typed, ok := ErrorDataOf(data); ok {
+		return typed, true
+	}
+	fields, ok := data.(map[string]any)
+	if !ok {
+		return ErrorData{}, false
+	}
+	text := func(key string) string {
+		value, _ := fields[key].(string)
+		return value
+	}
+	return ErrorData{
+		EvenerErrorInfo:  ErrorInfo(text("evenerErrorInfo")),
+		ClientMutationID: text("clientMutationId"),
+		MutationOutcome:  MutationOutcome(text("mutationOutcome")),
+		RetryDisposition: RetryDisposition(text("retryDisposition")),
+		Cause:            text("cause"),
+	}, true
+}
+
+// WithMutation stamps the mutation the error belongs to: its clientMutationId,
+// and the outcome and retry disposition when they are not empty. Data stays in
+// its shape, plain ErrorData or the generic map a wire client decodes, and
+// every other field is kept; the original data is not modified. ok is false,
+// with the error unchanged, for any other shape.
+func (e WireError) WithMutation(clientMutationID string, outcome MutationOutcome, disposition RetryDisposition) (WireError, bool) {
+	switch data := e.Data.(type) {
+	case ErrorData:
+		data.ClientMutationID = clientMutationID
+		if outcome != "" {
+			data.MutationOutcome = outcome
+		}
+		if disposition != "" {
+			data.RetryDisposition = disposition
+		}
+		e.Data = data
+	case map[string]any:
+		updated := maps.Clone(data)
+		updated["clientMutationId"] = clientMutationID
+		if outcome != "" {
+			updated["mutationOutcome"] = string(outcome)
+		}
+		if disposition != "" {
+			updated["retryDisposition"] = string(disposition)
+		}
+		e.Data = updated
+	default:
+		return e, false
+	}
+	return e, true
 }
 
 // markedNotAccepted is a copy of data with its ErrorData marked: data itself
@@ -882,11 +1015,17 @@ func MutationUnknown(clientMutationID, message string) WireError {
 	}
 }
 
-// BackpressureCauseQueueSaturated is the one cause a connectionBackpressure
-// refusal carries: the connection's inbound request queue was at or beyond
-// its high-water depth when the mutation arrived, so the hub refused the
-// mutation without queueing it.
+// BackpressureCauseQueueSaturated marks a request refused before admission at
+// either the retry-safe mutation high-water mark or the full queue's hard cap.
 const BackpressureCauseQueueSaturated = "queueSaturated"
+
+// JournaledRejectionCause marks a rejection the daemon recorded in its own
+// journal - the only refusal authoritative enough for a client to treat the
+// wire as certainly dead. Every other nameable refusal happened before any
+// journal could vouch for the wire, so clients default those to
+// delivery-uncertain. rejectClientMutation, the choke point that creates
+// journaled rejections, is the only writer of this cause.
+const JournaledRejectionCause = "journaledRejection"
 
 // BackpressureRefusal is the hub's in-band refusal of a retry-safe mutation
 // that arrived on a connection whose inbound request queue was at or beyond
@@ -898,45 +1037,56 @@ const BackpressureCauseQueueSaturated = "queueSaturated"
 // do, because the direct-send fallback does not retry
 // automatically.
 func BackpressureRefusal(clientMutationID, message string) WireError {
-	return WireError{
+	return backpressureRefusal(clientMutationID, message, RetryDispositionAutomatic)
+}
+
+// HardCapRefusal reports that a full connection queue did not accept a request.
+// Its caller must not infer automatic retry safety from that fact alone.
+func HardCapRefusal(clientMutationID, message string) WireError {
+	return backpressureRefusal(clientMutationID, message, RetryDispositionNone)
+}
+
+func backpressureRefusal(clientMutationID, message string, retry RetryDisposition) WireError {
+	wire := WireError{
 		Code:    CodeUnavailable,
 		Message: message,
 		Data: ErrorData{
-			EvenerErrorInfo:  ErrorConnectionBackpressure,
-			ClientMutationID: clientMutationID,
-			MutationOutcome:  MutationOutcomeNotAccepted,
-			RetryDisposition: RetryDispositionAutomatic,
-			Cause:            BackpressureCauseQueueSaturated,
+			EvenerErrorInfo: ErrorConnectionBackpressure,
+			Cause:           BackpressureCauseQueueSaturated,
 		},
-	}
+	}.NotAccepted(clientMutationID)
+	data := wire.Data.(ErrorData)
+	data.RetryDisposition = retry
+	wire.Data = data
+	return wire
 }
 
-// retrySafeMutationMethods is the wire contract the hub and the shared
+// RetrySafeMutationMethods is the wire contract the hub and the shared
 // TypeScript dispatcher both hold for which mutation requests are safe to
 // resend unchanged: each carries a clientMutationId, and the ClientMutationID
 // dedup on admission makes a raced resend a replay no-op. The hub refuses
-// only these in band for backpressure; the dispatcher holds the same set
-// (RETRY_SAFE_MUTATION_METHODS, appwire-client/typescript/state/mutation/
-// dispatcher.ts), and TestRetrySafeMutationMethodsMatchSharedDispatcher pins
-// the two equal. thread/start is deliberately absent: it can refuse after
-// the session has spawned (#3184), so a resend is not always safe.
-var retrySafeMutationMethods = map[string]bool{
-	MethodTurnStart:                true,
-	MethodTurnSteer:                true,
-	MethodTurnInterrupt:            true,
-	MethodTurnQueue:                true,
-	MethodTurnDrainAsSteer:         true,
-	MethodTurnPromoteQueuedAsSteer: true,
-	MethodTurnCancelQueued:         true,
-	MethodThreadClear:              true,
-	MethodNotesHumanSet:            true,
+// only these in band for backpressure; the TypeScript generator emits the
+// same list as RETRY_SAFE_MUTATION_METHODS for the dispatcher. thread/start
+// is deliberately absent: it can refuse after the session has spawned
+// (#3184), so a resend is not always safe.
+var RetrySafeMutationMethods = []string{
+	MethodTurnStart,
+	MethodTurnSteer,
+	MethodTurnInterrupt,
+	MethodTurnQueue,
+	MethodTurnDrainAsSteer,
+	MethodTurnPromoteQueuedAsSteer,
+	MethodTurnCancelQueued,
+	MethodThreadClear,
+	MethodNotesHumanSet,
+	MethodUrlsRemove,
 }
 
 // RetrySafeMutationMethod reports whether name is a retry-safe mutation
 // method: one whose request the hub may refuse in band for backpressure, and
 // one a client may resend unchanged.
 func RetrySafeMutationMethod(name string) bool {
-	return retrySafeMutationMethods[name]
+	return slices.Contains(RetrySafeMutationMethods, name)
 }
 
 func Unavailable(message string) WireError {
@@ -952,6 +1102,20 @@ func SessionUnavailable(message string) WireError {
 		Code:    CodeUnavailable,
 		Message: message,
 		Data:    ErrorData{EvenerErrorInfo: ErrorSessionUnavailable},
+	}
+}
+
+// RetryableSessionUnavailable reports a transport loss or a connection
+// replaced under a request, not a verdict on the session. Automatic retry is
+// safe: the caller re-reads once the replacement connection is live.
+func RetryableSessionUnavailable(message string) WireError {
+	return WireError{
+		Code:    CodeUnavailable,
+		Message: message,
+		Data: ErrorData{
+			EvenerErrorInfo:  ErrorSessionUnavailable,
+			RetryDisposition: RetryDispositionAutomatic,
+		},
 	}
 }
 

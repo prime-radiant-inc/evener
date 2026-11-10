@@ -1,19 +1,14 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef } from "react";
 import { expect, test, vi } from "vitest";
+import { readModuleCss } from "../../styles/cssBlock";
 import { ListRow, type ListRowProps } from "./index";
 
 function css(): string {
   // jsdom applies no stylesheet, so the declarations are the checkable truth
   // - comments stripped first so a doc comment cannot satisfy a match.
-  return readFileSync(join(dirname(fileURLToPath(import.meta.url)), "listrow.module.css"), "utf8").replace(
-    /\/\*[\s\S]*?\*\//g,
-    "",
-  );
+  return readModuleCss(import.meta.url, "listrow.module.css");
 }
 
 function rule(selector: string): string {
@@ -126,6 +121,84 @@ test("an interactive collection row ends in a decorative drill-in chevron; a pla
   expect(chevron()).toBeNull();
 });
 
+test("with trailingAction the row splits: the root is a container, the main area is its button", () => {
+  render(
+    <ListRow
+      label="superpowers"
+      meta="@ obra · v1.2.0"
+      onSelect={() => {}}
+      trailingAction={<button type="button">Install</button>}
+    />,
+  );
+  const main = screen.getByRole("button", { name: /superpowers/ });
+  const control = screen.getByRole("button", { name: "Install" });
+  // No nested buttons, and the row root is not itself one: each control's
+  // closest button is itself.
+  expect(main.closest("button")).toBe(main);
+  expect(control.closest("button")).toBe(control);
+  expect(main.parentElement?.tagName).toBe("DIV");
+  // The main area carries the facts; the drill-in chevron rides the
+  // trailing slot, after the control.
+  expect(main.textContent).toContain("@ obra · v1.2.0");
+  expect(main.querySelector('[aria-hidden="true"] svg')).toBeNull();
+  const slot = control.parentElement;
+  expect(slot?.contains(main)).toBe(false);
+  expect(slot?.children[0]).toBe(control);
+  const chevron = slot?.children[1];
+  expect(chevron?.getAttribute("aria-hidden")).toBe("true");
+  expect(chevron?.querySelector("svg")).not.toBeNull();
+});
+
+test("with trailingAction the main area runs onSelect; the control's click is not a select", async () => {
+  const user = userEvent.setup();
+  const onSelect = vi.fn();
+  const onInstall = vi.fn();
+  render(
+    <ListRow
+      label="superpowers"
+      meta="@ obra · v1.2.0"
+      onSelect={onSelect}
+      trailingAction={
+        <button type="button" onClick={onInstall}>
+          Install
+        </button>
+      }
+    />,
+  );
+  await user.click(screen.getByRole("button", { name: /superpowers/ }));
+  expect(onSelect).toHaveBeenCalledOnce();
+  await user.click(screen.getByRole("button", { name: "Install" }));
+  expect(onInstall).toHaveBeenCalledOnce();
+  expect(onSelect).toHaveBeenCalledOnce();
+});
+
+test("without trailingAction an interactive row is still one whole-row button", () => {
+  render(<ListRow label="superpowers" meta="@ obra · v1.2.0" onSelect={() => {}} />);
+  const buttons = screen.getAllByRole("button");
+  expect(buttons).toHaveLength(1);
+  const row = buttons[0] as HTMLElement;
+  expect(row.tagName).toBe("BUTTON");
+  expect(row.textContent).toContain("@ obra · v1.2.0");
+  // Today's shape: the drill-in chevron lives inside the row button.
+  expect(row.querySelector('[aria-hidden="true"] svg')).not.toBeNull();
+});
+
+test("keyboard: tab reaches the main button, then the control; Enter on the main runs onSelect", async () => {
+  const user = userEvent.setup();
+  const onSelect = vi.fn();
+  render(<ListRow label="superpowers" onSelect={onSelect} trailingAction={<button type="button">Install</button>} />);
+  const main = screen.getByRole("button", { name: /superpowers/ });
+  const control = screen.getByRole("button", { name: "Install" });
+  await user.tab();
+  expect(document.activeElement).toBe(main);
+  await user.tab();
+  expect(document.activeElement).toBe(control);
+  await user.tab({ shift: true });
+  expect(document.activeElement).toBe(main);
+  await user.keyboard("{Enter}");
+  expect(onSelect).toHaveBeenCalledOnce();
+});
+
 test("the collection row is a framed surface; the plain row is not", () => {
   const collection = rule(".collection");
   expect(collection).toContain("border: 1px solid var(--edge)");
@@ -140,6 +213,15 @@ test("an interactive row washes on hover and rings inset on keyboard focus", () 
   const focus = rule(".interactive:focus-visible");
   expect(focus).toContain("outline: var(--focus-ring)");
   expect(focus).toContain("outline-offset: -2px");
+});
+
+test("the split shape's CSS: the container washes on focus-within, the main button is chromeless", () => {
+  expect(rule('.split:focus-within:not([aria-disabled="true"])')).toContain("background: var(--hover-1)");
+  const main = rule(".splitMain");
+  expect(main).toContain("padding: 0");
+  expect(main).toContain("border: 0");
+  expect(main).toContain("background: transparent");
+  expect(rule(".splitTrailing")).toContain("gap: var(--space-2)");
 });
 
 test("the collection meta line is mono and truncates", () => {
@@ -167,7 +249,7 @@ test("an aria-disabled interactive row refuses activation but keeps focus", asyn
 });
 
 test("an aria-disabled interactive row is styled like a disabled one", () => {
-  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "listrow.module.css"), "utf8");
+  const css = readModuleCss(import.meta.url, "listrow.module.css");
   const disabledRules = [...css.matchAll(/([^{}]*:disabled[^{}]*)\{/g)].map((m) => m[1] ?? "");
   expect(disabledRules.length).toBeGreaterThan(0);
   for (const selector of disabledRules) expect(selector).toContain('[aria-disabled="true"]');

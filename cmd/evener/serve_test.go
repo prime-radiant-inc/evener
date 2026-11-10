@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -28,6 +29,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/execsupport/shellquote"
@@ -1945,4 +1947,26 @@ func jsonString(s string) string {
 		panic(err)
 	}
 	return string(b)
+}
+
+// The daemon's detailed status carries every field the agent reports on a
+// delegate, so the wire JSON of the bridged row equals the agent's own.
+func TestAgentToServerDetailedStatus_DelegatesCarryEveryAgentField(t *testing.T) {
+	var in agent.DelegateStatusInfo
+	appwiretest.FillNonZero(&in)
+	out := agentToServerDetailedStatus(agent.DetailedStatus{Delegates: []agent.DelegateStatusInfo{in}})
+	if len(out.Delegates) != 1 {
+		t.Fatalf("delegates = %+v, want one", out.Delegates)
+	}
+	want, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := json.Marshal(out.Delegates[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("bridged delegate JSON differs from the agent's:\ngot=%s\nwant=%s", got, want)
+	}
 }

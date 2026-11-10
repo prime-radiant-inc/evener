@@ -1,9 +1,11 @@
 package gatesurface
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -47,6 +49,81 @@ func TestShellTestRunMatchesGoConstant(t *testing.T) {
 func TestShellFuzzTestSkipMatchesGoConstant(t *testing.T) {
 	if shell := shellSingleQuotedVar(t, "GATE_FUZZ_TEST_SKIP"); shell != FuzzTestSkip {
 		t.Errorf("gate surface drift: shell GATE_FUZZ_TEST_SKIP=%q, Go gatesurface.FuzzTestSkip=%q — update both homes together", shell, FuzzTestSkip)
+	}
+}
+
+// TestShellHubIntegrationRunMatchesGoConstant pins the shell lib's
+// GATE_HUB_INTEGRATION_RUN byte-equal to gatesurface.HubIntegrationRun.
+func TestShellHubIntegrationRunMatchesGoConstant(t *testing.T) {
+	if shell := shellSingleQuotedVar(t, "GATE_HUB_INTEGRATION_RUN"); shell != HubIntegrationRun {
+		t.Errorf("gate surface drift: shell GATE_HUB_INTEGRATION_RUN=%q, Go gatesurface.HubIntegrationRun=%q — update both homes together", shell, HubIntegrationRun)
+	}
+}
+
+// TestHubIntegrationRunMatchesBudget names every test HubIntegrationRun selects in
+// testing-budget.json's perTestCeiling. The gate's list is a literal, and the
+// budget is the record of which tests the timing gate watches; a test dropped
+// from one and not the other is a test that silently stops being timed and
+// stops being exercised by the hub-integration lane.
+//
+// The three groups it covers used to be named ceiling classes. The map is flat
+// now, so the members are listed here with the ceiling they must carry: that
+// keeps the coupling checkable without a class key to look up.
+func TestHubIntegrationRunMatchesBudget(t *testing.T) {
+	raw, err := os.ReadFile("../../../testing-budget.json")
+	if err != nil {
+		t.Fatalf("reading testing-budget.json: %v", err)
+	}
+	var budget struct {
+		Ceilings map[string]float64 `json:"perTestCeiling"` //nolint:tagliatelle // testing-budget.json's key, camelCase beside perTestCeilingSeconds
+	}
+	if err := json.Unmarshal(raw, &budget); err != nil {
+		t.Fatalf("parsing testing-budget.json: %v", err)
+	}
+	// group -> its ceiling in the budget. The ceiling is part of the pin: a
+	// member that changes number without this test changing is a rebaseline that
+	// landed in one place only.
+	want := map[string]float64{
+		"TestHostDeployFilesystemSafety":                                     30,
+		"TestHubRPCThreadListServesRemoteHostWhoseAttachOutlastsLocalBudget": 30,
+		"TestValidateDeployBinaryAcceptsAGenuineEvenerArtifact":              30,
+		"TestDaemonRetirementProcessAdmittedWorkResetsInterval":              30,
+		"TestDaemonRetirementProcessDirectPositiveExits":                     30,
+		"TestDaemonRetirementProcessDirectZeroStaysResident":                 30,
+		"TestDaemonRetirementProcessHelperExitsWithItsFixture":               30,
+		"TestDaemonRetirementProcessHubZeroStaysResident":                    30,
+		"TestDaemonRetirementProcessReadsDoNotResetInterval":                 30,
+		"TestDaemonRetirementProcessRestartedHubRediscoversOrResumes":        30,
+		"TestE2E_StopIsOfferedWheneverTheWireSaysActive":                     15,
+		"TestE2E_SendPromptToARetiredSession":                                15,
+		"TestE2E_SendPromptAfterDaemonDiedMidTurn":                           15,
+		"TestE2E_ControlInvariantDuringPreTurnWorkOnTheFirstTurn":            15,
+		"TestE2E_ControlInvariantDuringPreTurnWorkAtATurnBoundary":           15,
+	}
+	for name, ceiling := range want {
+		got, ok := budget.Ceilings[name]
+		if !ok {
+			t.Errorf("testing-budget.json's perTestCeiling no longer names %q, which HubIntegrationRun selects", name)
+			continue
+		}
+		if got != ceiling {
+			t.Errorf("testing-budget.json's perTestCeiling gives %q ceiling %g, want %g", name, got, ceiling)
+		}
+	}
+	body := strings.TrimSuffix(strings.TrimPrefix(HubIntegrationRun, "^("), ")$")
+	got := map[string]bool{}
+	for name := range strings.SplitSeq(body, "|") {
+		got[name] = true
+	}
+	for name := range want {
+		if !got[name] {
+			t.Errorf("HubIntegrationRun is missing ceiling member %q", name)
+		}
+	}
+	for name := range got {
+		if _, ok := want[name]; !ok {
+			t.Errorf("HubIntegrationRun has %q, which testing-budget.json does not name", name)
+		}
 	}
 }
 

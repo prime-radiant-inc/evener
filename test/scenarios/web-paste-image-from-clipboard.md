@@ -234,8 +234,8 @@ curl -s -X POST -H "Content-Type: application/json" \
 - **Caps are 8 attachments and 8 MiB per file**, client-side
   (`appwire-client/typescript/attachmentLimits.ts:9-10,26-27`), with the message naming the file and
   the limit it broke. A 64×64 PNG is ~200 bytes; nowhere near. The server has
-  its own separate ceilings (`hubcore.SendMaxImageBytes` is 8 MiB and `SendMaxRequestBytes` is 96 MiB,
-  `internal/hubcore/types.go:13-14`) — don't conflate
+  its own separate ceilings (`hubcore.SendMaxImageBytes` is 8 MiB,
+  `internal/hubcore/types.go`) — don't conflate
   the two when a 413 shows up.
 - **claude-haiku-4-5-20251001 sometimes tries `read_file` on the literal
   string "image"** before describing it. The call fails, the model falls back

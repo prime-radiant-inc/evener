@@ -14,11 +14,14 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/execsupport/syncio"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/apptranscript"
+	"primeradiant.com/evener/internal/commitprovenance"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/llm"
 	_ "primeradiant.com/evener/llm/providers/all"
@@ -62,6 +65,7 @@ type runConfig struct {
 	runTimeout                  time.Duration // --timeout; zero disables
 	sandboxMode                 string        // --sandbox mode name (default "off")
 	sandboxNet                  string        // --sandbox-net on|off
+	commitProvenance            string        // --commit-provenance coauthor|off (empty keeps the default or a resumed value)
 	apiLog                      string        // --api-log on|off (default off)
 	askResponder                string        // --ask-responder command; non-empty makes the session interactive
 
@@ -109,6 +113,18 @@ func resolveMemoryProjectID(env execenv.ExecutionEnvironment, warnings io.Writer
 		return ""
 	}
 	return project.ID
+}
+
+// memoryStateRootForLaunch is the host state root native memory lives under.
+// With no state home the session runs without memory (an empty root means
+// unavailable) and the reason goes to warnings, unless the user opted out of
+// memory anyway.
+func memoryStateRootForLaunch(disabled bool, warnings io.Writer) string {
+	root, err := userdirs.DefaultStateRoot()
+	if err != nil && !disabled {
+		fmt.Fprintf(warnings, "warning: memory unavailable: %v\n", err) //nolint:errcheck
+	}
+	return root
 }
 
 func run(ctx context.Context, cfg runConfig) error {
@@ -177,14 +193,10 @@ func run(ctx context.Context, cfg runConfig) error {
 	if err := startupInterrupted(ctx, stepSeedingMarketplaces); err != nil {
 		return err
 	}
-	if _, err := agent.ParseProviderIdleTimeout(cfg.providerIdleTimeout); err != nil {
-		return err
-	}
-	apiLogEnabled, err := parseAPILog(cfg.apiLog)
+	settings, err := resolveLaunchSettings(cfg.providerIdleTimeout, cfg.apiLog, cfg.openAIResponsesContinuation)
 	if err != nil {
 		return err
 	}
-	openAIResponsesContinuation := resolveOpenAIResponsesContinuation(cfg.openAIResponsesContinuation, nil)
 
 	// Compute runtime state directory.
 	// Priority: --state-dir flag > EVENER_STATE_DIR env > XDG-computed default.
@@ -275,7 +287,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		return err
 	}
 
-	reserveSession, closeAPILog, err := runAttachAPILogger(client, stateDir, cfg.stderr, apiLogEnabled)
+	reserveSession, closeAPILog, err := runAttachAPILogger(client, stateDir, cfg.stderr, settings.apiLogEnabled)
 	if err != nil {
 		return err
 	}
@@ -326,7 +338,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	if err != nil {
 		return err
 	}
-	profile, err = applyFastCheapModel(profile, cfg.fastCheapModel, client)
+	profile, err = cmdutil.ApplyFastCheapModel(profile, cfg.fastCheapModel, client)
 	if err != nil {
 		return err
 	}
@@ -350,9 +362,14 @@ func run(ctx context.Context, cfg runConfig) error {
 		memoryProjectID = resolveMemoryProjectID(env, cfg.stderr)
 	}
 
+	memoryStateRoot := memoryStateRootForLaunch(cfg.disableMemory || (meta != nil && meta.Config.DisableMemory), cfg.stderr)
+	commitProvenance, err := commitprovenance.Normalize(cfg.commitProvenance)
+	if err != nil {
+		return err
+	}
 	var sess *agent.Session
 	baseSessionCfg := agent.SessionConfig{
-		MemoryStateRoot:             cmdutil.DefaultStateRoot(),
+		MemoryStateRoot:             memoryStateRoot,
 		MemoryProjectID:             memoryProjectID,
 		DisableMemory:               cfg.disableMemory,
 		LifetimeContext:             ctx,
@@ -376,8 +393,9 @@ func run(ctx context.Context, cfg runConfig) error {
 		NonInteractive:              true,
 		TurnEndsProcess:             true,
 		SystemPromptAsUser:          cfg.systemPromptAsUser,
-		OpenAIResponsesContinuation: openAIResponsesContinuation,
+		OpenAIResponsesContinuation: settings.openAIResponsesContinuation,
 		ProviderIdleTimeout:         cfg.providerIdleTimeout,
+		CommitProvenance:            commitProvenance,
 		ResolveProfile:              cmdutil.BuildResolveProfile(client),
 		StartupModelListing:         startupListing,
 	}
@@ -401,7 +419,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	if effort.Set {
 		baseSessionCfg.ReasoningEffort = effort.Value
 	}
-	if err := configureSandbox(&baseSessionCfg, cfg.sandboxMode, cfg.sandboxNet); err != nil {
+	if err := cmdutil.ConfigureSandbox(&baseSessionCfg, cfg.sandboxMode, cfg.sandboxNet); err != nil {
 		return err
 	}
 	// Engage enforcement for a FRESH session from the flag-set mode. A resume
@@ -430,9 +448,14 @@ func run(ctx context.Context, cfg runConfig) error {
 			StartupModelListing:         startupListing,
 			AcquireSessionOwnership:     reserveSession,
 			OwnershipAlreadyAcquired:    true,
-			OpenAIResponsesContinuation: openAIResponsesContinuation,
+			OpenAIResponsesContinuation: settings.openAIResponsesContinuation,
 			ProviderIdleTimeout:         cfg.providerIdleTimeout,
+			CommitProvenance:            cfg.commitProvenance,
 			TurnEndsProcess:             baseSessionCfg.TurnEndsProcess,
+			// See RestoreSessionConfig.ExportATIFPath: the flag is json:"-" on
+			// SessionConfig, so restore cannot recover it from the saved meta.
+			ExportATIFPath:            baseSessionCfg.ExportATIFPath,
+			ExportATIFProviderHandles: baseSessionCfg.ExportATIFProviderHandles,
 		})
 		if err != nil {
 			// The restore reopens the session's kept scratch and can fail
@@ -471,6 +494,11 @@ func run(ctx context.Context, cfg runConfig) error {
 	if err := startupInterrupted(ctx, stepCreatingSession); err != nil {
 		return err
 	}
+	bootGeneration, err := schema.NextBootGeneration(stateDir, sess.ID(), 0)
+	if err != nil {
+		return fmt.Errorf("boot generation: %w", err)
+	}
+	sess.SetBootGeneration(appwire.BootGeneration(bootGeneration))
 
 	// One startup line, loudly, states exactly what this host enforces (read from
 	// the env's resolved policy so it never overstates). Empty for an unsandboxed
@@ -571,7 +599,7 @@ func drainEventsHuman(eventCh <-chan events.SessionEvent, w io.Writer) <-chan st
 				if d, ok := ev.Data.(events.ToolCallStartData); ok {
 					args := d.ArgumentsJSON
 					if len(args) > 100 {
-						args = args[:97] + "..."
+						args = strings.ToValidUTF8(args[:97], "") + "..."
 					}
 					fmt.Fprintf(w, "[tool] %s %s\n", d.ToolName, args) //nolint:errcheck
 				}

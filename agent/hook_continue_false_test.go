@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
@@ -88,7 +89,7 @@ func TestPostToolUse_ContinueFalseEndsTheTurnAfterPersisting(t *testing.T) {
 		if round > 0 {
 			t.Fatalf("the tool hook's continue:false must end the turn; reached request %d", round)
 		}
-		return toolCallResponse(batchShellCall("shell-0"))
+		return agenttest.ToolCallResponse(batchShellCall("shell-0"))
 	})
 	warnings := collectWarnings(sess)
 
@@ -136,7 +137,7 @@ func TestPostToolUseFailure_ContinueFalseEndsTheTurn(t *testing.T) {
 		if round > 0 {
 			t.Fatalf("the hook's continue:false must end the turn; reached request %d", round)
 		}
-		return toolCallResponse(failCall)
+		return agenttest.ToolCallResponse(failCall)
 	})
 	warnings := collectWarnings(sess)
 
@@ -164,7 +165,7 @@ func TestStop_ContinueFalseEndsTheTurnWithItsReason(t *testing.T) {
 		if round > 0 {
 			t.Fatalf("the Stop hook's continue:false must end the turn; reached request %d", round)
 		}
-		return communicateResponse(true, "the hook will veto this reply")
+		return agenttest.CommunicateResponse(true, "the hook will veto this reply")
 	})
 	warnings := collectWarnings(sess)
 
@@ -195,7 +196,7 @@ func TestSubagentStop_ContinueFalseEndsTheRunWithNoContinuation(t *testing.T) {
 	var requests atomic.Int32
 	subSess := newSession(t, withSteps(func(llm.Request) llm.Response {
 		requests.Add(1)
-		return finalResponse("ok")
+		return agenttest.FinalResponse("ok")
 	}))
 	runner := hooks.NewRunner(nil, "")
 	runner.Add(plugin.HookSubagentStop, plugin.RegisteredHook{
@@ -231,7 +232,7 @@ func TestPostToolUse_ContinueFalseWithNoReasonStillEndsTheTurn(t *testing.T) {
 		if round > 0 {
 			t.Fatalf("a reasonless continue:false must still end the turn; reached request %d", round)
 		}
-		return toolCallResponse(batchShellCall("shell-0"))
+		return agenttest.ToolCallResponse(batchShellCall("shell-0"))
 	})
 	warnings := collectWarnings(sess)
 
@@ -257,7 +258,7 @@ func TestSessionStart_ContinueFalseDoesNotLeakPastAFailedAdmission(t *testing.T)
 	t.Parallel()
 	cmd := `printf '%s' '{"continue":false,"stopReason":"startup hook stopped the session"}'`
 	sess, adapter := postHookFixture(t, "SessionStart", cmd, func(_ int, _ llm.Request) llm.Response {
-		return finalResponse("second prompt answered")
+		return agenttest.FinalResponse("second prompt answered")
 	})
 	// Fail exactly the first input, before its user turn is recorded. The seam
 	// is the pre-incorporation failure a SessionStart stop can be recorded
@@ -299,7 +300,7 @@ func TestSessionStart_ContinueFalseDoesNotLeakPastAFailedAdmission(t *testing.T)
 // reports its error, even though the hook's stop supplies the result text.
 func TestSubagentStop_ContinueFalseKeepsTheRunError(t *testing.T) {
 	t.Parallel()
-	subSess := newSession(t, withSteps(func(llm.Request) llm.Response { return finalResponse("ok") }))
+	subSess := newSession(t, withSteps(func(llm.Request) llm.Response { return agenttest.FinalResponse("ok") }))
 	runner := hooks.NewRunner(nil, "")
 	runner.Add(plugin.HookSubagentStop, plugin.RegisteredHook{
 		Matcher: "*",
@@ -381,7 +382,7 @@ func TestSessionStart_ContinueFalseSurvivesANotificationTurn(t *testing.T) {
 	t.Parallel()
 	cmd := `printf '%s' '{"continue":false,"stopReason":"startup hook stopped the session"}'`
 	sess, adapter := postHookFixture(t, "SessionStart", cmd, func(_ int, _ llm.Request) llm.Response {
-		return finalResponse("notification turn answered")
+		return agenttest.FinalResponse("notification turn answered")
 	})
 	warnings := collectWarnings(sess)
 

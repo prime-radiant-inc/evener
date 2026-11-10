@@ -5,6 +5,11 @@ import "./index";
 import { createDockview } from "dockview";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { StubResizeObserver } from "../../resizeObserverTestUtils";
+import {
+  captureAttentionPlacement,
+  presentAttentionTarget,
+  restoreAttentionPlacement,
+} from "../../shell/attentionPlacement";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import { refParam } from "../../shell/routing";
 import {
@@ -14,6 +19,7 @@ import {
   workspaceStore,
 } from "../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
+import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
 import { associatedCascade, cascadeOrigin, recordCascadeOrigin } from "./inspectionOrigin";
 import { drillZoomIntent, parseZoomParams } from "./intent";
 
@@ -53,6 +59,50 @@ function inspectorFor(origin: OpenPaneRecord): OpenPaneRecord {
   recordCascadeOrigin(inspector, origin);
   return inspector;
 }
+
+test("attention retains the exact cascade leaf and follows a legitimate retype", () => {
+  const origin = record(workspaceStore.getState().openPane("session", { ref: "root" }));
+  const inspector = inspectorFor(origin);
+  const lifetime = conversationPaneLifetime(inspector);
+  const view = retainedTranscriptReadView(lifetime, "child", "cascade");
+  const entry = captureAttentionPlacement();
+  if (!entry) throw new Error("missing cascade entry");
+  expect(entry.requestedRef).toBe("child");
+  expect(entry.readViewId).toBe(view.id);
+  presentAttentionTarget("local:b");
+  expect(cascadeOrigin(inspector)).toBe(origin);
+  // Ordinary cascade activation only selects presented inspectors.
+  expect(associatedCascade(origin)).toBeNull();
+  expect(workspaceStore.getState().retypePane(inspector, "sessionZoom", { ...(inspector.params as object) })).toBe(
+    true,
+  );
+  expect(entry.pane).toBe(record(inspector.id));
+  expect(restoreAttentionPlacement(entry)).toBe(true);
+  expect(associatedCascade(origin)).toBe(entry.pane);
+  expect(conversationPaneLifetime(entry.pane)).toBe(lifetime);
+  expect(lifetime.readViews.get(JSON.stringify(["child", "cascade"]))).toBe(view);
+});
+
+test.each(["ref", "role", "reader"] as const)("attention rejects a rebound %s reader", (change) => {
+  const origin = record(workspaceStore.getState().openPane("session", { ref: "root" }));
+  const inspector = inspectorFor(origin);
+  const entry = captureAttentionPlacement();
+  if (!entry) throw new Error("missing cascade entry");
+  const lifetime = conversationPaneLifetime(inspector);
+  presentAttentionTarget("local:b");
+  if (change === "ref") {
+    workspaceStore
+      .getState()
+      .retypePane(inspector, "sessionZoom", { ...(inspector.params as object), ref: "other", edges: [] });
+  } else if (change === "role") {
+    workspaceStore.getState().retypePane(inspector, "session", { ref: "child" });
+  } else {
+    retainedTranscriptReadView(lifetime, "child", "cascade").dispose();
+    retainedTranscriptReadView(lifetime, "child", "cascade");
+  }
+  expect(restoreAttentionPlacement(entry)).toBe(false);
+  expect(workspaceStore.getState().focusedPaneId).toBe("pane_session_3");
+});
 
 test("a separated inspector binds to the exact committed ordinary conversation", () => {
   const origin = record(workspaceStore.getState().openPane("session", { ref: "root" }));

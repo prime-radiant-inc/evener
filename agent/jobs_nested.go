@@ -405,7 +405,7 @@ func (s *Session) stopNestedOrLocal(jobID string) (*jobstore.JobRecord, error) {
 	}
 	if forwarded != nil && (forwarded.ParentJobID != "" || forwarded.ParentDelegateID != "") && forwarded.OwnerSessionID != s.id {
 		if forwarded.Status.IsTerminal() {
-			return cloneJobRecord(forwarded), nil
+			return forwarded.Clone(), nil
 		}
 		if guidance := s.notControllableDescendantError(jobID); guidance != nil {
 			return nil, guidance
@@ -586,7 +586,9 @@ func (jm *jobManager) recoverForwardedTerminalEvents() error {
 			JobID:            rec.JobID,
 			Type:             rec.Type,
 			Command:          rec.Command,
+			Background:       rec.Background,
 			Intent:           rec.Intent,
+			WorkingDir:       rec.WorkingDir,
 			Task:             rec.Task,
 			Description:      rec.Description,
 			ParentSessionID:  rec.ParentSessionID,
@@ -678,8 +680,32 @@ func (jm *jobManager) recoveredEventTime(rec *jobstore.JobRecord) time.Time {
 
 var forwardEventAfterAppend func(*jobManager)
 
+// alreadyForwarded reports whether this journal already holds the forwarded
+// event: a job_started for the job, or a job_finished or job_notification_pending
+// for the same terminal generation. Child restore re-forwards every terminal
+// record the child owns so a forward interrupted by a crash is repaired; this
+// check is what keeps a completed forward from being repeated on each restore.
+func (jm *jobManager) alreadyForwarded(e jobstore.Event) (bool, error) {
+	switch e.Kind {
+	case jobstore.EventJobStarted, jobstore.EventJobFinished, jobstore.EventJobNotificationPending:
+	default:
+		return false, nil
+	}
+	return jm.store.HasEvent(func(held *jobstore.Event) bool {
+		if held.Kind != e.Kind || held.JobID != e.JobID {
+			return false
+		}
+		return e.Kind == jobstore.EventJobStarted || held.TerminalGen == e.TerminalGen
+	})
+}
+
 func (jm *jobManager) forwardEvent(e jobstore.Event) error {
 	e.VisibleToSession = jm.sessionID
+	if held, err := jm.alreadyForwarded(e); err != nil {
+		return err
+	} else if held {
+		return nil
+	}
 	if err := jm.store.Append(e); err != nil {
 		return err
 	}

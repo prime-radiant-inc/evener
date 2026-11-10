@@ -2,6 +2,7 @@ package appwire
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -73,6 +74,14 @@ func (i *InputItem) UnmarshalJSON(data []byte) error {
 func NormalizeMutationInput(items []InputItem) (MutationInput, error) {
 	normalized := MutationInput{Items: make([]InputItem, 0, len(items))}
 	for i, item := range items {
+		if item.VoicePresentation != nil {
+			if len(items) != 1 || item.Type != "text" || strings.TrimSpace(item.Text) == "" || len(item.Mentions) != 0 {
+				return MutationInput{}, errors.New("voice presentation requires one ordinary nonblank text item")
+			}
+			if err := ValidateVoicePresentation(item.VoicePresentation); err != nil {
+				return MutationInput{}, err
+			}
+		}
 		if item.Type != "text" && len(item.Mentions) > 0 {
 			return MutationInput{}, fmt.Errorf("input[%d]: mentions belong only to text", i)
 		}
@@ -155,6 +164,7 @@ func (i MutationInput) HasContent() bool {
 func cloneMutationInputItem(item InputItem) InputItem {
 	item.Data = append([]byte(nil), item.Data...)
 	item.Mentions = slices.Clone(item.Mentions)
+	item.VoicePresentation = CloneVoicePresentation(item.VoicePresentation)
 	if item.Metadata != nil {
 		metadata := item.Metadata
 		item.Metadata = make(map[string]string, len(metadata))

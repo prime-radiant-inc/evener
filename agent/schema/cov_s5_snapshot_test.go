@@ -2,6 +2,7 @@ package schema
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -77,7 +78,7 @@ func TestCov_SaveSessionMetaFS(t *testing.T) {
 // listSessionMetasFSWithErrors returns nil for a missing sessions dir and lists saved metas.
 func TestCov_ListSessionMetasFS(t *testing.T) {
 	mem := afero.NewMemMapFs()
-	metas, failures, err := listSessionMetasFSWithErrors(mem, "/nowhere")
+	metas, failures, err := listSessionMetasFSWithErrors(context.Background(), mem, "/nowhere")
 	if err != nil || metas != nil || failures != nil {
 		t.Errorf("missing dir should yield (nil,nil,nil), got %v %v %v", metas, failures, err)
 	}
@@ -85,7 +86,7 @@ func TestCov_ListSessionMetasFS(t *testing.T) {
 	if err := SaveSessionMetaWithFS(mem, "/state", SessionMeta{ID: sessionID}); err != nil {
 		t.Fatal(err)
 	}
-	metas, failures, err = listSessionMetasFSWithErrors(mem, "/state")
+	metas, failures, err = listSessionMetasFSWithErrors(context.Background(), mem, "/state")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +100,7 @@ func TestCov_ListSessionMetasFS(t *testing.T) {
 
 func TestListSessionMetas_CleanBreakValidatesFilenameAndMetadataID(t *testing.T) {
 	dir := t.TempDir()
-	sessionsDir := filepath.Join(dir, sessionsSubdir)
+	sessionsDir := filepath.Join(dir, SessionsSubdir)
 	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

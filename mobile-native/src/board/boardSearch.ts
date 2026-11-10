@@ -3,10 +3,10 @@
 // are Board memory, in boardMemory.ts. The Archived scope and "In sessions"
 // hits wait for S14.
 import type { NavigationProjectSummary, SearchResponse, SearchResult } from "@evener/appwire-client";
-import { groupSearchResults, type GroupedSearchRow } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import { attentionState, groupSearchResults, type GroupedSearchRow } from "@evener/appwire-client";
+import type { ConversationClientLike } from "../conversation/services/conversation";
 import { reconnectDelay } from "../hubConnection";
-import { type BoardState, decisiveState } from "./attention";
+import type { BoardState } from "./attention";
 
 export const SEARCH_DEBOUNCE = 250;
 
@@ -158,12 +158,5 @@ export function projectResults(
  * carries no timestamp and no seen state, so it shows no unread dot: without
  * a mark that fits, it has none. */
 export function searchResultMark(result: SearchResult): BoardState {
-	const decisive = decisiveState(result.state);
-	if (decisive) return decisive;
-	if (result.askPending) return "question";
-	if (result.approvalPending) return "approval";
-	// Awaiting without a question: the turn ended on needs_response (#4093).
-	if (result.state === "awaiting") return "needsYou";
-	if (result.state === "active") return "working";
-	return "idle";
+	return attentionState(result.state, { askPending: result.askPending, approvalPending: result.approvalPending });
 }

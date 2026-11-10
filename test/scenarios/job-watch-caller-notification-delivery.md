@@ -106,8 +106,7 @@ Run 1:
 - That block is the watch flavour, not a lifecycle terminal:
   `event="watch"` and `job_type="watch"` with `status="watch"`, the
   concrete job_id, and `reason="output_match: <the matched line>"`
-  naming WAKE_TOKEN_GO (`watchNotificationFromWatch`,
-  `agent/job_watch.go:2855`; rendered by `agent/job_notify.go:178-190`).
+  naming WAKE_TOKEN_GO (`agent/watch_frame.go#watchNotificationFromWatch`; rendered by `agent/job_notify.go:178-190`).
 - An assistant turn follows the notification turn (the model received
   the wake and reacted), and the session returns to `idle`.
 - `evener doctor watches $SID_A` shows the watch with a delivery count of
@@ -172,6 +171,6 @@ Run 2:
   (at-least-once) — only duplicates within one uninterrupted run
   falsify coalescing.
 - Each watch has a 50-delivery budget (`watchDeliveryBudget`,
-  `agent/job_watch.go#watchDeliveryBudget`); a watch that exhausts it is auto-cleared
+  `agent/watch_types.go#watchDeliveryBudget`); a watch that exhausts it is auto-cleared
   with one final notification. Neither run comes close, but a runaway
   `output_match` in a variant of this card will hit it.

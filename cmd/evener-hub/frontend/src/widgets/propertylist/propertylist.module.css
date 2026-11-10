@@ -23,6 +23,17 @@
   font-size: var(--font-size-caption);
 }
 
+/* The eyebrow recipe (design-system §2) on a fact row's label: the
+   uppercase caption tracking a card's read-only rows carry. The block
+   repeats the recipe's size because the token-contract audit reads each
+   uppercase rule on its own; it composes on .label for color and face. */
+.eyebrowLabel {
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+}
+
 .value {
   min-width: 0;
   margin: 0;

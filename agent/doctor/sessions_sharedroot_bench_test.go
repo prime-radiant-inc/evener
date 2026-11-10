@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"context"
 	"testing"
 )
 
@@ -15,7 +16,7 @@ func BenchmarkListSessionsSharedRoot(b *testing.B) {
 	base, _ := sharedRootFixtureTB(b, children)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := ListSessions(base, SessionsOpts{}); err != nil {
+		if _, err := ListSessions(context.Background(), base, SessionsOpts{}); err != nil {
 			b.Fatal(err)
 		}
 	}

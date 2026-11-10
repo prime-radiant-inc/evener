@@ -23,7 +23,20 @@
 //   the keyboard's progress, which the bars' home-indicator room follows.
 // - react-native-reanimated: the testkit's reanimatedModuleMock, since every
 //   bar (design/BarFrame) animates with the keyboard.
+// - react-native-safe-area-context: every screen that keeps content out of the
+//   notch renders SafeAreaView or reads useSafeAreaInsets. The native view spec
+//   cannot load under vitest, so the fake is an inert host element and zero
+//   insets; a suite's own vi.mock replaces it when it needs specific insets.
 import { vi } from "vitest";
+
+const expoCryptoTestState = vi.hoisted(() => ({ nextToken: 0 }));
+
+// DraftDocument uses Expo Crypto for capture ownership. Keep that dependency
+// behind the test boundary so Vitest never loads React Native's Flow entry.
+vi.mock("expo-crypto", () => ({
+	randomUUID: () => `native-test-capture-${++expoCryptoTestState.nextToken}`,
+	getRandomValues: (array: Uint8Array) => array,
+}));
 
 // react-test-renderer logs a deprecation warning through console.error on
 // every create() unless it is told it runs in a React Native test
@@ -55,6 +68,13 @@ vi.mock("react-native-keyboard-controller", async () => ({
 }));
 
 vi.mock("react-native-reanimated", async () => (await import("./renderNative.testkit")).reanimatedModuleMock());
+
+vi.mock("react-native-safe-area-context", () => ({
+	SafeAreaView: "SafeAreaView",
+	SafeAreaProvider: "SafeAreaProvider",
+	useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+	useSafeAreaFrame: () => ({ x: 0, y: 0, width: 0, height: 0 }),
+}));
 
 vi.mock("expo-glass-effect", async () => {
 	const { systemGlass } = await import("./renderNative.testkit");

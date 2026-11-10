@@ -16,14 +16,6 @@ func TestS2Cov_WarningHookMessage(t *testing.T) {
 	if got := warningHookMessage(wd); got != "boom" {
 		t.Fatalf("value = %q, want boom", got)
 	}
-	if got := warningHookMessage(&wd); got != "boom" {
-		t.Fatalf("pointer = %q, want boom", got)
-	}
-	var nilWD *events.WarningData
-	// A typed-nil *WarningData falls through to the default fmt.Sprint branch.
-	if got := warningHookMessage(nilWD); got == "" {
-		t.Fatalf("nil pointer = %q, want non-empty fmt.Sprint", got)
-	}
 	if got := warningHookMessage(events.CompactionTurnData{Kind: "SUMMARY"}); got == "" {
 		t.Fatalf("default branch returned empty for non-warning data")
 	}

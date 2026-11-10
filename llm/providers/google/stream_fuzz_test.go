@@ -118,6 +118,17 @@ func FuzzGeminiStreamMetamorphic(f *testing.F) {
 		"\n\n\n",
 		"",
 		`data: {"candidates":[{"finishReason":"MAX_TOKENS"}]}` + "\n\n",
+		// A non-object candidate part must be skipped without aborting the stream.
+		`data: {"candidates":[{"content":{"parts":["nope",{"text":"x"}]},"finishReason":"STOP"}]}` + "\n\n",
+		// functionCall args exercising the json.Number normalization arms: a
+		// list, a non-integral float, and an out-of-range exponent.
+		`data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"t","args":{"arr":[1,2],"f":1.5,"huge":1e999}}}]}}]}` + "\n\n" +
+			`data: {"candidates":[{"finishReason":"STOP"}]}` + "\n\n",
+		// In-band error arms: an envelope whose error code cannot decode into
+		// the status struct (keeps the raw passthrough), and a status outside
+		// 400..599 (classifies from the zero status).
+		`data: {"error":{"code":"x","message":"m"}}` + "\n\n",
+		`data: {"error":{"code":600,"message":"m"}}` + "\n\n",
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s))

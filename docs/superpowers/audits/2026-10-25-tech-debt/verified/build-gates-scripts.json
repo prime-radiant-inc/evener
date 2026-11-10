@@ -1,0 +1,137 @@
+[
+ {
+  "id": "build-gates-scripts-1",
+  "verdict": "confirmed",
+  "severity": "high",
+  "note": "Verified: testing-budget.json keys have no 'metric'; test-timing-budget.sh:485 sets stale_units and :553-556 downgrades ratio FAIL to WARN. Script is 664 lines, timingbudget_test.go 1024, classes 207. CI still runs the check (ci.yml:433) and class ceilings can fail, so 'disarmed' applies only to per-package ratios. Needs Jesse's rebaseline-vs-drop decision."
+ },
+ {
+  "id": "build-gates-scripts-2",
+  "verdict": "partial",
+  "severity": "medium",
+  "note": "Line counts verified (run-module-tests.sh 862, load-aware-workers.sh 416, gate-bounded 228). But the claim that Go's cgroup-aware GOMAXPROCS replaces load-aware-workers.sh is wrong: the script subtracts load1 and is consumed by test-web-browser.sh, native/run-tests.sh, frontend package.json and run-module-tests.sh, which are npm/vitest/shell consumers, not Go runtime. testing.md:244-247 does say Tooling that accumulates real logic belongs in Go, so the direction is policy-backed, but this is a multi-PR port, not a clear debt defect.",
+  "revised_fix_plan": "Treat as port-on-touch only. Port run-module-tests.sh pieces with procgroup when next touched; keep a Go or shell worker-sizing entry for npm consumers. Do not claim GOMAXPROCS makes it redundant."
+ },
+ {
+  "id": "build-gates-scripts-3",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Files exist (doctorcomments 132, transcriptcomments 127, sandboxbreakerdocs 170, lazytranscript 37, appwirelegacy 102 lines). Sandbox, lazytranscript and legacy-path tests are phrase or path pins (sandboxbreakerdocs_audit_test.go:26 regexp 'enforces nothing|gated off until M5'). doctor/transcript comments tests are AST checks of named callers or cited test names (e.g. decodeStrictJSONCitedTests), not hardcoded prose, so the copy-oracle characterization is overstated for those two. Severity lowered.",
+  "revised_fix_plan": "Delete sandboxbreakerdocs, lazytranscriptloading and appwirelegacypath audits. For doctorcomments and transcriptcomments, delete as comment-pinning change detectors too, but note they assert on code structure; confirm with Jesse."
+ },
+ {
+  "id": "build-gates-scripts-4",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "10 Test funcs in scenariosourcecite_audit_test.go (967 lines); scenarioMinBareLineAnchors=80 at :858; scanner tests at :248,310,359,418,453,943 as claimed. Lowers coverage of scenario cards so Jesse should confirm."
+ },
+ {
+  "id": "build-gates-scripts-5",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "makefiletargets_audit_test.go 1219 lines, 18 Test funcs (not 24; makefile_audit_test.go adds 1); TestMakeLintRunsEveryGateInLintTargets at :889; :567-569 comment admits the regexes mirror maketargetsdoc and must agree. Count claim of 24 is off but core holds."
+ },
+ {
+  "id": "build-gates-scripts-6",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Counts verified: internal/maketargetsdoc 3642 lines, main_gaps_test.go 1218 lines with 83 tests. But the fix removes a documented docs decision (generated tables) and needs Jesse; the real small win is trimming main_gaps_test.go. Severity lowered since it is isolated and works.",
+  "revised_fix_plan": "Trim main_gaps_test.go tests whose oracle is only an unreachable-branch error. Decision to drop the table renderer is a separate product/docs choice for Jesse."
+ },
+ {
+  "id": "build-gates-scripts-7",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "No Go file outside internal/devtool/gatesurface imports it (grep devtool/gatesurface finds only the package itself). Cited spec docs/superpowers/specs/2026-08-17-dev-tooling-in-go-design.md is not in the tree (ls of specs shows none)."
+ },
+ {
+  "id": "build-gates-scripts-8",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "make/testing.mk:233 uses bare $(mktemp) while Makefile:15 uses the TMPDIR form; scriptShellFiles walks only scripts/ (scriptmktemp_audit_test.go:72-79). makefileVariableFedDeletes = map[string]string{} confirmed at makefile_audit_test.go:27. No shellcheck in .tool-versions/make/workflows (grep empty)."
+ },
+ {
+  "id": "build-gates-scripts-9",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "test/live-compaction-*.sh source $SCRIPT_DIR/../scripts/live-eval-isolation.sh (line 12/13) but file only exists at scripts/lib/live-eval-isolation.sh; live_eval_begin is referenced only by those two scripts and the lib."
+ },
+ {
+  "id": "build-gates-scripts-10",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Script exists (573 lines), referenced only in docs/evener-hub-remote-operations.md:259 and a plan; last touched 2026-10-22. It is a documented hand-run test, and the faked-launchctl characterization matches. The testing.md rule applies, but it is hand-run convenience and a deploy-path decision for Jesse; not wired in CI is by design per its doc pointer.",
+  "revised_fix_plan": "Ask Jesse; either port to Go or leave as documented hand-run. Low priority."
+ },
+ {
+  "id": "build-gates-scripts-11",
+  "verdict": "confirmed",
+  "severity": "medium",
+  "note": "Three preflights (71, 136, 117 lines) each handle symlink/-nt logic (api-package-preflight.sh:77-92, native-preflight.sh:12-63) and make/repo.mk:97-101 inlines the docs-site symlink check a fourth time. Native deliberately refuses symlinks outright (different policy), so a shared lib must keep that variant."
+ },
+ {
+  "id": "build-gates-scripts-12",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "writeFixtureFile (loadawareworkers_test.go:153) and writeAuditScriptFixture (scriptmktemp_audit_test.go:380) are byte-identical; gatemodulerunner's writeRunnerFixtureFile (:488) already delegates to the locked writeTestFile."
+ },
+ {
+  "id": "build-gates-scripts-13",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "tools_*_retry_test.go are 47 and 48 lines; recipes make/repo.mk:12-33 are parallel retry loops. testing.md bans faked toolchains."
+ },
+ {
+  "id": "build-gates-scripts-14",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "Class-removal narrative with #4615 and #4699 appears in testing.md (~1300-1345), testing-budget.json '_' and script header. AGENTS.md says to keep dated narratives out of evergreen refs."
+ },
+ {
+  "id": "build-gates-scripts-15",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "scripts/run-module-tests.sh, scripts/setup-gocache.sh (printed in error at setup-gocache.sh:33), scripts/gitleaks-scan.sh and scripts/fuzz-mutation-score.sh are stale; real paths are under gate/ops/fuzz. Dev-tooling spec cited in cmd/evener-dev/main.go:2, drift_test.go:11, fuzz/README.md:144 is not tracked."
+ },
+ {
+  "id": "build-gates-scripts-16",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "ledger.json and buckets.json are both {}; mutation-floor and fuzz-mutation-score (make/fuzzing.mk:191,225) invoke the same script (with different args: --min-efficacy vs FUZZ_ARGS, so not identical targets); fuzz shell totals 1577 lines; manifest.tsv has 10 lines (not 4 mutations; unverified, header included). Merge claim is weak because they differ by gating; prune needs Jesse.",
+  "revised_fix_plan": "Ask Jesse whether the campaign toolkit is used. Do not merge the two make targets; they gate vs report."
+ },
+ {
+  "id": "build-gates-scripts-17",
+  "verdict": "confirmed",
+  "severity": "low",
+  "note": "ci.yml uses setup-node@v7.1.0 (lines 27,65,134,155) while composite uses @v7; setup-go repeated at 34,73,196,253,284. Size is modest and cache-key effects need CI to verify."
+ },
+ {
+  "id": "build-gates-scripts-18",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "Module list literal confirmed in Makefile:5, run-module-tests.sh:65, test-timing-budget.sh:137, coverage-floor.sh:34, modulelint.go:27, but lists differ deliberately: gate lists omit fuzz while modulelint includes it (go.work has fuzz). Deriving from go.work needs an exclusion list, so the cleanup is smaller than claimed.",
+  "revised_fix_plan": "Export GO_MODULES once from the Makefile and read it in scripts; keep the fuzz difference explicit."
+ },
+ {
+  "id": "build-gates-scripts-19",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "183 files match the gap/cov naming (verified count). audit_metrics_covtest_test.go cites audit.go:423 and asserts only err != nil. But -30,000 lines is speculation and the floors file already says 100% is not reachable (floors header lines 7,13); fix is a per-package review, not a ready PR.",
+  "revised_fix_plan": "Review the smallest packages first; delete tests whose only oracle is err != nil and drop line-number cites. Do not set a line target."
+ },
+ {
+  "id": "build-gates-scripts-20",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "scripts/sdk/rewrite-package-imports.mjs exists but has a 471-line test cmd/evener-hub/frontend/scripts/rewrite-package-imports.test.mjs run by 'node --test scripts/*.test.mjs' in the frontend npm test. Deleting the script also requires deleting that test; claim of 'nothing references the script' is wrong.",
+  "revised_fix_plan": "Delete the script and its test file together (about -930 lines); confirm the shared .mjs helpers keep other consumers."
+ },
+ {
+  "id": "build-gates-scripts-21",
+  "verdict": "partial",
+  "severity": "low",
+  "note": "TestReleaseArchiveDoesNotCarryEvenerDev and TestReleaseWorkflowDoesNotExpectEvenerDev are in buildscripts_test.go:478,514, not release_workflow_test.go. ios_workflow_test.go does copy the iosArchiveGuard expression verbatim. The absence tests guard a deliberate retirement; value is debatable.",
+  "revised_fix_plan": "Delete the verbatim-if copy and gitignore test; the evener-dev absence tests are optional."
+ }
+]

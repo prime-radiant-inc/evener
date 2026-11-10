@@ -1,10 +1,12 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { appendPopout } from "../internal/popoutTestUtils";
 import { MAX_HEIGHT_VIEWPORT_FRACTION, MIN_ROWS, Textarea } from "./index";
 import rawStyles from "./textarea.module.css";
 
@@ -480,4 +482,75 @@ test("with autoGrow, height clamps at MAX_HEIGHT_VIEWPORT_FRACTION of the viewpo
   const expectedMax = window.innerHeight * MAX_HEIGHT_VIEWPORT_FRACTION;
   expect(simulatedScrollHeight(longLine)).toBeGreaterThan(expectedMax); // the fixture actually exercises the clamp
   expect(textarea.style.height).toBe(`${expectedMax}px`);
+});
+
+// --- popout realm (Dockview) ---------------------------------------------
+// A Dockview popout is a separate Window with its own Document and its own
+// constructors. The clamp is a fraction of the FIELD's window height, and the
+// resize listener that re-applies it must live on that window. jsdom gives an
+// iframe its own HTMLElement.prototype, so the scrollHeight stub has to be
+// installed there too - the opener's stub does not reach the popout's field.
+test("a field mounted in a popout measures against the popout window and re-clamps when that window resizes", () => {
+  const { frame, doc, win } = appendPopout();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(win, "innerHeight");
+  const originalScrollHeight = Object.getOwnPropertyDescriptor(win.HTMLElement.prototype, "scrollHeight");
+  let measurements = 0;
+  Object.defineProperty(win, "innerHeight", { configurable: true, value: 600 });
+  Object.defineProperty(win.HTMLElement.prototype, "scrollHeight", {
+    configurable: true,
+    get(this: HTMLTextAreaElement) {
+      measurements += 1;
+      return simulatedScrollHeight(this.value ?? "");
+    },
+  });
+  const longLine = "x".repeat(4000);
+  const view = render(createPortal(<Textarea value={longLine} onChange={() => {}} autoGrow />, doc.body));
+  try {
+    const textarea = doc.querySelector("textarea");
+    if (textarea === null) throw new Error("popout textarea missing");
+    // Clamped against the popout's 600px viewport, not the opener's.
+    expect(textarea.style.height).toBe(`${600 * MAX_HEIGHT_VIEWPORT_FRACTION}px`);
+    const measurementsAfterMount = measurements;
+
+    // The opener's window is not where the field listens, so a resize there
+    // triggers no measurement.
+    fireEvent.resize(window);
+    expect(measurements).toBe(measurementsAfterMount);
+
+    Object.defineProperty(win, "innerHeight", { configurable: true, value: 1200 });
+    fireEvent.resize(win);
+
+    // The popout's own resize re-measured against its new height.
+    expect(measurements).toBeGreaterThan(measurementsAfterMount);
+    expect(textarea.style.height).toBe(`${1200 * MAX_HEIGHT_VIEWPORT_FRACTION}px`);
+  } finally {
+    view.unmount();
+    frame.remove();
+    if (originalInnerHeight) Object.defineProperty(win, "innerHeight", originalInnerHeight);
+    if (originalScrollHeight) Object.defineProperty(win.HTMLElement.prototype, "scrollHeight", originalScrollHeight);
+  }
+});
+
+// The auto-grow observer belongs to the field's own window: a popout's
+// element cannot be observed through the opener's constructor, and delivery
+// follows the constructing document's lifecycle.
+test("auto-grow in a popout observes through that window's ResizeObserver", () => {
+  const { frame, doc, win } = appendPopout();
+  const observe = vi.fn();
+  class WindowResizeObserver {
+    observe = observe;
+    disconnect = vi.fn();
+  }
+  Object.defineProperty(win, "ResizeObserver", { configurable: true, value: WindowResizeObserver });
+  const view = render(
+    createPortal(<Textarea aria-label="prompt" value="hello" onChange={() => {}} autoGrow />, doc.body),
+  );
+  try {
+    const field = doc.querySelector("textarea");
+    if (!field) throw new Error("popout textarea missing");
+    expect(observe).toHaveBeenCalledWith(field);
+  } finally {
+    view.unmount();
+    frame.remove();
+  }
 });

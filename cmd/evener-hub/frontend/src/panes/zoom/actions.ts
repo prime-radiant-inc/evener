@@ -1,7 +1,13 @@
 import type { SessionActivityContext, SessionDelegate } from "@evener/appwire-client";
 import { conversationPaneLifetime, type PaneLifetime } from "../../shell/paneLifetime";
 import { refParam } from "../../shell/routing";
-import { cancelPaneFocus, type OpenPaneRecord, requestPaneFocus, workspaceStore } from "../../shell/workspace";
+import {
+  cancelPaneFocus,
+  type OpenPaneRecord,
+  presentedPanes,
+  requestPaneFocus,
+  workspaceStore,
+} from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { sessionActivitySnapshot } from "../../stores/sessionActivity";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
@@ -11,9 +17,9 @@ import {
   type DelegateEdgeIntent,
   deriveCascadePath,
   drillZoomIntent,
-  parseZoomParams,
   popZoomIntent,
   type SessionZoomParams,
+  zoomIntentOf,
 } from "./intent";
 import "./index";
 import "../session";
@@ -33,8 +39,7 @@ function contextFor(ref: string): SessionActivityContext | null {
   return client ? (sessionActivitySnapshot(client, ref, "session")?.context ?? null) : null;
 }
 function intentFor(pane: OpenPaneRecord): SessionZoomParams | null {
-  if (pane.type !== "sessionZoom") return null;
-  const parsed = parseZoomParams(pane.params);
+  const parsed = zoomIntentOf(pane);
   // Legacy Return retains the exact source params. Inspection uses the
   // validated read-only descriptor and leaves its separate source untouched.
   if (!parsed) return null;
@@ -96,7 +101,7 @@ function updateIntent(pane: OpenPaneRecord, params: SessionZoomParams, userTrans
 
 export function enterAgentCascade(sub: SessionDelegate, sourcePaneId?: string): string {
   const workspace = workspaceStore.getState();
-  const source = workspace.panes.find((pane) => pane.id === (sourcePaneId ?? workspace.focusedPaneId));
+  const source = presentedPanes(workspace.panes).find((pane) => pane.id === (sourcePaneId ?? workspace.focusedPaneId));
   const edge = { ownerRef: sub.ownerRef, childRef: sub.childRef, delegateId: sub.delegateId };
   if (source) {
     const intent = intentFor(source);
@@ -164,7 +169,12 @@ export function returnFromAgentCascade(paneId: string): void {
     cancelPaneFocus(pane.id);
     workspace.closePane(pane.id);
     const current = origin ? workspaceStore.getState().panes.find((record) => record.id === origin.id) : undefined;
-    if (current && originLifetime?.alive && conversationPaneLifetime(current) === originLifetime) {
+    if (
+      current &&
+      current.slot !== "parked" &&
+      originLifetime?.alive &&
+      conversationPaneLifetime(current) === originLifetime
+    ) {
       workspaceStore.getState().focusPane(current.id);
       requestPaneFocus(current.id);
     }

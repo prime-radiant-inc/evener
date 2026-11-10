@@ -21,8 +21,10 @@ export interface NotificationLine {
 	headline: string;
 	detail?: string;
 	failed: boolean;
-	/** The subagent tapping opens: its own transcript, and its title. */
-	subagent?: { ref: string; title: string };
+	/** The subagent tapping opens: its own transcript, its title, and its
+	 * run's start when the roster names it, so its screen times the run as the
+	 * card's session does (#2988). */
+	subagent?: { ref: string; title: string; runStartedAt?: string };
 	/** A job's output, shown in place when tapped. */
 	output?: string;
 }
@@ -79,7 +81,16 @@ export function notificationLine(
 				(notification.excerpt || undefined) ??
 				(notification.outcome === "failed" || notification.outcome === "stopped" ? notification.ending : undefined);
 			if (detail) line.detail = detail;
-			if (ref) line.subagent = { ref, title: subject };
+			if (ref)
+				line.subagent = {
+					ref,
+					title: subject,
+					// A finished run's start is no Working time; only a still-open
+					// delegate's card carries it to the screen it opens (#2988).
+					...(subagent !== undefined && subagent.terminal !== true && subagent.runStartedAt !== undefined
+						? { runStartedAt: subagent.runStartedAt }
+						: {}),
+				};
 			return line;
 		}
 		case "job": {

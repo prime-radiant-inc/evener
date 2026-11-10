@@ -772,10 +772,7 @@ func TestRetirementBrowser(t *testing.T) {
 	if _, err := navigation.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatalf("build fixture navigation generation: %v", err)
 	}
-	appServer := newHubAppServerWithNavigation(hubcore.WebConfig{
-		HubStateRoot: t.TempDir(),
-		Past:         hubcore.NewPastIndex(""),
-	}, sources, navigation, nil)
+	appServer := newHubAppServerWithNavigation(testWebConfig(t, hubcore.WebConfig{}), sources, navigation, nil)
 	source.publishRestartResync = func() {
 		appServer.Broadcast(ref, appwire.NotifyEvenerThreadResync, map[string]any{"threadId": threadID, "ref": ref})
 	}
@@ -860,7 +857,7 @@ func TestRetirementBrowser(t *testing.T) {
 	// This is NOT a recursive go test invocation: the runner is a Node script
 	// that talks to THIS fixture directly; it does not run another go test.
 	cmd := exec.CommandContext(context.Background(), "node", "frontend/scripts/retirementguard/run.mjs")
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(browserFixtureEnv(hub.URL),
 		"RETIREMENT_HUB_URL="+hubWS,
 		"RETIREMENT_RETIRE_URL="+retireURL,
 		"RETIREMENT_DEGRADE_URL="+degradeURL,
@@ -870,8 +867,6 @@ func TestRetirementBrowser(t *testing.T) {
 		"RETIREMENT_RESTART_DRAFT="+restartDraftText,
 		"RETIREMENT_RESTART_TURN_ID="+restartDraftTurnID,
 		"RETIREMENT_ARTIFACT_DIR="+artifactDir,
-		// The guard's Vite dev server proxies /rpc to this fixture Hub.
-		"EVENER_HUB_ADDR="+hub.URL,
 	)
 	// Run from cmd/evener-hub so relative paths in the runner (e.g. "frontend/…")
 	// resolve correctly. The CWD of the current test binary is already

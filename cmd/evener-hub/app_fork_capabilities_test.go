@@ -22,6 +22,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/identifier"
@@ -44,13 +45,11 @@ func TestHubForkCapabilityReadAndStatusMatchHubOwnership(t *testing.T) {
 	})
 	roster := hubcore.NewRoster(runDir, nil)
 	roster.Refresh()
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, StateDir: runDir, Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, StateDir: runDir}))
 	t.Cleanup(hub.Close)
 	client := dialHubRPC(t, hub)
 	t.Cleanup(func() { _ = client.Close() })
-	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
+	mustInitializeHubClient(t, client)
 	for _, turns := range []bool{false, true} {
 		read, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: ref, IncludeTurns: turns, Subscribe: true, ItemLimit: 40})
 		if err != nil {
@@ -283,17 +282,10 @@ func TestHubRPCPersistedSubagentCanForkAfterStop(t *testing.T) {
 	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
 		t.Fatal(err)
 	}
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 	list, err := client.ThreadList(t.Context(), appwire.ThreadListParams{IncludeSubagents: true})
 	if err != nil {
 		t.Fatal(err)
@@ -309,7 +301,7 @@ func TestHubRPCPersistedSubagentCanForkAfterStop(t *testing.T) {
 		t.Fatalf("persisted subagent read did not advertise fork: %+v", read.Thread.Evener.Capabilities)
 	}
 	before := len(past.Search("", 100, 0))
-	_, err = client.ThreadFork(t.Context(), appwire.ThreadForkParams{Ref: "local:" + sessionID, SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "fork"})
+	_, err = appwiretest.ThreadFork(t.Context(), client, appwire.ThreadForkParams{Ref: "local:" + sessionID, SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "fork"})
 	if err != nil {
 		t.Fatalf("persisted subagent fork: %v", err)
 	}
@@ -465,7 +457,7 @@ func TestHubExplicitResumeResponseAdvertisesClearedForkFence(t *testing.T) {
 	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{}); err != nil {
 		t.Fatal(err)
 	}
-	resumed, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Ref: "local:" + sessionID})
+	resumed, err := appwiretest.ThreadResume(t.Context(), client, appwire.ThreadResumeParams{Ref: "local:" + sessionID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -749,15 +741,16 @@ func TestHubRelayedForkCapabilityFollowsLiveRecovery(t *testing.T) {
 	roster.Refresh()
 	locks := hubcore.NewResumeLocks()
 	finishForceStop := locks.BeginForceStop([]string{sessionID})
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		RunDir: runDir, Roster: roster, StateDir: runDir, Past: hubcore.NewPastIndex(""), ResumeLocks: locks,
-	})
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
+		RunDir:      runDir,
+		Roster:      roster,
+		StateDir:    runDir,
+		ResumeLocks: locks,
+	}))
 	t.Cleanup(hub.Close)
 	client := dialHubRPC(t, hub)
 	t.Cleanup(func() { _ = client.Close() })
-	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
+	mustInitializeHubClient(t, client)
 	read, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: ref, Subscribe: true, ItemLimit: 40})
 	if err != nil {
 		t.Fatal(err)
@@ -1181,15 +1174,15 @@ func TestHubForkCapabilityHonoursDaemonReportedRecoveryFlags(t *testing.T) {
 			if !ok || !slices.Equal(owner.ActiveFlags, tc.flags) {
 				t.Fatalf("roster owner=%+v ok=%v, want the daemon's reported flags %v", owner, ok, tc.flags)
 			}
-			hub := newHubRPCTestServer(t, hubcore.WebConfig{
-				RunDir: runDir, Roster: roster, StateDir: runDir, Past: hubcore.NewPastIndex(""),
-			})
+			hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
+				RunDir:   runDir,
+				Roster:   roster,
+				StateDir: runDir,
+			}))
 			t.Cleanup(hub.Close)
 			client := dialHubRPC(t, hub)
 			t.Cleanup(func() { _ = client.Close() })
-			if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-				t.Fatal(err)
-			}
+			mustInitializeHubClient(t, client)
 			list, err := client.ThreadList(t.Context(), appwire.ThreadListParams{})
 			if err != nil {
 				t.Fatal(err)
@@ -2062,9 +2055,7 @@ func TestHubForkCapabilityFencesTheSessionAStableRefResolvesTo(t *testing.T) {
 			t.Cleanup(hub.Close)
 			client := dialHubRPC(t, hub)
 			t.Cleanup(func() { _ = client.Close() })
-			if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-				t.Fatal(err)
-			}
+			mustInitializeHubClient(t, client)
 			list, err := client.ThreadList(t.Context(), appwire.ThreadListParams{})
 			if err != nil {
 				t.Fatal(err)
@@ -2563,15 +2554,15 @@ func TestHubRelayProjectsForkOnlyForStatusNotifications(t *testing.T) {
 	}
 	t.Cleanup(func() { hubRosterList = previousList })
 
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		RunDir: runDir, Roster: roster, StateDir: runDir, Past: hubcore.NewPastIndex(""),
-	})
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
+		RunDir:   runDir,
+		Roster:   roster,
+		StateDir: runDir,
+	}))
 	t.Cleanup(hub.Close)
 	client := dialHubRPC(t, hub)
 	t.Cleanup(func() { _ = client.Close() })
-	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
+	mustInitializeHubClient(t, client)
 	if _, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: ref, Subscribe: true, ItemLimit: 40}); err != nil {
 		t.Fatal(err)
 	}

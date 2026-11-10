@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
@@ -68,8 +69,6 @@ func communicateCallArgs(id string, args map[string]any) llm.ToolCallData {
 	}
 }
 
-// toolCallResponse is defined in tool_web_fetch_test.go (same package).
-
 // TestCommunicate_ToolChoiceNotForced_OnEveryRequest checks the whole request
 // sequence, not just the first: no round may force a tool call, including the
 // rounds that follow a communicate. See TestProcessInput_ToolChoiceIsNeverForced
@@ -84,19 +83,16 @@ func TestCommunicate_ToolChoiceNotForced_OnEveryRequest(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(comm)
+				return agenttest.ToolCallResponse(comm)
 			},
 		},
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "hi", nil)
+	_, err := sess.ProcessInput(ctx, "hi", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -126,7 +122,7 @@ func TestCommunicate_ResultExitsLoop(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(comm)
+				return agenttest.ToolCallResponse(comm)
 			},
 			// If the loop doesn't exit, this step would be reached.
 			func(req llm.Request) llm.Response {
@@ -172,10 +168,10 @@ func TestCommunicate_StatusMessageContinuesTurn(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(status)
+				return agenttest.ToolCallResponse(status)
 			},
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(final)
+				return agenttest.ToolCallResponse(final)
 			},
 		},
 	}
@@ -207,11 +203,7 @@ func TestCommunicateRejectsLegacyAwaitReply(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
 	rawArgs, _ := json.Marshal(map[string]any{
 		"message":     "legacy",
@@ -252,7 +244,7 @@ func TestCommunicate_StructuredOutputExitsLoop(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(comm)
+				return agenttest.ToolCallResponse(comm)
 			},
 			func(req llm.Request) llm.Response {
 				t.Fatalf("should not reach second LLM call after communicate")
@@ -310,7 +302,7 @@ func TestCommunicate_FirstTerminalResultWins(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(first, second)
+				return agenttest.ToolCallResponse(first, second)
 			},
 			func(req llm.Request) llm.Response {
 				t.Fatalf("should not reach second LLM call after terminal communicate")
@@ -366,13 +358,13 @@ func (a *communicateSessionRoutedAdapter) Complete(_ context.Context, req llm.Re
 	if req.SessionID == a.rootSessionID {
 		a.rootRequests++
 		if a.rootRequests == 1 {
-			response = toolCallResponse(a.delegate, a.status)
+			response = agenttest.ToolCallResponse(a.delegate, a.status)
 		} else {
-			response = toolCallResponse(a.parentDone)
+			response = agenttest.ToolCallResponse(a.parentDone)
 		}
 	} else {
 		a.childRequests++
-		response = toolCallResponse(a.childDone)
+		response = agenttest.ToolCallResponse(a.childDone)
 	}
 	response.Provider = a.Name()
 	response.Model = req.Model
@@ -457,8 +449,7 @@ func TestCommunicate_StatusBatchedWithDelegateDoesNotEndTurn(t *testing.T) {
 	// answered in-process with no I/O; the parent turn normally completes in
 	// well under a second. 30s only fires on a genuine hang, not scheduler
 	// contention under a loaded suite.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	out, err := sess.ProcessInput(ctx, "start the observer flow", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -480,7 +471,7 @@ func TestCommunicateCapturesRawStructuredOutput(t *testing.T) {
 	t.Parallel()
 	var captured any
 	deps := &toolDeps{
-		emit:               func(events.EventKind, events.EventData) {},
+		emit:               func(events.EventData) {},
 		deliverCommunicate: func(events.CommunicateData) error { return nil },
 		abort: func(context.Context) error {
 			return nil
@@ -527,7 +518,7 @@ func TestCommunicateCapturesEmptyRawStructuredOutputForCustomSchema(t *testing.T
 	t.Parallel()
 	var captured any
 	deps := &toolDeps{
-		emit:               func(events.EventKind, events.EventData) {},
+		emit:               func(events.EventData) {},
 		deliverCommunicate: func(events.CommunicateData) error { return nil },
 		abort: func(context.Context) error {
 			return nil
@@ -627,11 +618,7 @@ func TestCommunicate_InboxDrainsSteering(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
 	// Queue a steering message, then call communicate directly through the registry.
 	sess.Steer("change direction: do Y instead")
@@ -694,11 +681,11 @@ func TestCommunicate_ClientSteeringBeforeResultProjectsValidNextRequest(t *testi
 		name: "anthropic",
 		steps: []func(req llm.Request) llm.Response{
 			func(llm.Request) llm.Response {
-				return toolCallResponse(communicateCall(callID, "Initial work complete."))
+				return agenttest.ToolCallResponse(communicateCall(callID, "Initial work complete."))
 			},
 			func(req llm.Request) llm.Response {
 				requestErr = validateSteeredCommunicateHistory(req.Messages, callID, "commit them")
-				return toolCallResponse(communicateCall("communicate_after_steering", "Committed."))
+				return agenttest.ToolCallResponse(communicateCall("communicate_after_steering", "Committed."))
 			},
 		},
 	}
@@ -778,11 +765,11 @@ func TestCommunicate_TerminalClientSteeringRunsAfterTheTerminalResult(t *testing
 		name: "anthropic",
 		steps: []func(req llm.Request) llm.Response{
 			func(llm.Request) llm.Response {
-				return toolCallResponse(communicateCall(firstCallID, "Initial work complete."))
+				return agenttest.ToolCallResponse(communicateCall(firstCallID, "Initial work complete."))
 			},
 			func(req llm.Request) llm.Response {
 				requestErr = validateSteeredCommunicateHistory(req.Messages, firstCallID, steerText)
-				return toolCallResponse(communicateCall(secondCallID, "Committed."))
+				return agenttest.ToolCallResponse(communicateCall(secondCallID, "Committed."))
 			},
 		},
 	}
@@ -909,11 +896,7 @@ func TestCommunicate_DrainedImageSteeringRequeuesForPostToolInjection(t *testing
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
 	sess.SteerWithImages("look at this", []ImageAttachment{{
 		MediaType: "image/png",
@@ -951,11 +934,7 @@ func TestCommunicate_SchemaRejectsMalformedOutput(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
 	rawArgs, _ := json.Marshal(map[string]any{
 		"message":  "missing data field",
@@ -984,11 +963,7 @@ func TestCommunicate_SchemaRejectsIntentInsideOutput(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
 	rawArgs, _ := json.Marshal(map[string]any{
 		"message":  "RESULT_LIST_DIR visible-item.txt",
@@ -1020,11 +995,7 @@ func TestCommunicate_SchemaRejectsTopLevelIntent(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
 	rawArgs, _ := json.Marshal(map[string]any{
 		"message":  "RESULT_LIST_DIR visible-item.txt",
@@ -1056,11 +1027,7 @@ func TestCommunicate_ModelFacingSchemaOmitsIntent(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
 	var communicate *llm.ToolDefinition
 	var readFile *llm.ToolDefinition
@@ -1133,15 +1100,12 @@ func TestCommunicate_EmitsEvent(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(result) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(result) },
 		},
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
 	var evs []events.SessionEvent
 	evDone := make(chan struct{})
@@ -1154,7 +1118,7 @@ func TestCommunicate_EmitsEvent(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "hi", nil)
+	_, err := sess.ProcessInput(ctx, "hi", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -1193,7 +1157,7 @@ func TestCommunicate_AvailableImmediately(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(result) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(result) },
 			func(req llm.Request) llm.Response {
 				t.Fatalf("should not reach second step with MinResultRound=0")
 				return llm.Response{}
@@ -1234,7 +1198,7 @@ func TestCommunicate_EndTurnWarnsAboutRunningJobs(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
+		Arguments: idleShellJSON(`,"mode":"background"`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)

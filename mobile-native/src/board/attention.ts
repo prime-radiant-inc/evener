@@ -9,21 +9,23 @@
 // fallback left when it's given. A subagent failure never puts a Board row in
 // Needs you; the row's subagent chip (subagentChip) counts it, and the
 // session's Agents list holds the detail.
-import type { DelegateTiming, NavigationSessionSummary, SessionActivity } from "@evener/appwire-client";
-import { DELEGATE_QUIET_AFTER_MS, quietState, taskSettledCount } from "@evener/appwire-client";
-import { relativeAge, subagentTallyToShow } from "@evener/appwire-client/state/navigation";
-import { compactDuration } from "../session/format";
+import type { AttentionClass, DelegateTiming, NavigationSessionSummary, SessionActivity } from "@evener/appwire-client";
+import {
+	approvalWaiting,
+	attentionState,
+	compactDuration,
+	DELEGATE_QUIET_AFTER_MS,
+	parseTimestampMs,
+	quietState,
+	taskSettledCount,
+} from "@evener/appwire-client";
+import {
+	quotaWaitRemainingMs,
+	subagentTallyToShow,
+	waitingForQuotaText,
+} from "@evener/appwire-client/state/navigation";
 
-export type BoardState =
-	| "failed"
-	| "question"
-	| "needsYou"
-	| "approval"
-	| "warning"
-	| "restartNeeded"
-	| "working"
-	| "idle"
-	| "shutDown";
+export type BoardState = AttentionClass;
 
 export type Band = "needsYou" | "working" | "idle";
 
@@ -76,45 +78,13 @@ export function approvalRefs(needsYouSection: readonly NavigationSessionSummary[
 	return refs;
 }
 
-/** The Board state a hub state decides on its own, whatever flags ride
- * along, or null for one that leaves it to the row's other facts. A Board
- * row and a search result both start here. */
-export function decisiveState(state: string): BoardState | null {
-	switch (state) {
-		case "errored":
-			return "failed";
-		case "restartRequired":
-			return "restartNeeded";
-		case "warning":
-			return "warning";
-		case "ended":
-		case "notLoaded":
-			return "shutDown";
-	}
-	return null;
-}
-
 export function boardState(row: NavigationSessionSummary, approval: boolean): BoardState {
-	// A row from an offline source can't be reached, whatever state it last
-	// reported: it is never Working or Needs you.
-	if (row.offline) return "shutDown";
-	const decisive = decisiveState(row.state);
-	// Only a nonblocking warning yields to live child work. Search keeps its
-	// existing decisiveState rule, and failed children never decide this mark.
-	if (decisive && (decisive !== "warning" || row.ask_pending || approval || row.approval_pending)) return decisive;
-	if (row.state === "awaiting" && row.ask_pending) return "question";
-	if (approval || row.approval_pending === true) return "approval";
-	// Awaiting without a question is a turn that ended on needs_response: it
-	// waits on a person like a question does, ahead of any running work
-	// (#4093).
-	if (row.state === "awaiting") return "needsYou";
-	if (row.state === "active") return "working";
-	const runningSubagents = row.kind === "session" && (subagentTallyToShow(row)?.running ?? 0) > 0;
-	if (runningSubagents) return "working";
-	if (decisive) return decisive;
-	// A turn that ended rests Idle whether or not you've seen it: the row's
-	// blue dot (rowUnseen) says whether anything is new (#4093).
-	return "idle";
+	return attentionState(row.state, {
+		askPending: row.ask_pending,
+		approvalPending: approval || row.approval_pending === true,
+		runningChildren: row.kind === "session" && (subagentTallyToShow(row)?.running ?? 0) > 0,
+		offline: row.offline,
+	});
 }
 
 /** Classifies any of the Board's rows, Live's or a category's: the needs_you
@@ -168,9 +138,7 @@ export function bandOf(state: BoardState): Band | null {
 /** A hub timestamp in milliseconds, or null when the hub sent none or one
  * that doesn't parse. */
 export function hubTime(value?: string | null): number | null {
-	if (!value) return null;
-	const time = Date.parse(value);
-	return Number.isFinite(time) ? time : null;
+	return parseTimestampMs(value ?? undefined) ?? null;
 }
 
 // A row without a readable updated_at sorts as the oldest.
@@ -197,18 +165,23 @@ function newestEndedFirst(a: ClassifiedRow, b: ClassifiedRow): number {
 // of age; age breaks ties within a band. The hub sorts its needs_you section
 // into the same bands (hubapi.NeedsYouBand: failed first, then any row
 // awaiting you or with a pending question or approval whatever its own
-// state, then everything else). boardState's mark
-// precedence returns "warning"/"restartNeeded" for a row before ever
-// consulting ask_pending/approval_pending, so a warning or restart-needed row
-// that also carries one of those flags must still read it here directly - the
-// mark stays "warning"/"restartNeeded", but the row is blocked on you either
-// way. The approval mark is also checked directly, since a hub older than
-// S2a carries no raw approval_pending and the mark's own fallback
-// (approvalRefs, inferred from needs_you section membership) is the only
-// signal such a row has.
+// state, then everything else). boardState's mark precedence returns
+// "warning"/"restartNeeded" for a row before ever consulting
+// ask_pending/approval_pending, so a warning that also carries one of those
+// flags must still read it here directly: the mark stays "warning", but the
+// row is blocked on you either way. A restart need outranks an approval
+// (approvalWaiting), as in the hub. The approval mark is also checked
+// directly, since a hub older than S2a carries no raw approval_pending and the
+// mark's own fallback (approvalRefs, inferred from needs_you section
+// membership) is the only signal such a row has.
 function needsYouRank(item: ClassifiedRow): number {
 	if (item.state === "failed") return 0;
-	if (item.row.ask_pending || item.row.approval_pending || item.state === "approval" || item.state === "needsYou")
+	if (
+		item.row.ask_pending ||
+		approvalWaiting(item.row.state, item.row.approval_pending === true) ||
+		item.state === "approval" ||
+		item.state === "needsYou"
+	)
 		return 1;
 	return 2;
 }
@@ -288,10 +261,11 @@ export function summaryText(band: Band, count: number): string {
 
 export type Hue = "danger" | "attention";
 
-/** What a why line says, apart from its words: the state's reason, the
- * running subagents, a silence (quiet, or long enough to be stuck), the
- * session's latest intent, the job it runs, or only the state's own word. */
-export type WhyKind = "reason" | "subagents" | "stuck" | "quiet" | "intent" | "job" | "state";
+/** What a why line says, apart from its words: the state's reason, a wait
+ * for a provider's usage limit to reset, the running subagents, a silence
+ * (quiet, or long enough to be stuck), the session's latest intent, the job
+ * it runs, or only the state's own word. */
+export type WhyKind = "reason" | "quota" | "subagents" | "stuck" | "quiet" | "intent" | "job" | "state";
 
 export interface WhyLine {
 	/** Absent on a line that stands in for a why line (a held change's). */
@@ -315,14 +289,6 @@ const REASONS: Partial<Record<BoardState, { hue: Hue; text: string }>> = {
 	warning: { hue: "attention", text: "open the session to see it" },
 	restartNeeded: { hue: "attention", text: "restart this session to pick up the hub's update" },
 };
-
-// relativeAge buckets m/h/d purely from the gap between two instants (now
-// minus a timestamp); anchoring both ends of that gap to the epoch reuses its
-// buckets for a duration quietState reports directly, instead of copying its
-// thresholds here.
-function durationLabel(forMs: number): string {
-	return relativeAge(new Date(0).toISOString(), forMs) ?? "0m";
-}
 
 /** The why line of a session or subagent waiting on its subagents: on the
  * Board, in the tray, in the Agents and Jobs lists and on a subagent's row (spec
@@ -364,16 +330,19 @@ function workingWhyLine(row: NavigationSessionSummary, activity: SessionActivity
 	if (activity.runningSubagents > 0) return { kind: "subagents", text: waitingOnSubagents(activity.runningSubagents) };
 	const quiet = quietState(activity, msSinceReadMs);
 	if (quiet?.state === "stuck")
-		return { kind: "stuck", text: `May be stuck · no updates for ${durationLabel(quiet.forMs)}`, stuck: true };
-	if (quiet?.state === "quiet") return { kind: "quiet", text: `Quiet ${durationLabel(quiet.forMs)}` };
+		return { kind: "stuck", text: `May be stuck · no updates for ${compactDuration(quiet.forMs)}`, stuck: true };
+	if (quiet?.state === "quiet") return { kind: "quiet", text: `Quiet ${compactDuration(quiet.forMs)}` };
 	return commandOrWorking(row, activity.latestIntent);
 }
 
 /** The row's why line. activity and msSinceReadMs are S5's live read (the
  * Board polls evener/activity/read); omitting them keeps every state exactly
  * as it read before S5, including a working row's pre-S5 fallback
- * (workingActivity). */
+ * (workingActivity). A row whose model call waits out a usage limit says
+ * when it resumes while that time is still ahead. */
 export function whyLine(item: ClassifiedRow, activity?: SessionActivity, msSinceReadMs = 0): WhyLine | null {
+	const quotaWait = quotaWaitRemainingMs(item.row, Date.now());
+	if (quotaWait !== null) return { kind: "quota", text: waitingForQuotaText(quotaWait) };
 	if (item.state === "working")
 		return activity ? workingWhyLine(item.row, activity, msSinceReadMs) : workingActivity(item.row);
 	const reason = REASONS[item.state];

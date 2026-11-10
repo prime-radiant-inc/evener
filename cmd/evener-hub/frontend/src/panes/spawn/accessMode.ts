@@ -9,8 +9,8 @@ export interface AccessModeOption {
   label: string;
 }
 
-// Fixed order full → read-only → workspace-write → restricted (floor §1.8,
-// spawn.js:4-9). Labels are sentence case per the design system.
+// Fixed order full → read-only → workspace-write → restricted (floor §1.8).
+// Labels are sentence case per the design system.
 export const ACCESS_MODE_OPTIONS: readonly AccessModeOption[] = [
   { value: "full", label: "Full access" },
   { value: "read-only", label: "Read-only" },

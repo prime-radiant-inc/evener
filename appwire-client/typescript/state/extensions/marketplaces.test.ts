@@ -3,13 +3,9 @@ import { ErrorMarketplaceRemoveApplied, friendlyErrorMessage, WireError } from "
 import { deferRequest, FakeClient, failing, gateSettlements } from "../../testing/fakeClient";
 import { permissiveHubWriteGate } from "../../testing/hubWriteGate";
 import type { MarketplaceCatalogPlugin, MarketplaceEntry } from "../../types.gen";
+import { REFETCH_DEBOUNCE_MS } from "../refetchDebounce";
 import { createHubWriteGate, HubWriteBusyError, type HubWriteGate } from "./hubWriteGate";
-import {
-  createMarketplacesStore,
-  MARKETPLACE_REFETCH_DEBOUNCE_MS,
-  type MarketplacesStore,
-  marketplaceRemovalOutcome,
-} from "./marketplaces";
+import { createMarketplacesStore, type MarketplacesStore, marketplaceRemovalOutcome } from "./marketplaces";
 
 const ACME: MarketplaceEntry = { name: "acme", source: { kind: "github", repo: "acme/plugins" }, lastUpdated: 1 };
 const LOCAL: MarketplaceEntry = { name: "local", source: { kind: "directory", path: "/opt/plugins" }, lastUpdated: 2 };
@@ -106,7 +102,7 @@ describe("marketplaceRemovalOutcome", () => {
   });
 
   test("still accepts a minimal well-formed member and an empty applied list", () => {
-    // Every source field but kind is optional on the wire (appwire/types.go
+    // Every source field but kind is optional on the wire (appwire/types_auth_commands.go
     // omitempty) and an empty list is a legitimate empty registry, so member
     // validation must not reject payloads the hub really sends.
     const minimal = { name: "acme", source: { kind: "url" }, lastUpdated: 0 };
@@ -788,10 +784,10 @@ describe("notifications", () => {
 
     fake.emitNotification({ method: "evener/marketplace/updated", params: {} });
     expect(store.getState().browseCatalogs.size).toBe(0);
-    await vi.advanceTimersByTimeAsync(MARKETPLACE_REFETCH_DEBOUNCE_MS - 1);
+    await vi.advanceTimersByTimeAsync(REFETCH_DEBOUNCE_MS - 1);
     expect(store.getState().marketplaces).toEqual([ACME]);
     fake.emitNotification({ method: "evener/marketplace/updated", params: {} });
-    await vi.advanceTimersByTimeAsync(MARKETPLACE_REFETCH_DEBOUNCE_MS - 1);
+    await vi.advanceTimersByTimeAsync(REFETCH_DEBOUNCE_MS - 1);
     expect(store.getState().marketplaces).toEqual([ACME]); // the second notification reset the window
     await vi.advanceTimersByTimeAsync(1);
     expect(store.getState().marketplaces).toEqual([ACME, LOCAL]);

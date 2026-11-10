@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -21,6 +20,7 @@ import (
 	"primeradiant.com/evener/agent/internal/worktree"
 	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/gittest"
 	"primeradiant.com/evener/internal/devtool/shardrun"
 )
 
@@ -60,106 +60,6 @@ var (
 	sharedAgentTempRoot    string
 	intgMCPServerDir       string
 )
-
-type worktreeGitRunner func(string, ...string) (string, error)
-
-type worktreeMaintenanceProbe struct {
-	ready                chan struct{}
-	release              chan struct{}
-	exited               chan struct{}
-	publishedWhileActive bool
-	mutatorErr           error
-}
-
-func newWorktreeMaintenanceProbe() *worktreeMaintenanceProbe {
-	return &worktreeMaintenanceProbe{
-		ready:   make(chan struct{}),
-		release: make(chan struct{}),
-		exited:  make(chan struct{}),
-	}
-}
-
-func worktreeMaintenanceAutoEnabled(args []string) bool {
-	enabled := true
-	for i := 0; i < len(args); i++ {
-		var config string
-		switch {
-		case args[i] == "-c" && i+1 < len(args):
-			config = args[i+1]
-			i++
-		case strings.HasPrefix(args[i], "-c"):
-			config = args[i][2:]
-		default:
-			continue
-		}
-		key, value, ok := strings.Cut(config, "=")
-		if !ok || !strings.EqualFold(strings.TrimSpace(key), "maintenance.auto") {
-			continue
-		}
-		switch strings.ToLower(strings.TrimSpace(value)) {
-		case "false", "0", "no", "off":
-			enabled = false
-		default:
-			enabled = true
-		}
-	}
-	return enabled
-}
-
-func worktreeQuiescentCommitArgs(args []string) []string {
-	commit := slices.Index(args, "commit")
-	if commit < 0 {
-		return args
-	}
-	quiescent := make([]string, 0, len(args)+2)
-	quiescent = append(quiescent, args[:commit]...)
-	quiescent = append(quiescent, "-c", "maintenance.auto=false")
-	return append(quiescent, args[commit:]...)
-}
-
-func (p *worktreeMaintenanceProbe) run(underlyingRunner worktreeGitRunner) worktreeGitRunner {
-	return func(dir string, args ...string) (string, error) {
-		commit := slices.Contains(args, "commit")
-		maintenanceAutoEnabled := commit && worktreeMaintenanceAutoEnabled(args)
-		realArgs := args
-		if maintenanceAutoEnabled {
-			realArgs = worktreeQuiescentCommitArgs(args)
-		}
-		out, err := underlyingRunner(dir, realArgs...)
-		if err != nil {
-			return out, err
-		}
-		if maintenanceAutoEnabled {
-			go func() {
-				lock := filepath.Join(dir, ".git", "objects", "maintenance.lock")
-				p.mutatorErr = os.WriteFile(lock, []byte("maintenance\n"), 0o644)
-				close(p.ready)
-				if p.mutatorErr != nil {
-					close(p.exited)
-					return
-				}
-				<-p.release
-				p.mutatorErr = os.Remove(lock)
-				close(p.exited)
-			}()
-			<-p.ready
-		}
-		return out, nil
-	}
-}
-
-func (p *worktreeMaintenanceProbe) published() {
-	select {
-	case <-p.ready:
-		select {
-		case <-p.exited:
-		default:
-			p.publishedWhileActive = true
-		}
-		close(p.release)
-	default:
-	}
-}
 
 func TestMain(m *testing.M) {
 	memoryEvalCaptureSources()
@@ -202,6 +102,14 @@ func TestMain(m *testing.M) {
 		// value would hand the tests the real cache.
 		_ = os.Setenv("XDG_CACHE_HOME", filepath.Join(testHome, ".cache"))
 	}
+	// Production code spawns git with the process environment, so the isolation
+	// has to be the process's: a fixture-only setting would leave the code under
+	// test reading host config and starting detached maintenance.
+	removeGitConfig, err := gittest.IsolateProcess()
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "agent TestMain: %v\n", err)
+		os.Exit(2)
+	}
 	// A developer with EVENER_NO_USER_SKILLS exported would otherwise flip
 	// which user-global sources sessions discover: Discover skips the global
 	// MCP layer and DiscoverEvenerWideCommands skips the user-global commands
@@ -226,6 +134,7 @@ func TestMain(m *testing.M) {
 	if testHome != "" {
 		_ = os.RemoveAll(testHome)
 	}
+	removeGitConfig()
 	if sharedWorkspace != "" {
 		_ = os.Chmod(sharedWorkspace, 0o755)
 		_ = os.RemoveAll(sharedWorkspace)
@@ -267,22 +176,11 @@ type wtRepo struct {
 	head     string // SHA of the initial commit
 }
 
-// wtGit runs a git command in dir through a throwaway local env, failing the
-// test on any non-zero exit.
-func gitTestEnv() map[string]string {
-	return map[string]string{
-		"GIT_CONFIG_GLOBAL":   os.DevNull,
-		"GIT_CONFIG_NOSYSTEM": "1",
-	}
-}
-
+// runWorktreeGit runs a git command in dir under the process environment,
+// which TestMain's gittest.IsolateProcess has already isolated.
 func runWorktreeGit(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
-	cmd.Env = os.Environ()
-	for k, v := range gitTestEnv() {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
@@ -314,7 +212,7 @@ func worktreeBaseRepo(t *testing.T) (string, string) {
 // package run, so it lives in the package's fixture root, not the current
 // TMPDIR: a test that points TMPDIR at its own t.TempDir would otherwise leave
 // the cache naming a directory its cleanup removed.
-func buildWorktreeBaseRepo(run worktreeGitRunner) (path, head string, err error) {
+func buildWorktreeBaseRepo(run gittest.Runner) (path, head string, err error) {
 	dir, err := os.MkdirTemp(sharedAgentTempRoot, "evener-worktree-base-*")
 	if err != nil {
 		return "", "", err
@@ -398,8 +296,8 @@ func copyWorktreeBaseRepoFrom(t *testing.T, base, dst string) {
 
 func TestWorktreeFixturePublishesAfterSeedMaintenance(t *testing.T) {
 	t.Parallel()
-	probe := newWorktreeMaintenanceProbe()
-	base, _, err := buildWorktreeBaseRepo(probe.run(runWorktreeGit))
+	probe := gittest.NewMaintenanceProbe()
+	base, _, err := buildWorktreeBaseRepo(probe.Run(runWorktreeGit))
 	if base != "" {
 		t.Cleanup(func() {
 			if removeErr := os.RemoveAll(base); removeErr != nil {
@@ -413,85 +311,18 @@ func TestWorktreeFixturePublishesAfterSeedMaintenance(t *testing.T) {
 
 	destination := filepath.Join(t.TempDir(), "repo")
 	copyWorktreeBaseRepoFrom(t, base, destination)
-	probe.published()
+	probe.Published()
 
 	select {
-	case <-probe.ready:
-		<-probe.exited
+	case <-probe.Ready:
+		<-probe.Exited
 	default:
 	}
-	if probe.mutatorErr != nil {
-		t.Fatalf("maintenance mutator: %v", probe.mutatorErr)
+	if probe.MutatorErr != nil {
+		t.Fatalf("maintenance mutator: %v", probe.MutatorErr)
 	}
-	if probe.publishedWhileActive {
+	if probe.PublishedWhileActive {
 		t.Fatal("fixture publication overlapped the post-commit maintenance mutator")
-	}
-}
-
-func TestWorktreeMaintenanceProbeUsesEffectiveBoolean(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name   string
-		args   []string
-		active bool
-	}{
-		{name: "false", args: []string{"-c", "maintenance.auto=false", "commit"}},
-		{name: "zero", args: []string{"-c", "maintenance.auto=0", "commit"}},
-		{name: "no", args: []string{"-c", "maintenance.auto=no", "commit"}},
-		{name: "off", args: []string{"-c", "maintenance.auto=off", "commit"}},
-		{name: "case insensitive false", args: []string{"-c", "maintenance.auto=FaLsE", "commit"}},
-		{name: "last false", args: []string{"-c", "maintenance.auto=true", "-c", "maintenance.auto=0", "commit"}},
-		{name: "true", args: []string{"-c", "maintenance.auto=true", "commit"}, active: true},
-		{name: "last true", args: []string{"-c", "maintenance.auto=0", "-c", "maintenance.auto=on", "commit"}, active: true},
-		{name: "absent", args: []string{"commit"}, active: true},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			probe := newWorktreeMaintenanceProbe()
-			dir := t.TempDir()
-			if err := os.MkdirAll(filepath.Join(dir, ".git", "objects"), 0o755); err != nil {
-				t.Fatalf("mkdir objects: %v", err)
-			}
-			var gotArgs []string
-			wrapped := probe.run(func(_ string, args ...string) (string, error) {
-				gotArgs = slices.Clone(args)
-				return "", nil
-			})
-			result := make(chan error, 1)
-			go func() {
-				_, err := wrapped(dir, test.args...)
-				result <- err
-			}()
-			if test.active {
-				<-probe.ready
-				probe.published()
-				if err := <-result; err != nil {
-					t.Fatalf("probe run: %v", err)
-				}
-				<-probe.exited
-				if probe.mutatorErr != nil {
-					t.Fatalf("maintenance mutator: %v", probe.mutatorErr)
-				}
-				if !probe.publishedWhileActive {
-					t.Fatal("expected publication overlap")
-				}
-				if !slices.Contains(gotArgs, "maintenance.auto=false") {
-					t.Fatalf("real runner args = %v, missing quiescent config", gotArgs)
-				}
-				return
-			}
-			if err := <-result; err != nil {
-				t.Fatalf("probe run: %v", err)
-			}
-			select {
-			case <-probe.ready:
-				t.Fatal("suppressed config launched synthetic maintenance")
-			default:
-			}
-			if !slices.Equal(gotArgs, test.args) {
-				t.Fatalf("real runner args = %v, want %v", gotArgs, test.args)
-			}
-		})
 	}
 }
 
@@ -1365,10 +1196,6 @@ func branchExistsInRepo(t *testing.T, root, name string) bool {
 	t.Helper()
 	cmd := exec.Command("git", "show-ref", "--verify", "--quiet", "refs/heads/"+name)
 	cmd.Dir = root
-	cmd.Env = os.Environ()
-	for k, v := range gitTestEnv() {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
 	return cmd.Run() == nil
 }
 

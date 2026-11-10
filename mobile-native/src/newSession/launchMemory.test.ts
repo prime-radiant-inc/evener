@@ -66,6 +66,27 @@ describe("stored values", () => {
 		expect(new LaunchMemory(storage, "hub-a").lastSetup()).toBeNull();
 		expect(new LaunchMemory(storage, "hub-b").lastSetup()?.cwd).toBe("/b");
 	});
+
+	it("keeps the memory choice a start was made with", () => {
+		const storage = memory();
+		const starts = new LaunchMemory(storage, "hub-a");
+		starts.recordStart(setup({ overrides: { memoryEnabled: false, sandbox: "read-only" } }));
+		expect(new LaunchMemory(storage, "hub-a").lastSetup()?.overrides).toEqual({
+			memoryEnabled: false,
+			sandbox: "read-only",
+		});
+	});
+
+	it("reads a memory choice of the wrong type as no setup at all", () => {
+		// toSetup's contract distrusts a whole stored setup whose known field
+		// has the wrong type, rather than surfacing a half-remembered start.
+		const stored = JSON.stringify({
+			...setup(),
+			overrides: { memoryEnabled: "no", maxRounds: 7 },
+		});
+		const storage = memory(new Map([[lastSetupKey("hub-a"), stored]]));
+		expect(new LaunchMemory(storage, "hub-a").lastSetup()).toBeNull();
+	});
 });
 
 describe("a storage that fails", () => {

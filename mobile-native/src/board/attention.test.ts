@@ -215,8 +215,8 @@ describe("Live bands (spec 7.1)", () => {
 	// boardState's mark precedence returns "warning"/"restartNeeded" for these
 	// rows before it ever looks at ask_pending/approval_pending, so ranking by
 	// mark alone would bury a row the hub still counts as blocked on you under
-	// every plain warning or restart-needed row, however old. The band must
-	// read the flags directly instead.
+	// every plain warning row, however old. The band must read the flags
+	// directly instead. A restart need outranks an approval, as in the hub.
 	it("a warning that also carries ask_pending sorts in the middle band, above an older plain warning", () => {
 		const bands = liveBands(
 			[
@@ -231,17 +231,18 @@ describe("Live bands (spec 7.1)", () => {
 		expect(bands.needsYou.find((item) => item.row.ref === "w-asking")?.state).toBe("warning");
 	});
 
-	it("a restart-needed row that also carries approval_pending sorts in the middle band, above an older plain restart-needed", () => {
+	it("a restart-needed row with a stale approval_pending stays in the last band, below a genuine question", () => {
 		const bands = liveBands(
 			[
+				row("r-stale", { state: "restartRequired", approval_pending: true, updated_at: at(1) }),
+				row("q", { state: "awaiting", ask_pending: true, updated_at: at(30) }),
 				row("r-plain", { state: "restartRequired", updated_at: at(5) }),
-				row("r-approving", { state: "restartRequired", approval_pending: true, updated_at: at(30) }),
 			],
 			[],
 			never,
 		);
-		expect(bands.needsYou.map((item) => item.row.ref)).toEqual(["r-approving", "r-plain"]);
-		expect(bands.needsYou.find((item) => item.row.ref === "r-approving")?.state).toBe("restartNeeded");
+		expect(bands.needsYou.map((item) => item.row.ref)).toEqual(["q", "r-stale", "r-plain"]);
+		expect(bands.needsYou.find((item) => item.row.ref === "r-stale")?.state).toBe("restartNeeded");
 	});
 
 	// A hub that predates S2a never sends approval_pending; approvalRefs infers
@@ -487,6 +488,25 @@ describe("why lines on the fallbacks (spec 7.2, 18)", () => {
 		const states = ["failed", "question", "needsYou", "approval", "warning", "restartNeeded"] as const;
 		expect(new Set(states.map((state) => whyLine({ row: row("s"), state })?.text)).size).toBe(states.length);
 	});
+
+	// A working session whose model call waits out a usage limit until a
+	// known reset resumes by itself: while that time is ahead its line says so;
+	// once it has passed the wait is over and the working line returns.
+	it.each([
+		["ahead", 90 * 60_000, true],
+		["passed", -60_000, false],
+	] as const)(
+		"a working row whose quota wait resume time is %s (%d ms away) has the quota line: %s",
+		(_when, offsetMs, quota) => {
+			const failure = {
+				title: "Usage limit reached",
+				cause_kind: "provider",
+				status: 429,
+				resumes_at: new Date(Date.now() + offsetMs).toISOString(),
+			};
+			expect(whyLine({ row: row("s", { state: "active", failure }), state: "working" })?.kind === "quota").toBe(quota);
+		},
+	);
 
 	it("has none for Idle", () => {
 		expect(whyLine({ row: row("s"), state: "idle" })).toBeNull();

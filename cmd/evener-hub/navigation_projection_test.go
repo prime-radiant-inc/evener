@@ -1053,7 +1053,7 @@ func navigationMergeProjectTierPairwiseReference(first, next hubcore.TreeProject
 	rows := make([]hubcore.TreeNode, 0, len(firstRows)+len(nextRows))
 	rows = append(rows, firstRows...)
 	rows = append(rows, nextRows...)
-	sort.SliceStable(rows, func(i, j int) bool { return hubcore.TreeNodeLess(rows[i], rows[j]) })
+	sort.SliceStable(rows, func(i, j int) bool { return hubcore.ProjectTreeNodeLess(rows[i], rows[j]) })
 	return rows
 }
 
@@ -1198,29 +1198,30 @@ func TestTreeNodeOrderBreaksTiesByCreatedThenRawTitleThenID(t *testing.T) {
 	}
 }
 
-// A merged row must sit where its recency says it belongs. The merge keeps a
-// Key's first-appearance position while its LastActivity becomes the max across
-// the merged groups, so a collision can raise the merged row above a later
-// row's instant. The test-runs bucket is the live shape: it concatenates the
-// active and archived test-run projects, each LastActivity-ordered on its own,
-// so the bucket is not globally ordered and an archived test run newer than an
-// active one lifts the merged row past rows it should precede. Re-sorting the
-// bucket by LastActivity desc restores hubcore's own project order.
-func TestNavigationMergeProjectBucketsOrdersMergedRowByLastActivity(t *testing.T) {
+// A merged row must sit where its name says it belongs. The test-runs bucket
+// concatenates the active and archived test-run projects, each ordered on its
+// own, so the bucket is not globally ordered. Re-sorting the bucket by name
+// restores hubcore's own project order and keeps a merged row at its name's
+// position, independent of activity.
+func TestNavigationMergeProjectBucketsOrdersMergedRowByName(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	session := func(id string) hubcore.TreeNode {
 		return hubcore.TreeNode{ID: id, Title: id, Project: "x", Kind: "session", State: "idle"}
 	}
 	tree := hubcore.Tree{
 		Projects: []hubcore.TreeProject{
-			{Key: "other", Name: "other", IsTestRun: true, LastActivity: now.Add(-time.Hour),
+			{Key: "zulu", Name: "zulu", IsTestRun: true, LastActivity: now,
 				Current: []hubcore.TreeNode{session("01ARZ3NDEKTSV4RRFFQ69G5FAV")}},
-			{Key: "dup", Name: "dup", IsTestRun: true, LastActivity: now.Add(-2 * time.Hour),
+			{Key: "mike", Name: "mike", IsTestRun: true, LastActivity: now.Add(-time.Hour),
 				Current: []hubcore.TreeNode{session("01ARZ3NDEKTSV4RRFFQ69G5FAW")}},
+			{Key: "shared", Name: "shared", IsTestRun: true, LastActivity: now.Add(-2 * time.Hour),
+				Current: []hubcore.TreeNode{session("01ARZ3NDEKTSV4RRFFQ69G5FAY")}},
 		},
 		ArchivedProjects: []hubcore.TreeProject{
-			{Key: "dup", Name: "dup archived", IsTestRun: true, IsArchived: true, LastActivity: now,
+			{Key: "alpha", Name: "alpha", IsTestRun: true, IsArchived: true, LastActivity: now.Add(-3 * time.Hour),
 				Current: []hubcore.TreeNode{session("01ARZ3NDEKTSV4RRFFQ69G5FAX")}},
+			{Key: "shared", Name: "shared", IsTestRun: true, IsArchived: true, LastActivity: now.Add(-4 * time.Hour),
+				Current: []hubcore.TreeNode{session("01ARZ3NDEKTSV4RRFFQ69G5FAZ")}},
 		},
 	}
 	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "00112233445566778899aabbccddeeff", Revision: 1, Tree: tree})
@@ -1235,10 +1236,45 @@ func TestNavigationMergeProjectBucketsOrdersMergedRowByLastActivity(t *testing.T
 	for _, project := range resource.Projects {
 		got = append(got, project.Key)
 	}
-	// The merged dup row's LastActivity is now (the archived group's instant),
-	// newer than other's (now-1h), so dup must lead the bucket.
-	if want := []string{"dup", "other"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("test-runs catalog order = %v, want %v (merged row must follow its LastActivity)", got, want)
+	// The archived alpha run was appended after every active one and would sit
+	// last without the name sort. The shared key was merged from both lists and
+	// keeps its name's position.
+	if want := []string{"alpha", "mike", "shared", "zulu"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("test-runs catalog order = %v, want %v (rows and the merged row must follow their names)", got, want)
+	}
+}
+
+// Merging a project's groups unions their tiers; the union keeps the sidebar's
+// creation order rather than reverting to update order.
+func TestNavigationMergeProjectGroupsKeepsProjectSessionsInCreationOrder(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	row := func(id string, createdAgo, updatedAgo time.Duration) hubcore.TreeNode {
+		return hubcore.TreeNode{ID: id, Title: id, Project: "shared", Kind: "session", State: "idle",
+			CreatedAt: now.Add(-createdAgo), UpdatedAt: now.Add(-updatedAgo)}
+	}
+	buckets := navigationProjectBucket{
+		active: []hubcore.TreeProject{
+			{Key: "shared", Name: "shared", Current: []hubcore.TreeNode{
+				row("older-created", 2*time.Hour, 0),
+			}},
+			{Key: "shared", Name: "shared", Current: []hubcore.TreeNode{
+				row("newer-created", time.Hour, time.Hour),
+			}},
+		},
+	}
+	merged, err := navigationMergeProjectBucketsContext(context.Background(), buckets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(merged.active) != 1 {
+		t.Fatalf("active bucket = %d rows, want the shared key merged", len(merged.active))
+	}
+	var got []string
+	for _, node := range merged.active[0].Current {
+		got = append(got, node.ID)
+	}
+	if want := []string{"newer-created", "older-created"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("merged current order = %v, want %v (newest creation first)", got, want)
 	}
 }
 

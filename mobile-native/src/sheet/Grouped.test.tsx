@@ -1,4 +1,4 @@
-import { AccessibilityInfo, Platform, Pressable, type TextInput, View } from "react-native";
+import { AccessibilityInfo, Platform, Pressable, type TextInputInstance, View } from "react-native";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { textContrast } from "../design/contrast.testkit";
 import { fonts, palettes } from "../design/tokens";
@@ -21,18 +21,26 @@ import {
 	useErrorInView,
 	useFormError,
 } from "./Grouped";
+import { ModalFrame } from "./ModalSheet";
 
 const viewport = vi.hoisted(() => ({ fontScale: 1, scheme: "light" as "light" | "dark" }));
+const safeArea = vi.hoisted(() => ({ top: 0, bottom: 0, left: 0, right: 0 }));
 beforeEach(() => {
 	viewport.fontScale = 1;
 	viewport.scheme = "light";
+	Object.assign(safeArea, { top: 0, bottom: 0, left: 0, right: 0 });
 });
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 	useWindowDimensions: () => ({ width: 390, height: 844, scale: 3, fontScale: viewport.fontScale }),
 	useColorScheme: () => viewport.scheme,
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+vi.mock("react-native-safe-area-context", () => ({
+	SafeAreaView: "SafeAreaView",
+	SafeAreaProvider: "SafeAreaProvider",
+	useSafeAreaInsets: () => ({ ...safeArea }),
+	useSafeAreaFrame: () => ({ x: 0, y: 0, width: 0, height: 0 }),
+}));
 
 const light = palettes.light;
 const symbols = (tree: ReturnType<typeof render>) =>
@@ -460,6 +468,38 @@ describe("a form's error", () => {
 	});
 });
 
+describe("a grouped page's safe areas", () => {
+	it("applies the horizontal insets once outside a modal frame", () => {
+		safeArea.left = 50;
+		safeArea.right = 50;
+		const tree = render(
+			<GroupedPage>
+				<Row label="Fixture" />
+			</GroupedPage>,
+		);
+		expect(tree.root.findByType("ScrollView" as never).props.contentContainerStyle).toMatchObject({
+			paddingLeft: 50,
+			paddingRight: 50,
+		});
+	});
+
+	it("leaves the horizontal insets to ModalFrame inside a modal sheet", () => {
+		safeArea.left = 50;
+		safeArea.right = 50;
+		const tree = render(
+			<ModalFrame onRequestClose={() => {}}>
+				<GroupedPage>
+					<Row label="Fixture" />
+				</GroupedPage>
+			</ModalFrame>,
+		);
+		expect(tree.root.findByType("ScrollView" as never).props.contentContainerStyle).toMatchObject({
+			paddingLeft: 0,
+			paddingRight: 0,
+		});
+	});
+});
+
 describe("labels, footers and tags", () => {
 	it("keeps headings as authored and distinguishes a machine label with Menlo", () => {
 		const section = merged(texts(render(<GroupLabel>Where</GroupLabel>))[0]?.props.style);
@@ -655,7 +695,7 @@ describe("a text field row", () => {
 
 	it("hands its return key to the form, and its input to a ref, so one field can lead to the next", () => {
 		const onSubmit = vi.fn();
-		const ref = createRef<TextInput>();
+		const ref = createRef<TextInputInstance>();
 		const tree = render(
 			<TextFieldRow
 				label="Instance name"

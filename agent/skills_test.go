@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -35,7 +36,35 @@ func writeSkillMD(t *testing.T, dir, name, content string) {
 	}
 }
 
-func TestDiscoverSkills_FindsSkillsDir(t *testing.T) {
+// discoverProjectSkills returns the available skills Discover finds for env and
+// extraDirs outside the bundled set, keyed by catalog name.
+func discoverProjectSkills(t *testing.T, env execenv.ExecutionEnvironment, extraDirs ...string) map[string]skill.SkillMeta {
+	t.Helper()
+	bundledDir, err := skill.EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir: %v", err)
+	}
+	out := map[string]skill.SkillMeta{}
+	for name, d := range skill.Discover(env, skill.DiscoverOptions{ExtraDirs: extraDirs}).Entries {
+		if d.Unavailable || strings.HasPrefix(d.Meta.SkillFile, bundledDir+string(filepath.Separator)) {
+			continue
+		}
+		out[name] = d.Meta
+	}
+	return out
+}
+
+// loadSkillBody loads meta through skill.Load under its own name and returns
+// the instruction body.
+func loadSkillBody(meta skill.SkillMeta) (string, error) {
+	loaded, _, err := skill.Load(skill.Descriptor{CatalogName: meta.Name, Meta: meta})
+	if err != nil {
+		return "", err
+	}
+	return loaded.Body, nil
+}
+
+func TestDiscover_FindsSkillsDir(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	markGitRoot(t, root)
@@ -43,7 +72,7 @@ func TestDiscoverSkills_FindsSkillsDir(t *testing.T) {
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nHello instructions.\n")
 
 	env := execenv.NewLocalExecutionEnvironment(root)
-	skills := skill.DiscoverSkills(env)
+	skills := discoverProjectSkills(t, env)
 
 	if len(skills) != 1 {
 		t.Fatalf("expected 1 skill, got %d: %v", len(skills), skills)
@@ -60,7 +89,7 @@ func TestDiscoverSkills_FindsSkillsDir(t *testing.T) {
 	}
 }
 
-func TestDiscoverSkills_DeeperShadows(t *testing.T) {
+func TestDiscover_DeeperShadows(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	markGitRoot(t, root)
@@ -77,7 +106,7 @@ func TestDiscoverSkills_DeeperShadows(t *testing.T) {
 
 	// cwd is the deeper directory.
 	env := execenv.NewLocalExecutionEnvironment(sub)
-	skills := skill.DiscoverSkills(env)
+	skills := discoverProjectSkills(t, env)
 
 	if len(skills) != 1 {
 		t.Fatalf("expected 1 skill (shadowed), got %d: %v", len(skills), skills)
@@ -88,20 +117,20 @@ func TestDiscoverSkills_DeeperShadows(t *testing.T) {
 	}
 }
 
-func TestDiscoverSkills_NoSkillsDir(t *testing.T) {
+func TestDiscover_NoSkillsDir(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	markGitRoot(t, root)
 
 	env := execenv.NewLocalExecutionEnvironment(root)
-	skills := skill.DiscoverSkills(env)
+	skills := discoverProjectSkills(t, env)
 
 	if len(skills) != 0 {
 		t.Errorf("expected 0 skills, got %d", len(skills))
 	}
 }
 
-func TestDiscoverSkills_MissingRequiredField(t *testing.T) {
+func TestDiscover_MissingRequiredField(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name    string
@@ -129,7 +158,7 @@ func TestDiscoverSkills_MissingRequiredField(t *testing.T) {
 			writeSkillMD(t, root, "bad", c.content)
 
 			env := execenv.NewLocalExecutionEnvironment(root)
-			skills := skill.DiscoverSkills(env)
+			skills := discoverProjectSkills(t, env)
 
 			if len(skills) != 0 {
 				t.Errorf("expected 0 skills (%s), got %d: %v", c.missing, len(skills), skills)
@@ -138,7 +167,7 @@ func TestDiscoverSkills_MissingRequiredField(t *testing.T) {
 	}
 }
 
-func TestLoadSkillBody_ReturnsBody(t *testing.T) {
+func TestLoad_ReturnsBody(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	markGitRoot(t, root)
@@ -146,14 +175,14 @@ func TestLoadSkillBody_ReturnsBody(t *testing.T) {
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nHello instructions.\n")
 
 	env := execenv.NewLocalExecutionEnvironment(root)
-	skills := skill.DiscoverSkills(env)
+	skills := discoverProjectSkills(t, env)
 
 	s, ok := skills["greet"]
 	if !ok {
 		t.Fatal("expected skill named 'greet'")
 	}
 
-	body, err := skill.LoadSkillBody(s)
+	body, err := loadSkillBody(s)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -162,7 +191,7 @@ func TestLoadSkillBody_ReturnsBody(t *testing.T) {
 	}
 }
 
-func TestDiscoverSkills_AllowedTools(t *testing.T) {
+func TestDiscover_AllowedTools(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	markGitRoot(t, root)
@@ -170,7 +199,7 @@ func TestDiscoverSkills_AllowedTools(t *testing.T) {
 	writeSkillMD(t, root, "deploy", "---\nname: deploy\ndescription: \"Deploy skill\"\nallowed-tools:\n  - shell\n  - read_file\n---\nDeploy instructions.\n")
 
 	env := execenv.NewLocalExecutionEnvironment(root)
-	skills := skill.DiscoverSkills(env)
+	skills := discoverProjectSkills(t, env)
 
 	s, ok := skills["deploy"]
 	if !ok {
@@ -184,7 +213,7 @@ func TestDiscoverSkills_AllowedTools(t *testing.T) {
 	}
 }
 
-func TestDiscoverSkills_ExtraDirs(t *testing.T) {
+func TestDiscover_ExtraDirs(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	markGitRoot(t, root)
@@ -195,7 +224,7 @@ func TestDiscoverSkills_ExtraDirs(t *testing.T) {
 	writeSkillDirect(t, extraDir, "external", "---\nname: external\ndescription: \"External skill\"\n---\nExternal instructions.\n")
 
 	env := execenv.NewLocalExecutionEnvironment(root)
-	skills := skill.DiscoverSkills(env, extraDir)
+	skills := discoverProjectSkills(t, env, extraDir)
 
 	if len(skills) != 1 {
 		t.Fatalf("expected 1 skill, got %d: %v", len(skills), skills)
@@ -205,7 +234,7 @@ func TestDiscoverSkills_ExtraDirs(t *testing.T) {
 	}
 }
 
-func TestDiscoverSkills_ExtraDirShadows(t *testing.T) {
+func TestDiscover_ExtraDirShadows(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	markGitRoot(t, root)
@@ -216,7 +245,7 @@ func TestDiscoverSkills_ExtraDirShadows(t *testing.T) {
 	writeSkillDirect(t, extraDir, "greet", "---\nname: greet\ndescription: \"External greeting\"\n---\nExternal.\n")
 
 	env := execenv.NewLocalExecutionEnvironment(root)
-	skills := skill.DiscoverSkills(env, extraDir)
+	skills := discoverProjectSkills(t, env, extraDir)
 
 	if len(skills) != 1 {
 		t.Fatalf("expected 1 skill, got %d: %v", len(skills), skills)
@@ -227,7 +256,7 @@ func TestDiscoverSkills_ExtraDirShadows(t *testing.T) {
 	}
 }
 
-func TestDiscoverSkills_ExtraDirMissing(t *testing.T) {
+func TestDiscover_ExtraDirMissing(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	markGitRoot(t, root)
@@ -236,7 +265,7 @@ func TestDiscoverSkills_ExtraDirMissing(t *testing.T) {
 
 	env := execenv.NewLocalExecutionEnvironment(root)
 	// Nonexistent extra dir should be silently skipped.
-	skills := skill.DiscoverSkills(env, "/nonexistent/path/that/does/not/exist")
+	skills := discoverProjectSkills(t, env, "/nonexistent/path/that/does/not/exist")
 
 	if len(skills) != 1 {
 		t.Fatalf("expected 1 skill, got %d: %v", len(skills), skills)
@@ -246,7 +275,7 @@ func TestDiscoverSkills_ExtraDirMissing(t *testing.T) {
 	}
 }
 
-func TestDiscoverSkills_MultipleSkills(t *testing.T) {
+func TestDiscover_MultipleSkills(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	markGitRoot(t, root)
@@ -255,7 +284,7 @@ func TestDiscoverSkills_MultipleSkills(t *testing.T) {
 	writeSkillMD(t, root, "deploy", "---\nname: deploy\ndescription: \"Deploy\"\n---\nDeploy.\n")
 
 	env := execenv.NewLocalExecutionEnvironment(root)
-	skills := skill.DiscoverSkills(env)
+	skills := discoverProjectSkills(t, env)
 
 	if len(skills) != 2 {
 		t.Fatalf("expected 2 skills, got %d: %v", len(skills), skills)

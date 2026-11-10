@@ -25,14 +25,6 @@ import (
 // Grouping them is deliberate. The rule is identical for all of them and the
 // oracle is structural (see fuzz/aliascheck), so a clone function added to this
 // package can be listed here in four lines and needs no oracle of its own.
-//
-// NOT listed: cloneActivityRecord. It copies three pointer fields and leaves
-// jobstore.JobRecord.StructuredResult — an `any` that holds a decoded JSON
-// container — shared with the original. jobstore's own cloneEvent deep-copies
-// that same field through cloneJSONValue, so the two disagree about the same
-// data. Whether the activity path needs the deeper copy is a product question
-// about who mutates a projected record, not something to settle by asserting
-// either answer here.
 func FuzzAgentClonesShareNoMutableState(f *testing.F) {
 	f.Add(uint8(0))
 	f.Add(uint8(3))

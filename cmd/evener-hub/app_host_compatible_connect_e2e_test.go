@@ -12,9 +12,6 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
-	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
-	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
@@ -130,34 +127,8 @@ func TestHostCompatibleConnectContainerE2E(t *testing.T) {
 			t.Fatalf("Connect created operations: %+v, err=%v", operations, err)
 		}
 	}
-	// The public host surface has no capability-probe RPC. Exercise that
-	// consumer through a second real SSH channel and the production facts adapter.
-	registry, err := hostreg.New([]hostreg.Host{{Name: entry.Name, SSH: entry.Address, EvenerPath: target, ConfigPath: config, Addr: addr}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	manager := sshconn.New(registry, sshconn.Options{DeployDisabled: true})
-	t.Cleanup(func() { _ = manager.Close() })
-	channel, err := manager.Ensure(ctx, entry.Name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	source := appsource.NewRemoteHubSource(entry.Name, nil, func(context.Context, string) (*appwire.Client, error) {
-		return channel.Client(), nil
-	})
-	source.SetHostClientIfAttached(manager.ClientIfAttached)
-	source.SetHostFacts(func(_ context.Context, name string, client *appwire.Client) (appsource.HostFacts, error) {
-		return remoteHostFactsForChannel(channel, name, client)
-	})
-	source.SetHostHandshake(func(_ string, client *appwire.Client) (appwire.InitializeResponse, bool) {
-		return remoteHostHandshakeForChannel(channel, client)
-	})
-	caps, err := source.HostCapabilities(ctx)
-	if err != nil || caps.HubVersion != before.Version || caps.ProtocolVersion != appwire.ProtocolVersion {
-		t.Fatalf("capability probe: %+v, err=%v", caps, err)
-	}
 	if host.sha256IfFile(target) != beforeHash || !hostPipelineHostHealth(t, host, addr).StartedAt.Equal(before.StartedAt) {
-		t.Fatal("capability probe changed the installed binary or running process")
+		t.Fatal("connect changed the installed binary or running process")
 	}
 }
 

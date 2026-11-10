@@ -1,10 +1,8 @@
 package agent
 
 import (
-	"context"
 	"encoding/json"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
@@ -32,9 +30,7 @@ func TestRestingFailure_SummarizesTheFailedTurnUntilTheNextTurn(t *testing.T) {
 	if got := sess.RestingFailure(); got != nil {
 		t.Fatalf("a session that has not failed rests on %s", failureJSON(t, got))
 	}
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "first", nil); err == nil {
 		t.Fatal("first turn succeeded, want the scripted provider failure")
 	}
@@ -67,9 +63,7 @@ func TestRestingFailure_SurvivesRestore(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	sess := failingThenRecoveringSession(t, dir)
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "first", nil); err == nil {
 		t.Fatal("first turn succeeded, want the scripted provider failure")
 	}
@@ -91,7 +85,7 @@ func TestRestingFailure_NoneForAFailureWithNoDiagnostic(t *testing.T) {
 	sess.mu.Lock()
 	sess.history = append(sess.history, schema.NewTurn(schema.TurnUserInput, llm.User("go")), schema.NewTurn(schema.TurnFailure, llm.System("it broke")))
 	sess.mu.Unlock()
-	if got := sess.RestingWireState(); got != appwire.ThreadStatusSystemError {
+	if got := sess.restingWireState(); got != appwire.ThreadStatusSystemError {
 		t.Fatalf("RestingWireState = %q, want %q", got, appwire.ThreadStatusSystemError)
 	}
 	if got := sess.RestingFailure(); got != nil {

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/events"
@@ -307,6 +308,70 @@ func TestRunResumeWithCreatesFreshPluginSnapshot(t *testing.T) {
 	}
 }
 
+// --export-atif is not part of the saved session config, so the resume-with
+// child's restore must receive it from this invocation or its Close exports
+// nothing (#4672).
+func TestRunResumeWithCarriesInvocationATIFExport(t *testing.T) {
+	installRunScriptedProvider(t, &scriptedProvider{name: "openai"})
+	oldResolve := runResolvePlugins
+	oldRestore := runRestoreSession
+	oldEnsure := runEnsureUserConfigDirs
+	oldAttach := runAttachAPILogger
+	t.Cleanup(func() {
+		runResolvePlugins = oldResolve
+		runRestoreSession = oldRestore
+		runEnsureUserConfigDirs = oldEnsure
+		runAttachAPILogger = oldAttach
+	})
+	runEnsureUserConfigDirs = func() error { return nil }
+	runResolvePlugins = func(context.Context, []string, *[]string) (plugins.LaunchPluginResolution, error) {
+		return plugins.LaunchPluginResolution{}, nil
+	}
+	runAttachAPILogger = func(*llm.Client, string, io.Writer, bool) (func(string) error, func() error, error) {
+		return func(string) error { return nil }, func() error { return nil }, nil
+	}
+	var restoreCfg agent.RestoreSessionConfig
+	stopRestore := errors.New("stop after resume-with restore")
+	runRestoreSession = func(_ *llm.Client, _ *provider.Profile, _ execenv.ExecutionEnvironment, _ schema.SessionMeta, cfg agent.RestoreSessionConfig) (*agent.Session, error) {
+		restoreCfg = cfg
+		return nil, stopRestore
+	}
+
+	const sourceID = "02wMz5Txv1C3Hut0M8GCeB"
+	stateDir := t.TempDir()
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID: sourceID, ProfileID: "openai", Model: "gpt-test",
+	}); err != nil {
+		t.Fatalf("SaveSessionMeta: %v", err)
+	}
+	writer, err := transcript.NewWriter(filepath.Join(stateDir, "sessions", sourceID+".transcript.jsonl"), transcript.Header{
+		SessionID: sourceID, ProfileID: "openai", Model: "gpt-test", WorkingDir: stateDir,
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User("source context"))); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Close writer: %v", err)
+	}
+
+	exportPath := filepath.Join(t.TempDir(), "trajectory.json")
+	err = run(context.Background(), runConfig{
+		resumeWith: sourceID, prompt: "new prompt", workDir: stateDir, stateDir: stateDir,
+		exportATIF: exportPath, exportATIFProviderHandles: "raw-local",
+		noDefaultMarketplaces: true, stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
+	})
+	if !errors.Is(err, stopRestore) {
+		t.Fatalf("run error = %v, want %v", err, stopRestore)
+	}
+	if restoreCfg.ExportATIFPath != exportPath || restoreCfg.ExportATIFProviderHandles != "raw-local" {
+		t.Fatalf("resume-with restore export = %q %q, want %q %q",
+			restoreCfg.ExportATIFPath, restoreCfg.ExportATIFProviderHandles, exportPath, "raw-local")
+	}
+}
+
 func TestRunResumeWithNonLockReservationFailureRemovesChild(t *testing.T) {
 	installRunScriptedProvider(t, &scriptedProvider{name: "openai"})
 	oldAttach := runAttachAPILogger
@@ -538,8 +603,8 @@ func TestRunFastCheapModelValidation(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected unavailable --fast-cheap-model provider error")
 	}
-	if !errors.Is(err, errFastCheapProviderUnavailable) {
-		t.Fatalf("error = %v, want errFastCheapProviderUnavailable", err)
+	if !errors.Is(err, cmdutil.ErrFastCheapProviderUnavailable) {
+		t.Fatalf("error = %v, want cmdutil.ErrFastCheapProviderUnavailable", err)
 	}
 }
 
@@ -1255,6 +1320,65 @@ func TestLaunchChecksForLegacyDataBeforeResolvingPlugins(t *testing.T) {
 	}
 }
 
+// The legacy-data guard points the user at the migrate subcommand. Running it
+// through the evener binary's own dispatch must move each kind of stranded
+// data into the layout the guard accepts, so the next launch proceeds with
+// the data intact.
+func TestEvenerMigrateClearsTheLegacyDataRefusal(t *testing.T) {
+	// Paths are relative to HOME, which holds both XDG roots below.
+	tests := []struct {
+		name, stranded, migrated string
+	}{
+		{name: "XDG config root", stranded: ".config/serf/hub.toml", migrated: ".config/evener/hub.toml"},
+		{name: "XDG state root", stranded: ".local/state/serf/index.db", migrated: ".local/state/evener/index.db"},
+		{name: "legacy home root", stranded: ".serf/auth-token", migrated: ".local/state/evener/auth-token"},
+		{name: "interim home root", stranded: ".evener/launch.toml", migrated: ".config/evener/launch.toml"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+			t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
+			t.Setenv("EVENER_STATE_DIR", "")
+			t.Chdir(t.TempDir())
+			stranded := filepath.Join(home, filepath.FromSlash(tt.stranded))
+			migrated := filepath.Join(home, filepath.FromSlash(tt.migrated))
+			want := []byte("seeded " + tt.stranded)
+			if err := os.MkdirAll(filepath.Dir(stranded), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(stranded, want, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := cmdutil.EnsureUserConfigDirs(); err == nil {
+				t.Fatal("the guard let a launch proceed past unmigrated data")
+			}
+
+			var stdout, stderr bytes.Buffer
+			handled, _, err := dispatchCLICommand([]string{"migrate"}, strings.NewReader(""), &stdout, &stderr)
+			if !handled || err != nil {
+				t.Fatalf("evener migrate: handled=%v err=%v\nstdout: %s\nstderr: %s", handled, err, stdout.String(), stderr.String())
+			}
+
+			if err := cmdutil.EnsureUserConfigDirs(); err != nil {
+				t.Fatalf("the guard still refuses after evener migrate: %v", err)
+			}
+			if _, err := os.Stat(stranded); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("stranded data is still at %s: stat err = %v", stranded, err)
+			}
+			got, err := os.ReadFile(migrated)
+			if err != nil {
+				t.Fatalf("migrated data is not at %s: %v", migrated, err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Errorf("migrated data at %s = %q, want %q", migrated, got, want)
+			}
+		})
+	}
+}
+
 // Provisioning takes the session scratch and the flock lease under it, and
 // nothing releases either until a session owns the environment and its Close
 // does. A launch that ends before that hand-off owes them itself: a fresh
@@ -1569,3 +1693,16 @@ var (
 	errNoSessionToday                 = errors.New("no session today")
 	errRestoreFailedAfterProvisioning = errors.New("restore failed after the sandbox was provisioned")
 )
+
+func TestDrainEventsHumanToolArgsKeepRunesWhole(t *testing.T) {
+	evs := []events.SessionEvent{{Kind: events.EventToolCallStart, SessionID: "s", Data: events.ToolCallStartData{
+		ToolName:      "write_file",
+		CallID:        "c1",
+		ArgumentsJSON: strings.Repeat("世", 100),
+	}}}
+	var buf bytes.Buffer
+	<-drainEventsHuman(feedEvents(evs), &buf)
+	if !utf8.ValidString(buf.String()) {
+		t.Fatalf("tool args split a rune: %q", buf.String())
+	}
+}

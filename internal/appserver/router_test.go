@@ -3,6 +3,8 @@ package appserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"slices"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -61,5 +63,62 @@ func TestRouterAdmissionNilReleaseStillDispatches(t *testing.T) {
 	}
 	if _, ok := out.(appwire.ThreadListResponse); !ok {
 		t.Fatalf("response type=%T", out)
+	}
+}
+
+func TestRouterMethodsListsRegisteredHandlers(t *testing.T) {
+	if methods := NewRouter().Methods(); len(methods) != 0 {
+		t.Fatalf("Methods on an empty router = %v, want none", methods)
+	}
+	router := NewRouter()
+	HandleTyped(router, appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+		return appwire.ThreadListResponse{}, nil
+	})
+	HandleTyped(router, appwire.MethodInitialize, func(_ context.Context, _ appwire.InitializeParams) (appwire.InitializeResponse, error) {
+		return appwire.InitializeResponse{}, nil
+	})
+	methods := router.Methods()
+	slices.Sort(methods)
+	want := []string{appwire.MethodInitialize, appwire.MethodThreadList}
+	slices.Sort(want)
+	if !slices.Equal(methods, want) {
+		t.Fatalf("Methods = %v, want %v", methods, want)
+	}
+}
+
+func TestRouterDispatchMethodNotFound(t *testing.T) {
+	router := NewRouter()
+	_, err := router.Dispatch(context.Background(), appwire.Request{
+		ID:     appwire.NewIntID(1),
+		Method: "nonexistent/method",
+	})
+	if wire, ok := errors.AsType[appwire.WireError](err); !ok || wire.Code != appwire.CodeMethodNotFound {
+		t.Fatalf("Dispatch of an unknown method err = %v, want a method-not-found wire error", err)
+	}
+}
+
+// A handler with nothing to return still answers: Dispatch turns its nil
+// result into an empty response.
+func TestRouterDispatchNilResponse(t *testing.T) {
+	router := NewRouter()
+	router.Handle("test/null", func(_ context.Context, _ json.RawMessage) (any, error) {
+		return nil, nil
+	})
+	resp, err := router.Dispatch(context.Background(), appwire.Request{
+		ID:     appwire.NewIntID(1),
+		Method: "test/null",
+	})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if _, ok := resp.(appwire.EmptyResponse); !ok {
+		t.Fatalf("response type = %T, want EmptyResponse", resp)
+	}
+}
+
+func TestWireErrorWithGenericError(t *testing.T) {
+	result := WireError(errors.New("something went wrong"))
+	if result.Code != appwire.CodeInternalError {
+		t.Fatalf("WireError code = %d, want %d", result.Code, appwire.CodeInternalError)
 	}
 }

@@ -18,6 +18,17 @@ export interface AgentsDocSetParams {
   content: string;
 }
 
+export interface AnswerContinuationQuery {
+  ancestorTurnId: string;
+  candidateTurnId: string;
+}
+
+export interface AnswerContinuationVerdict {
+  ancestorTurnId: string;
+  candidateTurnId: string;
+  matches: boolean;
+}
+
 export interface ApiKeyConditionalSetParams {
   provider: string;
   value: string;
@@ -71,6 +82,11 @@ export interface ArchiveParams {
 export interface ArchiveResponse {
   ok: boolean;
   navigation: NavigationMutation;
+  /**
+   * NavigationDeferred reports that the archive decision is durable but its
+   * receipt was deferred; do not retry the decision as failed.
+   */
+  navigationDeferred?: boolean;
 }
 
 export interface ArchivedListParams {
@@ -107,6 +123,12 @@ export interface ArchivedListResponse {
 }
 
 export interface AttentionChanged {
+  ref?: string;
+  /**
+   * RosterInstanceID identifies the session occupying Ref in roster updates.
+   * Clear changes it without changing the workspace ref or threadId.
+   */
+  rosterInstanceId?: string;
   threadId: string;
   title: string;
   project: string;
@@ -126,6 +148,17 @@ export interface AttentionChanged {
    * older hub omits it, decoding as false.
    */
   needsResponse?: boolean;
+  pendingQuestion?: PendingQuestion;
+  askBootGeneration?: string;
+  askRevision?: number;
+  compositeList?: PendingAskCall[];
+  compositeTotal?: number;
+  calllessCount?: number;
+  askPageable?: boolean;
+  /**
+   * PublishedAt is the derivation moment, in Unix milliseconds.
+   */
+  publishedAt?: number;
   prevLevel: string;
 }
 
@@ -258,6 +291,7 @@ export interface AuthLoginCompleteParams {
 
 export interface AuthLoginCompleteResponse {
   status: AuthStatusResponse;
+  restart?: boolean;
 }
 
 export interface AuthLoginStartParams {
@@ -319,7 +353,7 @@ export interface AuthStatusResponse {
   /**
    * ShadowedEnvVar names an environment variable that is set but loses to
    * a higher-precedence credential (api_key, credential_headers, or
-   * store, spec §10); empty when no such variable is set, including when
+   * store); empty when no such variable is set, including when
    * an env source is itself what resolves.
    */
   shadowedEnvVar?: string;
@@ -331,7 +365,7 @@ export interface AuthStatusResponse {
   needsLogin?: boolean;
   /**
    * RefreshRejected is true when the issuer permanently refused this
-   * instance's stored refresh token (authopenai.RefreshRejected, #2479):
+   * instance's stored refresh token (authopenai.RefreshRejected):
    * the access token may still be valid, but the session needs a fresh
    * sign-in before its next refresh. It is why NeedsLogin can be true for a
    * record whose access token has not expired, so a client must not read
@@ -379,8 +413,15 @@ export interface AuthTestResponse {
 }
 
 export interface Capabilities {
+  sessionTools?: boolean;
   experimentalApi: boolean;
   optOutNotificationMethods?: string[];
+}
+
+export interface Causal {
+  watch_keys?: WatchKey[];
+  chain?: Entry[];
+  chain_truncated?: boolean;
 }
 
 export interface ClientInfo {
@@ -403,6 +444,39 @@ export interface CommandDescriptor {
 
 export interface CommandListResponse {
   commands: CommandDescriptor[];
+}
+
+export interface ConversationFrontier {
+  id: string;
+  baseId?: string;
+  addedInputs?: string[];
+  removedInputs?: string[];
+}
+
+export interface ConversationOutputProvenance {
+  version: number;
+  instanceId: string;
+  runGeneration: number;
+  requestId: string;
+  frontierId: string;
+  sourceItemId: string;
+}
+
+export interface ConversationProvenanceChangedParams {
+  threadId: string;
+  ref: string;
+  provenance: ConversationProvenanceState | null;
+}
+
+export interface ConversationProvenanceState {
+  version: number;
+  authoritative: boolean;
+  revision: number;
+  instanceId: string;
+  admittedInputs: string[];
+  retiredInputs: string[];
+  consumedFrontierId?: string;
+  frontiers: ConversationFrontier[];
 }
 
 export interface DaemonBlocker {
@@ -558,9 +632,29 @@ export interface EmptyParams {
 export interface EmptyResponse {
 }
 
+export interface Entry {
+  kind: string;
+  watch_id?: string;
+  watch_generation?: string;
+  delivery_id?: string;
+  session_id?: string;
+  job_id?: string;
+}
+
 export interface EvenerAuthUpdatedParams {
   provider?: string;
   activeSource?: string;
+  /**
+   * Reason names a broadcast that did not change credentials or provider
+   * configuration. The only value today is "models_changed": a background
+   * launch-model refresh produced a different list than a picker was served,
+   * so clients re-read their model catalog. It is catalog-only: no credential,
+   * instance or destination changed. Every credential write and
+   * provider-instance CRUD broadcast leaves it empty, and consumers must treat
+   * those empty-reason broadcasts as changes even when they carry no other
+   * payload.
+   */
+  reason?: string;
   /**
    * OriginClientId is the echoed OriginClientId of the mutation that caused
    * this broadcast - an auth write or a provider-instance CRUD change - the
@@ -799,6 +893,14 @@ export interface EvenerSubagentPreviewResponse {
 }
 
 export interface EvenerThread {
+  conversationProvenance?: ConversationProvenanceState;
+  pendingAsk?: PendingAskState;
+  /**
+   * Manager is the session's start-time Manager property, reported by the
+   * session itself. It is not a runtime setting: nothing can turn it on or
+   * off after the session starts.
+   */
+  manager?: boolean;
   /**
    * ResumeRequired means recovery stopped this session and automatic actions
    * must wait for an explicit thread/resume. Saved transcripts remain readable.
@@ -820,6 +922,12 @@ export interface EvenerThread {
   instanceId?: string;
   parentRef?: string;
   kind?: string;
+  /**
+   * ForkLabel names the snapshotted original of an edited message. A remote
+   * projection needs it to nest that original beneath the continuation that
+   * superseded it; the label is also the tree row's display suffix.
+   */
+  forkLabel?: string;
   profile?: string;
   /**
    * TurnCount is the daemon's total completed model-response count. It stays
@@ -827,6 +935,9 @@ export interface EvenerThread {
    */
   turnCount?: number;
   activeTurnId?: string;
+  quietForMs?: number;
+  probeState?: ThreadProbeState;
+  crashed?: boolean;
   contextPressure?: number;
   contextUsed?: number;
   contextWindow?: number;
@@ -836,7 +947,7 @@ export interface EvenerThread {
   diagnostics?: EvenerDiagnostics;
   /**
    * Queue carries authoritative queue depth + preview for the per-session
-   * input queue (kata r80p). Both UIs derive their queue-preview chrome
+   * input queue. Both UIs derive their queue-preview chrome
    * from this field rather than mirroring queue mutations locally, which
    * fixes multi-client incoherence and post-reload state. The empty zero
    * value (Depth==0, Preview==nil) means "no queued messages".
@@ -890,6 +1001,17 @@ export interface EvenerThread {
    * against it rather than guessing whether the hub can open it.
    */
   artifactsDir?: string;
+  /**
+   * ScratchDir is the session's named scratch directory on the hub that
+   * serves it, empty when no local path names one (a remote thread, an
+   * unknown ref, a session with no scratch directory on disk). Tools write
+   * screenshots and other session-local output there and name those files by
+   * absolute path in messages and tool results; the transcript turns such a
+   * path into a document-pane request, and this is the directory the hub's
+   * doc route serves that request out of. Clients compare an absolute path
+   * against it rather than guessing whether the hub can open it.
+   */
+  scratchDir?: string;
   /**
    * Usage, WorkMillis, and ActiveTurnStartedAt are the daemon's live
    * working-state/token metrics (WS2), served from the daemon's materialized
@@ -960,6 +1082,13 @@ export interface EvenerThread {
    * decoding as false.
    */
   askPending?: boolean;
+  /**
+   * AttentionLevel and AttentionAsOf are the Manager roster's derived level
+   * and its Unix-millisecond observation moment. Discovery alone populates
+   * them, and rows outside the live top-level roster leave them absent.
+   */
+  attentionLevel?: string;
+  attentionAsOf?: number;
   /**
    * PendingQuestion is the first question of the session's pending ask and
    * how many the ask holds (S1b). The daemon reads both from one sample of
@@ -1131,6 +1260,16 @@ export interface FavoriteSetResponse {
 }
 
 export interface FeatureSet {
+  voicePresentationContextV1?: boolean;
+  /**
+   * VoiceArmV1 marks a hub that stamps ThreadCapabilities.VoiceArm, its
+   * per-session answer to whether the iPhone may offer voice now. A client
+   * reads the thread bit only when this feature is present.
+   */
+  voiceArmV1?: boolean;
+  conversationProvenance?: boolean;
+  voice?: boolean;
+  sessionTools?: boolean;
   threadList: boolean;
   threadTurnsList: boolean;
   turnStart: boolean;
@@ -1275,7 +1414,7 @@ export interface HostDeployParams {
 export interface HostDeployResponse {
   id: string;
   clientOperationId: string;
-  state: string;
+  state: OperationState;
 }
 
 export interface HostEntry {
@@ -1342,7 +1481,7 @@ export interface HostNotificationParams {
 export interface HostOperationsParams {
   name?: string;
   operationId?: string;
-  state?: string;
+  state?: OperationState;
   generation?: number;
   incarnationId?: string;
   id?: string;
@@ -1428,7 +1567,7 @@ export interface HostRestartParams {
 export interface HostRestartResponse {
   id: string;
   clientOperationId: string;
-  state: string;
+  state: OperationState;
 }
 
 export interface HostRow {
@@ -1614,6 +1753,16 @@ export interface HubNotice {
   affectedSessions?: number;
 }
 
+export interface HubRestartParams {
+}
+
+export interface HubRestartResponse {
+  restarting: boolean;
+  incarnation: string;
+  currentVersion: string;
+  targetVersion: string;
+}
+
 export interface InitializeParams {
   protocolVersion: string;
   clientInfo: ClientInfo;
@@ -1638,6 +1787,7 @@ export interface InputItem {
   name?: string;
   path?: string;
   metadata?: Record<string, string>;
+  voicePresentation?: VoicePresentationContext;
 }
 
 export interface InputMention {
@@ -1755,7 +1905,7 @@ export interface InstanceEntry {
   /**
    * ShadowedEnvVar names an environment variable that is set but loses to
    * a higher-precedence credential (api_key, credential_headers, or
-   * store, spec §10); empty when no such variable is set, including when
+   * store); empty when no such variable is set, including when
    * an env source is itself what resolves.
    */
   shadowedEnvVar?: string;
@@ -1903,6 +2053,12 @@ export interface JobActivityDelegate {
   error?: string;
   terminal?: boolean;
   resumable?: boolean;
+  /**
+   * NeedsAttention means the delegate has delivered input it has not consumed
+   * yet, such as a question, a descendant report or a job completion. The
+   * delegate processes it autonomously; it is not by itself a human question.
+   */
+  needsAttention?: boolean;
   notResumableReason?: string;
   mandate?: string;
   task?: string;
@@ -2060,7 +2216,7 @@ export interface KeybindingsOverrides {
    * Rules then carries the shipped-default fallback (what is actually in
    * effect) while the diagnostic tells the client to keep editing read-only
    * - PATCH rejects in this state, so a client that treated the fallback as
-   * writable would fail every save (roborev PR #884 round 6). Absent from
+   * writable would fail every save. Absent from
    * broadcasts and patch responses, which only exist post-load.
    */
   loadError?: string;
@@ -2097,12 +2253,14 @@ export interface LaunchConfigLayer {
   openAIResponsesContinuation?: string;
   providerIdleTimeout?: string;
   sandbox?: string;
+  commitProvenance?: string;
   sandboxNet?: boolean;
   maxRounds?: number;
   maxSubagentDepth?: number;
   maxConcurrentDelegateTurns?: number;
   maxRetainedTerminal?: number;
   nonInteractive?: boolean;
+  memoryEnabled?: boolean;
   appReplaySize?: number;
   skillsDirs?: string[];
   pluginDirs?: string[];
@@ -2193,6 +2351,12 @@ export interface MCPServerSpec {
   args?: string[];
 }
 
+export interface ManagerView {
+  ref: string;
+  instanceId: string;
+  manager?: boolean;
+}
+
 export interface MarketplaceAddParams {
   name?: string;
   source: MarketplaceSourceInput;
@@ -2280,6 +2444,13 @@ export interface ModelDescriptor {
    * row the resolver itself warns about.
    */
   warnings?: string[];
+  /**
+   * InstanceDefault marks the row as its instance's configured default in
+   * the instance's own usable current listing. It is not the global default
+   * and not proof of generation access; an absent marker authorizes no
+   * automatic selection.
+   */
+  instanceDefault?: boolean;
 }
 
 export interface ModelListDiagnostic {
@@ -2314,6 +2485,7 @@ export interface ModelListResponse {
 }
 
 export interface MutationReceipt {
+  actor?: SessionActor;
   clientMutationId: string;
   disposition: string;
   threadId: string;
@@ -2327,7 +2499,7 @@ export interface MutationReceipt {
    * queued entries into itself). It rides the durable mutation result, so
    * a replayed disposition carries the same ids the first execution did —
    * unlike queueChanged's own copy of this fact, a replay needs no live
-   * push to settle those records (issue #1704). Absent on every receipt
+   * push to settle those records. Absent on every receipt
    * that is not a drain's.
    */
   consumedClientMutationIds?: string[];
@@ -2371,6 +2543,7 @@ export interface NavigationFailure {
   cause_kind?: string;
   provider?: string;
   status?: number;
+  resumes_at?: string;
 }
 
 export interface NavigationInvalidatedPayload {
@@ -2637,11 +2810,17 @@ export interface NavigationSessionSummary {
    * appwire.SearchResult.Archived reports for a live hit). It sits BESIDE Live
    * rather than replacing it: a session archived while it is still running
    * stays reachable through a pin, and this flag lets a client suppress the
-   * row's unread dot for it (#4199). Absent when it is not, and from an
+   * row's unread dot for it. Absent when it is not, and from an
    * older hub.
    */
   archived?: boolean;
   updated_at?: string;
+  /**
+   * CreatedAt is when the session started. A project's rows are ordered by
+   * it, newest first, so a client that joins the Current and Recent tiers
+   * can keep that order across the tier boundary.
+   */
+  created_at?: string;
   more_subagents?: number;
   /**
    * Subagents is a live root's whole-tree subagent tally, counted by its
@@ -2743,6 +2922,11 @@ export interface NoticesListResponse {
   notices: HubNotice[];
 }
 
+export interface Notification {
+  method: string;
+  params?: unknown;
+}
+
 export interface OperationProgressEntry {
   ts: string;
   message: string;
@@ -2755,7 +2939,7 @@ export interface OperationRecord {
   generation: number;
   incarnationId: string;
   kind: string;
-  state: string;
+  state: OperationState;
   progress?: OperationProgressEntry[];
   result?: OperationResult;
   createdAt: string;
@@ -2844,7 +3028,31 @@ export interface PathsCompleteResponse {
   data: string[];
 }
 
+export interface PendingAskCall {
+  turnId: string;
+  callId: string;
+}
+
+export interface PendingAskPage {
+  composites: PendingAskCall[];
+  total: number;
+  nextOffset?: number;
+  calllessCount: number;
+}
+
+export interface PendingAskState {
+  version: number;
+  instanceId: string;
+  revision: number;
+  calls: PendingAskCall[];
+  bootGeneration?: string;
+  calllessCount?: number;
+  compositeTotal?: number;
+  callsTruncated?: boolean;
+}
+
 export interface PendingMutation {
+  actor?: SessionActor;
   clientMutationId: string;
   method: string;
   input?: InputItem[];
@@ -2858,6 +3066,17 @@ export interface PendingQuestion {
   question: string;
   options?: string[];
   count: number;
+  /**
+   * The displayed question's composite identity is absent for call-less asks.
+   */
+  turnId?: string;
+  callId?: string;
+  /**
+   * Live append computes these flags from the full ask. Restore cannot
+   * reconstruct that evidence, so unknown stays absent rather than false.
+   */
+  complete?: boolean;
+  truncated?: boolean;
 }
 
 export interface PinSection {
@@ -2894,6 +3113,37 @@ export interface PluginCheckNowResponse {
   errors?: string[];
 }
 
+export interface PluginComponents {
+  skills?: string[];
+  agents?: string[];
+  commands?: string[];
+  hooks?: PluginHookEvent[];
+  mcpServers?: string[];
+  warnings?: string[];
+}
+
+export interface PluginComponentsParams {
+  targets: PluginComponentsTarget[];
+}
+
+export interface PluginComponentsResponse {
+  results: PluginComponentsResult[];
+}
+
+export interface PluginComponentsResult {
+  plugin?: string;
+  marketplace?: string;
+  path?: string;
+  components?: PluginComponents;
+  error?: string;
+}
+
+export interface PluginComponentsTarget {
+  plugin?: string;
+  marketplace?: string;
+  path?: string;
+}
+
 export interface PluginDiagnostic {
   name?: string;
   path?: string;
@@ -2922,6 +3172,11 @@ export interface PluginEntry {
    * it is true.
    */
   updateAvailable?: boolean;
+}
+
+export interface PluginHookEvent {
+  event: string;
+  count: number;
 }
 
 export interface PluginLaunchCandidate {
@@ -3103,6 +3358,46 @@ export interface RepoLaunchConfigStatus {
   preview?: string;
 }
 
+export interface RosterEvent {
+  ref?: string;
+  /**
+   * RosterInstanceID identifies the session occupying Ref in roster updates.
+   * Clear changes it without changing the workspace ref or threadId.
+   */
+  rosterInstanceId?: string;
+  threadId: string;
+  title: string;
+  project: string;
+  level: string;
+  askPending?: boolean;
+  /**
+   * ApprovalPending is true while the session is blocked on a sandbox
+   * escalation a human must allow or deny (M7). It is why an
+   * escalation-promoted session's Level is needs_you; AskPending is the
+   * question's equivalent.
+   */
+  approvalPending?: boolean;
+  /**
+   * NeedsResponse is true while the session rests awaiting with no pending
+   * question: its turn ended with end_reason needs_response, asking for a
+   * reply. A plain reply rests idle and never carries it. Additive: an
+   * older hub omits it, decoding as false.
+   */
+  needsResponse?: boolean;
+  pendingQuestion?: PendingQuestion;
+  askBootGeneration?: string;
+  askRevision?: number;
+  compositeList?: PendingAskCall[];
+  compositeTotal?: number;
+  calllessCount?: number;
+  askPageable?: boolean;
+  /**
+   * PublishedAt is the derivation moment, in Unix milliseconds.
+   */
+  publishedAt?: number;
+  kind: string;
+}
+
 export interface SandboxEscalationRequested {
   /**
    * ThreadID/Ref identify the SESSION this escalation belongs to, so a client can
@@ -3123,6 +3418,7 @@ export interface SandboxEscalationRequested {
 }
 
 export interface SandboxEscalationResolveParams {
+  managerProof?: SessionActorProof;
   threadId?: string;
   ref?: string;
   escalationId: string;
@@ -3301,6 +3597,7 @@ export interface SessionActivityAncestor {
   ref: string;
   sessionId: string;
   delegateId?: string;
+  delegateName?: string;
   title: string;
 }
 
@@ -3317,6 +3614,7 @@ export interface SessionActivityContext {
   rootRef: string;
   parentRef?: string;
   delegateId?: string;
+  delegateName?: string;
   ancestors: SessionActivityAncestor[];
   /**
    * AncestryKnown distinguishes proven root/lineage from bounded retained index progress.
@@ -3367,6 +3665,21 @@ export interface SessionActivityReadParams {
   scope?: SessionActivityScope;
 }
 
+export interface SessionActivityRequest {
+  ref: string;
+  resource: SessionActivityResource;
+  scope?: SessionActivityScope;
+  cursor?: string;
+  limit?: number;
+}
+
+export interface SessionActivityResponse {
+  summary?: SessionActivitySummary;
+  delegates?: SessionDelegatesResponse;
+  jobs?: SessionJobsResponse;
+  watches?: SessionWatchesResponse;
+}
+
 export interface SessionActivitySummary {
   /**
    * Issues identify unavailable physical sources; healthy counts retain authority.
@@ -3388,6 +3701,67 @@ export interface SessionActivitySummary {
   delegates: SessionActivityCounts;
   jobs: SessionActivityCounts;
   watches: SessionActivityCounts;
+}
+
+export interface SessionActor {
+  kind: string;
+  managerRef?: string;
+}
+
+export interface SessionActorProof {
+  bindingId: string;
+  callerRef: string;
+  actor: SessionActor;
+}
+
+export interface SessionBinding {
+  ref: string;
+  instanceId: string;
+  hubId: string;
+  bindingId: string;
+}
+
+export interface SessionControlRequest {
+  action: string;
+  approval?: SandboxEscalationResolveParams;
+  resume?: ThreadResumeParams;
+  fork?: ThreadForkParams;
+  clear?: ThreadClearParams;
+  model?: ThreadModelSetParams;
+  vision_model?: ThreadVisionModelSetParams;
+  reasoning_effort?: ThreadReasoningEffortSetParams;
+  compact?: ThreadCompactStartParams;
+  drain_queue?: TurnDrainAsSteerParams;
+  promote_queued?: TurnPromoteQueuedAsSteerParams;
+  cancel_queued?: TurnCancelQueuedParams;
+  rename?: ThreadNameSetParams;
+  goal?: GoalSetParams;
+  human_notes?: NotesHumanSetParams;
+  remove_url?: UrlsRemoveParams;
+  archive?: ArchiveParams;
+  delete?: SessionDeleteParams;
+  pin?: SessionPinAssignParams;
+  unpin?: SessionPinUnpinParams;
+  seen?: SessionSeenSetParams;
+}
+
+export interface SessionControlResponse {
+  result: EmptyResponse;
+  actor: SessionActor;
+  resume?: ThreadResumeResponse;
+  fork?: ThreadForkResponse;
+  clear?: ThreadClearResponse;
+  drain_queue?: TurnDrainAsSteerResponse;
+  promote_queued?: TurnPromoteQueuedAsSteerResponse;
+  cancel_queued?: TurnCancelQueuedResponse;
+  goal?: GoalSetResponse;
+  human_notes?: NotesHumanSetResponse;
+  remove_url?: UrlsRemoveResponse;
+  archive?: ArchiveResponse;
+  delete?: SessionDeleteResponse;
+  pin?: SessionPinAssignResponse;
+  unpin?: SessionPinUnpinResponse;
+  seen?: SessionSeenSetResponse;
 }
 
 export interface SessionDelegate {
@@ -3428,6 +3802,12 @@ export interface SessionDelegate {
   error?: string;
   terminal: boolean;
   resumable: boolean;
+  /**
+   * NeedsAttention means the delegate has delivered input it has not consumed
+   * yet, such as a question, a descendant report or a job completion. The
+   * delegate processes it autonomously; it is not by itself a human question.
+   */
+  needsAttention?: boolean;
   notResumableReason?: string;
   model?: string;
   reasoningEffort?: string;
@@ -3463,6 +3843,12 @@ export interface SessionDeleteResponse {
   navigation: NavigationMutation;
 }
 
+export interface SessionDiscovery {
+  threads: ThreadListResponse;
+  sources: SessionSource[];
+  builtAt: number;
+}
+
 export interface SessionDocumentParams {
   sessionId: string;
   path: string;
@@ -3488,11 +3874,80 @@ export interface SessionImageResponse {
   data: string;
 }
 
+export interface SessionJobStopParams {
+  ref: string;
+  jobId: string;
+  includeChildren?: boolean;
+  maxWaitMs?: number;
+}
+
+export interface SessionJobStopResponse {
+  jobId: string;
+  status: string;
+  outcome: string;
+}
+
 export interface SessionJobsResponse {
   context: SessionActivityContext;
   scope: SessionActivityScope;
   page: SessionActivityPage;
   jobs: JobActivityJob[];
+}
+
+export interface SessionObservationMetadata {
+  ref: string;
+  instanceId?: string;
+  generationId?: string;
+  turnId?: string;
+  answerToTurnIds?: string[];
+  entryId?: string;
+  endTurn?: boolean;
+  endReason?: string;
+  terminalAccepted?: boolean;
+  causalKnown: boolean;
+  causal?: Causal;
+}
+
+export interface SessionOperationRequest {
+  discover?: ThreadListParams;
+  read?: ThreadReadParams;
+  turns?: ThreadTurnsListParams;
+  activity?: SessionActivityRequest;
+  tasks?: SessionTasksRequest;
+  job?: JobsGetParams;
+  jobOutput?: JobsOutputParams;
+  models?: ModelListParams;
+  create?: ThreadStartParams;
+  start?: TurnStartParams;
+  queue?: TurnQueueParams;
+  steer?: TurnSteerParams;
+  control?: SessionControlRequest;
+  stop?: SessionStopRequest;
+}
+
+export interface SessionOperationResponse {
+  actor: SessionActor;
+  discover?: SessionDiscovery;
+  read?: ThreadReadResponse;
+  turns?: ThreadTurnsListResponse;
+  activity?: SessionActivityResponse;
+  tasks?: SessionTasksResponse;
+  job?: JobsGetResponse;
+  jobOutput?: JobsOutputResponse;
+  models?: ModelListResponse;
+  create?: ThreadStartResponse;
+  start?: TurnStartResponse;
+  queue?: TurnQueueResponse;
+  steer?: TurnSteerResponse;
+  control?: SessionControlResponse;
+  stop?: SessionStopResponse;
+  followUps?: SessionStatusFollowUp[];
+}
+
+export interface SessionOwnedDelegateStopParams {
+  ref: string;
+  delegateId: string;
+  maxWaitMs?: number;
 }
 
 export interface SessionPinAssignParams {
@@ -3528,6 +3983,32 @@ export interface SessionPinUnpinResponse {
   navigation: NavigationMutation;
 }
 
+export interface SessionRosterUpdate {
+  revision: number;
+  initial?: boolean;
+  resync?: boolean;
+  events?: RosterEvent[];
+}
+
+export interface SessionRuntimeCancel {
+  bindingId: string;
+  requestId: number;
+}
+
+export interface SessionRuntimeObservation {
+  bindingId: string;
+  watchId: string;
+  update?: SessionWatchUpdate;
+  ended?: boolean;
+}
+
+export interface SessionRuntimeRequest {
+  bindingId: string;
+  operation?: SessionOperationRequest;
+  watch?: SessionWatchRequest;
+  watchId?: string;
+}
+
 export interface SessionSeenMark {
   ref: string;
   seenThrough?: number;
@@ -3542,6 +4023,80 @@ export interface SessionSeenSetResponse {
   ok: boolean;
   changed: boolean;
   navigation: NavigationMutation;
+}
+
+export interface SessionSource {
+  id: string;
+  state: SessionSourceState;
+}
+
+export interface SessionStatusArguments {
+  hub: SessionStatusTarget;
+}
+
+export interface SessionStatusFollowUp {
+  tool: string;
+  arguments: SessionStatusArguments;
+}
+
+export interface SessionStatusTarget {
+  ref: string;
+  mode?: string;
+  resource?: SessionActivityResource;
+  scope?: SessionActivityScope;
+  cursor?: string;
+  limit?: number;
+  itemLimit?: number;
+  offset?: number;
+  snapshot?: string;
+  jobId?: string;
+  beforeBytes?: number;
+  maxBytes?: number;
+}
+
+export interface SessionStopRequest {
+  mode: string;
+  interrupt?: TurnInterruptParams;
+  delegate?: DelegateStopParams;
+  owned_delegate?: SessionOwnedDelegateStopParams;
+  job?: SessionJobStopParams;
+  shutdown?: ThreadShutdownParams;
+  force_stop?: ThreadForceStopParams;
+}
+
+export interface SessionStopResponse {
+  actor: SessionActor;
+  interrupt?: TurnInterruptResponse;
+  delegate?: DelegateStopResponse;
+  job?: SessionJobStopResponse;
+  result: EmptyResponse;
+}
+
+export interface SessionTasksRequest {
+  ref: string;
+  offset?: number;
+  limit?: number;
+  snapshot?: string;
+}
+
+export interface SessionTasksResponse {
+  data: Task[] | null;
+  snapshot?: string;
+  nextOffset?: number;
+}
+
+export interface SessionToolsInput {
+  callerRef: string;
+  method: string;
+  params: unknown;
+}
+
+export interface SessionToolsPeerParams {
+  hubId: string;
+}
+
+export interface SessionToolsPeerResponse {
+  hubId: string;
 }
 
 export interface SessionURL {
@@ -3561,6 +4116,21 @@ export interface SessionWatch {
   receiverRef: string;
   state: SessionWatchState;
   watch: EvenerWatchInfo;
+}
+
+export interface SessionWatchRequest {
+  ref?: string;
+  scope?: string;
+  events?: string[];
+  completion?: boolean;
+}
+
+export interface SessionWatchUpdate {
+  snapshot?: ThreadReadResponse;
+  roster?: SessionRosterUpdate;
+  notification?: Notification;
+  event?: string;
+  metadata: SessionObservationMetadata;
 }
 
 export interface SessionWatchesResponse {
@@ -3608,9 +4178,8 @@ export interface SettingsHubOverview {
   runDir?: string;
   /**
    * SpawnTimeout is how long the hub waits for a daemon to report ready after
-   * spawn. Source: web_settings.go settingsData.SpawnTimeout — today a
-   * hardcoded "30s" literal, not derived from live spawner config (there is
-   * no configurable spawn timeout yet).
+   * spawn, rendered as a Go duration string. Source: cfg.SpawnTimeout
+   * (hub.toml spawn_timeout).
    */
   spawnTimeout?: string;
   /**
@@ -3725,7 +4294,7 @@ export interface Task {
   type: string;
   description: string;
   prompt: string;
-  status: string;
+  status: TaskStatus;
   /**
    * DependsOn lists IDs of tasks that must complete before this one is ready.
    */
@@ -3736,7 +4305,8 @@ export interface Task {
   notes?: string[];
   /**
    * ReasoningEffort overrides the reasoning effort for a subagent that runs
-   * this task (low|medium|high); empty uses the session default.
+   * this task (minimal|low|medium|high|xhigh|max|none); empty uses the
+   * session default.
    */
   reasoning_effort?: string;
   /**
@@ -3852,6 +4422,11 @@ export interface ThreadActivity {
 }
 
 export interface ThreadCapabilities {
+  /**
+   * AskFence supports pair-fenced answers and paged pending-ask reads.
+   */
+  askFence?: boolean;
+  voicePresentationContextV1?: boolean;
   send: boolean;
   steer: boolean;
   interrupt: boolean;
@@ -3866,7 +4441,7 @@ export interface ThreadCapabilities {
    */
   changeVisionModel: boolean;
   /**
-   * Queue advertises harness support for turn/queue (kata 111a, #1375): true
+   * Queue advertises harness support for turn/queue: true
    * when the daemon wires a queue seam and the thread is not closed, not when
    * a turn happens to be in flight. The client applies the status, so
    * turn/queue is still meaningful only mid-turn.
@@ -3922,10 +4497,20 @@ export interface ThreadCapabilities {
    * before position, with or without a cursor: a client that trimmed rows
    * from the top of its window can page them back. The hub answers for its
    * own local and saved threads. A thread on another host stays masked until
-   * the hub can join such a page to its remote paging window (#3176); an
+   * the hub can join such a page to its remote paging window; an
    * older hub never sends it.
    */
   pageBefore?: boolean;
+  /**
+   * VoiceArm advertises that the iPhone may offer voice for this session now:
+   * it is a live manager whose conversation provenance is authoritative for
+   * this instance, and this hub has an OpenAI voice instance with a
+   * credential. The hub owns the bit, so it refreshes with every read instead
+   * of a client-side preflight. FeatureSet.VoiceArmV1 marks a hub that
+   * stamps it; a client talking to a hub without that feature keeps the
+   * earlier behavior.
+   */
+  voiceArm?: boolean;
 }
 
 export interface ThreadClearParams {
@@ -3953,6 +4538,7 @@ export interface ThreadCompactStartParams {
 export interface ThreadFailure {
   title?: string;
   cause?: DiagnosticCause;
+  resumesAt?: number;
 }
 
 export interface ThreadForceStopParams {
@@ -3998,8 +4584,8 @@ export interface ThreadForkParams {
    * NOT read as one for this: send ThreadItem.TranscriptKey, never Turn.ID;
    * the entry ordinal a live turn's own id implies coincides with its
    * transcript entry index only on a transcript replayed from disk,
-   * because every live turn minter numbers turns off its own counter (kata
-   * 0jhh). Required unless Aside.
+   * because every live turn minter numbers turns off its own counter.
+   * Required unless Aside.
    */
   sourceItemKey?: string;
 }
@@ -4014,6 +4600,10 @@ export interface ThreadForkResponse {
 }
 
 export interface ThreadItem {
+  conversationProvenance?: ConversationOutputProvenance;
+  actor?: SessionActor;
+  observation?: SessionObservationMetadata;
+  authorship?: TranscriptAuthorship;
   type: string;
   id: string;
   transcriptKey?: string;
@@ -4039,7 +4629,7 @@ export interface ThreadItem {
    * PrevalOnly is true when Error came from a pre-dispatch rejection (an
    * unknown tool name, or arguments that failed schema validation even
    * after repair) rather than the tool's own execution - the call never
-   * reached ExecuteCall (kata hgm1). A client uses this to tell a
+   * reached ExecuteCall. A client uses this to tell a
    * self-corrected malformed-call bounce apart from a real execution
    * failure or denial: same non-empty Error, different meaning. False (the
    * default) for a real execution failure, and meaningless when Error is
@@ -4056,8 +4646,8 @@ export interface ThreadItem {
   /**
    * DurationMS is the item's real server-measured runtime in milliseconds
    * (tool-call items only). Stamped live from the event stream's own
-   * timestamps; nil when no honest span was recorded (issue #37: the web
-   * hover meta shows real times or nothing).
+   * timestamps; nil when no honest span was recorded (the web hover meta
+   * shows real times or nothing).
    */
   durationMs?: number;
   /**
@@ -4084,7 +4674,7 @@ export interface ThreadItem {
   /**
    * Source carries item provenance for steering items: "user" for
    * human-sent steering (rendered as a user message), empty for
-   * daemon/system steering (issue #24).
+   * daemon/system steering.
    */
   source?: string;
   /**
@@ -4241,10 +4831,41 @@ export interface ThreadReadParams {
    * re-read when nothing outside the client's window changed.
    */
   heldSnapshot?: SnapshotIdentity;
+  /**
+   * LiveOnly requires the response to come from the live source. When the
+   * live read fails, the hub returns that error (retryable transport losses
+   * included) instead of serving saved history. The voice bridge sets it so
+   * an outage reaches its retry logic rather than a daemonless snapshot.
+   */
+  liveOnly?: boolean;
+  /**
+   * AnswerContinuation requests only a recorded ancestry verdict and its
+   * snapshot identity. It cannot subscribe or include a transcript window.
+   */
+  answerContinuation?: AnswerContinuationQuery;
+  /**
+   * A pending-ask page requires the observed pair and an explicit root ref.
+   */
+  expectedAskRevision?: number;
+  expectedAskBootGeneration?: string;
+  offset?: number;
+  limit?: number;
 }
 
 export interface ThreadReadResponse {
   thread: Thread;
+  pendingAskPage?: PendingAskPage;
+  /**
+   * TargetSessionToolsSupported reports whether the daemon serving this thread
+   * negotiated session tools. Omission means the serving hub cannot attest it.
+   */
+  targetSessionToolsSupported?: boolean;
+  /**
+   * LatestExecutionTurnID is the newest recorded execution span at Snapshot,
+   * regardless of later non-execution history turns.
+   */
+  latestExecutionTurnId?: string;
+  answerContinuation?: AnswerContinuationVerdict;
   /**
    * OlderCursor is set when itemLimit truncated the returned items; pass it
    * to thread/turns/list to fetch the page just before the window. Empty means
@@ -4344,6 +4965,12 @@ export interface ThreadStartParams {
   reasoningEffort?: string;
   nonInteractive?: boolean;
   launchOverrides?: LaunchConfigLayer;
+  /**
+   * Manager starts this session as a Manager of the sessions its hub can
+   * reach. It is a start-time property, not a setting: the daemon persists it
+   * with the session, so a resume keeps it and nothing can turn it off.
+   */
+  manager?: boolean;
 }
 
 export interface ThreadStartResponse {
@@ -4385,7 +5012,7 @@ export interface ThreadStatusChangedParams {
    * AskPending carries EvenerThread.AskPending — "this session is waiting on
    * a human answer" — for the reason the failure count rides along above: it
    * is otherwise snapshot-only, so after the user answers, every OTHER
-   * client keeps showing "question waiting" until its next read (#1613). The
+   * client keeps showing "question waiting" until its next read. The
    * pending set clears only at a turn boundary (a resolving user turn, an
    * interrupted turn: agent/session_tools_ask.go), which is exactly when a
    * status change is announced, so this refreshes it when it can have moved
@@ -4401,10 +5028,10 @@ export interface ThreadStatusChangedParams {
    * announced (see EvenerThread.Capabilities), for the same reason the failure
    * count rides along above: it is otherwise snapshot-only, and Send is the
    * entry defined by whether a turn is in flight (Steer, Interrupt and Queue
-   * advertise harness support and do not move with the status, #1363/#1375).
+   * advertise harness support and do not move with the status).
    * A client that read the thread while it was idle therefore holds send=true
    * for the whole turn that follows, and renders a session it KNOWS is active
-   * with a Send it must not offer until the page is reloaded (kata 06t8). A
+   * with a Send it must not offer until the page is reloaded. A
    * status transition is exactly when Send flips, so the set refreshes there
    * and nowhere else — no polling, no re-read of the transcript.
    *
@@ -4419,7 +5046,7 @@ export interface ThreadStatusChangedParams {
    * (cmd/evener-hub/app_relay.go's stampClosedThreadCapabilities), so a close
    * still arrives carrying a set — the same one the next thread/read returns.
    * A client that read the daemon's own all-false set there would lose the
-   * follow-up composer for a session the hub would happily resume (kata pk2d).
+   * follow-up composer for a session the hub would happily resume.
    */
   capabilities?: ThreadCapabilities;
   /**
@@ -4541,13 +5168,26 @@ export interface ThreadVisionModelSetParams {
   visionModel: string;
 }
 
+export interface TranscriptAuthor {
+  kind: string;
+  sessionRef?: string;
+  ownerRef?: string;
+  delegateId?: string;
+  delegateName?: string;
+}
+
+export interface TranscriptAuthorship {
+  author: TranscriptAuthor;
+  inherited: boolean;
+}
+
 export interface TranscriptDisplayAdvanced {
   roundTimings: boolean;
   tokenCounts: boolean;
   estimatedCost: boolean;
   systemEvents: boolean;
   promptEvents: boolean;
-  hookExits: string;
+  hookExits: TranscriptHookExitDetail;
 }
 
 export interface TranscriptDisplayChangedParams {
@@ -4564,7 +5204,7 @@ export interface TranscriptDisplayConfig {
 
 export interface TranscriptDisplayContent {
   kind: string;
-  level?: string;
+  level?: TranscriptLevel;
   custom?: TranscriptDisplayCustomContent;
 }
 
@@ -4573,6 +5213,15 @@ export interface TranscriptDisplayCustomContent {
   toolCalls: boolean;
   reasoning: boolean;
   expandByDefault: boolean;
+  /**
+   * Initial state of thinking disclosures. Canonical output always carries
+   * it; on input the field is optional so the custom vector as shipped
+   * before it (2026-08..10) keeps decoding, an absent field meaning what
+   * expandByDefault meant at the time. Removal condition: drop the
+   * optional-input acceptance once the minimum supported client bundle
+   * encodes the field.
+   */
+  thinkingOpenByDefault: boolean;
 }
 
 export interface TranscriptDisplayDefault {
@@ -4649,6 +5298,7 @@ export interface TurnCancelQueuedResponse {
 }
 
 export interface TurnDrainAsSteerParams {
+  managerProof?: SessionActorProof;
   ref: string;
   clientMutationId: string;
   expectedInstanceId: string;
@@ -4682,6 +5332,7 @@ export interface TurnInterruptResponse {
 }
 
 export interface TurnPromoteQueuedAsSteerParams {
+  managerProof?: SessionActorProof;
   ref: string;
   index: number;
   clientMutationId: string;
@@ -4694,10 +5345,13 @@ export interface TurnPromoteQueuedAsSteerResponse {
 }
 
 export interface TurnQueueParams {
+  managerProof?: SessionActorProof;
   ref: string;
   clientMutationId: string;
   expectedInstanceId: string;
   input?: InputItem[];
+  expectedAskRevision?: number;
+  expectedAskBootGeneration?: string;
 }
 
 export interface TurnQueueResponse {
@@ -4705,11 +5359,14 @@ export interface TurnQueueResponse {
 }
 
 export interface TurnStartParams {
+  managerProof?: SessionActorProof;
   ref?: string;
   threadId?: string;
   clientMutationId: string;
   expectedInstanceId: string;
   input?: InputItem[];
+  expectedAskRevision?: number;
+  expectedAskBootGeneration?: string;
 }
 
 export interface TurnStartResponse {
@@ -4718,11 +5375,14 @@ export interface TurnStartResponse {
 }
 
 export interface TurnSteerParams {
+  managerProof?: SessionActorProof;
   ref?: string;
   threadId?: string;
   clientMutationId: string;
   expectedInstanceId: string;
   input?: InputItem[];
+  expectedAskRevision?: number;
+  expectedAskBootGeneration?: string;
 }
 
 export interface TurnSteerResponse {
@@ -4753,6 +5413,15 @@ export interface UpdateCheckResponse {
   latestCommit?: string;
   updateAvailable: boolean;
   applicable: boolean;
+  onDiskCommit?: string;
+  onDiskError?: string;
+  installAvailable: boolean;
+  restartPending: boolean;
+  startedAt: string;
+  restartSupported: boolean;
+  checkError?: string;
+  installTarget?: string;
+  installTargetMatchesLaunch: boolean;
 }
 
 export interface UpgradeParams {
@@ -4787,6 +5456,37 @@ export interface UrlsUpdatedParams {
   urls?: SessionURL[];
 }
 
+export interface Value {
+}
+
+export interface VoicePresentationContext {
+  version: number;
+  deliveryId: string;
+  bindingId: string;
+  epoch: string;
+  instanceId: string;
+  canonicalSourceItemId: string;
+  originatingRequestId: string;
+  frontierId: string;
+  runGeneration: number;
+  presentationGeneration: number;
+  generatedTranscript: string;
+  transcriptTruncated: boolean;
+  outputComplete: boolean;
+  interrupted: boolean;
+  sampleRateHz: number;
+  items: VoicePresentationItem[];
+}
+
+export interface VoicePresentationItem {
+  responseId: string;
+  itemId: string;
+  generatedSamples: number;
+  queuedSamples: number;
+  playedSamples: number;
+  playbackComplete: boolean;
+}
+
 export interface WarningParams {
   threadId: string;
   ref: string;
@@ -4799,9 +5499,22 @@ export interface WarningParams {
   cause?: DiagnosticCause;
 }
 
+export interface WatchKey {
+  watch_id: string;
+  watch_generation: string;
+}
+
 export const METHOD_NAMES = [
   "initialize",
   "ping",
+  "evener/hub/session-tools/identify",
+  "evener/runtime/session/bind",
+  "evener/runtime/session/state",
+  "evener/runtime/session/invoke",
+  "evener/runtime/session/watch",
+  "evener/runtime/session/unwatch",
+  "evener/runtime/session/cancel",
+  "evener/hub/session-tools/input",
   "thread/list",
   "thread/read",
   "thread/unsubscribe",
@@ -4870,6 +5583,7 @@ export const METHOD_NAMES = [
   "evener/upgrade",
   "evener/update/check",
   "evener/update/apply",
+  "evener/hub/restart",
   "evener/auth/status",
   "evener/auth/test",
   "evener/auth/login/start",
@@ -4904,6 +5618,7 @@ export const METHOD_NAMES = [
   "evener/marketplace/edit",
   "evener/marketplace/browse",
   "evener/plugin/list",
+  "evener/plugin/components",
   "evener/plugin/install",
   "evener/plugin/upgrade",
   "evener/plugin/remove",
@@ -4922,6 +5637,7 @@ export const METHOD_NAMES = [
   "evener/settings/agentsDoc/set",
   "evener/sandbox/escalation/resolve",
   "evener/delegate/stop",
+  "evener/jobs/stop",
   "evener/host/request",
   "evener/host/attach",
   "evener/host/add",
@@ -4979,6 +5695,7 @@ export const HOST_REQUEST_METHODS = [
   "evener/paths/complete",
   "evener/plugin/checkNow",
   "evener/plugin/checkUpdates",
+  "evener/plugin/components",
   "evener/plugin/disable",
   "evener/plugin/enable",
   "evener/plugin/install",
@@ -4997,10 +5714,12 @@ export const HOST_REQUEST_METHODS = [
 export type HostRequestMethod = (typeof HOST_REQUEST_METHODS)[number];
 
 export const NOTIFICATION_NAMES = [
+  "evener/runtime/session/observation",
   "thread/started",
   "thread/closed",
   "thread/status/changed",
   "thread/queueChanged",
+  "thread/conversation-provenance/changed",
   "evener/thread/name/changed",
   "thread/model/changed",
   "thread/reasoning-effort/changed",
@@ -5039,6 +5758,107 @@ export const NOTIFICATION_NAMES = [
 
 export type NotificationName = (typeof NOTIFICATION_NAMES)[number];
 
+export const LIFECYCLE_CLASSES = [
+  "active",
+  "waiting",
+  "idle",
+  "settled",
+  "failed",
+  "neutral",
+  "ended",
+] as const;
+
+export type LifecycleClass = (typeof LIFECYCLE_CLASSES)[number];
+
+export const MACHINE_KINDS = [
+  "session",
+  "turn",
+  "threadStatus",
+  "job",
+  "delegate",
+  "delegateRun",
+  "delegateOutcome",
+  "watch",
+  "task",
+  "goal",
+  "hostOperation",
+  "mutationProjection",
+] as const;
+
+export type MachineKind = (typeof MACHINE_KINDS)[number];
+
+export const SESSION_STATES = [
+  "idle",
+  "active",
+  "awaiting",
+  "closed",
+] as const;
+
+export type SessionState = (typeof SESSION_STATES)[number];
+
+export const JOB_STATUSES = [
+  "running",
+  "completed",
+  "command_exited_nonzero",
+  "command_killed",
+  "failed",
+  "exhausted",
+  "cancelled",
+  "stopped",
+] as const;
+
+export type JobStatus = (typeof JOB_STATUSES)[number];
+
+export const DELEGATE_PHASES = [
+  "idle",
+  "running",
+  "settling",
+  "stopping",
+  "closed",
+] as const;
+
+export type DelegatePhase = (typeof DELEGATE_PHASES)[number];
+
+export const DELEGATE_RUN_STATUSES = [
+  "running",
+  "completed",
+  "failed",
+  "exhausted",
+  "cancelled",
+  "stopped",
+] as const;
+
+export type DelegateRunStatus = (typeof DELEGATE_RUN_STATUSES)[number];
+
+export const DELEGATE_OUTCOMES = [
+  "completed",
+  "failed",
+  "exhausted",
+  "cancelled",
+  "stopped",
+] as const;
+
+export type DelegateOutcome = (typeof DELEGATE_OUTCOMES)[number];
+
+export const GOAL_STATUSES = [
+  "active",
+  "complete",
+  "blocked",
+] as const;
+
+export type GoalStatus = (typeof GOAL_STATUSES)[number];
+
+export const OPERATION_STATES = [
+  "pending",
+  "running",
+  "complete",
+  "failed",
+  "interrupted",
+  "orphan-unverified",
+] as const;
+
+export type OperationState = (typeof OPERATION_STATES)[number];
+
 export const SESSION_ACTIVITY_SCOPES = [
   "session",
   "subtree",
@@ -5055,6 +5875,15 @@ export const SESSION_ACTIVITY_RESOURCES = [
 
 export type SessionActivityResource = (typeof SESSION_ACTIVITY_RESOURCES)[number];
 
+export const SESSION_SOURCE_STATES = [
+  "answered",
+  "attempted-failed",
+  "not-selected",
+  "skipped-unattached",
+] as const;
+
+export type SessionSourceState = (typeof SESSION_SOURCE_STATES)[number];
+
 export const SESSION_WATCH_STATES = [
   "armed",
   "ended",
@@ -5063,29 +5892,12 @@ export const SESSION_WATCH_STATES = [
 
 export type SessionWatchState = (typeof SESSION_WATCH_STATES)[number];
 
-export const STEERING_KINDS = [
-  "interrupted",
-  "interrupted-salvage",
-  "agent-message",
-  "hook-context",
-  "precompact-hook",
-  "compact-nudge",
-  "image-description",
-  "no-tool-calls",
-  "loop-detected",
-  "tasks-done",
-  "task-inactive",
-  "note-handoff",
-  "goal-objective",
-  "transcript-pointer",
-  "current-task",
-  "task-list",
-  "notification",
-  "provider-failure",
-  "human-note",
+export const THREAD_PROBE_STATES = [
+  "fresh",
+  "retained",
 ] as const;
 
-export type SteeringKind = (typeof STEERING_KINDS)[number];
+export type ThreadProbeState = (typeof THREAD_PROBE_STATES)[number];
 
 export const THREAD_ITEM_EVENT_KINDS = [
   "system_prompt",
@@ -5113,9 +5925,272 @@ export const THREAD_ITEM_EVENT_KINDS = [
 
 export type ThreadItemEventKind = (typeof THREAD_ITEM_EVENT_KINDS)[number];
 
+export const TASK_STATUSES = [
+  "open",
+  "in_progress",
+  "done",
+  "cancelled",
+] as const;
+
+export type TaskStatus = (typeof TASK_STATUSES)[number];
+
+export const TRANSCRIPT_LEVELS = [
+  "chat",
+  "intent",
+  "tools",
+  "activity",
+  "full",
+] as const;
+
+export type TranscriptLevel = (typeof TRANSCRIPT_LEVELS)[number];
+
+export const TRANSCRIPT_HOOK_EXIT_DETAILS = [
+  "none",
+  "successful",
+  "all",
+] as const;
+
+export type TranscriptHookExitDetail = (typeof TRANSCRIPT_HOOK_EXIT_DETAILS)[number];
+
+export const LIFECYCLE_MACHINES = {
+  "session": {
+    initial: "idle",
+    states: {
+      "idle": { class: "idle", terminal: false, summary: "resting between turns" },
+      "active": { class: "active", terminal: false, summary: "running a turn" },
+      "awaiting": { class: "waiting", terminal: false, summary: "resting with the next move owed to the human" },
+      "closed": { class: "ended", terminal: true, summary: "closed and unable to move again" },
+    },
+  },
+  "turn": {
+    initial: "inProgress",
+    states: {
+      "inProgress": { class: "active", terminal: false, summary: "turn is running" },
+      "completed": { class: "settled", terminal: true, summary: "turn finished" },
+      "failed": { class: "failed", terminal: true, summary: "turn ended on an error" },
+      "interrupted": { class: "neutral", terminal: true, summary: "turn was interrupted" },
+    },
+  },
+  "threadStatus": {
+    initial: "notLoaded",
+    states: {
+      "idle": { class: "idle", terminal: false, resting: true, summary: "resting between turns" },
+      "active": { class: "active", terminal: false, summary: "running a turn" },
+      "awaiting": { class: "waiting", terminal: false, summary: "waiting on a question or a reply" },
+      "warning": { class: "waiting", terminal: false, summary: "working with a warning that needs attention" },
+      "closed": { class: "ended", terminal: true, summary: "the session ended" },
+      "notLoaded": { class: "ended", terminal: false, summary: "no session is loaded for this row" },
+      "systemError": { class: "failed", terminal: false, resting: true, summary: "resting on a failed turn" },
+      "restartRequired": { class: "waiting", terminal: false, summary: "an older daemon process must be restarted" },
+    },
+  },
+  "job": {
+    initial: "running",
+    states: {
+      "running": { class: "active", terminal: false, summary: "runtime work is in progress" },
+      "completed": { class: "settled", terminal: true, summary: "the command exited zero" },
+      "command_exited_nonzero": { class: "failed", terminal: true, summary: "the supervised command reported failure" },
+      "command_killed": { class: "failed", terminal: true, summary: "the supervised command was killed by a signal" },
+      "failed": { class: "failed", terminal: true, summary: "the job system failed" },
+      "exhausted": { class: "failed", terminal: true, summary: "the job stopped at a configured budget" },
+      "cancelled": { class: "neutral", terminal: true, summary: "the job was cancelled" },
+      "stopped": { class: "neutral", terminal: true, summary: "the job was stopped" },
+    },
+  },
+  "delegate": {
+    initial: "idle",
+    states: {
+      "idle": { class: "idle", terminal: false, summary: "no run is open; a new run may start" },
+      "running": { class: "active", terminal: false, summary: "a run is in progress" },
+      "settling": { class: "active", terminal: false, summary: "a run is preparing its terminal packet" },
+      "stopping": { class: "active", terminal: false, summary: "a stop is draining the open run" },
+      "closed": { class: "ended", terminal: true, summary: "the delegate cannot run again" },
+    },
+  },
+  "delegateRun": {
+    initial: "running",
+    states: {
+      "running": { class: "active", terminal: false, summary: "the subagent run is executing" },
+      "completed": { class: "settled", terminal: true, summary: "the run finished" },
+      "failed": { class: "failed", terminal: true, summary: "the run ended on an error" },
+      "exhausted": { class: "failed", terminal: true, summary: "the run stopped at a configured budget" },
+      "cancelled": { class: "neutral", terminal: true, summary: "the run was cancelled" },
+      "stopped": { class: "neutral", terminal: true, summary: "the run was stopped" },
+    },
+  },
+  "delegateOutcome": {
+    states: {
+      "completed": { class: "settled", terminal: true, summary: "the run finished" },
+      "failed": { class: "failed", terminal: true, summary: "the run ended on an error" },
+      "exhausted": { class: "failed", terminal: true, summary: "the run stopped at a configured budget" },
+      "cancelled": { class: "neutral", terminal: true, summary: "the run was cancelled" },
+      "stopped": { class: "neutral", terminal: true, summary: "the run was stopped" },
+    },
+  },
+  "watch": {
+    initial: "armed",
+    states: {
+      "armed": { class: "active", terminal: false, summary: "the watch can still fire" },
+      "ended": { class: "ended", terminal: true, summary: "the watch can never fire again" },
+      "unknown": { class: "neutral", terminal: false, summary: "retained evidence cannot establish liveness" },
+    },
+  },
+  "task": {
+    initial: "open",
+    states: {
+      "open": { class: "idle", terminal: false, summary: "ready to start once its dependencies settle" },
+      "in_progress": { class: "active", terminal: false, summary: "the task is being worked" },
+      "done": { class: "settled", terminal: false, summary: "the task is done and may be reopened" },
+      "cancelled": { class: "neutral", terminal: false, summary: "the task is cancelled and may be reopened" },
+    },
+  },
+  "goal": {
+    initial: "active",
+    states: {
+      "active": { class: "active", terminal: false, summary: "the goal is being pursued" },
+      "complete": { class: "settled", terminal: true, summary: "the goal was completed" },
+      "blocked": { class: "failed", terminal: true, summary: "the goal stopped without completing" },
+    },
+  },
+  "hostOperation": {
+    initial: "pending",
+    states: {
+      "pending": { class: "active", terminal: false, summary: "accepted and waiting for its worker" },
+      "running": { class: "active", terminal: false, summary: "the operation is running" },
+      "complete": { class: "settled", terminal: true, summary: "the operation completed" },
+      "failed": { class: "failed", terminal: true, summary: "the operation failed" },
+      "interrupted": { class: "neutral", terminal: true, summary: "a controller shutdown interrupted the operation" },
+      "orphan-unverified": { class: "neutral", terminal: false, summary: "historical record whose boundary was never verified" },
+    },
+  },
+  "mutationProjection": {
+    initial: "pending",
+    states: {
+      "pending": { class: "active", terminal: false, summary: "accepted, not yet in the transcript projection" },
+      "reflected": { class: "settled", terminal: false, summary: "visible in the transcript projection" },
+      "removed": { class: "ended", terminal: true, summary: "removed from the transcript projection" },
+    },
+  },
+} as const;
+
+export type LifecycleMachineCatalog = typeof LIFECYCLE_MACHINES;
+
+export const STEERING_KINDS = [
+  "interrupted",
+  "interrupted-salvage",
+  "hook-context",
+  "precompact-hook",
+  "compact-nudge",
+  "image-description",
+  "no-tool-calls",
+  "loop-detected",
+  "tasks-done",
+  "task-inactive",
+  "note-handoff",
+  "goal-objective",
+  "transcript-pointer",
+  "current-task",
+  "task-list",
+  "notification",
+  "provider-failure",
+  "human-note",
+  "delegate-nudge",
+] as const;
+
+export type SteeringKind = (typeof STEERING_KINDS)[number];
+
+export const RETRY_SAFE_MUTATION_METHODS = [
+  "turn/start",
+  "turn/steer",
+  "turn/interrupt",
+  "turn/queue",
+  "turn/drainAsSteer",
+  "turn/promoteQueuedAsSteer",
+  "turn/cancelQueued",
+  "thread/clear",
+  "notes/human/set",
+  "urls/remove",
+] as const;
+
+export type RetrySafeMutationMethod = (typeof RETRY_SAFE_MUTATION_METHODS)[number];
+
+export const SHIPPED_TRANSCRIPT_DISPLAY_DEFAULTS: TranscriptDisplayDefaults = {
+  "desktop": {
+    "revision": 0,
+    "config": {
+      "version": 1,
+      "content": {
+        "kind": "preset",
+        "level": "tools"
+      },
+      "advanced": {
+        "roundTimings": false,
+        "tokenCounts": false,
+        "estimatedCost": false,
+        "systemEvents": false,
+        "promptEvents": false,
+        "hookExits": "none"
+      }
+    }
+  },
+  "mobile": {
+    "revision": 0,
+    "config": {
+      "version": 1,
+      "content": {
+        "kind": "preset",
+        "level": "intent"
+      },
+      "advanced": {
+        "roundTimings": false,
+        "tokenCounts": false,
+        "estimatedCost": false,
+        "systemEvents": false,
+        "promptEvents": false,
+        "hookExits": "none"
+      }
+    }
+  }
+};
+
+export const WIRE_FIELD_KEYS = {
+  ThreadItemPosition: ["entry", "item", "sub"],
+  TurnError: ["message", "additionalDetails", "codexErrorInfo", "source", "title", "hint", "cause"],
+  DiagnosticCause: ["kind", "provider", "model", "status"],
+  ThreadItem: ["conversationProvenance", "actor", "observation", "authorship", "type", "id", "transcriptKey", "position", "turnId", "transcriptEntryIndex", "text", "delta", "images", "toolName", "callId", "argumentsJson", "description", "output", "error", "outputImages", "status", "prevalOnly", "startedAt", "completedAt", "durationMs", "exitCode", "raw", "eventKind", "source", "steeringKind", "clientMutationId", "version", "roundId", "completedAtEntry"],
+  InputItem: ["type", "text", "mentions", "url", "mediaType", "data", "name", "path", "metadata", "voicePresentation"],
+  InputMention: ["kind", "name", "offset"],
+  OutputImage: ["source", "name", "mediaType", "size", "url", "sha", "path"],
+  QueueState: ["depth", "revision", "preview", "ids", "clientMutationIds", "texts", "skillNames", "commandNames", "mentions"],
+  EvenerUsage: ["inputTokens", "outputTokens", "cacheReadTokens", "totalTokens"],
+  EvenerDelegateInfo: ["runGeneration", "delegateId", "ownerSessionId", "logicalOwnerSessionId", "rootSessionId", "childSessionId", "transcriptRef", "parentDelegateId", "type", "lifecycle", "phase", "status", "outcome", "reason", "error", "terminal", "resumable", "needsAttention", "notResumableReason", "projectionRevision", "reportPreview", "reportPreviewTruncated", "task", "description", "agentType", "requestedModel", "resolvedProfileId", "resolvedModel", "model", "reasoningEffort", "originTurnId", "originToolCallId", "originItemId", "runStartedAt", "runEndedAt", "latestActivityAt", "latestIntent", "runningForMs", "quietForMs", "durationMs", "packetKind", "message", "structuredResult", "structuredResultValid", "structuredResultReason", "warnings", "diagnostics", "exhaustionBudget", "exhaustionLimit", "exhaustionResumable", "delegationAllowance", "parentWatchGranted", "usage", "worktree"],
+  JobActivityWorktree: ["path", "branch", "headSha", "ahead", "dirty"],
+  CommandDescriptor: ["name", "pluginName", "description", "argumentHint", "source"],
+  EvenerSkillInfo: ["name", "description", "disableModelInvocation", "userInvocable", "available", "allowedTools"],
+  SandboxEscalationRequested: ["threadId", "ref", "escalationId", "mode", "tool", "kind", "deniedPath", "command", "outputSoFar", "partiallyRan"],
+  SessionURL: ["id", "url", "label", "addedBy", "addedAt"],
+  ThreadStatus: ["type", "activeFlags"],
+  TaskAggregate: ["total", "done", "cancelled", "remaining", "current"],
+  TaskSummary: ["id", "description"],
+  ThreadAccess: ["sandbox", "network"],
+  GoalState: ["objective", "status", "iterations"],
+  EvenerTurnSlots: ["inUse", "cap", "jobs", "driveTurns"],
+  ThreadTurnsListResponse: ["data", "nextCursor", "bootGeneration", "epoch", "snapshot", "authoritative"],
+  SnapshotIdentity: ["incarnation", "length"],
+  Turn: ["id", "items", "itemsView", "status", "error", "version", "hasEarlierItems", "hasLaterItems", "startedAt", "completedAt", "durationMs", "usage", "cost"],
+} as const;
+
 export interface MethodTypes {
   "initialize": { params: InitializeParams; result: InitializeResponse };
   "ping": { params: EmptyParams; result: EmptyResponse };
+  "evener/hub/session-tools/identify": { params: SessionToolsPeerParams; result: SessionToolsPeerResponse };
+  "evener/runtime/session/bind": { params: SessionBinding; result: SessionBinding };
+  "evener/runtime/session/state": { params: SessionRuntimeRequest; result: ManagerView };
+  "evener/runtime/session/invoke": { params: SessionRuntimeRequest; result: SessionOperationResponse };
+  "evener/runtime/session/watch": { params: SessionRuntimeRequest; result: EmptyResponse };
+  "evener/runtime/session/unwatch": { params: SessionRuntimeRequest; result: EmptyResponse };
+  "evener/runtime/session/cancel": { params: SessionRuntimeCancel; result: EmptyResponse };
+  "evener/hub/session-tools/input": { params: SessionToolsInput; result: Value };
   "thread/list": { params: ThreadListParams; result: ThreadListResponse };
   "thread/read": { params: ThreadReadParams; result: ThreadReadResponse };
   "thread/unsubscribe": { params: ThreadUnsubscribeParams; result: EmptyResponse };
@@ -5184,6 +6259,7 @@ export interface MethodTypes {
   "evener/upgrade": { params: UpgradeParams; result: UpgradeResponse };
   "evener/update/check": { params: UpdateCheckParams; result: UpdateCheckResponse };
   "evener/update/apply": { params: UpdateApplyParams; result: UpdateApplyResponse };
+  "evener/hub/restart": { params: HubRestartParams; result: HubRestartResponse };
   "evener/auth/status": { params: AuthStatusParams; result: AuthStatusResponse };
   "evener/auth/test": { params: AuthTestParams; result: AuthTestResponse };
   "evener/auth/login/start": { params: AuthLoginStartParams; result: AuthLoginStartResponse };
@@ -5218,6 +6294,7 @@ export interface MethodTypes {
   "evener/marketplace/edit": { params: MarketplaceEditParams; result: MarketplaceListResponse };
   "evener/marketplace/browse": { params: MarketplaceBrowseParams; result: MarketplaceBrowseResponse };
   "evener/plugin/list": { params: EmptyParams; result: PluginListResponse };
+  "evener/plugin/components": { params: PluginComponentsParams; result: PluginComponentsResponse };
   "evener/plugin/install": { params: PluginRefParams; result: PluginListResponse };
   "evener/plugin/upgrade": { params: PluginRefParams; result: PluginListResponse };
   "evener/plugin/remove": { params: PluginRefParams; result: PluginListResponse };
@@ -5236,6 +6313,7 @@ export interface MethodTypes {
   "evener/settings/agentsDoc/set": { params: AgentsDocSetParams; result: AgentsDocResponse };
   "evener/sandbox/escalation/resolve": { params: SandboxEscalationResolveParams; result: EmptyResponse };
   "evener/delegate/stop": { params: DelegateStopParams; result: DelegateStopResponse };
+  "evener/jobs/stop": { params: SessionStopRequest; result: SessionStopResponse };
   "evener/host/request": { params: HostRequestParams; result: HostForwardedResult };
   "evener/host/attach": { params: HostAttachParams; result: HostAttachResponse };
   "evener/host/add": { params: HostAddParams; result: HostMutationCommitted | HostMutationTeardownFailure | HostMutationCollisionDropped | HostMutationAmbiguous };
@@ -5256,10 +6334,12 @@ export interface MethodTypes {
 }
 
 export interface NotificationTypes {
+  "evener/runtime/session/observation": SessionRuntimeObservation;
   "thread/started": ThreadStartedParams;
   "thread/closed": ThreadClosedParams;
   "thread/status/changed": ThreadStatusChangedParams;
   "thread/queueChanged": ThreadQueueChangedParams;
+  "thread/conversation-provenance/changed": ConversationProvenanceChangedParams;
   "evener/thread/name/changed": ThreadNameChangedParams;
   "thread/model/changed": ThreadModelChangedParams;
   "thread/reasoning-effort/changed": ThreadReasoningEffortChangedParams;

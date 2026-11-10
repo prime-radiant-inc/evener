@@ -33,7 +33,7 @@ import {
 import type { AnyNotification, ConnectionState, InstanceListResponse } from "@evener/appwire-client";
 import { setTimeout as wait } from "node:timers/promises";
 import { expect, onTestFinished, vi } from "vitest";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { ComposerFocus } from "./session/composerFocus";
 import { shrinkingScroller } from "./session/dockCard";
 import { isStep } from "./session/transcriptRows";
@@ -368,21 +368,32 @@ export function gestureHandlerModuleMock() {
 	};
 }
 
-/** A Gesture.Pan() builder as a record: each setting a test reads lands in
- * `config`, and each callback in `handlers`, so a test drives the gesture's
- * end by hand. */
+/** A pan's app-supplied settings and callbacks, from a Gesture.Pan() builder
+ * or usePanGesture configuration. Tests drive callbacks without simulating
+ * the native recognizer. */
 export interface PanGestureMock {
 	config: Record<string, unknown>;
 	handlers: {
 		onBegin?(): void;
 		onUpdate?(event: { translationX: number }): void;
 		onEnd?(event: { translationX: number; velocityX: number }, success: boolean): void;
+		onDeactivate?(event: { translationX: number; velocityX: number; canceled: boolean }): void;
 	};
 }
 
-/** react-native-gesture-handler's GestureDetector and Gesture.Pan for
- * vitest: the detector is a host element carrying its gesture, and the pan
- * a PanGestureMock whose builder methods return it. */
+/** A Gesture.LongPress() builder in the same shape: settings land in `config`
+ * and the hold's callback in `handlers.onStart`, which a test fires by hand
+ * to hold the message open. */
+export interface LongPressGestureMock {
+	config: Record<string, unknown>;
+	handlers: {
+		onStart?(): void;
+	};
+}
+
+/** The detector carries the app's gesture configuration. Legacy builders
+ * record their calls; the pan hook records its input without reproducing
+ * the library's configuration transforms. */
 export function gestureDetectorModuleMock() {
 	const pan = (): PanGestureMock => {
 		const gesture = { config: {}, handlers: {} } as PanGestureMock;
@@ -411,11 +422,33 @@ export function gestureDetectorModuleMock() {
 		});
 		return builder;
 	};
+	const longPress = (): LongPressGestureMock => {
+		const gesture = { config: {}, handlers: {} } as LongPressGestureMock;
+		const builder = Object.assign(gesture, {
+			minDuration: (duration: number) => {
+				gesture.config.minDurationMs = duration;
+				return builder;
+			},
+			runOnJS: (value: unknown) => {
+				gesture.config.runOnJS = value;
+				return builder;
+			},
+			onStart: (handler: LongPressGestureMock["handlers"]["onStart"]) => {
+				gesture.handlers.onStart = handler;
+				return builder;
+			},
+		});
+		return builder;
+	};
 	return {
 		__esModule: true,
 		GestureDetector: (props: { gesture: unknown; children?: ReactNode }) =>
 			createElement("GestureDetector", props, props.children),
-		Gesture: { Pan: pan },
+		Gesture: { Pan: pan, LongPress: longPress },
+		usePanGesture: (config: Record<string, unknown> & PanGestureMock["handlers"]): PanGestureMock => ({
+			config,
+			handlers: config,
+		}),
 	};
 }
 
@@ -429,12 +462,12 @@ export function releaseSwipeRow(
 	translationX: number,
 	{ velocityX = 0, via = [] }: { velocityX?: number; via?: readonly number[] } = {},
 ) {
-	const tracker = swipeable.props.simultaneousWithExternalGesture as PanGestureMock | undefined;
+	const tracker = swipeable.props.simultaneousWith as PanGestureMock | undefined;
 	if (!tracker) throw new Error("the swipeable has no release tracker");
 	act(() => {
 		tracker.handlers.onBegin?.();
 		for (const point of [...via, translationX]) tracker.handlers.onUpdate?.({ translationX: point });
-		tracker.handlers.onEnd?.({ translationX, velocityX }, true);
+		tracker.handlers.onDeactivate?.({ translationX, velocityX, canceled: false });
 	});
 }
 
@@ -456,6 +489,11 @@ export function swipeRowFully(
 	{ pageX = 200 }: { pageX?: number } = {},
 ) {
 	if (!swipeable) throw new Error("no swipeable row");
+	// The row sizes its full-swipe threshold from its own layout. Lay it out at
+	// the 390-point width these tests drive it at before the touch arrives.
+	let row = swipeable.parent;
+	while (row && typeof row.props.onLayout !== "function") row = row.parent;
+	if (row) act(() => row?.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 60 } } }));
 	act(() => swipeable.findByProps({ testID: "swipe-row-content" }).props.onTouchStart({ nativeEvent: { pageX } }));
 	releaseSwipeRow(swipeable, direction === "right" ? 250 : -250);
 	openSwipeRow(swipeable, direction);

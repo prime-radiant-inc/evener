@@ -37,9 +37,9 @@ func TestDirtyControllerRefusesABuildSource(t *testing.T) {
 		BuildSource:               "/some/evener/checkout",
 	})
 
-	_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil)
-	if !errors.Is(err, errControllerDirty) {
-		t.Fatalf("err = %v, want errControllerDirty", err)
+	_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil, nil)
+	if !errors.Is(err, ErrControllerDirty) {
+		t.Fatalf("err = %v, want ErrControllerDirty", err)
 	}
 }
 
@@ -59,9 +59,9 @@ func TestDirtyControllerRefusesANamedBuildBinary(t *testing.T) {
 		},
 	})
 
-	_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil)
-	if !errors.Is(err, errControllerDirty) {
-		t.Fatalf("err = %v, want errControllerDirty", err)
+	_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil, nil)
+	if !errors.Is(err, ErrControllerDirty) {
+		t.Fatalf("err = %v, want ErrControllerDirty", err)
 	}
 	if builds != 0 {
 		t.Fatalf("build attempts = %d, want 0 (an undeclared build source cannot be proven to reproduce a dirty controller)", builds)
@@ -72,7 +72,7 @@ func TestDirtyControllerRefusesANamedBuildBinary(t *testing.T) {
 // rule from the other side: only a DIRTY controller has to refuse a named
 // artifact. With a reproducible version, a named artifact deploys exactly as it
 // did before — the pre-push checks judge its evener identity and host target,
-// and the post-deploy read judges the build the host reports (errDeployUnstamped)
+// and the post-deploy read judges the build the host reports (ErrDeployUnstamped)
 // — so the rule reads "dirty AND not this controller's own executable", not
 // "artifacts are second-class".
 func TestCleanControllerDeploysANamedBuildBinary(t *testing.T) {
@@ -103,7 +103,7 @@ func TestCleanControllerDeploysANamedBuildBinary(t *testing.T) {
 		},
 	})
 
-	target, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil)
+	target, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil, nil)
 	if err != nil {
 		t.Fatalf("a clean controller refused a named binary artifact: %v", err)
 	}
@@ -122,14 +122,17 @@ func crossTarget() (string, string) {
 	return runtime.GOOS, "arm64"
 }
 
-// installRunner records every remote command and fails the installer invocation,
-// so a test can prove the installer fallback was the path taken — and which ref
-// it was pinned to — without scripting a whole install. Commands other than the
-// installer fail as unexpected.
+// installRunner answers the pre-write protocol check with a compatible contract
+// and fails the installer invocation, so a test can prove the installer fallback
+// was the path taken — and which ref it was pinned to — without scripting a
+// whole install. Any other command fails as unexpected.
 func installRunner(t *testing.T) *fakeRunner {
 	t.Helper()
 	return &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 		joined := strings.Join(argv, " ")
+		if strings.Contains(joined, "launch-check") {
+			return []byte(fmt.Sprintf(`{"hub_endpoint_schema":1,"protocol":%q,"version":"dev","launch_flags":["api-log"]}`, appwire.ProtocolVersion)), nil
+		}
 		if strings.Contains(joined, "EVENER_INSTALL_VERSION=") {
 			return nil, errors.New("installer refused by the test's runner")
 		}
@@ -167,7 +170,7 @@ func TestDefaultSourceCrossTargetFallsBackToTheInstaller(t *testing.T) {
 		},
 	})
 
-	_, err := m.deploy(context.Background(), host, Preflight{OS: goos, Arch: goarch, Home: "/home/dev"}, nil)
+	_, err := m.deploy(context.Background(), host, Preflight{OS: goos, Arch: goarch, Home: "/home/dev"}, nil, nil)
 	if err == nil {
 		t.Fatal("the cross-target deploy reported success")
 	}
@@ -218,9 +221,9 @@ func TestDefaultSourceCrossTargetUnpinnableRefusesTerminally(t *testing.T) {
 		},
 	})
 
-	_, err := m.deploy(context.Background(), host, Preflight{OS: goos, Arch: goarch, Home: "/home/dev"}, nil)
-	if !errors.Is(err, errOwnExecutableCannotServe) {
-		t.Fatalf("err = %v, want errOwnExecutableCannotServe", err)
+	_, err := m.deploy(context.Background(), host, Preflight{OS: goos, Arch: goarch, Home: "/home/dev"}, nil, nil)
+	if !errors.Is(err, ErrOwnExecutableCannotServe) {
+		t.Fatalf("err = %v, want ErrOwnExecutableCannotServe", err)
 	}
 	if !isTerminal(err) {
 		t.Fatalf("err = %v, want a terminal refusal (the same host, target, and build re-refuse identically)", err)
@@ -276,7 +279,7 @@ func TestNamedArtifactCrossTargetKeepsThePushRefusal(t *testing.T) {
 		},
 	})
 
-	_, err := m.deploy(context.Background(), host, Preflight{OS: goos, Arch: goarch, Home: "/home/dev"}, nil)
+	_, err := m.deploy(context.Background(), host, Preflight{OS: goos, Arch: goarch, Home: "/home/dev"}, nil, nil)
 	if !errors.Is(err, ErrDeployArtifactUnusable) {
 		t.Fatalf("err = %v, want the terminal artifact-mismatch refusal", err)
 	}
@@ -324,7 +327,7 @@ func TestDefaultSourceSameTargetStillPushes(t *testing.T) {
 		},
 	})
 
-	target, err := m.deploy(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH}, nil)
+	target, err := m.deploy(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH, LaunchCheckKnown: true, HubEndpointSchema: 1}, nil, nil)
 	if err != nil {
 		t.Fatalf("same-target deploy of the own executable: %v", err)
 	}
@@ -348,9 +351,9 @@ func TestDirtyControllerRefusesWhenTheStagingPathIsNotTheOwnExecutable(t *testin
 		BuildSource:               "/some/evener/checkout",
 	})
 
-	_, err := m.deploy(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH, Home: "/home/dev"}, nil)
-	if !errors.Is(err, errControllerDirty) {
-		t.Fatalf("err = %v, want errControllerDirty (a build source cannot reproduce a dirty controller)", err)
+	_, err := m.deploy(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH, Home: "/home/dev"}, nil, nil)
+	if !errors.Is(err, ErrControllerDirty) {
+		t.Fatalf("err = %v, want ErrControllerDirty (a build source cannot reproduce a dirty controller)", err)
 	}
 	if !isTerminal(err) {
 		t.Fatalf("err = %v, want a terminal refusal", err)
@@ -394,7 +397,7 @@ func TestDirtyControllerDeploysItsOwnExecutable(t *testing.T) {
 		},
 	})
 
-	target, err := m.deploy(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH}, nil)
+	target, err := m.deploy(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH, LaunchCheckKnown: true, HubEndpointSchema: 1}, nil, nil)
 	if err != nil {
 		t.Fatalf("deploy of the controller's own executable from a dirty controller: %v", err)
 	}
@@ -436,13 +439,14 @@ func TestDirtyControllerOwnExecutableDeployConvergesThroughTheOperation(t *testi
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}}
+	modelSelectedProcess(t, fr, host.EvenerPath, "oldsha", dirtyControllerVersion)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: dirtyControllerVersion,
 		OwnExecutable:             true,
 		BuildBinary:               writeStageBinary,
 	})
 
-	target, after, err := m.DeployForOperation(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH}, true, nil)
+	target, after, err := m.DeployForOperation(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH, LaunchCheckKnown: true, HubEndpointSchema: 1}, true, nil, nil)
 	if err != nil {
 		t.Fatalf("DeployForOperation: %v", err)
 	}
@@ -495,9 +499,9 @@ func TestDeployDisabledRefusesEveryDeployPath(t *testing.T) {
 
 	// The explicit operation reaches deploy directly; it must be refused rather
 	// than silently converted into the installer fallback.
-	_, err := m.deploy(context.Background(), host, facts, nil)
-	if !errors.Is(err, errDeployDisabled) {
-		t.Fatalf("deploy err = %v, want errDeployDisabled", err)
+	_, err := m.deploy(context.Background(), host, facts, nil, nil)
+	if !errors.Is(err, ErrDeployDisabled) {
+		t.Fatalf("deploy err = %v, want ErrDeployDisabled", err)
 	}
 	if !isTerminal(err) {
 		t.Fatalf("deploy err = %v, want a terminal refusal (retrying re-refuses the same setting)", err)
@@ -508,8 +512,8 @@ func TestDeployDisabledRefusesEveryDeployPath(t *testing.T) {
 	if !strings.Contains(err.Error(), help) {
 		t.Fatalf("refusal does not name the remedy: %v", err)
 	}
-	if _, _, err := m.DeployForOperation(context.Background(), host, facts, true, nil); !errors.Is(err, errDeployDisabled) {
-		t.Fatalf("DeployForOperation err = %v, want errDeployDisabled", err)
+	if _, _, err := m.DeployForOperation(context.Background(), host, facts, true, nil, nil); !errors.Is(err, ErrDeployDisabled) {
+		t.Fatalf("DeployForOperation err = %v, want ErrDeployDisabled", err)
 	}
 	if runs := fr.recordedRuns(); len(runs) != 0 {
 		t.Fatalf("a disabled deploy reached the host: %v", runs)
@@ -521,7 +525,7 @@ func TestDeployDisabledRefusesEveryDeployPath(t *testing.T) {
 // dirty controller because it IS the controller's build — and when the build the
 // host ends up with is a different one after all (nothing in sshconn can prove
 // the bytes, so the check is the host's own report), the post-deploy identity
-// read still refuses terminally (errDeployUnstamped) instead of attaching the
+// read still refuses terminally (ErrDeployUnstamped) instead of attaching the
 // host to that build.
 func TestDirtyControllerOwnExecutableMismatchRefusesUnstamped(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
@@ -554,8 +558,8 @@ func TestDirtyControllerOwnExecutableMismatchRefusesUnstamped(t *testing.T) {
 	testRestartRecorder(t, m)
 
 	_, err := m.Ensure(context.Background(), "alpha")
-	if !errors.Is(err, errDeployUnstamped) {
-		t.Fatalf("Ensure err = %v, want errDeployUnstamped", err)
+	if !errors.Is(err, ErrDeployUnstamped) {
+		t.Fatalf("Ensure err = %v, want ErrDeployUnstamped", err)
 	}
 	if errors.Is(err, ErrDeploy) {
 		t.Fatalf("Ensure err = %v still wraps ErrDeploy, so the supervisor would re-push the same foreign artifact forever", err)
@@ -572,5 +576,5 @@ func TestDirtyControllerOwnExecutableMismatchRefusesUnstamped(t *testing.T) {
 // protocol incompatible" (what a hardcoded "evener-appwire-v5" did when the
 // protocol moved to v6 on main).
 func launchCheckJSON(version string) string {
-	return fmt.Sprintf(`{"protocol":%q,"version":%q,"launch_flags":["api-log"]}`, appwire.ProtocolVersion, version)
+	return fmt.Sprintf(`{"hub_endpoint_schema":1,"protocol":%q,"version":%q,"launch_flags":["api-log"]}`, appwire.ProtocolVersion, version)
 }

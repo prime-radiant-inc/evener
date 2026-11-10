@@ -182,8 +182,8 @@ func FuzzSessionMetadataHelpers(f *testing.F) {
 			t.Fatalf("job projection mismatch: records=%d projected=%+v", len(kept), projected)
 		}
 
-		warning := warningHookMessage(&events.WarningData{Message: text})
-		if warning != text || warningHookMessage((*events.WarningData)(nil)) != "<nil>" {
+		warning := warningHookMessage(events.WarningData{Message: text})
+		if warning != text {
 			t.Fatalf("warning rendering mismatch: %q", warning)
 		}
 		reminder := formatCurrentTaskSteering(taskpkg.Task{ID: int(mode), Description: text, Prompt: alternate}, mode%2 == 0)
@@ -220,14 +220,14 @@ func FuzzSessionGoalCompactState(f *testing.F) {
 
 		s := &Session{}
 		s.setPinnedNote(instructions)
-		if got := s.PinnedNote(); got != instructions {
+		if got := s.pinnedNote(); got != instructions {
 			t.Fatalf("pinned note=%q, want %q", got, instructions)
 		}
 		_, gen := s.pinnedNoteSnapshot()
 		s.mu.Lock()
 		s.claimPinnedNoteLocked(gen)
 		s.mu.Unlock()
-		if got := s.PinnedNote(); got != "" {
+		if got := s.pinnedNote(); got != "" {
 			t.Fatalf("claimPinnedNoteLocked left %q", got)
 		}
 

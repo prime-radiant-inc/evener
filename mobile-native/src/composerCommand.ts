@@ -15,8 +15,9 @@ import type {
 	ConversationGoalActions,
 	ConversationModelCatalog,
 	ConversationService,
-} from "../../mobile/src/services/conversation";
+} from "./conversation/services/conversation";
 import type { DraftDocument } from "./draftDocument";
+import type { ConversationMutationContext } from "./conversation/state/conversationMutation";
 
 const localCommands = [
 	{ id: "project", capability: null, label: "Show in project" },
@@ -103,15 +104,35 @@ interface CommandContext {
 	drainRefusal(): string | null;
 	/** Sends a steer or queue through the outbox, as the composer does, so it
 	 * keeps its place in line and a lost answer is resent. */
-	submit(kind: "steer" | "queue", input: InputItem[]): Promise<void>;
+	submit(kind: "steer" | "queue", input: InputItem[], context?: ConversationMutationContext): Promise<void>;
 	/** Stops the turn as the Stop button does. */
 	stop(): Promise<void>;
 	reasoning(): Pick<MobileConversation, "supportsReasoning" | "reasoningEffort" | "reasoningEffortLevels"> | null;
 }
 
 /** Attachments follow ordinary message routing, as in the web composer. */
-export function composerCommand(text: string, imageCount = 0) {
-	return imageCount ? null : matchBuiltinInvocation(text, commands);
+export function composerCommand(
+	text: string,
+	imageCount = 0,
+	composer?: {
+		skillNames?: string[];
+		commandNames?: string[];
+		mentions?: { kind: "skill" | "command"; name: string; offset: number }[];
+	},
+) {
+	if (imageCount) return null;
+	const match = matchBuiltinInvocation(text, commands);
+	if (!match) return null;
+	const leadingMention = composer?.mentions?.find(
+		(mention) => mention.offset === 0 && mention.name === match.command.id,
+	);
+	const selectedLeadingMention =
+		leadingMention?.kind === "skill"
+			? composer?.skillNames?.includes(leadingMention.name)
+			: leadingMention?.kind === "command"
+				? composer?.commandNames?.includes(leadingMention.name)
+				: false;
+	return selectedLeadingMention ? null : match;
 }
 
 export async function submitComposerCommand(
@@ -126,14 +147,16 @@ export async function submitComposerCommand(
 	const snapshot = document.getSnapshot();
 	const record = snapshot.record;
 	if (!snapshot.loaded || snapshot.error || snapshot.submitting || record.unconfirmed !== null) return null;
-	const match = composerCommand(record.draft, record.images?.length);
+	const match = composerCommand(record.draft, record.images?.length, record.composer);
 	if (!match || !context.isCurrent()) return null;
-	let operation: () => Promise<unknown>;
+	let operation: (captureContext?: ConversationMutationContext) => Promise<unknown>;
 	let afterSubmit = () => {};
 	const id = match.command.id;
 	if (isLocalComposerCommand(id)) {
-		await context.local(id);
-		if (document.getSnapshot().record === record) document.edit("");
+		await document.submitBuiltinCommand(async () => {
+			await context.local(id);
+			return true;
+		});
 		return id;
 	}
 	// A command with a control (steer, queue, drain, stop) runs only when the
@@ -163,14 +186,45 @@ export async function submitComposerCommand(
 		};
 	} else if (id === "steer" || id === "queue" || id === "drain-as-steer") {
 		requireControl();
-		const input = buildComposerInput(match.argsText);
 		// The explicit /steer command preserves waiting queue entries. Draining
 		// uses its own command, the one Steer all now is.
 		if (id === "drain-as-steer") {
 			const refusal = context.drainRefusal();
 			if (refusal !== null) throw new CommandArgumentError(refusal);
+			operation = () => context.drainQueue();
+		} else {
+			// Recover the message body, not the routing command. Mention offsets
+			// belong to that same original body, before buildComposerInput trims it.
+			const bodyOffset = record.draft.length - match.argsText.length;
+			const mentions = record.composer?.mentions
+				?.filter((mention) => mention.offset >= bodyOffset)
+				.map((mention) => ({ ...mention, offset: mention.offset - bodyOffset }));
+			const composer = {
+				text: match.argsText,
+				attachments: [],
+				...(record.composer?.skillNames === undefined ? {} : { skillNames: record.composer.skillNames }),
+				...(record.composer?.commandNames === undefined ? {} : { commandNames: record.composer.commandNames }),
+				...(mentions === undefined ? {} : { mentions }),
+			};
+			const input = buildComposerInput(
+				composer.text,
+				composer.attachments,
+				composer.skillNames,
+				composer.commandNames,
+				composer.mentions,
+			);
+			const mutationContext: ConversationMutationContext = {
+				composer,
+				...(record.composer?.recoveryIds === undefined ? {} : { recoverySourceIds: record.composer.recoveryIds }),
+			};
+			operation = (captureContext) =>
+				context.submit(id, input, {
+					...mutationContext,
+					...(captureContext?.draftCaptureToken === undefined
+						? {}
+						: { draftCaptureToken: captureContext.draftCaptureToken }),
+				});
 		}
-		operation = id === "drain-as-steer" ? () => context.drainQueue() : () => context.submit(id, input);
 	} else if (id === "model") {
 		const catalog = await service.models();
 		// A catalog request must never consume text edited while it was loading,
@@ -211,9 +265,11 @@ export async function submitComposerCommand(
 	}
 	let completed: typeof match.command.id | null = null;
 	try {
-		await document.submit(async () => {
+		const submit =
+			id === "steer" || id === "queue" ? document.submit.bind(document) : document.submitBuiltinCommand.bind(document);
+		await submit(async (_text, _images, captureContext) => {
 			if (!context.isCurrent()) return false;
-			await operation();
+			await operation(captureContext);
 			completed = match.command.id;
 			return true;
 		});

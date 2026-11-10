@@ -1,7 +1,8 @@
 // railExpansion.ts persists the rail's per-row expand state, so a project you
 // opened, a subagent fold you looked inside, and the Archived-sessions section
-// are all still where you left them after a reload. Rail.tsx owns the live
-// map; this module only turns it into localStorage and back.
+// are all still where you left them after a reload. The navigation store owns
+// the live map (stores/navigation/persistence.ts binds this module as its
+// port); this module only turns it into localStorage and back.
 //
 // One JSON blob under one key, following DockHost's evener.workspace.layout.v2
 // precedent rather than the htmx UI's key-per-row
@@ -66,3 +67,10 @@ export function saveExpansion(overrides: ReadonlyMap<string, boolean>): void {
     // Best-effort, same rationale as stores/prefs.ts's writeRaw.
   }
 }
+
+// Section-fold keys. Archived is the only one that starts collapsed; every
+// other tier is where you expect to find your work.
+export const LIVE_SECTION_KEY = "section:live";
+export const PROJECTS_SECTION_KEY = "section:projects";
+export const TEST_RUNS_SECTION_KEY = "section:test_runs";
+export const ARCHIVED_SECTION_KEY = "section:archived";

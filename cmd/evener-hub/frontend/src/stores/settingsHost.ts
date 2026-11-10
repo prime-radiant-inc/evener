@@ -12,16 +12,17 @@
 // URL: the seed a fresh load starts from, and the adoption a popstate performs.
 // Both ask shell/routing.ts whether the route is a settings route, which is why
 // the settings URL's parameter name and predicate live THERE (routing.ts imports
-// hostRouting.ts's one spelling rule, and this module imports routing.ts, so the
+// appwire-client hostRouting.ts's one spelling rule, and this module imports routing.ts, so the
 // dependency runs one way only). The React glue - the settings URL builder, the
 // shared hook and the mount/popstate sync - lives in panes/settings/settingsHost.ts;
 // shell/routing.ts's navigate carries the host across the app's own navigations.
+
+import { LOCAL_HOST, normalizeHost } from "@evener/appwire-client";
 import { createStore, useStore } from "zustand";
 import { HOST_QUERY_PARAM, isSettingsPath, setSettingsHostRouteSync } from "../shell/routing";
-import { LOCAL_HOST, normalizeHost } from "./hostRouting";
 
 // The one spelling rule (absent / empty / `local` -> LOCAL_HOST) lives in
-// hostRouting.ts, where shell/routing.ts can reach it too: it is re-exported here
+// appwire-client hostRouting.ts, where shell/routing.ts can reach it too: it is re-exported here
 // so this module keeps the surface its consumers and tests already use.
 export { normalizeHost };
 

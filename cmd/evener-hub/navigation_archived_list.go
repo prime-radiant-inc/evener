@@ -144,10 +144,10 @@ func archivedListCandidates(hint navigationResourceKind) []navigationResourceKin
 }
 
 // ArchivedList returns the page of archived rows of request's project that
-// follows request.After in the rail's order, from the catalog holding the
-// project now (archivedListCatalog). A project none of the catalogs it may be
-// read from holds answers an empty page: it was deleted, or became or stopped
-// being a test run, since the rail listed it.
+// follows request.After in the project's session order, from the catalog
+// holding the project now (archivedListCatalog). A project none of the
+// catalogs it may be read from holds answers an empty page: it was deleted,
+// or became or stopped being a test run, since the rail listed it.
 func (p navigationProjection) ArchivedList(ctx context.Context, request navigationArchivedListRequest) (navigationArchivedPage, error) {
 	catalog, project := p.archivedListCatalog(request.Hint, request.ProjectKey)
 	rows, _ := project.TierRows("archived")
@@ -161,7 +161,7 @@ func (p navigationProjection) ArchivedList(ctx context.Context, request navigati
 	start := 0
 	if request.After != nil {
 		start = sort.Search(len(rows), func(i int) bool {
-			return hubcore.SessionOrderLess(*request.After, hubcore.TreeNodeOrderKey(rows[i]))
+			return hubcore.ProjectSessionOrderLess(*request.After, hubcore.TreeNodeOrderKey(rows[i]))
 		})
 	}
 	projector := navigationProjector{projection: p}

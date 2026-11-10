@@ -22,14 +22,12 @@ func hostRequestDispatchHub(t *testing.T, handle func(method string, params json
 	t.Helper()
 	remote, calls, _ := scriptedAdminRemote(t, handle, true)
 	sources, hosts := scriptedRemoteHost(t, remote, true)
-	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), RemoteHostRegistry: hosts}, sources)
+	server := newHubAppServer(testWebConfig(t, hubcore.WebConfig{RemoteHostRegistry: hosts}), sources)
 	wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
 	t.Cleanup(wire.Close)
 	client := dialHubRPC(t, wire)
 	t.Cleanup(func() { _ = client.Close() })
-	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
+	mustInitializeHubClient(t, client)
 	return client, calls
 }
 

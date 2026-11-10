@@ -65,21 +65,42 @@ func TestRun(t *testing.T) {
 
 func TestMainAndRenderFailure(t *testing.T) {
 	oldExit, oldArgs, oldExecute := exitProcess, os.Args, executeTemplate
-	t.Cleanup(func() { exitProcess, os.Args, executeTemplate = oldExit, oldArgs, oldExecute })
+	oldStderr := os.Stderr
+	mainStderr, err := os.CreateTemp(t.TempDir(), "main-stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	renderStderr, err := os.CreateTemp(t.TempDir(), "render-stderr")
+	if err != nil {
+		_ = mainStderr.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		exitProcess, os.Args, executeTemplate, os.Stderr = oldExit, oldArgs, oldExecute, oldStderr
+		_ = mainStderr.Close()
+		_ = renderStderr.Close()
+	})
 	os.Args = []string{"appwiredoc"}
+	os.Stderr = mainStderr
 	var code int
 	exitProcess = func(got int) { code = got }
 	main()
 	if code != 2 {
 		t.Fatalf("main exit=%d", code)
 	}
-	stderr, err := os.CreateTemp(t.TempDir(), "stderr")
-	if err != nil {
-		t.Fatal(err)
+	if info, err := mainStderr.Stat(); err != nil {
+		t.Fatalf("stat main stderr: %v", err)
+	} else if info.Size() == 0 {
+		t.Fatal("main stderr was empty")
 	}
 	executeTemplate = func(*template.Template, *strings.Builder, docData) error { return errors.New("render") }
-	if got := run([]string{"-out", "ignored"}, stderr, os.WriteFile); got != 1 {
+	if got := run([]string{"-out", "ignored"}, renderStderr, os.WriteFile); got != 1 {
 		t.Fatalf("render code=%d", got)
+	}
+	if info, err := renderStderr.Stat(); err != nil {
+		t.Fatalf("stat render stderr: %v", err)
+	} else if info.Size() == 0 {
+		t.Fatal("render stderr was empty")
 	}
 }
 
@@ -120,7 +141,7 @@ func TestBuildIncludesJobActivityTypes(t *testing.T) {
 	}
 }
 
-func TestBuildIncludesStableDelegateInfo(t *testing.T) {
+func TestBuildIncludesDelegateInfo(t *testing.T) {
 	d := build()
 	for _, tv := range d.Types {
 		if tv.Name != "EvenerDelegateInfo" {
@@ -364,6 +385,30 @@ func TestBuildIncludesSessionActivityResources(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestBuildIncludesActivityReadSessionActivity pins the pulse meter's element
+// type. SessionActivity is not one of the evener/thread/* activity resources
+// above: ActivityReadResponse.Sessions is its only catalog reference, and a
+// consumer of evener/activity/read needs its field table.
+func TestBuildIncludesActivityReadSessionActivity(t *testing.T) {
+	want := []string{"ref", "minutes", "runningSubagents", "quietForMs", "latestIntent", "lastMovedAt"}
+	for _, resource := range build().Types {
+		if resource.Name != "SessionActivity" {
+			continue
+		}
+		present := make(map[string]bool, len(resource.Fields))
+		for _, field := range resource.Fields {
+			present[field.JSON] = true
+		}
+		for _, field := range want {
+			if !present[field] {
+				t.Errorf("SessionActivity missing wire field %s", field)
+			}
+		}
+		return
+	}
+	t.Fatal("build() missing SessionActivity")
 }
 
 func TestBuildIncludesJobOutputPage(t *testing.T) {

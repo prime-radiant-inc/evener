@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"context"
 	"fmt"
 	"regexp"
 	"sort"
@@ -56,10 +55,7 @@ func TestShippedPromptsOnlyNameToolsTheSessionHas(t *testing.T) {
 		agentType := agent.Name
 		parent.pluginAgents[agentType] = agent
 
-		prepared, err := parent.prepareSubagentRun(context.Background(), "task", "", "", 0, agentType, "", nil, nil)
-		if err != nil {
-			t.Fatalf("prepareSubagentRun(%s): %v", agentType, err)
-		}
+		prepared := prepareStableChild(t, parent, delegateArgs{Task: "task", AgentType: agentType})
 		child := prepared.sub.sess
 		surface := child.reg.RegisteredNames()
 		for _, visible := range child.providerVisibleToolNames(child.reg.Names()) {
@@ -78,7 +74,6 @@ func TestShippedPromptsOnlyNameToolsTheSessionHas(t *testing.T) {
 					source, agentType, name, n, mentionCapWithoutTheTool[name]))
 			}
 		}
-		releasePreparedTreeSlot(prepared)
 		child.Close()
 	}
 	if len(findings) > 0 {

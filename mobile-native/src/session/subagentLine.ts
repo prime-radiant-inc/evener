@@ -2,11 +2,10 @@
 // title, its state and how long it has been in it ("failed · 6m"), and the
 // latest activity beneath, which reads the same as in the Agents list.
 // Pure: the row re-renders with the transcript, so no clock of its own.
-import { delegateEndingText, delegateTiming, type EvenerDelegateInfo } from "@evener/appwire-client";
+import { compactDuration, delegateEndingText, delegateTiming, type EvenerDelegateInfo } from "@evener/appwire-client";
 import { endedInStop, runningSubagentCount, subagentState } from "../subagents/subagentModel";
 import { hubTime, subagentQuietLine, waitingOnSubagents } from "../board/attention";
 import type { TimelineRow } from "../timeline";
-import { compactDuration } from "./format";
 
 type Activity = Extract<TimelineRow, { kind: "activity" }>;
 
@@ -20,6 +19,9 @@ export interface SubagentLine {
 	activityFrom?: "roster" | "tree";
 	/** The subagent's own transcript, which tapping the row opens. */
 	ref?: string;
+	/** When its run started, so the screen it opens times the run as this row
+	 * does, before the coordinator's tree reports the row (#2988). */
+	runStartedAt?: string;
 	/** The subagent's id, for its outcome in the coordinator's tree. */
 	delegateId?: string;
 	runGeneration?: number;
@@ -77,6 +79,10 @@ export function subagentLine(
 		state,
 		stateText,
 		ref: delegate.transcriptRef,
+		// Only a running row needs its run's start: a finished row's screen is
+		// no Working time, and carrying an old start could time a winding-down
+		// session by a run that already ended (#2988).
+		...(state === "running" && delegate.runStartedAt !== undefined ? { runStartedAt: delegate.runStartedAt } : {}),
 		delegateId: delegate.delegateId,
 		runGeneration: delegate.runGeneration,
 	};

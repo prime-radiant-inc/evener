@@ -1,0 +1,16 @@
+{
+  "errors": 0,
+  "failures": 0,
+  "frontend_relative_l2_errors": [
+    0.0021442624274641275,
+    0.002027551643550396,
+    0.0019347789930179715
+  ],
+  "streaming_parity_max_absolute_errors": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "tests_run": 5
+}

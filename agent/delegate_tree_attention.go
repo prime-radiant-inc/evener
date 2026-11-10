@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"maps"
 	"os"
-	"path/filepath"
 	"slices"
 	"sort"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/schema"
 )
 
 type coldDelegateAttentionRef struct {
@@ -66,6 +66,42 @@ func delegateAttentionProjectionEligible(state delegatestore.State, delegateID s
 		ancestorID = ancestor.Descriptor.ParentDelegateID
 	}
 	return true
+}
+
+// attentionReopenRefused reports whether a deliberate stop or the tree's
+// close owns delegateID's teardown, so a failed presentation start must leave
+// its consumed report to that teardown instead of re-delivering it. A stop's
+// discard machinery enumerates attention by the ids it knew at plan time, so
+// a row appended under a fresh identity after that enumeration can outlive
+// the teardown and wake paced retries for a delegate that was deliberately
+// stopped — the same policy the owner's drives enforce with childStopGated,
+// read here from the controller's own ledgers so a run settling after the
+// stop plan completed is covered too.
+func (c *delegateTreeController) attentionReopenRefused(delegateID string) bool {
+	if c == nil {
+		return true
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.attentionReopenRefusedLocked(delegateID)
+}
+
+func (c *delegateTreeController) attentionReopenRefusedLocked(delegateID string) bool {
+	// Closing, a missing aggregate, a pending stop and a covering stop refuse
+	// the reopen exactly as they refuse the tree's deliveries, read here with
+	// no owner (the empty owner id skips deliveryStoppedLocked's owner branch).
+	if c.deliveryStoppedLocked(delegateID, "") {
+		return true
+	}
+	aggregate := c.durable[delegateID]
+	if aggregate.Phase == delegatestore.PhaseStopping || aggregate.Phase == delegatestore.PhaseClosed {
+		return true
+	}
+	// The deliberately stopped finish outlives the stop plan that asked for
+	// it: the aggregate's latest settled generation stays stopped-by-parent
+	// until a newer generation runs, which is exactly the sticky gate the
+	// owner's own drives read (delegateRowStopGated).
+	return delegateOutcomeStopGated(aggregate.LatestOutcome, aggregate.CurrentRunOpen)
 }
 
 func readExistingDelegateAttentionFold(path, expectedSessionID string) (delegateAttentionFold, error) {
@@ -203,20 +239,6 @@ func (c *delegateTreeController) reconcileDelegateAttentionFromTranscripts() err
 	}
 	c.attention = rebuilt
 	return nil
-}
-
-func (c *delegateTreeController) noteDelegateAttention(delegateID, attentionID string) bool {
-	if c == nil {
-		return false
-	}
-	release, err := c.beginRetirementMutation()
-	if err != nil {
-		return false
-	}
-	defer release()
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.noteDelegateAttentionLocked(delegateID, attentionID)
 }
 
 // openDelegateAttention serializes a transcript-derived open against accepted
@@ -599,7 +621,9 @@ func (c *delegateTreeController) hasPendingDelegateAttention() bool {
 			continue
 		}
 		aggregate := c.durable[delegateID]
-		if len(state.wakeIDs) != 0 && aggregate != nil && aggregate.Resumable && aggregate.PendingStopSeq == 0 && aggregate.Phase != delegatestore.PhaseClosed {
+		// Resumable alone excludes a closed delegate: every fold transition
+		// into PhaseClosed requires !Resumable.
+		if len(state.wakeIDs) != 0 && aggregate != nil && aggregate.Resumable && aggregate.PendingStopSeq == 0 {
 			return true
 		}
 	}
@@ -670,17 +694,8 @@ func (c *delegateTreeController) retryDelegateAttentionLater() {
 	root := c.rootRuntime
 	c.mu.Unlock()
 	if root != nil {
-		root.scheduleStableDelegateAttentionRetry()
+		root.scheduleDelegateAttentionRetry()
 	}
-}
-
-func (c *delegateTreeController) nextIdleDelegateAttention() (string, string, bool) {
-	if c == nil {
-		return "", "", false
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.nextIdleDelegateAttentionLocked()
 }
 
 // selectDelegateAttentionWake is the wake driver's selection: it returns the
@@ -866,11 +881,7 @@ func (c *delegateTreeController) holdAttentionRestoreLocked(delegateID string) {
 func (c *delegateTreeController) releaseAttentionRestoreHold(delegateID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.attentionRestoreHolds[delegateID] <= 1 {
-		delete(c.attentionRestoreHolds, delegateID)
-		return
-	}
-	c.attentionRestoreHolds[delegateID]--
+	releaseCountedLocked(c.attentionRestoreHolds, delegateID)
 }
 
 // attentionRestoreHeldLocked reports whether an attention wake pass holds
@@ -944,6 +955,15 @@ func (c *delegateTreeController) idleDelegateRestoreCommit(delegateID string) (d
 		return delegateStartCommit{}, "", errDelegateTargetBusy
 	}
 	aggregate := c.durable[delegateID]
+	if c.laneHandoffCoversLocked(delegateID) {
+		return delegateStartCommit{}, "", errDelegateTargetBusy
+	}
+	// The cold path never runs CommitStart, so it owns the ancestor check the
+	// ordinary start paths get at commit: a closed ancestor must not be revived
+	// into a lane that was already handed off.
+	if blocked, _ := c.ancestorFenceLocked(aggregate.Descriptor.ParentDelegateID); blocked {
+		return delegateStartCommit{}, "", errDelegateTargetBusy
+	}
 	descriptor := cloneDelegateStartDescriptor(aggregate.Descriptor)
 	worktreePath := ""
 	if descriptor.Isolation == "worktree" {
@@ -953,7 +973,7 @@ func (c *delegateTreeController) idleDelegateRestoreCommit(delegateID string) (d
 		lease:          delegateLease{delegateID: delegateID, generation: aggregate.Generation},
 		ctx:            context.Background(),
 		descriptor:     descriptor,
-		transcriptPath: filepath.Join(c.stateDir, sessionsSubdir, descriptor.ChildSessionID+".transcript.jsonl"),
+		transcriptPath: schema.SessionTranscriptPath(c.stateDir, descriptor.ChildSessionID),
 		worktreePath:   worktreePath,
 	}, descriptor.ParentDelegateID, nil
 }
@@ -1013,6 +1033,13 @@ func (c *delegateTreeController) beginIdleRuntimeInstallation(delegateID string)
 	if err != nil {
 		return nil, err
 	}
+	c.mu.Lock()
+	refused := c.closing || c.laneHandoffCoversLocked(delegateID)
+	c.mu.Unlock()
+	if refused {
+		release()
+		return nil, errDelegateTargetBusy
+	}
 	return &delegateIdleRuntimeInstallation{controller: c, delegateID: delegateID, release: release}, nil
 }
 
@@ -1025,6 +1052,9 @@ func (installation *delegateIdleRuntimeInstallation) attach(runtime *Session) er
 	defer c.mu.Unlock()
 	aggregate := c.durable[delegateID]
 	if c.closing || aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.PendingStopSeq != 0 || runtime.delegateController != c || runtime.owningDelegateID != delegateID || runtime.ID() != aggregate.Descriptor.ChildSessionID {
+		return errDelegateTargetBusy
+	}
+	if c.laneHandoffCoversLocked(delegateID) {
 		return errDelegateTargetBusy
 	}
 	live := c.live[delegateID]

@@ -28,9 +28,10 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 
 	// Track tool call state for streaming.
 	type toolCallState struct {
-		id   string
-		name string
-		args strings.Builder
+		id               string
+		name             string
+		thoughtSignature string
+		args             strings.Builder
 	}
 	toolCalls := map[int]*toolCallState{}
 	var textStarted bool
@@ -54,17 +55,15 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 	// earlier top-level ones.
 	var sawTopLevelUsage bool
 	finished := false
-	var finalEvent *llm.StreamEvent
 
-	runner := &transport.StreamRunner{
+	var runner *transport.StreamRunner
+	runner = &transport.StreamRunner{
 		Provider:   res.Instance,
 		Resp:       resp,
 		Stream:     s,
 		Attempt:    attempt,
 		StatusCode: resp.StatusCode,
-		FinalEvent: func() *llm.StreamEvent {
-			return finalEvent
-		},
+		Cancel:     cancel,
 		// HTTP response-byte idle is owned by ClientWithAdapterTimeout, below gzip decoding.
 		Finished:      &finished,
 		IncompleteMsg: res.Instance + " stream ended without completion",
@@ -90,10 +89,11 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 					tc := toolCalls[idx]
 					rescuedArgs := rescueClaudeXMLArgs(tc.args.String())
 					tcd := llm.ToolCallData{
-						ID:        tc.id,
-						Name:      tc.name,
-						Arguments: json.RawMessage(rescuedArgs),
-						Type:      "function",
+						ID:               tc.id,
+						Name:             tc.name,
+						Arguments:        json.RawMessage(rescuedArgs),
+						Type:             "function",
+						ThoughtSignature: tc.thoughtSignature,
 					}
 					completedToolCalls = append(completedToolCalls, tcd)
 					s.Send(llm.StreamEvent{
@@ -159,20 +159,9 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 					}
 				}
 				llm.StampEndpointURL(finalResp, r.EndpointURL, r.Material)
-				event := llm.StreamEvent{
-					Type:         llm.StreamEventFinish,
-					FinishReason: &finish,
-					Usage:        usage,
-					Response:     finalResp,
-				}
-				if attempt.Active() {
-					finalEvent = &event
-				} else {
-					s.Send(event)
-				}
-				// The provider may keep the body open after [DONE]. Stop the
-				// parser before its next read; finished preserves success accounting.
-				cancel()
+				// The provider may keep the body open after [DONE]; Finish stops
+				// the parser before its next read.
+				runner.Finish(*finalResp)
 				return nil
 			}
 
@@ -279,28 +268,34 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 						reasoningStarted = false // Prevent double-close in [DONE].
 					}
 					state = &toolCallState{
-						id:   tc.ID,
-						name: tc.Function.Name,
+						id:               tc.ID,
+						name:             tc.Function.Name,
+						thoughtSignature: thoughtSignatureFromExtraContent(tc.ExtraContent),
 					}
 					toolCalls[tc.Index] = state
 					s.Send(llm.StreamEvent{
 						Type: llm.StreamEventToolCallStart,
 						ToolCall: &llm.ToolCallData{
-							ID:   tc.ID,
-							Name: tc.Function.Name,
-							Type: "function",
+							ID:               tc.ID,
+							Name:             tc.Function.Name,
+							Type:             "function",
+							ThoughtSignature: state.thoughtSignature,
 						},
 					})
+				}
+				if state.thoughtSignature == "" {
+					state.thoughtSignature = thoughtSignatureFromExtraContent(tc.ExtraContent)
 				}
 				if tc.Function.Arguments != "" {
 					state.args.WriteString(tc.Function.Arguments)
 					s.Send(llm.StreamEvent{
 						Type: llm.StreamEventToolCallDelta,
 						ToolCall: &llm.ToolCallData{
-							ID:        state.id,
-							Name:      state.name,
-							Arguments: json.RawMessage(tc.Function.Arguments),
-							Type:      "function",
+							ID:               state.id,
+							Name:             state.name,
+							Arguments:        json.RawMessage(tc.Function.Arguments),
+							Type:             "function",
+							ThoughtSignature: state.thoughtSignature,
 						},
 					})
 				}

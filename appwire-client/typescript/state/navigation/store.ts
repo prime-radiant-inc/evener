@@ -132,6 +132,12 @@ export interface NavigationStoreState {
     limit?: number,
   ): Promise<ResourceState<NavigationProjectPage>>;
   lookupLocation(ref: string): Promise<ResourceState<NavigationSessionLocation>>;
+  /** Records one rail row's expand state under any rail node id (a project's
+   * row, a section fold, a host fold or a host copy) in the store's one
+   * expansion map, then hands the whole map to the persistence port. Unlike
+   * setExpanded this reads no project: the caller owns whatever hydration the
+   * row it toggled needs. */
+  setRowExpanded(id: string, expanded: boolean): void;
   setExpanded(projectKey: string, expanded: boolean): void;
   toggleExpanded(projectKey: string): void;
   awaitNavigationTargets(targets: NavigationInvalidationTarget[], generationID?: string): Promise<void>;
@@ -596,15 +602,19 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
     revalidator.forceLocations();
     return revalidator.waitForTargets(mutation.targets, mutation.generation_id, visibleKeys);
   }
-  /** The one ordered sequence behind both expansion actions: publish, then
-   * persist, then hydrate what the row just revealed. Persistence is
-   * best-effort and must never cost the caller the in-memory change, so the
-   * store publishes before it hands the map to the host. */
-  function commitExpansion(projectKey: string, expanded: boolean): void {
+  /** The one ordered sequence behind every expansion action: publish, then
+   * persist. Persistence is best-effort and must never cost the caller the
+   * in-memory change, so the store publishes before it hands the map to the
+   * host. */
+  function commitRowExpansion(id: string, expanded: boolean): void {
     const next = new Map(store.getState().expanded);
-    next.set(projectKey, expanded);
+    next.set(id, expanded);
     store.setState({ expanded: next });
     persistence.writeExpansion(next);
+  }
+  /** A project row's expansion also hydrates the project it just revealed. */
+  function commitExpansion(projectKey: string, expanded: boolean): void {
+    commitRowExpansion(projectKey, expanded);
     if (expanded && store.getState().mode === "v3") void hydrateProject(projectKey, bootEpoch);
   }
   function actions() {
@@ -667,6 +677,7 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
       applyNavigationMutation: (mutation: NavigationMutation) => {
         return applyMutation(mutation, foregroundKeys());
       },
+      setRowExpanded: (id: string, expanded: boolean) => commitRowExpansion(id, expanded),
       setExpanded: (projectKey: string, expanded: boolean) => commitExpansion(projectKey, expanded),
       toggleExpanded: (projectKey: string) =>
         commitExpansion(projectKey, !(store.getState().expanded.get(projectKey) ?? false)),

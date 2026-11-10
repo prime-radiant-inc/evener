@@ -3,8 +3,9 @@ import { deferRequest, FakeClient } from "@evener/appwire-client/testing/fakeCli
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { connectionStore } from "../../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../../../stores/extensions";
+import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { alertReasons, statusReasons } from "../reasonTestUtils";
 import { MarketplacesPluginsSection } from "./index";
@@ -35,25 +36,18 @@ function cloneLitterError(data: unknown): WireError {
   });
 }
 
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] }));
-  connectionStore.getState().connect(fake);
-  return fake;
-}
-
 // Registers list handlers returning one marketplace + one plugin, so the
 // section's own mount fetch populates the store (the same path production
 // takes) instead of the test forcing store state around it.
 function connectSeededClient(): FakeClient {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   fake.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
   fake.on("evener/plugin/list", () => ({ plugins: [LINTER] }));
   return fake;
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetExtensionsStoreForTests();
   resetToastStoreForTests();
 });
@@ -83,6 +77,34 @@ test("cached inventory keeps install disabled throughout a delayed retry", async
   expect(fake.calls.filter((c) => c.method === "evener/plugin/install")).toHaveLength(0);
   await act(async () => release({ plugins: [LINTER] }));
   expect((screen.getByRole("button", { name: "Install" }) as HTMLButtonElement).disabled).toBe(false);
+});
+
+test("catalog details open after the initial plugin list fails without allowing writes", async () => {
+  const fake = connectSeededClient();
+  fake.on("evener/plugin/list", () => {
+    throw new Error("initial-list-failure-sentinel");
+  });
+  fake.on("evener/marketplace/browse", () => ({ name: ACME.name, plugins: [{ name: "formatter" }] }));
+  const user = userEvent.setup();
+  render(<MarketplacesPluginsSection />);
+  await waitFor(() => expect(extensionsStore.getState().pluginsError).not.toBeNull());
+  expect(extensionsStore.getState().plugins).toBeNull();
+  await user.click(screen.getByRole("radio", { name: "Browse" }));
+  await user.click(screen.getByText(ACME.name, { selector: "summary" }));
+  const catalog = await screen.findByRole("list", { name: `${ACME.name} plugins` });
+  await user.click(within(catalog).getByRole("button", { name: /formatter/ }));
+  const sheet = screen.getByRole("dialog", { name: "formatter" });
+  expect(sheet.querySelector('[data-kind="plugin-detail"]')?.getAttribute("data-mode")).toBe("catalog");
+  expect(within(sheet).queryByRole("switch")).toBeNull();
+  const install = within(sheet).getByRole("button", { name: "Install" });
+  expect((install as HTMLButtonElement).disabled).toBe(true);
+  await user.click(install);
+  expect(screen.getAllByRole("dialog")).toHaveLength(1);
+  expect(
+    fake.calls.filter((call) =>
+      /evener\/plugin\/(install|enable|disable|setAutoUpgrade|remove|upgrade)$/.test(call.method),
+    ),
+  ).toHaveLength(0);
 });
 
 test("an install confirmation reconciles a target installed during inventory recovery", async () => {
@@ -168,7 +190,7 @@ test("cached installed details remain inspectable through failed reads and delay
 });
 
 test("first plugin journey navigates through Sources and explicitly browses the added catalog without installing", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   fake.on("evener/marketplace/list", () => ({ marketplaces: [] }));
   fake.on("evener/plugin/list", () => ({ plugins: [] }));
   fake.on("evener/marketplace/add", () => ({ marketplaces: [ACME] }));
@@ -358,7 +380,7 @@ afterEach(() => {
 });
 
 test("shows a loading state before both the marketplace and plugin lists resolve", () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   fake.on("evener/marketplace/list", () => new Promise(() => {}));
   fake.on("evener/plugin/list", () => new Promise(() => {}));
   render(<MarketplacesPluginsSection />);
@@ -366,7 +388,7 @@ test("shows a loading state before both the marketplace and plugin lists resolve
 });
 
 test("fetches both marketplaces and plugins in parallel on mount", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   fake.on("evener/marketplace/list", () => ({ marketplaces: [] }));
   fake.on("evener/plugin/list", () => ({ plugins: [] }));
   render(<MarketplacesPluginsSection />);
@@ -376,7 +398,7 @@ test("fetches both marketplaces and plugins in parallel on mount", async () => {
 });
 
 test("opening the view asks the hub for plugin updates once the lists load, and marks what it finds", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   fake.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
   const releaseList = deferRequest<{ plugins: PluginEntry[] }>(fake, "evener/plugin/list");
   fake.on("evener/plugin/checkUpdates", () => {
@@ -394,7 +416,7 @@ test("opening the view asks the hub for plugin updates once the lists load, and 
 });
 
 test("a view whose plugin list failed to load asks the hub for no updates", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   fake.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
   fake.on("evener/plugin/list", () => {
     throw new Error("boom");
@@ -405,7 +427,7 @@ test("a view whose plugin list failed to load asks the hub for no updates", asyn
 });
 
 test("keeps navigation available with one failure notice when the marketplace list fails to load", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   fake.on("evener/marketplace/list", () => {
     throw new Error("network down");
   });
@@ -420,7 +442,7 @@ test("keeps navigation available with one failure notice when the marketplace li
 });
 
 test("shows one failed-to-load message when the plugin list fails to load", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   fake.on("evener/marketplace/list", () => ({ marketplaces: [] }));
   fake.on("evener/plugin/list", () => {
     throw new Error("boom");
@@ -441,7 +463,7 @@ test.each([
   ["plugin", "a hub-reported WireError", new WireError("plugin index is rebuilding", -32000)],
   ["plugin", "a client-side failure", new Error("AppwireClient internal detail")],
 ])("a %s list failure from %s shows that error's friendly form", async (list, _name, err) => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   fake.on("evener/marketplace/list", () => {
     if (list === "marketplace") throw err;
     return { marketplaces: [] };
@@ -522,7 +544,7 @@ test("switching segments while the marketplace sheet is open closes it", async (
 });
 
 test("keeps an applied removal guard across failed reconciliation and sheet remount", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   let listCalls = 0;
   fake.on("evener/marketplace/list", () => {
     listCalls += 1;
@@ -554,7 +576,7 @@ test("a later accepted notification publication clears a same-name applied remov
   // Library's findBy/waitFor polls advance it, so the wait costs no real time.
   vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime });
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   let listCalls = 0;
   fake.on("evener/marketplace/list", () => {
     listCalls += 1;
@@ -582,7 +604,7 @@ test("a later accepted notification publication clears a same-name applied remov
 });
 
 test("a delayed applied outcome after authoritative absence cannot leave a removal guard", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   let listCalls = 0;
   fake.on("evener/marketplace/list", () => {
     listCalls += 1;
@@ -627,7 +649,7 @@ test("a delayed applied outcome after authoritative absence cannot leave a remov
 });
 
 test("clears an applied removal guard when the connection client changes", async () => {
-  const first = connectFakeClient();
+  const first = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   let listCalls = 0;
   first.on("evener/marketplace/list", () => {
     listCalls += 1;
@@ -657,7 +679,7 @@ test("clears an applied removal guard when the connection client changes", async
 });
 
 test("a fenced outcome from the replaced client cannot leave a removal guard", async () => {
-  const first = connectFakeClient();
+  const first = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   first.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
   first.on("evener/plugin/list", () => ({ plugins: [] }));
   let rejectRemoval: ((reason: unknown) => void) | undefined;
@@ -749,7 +771,7 @@ test("Browse tree expansion survives a segment round trip (Installed → Browse 
 });
 
 test("clears an applied removal guard when the selected host changes (same connection)", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   let betaListCalls = 0;
   fake.on("evener/host/request", (params) => {
     const forwarded = params as { host: string; method: string };
@@ -855,7 +877,7 @@ function heldListReads() {
 }
 
 test("a late applied outcome after the whole page unmounts leaves no guard on the remounted page and warns once", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   const held = heldListReads();
   let listCalls = 0;
   fake.on("evener/marketplace/list", () => {
@@ -896,7 +918,7 @@ test("a late applied outcome after the whole page unmounts leaves no guard on th
 });
 
 test("an outcome from the replaced client cannot mark or block the remounted page and adds no list call", async () => {
-  const first = connectFakeClient();
+  const first = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   first.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
   first.on("evener/plugin/list", () => ({ plugins: [] }));
 
@@ -924,7 +946,7 @@ test("an outcome from the replaced client cannot mark or block the remounted pag
 });
 
 test("a late applied outcome against an already-reconciled list is not marked, does not re-fetch, and warns truthfully once", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   const held = heldListReads();
   let listCalls = 0;
   fake.on("evener/marketplace/list", () => {
@@ -966,7 +988,7 @@ test("a late applied outcome against an already-reconciled list is not marked, d
 });
 
 test("an ordinary removal failure stays retryable across a whole-page remount", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient((fake) => fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] })));
   fake.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
   fake.on("evener/plugin/list", () => ({ plugins: [] }));
   let removeAttempts = 0;
@@ -1000,4 +1022,120 @@ test("an ordinary removal failure stays retryable across a whole-page remount", 
     within(screen.getByRole("dialog", { name: "Remove marketplace" })).getByRole("button", { name: "Remove" }),
   );
   await waitFor(() => expect(removeAttempts).toBe(2));
+});
+
+test("a catalog row's main area opens the detail sheet in catalog mode, with no components read", async () => {
+  const fake = connectSeededClient();
+  fake.on("evener/marketplace/browse", () => ({
+    name: ACME.name,
+    plugins: [{ name: "formatter", description: "Fixture formatter" }],
+  }));
+  fake.on("evener/plugin/components", (params) => ({
+    results: params.targets.map((t) => ({
+      plugin: t.plugin,
+      marketplace: t.marketplace,
+      components: { skills: ["run"] },
+    })),
+  }));
+  const user = userEvent.setup();
+  render(<MarketplacesPluginsSection />);
+  await screen.findByRole("button", { name: /linter/ });
+  await user.click(screen.getByRole("radio", { name: "Browse" }));
+  await user.click(screen.getByText(/acme-plugins/, { selector: "summary" }));
+  await screen.findByRole("list", { name: `${ACME.name} plugins` });
+  const componentsCallsBefore = fake.calls.filter((c) => c.method === "evener/plugin/components").length;
+
+  await user.click(screen.getByRole("button", { name: /formatter/ }));
+  const sheet = screen.getByRole("dialog", { name: "formatter" });
+  // Catalog mode: description + metadata + the Install footer, no switches
+  // and no Contents block (spec decision 2).
+  expect(within(sheet).getByText("Fixture formatter")).toBeTruthy();
+  expect(within(sheet).queryByRole("switch")).toBeNull();
+  expect(sheet.querySelector('[data-kind="plugin-contents"]')).toBeNull();
+  expect(within(sheet).getByRole("button", { name: "Install" })).toBeTruthy();
+  expect(within(sheet).queryByRole("button", { name: "Remove" })).toBeNull();
+  // Opening the catalog sheet reads no components: no new call, and no
+  // components call ever named the not-installed plugin.
+  expect(fake.calls.filter((c) => c.method === "evener/plugin/components")).toHaveLength(componentsCallsBefore);
+  expect(
+    fake.calls.some(
+      (c) =>
+        c.method === "evener/plugin/components" &&
+        (c.params as { targets: { plugin?: string }[] }).targets.some((t) => t.plugin === "formatter"),
+    ),
+  ).toBe(false);
+});
+
+test("an install through the catalog sheet returns focus to the row it reshaped", async () => {
+  const fake = connectSeededClient();
+  fake.on("evener/marketplace/browse", () => ({
+    name: ACME.name,
+    plugins: [{ name: "formatter", description: "Fixture formatter" }],
+  }));
+  fake.on("evener/plugin/install", () => ({
+    plugins: [
+      LINTER,
+      {
+        plugin: "formatter",
+        marketplace: ACME.name,
+        version: "1.4.0",
+        enabled: true,
+        autoUpgrade: false,
+        broken: false,
+        installPath: "/formatter",
+        installedAt: 1,
+        lastUpdated: 1,
+      },
+    ],
+  }));
+  const user = userEvent.setup();
+  render(<MarketplacesPluginsSection />);
+  await screen.findByRole("button", { name: /linter/ });
+  await user.click(screen.getByRole("radio", { name: "Browse" }));
+  await user.click(screen.getByText(/acme-plugins/, { selector: "summary" }));
+  await screen.findByRole("list", { name: `${ACME.name} plugins` });
+  // Open from the row's main area, so the sheet's FocusScope remembers the
+  // row's main button as its opener.
+  await user.click(screen.getByRole("button", { name: /formatter/ }));
+  const sheet = screen.getByRole("dialog", { name: "formatter" });
+  await user.click(within(sheet).getByRole("button", { name: "Install" }));
+  const confirm = screen.getByRole("dialog", { name: "Install plugin" });
+  await user.click(within(confirm).getByRole("button", { name: "Install" }));
+  // The install's fresh list reshapes the row - the split row's main button
+  // is replaced by the whole-row button - and the sheet closes.
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "formatter" })).toBeNull());
+  const reshapedRow = screen.getByRole("button", { name: /formatter/ });
+  expect(document.activeElement).toBe(reshapedRow);
+});
+
+test("an already-installed catalog row opens the sheet in installed mode", async () => {
+  const fake = connectSeededClient();
+  fake.on("evener/marketplace/browse", () => ({
+    name: ACME.name,
+    plugins: [{ name: LINTER.plugin, description: "The linter" }],
+  }));
+  fake.on("evener/plugin/components", (params) => ({
+    results: params.targets.map((t) => ({
+      plugin: t.plugin,
+      marketplace: t.marketplace,
+      components: { skills: ["run"] },
+    })),
+  }));
+  const user = userEvent.setup();
+  render(<MarketplacesPluginsSection />);
+  await screen.findByRole("button", { name: /linter/ });
+  await user.click(screen.getByRole("radio", { name: "Browse" }));
+  await user.click(screen.getByText(/acme-plugins/, { selector: "summary" }));
+  await screen.findByRole("list", { name: `${ACME.name} plugins` });
+
+  // The catalog row reads as installed: no trailing Install control.
+  expect(screen.queryByRole("button", { name: "Install" })).toBeNull();
+  await user.click(screen.getByRole("button", { name: /linter/ }));
+  const sheet = screen.getByRole("dialog", { name: LINTER.plugin });
+  // The installed entry's editor, not the catalog sheet: switches and the
+  // Remove footer, plus the Contents the components cache holds.
+  expect(within(sheet).getByRole("switch", { name: "Enabled by default" })).toBeTruthy();
+  expect(within(sheet).getByRole("button", { name: "Remove" })).toBeTruthy();
+  expect(within(sheet).queryByRole("button", { name: "Install" })).toBeNull();
+  await waitFor(() => expect(sheet.querySelector('[data-kind="plugin-contents"]')).toBeTruthy());
 });

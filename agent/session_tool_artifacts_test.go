@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/identifier"
@@ -85,9 +86,10 @@ func replaceRootArtifactStore(t *testing.T, root *Session, store artifactStore) 
 func newArtifactTestRoot(t *testing.T) *Session {
 	t.Helper()
 	return newSession(t,
-		withSteps(func(llm.Request) llm.Response { return finalResponse("child done") }),
+		withSteps(func(llm.Request) llm.Response { return agenttest.FinalResponse("child done") }),
 		withConfig(SessionConfig{
 			MaxSubagentDepth: 1,
+			StateDir:         t.TempDir(),
 			testOnly: testConfig{
 				skipGitSnapshot:     true,
 				minimalSystemPrompt: true,
@@ -338,7 +340,7 @@ func TestSessionArtifactStoreSharedByDescendantsOnly(t *testing.T) {
 	t.Parallel()
 	rootA := newArtifactTestRoot(t)
 	rootB := newArtifactTestRoot(t)
-	childID := spawnRuntimeAgent(t, rootA, "child task", "", 1, "", "", nil)
+	childID := spawnRuntimeAgent(t, rootA, delegateArgs{Task: "child task"})
 	child := rootA.getSub(childID)
 	if child == nil || child.sess == nil {
 		t.Fatal("production child was not tracked")
@@ -359,7 +361,7 @@ func TestSessionArtifactStoreChildCloseDoesNotCloseStore(t *testing.T) {
 	root := newArtifactTestRoot(t)
 	store := &recordingArtifactStore{}
 	replaceRootArtifactStore(t, root, store)
-	childID := spawnRuntimeAgent(t, root, "child task", "", 1, "", "", nil)
+	childID := spawnRuntimeAgent(t, root, delegateArgs{Task: "child task"})
 	child := root.getSub(childID)
 	if child == nil || child.sess == nil {
 		t.Fatal("production child was not tracked")
@@ -380,7 +382,7 @@ func TestSessionArtifactStoreRootCascadeClosesTrackedChildFirstAndExactlyOnce(t 
 	root := newArtifactTestRoot(t)
 	store := &recordingArtifactStore{}
 	replaceRootArtifactStore(t, root, store)
-	childID := spawnRuntimeAgent(t, root, "child task", "", 1, "", "", nil)
+	childID := spawnRuntimeAgent(t, root, delegateArgs{Task: "child task"})
 	child := root.getSub(childID)
 	if child == nil || child.sess == nil {
 		t.Fatal("production child was not tracked")
@@ -465,8 +467,8 @@ func TestSessionArtifactStoreInheritedFreshConstructorFailurePreservesStore(t *t
 		return nil
 	}
 
-	if _, err := root.spawnAgent(context.Background(), "child task", "", "", 1, "", "", nil, nil); !errors.Is(err, want) {
-		t.Fatalf("production child constructor error = %v, want %v", err, want)
+	if res := root.createDelegate(context.Background(), delegateArgs{Task: "child task"}); !errors.Is(res.Err, want) {
+		t.Fatalf("production child constructor error = %v, want %v", res.Err, want)
 	}
 	if got := store.closeCount.Load(); got != 0 {
 		t.Fatalf("inherited store closed by failed child constructor %d times", got)

@@ -90,7 +90,7 @@ func TestClientMutationCommandSelection(t *testing.T) {
 			writeEvenerwideCommandFile(t, root, "inert", "!`printf x >> inert-invoked` @missing [$ARGUMENTS][$1]")
 			writeSkillMD(t, root, "inert", "---\nname: inert\ndescription: fixture\n---\nSKILL_318")
 			adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-				return toolCallResponse(communicateCall("done-1", "ok"))
+				return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 			}}
 			s := newSession(t, withAdapter(adapter), withDir(root), withProfile(newAnthropicProfile("claude-test")), withConfig(SessionConfig{PluginDirs: []string{pluginDir}}), withoutGitSnapshot())
 			_, stop := captureEvents(s)
@@ -163,7 +163,7 @@ func TestClientMutationCommandSelectionUnavailableThenRecovery(t *testing.T) {
 	root := t.TempDir()
 	pluginDir := writePluginCommand(t, "pkg", "probe", "BODY_RECOVERY_318[$ARGUMENTS]")
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSession(t, withAdapter(adapter), withDir(root), withProfile(newAnthropicProfile("claude-test")), withConfig(SessionConfig{PluginDirs: []string{pluginDir}}), withoutGitSnapshot())
 	_, stop := captureEvents(s)
@@ -191,7 +191,7 @@ func TestClientMutationCommandSelectionQueueRestore(t *testing.T) {
 	root := t.TempDir()
 	writeEvenerwideCommandFile(t, root, "probe", "BODY_RESTORE_318[$ARGUMENTS]")
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-		return toolCallResponse(communicateCall("done-1", "ok"))
+		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSkillSelectionDiskSession(t, root, adapter)
 	id := s.ID()
@@ -228,7 +228,7 @@ func TestClientMutationCommandPreparationAdmissionRetry(t *testing.T) {
 				root := t.TempDir()
 				pluginDir := writePluginCommand(t, "pkg", "probe", "BODY_PINNED_318 !`printf x >> invoked; printf OUTPUT_PINNED_318`")
 				adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-					return toolCallResponse(communicateCall("done-1", "ok"))
+					return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 				}}
 				s := newSession(t, withAdapter(adapter), withDir(root), withProfile(newAnthropicProfile("claude-test")), withConfig(SessionConfig{StateDir: root, PluginDirs: []string{pluginDir}}), withoutGitSnapshot())
 				_, stop := captureEvents(s)

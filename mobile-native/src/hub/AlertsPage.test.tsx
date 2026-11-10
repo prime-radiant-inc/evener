@@ -7,7 +7,6 @@ import { render, renderedText } from "../renderNative.testkit";
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 import { AlertsPage } from "./AlertsPage";
 

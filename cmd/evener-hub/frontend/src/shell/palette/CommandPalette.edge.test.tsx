@@ -11,15 +11,18 @@
 import { act, cleanup, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { ALL_CAPABILITIES as CAPS } from "../../threadTestUtils";
+import "../../panes/session";
 import "../../panes/sessionPanels";
-import type { ItemModel, ThreadCapabilities, ThreadModel, TurnModel } from "@evener/appwire-client";
+import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
 import { resetComposerFocusStoreForTests } from "../../panes/session/composer/composerFocus";
 import { resetQuoteInsertStoreForTests, useQuoteInsertRequest } from "../../panes/session/composer/quoteInsert";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { useCommandCatalog } from "../../stores/commandCatalog";
-import { connectionStore } from "../../stores/connection";
+import { resetConnectionStoreForTests } from "../../stores/connection";
 import { resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import { NeedsYouProvider } from "../NeedsYouProvider";
 import { captureNewTabs, NEW_TAB_POLICY, openedNewTab } from "../openInNewTab.testSupport";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { CommandPalette, commandErrorMessage } from "./CommandPalette";
@@ -36,22 +39,6 @@ import {
 beforeAll(() => {
   installLocalStorage(new MemoryStorage());
 });
-
-const CAPS: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
 
 function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
   const { jobsTreeRevision = null, ...rest } = overrides;
@@ -106,7 +93,7 @@ function focusSession(ref: string, overrides: Partial<ThreadModel> = {}): void {
 
 beforeEach(() => {
   paletteStore.setState({ open: false, query: "", openSeq: 0 });
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   useCommandCatalog.setState(useCommandCatalog.getInitialState());
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
@@ -160,13 +147,34 @@ describe("remote search results", () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     scriptSearchFailure();
 
-    render(<CommandPalette />);
+    render(
+      <NeedsYouProvider>
+        <CommandPalette />
+      </NeedsYouProvider>,
+    );
     act(() => openPalette());
     await user.type(screen.getByRole("combobox"), "query");
 
     const results = screen.getByRole("listbox");
     await waitFor(() => expect(within(results).getByRole("alert")).toBeTruthy());
     expect(within(results).queryAllByRole("option")).toHaveLength(0);
+  });
+
+  test("a failed search still raises an alert when commands match the query", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    scriptSearchFailure();
+
+    render(
+      <NeedsYouProvider>
+        <CommandPalette />
+      </NeedsYouProvider>,
+    );
+    act(() => openPalette());
+    await user.type(screen.getByRole("combobox"), "settings");
+
+    const results = screen.getByRole("listbox");
+    await waitFor(() => expect(within(results).getByRole("alert")).toBeTruthy());
+    expect(within(results).getAllByRole("option").length).toBeGreaterThan(0);
   });
 
   // --- search result activation: live/past with newTab (lines 505-506) ---
@@ -179,7 +187,11 @@ describe("remote search results", () => {
       past: [],
     });
 
-    render(<CommandPalette />);
+    render(
+      <NeedsYouProvider>
+        <CommandPalette />
+      </NeedsYouProvider>,
+    );
     act(() => openPalette());
     await user.type(screen.getByRole("combobox"), "live");
 
@@ -205,7 +217,11 @@ describe("remote search results", () => {
       past: [{ id: "past1", ref: "local:past1", title: "old session", project: "p", state: "ended", age: "2h" }],
     });
 
-    render(<CommandPalette />);
+    render(
+      <NeedsYouProvider>
+        <CommandPalette />
+      </NeedsYouProvider>,
+    );
     act(() => openPalette());
     await user.type(screen.getByRole("combobox"), "old");
 
@@ -225,16 +241,57 @@ test("Shift+Enter on an in-session search result closes the palette without navi
   scriptSearch({ live: [], past: [] });
   focusSession("ref_a", { turns: [turn([item("i1", "search term found here")])] });
 
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   act(() => openPalette());
   await user.type(screen.getByRole("combobox"), "search");
 
   await waitFor(() => expect(paletteRowsOfKind("insession")).toHaveLength(1));
-  await user.keyboard("{Shift>}{Enter}{/Shift}");
+  await user.keyboard("{ArrowDown}{Shift>}{Enter}{/Shift}");
 
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(window.location.pathname).toBe("/");
   expect(anchors).toHaveLength(0);
+});
+
+test("Enter on a plain query prefers the first session hit over the leading command", async () => {
+  const user = userEvent.setup();
+  scriptSearch({ live: [], past: [] });
+  focusSession("ref_a", { turns: [turn([item("i1", "set term found here")])] });
+
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette());
+  await user.type(screen.getByRole("combobox"), "set");
+  await waitFor(() => expect(paletteRowsOfKind("insession")).toHaveLength(1));
+
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(window.location.pathname).toBe("/");
+});
+
+test("ArrowUp to a leading command runs the highlighted command", async () => {
+  const user = userEvent.setup();
+  scriptSearch({ live: [], past: [] });
+  focusSession("ref_a", { turns: [turn([item("i1", "set term found here")])] });
+
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette());
+  await user.type(screen.getByRole("combobox"), "set");
+  await waitFor(() => expect(paletteRowsOfKind("insession")).toHaveLength(1));
+
+  await user.keyboard("{ArrowUp}{Enter}");
+  await waitFor(() => expect(window.location.pathname).toBe("/settings"));
 });
 
 // --- enterPressed: handoff via arrow+Enter (lines 519-524) ---
@@ -243,7 +300,11 @@ test("arrow-down then Enter on the handoff row hands off to the composer", async
   const user = userEvent.setup();
   focusSession("ref_a");
 
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   act(() => openPalette("/interrupt"));
 
   // Arrow down to the handoff row (index 0 is the handoff row)
@@ -254,11 +315,68 @@ test("arrow-down then Enter on the handoff row hands off to the composer", async
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
+test("arrow-down onto the first command in command-filter runs it instead of sending raw text", async () => {
+  const user = userEvent.setup();
+  focusSession("ref_a");
+  const send = vi.spyOn(threadsStore.getState(), "send");
+
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette("/e"));
+  await user.keyboard("{ArrowDown}{Enter}");
+
+  expect(send).not.toHaveBeenCalled();
+  await waitFor(() => {
+    const closed = screen.queryByRole("dialog") === null;
+    const argsPill = screen.queryByRole("button", { name: "back to command list" });
+    expect(closed || argsPill !== null).toBe(true);
+  });
+});
+
+test("Enter runs a command matched by its full title above a handoff row", async () => {
+  const user = userEvent.setup();
+  focusSession("ref_a");
+
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette("/go to dashboard"));
+  await user.keyboard("{Enter}");
+
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  const { result: insert } = renderHook(() => useQuoteInsertRequest("ref_a"));
+  expect(insert.current?.text).toBeUndefined();
+});
+
+test("Enter on a bare slash does not run the highlighted row", async () => {
+  const user = userEvent.setup();
+  focusSession("ref_a");
+
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette("/"));
+  await user.keyboard("{Enter}");
+
+  expect(screen.getByRole("dialog")).toBeTruthy();
+});
+
 // --- clearToSearch and showHelp UI callbacks (lines 248-251) ---
 
 test("/search command clears to search mode", async () => {
   const user = userEvent.setup();
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   act(() => openPalette("/"));
 
   await user.click(screen.getByRole("option", { name: /Search sessions/ }));
@@ -272,7 +390,11 @@ test("/search command clears to search mode", async () => {
 
 test("/help command shows the help panel", async () => {
   const user = userEvent.setup();
-  render(<CommandPalette />);
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
   act(() => openPalette("/"));
 
   await user.click(screen.getByRole("option", { name: /Show keyboard shortcuts/ }));

@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"unicode"
 )
 
 // maxFailureLedgerEntries bounds the ledger's memory. It has room for
@@ -290,20 +289,26 @@ func isIntegerLiteral(s string) bool {
 
 // breakerThreshold is how many times a signature may produce the same answer
 // before the breaker intervenes. The second such result carries a nudge. For
-// repeated failures the call that would be the third is not executed at all;
-// repeated identical successes only ever draw the nudge, since the next one
-// may be the call that finally sees a changed world.
+// repeated failures by a tool that can change state, the call that would be
+// the third is not executed at all. Repeated identical successes only ever
+// draw the nudge, since the next one may be the call that finally sees a
+// changed world. Read-only failures follow the same rule as successes: the
+// state they read may have changed, so their repeats always dispatch.
 const breakerThreshold = 2
+
+// ParkPrefix begins the body of every call Evener refuses without executing;
+// layers that count refusals match on it.
+const ParkPrefix = "evener did not execute this call: "
 
 // The intervention texts. Parked results all begin with parkPrefix, which is
 // the stable marker other layers count them by.
 //
-// The failure nudge stays a fixed string: the park check runs before every
-// dispatch and refuses a call once its failure streak reaches
-// breakerThreshold, so record() can never observe a failure streak above
-// that threshold and the nudge only ever fires at exactly two failures.
+// The failure nudge stays a fixed string: the park check refuses a mutating
+// call once its failure streak reaches breakerThreshold, so record() only
+// observes a streak above that threshold for read-only calls, which are never
+// parked and keep receiving the fixed nudge.
 const (
-	parkPrefix       = "evener did not execute this call: "
+	parkPrefix       = ParkPrefix
 	failureNudgeText = "You just ran the same tool twice with the same arguments and got the same failure. Consider an alternate approach"
 )
 
@@ -317,7 +322,7 @@ const repetitionNudgePrefix = "You have now made this same call and received the
 // as a session loops; stating the real count lets a long loop read as
 // escalating rather than repeating the same "twice" wording forever.
 func repetitionNudgeText(count int) string {
-	return fmt.Sprintf(repetitionNudgePrefix+"%d times in a row. Repeating it will not change the answer — use the result you already have, or change your approach.", count)
+	return fmt.Sprintf(repetitionNudgePrefix+"%d times in a row. Repeating it will not change the answer — use the result you already have, or change your approach. If you are repeating it to wait for something, end your turn with your result tool: the completion wakes you, and to wake on a condition you set a job_watch with output_match.", count)
 }
 
 // IsBreakerNudge reports whether text is the breaker's intervention text —
@@ -532,8 +537,7 @@ func (l *failureLedger) touch(order []string, entries map[string]*failureEntry, 
 // streak detection across otherwise-identical failures.
 func errorClass(output string) string {
 	line := firstNonBlankLine(output)
-	line = strings.TrimSpace(line)
-	line = collapseWhitespace(line)
+	line = strings.Join(strings.Fields(line), " ")
 	line = strings.ToLower(line)
 	line = replaceDigitRuns(line, "#")
 	line = TruncateRunes(line, 200)
@@ -549,23 +553,6 @@ func firstNonBlankLine(s string) string {
 		}
 	}
 	return ""
-}
-
-func collapseWhitespace(s string) string {
-	var b strings.Builder
-	inSpace := false
-	for _, r := range s {
-		if unicode.IsSpace(r) {
-			if !inSpace {
-				b.WriteByte(' ')
-				inSpace = true
-			}
-			continue
-		}
-		inSpace = false
-		b.WriteRune(r)
-	}
-	return b.String()
 }
 
 func replaceDigitRuns(s, replacement string) string {

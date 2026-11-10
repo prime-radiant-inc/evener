@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
@@ -151,7 +152,19 @@ func TestReadTranscriptPublicDefinitionContinuesSessionExpansion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first read_transcript expansion: %v", err)
 	}
-	firstEnvelope := first.(readMarkdownEnvelope)
+	decode := func(value any) readMarkdownEnvelope {
+		t.Helper()
+		complete := value.(tool.StateResult)
+		if !complete.RequireCompleteOutput {
+			t.Fatal("markdown handoff permits partial delivery")
+		}
+		var envelope readMarkdownEnvelope
+		if err := json.Unmarshal([]byte(complete.Output), &envelope); err != nil {
+			t.Fatal(err)
+		}
+		return envelope
+	}
+	firstEnvelope := decode(first)
 	if firstEnvelope.Continuation == nil || firstEnvelope.Continuation.OffsetBytes != defaultExpansionBytes {
 		t.Fatalf("first continuation = %+v, want offset %d", firstEnvelope.Continuation, defaultExpansionBytes)
 	}
@@ -164,7 +177,7 @@ func TestReadTranscriptPublicDefinitionContinuesSessionExpansion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("continued read_transcript expansion: %v", err)
 	}
-	secondEnvelope := second.(readMarkdownEnvelope)
+	secondEnvelope := decode(second)
 	if secondEnvelope.Expansion == nil || secondEnvelope.Expansion.OffsetBytes != defaultExpansionBytes {
 		t.Fatalf("second expansion = %+v, want offset %d", secondEnvelope.Expansion, defaultExpansionBytes)
 	}
@@ -213,7 +226,7 @@ func TestReadTranscriptRejectsSessionPagingArgumentsForJobRefs(t *testing.T) {
 			if name == "range" {
 				value = "last:1"
 			}
-			_, err := execReadTranscript(nil, map[string]any{
+			_, err := execReadTranscript(context.Background(), nil, map[string]any{
 				"transcript_ref": "job:job_test",
 				name:             value,
 			})
@@ -300,7 +313,7 @@ func writeFindSession(t *testing.T, bucketDir string, spec findMetaSpec, turnTex
 // wire bytes (the exact shape the model sees).
 func marshalFind(t *testing.T, deps *toolDeps, args map[string]any) []byte {
 	t.Helper()
-	v, err := execFindSessionTranscripts(deps, args)
+	v, err := execFindSessionTranscripts(context.Background(), deps, args)
 	if err != nil {
 		t.Fatalf("execFindSessionTranscripts: %v", err)
 	}
@@ -739,7 +752,7 @@ func writeSessionWithToolTurn(t *testing.T, bucketDir string, spec findMetaSpec)
 // marshalRead calls execReadSessionTranscript and JSON-marshals the result.
 func marshalRead(t *testing.T, deps *toolDeps, args map[string]any) []byte {
 	t.Helper()
-	v, err := execReadSessionTranscript(deps, args)
+	v, err := execReadSessionTranscript(context.Background(), deps, args)
 	if err != nil {
 		t.Fatalf("execReadSessionTranscript: %v", err)
 	}

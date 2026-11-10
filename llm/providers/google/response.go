@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/invariant"
 	"primeradiant.com/evener/llm"
 )
 
@@ -151,19 +152,28 @@ func fromGeminiResponse(raw map[string]any, requestedModel string) llm.Response 
 	return r
 }
 
+// parseUsage maps a Gemini usageMetadata object onto llm.Usage. Gemini's
+// promptTokenCount is the total effective prompt size and includes cached
+// content, so the cached term is subtracted to honor llm.Usage's "InputTokens
+// means new uncached input" invariant.
 func parseUsage(u map[string]any) llm.Usage {
+	rawPrompt := llm.IntFromAny(u["promptTokenCount"])
+	cachedRead := max(llm.IntFromAny(u["cachedContentTokenCount"]), 0)
 	usage := llm.Usage{
-		InputTokens:  llm.IntFromAny(u["promptTokenCount"]),
+		InputTokens:  max(rawPrompt-cachedRead, 0),
 		OutputTokens: llm.IntFromAny(u["candidatesTokenCount"]),
 		TotalTokens:  llm.IntFromAny(u["totalTokenCount"]),
 		Raw:          u,
 	}
-	if v := llm.IntFromAny(u["cachedContentTokenCount"]); v > 0 {
-		usage.CacheReadTokens = &v
+	if cachedRead > 0 {
+		usage.CacheReadTokens = &cachedRead
 	}
 	if v := llm.IntFromAny(u["thoughtsTokenCount"]); v > 0 {
 		usage.ReasoningTokens = &v
 	}
+	// InputTokens is new uncached input; the prompt-minus-cached subtraction above
+	// is clamped at zero, so a negative value would mean that clamp regressed.
+	invariant.Hold(usage.InputTokens >= 0, "google parseUsage produced negative InputTokens: %d", usage.InputTokens)
 	return usage
 }
 

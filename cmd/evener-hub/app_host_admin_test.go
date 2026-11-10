@@ -473,6 +473,9 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		"evener/git/head":              true, // discovery: read-only branch metadata for a remote path
 		"evener/harnesses/list":        true, // discovery: the host's own harnesses
 		"evener/host/request":          false,
+		// Private Manager input requires the caller's authenticated bridge
+		// binding and must never be available through the generic admin proxy.
+		"evener/hub/session-tools/input": false,
 		// evener/host/attach is controller-LOCAL: it dials a host this
 		// controller owns through the Ensure-backed seam. There is no host to
 		// forward to until the attach succeeds, so it is never a proxied call,
@@ -536,6 +539,7 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		"evener/jobs/list":                        false,
 		"evener/jobs/output":                      false,
 		"evener/jobs/get":                         false,
+		"evener/jobs/stop":                        false, // Local Manager stop authority; never forward to a peer hub.
 		"evener/launch/getLayer":                  true,
 		"evener/launch/resolve":                   true,
 		"evener/launch/schema":                    true,
@@ -556,6 +560,7 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		"evener/pin-section/rename":               false,
 		"evener/plugin/checkNow":                  true,
 		"evener/plugin/checkUpdates":              true,
+		"evener/plugin/components":                true,
 		"evener/plugin/disable":                   true,
 		"evener/plugin/enable":                    true,
 		"evener/plugin/install":                   true,
@@ -594,6 +599,7 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		"evener/thread/watches/list":              false,
 		"evener/update/apply":                     false,
 		"evener/update/check":                     false,
+		"evener/hub/restart":                      false,
 		"evener/upgrade":                          false,
 		"goal/set":                                false,
 		"model/list":                              true, // discovery: the host's own model inventory (ScopeBoth)
@@ -1822,6 +1828,7 @@ func TestHostAdminMutationClassificationMatchesAllowList(t *testing.T) {
 		appwire.MethodEvenerMarketplaceBrowse:    true,
 		appwire.MethodEvenerMarketplaceRefresh:   true,
 		appwire.MethodEvenerPluginList:           true,
+		appwire.MethodEvenerPluginComponents:     true,
 		appwire.MethodEvenerPluginPreview:        true,
 		appwire.MethodEvenerPluginCheckUpdates:   true,
 		appwire.MethodEvenerAuthStatus:           true,

@@ -452,6 +452,20 @@ func (s *WebServer) acquireProjectDeletionOwnership(
 			return nil, &projectDeletionOwnershipError{ThreadID: target.ThreadID, Live: live, Err: ownershipErr}
 		}
 		stateDir := s.projectDeletionStateDir(target.StateProjectID, record.ProjectID, target.ThreadID, stateDirs)
+		missingHistory := stateDirs[target.ThreadID] == "" && target.StateProjectID == "" && record.ProjectID == ""
+		deleted := false
+		if missingHistory {
+			var err error
+			stateDir, deleted, err = s.missingSessionDeletionStateDir(target.ThreadID)
+			if err != nil {
+				release()
+				return nil, &projectDeletionOwnershipError{ThreadID: target.ThreadID, Err: err}
+			}
+			if stateDir == "" {
+				// No metadata or artifacts remain anywhere the index owns.
+				continue
+			}
+		}
 		if stateDir == "" {
 			release()
 			return nil, &projectDeletionOwnershipError{
@@ -471,14 +485,58 @@ func (s *WebServer) acquireProjectDeletionOwnership(
 			return nil, &projectDeletionOwnershipError{ThreadID: target.ThreadID, Err: err}
 		}
 		owners = append(owners, owner)
+		if missingHistory {
+			if !deleted {
+				release()
+				return nil, &projectDeletionOwnershipError{ThreadID: target.ThreadID, Err: errors.New("session artifacts remain without a deletion tombstone")}
+			}
+			stateDirs[target.ThreadID] = stateDir
+		}
 	}
 	return release, nil
 }
 
+// missingSessionDeletionStateDir distinguishes a completed deletion from lost
+// metadata using the existing tombstone. The index's configured roots, not an
+// empty project ID, locate the API-log reservation even before metadata exists.
+func (s *WebServer) missingSessionDeletionStateDir(threadID string) (string, bool, error) {
+	if s.cfg.Past == nil || !s.cfg.Past.ConfirmAbsent(threadID) {
+		return "", false, errors.New("session metadata absence is not confirmed")
+	}
+	projects, err := filepath.Glob(s.cfg.Past.StateGlob())
+	if err != nil {
+		return "", false, err
+	}
+	var stateDir string
+	var deleted bool
+	for _, project := range projects {
+		entries, err := os.ReadDir(schema.SessionsDir(project))
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return "", false, err
+		}
+		for _, entry := range entries {
+			if entry.Name() != threadID && !strings.HasPrefix(entry.Name(), threadID+".") {
+				continue
+			}
+			if stateDir != "" && stateDir != project {
+				return "", false, errors.New("session artifacts span multiple state directories")
+			}
+			stateDir = project
+			if entry.Name() == threadID+schema.SessionMetaTombstoneSuffix {
+				deleted = true
+			}
+		}
+	}
+	return stateDir, deleted, nil
+}
+
 // cleanupProjectDeletionTargetAndDecisions removes one target's artifacts via
-// cleanupProjectDeletionTarget, then scrubs its session-kind archive/favorite
-// decisions on success. A failed artifact removal reports skip (with a
-// reason) and never touches decisions, so a retried delete finds them intact.
+// cleanupProjectDeletionTarget, then scrubs its session decisions and voice
+// journal on success. A failed artifact removal reports skip (with a reason)
+// and leaves both intact for a retried delete.
 // Shared by whole-project deletion (cleanupProjectDeletion, below) and
 // single-session deletion (sessionDelete) so both apply the exact
 // same per-target contract instead of two copies of it.
@@ -520,6 +578,11 @@ func (s *WebServer) scrubSessionDecisions(threadID string) (decisionErrors []str
 	if s.cfg.MessageSearch != nil {
 		if err := s.cfg.MessageSearch.Forget(context.Background(), threadID); err != nil {
 			decisionErrors = append(decisionErrors, fmt.Sprintf("message search index error: %v", err))
+		}
+	}
+	if s.voice != nil {
+		if err := s.voice.deleteSession(context.Background(), localAppRef(threadID)); err != nil {
+			decisionErrors = append(decisionErrors, fmt.Sprintf("voice journal error: %v", err))
 		}
 	}
 	return decisionErrors
@@ -655,7 +718,7 @@ func (s *WebServer) cleanupProjectDeletionTarget(stateDir, sessionID string) err
 // session whose metadata is already gone); a failure before that leaves the
 // metadata in place, which is what lets the caller roll the tombstone back.
 func (s *WebServer) removeProjectDeletionArtifacts(stateDir, sessionID string) error {
-	sessionsDir := filepath.Join(stateDir, "sessions")
+	sessionsDir := schema.SessionsDir(stateDir)
 	if err := removeFlatProjectSessionArtifacts(sessionsDir, sessionID); err != nil {
 		return err
 	}
@@ -665,11 +728,17 @@ func (s *WebServer) removeProjectDeletionArtifacts(stateDir, sessionID string) e
 	// The transcript's index sidecar is derived from it and goes with it; the
 	// hub's cached handle on it is closed first, so nothing keeps the deleted
 	// files open.
-	transcriptPath := filepath.Join(sessionsDir, sessionID+".transcript.jsonl")
+	transcriptPath := schema.SessionTranscriptPath(stateDir, sessionID)
 	pastTranscriptIndexes.Forget(transcriptPath)
 	transcriptIndexRepairs.forget(transcriptPath)
-	if err := removeProjectSessionDir(transcriptindex.DirFor(transcriptPath)); err != nil && !os.IsNotExist(err) {
+	sidecars, err := transcriptindex.SidecarDirs(transcriptPath)
+	if err != nil {
 		return err
+	}
+	for _, sidecar := range sidecars {
+		if err := removeProjectSessionDir(sidecar); err != nil && !os.IsNotExist(err) {
+			return err
+		}
 	}
 	for _, path := range []string{
 		filepath.Join(stateDir, "mutations", sessionID+".json"),
@@ -686,7 +755,7 @@ func (s *WebServer) removeProjectDeletionArtifacts(stateDir, sessionID string) e
 	if err := removeProjectSessionDaemonLog(s.cfg.RunDir, sessionID); err != nil {
 		return err
 	}
-	apiLogPath := filepath.Join(sessionsDir, sessionID+".api.jsonl")
+	apiLogPath := schema.SessionAPILogPath(stateDir, sessionID)
 	if err := removeProjectSessionFile(apiLogPath); err != nil && !os.IsNotExist(err) {
 		return err
 	}
@@ -703,7 +772,7 @@ func (s *WebServer) removeProjectDeletionArtifacts(stateDir, sessionID string) e
 // sweep still rolls the tombstone back and cannot fence a live, resumable
 // session with ErrSessionDeleted.
 func sessionMetaFilePresent(stateDir, sessionID string) bool {
-	_, err := os.Stat(filepath.Join(stateDir, "sessions", sessionID+".meta.json"))
+	_, err := os.Stat(schema.SessionMetaPath(stateDir, sessionID))
 	return !os.IsNotExist(err)
 }
 
@@ -780,12 +849,12 @@ func removeFlatProjectSessionArtifacts(sessionsDir, sessionID string) error {
 		return fmt.Errorf("read sessions directory: %w", err)
 	}
 	prefix := sessionID + "."
-	apiLogName := sessionID + ".api.jsonl"
+	apiLogName := sessionID + schema.SessionAPILogSuffix
 	// Leave the cross-process meta lock file in place: deleting its inode while a
 	// writer (the daemon) still holds it would let that writer recreate the meta
 	// through the old inode while a new writer locks a fresh one, defeating the
 	// serialization and resurrecting a deleted session.
-	metaLockName := sessionID + ".meta.json.lock"
+	metaLockName := sessionID + schema.SessionMetaLockSuffix
 	// The tombstone must outlive the sweep: it is what stops a writer from
 	// recreating the meta after deletion.
 	tombstoneName := sessionID + schema.SessionMetaTombstoneSuffix

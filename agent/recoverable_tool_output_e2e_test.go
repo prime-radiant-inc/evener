@@ -98,14 +98,18 @@ func TestRecoverableGrepReceiptReplayEndToEnd(t *testing.T) {
 	s, workspace := task7LocalSession(t)
 	const pattern = `RECOVER_[0-9]{3}`
 	const matchCount = 70
+	const lastMatch = "RECOVER_069"
+	// Padding pushes the output past the registry character cap, the limit a
+	// raised max_results cannot lift.
+	pad := strings.Repeat("p", 40)
 	var fixture strings.Builder
 	for i := range matchCount {
 		for before := range 3 {
-			fmt.Fprintf(&fixture, "before-%03d-%d\n", i, before)
+			fmt.Fprintf(&fixture, "before-%03d-%d-%s\n", i, before, pad)
 		}
 		fmt.Fprintf(&fixture, "RECOVER_%03d\n", i)
 		for after := range 3 {
-			fmt.Fprintf(&fixture, "after-%03d-%d\n", i, after)
+			fmt.Fprintf(&fixture, "after-%03d-%d-%s\n", i, after, pad)
 		}
 	}
 	path := filepath.Join(workspace, "recoverable-grep.txt")
@@ -136,7 +140,7 @@ func TestRecoverableGrepReceiptReplayEndToEnd(t *testing.T) {
 	if len(receipts) != 1 {
 		t.Fatalf("grep unique receipt count = %d from %d occurrences, want exactly one; output tail=%q", len(receipts), len(receiptOccurrences), grep.Output[max(0, len(grep.Output)-500):])
 	}
-	if strings.Contains(grep.Output, "RECOVER_069") {
+	if strings.Contains(grep.Output, lastMatch) {
 		t.Fatal("grep preview unexpectedly contains the match selected to prove replay of omitted output")
 	}
 
@@ -162,20 +166,20 @@ func TestRecoverableGrepReceiptReplayEndToEnd(t *testing.T) {
 		firstLine := i*7 + 1
 		wantLine := fmt.Sprintf("%d:RECOVER_%03d", firstLine+3, i)
 		wantBefore := []string{
-			fmt.Sprintf("%d-before-%03d-0", firstLine, i),
-			fmt.Sprintf("%d-before-%03d-1", firstLine+1, i),
-			fmt.Sprintf("%d-before-%03d-2", firstLine+2, i),
+			fmt.Sprintf("%d-before-%03d-0-%s", firstLine, i, pad),
+			fmt.Sprintf("%d-before-%03d-1-%s", firstLine+1, i, pad),
+			fmt.Sprintf("%d-before-%03d-2-%s", firstLine+2, i, pad),
 		}
 		wantAfter := []string{
-			fmt.Sprintf("%d-after-%03d-0", firstLine+4, i),
-			fmt.Sprintf("%d-after-%03d-1", firstLine+5, i),
-			fmt.Sprintf("%d-after-%03d-2", firstLine+6, i),
+			fmt.Sprintf("%d-after-%03d-0-%s", firstLine+4, i, pad),
+			fmt.Sprintf("%d-after-%03d-1-%s", firstLine+5, i, pad),
+			fmt.Sprintf("%d-after-%03d-2-%s", firstLine+6, i, pad),
 		}
 		if match.Line != wantLine || !slices.Equal(match.Before, wantBefore) || !slices.Equal(match.After, wantAfter) {
 			t.Fatalf("match %d = %+v, want line %q before %v after %v", i, match, wantLine, wantBefore, wantAfter)
 		}
 	}
-	if search.Matches[matchCount-1].Line != "487:RECOVER_069" {
+	if search.Matches[matchCount-1].Line != fmt.Sprintf("%d:%s", (matchCount-1)*7+4, lastMatch) {
 		t.Fatalf("omitted grep match was not recovered: last=%+v", search.Matches[matchCount-1])
 	}
 	if got := task7ExecutedToolStarts(s, "grep"); got != 1 {
@@ -197,7 +201,7 @@ func task7RunningOutput(t *testing.T, s *Session, jobID string) *jobstore.Output
 // task7AwaitOutputBytes polls OutputStore.Len rather than awaiting a signal
 // because jobstore.OutputStore emits no "bytes appended" event of its own: the
 // only production notification path for new job output is the output_match
-// watch matcher (job_watch.go feedJobOutputWithProvenance), which fires on a
+// watch matcher (feedJobOutputWithProvenance), which fires on a
 // regex match against content, not on reaching an exact lifetime byte count.
 // Rigging a watch here to stand in for a byte-count wait would test the watch
 // subsystem instead of the output store, so this stays a bounded poll per

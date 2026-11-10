@@ -1,15 +1,13 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
+import { readModuleCss } from "../../styles/cssBlock";
 import { Loader } from "./index";
 import styles from "./loader.module.css";
 
 // One read of the CSS module's source, shared by every declaration-level
 // test below (the same module-scope read notificationStatusIcon.contract.
 // test.ts uses for its module).
-const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "loader.module.css"), "utf8");
+const css = readModuleCss(import.meta.url, "loader.module.css");
 
 // Splits the stylesheet at ONE media query into what sits inside its block
 // and what sits outside it, by counting braces from the block's opening one

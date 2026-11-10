@@ -7,6 +7,7 @@ import { Pressable, Text } from "react-native";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { GhostBubble } from "./GhostBubble";
 import type { Ghost, GhostAction } from "./ghosts";
+import { TRANSCRIPT_GUTTER_PT } from "./transcriptLayout";
 import type { GhostRow } from "./transcriptRows";
 
 /** What a ghost row of the transcript needs from the screen besides the row.
@@ -16,10 +17,17 @@ import type { GhostRow } from "./transcriptRows";
  * (#3247). */
 export interface GhostRowHost {
 	disabled: boolean;
+	/** Rejected/uncertain restore only. Local merge readiness comes from
+	 * ghosts(..., local), shared with the QueueSheet host. */
 	canEdit: boolean;
 	editHint: string | null;
+	/** Parked Edit waits for image selection and encoding to finish. */
+	canEditParked: boolean;
+	parkedEditHint: string | null;
 	/** The images an unconfirmed send carried, shown in its bubble. */
 	draftAttachments?: ReactNode;
+	/** The images a parked replacement set aside, by park identity. */
+	parkedAttachments?: (parkId: string) => ReactNode;
 	onAction(ghost: Ghost, action: GhostAction): void;
 	onMore(): void;
 }
@@ -33,14 +41,22 @@ export function GhostRowView({ row }: { row: GhostRow }) {
 	if (host === null) throw new Error("A ghost row renders inside a GhostRowContext provider.");
 	if (row.kind === "moreQueued") return <MoreQueued count={row.count} onPress={host.onMore} />;
 	const { ghost } = row;
+	const parked = ghost.origin.kind === "parked";
 	return (
 		<GhostBubble
 			ghost={ghost}
 			disabled={host.disabled}
-			canEdit={host.canEdit}
-			editHint={host.editHint}
+			canEdit={parked ? host.canEditParked : host.canEdit}
+			editHint={parked ? host.parkedEditHint : host.editHint}
 			backdrop="page"
-			attachments={ghost.origin.kind === "draft" ? host.draftAttachments : undefined}
+			edgeInset={TRANSCRIPT_GUTTER_PT}
+			attachments={
+				ghost.origin.kind === "parked"
+					? host.parkedAttachments?.(ghost.origin.parkId)
+					: ghost.origin.kind === "draft" || ghost.showDraftAttachments
+						? host.draftAttachments
+						: undefined
+			}
 			onAction={(action) => host.onAction(ghost, action)}
 		/>
 	);

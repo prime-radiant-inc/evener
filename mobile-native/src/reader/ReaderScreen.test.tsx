@@ -89,8 +89,8 @@ vi.mock("react-native", async () => ({
 		},
 	},
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-safe-area-context", () => ({
+	SafeAreaView: "SafeAreaView",
 	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
 }));
 vi.mock("react-native-enriched-markdown", async () => {
@@ -127,7 +127,6 @@ vi.mock("expo-secure-store", () => ({
 }));
 // SessionLink's module also holds the durable outbox, which opens sqlite.
 vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
-vi.mock("expo-crypto", () => ({ randomUUID: () => "test-uuid", getRandomValues: (array: Uint8Array) => array }));
 vi.mock("../alerts/alertsContext", () => ({
 	useHoldAlerts: (active: boolean, kind: string) => alerts.holds.push([active, kind]),
 	useHeldAlertCount: () => alerts.held,
@@ -676,6 +675,21 @@ it("remembers where you were and what you read when you leave, and leaves the wa
 	});
 });
 
+it("keeps the visible reading position when another viewability token has no index", async () => {
+	const { tree } = await mount();
+	const list = documentList(tree);
+	const blocks = documentBlocks(PLAN);
+	act(() => list.props.onViewableItemsChanged({ viewableItems: [{ index: undefined }, { index: 1 }], changed: [] }));
+	const scroll = {
+		nativeEvent: { contentOffset: { y: 100 }, layoutMeasurement: { height: 400 }, contentSize: { height: 1000 } },
+	};
+	act(() => {
+		list.props.onScroll(scroll);
+		list.props.onMomentumScrollEnd(scroll);
+	});
+	expect(memory.position(KEY)).toEqual({ blockIndex: 1, blockHash: blocks[1]?.hash, offset: 0, progress: 0.5 });
+});
+
 it("leaves no way back once you read to the end", async () => {
 	const { tree } = await mount();
 	const list = documentList(tree);
@@ -825,6 +839,24 @@ it("goes back to its session and copies its path from ⋯", async () => {
 	expect(harness.clipboard.at(-1)).toBe(PLAN);
 	menuAction(navigation, "Open session").onPress();
 	expect(navigation.pop).toHaveBeenCalledWith(1);
+});
+
+// A retained artifact's folder-relative path names a different file when pasted
+// beside the session's folder, so ⋯ copies the target that was read.
+it("copies an artifacts document's full target from ⋯", async () => {
+	const artifactsDir = "/state/sessions/local-fix/artifacts";
+	served["report.md"] = { body: "# Report\n\nOne line.\n" };
+	const { navigation } = await mount("report.md", {
+		reference: {
+			path: "report.md",
+			cwd: artifactsDir,
+			readTarget: `${artifactsDir}/report.md`,
+			provenance: "absolute",
+			root: "artifacts",
+		},
+	});
+	await act(async () => menuAction(navigation, "Copy path").onPress());
+	expect(harness.clipboard).toEqual([`${artifactsDir}/report.md`]);
 });
 
 it("shares the document through its hub from the Document actions menu", async () => {

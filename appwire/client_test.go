@@ -102,86 +102,6 @@ func TestClientRoutesResponsesAndNotifications(t *testing.T) {
 	}
 }
 
-func TestClientNavigationReadRoundTrip(t *testing.T) {
-	transport := newMemoryTransport()
-	client := NewClient(transport)
-	ctx := t.Context()
-	client.Start(ctx)
-
-	zero := uint32(0)
-	done := make(chan struct {
-		resp NavigationReadResponse
-		err  error
-	}, 1)
-	go func() {
-		resp, err := client.NavigationRead(ctx, NavigationReadParams{
-			Resource:              "section",
-			Section:               "live",
-			Offset:                &zero,
-			Limit:                 &zero,
-			RepresentationVersion: 3,
-			Base:                  &NavigationReadBase{GenerationID: "generation-a", Revision: 4, ETag: "etag-a"},
-		})
-		done <- struct {
-			resp NavigationReadResponse
-			err  error
-		}{resp: resp, err: err}
-	}()
-
-	var written Message
-	select {
-	case written = <-transport.writes:
-	case <-time.After(time.Second):
-		t.Fatal("request was not written")
-	}
-	if written.Request.Method != MethodEvenerNavigationRead {
-		t.Fatalf("method = %q, want %q", written.Request.Method, MethodEvenerNavigationRead)
-	}
-	var params NavigationReadParams
-	if err := json.Unmarshal(written.Request.Params, &params); err != nil {
-		t.Fatalf("params decode: %v", err)
-	}
-	if params.Resource != "section" || params.Section != "live" || params.RepresentationVersion != 3 {
-		t.Fatalf("params = %+v, want section/live with representationVersion 3", params)
-	}
-	if params.Base == nil || params.Base.GenerationID != "generation-a" || params.Base.Revision != 4 || params.Base.ETag != "etag-a" {
-		t.Fatalf("params = %+v, want v3 base", params)
-	}
-	if params.Offset == nil {
-		t.Fatal("decoded offset is nil; explicit zero was not preserved")
-	}
-	if *params.Offset != 0 {
-		t.Fatalf("decoded offset = %d, want 0", *params.Offset)
-	}
-	if params.Limit == nil {
-		t.Fatal("decoded limit is nil; explicit zero was not preserved")
-	}
-	if *params.Limit != 0 {
-		t.Fatalf("decoded limit = %d, want 0", *params.Limit)
-	}
-
-	transport.reads <- ResponseMessage(written.Request.ID, NavigationReadResponse{
-		Status:       "not_modified",
-		GenerationID: "generation-a",
-		Revision:     4,
-		ETag:         "etag-a",
-	})
-	select {
-	case result := <-done:
-		if result.err != nil {
-			t.Fatalf("NavigationRead: %v", result.err)
-		}
-		if result.resp.Status != "not_modified" || result.resp.GenerationID != "generation-a" || result.resp.Revision != 4 || result.resp.ETag != "etag-a" {
-			t.Fatalf("response = %+v, want matching not-modified envelope", result.resp)
-		}
-		if len(result.resp.Data) != 0 {
-			t.Fatalf("response data = %s, want omitted for not-modified result", result.resp.Data)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("response was not routed")
-	}
-}
-
 func TestClientGoalSetRoundTrip(t *testing.T) {
 	transport := newMemoryTransport()
 	client := NewClient(transport)
@@ -271,6 +191,113 @@ func TestClientInitializeRejectsMismatchedProtocolBeforeInitialized(t *testing.T
 	}
 	if mismatch.Got != "evener-appwire-v1" || mismatch.Want != ProtocolVersion {
 		t.Fatalf("mismatch = %+v, want Got=%q Want=%q", mismatch, "evener-appwire-v1", ProtocolVersion)
+	}
+}
+
+func TestClientInitializeTranslatesLegacyProtocolRefusal(t *testing.T) {
+	for _, wanted := range []string{"evener-appwire-v5", "evener-appwire-v99"} {
+		t.Run(wanted, func(t *testing.T) {
+			transport := newMemoryTransport()
+			client := NewClient(transport)
+			ctx := t.Context()
+			client.Start(ctx)
+
+			done := make(chan error, 1)
+			go func() {
+				_, err := client.Initialize(ctx, InitializeParams{ProtocolVersion: ProtocolVersion})
+				done <- err
+			}()
+
+			request := <-transport.writes
+			transport.reads <- ErrorMessage(request.Request.ID, InvalidRequest(
+				`protocol version "`+ProtocolVersion+`" is incompatible; want "`+wanted+`"`))
+			err := <-done
+			var mismatch ProtocolVersionMismatchError
+			if !errors.As(err, &mismatch) {
+				t.Fatalf("err = %v (%T), want ProtocolVersionMismatchError", err, err)
+			}
+			if mismatch.Got != wanted || mismatch.Want != ProtocolVersion {
+				t.Fatalf("mismatch = %+v, want Got=%q Want=%q", mismatch, wanted, ProtocolVersion)
+			}
+		})
+	}
+}
+
+func TestLegacyProtocolVersion(t *testing.T) {
+	prefix := `appwire initialize: protocol version "`
+	for _, tc := range []struct {
+		name    string
+		message string
+		want    string
+		ok      bool
+	}{
+		{"older", prefix + ProtocolVersion + `" is incompatible; want "evener-appwire-v5"`, "evener-appwire-v5", true},
+		{"newer", prefix + ProtocolVersion + `" is incompatible; want "evener-appwire-v99"`, "evener-appwire-v99", true},
+		{"announced-other", prefix + "evener-appwire-v6" + `" is incompatible; want "evener-appwire-v5"`, "", false},
+		{"wanted-current", prefix + ProtocolVersion + `" is incompatible; want "` + ProtocolVersion + `"`, "", false},
+		{"wanted-noncanonical", prefix + ProtocolVersion + `" is incompatible; want "evener-appwire-v05"`, "", false},
+		{"wanted-nonversion", prefix + ProtocolVersion + `" is incompatible; want "old-protocol"`, "", false},
+		{"missing-prefix", `protocol version "` + ProtocolVersion + `" is incompatible; want "evener-appwire-v5"`, "", false},
+		{"trailing-text", prefix + ProtocolVersion + `" is incompatible; want "evener-appwire-v5" extra`, "", false},
+		{"empty", "", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := legacyProtocolVersion(tc.message)
+			if got != tc.want || ok != tc.ok {
+				t.Fatalf("legacyProtocolVersion(%q) = %q, %v; want %q, %v", tc.message, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
+func TestClientInitializeDoesNotTranslateAnotherErrorCode(t *testing.T) {
+	transport := newMemoryTransport()
+	client := NewClient(transport)
+	ctx := t.Context()
+	client.Start(ctx)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.Initialize(ctx, InitializeParams{ProtocolVersion: ProtocolVersion})
+		done <- err
+	}()
+
+	request := <-transport.writes
+	transport.reads <- ErrorMessage(request.Request.ID, WireError{
+		Code:    CodeInternalError,
+		Message: `protocol version "` + ProtocolVersion + `" is incompatible; want "evener-appwire-v5"`,
+		Data:    ErrorData{EvenerErrorInfo: ErrorInternal},
+	})
+	err := <-done
+	if mismatch, ok := errors.AsType[ProtocolVersionMismatchError](err); ok {
+		t.Fatalf("a non-InvalidRequest error became a protocol mismatch: %+v", mismatch)
+	}
+	wire, ok := errors.AsType[WireError](err)
+	if !ok || wire.Code != CodeInternalError {
+		t.Fatalf("err = %v (%T), want the original InternalError", err, err)
+	}
+}
+
+func TestClientInitializeLeavesGenericInvalidRequestAlone(t *testing.T) {
+	transport := newMemoryTransport()
+	client := NewClient(transport)
+	ctx := t.Context()
+	client.Start(ctx)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.Initialize(ctx, InitializeParams{ProtocolVersion: ProtocolVersion})
+		done <- err
+	}()
+
+	request := <-transport.writes
+	transport.reads <- ErrorMessage(request.Request.ID, InvalidRequest("unsupported appwire protocol"))
+	err := <-done
+	if _, ok := errors.AsType[WireError](err); !ok {
+		t.Fatalf("err = %v (%T), want WireError", err, err)
+	}
+	if mismatch, ok := errors.AsType[ProtocolVersionMismatchError](err); ok {
+		t.Fatalf("generic invalid request became a protocol mismatch: %+v", mismatch)
 	}
 }
 
@@ -667,5 +694,18 @@ func TestClientRequestFailsAfterReadLoopExit(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("request hung after the read loop exited (missed-failure race)")
+	}
+}
+
+func TestClientReady(t *testing.T) {
+	if (&Client{}).Ready() {
+		t.Fatal("zero-value client reported ready")
+	}
+	var nilClient *Client
+	if nilClient.Ready() {
+		t.Fatal("nil client reported ready")
+	}
+	if !NewClient(newMemoryTransport()).Ready() {
+		t.Fatal("client constructed with a transport reported not ready")
 	}
 }

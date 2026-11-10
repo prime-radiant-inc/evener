@@ -138,9 +138,9 @@ func TestEnvFloorKeepsUserToolPrecedence(t *testing.T) {
 	const bin = "/Applications/Xcode.app/Contents/Developer/usr/bin"
 	policy := ResolvedPolicy{Mode: ModeRestricted, ToolchainBinDir: bin}
 
-	out := ApplyEnvFloor([]string{"PATH=/home/u/bin:/opt/homebrew/bin"}, policy, "")
+	out := ApplyEnvFloor([]string{"PATH=/fixture-home/u/bin:/opt/homebrew/bin"}, policy, "")
 	got, _ := envValue(out, "PATH")
-	if want := "/home/u/bin:/opt/homebrew/bin:" + bin; got != want {
+	if want := "/fixture-home/u/bin:/opt/homebrew/bin:" + bin; got != want {
 		t.Errorf("with no system dir on PATH the toolchain goes last: got %q, want %q", got, want)
 	}
 }
@@ -154,7 +154,7 @@ func TestEnvFloorLeavesPathAloneWithoutAToolchain(t *testing.T) {
 	}
 
 	// No PATH in, no PATH out: the floor never invents a search path.
-	out = ApplyEnvFloor([]string{"HOME=/home/u"}, ResolvedPolicy{Mode: ModeRestricted, ToolchainBinDir: "/x/usr/bin"}, "")
+	out = ApplyEnvFloor([]string{"HOME=/fixture-home/u"}, ResolvedPolicy{Mode: ModeRestricted, ToolchainBinDir: "/x/usr/bin"}, "")
 	if _, ok := envValue(out, "PATH"); ok {
 		t.Errorf("the floor must not invent a PATH: %v", out)
 	}
@@ -208,7 +208,7 @@ func TestEnvFloorLeavesAnEmptyPathEmpty(t *testing.T) {
 // The floor is a pure function of its inputs, PATH rewrite included.
 func TestEnvFloorPathRewriteDoesNotMutateInput(t *testing.T) {
 	t.Parallel()
-	in := []string{"PATH=/usr/bin:/bin", "HOME=/home/u"}
+	in := []string{"PATH=/usr/bin:/bin", "HOME=/fixture-home/u"}
 	before := slices.Clone(in)
 	ApplyEnvFloor(in, ResolvedPolicy{Mode: ModeRestricted, ToolchainBinDir: "/x/usr/bin"}, "")
 	if !slices.Equal(in, before) {

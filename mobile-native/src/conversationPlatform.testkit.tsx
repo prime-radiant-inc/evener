@@ -2,11 +2,13 @@
 // AppWire, services, stores, drafts and mutation dispatch remain production code.
 import { createElement, type ReactNode } from "react";
 import { vi } from "vitest";
+import type { SqliteDoubleDatabase } from "./sqliteSync.testkit";
 
 export const nativePlatform = {
 	uuid: 0,
 	kv: new Map<string, string>(),
 	sqlitePorts: new Map<string, unknown>(),
+	sqliteDatabases: new Set<SqliteDoubleDatabase>(),
 	secure: new Map<string, string>(),
 };
 
@@ -36,7 +38,6 @@ vi.mock("react-native-enriched-markdown", () => ({
 	EnrichedMarkdownText: "EnrichedMarkdownText",
 }));
 vi.mock("expo-web-browser", () => ({ openBrowserAsync: vi.fn(async () => ({ type: "dismiss" })) }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-gesture-handler", async () =>
 	(await import("./renderNative.testkit")).gestureDetectorModuleMock(),
 );
@@ -57,11 +58,15 @@ vi.mock("expo-crypto", () => ({
 }));
 vi.mock("expo-sqlite", async () => {
 	const { openSqliteSyncDouble } = await import("./sqliteSync.testkit");
+	const { join } = await import("node:path");
 	return {
 		openDatabaseSync: (database: string) => {
 			let port = nativePlatform.sqlitePorts.get(database);
 			if (!port) {
-				port = openSqliteSyncDouble().port;
+				const directory = process.env.EVENER_RETRY_SQLITE_DIR;
+				const opened = openSqliteSyncDouble(directory ? join(directory, database) : ":memory:");
+				port = opened.port;
+				nativePlatform.sqliteDatabases.add(opened.database);
 				nativePlatform.sqlitePorts.set(database, port);
 			}
 			return port;

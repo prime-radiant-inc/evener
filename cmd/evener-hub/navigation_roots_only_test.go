@@ -198,10 +198,7 @@ func TestNavigationRestartRequired_ForkAndJobTreeRootsKeepState(t *testing.T) {
 	save(viaSubID, subID, false)
 	writeDelegateDescriptors(t, stateDir, daemonID, delegateLink{childID: forkID}, delegateLink{childID: subID}, delegateLink{childID: viaSubID, parentDelegateID: "dlg_" + subID})
 
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 1001, Protocol: "evener-appwire-v3", ThreadID: daemonID, SessionID: daemonID, Endpoint: protocolMismatchPeer(t)})
 	roster := liveClaimRoster(runDir, &hubcore.StatusProber{})

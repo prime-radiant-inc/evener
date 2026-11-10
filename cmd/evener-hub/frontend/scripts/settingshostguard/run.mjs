@@ -35,6 +35,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { connectOnlyPage, devtoolsHttpURL, evaluate, navigateTo, REFUSED_BUTTON_SELECTOR, waitForHttp } from "../browserGuardCdp.mjs";
 import {
+  CHROME_ANNOUNCEMENT_DEADLINE_MS,
   chromeProfileEnvironment,
   chromeProfileIsolationArgs,
   createBrowserProcessCleanup,
@@ -73,7 +74,6 @@ function makeChromeProfileDir() {
 }
 
 const DEVTOOLS_ANNOUNCEMENT_PREFIX = "DevTools listening on ";
-const CHILD_EXIT_GRACE_MS = 2_000;
 const VIEWPORT = { width: 1440, height: 1000 };
 
 // The settings panes the harness visits, in tour order. "project" is not a
@@ -235,8 +235,8 @@ class Driver {
     let lineBuffer = "";
     const announced = new Promise((resolve, reject) => {
       const timer = setTimeout(
-        () => reject(new Error(`chrome never announced its DevTools endpoint after ${CHILD_EXIT_GRACE_MS * 5}ms`)),
-        CHILD_EXIT_GRACE_MS * 5,
+        () => reject(new Error(`chrome never announced its DevTools endpoint after ${CHROME_ANNOUNCEMENT_DEADLINE_MS}ms`)),
+        CHROME_ANNOUNCEMENT_DEADLINE_MS,
       );
       const finish = (fn, value) => {
         clearTimeout(timer);

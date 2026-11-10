@@ -33,15 +33,19 @@
 
 import {
   humanizeState,
+  LOCAL_HOST,
   SHUT_DOWN_STATUSES,
   watchCadenceLabel,
   watchDurationLabel,
   watchGloss,
 } from "@evener/appwire-client";
-import { subagentTallyToShow } from "@evener/appwire-client/state/navigation";
+import {
+  quotaWaitRemainingMs,
+  subagentTallyToShow,
+  waitingForQuotaText,
+} from "@evener/appwire-client/state/navigation";
 import { memo, type ReactNode, useCallback, useRef } from "react";
 import { settingsURLWithQuery } from "../../panes/settings/settingsHost";
-import { LOCAL_HOST } from "../../stores/hostRouting";
 import {
   relativeAge,
   selectDisplaySources,
@@ -52,6 +56,7 @@ import { useNavigationStore } from "../../stores/navigation/store";
 import {
   Badge,
   Button,
+  type CadenceState,
   Chevron,
   Eyebrow,
   HoverCard,
@@ -71,6 +76,7 @@ import { navigate } from "../routing";
 import { type PinTarget, SessionMenu } from "../sessionMenu/SessionMenu";
 import { cadenceStateFor, SIGNAL_STATES } from "../sessionStatus";
 import styles from "./RailRow.module.css";
+import { type RailActivityRead, type RailStatus, useSessionActivityRead, workingStatus } from "./railActivity";
 import {
   activeWatchCount,
   displayState,
@@ -467,13 +473,19 @@ function effectiveSessionState(session: RailSession): string {
   return presented;
 }
 
-function sessionStatusLabel(session: RailSession, effectiveState: string, notStarted: boolean): string {
-  const state = cadenceStateFor(effectiveState);
-  if (notStarted) return "Not started";
-  if (state === "failed") return STATUS_LABEL.failed;
-  if (state === "working") return STATUS_LABEL.working;
+function sessionStatusLabel(
+  session: RailSession,
+  state: CadenceState,
+  notStarted: boolean,
+  read: RailActivityRead | null,
+): RailStatus {
+  if (notStarted) return { kind: "not-started", text: "Not started" };
+  const quotaWait = quotaWaitRemainingMs(session, Date.now());
+  if (quotaWait !== null) return { kind: "quota", text: waitingForQuotaText(quotaWait) };
+  if (state === "failed") return { kind: "failed", text: STATUS_LABEL.failed };
+  if (state === "working") return workingStatus(session, read);
   const label = humanizeState(session.state, session.ask_pending === true, session.approval_pending === true);
-  return label.charAt(0).toUpperCase() + label.slice(1);
+  return { kind: "state", text: label.charAt(0).toUpperCase() + label.slice(1) };
 }
 
 // Every fact wraps: the card is where the reader confirms which session
@@ -513,13 +525,19 @@ function SessionContextCard({
   const jobs = session.running_job_count ?? 0;
   const watches = session.watch_count ?? 0;
   const armedWatches = activeWatchCount(session);
-  const status = sessionStatusLabel(session, effectiveState, notStarted);
+  const state = cadenceStateFor(effectiveState);
+  // Only a working row asks the hub what the session is doing: every other
+  // state word is already settled by the row's own fields.
+  const read = useSessionActivityRead(session.ref, state === "working");
+  const status = sessionStatusLabel(session, state, notStarted, read);
   const now = useRailNow();
   return (
-    <div className={CLASS.contextCard} data-state={cadenceStateFor(effectiveState)}>
+    <div className={CLASS.contextCard} data-state={state}>
       <div className={CLASS.contextHead}>
         <Eyebrow as="span">Session</Eyebrow>
-        <span className={CLASS.contextStatus}>{status}</span>
+        <span className={CLASS.contextStatus} data-testid="rail-context-status" data-status-kind={status.kind}>
+          {status.text}
+        </span>
       </div>
       <div className={CLASS.contextSummary}>{session.title}</div>
       <PropertyList

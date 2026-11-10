@@ -66,11 +66,11 @@ function rewrite(root) {
 
 test("rewrites a relative import of the package onto the package name", () => {
   const root = fixture({
-    "mobile/src/state.ts": 'import { errorText } from "../../appwire-client/typescript/errors";\nerrorText();\n',
+    "mobile-native/src/state.ts": 'import { errorText } from "../../appwire-client/typescript/errors";\nerrorText();\n',
   });
   try {
     assert.equal(rewrite(root).status, 0);
-    assert.match(readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"), /from "@evener\/appwire-client"/);
+    assert.match(readFileSync(path.join(root, "mobile-native/src/state.ts"), "utf8"), /from "@evener\/appwire-client"/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -84,7 +84,7 @@ test("a symbol the package does not publish leaves every file untouched", () => 
   const refused = 'import { internalOnly } from "../../appwire-client/typescript/errors";\ninternalOnly();\n';
   const root = fixture({
     "cmd/evener-hub/frontend/src/app.ts": clean,
-    "mobile/src/state.ts": refused,
+    "mobile-native/src/state.ts": refused,
   });
   try {
     const run = rewrite(root);
@@ -94,7 +94,7 @@ test("a symbol the package does not publish leaves every file untouched", () => 
     // This one resolves and would have been rewritten; it is the file a
     // write-as-you-go sweep left migrated behind the refusal.
     assert.equal(readFileSync(path.join(root, "cmd/evener-hub/frontend/src/app.ts"), "utf8"), clean);
-    assert.equal(readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"), refused);
+    assert.equal(readFileSync(path.join(root, "mobile-native/src/state.ts"), "utf8"), refused);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -124,7 +124,7 @@ test("an inline type member and a value member of the same export merge to the v
   // ways. Keyed by rendered text these survived as `{ type Thing, Thing }` --
   // a duplicate identifier the tool itself introduced.
   const root = fixture({
-    "mobile/src/state.ts": [
+    "mobile-native/src/state.ts": [
       'import { type Thing } from "../../appwire-client/typescript/model";',
       'import { Thing } from "../../appwire-client/typescript/model";',
       "export const made: Thing = new Thing();",
@@ -133,7 +133,7 @@ test("an inline type member and a value member of the same export merge to the v
   });
   try {
     assert.equal(rewrite(root).status, 0);
-    const merged = readFileSync(path.join(root, "mobile/src/state.ts"), "utf8");
+    const merged = readFileSync(path.join(root, "mobile-native/src/state.ts"), "utf8");
     assert.match(merged, /^import \{ Thing \} from "@evener\/appwire-client";$/m);
     assert.doesNotMatch(merged, /type Thing/);
     assert.equal(merged.match(/@evener\/appwire-client/g).length, 1);
@@ -149,13 +149,13 @@ test("two exports behind one local alias are refused, not merged", () => {
     "shared();",
     "",
   ].join("\n");
-  const root = fixture({ "mobile/src/state.ts": before });
+  const root = fixture({ "mobile-native/src/state.ts": before });
   try {
     const run = rewrite(root);
     assert.equal(run.status, 2);
     assert.match(run.output, /both imported as shared/);
     assert.match(run.output, /nothing was written/);
-    assert.equal(readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"), before);
+    assert.equal(readFileSync(path.join(root, "mobile-native/src/state.ts"), "utf8"), before);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -166,12 +166,12 @@ test("a backtick specifier is rewritten like a quoted one", () => {
   // the same string, and a reader that only knows string literals skips it in
   // silence -- leaving a path import behind the rewrite it was meant to make.
   const root = fixture({
-    "mobile/src/state.ts": "const doc = await import(`../../appwire-client/typescript/docContent`);\nvoid doc;\n",
+    "mobile-native/src/state.ts": "const doc = await import(`../../appwire-client/typescript/docContent`);\nvoid doc;\n",
   });
   try {
     assert.equal(rewrite(root).status, 0);
     assert.match(
-      readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"),
+      readFileSync(path.join(root, "mobile-native/src/state.ts"), "utf8"),
       /import\("@evener\/appwire-client\/docContent"\)/,
     );
   } finally {
@@ -181,12 +181,12 @@ test("a backtick specifier is rewritten like a quoted one", () => {
 
 test("a namespace import of a module the package does not publish is refused", () => {
   const before = 'import * as errors from "../../appwire-client/typescript/errors";\nvoid errors;\n';
-  const root = fixture({ "mobile/src/state.ts": before });
+  const root = fixture({ "mobile-native/src/state.ts": before });
   try {
     const run = rewrite(root);
     assert.equal(run.status, 2);
     assert.match(run.output, /import-namespace of "errors"/);
-    assert.equal(readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"), before);
+    assert.equal(readFileSync(path.join(root, "mobile-native/src/state.ts"), "utf8"), before);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -194,12 +194,12 @@ test("a namespace import of a module the package does not publish is refused", (
 
 test("a namespace import of a published subpath is rewritten", () => {
   const root = fixture({
-    "mobile/src/state.ts": 'import * as doc from "../../appwire-client/typescript/docContent";\nvoid doc;\n',
+    "mobile-native/src/state.ts": 'import * as doc from "../../appwire-client/typescript/docContent";\nvoid doc;\n',
   });
   try {
     assert.equal(rewrite(root).status, 0);
     assert.match(
-      readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"),
+      readFileSync(path.join(root, "mobile-native/src/state.ts"), "utf8"),
       /from "@evener\/appwire-client\/docContent"/,
     );
   } finally {
@@ -211,14 +211,14 @@ test("a state subpath added to the exports map is rewritten without a code edit"
   // A symbol only a nested subpath publishes maps onto that subpath, since the
   // subpaths are the package's exports map rather than a list in the rewriter.
   const root = fixture({
-    "mobile/src/route.ts":
+    "mobile-native/src/route.ts":
       'import { parseRoute } from "../../appwire-client/typescript/state/navigation";\nparseRoute();\n',
   });
   try {
     const run = rewrite(root);
     assert.equal(run.status, 0, run.output);
     assert.match(
-      readFileSync(path.join(root, "mobile/src/route.ts"), "utf8"),
+      readFileSync(path.join(root, "mobile-native/src/route.ts"), "utf8"),
       /from "@evener\/appwire-client\/state\/navigation"/,
     );
   } finally {
@@ -228,13 +228,13 @@ test("a state subpath added to the exports map is rewritten without a code edit"
 
 test("a whole-module import of a published state subpath is rewritten to that subpath", () => {
   const root = fixture({
-    "mobile/src/route.ts": 'import * as nav from "../../appwire-client/typescript/state/navigation";\nvoid nav;\n',
+    "mobile-native/src/route.ts": 'import * as nav from "../../appwire-client/typescript/state/navigation";\nvoid nav;\n',
   });
   try {
     const run = rewrite(root);
     assert.equal(run.status, 0, run.output);
     assert.match(
-      readFileSync(path.join(root, "mobile/src/route.ts"), "utf8"),
+      readFileSync(path.join(root, "mobile-native/src/route.ts"), "utf8"),
       /from "@evener\/appwire-client\/state\/navigation"/,
     );
   } finally {
@@ -248,14 +248,14 @@ test("a subpath the exports map gives as a string shorthand is rewritten too", (
   // as "state/mutation/index.js", the subpath read as unpublished, and the run
   // refused. Both forms have to yield the same module id.
   const root = fixture({
-    "mobile/src/outbox.ts":
+    "mobile-native/src/outbox.ts":
       'import { enqueue } from "../../appwire-client/typescript/state/mutation";\nenqueue();\n',
   });
   try {
     const run = rewrite(root);
     assert.equal(run.status, 0, run.output);
     assert.match(
-      readFileSync(path.join(root, "mobile/src/outbox.ts"), "utf8"),
+      readFileSync(path.join(root, "mobile-native/src/outbox.ts"), "utf8"),
       /from "@evener\/appwire-client\/state\/mutation"/,
     );
   } finally {
@@ -265,12 +265,12 @@ test("a subpath the exports map gives as a string shorthand is rewritten too", (
 
 test("an import-equals require of the package is refused like any other whole-module site", () => {
   const before = 'import errors = require("../../appwire-client/typescript/errors");\nvoid errors;\n';
-  const root = fixture({ "mobile/src/state.ts": before });
+  const root = fixture({ "mobile-native/src/state.ts": before });
   try {
     const run = rewrite(root);
     assert.equal(run.status, 2);
     assert.match(run.output, /require-equals of "errors"/);
-    assert.equal(readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"), before);
+    assert.equal(readFileSync(path.join(root, "mobile-native/src/state.ts"), "utf8"), before);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -280,11 +280,11 @@ test("a whole-module site naming the package root is rewritten to the package na
   // Both spellings resolve to index.ts, and the root is published: refusing
   // them said otherwise.
   for (const specifier of ["../../appwire-client/typescript", "../../appwire-client/typescript/index"]) {
-    const root = fixture({ "mobile/src/state.ts": `import * as pkg from "${specifier}";\nvoid pkg;\n` });
+    const root = fixture({ "mobile-native/src/state.ts": `import * as pkg from "${specifier}";\nvoid pkg;\n` });
     try {
       const run = rewrite(root);
       assert.equal(run.status, 0, `${specifier}: ${run.output}`);
-      assert.match(readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"), /from "@evener\/appwire-client";/);
+      assert.match(readFileSync(path.join(root, "mobile-native/src/state.ts"), "utf8"), /from "@evener\/appwire-client";/);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -293,12 +293,12 @@ test("a whole-module site naming the package root is rewritten to the package na
 
 test("a whole-module site naming a module the package does not publish is still refused", () => {
   const before = 'import * as errors from "../../appwire-client/typescript/errors";\nvoid errors;\n';
-  const root = fixture({ "mobile/src/state.ts": before });
+  const root = fixture({ "mobile-native/src/state.ts": before });
   try {
     const run = rewrite(root);
     assert.equal(run.status, 2);
     assert.match(run.output, /import-namespace of "errors"/);
-    assert.equal(readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"), before);
+    assert.equal(readFileSync(path.join(root, "mobile-native/src/state.ts"), "utf8"), before);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -306,12 +306,12 @@ test("a whole-module site naming a module the package does not publish is still 
 
 test("an empty named import binds nothing, so it is refused", () => {
   const before = 'import {} from "../../appwire-client/typescript/errors";\n';
-  const root = fixture({ "mobile/src/state.ts": before });
+  const root = fixture({ "mobile-native/src/state.ts": before });
   try {
     const run = rewrite(root);
     assert.equal(run.status, 2);
     assert.match(run.output, /empty named import of "errors"/);
-    assert.equal(readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"), before);
+    assert.equal(readFileSync(path.join(root, "mobile-native/src/state.ts"), "utf8"), before);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -324,7 +324,7 @@ test("export * as ns publishes the namespace, not the module's members", () => {
 
   const named = fixture({
     "appwire-client/typescript/index.ts": index,
-    "mobile/src/state.ts": 'import { alpha } from "../../appwire-client/typescript/model";\nalpha();\n',
+    "mobile-native/src/state.ts": 'import { alpha } from "../../appwire-client/typescript/model";\nalpha();\n',
   });
   try {
     const run = rewrite(named);
@@ -336,12 +336,12 @@ test("export * as ns publishes the namespace, not the module's members", () => {
 
   const namespace = fixture({
     "appwire-client/typescript/index.ts": index,
-    "mobile/src/state.ts": 'import { ns } from "../../appwire-client/typescript/index";\nvoid ns;\n',
+    "mobile-native/src/state.ts": 'import { ns } from "../../appwire-client/typescript/index";\nvoid ns;\n',
   });
   try {
     assert.equal(rewrite(namespace).status, 0);
     assert.match(
-      readFileSync(path.join(namespace, "mobile/src/state.ts"), "utf8"),
+      readFileSync(path.join(namespace, "mobile-native/src/state.ts"), "utf8"),
       /import \{ ns \} from "@evener\/appwire-client";/,
     );
   } finally {
@@ -351,7 +351,7 @@ test("export * as ns publishes the namespace, not the module's members", () => {
 
 test("a side-effect import of a published module is migrated, not refused", () => {
   const root = fixture({
-    "mobile/src/state.ts": [
+    "mobile-native/src/state.ts": [
       'import "../../appwire-client/typescript/index";',
       'import "../../appwire-client/typescript/docContent";',
       "",
@@ -360,7 +360,7 @@ test("a side-effect import of a published module is migrated, not refused", () =
   try {
     const run = rewrite(root);
     assert.equal(run.status, 0, run.output);
-    const after = readFileSync(path.join(root, "mobile/src/state.ts"), "utf8");
+    const after = readFileSync(path.join(root, "mobile-native/src/state.ts"), "utf8");
     assert.match(after, /^import "@evener\/appwire-client";$/m);
     assert.match(after, /^import "@evener\/appwire-client\/docContent";$/m);
   } finally {
@@ -369,7 +369,7 @@ test("a side-effect import of a published module is migrated, not refused", () =
 });
 
 test("a side-effect import of a module the package does not publish is still refused", () => {
-  const root = fixture({ "mobile/src/state.ts": 'import "../../appwire-client/typescript/errors";\n' });
+  const root = fixture({ "mobile-native/src/state.ts": 'import "../../appwire-client/typescript/errors";\n' });
   try {
     const run = rewrite(root);
     assert.equal(run.status, 2);
@@ -381,7 +381,7 @@ test("a side-effect import of a module the package does not publish is still ref
 
 test("a comment above a removed duplicate goes with it", () => {
   const root = fixture({
-    "mobile/src/state.ts": [
+    "mobile-native/src/state.ts": [
       'import { errorText } from "../../appwire-client/typescript/errors";',
       "// about the second import, which is about to be merged away",
       'import { alpha } from "../../appwire-client/typescript/model";',
@@ -392,7 +392,7 @@ test("a comment above a removed duplicate goes with it", () => {
   });
   try {
     assert.equal(rewrite(root).status, 0);
-    const after = readFileSync(path.join(root, "mobile/src/state.ts"), "utf8");
+    const after = readFileSync(path.join(root, "mobile-native/src/state.ts"), "utf8");
     assert.doesNotMatch(after, /about the second import/);
     assert.match(after, /\/\/ about the code below, which stays\nexport const used/);
     assert.equal(after.match(/@evener\/appwire-client/g).length, 1);
@@ -403,7 +403,7 @@ test("a comment above a removed duplicate goes with it", () => {
 
 test("a trailing comment on the statement above a removed duplicate survives", () => {
   const root = fixture({
-    "mobile/src/state.ts": [
+    "mobile-native/src/state.ts": [
       'import { errorText } from "../../appwire-client/typescript/errors"; // keep me',
       'import { alpha } from "../../appwire-client/typescript/model";',
       "export const used = [errorText, alpha];",
@@ -412,7 +412,7 @@ test("a trailing comment on the statement above a removed duplicate survives", (
   });
   try {
     assert.equal(rewrite(root).status, 0);
-    const after = readFileSync(path.join(root, "mobile/src/state.ts"), "utf8");
+    const after = readFileSync(path.join(root, "mobile-native/src/state.ts"), "utf8");
     assert.match(after, /\/\/ keep me/);
     assert.equal(after.match(/@evener\/appwire-client/g).length, 1);
   } finally {
@@ -441,13 +441,13 @@ test("a JavaScript consumer is swept like a TypeScript one", () => {
 
 test("a testing import is validated against the testing module's exports, like the root", () => {
   const root = fixture({
-    "mobile/src/state.ts":
+    "mobile-native/src/state.ts":
       'import { FakeClient } from "../../appwire-client/typescript/testing/fakeClient";\nnew FakeClient();\n',
   });
   try {
     assert.equal(rewrite(root).status, 0);
     assert.match(
-      readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"),
+      readFileSync(path.join(root, "mobile-native/src/state.ts"), "utf8"),
       /from "@evener\/appwire-client\/testing\/fakeClient"/,
     );
   } finally {
@@ -457,14 +457,14 @@ test("a testing import is validated against the testing module's exports, like t
 
 test("a symbol the testing module does not publish is reported, not rewritten", () => {
   const root = fixture({
-    "mobile/src/state.ts":
+    "mobile-native/src/state.ts":
       'import { FakeClientz } from "../../appwire-client/typescript/testing/fakeClient";\nnew FakeClientz();\n',
   });
   try {
     const result = rewrite(root);
     assert.equal(result.status, 2);
     assert.match(result.output, /FakeClientz/);
-    assert.match(readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"), /typescript\/testing\/fakeClient/);
+    assert.match(readFileSync(path.join(root, "mobile-native/src/state.ts"), "utf8"), /typescript\/testing\/fakeClient/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

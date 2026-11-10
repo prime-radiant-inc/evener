@@ -494,6 +494,11 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // the same meaning-per-hue split RailRow.module.css's signal-row family and
 // the subagent row's attribute-keyed state colors already established; every
 // terminal or neutral state stays on the ink ramp.
+//
+// attention-control: panes/session/nextNeedsYou.module.css earns the same
+// exact-path exception for the 6px dot that marks the floating needs-you
+// control. The dot IS the attention signal on a control whose text already
+// says "Needs you"; every word on the control stays on the ink scale.
 const SEMANTIC_PATH_EXCEPTIONS = new Set([
   "shell/rail/RailRow.module.css",
   "panes/session/transcript/tools/subagentmodule.module.css",
@@ -501,14 +506,8 @@ const SEMANTIC_PATH_EXCEPTIONS = new Set([
   "panes/session/transcript/tools/taskcheck.module.css",
   "panes/session/chrome/activitypanel.module.css",
   "panes/session/chrome/taskspanel.module.css",
-  // Dev-only: the task-card mock-up harness (taskcardmockups.html). Its
-  // losing "segment strip" variant proposes one genuinely semantic use -
-  // --alive for the working task's segment - and the harness exists to
-  // stage exactly that kind of proposal for review. Nothing here ships;
-  // the production task card/pane stylesheets are allowlisted on their own
-  // above.
-  "dev/taskcardmockups/taskcardmockups.module.css",
   "panes/session/transcript/entityref.module.css",
+  "panes/session/nextNeedsYou.module.css",
 ]);
 
 function reachesSemanticHue(cssText: string): boolean {
@@ -575,14 +574,6 @@ test("the currentwork.module.css semantic-var exception is scoped to its exact p
 test("the taskspanel.module.css semantic-var exception is scoped to its exact path, not just its basename", () => {
   expect(SEMANTIC_PATH_EXCEPTIONS.has("panes/session/chrome/taskspanel.module.css")).toBe(true);
   expect(SEMANTIC_PATH_EXCEPTIONS.has("widgets/taskspanel.module.css")).toBe(false);
-});
-
-test("the taskcardmockups.module.css semantic-var exception is scoped to its exact dev path", () => {
-  expect(SEMANTIC_PATH_EXCEPTIONS.has("dev/taskcardmockups/taskcardmockups.module.css")).toBe(true);
-  // A same-named decoy outside the dev harness must still go through the
-  // normal widget-allowlist check, exactly like every other entry.
-  expect(SEMANTIC_PATH_EXCEPTIONS.has("taskcardmockups.module.css")).toBe(false);
-  expect(SEMANTIC_PATH_EXCEPTIONS.has("panes/taskcardmockups.module.css")).toBe(false);
 });
 
 test("the entityref.module.css semantic-var exception is scoped to its exact path, not just its basename", () => {
@@ -837,7 +828,7 @@ test("the canonical dark token block directly scopes nested dark wrappers", () =
   expect(darkBlock).toContain("color-scheme: dark;");
   // Approved 2026-09-09 editorial-instrument spec replaces the neutral palette;
   // this still pins direct nested-theme scoping, not a second palette block.
-  expect(darkBlock).toContain("--surface-1: #232320;");
+  expect(darkBlock).toContain("--surface-1: #1D2025;");
 });
 
 // --- (f) the -ink text companions clear AA in both themes ---------------
@@ -988,6 +979,29 @@ test("--ink-low and --ink-mid clear 4.5:1 on the page and pane surfaces in both 
         expect(ratio, `${theme.name} ${inkName} on ${groundName}`).toBeGreaterThanOrEqual(4.5);
       }
     }
+  }
+});
+
+test("the selection wash is visibly distinct from the page in both themes", () => {
+  const themes = [
+    { name: "dark", block: extractBlock(TOKENS_CSS, /(?:^|\n):root(?:\s*,\s*\[data-theme="dark"\])?\s*\{/) },
+    { name: "light", block: extractBlock(TOKENS_CSS, /\[data-theme="light"\][^{]*\{/) },
+  ];
+  for (const theme of themes) {
+    const accent = declaredToken(theme.block, "--accent");
+    const surface1 = declaredToken(theme.block, "--surface-1");
+    const surface0 = declaredToken(theme.block, "--surface-0");
+    const declared = declaredToken(theme.block, "--selection-bg");
+    expect(accent).toBeDefined();
+    expect(surface1).toBeDefined();
+    expect(surface0).toBeDefined();
+    expect(declared).toBeDefined();
+    if (!accent || !surface1 || !surface0 || !declared) continue;
+    const percentage = /var\(--accent\) (\d+)%, var\(--surface-1\)/.exec(declared);
+    expect(percentage, `${theme.name} selection mix`).not.toBeNull();
+    if (!percentage) continue;
+    const wash = oklabMix(parseHexColor(accent), parseHexColor(surface1), Number(percentage[1]) / 100);
+    expect(contrastRatio(wash, parseHexColor(surface0)), `${theme.name} selection vs page`).toBeGreaterThanOrEqual(1.4);
   }
 });
 
@@ -1215,7 +1229,7 @@ const BARE_VAR_RE = /var\(\s*(--[a-zA-Z0-9-]+)\s*\)/g;
 //   - JS writes it, as an inline style or a setProperty call, so no
 //     stylesheet ever declares it: --keyboard-inset (shell/
 //     useKeyboardInset.ts), --rail-width (shell/rail/RailResizeHandle.tsx),
-//     --fill (Meter and RecommendationCard paint their fill width).
+//     --fill (Meter paints its fill width).
 //   - A theming hook a container sets to retint the content it owns:
 //     --markdown-ink, --prose-ink. (--prose-font-size left this set when the
 //     reading-surface hosts began declaring it; the declarer guardrail test

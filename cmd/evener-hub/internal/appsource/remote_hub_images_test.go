@@ -101,7 +101,7 @@ func TestRemoteHubTranslateOutRewritesStampedImageURLs(t *testing.T) {
 
 	t.Run("thread/read", func(t *testing.T) {
 		out := &appwire.ThreadReadResponse{Thread: remoteImageThreadFixture()}
-		if err := source.translateOut(out); err != nil {
+		if err := source.translateOutWithForwarded(out, allRemoteThreadCapabilities()); err != nil {
 			t.Fatalf("translateOut: %v", err)
 		}
 		assertRemoteImageItemRewritten(t, "thread/read", out.Thread.Turns[0].Items[0])
@@ -109,7 +109,7 @@ func TestRemoteHubTranslateOutRewritesStampedImageURLs(t *testing.T) {
 
 	t.Run("thread/list", func(t *testing.T) {
 		out := &appwire.ThreadListResponse{Data: []appwire.Thread{remoteImageThreadFixture()}}
-		if err := source.translateOut(out); err != nil {
+		if err := source.translateOutWithForwarded(out, allRemoteThreadCapabilities()); err != nil {
 			t.Fatalf("translateOut: %v", err)
 		}
 		assertRemoteImageItemRewritten(t, "thread/list", out.Data[0].Turns[0].Items[0])
@@ -117,7 +117,7 @@ func TestRemoteHubTranslateOutRewritesStampedImageURLs(t *testing.T) {
 
 	t.Run("thread/turns/list", func(t *testing.T) {
 		out := &appwire.ThreadTurnsListResponse{Data: []appwire.Turn{remoteImageTurnFixture()}}
-		if err := source.translateOut(out); err != nil {
+		if err := source.translateOutWithForwarded(out, allRemoteThreadCapabilities()); err != nil {
 			t.Fatalf("translateOut: %v", err)
 		}
 		assertRemoteImageItemRewritten(t, "thread/turns/list", out.Data[0].Items[0])
@@ -125,7 +125,7 @@ func TestRemoteHubTranslateOutRewritesStampedImageURLs(t *testing.T) {
 
 	t.Run("thread/start", func(t *testing.T) {
 		out := &appwire.ThreadStartResponse{Thread: remoteImageThreadFixture(), Turn: remoteImageTurnFixture()}
-		if err := source.translateOut(out); err != nil {
+		if err := source.translateOutWithForwarded(out, allRemoteThreadCapabilities()); err != nil {
 			t.Fatalf("translateOut: %v", err)
 		}
 		assertRemoteImageItemRewritten(t, "thread/start thread", out.Thread.Turns[0].Items[0])
@@ -134,7 +134,7 @@ func TestRemoteHubTranslateOutRewritesStampedImageURLs(t *testing.T) {
 
 	t.Run("thread/resume", func(t *testing.T) {
 		out := &appwire.ThreadResumeResponse{Thread: remoteImageThreadFixture()}
-		if err := source.translateOut(out); err != nil {
+		if err := source.translateOutWithForwarded(out, allRemoteThreadCapabilities()); err != nil {
 			t.Fatalf("translateOut: %v", err)
 		}
 		assertRemoteImageItemRewritten(t, "thread/resume", out.Thread.Turns[0].Items[0])
@@ -142,7 +142,7 @@ func TestRemoteHubTranslateOutRewritesStampedImageURLs(t *testing.T) {
 
 	t.Run("thread/fork", func(t *testing.T) {
 		out := &appwire.ThreadForkResponse{Thread: remoteImageThreadFixture()}
-		if err := source.translateOut(out); err != nil {
+		if err := source.translateOutWithForwarded(out, allRemoteThreadCapabilities()); err != nil {
 			t.Fatalf("translateOut: %v", err)
 		}
 		assertRemoteImageItemRewritten(t, "thread/fork", out.Thread.Turns[0].Items[0])
@@ -150,7 +150,7 @@ func TestRemoteHubTranslateOutRewritesStampedImageURLs(t *testing.T) {
 
 	t.Run("thread/clear", func(t *testing.T) {
 		out := &appwire.ThreadClearResponse{Thread: remoteImageThreadFixture()}
-		if err := source.translateOut(out); err != nil {
+		if err := source.translateOutWithForwarded(out, allRemoteThreadCapabilities()); err != nil {
 			t.Fatalf("translateOut: %v", err)
 		}
 		assertRemoteImageItemRewritten(t, "thread/clear", out.Thread.Turns[0].Items[0])
@@ -158,7 +158,7 @@ func TestRemoteHubTranslateOutRewritesStampedImageURLs(t *testing.T) {
 
 	t.Run("turn/start", func(t *testing.T) {
 		out := &appwire.TurnStartResponse{Turn: remoteImageTurnFixture()}
-		if err := source.translateOut(out); err != nil {
+		if err := source.translateOutWithForwarded(out, allRemoteThreadCapabilities()); err != nil {
 			t.Fatalf("translateOut: %v", err)
 		}
 		assertRemoteImageItemRewritten(t, "turn/start", out.Turn.Items[0])
@@ -166,7 +166,7 @@ func TestRemoteHubTranslateOutRewritesStampedImageURLs(t *testing.T) {
 
 	t.Run("thread/turns/items/list", func(t *testing.T) {
 		out := &appwire.ThreadTurnItemsListResponse{Data: []appwire.ThreadItem{remoteImageItemFixture()}}
-		if err := source.translateOut(out); err != nil {
+		if err := source.translateOutWithForwarded(out, allRemoteThreadCapabilities()); err != nil {
 			t.Fatalf("translateOut: %v", err)
 		}
 		assertRemoteImageItemRewritten(t, "thread/turns/items/list", out.Data[0])
@@ -174,7 +174,7 @@ func TestRemoteHubTranslateOutRewritesStampedImageURLs(t *testing.T) {
 
 	t.Run("evener/subagent/preview", func(t *testing.T) {
 		out := &appwire.EvenerSubagentPreviewResponse{Items: []appwire.ThreadItem{remoteImageItemFixture()}}
-		if err := source.translateOut(out); err != nil {
+		if err := source.translateOutWithForwarded(out, allRemoteThreadCapabilities()); err != nil {
 			t.Fatalf("translateOut: %v", err)
 		}
 		assertRemoteImageItemRewritten(t, "evener/subagent/preview", out.Items[0])
@@ -196,7 +196,7 @@ func TestRemoteHubTranslateNotificationRewritesStampedImageURLs(t *testing.T) {
 		}
 		translated, threadID, ok := source.translateNotification(appwire.Notification{
 			Method: appwire.NotifyThreadStarted, Params: params,
-		})
+		}, nil)
 		if !ok || threadID != "t1" {
 			t.Fatalf("translateNotification = (%+v, %q, %v), want thread t1 routed", translated, threadID, ok)
 		}
@@ -221,7 +221,7 @@ func TestRemoteHubTranslateNotificationRewritesStampedImageURLs(t *testing.T) {
 		}
 		translated, threadID, ok := source.translateNotification(appwire.Notification{
 			Method: appwire.NotifyHistoryUpdated, Params: params,
-		})
+		}, nil)
 		if !ok || threadID != "t1" {
 			t.Fatalf("translateNotification = (%+v, %q, %v), want thread t1 routed", translated, threadID, ok)
 		}
@@ -253,7 +253,7 @@ func TestRemoteHubImageVisitorNeutralizesUnqualifiableRoutes(t *testing.T) {
 			},
 		}}}},
 	}}
-	if err := source.translateOut(out); err != nil {
+	if err := source.translateOutWithForwarded(out, allRemoteThreadCapabilities()); err != nil {
 		t.Fatalf("translateOut: %v", err)
 	}
 	item := out.Thread.Turns[0].Items[0]
@@ -279,7 +279,7 @@ func TestRemoteHubImageVisitorLeavesHostQualifiedRoutesAlone(t *testing.T) {
 	source := NewRemoteHubSource(remoteImageHost, nil, nil)
 	thread := remoteImageThreadFixture()
 	for pass := range 2 {
-		if err := source.translateOut(&appwire.ThreadReadResponse{Thread: thread}); err != nil {
+		if err := source.translateOutWithForwarded(&appwire.ThreadReadResponse{Thread: thread}, allRemoteThreadCapabilities()); err != nil {
 			t.Fatalf("translateOut pass %d: %v", pass, err)
 		}
 	}
@@ -308,7 +308,7 @@ func TestRemoteHubImageVisitorNeutralizesForeignSourceRoutes(t *testing.T) {
 			},
 		}}}},
 	}}
-	if err := source.translateOut(out); err != nil {
+	if err := source.translateOutWithForwarded(out, allRemoteThreadCapabilities()); err != nil {
 		t.Fatalf("translateOut: %v", err)
 	}
 	item := out.Thread.Turns[0].Items[0]

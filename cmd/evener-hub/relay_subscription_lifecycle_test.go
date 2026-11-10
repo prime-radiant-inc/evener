@@ -23,7 +23,7 @@ func TestHubRelayStableCompletedLifecycle(t *testing.T) {
 			defer cancel()
 			daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, p appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-				appserver.Subscribe(ctx, "current")
+				appserver.SubscribeWithAdmission(ctx, "current", false)
 				return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "current", SessionID: "current", Evener: appwire.EvenerThread{Ref: "local:current"}}}, nil
 			})
 			upstream := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
@@ -33,7 +33,7 @@ func TestHubRelayStableCompletedLifecycle(t *testing.T) {
 			}, http.DefaultClient)
 			sources := appsource.NewRegistry()
 			sources.Add(source)
-			cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+			cfg := testWebConfig(t, hubcore.WebConfig{})
 			server := newHubAppServer(cfg, sources)
 			wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
 			defer wire.Close()
@@ -94,7 +94,7 @@ func TestHubRelayNonAtomicUnsubscribeGap(t *testing.T) {
 				case <-ctx.Done():
 				}
 			}
-			cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+			cfg := testWebConfig(t, hubcore.WebConfig{})
 			if existing {
 				cfg.RelayHooks.BeforeExistingRegistration = gate
 			} else {

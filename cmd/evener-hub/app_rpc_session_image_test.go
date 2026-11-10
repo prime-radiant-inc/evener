@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/testfs"
 	"primeradiant.com/evener/llm"
 )
 
@@ -86,10 +87,7 @@ func seedSessionImageSession(t *testing.T, cwd string, image []byte, storedMedia
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
 	return past
 }
 
@@ -102,11 +100,7 @@ func requestSessionImage(t *testing.T, srv *httptest.Server, params appwire.Sess
 // request for method, returning its typed response or the hub's refusal.
 func requestHubMethod[R any](t *testing.T, srv *httptest.Server, method string, params any) (R, error) {
 	t.Helper()
-	rpc := dialHubRPC(t, srv)
-	defer rpc.Close()
-	if _, err := rpc.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	rpc := dialHubRPCInitialized(t, srv)
 	var resp R
 	err := rpc.Request(context.Background(), method, params, &resp)
 	return resp, err
@@ -198,7 +192,7 @@ func TestHubSessionImageServesFileBackedBytes(t *testing.T) {
 // not only macOS with its /var link. The folder is canonical so the symlink
 // made here is the only alias in play.
 func TestHubSessionImageServesFromASessionFolderReachedThroughASymlink(t *testing.T) {
-	folder := canonicalTempDir(t)
+	folder := testfs.CanonicalTempDir(t)
 	if err := os.WriteFile(filepath.Join(folder, "shot.png"), sessionImageTestPNG, 0o644); err != nil {
 		t.Fatal(err)
 	}

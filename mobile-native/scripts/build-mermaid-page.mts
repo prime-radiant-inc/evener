@@ -9,13 +9,10 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
-// The one source for the forbid list: the web frontend's forbidTags leaf owns
-// it, and this generator substitutes it into the native page bundle so the two
-// frontends cannot drift. The leaf has no imports, so this resolves under the
-// native job's own install (no frontend node_modules needed); imported as TS
-// (this script runs under tsx), while the emitted page stays a plain inlined
-// bundle.
-import { MERMAID_FORBID_TAGS } from "../../cmd/evener-hub/frontend/src/widgets/mermaid/forbidTags";
+// The one source for the forbid list: the AppWire package owns it, and this
+// generator substitutes it into the native page bundle so the two frontends
+// cannot drift. The emitted page stays a plain inlined bundle.
+import { MERMAID_FORBID_TAGS, MERMAID_SANITIZE_CONFIG } from "@evener/appwire-client";
 
 const nativeRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const GENERATED_FILE = path.join(nativeRoot, "src", "generated", "mermaidPage.ts");
@@ -28,6 +25,15 @@ const CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-i
 // Evaluated inside the bundle. The bootstrap module carries its own `import
 // mermaid` / `import DOMPurify`, which esbuild follows and inlines here.
 const ENTRY = 'import { bootstrapMermaidPage } from "./src/mermaidPageContent.ts";\nbootstrapMermaidPage();\n';
+
+/** The shared values the page bundle is built with. Exported so the test can
+ * prove the generator substitutes the package's lists, not a stale copy. */
+export function mermaidPageDefines(): Record<string, string> {
+	return {
+		MERMAID_FORBID_TAGS: JSON.stringify(MERMAID_FORBID_TAGS),
+		MERMAID_SANITIZE_CONFIG: JSON.stringify(MERMAID_SANITIZE_CONFIG),
+	};
+}
 
 function renderHtml(bundle: string): string {
 	return [
@@ -65,9 +71,9 @@ export async function buildMermaidPageHtml(): Promise<string> {
 		// bundle: "none" would strip them, and the MIT terms require retaining them.
 		legalComments: "eof",
 		charset: "utf8",
-		// mermaidPageContent.ts declares MERMAID_FORBID_TAGS; esbuild substitutes
-		// the web module's current list here, so the page carries no copy of it.
-		define: { MERMAID_FORBID_TAGS: JSON.stringify(MERMAID_FORBID_TAGS) },
+		// mermaidPageContent.ts declares both; esbuild substitutes the package's
+		// current values here, so the page carries no copy of them.
+		define: mermaidPageDefines(),
 	});
 	const [output] = result.outputFiles ?? [];
 	if (!output) throw new Error("esbuild produced no bundle for the mermaid page");

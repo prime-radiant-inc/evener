@@ -5,8 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"path/filepath"
 	"slices"
+
+	"primeradiant.com/evener/agent/activitybound"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/schema"
@@ -43,6 +44,30 @@ func normalizeSessionActivity(ref string, scope appwire.SessionActivityScope, li
 	}
 	return id, scope, min(limit, 200), nil
 }
+
+// withActivityList opens one activity read for a list request, pages it and
+// releases it. The live and retained entry points differ only in how they open.
+func withActivityList[R any](
+	ctx context.Context,
+	params appwire.SessionActivityListParams,
+	open func(context.Context, appwire.SessionActivityReadParams) (*sessionActivityRead, error),
+	page func(*sessionActivityRead, context.Context, appwire.SessionActivityListParams) (R, error),
+) (R, error) {
+	var zero R
+	_, scope, limit, err := normalizeSessionActivity(params.Ref, params.Scope, params.Limit)
+	if err != nil {
+		return zero, err
+	}
+	params.Scope = scope
+	params.Limit = limit
+	read, err := open(ctx, appwire.SessionActivityReadParams{Ref: params.Ref, Scope: scope})
+	if err != nil {
+		return zero, err
+	}
+	defer read.index.release()
+	return page(read, ctx, params)
+}
+
 func (s *Session) activityRead(ctx context.Context, params appwire.SessionActivityReadParams) (*sessionActivityRead, error) {
 	id, scope, _, err := normalizeSessionActivity(params.Ref, params.Scope, 0)
 	if err != nil {
@@ -225,16 +250,18 @@ func activityContextFromDelegates(result *appwire.SessionActivityContext, rootID
 		}
 		if result.DelegateID == "" {
 			result.DelegateID = aggregate.DelegateID
+			result.DelegateName = activitybound.Truncate(d.Name, activityMaxLabelRunes)
 			result.ParentRef = encodeRef("", owner)
 		}
 		parentDelegateID := d.ParentDelegateID
-		chain = append(chain, appwire.SessionActivityAncestor{Ref: encodeRef("", owner), SessionID: owner, DelegateID: parentDelegateID, Title: truncateActivityText(owner, activityMaxLabelRunes)})
+		chain = append(chain, appwire.SessionActivityAncestor{Ref: encodeRef("", owner), SessionID: owner, DelegateID: parentDelegateID, Title: activitybound.Truncate(owner, activityMaxLabelRunes)})
 		if parentDelegateID != "" {
 			parent := state[parentDelegateID]
 			if parent == nil || parent.Descriptor.ChildSessionID != owner {
 				return false
 			}
-			chain[len(chain)-1].Title = truncateActivityText(parent.Descriptor.Description, activityMaxLabelRunes)
+			chain[len(chain)-1].Title = activitybound.Truncate(parent.Descriptor.Description, activityMaxLabelRunes)
+			chain[len(chain)-1].DelegateName = activitybound.Truncate(parent.Descriptor.Name, activityMaxLabelRunes)
 		} else if owner != rootID {
 			return false
 		}
@@ -246,7 +273,7 @@ func activityContextFromDelegates(result *appwire.SessionActivityContext, rootID
 	return true
 }
 func (read *sessionActivityRead) delegatePath() string {
-	return filepath.Join(jobsDir(read.stateDir, read.rootID), "delegates.jsonl")
+	return schema.SessionDelegateJournalPath(read.stateDir, read.rootID)
 }
 func (read *sessionActivityRead) advanceDelegates(ctx context.Context) (bool, error) {
 	if read.index.controller != nil {
@@ -527,7 +554,7 @@ func (read *sessionActivityRead) summary(ctx context.Context) (appwire.SessionAc
 				jm := runtime.jobManager
 				jm.mu.Lock()
 				for _, cfg := range jm.watches {
-					if cfg != nil && cfg.id == id {
+					if cfg != nil && cfg.watchID == id {
 						proven = true
 						if watchOneShotHasFired(cfg) {
 							result.Watches.Completed++

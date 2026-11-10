@@ -1,5 +1,5 @@
 import { hydrateThread } from "@evener/appwire-client";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, renderHook, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Profiler } from "react";
 import { afterEach, expect, test, vi } from "vitest";
@@ -8,7 +8,7 @@ import "../../panes/zoom";
 import { activityThread } from "../../stores/sessionActivityTestUtils";
 import { threadsStore } from "../../stores/threads";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
-import { ScopeCrumbs } from "./ScopeCrumbs";
+import { ScopeCrumbs, useScopeTitle } from "./ScopeCrumbs";
 import { installFocusedScope, summaryOf } from "./scopeTestUtils";
 
 afterEach(() => {
@@ -105,6 +105,29 @@ test("an unhydrated public alias keeps its own fallback instead of borrowing ano
   expect(screen.getByText("Public child").getAttribute("aria-current")).toBe("page");
   expect(screen.queryByText("Remote name")).toBeNull();
   expect(screen.queryByText("Remote title")).toBeNull();
+});
+
+test("scope title eligibility preserves navigation fallback and resumes live-name precedence", () => {
+  const ref = "remote:4212";
+  const fallback = "fallback-4212";
+  const navigationTitle = "nav-4212";
+  const renamedNavigationTitle = "nav-4212-renamed";
+  const liveTitle = "model-4212";
+  installFocusedScope(ref, summaryOf({ ref, title: navigationTitle }));
+  const model = { ...hydrateThread(activityThread(ref), ref, 1000), name: liveTitle };
+  threadsStore.setState({ threads: new Map([[ref, model]]) });
+  const { result, rerender } = renderHook(({ eligible }) => useScopeTitle(ref, fallback, eligible), {
+    initialProps: { eligible: false },
+  });
+  expect.soft(result.current).toBe(navigationTitle);
+  act(() => installFocusedScope(ref, summaryOf({ ref, title: renamedNavigationTitle })));
+  expect.soft(result.current).toBe(renamedNavigationTitle);
+  rerender({ eligible: true });
+  expect(result.current).toBe(liveTitle);
+  act(() => threadsStore.setState({ threads: new Map([[ref, { ...model, name: "" }]]) }));
+  expect(result.current).toBe(renamedNavigationTitle);
+  act(() => installFocusedScope(ref));
+  expect(result.current).toBe(fallback);
 });
 
 test("ancestor buttons route to the live conversation pane, not a read-only leftover", async () => {

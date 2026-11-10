@@ -31,6 +31,7 @@ vi.mock("@react-navigation/native", () => ({
 	createNavigationContainerRef: () => ({ getRootState: () => undefined }),
 }));
 vi.mock("@react-navigation/native-stack", () => ({ createNativeStackNavigator: () => ({}) }));
+vi.mock("expo", () => ({ requireOptionalNativeModule: () => null }));
 vi.mock("expo-status-bar", () => ({}));
 vi.mock("expo-camera", () => ({}));
 vi.mock("expo-clipboard", () => ({}));
@@ -56,6 +57,7 @@ const outbox = vi.hoisted(() => ({ bind: vi.fn() }));
 vi.mock("./src/outbox/nativeOutboxFlush", () => ({ outboxFlush: outbox }));
 vi.mock("./src/NativePreferencesProvider", () => ({
 	NativePreferencesProvider: (props: { children?: ReactNode }) => props.children ?? null,
+	useNativePreferences: () => ({ hubId: null, config: null }),
 }));
 
 // The keyboard controller reports the keyboard's frames to the screens

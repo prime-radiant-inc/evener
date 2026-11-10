@@ -35,6 +35,9 @@ linters:
     - modernize
     - nakedret
     - nilerr
+    # A suppression must name its linter and say why, and goes stale loudly
+    # once the finding it silenced is gone.
+    - nolintlint
     - noctx
     - perfsprint
     - predeclared
@@ -43,6 +46,11 @@ linters:
     - unconvert
     - usestdlibvars
   settings:
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      # Directives that no longer match a finding are not this gate's concern.
+      allow-unused: true
     govet:
       disable:
         - inline
@@ -154,6 +162,14 @@ linters:
       - path: _test\.go
         text: SA5011
 
+      # Explanations are required for every suppression except these four
+      # linters, whose existing bare suppressions (defer Close, best-effort
+      # writes, SQL without a context) predate the gate. A new
+      # nolint:unused, or any other linter, must say why.
+      - linters:
+          - nolintlint
+        text: 'nolint:(errcheck|noctx|nilerr|staticcheck)` should provide explanation'
+
       # llm/providers/ speaks each upstream provider's wire format; tag
       # casing belongs to upstream, not to this repo's snake_case default.
       # (Paths are relative to this config file, so this matches the llm
@@ -165,6 +181,20 @@ linters:
       # a package that is otherwise snake_case. tagliatelle's overrides are
       # per-package, so this per-file regime is expressed as an exclusion.
       - path: ^server/appwire_
+        linters:
+          - tagliatelle
+
+      # Device voice controls, their journal records and presentation fixtures
+      # use AppWire camelCase. The second pass in .golangci-appwire.yml checks
+      # these exact files; upstream voice_realtime.go stays snake_case here.
+      - path: '^cmd/evener-hub/(voice_bridge|voice_http(_test)?|e2e_voice_presentation_test|internal/hubcore/voice_journal(_presentation_test)?)\.go$'
+        linters:
+          - tagliatelle
+      # Only the presentation projection's InputID crosses naming regimes in
+      # these agent files. In particular, the live test's tool-result fields
+      # remain snake_case and are still checked by this pass.
+      - path: '^agent/session_voice_presentation(_test|_live_test)?\.go$'
+        source: '^\s*InputID\s'
         linters:
           - tagliatelle
 
@@ -187,6 +217,17 @@ linters:
         text: '^exported: (exported (method|function|type|const|var)|comment on exported)'
         linters:
           - revive
+
+      # SessionOperationRequest mirrors operation keys from the tool variants.
+      - path: ^appwire/session_tools\.go$
+        source: 'json:"(vision_model|reasoning_effort|drain_queue|promote_queued|cancel_queued|human_notes|remove_url|owned_delegate|force_stop)(,omitempty)?"'
+        linters:
+          - tagliatelle
+      # Manager read/partial-outcome schemas retain their existing AppWire fields.
+      - path: ^agent/session_tools_hub\.go$
+        source: 'json:"(instanceId|clientMutationId|jobId|itemLimit|maxBytes|beforeBytes)(,omitempty)?"'
+        linters:
+          - tagliatelle
 
 formatters:
   enable:

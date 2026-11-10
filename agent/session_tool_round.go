@@ -34,7 +34,7 @@ func (s *Session) handleNoToolCalls(noContent bool, t *retryTracker) (retry bool
 
 func (s *Session) applyNoToolCallsDecision(dec noToolCallsDecision) (retry bool, ferr error) {
 	if dec.Retry {
-		s.emit(events.EventWarning, events.WarningData{Message: dec.WarningMsg})
+		s.emit(events.WarningData{Message: dec.WarningMsg})
 		s.appendSteeringTurn(dec.SteeringText, events.SteeringKindNoToolCalls)
 		return true, nil
 	}
@@ -164,7 +164,7 @@ func (s *Session) batchToolCalls(calls []llm.ToolCallData, results []tool.ExecRe
 // and returns the abort error alongside the partial results.
 func (s *Session) execToolBatch(ctx context.Context, calls []llm.ToolCallData, profile *provider.Profile, finishReason string) ([]tool.ExecResult, error) {
 	results := make([]tool.ExecResult, len(calls))
-	if profile.SupportsParallelToolCalls() && len(calls) > 1 {
+	if len(calls) > 1 {
 		// Ordered-group algorithm: batch consecutive read-only calls for
 		// parallel execution; serialize everything else.
 		flushReadBatch := func(batch []int) error {
@@ -308,7 +308,8 @@ func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallDa
 					path, _ = args["file_path"].(string)
 				}
 			}
-			if vision.outcome == visionSideChannelOwnedTimeout || vision.outcome == visionSideChannelProviderFailure {
+			if vision.outcome == visionSideChannelOwnedTimeout || vision.outcome == visionSideChannelProviderFailure ||
+				vision.outcome == visionSideChannelUndeliverableDocument {
 				owner := &struct{ _ byte }{}
 				if abortErr := s.withResponseSideEffects(ctx, func() {
 					s.trySteerTurnOwnedMessage(steeringMessage{Text: visionFailureSteering(path, vision), Kind: events.SteeringKindImageDescription}, owner)
@@ -333,7 +334,7 @@ func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallDa
 				}
 				var steerErr error
 				if abortErr := s.withResponseSideEffects(ctx, func() {
-					steerErr = s.SteerKind(label+": "+desc+"\n"+systemReminder(visionConsumerReminder),
+					steerErr = s.steerKind(label+": "+desc+"\n"+systemReminder(visionConsumerReminder),
 						events.SteeringKindImageDescription)
 				}); abortErr != nil {
 					return abortErr
@@ -456,7 +457,7 @@ func (s *Session) notifyStrategyAfterAction(ctx context.Context) error {
 	s.mu.Unlock()
 	if warn {
 		if abortErr := s.withResponseSideEffects(ctx, func() {
-			s.emit(events.EventWarning, bareWarningDataFromError("strategy AfterAction error", afterErr))
+			s.emit(bareWarningDataFromError("strategy AfterAction error", afterErr))
 		}); abortErr != nil {
 			return abortErr
 		}
@@ -507,7 +508,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 				warning = s.stuckEscalation(count)
 			}
 			if abortErr := s.withResponseSideEffects(ctx, func() {
-				s.emit(events.EventLoopDetection, events.LoopDetectionData{Message: warning})
+				s.emit(events.LoopDetectionData{Message: warning})
 				s.appendSteeringTurn(warning, events.SteeringKindLoopDetected)
 			}); abortErr != nil {
 				s.removeAllTurnOwnedSteering()
@@ -533,7 +534,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 	// here would mark it incorporated in a result that ends the turn without a
 	// model request that can act on it.
 	if abortErr := s.withResponseSideEffects(ctx, func() {
-		if !s.Communicated() {
+		if !s.communicated() {
 			if s.hasPendingSteering() {
 				yieldToObserverCallback = false
 			}

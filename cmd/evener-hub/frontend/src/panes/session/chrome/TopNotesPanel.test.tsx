@@ -1,6 +1,3 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { ThreadModel } from "@evener/appwire-client";
 import { act, cleanup, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -8,25 +5,9 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { resetHumanNoteDrafts, useHumanNoteDraft } from "../../../stores/humanNoteDrafts";
 import { putThreadModel, resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { topNotesStore } from "../../../stores/topNotes";
+import { readModuleCss } from "../../../styles/cssBlock";
+import { ALL_CAPABILITIES } from "../../../threadTestUtils";
 import { TopNotesPanel } from "./TopNotesPanel";
-
-const here = dirname(fileURLToPath(import.meta.url));
-
-const FULL_CAPABILITIES = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
 
 function makeModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
   const { jobsTreeRevision = null, ...rest } = overrides;
@@ -45,7 +26,7 @@ function makeModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     tasks: null,
     jobsUpdatedAt: null,
     lastFrameAt: 0,
-    capabilities: FULL_CAPABILITIES,
+    capabilities: ALL_CAPABILITIES,
     goal: null,
     humanNote: "",
     agentNote: "",
@@ -559,7 +540,7 @@ test("the panel sits flush in both states, and the card's border cannot clip", (
   // The transcript column keeps the pane body's side padding, but the notes
   // panel claims the top edge back: PaneScaffold's .body pads --space-5
   // (desktop) / --space-4 (phone), and the panel cancels exactly that.
-  const css = readFileSync(join(here, "topnotespanel.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readModuleCss(import.meta.url, "topnotespanel.module.css");
   const root = css.match(/\.topNotesPanel\s*\{([^}]*)\}/);
   expect(root?.[1]).toContain("margin-top: calc(-1 * var(--space-5))");
   const mobile = css.match(/@media \(max-width: 899px\)\s*\{\s*\.topNotesPanel\s*\{([^}]*)\}/);

@@ -6,7 +6,7 @@
 # through Vite, `tsc` through TypeScript's own resolver, and the app on a
 # device through mobile-native/metro.config.js — its watchFolders, its
 # nodeModulesPaths, and the resolveRequest hook that redirects specifiers
-# coming from the shared mobile/ and frontend sources. Nothing else in the gate
+# coming from the frontend sources. Nothing else in the gate
 # runs Metro, so a regression in that third resolver used to ship green.
 #
 # `expo export` drives Metro over the real entry point with no device,

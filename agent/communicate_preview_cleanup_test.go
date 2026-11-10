@@ -89,10 +89,7 @@ func TestCallModelRetryResetsReusedPreviewCallIDGeneration(t *testing.T) {
 		finish := llm.FinishReason{Reason: llm.FinishReasonToolCalls}
 		st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &finish})
 	}})
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-test"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(client), withProfile(NewOpenAIProfile("gpt-test")), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	recorder := startPreviewEventRecorder(sess)
 	resp, callErr := sess.callModel(context.Background(), llm.RetryPolicy{MaxRetries: 1}, NewOpenAIProfile("gpt-test"), llm.Request{
 		Provider: "openai",
@@ -232,10 +229,7 @@ func TestCallModelPanicAfterConsumeResetsTransferredPreview(t *testing.T) {
 		finish := llm.FinishReason{Reason: llm.FinishReasonToolCalls}
 		st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &finish})
 	}})
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-test"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(client), withProfile(NewOpenAIProfile("gpt-test")), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	var got []events.EventKind
 	done := make(chan struct{})
 	go func() {
@@ -385,10 +379,7 @@ func TestCommunicatePreviewResetsWhenCallerAbortsAfterStream(t *testing.T) {
 			st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &finish})
 		},
 	})
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(client), withDir(dir), withConfig(SessionConfig{}))
 	var got []events.EventKind
 	done := make(chan struct{})
 	go func() {

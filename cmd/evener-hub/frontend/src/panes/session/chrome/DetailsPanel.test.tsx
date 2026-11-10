@@ -1,27 +1,12 @@
-import type { ThreadCapabilities, ThreadModel, TurnModel } from "@evener/appwire-client";
+import type { ThreadModel, TurnModel } from "@evener/appwire-client";
 import { tokenUnitLabel } from "@evener/appwire-client";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
+import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import rawMeterStyles from "../../../widgets/meter/meter.module.css";
-import { DetailsPanel } from "./DetailsPanel";
-
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
+import { DetailsPanel, DetailsPanelBody } from "./DetailsPanel";
 
 function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
   const { jobsTreeRevision = null, ...rest } = overrides;
@@ -83,6 +68,38 @@ function rowTerm(value: HTMLElement): string | null | undefined {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+});
+
+test.each([true, false, undefined])("Manager projection %s is read-only in session details", async (manager) => {
+  await openPanel(testModel({ manager }));
+  expect(screen.queryByRole("switch")).toBeNull();
+  const indication = screen.queryByTestId("session-details-manager");
+  if (manager) {
+    expect(indication?.closest("dd")).toBeTruthy();
+    expect(indication?.closest("button")).toBeNull();
+  } else {
+    expect(indication).toBeNull();
+  }
+});
+
+// The body's branch row: the wire's gitBranch is the source of truth, the
+// caller's locally resolved branch (About's fallback for local sessions,
+// whose read path never populated the wire's gitInfo) fills the gap, and
+// neither present means no row — the panel's central absent-means-omitted
+// rule.
+test("details body shows a locally resolved branch when the wire carries none", () => {
+  render(<DetailsPanelBody model={testModel()} now={0} resolvedBranch="trunk" />);
+  expect(screen.getByTestId("session-details-branch").textContent).toContain("trunk");
+});
+
+test("details body keeps the wire's branch over a locally resolved one", () => {
+  render(<DetailsPanelBody model={testModel({ gitBranch: "feature/wire" })} now={0} resolvedBranch="trunk" />);
+  expect(screen.getByTestId("session-details-branch").textContent).toContain("feature/wire");
+});
+
+test("details body omits the branch row when neither wire nor lookup has one", () => {
+  render(<DetailsPanelBody model={testModel()} now={0} />);
+  expect(screen.queryByTestId("session-details-branch")).toBeNull();
 });
 
 test("the trigger opens the details sheet", async () => {

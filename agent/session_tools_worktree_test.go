@@ -43,8 +43,7 @@ func TestWorktreeRootResolutionErrorDoesNotSelectFallbackIdentity(t *testing.T) 
 // installWorktreeSeams registers test seams for s for the rest of the test.
 func installWorktreeSeams(t *testing.T, s *Session, seams worktreeTestSeams) {
 	t.Helper()
-	worktreeSeams.Store(s, seams)
-	t.Cleanup(func() { worktreeSeams.Delete(s) })
+	s.cfg.testOnly.worktree = seams
 }
 
 func TestRollbackFreshDelegateWorktreeUsesCarriedProjectMetadataDir(t *testing.T) {

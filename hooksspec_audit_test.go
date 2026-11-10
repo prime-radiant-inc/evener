@@ -1,6 +1,7 @@
 package evener_test
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -57,4 +58,57 @@ func TestHooksLifecycleSpec_PromptInputExitIsSent(t *testing.T) {
 	if !strings.Contains(section, "Amendment") {
 		t.Errorf("§4.7 lost the amendment that records what the shipped code does:\n%s", section)
 	}
+}
+
+// safeAuditMarkdownSection returns the body of the first section whose trimmed
+// line equals heading, up to the next ATX heading at the same or a higher level.
+// It fails when the heading is missing, so a renamed section trips the audit
+// rather than silently scanning nothing.
+func safeAuditMarkdownSection(t *testing.T, path, heading string) string {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	level := safeAuditHeadingLevel(heading)
+	if level == 0 {
+		t.Fatalf("heading %q is not an ATX heading", heading)
+	}
+	lines := strings.Split(string(body), "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) == heading {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatalf("%s no longer carries the heading %q; the audit would otherwise pass vacuously", path, heading)
+	}
+	var b strings.Builder
+	for _, line := range lines[start+1:] {
+		if l := safeAuditHeadingLevel(line); l != 0 && l <= level {
+			break
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+// safeAuditHeadingLevel reports the ATX heading level of a line (1-6), or 0 when
+// the line is not a heading.
+func safeAuditHeadingLevel(line string) int {
+	line = strings.TrimSpace(line)
+	n := 0
+	for n < len(line) && line[n] == '#' {
+		n++
+	}
+	if n == 0 || n > 6 {
+		return 0
+	}
+	if n == len(line) || line[n] == ' ' {
+		return n
+	}
+	return 0
 }

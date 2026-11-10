@@ -7,7 +7,11 @@ import { externalMarkdownLink } from "./markdownLinks";
 import { splitNativeSegments } from "./markdownSegments";
 import { type MarkdownRoles, markdownStyle } from "./markdownStyle";
 import { MermaidDiagram } from "./MermaidDiagram";
-import { type NativeFileOpenContext, renderMarkdownFileReferences } from "./reader/markdownFileReferences";
+import {
+	type NativeFileOpenContext,
+	namedFileTarget,
+	renderMarkdownFileReferences,
+} from "./reader/markdownFileReferences";
 import { useColors } from "./ui";
 
 // Agent prose in the phone's reading font (the serif unless Display says
@@ -100,7 +104,12 @@ export const MarkdownResponse = memo(function MarkdownResponse({
 					? segment
 					: {
 							...segment,
-							fileRender: fileContext ? renderMarkdownFileReferences(segment.source, fileContext.cwd) : undefined,
+							fileRender: fileContext
+								? renderMarkdownFileReferences(segment.source, fileContext.cwd, {
+										artifactsDir: fileContext.artifactsDir,
+										scratchDir: fileContext.scratchDir,
+									})
+								: undefined,
 						},
 			),
 		[segments, fileContext],
@@ -110,10 +119,19 @@ export const MarkdownResponse = memo(function MarkdownResponse({
 	const current = useRef<typeof rendered | null>(null);
 	useLayoutEffect(() => {
 		current.current = rendered;
-		return () => {
-			current.current = null;
-		};
 	}, [rendered]);
+	// Retire presses only when this view goes away. Nulling on every re-run of
+	// the effect above would open a window on each publish where a tap on a
+	// link returns early, and a live session publishes constantly: that made
+	// every file link in the prose dead (#4839). Layout cleanup runs at the
+	// unmount commit, not after paint, so a native callback already in flight
+	// cannot act on a message that has just disappeared.
+	useLayoutEffect(
+		() => () => {
+			current.current = null;
+		},
+		[],
+	);
 	return (
 		<>
 			{rendered.map((segment, index) =>
@@ -127,6 +145,7 @@ export const MarkdownResponse = memo(function MarkdownResponse({
 				) : (
 					<EnrichedMarkdownText
 						key={index}
+						testID="native-markdown"
 						markdown={segment.fileRender?.markdown ?? segment.source}
 						markdownStyle={style}
 						flavor="github"
@@ -149,7 +168,7 @@ export const MarkdownResponse = memo(function MarkdownResponse({
 							if (current.current !== rendered) return;
 							const reference = segment.fileRender?.references.get(url);
 							if (reference && fileContext) {
-								Alert.alert("File", reference.path, [
+								Alert.alert("File", namedFileTarget(reference), [
 									{
 										text: "Open file",
 										onPress: () => {
@@ -159,7 +178,7 @@ export const MarkdownResponse = memo(function MarkdownResponse({
 									{
 										text: "Copy path",
 										onPress: () => {
-											if (current.current === rendered) void copyText(reference.path);
+											if (current.current === rendered) void copyText(namedFileTarget(reference));
 										},
 									},
 									{ text: "Cancel", style: "cancel" },

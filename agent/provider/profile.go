@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/internal/tool/wirenames"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -61,11 +62,11 @@ func NewOpenAIProfile(model string) *Profile {
 func surfaceConventions(surface string) (docFiles []string, toolNameMap map[string]string) {
 	switch surface {
 	case registry.SurfaceOpenAI:
-		return []string{"AGENTS.md", ".codex/instructions.md"}, map[string]string{"shell": "exec_command", "grep": "grep_files", "glob": "find_files"}
+		return []string{"AGENTS.md", ".codex/instructions.md"}, wirenames.ForSurface(surface)
 	case registry.SurfaceAnthropic:
 		return []string{"CLAUDE.md", "AGENTS.md"}, nil
 	case registry.SurfaceGoogle:
-		return []string{"GEMINI.md", "AGENTS.md"}, map[string]string{"shell": "run_shell_command", "grep": "grep_search", "list_dir": "list_directory"}
+		return []string{"GEMINI.md", "AGENTS.md"}, wirenames.ForSurface(surface)
 	default:
 		return []string{"AGENTS.md"}, nil
 	}
@@ -253,17 +254,6 @@ func (p *Profile) ProjectDocFiles() []string {
 	return append([]string{}, p.docFiles...)
 }
 
-// SupportsParallelToolCalls reports whether the model may emit multiple tool
-// calls in a single response. Every protocol the agent drives does.
-func (p *Profile) SupportsParallelToolCalls() bool { return true }
-
-// SupportsStreaming reports whether the model streams. Every protocol the
-// agent drives does.
-func (p *Profile) SupportsStreaming() bool { return true }
-
-// DefaultCommandTimeoutMS is the default shell command timeout.
-func (p *Profile) DefaultCommandTimeoutMS() int { return 120_000 }
-
 // ContextWindowSize is the row's window, or 0 when unknown (spec §7.3). The
 // context manager budgets an unknown window against a conservative assumed
 // window instead of running without one (issue #4564); callers that need the
@@ -376,15 +366,15 @@ func (p *Profile) AcceptsImageInput() bool {
 }
 
 // AcceptsDocumentInput reports whether the model's own row declares document
-// ("pdf") input and its adapter represents a user-message document on the
+// ("pdf") input and its adapter represents this user-message document on the
 // wire. Unlike an image — the one user-message shape every protocol vouches
 // for — a document needs the protocol check too: the Responses builder writes
-// input_file and the Anthropic builder writes a document content block, while
-// the Google builder rejects the kind and chat strips it
-// (llm.DeliversUserMessageDocuments). Renamed profiles do not count, for the
-// same reason as AcceptsImageInput.
-func (p *Profile) AcceptsDocumentInput() bool {
-	return !p.rowFactsInherited && p.res.Caps.AcceptsModality("pdf") && llm.DeliversUserMessageDocuments(p.res)
+// input_file, the Anthropic builder writes a document content block, Google
+// writes inlineData/fileData, and the Chat builder writes a file part for
+// inline bytes (llm.DeliversUserMessageDocuments). Renamed profiles do not
+// count, for the same reason as AcceptsImageInput.
+func (p *Profile) AcceptsDocumentInput(doc *llm.DocumentData) bool {
+	return !p.rowFactsInherited && p.res.Caps.AcceptsModality("pdf") && llm.DeliversUserMessageDocuments(p.res, doc)
 }
 
 // SeesToolResultMedia reports whether the session model receives tool-result

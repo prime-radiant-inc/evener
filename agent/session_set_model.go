@@ -16,16 +16,14 @@ import (
 // unrepresentableContentKinds is the spec's per-protocol policy table
 // (docs/superpowers/specs/2026-07-12-model-switching-design.md, "Unrepresentable
 // history") for content kinds a target's request builder cannot faithfully
-// carry. It keys on the wire protocol because the restriction belongs to the
-// request builder: a protocol misfiled here whose builder hard-errors on the
-// kind would brick every subsequent turn.
+// carry in at least one role. It keys on the wire protocol because the
+// restriction belongs to the request builder: a protocol misfiled here whose
+// builder hard-errors on the kind would brick every subsequent turn.
 //
-// Per protocol: hard errors for google (its request builder rejects the kind
-// outright); silent drops for openai-chat (llm/providers/chatcompletions has
-// no document/audio case — silently dropping user content counts as
-// unrepresentable by policy); audio only for anthropic (its builder writes a
-// document content block, #4209) and openai-responses (llm/providers/responses
-// carries documents).
+// Google rejects audio and non-user documents. OpenAI Chat carries user
+// documents as a file part but silently drops audio and non-user documents.
+// Anthropic and OpenAI Responses carry documents but reject audio.
+// User-document delivery is checked separately below.
 func unrepresentableContentKinds(protocol string) map[llm.ContentKind]bool {
 	switch protocol {
 	case registry.ProtocolGoogle, registry.ProtocolOpenAIChat:
@@ -51,6 +49,9 @@ func unrepresentableHistoryKinds(history []schema.Turn, protocol string) []llm.C
 	var out []llm.ContentKind
 	for _, t := range history {
 		for _, p := range t.Message.Content {
+			if p.Kind == llm.ContentDocument && t.Message.Role == llm.RoleUser && llm.DeliversUserMessageDocuments(registry.Resolved{Protocol: protocol}, p.Document) {
+				continue
+			}
 			if restricted[p.Kind] && !seen[p.Kind] {
 				seen[p.Kind] = true
 				out = append(out, p.Kind)
@@ -81,12 +82,15 @@ const modelSwitchEnumerationTimeout = 8 * time.Second
 // the network latency/timeout budget per switch and open a TOCTOU window where
 // the provider's model list could change between the metadata-fill call and
 // the membership-check call, letting the two disagree about availability.
+// The instance and listing the enumeration produced are returned alongside the
+// resolved profile so a queueing caller (Session.SetModel's queue path) can
+// carry them to the switch's later application instead of enumerating again.
 // sessionID attributes the canonical API-log attempt this listing produces
 // (llm.WithAPILogContext), matching resolveLiveModelProfileWithEnumerationTimeout's
 // pre-session counterpart — every caller here (SetModel, subagent model
 // selection) runs on an already-existing session, so sessionID is always that
 // session's own id.
-func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile, sessionID string, timeout llm.AdapterTimeout, primedInstance string, primed *llm.ModelListing) (*provider.Profile, error) {
+func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile, sessionID string, timeout llm.AdapterTimeout, primedInstance string, primed *llm.ModelListing) (resolved *provider.Profile, listedInstance string, listing *llm.ModelListing, err error) {
 	if primed != nil && primedInstance == profile.ID() {
 		// SetModel already listed this instance before it took the session
 		// lock. Reuse that listing: a second fetch could return empty and clear
@@ -96,9 +100,9 @@ func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile, ses
 			profile = profile.WithResolved(res)
 		}
 		if err := validateModelSwitchMembership(client, profile, *primed); err != nil {
-			return profile, err
+			return profile, primedInstance, primed, err
 		}
-		return profile, nil
+		return profile, primedInstance, primed, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), modelSwitchEnumerationTimeout)
 	defer cancel()
@@ -110,13 +114,13 @@ func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile, ses
 	if enumeration.err != nil {
 		// Fail open unconditionally: an instance that cannot be listed at all
 		// and any listing failure (timeout, auth error, etc.) both accept the
-		// switch, with no live metadata to fill.
-		return filled, nil
+		// switch, with no live metadata to fill and no listing to carry.
+		return filled, "", nil, nil
 	}
 	if err := validateModelSwitchMembership(client, filled, enumeration.listing); err != nil {
-		return filled, err
+		return filled, "", nil, err
 	}
-	return filled, nil
+	return filled, profile.ID(), &enumeration.listing, nil
 }
 
 // validateModelSwitchMembership is the switch-time membership policy. The

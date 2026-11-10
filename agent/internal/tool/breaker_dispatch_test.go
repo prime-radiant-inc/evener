@@ -19,7 +19,7 @@ import (
 const wantFailureNudge = "You just ran the same tool twice with the same arguments and got the same failure. Consider an alternate approach"
 
 func wantRepetitionNudge(count int) string {
-	return fmt.Sprintf("You have now made this same call and received the identical result %d times in a row. Repeating it will not change the answer — use the result you already have, or change your approach.", count)
+	return fmt.Sprintf("You have now made this same call and received the identical result %d times in a row. Repeating it will not change the answer — use the result you already have, or change your approach. If you are repeating it to wait for something, end your turn with your result tool: the completion wakes you, and to wake on a condition you set a job_watch with output_match.", count)
 }
 
 // repetitionNudgeMarker is present in the repetition nudge at any count, for
@@ -40,6 +40,19 @@ type breakerFake struct {
 
 func registerBreakerFake(t *testing.T, r *Registry, name string, fn func(calls int) (any, error)) *breakerFake {
 	t.Helper()
+	return registerBreakerFakeTool(t, r, name, false, fn)
+}
+
+// registerReadOnlyBreakerFake is registerBreakerFake for a tool registered as
+// ReadOnly, the class of call whose repeat must re-check mutable external
+// state instead of being parked on a stale failure (#4330).
+func registerReadOnlyBreakerFake(t *testing.T, r *Registry, name string, fn func(calls int) (any, error)) *breakerFake {
+	t.Helper()
+	return registerBreakerFakeTool(t, r, name, true, fn)
+}
+
+func registerBreakerFakeTool(t *testing.T, r *Registry, name string, readOnly bool, fn func(calls int) (any, error)) *breakerFake {
+	t.Helper()
 	fake := &breakerFake{fn: fn}
 	err := r.Register(RegisteredTool{
 		Definition: llm.ToolDefinition{
@@ -47,6 +60,7 @@ func registerBreakerFake(t *testing.T, r *Registry, name string, fn func(calls i
 			Description: "breaker test fake",
 			Parameters:  map[string]any{"type": "object"},
 		},
+		ReadOnly: readOnly,
 		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
 			fake.calls++
 			return fake.fn(fake.calls)
@@ -126,6 +140,70 @@ func TestBreakerDispatch_IdenticalFailureNudgesThenParks(t *testing.T) {
 	}
 	if strings.Contains(fifth.Output, "evener did not execute this call:") {
 		t.Errorf("different arguments must not be parked, got %q", fifth.Output)
+	}
+}
+
+// TestBreakerDispatch_ReadOnlyFailureRechecksInsteadOfParking reproduces
+// #4330: a memory_read failed twice because the page did not exist, then the
+// page appeared. The third identical call must re-check storage rather than be
+// refused on the stale failures, because a read-only call's world can change
+// between attempts.
+func TestBreakerDispatch_ReadOnlyFailureRechecksInsteadOfParking(t *testing.T) {
+	r := NewRegistry()
+	fake := registerReadOnlyBreakerFake(t, r, "memory_read", func(calls int) (any, error) {
+		if calls < 3 {
+			return nil, errors.New("open /memory/MEMORY.md: no such file or directory")
+		}
+		return "page body", nil
+	})
+	env := breakerEnv(t)
+	ctx := context.Background()
+	call := breakerCall("r1", "memory_read", `{"path":"MEMORY.md"}`)
+
+	first := r.ExecuteCall(ctx, env, call)
+	if !first.IsError {
+		t.Fatalf("first call should be the stale failure: %#v", first)
+	}
+	if first.Err == nil {
+		t.Fatalf("first call must surface the executor's failure, got %#v", first)
+	}
+	second := r.ExecuteCall(ctx, env, call)
+	if fake.calls != 2 || second.Err == nil {
+		t.Fatalf("second call must still execute the failing tool: invocations = %d, result = %#v", fake.calls, second)
+	}
+
+	third := r.ExecuteCall(ctx, env, call)
+	if fake.calls != 3 {
+		t.Fatalf("third read-only call was refused by the breaker: invocations = %d, want 3", fake.calls)
+	}
+	if third.IsError || third.Err != nil {
+		t.Errorf("third call must return the now-present page: %#v", third)
+	}
+	if !strings.HasPrefix(third.Output, "page body") {
+		t.Errorf("third call lost its result body: %q", third.Output)
+	}
+}
+
+// A read-only call that keeps failing is still never parked: every repeat
+// re-checks the state it reads, and the fixed failure nudge applies pressure
+// instead of a refusal that would read as fresh evidence the state is absent.
+func TestBreakerDispatch_PersistentReadOnlyFailureIsNeverParked(t *testing.T) {
+	r := NewRegistry()
+	fake := registerReadOnlyBreakerFake(t, r, "memory_read", func(int) (any, error) {
+		return nil, errors.New("open /memory/MEMORY.md: no such file or directory")
+	})
+	env := breakerEnv(t)
+	ctx := context.Background()
+	call := breakerCall("r1", "memory_read", `{"path":"MEMORY.md"}`)
+
+	for i := range 5 {
+		res := r.ExecuteCall(ctx, env, call)
+		if fake.calls != i+1 {
+			t.Fatalf("call %d was refused: invocations = %d", i+1, fake.calls)
+		}
+		if res.Err == nil {
+			t.Errorf("call %d must surface the executor's failure, got %#v", i+1, res)
+		}
 	}
 }
 

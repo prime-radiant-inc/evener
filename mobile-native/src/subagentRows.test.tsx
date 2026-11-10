@@ -21,6 +21,9 @@ import {
 	subagentOutcomesResponse,
 	subagentOutcomesDelegatesResponse,
 	subagentResumedDelegatesResponse,
+	subagentResumedFinishedNotification,
+	subagentResumedOpenDelegatesResponse,
+	subagentResumedOpenNotification,
 } from "@evener/appwire-client/testing/subagentWireFixtures";
 import { act } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -40,9 +43,11 @@ import { projectNativeTranscript } from "./transcriptPresentation";
 vi.mock("react-native", async () => ({
 	...(await import("./renderNative.testkit")).nativeModuleMock(),
 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 vi.mock("react-native-enriched-markdown", () => ({ EnrichedMarkdownText: "EnrichedMarkdownText" }));
+vi.mock("react-native-gesture-handler", async () =>
+	(await import("./renderNative.testkit")).gestureDetectorModuleMock(),
+);
 vi.mock("expo-clipboard", () => ({ setStringAsync: async () => true }));
 vi.mock("./TranscriptImages", () => ({ TranscriptImages: () => null }));
 
@@ -189,7 +194,21 @@ describe("a subagent row", () => {
 		expect(subagentStates(tree)).toEqual(["running"]);
 		expect(stateText(tree)).toMatch(/\d/);
 		act(() => tree.root.findAll((node) => node.props.accessibilityRole === "button")[0]?.props.onPress());
-		expect(openSubagent).toHaveBeenCalledWith(RECEIPT.transcript_ref, "Fix race in tree settle");
+		// The row carries its run's start to the screen it opens, so the two
+		// time the run from one fact (#2988).
+		expect(openSubagent).toHaveBeenCalledWith(
+			RECEIPT.transcript_ref,
+			"Fix race in tree settle",
+			new Date(T0).toISOString(),
+		);
+	});
+
+	it.each(LEVELS)("opens a finished subagent without a run start at %s (#2988)", (level) => {
+		// Its old run start is no Working time; carrying it could time a
+		// winding-down session by a run that already ended.
+		const { tree, openSubagent } = subagentRow(level, FAILED);
+		act(() => tree.root.findAll((node) => node.props.accessibilityRole === "button")[0]?.props.onPress());
+		expect(openSubagent).toHaveBeenCalledWith(RECEIPT.transcript_ref, "Fix race in tree settle", undefined);
 	});
 
 	it.each(LEVELS)("reads a failed subagent as failed at %s, though its call succeeded", (level) => {
@@ -739,6 +758,68 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		});
 		expect(jobsLists(client)).toHaveLength(reads);
 		expect(renderedText(screen)).toContain("The frame carried this report.");
+	});
+
+	it("renders recorded resumed-run frames without borrowing the prior report", async () => {
+		const client = pushHub();
+		client.on("evener/thread/delegates/list", () => subagentOutcomesDelegatesResponse());
+		const shared = subagentTree("hub-1", COORDINATOR.ref, COORDINATOR.threadId);
+		const release = holdSubagentTree(shared);
+		const sharedRow = () =>
+			shared.getSnapshot().pages?.delegates.rows.find(({ delegateId }) => delegateId === "dlg_reported");
+		const prior = subagentOutcomesDelegatesResponse().delegates.find(({ delegateId }) => delegateId === "dlg_reported");
+		const open = subagentResumedOpenDelegatesResponse().delegates.find(
+			({ delegateId }) => delegateId === "dlg_reported",
+		);
+		const finishedRun = subagentResumedDelegatesResponse().delegates.find(
+			({ delegateId }) => delegateId === "dlg_reported",
+		);
+		if (!prior || !open || !finishedRun) throw new Error("producer corpus missing resumed run");
+		const screen = transcript({ delegates: [finished("dlg_reported", { runGeneration: prior.runGeneration })] });
+		await act(async () => {});
+		expect(renderedText(screen)).toContain("Fixed the race: settle now waits for the drain.");
+		const reads = jobsLists(client).length;
+		const running = subagent({
+			delegateId: "dlg_reported",
+			runGeneration: open.runGeneration,
+			projectionRevision: open.projectionRevision,
+		});
+
+		await act(async () => {
+			client.emitNotification(subagentResumedOpenNotification());
+			screen.update(<Transcript delegates={[running]} />);
+		});
+		expect(sharedRow()).toMatchObject({
+			runGeneration: open.runGeneration,
+			projectionRevision: open.projectionRevision,
+			terminal: false,
+		});
+		expect(subagentStates(screen)).toEqual(["running"]);
+		expect(renderedText(screen)).not.toContain("Fixed the race: settle now waits for the drain.");
+		expect(renderedText(screen)).not.toContain("Second run report.");
+		expect(jobsLists(client)).toHaveLength(reads);
+
+		const done = finished("dlg_reported", {
+			runGeneration: finishedRun.runGeneration,
+			projectionRevision: finishedRun.projectionRevision,
+		});
+		act(() => screen.update(<Transcript delegates={[done]} />));
+		expect(saysRosterWord(screen)).toBe(true);
+		expect(renderedText(screen)).not.toContain("Fixed the race: settle now waits for the drain.");
+
+		await act(async () => {
+			client.emitNotification(subagentResumedFinishedNotification());
+		});
+		expect(sharedRow()).toMatchObject({
+			runGeneration: finishedRun.runGeneration,
+			projectionRevision: finishedRun.projectionRevision,
+			terminal: true,
+			reportPreview: "Second run report.",
+		});
+		expect(renderedText(screen)).toContain("Second run report.");
+		expect(renderedText(screen)).not.toContain("Fixed the race: settle now waits for the drain.");
+		expect(jobsLists(client)).toHaveLength(reads);
+		release();
 	});
 
 	it("reads once for an unknown delegate's frame, and not again for the same id", async () => {

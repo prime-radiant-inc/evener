@@ -1,0 +1,284 @@
+{
+ "verdicts": [
+  {
+   "id": "agent-misc-root-1",
+   "title": "Package agent is a god package; extract Session-free subsystems leaf-first",
+   "category": "architecture",
+   "original_severity": "high",
+   "verdict": "partial",
+   "severity": "medium",
+   "note": "Core numbers verified: 176 non-test files/105,781 lines, 957 test files/374,987 lines, Session struct spans 1,017 lines (session.go:109), testConfig has 91 fields, 1,087 Session methods in 97 files, resourceCapsFromEnv has one non-test caller (env_info.go:26). Real, but severity high overstates it: no evidence of bugs, and the compile-time/recompile-cost claim is unmeasured (AGENTS.md says measure in CI, not locally). agent already has many subpackages (transcript, schema, doctor, internal/*), so extraction is ongoing. Steps 1-3 are cheap leaf moves; step 4 (transcriptview) exports many helpers and depends on findings 3/11/14/26 first. Commit count claim (569) not reproduced (519 via git log).",
+   "revised_fix_plan": "Keep steps 1-3 only as concrete PRs (hostresources, memory pages after 15/16, envsnapshot); treat 4-5 as contingent on shrinking exported surface. Do not frame as a standalone refactor; each move should be justified by a boundary (e.g. a second consumer). Measure test-binary build time in CI before and after."
+  },
+  {
+   "id": "agent-misc-root-2",
+   "title": "One delegate-status record copied across four struct types and mappers",
+   "category": "duplication",
+   "original_severity": "high",
+   "verdict": "partial",
+   "severity": "high",
+   "note": "Duplication confirmed: agent/status.go:124 DelegateStatusInfo (51 json tags), events.DelegateUpdatedData (52), server/server.go:105 DelegateStatusInfo (50), appwire.EvenerDelegateInfo (54); mappers at server/appwire_runtime.go:2827, cmd/evener-hub/app_threadread.go:1278, cmd/evener/serve.go:2315 are ~30-line positional copies; plus three clone helpers for the same *bool/*int64 (cloneServerBool, cloneHubBool, cloneServeBool). Real drift: server.DelegateStatusInfo lacks latest_intent that agent's has. HOWEVER the fix plan is unsafe: I diffed json tags and agent/server structs use snake_case (delegate_id, run_generation) while appwire.EvenerDelegateInfo uses camelCase (delegateId, runGeneration) and has extra fields (logicalOwnerSessionId, reportPreview, reportPreviewTruncated); events.DelegateUpdatedData adds ancestor_session_ids. 'Alias agent type to appwire and keep appwire tags' would silently change the daemon status wire. Severity stays high given evidenced drift.",
+   "revised_fix_plan": "Step 1: make server.DelegateStatusInfo a type alias of agent.DelegateStatusInfo (server already imports agent) and delete the serve.go copy loop and its cloneServe* helpers (additive: latest_intent starts appearing). Step 2: one exported agent mapper (method on agent.DelegateStatusInfo returning appwire.EvenerDelegateInfo, deep-copying pointers once) replacing appDelegateFromDetailedStatus and appwireDelegateFromAgentStatus. Step 3: keep delegateUpdatedDataFromStatus but add a reflection field-coverage test across the three types. Do NOT alias to appwire unless the snake_case consumers are first identified and migrated. Guard with JSON golden for each wire."
+  },
+  {
+   "id": "agent-misc-root-3",
+   "title": "Transcript read header+entries loop hand-rolled multiple times with drifted limits",
+   "category": "duplication",
+   "original_severity": "high",
+   "verdict": "confirmed",
+   "severity": "high",
+   "note": "Verified: fork.go:191 readForkParent hard-codes 10*1024*1024 (fork.go:105,133,211; aside.go:58) while transcript.DefaultMaxLineBytes = 128<<20 (agent/transcript/transcript.go:32) and agent/transcript_read.go:16 redefines transcriptJSONLMaxLineBytes = 128<<20 (a third copy beside transcript.go:34). ReadLine returns ErrLineTooLong over cap, so fork/aside fail on 10-128 MiB lines that resume reads. ReadLine/DecodeHeader hits in session_attention.go (2), doctor/transcript.go (2), apptranscript (1), transcriptindex (3), image_serve (1), thread_history (1), reconstruct (2), transcript_render (3). Not all are the same shape (indexers track offsets, doctor tracks line numbers), so 'six' is fair for the full-read sites, fewer for pure duplicates. Note maxScanToken is a test-injected dep in forkSessionDeps, so tests rely on small caps.",
+   "revised_fix_plan": "Start with the concrete bug: red test forking a transcript with a >10 MiB line, then make fork/aside use transcript.DefaultMaxLineBytes (keep maxScanToken test seam). Then lift one shared reader only if 2+ other callers port cleanly; do not force indexers/doctor into it."
+  },
+  {
+   "id": "agent-misc-root-4",
+   "title": "XDG state-root resolution reimplemented with different HOME-less fallbacks",
+   "category": "duplication",
+   "original_severity": "medium",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "note": "Verified fallbacks: agent/runtime_dir.go:73-95 uses os.TempDir() (state and cache), auth/openai/storage.go:98-110 os.TempDir(), cmdutil/statedir.go:35-55 \".\", rendezvous/rendezvous.go:52-62 \".\", appwire/frame_recorder.go:90-103 relative path; llm/registry/load.go has another. frame_recorder.go comment admits duplication to avoid dependency. userdirs has ConfigRoot/DefaultConfigRoot but no state counterpart. runtime_dir.go:71 hexHash 'retained for non-project cache/test callers' is test-only (5 refs in runtime_dir_test.go, 1 in transcript_lookup_test.go). Needs Jesse's decision on the fallback.",
+   "revised_fix_plan": "As stated; ask Jesse for the HOME-less fallback first (one question)."
+  },
+  {
+   "id": "agent-misc-root-5",
+   "title": "Directory-fsync idiom and SyncUnsupported predicate copied in many places",
+   "category": "duplication",
+   "original_severity": "medium",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "note": "Identical ENOSYS/ENOTSUP/EINVAL predicate in auth/openai/storage.go, server/thread_clear_journal.go, agent/session_client_mutation_persist.go, agent/internal/worktree/sync_unix.go, cmd/evener-hub/internal/fsdurability/fsdurability.go, internal/hubendpoint/runtime.go (6 files, plus agent/skill/lease_unix.go mentions ENOSYS). image_persist.go:178 reuses clientMutationSyncUnsupported (in-package, fine). jobstore/output.go:947 syncParentDir has no tolerance, while the fsdurability doc says a durability nicety must not become an outage. execsupport is already required by root and agent; auth/go.mod requires only envvars so a new require is needed.",
+   "revised_fix_plan": "As stated. Decide jobstore tolerance with a test."
+  },
+  {
+   "id": "agent-misc-root-6",
+   "title": "Evaluation harness compiled into production package, used only by tests",
+   "category": "dead-code",
+   "original_severity": "medium",
+   "verdict": "confirmed",
+   "severity": "low",
+   "note": "Verified zero non-test references to newEvalCollector, runRetentionProbes, buildBinaryJudgePrompt, parseBinaryJudge, turnsToMessages, evalCollector, evalMetrics outside agent/eval*.go; users are eval_test.go, eval_lifecycle_program_fuzz_test.go, memory_eval_support_test.go. F2PResults/Diff/RetentionBreakdown only declared (eval.go:43-52). The 'cheapmodel import in daemon binary' impact is overstated since cheapmodel is used elsewhere in agent. ~290 lines of test-only code in a prod file; severity low.",
+   "revised_fix_plan": "Rename to *_test.go files; delete unused F2P/Diff/RetentionBreakdown fields if tests do not assert them."
+  },
+  {
+   "id": "agent-misc-root-7",
+   "title": "Dead historical-jobs chain across agent and hub",
+   "category": "dead-code",
+   "original_severity": "medium",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "note": "Verified: LoadSessionHistoricalJobRecords and HistoricalJobRecord have no non-test references beyond agent/historical_jobs.go; hub reconcileDelegateThreadItems/reconcileDelegateThreadItem/delegateJobIDFromRaw/isTerminalHistoricalJobStatus/reconcileDelegateThreadItemForTest (app_threadread.go:1635-1707) have no non-test caller; reconcileDelegateThreadItem body is '_ = rec; return item' (app_threadread.go:1676-1679).",
+   "revised_fix_plan": "As stated. Check the retained read-only assertions before deleting tests."
+  },
+  {
+   "id": "agent-misc-root-8",
+   "title": "Production helpers whose only callers are tests",
+   "category": "dead-code",
+   "original_severity": "medium",
+   "verdict": "partial",
+   "severity": "medium",
+   "note": "Verified test-only (no non-test reference): moveLegacyMemoryIndex, backUpMemoryIndex, removeMigratedMemoryIndex, migrateMemoryScope, migrateLegacyMemoryIndexes (memory_migrate.go non-Ctx wrappers), resolveLiveModelProfile, renderMemoryIndex (memory_index_render.go:264), retainedMatchesSerializedSize, prepareSubagentEnvironment, cloneSandboxSnapshot, sandboxPolicyFromSnapshot, communicateStructuredResult, appendTurnWithDurableTranscriptMessage, taskReminderFullWithPrompts, writeTranscript/writeTranscriptDurable (session.go:2471,2531; comment at 2452 says they are the 'only two doors' but production uses *Locked), hexHash, asideSessionFS, errors.go (ErrPermissionDenied/PermissionDeniedError: zero refs anywhere except an old plan doc). WRONG item: CatalogNameOrName is used by the embedded prompt template agent/prompts/system.md.tmpl:248-249 and must be kept. Also confirm each deleted symbol's test is not the sole coverage of a real behavior (renderMemoryIndex tests may be the only coverage of index rendering).",
+   "revised_fix_plan": "Delete the confirmed list except CatalogNameOrName; for renderMemoryIndex and writeTranscript wrappers, check whether tests protect real behavior and re-point them at the production entry first."
+  },
+  {
+   "id": "agent-misc-root-9",
+   "title": "Live model profile resolution: six wrapper layers, Resolve/WithResolved block pasted three times",
+   "category": "complexity",
+   "original_severity": "medium",
+   "verdict": "confirmed",
+   "severity": "low",
+   "note": "Verified agent/live_model_metadata.go: fillLiveModelMetadata:91 and resolveStartupModelProfile:122 and resolveStartupModelProfileWithReuse:139 each paste the client.Resolve/WithResolved block; resolveLiveModelProfile (:54) is test-only; resolveLiveModelProfileValidated has one caller (resolveStartupModelProfile). ~45 lines saving, contained in one file; low severity.",
+   "revised_fix_plan": "Extract one applyPrimedListing helper and delete resolveLiveModelProfile; merge the two Startup functions with a validate flag only if callers stay readable."
+  },
+  {
+   "id": "agent-misc-root-10",
+   "title": "Fork and aside repeat the same construction; fork caps lines at 10 MiB",
+   "category": "duplication",
+   "original_severity": "medium",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "note": "Verified: forkSessionDeps literal with maxScanToken 10*1024*1024 built at fork.go:99-104, fork.go:128-134, aside.go:49-54; 10*1024*1024 also at fork.go:211 and aside.go:58. writeForkChild (fork.go:266) is a pass-through to writeForkChildWithConfig; asideSessionFS (aside.go:~27) is test-only pass-through. RemoveSessionArtifacts (fork.go:~340) hard-codes \"sessions\" and a suffix list. Overlaps finding 3 (cap bug).",
+   "revised_fix_plan": "Fold the deps literal into one defaultForkDeps(), delete pass-throughs, take suffix list from schema (finding 11). Fix the 10 MiB cap via finding 3."
+  },
+  {
+   "id": "agent-misc-root-11",
+   "title": "Session file layout hand-built at many sites despite transcriptPath helper",
+   "category": "duplication",
+   "original_severity": "medium",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "note": "Verified 29 non-test sites joining '.transcript.jsonl' by hand (agent: transcript_lookup.go:438, fork.go:198,294, session.go:2783, session_init.go:601,990,1403, delegate_tree_start.go:160,349,651, etc; outside: cmd/evener/serve.go:1368, image_serve.go:60, project_delete.go:668, app_threadread.go:1491, evener-doctor, fuzz-harvest, v2-upgrade, tools/tool-fluency). stateHomeFor and refFor in transcript_lookup.go:381-390 are one-line wrappers. agent/schema already owns layout helpers (SessionDir snapshot.go:348, BootGenerationPath) and hand-builds .meta.json at snapshot.go:640,685, a natural home.",
+   "revised_fix_plan": "Add TranscriptPath/MetaPath/APILogPath and the artifact suffix list in agent/schema; migrate in-package sites first."
+  },
+  {
+   "id": "agent-misc-root-12",
+   "title": "Rune/byte truncation and whitespace-collapse helpers reimplemented about ten times",
+   "category": "duplication",
+   "original_severity": "low",
+   "verdict": "confirmed",
+   "severity": "low",
+   "note": "Verified: agent/internal/contextmgr/fork_summarize.go:104 truncate slices s[:limit]+\"...\" at a byte offset (can split a multibyte rune in text sent to the cheap model; used at lines 56-80); project_docs.go:164 truncateDoc loop duplicates the runetrim.Cut idiom; appwire/delegate_roster.go:33 truncateRosterText is a copy of activitybound.Truncate (same walk, same cutAt logic); contextmgr context_manager.go:~1090 also cuts cmd[:60] by bytes.",
+   "revised_fix_plan": "Fix fork_summarize.truncate first with a failing multibyte test; consolidate roster copy onto activitybound.Truncate (appwire may import it if module layout allows)."
+  },
+  {
+   "id": "agent-misc-root-13",
+   "title": "System-reminder wrapping spelled several ways",
+   "category": "duplication",
+   "original_severity": "medium",
+   "verdict": "partial",
+   "severity": "low",
+   "note": "Verified: system_notification.go:43-65 systemReminderBlock/Builder/finish re-spell tags (builder callers only task_reminders.go:25,83); raw literals task_reminders.go:157-252, session_queue.go:378 wrapHookContext, session_compaction.go:463. BUT the plan is unsafe in two places: wrapHookContext and the compaction pointer wrap '<SYSTEM-REMINDER>' + text + '</SYSTEM-REMINDER>' with NO newlines, while sysmsg.ReminderBlock adds newlines, so switching changes model-visible bytes and the sysmsg.IsReminderBlock invariant would not hold for them. And hasTaskListAnnouncement (task_reminders.go:167-197) already checks the in-memory steeringQueue first; the transcript read is the crash-recovery fallback (queue is lost on restart) and a bounded tail read could miss an earlier delivery. Variant: v09 and the Fisher note are at task_reminders.go:18,60.",
+   "revised_fix_plan": "Only collapse builder/finish onto sysmsg.ReminderBlock (same bytes) and make withCurrentStep operate pre-wrap. Leave wrapHookContext/compaction literals or give sysmsg a distinct inline-wrap helper deliberately. Keep the transcript fallback or persist a delivered flag in meta; do not use a tail read."
+  },
+  {
+   "id": "agent-misc-root-14",
+   "title": "Transcript job-result renderer keeps two hand-maintained key allowlists",
+   "category": "complexity",
+   "original_severity": "medium",
+   "verdict": "partial",
+   "severity": "low",
+   "note": "Verified lists exist (jobResultKnownKeys 51 entries at transcript_render.go:1461, jobResultMetadataKeys 11 entries at :1522, jobResult struct 19 fields at session_outline.go:49) and the comment at :1491 cites commit hashes. But the plan's premise is wrong: jobResultKnownKeys is the union of keys from three producer structs (jobResult, stableDelegateCreateResult, delegateSendResult), not the jobResult struct; and jobResultMetadataKeys (11 keys, not 35) is a deliberate display subset, not derivable from tags. A drift-detector test (TestJobResultKnownKeysCoversLiveDelegateShapes) already guards the known-keys list.",
+   "revised_fix_plan": "Optionally derive jobResultKnownKeys by reflection over the three producer structs' JSON tags (delete the literal map and history comment); keep jobResultMetadataKeys as is. Low priority."
+  },
+  {
+   "id": "agent-misc-root-15",
+   "title": "Memory frontmatter editors in memory_migrate.go; frontmatter exists as two packages, one with only a test importer",
+   "category": "architecture",
+   "original_severity": "medium",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "note": "Verified: setMemoryFrontmatterField/repairMemoryFrontmatter/memoryYAMLField are used by live memory_save (session_tools_memory.go:200-201, memory_write_page.go:27) but live in memory_migrate.go. /frontmatter (61 lines + 303 test lines) is imported by exactly one file, internal/bundled/bundled_test.go:9; its comment (frontmatter.go:25) says it mirrors agent/internal/frontmatter which this module cannot import; testing-budget.json:96 has a row for it.",
+   "revised_fix_plan": "As stated."
+  },
+  {
+   "id": "agent-misc-root-16",
+   "title": "Legacy MEMORY.md migration is 671 lines of compatibility code with swallowed error",
+   "category": "compat-legacy",
+   "original_severity": "medium",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "note": "Verified memory_migrate.go is 671 lines; call site session_memory.go:201 is '_ = migrateMemoryScopeCtx(ctx, env)' with a doc comment saying a failed migration never blocks rendering and the next read retries (so the swallow is documented, not accidental). Retention is a product decision; friction.md favors automatic recovery, so do not delete without Jesse. Non-Ctx wrappers are test-only (finding 8).",
+   "revised_fix_plan": "Ask Jesse for a supported upgrade window; meanwhile drop non-Ctx wrappers and log the migration error at warning level."
+  },
+  {
+   "id": "agent-misc-root-17",
+   "title": "Test seams woven into production code",
+   "category": "test-debt",
+   "original_severity": "medium",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "note": "Verified: git_snapshot.go:46-51 testing.Testing() chooses git timeout; history_repair.go:14-17 pendingWatchSendDrainFaultKey read in production, set only in session_state_goal_exact_fuzz_test.go:106,133; atif.go:13-14 atifMarshalIndent/atifMkdirAll mock stdlib, overridden only in agent_misc_program_fuzz_test.go:279-295; testConfig 91 fields; ForTest exported methods used cross-package (SimulateCrashMidExecutionForTest, ManagedJobsFinalizedForTest etc.), so export_test.go cannot replace them. One seam per PR.",
+   "revised_fix_plan": "Per-seam PRs as stated; use an agenttest helper package for cross-package ForTest methods."
+  },
+  {
+   "id": "agent-misc-root-18",
+   "title": "Tests assert on model-visible and reminder phrasing",
+   "category": "test-debt",
+   "original_severity": "medium",
+   "verdict": "confirmed",
+   "severity": "medium",
+   "note": "Verified agent/failure_steering_test.go:20-27 constants of full English sentences and a header comment saying tests assert 'character-for-character'; :362 strings.Contains(got, \"through report_result and re-issue\"); :491-494 Contains 'draft'/'fragment'; task_reminders_test.go:168 Contains 'completed all tasks'. Directly violates the AGENTS.md rule; failure_steering.go:39 claims the text is spec-pinned product surface, so Jesse should rule.",
+   "revised_fix_plan": "Ask Jesse about the spec pin, then assert behavior (shape chosen, draft clause iff salvaged bytes >= threshold, tool name argument surfaces)."
+  },
+  {
+   "id": "agent-misc-root-19",
+   "title": "Delegate sandbox policy engine in session file set; invalid_request carried twice",
+   "category": "inconsistency",
+   "original_severity": "low",
+   "verdict": "partial",
+   "severity": "low",
+   "note": "Verified typed delegateSandboxRequestError (sandbox_delegate.go:22-44) wraps fmt.Errorf(\"invalid_request: %w\"); 170 non-test lines mention 'invalid_request' in agent (session_tools_transcript 41, session_tools_jobs 39, job_watch 36, sandbox_delegate 21 including comments). But the prefix is the model-facing repair text and the typed class is for in-process callers, so 'two classification mechanisms' is by design and no Go code parses the prefix (grep confirmed). A helper is a mild cleanup only.",
+   "revised_fix_plan": "Skip unless touching these files; optionally add invalidRequestf helper. Moving Session-free sandbox functions out is part of finding 1 only if a second consumer appears."
+  },
+  {
+   "id": "agent-misc-root-20",
+   "title": "git_snapshot.go: six-value return and two ways of spawning git",
+   "category": "complexity",
+   "original_severity": "low",
+   "verdict": "confirmed",
+   "severity": "low",
+   "note": "Verified: snapshotGitBranch (git_snapshot.go:84-110) passes shell strings via env.ExecCommand with context.Background while snapshotGit (:117) uses execenv.RunGit argv with caller ctx; snapshotGit returns six values and has two callers (session_env_swap.go:132, session_init.go:1653); comments cite '#4568 round 2' / '#4621 round 15'.",
+   "revised_fix_plan": "Return a gitSnapshot struct and drive both through RunGit."
+  },
+  {
+   "id": "agent-misc-root-21",
+   "title": "tree_counter.go mixes unrelated types, orphaned doc comment",
+   "category": "slop",
+   "original_severity": "low",
+   "verdict": "confirmed",
+   "severity": "low",
+   "note": "Verified: jobActivityClock (tree_counter.go:10-47) is unrelated to turn slots; treeCounter doc paragraph (lines ~99-105) sits above slotKind type. treeCapacityErrorFor (:193) derefs s.treeCounter without nil check, but its sole caller (subagents.go:1263) only runs after a failed reserve, which requires a non-nil counter, so the nil deref is unreachable today; 'legacy in-process spawn' comment at ~:204.",
+   "revised_fix_plan": "Fix doc placement and move jobActivityClock; skip the nil guard (YAGNI)."
+  },
+  {
+   "id": "agent-misc-root-22",
+   "title": "Stale package doc example and test-only Retirement clock aliases",
+   "category": "doc-drift",
+   "original_severity": "low",
+   "verdict": "partial",
+   "severity": "low",
+   "note": "Verified doc.go:1-46 example calls agent.NewOpenAIProfile (exists only at agent/provider/profile.go:51) and NewSession takes *provider.Profile (session_init.go:298); [Profile]/[SessionEvent]/[EventKind] links have no agent-package types. RetirementTimer/RetirementTicker aliases (retirement.go:18-24) are referenced by server test fakes (appwire_retirement_admission_test.go:147-153) and agent tests only, but they are the return types of the exported RetirementClock interface, so removal requires making agent/internal/clock public. Real doc fix; alias removal is optional.",
+   "revised_fix_plan": "Fix doc.go now; leave aliases unless clock is made public for another reason."
+  },
+  {
+   "id": "agent-misc-root-23",
+   "title": "Per-tool call summary is a third parallel tool-name switch",
+   "category": "duplication",
+   "original_severity": "low",
+   "verdict": "partial",
+   "severity": "low",
+   "note": "Verified toolInputSummary (transcript_render.go:1809) has 12 cases and contextmgr context_manager.go:~1084 has a separate switch, but they summarize different things (call input vs result) with different formats, so they are not duplicates; the proposal is explicitly backlog. No action warranted now (YAGNI).",
+   "revised_fix_plan": "No change; revisit if a fourth consumer appears."
+  },
+  {
+   "id": "agent-misc-root-24",
+   "title": "tool_web_fetch.go unit and field drift",
+   "category": "inconsistency",
+   "original_severity": "low",
+   "verdict": "partial",
+   "severity": "low",
+   "note": "Verified webFetchMaxContent '// chars' (tool_web_fetch.go:25) applied with runetrim.Cut (bytes) at :183 while webFetchRawFallbackMaxContent goes through rune-based truncateWebFetchContent (:197). 'url' and 'source_url' duplicate only in the raw-fallback result (:207-208), not in the normal result (:225), and no other file in the repo reads source_url. http.DefaultClient at :63 is the production default (security note unverified).",
+   "revised_fix_plan": "Rename constants to bytes/runes accurately; drop source_url (no readers); security review separately."
+  },
+  {
+   "id": "agent-misc-root-25",
+   "title": "Comment volume and history narration in code",
+   "category": "slop",
+   "original_severity": "low",
+   "verdict": "partial",
+   "severity": "low",
+   "note": "Directionally right: agent non-test files have 25,279 comment lines and 196 '#NNNN' references; SessionInfraRoots comment block ~52 lines (sandbox_infra.go:14-65) for a short function; 'ruled 2026-08-06' at prompt_data.go:98. Slice-specific percentages not reproduced. Not an actionable PR; fold into touch-when-editing policy.",
+   "revised_fix_plan": "No standalone work; delete history sentences when editing each file."
+  },
+  {
+   "id": "agent-misc-root-26",
+   "title": "Range-fallback logic wrapped three layers deep and repeated",
+   "category": "duplication",
+   "original_severity": "low",
+   "verdict": "confirmed",
+   "severity": "low",
+   "note": "Verified: parseRange->parseRangeErr->turnwindow.Parse (transcript_render.go:282-306); selectAPILogRange (apilog_read.go:756) re-implements default+warning; the identical 'invalid range %q; rendered the default instead. Accepted: %s' warning is built at apilog_read.go:767, session_tools_transcript.go:1183-1186 and :1571-1576.",
+   "revised_fix_plan": "Add one helper returning (spec, warning) for invalid ranges; delete parseRange wrapper."
+  },
+  {
+   "id": "agent-misc-root-27",
+   "title": "Test layout: coverage-chasing and fuzz files in the package under test",
+   "category": "test-debt",
+   "original_severity": "medium",
+   "verdict": "partial",
+   "severity": "low",
+   "note": "Counts verified: 957 test files/374,987 lines; 143 *cov* files (32,025 lines); 114 *fuzz* files (34,725 lines); s1cov_ helpers shared by 11 files. Real naming/organization debt, but renaming is churn with no behavior payoff and the plan depends on finding 1 moves; severity medium overstated.",
+   "revised_fix_plan": "Rename/fold only when a subject is touched or moved; no bulk rename."
+  },
+  {
+   "id": "agent-misc-root-28",
+   "title": "Small core special cases: coordinator plugin name, Session-building CoreToolNames, tiny prompt_template.go",
+   "category": "architecture",
+   "original_severity": "low",
+   "verdict": "partial",
+   "severity": "low",
+   "note": "Verified coordinator_workflow_plugin.go:5-12 hard-codes \"coordinator-workflow\" (one caller session_init.go:1995), CoreToolNames builds a full Session (core_tool_names.go:28-46) with test seams, prompt_template.go is 46 lines. The suggested 'bare tool.Registry via registerCoreTools' is infeasible: registerCoreTools(reg, s *Session) (session_tool_registry.go:476) takes the Session, so the Session is required.",
+   "revised_fix_plan": "Ask Jesse about the coordinator special case; leave CoreToolNames as is or move it under the harvest tool; merging prompt_template.go into prompt_data.go is optional."
+  }
+ ]
+}

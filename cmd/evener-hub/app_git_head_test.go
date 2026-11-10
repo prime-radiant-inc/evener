@@ -10,7 +10,9 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/gittest"
 )
 
 func TestHubGitHeadFailSoft(t *testing.T) {
@@ -223,12 +225,10 @@ func TestResolveGitOriginRealRepo(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
-	// Isolate the fixture AND the resolver from the developer's own git
-	// configuration: `git remote get-url` honours url.*.insteadOf rewrites, so
-	// an ambient rule would change the URL under test.
-	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
-	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
-	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	// TestMain's git isolation keeps the developer's own git configuration from
+	// the fixture AND the resolver: `git remote get-url` honours
+	// url.*.insteadOf rewrites, so an ambient rule would change the URL under
+	// test.
 	repo := t.TempDir()
 	for _, args := range [][]string{
 		{"init", "-q"},
@@ -253,6 +253,17 @@ func TestResolveGitOriginRealRepo(t *testing.T) {
 	}
 }
 
+// TestHubGitRunsUnderTheTestProcessGitConfig pins TestMain's git isolation at
+// gitCommand, which the hub's git-head reads spawn git through with the
+// process environment: TestMain's gittest.IsolateProcess must reach it.
+func TestHubGitRunsUnderTheTestProcessGitConfig(t *testing.T) {
+	t.Parallel()
+	gittest.RequireIsolated(t, func(dir string, args ...string) (string, error) {
+		out, err := gitCommand(t.Context(), "git", append([]string{"-C", dir}, args...)...).Output()
+		return string(out), err
+	})
+}
+
 func TestHubRPCGitHeadUsesCanonicalDirectory(t *testing.T) {
 	root := t.TempDir()
 	canonicalRoot, err := filepath.EvalSymlinks(root)
@@ -264,22 +275,17 @@ func TestHubRPCGitHeadUsesCanonicalDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	var gotDir string
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		Past: hubcore.NewPastIndex(""),
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 		ResolveGitHead: func(_ context.Context, dir string) (string, error) {
 			gotDir = dir
 			return "main", nil
 		},
-	})
+	}))
 	defer hub.Close()
 
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	client := dialHubRPCInitialized(t, hub)
 
-	resp, err := client.GitHead(context.Background(), appwire.GitHeadParams{CWD: link})
+	resp, err := appwiretest.GitHead(context.Background(), client, appwire.GitHeadParams{CWD: link})
 	if err != nil {
 		t.Fatalf("GitHead: %v", err)
 	}

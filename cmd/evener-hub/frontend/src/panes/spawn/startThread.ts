@@ -1,8 +1,5 @@
 // startThread is the canonical launch seam: it starts a real session over
-// AppWire "thread/start" and returns the created thread's ref. T1 defines the
-// signature + a minimal working body (bare
-// prompt + cwd -> real session); T2 fills the rest (branch/access-mode ->
-// launchOverrides, the schema engine, sticky defaults).
+// AppWire "thread/start" and returns the created thread's ref.
 import type { AppwireClientLike, ComposerMention, LaunchConfigLayer, ThreadStartParams } from "@evener/appwire-client";
 import { buildComposerInput } from "@evener/appwire-client";
 import type { InputAttachment } from "../../stores/threads";
@@ -30,6 +27,10 @@ export interface SpawnRequest {
   // OMITTED from the wire so a local spawn stays byte-identical to before the
   // host picker existed; any other value names the host/source to target.
   source?: string;
+  // Start the session as a Manager. A start-time property carried by
+  // ThreadStartParams.manager; false is OMITTED from the wire so an ordinary
+  // launch stays byte-identical to before this control existed.
+  manager?: boolean;
 }
 
 export interface SpawnResult {
@@ -40,7 +41,7 @@ export interface SpawnResult {
 // translating composer attachment markers at the wire boundary.
 // The ref is thread.evener.ref VERBATIM - the qualified "<source>:<threadId>"
 // form (e.g. "local:abc123"), NOT the legacy server's "local:"-stripped bare
-// id (floor §1.14 / spawn.js:404-417 describes that legacy routing). The SPA
+// id (floor §1.14 describes that legacy routing). The SPA
 // routes and reads every session by this qualified ref: thread/read resolves
 // it through appwire.ParseRef, which REQUIRES the ":" separator (appwire/
 // refs.go; cmd/evener-hub/internal/appsource/registry.go SourceForRef), so a
@@ -60,6 +61,7 @@ export async function startThread(client: AppwireClientLike, req: SpawnRequest):
   const launchOverrides = mergeAccessModeSandbox(req.launchOverrides, req.accessMode ?? "");
   if (launchOverrides) params.launchOverrides = launchOverrides;
   if (req.source && req.source !== "local") params.source = req.source;
+  if (req.manager) params.manager = true;
   const resp = await client.request("thread/start", params);
   return { ref: resp.thread.evener.ref };
 }

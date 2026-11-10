@@ -906,7 +906,7 @@ const NO_CAPABILITIES: ThreadCapabilities = {
 };
 
 // A session's capabilities as the hub advertises them for its status:
-// - live, a daemon's set (server/appwire_runtime.go's appCapabilitiesLocked),
+// - live, a daemon's set (server/appwire_thread_projection.go's appCapabilitiesLocked),
 //   with Send only while it rests and Clear as clearAvailable says;
 // - shut down, the hub's past-session set (cmd/evener-hub/app_threadread.go's
 //   pastThreadCapabilities), since sending resumes it;
@@ -1005,7 +1005,7 @@ export function endTurn(thread: Thread, turn: Turn, status: "completed" | "inter
 }
 
 // The first question of the session's pending ask, as the daemon summarizes
-// it for the Board's row (appwire/types.go's PendingQuestion).
+// it for the Board's row (appwire/types_thread.go's PendingQuestion).
 function pendingQuestionOf(ask: Question[]): PendingQuestion {
 	const [first] = ask;
 	if (!first) throw new Error("a pending question needs an ask");
@@ -1221,7 +1221,7 @@ function restartRequiredError(clientMutationId: string): WireError {
 
 // A notes change must reach a session that takes shared notes, and name the
 // instance it read. A stale instance is refused as the daemon refuses it
-// (server/appwire_runtime.go, appwire.MutationNotAccepted). A shut-down
+// (server/appwire_thread_settings.go, appwire.MutationNotAccepted). A shut-down
 // session is resumed to take it, as the hub's setNotesHumanWithResume and
 // removeURLWithResume do (cmd/evener-hub/app_session_resume.go).
 function requireSharedNotes(thread: Thread, expectedInstanceId: string, clientMutationId: string, now: number): void {
@@ -1275,7 +1275,7 @@ function normalizeWhiteboard(text: string): string {
 }
 
 // The steer text for a changed note, as the daemon renders it
-// (agent/session_notes_rpc.go's formatNotesField): continuation lines indented
+// (agent/session_notes_context.go's formatNotesField): continuation lines indented
 // two spaces under the prefix, blank lines left empty. noteFromSteer reads it
 // back.
 export function humanNoteSteerText(note: string): string {
@@ -1286,7 +1286,7 @@ export function humanNoteSteerText(note: string): string {
 // notes/human/set: your note replaces the session's. A changed note steers
 // the agent in a turn of its own, which the receipt names; an unchanged one
 // projects "removed" and wakes no one, as the daemon's does
-// (agent/session_notes_rpc.go).
+// (agent/session_notes_mutations.go).
 export function setHumanNote(thread: Thread, params: NotesHumanSetParams, now: number): NotesHumanSetResponse {
 	requireSharedNotes(thread, params.expectedInstanceId, params.clientMutationId, now);
 	const note = normalizeWhiteboard(params.note ?? "");
@@ -1295,7 +1295,7 @@ export function setHumanNote(thread: Thread, params: NotesHumanSetParams, now: n
 	let turnId: string | undefined;
 	if (changed) {
 		// The note steers the agent, recorded as the daemon records it
-		// (agent/session_notes_rpc.go); the phone shows it as your note's row.
+		// (agent/session_notes_mutations.go); the phone shows it as your note's row.
 		const steer: ThreadItem = {
 			id: `demo-note-${params.clientMutationId}`,
 			type: "steering",

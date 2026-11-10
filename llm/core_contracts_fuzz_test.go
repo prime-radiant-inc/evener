@@ -22,53 +22,6 @@ func FuzzCoreContracts(f *testing.F) {
 	})
 }
 
-func FuzzCoreDeterministicScenarios(f *testing.F) {
-	f.Add(uint8(0))
-	f.Fuzz(func(t *testing.T, _ uint8) {
-		TestConfigurationErrorSatisfiesErrorContract(t)
-		TestRewriteErrorProviderLeavesEmptyProviderUnstamped(t)
-		TestClassifyByMessageAuthenticationSignals(t)
-		TestMessageConstructors(t)
-		TestIntFromAny(t)
-		TestReasoningBudget(t)
-		TestReasoningTextJoinsBlocksWithBlankLine(t)
-		TestDefaultSleepTimerAndCancel(t)
-		TestRetryableError(t)
-		TestSaturatingDelay(t)
-		TestParseAndValidateArgs(t)
-		TestCompileSchemaRejectsUnmarshalableParams(t)
-		TestPrepareToolsRejectsInvalidToolName(t)
-		TestGenerateOptionsValidate(t)
-		TestPrepareGenerationInputValidation(t)
-		TestStreamAccumulatorToolCallDeltaWithoutStart(t)
-		TestStreamAccumulatorFinishRebuildsEmptyResponse(t)
-		TestCopyResponseMetadataNilSource(t)
-		TestStreamAccumulatorNilReceiver(t)
-		TestEstimateInputTokensCountsResponseFormat(t)
-		TestCountInputTokensConfigErrors(t)
-		TestLoadOrCreateContinuationSecretOpenFileError(t)
-		TestLoadOrCreateContinuationSecretMissingStateDir(t)
-		TestStreamResultNilReceivers(t)
-		TestErrorClassStringExhaustive(t)
-		TestExpandTilde(t)
-		TestInferMimeTypeFromPath(t)
-		TestDataURI(t)
-		TestStripMarkdownCodeFence(t)
-		TestStripMarkdownCodeFenceNested(t)
-		TestMiddlewareFunc_NilPhasesPassThrough(t)
-		TestApplyMiddleware_SkipsNilEntries(t)
-		TestCloneProviderOptions_DeepIndependence(t)
-		TestEstimateInputTokens_AllContentKinds(t)
-		TestEstimateOpenAIImageTokens(t)
-		TestImageDimensions_LocalFileURL(t)
-		TestEstimateImageTokens_FallbackWhenDimensionsUnknown(t)
-		TestEstimateImageTokens_DefaultProviderFamily(t)
-		TestParseRetryAfterEdgeCases(t)
-		TestNonHTTPBaseErrorMessage(t)
-		TestNewUnsupportedToolChoiceError(t)
-	})
-}
-
 func fuzzTimeoutAndHeaders(t *testing.T, seed uint8) {
 	ctx := context.Background()
 	got, cancel := ApplyAdapterTimeout(ctx, nil, false)
@@ -187,9 +140,6 @@ func fuzzTypeContracts(t *testing.T) {
 		_ = NormalizeReasoningEffort(effort)
 		_ = ReasoningEffortRank(effort)
 		_ = ClampReasoningEffort(effort, []string{"low", "high", "max", "unknown"})
-	}
-	if !reflect.DeepEqual(OrderedEffortLevels(map[string]string{"max": "", "low": ""}), []string{"low", "max"}) {
-		t.Fatal("effort ordering failed")
 	}
 	for _, sig := range append(OpenAICompatReasoningFields(), "foreign") {
 		_ = IsOpenAICompatReasoningField(sig)

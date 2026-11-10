@@ -3,14 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
-import { searchForWorkspaceRoot } from "vite";
+import { runnerImport, searchForWorkspaceRoot } from "vite";
 import { configDefaults, defineConfig, type Plugin } from "vitest/config";
 
 // The dev server proxies every hub-owned route to a locally running evener-hub.
 // Cookies are port-agnostic on localhost, so the /auth/<token> capability flow
 // works through the proxy unchanged.
-const hub = process.env.EVENER_HUB_ADDR ?? "http://127.0.0.1:9180";
-
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // The AppWire TypeScript package lives at the repo root (appwire-client/typescript),
@@ -45,8 +43,60 @@ function restoreDistPlaceholder(): Plugin {
   };
 }
 
+// The chunks above Vite's 500 kB heuristic are vendor distribution files that
+// Rollup copies whole: @mermaid-js/parser's prebuilt 629.66 kB core and elkjs's
+// 1,502.08 kB layout engine (pulled by mermaid 12.3.0). Neither has a useful
+// source-level split, and the app reaches them only through the dynamic
+// `import("mermaid")` in src/widgets/mermaid/security.ts, so a reader pays for
+// them only when a diagram is rendered. This plugin proves that stays true: a
+// build fails if any chunk over 500 kB is reachable from an entry through
+// STATIC imports, which is the condition that would make its size warning
+// matter. A dynamic import is the boundary that makes everything below it
+// lazy, so a diagram chunk may statically import the parser without putting it
+// on the eager path.
+const LAZY_CHUNK_BYTES = 500_000;
+
+function largeChunksStayLazy(): Plugin {
+  return {
+    name: "large-chunks-stay-lazy",
+    apply: "build",
+    generateBundle(_options, bundle) {
+      const eager = new Set<string>();
+      const pending = Object.values(bundle).filter((output) => output.type === "chunk" && output.isEntry);
+      while (pending.length > 0) {
+        const chunk = pending.pop();
+        if (chunk === undefined || eager.has(chunk.fileName)) continue;
+        eager.add(chunk.fileName);
+        for (const imported of chunk.imports) {
+          const next = bundle[imported];
+          if (next?.type === "chunk") pending.push(next);
+        }
+      }
+      for (const output of Object.values(bundle)) {
+        if (output.type !== "chunk") continue;
+        if (output.code.length > LAZY_CHUNK_BYTES && eager.has(output.fileName)) {
+          this.error(
+            `chunk ${output.fileName} is ${(output.code.length / 1000).toFixed(2)} kB and is reachable from an entry through static imports; split it or load it behind a dynamic import`,
+          );
+        }
+      }
+    },
+  };
+}
+
+// Config loading precedes resolve.alias, so a static package import cannot
+// resolve here. Vite imports by package name with its source alias before it
+// evaluates the plain config object that browser/editorial configs merge.
+const { module: hubOriginModule } = await runnerImport("@evener/appwire-client/hubOrigin", {
+  resolve: { alias: { "@evener/appwire-client/hubOrigin": path.join(appwirePackageDir, "hubOrigin.ts") } },
+});
+const { parseHubOrigin } = hubOriginModule as typeof import("@evener/appwire-client/hubOrigin");
+if (Object.hasOwn(process.env, "EVENER_HUB_ADDR"))
+  throw new Error("EVENER_HUB_ADDR has been removed; set EVENER_HUB_URL to an HTTP(S) origin.");
+const hub = parseHubOrigin(process.env.EVENER_HUB_URL ?? "http://127.0.0.1:9180");
+
 export default defineConfig({
-  plugins: [react(), restoreDistPlaceholder()],
+  plugins: [react(), restoreDistPlaceholder(), largeChunksStayLazy()],
   // Keep the dep-optimizer cache inside this checkout by default. Vite defaults
   // it to node_modules/.vite, and fleet worktrees symlink node_modules to ONE
   // shared install (docs/developing-evener/conventions/agent-fleets.md), so
@@ -63,7 +113,17 @@ export default defineConfig({
   // vitest suite (issue #4193). An empty value falls back to the checkout, the
   // same truthiness BROWSER_GUARD_VITE_CACHE_DIR uses below.
   cacheDir: process.env.EVENER_FRONTEND_VITE_CACHE_DIR || path.join(__dirname, ".vite-cache"),
-  build: { assetsDir: "webassets", outDir: "dist", emptyOutDir: true },
+  build: {
+    assetsDir: "webassets",
+    outDir: "dist",
+    emptyOutDir: true,
+    // Vite's 500 kB warning is a heuristic for eager chunks. The two lazy
+    // vendor chunks measured above are 629.66 kB (@mermaid-js/parser) and
+    // 1,502.08 kB (elkjs); largeChunksStayLazy proves every chunk over 500 kB
+    // stays off the entry's static import graph, so the limit sits just past
+    // the measured maximum.
+    chunkSizeWarningLimit: 1600,
+  },
   // These mirror tsconfig.json's paths - tsconfig paths are invisible to Vite,
   // so the alias is what the bundler, the dev server, Vitest and the five
   // browser guards all resolve through. The targets are the package's
@@ -73,6 +133,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@evener/appwire-client/docContent": path.join(appwirePackageDir, "docContent.ts"),
+      "@evener/appwire-client/hubOrigin": path.join(appwirePackageDir, "hubOrigin.ts"),
       "@evener/appwire-client/pairing": path.join(appwirePackageDir, "pairing.ts"),
       "@evener/appwire-client/state/navigation": path.join(appwirePackageDir, "state", "navigation", "index.ts"),
       "@evener/appwire-client/state/credentials": path.join(appwirePackageDir, "state", "credentials", "index.ts"),
@@ -100,10 +161,17 @@ export default defineConfig({
       // tinykeys, so this alias serves only its tests.
       tinykeys: path.join(__dirname, "node_modules", "tinykeys"),
       tweetnacl: path.join(__dirname, "node_modules", "tweetnacl"),
+      // The package's ANSI parser; the package has no install of its own in the web job.
+      anser: path.join(__dirname, "node_modules", "anser"),
     },
   },
   server: {
     host: "127.0.0.1",
+    // Jesse reaches dev servers from remote machines as magic-kingdom (the
+    // tailscale hostname). Vite blocks non-localhost Host headers by default,
+    // so remote dev serving opts in with a comma-separated host allowlist;
+    // unset keeps Vite's default protection unchanged.
+    allowedHosts: process.env.EVENER_DEV_ALLOWED_HOSTS?.split(",").map((h) => h.trim()),
     fs: {
       // Agent worktrees keep cmd/evener-hub/frontend/node_modules as a symlink
       // to one shared install (see docs/developing-evener/conventions/agent-fleets.md), whose

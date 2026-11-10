@@ -27,9 +27,9 @@ func seed100ToolsRangeA(t *testing.T) {
 		_, _ = decodeDelegateArgs(args)
 	}
 	bare := newSession(t)
-	_, _ = stableDelegateSendTool(context.Background(), bare, map[string]any{"to": "caller"}, 100)
-	_, _ = stableDelegateCreateTool(context.Background(), bare, map[string]any{"sandbox_net": "bad"}, 100)
-	_, _ = stableDelegateCreateTool(context.Background(), &Session{}, map[string]any{"prompt": "x"}, 100)
+	_, _ = delegateSendTool(context.Background(), bare, map[string]any{"to": "caller"}, 100)
+	_, _ = delegateCreateTool(context.Background(), bare, map[string]any{"sandbox_net": "bad"}, 100)
+	_, _ = delegateCreateTool(context.Background(), &Session{}, map[string]any{"prompt": "x"}, 100)
 	_, _ = jobWatchTool(bare, map[string]any{"operation": "create", "source": "bad-source"}, 100)
 	ended := frozenTestTime
 

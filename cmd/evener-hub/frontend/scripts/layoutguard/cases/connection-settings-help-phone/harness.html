@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>connection-settings-help-phone layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  body {
+    margin: 0;
+    background: var(--surface-1);
+    font-family: var(--font-sans);
+  }
+  /* The settings disclosure's own container, at a phone body width. The
+     media query under test is the real one in ConnectionFacts.module.css. */
+  .page {
+    box-sizing: border-box;
+    width: 390px;
+    padding: var(--space-4);
+  }
+</style>
+</head>
+<body data-font-size="m">
+<div class="page" id="page">
+  <div class="settingsRow" id="settings-row">
+    <label class="rowLabel" for="credential-header">Credential header</label>
+    <span class="settingField">
+      <input
+        class="input"
+        id="credential-header"
+        value="Authorization=Bearer $PORTKEY_KEY"
+        aria-describedby="credential-header-help"
+      >
+    </span>
+    <span class="rowHelp settingHelp" id="credential-header-help">
+      NAME=VALUE; the value must reference a $VARIABLE or run a $(command), never a literal secret.
+    </span>
+  </div>
+</div>
+<script>
+window.measure = () => {
+  const box = (el) => {
+    const r = el.getBoundingClientRect();
+    return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
+  };
+  const row = document.querySelector("#settings-row");
+  const label = document.querySelector("#settings-row .rowLabel");
+  const field = document.querySelector("#settings-row .settingField");
+  const input = document.querySelector("#credential-header");
+  const help = document.querySelector("#credential-header-help");
+  const rowStyle = getComputedStyle(row);
+  const helpStyle = getComputedStyle(help);
+  return {
+    viewportWidth: window.innerWidth,
+    row: box(row),
+    label: box(label),
+    field: box(field),
+    input: box(input),
+    help: box(help),
+    rowScrollWidth: row.scrollWidth,
+    rowClientWidth: row.clientWidth,
+    rowColumns: rowStyle.gridTemplateColumns,
+    helpGridColumn: helpStyle.gridColumnStart,
+  };
+};
+</script>
+</body>
+</html>

@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -8,10 +9,8 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -20,6 +19,7 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
+	"primeradiant.com/evener/internal/hubendpoint"
 )
 
 // The attach subcommand is the remote half of the multi-host bridge: it runs on
@@ -35,8 +35,9 @@ import (
 // else, so every diagnostic goes to stderr.
 
 type attachOptions struct {
-	stdio bool
-	addr  string
+	stdio      bool
+	hubURL     string
+	urlPresent bool
 	// configExplicit records whether the operator (or the controller that
 	// spawned this bridge) named the path with --config: a named path must
 	// load, while the implicit default path may be absent.
@@ -58,20 +59,15 @@ var errNoHubAt = errors.New("no hub at")
 // context (a signal), not by this.
 const attachDialTimeout = 15 * time.Second
 
-// attachDialClient disables proxying for the handshake. http.DefaultClient
-// honors HTTP_PROXY, which would hand the hub's capability token to the proxy's
-// host instead of the loopback hub.
-var attachDialClient = &http.Client{Transport: &http.Transport{Proxy: nil}}
-
 func parseAttachOptions(args []string, stderr io.Writer) (attachOptions, error) {
 	opts := attachOptions{configPath: DefaultConfigPath()}
 	fs := flag.NewFlagSet("evener hub attach", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.BoolVar(&opts.stdio, "stdio", false, "proxy AppWire between the hub's loopback /rpc and stdin/stdout")
-	fs.StringVar(&opts.addr, "addr", "", "override hub loopback address (default: hub.toml addr, else 127.0.0.1:9180)")
+	fs.StringVar(&opts.hubURL, "hub-url", "", "verified literal-loopback HTTP origin")
 	fs.StringVar(&opts.configPath, "config", opts.configPath, "path to hub.toml")
 	fs.Usage = func() {
-		_, _ = fmt.Fprintf(stderr, "Usage: evener hub attach --stdio [--addr host:port] [--config path]\n\n")
+		_, _ = fmt.Fprintf(stderr, "Usage: evener hub attach --stdio [--hub-url ORIGIN] [--config path]\n\n")
 		_, _ = fmt.Fprintf(stderr, "Run on the hub host: connect to the local hub's loopback AppWire edge\nand proxy newline-delimited AppWire messages between it and stdin/stdout.\n\n")
 		fs.PrintDefaults()
 	}
@@ -81,13 +77,9 @@ func parseAttachOptions(args []string, stderr io.Writer) (attachOptions, error) 
 	if fs.NArg() != 0 {
 		return opts, fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
-	// fs.Visit reports the flags that were actually set, so a path the operator
-	// named is distinguishable from the implicit default before it is loaded.
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "config" {
-			opts.configExplicit = true
-		}
-	})
+	set := setFlagNames(fs)
+	opts.configExplicit = set["config"]
+	opts.urlPresent = set["hub-url"]
 	if !opts.stdio {
 		return opts, errors.New("attach requires --stdio")
 	}
@@ -96,30 +88,57 @@ func parseAttachOptions(args []string, stderr io.Writer) (attachOptions, error) 
 
 // runAttach resolves the hub's loopback address and capability token, then
 // runs the bidirectional bridge over the process streams carried in deps.
-func runAttach(args []string, stderr io.Writer, deps mainDeps) error {
-	opts, err := parseAttachOptions(args, stderr)
+func runAttach(args []string, stderr io.Writer, deps mainDeps) (err error) {
+	var parseOutput bytes.Buffer
+	opts, err := parseAttachOptions(args, &parseOutput)
+	parseReported := parseOutput.Len() != 0
+	_, _ = parseOutput.WriteTo(stderr)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
 		}
-		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		// flag.Parse already reports syntax failures. Semantic parse errors do not.
+		if !parseReported {
+			_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		}
 		return err
 	}
-	// The address and state root come from the hub's own config machinery, not
-	// a re-derived path, so a hub.toml override moves the bridge with it.
-	cfg, err := deps.loadConfig(opts.configPath, opts.configExplicit)
+	defer func() {
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		}
+	}()
+	ctx, cancel := deps.notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	// Validate an explicit destination before reading any host credential.
+	if opts.urlPresent {
+		if _, err := attachOrigin(opts.hubURL); err != nil {
+			return err
+		}
+	}
+	report, err := resolveHubEndpoint(ctx, endpointOptions{configPath: opts.configPath, configExplicit: opts.configExplicit}, deps)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] config: %v\n", err)
 		return err
 	}
-	addr := opts.addr
-	if addr == "" {
-		addr = cfg.Addr
+	if report.Running == nil {
+		return fmt.Errorf("%w: selected hub is %s (%s)", errNoHubAt, report.State, report.Reason)
 	}
-	addr = loopbackAddr(addr)
-	token, err := readAuthToken(cfg.HubStateRoot)
+	record := *report.Running
+	if record.LoopbackURL == "" {
+		return errNonLoopbackAddr
+	}
+	origin, err := attachOrigin(record.LoopbackURL)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		return err
+	}
+	if opts.urlPresent {
+		selected, _ := attachOrigin(opts.hubURL)
+		if selected.String() != origin.String() {
+			return hubendpoint.ErrIdentityMismatch
+		}
+	}
+	token, err := readAuthToken(record.HubStateRoot)
+	if err != nil {
 		return err
 	}
 
@@ -134,28 +153,23 @@ func runAttach(args []string, stderr io.Writer, deps mainDeps) error {
 	stream := appwire.NewStreamTransport(newStdioStream(stdin, stdout))
 	// A signal ends the bridge: the pump is one long-lived call, so without this
 	// an operator could not stop an attached bridge except by killing it.
-	ctx, cancel := deps.notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-	if err := proxyAppWire(ctx, addr, token, stream); err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
-		return err
-	}
-	return nil
+	return proxyAppWire(ctx, origin.String(), token, record, stream)
 }
 
 // proxyAppWire dials the hub's loopback AppWire edge and pumps Messages in both
 // directions until either side closes. A failed dial is reported as "no hub at
 // <addr>" so the operator sees the actionable cause rather than a bare
 // connection error.
-func proxyAppWire(ctx context.Context, addr, token string, stream appwire.Transport) error {
-	hubURL, err := resolveHubURL(addr)
+func proxyAppWire(ctx context.Context, rawOrigin, token string, record hubendpoint.Record, stream appwire.Transport) error {
+	origin, err := attachOrigin(rawOrigin)
+	if err != nil {
+		return err
+	}
+	client, err := hubendpoint.HTTPClientWithBearer(nil, token, origin, &record)
 	if err != nil {
 		return err
 	}
 	header := http.Header{}
-	if token != "" {
-		header.Set("Authorization", "Bearer "+token)
-	}
 	// Mark the connection remote-originated for the hub it dials (component 05,
 	// §"The origin signal is an explicit bridge marker on the connection"): the
 	// hub stamps this role into every request's context, so its host-routing
@@ -165,14 +179,14 @@ func proxyAppWire(ctx context.Context, addr, token string, stream appwire.Transp
 	header.Set(bridgeOriginHeader, "1")
 	dialCtx, cancel := context.WithTimeout(ctx, attachDialTimeout)
 	defer cancel()
-	ws, err := appwire.DialWebSocketWithHeaders(dialCtx, hubURL, attachDialClient, header)
+	ws, err := appwire.DialWebSocketWithHeaders(dialCtx, origin.RPCURL(), client, header)
 	if err != nil {
 		// A cancel during the handshake is the operator stopping the bridge, not
 		// a failure to reach a hub.
 		if ctx.Err() != nil {
 			return nil
 		}
-		return fmt.Errorf("%w %s: %w", errNoHubAt, addr, err)
+		return fmt.Errorf("%w %s: %w", errNoHubAt, origin.String(), err)
 	}
 	return pumpBoth(ctx, ws, stream)
 }
@@ -262,60 +276,15 @@ func readAuthToken(hubStateRoot string) (string, error) {
 	return token, nil
 }
 
-// loopbackAddr rewrites a wildcard bind address to loopback, since a client
-// running on the hub host reaches the hub over loopback even when the hub
-// advertises 0.0.0.0 or ::. The IPv6 wildcard maps to ::1 rather than
-// 127.0.0.1: a hub bound IPv6-only is not listening on IPv4, so forcing the
-// family there would fail the dial. Non-wildcard addresses pass through.
-// "localhost" is rewritten to the literal 127.0.0.1 as well: dialing the NAME
-// would hand a poisoned resolver or hosts entry the hub's capability token.
-func loopbackAddr(addr string) string {
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		return addr
+// attachOrigin enforces the bridge's stricter literal-loopback/no-proxy policy.
+func attachOrigin(raw string) (hubendpoint.Origin, error) {
+	origin, err := hubendpoint.ParseOrigin(raw)
+	if err != nil || origin.Scheme() != "http" || !isLoopbackHost(origin.Hostname()) {
+		return hubendpoint.Origin{}, errNonLoopbackAddr
 	}
-	switch host {
-	case "", "0.0.0.0", "localhost":
-		return net.JoinHostPort("127.0.0.1", port)
-	case "::":
-		return net.JoinHostPort("::1", port)
-	}
-	return addr
+	return origin, nil
 }
 
-// resolveHubURL validates addr and returns the ws:// URL to dial. The hub's
-// capability token crosses this connection in cleartext, so the address must
-// provably stay on this host — and the assembled URL is what has to be
-// validated, not the host:port pair. net.SplitHostPort folds anything after an
-// "@" into the port ("localhost:9180@attacker.example" splits as host
-// "localhost" and port "9180@attacker.example"), so a check that trusts its
-// host portion then dials the attacker's host once url.Parse strips the
-// userinfo.
-func resolveHubURL(addr string) (string, error) {
-	refuse := func() (string, error) {
-		return "", fmt.Errorf("%w: %q", errNonLoopbackAddr, addr)
-	}
-	u, err := url.Parse("ws://" + addr + "/rpc")
-	if err != nil {
-		return refuse()
-	}
-	if u.User != nil || u.Path != "/rpc" || u.RawQuery != "" || u.Fragment != "" {
-		return refuse()
-	}
-	port, err := strconv.Atoi(u.Port())
-	if err != nil || port < 1 || port > 65535 {
-		return refuse()
-	}
-	if !isLoopbackHost(u.Hostname()) {
-		return refuse()
-	}
-	return u.String(), nil
-}
-
-// isLoopbackHost reports whether host is a loopback address LITERAL. Names are
-// deliberately not resolved here: loopbackAddr rewrites "localhost" to
-// 127.0.0.1 before this is consulted, so a poisoned resolver or hosts entry
-// cannot aim a token-carrying dial off-host.
 func isLoopbackHost(host string) bool {
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()

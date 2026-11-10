@@ -5,7 +5,7 @@
 // a place's last answer stays while it is asked again.
 import type { AnyNotification } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
-import type { ConversationClientLike, NewSessionService } from "../../../mobile/src/services/newSession";
+import type { ConversationClientLike, NewSessionService } from "../conversation/services/newSession";
 import { creationService } from "./creations";
 
 /** `read` must be a stable function (declared at module level), or the page
@@ -35,6 +35,36 @@ export function useHostRead<T>(
 		};
 	}, [client, ready, host, project, place, read, revision]);
 	return known?.place === place ? known.value : null;
+}
+
+/** One read about the chosen host alone (the hub's launch schema): asked
+ * while the sheet is ready, again whenever the host or `revision` changes.
+ * Null before the answer and after a failure; the host's last answer stays
+ * while it is asked again. `revision` re-runs the read exactly as
+ * useHostRead's does: the schema hook passes the host's reach, so a read
+ * that failed while the host was unreachable is asked again once it isn't. */
+export function useHostOnlyRead<T>(
+	client: ConversationClientLike | null,
+	ready: boolean,
+	host: string,
+	read: (service: NewSessionService, host: string) => Promise<T>,
+	revision: string | number = 0,
+): T | null {
+	const [known, setKnown] = useState<{ host: string; value: T | null } | null>(null);
+	useEffect(() => {
+		// The revision re-runs this read; it isn't read inside.
+		void revision;
+		if (!client || !ready) return;
+		let current = true;
+		read(creationService(client), host).then(
+			(value) => current && setKnown({ host, value }),
+			() => current && setKnown({ host, value: null }),
+		);
+		return () => {
+			current = false;
+		};
+	}, [client, ready, host, read, revision]);
+	return known?.host === host ? known.value : null;
 }
 
 /** A count that goes up whenever the hub sends one of `methods`, for reads

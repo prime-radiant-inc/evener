@@ -127,6 +127,26 @@ func TestVertexListModelsExitsOnCancellation(t *testing.T) {
 	}
 }
 
+// The Vertex listing honors the listing timeout like every other protocol's
+// listing: a silent endpoint ends with the provider deadline, not the caller's.
+func TestVertexListModelsHonorsTheListingTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ctx = llm.WithModelListingTimeout(ctx, llm.AdapterTimeout{Request: 50 * time.Millisecond})
+	_, err := (&Protocol{Client: srv.Client()}).ListModels(ctx, vertexRes(srv))
+	if err == nil {
+		t.Fatal("ListModels returned no error from a silent endpoint")
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("the caller's deadline fired before the listing timeout: %v", ctx.Err())
+	}
+}
+
 func TestVertexListModelsStopsOnARepeatedPageToken(t *testing.T) {
 	requests := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

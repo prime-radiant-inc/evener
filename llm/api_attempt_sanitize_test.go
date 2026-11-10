@@ -505,3 +505,211 @@ func TestClassifyAPIAttemptOutcomeDoesNotInferCallerCancellationFromSyntheticEvi
 		})
 	}
 }
+
+// A blank header or query name names nothing, so it is not recorded.
+func TestNewAPILogCredentialMaterialSkipsBlankNames(t *testing.T) {
+	blank := []string{"  ", ""}
+	if m := NewAPILogCredentialMaterial(blank, nil, "secret"); len(m.HeaderNames) != 0 {
+		t.Fatalf("HeaderNames = %v, want empty", m.HeaderNames)
+	}
+	if m := NewAPILogCredentialMaterial(nil, blank, "secret"); len(m.QueryNames) != 0 {
+		t.Fatalf("QueryNames = %v, want empty", m.QueryNames)
+	}
+}
+
+func TestNewAPILogCredentialMaterialDuplicateValue(t *testing.T) {
+	m := NewAPILogCredentialMaterial(nil, nil, "secret", "secret", "other")
+	if len(m.Values) != 2 {
+		t.Fatalf("Values = %v, want 2 (secret, other)", m.Values)
+	}
+}
+
+func TestNewAPILogCredentialMaterialSkipsAnEmptyValue(t *testing.T) {
+	material := NewAPILogCredentialMaterial(nil, nil, "", "credential-secret", "")
+	want := APILogCredentialMaterial{
+		Values:      []string{"credential-secret"},
+		secretNames: []string{},
+		patterns:    []string{"credential-secret"},
+	}
+	if !reflect.DeepEqual(material, want) {
+		t.Fatalf("empty-filtered credential material = %#v, want %#v", material, want)
+	}
+	assertValueCredentialSanitizesExactly(t, material)
+}
+
+// Material built without the constructor's prepared patterns still scrubs
+// its values.
+func TestCredentialEvidencePatternsFallBackToValues(t *testing.T) {
+	material := APILogCredentialMaterial{Values: []string{"credential-secret"}}
+	if patterns := credentialEvidencePatterns(material); !reflect.DeepEqual(patterns, []string{"credential-secret"}) {
+		t.Fatalf("fallback credential patterns = %q, want the value", patterns)
+	}
+	assertValueCredentialSanitizesExactly(t, material)
+}
+
+func assertValueCredentialSanitizesExactly(t *testing.T, material APILogCredentialMaterial) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, "https://provider.test/v1/safe-marker?token=credential-secret&safe_query=safe-marker", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "safe-host.provider.test"
+	req.Header = http.Header{
+		"X-Credential-Value": {"prefix credential-secret suffix"},
+		"X-Safe":             {"safe-marker"},
+	}
+	endpoint, headers := SanitizeRequestForAPILog(req, material)
+	wantHeaders := map[string][]string{
+		"Host":   {"safe-host.provider.test"},
+		"X-Safe": {"safe-marker"},
+	}
+	if endpoint != "https://provider.test/v1/safe-marker" || !reflect.DeepEqual(headers, wantHeaders) {
+		t.Fatalf("sanitized value-material request = (%q, %#v), want (%q, %#v)", endpoint, headers, "https://provider.test/v1/safe-marker", wantHeaders)
+	}
+}
+
+func TestAPILogCredentialMaterialForRequestNil(t *testing.T) {
+	configured := NewAPILogCredentialMaterial([]string{"X-Custom"}, []string{"token"}, "secret")
+	material := APILogCredentialMaterialForRequest(nil, configured)
+	if _, ok := material.HeaderNames["X-Custom"]; !ok {
+		t.Fatal("missing configured header name")
+	}
+	if _, ok := material.QueryNames["token"]; !ok {
+		t.Fatal("missing configured query name")
+	}
+}
+
+// A percent-escaped credential query name is recognized by its unescaped
+// form, and its escaped spelling is recorded too.
+func TestAPILogCredentialMaterialForRequestEscapedQueryName(t *testing.T) {
+	req, err := http.NewRequest(http.MethodGet, "https://provider.test/api?access%5Ftoken=secret", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	material := APILogCredentialMaterialForRequest(req, APILogCredentialMaterial{})
+	for _, name := range []string{"access_token", "access%5ftoken"} {
+		if _, ok := material.QueryNames[name]; !ok {
+			t.Fatalf("QueryNames = %v, want %q", material.QueryNames, name)
+		}
+	}
+}
+
+// Each cookie value is recorded as sent, unquoted, and percent-decoded; a
+// pair with no value contributes nothing.
+func TestStructuredCredentialHeaderValuesOfACookie(t *testing.T) {
+	for _, tc := range []struct {
+		name, cookie string
+		want         []string
+	}{
+		{"pairs without a value", `noequals; empty=; quoted="quoted-value"`, []string{`"quoted-value"`, "quoted-value"}},
+		{"percent-encoded value", "session=%41%42", []string{"%41%42", "AB"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := structuredCredentialHeaderValues("Cookie", tc.cookie); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("structured cookie values = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSanitizeRequestForAPILogNil(t *testing.T) {
+	endpoint, headers := SanitizeRequestForAPILog(nil, APILogCredentialMaterial{})
+	if endpoint != "" || headers != nil {
+		t.Fatalf("endpoint=%q headers=%v, want empty/nil", endpoint, headers)
+	}
+}
+
+// A Trailer header that names only credential headers (blank entries aside)
+// is dropped rather than logged empty.
+func TestSanitizeRequestForAPILogDropsAnEmptiedTrailer(t *testing.T) {
+	for _, tc := range []struct {
+		name, trailer string
+		material      APILogCredentialMaterial
+	}{
+		{"common credential names", "Authorization, X-Api-Key", NewAPILogCredentialMaterial(nil, nil)},
+		{"blank entries around a configured name", ", X-Custom, ", NewAPILogCredentialMaterial([]string{"X-Custom"}, nil)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodPost, "https://provider.test", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Trailer", tc.trailer)
+			endpoint, headers := SanitizeRequestForAPILog(req, tc.material)
+			if _, ok := headers["Trailer"]; ok || endpoint == "" {
+				t.Fatalf("sanitized = (%q, %v), want an endpoint and no Trailer", endpoint, headers)
+			}
+		})
+	}
+}
+
+// A Trailer value that names no credential is kept byte for byte.
+func TestSanitizeTrailerHeaderValuesNoRemoval(t *testing.T) {
+	values := sanitizeTrailerHeaderValues([]string{"X-Debug,X-Info"}, APILogCredentialMaterial{})
+	if len(values) != 1 || values[0] != "X-Debug,X-Info" {
+		t.Fatalf("values = %q, want the original preserved exactly", values)
+	}
+}
+
+// The logged Host is the one the client sends: never a Header["Host"] entry,
+// and never a Host that is itself a credential.
+func TestSanitizeRequestForAPILogHost(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		host     string
+		header   string
+		material APILogCredentialMaterial
+		want     map[string][]string
+	}{
+		{"Host value carries a credential", "contains-secret-value", "", NewAPILogCredentialMaterial(nil, nil, "secret-value"),
+			map[string][]string{"X-Safe": {"kept"}}},
+		{"Host named as a credential header", "plain.provider.test", "", NewAPILogCredentialMaterial([]string{"Host"}, nil, "unrelated-secret"),
+			map[string][]string{"X-Safe": {"kept"}}},
+		{"Header[Host] beside the wire Host", "wire.provider.test", "should-be-skipped", APILogCredentialMaterial{},
+			map[string][]string{"Host": {"wire.provider.test"}, "X-Safe": {"kept"}}},
+		{"Header[Host] without a wire Host", "", "should-be-skipped", APILogCredentialMaterial{},
+			map[string][]string{"X-Safe": {"kept"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, "https://provider.test", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Host = tc.host
+			req.Header.Set("X-Safe", "kept")
+			if tc.header != "" {
+				req.Header["Host"] = []string{tc.header}
+			}
+			endpoint, headers := SanitizeRequestForAPILog(req, tc.material)
+			if endpoint != "https://provider.test" || !reflect.DeepEqual(headers, tc.want) {
+				t.Fatalf("sanitized request = (%q, %#v), want (%q, %#v)", endpoint, headers, "https://provider.test", tc.want)
+			}
+		})
+	}
+}
+
+// TestUnescapeQueryComponentError: an invalid escape returns the input as is.
+func TestUnescapeQueryComponentError(t *testing.T) {
+	if got := unescapeQueryComponent("%zz"); got != "%zz" {
+		t.Fatalf("unescapeQueryComponent(%q) = %q, want %q", "%zz", got, "%zz")
+	}
+}
+
+// Names that differ only by case fold to one variant.
+func TestCaseFoldedCredentialNameVariantsDuplicate(t *testing.T) {
+	if got := caseFoldedCredentialNameVariants([]string{"Key", "key", "KEY"}); !reflect.DeepEqual(got, []string{"key"}) {
+		t.Fatalf("variants = %q, want exactly [key]", got)
+	}
+}
+
+func TestCredentialValueVariantsEmpty(t *testing.T) {
+	variants := credentialValueVariants([]string{"", "valid"})
+	if len(variants) == 0 {
+		t.Fatal("expected at least one variant for 'valid'")
+	}
+	for _, v := range variants {
+		if v == "" {
+			t.Fatal("empty variant should not be included")
+		}
+	}
+}

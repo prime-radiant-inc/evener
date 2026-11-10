@@ -27,95 +27,42 @@ func TestConstraintMessage_MinLength(t *testing.T) {
 	}
 }
 
-// TestConstraintMessage_MinLengthLimitNotInt covers the schemaInt failure
-// path for minLength (line 121-122): minLength is not a number, so
-// constraintMessage returns "" and falls back to generic.
-func TestConstraintMessage_MinLengthLimitNotInt(t *testing.T) {
-	params := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"name": map[string]any{"type": "string", "minLength": "bad"},
-		},
-		"required": []string{"name"},
+// TestConstraintMessage_UnparsableConstraintDeclinesToConstrain covers the
+// schemaInt failure path of every limit keyword (the limit is not a number)
+// and the empty-enum path: constraintMessage returns "" for each, which is
+// what makes ExplainSchemaError fall back to its generic message - a limit
+// it cannot parse names no constraint at all.
+func TestConstraintMessage_UnparsableConstraintDeclinesToConstrain(t *testing.T) {
+	cases := []struct {
+		name    string
+		field   string
+		keyword string
+		prop    map[string]any
+		args    map[string]any
+	}{
+		{"minLength limit not an int", "name", "minLength", map[string]any{"type": "string", "minLength": "bad"}, map[string]any{"name": "hi"}},
+		{"maxLength limit not an int", "name", "maxLength", map[string]any{"type": "string", "maxLength": true}, map[string]any{"name": "hi"}},
+		{"maxItems limit not an int", "items", "maxItems", map[string]any{"type": "array", "maxItems": "bad"}, map[string]any{"items": []any{1, 2}}},
+		{"minItems limit not an int", "items", "minItems", map[string]any{"type": "array", "minItems": "bad"}, map[string]any{"items": []any{1, 2}}},
+		{"enum with no values", "color", "enum", map[string]any{"type": "string", "enum": []any{}}, map[string]any{"color": "red"}},
 	}
-	args := map[string]any{"name": "hi"}
-	got := ExplainSchemaError("my_tool", params, args, "name", "minLength")
-	// Falls back to generic message since limit is not an int.
-	if !strings.Contains(got, "wrong type or value") {
-		t.Fatalf("got:\n%s\nwant fallback to generic", got)
-	}
-}
-
-// TestConstraintMessage_MaxLengthLimitNotInt covers the schemaInt failure
-// for maxLength (line 113-114).
-func TestConstraintMessage_MaxLengthLimitNotInt(t *testing.T) {
-	params := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"name": map[string]any{"type": "string", "maxLength": true},
-		},
-		"required": []string{"name"},
-	}
-	args := map[string]any{"name": "hi"}
-	got := ExplainSchemaError("my_tool", params, args, "name", "maxLength")
-	if !strings.Contains(got, "wrong type or value") {
-		t.Fatalf("got:\n%s\nwant fallback to generic", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			params := map[string]any{
+				"type":       "object",
+				"properties": map[string]any{tc.field: tc.prop},
+				"required":   []string{tc.field},
+			}
+			got := constraintMessage("my_tool", params, tc.field, tc.field, tc.keyword, tc.args, tc.field, nil)
+			if got != "" {
+				t.Fatalf("constraintMessage(%q) = %q, want it to decline to constrain", tc.keyword, got)
+			}
+		})
 	}
 }
 
-// TestConstraintMessage_MaxItemsLimitNotInt covers the schemaInt failure
-// for maxItems (line 129-130).
-func TestConstraintMessage_MaxItemsLimitNotInt(t *testing.T) {
-	params := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"items": map[string]any{"type": "array", "maxItems": "bad"},
-		},
-		"required": []string{"items"},
-	}
-	args := map[string]any{"items": []any{1, 2}}
-	got := ExplainSchemaError("my_tool", params, args, "items", "maxItems")
-	if !strings.Contains(got, "wrong type or value") {
-		t.Fatalf("got:\n%s\nwant fallback to generic", got)
-	}
-}
-
-// TestConstraintMessage_MinItemsLimitNotInt covers the schemaInt failure
-// for minItems (line 136-137).
-func TestConstraintMessage_MinItemsLimitNotInt(t *testing.T) {
-	params := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"items": map[string]any{"type": "array", "minItems": "bad"},
-		},
-		"required": []string{"items"},
-	}
-	args := map[string]any{"items": []any{1, 2}}
-	got := ExplainSchemaError("my_tool", params, args, "items", "minItems")
-	if !strings.Contains(got, "wrong type or value") {
-		t.Fatalf("got:\n%s\nwant fallback to generic", got)
-	}
-}
-
-// TestConstraintMessage_EnumEmpty covers the empty-enum path (line 143-145):
-// enum is present but empty, so constraintMessage returns "".
-func TestConstraintMessage_EnumEmpty(t *testing.T) {
-	params := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"color": map[string]any{"type": "string", "enum": []any{}},
-		},
-		"required": []string{"color"},
-	}
-	args := map[string]any{"color": "red"}
-	got := ExplainSchemaError("my_tool", params, args, "color", "enum")
-	if !strings.Contains(got, "wrong type or value") {
-		t.Fatalf("got:\n%s\nwant fallback to generic", got)
-	}
-}
-
-// TestConstraintMessage_FieldSchemaNil covers the nil-fieldSchema path
-// (line 106-108): the field has no schema properties.
+// TestConstraintMessage_FieldSchemaNil covers the nil-fieldSchema path where
+// the field has no schema properties.
 func TestConstraintMessage_FieldSchemaNil(t *testing.T) {
 	params := map[string]any{
 		"type":       "object",
@@ -129,8 +76,8 @@ func TestConstraintMessage_FieldSchemaNil(t *testing.T) {
 	}
 }
 
-// TestConstraintMessage_UnrecognizedKeyword covers the default case
-// (line 149): a keyword that is not one of the recognized constraints.
+// TestConstraintMessage_UnrecognizedKeyword covers the default case where
+// a keyword is not one of the recognized constraints.
 func TestConstraintMessage_UnrecognizedKeyword(t *testing.T) {
 	params := map[string]any{
 		"type": "object",
@@ -146,7 +93,7 @@ func TestConstraintMessage_UnrecognizedKeyword(t *testing.T) {
 	}
 }
 
-// TestResolveInstanceValue_NilPath covers the empty-path return (line 158-159).
+// TestResolveInstanceValue_NilPath covers the empty-path return.
 func TestResolveInstanceValue_NilPath(t *testing.T) {
 	args := map[string]any{"key": "val"}
 	if got := resolveInstanceValue(args, ""); got != nil {
@@ -155,7 +102,7 @@ func TestResolveInstanceValue_NilPath(t *testing.T) {
 }
 
 // TestResolveInstanceValue_ArrayOutOfBounds covers the array-index path
-// where the index is out of bounds (line 164-166).
+// where the index is out of bounds.
 func TestResolveInstanceValue_ArrayOutOfBounds(t *testing.T) {
 	args := map[string]any{"items": []any{1, 2}}
 	if got := resolveInstanceValue(args, "items/5"); got != nil {
@@ -164,7 +111,7 @@ func TestResolveInstanceValue_ArrayOutOfBounds(t *testing.T) {
 }
 
 // TestResolveInstanceValue_NegativeIndex covers the array-index path with
-// a negative index — arrayIndex won't match, so it tries map lookup (line 171-174).
+// a negative index — arrayIndex won't match, so it tries map lookup.
 func TestResolveInstanceValue_ArrayNotMap(t *testing.T) {
 	args := map[string]any{"items": "not-an-array"}
 	// "items/0" — arrayIndex("0") is true, but cur is not an array, so returns nil.
@@ -174,7 +121,7 @@ func TestResolveInstanceValue_ArrayNotMap(t *testing.T) {
 }
 
 // TestResolveInstanceValue_MapNotMap covers the map-step path where cur
-// is not a map (line 171-173).
+// is not a map.
 func TestResolveInstanceValue_NestedNotMap(t *testing.T) {
 	args := map[string]any{"key": 42}
 	// "key/sub" — after resolving "key" to 42 (int), trying to resolve "sub"
@@ -224,8 +171,8 @@ func TestSchemaInt(t *testing.T) {
 	}
 }
 
-// TestResolveSchemaErrorContainer_NilSchema covers the nil-schema path
-// (line 229-230): a segment's current schema node is nil.
+// TestResolveSchemaErrorContainer_NilSchema covers the nil-schema path where
+// a segment's current schema node is nil.
 func TestResolveSchemaErrorContainer_NilSchema(t *testing.T) {
 	params := map[string]any{
 		"type": "object",
@@ -241,7 +188,7 @@ func TestResolveSchemaErrorContainer_NilSchema(t *testing.T) {
 }
 
 // TestResolveSchemaErrorContainer_ArrayNoItems covers the array-without-items
-// path (line 233-234): the schema is type:array but has no items.
+// path: the schema is type:array but has no items.
 func TestResolveSchemaErrorContainer_ArrayNoItems(t *testing.T) {
 	params := map[string]any{
 		"type": "object",
@@ -257,8 +204,7 @@ func TestResolveSchemaErrorContainer_ArrayNoItems(t *testing.T) {
 }
 
 // TestResolveSchemaErrorContainer_TerminalArrayIndexAllPresent covers the
-// terminal array-index path where all required fields are present, so ok=false
-// (line 265).
+// terminal array-index path where all required fields are present, so ok=false.
 func TestResolveSchemaErrorContainer_TerminalArrayIndexAllPresent(t *testing.T) {
 	params := map[string]any{
 		"type": "object",
@@ -325,7 +271,7 @@ func TestFormatPath(t *testing.T) {
 	}
 }
 
-// TestParseExcerpt_EmptyRaw covers the empty-raw return (line 358-359).
+// TestParseExcerpt_EmptyRaw covers the empty-raw return.
 func TestParseExcerpt_EmptyRaw(t *testing.T) {
 	got := parseExcerpt(io.EOF, nil)
 	if got != "" {
@@ -333,8 +279,7 @@ func TestParseExcerpt_EmptyRaw(t *testing.T) {
 	}
 }
 
-// TestParseExcerpt_UnexpectedEOF covers the io.EOF/io.ErrUnexpectedEOF path
-// (line 362-367).
+// TestParseExcerpt_UnexpectedEOF covers the io.EOF/io.ErrUnexpectedEOF path.
 func TestParseExcerpt_UnexpectedEOF(t *testing.T) {
 	raw := []byte(`{"key": "val`)
 	got := parseExcerpt(io.ErrUnexpectedEOF, raw)
@@ -344,7 +289,7 @@ func TestParseExcerpt_UnexpectedEOF(t *testing.T) {
 }
 
 // TestParseExcerpt_UnexpectedEOFCapped covers the tail-capping path when the
-// raw exceeds the window size (line 363-365).
+// raw exceeds the window size.
 func TestParseExcerpt_UnexpectedEOFCapped(t *testing.T) {
 	raw := []byte(`{"key": "` + strings.Repeat("x", 500))
 	got := parseExcerpt(io.ErrUnexpectedEOF, raw)
@@ -354,7 +299,7 @@ func TestParseExcerpt_UnexpectedEOFCapped(t *testing.T) {
 }
 
 // TestParseExcerpt_SyntaxError covers the *json.SyntaxError path with a
-// valid offset (line 369-391).
+// valid offset.
 func TestParseExcerpt_SyntaxError(t *testing.T) {
 	raw := []byte(`{"key": }`)
 	var v any
@@ -372,7 +317,7 @@ func TestParseExcerpt_SyntaxError(t *testing.T) {
 }
 
 // TestParseExcerpt_SyntaxErrorUnexpectedEOF covers the special case where
-// the syntax error is "unexpected end of JSON input" (line 372-375), which
+// the syntax error is "unexpected end of JSON input", which
 // positions the marker at the end of the input.
 func TestParseExcerpt_SyntaxErrorUnexpectedEOF(t *testing.T) {
 	raw := []byte(`{"key": "val`)
@@ -405,7 +350,7 @@ func TestParseExcerpt_SyntaxErrorCapped(t *testing.T) {
 	}
 }
 
-// TestParseExcerpt_NonSyntaxError covers the fallback tail path (line 392-397)
+// TestParseExcerpt_NonSyntaxError covers the fallback tail path
 // for an error that is neither io.EOF nor *json.SyntaxError.
 func TestParseExcerpt_NonSyntaxError(t *testing.T) {
 	raw := []byte(`some raw input that is not JSON`)
@@ -416,7 +361,7 @@ func TestParseExcerpt_NonSyntaxError(t *testing.T) {
 }
 
 // TestParseExcerpt_NonSyntaxErrorCapped covers the tail-capping for the
-// fallback path (line 393-395).
+// fallback path.
 func TestParseExcerpt_NonSyntaxErrorCapped(t *testing.T) {
 	raw := []byte(strings.Repeat("x", 500))
 	got := parseExcerpt(errors.New("other error"), raw)
@@ -438,7 +383,7 @@ func TestIsUnexpectedJSONEOF(t *testing.T) {
 	}
 }
 
-// TestSchemaIsArray covers schemaIsArray (line 293-295).
+// TestSchemaIsArray covers schemaIsArray.
 func TestSchemaIsArray(t *testing.T) {
 	if !schemaIsArray(map[string]any{"type": "array"}) {
 		t.Error("type:array should be true")
@@ -451,7 +396,7 @@ func TestSchemaIsArray(t *testing.T) {
 	}
 }
 
-// TestRequiredNames covers requiredNames (line 302-304).
+// TestRequiredNames covers requiredNames.
 func TestRequiredNames(t *testing.T) {
 	schema := map[string]any{"required": []string{"a", "b", "c"}}
 	got := requiredNames(schema)
@@ -508,7 +453,7 @@ func TestMinimalExample(t *testing.T) {
 }
 
 // TestExplainSchemaError_ContainerPathMissingField covers the "missing
-// required argument in <container>" path (line 82-83) where containerPath
+// required argument in <container>" path where containerPath
 // is non-empty.
 func TestExplainSchemaError_ContainerPathMissingField(t *testing.T) {
 	params := taskListParamsForExplain()
@@ -523,7 +468,7 @@ func TestExplainSchemaError_ContainerPathMissingField(t *testing.T) {
 }
 
 // TestExplainSchemaError_ContainerPathRequiredList covers the "Required
-// arguments in <container>" tail (line 91-92).
+// arguments in <container>" tail.
 func TestExplainSchemaError_ContainerPathRequiredList(t *testing.T) {
 	params := taskListParamsForExplain()
 	args := map[string]any{
@@ -537,7 +482,7 @@ func TestExplainSchemaError_ContainerPathRequiredList(t *testing.T) {
 }
 
 // TestExplainSchemaError_NoInstanceLocation covers the !haveField case
-// (line 78-79) where instanceLocation is empty.
+// where instanceLocation is empty.
 func TestExplainSchemaError_NoInstanceLocation(t *testing.T) {
 	got := ExplainSchemaError("my_tool", editParamsForExplain(), map[string]any{}, "", "")
 	if !strings.Contains(got, "arguments did not match the schema") {
@@ -546,7 +491,7 @@ func TestExplainSchemaError_NoInstanceLocation(t *testing.T) {
 }
 
 // TestExplainSchemaError_PresentFieldWithContainerPath covers the
-// present-field path with containerPath != "" (line 66-68).
+// present-field path with containerPath != "".
 func TestExplainSchemaError_PresentFieldWithContainerPath(t *testing.T) {
 	params := askUserParamsWithHeaderMaxLengthForExplain()
 	args := map[string]any{
@@ -559,24 +504,6 @@ func TestExplainSchemaError_PresentFieldWithContainerPath(t *testing.T) {
 	got := ExplainSchemaError("ask_user", params, args, "questions/0/header", "maxLength")
 	if !strings.Contains(got, "questions[0].header") {
 		t.Fatalf("got:\n%s\nwant 'questions[0].header'", got)
-	}
-}
-
-// TestExplainSchemaError_PresentFieldUnhandledKeyword covers the
-// present-field path with an unhandled keyword (line 73-74): falls back to
-// generic message.
-func TestExplainSchemaError_PresentFieldUnhandledKeyword(t *testing.T) {
-	params := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"val": map[string]any{"type": "string"},
-		},
-		"required": []string{"val"},
-	}
-	args := map[string]any{"val": "hello"}
-	got := ExplainSchemaError("my_tool", params, args, "val", "pattern")
-	if !strings.Contains(got, "wrong type or value") {
-		t.Fatalf("got:\n%s\nwant 'wrong type or value'", got)
 	}
 }
 

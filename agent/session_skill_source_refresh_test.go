@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/skill"
@@ -83,12 +84,12 @@ func TestSkillActivation_UpdatedPluginRevision(t *testing.T) {
 			pointInstalledSkill(t, store, oldRoot)
 			adapter := &fakeAdapter{name: "openai"}
 			if tc.route == "model_tool" {
-				adapter.steps = append(adapter.steps, func(llm.Request) llm.Response {
-					return toolCallResponse(useSkillCall("skill-1", "scope:alpha"))
+				adapter.appendSteps(func(llm.Request) llm.Response {
+					return agenttest.ToolCallResponse(useSkillCall("skill-1", "scope:alpha"))
 				})
 			}
-			adapter.steps = append(adapter.steps, func(llm.Request) llm.Response {
-				return toolCallResponse(communicateCall("done-1", "done"))
+			adapter.appendSteps(func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(communicateCall("done-1", "done"))
 			})
 			client := llm.NewClient()
 			client.Register(adapter)

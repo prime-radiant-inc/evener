@@ -1,22 +1,42 @@
 import { parseFileReference } from "@evener/appwire-client/docContent";
 import { createRoot } from "react-dom/client";
 import { enhanceFileReferences } from "../panes/session/transcript/messages/fileReferenceDOM";
+import { OpenTranscriptButton } from "../panes/session/transcript/openTranscript";
 import { openSessionByRef } from "../shell/sessionPlacement";
 import { documentPaneState, workspaceStore } from "../shell/workspace";
 import { selectLocation } from "../stores/navigation/selectors";
 import { navigationStore } from "../stores/navigation/store";
 import { Markdown } from "../widgets/markdown";
 import { DocumentFileLinksFixture, startFileLinksFixture } from "./DocumentFileLinksFixture";
+import { NestedFocusProbe } from "./NestedFocusProbe";
 import "../styles/tokens.css";
 import "../styles/global.css";
 
 const root = document.getElementById("root");
 if (!root) throw new Error("document harness missing root");
-const fixtureRef = new URLSearchParams(location.search).get("ref") ?? "";
+const query = new URLSearchParams(location.search);
+const fixtureRef = query.get("ref") ?? "";
+const childRef = query.get("child");
 // The dev page is fetched through Vite's filesystem route, but the shell must
 // receive a genuine product session URL rather than that development filename.
 history.replaceState(null, "", `/s/${encodeURIComponent(fixtureRef)}`);
-createRoot(root).render(<DocumentFileLinksFixture />);
+createRoot(root).render(
+  <DocumentFileLinksFixture
+    probe={
+      childRef ? (
+        <>
+          <div
+            data-nested-focus-open
+            style={{ position: "fixed", top: "var(--space-3)", right: "var(--space-3)", zIndex: "var(--z-menu)" }}
+          >
+            <OpenTranscriptButton transcriptRef={childRef} parentRef={fixtureRef} />
+          </div>
+          <NestedFocusProbe ownerRef={fixtureRef} childRef={childRef} />
+        </>
+      ) : undefined
+    }
+  />,
+);
 async function qualifyMarkdown(markdown: string, cwd: string) {
   const source = workspaceStore.getState().panes.find((pane) => pane.type === "session");
   if (!source) throw new Error("real source pane missing");

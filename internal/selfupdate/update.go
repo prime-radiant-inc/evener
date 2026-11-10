@@ -40,6 +40,12 @@ var defaultMaxArchiveBytes = int64(128 << 20)
 // builds from the transition window did, and those have aged out.
 var installBinaries = []string{"evener"}
 
+// ErrInstallDirReadOnly reports that the managed directory has no lock file and
+// does not permit creating one. No other installer can hold a lock there, so
+// a hub running against such an installation can still verify and exec its
+// binary; the restart path may proceed without the lock, an install may not.
+var ErrInstallDirReadOnly = errors.New("install directory is read-only")
+
 var (
 	copyStream = io.Copy
 	closeFile  = (*os.File).Close
@@ -180,6 +186,14 @@ func releaseAsset(goos, goarch string) (asset, root string, err error) {
 	default:
 		return "", "", fmt.Errorf("unsupported platform %s-%s: no Evener binary release is available", goos, goarch)
 	}
+}
+
+// SupportsPlatform reports whether a release archive exists for goos/goarch.
+// The hub's update check uses it so a build on an unpublished platform does
+// not offer an install that Upgrade would reject.
+func SupportsPlatform(goos, goarch string) bool {
+	_, _, err := releaseAsset(goos, goarch)
+	return err == nil
 }
 
 func installPrefix(prefix string) (string, error) {

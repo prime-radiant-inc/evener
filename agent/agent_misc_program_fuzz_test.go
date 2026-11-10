@@ -116,20 +116,11 @@ func miscCatalogAndReminderProgram(t *testing.T, token string) {
 
 func miscDiagnosticProgram(t *testing.T, token string) {
 	t.Helper()
-	for _, data := range []events.EventData{events.WarningData{Message: token}, &events.WarningData{Message: token}, events.ErrorData{Error: token}, &events.ErrorData{Error: token}} {
-		kind := events.EventWarning
-		switch data.(type) {
-		case events.ErrorData, *events.ErrorData:
-			kind = events.EventError
-		}
-		if enrichDiagnosticData(kind, data) == nil {
+	for _, data := range []events.EventData{events.WarningData{Message: token}, events.ErrorData{Error: token}} {
+		if enrichDiagnosticData(data) == nil {
 			t.Fatal("diagnostic enrichment returned nil")
 		}
 	}
-	var nilWarning *events.WarningData
-	var nilError *events.ErrorData
-	_ = enrichDiagnosticData(events.EventWarning, nilWarning)
-	_ = enrichDiagnosticData(events.EventError, nilError)
 	if providerCauseFromError(nil, token) != nil || providerCauseFromError(errors.New(token), token) != nil {
 		t.Fatal("non-provider error acquired a cause")
 	}
@@ -183,7 +174,6 @@ func miscContinuationAndCounterProgram(t *testing.T) {
 	if slot, ok := (&Session{}).reserveTreeSlot(slotKindJob); !ok || slot != nil {
 		t.Fatalf("unbounded reservation = %#v, %v", slot, ok)
 	}
-	releasePreparedTreeSlot(nil)
 
 	unsafe := llm.Message{Content: []llm.ContentPart{{Kind: llm.ContentImage}}}
 	_ = responsesContinuationMessageHasUnsafeDeltaContent(unsafe)
@@ -232,7 +222,7 @@ func miscStatusAndPersistenceProgram(t *testing.T, token string) {
 	detailedStatusMCPServers = func(*Session) []mcpconfig.ServerInfo {
 		return []mcpconfig.ServerInfo{{Name: "srv", Tools: []string{"mcp_tool"}}}
 	}
-	s.RegisterTool("mcp_tool", "fixture", map[string]any{"type": "object"}, func(context.Context, any) (any, error) { return nil, nil })
+	s.registerTool("mcp_tool", "fixture", map[string]any{"type": "object"}, func(context.Context, any) (any, error) { return nil, nil })
 	ds := s.DetailedStatus()
 	if len(ds.Skills) != 2 || ds.Skills[0].Name != "a" || len(ds.Plugins) != 1 || len(ds.HookEvents) != 2 {
 		t.Fatalf("detailed status fixture = %#v", ds)

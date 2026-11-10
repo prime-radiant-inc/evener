@@ -112,7 +112,7 @@ func TestRelaySessionReadCancelledContext(t *testing.T) {
 	s := newRelaySessionForTest()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := s.read(ctx, appwire.ThreadReadParams{})
+	_, err := s.read(ctx, nil, appwire.ThreadReadParams{})
 	if err == nil {
 		t.Fatal("read with cancelled context should return error")
 	}
@@ -122,7 +122,7 @@ func TestRelaySessionReadCancelledContext(t *testing.T) {
 func TestRelaySessionReadSessionClosed(t *testing.T) {
 	s := newRelaySessionForTest()
 	s.cancel()
-	_, err := s.read(context.Background(), appwire.ThreadReadParams{})
+	_, err := s.read(context.Background(), nil, appwire.ThreadReadParams{})
 	if err == nil {
 		t.Fatal("read on closed session should return error")
 	}

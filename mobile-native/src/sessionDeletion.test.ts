@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { type NavigationActionCheckpoint, nativeNavigationActions } from "./navigationActionRepository";
 import { NavigationActions } from "./navigationActions";
 import { sessionDeletionResult } from "./sessionDeletionResult";
@@ -23,18 +23,15 @@ function boundary(reply: () => Promise<unknown> = async () => deleted) {
 		},
 	};
 	const journal = nativeNavigationActions("hub", backend);
-	const calls: { method: string; params: unknown }[] = [];
 	const reads: (NavigationActionCheckpoint | undefined)[] = [];
-	const client = {
-		request: async (method: string, params: unknown) => {
-			calls.push({ method, params });
-			expect(journal.load()?.operation).toEqual({
-				kind: "deleteSession",
-				params: { ref },
-			});
-			return reply();
-		},
-	} as unknown as ConversationClientLike;
+	const client = new FakeClient("ready");
+	client.on("evener/session/delete", async () => {
+		expect(journal.load()?.operation).toEqual({
+			kind: "deleteSession",
+			params: { ref },
+		});
+		return (await reply()) as never;
+	});
 	let readFails = true;
 	const read = async (checkpoint?: NavigationActionCheckpoint) => {
 		reads.push(checkpoint);
@@ -51,7 +48,7 @@ function boundary(reply: () => Promise<unknown> = async () => deleted) {
 	return {
 		backend,
 		journal,
-		calls,
+		calls: client.calls,
 		reads,
 		create,
 		actions: create(),
@@ -180,6 +177,7 @@ describe("durable session deletion", () => {
 		);
 		const run = f.actions.deleteSession({ ref });
 		f.actions.dispose();
+		await Promise.resolve();
 		resolve(deleted);
 		await run;
 		expect(f.journal.load()).toMatchObject({
@@ -197,6 +195,7 @@ describe("durable session deletion", () => {
 				}),
 		);
 		const run = f.actions.deleteSession({ ref });
+		await Promise.resolve();
 		const pending = f.journal.load();
 		if (!pending) throw Error("intent missing");
 		expect(f.journal.finish(pending)).toBe(true);

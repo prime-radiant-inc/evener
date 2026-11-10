@@ -48,6 +48,10 @@ type Input struct {
 	// tool_result = tool_response; user_prompt = prompt.
 	ToolResult string `json:"tool_result,omitempty"`
 	UserPrompt string `json:"user_prompt,omitempty"`
+
+	// UnmarshalToolArguments preserves the selected tool's opted-in argument
+	// values in updatedInput. It is per-call metadata, never hook protocol data.
+	UnmarshalToolArguments func([]byte, *map[string]any) error `json:"-"`
 }
 
 // Effort is the Claude-documented effort object: the level under "level".

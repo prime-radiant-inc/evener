@@ -14,15 +14,12 @@ func TestOpenAIPromptCacheDefaults_RequestCapture(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("ok") },
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 	}}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	_, err = sess.ProcessInput(context.Background(), "run", nil)
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("gpt-5.5")), withDir(dir), withConfig(SessionConfig{}))
+	_, err := sess.ProcessInput(context.Background(), "run", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -59,7 +56,7 @@ func TestOpenAIPromptCacheDefaults_FallbackRowDropsRetentionKeepsKey(t *testing.
 			case "gpt-5.5":
 				return llm.Response{}, permErr
 			case "gpt-4o-mini":
-				return finalResponse("fallback answered"), nil
+				return agenttest.FinalResponse("fallback answered"), nil
 			default:
 				t.Fatalf("unexpected model %q", req.Model)
 				return llm.Response{}, nil
@@ -77,10 +74,7 @@ func TestOpenAIPromptCacheDefaults_FallbackRowDropsRetentionKeepsKey(t *testing.
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
-	go func() {
-		for range sess.Events() {
-		}
-	}()
+	drainSessionEvents(sess)
 
 	if _, err := sess.ProcessInput(context.Background(), "run", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -150,14 +144,11 @@ func TestPromptCacheDefaults_AnthropicRowDropsBothFields(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "anthropic", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("ok") },
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 	}}
 	c.Register(f)
 
-	sess, err := NewSession(c, newAnthropicProfile("claude-opus-4-6"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(newAnthropicProfile("claude-opus-4-6")), withDir(dir), withConfig(SessionConfig{}))
 	if _, err := sess.ProcessInput(context.Background(), "run", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}

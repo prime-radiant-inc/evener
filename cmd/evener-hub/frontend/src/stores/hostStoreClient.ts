@@ -22,8 +22,8 @@ import type {
   MethodTypes,
   RequestPort,
 } from "@evener/appwire-client";
+import { hostRequest } from "@evener/appwire-client";
 import { connectionStore, onConnectionNotification } from "./connection";
-import { hostRequest } from "./hostRouting";
 
 /** HostStoreClient is the narrow port every host-scoped package store takes
  * (LaunchConfigClient, MarketplacesClient, PluginsClient, LaunchLayerClient are
@@ -45,7 +45,7 @@ export type HostStoreClient = RequestPort<HostRequestMethod> & Pick<AppwireClien
  * The per-call `opts` AppwireClient.request accepts has no deadline field on
  * the wire - evener/host/request's params are {host, method, params} - so the
  * caller's deadline is carried by the ONE call that carries the caller's wait,
- * the proxy request itself (stores/hostRouting.ts's hostRequest), rather than
+ * the proxy request itself (appwire-client hostRouting.ts's hostRequest), rather than
  * being dropped: a caller asking for a longer budget than the client's own
  * default would otherwise silently run under that default instead. The bound is
  * then the whole forwarded round trip (the SSH hop plus the remote hub's

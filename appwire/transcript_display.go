@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 )
 
 const (
@@ -35,6 +36,16 @@ const (
 	TranscriptLevelFull     TranscriptLevel = "full"
 )
 
+// AllTranscriptLevels is every TranscriptLevel value, least to most detailed.
+// The TypeScript generator emits it as TRANSCRIPT_LEVELS.
+var AllTranscriptLevels = []string{
+	string(TranscriptLevelChat),
+	string(TranscriptLevelIntent),
+	string(TranscriptLevelTools),
+	string(TranscriptLevelActivity),
+	string(TranscriptLevelFull),
+}
+
 type TranscriptHookExitDetail string
 
 const (
@@ -46,6 +57,14 @@ const (
 	TranscriptHookExitSuccessful = TranscriptHookExitDetailSuccessful
 	TranscriptHookExitAll        = TranscriptHookExitDetailAll
 )
+
+// AllTranscriptHookExitDetails is every TranscriptHookExitDetail value. The
+// TypeScript generator emits it as TRANSCRIPT_HOOK_EXIT_DETAILS.
+var AllTranscriptHookExitDetails = []string{
+	string(TranscriptHookExitDetailNone),
+	string(TranscriptHookExitDetailSuccessful),
+	string(TranscriptHookExitDetailAll),
+}
 
 type TranscriptContentKind string
 
@@ -62,6 +81,28 @@ type TranscriptDisplayCustomContent struct {
 	ToolCalls       bool `json:"toolCalls"`
 	Reasoning       bool `json:"reasoning"`
 	ExpandByDefault bool `json:"expandByDefault"`
+	// Initial state of thinking disclosures. Canonical output always carries
+	// it; on input the field is optional so the custom vector as shipped
+	// before it (2026-08..10) keeps decoding, an absent field meaning what
+	// expandByDefault meant at the time. Removal condition: drop the
+	// optional-input acceptance once the minimum supported client bundle
+	// encodes the field.
+	ThinkingOpenByDefault bool `json:"thinkingOpenByDefault"`
+}
+
+// ApplyTranscriptDisplayThinkingOpenFixup resolves the legacy 4-field custom
+// vector's missing thinkingOpenByDefault: absent means what expandByDefault
+// meant at the time (that switch opened reasoning-on thinking before the
+// dedicated field existed). Both decode paths call this - the patch decoder
+// knows presence from its field map, the hub store from its shape validator -
+// so the migration rule has one owner. Removal condition: delete with the
+// 4-field acceptance once the minimum supported client bundle encodes the
+// five-field shape.
+func ApplyTranscriptDisplayThinkingOpenFixup(custom *TranscriptDisplayCustomContent, present bool) {
+	if custom == nil || present {
+		return
+	}
+	custom.ThinkingOpenByDefault = custom.ExpandByDefault
 }
 
 type TranscriptDisplayContent struct {
@@ -198,21 +239,11 @@ func ValidateTranscriptDisplayConfig(config TranscriptDisplayConfig) error {
 }
 
 func validTranscriptLevel(level TranscriptLevel) bool {
-	switch level {
-	case TranscriptLevelChat, TranscriptLevelIntent, TranscriptLevelTools, TranscriptLevelActivity, TranscriptLevelFull:
-		return true
-	default:
-		return false
-	}
+	return slices.Contains(AllTranscriptLevels, string(level))
 }
 
 func validTranscriptHookExitDetail(detail TranscriptHookExitDetail) bool {
-	switch detail {
-	case TranscriptHookExitDetailNone, TranscriptHookExitDetailSuccessful, TranscriptHookExitDetailAll:
-		return true
-	default:
-		return false
-	}
+	return slices.Contains(AllTranscriptHookExitDetails, string(detail))
 }
 
 func validTranscriptViewportClass(layout TranscriptViewportClass) bool {
@@ -294,6 +325,16 @@ func DecodeTranscriptDisplayDefaultsPatchParams(raw json.RawMessage) (Transcript
 		if err := requireTranscriptDisplayBooleans(customFields, "toolIntent", "toolCalls", "reasoning", "expandByDefault"); err != nil {
 			return TranscriptDisplayDefaultsPatchParams{}, fmt.Errorf("custom: %w", err)
 		}
+		// thinkingOpenByDefault is optional on input (see the struct's own
+		// comment): present, it must be a boolean; absent, the fixup resolves
+		// it from expandByDefault.
+		_, thinkingOpenPresent := customFields["thinkingOpenByDefault"]
+		if thinkingOpenPresent {
+			if err := requireTranscriptDisplayBooleans(customFields, "thinkingOpenByDefault"); err != nil {
+				return TranscriptDisplayDefaultsPatchParams{}, fmt.Errorf("custom: %w", err)
+			}
+		}
+		ApplyTranscriptDisplayThinkingOpenFixup(params.Config.Content.Custom, thinkingOpenPresent)
 	default:
 		return TranscriptDisplayDefaultsPatchParams{}, fmt.Errorf("invalid transcript content kind %q", params.Config.Content.Kind)
 	}

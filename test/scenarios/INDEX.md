@@ -462,11 +462,12 @@ verified against a real hub + a real model turn (`openai/gpt-5.4-mini`).
   at the one canonical `/s/local:<session-id>` ref (the single ref form
   commit `8cea30ca6` settled on), and clicking the same row again does
   not open a second copy of the session beside the first.
-- `sidebar-project-order-lastactivity-feel.md` — a just-touched project
-  surfaces at the top, promptly. The `LastActivity` comparator is
-  already pinned by hubcore fuzz scenarios, so this card covers the
-  layer they cannot see: a completed turn propagating into the navigation
-  projection's memoized `Past.AllMetas()` input.
+- `sidebar-stable-order-feel.md` — projects keep their name order and a
+  project's sessions keep their newest-created-first order through a
+  completed turn. The comparators are already pinned by hubcore fuzz
+  scenarios, so this card covers the layer they cannot see: a turn reaching
+  the navigation projection's memoized `Past.AllMetas()` input without moving
+  either list.
 
 ## Cost display & Display settings (Track C)
 

@@ -1,13 +1,10 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { render, within } from "@testing-library/react";
 import { expect, test } from "vitest";
+import { readModuleCss } from "../../styles/cssBlock";
 import SegmentedControlGallerySection from "./segmentedcontrol";
 
 function galleryCssSource() {
-  const here = dirname(fileURLToPath(import.meta.url));
-  return readFileSync(join(here, "segmentedcontrol.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  return readModuleCss(import.meta.url, "segmentedcontrol.module.css");
 }
 
 test("shows every documented SegmentedControl state in both theme panes", () => {

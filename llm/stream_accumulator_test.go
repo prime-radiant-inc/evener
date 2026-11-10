@@ -193,6 +193,27 @@ func TestStreamAccumulator_ToolCallEvents_AccumulatedInResponse(t *testing.T) {
 	}
 }
 
+func TestStreamAccumulator_ToolCallThoughtSignature(t *testing.T) {
+	acc := NewStreamAccumulator()
+	acc.Process(StreamEvent{Type: StreamEventToolCallStart, ToolCall: &ToolCallData{
+		ID: "call_gemini", Name: "read_file", Type: "function", ThoughtSignature: "sig-1",
+	}})
+	acc.Process(StreamEvent{Type: StreamEventToolCallEnd, ToolCall: &ToolCallData{
+		ID: "call_gemini", Arguments: json.RawMessage(`{"path":"x"}`), ThoughtSignature: "sig-1",
+	}})
+	f := FinishReason{Reason: "tool_calls"}
+	acc.Process(StreamEvent{Type: StreamEventFinish, FinishReason: &f})
+
+	resp := acc.Response()
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	calls := resp.ToolCalls()
+	if len(calls) != 1 || calls[0].ThoughtSignature != "sig-1" {
+		t.Fatalf("tool calls = %+v, want one call with the signature", calls)
+	}
+}
+
 func TestStreamAccumulator_ToolCallEndOverridesAccumulatedArgumentsAndName(t *testing.T) {
 	acc := NewStreamAccumulator()
 	acc.Process(StreamEvent{Type: StreamEventStreamStart})
@@ -351,5 +372,66 @@ func TestStreamAccumulator_ReasoningAndToolCallsTogether(t *testing.T) {
 	}
 	if calls[0].Name != "get_weather" {
 		t.Fatalf("tool call name: got %q, want %q", calls[0].Name, "get_weather")
+	}
+}
+
+// TestStreamAccumulatorToolCallDeltaWithoutStart covers the arms where a
+// ToolCallDelta and ToolCallEnd arrive for tool-call IDs that were never
+// opened with a ToolCallStart, so the accumulator must create the record and
+// fill its name/item/type/arguments lazily.
+func TestStreamAccumulatorToolCallDeltaWithoutStart(t *testing.T) {
+	acc := NewStreamAccumulator()
+	acc.Process(StreamEvent{Type: StreamEventTextStart})
+	acc.Process(StreamEvent{Type: StreamEventTextDelta, Delta: "hello"})
+
+	acc.Process(StreamEvent{Type: StreamEventToolCallDelta, ToolCall: &ToolCallData{
+		ID: "call-a", ItemID: "item-a", Name: "search", Type: "function", Arguments: []byte(`{"q":`),
+	}})
+	acc.Process(StreamEvent{Type: StreamEventToolCallEnd, ToolCall: &ToolCallData{
+		ID: "call-b", ItemID: "item-b", Name: "fetch", Type: "function", Arguments: []byte(`{}`),
+	}})
+	acc.Process(StreamEvent{Type: StreamEventFinish})
+
+	resp := acc.Response()
+	if resp == nil {
+		t.Fatal("Response() = nil after finish")
+	}
+	calls := resp.ToolCalls()
+	if len(calls) != 2 {
+		t.Fatalf("ToolCalls() = %d, want 2", len(calls))
+	}
+	if calls[0].Name != "search" || calls[1].Name != "fetch" {
+		t.Fatalf("tool call names = %q, %q", calls[0].Name, calls[1].Name)
+	}
+	if acc.PartialResponse() == nil {
+		t.Fatal("PartialResponse() = nil, want accumulated partial")
+	}
+}
+
+// TestStreamAccumulatorFinishRebuildsEmptyResponse covers the FINISH arm where
+// the provider Response carries no content, so the accumulator rebuilds it from
+// accumulated deltas and copies the provider metadata across.
+func TestStreamAccumulatorFinishRebuildsEmptyResponse(t *testing.T) {
+	acc := NewStreamAccumulator()
+	acc.Process(StreamEvent{Type: StreamEventTextDelta, TextID: "t0", Delta: "body"})
+	acc.Process(StreamEvent{Type: StreamEventFinish, Response: &Response{
+		Model:     "gpt-x",
+		Provider:  "openai",
+		Warnings:  []Warning{{Message: "deprecated", Code: "warn"}},
+		RateLimit: &RateLimitInfo{},
+	}})
+
+	resp := acc.Response()
+	if resp == nil {
+		t.Fatal("Response() = nil after finish")
+	}
+	if resp.Model != "gpt-x" || resp.Provider != "openai" {
+		t.Fatalf("metadata not copied: %+v", resp)
+	}
+	if len(resp.Warnings) != 1 || resp.RateLimit == nil {
+		t.Fatalf("warnings/ratelimit not copied: %+v", resp)
+	}
+	if resp.Text() != "body" {
+		t.Fatalf("rebuilt text = %q, want body", resp.Text())
 	}
 }

@@ -3,7 +3,7 @@ import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FlatList } from "react-native";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ConversationClientLike } from "./conversation/services/conversation";
 import { LaunchFieldEditor } from "./LaunchFieldEditor";
 import { Sheet } from "./sheet/Sheet";
 import { flatListCalls, pressable, render } from "./renderNative.testkit";
@@ -13,7 +13,10 @@ vi.mock("react-native", async () => ({
 	...(await import("./renderNative.testkit")).nativeModuleMock(),
 	useWindowDimensions: () => ({ width: 390, height: 844, scale: 2, fontScale: viewport.fontScale }),
 }));
-vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
+vi.mock("react-native-safe-area-context", () => ({
+	SafeAreaView: "SafeAreaView",
+	useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
 
 beforeEach(() => {
 	viewport.fontScale = 1;

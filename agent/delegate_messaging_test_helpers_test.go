@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/llm"
 )
 
@@ -26,7 +27,7 @@ type messagingAdapter struct {
 	mu       sync.Mutex
 	rootID   string
 	markers  []string
-	scripts  map[string][]func(llm.Request) llm.Response
+	scripts  map[string]*agenttest.Script[func(llm.Request) llm.Response]
 	sessions map[string]string
 	requests map[string][]llm.Request
 	arrived  chan struct{}
@@ -35,7 +36,7 @@ type messagingAdapter struct {
 func newMessagingAdapter(markers ...string) *messagingAdapter {
 	return &messagingAdapter{
 		markers:  markers,
-		scripts:  make(map[string][]func(llm.Request) llm.Response),
+		scripts:  make(map[string]*agenttest.Script[func(llm.Request) llm.Response]),
 		sessions: make(map[string]string),
 		requests: make(map[string][]llm.Request),
 		arrived:  make(chan struct{}, 1),
@@ -52,7 +53,12 @@ func (*messagingAdapter) Stream(context.Context, llm.Request) (llm.Stream, error
 func (a *messagingAdapter) script(key string, steps ...func(llm.Request) llm.Response) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.scripts[key] = append(a.scripts[key], steps...)
+	script := a.scripts[key]
+	if script == nil {
+		script = &agenttest.Script[func(llm.Request) llm.Response]{}
+		a.scripts[key] = script
+	}
+	script.Append(steps...)
 }
 
 func (a *messagingAdapter) requestsFor(key string) []llm.Request {
@@ -103,18 +109,19 @@ func (a *messagingAdapter) Complete(_ context.Context, req llm.Request) (llm.Res
 	a.mu.Lock()
 	key := a.keyLocked(req)
 	a.requests[key] = append(a.requests[key], req)
-	var step func(llm.Request) llm.Response
-	if steps := a.scripts[key]; len(steps) > 0 {
-		step, a.scripts[key] = steps[0], steps[1:]
-	}
+	script := a.scripts[key]
 	a.mu.Unlock()
+	// Wake the request pollers before the step runs: a step may block on a
+	// gate the poller's assertion opens, so the signal must not wait for it.
 	select {
 	case a.arrived <- struct{}{}:
 	default:
 	}
-	response := finalResponse("done")
-	if step != nil {
-		response = step(req)
+	response := agenttest.FinalResponse("done")
+	if script != nil {
+		if step, ok := script.Shift(); ok {
+			response = step(req)
+		}
 	}
 	response.Provider = a.Name()
 	response.Model = req.Model
@@ -155,7 +162,7 @@ func delegateToolResponseWithResultSchema(id, prompt string, resultSchema map[st
 
 func delegateToolCall(id string, arguments map[string]any) llm.Response {
 	args, _ := json.Marshal(arguments)
-	return toolCallResponse(llm.ToolCallData{ID: id, Name: "delegate", Arguments: args, Type: "function"})
+	return agenttest.ToolCallResponse(llm.ToolCallData{ID: id, Name: "delegate", Arguments: args, Type: "function"})
 }
 
 // writeToolDescriptions renders each tool's description and its parameters'
@@ -195,20 +202,20 @@ func rootAttentionFold(t *testing.T, root *Session) delegateAttentionFold {
 // updateResponse is a delegate's model turn that sends message to its parent
 // as an update: communicate(end_turn=false).
 func updateResponse(id, message string) llm.Response {
-	return toolCallResponse(communicateCallArgs(id, map[string]any{"message": message, "end_turn": false}))
+	return agenttest.ToolCallResponse(communicateCallArgs(id, map[string]any{"message": message, "end_turn": false}))
 }
 
 // delegateSendResponse is a model turn that sends message to delegateID and
 // waits up to maxWaitMS for the generation it starts.
 func delegateSendResponse(id, delegateID, message string, maxWaitMS int) llm.Response {
 	args, _ := json.Marshal(map[string]any{"to": delegateID, "message": message, "max_wait_ms": maxWaitMS})
-	return toolCallResponse(llm.ToolCallData{ID: id, Name: "delegate_send", Arguments: args, Type: "function"})
+	return agenttest.ToolCallResponse(llm.ToolCallData{ID: id, Name: "delegate_send", Arguments: args, Type: "function"})
 }
 
 // jobListResponse is a model turn that calls job_list: a tool round that
 // changes nothing, so the request after it is the turn's next model boundary.
 func jobListResponse(id string) llm.Response {
-	return toolCallResponse(llm.ToolCallData{ID: id, Name: "job_list", Arguments: json.RawMessage(`{}`), Type: "function"})
+	return agenttest.ToolCallResponse(llm.ToolCallData{ID: id, Name: "job_list", Arguments: json.RawMessage(`{}`), Type: "function"})
 }
 
 // waitForSoleChildIdle waits until root has exactly one child session and it
@@ -251,4 +258,24 @@ func waitForRootAttention(t *testing.T, root *Session, n int) []string {
 		return len(pending) >= n
 	})
 	return pending
+}
+
+// settleSendDelivery acknowledges the result a send's inline wait returned,
+// as the tool round that records the send's reply does, so the result is not
+// left admitted for the root's Close to wait out. A send that returned no
+// result has nothing to acknowledge.
+func settleSendDelivery(t *testing.T, root *Session, outcome delegateSendOutcome) {
+	t.Helper()
+	if outcome.commit == nil {
+		return
+	}
+	completed, err := completeDelegateDeliveryCommits(append(slices.Clone(outcome.earlierCommits), outcome.commit))
+	if err != nil {
+		t.Fatalf("acknowledge the send's result: %v", err)
+	}
+	for _, plans := range completed {
+		if err := root.executeDelegateMutationPlans(plans); err != nil {
+			t.Fatalf("execute the send's acknowledgement: %v", err)
+		}
+	}
 }

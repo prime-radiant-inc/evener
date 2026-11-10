@@ -16,11 +16,11 @@ import { documentMemory } from "./nativeDocumentMemory";
 import { readerHosts } from "./readerHosts";
 
 export function CommentsSheet({ route, navigation }: NativeStackScreenProps<Routes, "CommentsSheet">) {
-	const { hubId, sessionRef, path } = route.params;
+	const { hubId, sessionRef, path, root } = route.params;
 	const sheet = useSheet();
 	const host = useSheetHost(readerHosts, sheetKey(hubId, sessionRef, path), sheet);
 	const memory = documentMemory(hubId);
-	const key = { sessionRef, path };
+	const key = { sessionRef, path, ...(root !== undefined ? { root } : {}) };
 	useSyncExternalStore(memory.subscribe, memory.getRevision);
 	const comments = memory.comments(key);
 	const { palette } = useColors();
@@ -66,7 +66,7 @@ export function CommentsSheet({ route, navigation }: NativeStackScreenProps<Rout
 								Send review
 							</Text>
 						</Pressable>
-					) : null
+					) : undefined
 				}
 				renderItem={({ item: comment }: { item: DocumentComment }) => {
 					const anchored = host?.anchor(comment) ?? null;

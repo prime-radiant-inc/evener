@@ -2,8 +2,9 @@
 // the scope you're reading. Crumbs above the leaf open their session; the leaf
 // is current text, never a link to itself.
 
+import { useMemo } from "react";
 import { navigationSummaryFor } from "../../panes/session/threadTitle";
-import { useNavigationStore } from "../../stores/navigation/store";
+import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { useThreadsStore } from "../../stores/threads";
 import { Button } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
@@ -19,14 +20,18 @@ const CLASS = {
   crumbCurrent: requireClass(styles.crumbCurrent, "scopeCrumbs.module.css", "crumbCurrent"),
 };
 
-/** A scope's display title: the loaded thread name, then the navigation row's
- * title for the same ref, then the caller's fallback. The activity context's
- * ancestor titles are session ids, not names, so a surface that shows a scope
- * should resolve its title here rather than render a fallback ref raw. */
-export function useScopeTitle(ref: string, fallback: string): string {
-  const name = useThreadsStore((state) => state.threads.get(ref)?.name);
+/** A scope's display title: the eligible loaded thread name, then the exact
+ * navigation row's title, then the caller's fallback. Callers with an identity
+ * fence pass its result as allowModelName so a stale image cannot name a scope.
+ * Activity ancestor titles are session ids, not display names. */
+export function useScopeTitle(ref: string, fallback: string, allowModelName = true): string {
+  const name = useThreadsStore((state) => (allowModelName ? state.threads.get(ref)?.name : undefined));
   useNavigationStore((state) => state.resources);
-  return name || navigationSummaryFor(ref)?.title || fallback;
+  const navigation = navigationStore.getState();
+  return useMemo(
+    () => name || navigationSummaryFor(ref, navigation)?.title || fallback,
+    [name, ref, navigation, fallback],
+  );
 }
 
 function ScopeCrumbLabel({

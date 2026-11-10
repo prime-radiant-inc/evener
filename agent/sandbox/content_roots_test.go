@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+
+	"primeradiant.com/evener/identifier"
 )
 
 // The probe lists the plugin store's installed plugin files and the user skills
@@ -101,7 +103,7 @@ func TestEvenerContentRootsAreReadableThroughTheCredentialMask(t *testing.T) {
 				}
 			}
 			for _, w := range slices.Concat(rp.FileTool.WriteRoots, rp.Spawned.WriteRoots) {
-				if pathUnder(w, store) || pathUnder(store, w) {
+				if identifier.PathUnder(w, store) || identifier.PathUnder(store, w) {
 					t.Errorf("the plugin store must never be writable: write root %q", w)
 				}
 			}
@@ -992,5 +994,96 @@ func TestEvenerContentRootsHonourAStoredSpellingConfigMaskBeforeTheDirExists(t *
 	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true), DenylistAdd: []string{filepath.Join(stored, ".config", "evener")}}, host, root)
 	if len(rp.UnmaskedRoots) != 0 {
 		t.Errorf("an explicit stored-spelling config mask must keep content masked, got %v", rp.UnmaskedRoots)
+	}
+}
+
+// TestCarveOutAcceptsARootCreatedLaterUnderAnotherCase pins a carve-out root
+// that did not exist at resolution: it is pinned with its literal trailing
+// spelling, and a directory created later under another letter case on a
+// case-insensitive volume reports the stored spelling, so the exact comparison
+// refused it for the rest of the session. The pin is re-derived only for the
+// same directory: its parent is the pinned parent and the names differ only by
+// case.
+func TestCarveOutAcceptsARootCreatedLaterUnderAnotherCase(t *testing.T) {
+	root := mainRepo(t)
+	parent := clean(t.TempDir())
+	storedHome := filepath.Join(parent, "casehome")
+	if err := os.MkdirAll(filepath.Join(storedHome, ".config", "evener"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spelledHome := filepath.Join(parent, "CASEHOME")
+	if _, err := os.Stat(spelledHome); err != nil {
+		t.Skip("this volume is case-sensitive")
+	}
+
+	skills := filepath.Join(spelledHome, ".config", "evener", "skills")
+	host := bwrapHost()
+	host.Home = spelledHome
+	host.EvenerContentRoots = []string{skills}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, host, root)
+	if len(rp.UnmaskedRoots) == 0 {
+		t.Fatalf("fixture: the missing skills dir was not admitted as a carve-out: %v", rp.UnmaskedRoots)
+	}
+
+	// The directory appears after resolution under the stored spelling, and its
+	// final name is another letter case than the configured one.
+	storedSkills := filepath.Join(storedHome, ".config", "evener", "SKILLS")
+	if err := os.MkdirAll(storedSkills, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !rp.CarveOutResolvesTo(skills, storedSkills) {
+		t.Errorf("a carve-out root created later under another case must be accepted: pinned %q", rp.carveOutAt[skills])
+	}
+	if !rp.CarveOutIntact(skills) {
+		t.Errorf("CarveOutIntact must accept the root the kernel now reports")
+	}
+	skill := filepath.Join(storedSkills, "SKILL.md")
+	if err := os.WriteFile(skill, []byte("skill\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{skill, filepath.Join(skills, "SKILL.md")} {
+		if rp.Masks(p) {
+			t.Errorf("content under the re-derived carve-out must stay readable: %s is masked", p)
+		}
+	}
+	if !rp.Masks(filepath.Join(storedSkills, ".git", "config")) {
+		t.Errorf(".git inside the re-derived carve-out must stay masked")
+	}
+
+	// The same case-fold name under a different parent is a different directory.
+	elsewhere := filepath.Join(parent, "elsewhere", "casehome", "SKILLS")
+	if err := os.MkdirAll(elsewhere, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if rp.CarveOutResolvesTo(skills, elsewhere) {
+		t.Errorf("a case-fold name under a different parent must not be accepted")
+	}
+}
+
+// TestCarveOutKeepsAnExistingRootsExactPin pins the boundary of the
+// re-derivation: only a root that did not exist at resolution may move to the
+// stored spelling. A root that existed keeps its exact pin, so deleting and
+// recreating it under another case is still refused.
+func TestCarveOutKeepsAnExistingRootsExactPin(t *testing.T) {
+	t.Parallel()
+	dir := clean(t.TempDir())
+	skills := filepath.Join(dir, "skills")
+	if err := os.Mkdir(skills, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pinned := filepath.Join(dir, "SKILLS")
+	missing := ResolvedPolicy{
+		carveOutAt:      map[string]string{skills: pinned},
+		carveOutMissing: map[string]bool{skills: true},
+	}
+	if !missing.CarveOutResolvesTo(skills, skills) {
+		t.Errorf("a root missing at resolution must be re-derived to the stored spelling")
+	}
+	existing := ResolvedPolicy{
+		carveOutAt:      map[string]string{skills: pinned},
+		carveOutMissing: map[string]bool{skills: false},
+	}
+	if existing.CarveOutResolvesTo(skills, skills) {
+		t.Errorf("a root that existed at resolution must keep its exact pin")
 	}
 }

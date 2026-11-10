@@ -13,6 +13,8 @@
 
 export type { MutationCommit, MutationCommitFeed } from "./commitFeed";
 export { wireMutationCommitFeed } from "./commitFeed";
+export type { ComposerVerb } from "./composerMethods";
+export { COMPOSER_METHODS, composerVerb, DIRECT_FALLBACK_METHODS, PENDING_TURN_METHODS } from "./composerMethods";
 export type { MutationDispatchClientLookup, MutationDispatcherOptions } from "./dispatcher";
 export { MutationDispatcher, RETRY_SAFE_MUTATION_METHODS, validConsumedClientMutationIds } from "./dispatcher";
 export type {
@@ -23,6 +25,7 @@ export type {
   MutationOutboxOptions,
   MutationOutboxStorage,
   MutationStopBarrier,
+  MutationStopCapture,
   MutationVisibilityTarget,
 } from "./outbox";
 export { isClientReady, MutationOutbox } from "./outbox";
@@ -32,7 +35,7 @@ export {
   imagePlaceholder,
   normalizeText,
   ownPendingSend,
-  PENDING_TURN_METHODS,
+  ownPendingTurnInput,
   pendingEntryPreview,
   queueEntryPreviewText,
   reconcilePendingEntries,
@@ -51,6 +54,7 @@ export type {
 export {
   awaitingFirstFrameSend,
   blockedEntries,
+  canceledEntries,
   createPendingTurnsStore,
   outboxEntriesByState,
   recoveryEntries,
@@ -62,8 +66,14 @@ export type {
   MutationProjectionRefresh,
 } from "./projection";
 export { createMutationProjectionFence, replaceTargetRecords } from "./projection";
-export type { MutationProjectionWorkPorts, MutationProjectionWorkTracker } from "./projectionWork";
+export type { MutationProjectionWorkTracker } from "./projectionWork";
 export { createMutationProjectionWorkTracker } from "./projectionWork";
+export type {
+  MutationRetryCapture,
+  QueuedMessageStorage,
+  WebQueuedMessageStorage,
+} from "./queuedMessages";
+export { canEditQueuedMessage, canRemoveQueuedMessage, matchesQueuedMessageSnapshot } from "./queuedMessages";
 export type {
   ClientIdentity,
   ClientIdentityStorage,
@@ -76,7 +86,14 @@ export type {
   MutationRecoveryKind,
   MutationRecoveryRecord,
 } from "./records";
-export { acceptedRecord, carriesOptimisticInput, createClientIdentity } from "./records";
+export {
+  acceptedRecord,
+  carriesOptimisticInput,
+  createClientIdentity,
+  effectiveWireId,
+  retainsAcceptedCopy,
+  settlementRetiresRecovery,
+} from "./records";
 export type { SecureRandomSource } from "./secureUUID";
 export { createSecureUUID } from "./secureUUID";
 export { appliedMutationIdentities, notificationMutationIdentities } from "./settledIdentities";

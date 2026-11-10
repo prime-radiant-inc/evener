@@ -8,6 +8,7 @@ import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { markFor } from "../board/StateMark";
 import { PulseMeter } from "../board/PulseMeter";
 import { meterTone } from "../board/pulse";
+import { useDetailPaneWidth } from "../duo/paneWidth";
 import { useHeaderTextScale } from "../headerText";
 import { allowFontScaling, useColors } from "../ui";
 import type { SessionStateLine } from "./sessionState";
@@ -116,7 +117,8 @@ export function SessionTitle({
 }) {
 	const { palette } = useColors();
 	const scale = useHeaderTextScale();
-	const { width } = useWindowDimensions();
+	const { width: windowWidth } = useWindowDimensions();
+	const width = useDetailPaneWidth() ?? windowWidth;
 	const span = navBarButtonSpan(backCount, scale);
 	const mark = markFor(line.state, false);
 	const liveAction = line.live && onJumpToLive;
@@ -148,7 +150,15 @@ export function SessionTitle({
 	);
 	return (
 		<GestureDetector gesture={pan}>
-			<View style={{ maxWidth: Math.max(0, width - 2 * span), flexDirection: "row", alignItems: "center", gap: 4 }}>
+			<View
+				style={{
+					maxWidth: Math.max(0, width - 2 * span),
+					overflow: "hidden",
+					flexDirection: "row",
+					alignItems: "center",
+					gap: 4,
+				}}
+			>
 				<Pressable
 					accessibilityRole="button"
 					accessibilityLabel={`${title}, ${line.text}, session info`}
@@ -176,11 +186,15 @@ export function SessionTitle({
 						allowFontScaling={allowFontScaling}
 						numberOfLines={1}
 						ellipsizeMode="tail"
-						style={{ color: palette.inkHi, fontSize: 15 * scale, fontWeight: "600" }}
+						// The wrapper's maxWidth bounds this row, but a centered
+						// column measures its child at the child's content width:
+						// the title needs its own bound or it overflows the
+						// wrapper and draws under the bar's buttons (#2988).
+						style={{ color: palette.inkHi, fontSize: 15 * scale, fontWeight: "600", maxWidth: "100%" }}
 					>
 						{title}
 					</Text>
-					<View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+					<View style={{ flexDirection: "row", alignItems: "center", gap: 4, maxWidth: "100%" }}>
 						{!liveAction ? (
 							<LeadingMark line={line} mark={mark} perMinute={perMinute} connected={connected} scale={scale} />
 						) : null}

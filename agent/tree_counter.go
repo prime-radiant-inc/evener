@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 )
 
@@ -109,6 +110,12 @@ type treeCounter struct {
 	jobs   atomic.Int64
 	drives atomic.Int64
 	limit  int64
+
+	// freedMu guards freed, which is closed at the next release so a turn
+	// waiting to take a slot back (driveTurn.retakeSlot) wakes on it instead
+	// of polling.
+	freedMu sync.Mutex
+	freed   chan struct{}
 }
 
 // newTreeCounter returns a treeCounter with the given cap; cap <= 0 selects
@@ -142,6 +149,24 @@ func (c *treeCounter) reserve(kind slotKind) bool {
 func (c *treeCounter) releaseKind(kind slotKind) {
 	decClamped(&c.n)
 	decClamped(c.kindCounter(kind))
+	c.freedMu.Lock()
+	if c.freed != nil {
+		close(c.freed)
+		c.freed = nil
+	}
+	c.freedMu.Unlock()
+}
+
+// nextRelease returns a channel closed at the next release. Read it before
+// a reserve attempt, so a release between a refused reserve and the wait is
+// not missed.
+func (c *treeCounter) nextRelease() <-chan struct{} {
+	c.freedMu.Lock()
+	defer c.freedMu.Unlock()
+	if c.freed == nil {
+		c.freed = make(chan struct{})
+	}
+	return c.freed
 }
 
 func (c *treeCounter) kindCounter(kind slotKind) *atomic.Int64 {
@@ -197,18 +222,6 @@ func (s *Session) treeCapacityErrorFor() error {
 		drives, _, _, _ = s.driveCounter.occupancy()
 	}
 	return &treeCapacityError{cap: limit, jobs: jobs, drives: drives}
-}
-
-// releasePreparedTreeSlot returns the tree-counter slot a prepared spawn reserved
-// when the prepared run is discarded before its reservation transfers to a
-// delegate runningJob — an error path between prepare and attach, or the legacy
-// in-process spawn that mints no delegate job. Idempotent and nil-safe.
-func releasePreparedTreeSlot(prepared *preparedSubagentRun) {
-	if prepared == nil {
-		return
-	}
-	prepared.treeSlot.release()
-	prepared.treeSlot = nil
 }
 
 // reserveDriveSlot claims a drive-budget slot for a drive-down notification

@@ -1,11 +1,12 @@
 import type { InstanceEntry, InstanceListResponse, ProviderDescriptor } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { urlToPane } from "../../../../shell/routing";
-import { connectionStore } from "../../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
@@ -48,33 +49,27 @@ function provider(id: string, name: string, setup?: InstanceEntry): ProviderDesc
   };
 }
 
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
-}
-
 /** The dialog as the app mounts it: `onClose` is what makes it go away, so the
  * harness owns that state and the test can see the dialog actually leave. */
-function Harness({ onClose }: { onClose(): void }) {
+function Harness({ onClose, onConnected = () => {} }: { onClose(): void; onConnected?: (name?: string) => void }) {
   const [open, setOpen] = useState(true);
   if (!open) return null;
   return (
     <ConnectProviderDialog
-      completionLabel="Choose model"
       onClose={() => {
         setOpen(false);
         onClose();
       }}
-      onConnected={() => {}}
+      onConnected={(name) => {
+        setOpen(false);
+        onConnected(name);
+      }}
     />
   );
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetCredentialsStoreForTests();
   resetToastStoreForTests();
   // The auth mutations carry the page's identity on the wire; pinning it keeps
@@ -84,7 +79,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   window.history.pushState({}, "", "/");
   vi.restoreAllMocks();
 });
@@ -153,7 +148,7 @@ test.each(["dialog", "settings"])("%s completes without navigating away from its
   window.history.pushState({}, "", "/settings/credentials");
   render(
     surface === "dialog" ? (
-      <ConnectProviderDialog completionLabel="Choose model" onClose={() => {}} onConnected={onConnected} />
+      <Harness onClose={() => {}} onConnected={onConnected} />
     ) : (
       <CredentialsSection sectionId="credentials" />
     ),
@@ -163,15 +158,11 @@ test.each(["dialog", "settings"])("%s completes without navigating away from its
   if (surface === "settings") await user.click(await screen.findByRole("button", { name: "Connect provider" }));
   await user.click(await screen.findByRole("button", { name: "Anthropic" }));
   await user.type(screen.getByLabelText("API key"), "sk-guided");
-  await user.click(screen.getByRole("button", { name: "Save and check" }));
-  await waitFor(() => expect(document.querySelector('[role="status"][data-state="success"]')).not.toBeNull());
-  const completion = document.querySelector('[role="status"][data-state="success"]')?.nextElementSibling;
-  if (!(completion instanceof HTMLButtonElement)) throw new Error("Missing completion action");
-  expect(onConnected).not.toHaveBeenCalled();
-  await user.click(completion);
+  await user.click(screen.getByRole("button", { name: "Save and test" }));
 
   if (surface === "dialog") {
-    expect(onConnected).toHaveBeenCalledExactlyOnceWith("anthropic");
+    await waitFor(() => expect(onConnected).toHaveBeenCalledExactlyOnceWith("anthropic"));
+    expect(screen.queryByRole("dialog")).toBeNull();
   } else {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   }
@@ -188,7 +179,7 @@ test.each(["onboarding", "settings"])(
     connectionStore.getState().connect(fake);
     render(
       view === "onboarding" ? (
-        <ConnectProviderDialog completionLabel="Choose model" onClose={() => {}} onConnected={() => {}} />
+        <ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />
       ) : (
         <CredentialsSection sectionId="credentials" />
       ),
@@ -222,7 +213,7 @@ test("a registry load failure can be retried without closing the dialog", async 
   });
   connectionStore.getState().connect(fake);
   const close = vi.fn();
-  render(<ConnectProviderDialog completionLabel="Choose model" onClose={close} onConnected={() => {}} />);
+  render(<ConnectProviderDialog onClose={close} onConnected={() => {}} />);
 
   await screen.findByRole("alert");
   await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
@@ -247,7 +238,7 @@ test("mounting the dialog reads the controller's list and issues no proxied call
   });
   connectionStore.getState().connect(fake);
 
-  render(<ConnectProviderDialog completionLabel="Choose model" onClose={() => {}} onConnected={() => {}} />);
+  render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
 
   expect(await screen.findByRole("button", { name: "Anthropic" })).toBeTruthy();
   expect(fake.calls.some((call) => call.method === "evener/host/request")).toBe(false);

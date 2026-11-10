@@ -15,17 +15,12 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { connectionStore } from "../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { daemonResidentsStore, resetDaemonResidentsStoreForTests } from "../../../stores/daemonResidents";
+import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { HubResidents } from "./hubResidents";
 
 const POLL_INTERVAL_MS = 2000;
-
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
 
 // Checks the HTML disabled property — no jest-dom in this project.
 // Mirrors QueueStrip.test.tsx's isDisabled helper.
@@ -41,7 +36,7 @@ const IDENTITY_FIXTURE: DaemonIdentity = {
 };
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetDaemonResidentsStoreForTests();
 });
 
@@ -84,7 +79,7 @@ test("archived incompatible residents remain visible and cannot safely retire", 
 // ─── I-1: Row shows identity.ref ─────────────────────────────────────────────
 
 test("row displays identity.ref under the daemon name", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/daemon/list", () => ({
     defaultTimeoutMillis: 3600000,
     daemons: [
@@ -111,7 +106,7 @@ test("row displays identity.ref under the daemon name", async () => {
 // ─── I-2: List-snapshot blockers visible before any retire attempt ────────────
 
 test("list-snapshot lifecycle blockers are shown in the row before any retire attempt", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/daemon/list", () => ({
     defaultTimeoutMillis: 3600000,
     daemons: [
@@ -140,7 +135,7 @@ test("list-snapshot lifecycle blockers are shown in the row before any retire at
 });
 
 test("delegate blocker with both ids renders the root session id and the delegate id", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/daemon/list", () => ({
     defaultTimeoutMillis: 3600000,
     daemons: [
@@ -170,7 +165,7 @@ test("delegate blocker with both ids renders the root session id and the delegat
 });
 
 test("delegate blocker with an empty session id falls through to the delegate id", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/daemon/list", () => ({
     defaultTimeoutMillis: 3600000,
     daemons: [
@@ -203,7 +198,7 @@ test("delegate blocker with an empty session id falls through to the delegate id
 });
 
 test("residents sharing a ref but differing in generation render without duplicate React keys", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   const sharedRef = "local:replaced-resident";
   fake.on("evener/daemon/list", () => ({
     defaultTimeoutMillis: 3600000,
@@ -289,7 +284,7 @@ function sharedRefDaemon(opts: {
 }
 
 test("a retire refusal for one generation does not appear on the sibling generation sharing its ref", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/daemon/list", () => ({
     defaultTimeoutMillis: 3600000,
     daemons: [
@@ -320,7 +315,7 @@ test("a retire refusal for one generation does not appear on the sibling generat
 });
 
 test("an in-flight retire on one generation does not disable the sibling generation sharing its ref", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/daemon/list", () => ({
     defaultTimeoutMillis: 3600000,
     daemons: [
@@ -362,7 +357,7 @@ test("an in-flight retire on one generation does not disable the sibling generat
 });
 
 test("a failed retire on one generation does not show its error on the sibling generation sharing its ref", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/daemon/list", () => ({
     defaultTimeoutMillis: 3600000,
     daemons: [
@@ -387,7 +382,7 @@ test("a failed retire on one generation does not show its error on the sibling g
 });
 
 test("same-ref rows of different generations each display their own lifecycle phase", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   // The old generation exits as its retire is accepted, so its own probe goes
   // stale (no lifecycle) while the replacement at the shared ref stays current
   // and resident. The accepted retire's phase must show only on its own row.
@@ -424,7 +419,7 @@ test("same-ref rows of different generations each display their own lifecycle ph
 });
 
 test("a refusal clears when its own generation's phase changes despite a later same-ref row at the old phase", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   const newResident = sharedRefDaemon({ generation: "gen-new", pid: 402, name: "Prune new" });
   // The replacement is listed last: a ref-keyed map would resolve the shared ref
   // to this row and read the old generation's phase change as no change at all.
@@ -465,7 +460,7 @@ test("a refusal clears when its own generation's phase changes despite a later s
 });
 
 test("a generation rotation at one ref does not carry the old generation's refusal to its replacement", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   let daemons: DaemonResident[] = [sharedRefDaemon({ generation: "gen-old", pid: 401, name: "Rotating daemon" })];
   fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons }));
   fake.on("evener/daemon/retire", () => ({
@@ -498,7 +493,7 @@ test("a generation rotation at one ref does not carry the old generation's refus
 
 test("polling stops after unmount: no further calls after unmount", async () => {
   vi.useFakeTimers();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/daemon/list", () => ({
     defaultTimeoutMillis: 1000,
     daemons: [],
@@ -536,7 +531,7 @@ test("polling stops after unmount: no further calls after unmount", async () => 
 // ─── Failed refresh: old rows retained, stale indicator shown ────────────────
 
 test("failed refresh retains old rows and shows a stale-data indicator", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   const firstResponse: DaemonListResponse = {
     defaultTimeoutMillis: 3600000,
     daemons: [
@@ -584,7 +579,7 @@ test.each([
   ["a hub-reported WireError", new WireError("daemon inventory is rebuilding", -32000)],
   ["a client-side failure", new Error("AppwireClient internal detail")],
 ])("a failed refresh from %s shows that error's friendly form", async (_name, err) => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
   render(<HubResidents />);
   await waitFor(() => expect(daemonResidentsStore.getState().data).not.toBeNull());
@@ -603,7 +598,7 @@ test.each([
 
 describe("force-stop dialog", () => {
   test("clicking Force stop opens an accessible confirmation dialog with ref/PID and interruption warning", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/daemon/list", () => ({
       defaultTimeoutMillis: 3600000,
       daemons: [
@@ -638,7 +633,7 @@ describe("force-stop dialog", () => {
   });
 
   test("cancelling force-stop dialog sends no RPC", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/daemon/list", () => ({
       defaultTimeoutMillis: 3600000,
       daemons: [
@@ -671,7 +666,7 @@ describe("force-stop dialog", () => {
   });
 
   test("confirming force-stop sends evener/thread/forceStop with the exact original ExpectedDaemon", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/daemon/list", () => ({
       defaultTimeoutMillis: 3600000,
       daemons: [
@@ -710,7 +705,7 @@ describe("force-stop dialog", () => {
   });
 
   test("changing the list row behind the open dialog does not silently retarget the action", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     const identityA: DaemonIdentity = {
       ref: "local:daemon-x",
       pid: 200,
@@ -781,7 +776,7 @@ describe("force-stop dialog", () => {
   });
 
   test("Force stop button is disabled while the action is pending", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     let resolveForceStop!: () => void;
     fake.on("evener/daemon/list", () => ({
       defaultTimeoutMillis: 3600000,
@@ -835,7 +830,7 @@ describe("force-stop dialog", () => {
   // ─── I-3: Force-stop RPC failure shows error in row ──────────────────────
 
   test("force-stop RPC failure displays a friendly error in the row", async () => {
-    const fake = connectFakeClient();
+    const fake = connectReadyFakeClient();
     fake.on("evener/daemon/list", () => ({
       defaultTimeoutMillis: 3600000,
       daemons: [
@@ -876,7 +871,7 @@ describe("force-stop dialog", () => {
 // ─── I-3: Retire RPC failure shows error in row ───────────────────────────────
 
 test("retire RPC failure displays a friendly error in the row", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/daemon/list", () => ({
     defaultTimeoutMillis: 3600000,
     daemons: [
@@ -913,7 +908,7 @@ test("retire RPC failure displays a friendly error in the row", async () => {
 // ─── Timeout rendering ────────────────────────────────────────────────────────
 
 test("unknown timeout (lifecycle null) renders differently from disabled zero (timeoutMillis=0)", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/daemon/list", () => ({
     defaultTimeoutMillis: 3600000,
     daemons: [
@@ -965,7 +960,7 @@ test("unknown timeout (lifecycle null) renders differently from disabled zero (t
 });
 
 test("both the Hub default timeout and the row's effective timeout are displayed", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/daemon/list", () => ({
     defaultTimeoutMillis: 3600000, // 1h
     daemons: [
@@ -1000,7 +995,7 @@ test("both the Hub default timeout and the row's effective timeout are displayed
 // ─── Accepted:true shows "retiring" ──────────────────────────────────────────
 
 test("Accepted:true retire response displays retiring state without removing the row", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   // Initial list: daemon is resident
   fake.on("evener/daemon/list", () => ({
     defaultTimeoutMillis: 3600000,
@@ -1040,7 +1035,7 @@ test("Accepted:true retire response displays retiring state without removing the
 // ─── N-1: accepted retire survives a stale probe ─────────────────────────────
 
 test("accepted retire phase survives a later stale probe with no lifecycle", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   // Mutable server view: the daemon moves to "retiring" once the retire RPC is
   // accepted, then its probe goes stale (lifecycle omitted) as it exits.
   let phase: "resident" | "retiring" = "resident";
@@ -1097,7 +1092,7 @@ test("accepted retire phase survives a later stale probe with no lifecycle", asy
 // ─── Round-10 M3: a stale CURRENT snapshot does not supersede an accepted retire
 
 test("an accepted retire survives a post-retire refresh that still reports resident", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   // The Hub's cached roster keeps reporting the pre-retire view after the retire
   // is accepted: a current probe, phase "resident", canRetire true. That is not
   // evidence the retire was undone, so the accepted result must not be pruned.
@@ -1164,7 +1159,7 @@ test("an accepted retire survives a post-retire refresh that still reports resid
 });
 
 test("an accepted retire is cleared when its row leaves the roster", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   let present = true;
   const resident = {
     identity: IDENTITY_FIXTURE,
@@ -1213,7 +1208,7 @@ test("an accepted retire is cleared when its row leaves the roster", async () =>
 });
 
 test("an accepted retire is cleared when the daemon reaches a genuinely different phase", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   // The row's own probe tracks its lifecycle; the accepted retire records
   // "retiring" locally before the list reports the daemon's next phase.
   let phase = "resident";
@@ -1262,7 +1257,7 @@ test("an accepted retire is cleared when the daemon reaches a genuinely differen
 // ─── Retire refusal: blockers displayed, row kept ────────────────────────────
 
 test("retire refusal persists across an immediately-following fresh current snapshot with no blockers", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   const resident = {
     identity: IDENTITY_FIXTURE,
     name: "Blocked resident",
@@ -1322,7 +1317,7 @@ test("retire refusal persists across an immediately-following fresh current snap
 // ─── M-9: A fresh snapshot alone does not clear a refusal ────────────────────
 
 test("retire refusal survives a fresh current snapshot that stops reporting the blocker", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   // The list's own probe tracks the blocker, as the server would report it.
   let blockers: { category: string; sessionId?: string }[] = [{ category: "turn", sessionId: "session-abc" }];
   fake.on("evener/daemon/list", () => ({
@@ -1371,7 +1366,7 @@ test("retire refusal survives a fresh current snapshot that stops reporting the 
 // ─── Round-8 finding 6: no duplicate "Blocked by" lines after a refusal ──────
 
 test("a refused retire whose blockers subsume the snapshot blockers renders one Blocked by line", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   // The list snapshot already reports the in-flight delegate lease, exactly as
   // the server's status snapshot does.
   const inFlightBlocker = { category: "delegate", sessionId: "session-root", delegateId: "dlg-xyz" };
@@ -1425,7 +1420,7 @@ test("a refused retire whose blockers subsume the snapshot blockers renders one 
 // ─── M-6: Departed-daemon per-row state is pruned ────────────────────────────
 
 test("a departed daemon's action error is pruned and does not resurface on a same-ref row", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   let present = true;
   const resident = {
     identity: IDENTITY_FIXTURE,
@@ -1471,7 +1466,7 @@ test("a departed daemon's action error is pruned and does not resurface on a sam
 // ─── M-6: Stale retire-refusal blockers clear on lifecycle change ─────────────
 
 test("retire refusal blockers clear when a newer snapshot changes the row lifecycle", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   const resident = {
     identity: IDENTITY_FIXTURE,
     name: "Lifecycle changing",
@@ -1536,7 +1531,7 @@ test("retire refusal blockers clear when a newer snapshot changes the row lifecy
 // ─── M-9: Refusal clears on the two remaining legitimate transitions ─────────
 
 test("retire refusal clears when the daemon leaves the roster", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   let present = true;
   const resident = {
     identity: IDENTITY_FIXTURE,
@@ -1585,7 +1580,7 @@ test("retire refusal clears when the daemon leaves the roster", async () => {
 });
 
 test("initiating a new retire clears the previous refusal", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   let retireCalls = 0;
   let releaseSecondRetire!: () => void;
   fake.on("evener/daemon/list", () => ({
@@ -1653,7 +1648,7 @@ test("initiating a new retire clears the previous refusal", async () => {
 // ─── M-9: Keyboard focus reachability ────────────────────────────────────────
 
 test("Retire now button is keyboard-focusable", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/daemon/list", () => ({
     defaultTimeoutMillis: 3600000,
     daemons: [
@@ -1683,7 +1678,7 @@ test("Retire now button is keyboard-focusable", async () => {
 // ─── Effective timeout: a sub-second value must not read as disabled ─────────
 
 test("a sub-second timeout does not render as the disabled zero sentinel", async () => {
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   fake.on("evener/daemon/list", () => ({
     defaultTimeoutMillis: 3600000,
     daemons: [
@@ -1716,7 +1711,7 @@ test("a sub-second timeout does not render as the disabled zero sentinel", async
 
 test("the empty state survives a background poll instead of blanking", async () => {
   vi.useFakeTimers();
-  const fake = connectFakeClient();
+  const fake = connectReadyFakeClient();
   let calls = 0;
   let releasePoll!: () => void;
   fake.on("evener/daemon/list", () => {

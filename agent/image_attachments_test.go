@@ -12,9 +12,8 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
-	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -32,10 +31,7 @@ func TestSession_DrainAsSteer_CarriesImagesIntoSteeringMessage(t *testing.T) {
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai"}
 	c.Register(f)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	imgs := []ImageAttachment{{
@@ -93,10 +89,7 @@ func TestSession_DrainAsSteerWithInput_AppendsAndDrainsAtomically(t *testing.T) 
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai"}
 	c.Register(f)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	if err := sess.Enqueue(context.Background(), "already queued"); err != nil {
@@ -114,7 +107,7 @@ func TestSession_DrainAsSteerWithInput_AppendsAndDrainsAtomically(t *testing.T) 
 		t.Fatalf("DrainAsSteerWithInput: %v", err)
 	}
 
-	if depth := sess.QueueDepth(); depth != 0 {
+	if depth := sess.queueDepth(); depth != 0 {
 		t.Fatalf("QueueDepth=%d, want 0", depth)
 	}
 	queue := sess.SteeringQueueSnapshot()
@@ -140,16 +133,13 @@ func TestSession_Enqueue_DrainCarriesImagesIntoUserTurn(t *testing.T) {
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("first reply") },
-			func(req llm.Request) llm.Response { return finalResponse("second reply") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("first reply") },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("second reply") },
 		},
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	imgs := []ImageAttachment{{
@@ -163,8 +153,7 @@ func TestSession_Enqueue_DrainCarriesImagesIntoUserTurn(t *testing.T) {
 
 	// TRIPWIRE: scripted in-process adapter, no real I/O; the turn normally
 	// completes in well under a second. 30s only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "first input", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}

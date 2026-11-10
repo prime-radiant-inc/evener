@@ -269,7 +269,7 @@ func TestWorktreeSwitch_FailedSwitchKeepsCWD(t *testing.T) {
 	}
 	// sendEvent is ordered and lossless. Once this sentinel is consumed, every
 	// event the failed operation emitted has already passed the same callback.
-	r.s.emit(events.EventQueueChanged, events.QueueChangedData{Revision: sentinelRevision})
+	r.s.emit(events.QueueChangedData{Revision: sentinelRevision})
 	select {
 	case <-drained:
 	case <-ctx.Done():

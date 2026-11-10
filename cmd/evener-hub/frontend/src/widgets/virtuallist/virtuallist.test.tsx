@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Virtualizer } from "@tanstack/react-virtual";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { createRef, useState } from "react";
+import { createRef, type ReactNode, useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   holdReaderFrames,
@@ -185,25 +185,29 @@ describe("dynamic sizing", () => {
     expect(sizer.style.height).toBe(`${count * ROW_HEIGHT}px`);
   });
 
-  test("dynamic=true measures each rendered row's real height and corrects the total", () => {
+  test("dynamic=true measures each rendered row's real height and corrects the total", async () => {
     stubPerElementOffsetHeight(styles);
     const count = 10;
-    const { container } = render(
-      <VirtualList
-        dynamic
-        count={count}
-        estimateSize={() => ROW_HEIGHT}
-        renderRow={(i) => <div key={i}>row {i}</div>}
-      />,
+    const { container } = await act(async () =>
+      render(
+        <VirtualList
+          dynamic
+          count={count}
+          estimateSize={() => ROW_HEIGHT}
+          renderRow={(i) => <div key={i}>row {i}</div>}
+        />,
+      ),
     );
     const sizer = rootOf(container).firstElementChild as HTMLElement;
     expect(sizer.style.height).toBe(`${count * MEASURED_HEIGHT}px`);
   });
 
-  test("dynamic=true still positions rows correctly (each translateY reflects the corrected running total, not index * estimate)", () => {
+  test("dynamic=true still positions rows correctly (each translateY reflects the corrected running total, not index * estimate)", async () => {
     stubPerElementOffsetHeight(styles);
-    const { container } = render(
-      <VirtualList dynamic count={5} estimateSize={() => ROW_HEIGHT} renderRow={(i) => <div key={i}>row {i}</div>} />,
+    const { container } = await act(async () =>
+      render(
+        <VirtualList dynamic count={5} estimateSize={() => ROW_HEIGHT} renderRow={(i) => <div key={i}>row {i}</div>} />,
+      ),
     );
     const rowEls = Array.from(rootOf(container).querySelectorAll("[data-index]"));
     for (const el of rowEls) {
@@ -224,16 +228,18 @@ describe("dynamic sizing", () => {
   // the measured element must carry no inline height of the virtualizer's
   // own, ever, so its rendered box is free to be exactly its content's
   // natural height and a real ResizeObserver can see it change.
-  test("dynamic=true: the measured element carries no inline height - its box is sized by content, never by the virtualizer's own size write", () => {
+  test("dynamic=true: the measured element carries no inline height - its box is sized by content, never by the virtualizer's own size write", async () => {
     stubPerElementOffsetHeight(styles);
     const count = 10;
-    const { container } = render(
-      <VirtualList
-        dynamic
-        count={count}
-        estimateSize={() => ROW_HEIGHT}
-        renderRow={(i) => <div key={i}>row {i}</div>}
-      />,
+    const { container } = await act(async () =>
+      render(
+        <VirtualList
+          dynamic
+          count={count}
+          estimateSize={() => ROW_HEIGHT}
+          renderRow={(i) => <div key={i}>row {i}</div>}
+        />,
+      ),
     );
     const rowEls = Array.from(rootOf(container).querySelectorAll("[data-index]"));
     expect(rowEls.length).toBeGreaterThan(0);
@@ -249,15 +255,22 @@ describe("dynamic sizing", () => {
   // equals the estimate never enters it. Marking from itemSizeCache would read
   // that measured row as unmeasured. Here every row measures exactly the
   // estimate (ROW_HEIGHT), the delta-0 case, and each must still be marked.
-  test("dynamic=true marks each row measured even when its height equals the estimate (resizeItem's delta-0 stores nothing)", () => {
+  test("dynamic=true marks each row measured even when its height equals the estimate (resizeItem's delta-0 stores nothing)", async () => {
     Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
       configurable: true,
       get(this: HTMLElement) {
         return this.classList.contains(styles.root) ? CONTAINER_HEIGHT : ROW_HEIGHT;
       },
     });
-    const { container } = render(
-      <VirtualList dynamic count={10} estimateSize={() => ROW_HEIGHT} renderRow={(i) => <div key={i}>row {i}</div>} />,
+    const { container } = await act(async () =>
+      render(
+        <VirtualList
+          dynamic
+          count={10}
+          estimateSize={() => ROW_HEIGHT}
+          renderRow={(i) => <div key={i}>row {i}</div>}
+        />,
+      ),
     );
     const rowEls = Array.from(rootOf(container).querySelectorAll("[data-index]")) as HTMLElement[];
     expect(rowEls.length).toBeGreaterThan(0);
@@ -455,10 +468,24 @@ describe("anchorToEnd", () => {
 
   type ReaderLayout = CommittedVirtualListLayout;
 
-  function renderMeasuredList(
+  async function renderMeasuredList(
     anchorToEnd: boolean,
     clampScrollWrites = false,
     reader?: { onLayout(layout: ReaderLayout): void; count?: number; estimate?: number },
+    options?: {
+      readingPoint?: () =>
+        | {
+            row: number;
+            id: string;
+            offset: number;
+            offsetInRow: number;
+            height: number;
+            width: number;
+            viewport: number;
+          }
+        | undefined;
+      renderRow?: (index: number) => ReactNode;
+    },
   ) {
     const ref = createRef<VirtualListHandle>();
     let virtualizer: Virtualizer<HTMLDivElement, HTMLDivElement> | undefined;
@@ -478,7 +505,8 @@ describe("anchorToEnd", () => {
           virtualizer = instance;
         }}
         {...(reader ? { onLayout: reader.onLayout } : {})}
-        renderRow={(index) => <div>row {index}</div>}
+        {...(options?.readingPoint ? { readingPoint: options.readingPoint } : {})}
+        renderRow={options?.renderRow ?? ((index) => <div>row {index}</div>)}
       />,
     );
     const root = rootOf(container);
@@ -499,6 +527,8 @@ describe("anchorToEnd", () => {
         ? Math.max(0, Math.min(target, root.scrollHeight - root.clientHeight))
         : target;
     };
+    // Mount measurements run after attachment, before browser observations.
+    await act(async () => {});
     return { root, current, ref };
   }
 
@@ -563,8 +593,8 @@ describe("anchorToEnd", () => {
       wantScroll: 1000,
       wantStart: 1100,
     },
-  ])("$name", ({ anchorToEnd, from, to, size, row, wantScroll, wantStart }) => {
-    const { root, current } = renderMeasuredList(anchorToEnd);
+  ])("$name", async ({ anchorToEnd, from, to, size, row, wantScroll, wantStart }) => {
+    const { root, current } = await renderMeasuredList(anchorToEnd);
     root.scrollTop = from;
     fireEvent.scroll(root);
     root.scrollTop = to;
@@ -585,10 +615,10 @@ describe("anchorToEnd", () => {
     { name: "reader with anchorToEnd off", anchorToEnd: false, reader: { onLayout: () => {} } },
   ])(
     "$name: batched growth above the viewport keeps its logical row when DOM scroll writes clamp",
-    ({ anchorToEnd, reader }) => {
+    async ({ anchorToEnd, reader }) => {
       // Native writes can clamp before React commits the new sizer height.
       // Only this layout boundary is modeled; the virtualizer stays real.
-      const { root, current } = renderMeasuredList(anchorToEnd, true, reader);
+      const { root, current } = await renderMeasuredList(anchorToEnd, true, reader);
       root.scrollTop = 1700;
       fireEvent.scroll(root);
       root.scrollTop = 1500;
@@ -609,8 +639,8 @@ describe("anchorToEnd", () => {
     },
   );
 
-  test("a newer native gesture supersedes a clamped measurement before its sizer commit", () => {
-    const { root, current } = renderMeasuredList(true, true);
+  test("a newer native gesture supersedes a clamped measurement before its sizer commit", async () => {
+    const { root, current } = await renderMeasuredList(true, true);
     root.scrollTop = 1700;
     fireEvent.scroll(root);
     root.scrollTop = 1500;
@@ -627,8 +657,8 @@ describe("anchorToEnd", () => {
     expect(current().range?.startIndex).toBe(0);
   });
 
-  test("a newer explicit offset supersedes a clamped measurement before its sizer commit", () => {
-    const { root, current } = renderMeasuredList(true, true);
+  test("a newer explicit offset supersedes a clamped measurement before its sizer commit", async () => {
+    const { root, current } = await renderMeasuredList(true, true);
     root.scrollTop = 1700;
     fireEvent.scroll(root);
     root.scrollTop = 1500;
@@ -654,11 +684,85 @@ describe("anchorToEnd", () => {
     return { geometry, ...external };
   }
 
+  function placeEntry(element: HTMLElement, top: number, height: number) {
+    const bounds = {
+      top,
+      bottom: top + height,
+      height,
+      width: 300,
+      left: 0,
+      right: 300,
+      x: 0,
+      y: top,
+      toJSON: () => ({}),
+    } as DOMRect;
+    Object.defineProperty(element, "getBoundingClientRect", { configurable: true, value: () => bounds });
+    return element;
+  }
+
+  async function renderReaderEntry() {
+    const external = installMeasuredGeometry([6000, 1000, 6000, 6000, 6000]);
+    const frames = holdReaderFrames();
+    const entry = { top: -100, height: 400, width: 0, viewport: 0 };
+    const { root, current } = await renderMeasuredList(true, true, undefined, {
+      readingPoint: () => ({
+        row: 1,
+        id: "entry-1",
+        offset: entry.top,
+        offsetInRow: entry.top,
+        height: entry.height,
+        width: entry.width,
+        viewport: entry.viewport,
+      }),
+      renderRow: (index) => (
+        <div>
+          <span data-view-anchor-id={`entry-${index}`}>row {index}</span>
+        </div>
+      ),
+    });
+    await act(async () => external.notify());
+    await act(async () => current().scrollToIndex(1, { align: "start" }));
+    entry.width = root.clientWidth;
+    entry.viewport = root.clientHeight;
+    const anchor = root.querySelector<HTMLElement>('[data-view-anchor-id="entry-1"]');
+    if (!anchor) throw new Error("the reading entry did not render");
+    placeEntry(anchor, entry.top, entry.height);
+    await act(async () => {
+      root.scrollTop = 6100;
+      frames.release();
+    });
+    await act(async () => external.notify());
+    return {
+      external,
+      frames,
+      entry,
+      anchor,
+      root,
+      restore: () => {
+        cleanup();
+        external.restore();
+        frames.restore();
+      },
+    };
+  }
+
+  test("growth after the reading entry inside its row holds the reader", async () => {
+    const scene = await renderReaderEntry();
+    try {
+      expect(scene.root.scrollTop).toBe(6100);
+      scene.external.geometry.rowHeights[1] = 1400;
+      await act(async () => scene.external.notify());
+      expect(scene.root.scrollTop).toBe(6100);
+    } finally {
+      scene.restore();
+    }
+  });
+
   test("reader layout observes committed sizer and rejects later unmeasured DOM", async () => {
     const external = installMeasuredGeometry([500, 500, 500, 500, 500]);
     const observed: { layout: ReaderLayout; sizer: number; secondRow: string | undefined }[] = [];
     try {
-      const { root } = renderMeasuredList(true, true, {
+      const { root } = await renderMeasuredList(true, true, {
         onLayout: (layout) => {
           const port = layout.virtualizer.scrollElement;
           observed.push({
@@ -693,7 +797,7 @@ describe("anchorToEnd", () => {
     const frames = holdReaderFrames();
     let committed: ReaderLayout | undefined;
     try {
-      const { root } = renderMeasuredList(true, true, {
+      const { root } = await renderMeasuredList(true, true, {
         onLayout: (layout) => {
           committed = layout;
         },
@@ -721,7 +825,7 @@ describe("anchorToEnd", () => {
     const external = installMeasuredGeometry([500.171875, 29.3125, 500.171875, 500.171875, 500.171875]);
     let committed: ReaderLayout | undefined;
     try {
-      const { root } = renderMeasuredList(true, true, {
+      const { root } = await renderMeasuredList(true, true, {
         onLayout: (layout) => {
           committed = layout;
         },
@@ -744,7 +848,7 @@ describe("anchorToEnd", () => {
     const external = installMeasuredGeometry([500, 500, 500, 500, 500], 15);
     let committed: ReaderLayout | undefined;
     try {
-      const { root } = renderMeasuredList(true, true, {
+      const { root } = await renderMeasuredList(true, true, {
         onLayout: (layout) => {
           committed = layout;
         },
@@ -773,7 +877,7 @@ describe("anchorToEnd", () => {
     const frames = holdReaderFrames();
     let release = false;
     try {
-      const { root, current } = renderMeasuredList(true, true, {
+      const { root, current } = await renderMeasuredList(true, true, {
         count: 200,
         estimate: 96,
         onLayout: (layout) => {
@@ -807,7 +911,7 @@ describe("anchorToEnd", () => {
     const frames = holdReaderFrames();
     let layout: ReaderLayout | undefined;
     try {
-      const { root, current } = renderMeasuredList(true, true, {
+      const { root, current } = await renderMeasuredList(true, true, {
         onLayout: (value) => {
           layout = value;
         },
@@ -839,7 +943,7 @@ describe("anchorToEnd", () => {
     const frames = holdReaderFrames();
     let layout: ReaderLayout | undefined;
     try {
-      const { root, current } = renderMeasuredList(true, true, {
+      const { root, current } = await renderMeasuredList(true, true, {
         onLayout: (value) => {
           layout = value;
         },
@@ -884,7 +988,7 @@ describe("anchorToEnd", () => {
       const frames = holdReaderFrames();
       let layout: ReaderLayout | undefined;
       try {
-        const { root, current } = renderMeasuredList(anchorToEnd, true, {
+        const { root, current } = await renderMeasuredList(anchorToEnd, true, {
           onLayout: (value) => {
             layout = value;
           },
@@ -929,7 +1033,7 @@ describe("anchorToEnd", () => {
     const frames = holdReaderFrames();
     let layout: ReaderLayout | undefined;
     try {
-      const { root, current, ref } = renderMeasuredList(true, true, {
+      const { root, current, ref } = await renderMeasuredList(true, true, {
         onLayout: (value) => {
           layout = value;
         },
@@ -970,7 +1074,7 @@ describe("anchorToEnd", () => {
     const frames = holdReaderFrames();
     let layout: ReaderLayout | undefined;
     try {
-      const { root, current, ref } = renderMeasuredList(true, true, {
+      const { root, current, ref } = await renderMeasuredList(true, true, {
         onLayout: (value) => {
           layout = value;
         },
@@ -1011,7 +1115,7 @@ describe("anchorToEnd", () => {
     const frames = holdReaderFrames();
     let layout: ReaderLayout | undefined;
     try {
-      const { root, current } = renderMeasuredList(true, true, {
+      const { root, current } = await renderMeasuredList(true, true, {
         onLayout: (value) => {
           layout = value;
         },

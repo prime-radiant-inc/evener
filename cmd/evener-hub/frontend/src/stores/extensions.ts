@@ -19,6 +19,7 @@
 //     convention.
 
 import type { AnyNotification, PathValidateResponse } from "@evener/appwire-client";
+import { isLocalHost } from "@evener/appwire-client";
 import {
   createHubWriteGate,
   createLaunchLayerStore,
@@ -43,7 +44,6 @@ import {
   connectionStore,
   onConnectionNotification,
 } from "./connection";
-import { isLocalHost } from "./hostRouting";
 import { remoteHostStoreClient } from "./hostStoreClient";
 import {
   currentHostRegistration,

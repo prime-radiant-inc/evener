@@ -3,9 +3,12 @@ package llm
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"image"
 	"image/color"
 	"image/png"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -1172,5 +1175,288 @@ func TestEstimateMessagesInputTokensForResolved_NameIdentifiesTheFamilyWhenTheRo
 	// name-only entry points cannot claim OpenAI's image rules for it either.
 	if got := providerTokenFamily("cerebras", "gpt-oss-120b"); got != "" {
 		t.Fatalf("providerTokenFamily(cerebras, gpt-oss-120b) = %q, want no family: gpt-oss is deliberately generic", got)
+	}
+}
+
+// A thinking part that carries no ThinkingData at all bills nothing on every
+// protocol: the walker hands the part to the replay rule, which must return
+// the empty count rather than dereference the absent payload.
+func TestEstimateMessagesInputTokensForResolved_PartWithoutThinkingData(t *testing.T) {
+	messages := []Message{{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentThinking}}}}
+	for _, protocol := range []string{registry.ProtocolAnthropic, registry.ProtocolOpenAIResponses, registry.ProtocolOpenAIChat, registry.ProtocolGoogle} {
+		row := registry.Resolved{Instance: "gateway", Protocol: protocol}
+		if got := EstimateMessagesInputTokensForResolved(row, messages).Tokens; got != 0 {
+			t.Fatalf("%s billed %d tokens for a part with no thinking data, want 0", protocol, got)
+		}
+	}
+	if got := EstimateMessagesInputTokens(messages).Tokens; got != 0 {
+		t.Fatalf("targetless estimate = %d, want 0", got)
+	}
+}
+
+// A targetless estimate bills an opaque (non-compat) reasoning blob together
+// with its id and every summary entry, because the OpenAI Responses shape
+// replays all of them on the wire.
+func TestEstimateMessagesInputTokensCountsOpaqueBlobIdAndSummaries(t *testing.T) {
+	const (
+		blobChars    = 800
+		idChars      = 400
+		summaryChars = 400
+		extraChars   = 120
+	)
+	blob := strings.Repeat("b", blobChars)
+	if IsOpenAICompatEncryptedReasoning(blob) {
+		t.Fatal("fixture must be an opaque blob, not a compat reasoning array")
+	}
+	messages := []Message{{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentThinking, Thinking: &ThinkingData{
+		EncryptedContent: blob,
+		ID:               strings.Repeat("i", idChars),
+		Summary:          []string{strings.Repeat("m", summaryChars), strings.Repeat("x", extraChars), " "},
+	}}}}}
+	// Every summary entry counts, blanks included: the generic arm replays the
+	// list verbatim.
+	want := (blobChars + idChars + summaryChars + extraChars + 1) / 4
+	if got := EstimateMessagesInputTokens(messages).Tokens; got != want {
+		t.Fatalf("targetless opaque-blob estimate = %d, want %d", got, want)
+	}
+}
+
+// A resolved row with none of its own facts offers no vendor name to the image
+// rules when the caller supplied no provider either: the instance alias is not
+// evidence, so the generic fallback prices the image.
+func TestEstimateMessagesInputTokensForResolved_NoVendorNameToRead(t *testing.T) {
+	messages := []Message{{Role: RoleUser, Content: []ContentPart{
+		{Kind: ContentImage, Image: &ImageData{Data: testPNG1024(), MediaType: "image/png"}},
+	}}}
+	row := registry.Resolved{Instance: "gateway", ModelID: "mystery-zz"}
+	want := fallbackMediaTokens + len("image/png")/4
+	if got := EstimateMessagesInputTokensForResolved(row, messages).Tokens; got != want {
+		t.Fatalf("factless row image history = %d, want the generic fallback %d: no vendor name may be inferred", got, want)
+	}
+}
+
+// The row's surface names the image family when the family map does not: an
+// openai-surfaced row with no recorded family and no wire protocol still
+// prices images with OpenAI's rules, and a Google protocol row with neither
+// surface nor family falls through to the protocol.
+func TestEstimateMessagesInputTokensForResolved_SurfaceAndProtocolNameTheFamily(t *testing.T) {
+	messages := []Message{{Role: RoleUser, Content: []ContentPart{
+		{Kind: ContentImage, Image: &ImageData{Data: testPNG1024(), MediaType: "image/png"}},
+	}}}
+	openaiSurfaced := registry.Resolved{Instance: "gateway", ModelID: "zz", Surface: registry.SurfaceOpenAI}
+	if got, want := EstimateMessagesInputTokensForResolved(openaiSurfaced, messages).Tokens, estimateOpenAIImageTokens(1024, 1024, ""); got != want {
+		t.Fatalf("openai-surfaced row image history = %d, want %d: the surface names the family", got, want)
+	}
+	googleProtocol := registry.Resolved{Instance: "gateway", ModelID: "mystery-zz", Protocol: registry.ProtocolGoogle}
+	if got, want := EstimateMessagesInputTokensForResolved(googleProtocol, messages).Tokens, estimateGoogleImageTokens(1024, 1024); got != want {
+		t.Fatalf("google-protocol row image history = %d, want %d: the protocol is the last family source", got, want)
+	}
+}
+
+// A tool result carrying non-image media bytes rides only where the adapter
+// has a portable representation for it: name-based targets bill the fallback
+// (no row can rule the bytes out), while a chat row drops them entirely.
+func TestEstimateToolResultMediaByType(t *testing.T) {
+	const pdfBytes = "%PDF-1.4 no raster here"
+	toolResult := func() []Message {
+		return []Message{{Role: RoleTool, Content: []ContentPart{{Kind: ContentToolResult, ToolResult: &ToolResultData{
+			ToolCallID: "tc1", Content: "done", ImageData: []byte(pdfBytes), ImageMediaType: "application/pdf",
+		}}}}}
+	}
+	textOnly := []Message{{Role: RoleTool, Content: []ContentPart{{Kind: ContentToolResult, ToolResult: &ToolResultData{
+		ToolCallID: "tc1", Content: "done",
+	}}}}}
+
+	chat := registry.Resolved{Instance: "gateway", ModelID: "m", Protocol: registry.ProtocolOpenAIChat}
+	if got, want := EstimateMessagesInputTokensForResolved(chat, toolResult()).Tokens, EstimateMessagesInputTokensForResolved(chat, textOnly).Tokens; got != want {
+		t.Fatalf("chat non-image tool-result media = %d, want the text-only estimate %d: chat drops tool-result media entirely", got, want)
+	}
+	if got, want := EstimateMessagesInputTokens(toolResult()).Tokens, EstimateMessagesInputTokens(textOnly).Tokens+fallbackMediaTokens+len("application/pdf")/4; got != want {
+		t.Fatalf("targetless non-image tool-result media = %d, want the undecoded fallback %d", got, want)
+	}
+}
+
+// The estimator equivalence covers the reasoning-replay caps too: two rows that
+// differ only in ThinkingAsText or ImageDetail are different estimator
+// targets, because the local estimate reads both.
+func TestEstimatorTargetsEquivalentCoversThinkingAndImageDetail(t *testing.T) {
+	base := registry.Resolved{Instance: "gateway", ModelID: "gateway-zz", Protocol: registry.ProtocolOpenAIChat}
+	same := base
+	if !EstimatorTargetsEquivalent(base, same) {
+		t.Fatal("identical rows are one estimator target")
+	}
+	otherThinking := base
+	on, off := true, false
+	otherThinking.Caps.ThinkingAsText = &on
+	baseWithOff := base
+	baseWithOff.Caps.ThinkingAsText = &off
+	if EstimatorTargetsEquivalent(baseWithOff, otherThinking) {
+		t.Fatal("rows that disagree on ThinkingAsText are different estimator targets: the replay rule reads it")
+	}
+	otherDetail := base
+	low, high := "low", "high"
+	otherDetail.Caps.ImageDetail = &low
+	baseWithHigh := base
+	baseWithHigh.Caps.ImageDetail = &high
+	if EstimatorTargetsEquivalent(baseWithHigh, otherDetail) {
+		t.Fatal("rows that disagree on ImageDetail are different estimator targets: the image estimate reads it")
+	}
+}
+
+func TestEstimateInputTokensCountsResponseFormat(t *testing.T) {
+	rf := &ResponseFormat{Type: "json_object"}
+	withRF := EstimateInputTokens(Request{Model: "m", Messages: []Message{User("hi")}, ResponseFormat: rf})
+	without := EstimateInputTokens(Request{Model: "m", Messages: []Message{User("hi")}})
+	if withRF.Tokens <= without.Tokens {
+		t.Fatalf("response format not counted: with=%d without=%d", withRF.Tokens, without.Tokens)
+	}
+}
+
+// TestCountInputTokensConfigErrors covers the validation, missing-provider, and
+// unknown-provider guards of Client.CountInputTokens.
+func TestCountInputTokensConfigErrors(t *testing.T) {
+	c := NewClient()
+	ctx := context.Background()
+
+	if _, err := c.CountInputTokens(ctx, Request{Messages: []Message{User("hi")}}); err == nil {
+		t.Fatal("CountInputTokens(no model) error = nil, want validation failure")
+	}
+	if _, err := c.CountInputTokens(ctx, Request{Model: "m", Messages: []Message{User("hi")}}); err == nil {
+		t.Fatal("CountInputTokens(no provider) error = nil, want configuration failure")
+	}
+	_, err := c.CountInputTokens(ctx, Request{Model: "m", Provider: "ghost", Messages: []Message{User("hi")}})
+	if err == nil {
+		t.Fatal("CountInputTokens(unknown provider) error = nil, want configuration failure")
+	}
+}
+
+// Every content kind the estimator reads contributes to the estimate: a part
+// carrying more of its kind's payload estimates higher than a smaller one.
+func TestEstimateInputTokensCountsEveryContentKind(t *testing.T) {
+	estimate := func(part ContentPart) int {
+		return EstimateInputTokens(Request{
+			Provider: "anthropic",
+			Model:    "claude-test",
+			Messages: []Message{{Role: RoleAssistant, Content: []ContentPart{part}}},
+		}).Tokens
+	}
+	long := strings.Repeat("x", 400)
+	for _, tc := range []struct {
+		name         string
+		small, large ContentPart
+	}{
+		{"audio", ContentPart{Kind: ContentText}, ContentPart{Kind: ContentAudio, Audio: &AudioData{MediaType: "audio/wav", Data: []byte("aud")}}},
+		{"document", ContentPart{Kind: ContentDocument, Document: &DocumentData{URL: "https://example.com/a.pdf"}},
+			ContentPart{Kind: ContentDocument, Document: &DocumentData{URL: "https://example.com/" + long + ".pdf"}}},
+		{"tool call", ContentPart{Kind: ContentToolCall, ToolCall: &ToolCallData{ID: "tc1", Name: "do", Arguments: json.RawMessage(`{}`)}},
+			ContentPart{Kind: ContentToolCall, ToolCall: &ToolCallData{ID: "tc1", Name: "do", Arguments: json.RawMessage(`{"x":"` + long + `"}`)}}},
+		{"string tool result", ContentPart{Kind: ContentToolResult, ToolResult: &ToolResultData{ToolCallID: "tc1", Content: ""}},
+			ContentPart{Kind: ContentToolResult, ToolResult: &ToolResultData{ToolCallID: "tc1", Content: long}}},
+		{"byte tool result", ContentPart{Kind: ContentToolResult, ToolResult: &ToolResultData{ToolCallID: "tc1", Content: []byte{}}},
+			ContentPart{Kind: ContentToolResult, ToolResult: &ToolResultData{ToolCallID: "tc1", Content: []byte(long)}}},
+		{"structured tool result", ContentPart{Kind: ContentToolResult, ToolResult: &ToolResultData{ToolCallID: "tc1", Content: map[string]any{}}},
+			ContentPart{Kind: ContentToolResult, ToolResult: &ToolResultData{ToolCallID: "tc1", Content: map[string]any{"k": long}}}},
+		{"web search", ContentPart{Kind: ContentWebSearch, WebSearch: &WebSearchData{}},
+			ContentPart{Kind: ContentWebSearch, WebSearch: &WebSearchData{Query: long}}},
+		{"unknown kind", ContentPart{Kind: ContentKind("unhandled_future_kind")},
+			ContentPart{Kind: ContentKind("unhandled_future_kind"), Text: long}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if small, large := estimate(tc.small), estimate(tc.large); large <= small {
+				t.Fatalf("estimate with more payload = %d, without = %d; want more", large, small)
+			}
+		})
+	}
+}
+
+func TestEstimateOpenAIImageTokens(t *testing.T) {
+	openaiReq := func(img *ImageData) Request {
+		return Request{
+			Provider: "openai",
+			Model:    "gpt-4o",
+			Messages: []Message{{Role: RoleUser, Content: []ContentPart{{Kind: ContentImage, Image: img}}}},
+		}
+	}
+
+	t.Run("low detail is flat 85", func(t *testing.T) {
+		got := EstimateInputTokens(openaiReq(&ImageData{MediaType: "image/png", Detail: "low", Data: pngImage(t, 100, 100)}))
+		if got.Tokens != 85 {
+			t.Fatalf("low-detail Tokens = %d, want 85", got.Tokens)
+		}
+	})
+
+	t.Run("small high image tiles once", func(t *testing.T) {
+		// 100x100: no scaling, short=100, one 512 tile each side → 85 + 170.
+		got := EstimateInputTokens(openaiReq(&ImageData{MediaType: "image/png", Data: pngImage(t, 100, 100)}))
+		if got.Tokens != 85+170 {
+			t.Fatalf("Tokens = %d, want %d", got.Tokens, 85+170)
+		}
+	})
+
+	t.Run("mid image hits short-side downscale", func(t *testing.T) {
+		// 1100x1100: scaleWithin leaves it (<=2048), short=1100>768 downscales to
+		// 768x768 → 85 + 170*ceilDiv(768,512)^2 = 85 + 170*4. Undownscaled it
+		// would tile 3x3.
+		got := EstimateInputTokens(openaiReq(&ImageData{MediaType: "image/png", Data: pngImage(t, 1100, 1100)}))
+		if got.Tokens != 85+170*4 {
+			t.Fatalf("Tokens = %d, want %d", got.Tokens, 85+170*4)
+		}
+	})
+
+	t.Run("oversized image hits scaleWithin downscale", func(t *testing.T) {
+		// 3000x1000: scaleWithin scales long side to 2048 → 2048x682, short<=768,
+		// → 85 + 170*ceilDiv(2048,512)*ceilDiv(683,512) = 85 + 170*4*2.
+		got := EstimateInputTokens(openaiReq(&ImageData{MediaType: "image/png", Data: pngImage(t, 3000, 1000)}))
+		if got.Tokens != 85+170*4*2 {
+			t.Fatalf("Tokens = %d, want %d", got.Tokens, 85+170*4*2)
+		}
+	})
+}
+
+func TestImageDimensions_LocalFileURL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pic.png")
+	if err := os.WriteFile(path, pngImage(t, 57, 57), 0o600); err != nil {
+		t.Fatalf("write png: %v", err)
+	}
+
+	// Anthropic 57x57 → ceilDiv(57,28)^2 = 3*3 = 9, read from the local file URL.
+	req := Request{
+		Provider: "anthropic",
+		Model:    "claude-test",
+		Messages: []Message{{Role: RoleUser, Content: []ContentPart{
+			{Kind: ContentImage, Image: &ImageData{URL: path, MediaType: "image/png"}},
+		}}},
+	}
+	if got := EstimateInputTokens(req); got.Tokens != 9 {
+		t.Fatalf("local-file image Tokens = %d, want 9", got.Tokens)
+	}
+}
+
+// A local-path image that cannot be opened, and one that opens but is not a
+// decodable raster, both fall back to the undecoded estimate: the local file
+// promise alone must not invent dimensions.
+func TestEstimateImageTokens_LocalPathFallbacks(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "missing.png")
+	if err := os.WriteFile(filepath.Join(dir, "garbage.png"), []byte("definitely not a raster"), 0o600); err != nil {
+		t.Fatalf("write garbage: %v", err)
+	}
+	garbage := filepath.Join(dir, "garbage.png")
+
+	for name, path := range map[string]string{"missing": missing, "undecodable": garbage} {
+		t.Run(name, func(t *testing.T) {
+			req := Request{
+				Provider: "anthropic",
+				Model:    "claude-test",
+				Messages: []Message{{Role: RoleUser, Content: []ContentPart{
+					{Kind: ContentImage, Image: &ImageData{URL: path, MediaType: "image/png"}},
+				}}},
+			}
+			want := fallbackMediaTokens + len(path)/4 + len("image/png")/4
+			if got := EstimateInputTokens(req); got.Tokens != want {
+				t.Fatalf("local %s-path image Tokens = %d, want the undecoded fallback %d", name, got.Tokens, want)
+			}
+		})
 	}
 }

@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -23,7 +24,7 @@ func TestAPILogExposesDisjointCacheWriteTiers(t *testing.T) {
 	attempt.Response.Usage.CacheWrite1hTokens = &oneHour
 	writeRichSession(t, bucket, sidA, nil, []apilog.APILogRecord{attempt, doctorSettlement(attempt, 1)}, schema.SessionMeta{})
 
-	result, err := APILog(base, sidA, APILogOpts{})
+	result, err := APILog(context.Background(), base, sidA, APILogOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}

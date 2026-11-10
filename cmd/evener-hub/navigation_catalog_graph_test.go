@@ -157,7 +157,7 @@ func TestNavigationCatalogGraphCollapsesDuplicateProjectKeys(t *testing.T) {
 			// location key - so a dropped session surfaces as the "not found" shape
 			// rather than as a silently empty location.
 			for _, id := range []string{"01ARZ3NDEKTSV4RRFFQ69G5FAV", "01ARZ3NDEKTSV4RRFFQ69G5FAW"} {
-				ref := hubapi.LocalRef(id).String()
+				ref := appwire.LocalRef(id).String()
 				object, _, err := projection.Resource(navigationResourceKey{Kind: navigationResourceLocation, ID: ref})
 				if err != nil {
 					t.Errorf("location read for merged session %q: %v", id, err)
@@ -216,7 +216,7 @@ func TestNavigationCatalogGraphKeepsDuplicateKeyPerBucket(t *testing.T) {
 	// first catalog holding it; the location index must still carry every
 	// session of every catalog.
 	for _, id := range []string{"01ARZ3NDEKTSV4RRFFQ69G5FAV", "01ARZ3NDEKTSV4RRFFQ69G5FAW"} {
-		ref := hubapi.LocalRef(id).String()
+		ref := appwire.LocalRef(id).String()
 		object, _, err := projection.Resource(navigationResourceKey{Kind: navigationResourceLocation, ID: ref})
 		if err != nil {
 			t.Errorf("location read for merged session %q: %v", id, err)
@@ -257,20 +257,20 @@ func navigationMergeGraphID(n int) string {
 // The catalog merge must not only keep every group's sessions; it must describe
 // them the way a tree-built project does. hubcore caps a tree-built project's
 // public tier at maxSidebarSessionsPerTier and reports the rows beyond it as the
-// per-tier overflow (More*), and its tiers are globally most-recent-first. A
+// per-tier overflow (More*), and its tiers are globally newest-created-first. A
 // merged row colliding on one Key must match: two groups that each exceed the
 // cap collapse to a project whose current overflow is the number of rows beyond
 // the cap, whose retained tier keeps every row so paging still reaches them, and
-// whose rows stay ordered by recency across both groups rather than in
+// whose rows stay ordered by creation across both groups rather than in
 // group-append order.
-func TestNavigationCatalogGraphMergeCapsTiersAndKeepsRecency(t *testing.T) {
+func TestNavigationCatalogGraphMergeCapsTiersAndKeepsCreationOrder(t *testing.T) {
 	generation := "00112233445566778899aabbccddeeff"
 	const capacity = hubcore.SidebarSessionPageSize
 	base := time.Unix(1_700_000_000, 0).UTC()
 	// capacity+5 current rows per group: each group overflows the cap on its
 	// own, so neither group's own MoreCurrent is set, yet the merged project
 	// overflows it. The "a" rows are two hours older than the "b" rows, so the
-	// newest session overall lives in the SECOND group and only a global
+	// newest-created session overall lives in the SECOND group and only a global
 	// re-sort lifts it above the whole first group.
 	group := func(prefix string, offset time.Duration) []hubcore.TreeNode {
 		rows := make([]hubcore.TreeNode, capacity+5)
@@ -329,8 +329,8 @@ func TestNavigationCatalogGraphMergeCapsTiersAndKeepsRecency(t *testing.T) {
 		t.Errorf("catalog summary = %d sessions, %d more current; want %d and %d", summary.SessionCount, summary.MoreCurrent, total, total-capacity)
 	}
 
-	// The retained rows are globally most-recent-first: the newest session of
-	// the second group sorts ahead of every row of the older first group.
+	// The retained rows are globally newest-created-first: the newest session
+	// of the second group sorts ahead of every row of the older first group.
 	// Appending group one before group two would leave "a-00" first.
 	if merged.Current[0].ID != "b-00" {
 		t.Errorf("merged current[0] = %q, want the newest row across both groups (b-00); tiers kept group-append order", merged.Current[0].ID)
@@ -360,7 +360,7 @@ func TestNavigationCatalogGraphMergeCapsTiersAndKeepsRecency(t *testing.T) {
 	// A session that only the retained union reaches keeps its location, so a
 	// direct lookup still resolves it after the merge.
 	last := "a-54"
-	ref := hubapi.LocalRef(last).String()
+	ref := appwire.LocalRef(last).String()
 	object, _, err := projection.Resource(navigationResourceKey{Kind: navigationResourceLocation, ID: ref})
 	if err != nil {
 		t.Fatalf("location for beyond-cap session %q: %v", last, err)

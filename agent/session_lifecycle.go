@@ -4,20 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
-	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -62,6 +59,12 @@ const (
 	maxEmptyRetries        = 3
 	maxTotalEmptyResponses = 8 // prevent repeated burst-and-recover spirals
 	maxBareTextRetries     = 3
+	// maxServerContinuations bounds one input turn's run of consecutive
+	// pause_turn responses. A pause is a legitimate protocol continuation, so it
+	// still refunds its tool round (see TestSession_PauseTurn_*), but a provider
+	// that returns them forever must not keep a single turn alive indefinitely:
+	// the chain is a distinct budget from the tool-round cap.
+	maxServerContinuations = 8
 )
 
 // maxHookStopReasonRunes bounds a hook-supplied stop reason at the dispatch
@@ -80,786 +83,6 @@ type retryTracker struct {
 	consecutiveEmpty    int
 	totalEmpty          int
 	consecutiveBareText int
-}
-
-// Close shuts the session down once (subsequent calls are no-ops via
-// closeOnce). It marks the session closing/closed, cancels in-flight
-// LLM calls, cleans up the environment (killing child processes), runs the
-// SessionEnd hooks, emits EventSessionEnd with the final state, closes
-// subagents, the MCP manager, and the transcript, closes the root-owned artifact
-// store after descendant shutdown, exports the ATIF trajectory when configured
-// for the root session, waits for in-flight event emitters to finish, and closes
-// the events channel. The bundled skills live in a content-addressed cache
-// shared with every other process, so Close leaves it in place.
-func (s *Session) Close() {
-	s.close(context.Background(), closeOptions{cleanupEnv: true})
-}
-
-// CloseWithReason closes the session and reports the given Claude session end
-// reason to SessionEnd hooks. Evener can prove only "clear" (a thread clear
-// replaced this identity); every other caller passes nothing, which reaches the
-// hooks as Claude's "other". An unrecognized reason is reduced to "other" too,
-// so a hook matched on a reason evener cannot prove never fires on a guess.
-func (s *Session) CloseWithReason(reason string) {
-	s.close(context.Background(), closeOptions{cleanupEnv: true, reason: reason})
-}
-
-// CloseForShutdown closes the session with a terminal lifecycle boundary.
-// A cancelled in-flight turn may already have published an interrupted idle
-// boundary; that boundary must not suppress the session's closed notification.
-//
-// The close reports Claude's "prompt_input_exit": a daemon shutdown while the
-// user's prompt was up is the one provable form of the user exiting a session.
-// releaseRuntimeOnce downgrades it to "other" when the session still had work in
-// flight (a pending ask, an in-flight turn, a running job or delegate), because
-// then the user did not exit a prompt — the session died under work.
-func (s *Session) CloseForShutdown() {
-	s.close(context.Background(), closeOptions{cleanupEnv: true, forceTerminal: true, reason: sessionEndPromptInputExit})
-}
-
-type closeOptions struct {
-	cleanupEnv    bool
-	forceTerminal bool
-	// reason is the Claude session end reason ("clear", "resume", "logout",
-	// "prompt_input_exit", "other"). Empty means "other": the normal close paths
-	// can prove no reason, and SessionEnd must not claim one they cannot.
-	reason string
-}
-
-// claudeSessionEndReasons is Claude's closed session end vocabulary. A hook
-// matcher targets exactly one of these words.
-var claudeSessionEndReasons = map[string]bool{
-	"clear":             true,
-	"resume":            true,
-	"logout":            true,
-	"prompt_input_exit": true,
-	"other":             true,
-}
-
-// sessionEndPromptInputExit is Claude's reason for a session the user ended
-// while prompt input was up. The daemon's shutdown close reports it when the
-// session is provably idle.
-const sessionEndPromptInputExit = "prompt_input_exit"
-
-// claudeSessionEndReason maps a caller's reason onto Claude's vocabulary. Evener
-// proves two of these words: "clear" (a thread clear replaced this identity) and
-// "prompt_input_exit" (a shutdown close with the session idle and no work in
-// flight). "resume" and "logout" are accepted here but never sent by any caller,
-// because evener has no resume/logout event to prove them from. An empty or
-// unrecognized reason is "other" rather than a word a hook would act on.
-func claudeSessionEndReason(reason string) string {
-	trimmed := strings.TrimSpace(reason)
-	if claudeSessionEndReasons[trimmed] {
-		return trimmed
-	}
-	return "other"
-}
-
-// idleForPromptExit reports whether the session is idle enough for Claude's
-// "prompt_input_exit" to be true: no in-flight turn, no running job or
-// delegate, and no turn that was just cut short. A pending ask does NOT count —
-// a question on screen is the most literal case of the user exiting while
-// prompt input was visible.
-//
-// It reads every facet before releaseRuntimeOnce mutates any of them.
-func (s *Session) idleForPromptExit() bool {
-	if s == nil {
-		return false
-	}
-	s.mu.Lock()
-	// turnInterrupted is the marker that survives the interrupt branch's own
-	// settle: that settle sets SessionIdle and clears the pending ask, so
-	// without this a turn killed mid-stream would read as an idle prompt.
-	idle := s.state != SessionProcessing && !s.closing && !s.turnInterrupted
-	s.mu.Unlock()
-	if !idle {
-		return false
-	}
-	// The gates the idle-runtime release itself applies
-	// (idleReleasePregatesClear), so a claim made here and a release that path
-	// would refuse cannot disagree: a running job, a pending terminal flush, a
-	// watch send still owed, a running child, or an unconsumed delivery, close,
-	// or restore residue all mean the prompt was not the only thing left
-	// standing. Queued input, undelivered notifications, and undealt attention
-	// count too.
-	return s.idleReleasePregatesClear() && !s.sessionWorkPending()
-}
-
-// releaseRuntime runs the session's single one-time teardown under an explicit
-// policy. A prior terminal close or non-terminal release owns the pass, so a
-// later deferred Close can never run a destructive second pass. Terminal
-// callers keep the void/logging contract; a retirement caller gets the cleanup
-// errors back.
-func (s *Session) releaseRuntime(ctx context.Context, options closeOptions, policy runtimeReleasePolicy) error {
-	var releaseErr error
-	ran := false
-	s.closeOnce.Do(func() {
-		ran = true
-		releaseErr = s.releaseRuntimeOnce(ctx, options, policy)
-	})
-	if !ran {
-		// A terminal Close or an earlier release already owns the one pass.
-		// Terminal callers keep their void/no-op contract; a retirement caller
-		// must see that its release did not happen.
-		if policy == releaseRetirement {
-			return errRetirementTeardownSpent
-		}
-		return nil
-	}
-	return releaseErr
-}
-
-// close is the terminal-policy helper retained for internal callers and tests
-// that shuts a session down without needing the cleanup error.
-func (s *Session) close(ctx context.Context, options closeOptions) {
-	_ = s.releaseRuntime(ctx, options, releaseTerminal)
-}
-
-// joinWithinCloseBudget waits for wg, giving up when the close cascade's shared
-// budget expires and saying so. The joins it replaces exist for DELIVERY
-// ORDERING — an in-flight tool's end event, a detached emitter's event, reaching
-// the stream before it closes — which is a nicety, not a safety property:
-// sendEvent takes eventsMu and re-checks eventsClosed, so a straggler that
-// emits after this gives up is dropped, never a send on a closed channel.
-//
-// Weighed against that: a goroutine parked in an operation nothing can cancel
-// (an uncancellable tool call in a delegate the drain has already abandoned)
-// holds the WaitGroup forever, and an unbounded join converts a bounded drain
-// into an unbounded process. Losing an event that was never going to arrive is
-// the cheaper failure.
-//
-// The waiter goroutine is not leaked in any lasting sense: it holds nothing and
-// exits the moment the WaitGroup does drain.
-func (s *Session) joinWithinCloseBudget(ctx context.Context, wg *sync.WaitGroup, what string) {
-	joined := make(chan struct{})
-	go func() {
-		defer close(joined)
-		wg.Wait()
-	}()
-	select {
-	case <-joined:
-	case <-ctx.Done():
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
-			"close budget expired joining %s; their remaining events are dropped", what)})
-	}
-}
-
-func (s *Session) releaseAPILogRoute() {
-	if err := s.client.ReleaseSessionAPILog(s.id); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("release session API log: %v", err)})
-	}
-}
-
-// beginDispose admits an in-turn dispose op iff the session is not yet closing,
-// registering it on disposeWG under a single s.mu hold — the sendersWG idiom
-// (session.go): the closing check AND the WaitGroup Add happen atomically, so a
-// successful Add happens-before Close()'s disposeWG.Wait() join. A check
-// followed by an Add outside the lock would reopen the race (spec §P1, rev-9.1
-// finding O5). A true return MUST be paired with a (deferred) endDispose().
-func (s *Session) beginDispose() bool {
-	release, err := s.beginRetirementMutation("environment")
-	if err != nil {
-		return false
-	}
-	s.mu.Lock()
-	if s.closing {
-		s.mu.Unlock()
-		release()
-		return false
-	}
-	s.disposeWG.Add(1)
-	s.disposeRetirement = append(s.disposeRetirement, release)
-	s.mu.Unlock()
-	return true
-}
-
-// endDispose releases a dispose admission obtained from beginDispose().
-func (s *Session) endDispose() {
-	s.mu.Lock()
-	last := len(s.disposeRetirement) - 1
-	release := s.disposeRetirement[last]
-	s.disposeRetirement[last] = nil
-	s.disposeRetirement = s.disposeRetirement[:last]
-	s.mu.Unlock()
-	s.disposeWG.Done()
-	release()
-}
-
-// envWorkID handles one admission in envWork, so its label can be dropped
-// again when the work returns.
-type envWorkID uint64
-
-type envWorkRecord struct {
-	label   string
-	release func()
-}
-
-// registerEnvWorkLocked records an admission described by label and returns its
-// handle. The caller holds s.mu and has already established that the session is
-// not closing — that pairing is the whole point (see beginEnvWork).
-func (s *Session) registerEnvWorkLocked(label string, release func()) envWorkID {
-	s.envWorkSeq++
-	id := envWorkID(s.envWorkSeq)
-	if s.envWork == nil {
-		s.envWork = make(map[envWorkID]envWorkRecord)
-	}
-	if len(s.envWork) == 0 {
-		s.envWorkDrained = make(chan struct{})
-	}
-	s.envWork[id] = envWorkRecord{label: label, release: release}
-	return id
-}
-
-// beginEnvWork admits work that runs commands on the session's execution
-// environment and must therefore finish before Close reaps that environment's
-// process table: a whole manage_worktree call at its dispatch, the cut of a
-// delegate's isolation lane and the rollback that undoes it, and the rollback a
-// refused or failed operation owes after its swap has already released the
-// swap's own admission. It is the beginDispose idiom again — the closing check
-// AND the admission happen under one s.mu hold, so a successful admission
-// happens-before Close()'s join. A true return MUST be paired with a (deferred)
-// endEnvWork().
-//
-// label says what the work is, in the terms a human reading a shutdown warning
-// would want: it is what the close names if its bounded join gives up on this
-// admission.
-//
-// swapEnvAndRefresh calls registerEnvWorkLocked directly rather than this,
-// because it needs the environment it is adopting from out of the same lock
-// hold that reads `closing`; it is the same admission Close() joins.
-//
-// A false return means the close was already under way when this work began.
-// There is nothing left to fence it against — the environment it would run on
-// is already being torn down, and the close may already be past its join — and
-// the two kinds of caller answer that differently, on purpose:
-//
-//   - The manage_worktree DISPATCH refuses the call, and a delegate's
-//     isolation step refuses the spawn (errWorktreeOpWhileClosing). The work
-//     has not started, and running it unfenced would lock lanes and write
-//     sidecars against an environment being reaped and stores being closed. A
-//     closing session was never going to complete it anyway.
-//   - A ROLLBACK proceeds best-effort, exactly as it did before the fence
-//     existed. Its admission failing is the expected case — the close is what
-//     made the rollback necessary — and it is an undo the session already owes,
-//     so skipping it would leave the residue the rollback exists to prevent.
-//     Better unfenced cleanup than none.
-func (s *Session) beginEnvWork(label string) (envWorkID, bool) {
-	release, err := s.beginRetirementMutation("environment")
-	if err != nil {
-		return 0, false
-	}
-	s.mu.Lock()
-	if s.closing {
-		s.mu.Unlock()
-		release()
-		return 0, false
-	}
-	id := s.registerEnvWorkLocked(label, release)
-	s.mu.Unlock()
-	return id, true
-}
-
-// relabelEnvWork renames a live admission. An operation's admission is taken
-// before the work it will eventually have to undo, so the label that is honest
-// during the operation is not the one that is honest once its rollback starts;
-// the rollback renames itself as it begins. A handle no longer live (the work
-// returned) renames nothing.
-func (s *Session) relabelEnvWork(id envWorkID, label string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if work, live := s.envWork[id]; live {
-		work.label = label
-		s.envWork[id] = work
-	}
-}
-
-// endEnvWork releases an admission obtained from beginEnvWork(). Ending a
-// handle that already ended releases nothing, so it cannot end the join early
-// while another admission is still live.
-func (s *Session) endEnvWork(id envWorkID) {
-	s.mu.Lock()
-	work, live := s.envWork[id]
-	if live {
-		delete(s.envWork, id)
-		if len(s.envWork) == 0 {
-			close(s.envWorkDrained)
-			s.envWorkDrained = nil
-		}
-	}
-	s.mu.Unlock()
-	if work.release != nil {
-		work.release()
-	}
-}
-
-// outstandingEnvWork lists the labels of every admission still in flight,
-// ordered so a warning reads the same way twice.
-func (s *Session) outstandingEnvWork() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	labels := make([]string, 0, len(s.envWork))
-	for _, work := range s.envWork {
-		labels = append(labels, work.label)
-	}
-	sort.Strings(labels)
-	return labels
-}
-
-// joinEnvWorkWithinCloseBudget waits for every admitted environment work item
-// before the close touches anything that work is still using — the delegate
-// tree, this session's lanes and locks, the stores recording them, and finally
-// the environment's process table — and says what it walked past when the
-// shared close budget expires first.
-//
-// The four kinds of admission reach this join by different routes:
-//
-//   - A whole OPERATION, admitted at the manage_worktree dispatch, runs its git
-//     on the request context of the tool call. A close cancels the turn context
-//     that call descends from, so it stops of its own accord — but only the
-//     operations that reach a cancellation point do, and an operation that has
-//     already committed to a git command finishes it.
-//   - A delegate's LANE CREATE, admitted in prepareIsolation, runs its git on
-//     the request context of the spawn, which descends from that same turn
-//     context: it stops exactly the way an operation does, and likewise
-//     finishes a git command it has already committed to.
-//   - A SWAP's refresh runs under the session's own context, which this close
-//     cancelled in its step 2, well before reaching here. It stops on its own.
-//   - A ROLLBACK (worktreeCleanupRun) is DETACHED on purpose: it runs on
-//     context.Background() with a close-cascade budget of its own, because the
-//     close that refused the swap — or the spawn whose lane it is taking back —
-//     has already cancelled the request context the op's runner was bound to,
-//     and a rollback through that would fail silently. Cancelling the close
-//     cannot shorten it.
-//
-// So this bound is not a restatement of the rollback's bound: the close budget
-// is one close-cascade budget minted when the close began and partly spent by
-// the time it gets here, while a rollback's is a full close-cascade budget
-// starting later. The join can therefore always expire first. That is accepted
-// rather than fixed by waiting longer, for two reasons. The cascade budget
-// (spec §P0) exists so a whole close is bounded, and this join is a participant
-// in it, not an exception: giving rollback admissions their own full budget
-// would let one refused create roughly double a shutdown, which is the
-// unbounded-fence failure in slower motion. And when time is left the gap
-// rarely bites — a rollback of a just-created, still-empty lane is three git
-// commands and a sidecar unlink, and only approaches its ceiling when git is
-// already wedged, which is exactly the case the bound exists for.
-//
-// Sometimes there is no time left at all, and then a perfectly healthy rollback
-// is walked past: a close whose delegate-tree stop was hopeless calls
-// cancelBudget() outright, so the join below is zero-length by the time it
-// runs. That is the deliberate order of a shutdown that has already given up on
-// one subtree — but it is why the warning matters, and why it must name a real
-// admission rather than fire on every such close.
-//
-// If the two budgets ever do need reconciling, the move is to shorten the
-// ROLLBACK's (it cleans up an empty lane; it is not a disposal pass) rather
-// than lengthen the close — a budget change, and its own decision, not
-// something to smuggle in here.
-//
-// Walking past is the lesser failure either way. But the cleanup below is about
-// to reap the process table under whatever is still running, which must not
-// happen silently, so the warning names it.
-func (s *Session) joinEnvWorkWithinCloseBudget(ctx context.Context) {
-	s.mu.Lock()
-	drained := s.envWorkDrained
-	s.mu.Unlock()
-	if drained == nil {
-		return
-	}
-	// testOnly seam: see testConfig.closeAwaitingEnvWork. Nil in production.
-	// Only an endEnvWork of the last live admission closes drained, and the
-	// budget is not yet spent, so the select below blocks.
-	if observe := s.cfg.testOnly.closeAwaitingEnvWork; observe != nil && ctx.Err() == nil {
-		observe()
-	}
-	select {
-	case <-drained:
-		return
-	case <-ctx.Done():
-	}
-	// The budget is spent. Warn only about work that is actually still there:
-	// a close reaches this join with an already-expired budget whenever the
-	// delegate-tree stop cancelled the cascade outright, and one that also
-	// admitted nothing has nothing the cleanup below can run under. An empty
-	// list is likewise what a drain that won the race by a hair leaves — both
-	// are silence, not a warning naming nobody.
-	outstanding := s.outstandingEnvWork()
-	if len(outstanding) == 0 {
-		return
-	}
-	s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
-		"close budget expired with environment work still in flight (%s); the environment is cleaned under it",
-		strings.Join(outstanding, "; "))})
-}
-
-func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, policy runtimeReleasePolicy) error {
-	retirement := policy == releaseRetirement
-	cleanupEnv := options.cleanupEnv
-	emitTerminal := options.forceTerminal
-	// Sampled before step 1 mutates state and closing: a shutdown close may claim
-	// prompt_input_exit only if the session was idle at that instant.
-	sessionEndReason := claudeSessionEndReason(options.reason)
-	if sessionEndReason == sessionEndPromptInputExit && !s.idleForPromptExit() {
-		sessionEndReason = "other"
-	}
-	var releaseErr error
-	{
-		// One budget per close cascade (spec §P0, Implementation-order item 4):
-		// the initiating close mints the deadline; descendants reached below via
-		// close(budgetCtx, closeOptions{}) reuse it rather than minting their own.
-		budgetCtx, cancelBudget := ensureCloseBudget(ctx)
-		defer cancelBudget()
-		// Publish the shared deadline independently of eventsMu: an emitter may
-		// already hold eventsMu.RLock while waiting for the authoritative bridge.
-		// Its send must observe this context so the final close can acquire the
-		// write lock after the deadline instead of waiting behind that emitter.
-		s.closeCtxMu.Lock()
-		s.closeCtx = budgetCtx
-		if s.closeSignal == nil {
-			s.closeSignal = make(chan struct{})
-		}
-		closeSignal := s.closeSignal
-		s.closeCtxMu.Unlock()
-		go func() {
-			<-budgetCtx.Done()
-			close(closeSignal)
-		}()
-		// Dispose-turn vs own-close protocol (spec §P1, Implementation-order
-		// items 1-2): set-flag → cancel → join → drain. An in-turn dispose op
-		// admitted via beginDispose() holds disposeWG; close must not begin
-		// draining/teardown while one runs (its dispose steps need s.mu, which
-		// drainForClose holds — joining at the drain point would deadlock).
-		//
-		// Step 1: set the monotonic refuse-new-work flags under the documented
-		// lock pair (responseSideEffectsMu then mu, session.go), then release
-		// BOTH before the join. Holding responseSideEffectsMu across the join
-		// would stall every tool's side-effect section on one dispose (rev-9.1
-		// finding O4). `closing` is monotonic and every reader treats it as a
-		// refuse-new-work flag, so splitting today's single critical section is
-		// safe.
-		s.responseSideEffectsMu.Lock()
-		s.mu.Lock()
-		turns := s.modelResponses
-		emitEnd := emitTerminal || !s.sessionEndEmitted
-		s.sessionEndEmitted = true
-		if s.state == SessionProcessing {
-			s.endTurnLocked() // dying turn's work counts and it ends now (Decision 4/L3)
-		}
-		s.closing = true
-		if !retirement {
-			s.state = SessionClosed
-		}
-		s.mu.Unlock()
-		s.responseSideEffectsMu.Unlock()
-
-		// Step 2: cancel the turn ctx BEFORE the join so a mid-dispose git op is
-		// actually interruptible — the git runners are ctx-aware, which is what
-		// bounds the join (rev-9.1 finding O1: joining before cancelling makes
-		// the "observes ctx cancellation" mitigation unreachable). `closing` is
-		// already set above, so beginDispose() refuses any new admission past
-		// this point; only ops admitted before it are joined here.
-		if s.cancelFunc != nil {
-			s.cancelFunc()
-		}
-		if !retirement {
-			// Escalations can use a context independent of the turn. Deny their
-			// human-decision waits before joining the retained environment work;
-			// closing already prevents any new escalation from registering.
-			s.cancelAllEscalations()
-			// A delegate result is acknowledged only after its enclosing tool-result
-			// turn is durable. Closing refuses that turn, so release any receipts that
-			// can no longer reach their commit point before stopping the tree.
-			s.abortDelegateDeliveryCommits()
-		}
-		// A close that begins before the P3 open-pass delay elapses cancels the
-		// pass outright; stop the timer now that `closing` is set (a timer that
-		// already fired is joined below via sweepWG instead — spec §P3).
-		s.stopLaneResidueSweepTimer()
-		s.stopLaneReLockRetryTimer()
-
-		// Step 3: join the in-flight-dispose WaitGroup with NO locks held, then
-		// join any in-flight P3 open-pass residue sweep before this session's own
-		// disposal runs, so the two never race on the same lane's git ops.
-		s.disposeWG.Wait()
-		s.sweepWG.Wait()
-		// testOnly seam: observation point exactly after both joins returned. See
-		// testConfig.closeAfterDisposeSweepJoin. Nil in production.
-		if s.cfg.testOnly.closeAfterDisposeSweepJoin != nil {
-			s.cfg.testOnly.closeAfterDisposeSweepJoin()
-		}
-
-		// Join the environment work admitted before `closing` was set: a whole
-		// manage_worktree call (admitted at its dispatch, which is the one entry
-		// every operation passes through), the refresh of any swap that call
-		// performs, the cut of a delegate's isolation lane and the rollback that
-		// undoes it, and the rollback a refused or failed operation still owes
-		// after that swap returned. All of them fork git on the session's shared
-		// process table, and the rollbacks are work a close CAUSED.
-		//
-		// It joins HERE, before the delegate tree closes and before any of this
-		// session's own worktree cleanup, because everything below acts on the
-		// same lanes, locks and durable records an in-flight operation is still
-		// moving: disposing delegate lanes, sweeping foreign residue, unlocking
-		// the session's own worktree, and closing the stores that record all of
-		// it. Joining just before the environment cleanup would fence the process
-		// table and nothing else, leaving the operation to race every step in
-		// between. Nothing admitted may depend on those steps — an operation that
-		// waited on the delegate-tree close would deadlock this join until the
-		// budget expired — which is the same constraint the disposeWG join above
-		// already imposes on the dispose op.
-		//
-		// A swap's refresh stops on the session context cancelled in step 2
-		// above; a rollback is deliberately detached from it and bounded by a
-		// budget of its own; an operation, and a delegate's lane create, stop
-		// wherever their own request context is checked. This join is the
-		// backstop over all of them (see joinEnvWorkWithinCloseBudget). It runs for a child close too
-		// (cleanupEnv false): no such work may outlive the session that admitted
-		// it.
-		s.joinEnvWorkWithinCloseBudget(budgetCtx)
-
-		// The root-owned stable controller is the shutdown authority for its
-		// delegate tree. Persist and join recursive stop before generic Session
-		// teardown can close a child out from under that durable operation. The
-		// store stays open until worktree disposal has recorded its evidence.
-		// Retirement never stops or closes the durable delegate tree; exact
-		// resident child runtimes are released leaf-first by the caller instead.
-		if !retirement {
-			if err := s.closeOwnedDelegateRuntimeTree(budgetCtx); err != nil {
-				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate tree close incomplete: %v", err)})
-				// A hopeless stop has already consumed its dedicated half of the
-				// cascade budget. Do not spend the remaining half joining the same
-				// wedged child again through its generic Session.Close path.
-				if errors.Is(err, context.DeadlineExceeded) {
-					cancelBudget()
-				}
-			}
-		}
-
-		// Step 4: reacquire the pair and drain the subagent map. Marking closing
-		// BEFORE draining means a spawn or namer launch racing teardown is either
-		// registered here (and cancelled below) or observes closing and refuses —
-		// there is no window for a late goroutine to escape the drain. The map is
-		// cleared under the lock; children are closed OUTSIDE the lock
-		// (teardownChildSession's close acquires the child's own mu).
-		var subs []*subagent
-		if !retirement {
-			s.responseSideEffectsMu.Lock()
-			s.mu.Lock()
-			subs = s.subagents.drainForClose()
-			s.mu.Unlock()
-			s.responseSideEffectsMu.Unlock()
-		}
-		// Flush the just-accumulated work time and usage now, before any
-		// teardown below (Decision 4/L3): Close is the terminal event for a
-		// turn that died mid-flight above, and also for a turn that was
-		// cooperatively interrupted earlier — whose accumulation happened in
-		// processInputKindWithProvenance's wrapper AFTER processOneInput's own
-		// deferred autosave had already fired with a stale, pre-accumulation
-		// value. Neither case has any other flush point once Close runs, so
-		// without this the in-memory WorkMillis/CumulativeUsage are correct
-		// but never reach meta.json, and a daemon restart silently loses them.
-		if !retirement {
-			s.maybeAutoSave()
-			s.subagents.waitForReconstructions()
-			s.subagents.waitForReconstructionSideEffects()
-		}
-
-		// Spec Appendix B graceful shutdown ordering:
-		// 1. In-flight LLM calls were already cancelled in the set-flag → cancel
-		// → join preamble above; the dispose protocol requires the cancel to
-		// precede the join, which is earlier than this point.
-
-		// 2. Mark and stop durable jobs before environment cleanup can reap
-		// process handles and make deliberate shutdown look like runtime failure.
-		// Keep the parent store open while child sessions close; nested child
-		// jobs may still need to forward their terminal events to the parent.
-		var jobManagerCloseErr error
-		if s.jobManager != nil {
-			if retirement {
-				jobManagerCloseErr = s.jobManager.releaseQuiescentRuntime()
-			} else {
-				jobManagerCloseErr = s.jobManager.closeRuntimeState(budgetCtx)
-			}
-		}
-
-		// 3. Close subagents before shared environment cleanup; child sessions
-		// can own durable jobs whose process handles live in the parent env. The
-		// parent owns cleanup of that env (step 4), so a child's teardown never
-		// runs it; what a child owns is its scratch, which its teardown ends.
-		if !retirement {
-			for _, sub := range subs {
-				teardownChildSession(budgetCtx, sub.sess)
-			}
-		}
-		if s.ownsArtifactStore && s.artifactStore != nil {
-			if err := s.artifactStore.Close(); err != nil {
-				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("artifact store close incomplete: %v", err)})
-				if retirement {
-					releaseErr = errors.Join(releaseErr, err)
-				}
-			}
-		}
-		// Native worktree tools spec §9 step 4 + §5 close-unlock: dispose the
-		// isolation delegate lanes this session created and unlock its own
-		// occupied managed worktree. Both run AFTER child sessions close (a
-		// mid-tree delegate parent disposes its own lanes first) and BEFORE the
-		// store closes, because disposal's disposed mark is a durable append
-		// (step 5). env Cleanup() below (step 4 of the ordering) kills any
-		// residual lane process; a residual writer racing the clean check is
-		// self-healing since disposal's `git worktree remove` runs without
-		// --force and downgrades to keep on a dirty refusal.
-		if !retirement {
-			s.disposeDelegateLanesAtClose(budgetCtx)
-			// P3 close pass (spec §P3): after this session's own P0 disposal, collect
-			// foreign residue (other cleanly-closed sessions' unlocked, merged
-			// delegate lanes) over the SAME shared close budget. Store must still be
-			// open (the own-store Disposed mark is a durable append); it closes below.
-			s.disposeLaneResidueAtClose(budgetCtx)
-			s.unlockOwnManagedWorktreeAtClose(budgetCtx)
-		}
-
-		if !retirement && s.jobManager != nil {
-			jobManagerCloseErr = errors.Join(jobManagerCloseErr, s.jobManager.closeStoreOnly())
-		}
-		if jobManagerCloseErr != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("job manager close incomplete: %v", jobManagerCloseErr)})
-			if retirement {
-				releaseErr = errors.Join(releaseErr, jobManagerCloseErr)
-			}
-		}
-		if err := s.closeOwnedDelegateStoreWithContext(budgetCtx); err != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate store close incomplete: %v", err)})
-			if retirement {
-				releaseErr = errors.Join(releaseErr, err)
-			}
-		}
-
-		// Retirement ends the parked and abandoned environments' scratch
-		// without signalling any process; the current environment's goes at the
-		// end of close, after MCP shutdown.
-		if retirement {
-			s.endRetirementScratch()
-		}
-		s.closeMemoryEnvironments()
-		// 4. Kill any remaining child processes (SIGTERM → wait 2s → SIGKILL).
-		if options.cleanupEnv {
-			if observe := s.cfg.testOnly.envCleanupObserved; observe != nil {
-				observe(s.currentEnv())
-			}
-			s.currentEnv().Cleanup()
-			// A session closing while entered in a worktree still holds the
-			// environment it parked at enter. A child spawned before the enter
-			// shares that object and may have minted a scratch there — one the
-			// child's teardown skips (not its own) and the current clone's
-			// Cleanup never reaches. The parked environment shares the current
-			// clone's process table, which was just reaped, so only its scratch
-			// is left: removed, never a second Cleanup.
-			s.disposeParkedWorktreeEnvironmentScratch()
-			// And every environment a later enter dropped, which the parked one
-			// does not cover: worktreeRestoreEnv holds only the launch
-			// environment, so a switch leaves the clone it came from reachable
-			// from nothing.
-			s.disposeAbandonedEnvironmentScratch()
-		}
-
-		if !retirement {
-			// SessionEnd hooks (best-effort, bounded timeout)
-			if s.hookRunner != nil && s.hookRunner.Has(plugin.HookSessionEnd) {
-				hookCtx, hookCancel := context.WithTimeout(context.Background(), 10*time.Second)
-				in := s.hookInput(plugin.HookSessionEnd)
-				in.Reason = sessionEndReason
-				s.hookRunner.RunSessionEndFor(s.apiLogContext(hookCtx), in, sessionEndReason)
-				hookCancel()
-			}
-
-			// 5-6. Emit SESSION_END with final state.
-			//
-			// Under the transcript door, because the terminal boundary has to be
-			// ordered against the one other publication that takes it: an
-			// environment append holds attentionMu across its entry and the event
-			// announcing it, so taking it here waits for an append already in
-			// flight and shuts out any that starts later (it re-reads `closing`,
-			// set in step 1, under this same lock). Without that an ENVIRONMENT
-			// event can reach a live reader behind the SESSION_END that says the
-			// session is over. The send is bounded by the shared close budget, the
-			// same bound the emit below already relies on, and the door is released
-			// before closeAttachedTranscript takes it again.
-			s.attentionMu.Lock()
-			if emitEnd {
-				// A live authoritative bridge gets the terminal boundary with the
-				// same lossless backpressure as every other event. A wedged bridge
-				// cannot be allowed to hold CloseForShutdown here: the shared close
-				// deadline releases sendEventContext, after which the durable closed
-				// state and stream close below still complete.
-				data := events.SessionEndData{
-					Reason: "session_closed",
-					State:  string(SessionClosed),
-					Turns:  turns,
-				}
-				_, ev, delivered := s.sendEventContext(budgetCtx, events.EventSessionEnd, data, s.activeCausalProvenance())
-				if delivered && s.jobManager != nil {
-					s.jobManager.onSessionEvent(ev)
-				}
-			}
-			s.attentionMu.Unlock()
-		}
-
-		if s.mcpMgr != nil {
-			s.mcpMgr.Close()
-		}
-
-		// Scratch goes last: SessionEnd hooks and MCP servers above still run with
-		// TMPDIR inside it, and bubblewrap refuses a missing bind source.
-		if cleanupEnv || retirement {
-			s.endOwnedCurrentScratch()
-		}
-
-		if retirement {
-			// The fault seam is evaluated only under the non-terminal policy, so a
-			// set fault can never skip the terminal close's transcript close.
-			if err := retirementReleaseFailure("transcript_close"); err != nil {
-				releaseErr = errors.Join(releaseErr, err)
-			} else if err := s.closeAttachedTranscript(); err != nil {
-				releaseErr = errors.Join(releaseErr, fmt.Errorf("close transcript: %w", err))
-			}
-		} else {
-			_ = s.closeAttachedTranscript()
-		}
-
-		if !retirement {
-			// Export ATIF trajectory if configured (root session only, after transcript flush).
-			if s.cfg.ExportATIFPath != "" && s.stateDir != "" && s.cfg.spawn.depth == 0 {
-				tpath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
-				if err := exportATIF(tpath, s.cfg.ExportATIFPath, s.cfg.ExportATIFProviderHandles); err != nil {
-					s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("ATIF export failed: %v", err)})
-				}
-			}
-
-			// 8. Reassert closed in case an in-flight turn reached a late state transition.
-			s.mu.Lock()
-			s.state = SessionClosed
-			s.mu.Unlock()
-		}
-		s.joinWithinCloseBudget(budgetCtx, &s.toolEventsWG, "in-flight tool events")
-		// Join detached event emitters (subagent runs, session namer) so their
-		// events are delivered before the channel closes. They are already
-		// cancelled above (child Close + cancelFunc), so this normally returns
-		// promptly — but "cancelled" is not the same as "returns", which is the
-		// whole of #317: a delegate parked inside an uncancellable tool call holds
-		// both of these WaitGroups forever, and an unbudgeted join here made the
-		// drain's give-up worthless because run.go prints its answer only after
-		// Close(). Both joins are therefore bounded by the shared close budget.
-		s.joinWithinCloseBudget(budgetCtx, &s.sendersWG, "detached event emitters")
-		s.releaseAPILogRoute()
-		// Close under eventsMu so a caller-owned emit() (Enqueue/DrainAsSteer or
-		// the ProcessInput loop — goroutines the session cannot join) can never
-		// send on the closed channel. This replaces the old emit() recover().
-		s.eventsMu.Lock()
-		s.eventsClosed = true
-		close(s.events)
-		s.eventsMu.Unlock()
-	}
-	return releaseErr
 }
 
 // recordAbandonedEnvironmentLocked remembers an environment the swap has just
@@ -937,7 +160,7 @@ func (s *Session) endOwnedCurrentScratch() {
 		return
 	}
 	if err := local.EndSessionScratch(); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: "session scratch removal incomplete: " + err.Error()})
+		s.emit(events.WarningData{Message: "session scratch removal incomplete: " + err.Error()})
 	}
 }
 
@@ -953,7 +176,7 @@ func (s *Session) discardRestoredCandidate() {
 	s.closeOnce.Do(func() {
 		s.responseSideEffectsMu.Lock()
 		s.mu.Lock()
-		s.sessionEndEmitted = true
+		s.suppressSessionEndLocked()
 		s.closing = true
 		s.state = SessionClosed
 		subs := s.subagents.drainForClose()
@@ -1017,6 +240,11 @@ const (
 	// EntryDelegateAttention is a controller-owned stable delegate generation
 	// whose exact model-bound input is already durable in the receiver transcript.
 	EntryDelegateAttention
+	// EntryRuntime is a daemon-authored recovery turn. It records no user turn:
+	// the steering queued for it (a delegate's missing-report reminder) is the
+	// model's whole prompt, so recovery cannot masquerade as caller instruction
+	// in history, events, hooks, or compaction (#3734).
+	EntryRuntime
 	// entryKindCount is the number of EntryKind values. Keep it last: the
 	// turn-opening audit (entrykind_audit_test.go) iterates up to it, so a kind
 	// added above this line must declare how its turn acquires an identity
@@ -1080,13 +308,12 @@ func routeNoToolCalls(kind EntryKind, noContent bool, afterTerminalCommunicate b
 
 // drainInputs is the snapshot the drain loop feeds selectDrainNextAction after a
 // completed (non-error) turn: the kind of the turn that just ran, whether a goal
-// continuation is already deferred, the popped follow-up text and queued message
+// continuation is already deferred, the popped queued message
 // (its text plus image and selection counts), whether notification work is pending, and
 // whether the turn just rested SessionAwaiting (spec §5.3's drain-ladder gate).
 type drainInputs struct {
 	RanKind              EntryKind
 	HaveDeferredCont     bool
-	FollowUp             string
 	QueuedText           string
 	QueuedImages         int
 	QueuedSkills         int
@@ -1104,7 +331,7 @@ type drainInputs struct {
 	// could not persist, most often. No autonomous turn runs behind it -- a
 	// notification or continuation would drain the steer under a turn id that
 	// is not the receipt's -- so the input settles and the next external wake
-	// carries the steer. User work (a follow-up, a queued message) still runs.
+	// carries the steer. User work (a queued message) still runs.
 	SteeringParked bool
 }
 
@@ -1112,11 +339,9 @@ type drainInputs struct {
 type drainAction int
 
 const (
-	// runFollowUp runs the popped per-turn follow-up as the next turn.
-	runFollowUp drainAction = iota
 	// runQueued runs the popped queued user message -- or the steering carrier
 	// claimed in its place -- as the next turn.
-	runQueued
+	runQueued drainAction = iota
 	// armGoalGate marks that the goal-continuation gate folds this turn and, with no
 	// notification pending, the resulting turn is the deferred continuation (if the
 	// fold arms one) or idle.
@@ -1138,8 +363,8 @@ const (
 // SessionAwaiting.
 //
 // Awaiting is checked first and overrides every other rung (spec §5.3's
-// drain-ladder gate): a turn that just posted a question holds its follow-up,
-// notification, and goal rungs — none of them may drive the model past the
+// drain-ladder gate): a turn that just posted a question holds its
+// notification and goal rungs — none of them may drive the model past the
 // unanswered questions — and only the queued-input rung stays live, because a
 // message the user queued mid-turn IS the reply (they are demonstrably present).
 //
@@ -1150,8 +375,8 @@ const (
 // instead would report the session idle while the user's drained text is
 // still undispatched (issue #1308).
 //
-// Otherwise, priority: a pending follow-up, then a queued user message (or
-// the carrier), then a pending notification, then the goal gate's deferred
+// Otherwise, priority: a queued user message (or the carrier), then a pending
+// notification, then the goal gate's deferred
 // continuation, then idle.
 // The goal gate always folds BEFORE the notification turn runs: the wrapper arms
 // on !skipGoalGate before acting on runNotification, so the fold stays ahead of
@@ -1169,8 +394,6 @@ func selectDrainNextAction(in drainInputs) (action drainAction, skipGoalGate boo
 		return goIdle, skipGoalGate
 	}
 	switch {
-	case strings.TrimSpace(in.FollowUp) != "":
-		return runFollowUp, skipGoalGate
 	case queued:
 		return runQueued, skipGoalGate
 	case in.SteeringParked:
@@ -1195,18 +418,27 @@ func (s *Session) ProcessInput(ctx context.Context, input string, images []Image
 
 // ProcessInputKind processes a single input of the given EntryKind through to
 // completion and returns the accumulated assistant output. It runs the input,
-// then loops to drain per-turn follow-ups and queued user messages, running
-// each as a further turn. On a cancelled turn it applies interrupt semantics —
-// flipping the session back to idle (unless closed), appending a system-reminder
-// interrupt marker, and optionally draining the queue head — then returns the
-// partial output with the error. It emits EventSessionEnd for the input and
+// then loops to drain queued user messages, running each as a further turn.
+// On a cancelled turn it applies interrupt semantics — flipping the session
+// back to idle (unless closed), appending a system-reminder interrupt marker,
+// and optionally draining the queue head — then returns the partial output with the error. It emits EventSessionEnd for the input and
 // returns an error when the session is closed or a turn fails.
 func (s *Session) ProcessInputKind(ctx context.Context, input string, images []ImageAttachment, kind EntryKind) (string, error) {
 	return s.processInputKindWithProvenance(ctx, input, images, kind, nil)
 }
 
 func (s *Session) processInputWithProvenance(ctx context.Context, input string, images []ImageAttachment, p *provenance.Causal) (string, error) {
+	// This internal entry is used for harness nudges and stop-hook input, not
+	// a client's message. Keep that evidence distinct from session placement.
+	ctx = context.WithValue(ctx, internalTranscriptInputKey{}, true)
 	return s.processInputKindWithProvenance(ctx, input, images, EntryUserInput, p)
+}
+
+// processRuntimeInput runs a daemon-authored recovery turn. It records no user
+// input of its own: the steering queued for it is the model's whole prompt, so
+// the turn cannot be mistaken for the caller speaking (#3734).
+func (s *Session) processRuntimeInput(ctx context.Context, p *provenance.Causal) (string, error) {
+	return s.processInputKindWithProvenance(ctx, "", nil, EntryRuntime, p)
 }
 
 func (s *Session) processInputKindWithProvenance(ctx context.Context, input string, images []ImageAttachment, kind EntryKind, inputProvenance *provenance.Causal) (string, error) {
@@ -1215,6 +447,8 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		return "", admissionErr
 	}
 	defer release()
+	s.inputsInFlight.Add(1)
+	defer s.inputsInFlight.Add(-1)
 	// A SessionStart hook's continue:false is recorded while an input is being
 	// accepted and consumed by processOneInput's take. An input refused before
 	// that -- an unhealthy transcript, a closed session, a failed user-turn
@@ -1228,6 +462,12 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 	if kind == EntryUserInput {
 		defer s.clearSessionStartHookStop()
 	}
+	// A delegate child's turn keeps the marker parent's activity evidence
+	// fresh for its whole life, silent stretches included; see
+	// startLaneEvidenceTicker. Stopped before the retirement release, so no
+	// tick outlives the turn.
+	stopEvidenceTicker := s.startLaneEvidenceTicker(ctx)
+	defer stopEvidenceTicker()
 	// Stamp the session id for the whole turn so LLM side calls made from tools
 	// (web fetch summaries, naming, in-turn compaction) attribute to this
 	// session in the per-session API log. callModelWithFallback layers its
@@ -1277,7 +517,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		s.mu.Unlock()
 		return "", nil
 	}
-	s.sessionEndEmitted = false
+	s.rearmSessionEndLocked()
 	// Mark the session as in-turn for the duration of this input. SetGoal/ClearGoal
 	// read this under s.mu to coordinate the idle kick against the drain-loop gate
 	// (spec §7): while it is set, an idle kick is suppressed (the gate backs the
@@ -1289,6 +529,13 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		s.mu.Lock()
 		s.goalInTurn = false
 		s.mu.Unlock()
+		// The last act before going idle: a switch queued while this input ran
+		// whose moment already passed (the pick landed after the final turn
+		// returned, so no further turn of this input applies it) would
+		// otherwise wait for a turn that nothing schedules. The session is idle
+		// here, so the switch applies now and its marker is persisted before
+		// the process can retire. Between-turn picks are the loop site above's.
+		s.applyPendingModelSwitch()
 	}()
 
 	// A test-only seam: fail the turn before its user entry is recorded, the
@@ -1323,9 +570,11 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// turn's own buffered record can poison the writer while it runs, and
 		// this loop then carries straight on into the follow-up or drained
 		// message behind it. The writer's own lock is taken outside s.mu (an
-		// append holds it across a write and an fsync), and poisoned is never
-		// cleared, so a stale read costs one turn that then meets the writer's
-		// own refusal.
+		// append holds it across a write and an fsync). A writer an attention
+		// reopen replaced is not the session's writer any more: the gate
+		// revalidates a refusal against the attached writer, and a close or
+		// poison that lands after a healthy decision is the stale read the next
+		// round's gate re-samples.
 		if err := s.refuseTurnOnUnhealthyTranscript(processCtx); err != nil {
 			// A steering carrier claimed at the tail below owns the active-turn
 			// slot until something hands it back; a refusal here is before the
@@ -1359,6 +608,14 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// does not — /par #4).
 		ranKind := nextKind
 		ranClientMutation := queuedClientMutationFromContext(processCtx)
+		// A model switch queued during the previous turn - or picked in the
+		// window after that turn settled but before this one starts - applies
+		// here, and only here: the previous processOneInput has returned, so
+		// its deferred settlement (attention finalizers included) already ran
+		// and cannot clobber the switch's own recovery, and this turn has not
+		// been admitted yet, so it opens on the picked model with the switch
+		// marker between the two turns.
+		s.applyPendingModelSwitch()
 		out, progressed, err := s.processOneInput(processCtx, next, nextImages, nextKind, nextProvenance)
 		// The durable name of the turn that just ran, read before this turn's
 		// completion below releases it. An interrupt's marker is that turn's
@@ -1396,9 +653,8 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// The durable selection belonged to the turn that just ran; a
 		// follow-up turn must not re-admit it.
 		processCtx = withDurableSkillSelection(processCtx, nil)
-		// Follow-up turns (after the first) carry no attachments and are
-		// user-driven, not continuations.
-		nextImages = nil
+		// Follow-up turns (after the first) are user-driven, not
+		// continuations; each drain rung sets the attachments it carries.
 		nextKind = EntryUserInput
 		nextProvenance = nil
 		if strings.TrimSpace(out) != "" {
@@ -1444,7 +700,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 						// check — clears after the marker is accepted.
 						s.clearAskPending()
 						s.finishProcessingAtBoundary(processCtx, SessionIdle)
-						s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: interruptMsg, Kind: events.SteeringKindInterrupted})
+						s.emit(events.SteeringInjectedData{Text: interruptMsg, Kind: events.SteeringKindInterrupted})
 					}
 				} else {
 					// A closing session cannot publish a marker. Preserve the
@@ -1458,13 +714,10 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 				if markerAccepted {
 					s.mu.Lock()
 					turns := s.modelResponses
-					emitEnd := !s.sessionEndEmitted
-					if emitEnd {
-						s.sessionEndEmitted = true
-					}
+					emitEnd := s.claimSessionEndLocked(false)
 					s.mu.Unlock()
 					if emitEnd {
-						s.emit(events.EventSessionEnd, events.SessionEndData{
+						s.emit(events.SessionEndData{
 							Reason: "interrupted",
 							// The boundary above settled the session; WireState says
 							// whether queued work will move it on.
@@ -1517,10 +770,8 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 						} else if inputHasContent(queued.Text, queued.Images, queued.SkillNames, queued.CommandNames) {
 							next = queued.Text
 							nextImages = queued.Images
-							processCtx = s.contextWithSelectedSkills(withQueuedClientMutation(cfg.nextTurnContext(), queued), queued)
-							s.mu.Lock()
-							s.sessionEndEmitted = false
-							s.mu.Unlock()
+							processCtx = s.claimedInputContext(cfg.nextTurnContext(), queued)
+							s.rearmSessionEnd()
 							continue
 						}
 					}
@@ -1564,98 +815,69 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		s.completeExecution(schema.TurnCompleted)
 		// Drain the next action after a completed (non-error) turn. The pops and the
 		// goal-gate fold are side effects kept here; selectDrainNextAction is the pure
-		// priority decision over their results. popQueueHead is reached only when no
-		// follow-up is pending (it consumes a queued message), matching the original
-		// short-circuit; notification work is likewise consulted only at its ladder
-		// rung and only for a non-notification, non-awaiting turn.
+		// priority decision over their results. Notification work is consulted only
+		// at its ladder rung and only for a non-notification, non-awaiting turn.
 		//
 		// awaiting reflects the boundary state the turn that just ran left behind
-		// (spec §5.3's drain-ladder gate). The follow-up pop itself is skipped while
-		// awaiting — not popped and then discarded — so a follow-up queued during
-		// the asking turn (FollowUp is public API with no gating of its own) is left
-		// intact in s.followups for the next drain cycle instead of being silently
-		// dropped by an awaiting rest that won't run it.
-		//
-		// This used to read s.State() == SessionAwaiting alone, on the premise
-		// that askPendingCount() > 0 here implied THIS round's own delta grew it
-		// (askedThisRound, which deliverIfCommunicated maps straight to
-		// SessionAwaiting) — true only because processOneInput's entry used to
-		// clear askPending unconditionally, so nothing could reach this capture
-		// with a pending ask the round itself did not just post. A steering-carrier
-		// entry whose steer does not answer the ask (a human-note update,
-		// steeringCarrierClaimAnswersAsk) now skips that entry clear, so a round
-		// that merely acknowledges the note without posting anything new leaves
-		// askPending exactly as it was — nonzero, but with askedThisRound false —
-		// and deliverIfCommunicated settles it SessionIdle at this capture point
-		// (armAwaitingAtSettle's general upgrade runs later, at the outer loop's
-		// own terminal settle, not before this capture). Reading state alone would
-		// then pop and run a follow-up while ask1 sits unanswered
-		// (TestAskUser_FollowUpNotDrainedWhilePendingAskSurvivesAHumanNoteCarrierRound
-		// pins this). askPendingCount() > 0 is checked directly alongside the
-		// state read so the gate holds regardless of which boundary state this
-		// round's own delta happened to settle on — awaitingOrHasPendingAsk
-		// samples both under one lock so a concurrent state transition or
-		// askPending mutation can't land between the two reads.
+		// (spec §5.3's drain-ladder gate). A steering-carrier entry whose steer does
+		// not answer the ask (a human-note update, steeringCarrierClaimAnswersAsk)
+		// skips the entry clear of askPending, so a round that merely acknowledges
+		// the note leaves askPending nonzero while deliverIfCommunicated settles it
+		// SessionIdle at this capture point. State alone would then read as not
+		// awaiting while ask1 sits unanswered, so askPendingCount() > 0 is checked
+		// alongside it; awaitingOrHasPendingAsk samples both under one lock so a
+		// concurrent state transition or askPending mutation can't land between
+		// the two reads.
 		awaiting := s.awaitingOrHasPendingAsk()
-		var fu string
-		if !awaiting {
-			// Follow-ups need no such guard: they live in memory for this
-			// process only, so a refusal that leaves one popped loses nothing a
-			// restart could have recovered. The queue below is durable.
-			fu = s.popFollowUp()
-		}
 		var queued queuedInput
-		if strings.TrimSpace(fu) == "" {
-			// The pop is durable and the turn it feeds runs on the next
-			// iteration, past the gate at the top of this loop. Refuse before
-			// taking the message rather than after: a message popped for a turn
-			// that is then refused is in no transcript, no queue and no session.
-			// Left queued, it is waiting when the restart recovers the writer.
-			if err := s.refuseTurnOnUnhealthyTranscript(processCtx); err != nil {
-				return strings.Join(outputs, "\n"), err
-			}
-			// kata 111a / t5j6: each drained queued message becomes a distinct user
-			// turn; its image attachments ride along as ContentImage parts.
-			//
-			// The claim refuses poison itself, on the generation it commits
-			// against, so a poisoning that lands after the check above still
-			// cannot pop a message for a turn the transcript will refuse. That
-			// refusal ends the input exactly as the check would.
-			var popRefusal error
-			queued, popRefusal = s.popQueueHeadRefusingPoison()
-			if popRefusal != nil {
+		// The pop is durable and the turn it feeds runs on the next
+		// iteration, past the gate at the top of this loop. Refuse before
+		// taking the message rather than after: a message popped for a turn
+		// that is then refused is in no transcript, no queue and no session.
+		// Left queued, it is waiting when the restart recovers the writer.
+		if err := s.refuseTurnOnUnhealthyTranscript(processCtx); err != nil {
+			return strings.Join(outputs, "\n"), err
+		}
+		// kata 111a / t5j6: each drained queued message becomes a distinct user
+		// turn; its image attachments ride along as ContentImage parts.
+		//
+		// The claim refuses poison itself, on the generation it commits
+		// against, so a poisoning that lands after the check above still
+		// cannot pop a message for a turn the transcript will refuse. That
+		// refusal ends the input exactly as the check would.
+		var popRefusal error
+		queued, popRefusal = s.popQueueHeadRefusingPoison()
+		if popRefusal != nil {
+			return strings.Join(outputs, "\n"), s.refuseTurnOnUnhealthyTranscript(processCtx)
+		}
+		// User steering the turn that just ran left behind -- a queue
+		// drained as steering after its last model call was in flight --
+		// has no turn of its own, and the input is not over until it has
+		// run. Claim its carrier here, as the queued entry, so it runs
+		// inline rather than after this call has reported the session
+		// idle and a wake reopens it (issue #1308). Only when nothing is
+		// queued: a queued message drains the steering itself. The claim
+		// refuses a held rail (a Stop parked the steer) and an occupied
+		// slot, the same gate the wake's claim uses, and it is not made
+		// while steering is parked (steeringParkedNow): a steer this
+		// input already tried and failed to append -- at a carrier, which
+		// ends the input, or at a running turn's own boundary drain,
+		// which goes on and completes -- is one attempt per external
+		// wake, and this rung is not one. The selector sees the park too
+		// and takes goIdle ahead of the autonomous rungs.
+		if !inputHasContent(queued.Text, queued.Images, queued.SkillNames, queued.CommandNames) && !s.steeringParkedNow() && s.hasPendingUserSteering() {
+			carrier, carrierRefusal := s.claimSteeringCarrierInput()
+			if carrierRefusal != nil {
 				return strings.Join(outputs, "\n"), s.refuseTurnOnUnhealthyTranscript(processCtx)
 			}
-			// User steering the turn that just ran left behind -- a queue
-			// drained as steering after its last model call was in flight --
-			// has no turn of its own, and the input is not over until it has
-			// run. Claim its carrier here, as the queued entry, so it runs
-			// inline rather than after this call has reported the session
-			// idle and a wake reopens it (issue #1308). Only when nothing is
-			// queued: a queued message drains the steering itself. The claim
-			// refuses a held rail (a Stop parked the steer) and an occupied
-			// slot, the same gate the wake's claim uses, and it is not made
-			// while steering is parked (steeringParkedNow): a steer this
-			// input already tried and failed to append -- at a carrier, which
-			// ends the input, or at a running turn's own boundary drain,
-			// which goes on and completes -- is one attempt per external
-			// wake, and this rung is not one. The selector sees the park too
-			// and takes goIdle ahead of the autonomous rungs.
-			if !inputHasContent(queued.Text, queued.Images, queued.SkillNames, queued.CommandNames) && !s.steeringParkedNow() && s.hasPendingUserSteering() {
-				carrier, carrierRefusal := s.claimSteeringCarrierInput()
-				if carrierRefusal != nil {
-					return strings.Join(outputs, "\n"), s.refuseTurnOnUnhealthyTranscript(processCtx)
-				}
-				if carrier.SteeringCarrier {
-					queued = carrier
-					if s.cfg.testOnly.steeringCarrierClaimed != nil {
-						s.cfg.testOnly.steeringCarrierClaimed(carrier.StableTurnID)
-					}
+			if carrier.SteeringCarrier {
+				queued = carrier
+				if s.cfg.testOnly.steeringCarrierClaimed != nil {
+					s.cfg.testOnly.steeringCarrierClaimed(carrier.StableTurnID)
 				}
 			}
 		}
-		noFollowUpOrQueued := strings.TrimSpace(fu) == "" &&
-			!inputHasContent(queued.Text, queued.Images, queued.SkillNames, queued.CommandNames) && !queued.SteeringCarrier
+		noQueued := !inputHasContent(queued.Text, queued.Images, queued.SkillNames, queued.CommandNames) && !queued.SteeringCarrier
 		notificationsPending := false
 		// After a terminal communicate, notification work is left to the one-shot
 		// drain rather than run here: a completion the model was never shown is
@@ -1664,13 +886,12 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// one-shot turn path is followed by DrainJobTree (cmd/evener run,
 		// drainForFinalization), and the drain's own turn gate reads the same
 		// two signals.
-		if noFollowUpOrQueued && !awaiting && ranKind != EntryNotification && !s.hasAcceptedTerminalCommunicate() {
+		if noQueued && !awaiting && ranKind != EntryNotification && !s.hasAcceptedTerminalCommunicate() {
 			notificationsPending = s.peekNotifications() > 0 || s.pendingRootDelegateAttention()
 		}
 		action, skipGoalGate := selectDrainNextAction(drainInputs{
 			RanKind:              ranKind,
 			HaveDeferredCont:     haveDeferredCont,
-			FollowUp:             fu,
 			QueuedText:           queued.Text,
 			QueuedImages:         len(queued.Images),
 			QueuedSkills:         len(queued.SkillNames),
@@ -1681,20 +902,11 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			SteeringParked:       s.steeringParkedNow(),
 		})
 
-		switch action {
-		case runFollowUp:
-			next = fu
-			s.mu.Lock()
-			s.sessionEndEmitted = false
-			s.mu.Unlock()
-			continue
-		case runQueued:
+		if action == runQueued {
 			next = queued.Text
 			nextImages = queued.Images
-			processCtx = s.contextWithSelectedSkills(withQueuedClientMutation(processCtx, queued), queued)
-			s.mu.Lock()
-			s.sessionEndEmitted = false
-			s.mu.Unlock()
+			processCtx = s.claimedInputContext(processCtx, queued)
+			s.rearmSessionEnd()
 			continue
 		}
 
@@ -1769,11 +981,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			// here). If the goal is no longer active, drop the stale continuation and
 			// fall through to settle + idle; if it is active, run a FRESH render of the
 			// CURRENT objective so a retarget pursues the new goal.
-			s.mu.Lock()
-			if !s.closingOrClosedLocked() {
-				s.sessionEndEmitted = false
-			}
-			s.mu.Unlock()
+			s.rearmSessionEndUnlessClosing()
 			if cont, ok := s.currentGoalContinuation(); ok {
 				next = cont
 				nextImages = nil
@@ -1785,7 +993,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// turn-tail window (after the gate's store read) so it is not stranded until
 		// the next user message (spec §7). No-op when no fresh goal is pending.
 		if err := s.flushPendingDelegateDeliveries(); err != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: "delegate delivery retry at processing boundary failed: " + err.Error()})
+			s.emit(events.WarningData{Message: "delegate delivery retry at processing boundary failed: " + err.Error()})
 		}
 		goalKicked := s.settleGoalOnIdle()
 		// A steer this input recorded whose store mark the store refused gets
@@ -1793,17 +1001,15 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		s.reconcileRecordedSteering()
 		s.armAwaitingAtSettle(strings.TrimSpace(strings.Join(outputs, "\n")) != "", goalKicked)
 		s.mu.Lock()
-		if !s.sessionEndEmitted {
-			s.sessionEndEmitted = true
-			turns := s.modelResponses
-			s.mu.Unlock()
-			s.emit(events.EventSessionEnd, events.SessionEndData{
+		turns := s.modelResponses
+		emitEnd := s.claimSessionEndLocked(false)
+		s.mu.Unlock()
+		if emitEnd {
+			s.emit(events.SessionEndData{
 				Reason: "input_complete",
 				State:  s.WireState(),
 				Turns:  turns,
 			})
-		} else {
-			s.mu.Unlock()
 		}
 		return strings.Join(outputs, "\n"), nil
 	}
@@ -1824,13 +1030,10 @@ func (s *Session) endInputAtTurnFailure() {
 	s.mu.Lock()
 	closed := s.closingOrClosedLocked()
 	turns := s.modelResponses
-	emitEnd := !s.sessionEndEmitted && !closed
-	if emitEnd {
-		s.sessionEndEmitted = true
-	}
+	emitEnd := !closed && s.claimSessionEndLocked(false)
 	s.mu.Unlock()
 	if emitEnd {
-		s.emit(events.EventSessionEnd, events.SessionEndData{
+		s.emit(events.SessionEndData{
 			Reason: "turn_failed",
 			State:  s.WireState(),
 			Turns:  turns,
@@ -1852,12 +1055,14 @@ func (s *Session) endInputAtTurnFailure() {
 // telling the caller the input finished normally while its message or steer stays
 // unclaimed.
 //
-// It reads the writer's own lock outside s.mu (an append holds that lock across
-// a write and an fsync), and neither fact is ever cleared, so a stale read costs
-// one turn that then meets the writer's own refusal.
+// A writer an attention reopen replaced is not the session's writer any more.
+// The gate discards a refusal decided on a writer that is no longer attached
+// and decides again on the replacement (refuseOnCurrentUnhealthyTranscript), so
+// the closed or repaired handle a reopen left behind cannot refuse a healthy
+// session. A genuinely closed or poisoned current writer still refuses.
 func (s *Session) refuseTurnOnUnhealthyTranscript(ctx context.Context) error {
-	s.failClosedOnUnhealthyTranscript()
-	refusal := s.refuseOnUnhealthyTranscript(s.attachedTranscript())
+	s.failClosedOnTranscriptCreation()
+	refusal := s.refuseOnCurrentUnhealthyTranscript()
 	if refusal == nil {
 		return nil
 	}
@@ -1867,143 +1072,9 @@ func (s *Session) refuseTurnOnUnhealthyTranscript(ctx context.Context) error {
 	return refusal
 }
 
-// refuseBeforeClaimingOnUnhealthyTranscript reports why a durable claim must not
-// be taken when the transcript has stopped accepting records. The turn loop's
-// own gate refuses too, but by then the caller has already claimed its mutation
-// or taken the queue head, and a claim spent on a turn that never runs is
-// recoverable only by restarting the session. This is the first of two guards:
-// poisoning can land between this read and that gate, which is why both callers
-// also give the claim back when the loop refuses.
-//
-// Unlike the loop's gate it settles nothing and emits no end of input: at these
-// entry points no turn has begun and no input has been published, so there is
-// no processing boundary to close and no subscriber waiting to hear this input
-// end. A session that failed closed does show its one diagnostic here, since a
-// refused claim never reaches the loop's gate. Its callers only reach it when
-// they have work in hand, so an idle wake against a dead transcript still
-// stands down quietly.
-func (s *Session) refuseBeforeClaimingOnUnhealthyTranscript() error {
-	s.failClosedOnUnhealthyTranscript()
-	refusal := s.refuseOnUnhealthyTranscript(s.attachedTranscript())
-	s.announceFailClosed()
-	return refusal
-}
-
-// refuseOnUnhealthyTranscript is refuseBeforeClaimingOnUnhealthyTranscript for a
-// writer the caller already sampled: it reports why a durable claim must not be
-// taken when the writer will not accept the turn's records -- poisoned, or
-// closed, whose ordinary appends are silent no-ops. It reads only the writer's
-// own lock, so a claim inside the mutation-store serializer can decide the
-// refusal without waiting on Session.mu: the serializer never waits on s.mu, and
-// a Session.mu holder that then reaches the serializer would deadlock. Nil-safe,
-// like the writer's own doors -- a session with no state directory has no writer
-// and so nothing to refuse.
-//
-// Both facts are decided here rather than only at the announcement, because the
-// claim commits durable state -- the active turn, the queue entry, the budget
-// slot -- before that. A closed writer refused only at the announcement would be
-// claimed, handed back and woken on every wake, committing and fsyncing twice
-// each time.
-//
-// The read is as tight as the lock order allows, but it is not atomic with the
-// claim's commit: the writer's lock and the store's are different resources, and
-// holding the writer's across the commit would invert their order. A poisoning
-// that lands between this read and the commit is therefore still possible; what
-// the claim guarantees is that the refusal and the claim decision see one
-// generation, and both claim callers give the claim back when the turn loop then
-// refuses it.
-//
-// A session that failed closed refuses first, with its own reason. Deciding to
-// fail closed happens elsewhere (failClosedOnUnhealthyTranscript, the write
-// door): this read is lock-free, so it stays safe inside the serializer.
-func (s *Session) refuseOnUnhealthyTranscript(writer *transcript.Writer) error {
-	if refusal := s.failedClosedRefusal(); refusal != nil {
-		return refusal
-	}
-	if writer.Poisoned() {
-		return errTranscriptRefusesRecords()
-	}
-	if writer.Closed() {
-		return errTranscriptClosed()
-	}
-	return nil
-}
-
-// errTranscriptRefusesRecords is the single answer both poisoned-transcript
-// guards give, so a caller sees one error whichever guard produced it.
-func errTranscriptRefusesRecords() error {
-	return fmt.Errorf("session transcript stopped accepting records: %w", transcript.ErrWriterPoisoned)
-}
-
-// transcriptRefusal is the single decision every site that a transcript can
-// refuse makes: it maps the writer's own refusal -- poisoned or closed, from a
-// door that returned one or from a sampled writer -- to the session's answer, and
-// returns nil for anything else, including a store failure.
-//
-// One function, deliberately. This change has needed it three times: a claim
-// boundary that refused a closed writer without the matching gate, two post-run
-// give-backs that knew only poison, and now the user-input append. Each instance
-// was the same class, and each was found only after the previous one was fixed,
-// because the sites asked the question in their own words. There is one answer
-// now: ask this.
-func transcriptRefusal(cause error) error {
-	if cause == nil {
-		return nil
-	}
-	if errors.Is(cause, ErrTranscriptFailedClosed) {
-		return cause
-	}
-	if errors.Is(cause, transcript.ErrWriterPoisoned) {
-		return errTranscriptRefusesRecords()
-	}
-	if errors.Is(cause, transcript.ErrWriterClosed) {
-		return errTranscriptClosed()
-	}
-	return nil
-}
-
-// errWhileHealthyRefuses is transcriptRefusal under the name the writer door's
-// callers use, kept because the door hands back the writer's own sentinel.
-func errWhileHealthyRefuses(cause error) error {
-	return transcriptRefusal(cause)
-}
-
-// errTranscriptClosed is the closed-writer answer: the writer will not record
-// the turn, but nothing was poisoned, so it is not reported as if it had been.
-func errTranscriptClosed() error {
-	return fmt.Errorf("session transcript is closed: %w", transcript.ErrWriterClosed)
-}
-
-// transcriptRefusedClaim reports whether a claim's error is the transcript's own
-// refusal rather than a store failure. It is transcriptRefusal as a predicate, so
-// a site that only branches cannot ask a different question than a site that
-// reports: a claim site that classified only the poisoned one would take a closed
-// writer's refusal for a write failure, stand down quietly, and leave the claim
-// to be retried on every wake.
-func transcriptRefusedClaim(err error) bool {
-	return transcriptRefusal(err) != nil
-}
-
-// transcriptRefusalForWrite is transcriptRefusal for a write that has just run.
-// The door's error is the writer's refusal when the writer was already refusing,
-// but when THIS write is what broke the writer the error carries the cause (a
-// partial line), not the sentinel -- a partial append poisons the writer rather
-// than returning ErrWriterPoisoned. The post-write state is therefore part of the
-// same decision, asked the same way: refusing. It is stable by then, because the
-// failed write is what set it, under the writer's own lock.
-func (s *Session) transcriptRefusalForWrite(writeErr error) error {
-	if refusal := transcriptRefusal(writeErr); refusal != nil {
-		return refusal
-	}
-	if writeErr == nil {
-		return nil
-	}
-	return s.refuseOnUnhealthyTranscript(s.attachedTranscript())
-}
-
 func delegateEntryRequiresReport(kind EntryKind) bool {
 	switch kind {
-	case EntryUserInput, EntryContinuation:
+	case EntryUserInput, EntryContinuation, EntryRuntime:
 		return true
 	default:
 		return false
@@ -2014,9 +1085,14 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	communicatePreviewCalls := map[string]struct{}{}
 	defer func() {
 		for callID := range communicatePreviewCalls {
-			s.emit(events.EventCommunicatePreviewReset, events.CommunicatePreviewResetData{CallID: callID})
+			s.emit(events.CommunicatePreviewResetData{CallID: callID})
 		}
 	}()
+	// Only an input that reached its round loop was admitted as a turn; a wake
+	// that stood down earlier (an unnameable turn, a parked rail) does not
+	// count toward an owed completion's undispatched turns.
+	admittedToRounds := false
+	defer func() { s.endTurnForJobNotificationsAwaitingRequest(admittedToRounds) }()
 	var rootAttentionIDs []string
 	rootAttentionAccepted := false
 	// Consume the deliveries this turn's settled rounds presented, armed
@@ -2051,7 +1127,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			err = errors.Join(err, finishErr)
 			return
 		}
-		s.emit(events.EventWarning, warningDataFromError("mid-turn delegate attention consumption failed; left pending for its wake", finishErr))
+		s.emit(warningDataFromError("mid-turn delegate attention consumption failed; left pending for its wake", finishErr))
 	}()
 	// Flush meta.json on every exit from this function — normal return, error
 	// return, ctx cancellation, retry-budget exhaustion, or panic. Without
@@ -2126,6 +1202,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// since it reads the client-mutation journal, not session state.
 	queuedIdentity := queuedClientMutationFromContext(ctx)
 	carrierAnswersAsk := s.steeringCarrierClaimAnswersAsk(queuedIdentity)
+	carrierAskResolution := s.clientMutationAskResolution(queuedIdentity.ClientMutationID)
 
 	// restMu: a needs_response rest arming right now announces first.
 	if hook := s.cfg.testOnly.turnStartBeforeRestMu; hook != nil {
@@ -2156,7 +1233,17 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	s.restGeneration++
 	s.restMu.Unlock()
 	s.turnStartedAt = s.sclock().Now()
+	// A housekeeping input — a job notification, a goal continuation, or the
+	// runtime recovery — runs inside the same delegate generation as the
+	// non-terminal update it follows. Preserve that evidence so a later
+	// missing-report reminder still knows the delegate reached its parent; a new
+	// caller input or attention generation starts fresh.
+	preserveUpdate := kind != EntryUserInput && kind != EntryDelegateAttention
+	updated := s.comm.updated
 	s.comm = communicateResult{}
+	if preserveUpdate {
+		s.comm.updated = updated
+	}
 	// stop_hook_active is per turn: a continuation a Stop hook blocked into this
 	// turn must not leak into the next one.
 	s.stopHookActive.Store(false)
@@ -2176,7 +1263,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// failed MaxTurns, environment, or transcript admission must leave the
 	// pending ask available for the next real reply and for restore.
 	if carrierAnswersAsk && queuedIdentity.SteeringCarrier {
-		s.setAskPendingLocked(nil)
+		s.clearAskPendingResolutionLocked(carrierAskResolution)
 	}
 	s.mu.Unlock()
 	s.delegateDeliveryMu.Unlock()
@@ -2187,7 +1274,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 	select {
 	case <-ctx.Done():
-		s.emit(events.EventError, errorDataFromError(ctx.Err()))
+		s.emit(errorDataFromError(ctx.Err()))
 		// Leave the processing boundary for the outer cancellation handler. It
 		// must first admit the interrupt marker, then settle Awaiting when a
 		// pending ask survives a rejected marker; settling Idle here would make
@@ -2278,7 +1365,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			case refusal == turnNameFenced, s.runningTurnNameHasOwner():
 				s.scheduleRunningTurnNameRetry(jobNotificationRetryMaxDelay)
 			default:
-				s.emit(events.EventWarning, events.WarningData{
+				s.emit(events.WarningData{
 					Message: "a turn name is held with no pending mutation to release it; deferring this wake would never resume",
 				})
 			}
@@ -2324,6 +1411,8 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		rootAttentionAccepted = true
 	} else if kind == EntryDelegateAttention {
 		s.acceptDelegateAttentionInput()
+	} else if kind == EntryRuntime {
+		s.acceptRuntimeInput(inputProvenance)
 	} else if err := s.acceptUserInputWithSkillSelection(ctx, input, images, inputProvenance, kind == EntryUserInput, skillSelection); err != nil {
 		if errors.Is(err, errSteeringCarrierStoodDown) {
 			// A carrier that stood down ran no model turn. Record it so the
@@ -2381,12 +1470,14 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	localAdmissionCompacted := false
 	providerContextRecovered := false
 	var tracker retryTracker
+	serverContinuations := 0
 
 	// Continuation (goal) turns clamp the per-input round cap to GoalTurnMaxRounds
 	// (spec §2b/C13); a config of <0 is "unbounded", so a bare min would be wrong.
 	goalControlsCap := goalControlsRoundCap(s.cfg.MaxToolRoundsPerInput, kind)
 	roundCap := goalRoundCap(s.cfg.MaxToolRoundsPerInput, kind)
 
+	admittedToRounds = true
 	for round := 0; roundCap < 0 || round < roundCap; round++ {
 		// The same admission rule the drain loop applies before a turn, applied
 		// before every round after the first: an input does not stop being
@@ -2425,7 +1516,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 		select {
 		case <-ctx.Done():
-			s.emit(events.EventError, errorDataFromError(ctx.Err()))
+			s.emit(errorDataFromError(ctx.Err()))
 			// Leave the processing boundary for the outer cancellation handler.
 			// A cancellation between rounds has the same marker-admission and
 			// pending-ask boundary as cancellation before the first round.
@@ -2433,24 +1524,72 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		default:
 		}
 
-		profile, sys, _, req, fullHistory, reqEffort, prepareErr := s.prepareModelRequestWithError(ctx, round, &timings)
+		var (
+			profile, usedProfile *provider.Profile
+			sys, reqEffort       string
+			req                  llm.Request
+			fullHistory          []llm.Message
+			modelResp            sessionModelResponse
+			attempt              ModelAttemptMetadata
+			tPhaseStart          time.Time
+			err, prepareErr      error
+		)
+		// A call that waited out a usage limit (waitOutUsageLimit) makes the
+		// round's request again: prepared afresh, so it runs on a model
+		// switched to meanwhile and carries steering and notifications that
+		// arrived meanwhile, and within the same round, so waiting spends no
+		// round.
+		for {
+			// Notifications that arrived since the opener's drain or the
+			// previous request join this request, including a pause_turn
+			// continuation, which does not advance the round. They count as
+			// delivered only once a request is dispatched (below), so any exit
+			// before that leaves them owed.
+			if kind == EntryNotification {
+				s.injectLaterJobNotifications(ctx)
+			}
+			profile, sys, _, req, fullHistory, reqEffort, prepareErr = s.prepareModelRequestWithError(ctx, round, &timings)
+			if prepareErr != nil {
+				break
+			}
+			// --- Phase: LLMCall ---
+			tPhaseStart = s.sclock().Now()
+			quotaWakes := s.quotaWakeCount()
+			s.noteParentJobActivity(jobPhaseAwaitingModel)
+			// Completions awaiting a request settle only once one built from
+			// the transcript holding their reminders has actually been handed
+			// to the provider; the client reports that moment. A provider
+			// error after it still settles them (the turn fails visibly, or
+			// waits and retries from the same transcript), while a Stop, an
+			// admission refusal or any other failure before it leaves them
+			// owed.
+			var requestSent atomic.Bool
+			sentCtx := llm.WithRequestSentObserver(ctx, func() { requestSent.Store(true) })
+			modelResp, req, attempt, usedProfile, err = s.callModelWithFallback(sentCtx, profile, req, fullHistory, reqEffort, round)
+			if requestSent.Load() {
+				s.settleJobNotificationsCarriedByRequest(ctx)
+			}
+			for _, callID := range modelResp.CommunicatePreviewCallIDs {
+				communicatePreviewCalls[callID] = struct{}{}
+			}
+			retry, waitErr := s.waitOutUsageLimit(ctx, err, req.Model, quotaWakes)
+			if waitErr != nil {
+				err = waitErr
+			}
+			if !retry {
+				break
+			}
+			s.resetCommunicatePreviews(communicatePreviewCalls)
+		}
 		if prepareErr != nil {
 			if isLocalContextCompactionError(prepareErr) && !localAdmissionCompacted && s.contextMgr != nil {
-				s.emit(events.EventWarning, warningDataFromError(
+				s.emit(warningDataFromError(
 					"Local context admission failed; compacting context and retrying", prepareErr))
 				localAdmissionCompacted = true
 				s.forceCompactForModelRecovery(ctx)
 				continue
 			}
 			return "", progressed, prepareErr
-		}
-		// --- Phase: LLMCall ---
-		tPhaseStart := s.sclock().Now()
-
-		s.noteParentJobActivity(jobPhaseAwaitingModel)
-		modelResp, req, attempt, usedProfile, err := s.callModelWithFallback(ctx, profile, req, fullHistory, reqEffort, round)
-		for _, callID := range modelResp.CommunicatePreviewCallIDs {
-			communicatePreviewCalls[callID] = struct{}{}
 		}
 		resp := modelResp.Response
 
@@ -2464,7 +1603,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 		if err != nil {
 			if isLocalContextCompactionError(err) && !localAdmissionCompacted && s.contextMgr != nil {
-				s.emit(events.EventWarning, warningDataFromError(
+				s.emit(warningDataFromError(
 					"Local context admission failed; compacting context and retrying", err))
 				localAdmissionCompacted = true
 				s.forceCompactForModelRecovery(ctx)
@@ -2481,7 +1620,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				if failedModel == "" {
 					failedModel = profile.Model()
 				}
-				s.emit(events.EventWarning, bareWarningDataFromError(
+				s.emit(bareWarningDataFromError(
 					"Context length exceeded: Provider context disagreement for "+failedProvider+"/"+failedModel+"; compacting context and retrying", err))
 				providerContextRecovered = true
 				s.forceCompactForModelRecovery(ctx)
@@ -2541,6 +1680,13 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		rc := classifyRoundContent(txt, len(calls), resp.Message.Content)
 		noContent := rc.NoContent
 		skipHistory := rc.SkipHistory
+		// A pause_turn response is the provider's partial state. Even when it
+		// carries only server-side tool blocks (a web search still running) and
+		// no text or client tool calls, the continuation must see it again, so
+		// keep it in history instead of dropping it as a no-content round.
+		if resp.Finish.Reason == llm.FinishReasonPauseTurn && len(resp.Message.Content) > 0 {
+			skipHistory = false
+		}
 
 		if abortErr := errors.Join(s.emitAssistantResponse(ctx, resp, modelResp, txt, skipHistory, attempt), sessionLifecycleFault(ctx, "emit_assistant")); abortErr != nil {
 			return "", progressed, abortErr
@@ -2548,22 +1694,29 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// pause_turn: model needs another turn (e.g. server-side web search still running).
 		if resp.Finish.Reason == llm.FinishReasonPauseTurn {
 			round-- // Don't count pause_turn as a tool round.
+			serverContinuations++
 			timings.TotalRound = time.Since(roundStart)
 			timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall
-			s.emit(events.EventRoundTimings, timings)
+			s.emit(timings)
+			if serverContinuations >= maxServerContinuations {
+				// Stop the chain on its own budget; the pause responses
+				// already emitted stay in history, so the turn is resumable.
+				exhausted := &budgetExhaustionError{
+					Budget:    exhaustedBudgetServerContinuations,
+					Limit:     maxServerContinuations,
+					Resumable: true,
+				}
+				s.emitBudgetExhaustionFailure(exhausted)
+				return lastText, progressed, exhausted
+			}
 			continue
 		}
+		serverContinuations = 0
 
 		// Reverse-map provider-specific tool names to canonical names for registry lookup.
 		for i := range calls {
 			calls[i].Name = s.canonicalToolName(calls[i].Name)
 		}
-
-		// Progress signal for the goal engine: a turn "progressed" iff it made a
-		// real mutating tool call — !ReadOnly AND not the result/communicate tool
-		// AND not task_list (plan-spam and "I'm done" messages must not count).
-		// Accumulated as a turn-level OR across the turn's rounds (spec §2).
-		progressed = progressed || s.callsMadeProgress(calls)
 
 		if len(calls) == 0 {
 			// A bare-text (non-empty) response to a notification turn
@@ -2599,7 +1752,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			round-- // Don't count empty/bare-text retries as tool rounds.
 			timings.TotalRound = time.Since(roundStart)
 			timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall
-			s.emit(events.EventRoundTimings, timings)
+			s.emit(timings)
 			continue
 		}
 
@@ -2627,6 +1780,15 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		if execErr != nil {
 			return "", progressed, execErr
 		}
+
+		// Progress signal for the goal engine: a turn "progressed" iff it
+		// executed a real mutating tool call — !ReadOnly, not the
+		// result/communicate tool, not task_list (plan-spam and "I'm done"
+		// messages must not count), and not a failed or prevalidation-only
+		// result. Credited from the executed results, not the proposed calls,
+		// so an unknown name or a rejected write never resets the no-progress
+		// streak. Accumulated as a turn-level OR across the turn's rounds.
+		progressed = progressed || s.toolResultsMadeProgress(results)
 
 		timings.ToolExec = time.Since(tPhaseStart)
 
@@ -2707,7 +1869,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// Emit round timings before checking result delivery.
 		timings.TotalRound = time.Since(roundStart)
 		timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall - timings.ToolExec - timings.Persistence - timings.AfterAction
-		s.emit(events.EventRoundTimings, timings)
+		s.emit(timings)
 
 		// communicate sets the flag, or this round posted question(s) (spec
 		// §5.1) — either ends the turn; deliverIfCommunicated decides the
@@ -2745,10 +1907,11 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			s.finishProcessingAtFailureBoundary(ctx)
 			return "", progressed, nil
 		}
-		// A managed job can finish while this tool batch is running. Yield before
-		// another ordinary model round so the outer drain delivers that completion
-		// as an EntryNotification turn. Notification turns already own their current
-		// batch and leave any later arrivals for the next wake.
+		// A managed job can finish while this tool batch is running. An ordinary
+		// turn yields before another model round so the outer drain delivers that
+		// completion as an EntryNotification turn. A notification turn is that
+		// delivery already: it folds the arrival in at the start of its next
+		// round, once that round is certain to make a model request.
 		if kind != EntryNotification && s.peekNotifications() > 0 {
 			s.finishProcessingAtFailureBoundary(ctx)
 			return "", progressed, nil
@@ -2756,7 +1919,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	}
 
 	s.recordNotice(schema.NoticeInfo{Kind: schema.NoticeTurnLimit, TurnLimit: &schema.TurnLimitNotice{MaxToolRoundsPerInput: s.cfg.MaxToolRoundsPerInput}})
-	s.emit(events.EventTurnLimit, events.TurnLimitData{MaxToolRoundsPerInput: s.cfg.MaxToolRoundsPerInput})
+	s.emit(events.TurnLimitData{MaxToolRoundsPerInput: s.cfg.MaxToolRoundsPerInput})
 	s.finishProcessingAtFailureBoundary(ctx)
 	if goalControlsCap {
 		return lastText, progressed, nil
@@ -2838,6 +2001,7 @@ func (s *Session) returnAcceptedUserTurn(queuedIdentity queuedClientMutationIden
 // failed once still accepts the next record, and whether that is right for
 // every producer is the audit in #1181, not this path's rule to settle.
 func (s *Session) appendUserInputTurnRefusingPoison(turn schema.Turn) error {
+	turn.AnswerToTurnIDs = s.pendingAskTurnIDs()
 	err := s.appendTurnAfterTranscriptWrite(
 		turn,
 		func() error { return s.writeTranscriptSyncedLocked(turn) },
@@ -2850,7 +2014,7 @@ func (s *Session) appendUserInputTurnRefusingPoison(turn schema.Turn) error {
 		if refusal := s.transcriptRefusalForWrite(err); refusal != nil {
 			return errors.Join(err, refusal)
 		}
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		s.emit(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 	return err
 }
@@ -2920,7 +2084,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 				return fmt.Errorf("reserve user turn budget: %w", err)
 			}
 			s.recordNotice(schema.NoticeInfo{Kind: schema.NoticeTurnLimit, TurnLimit: &schema.TurnLimitNotice{MaxTurns: s.cfg.MaxTurns}})
-			s.emit(events.EventTurnLimit, events.TurnLimitData{MaxTurns: s.cfg.MaxTurns})
+			s.emit(events.TurnLimitData{MaxTurns: s.cfg.MaxTurns})
 			s.finishProcessingAtFailureBoundary(ctx)
 			return &budgetExhaustionError{
 				Budget:    exhaustedBudgetTurns,
@@ -2935,7 +2099,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 	if queuedIdentity.ClientMutationID != "" &&
 		s.clientMutationUserTranscriptIncorporated(queuedIdentity.ClientMutationID, queuedIdentity.StableTurnID) {
 		s.injectDrainedSteering()
-		s.clearAskPending()
+		s.clearAskPendingResolution(s.clientMutationAskResolution(queuedIdentity.ClientMutationID))
 		return nil
 	}
 
@@ -2984,6 +2148,10 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 	if queuedIdentity.ClientMutationID == "" {
 		if !preseededInput {
 			turn := schema.NewTurn(schema.TurnUserInput, buildSelectedUserInputMessage(input, images, skillInputNames(skillInput)))
+			turn.ConversationInputIDs = s.conversationInputIDs("")
+			if internal, _ := ctx.Value(internalTranscriptInputKey{}).(bool); !internal {
+				turn.Authorship = humanTranscriptAuthorship()
+			}
 			if selected := durableSkillSelectionFromContext(ctx); selected != nil {
 				turn.CommandInput = selected.CommandInput
 				turn.Message = appendSelectedCommands(turn.Message, selected.CommandInput, selected.CommandBodies)
@@ -3000,12 +2168,16 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 		}
 	} else {
 		turn := schema.NewTurn(schema.TurnUserInput, buildSelectedUserInputMessage(input, images, skillInputNames(skillInput)))
+		turn.ConversationInputIDs = s.conversationInputIDs(queuedIdentity.ClientMutationID)
+		turn.Authorship = humanTranscriptAuthorship()
 		if selected := durableSkillSelectionFromContext(ctx); selected != nil {
 			turn.CommandInput = selected.CommandInput
 			turn.Message = appendSelectedCommands(turn.Message, selected.CommandInput, selected.CommandBodies)
 		}
 		turn.ClientMutationID = queuedIdentity.ClientMutationID
+		attachVoicePresentation(&turn, queuedIdentity.VoicePresentation, queuedIdentity.ClientMutationID)
 		turn.StableTurnID = queuedIdentity.StableTurnID
+		turn.Actor = s.clientMutationActor(queuedIdentity.ClientMutationID)
 		if skillInput != nil {
 			turn.SkillState = &schema.SkillTurnState{Input: skillInput}
 		}
@@ -3018,7 +2190,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 				recoveryErr := s.recoverClientMutationFailures(true)
 				userRecorded := s.clientMutationTranscriptItems(queuedIdentity.ClientMutationID, queuedIdentity.StableTurnID).User
 				if userRecorded {
-					s.clearAskPending()
+					s.clearAskPendingResolution(s.clientMutationAskResolution(queuedIdentity.ClientMutationID))
 				}
 				if recoveryErr != nil {
 					return errors.Join(failure, fmt.Errorf("record client start failure: %w", recoveryErr))
@@ -3026,17 +2198,18 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 				if !userRecorded {
 					return failure
 				}
-				s.emit(events.EventUserInput, events.UserInputData{
+				s.emit(events.UserInputData{
 					Text:             input,
 					Images:           userInputImagesFromAttachments(images),
 					ClientMutationID: queuedIdentity.ClientMutationID,
 					StableTurnID:     queuedIdentity.StableTurnID,
 					Turn:             s.recordedUserInputTurn(userInputTurn),
 				})
-				s.emit(events.EventError, errorDataFromError(failure))
+				s.emit(errorDataFromError(failure))
 				return failure
 			}
 		}
+		s.setClientMutationAskEvidence(&turn, queuedIdentity.ClientMutationID, "")
 		if err := s.appendTurnAfterTranscriptWrite(
 			turn,
 			func() error { return s.appendClientMutationTranscriptLocked(turn) },
@@ -3049,7 +2222,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 		}
 		// The claimed user turn is now durable. Resolve the pending ask only
 		// after this admission point; failures before it must preserve the ask.
-		s.clearAskPending()
+		s.clearAskPendingResolution(turn.AskResolution)
 		if err := s.markClaimedUserTranscriptIncorporated(queuedIdentity.ClientMutationID); err != nil {
 			return fmt.Errorf("incorporate claimed user input: %w", err)
 		}
@@ -3059,7 +2232,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 		// point. Earlier admission failures intentionally leave askPending set.
 		s.clearAskPending()
 	}
-	s.emit(events.EventUserInput, events.UserInputData{
+	s.emit(events.UserInputData{
 		Text:             input,
 		Images:           userInputImagesFromAttachments(images),
 		ClientMutationID: queuedIdentity.ClientMutationID,
@@ -3130,7 +2303,7 @@ func (s *Session) acceptContinuationInput(_ context.Context, input, stableTurnID
 	if snap, ok := s.getOrCreateGoalStore().Snapshot(); ok && snap.Objective != "" {
 		marker = "Continuing toward: " + snap.Objective
 	}
-	s.emit(events.EventGoalContinuation, events.GoalContinuationData{Text: marker, StableTurnID: stableTurnID})
+	s.emit(events.GoalContinuationData{Text: marker, StableTurnID: stableTurnID})
 	turn := schema.NewTurn(schema.TurnSteering, llm.User(input))
 	turn.GoalContinuation = &schema.GoalContinuationInfo{Text: marker}
 	turn.StableTurnID = stableTurnID
@@ -3149,123 +2322,13 @@ func (s *Session) acceptDelegateAttentionInput() {
 	s.repairOrphanedToolResults(context.Background(), "before accepting delegate attention")
 }
 
-// acceptNotificationInput records a job-completion notification turn at the
-// start of an input turn. It mirrors acceptContinuationInput's framing — the
-// drained queue is delivered to the model as a schema.TurnSteering reminder (a
-// user-role message that expandHistory passes through without rendering a user
-// bubble), so prepareModelRequestWithError rebuilds the request from s.history and the
-// reminder reaches the model THIS turn. Unlike acceptUserInput it skips the
-// namer, the UserPromptSubmit hooks, the MaxTurns check, and the s.turns++
-// accounting (a notification is not a user turn).
-//
-// It returns proceed=false on an empty queue, having set s.sessionEndEmitted so
-// the drain loop's idle tail suppresses the phantom SESSION_END{input_complete} —
-// an empty notification turn is a true no-op that makes no model request.
-// acceptNotificationInput decides whether this wake has anything to deliver and
-// prepares it. turnID is the name processOneInput already took for the turn --
-// empty only for a session no daemon serves, which needs no name. The caller
-// stands down before reaching here when a served session could not be named, so
-// every wake that gets this far can address its own turn.
-func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (proceed bool) {
-	s.drivePendingStableDelegateAttention()
-	// Drive signal (b) (spec §3): a child driven on its pending caller-targeted
-	// watch sends may have no token queued yet (the drive was launched on the
-	// hasPendingWatchSends signal, not a token enqueue). Enqueue the OWN session's
-	// pending caller tokens onto its rail before draining so the frame renders in
-	// this same drive turn. Caller-only — sidecar delivery stays at the boundary.
-	s.enqueueOwnCallerWatchSendTokens()
-	jobNotifs, retryJobNotifs, injectedJobNotifs := s.filterDeliverableJobNotifications(s.drainJobNotifications())
-	if sessionLifecycleFault(ctx, "inject_watch_notification") != nil {
-		jobNotifs = append(jobNotifs, deliverableJobNotification{
-			notification: jobNotification{Kind: jobNotificationKindWatch, JobID: "injected-watch", Status: jobNotificationEventWatch},
-			watchJM:      &jobManager{},
-		})
-	}
-	hasSteering := s.hasPendingSteering()
-	hasRootAttention := s.hasPendingRootDelegateAttention()
-	// A delegate parked in its finalization drain is woken for its own
-	// delegates' updates (hasPendingDelegateUpdateAttention); the update is
-	// already in its transcript, so the turn's model request carries it. Only
-	// a turn that consumes what it presents is admitted for it: a parent's
-	// unleased drive of an idle delegate would present the update and leave it
-	// pending.
-	hasDelegateUpdate := s.coversPresentedAttention(ctx) && s.hasPendingDelegateUpdateAttention()
-	s.requeueJobNotifications(retryJobNotifs)
-	injectedFailures := s.markJobNotificationsDelivered(injectedJobNotifs)
-	s.requeueJobNotifications(injectedFailures)
-	// A parked rail stands down here too, even with attention pending: the
-	// outer gate's carve-out reads the RAW queue depth, so a stale watch tick
-	// (a token whose watch died, a cleared timer) phantom-opens it. The park
-	// defers the attention, and a turn carrying nothing deliverable runs
-	// nothing. The begin-consumed wake stays consumed — the IDs stay cached
-	// and unpark re-arms them.
-	if len(jobNotifs) == 0 && !hasSteering && !hasDelegateUpdate && (!hasRootAttention || s.rootAttentionRailParked()) {
-		if len(retryJobNotifs) == 0 && len(injectedFailures) == 0 {
-			s.resetJobNotificationRetry()
-		}
-		s.finishNotificationNoop()
-		return false
-	}
-
-	s.repairOrphanedToolResults(context.Background(), "before accepting notification")
-
-	// A notification turn adopts the union of the provenance carried by the
-	// notifications it delivers, so events the turn emits (and any watch it
-	// retriggers) stamp the origin watch's lineage. The echo still delivers and is
-	// classified self-influenced by the breaker (bounded by the runaway fuse), not
-	// suppressed.
-	var notificationProvenance *provenance.Causal
-	for _, n := range jobNotifs {
-		notificationProvenance = provenance.Union(notificationProvenance, n.notification.Provenance)
-	}
-	s.replaceActiveProvenance(notificationProvenance)
-
-	// Persist before announcing. appendSteeringTurnDurably is this turn's last
-	// refusal, and a turn announced before it can still be refused -- which
-	// would leave the projection holding an open, active turn that
-	// finishNotificationNoop's sessionEndEmitted then suppresses the close for.
-	var reminder string
-	if len(jobNotifs) > 0 {
-		reminder = s.formatJobNotificationReminder(jobNotifs)
-		if err := errors.Join(s.appendSteeringTurnDurablyForOwner(reminder, events.SteeringKindNotification, turnID), sessionLifecycleFault(ctx, "append_notification")); err != nil {
-			s.requeueJobNotifications(jobNotifications(jobNotifs))
-			s.finishNotificationNoop()
-			return false
-		}
-	}
-
-	// Every refusal is behind us, so open the turn. This is the ONLY thing that
-	// gives a notification turn a turn of its own: its reminder rides
-	// EventSteeringInjected, which opens nothing, and the steering-only and
-	// attention-only wakes emit no reminder at all. Announcing outside the
-	// jobNotifs block is what covers all three shapes.
-	//
-	// The announce precedes every content event of the turn. A boundary that
-	// came after would leave that content attributed to the turn before it.
-	s.emit(events.EventTurnStarted, events.TurnStartedData{TurnID: turnID})
-	if reminder != "" {
-		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: reminder, Kind: events.SteeringKindNotification})
-	}
-
-	deliveredFailures := s.markJobNotificationsDelivered(jobNotifs)
-	s.requeueJobNotifications(deliveredFailures)
-	if len(deliveredFailures) == 0 {
-		s.resetJobNotificationRetry()
-	}
-	s.countJobNotificationsDelivered(len(jobNotifs) - len(deliveredFailures))
-	// Settle caller-targeted watch sends only after the durable reminder turn
-	// persisted (above): the durable pending survives an appendSteeringTurnDurably
-	// failure for re-token (at-least-once contract, spec §4.3).
-	for _, d := range jobNotifs {
-		if d.watchJM == nil {
-			continue
-		}
-		s.settleDeliveredWatchNotification(ctx, d)
-	}
-
-	// Drain any pending steering messages before the first LLM call (spec 2.5).
+// acceptRuntimeInput starts a daemon-authored recovery turn. It records no
+// turn of its own: the steering already queued for this turn carries the
+// runtime reminder, and draining it is what gives the model its prompt.
+func (s *Session) acceptRuntimeInput(p *provenance.Causal) {
+	s.replaceActiveProvenance(p)
+	s.repairOrphanedToolResults(context.Background(), "before accepting runtime input")
 	s.injectDrainedSteering()
-	return true
 }
 
 // acceptSteeringCarrierInput opens a turn whose only job is to carry
@@ -3310,7 +2373,7 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, identity queue
 	// acceptNotificationInput's boundary: content emitted before it would be
 	// attributed to the turn before this one.
 	if s.servedByDaemon() {
-		s.emit(events.EventTurnStarted, events.TurnStartedData{TurnID: turnID})
+		s.emit(events.TurnStartedData{TurnID: turnID})
 	}
 	// The carrier turn runs on resume semantics too: the drained human-note
 	// steer it carries is already in the store, and this projection puts the
@@ -3341,7 +2404,7 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, identity queue
 		// askPending set, so its failure must not be a resolution boundary
 		// either, or restore would diverge from live.
 		if s.steeringCarrierClaimAnswersAsk(identity) {
-			s.emitSteeringCarrierTurnFailure(errorDataFromError(err))
+			s.emitSteeringCarrierTurnFailure(errorDataFromError(err), identity.ClientMutationID)
 		} else {
 			s.emitTurnFailure(errorDataFromError(err))
 		}
@@ -3375,242 +2438,4 @@ func (s *Session) releaseSteeringCarrierClaim(identity queuedClientMutationIdent
 	if identity.SteeringCarrier {
 		s.releaseRunningTurnID(identity.StableTurnID)
 	}
-}
-
-func (s *Session) settleDeliveredWatchNotification(ctx context.Context, d deliverableJobNotification) {
-	err := sessionLifecycleFault(ctx, "settle_watch")
-	if err == nil {
-		err = d.watchJM.settleWatchSendDelivered(d.watchCfg, d.watchState)
-	}
-	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: "watch send settle failed: " + err.Error()})
-	}
-}
-
-func (s *Session) finishNotificationNoop() {
-	// No turn ran, so a needs_response rest the wake interrupted still stands,
-	// and the drain loop then treats the input as awaiting, holding follow-ups
-	// as that rest did. A rest still owed was cancelled by the wake's turn
-	// start; the drain-loop settle arms it again, from the end reason the
-	// turn start reset.
-	rest := SessionIdle
-	s.mu.Lock()
-	if s.restBeforeInput == SessionAwaiting {
-		rest = SessionAwaiting
-	}
-	s.comm.endReason = s.endReasonBeforeInput
-	s.resumeQuietRest = s.quietRestBeforeInput
-	s.mu.Unlock()
-	s.finishProcessingAtBoundary(context.Background(), rest)
-	s.mu.Lock()
-	s.sessionEndEmitted = true
-	s.mu.Unlock()
-}
-
-func (s *Session) filterDeliverableJobNotifications(raw []jobNotification) ([]deliverableJobNotification, []jobNotification, []deliverableJobNotification) {
-	if len(raw) == 0 {
-		return nil, nil, nil
-	}
-	survivors := make([]deliverableJobNotification, 0, len(raw))
-	durableRaw := make([]jobNotification, 0, len(raw))
-	seenTok := make(map[jobstore.WatchSendKey]bool)
-	for _, n := range raw {
-		if n.WatchSend != nil {
-			jm, cfg, state, ok := s.resolveWatchSendToken(n.WatchSend)
-			if !ok {
-				continue // stale token: replaced, cleared, dropped, or settled
-			}
-			if seenTok[n.WatchSend.Key] {
-				continue
-			}
-			seenTok[n.WatchSend.Key] = true
-			n.watchSendFrame = state.Frame
-			n.Provenance = provenance.Union(n.Provenance, state.Provenance)
-			survivors = append(survivors, deliverableJobNotification{notification: n, watchJM: jm, watchCfg: cfg, watchState: state})
-			continue
-		}
-		if n.isWatch() {
-			if n.WatchID != "" && !n.Terminal && !s.timerWatchIsLive(n.WatchID) {
-				continue // the timer was cleared after this tick was built
-			}
-			survivors = append(survivors, deliverableJobNotification{notification: n})
-			continue
-		}
-		durableRaw = append(durableRaw, n)
-	}
-	if len(durableRaw) == 0 {
-		return survivors, nil, nil
-	}
-	if s.jobManager == nil {
-		return survivors, durableRaw, nil
-	}
-	recs, err := s.jobManager.store.Load()
-	if err != nil {
-		return survivors, durableRaw, nil
-	}
-	alreadyInjected := make(map[string]bool, len(durableRaw))
-	for _, n := range durableRaw {
-		rec := recs[n.JobID]
-		if rec == nil || !jobstore.ShouldDeliver(rec) {
-			continue
-		}
-		if _, ok := alreadyInjected[rec.JobID]; !ok {
-			alreadyInjected[rec.JobID] = s.jobNotificationAlreadyInjected(rec.JobID)
-		}
-	}
-	durableSurvivors, injected := classifyDurableNotifications(durableRaw, recs, alreadyInjected)
-	survivors = append(survivors, durableSurvivors...)
-	return survivors, nil, injected
-}
-
-// timerWatchIsLive reports whether the timer with this id is still installed.
-// A timer's key is reconstructible from its id because its slot is the id, so
-// this is one map lookup under jm.mu, taken with pendingJobNotifsMu released.
-// With no manager to ask it fails OPEN: this answer only ever decides a drop,
-// and delivering a tick whose timer cannot be checked beats losing it.
-func (s *Session) timerWatchIsLive(watchID string) bool {
-	jm := s.jobManager
-	if jm == nil {
-		return true
-	}
-	key := watchKey{VisibleSessionID: jm.sessionID, Target: runtimeMessageAliasCaller, Slot: watchID}
-	jm.mu.Lock()
-	defer jm.mu.Unlock()
-	return jm.watches[key] != nil
-}
-
-// classifyDurableNotifications is the pure durable-notification classification
-// core: given the drained durable notifications, the loaded job records, and a
-// per-job "already injected into history" snapshot, it partitions the durable
-// entries into fresh survivors and already-injected replays. It applies the
-// ShouldDeliver gate and the terminal-generation dedupe (DedupeKey), so an exact
-// duplicate terminal event contributes at most one deliverable. It takes only
-// data snapshots and performs no I/O, locking, mutation, or event emission.
-func classifyDurableNotifications(
-	durableRaw []jobNotification,
-	recs map[string]*jobstore.JobRecord,
-	alreadyInjected map[string]bool,
-) (survivors, injected []deliverableJobNotification) {
-	seen := make(map[jobstore.DedupeKey]bool)
-	for _, n := range durableRaw {
-		rec := recs[n.JobID]
-		if rec == nil || !jobstore.ShouldDeliver(rec) {
-			continue
-		}
-		key := rec.DedupeKey()
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		deliverable := deliverableJobNotification{
-			notification: jobNotificationFromRecord(rec),
-			terminalGen:  rec.TerminalGen,
-		}
-		if alreadyInjected[rec.JobID] {
-			injected = append(injected, deliverable)
-			continue
-		}
-		survivors = append(survivors, deliverable)
-	}
-	return survivors, injected
-}
-
-func (s *Session) jobNotificationAlreadyInjected(jobID string) bool {
-	if jobID == "" {
-		return false
-	}
-	needle := fmt.Sprintf("job_id=%q", jobID)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, turn := range s.history {
-		if durableJobNotificationAlreadyInjected(turn.Message.Text(), needle) {
-			return true
-		}
-	}
-	return false
-}
-
-func durableJobNotificationAlreadyInjected(text, needle string) bool {
-	for {
-		start := strings.Index(text, "<job-notification")
-		if start < 0 {
-			return false
-		}
-		text = text[start:]
-		end := strings.Index(text, "</job-notification>")
-		block := text
-		if end >= 0 {
-			block = text[:end]
-		}
-		if strings.Contains(block, needle) &&
-			!strings.Contains(block, `event="watch"`) &&
-			!strings.Contains(block, `status="watch"`) {
-			return true
-		}
-		if end < 0 {
-			return false
-		}
-		text = text[end+len("</job-notification>"):]
-	}
-}
-
-func (s *Session) markJobNotificationsDelivered(notifs []deliverableJobNotification) []jobNotification {
-	if len(notifs) == 0 || s.jobManager == nil {
-		return nil
-	}
-	var failed []jobNotification
-	for _, n := range notifs {
-		if n.terminalGen == "" {
-			continue
-		}
-		if err := s.jobManager.appendEvent(jobstore.Event{
-			Kind:        jobstore.EventJobNotificationDelivered,
-			TS:          s.jobManager.now(),
-			JobID:       n.notification.JobID,
-			TerminalGen: n.terminalGen,
-		}); err != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("job notification delivery mark failed: %v", err)})
-			failed = append(failed, n.notification)
-			continue
-		}
-		// Forward the settle up so the parent's forwarded COPY of a child-owned job
-		// settles too (spec §3): the child forwards only the Pending up, so without
-		// this the parent's copy stays NotifyPending after the child self-delivers
-		// and is later falsely escalated as "child unreachable:". Best-effort and
-		// no-op for root sessions and non-forwarded terminals (forwardSnapshot
-		// guards on the configured parent resource); the parent intake (forwardEvent) settles
-		// the copy without enqueueing, so no spurious render.
-		if ferr := s.jobManager.forwardSnapshot(jobstore.Event{
-			Kind:        jobstore.EventJobNotificationDelivered,
-			TS:          s.jobManager.now(),
-			JobID:       n.notification.JobID,
-			TerminalGen: n.terminalGen,
-		}); ferr != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("job notification delivery forward failed: %v", ferr)})
-		}
-	}
-	return failed
-}
-
-func jobNotifications(notifs []deliverableJobNotification) []jobNotification {
-	if len(notifs) == 0 {
-		return nil
-	}
-	out := make([]jobNotification, 0, len(notifs))
-	for _, n := range notifs {
-		out = append(out, n.notification)
-	}
-	return out
-}
-
-// formatJobNotificationReminder renders notification blocks for a notification
-// turn, joined by newlines. Terminal job_finished blocks carry a bounded result
-// excerpt (shell tail / delegate head) re-read from the job record at render
-// time, so the durable-replay path stays consistent with the live path.
-func (s *Session) formatJobNotificationReminder(jobNotifs []deliverableJobNotification) string {
-	blocks := make([]string, 0, len(jobNotifs))
-	for _, n := range jobNotifs {
-		blocks = append(blocks, formatJobNotificationBlock(n.notification, s.terminalNotificationExcerpt(n.notification), s.canInstructTool("read_transcript")))
-	}
-	return strings.Join(blocks, "\n")
 }

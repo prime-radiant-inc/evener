@@ -202,7 +202,7 @@ func fuzzScenarioBuildTree_NoApprovalDetailWithoutTheFlag(t *testing.T) {
 // field - Ref, State, the ask and approval flags with their detail, the
 // question, the failure, dormancy, jobs, watches, tasks, the subagent tally,
 // the turn end, the last message and the model - resolves through one helper
-// (tree.go's liveFieldsFor) for all three builders: buildNode (the Live and
+// (tree_live.go's fieldsFor) for all three builders: buildNode (the Live and
 // project rows), the meta-less Live leaf, and the NeedsYou node. This pins
 // that the builders cannot drift apart as a new live fact lands; before #2506
 // each builder copied the facts by hand, so a miss showed up only when an

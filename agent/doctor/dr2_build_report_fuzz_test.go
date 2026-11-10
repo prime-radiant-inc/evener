@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -554,8 +555,8 @@ func FuzzDr2APILog(f *testing.F) {
 		}
 		base := dr2_writeSession(t, body)
 
-		res, err := APILog(base, selector, opts)
-		res2, err2 := APILog(base, selector, opts)
+		res, err := APILog(context.Background(), base, selector, opts)
+		res2, err2 := APILog(context.Background(), base, selector, opts)
 		if (err == nil) != (err2 == nil) {
 			t.Fatalf("APILog error nondeterministic: %v vs %v", err, err2)
 		}

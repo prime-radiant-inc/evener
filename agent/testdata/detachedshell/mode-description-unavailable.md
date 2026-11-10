@@ -1,0 +1,1 @@
+foreground waits for the command to finish before continuing; background runs a session-owned job in the background and Evener stops it when the session ends. This environment cannot disown a process, so detached mode is unavailable; nothing can outlive the session.

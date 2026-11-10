@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/memorypages"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/apptranscript"
@@ -92,16 +93,16 @@ func TestMemoryContextWireFixtures(t *testing.T) {
 	_, revokedItems := capture("revoked", project(memoryProjection{Scope: "project", Status: "revoked"}))
 	_, unavailableItems := capture("unavailable", project(memoryProjection{Scope: "project", Status: "unavailable"}))
 
-	var overflow []memoryPage
+	var overflow []memorypages.Page
 	for i := range 200 {
 		tags := []string{"alpha"}
 		if i%4 == 0 {
 			tags = nil
 		}
-		overflow = append(overflow, memoryPage{Path: fmt.Sprintf("opaque-%03d.md", i),
+		overflow = append(overflow, memorypages.Page{Path: fmt.Sprintf("opaque-%03d.md", i),
 			Description: "opaque-description " + strings.Repeat("x", 64), HasDescription: true, Tags: tags, Updated: "2026-10-01"})
 	}
-	partial, full, truncated := projectMemoryIndex(overflow, memoryProjectionCap)
+	partial, full, truncated := memorypages.ProjectIndex(overflow, memorypages.ProjectionCap)
 	_, truncatedItems := capture("truncated", project(memoryProjection{Scope: "project", Status: "current", Truncated: truncated, Content: partial, Index: full}))
 
 	quotedTurn, quotedItems := capture("quoted", project(memoryProjection{Scope: "project", Status: "current", Content: "Line one\nLine \"two\" \u2014 caf\u00e9\tend"}))

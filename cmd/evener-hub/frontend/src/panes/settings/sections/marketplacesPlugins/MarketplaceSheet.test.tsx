@@ -1,11 +1,12 @@
 import { ErrorMarketplaceRemoveApplied, type MarketplaceEntry, WireError } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type Dispatch, type SetStateAction, useEffect, useState } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { connectionStore, useConnectionStore } from "../../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests, useConnectionStore } from "../../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests, useExtensionsStore } from "../../../../stores/extensions";
+import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
 import { Toast } from "../../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { MarketplaceSheet } from "./MarketplaceSheet";
@@ -44,12 +45,6 @@ const FUTURE: MarketplaceEntry = {
   installLocation: "/home/u/.config/evener/plugins/marketplaces/acme",
   lastUpdated: 1_700_000_000,
 };
-
-function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  return fake;
-}
 
 function SheetHarness({
   name,
@@ -181,10 +176,10 @@ function listCalls(fake: FakeClient): number {
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetExtensionsStoreForTests();
   resetToastStoreForTests();
-  connectFakeClient();
+  connectReadyFakeClient();
 });
 
 afterEach(() => {
@@ -212,6 +207,16 @@ test("prefills the name, the source kind, and its field; shows install location 
   expect(screen.getByTestId("marketplace-last-updated")).toBeTruthy();
   // Nothing has been touched, so nothing is about to be re-fetched.
   expect(screen.queryByTestId("marketplace-refetch-note")).toBeNull();
+});
+
+test("shows the branch or tag a marketplace is pinned to", () => {
+  renderSheet({ ...ACME, source: { kind: "github", repo: "acme/plugins", ref: "release/next" } });
+  expect(screen.getByTestId("marketplace-pinned-to").textContent).toBe("release/next");
+});
+
+test("does not show a pin for a directory source", () => {
+  renderSheet({ ...LOCAL, source: { kind: "directory", path: "/srv/mkt", ref: "main" } });
+  expect(screen.queryByTestId("marketplace-pinned-to")).toBeNull();
 });
 
 test("Save is disabled until something changes, and a rename alone promises no re-fetch", async () => {

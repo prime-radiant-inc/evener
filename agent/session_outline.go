@@ -7,6 +7,8 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -70,7 +72,7 @@ type jobResult struct {
 
 func (r jobResult) effectiveJobID() string {
 	// DelegateID is the fallback, checked last: the stable-delegate result shape
-	// (agent/session_tools.go's stableDelegateCreateResult, agent/session_tools_jobs.go's
+	// (agent/session_tools.go's delegateCreateResult, agent/session_tools_jobs.go's
 	// delegateSendResult) carries no job_id family member at all, so without this
 	// fallback a delegate/delegate_send result always has an empty job identity
 	// (issue #194).
@@ -350,10 +352,13 @@ func anyLineWiderThan(s string, limit int) bool {
 
 // outlineRoleLabel maps a turn kind to its capitalized outline role label. The
 // conversational roles match the markdown renderer's headings
-// (User/Assistant/Steering/…); the harness context kinds use their CamelCase
-// kind token (Environment, NotesContext, MemoryContext) rather than the
-// renderer's prose heading.
+// (User/Assistant/Steering/…); harness context kinds derive their CamelCase
+// label from the kind token (Environment, NotesContext, MemoryContext) rather
+// than the renderer's prose heading.
 func outlineRoleLabel(kind schema.TurnKind) string {
+	if kind.HarnessContext() {
+		return camelCaseKindLabel(kind)
+	}
 	switch kind {
 	case schema.TurnUserInput:
 		return "User"
@@ -365,12 +370,6 @@ func outlineRoleLabel(kind schema.TurnKind) string {
 		return "Summary"
 	case schema.TurnCheckpoint:
 		return "Checkpoint"
-	case schema.TurnEnvironment:
-		return "Environment"
-	case schema.TurnNotesContext:
-		return "NotesContext"
-	case schema.TurnMemoryContext:
-		return "MemoryContext"
 	case schema.TurnSystem:
 		return "System"
 	case schema.TurnToolResults, schema.TurnTool:
@@ -378,6 +377,23 @@ func outlineRoleLabel(kind schema.TurnKind) string {
 	default:
 		return string(kind)
 	}
+}
+
+// camelCaseKindLabel renders a harness context kind token as its CamelCase
+// outline label: ENVIRONMENT → Environment, NOTES_CONTEXT → NotesContext.
+// Lowercasing each part first keeps the label stable for an upper-case token,
+// and a future harness context kind gains a label without a per-kind display
+// case here.
+func camelCaseKindLabel(kind schema.TurnKind) string {
+	parts := strings.Split(strings.ToLower(string(kind)), "_")
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(part)
+		parts[i] = string(unicode.ToUpper(r)) + part[size:]
+	}
+	return strings.Join(parts, "")
 }
 
 // turnPlainText returns the concatenated text content of a turn (assistant/user

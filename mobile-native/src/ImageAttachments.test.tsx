@@ -10,7 +10,6 @@ import { ImageAttachments } from "./ImageAttachments";
 import { render } from "./renderNative.testkit";
 
 vi.mock("react-native", async () => (await import("./renderNative.testkit")).nativeModuleMock());
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 const image = { id: "image-1", marker: 1, mediaType: "image/png", data: "AQID", name: "photo.png" };
 

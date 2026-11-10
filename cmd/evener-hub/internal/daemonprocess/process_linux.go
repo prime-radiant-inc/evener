@@ -16,6 +16,7 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/unix"
+	"primeradiant.com/evener/agent/schema"
 )
 
 type linuxProcess struct{ pid, fd int }
@@ -101,11 +102,12 @@ func (p *linuxProcess) inspect(t Target) (identity, error) {
 	if err != nil {
 		return identity{}, err
 	}
-	var boot, wall unix.Timespec
-	if err := unix.ClockGettime(unix.CLOCK_BOOTTIME, &boot); err != nil {
+	tick, err := linuxTicksDuration(1, hz)
+	if err != nil {
 		return identity{}, err
 	}
-	if err := unix.ClockGettime(unix.CLOCK_REALTIME, &wall); err != nil {
+	base, err := linuxBootEpoch(unix.ClockGettime, tick)
+	if err != nil {
 		return identity{}, err
 	}
 	// The end of the kernel's reported clock tick is a conservative upper bound
@@ -114,7 +116,6 @@ func (p *linuxProcess) inspect(t Target) (identity, error) {
 	if err != nil {
 		return identity{}, err
 	}
-	base := time.Unix(wall.Sec, wall.Nsec).Add(-time.Duration(boot.Nano()))
 	started, startedLower := base.Add(upper), base.Add(lower)
 	// A retiring target never needs log ownership (judge doesn't read it),
 	// and a retiring daemon is closing its files, so scanning them could
@@ -134,6 +135,58 @@ func (p *linuxProcess) inspect(t Target) (identity, error) {
 		return identity{}, ErrExited
 	}
 	return identity{generation: strconv.FormatUint(ticks, 10), uid: int(procStat.Uid), startedAt: started, startedAtLower: startedLower, argv: strings.Split(strings.TrimSuffix(string(argv), "\x00"), "\x00"), ownsLog: owns, exiting: exiting}, nil
+}
+
+// linuxClockReadAttempts bounds how many clock pairs linuxBootEpoch reads
+// before giving up on a quiet one.
+const linuxClockReadAttempts = 8
+
+// linuxClockReadBudgetTicks bounds the boot time linuxBootEpoch spends
+// retrying a preempted pair. A preempted pair is exactly what the retry
+// exists for, so a bound on attempts alone can stack those gaps on the
+// roster path; four ticks covers an ordinary scheduler hiccup and refuses
+// the rest.
+const linuxClockReadBudgetTicks = 4
+
+// linuxBootEpochGapTicks is the largest gap between linuxBootEpoch's two
+// CLOCK_BOOTTIME reads it accepts into a start estimate. One tick is the
+// start's own resolution; linuxStartSettle uses the same band so a fixture
+// published after it cannot drift from this guarantee.
+const linuxBootEpochGapTicks = 1
+
+// linuxBootEpoch is the wall-clock instant CLOCK_BOOTTIME counts from,
+// estimated from two CLOCK_BOOTTIME reads framing one CLOCK_REALTIME read.
+// The reads are sequential, so a preempted pair over-estimates the epoch by
+// the gap between them; that inflates the process start estimate and can
+// report a live daemon as possibly newer than its rendezvous (#5746). Retry
+// until the pair is read within linuxBootEpochGapTicks - the start's own
+// resolution - and refuse rather than vouch with a bound the read cannot
+// justify. A tick the caller already derived is passed in rather than
+// recomputed.
+func linuxBootEpoch(get func(int32, *unix.Timespec) error, tick time.Duration) (time.Time, error) {
+	var start time.Duration
+	for attempt := range linuxClockReadAttempts {
+		var before, wall, after unix.Timespec
+		if err := get(unix.CLOCK_BOOTTIME, &before); err != nil {
+			return time.Time{}, err
+		}
+		if err := get(unix.CLOCK_REALTIME, &wall); err != nil {
+			return time.Time{}, err
+		}
+		if err := get(unix.CLOCK_BOOTTIME, &after); err != nil {
+			return time.Time{}, err
+		}
+		if attempt == 0 {
+			start = time.Duration(before.Nano())
+		}
+		if time.Duration(after.Nano()-before.Nano()) <= linuxBootEpochGapTicks*tick {
+			return time.Unix(wall.Sec, wall.Nsec).Add(-time.Duration(before.Nano())), nil
+		}
+		if time.Duration(after.Nano())-start > linuxClockReadBudgetTicks*tick {
+			break
+		}
+	}
+	return time.Time{}, errors.New("daemon process start clock read interrupted")
 }
 
 // linuxPFExiting is the kernel's PF_EXITING task flag: set when a process
@@ -172,7 +225,7 @@ func (p *linuxProcess) inspectionError(err error) error {
 
 func linuxOwnsLog(root string, t Target) (bool, error) {
 	var expected unix.Stat_t
-	path := filepath.Join(t.StateDir, "sessions", t.SessionID+".api.jsonl")
+	path := schema.SessionAPILogPath(t.StateDir, t.SessionID)
 	if err := unix.Lstat(path, &expected); err != nil {
 		return false, err
 	}

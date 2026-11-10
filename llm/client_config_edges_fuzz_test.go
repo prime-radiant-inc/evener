@@ -184,7 +184,6 @@ func replayTypeAndValidationEdges(t *testing.T) {
 	for _, s := range []string{"", "x", "[]", "[", `[{"type":"other"}]`, `[{"type":"reasoning.text"}]`} {
 		_ = IsOpenAICompatEncryptedReasoning(s)
 	}
-	_ = OrderedEffortLevels(map[string]string{"high": "h", "low": "l"})
 	for _, req := range []Request{{}, {Model: "m"}, {Model: "m", Messages: []Message{User("x")}, Tools: []ToolDefinition{{Name: "bad-name"}}}, {Model: "m", Messages: []Message{User("x")}, Tools: []ToolDefinition{{Name: "ok", Parameters: map[string]any{}}}}} {
 		_ = req.Validate()
 	}

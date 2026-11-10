@@ -17,15 +17,12 @@ import (
 // rooted at the user's home (~/.local/state).
 func TestDefaultStateDirWithStateHomeFallsBackToUserHome(t *testing.T) {
 	t.Setenv(envvars.XDGStateHome.Name, "")
-
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = os.TempDir()
-	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	want := filepath.Join(home, ".local", "state", "evener")
 
-	if got := DefaultStateDirWithStateHome(""); got != want {
-		t.Fatalf("DefaultStateDirWithStateHome(\"\") = %q, want %q", got, want)
+	if got, err := DefaultStateDirWithStateHome(""); err != nil || got != want {
+		t.Fatalf("DefaultStateDirWithStateHome(\"\") = %q, %v, want %q", got, err, want)
 	}
 }
 

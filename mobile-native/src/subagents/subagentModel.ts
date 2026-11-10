@@ -1,18 +1,14 @@
 // Native activity rows and outcome words over the shared session projection.
 import {
-	type ActivityDelegate,
-	type ActivityJob,
-	type ActivitySessionNode,
-	type ActivityTree,
 	activityNodeID,
 	buildEntityView,
-	findEntityView,
-	type SessionActivityCounts,
+	compactDuration,
 	delegateEndingText,
 	delegateHasActiveWork,
 	delegateModel,
 	delegateStatedIntent,
 	delegateTiming,
+	findEntityView,
 	firstLine,
 	formatTokenCount,
 	isActivityFailure,
@@ -22,9 +18,14 @@ import {
 	jobStatusDisplay,
 	plainQuoteLine,
 	shellJobState,
+	spokenDuration,
+	type ActivityDelegate,
+	type ActivityJob,
+	type ActivitySessionNode,
+	type ActivityTree,
+	type SessionActivityCounts,
 } from "@evener/appwire-client";
-import { waitingOnSubagents } from "../board/attention";
-import { compactDuration, spokenDuration } from "../session/format";
+import { hubTime, waitingOnSubagents } from "../board/attention";
 import type { SubagentTally } from "../session/sessionState";
 
 export type SubagentState = "running" | "failed" | "done";
@@ -237,23 +238,17 @@ export function flattenJobs(tree: ActivityTree, coordinatorTitle: string): Shell
 	return flattenActivity(tree, coordinatorTitle).filter(isJobRow);
 }
 
-function time(value: string | undefined): number | null {
-	if (!value) return null;
-	const parsed = Date.parse(value);
-	return Number.isFinite(parsed) ? parsed : null;
-}
-
 /** When the row entered its state: started (running) or ended. */
 function enteredAt(row: ActivityListRow): number | null {
-	if (row.kind === "job") return time(row.state === "running" ? row.job.startedAt : row.job.endedAt);
-	return time(row.state === "running" ? row.delegate.runStartedAt : row.delegate.runEndedAt);
+	if (row.kind === "job") return hubTime(row.state === "running" ? row.job.startedAt : row.job.endedAt);
+	return hubTime(row.state === "running" ? row.delegate.runStartedAt : row.delegate.runEndedAt);
 }
 
 /** Bare time in the current state (spec 9, ruling 7): how long a running
  * subagent has run, how long since one failed or finished. */
 export function timeInState(row: SubagentRow, now: number): number | null {
 	if (row.state === "running") return delegateTiming(row.delegate, now).durationMs ?? null;
-	const ended = time(row.delegate.runEndedAt);
+	const ended = hubTime(row.delegate.runEndedAt);
 	return ended === null ? null : Math.max(0, now - ended);
 }
 
@@ -494,15 +489,15 @@ function shellJobStatus(row: ShellJobRow, now: number): { words: string; clean: 
 	const { job } = row;
 	const words = jobStatusDisplay(job.status, job.reason);
 	if (!job.terminal) {
-		const since = time(job.lastOutputAt) ?? time(job.startedAt);
+		const since = hubTime(job.lastOutputAt) ?? hubTime(job.startedAt);
 		return {
 			words,
 			clean: false,
 			ms: since === null ? null : Math.max(0, now - since),
 		};
 	}
-	const started = time(job.startedAt);
-	const ended = time(job.endedAt);
+	const started = hubTime(job.startedAt);
+	const ended = hubTime(job.endedAt);
 	return {
 		words,
 		clean: job.status === "completed" && !jobIsFailed(job),

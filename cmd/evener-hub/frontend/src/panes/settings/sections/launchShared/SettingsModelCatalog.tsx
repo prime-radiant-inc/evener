@@ -1,7 +1,7 @@
+import { isLocalHost, LOCAL_HOST } from "@evener/appwire-client";
 import { useCallback, useEffect } from "react";
 import { useConnectionStore } from "../../../../stores/connection";
 import { useCredentialsStore, useHostInstances } from "../../../../stores/credentials";
-import { isLocalHost, LOCAL_HOST } from "../../../../stores/hostRouting";
 import { ModelCatalog, type ModelCatalogProps } from "../../../../widgets";
 import { fetchModelCatalog, fetchModelCatalogForHost } from "../../../../widgets/modelCatalog/catalogClient";
 

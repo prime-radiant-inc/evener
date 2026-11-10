@@ -10,17 +10,18 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
 import { beforeEach, expect, test } from "vitest";
-import { connectionStore } from "../../../../stores/connection";
+import { resetConnectionStoreForTests } from "../../../../stores/connection";
 import type { MutationRecoveryKind } from "../../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
+import { connectFakeClient } from "../../../../testing/connectionTestUtils";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import visuallyHiddenStyles from "../../../../widgets/visuallyhidden/visuallyhidden.module.css";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "../../composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "../../composer/queue/testing/flushPendingTurnsProjection";
 import { SessionNowContext } from "../../liveness";
 import { HeldSteerAnnouncements } from "./HeldSteerAnnouncements";
-import { CAPABILITIES, connectFakeClient, hydrate, readResponse, seedHeld } from "./testing/heldSteerTestUtils";
+import { CAPABILITIES, hydrate, readResponse, seedHeld } from "./testing/heldSteerTestUtils";
 
 // Two fixed clock instants for the timer-cadence test. SessionNowContext's
 // default is Date.now() frozen at module import; any fixed instant at or
@@ -41,7 +42,7 @@ const REJECTED_AT_ACCEPTANCE: MutationRecoveryKind = "rejected";
 
 beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
 });
@@ -59,7 +60,7 @@ test("a held steer appearing is announced once", async () => {
     </SessionNowContext.Provider>,
   );
   await act(async () => {
-    await seedHeld("steer", "hello");
+    await seedHeld("steer", "hello", { attempted: true });
   });
   await waitFor(() => expect(screen.getByTestId("held-steer-announcements").dataset.outcomes).toBe("held"));
   // The live region speaks it.
@@ -78,7 +79,7 @@ test("a held steer appearing is announced once", async () => {
 test("a hold already in flight when the pane opens announces nothing", async () => {
   const fake = connectFakeClient();
   await hydrate(fake, "ref_a");
-  await seedHeld("steer", "hello");
+  await seedHeld("steer", "hello", { attempted: true });
   render(
     <SessionNowContext.Provider value={NOW_A}>
       <HeldSteerAnnouncements ref="ref_a" />
@@ -86,6 +87,21 @@ test("a hold already in flight when the pane opens announces nothing", async () 
   );
   await act(async () => {});
   expect(screen.getByTestId("held-steer-announcements").textContent).toBe("");
+});
+
+test("a refused attempt moving back to QueueStrip does not announce delivery or failure", async () => {
+  const fake = connectFakeClient();
+  await hydrate(fake, "ref_a");
+  const id = await seedHeld("steer", "still locally queued", { attempted: true });
+  render(<HeldSteerAnnouncements ref="ref_a" />);
+  await act(async () => {
+    const storage = new MutationOutboxIndexedDB();
+    await storage.unmarkAttempted(id);
+    storage.close();
+    await refreshPendingTurnsProjection("ref_a");
+  });
+  await flushPendingTurnsProjectionForTests();
+  expect(screen.getByTestId("held-steer-announcements").dataset.outcomes).toBeUndefined();
 });
 
 // The ref-change baseline: one region instance reused across refs baselines
@@ -97,8 +113,8 @@ test("a ref change baselines silently - the new ref's existing hold announces no
   const fake = connectFakeClient();
   await hydrate(fake, "ref_a");
   await hydrate(fake, "ref_b");
-  await seedHeld("steer", "alpha");
-  await seedHeld("steer", "beta", { ref: "ref_b" });
+  await seedHeld("steer", "alpha", { attempted: true });
+  await seedHeld("steer", "beta", { ref: "ref_b", attempted: true });
   const view = render(
     <SessionNowContext.Provider value={NOW_A}>
       <HeldSteerAnnouncements ref="ref_a" />
@@ -117,7 +133,7 @@ test("a ref change baselines silently - the new ref's existing hold announces no
 test("delivery is announced once when the transcript reflects the id", async () => {
   const fake = connectFakeClient();
   await hydrate(fake, "ref_a");
-  const id = await seedHeld("steer", "hello");
+  const id = await seedHeld("steer", "hello", { attempted: true });
   render(
     <SessionNowContext.Provider value={NOW_A}>
       <HeldSteerAnnouncements ref="ref_a" />
@@ -161,7 +177,7 @@ test("delivery is announced once when the transcript reflects the id", async () 
 test("a same-batch delivery plus a new arrival announces the delivery", async () => {
   const fake = connectFakeClient();
   await hydrate(fake, "ref_a");
-  const idA = await seedHeld("steer", "alpha");
+  const idA = await seedHeld("steer", "alpha", { attempted: true });
   render(
     <SessionNowContext.Provider value={NOW_A}>
       <HeldSteerAnnouncements ref="ref_a" />
@@ -271,7 +287,7 @@ test.each([
 ] as const)("a %s departure is announced once", async (_label, expected, seedKind) => {
   const fake = connectFakeClient();
   await hydrate(fake, "ref_a");
-  const id = await seedHeld("steer", "hello");
+  const id = await seedHeld("steer", "hello", { attempted: true });
   render(
     <SessionNowContext.Provider value={NOW_A}>
       <HeldSteerAnnouncements ref="ref_a" />
@@ -283,6 +299,7 @@ test.each([
       await storage.transferToRecovery(id, REJECTED_AT_ACCEPTANCE, "turn is not active");
     } else if (seedKind === "cancelUnattempted") {
       await storage.cancelUnattempted("ref_a");
+      await storage.unmarkAttempted(id);
     } else {
       await storage.markUnknown(id, "blockedUnknown");
     }
@@ -300,7 +317,7 @@ test.each([
 test("a failed-delivery vanish (record gone, nothing holds the id) is announced once", async () => {
   const fake = connectFakeClient();
   await hydrate(fake, "ref_a");
-  await seedHeld("steer", "hello");
+  await seedHeld("steer", "hello", { attempted: true });
   render(
     <SessionNowContext.Provider value={NOW_A}>
       <HeldSteerAnnouncements ref="ref_a" />
@@ -337,7 +354,7 @@ test("the region stays silent on the timer's cadence", async () => {
     </SessionNowContext.Provider>,
   );
   await act(async () => {
-    await seedHeld("steer", "hello");
+    await seedHeld("steer", "hello", { attempted: true });
   });
   await waitFor(() => expect(screen.getByTestId("held-steer-announcements").dataset.outcomes).toBe("held"));
   // The clock advances under a mounted region (Session's own 3s
@@ -373,7 +390,7 @@ test("the announcement text is visually hidden", async () => {
     </SessionNowContext.Provider>,
   );
   await act(async () => {
-    await seedHeld("steer", "hello");
+    await seedHeld("steer", "hello", { attempted: true });
   });
   await waitFor(() => expect(screen.getByTestId("held-steer-announcements").dataset.outcomes).toBe("held"));
   const child = screen.getByTestId("held-steer-announcements").firstElementChild;

@@ -4,9 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
+	"path/filepath"
+	"slices"
 	"sort"
+	"strings"
 
+	agentplugin "primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
@@ -163,7 +168,9 @@ func marketplaceRefusalToWire(err error) error {
 		return appwire.Conflict(err.Error())
 	case errors.Is(err, plugins.ErrMarketplaceNotFound), errors.Is(err, plugins.ErrInvalidName),
 		errors.Is(err, plugins.ErrMarketplaceSourceInStore),
-		errors.Is(err, plugins.ErrMarketplaceSourceUnsupported):
+		errors.Is(err, plugins.ErrMarketplaceSourceUnsupported),
+		errors.Is(err, plugins.ErrMarketplaceSourcePinned),
+		errors.Is(err, plugins.ErrSourceRefQualified):
 		return appwire.InvalidParams(err.Error())
 	}
 	return err
@@ -357,6 +364,142 @@ func (c *hubPluginsController) listPlugins(ctx context.Context) (appwire.PluginL
 		})
 	}
 	return appwire.PluginListResponse{Plugins: entries}, nil
+}
+
+// Components answers evener/plugin/components: one loaded component inventory
+// per requested target, the results echoing the targets in their request
+// order. A target is exactly one of two forms — an installed
+// plugin/marketplace pair or a directory path — and one carrying both or
+// neither is a caller bug that fails the whole request as a params error
+// before any load runs. A target that is merely broken or unknown is not a
+// caller bug: its row carries the load's own error text and the batch keeps
+// its other answers. Manager.Inspect performs no fail-soft; this handler is
+// where its per-target errors become per-target rows.
+func (c *hubPluginsController) Components(ctx context.Context, params appwire.PluginComponentsParams) (appwire.PluginComponentsResponse, error) {
+	for i, target := range params.Targets {
+		if err := validatePluginComponentsTarget(i, target); err != nil {
+			return appwire.PluginComponentsResponse{}, err
+		}
+	}
+	resp := appwire.PluginComponentsResponse{Results: make([]appwire.PluginComponentsResult, 0, len(params.Targets))}
+	for _, target := range params.Targets {
+		result := appwire.PluginComponentsResult{PluginComponentsTarget: target}
+		instance, err := c.mgr.Inspect(ctx, plugins.InspectTarget{
+			Plugin: target.Plugin, Marketplace: target.Marketplace, Path: target.Path,
+		})
+		if err != nil {
+			result.Error = err.Error()
+		} else {
+			result.Components = pluginComponentsToWire(instance)
+		}
+		resp.Results = append(resp.Results, result)
+	}
+	return resp, nil
+}
+
+// validatePluginComponentsTarget rejects a target that is not exactly one of
+// the two forms. The installed form needs only the plugin name: the registry
+// records plugins in the marketplace named "" (registryKeyOwner treats the
+// empty name as a recorded name), so an empty marketplace is a real pair, not
+// a malformed one. Both forms set, or neither, is a caller bug.
+func validatePluginComponentsTarget(index int, target appwire.PluginComponentsTarget) error {
+	if (target.Path != "" && target.Plugin != "") || (target.Path == "" && target.Plugin == "") {
+		return appwire.InvalidParams(fmt.Sprintf(
+			"targets[%d]: exactly one form is required, an installed plugin/marketplace pair or a path (plugin=%q, marketplace=%q, path=%q)",
+			index, target.Plugin, target.Marketplace, target.Path))
+	}
+	return nil
+}
+
+// pluginComponentsToWire maps one loaded plugin Instance to the wire's
+// component inventory. The loader namespaces every name it discovers —
+// "plugin-name:" before skills, agents and commands, "plugin_<plugin-name>_"
+// before MCP servers — and the wire carries bare names, so each is stripped
+// back to what the plugin itself declared. Every list is sorted, so a batch
+// answer reads the same however the loader's maps iterate.
+func pluginComponentsToWire(instance agentplugin.Instance) *appwire.PluginComponents {
+	return &appwire.PluginComponents{
+		Skills:     barePluginNames(instance.Skills),
+		Agents:     barePluginNames(instance.Agents),
+		Commands:   barePluginNames(instance.Commands),
+		Hooks:      pluginHookEvents(instance.Hooks),
+		MCPServers: barePluginMCPServerNames(instance),
+		Warnings:   pluginLoadWarnings(instance),
+	}
+}
+
+// barePluginNames strips the loader's "plugin-name:" namespace from each key
+// and returns the bare names sorted. The manifest name is validated non-empty
+// kebab-case, so a key's first ":" is the namespace separator; a key without
+// one (impossible from the loader) keeps its whole text.
+func barePluginNames[V any](namespaced map[string]V) []string {
+	if len(namespaced) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(namespaced))
+	for _, key := range slices.Sorted(maps.Keys(namespaced)) {
+		if _, bare, ok := strings.Cut(key, ":"); ok {
+			names = append(names, bare)
+		} else {
+			names = append(names, key)
+		}
+	}
+	return names
+}
+
+// barePluginMCPServerNames strips the loader's "plugin_<plugin-name>_"
+// namespace from each server config's name and returns the bare server names
+// sorted.
+func barePluginMCPServerNames(instance agentplugin.Instance) []string {
+	if len(instance.MCPConfigs) == 0 {
+		return nil
+	}
+	prefix := "plugin_" + instance.Manifest.Name + "_"
+	names := make([]string, 0, len(instance.MCPConfigs))
+	for _, server := range instance.MCPConfigs {
+		names = append(names, strings.TrimPrefix(server.Name, prefix))
+	}
+	sort.Strings(names)
+	return names
+}
+
+// pluginHookEvents reduces the loader's per-event hook lists to one count row
+// per declared event, sorted by event name.
+func pluginHookEvents(hooks map[agentplugin.HookEvent][]agentplugin.RegisteredHook) []appwire.PluginHookEvent {
+	if len(hooks) == 0 {
+		return nil
+	}
+	events := make([]appwire.PluginHookEvent, 0, len(hooks))
+	for _, event := range slices.Sorted(maps.Keys(hooks)) {
+		events = append(events, appwire.PluginHookEvent{Event: string(event), Count: len(hooks[event])})
+	}
+	return events
+}
+
+// pluginLoadWarnings concatenates the diagnostics a plugin load itself
+// produced: the loader's MCP config warnings as-is, one row per skipped
+// component file (kind and file the loader recorded, then its own reason),
+// and one note per declared hook event evener will never fire. Reserved
+// events (recognized Claude events evener does not fire) and unrecognized
+// event names use the sentence shape the session-load warnings use, so a
+// plugin's diagnostics read the same wherever they surface.
+func pluginLoadWarnings(instance agentplugin.Instance) []string {
+	var warnings []string
+	warnings = append(warnings, instance.MCPConfigWarnings...)
+	for _, skipped := range instance.SkippedComponents {
+		warnings = append(warnings, fmt.Sprintf("%s %s skipped: %s", skipped.Kind, filepath.Base(skipped.File), skipped.Reason))
+	}
+	for _, event := range slices.Sorted(maps.Keys(instance.UnsupportedHooks)) {
+		warnings = append(warnings, fmt.Sprintf(
+			"plugin %q declares a hook for the reserved event %q, which evener does not yet fire; this hook will not run",
+			instance.Manifest.Name, event))
+	}
+	for _, event := range slices.Sorted(maps.Keys(instance.UnknownHooks)) {
+		warnings = append(warnings, fmt.Sprintf(
+			"plugin %q declares a hook for %q, which is not a recognized Claude or evener hook event (likely a typo); this hook will never fire",
+			instance.Manifest.Name, event))
+	}
+	return warnings
 }
 
 // CheckUpdates runs plugins.Manager.CheckUpdates and returns the list carrying

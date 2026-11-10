@@ -3,6 +3,7 @@
 package doctor
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"io"
@@ -279,14 +280,21 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 
 	t.Setenv("EVENER_STATE_DIR", fixture.base)
 	t.Setenv("XDG_STATE_HOME", filepath.Join(fixture.base, "xdg"))
-	trace.ResolvedStateBases = append(trace.ResolvedStateBases, ResolveStateBase("flag-state"), ResolveStateBase(""))
+	resolveBase := func(flag string) string {
+		base, err := ResolveStateBase(flag)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return base
+	}
+	trace.ResolvedStateBases = append(trace.ResolvedStateBases, resolveBase("flag-state"), resolveBase(""))
 	t.Setenv("EVENER_STATE_DIR", "")
-	trace.ResolvedStateBases = append(trace.ResolvedStateBases, ResolveStateBase(""))
+	trace.ResolvedStateBases = append(trace.ResolvedStateBases, resolveBase(""))
 	if trace.ResolvedStateBases[0] != "flag-state" || trace.ResolvedStateBases[1] != fixture.base || trace.ResolvedStateBases[2] != filepath.Join(fixture.base, "xdg") {
 		t.Fatalf("ResolveStateBase precedence = %#v", trace.ResolvedStateBases)
 	}
 	t.Setenv("XDG_STATE_HOME", "")
-	_ = ResolveStateBase("")
+	_, _ = ResolveStateBase("")
 	originalGlob := globProjectBuckets
 	globProjectBuckets = func(string) ([]string, error) { return nil, errors.New("scripted glob failure") }
 	t.Cleanup(func() { globProjectBuckets = originalGlob })
@@ -296,7 +304,7 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 	globProjectBuckets = originalGlob
 	originalHome := doctorUserHomeDir
 	doctorUserHomeDir = func() (string, error) { return "", errors.New("scripted home failure") }
-	_ = ResolveStateBase("")
+	_, _ = ResolveStateBase("")
 	doctorUserHomeDir = originalHome
 	missing := filepath.Join(fixture.base, "missing.transcript.jsonl")
 	if _, err := loadTranscript(missing); err == nil {
@@ -405,12 +413,12 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 		{SummaryOnly: true},
 	}
 	for _, opts := range apiOpts {
-		result, err := APILog(fixture.base, fixture.rootSID, opts)
+		result, err := APILog(context.Background(), fixture.base, fixture.rootSID, opts)
 		if err != nil || result.SessionID != fixture.rootSID ||
 			!hasIntValue(result.Totals.InputTokens, 71000) ||
 			!hasIntValue(result.Totals.OutputTokens, 700) ||
 			!hasIntValue(result.Totals.TotalTokens, 71700) {
-			t.Fatalf("APILog(%#v) = %#v, %v", opts, result, err)
+			t.Fatalf("APILog(context.Background(), %#v) = %#v, %v", opts, result, err)
 		}
 		trace.APILogs = append(trace.APILogs, result)
 		rendered := RenderAPILog(result, opts)
@@ -422,7 +430,7 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 	if trace.APILogs[0].Totals.Calls != 4 || trace.APILogs[1].Totals.Empties != 1 || len(trace.APILogs[2].Calls) != 1 || len(trace.APILogs[3].Calls) != 1 {
 		t.Fatalf("APILog reports = %#v", trace.APILogs)
 	}
-	if _, err := APILog(fixture.base, "local:"+doctorFilesystemAbsentSID, APILogOpts{}); err == nil {
+	if _, err := APILog(context.Background(), fixture.base, "local:"+doctorFilesystemAbsentSID, APILogOpts{}); err == nil {
 		t.Fatal("APILog missing selector unexpectedly succeeded")
 	}
 

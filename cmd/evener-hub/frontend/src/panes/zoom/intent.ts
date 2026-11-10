@@ -96,6 +96,27 @@ export function parseZoomParams(value: unknown): SessionZoomParams | null {
   };
 }
 
+/** The fields a session-zoom helper reads. Structural, so a shell pane record
+ * satisfies it without this module importing the workspace. */
+interface ZoomPaneLike {
+  readonly type: string;
+  readonly params: unknown;
+}
+
+/** The parsed intent of a sessionZoom pane, or null for any other pane type or
+ * params that do not validate. A predicate over the pane shape, so callers need
+ * not spell the type test and the parse separately. */
+export function zoomIntentOf(pane: ZoomPaneLike): SessionZoomParams | null {
+  return pane.type === "sessionZoom" ? parseZoomParams(pane.params) : null;
+}
+
+/** The conversation a cascade pane returns to, or null for a pane that is not a
+ * valid cascade. An inspection cascade carries a source too: it names the
+ * conversation the cascade was opened from. */
+export function cascadeSourceOf(pane: ZoomPaneLike): ConversationReturnDescriptor | null {
+  return zoomIntentOf(pane)?.source ?? null;
+}
+
 export function deriveCascadePath(params: SessionZoomParams, context: SessionActivityContext | null): CascadePath {
   if (!context?.ancestryKnown) {
     const edges = edgeSegment(params.edges, params.ref);

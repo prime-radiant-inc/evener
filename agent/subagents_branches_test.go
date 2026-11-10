@@ -4,7 +4,6 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/tool"
@@ -361,19 +360,19 @@ func TestFrozenSubagentToolNamesEmpty(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// frozenStableDelegateSandboxMatches
+// frozenDelegateSandboxMatches
 // ---------------------------------------------------------------------------
 
-func TestFrozenStableDelegateSandboxMatchesNilNil(t *testing.T) {
+func TestFrozenDelegateSandboxMatchesNilNil(t *testing.T) {
 	t.Parallel()
-	if !frozenStableDelegateSandboxMatches(nil, nil) {
+	if !frozenDelegateSandboxMatches(nil, nil) {
 		t.Fatalf("expected true for nil nil")
 	}
 }
 
-func TestFrozenStableDelegateSandboxMatchesNilWant(t *testing.T) {
+func TestFrozenDelegateSandboxMatchesNilWant(t *testing.T) {
 	t.Parallel()
-	if frozenStableDelegateSandboxMatches(nil, &delegatestore.SandboxSnapshot{}) {
+	if frozenDelegateSandboxMatches(nil, &delegatestore.SandboxSnapshot{}) {
 		t.Fatalf("expected false for nil got, non-nil want")
 	}
 }
@@ -613,7 +612,7 @@ func TestSubagentStruct(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// sandboxSnapshotFromEnv (tested via frozenStableDelegateSandboxMatches)
+// sandboxSnapshotFromEnv (tested via frozenDelegateSandboxMatches)
 // ---------------------------------------------------------------------------
 
 func TestSandboxSnapshotFromEnvNilEnv(t *testing.T) {
@@ -664,12 +663,12 @@ func TestRootOnlyWorktreeTools(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// stableDelegateToolNameCeiling with nil registry
+// delegateToolNameCeiling with nil registry
 // ---------------------------------------------------------------------------
 
-func TestStableDelegateToolNameCeilingNilRegistry(t *testing.T) {
+func TestDelegateToolNameCeilingNilRegistry(t *testing.T) {
 	t.Parallel()
-	if stableDelegateToolNameCeiling(nil, "communicate", false, nil, nil, false, "") != nil {
+	if delegateToolNameCeiling(nil, "communicate", false, nil, nil, false, "") != nil {
 		t.Fatalf("expected nil for nil registry")
 	}
 }
@@ -677,20 +676,6 @@ func TestStableDelegateToolNameCeilingNilRegistry(t *testing.T) {
 // ---------------------------------------------------------------------------
 // subagent emit field
 // ---------------------------------------------------------------------------
-
-func TestSubagentEmitField(t *testing.T) {
-	t.Parallel()
-	called := false
-	sub := &subagent{
-		emit: func(kind events.EventKind, data events.EventData) {
-			called = true
-		},
-	}
-	sub.emit(events.EventSessionStart, nil)
-	if !called {
-		t.Fatalf("expected emit to be called")
-	}
-}
 
 // ---------------------------------------------------------------------------
 // subagent time fields

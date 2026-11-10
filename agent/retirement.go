@@ -221,12 +221,15 @@ func (c *RetirementController) beginMutation(sessionID, category string, naming 
 // TryClaim does, since waiting would end in the same refusal. An obligation
 // that holds no lease but appears in the non-blocking evidence read (an open
 // question, an in-memory job notification, an active goal between turns, the
-// shared tree's in-memory owner state) cannot end the wait on its own, and
-// TryClaim refuses over it while it is present, so awaitNaming reads those
-// directly and skips the wait when one exists (#4055). Evidence whose read has
-// to block (a
-// running job, a watch, the job journal, the attention registry) is not
-// pre-checked, so a retire beside only that work still waits out the namer.
+// shared tree's in-memory owner state, a running job, a watch, a journal-only
+// pending notification, pending attention) cannot end the wait on its own, and
+// TryClaim refuses over it while it is present (the shared tree's wake set is a
+// conservative proxy; the full read decides from the transcript folds), so
+// awaitNaming reads those directly and skips the wait when one exists (#4055,
+// #4528). The sources whose read used to block are read under TryLock counters
+// or a bounded lock-free journal scan; a source that cannot be read without
+// waiting contributes no evidence, so a retire beside only that work keeps
+// today's wait.
 func (c *RetirementController) TryManualClaim(ctx context.Context) (*RetirementClaim, RetirementSnapshot, error) {
 	c.awaitNaming(ctx, sessionNameTimeout)
 	if err := ctx.Err(); err != nil {
@@ -462,7 +465,8 @@ func (c *RetirementController) snapshotLocked() RetirementSnapshot {
 // claimSnapshotCurrent builds a claim-attempt snapshot from the live controller
 // state plus a fresh, non-blocking evidence read of root. It never consults cached
 // evidence and never holds c.mu across the evidence read, so it cannot present a
-// settled obligation as current and cannot wait on admitted work. root and
+// settled obligation as current and cannot wait on an owner lock admitted work
+// holds; the read itself may do bounded filesystem I/O. root and
 // generation are the controller identity captured under c.mu; a nil root yields no
 // Session evidence (the snapshot's own root check reports the missing root
 // instead). The automatic (manual=false) path skips the read: Run records only
@@ -498,8 +502,9 @@ func (c *RetirementController) claimSnapshotCurrent(root *Session, generation ui
 	return c.snapshotWithBlockersLocked(evidence)
 }
 
-// nonBlockingEvidenceRead reads the obligations that cannot wait on admitted
-// work, mirroring the full read's root-vs-tree split. includeNaming keeps each
+// nonBlockingEvidenceRead reads the obligations that cannot wait on an owner
+// lock admitted work holds, mirroring the full read's root-vs-tree split; the
+// journal source is read through a bounded, lock-free scan. includeNaming keeps each
 // namer's own naming.pending contribution: true for the claim snapshot, whose
 // refusal must name the namer, and false for the manual retire's wait pre-check
 // (#4055), which waits for a namer and nothing else and so must drop it by

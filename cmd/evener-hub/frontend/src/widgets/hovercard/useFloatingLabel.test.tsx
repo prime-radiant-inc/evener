@@ -1,6 +1,9 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { StrictMode, useRef } from "react";
+import { createPortal } from "react-dom";
+import { createRoot } from "react-dom/client";
 import { afterEach, expect, test, vi } from "vitest";
+import { appendPopout } from "../internal/popoutTestUtils";
 import { POINTER_CLICK_WINDOW_MS, SHOW_DELAY_MS, useFloatingLabel } from "./useFloatingLabel";
 
 afterEach(() => {
@@ -163,6 +166,28 @@ test("viewport resize dismisses a visible label", () => {
   expect(screen.queryByTestId("observed-label")).toBeNull();
 });
 
+// A hovercard in a Dockview popout lives in another window. The label's
+// dismissal pair has to listen there: the opener's window never scrolls or
+// resizes when that popout does.
+test("a label mounted in a popout document dismisses on that window's scroll", () => {
+  vi.useFakeTimers();
+  const { frame, doc, win } = appendPopout();
+  const view = render(createPortal(<Harness />, doc.body));
+  try {
+    const trigger = doc.querySelector("button");
+    if (!trigger) throw new Error("popout trigger missing");
+    fireEvent.mouseEnter(trigger);
+    advance(SHOW_DELAY_MS);
+    expect(doc.querySelector('[data-testid="observed-label"]')).not.toBeNull();
+
+    act(() => win.dispatchEvent(new win.Event("scroll")));
+    expect(doc.querySelector('[data-testid="observed-label"]')).toBeNull();
+  } finally {
+    view.unmount();
+    frame.remove();
+  }
+});
+
 test("unmount clears a pending show timer", () => {
   vi.useFakeTimers();
   const { unmount } = render(<Harness />);
@@ -298,11 +323,15 @@ test("shares pointer tracking across any number of mounted consumers", () => {
       expect(tally.net("pointerdown", true)).toBe(1);
       expect(tally.net("pointerup", true)).toBe(1);
       expect(tally.net("pointercancel", true)).toBe(1);
+      expect(tally.net("pointermove", true)).toBe(1);
+      expect(tally.net("visibilitychange", true)).toBe(1);
 
       view.unmount();
       expect(tally.net("pointerdown", true)).toBe(0);
       expect(tally.net("pointerup", true)).toBe(0);
       expect(tally.net("pointercancel", true)).toBe(0);
+      expect(tally.net("pointermove", true)).toBe(0);
+      expect(tally.net("visibilitychange", true)).toBe(0);
     }
   } finally {
     tally.restore();
@@ -347,11 +376,15 @@ test("a StrictMode remount settles on one shared owner", () => {
     expect(tally.net("pointerdown", true)).toBe(1);
     expect(tally.net("pointerup", true)).toBe(1);
     expect(tally.net("pointercancel", true)).toBe(1);
+    expect(tally.net("pointermove", true)).toBe(1);
+    expect(tally.net("visibilitychange", true)).toBe(1);
 
     view.unmount();
     expect(tally.net("pointerdown", true)).toBe(0);
     expect(tally.net("pointerup", true)).toBe(0);
     expect(tally.net("pointercancel", true)).toBe(0);
+    expect(tally.net("pointermove", true)).toBe(0);
+    expect(tally.net("visibilitychange", true)).toBe(0);
   } finally {
     tally.restore();
   }
@@ -384,4 +417,62 @@ test("pointer-focus suppression follows the current hoverless mode while keyboar
   fireEvent.focus(trigger);
   advance(SHOW_DELAY_MS);
   expect(screen.getByTestId("observed-label")).toBeTruthy();
+});
+
+test("a press whose release never arrives stops suppressing hoverless keyboard focus", () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(1_000_000);
+  installTogglingMatchMedia(true);
+  render(<Harness />);
+  const trigger = screen.getByRole("button", { name: "Trigger" });
+
+  // The browser never delivers pointerup or pointercancel for this press.
+  fireEvent.pointerDown(trigger, { pointerId: 7, button: 0 });
+  fireEvent.focus(trigger);
+  advance(SHOW_DELAY_MS);
+  expect(screen.queryByTestId("observed-label")).toBeNull();
+
+  // Long after the press, keyboard focus is the keyboard's, not the press's.
+  fireEvent.blur(trigger);
+  advance(60_000);
+  fireEvent.focus(trigger);
+  advance(SHOW_DELAY_MS);
+  expect(screen.getByTestId("observed-label")).toBeTruthy();
+});
+
+// The resize observer belongs to the window of the element it watches: the
+// opener's constructor cannot observe a popout's node, and delivery would
+// follow the opener's lifecycle.
+test("a label moved into a popout observes through that window's ResizeObserver", async () => {
+  vi.useFakeTimers();
+  const { frame, doc, win } = appendPopout();
+  const observe = vi.fn();
+  class WindowResizeObserver {
+    observe = observe;
+    disconnect = vi.fn();
+  }
+  Object.defineProperty(win, "ResizeObserver", { configurable: true, value: WindowResizeObserver });
+  const measure = vi.fn();
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  try {
+    act(() => root.render(<Harness measure={measure} />));
+    const trigger = host.querySelector("button");
+    if (!trigger) throw new Error("trigger missing");
+    fireEvent.mouseEnter(trigger);
+    advance(SHOW_DELAY_MS);
+    expect(observe).not.toHaveBeenCalled();
+
+    act(() => {
+      doc.body.appendChild(host);
+    });
+    await act(async () => {});
+
+    expect(observe).toHaveBeenCalledTimes(1);
+  } finally {
+    act(() => root.unmount());
+    frame.remove();
+    host.remove();
+  }
 });

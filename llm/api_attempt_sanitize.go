@@ -29,32 +29,24 @@ var commonCredentialQueryNames = map[string]struct{}{
 	"token":        {},
 }
 
-// BuildAPILogCredentialMaterial constructs an APILogCredentialMaterial from
-// the standard provider fields: a primary header name (e.g. "Authorization"
-// or "x-api-key"), query parameter names (e.g. []string{"key"} for Google),
-// the API key value, additional credential headers, and any user info
-// embedded in the request URL.
-//
-// This is the shared implementation used by all provider adapters. Each
-// adapter calls it with its primary header name and query param names:
-//
-//	llm.BuildAPILogCredentialMaterial("Authorization", nil, a.APIKey, a.CredentialHeaders, httpReq)
-func BuildAPILogCredentialMaterial(primaryHeader string, queryNames []string, apiKey string, credentialHeaders map[string]string, httpReq *http.Request) APILogCredentialMaterial {
-	var headerNames []string
-	if primaryHeader != "" {
-		headerNames = []string{primaryHeader}
-	}
-	values := []string{apiKey}
-	for name, value := range credentialHeaders {
+// Merge returns the union of m and other.
+func (m APILogCredentialMaterial) Merge(other APILogCredentialMaterial) APILogCredentialMaterial {
+	headerNames := make([]string, 0, len(m.HeaderNames)+len(other.HeaderNames))
+	for name := range m.HeaderNames {
 		headerNames = append(headerNames, name)
-		values = append(values, value)
 	}
-	if httpReq != nil && httpReq.URL != nil && httpReq.URL.User != nil {
-		values = append(values, httpReq.URL.User.Username())
-		if password, ok := httpReq.URL.User.Password(); ok {
-			values = append(values, password)
-		}
+	for name := range other.HeaderNames {
+		headerNames = append(headerNames, name)
 	}
+	queryNames := make([]string, 0, len(m.QueryNames)+len(other.QueryNames))
+	for name := range m.QueryNames {
+		queryNames = append(queryNames, name)
+	}
+	for name := range other.QueryNames {
+		queryNames = append(queryNames, name)
+	}
+	values := append([]string(nil), m.Values...)
+	values = append(values, other.Values...)
 	return NewAPILogCredentialMaterial(headerNames, queryNames, values...)
 }
 

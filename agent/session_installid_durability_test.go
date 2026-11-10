@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/installid"
 	"primeradiant.com/evener/llm"
 )
@@ -33,7 +34,7 @@ func TestSession_InstallationIDSurvivesRestore(t *testing.T) {
 
 	createClient := llm.NewClient()
 	createAdapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("ok") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 	}}
 	createClient.Register(createAdapter)
 
@@ -70,7 +71,7 @@ func TestSession_InstallationIDSurvivesRestore(t *testing.T) {
 
 	restoreClient := llm.NewClient()
 	restoreAdapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("ok") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
 	}}
 	restoreClient.Register(restoreAdapter)
 

@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/identifier"
 )
 
 var updateSeatbeltGolden = flag.Bool("update-seatbelt-golden", false, "regenerate agent/sandbox/testdata/seatbelt/*.sbpl")
@@ -217,7 +219,7 @@ func TestSeatbeltReadOnlyNoPersistentWrite(t *testing.T) {
 	}
 	// No writable root covers the worktree.
 	for _, p := range params {
-		if strings.HasPrefix(p.Key, "WRITABLE_ROOT_") && (p.Path == cwd || pathUnder(cwd, p.Path)) {
+		if strings.HasPrefix(p.Key, "WRITABLE_ROOT_") && (p.Path == cwd || identifier.PathUnder(cwd, p.Path)) {
 			t.Errorf("read-only must not grant a worktree-covering write root, got %q=%q", p.Key, p.Path)
 		}
 	}
@@ -331,7 +333,7 @@ func TestSeatbeltLinkedWorktreeReadNotWrite(t *testing.T) {
 	// would make it writable — report EVERY such match, not only the common-dir one.
 	mainConfig := filepath.Join(common, "config")
 	for _, p := range params {
-		if strings.HasPrefix(p.Key, "WRITABLE_ROOT_") && (p.Path == mainConfig || p.Path == common || pathUnder(mainConfig, p.Path)) {
+		if strings.HasPrefix(p.Key, "WRITABLE_ROOT_") && (p.Path == mainConfig || p.Path == common || identifier.PathUnder(mainConfig, p.Path)) {
 			t.Errorf("linked-worktree write root %q=%q would make the main repo config writable (common=%q)", p.Key, p.Path, common)
 		}
 	}
@@ -687,10 +689,7 @@ func TestSeatbeltGrantsTheValidatedCarveOutPath(t *testing.T) {
 // inside the carve-out, whose config a direct read must not reach.
 func seatbeltContentFixture(t *testing.T) (host HostFacts, store, realGit string) {
 	t.Helper()
-	home, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	home := canonicalTempDir(t)
 	store = filepath.Join(home, ".config", "evener", "plugins")
 	realGit = filepath.Join(store, "store", "real.git")
 	if err := os.MkdirAll(realGit, 0o755); err != nil {
@@ -754,10 +753,7 @@ func TestSeatbeltLeavesGitReadableWithoutTheConfigMask(t *testing.T) {
 // repository's .git) must not deny the whole carve-out: its .git regex counts
 // that component, matching only a further .git below the root.
 func TestSeatbeltDeniesOnlyTheGitBelowACarveOutUnderAGitDirectory(t *testing.T) {
-	home, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	home := canonicalTempDir(t)
 	fx := writeGitAncestryEvenerContentFixture(t, home)
 	host := seatbeltHost()
 	host.Home = home

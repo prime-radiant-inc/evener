@@ -5,6 +5,8 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Driver } from "../skillguard/run.mjs";
 import { evaluate, navigateTo, queryAccessibilityTree, REFUSED_BUTTON_SELECTOR } from "../browserGuardCdp.mjs";
+import { revealControlStep, revealReadyExpr } from "./revealControl.mjs";
+import { attentionJourney } from "./attention.mjs";
 
 const fixture = JSON.parse(readFileSync(0, "utf8"));
 const driver = new Driver(fixture);
@@ -63,6 +65,19 @@ const scroll = (ref) => `${column(ref)} [data-testid="transcript-virtual-list"] 
 const stagedPNG = 'button[aria-label="View staged.png"] img';
 const errors = [];
 const consoleEvents = [];
+// The deliberate held ancestor is an active session drawn in the read-only
+// cascade surface, which provokes kata 5gdv's known diagnostic ("composer is
+// showing a working session with no Stop"). Only that exact marker for the
+// fixture's held ancestor is allowed; every other warning still fails.
+const knownDiagnostics = [];
+let allowStoplessAncestor = false;
+const stoplessComposerWarning = (params) => {
+  if (!allowStoplessAncestor) return false;
+  const marker = params.args?.[0]?.value;
+  if (typeof marker !== "string" || !marker.startsWith("[evener 5gdv] composer is showing a working session with no Stop.")) return false;
+  const ref = params.args?.[1]?.preview?.properties?.find((property) => property.name === "ref")?.value;
+  return ref === fixture.refs[1];
+};
 const frames = [];
 const readingPoints = [];
 let failed = false;
@@ -124,31 +139,16 @@ const sourceAnchorRowExpr = `(() => {
 })()`;
 const sourceAnchorExpr = `((${sourceAnchorRowExpr})?.id ?? null)`;
 
-// settledSample waits until sampleExpr returns the same non-null value on two
-// consecutive polls of one settle; a null poll between them breaks the run. key scopes the samples, so a sample left by
-// an earlier settle never confirms a later one.
-let settles = 0;
-function settledSample(sampleExpr, label) {
-  const key = `${++settles}:${label}`;
-  return wait(`(() => {
-    const sample = ${sampleExpr};
-    if (sample === null || sample === undefined) {
-      window.__cascadeSettleSample = null;
-      return null;
-    }
-    const stamp = JSON.stringify({ key:${q(key)}, sample });
-    const previous = window.__cascadeSettleSample;
-    window.__cascadeSettleSample = stamp;
-    return previous === stamp ? sample : null;
-  })()`, label);
-}
-
 // A row far above the viewport can still grow, and the virtualizer compensates
 // with a scrollTop write that the rows' positions only follow on the next
 // commit. A single read can land in that frame and see every row shifted, so
 // the anchor is read only once it is stable.
 async function sourceAnchor() {
-  return (await settledSample(sourceAnchorRowExpr, "real center transcript has a stable visible semantic anchor")).id;
+  return (
+    await driver.settleExpression(sourceAnchorRowExpr, {
+      label: "real center transcript has a stable visible semantic anchor",
+    })
+  ).id;
 }
 
 function readingPointExpr(portExpr) {
@@ -201,7 +201,7 @@ const sourcePortExpr = `${driver.paneScopeExpr(fixture.rootRef)}?.querySelector(
 const sourceReadingPointExpr = readingPointExpr(sourcePortExpr);
 
 // The reader-reflow rule (docs/superpowers/specs/2026-10-04-shared-transcript-
-// reader-reflow-design.md, readingPointOffset in useTranscriptScroll.ts): where
+// reader-reflow-design.md, readingPointOffset in viewAnchor.ts): where
 // the entry that held the reading point should start relative to the viewport
 // top after a reflow. Also evaluated in the page, so it stays self-contained.
 // When the entry did not reflow (same width and height), the reading line
@@ -237,11 +237,14 @@ function assertReadingContinuity(before, after, label) {
 }
 
 async function settledReadingPoint(portExpr, label) {
-  return settledSample(`(() => {
-    const point = ${readingPointExpr(portExpr)};
-    window.__cascadeReadingAttempt = { label:${q(label)}, point };
-    return point?.useful ? point : null;
-  })()`, `${label}, useful reading geometry is stable`);
+  return driver.settleExpression(
+    `(() => {
+      const point = ${readingPointExpr(portExpr)};
+      window.__cascadeReadingAttempt = { label:${q(label)}, point };
+      return point?.useful ? point : null;
+    })()`,
+    { label: `${label}, useful reading geometry is stable` },
+  );
 }
 
 async function settledReadingContinuity(before, portExpr, label) {
@@ -294,12 +297,20 @@ async function nativeReaderWheel(portExpr, deltaY) {
   await wait(`(${portExpr})?.scrollTop !== ${point.scrollTop}`, "native wheel actually moves its intended reader");
 }
 
+// The interruption and reflow measurements need a reading point inside a tall
+// entry, away from the end, so the reader's progress can be told apart from a
+// no-op. One predicate, embedded in the page wait via toString().
+function insideUsefulTallEntry(point) {
+  return Boolean(point && !point.followingBottom && point.height > point.viewport && point.offset < -100);
+}
+
 async function readInsideTallEntry(portExpr, label) {
   await nativeReaderWheel(portExpr, -900);
   return wait(`(() => {
     const point = ${readingPointExpr(portExpr)};
     window.__cascadeReadingAttempt = { label:${q(label)}, point };
-    return point?.useful && !point.followingBottom && point.height > point.viewport && point.offset < -100 ? point : null;
+    ${insideUsefulTallEntry.toString()}
+    return point?.useful && insideUsefulTallEntry(point) ? point : null;
   })()`, `${label}, native wheel selects useful content inside a tall entry`);
 }
 
@@ -314,7 +325,7 @@ async function heightOnlyChange(portExpr, height, label) {
 
 async function viewportReflow(portExpr, width, height, label, changed) {
   const before = await settledReadingPoint(portExpr, `${label} before`);
-  assert.ok(!before.followingBottom && before.height > before.viewport && before.offset < -100, `${label} begins inside a tall entry away from the end`);
+  assert.ok(insideUsefulTallEntry(before), `${label} begins inside a tall entry away from the end`);
   await driver.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor:1, mobile:false });
   const portDimension = changed === "width" ? `clientWidth !== ${before.width}` : `clientHeight !== ${before.viewport}`;
   await wait(`window.innerWidth === ${width} && window.innerHeight === ${height} && (${portExpr})?.${portDimension}`, `${label}, actual reader ${changed} changes`);
@@ -379,7 +390,7 @@ async function openSourceVerbosity() {
   await driver.clickAt(verbosity.x, verbosity.y);
   return wait(`(() => {
     const panel = document.querySelector('[data-testid="transcript-detail-control"]');
-    const selected = panel?.querySelector('[role="radio"][aria-checked="true"]')?.textContent.trim();
+    const selected = panel?.querySelector('section[aria-label="Transcript detail editor"] [role="radio"][aria-checked="true"]')?.textContent.trim();
     return selected ? { selected, local:panel.textContent.includes('Local Desktop view') } : null;
   })()`, "the real Verbosity dialog exposes its current preset");
 }
@@ -394,7 +405,39 @@ async function clickVerbosityChoice(label, role = "radio") {
   await driver.clickAt(point.x, point.y);
 }
 
-const LATE_MEASUREMENT_DELAY_MS = 400;
+// A native smooth scroll has no known duration, so when a held measurement is
+// released has to come from the port's own geometry. Three consecutive stable
+// reads mean the reader has come to rest.
+async function waitForReaderAtRest(portExpr, label) {
+  await read("window.__cascadeRest = { top: null, frames: 0 }");
+  await wait(`(() => {
+    const port = ${portExpr};
+    if (!port) return null;
+    const state = window.__cascadeRest ?? { top: null, frames: 0 };
+    if (state.top !== port.scrollTop) {
+      state.top = port.scrollTop;
+      state.frames = 0;
+      return null;
+    }
+    state.frames += 1;
+    return state.frames >= 3 ? { scrollTop: port.scrollTop } : null;
+  })()`, label);
+  return read("window.__cascadeRest.top");
+}
+
+// Deliver the held measurements the way the browser does: one ResizeObserver
+// callback per frame, so each correction sees the committed geometry of the one
+// before it.
+async function releaseQueuedMeasurements() {
+  for (;;) {
+    const remaining = await read("window.__cascadeMeasurements.releaseOne()");
+    if (remaining === 0) {
+      await read("window.__cascadeMeasurements.port = null; window.__cascadeMeasurements.row = null");
+      return;
+    }
+    await read("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+  }
+}
 
 async function nativePositioningInterruption(input) {
   assert.ok(input === "wheel" || input === "pill" || input === "Shift-Space", "the native interruption uses a real reader input");
@@ -402,10 +445,32 @@ async function nativePositioningInterruption(input) {
   assert.ok(["Chat", "Tools"].includes(original.selected), "the native interruption starts from a real Chat or Tools preset");
   if (original.selected !== "Chat") {
     await clickVerbosityChoice("Chat");
-    await wait('document.querySelector("[data-testid=transcript-detail-control] [role=radio][aria-checked=true]")?.textContent.trim() === "Chat"', "the real source has a Chat baseline before the measurement hold");
+    await wait(`document.querySelector('[data-testid="transcript-detail-control"] section[aria-label="Transcript detail editor"] [role="radio"][aria-checked="true"]')?.textContent.trim() === "Chat"`, "the real source has a Chat baseline before the measurement hold");
   }
-  const before = await settledReadingPoint(sourcePortExpr, "native interruption before width");
-  assert.ok(!before.followingBottom && before.height > before.viewport && before.offset < -100,
+  // The interruption measurement must start inside a tall entry, away from the
+  // end. The preceding journeys (and a late reflow) can leave the source at the
+  // bottom, so establish the structural precondition through the reader's own
+  // native wheel when it is not already true, instead of sampling whatever
+  // offset the last step left (issue #4778's run 39370270268 job 118456327626
+  // failed this exact assertion).
+  let before = await settledReadingPoint(sourcePortExpr, "native interruption before width");
+  if (!insideUsefulTallEntry(before)) {
+    // The Verbosity dialog's full-screen scrim covers the reader, so the
+    // native wheel's hit test cannot reach the port. Close it, reposition the
+    // reader, then reopen it and resample the settled geometry before arming
+    // the measurement hold (RoboRev review of #5791).
+    await key("Escape", 27);
+    await wait('document.querySelector("[data-testid=transcript-detail-control]") === null',
+      "Verbosity closes before the reader is repositioned");
+    await readInsideTallEntry(sourcePortExpr, "native interruption before width");
+    const reopened = await openSourceVerbosity();
+    assert.equal(reopened.selected, "Chat", "the reopened Verbosity keeps the Chat baseline");
+    // readInsideTallEntry returns the first sample that satisfies the tall-entry
+    // predicate; every other before point in this journey is a settled reading,
+    // so re-read it here before it becomes observation.before.
+    before = await settledReadingPoint(sourcePortExpr, "native interruption before width");
+  }
+  assert.ok(insideUsefulTallEntry(before),
     "the native interruption starts inside useful tall content away from the end");
   const observation = { kind:`${input}-interruption`, original, baselinePreset:"Chat", before };
   readingPoints.push(observation);
@@ -422,7 +487,7 @@ async function nativePositioningInterruption(input) {
     await wait(`window.innerWidth === 920 && (${sourcePortExpr})?.clientWidth !== ${before.width}`, "interruption preparation changes actual source width");
     const other = "Tools";
     await clickVerbosityChoice(other);
-    await wait(`document.querySelector('[data-testid="transcript-detail-control"] [role="radio"][aria-checked="true"]')?.textContent.trim() === ${q(other)}`, "the real source preset change is published");
+    await wait(`document.querySelector('[data-testid="transcript-detail-control"] section[aria-label="Transcript detail editor"] [role="radio"][aria-checked="true"]')?.textContent.trim() === ${q(other)}`, "the real source preset change is published");
     await key("Escape", 27);
     await wait('document.querySelector("[data-testid=transcript-detail-control]") === null', "Verbosity closes before input reaches the source port");
     observation.prepared = await wait(`(() => {
@@ -506,13 +571,21 @@ async function nativePositioningInterruption(input) {
     assert.ok(observation.newer.entry !== observation.prepared.point.entry || Math.abs(observation.newer.offset - observation.prepared.point.offset) >= 100,
       "the admitted input meaningfully moves the prepared reader");
     // Late measurements can land any time after the reader's input. Release
-    // them well past TanStack's 150ms isScrollingResetDelay, when the
-    // virtualizer no longer reports a backward scroll, so the reader's own
-    // movement record alone has to protect the newer reading point (#3871,
-    // #3880).
-    await new Promise(resolve => setTimeout(resolve, LATE_MEASUREMENT_DELAY_MS));
+    // them once the reader has actually come to rest, never after a fixed
+    // delay: the outcome must not depend on where TanStack's isScrolling reset
+    // falls relative to the release (#3871, #3880).
+    await waitForReaderAtRest(sourcePortExpr, `the reading port rests after admitted ${input}`);
+    // Streaming rows keep arriving while the hold is up, and each arrival may
+    // move the reader with the content. The release only has to preserve the
+    // reading point as it stands when the release begins.
+    observation.releasePoint = await settledReadingPoint(sourcePortExpr, `native interruption immediately before releasing ${input}`);
   } finally {
-    await read('window.__cascadeMeasurements.release()');
+    await releaseQueuedMeasurements();
+    await read(`(() => {
+      const writes = window.__cascadeWrites ?? [];
+      for (const write of writes.slice(-60)) console.log("CASCADE_WRITE", JSON.stringify(write));
+      window.__cascadeWrites = [];
+    })()`);
     observation.released = await read(`(() => {
       const state = window.__cascadeMeasurements;
       return { queued:state.queued.length, held:state.port !== null || state.row !== null };
@@ -520,10 +593,11 @@ async function nativePositioningInterruption(input) {
   }
   assert.deepEqual(observation.released, { queued:0, held:false }, "all genuine queued measurements are released");
   observation.after = await settledReadingPoint(sourcePortExpr, "native interruption after release");
-  const { newer, after } = observation;
+  const { after } = observation;
+  const releasePoint = observation.releasePoint;
   const oldOffset = wantedReadingOffset(before, after);
   const oldTarget = Math.max(0, Math.min(after.scrollTop + after.offset - oldOffset, Math.max(0, after.scrollHeight - after.viewport)));
-  const retainedNewer = after.entry === newer.entry && Math.abs(after.offset - newer.offset) <= 2;
+  const retainedNewer = after.entry === releasePoint.entry && Math.abs(after.offset - releasePoint.offset) <= 2;
   observation.staleReplay = !retainedNewer && after.entry === before.entry && Math.abs(after.scrollTop - oldTarget) <= 2;
   observation.oldTarget = oldTarget;
   await capture(`${input}-interruption-released`);
@@ -547,7 +621,7 @@ async function nativePositioningInterruption(input) {
   })()`);
   await openSourceVerbosity();
   await clickVerbosityChoice(original.local ? original.selected : "Use hub default", original.local ? "radio" : "button");
-  await wait(`document.querySelector('[data-testid="transcript-detail-control"] [role="radio"][aria-checked="true"]')?.textContent.trim() === ${q(original.selected)}`, "native UI restores the original source preset");
+  await wait(`document.querySelector('[data-testid="transcript-detail-control"] section[aria-label="Transcript detail editor"] [role="radio"][aria-checked="true"]')?.textContent.trim() === ${q(original.selected)}`, "native UI restores the original source preset");
   await key("Escape", 27);
   await wait('document.querySelector("[data-testid=transcript-detail-control]") === null', "restored Verbosity dialog closes");
   await driver.send("Emulation.setDeviceMetricsOverride", { width:1000, height:900, deviceScaleFactor:1, mobile:false });
@@ -707,14 +781,23 @@ async function assertSpineStatus(ref, ...states) {
   if (glyphState === "working" && reducedMotion) {
     assert.equal(status.animation, "none", "reduced motion keeps the running indicator still");
   }
-  const axNodes = await queryAccessibilityTree(driver.send, `${scope(ref)} [data-runtime-state]`);
-  const axNames = (axNodes ?? []).filter((node) => !node.ignored && node.name?.value).map((node) => node.name.value);
+  // Chrome's accessibility tree can trail a status transition by a frame.
+  // Poll until it agrees with the rendered label, bounded as a tripwire; a
+  // genuinely competing name never converges and still fails below.
+  let axNames = [];
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const axNodes = await queryAccessibilityTree(driver.send, `${scope(ref)} [data-runtime-state]`);
+    axNames = (axNodes ?? []).filter((node) => !node.ignored && node.name?.value).map((node) => node.name.value);
+    if (axNames.length > 0 && axNames.every((name) => name === text)) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
   assert.ok(axNames.length > 0, "the compact status exposes an accessible label in the real tree");
   assert.ok(
     axNames.every((name) => name === text),
     `the real accessibility tree names the status only with its exact runtime text ${q(text)}, got ${q(axNames)}`,
   );
   driver.milestone("compact-spine-status", { ref, ...status });
+  return status;
 }
 
 async function installSourceTrace() {
@@ -978,6 +1061,54 @@ async function sourceMutationJourney() {
   await capture("queued-source-single-delivery");
 }
 
+// The fixture holds the first rendered ancestor's (refs[1]) final provider
+// round, so the spine is genuinely active when the browser drills it in. This
+// leg releases that hold and confirms the resting idle state; the existing
+// source-mutation idle coverage stays untouched.
+async function dottedAncestorStatus(ref) {
+  const active = await assertSpineStatus(ref, "active");
+  await driver.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+  assert.equal(await read('matchMedia("(prefers-reduced-motion: reduce)").matches'), true, "reduced motion is actually emulated before the stillness assertion");
+  const activeReduced = await assertSpineStatus(ref, "active");
+  await driver.send("Emulation.setEmulatedMedia", { features: [] });
+  await capture("dotted-ancestor-status");
+  await observeGeometryAndFocus(ref);
+  const releasedAfter = frames.length;
+  driver.control("release-ancestor-provider");
+  await waitFrames(() => frames.slice(releasedAfter).some(frame => frame.direction === "Network.webSocketFrameReceived" && frame.method === "thread/status/changed" && frame.params.ref === ref && frame.params.status.type === "idle"), "actual rendered ancestor settles after its provider release");
+  const idle = await assertSpineStatus(ref, "idle");
+  allowStoplessAncestor = false;
+  assert.equal(await read("document.activeElement === window.__cascadeFocused"), true, "ancestor status changes preserve focused element");
+  assert.deepEqual(await read("window.__cascadeGeometryChanges"), [], "ancestor provider completion never changes geometry");
+  await read("window.__cascadeGeometryObserver.disconnect()");
+  driver.milestone("dotted-ancestor-status", { ref, active: active.state, reducedMotionActive: activeReduced.state, idle: idle.state, glyph: active.glyphState, knownDiagnostics: knownDiagnostics.length });
+}
+
+// Enter once, prove the held ancestor while it is a spine, and release it
+// before the source-reading setup. The live delegate row remounts the source
+// reader, so the source's own reading checks run after the release. The page
+// then reloads before the baseline journey: unmounting and re-entering alone
+// would reuse the released subscription's stale active metadata instead of the
+// live idle notification (#4878), and the reload makes every subscription
+// re-read it.
+async function dottedAncestorJourney() {
+  allowStoplessAncestor = true;
+  await driver.click(sourceAgents);
+  await drill(fixture.edges[0], 1);
+  await drill(fixture.edges[1], 2);
+  await drill(fixture.edges[2], 3);
+  await dottedAncestorStatus(fixture.refs[1]);
+  await pinSourceDom();
+  // A remounted reader shows its first rows at the top before it moves to the
+  // end of the transcript; Return's baseline is the settled end, not that
+  // interval.
+  await wait(`(() => {
+    const port = ${sourcePortExpr};
+    return port && port.clientHeight > 0 && port.scrollHeight - port.clientHeight - port.scrollTop <= 4;
+  })()`, "the remounted source reader rests at the end of its transcript");
+  await returnToSource();
+}
+
 // Both rows come from the root's real project catalog. A native row click,
 // selected by its description, distinguishes identities with identical labels.
 async function completeOverlap(ref, kind) {
@@ -1008,7 +1139,21 @@ async function assertOverlap(ref, text, label) {
   assert.deepEqual(atoms, overlapMentions(text), `${label}, atom kind and exact text-owned offsets`);
   const stored = await read(`JSON.parse(localStorage.getItem(${q(`evener.composer.draft.v2.${ref}`)}))`);
   const { editedAt, ...record } = stored;
-  assert.deepEqual(record, { text, skillNames:['cascade-overlap'], commandNames:['cascade-overlap'], mentions:overlapMentions(text) }, `${label}, complete real persisted draft`);
+  assert.deepEqual(record, {
+    text,
+    skillNames:['cascade-overlap'],
+    commandNames:['cascade-overlap'],
+    mentions:overlapMentions(text),
+    revisionId: record.revisionId,
+  }, `${label}, complete real persisted draft`);
+  assert.equal(typeof record.revisionId, 'string', `${label}, draft record carries its revision identity`);
+  assert.ok(record.revisionId.length > 0, `${label}, revision identity is non-empty`);
+  const priorRevisionId = assertOverlap.revisionIds?.get(ref);
+  if (priorRevisionId !== undefined) {
+    assert.notEqual(record.revisionId, priorRevisionId, `${label}, changed persisted draft has a new revision identity`);
+  }
+  assertOverlap.revisionIds ??= new Map();
+  assertOverlap.revisionIds.set(ref, record.revisionId);
   assert.equal(typeof editedAt, 'number', `${label}, draft record carries its write stamp`);
 }
 
@@ -1472,28 +1617,16 @@ const sidebarEntranceSettled = `(() => {
 
 async function reveal(edge, container) {
   const selector = `${container} ${row(edge)}`;
-  await wait(`document.querySelector(${q(selector)}) !== null || [...document.querySelectorAll(${q(`${container} button`)})].some(b => b.textContent.trim().startsWith('Inactive subagents ('))`, "real direct delegate collection");
+  await wait(revealReadyExpr(selector, container, REFUSED_BUTTON_SELECTOR), "real direct delegate collection");
   for (let boundary = 0; boundary < 10; boundary++) {
     if (await read(`document.querySelector(${q(selector)}) !== null`)) return selector;
-    const visible = await read(`document.querySelectorAll(${q(`${container} [data-activity-anchor]`)}).length`);
-    // The control is found and activated in one page turn. Scrolling a Show or
-    // Load more control into view can make the page boundary under it load the
-    // next page by itself; when that page lands it removes the boundary and the
-    // list shifts, so a press measured before it can land on a neighbouring
-    // delegate row and drill into it (#3804). The click still requires the
-    // control to be the topmost element at its center, as a real press would.
-    const step = await wait(`(() => {
-      if (document.querySelector(${q(selector)})) return { revealed: true };
-      const buttons = [...document.querySelectorAll(${q(`${container} button`)})];
-      const b = buttons.find(n => !n.matches(${q(REFUSED_BUTTON_SELECTOR)}) && (${visible} === 0 ? n.textContent.trim().startsWith('Inactive subagents (') : n.textContent.trim().startsWith('Show ') || n.textContent.trim() === 'Load more subagents'));
-      if (!b) return null;
-      b.scrollIntoView({ block: 'center' });
-      const r = b.getBoundingClientRect();
-      if (!b.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2))) return null;
-      const before = document.querySelector(${q(container)}).textContent;
-      b.click();
-      return { before };
-    })()`, "real disclosure or direct page boundary");
+    // The control is found and activated in one page turn (see
+    // revealControlStep). Scrolling a Show or Load more control into view can
+    // make the page boundary under it load the next page by itself; when that
+    // page lands it removes the boundary and the list shifts, so a press
+    // measured before it can land on a neighbouring delegate row and drill into
+    // it (#3804).
+    const step = await wait(revealControlStep(selector, container, REFUSED_BUTTON_SELECTOR), "real disclosure or direct page boundary");
     if (step.revealed) return selector;
     await wait(`document.querySelector(${q(selector)}) !== null || document.querySelector(${q(container)}).textContent !== ${q(step.before)}`, "direct collection progresses");
   }
@@ -1515,20 +1648,51 @@ async function waitFrames(predicate, label) {
   });
 }
 
+// Page.reload resolves before the old document is replaced, so a following
+// openSession can see the outgoing document's rail row and composer and return
+// against it. Wait for the reload's own load event before re-opening.
+async function reloadDocument() {
+  const loaded = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => finish(new Error("reload did not fire its load event")), 15000);
+    const handler = (event) => {
+      if (JSON.parse(event.data).method === "Page.loadEventFired") finish();
+    };
+    const finish = (error) => {
+      clearTimeout(timer);
+      driver.page.ws.removeEventListener("message", handler);
+      error ? reject(error) : resolve();
+    };
+    driver.page.ws.addEventListener("message", handler);
+  });
+  await driver.send("Page.reload", { ignoreCache: true });
+  await loaded;
+}
+
 const sent = (after = 0) => frames.slice(after).filter(f => f.direction === "Network.webSocketFrameSent");
 const answered = (request) => frames.some(f => f.direction === "Network.webSocketFrameReceived" && f.id === request.id && Object.hasOwn(f, "result") && !f.error);
 
-async function reconnect() {
+// expectRefs is the scene's own set of conversation owners. The cascade calls
+// omit it and keep the strict seven-ref cascade requirement; a later journey
+// whose panes have been replaced or closed passes the owners actually mounted,
+// because a closed or parked reader has no subscription to recover.
+async function reconnect({ expectRefs } = {}) {
   const after = frames.length;
+  const expected = expectRefs ?? fixture.refs;
   const sockets = await read(`(() => {
     const sockets = window.__cascadeSockets.filter(s => s.readyState === WebSocket.OPEN && new URL(s.url).pathname === '/rpc');
     for (const socket of sockets) socket.close(4000, 'cascade guard transport boundary');
     return sockets.length;
   })()`);
   assert.equal(sockets, 1, "one actual shared hub socket is closed");
-  await waitFrames(() => fixture.refs.every(ref => sent(after).some(f => f.method === "thread/read" && f.params.ref === ref && f.params.subscribe && answered(f))), "all seven real subscription owners recover");
+  await waitFrames(() => expected.every(ref => sent(after).some(f => f.method === "thread/read" && f.params.ref === ref && f.params.subscribe && answered(f))), expectRefs ? `${expected.length} mounted subscription owners recover` : "all seven real subscription owners recover")
+    .catch((error) => {
+      const subscriptions = sent(after).filter((f) => f.method === "thread/read" && f.params.subscribe);
+      const observed = [...new Set(subscriptions.map((f) => f.params.ref))];
+      const missing = expected.filter((ref) => !subscriptions.some((f) => f.params.ref === ref && answered(f)));
+      throw new Error(`${error.message}; missing owners ${JSON.stringify(missing)}; observed ${observed.length} subscriptions ${JSON.stringify(observed)}`);
+    });
   const subscriptions = sent(after).filter(f => f.method === "thread/read" && f.params.subscribe);
-  assert.ok(subscriptions.length >= 7);
+  assert.ok(subscriptions.length >= expected.length);
   assert.ok(subscriptions.every(f => f.params.replaceSubscription === false), "every admitted thread membership is additive");
   return after;
 }
@@ -1555,6 +1719,13 @@ try {
     const Native = window.ResizeObserver;
     const state = window.__cascadeMeasurements = {
       Native, port: null, row: null, queued: [],
+      releaseOne() {
+        const pending = this.queued.shift();
+        if (!pending) { this.port = null; this.row = null; return 0; }
+        const connected = pending.entries.filter(entry => entry.target.isConnected);
+        if (connected.length) pending.callback(connected, pending.observer);
+        return this.queued.length;
+      },
       release() {
         this.port = null;
         this.row = null;
@@ -1592,7 +1763,10 @@ try {
     if (value.method === "Runtime.exceptionThrown") errors.push(value.params);
     if (value.method === "Runtime.consoleAPICalled") {
       consoleEvents.push(value.params);
-      if (["error", "warning"].includes(value.params.type)) errors.push(value.params);
+      if (["error", "warning"].includes(value.params.type)) {
+        if (value.params.type === "warning" && stoplessComposerWarning(value.params)) knownDiagnostics.push(value.params);
+        else errors.push(value.params);
+      }
     }
     if (["Network.webSocketFrameSent", "Network.webSocketFrameReceived"].includes(value.method)) {
       try { frames.push({ direction: value.method, requestId: value.params.requestId, ...JSON.parse(value.params.response.payloadData) }); } catch {}
@@ -1686,6 +1860,16 @@ try {
   fixture.sourcePaneId = await read(`document.querySelector(${q(`${sourceFooter} [data-pane-id]`)})?.dataset.paneId`);
   assert.ok(fixture.sourcePaneId, "source has a committed Dockview pane ID");
   fixture.sourceTabCount = await read("document.querySelectorAll('.dv-tab').length");
+  await dottedAncestorJourney();
+  await reloadDocument();
+  await driver.openSession(fixture.rootRef);
+  const restoredSourcePaneId = await read(`document.querySelector(${q(`${sourceFooter} [data-pane-id]`)})?.dataset.paneId`);
+  assert.ok(restoredSourcePaneId, "reloaded source has a committed Dockview pane ID");
+  assert.equal(restoredSourcePaneId, fixture.sourcePaneId, "reload restores the saved source pane identity");
+  const restoredTabCount = await read("document.querySelectorAll('.dv-tab').length");
+  assert.equal(restoredTabCount, fixture.sourceTabCount, "reload restores the saved tab count");
+  fixture.sourcePaneId = restoredSourcePaneId;
+  fixture.sourceTabCount = restoredTabCount;
   await driver.focusComposer(fixture.rootRef);
   await driver.typeText(fixture.rootRef, "CASCADE_UNSENT_SOURCE_DRAFT");
   await driver.typeText(fixture.rootRef, " /cascade-source");
@@ -1723,6 +1907,12 @@ try {
   await wait(cascadeUntitledExpr, "the pane hosts no Agent path nav and no title heading");
   await read('window.__cascadeTraceSource("after-first-drill")');
   await assertSourceDom();
+  // Opening the secondary split narrows the source and reflows its transcript.
+  // The virtualizer can show the top row for a frame before the reading entry
+  // is restored; issue #4778's second recorded occurrence failed exactly here
+  // (actual turn_m1, expected turn_m17) because the assertion ran before that
+  // restore. Wait on the structured anchor, then keep the assertion.
+  await wait(`${sourceAnchorExpr} === ${q(beforeEntryAnchor)}`, "secondary entry restores the visible source row");
   assert.equal(await sourceAnchor(), beforeEntryAnchor, "secondary entry preserves the visible source row");
   driver.milestone("root-child", { sourcePaneId: fixture.sourcePaneId, inspectorPaneId: fixture.inspectorPaneId, sourceAnchor: beforeEntryAnchor });
   for (let level = 2; level <= 6; level++) await drill(fixture.edges[level - 1], level);
@@ -1824,10 +2014,13 @@ try {
   // reached through its own pane's footer: the shared sidebar scoped to the
   // source. The paging delegate rows there still keyboard-truncate the
   // inspector's selected branch.
-  const beforeSidebar = frames.length;
   await driver.click(sourceAgents);
   const branchRow = await reveal(fixture.branch, '[data-testid="activity-sidebar"]');
-  const paging = sent(beforeSidebar).filter(f => f.method === 'evener/thread/delegates/list' && f.params.ref === fixture.rootRef && f.params.cursor);
+  // A retained page may complete before the sidebar opens, so the observed
+  // direct history includes it. Any request still in flight gets its reply.
+  const directPageRequests = () => sent(0).filter(f => f.method === 'evener/thread/delegates/list' && f.params.ref === fixture.rootRef && f.params.cursor);
+  await waitFrames(() => directPageRequests().length > 0 && directPageRequests().every(answered), "the observed root collection advances the real direct-page cursor");
+  const paging = directPageRequests();
   assert.ok(paging.length > 0 && paging.every(answered), "the observed root collection advances the real direct-page cursor");
   await read(`document.querySelector(${q(branchRow)}).focus()`);
   await wait(`document.activeElement === document.querySelector(${q(branchRow)})`, "real sidebar row owns keyboard focus");
@@ -1912,6 +2105,14 @@ try {
   await nativePositioningInterruption("wheel");
   await nativePositioningInterruption("pill");
   await reloadAndMobileJourney();
+  // The attention tier stays empty until this driver releases it, so every
+  // assertion above runs against exactly the baseline it ran against before
+  // the control existed. From here the real needs_you queue, the floating
+  // control and its hops own the browser.
+  await attentionJourney({
+    driver, fixture, read, wait, capture, key, frames, sent, answered, reconnect,
+    drill, upload, holdCanvasCompletion, sourcePortExpr, settledReadingPoint, assertReadingContinuity,
+  });
   assert.deepEqual(errors, [], "unexpected browser errors or warnings");
 } catch (error) {
   failed = true;
@@ -1929,6 +2130,7 @@ try {
   } finally {
     try {
       writeFileSync(path.join(fixture.artifactDir, "console.json"), JSON.stringify(consoleEvents, null, 2));
+      writeFileSync(path.join(fixture.artifactDir, "known-diagnostics.json"), JSON.stringify(knownDiagnostics, null, 2));
       writeFileSync(path.join(fixture.artifactDir, "rpc-frames.json"), JSON.stringify(frames, null, 2));
       writeFileSync(path.join(fixture.artifactDir, "reading-points.json"), JSON.stringify(readingPoints, null, 2));
       if (driver.page) writeFileSync(path.join(fixture.artifactDir, "reading-attempt.json"), JSON.stringify(await read('window.__cascadeReadingAttempt ?? null'), null, 2));

@@ -9,7 +9,7 @@
 // interrupt has left the outbox.
 import type { AppwireClientLike, EvenerThread, ThreadReadResponse } from "@evener/appwire-client";
 import { sessionControls } from "@evener/appwire-client";
-import { READ_ITEM_LIMIT } from "../../../mobile/src/services/conversation";
+import { READ_ITEM_LIMIT } from "../conversation/services/conversation";
 import { createNativeMutationHost, type NativeMutationHost } from "../nativeMutationHost";
 import { type NativeMutationRuntime, nativeMutationTargetKey } from "../nativeMutationRuntime";
 import type { ToastMessage } from "../Toast";

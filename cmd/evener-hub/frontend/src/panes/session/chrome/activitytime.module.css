@@ -1,0 +1,7 @@
+.rowTime {
+  flex: none;
+  color: var(--ink-low);
+  font-size: var(--font-size-caption);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
