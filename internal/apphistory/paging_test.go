@@ -234,30 +234,50 @@ func TestWindowedHistoryTranslatesCoarseMessagesIntoItemTypes(t *testing.T) {
 }
 
 // A window continuation cursor names the exact-type view it resumes. Following
-// it through the public handler must forward that cursor untouched, not decode
-// it as a legacy selection cursor or re-page the transcript around it.
-func TestWindowedHistoryForwardsWindowContinuationWithTranslatedTypes(t *testing.T) {
+// the cursor the first page returned must reach the rest of the window: the
+// cursor travels untouched instead of being decoded as a legacy selection
+// cursor or re-paged around.
+func TestWindowedHistoryFollowsReturnedContinuationWithTranslatedTypes(t *testing.T) {
 	t.Parallel()
 	content := conversationParams()
 	window := appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Latest: 1}}
-	var seen appwire.ThreadTurnsListParams
-	page, err := List(t.Context(), appwire.ThreadTurnsListParams{
-		ThreadContentParams: content, Ref: "local:thread", Cursor: "window-continuation", ItemLimit: 1, ThreadWindowParams: window,
-	}, func(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
-		seen = params
+	var seen []appwire.ThreadTurnsListParams
+	list := func(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+		seen = append(seen, params)
+		if len(seen) == 1 {
+			return appwire.ThreadTurnsListResponse{
+				Data:       []appwire.Turn{{ID: "turn", ItemsView: appwire.TurnItemsViewFragment}},
+				NextCursor: "window-continuation",
+				Snapshot:   &appwire.SnapshotIdentity{Incarnation: "inc", Length: 205},
+			}, nil
+		}
 		return appwire.ThreadTurnsListResponse{
-			Data:     []appwire.Turn{{ID: "turn", ItemsView: appwire.TurnItemsViewFragment}},
-			Snapshot: &appwire.SnapshotIdentity{Incarnation: "inc", Length: 205},
+			Data: []appwire.Turn{{ID: "turn-older", ItemsView: appwire.TurnItemsViewFragment}},
 		}, nil
-	})
+	}
+	first, err := List(t.Context(), appwire.ThreadTurnsListParams{
+		ThreadContentParams: content, Ref: "local:thread", ItemLimit: 1, ThreadWindowParams: window,
+	}, list)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if seen.Cursor != "window-continuation" || seen.Selection() != 0 || !slices.Contains(seen.ItemTypes, "messages") || seen.ItemLimit != 1 || seen.TurnWindow == nil {
-		t.Fatalf("windowed continuation request = %+v", seen)
+	if first.NextCursor == "" {
+		t.Fatal("first windowed page returned no continuation to follow")
 	}
-	if len(page.Data) != 1 || page.Data[0].ID != "turn" || page.NextCursor != "" {
-		t.Fatalf("windowed continuation page = %+v", page)
+	next, err := List(t.Context(), appwire.ThreadTurnsListParams{
+		ThreadContentParams: content, Ref: "local:thread", Cursor: first.NextCursor, ItemLimit: 1, ThreadWindowParams: window,
+	}, list)
+	if err != nil {
+		t.Fatalf("following the returned continuation: %v", err)
+	}
+	if len(seen) != 2 {
+		t.Fatalf("windowed continuation calls = %d, want one page per request", len(seen))
+	}
+	if resumed := seen[1]; resumed.Cursor != first.NextCursor || resumed.Selection() != 0 || !slices.Contains(resumed.ItemTypes, "messages") || resumed.ItemLimit != 1 || resumed.TurnWindow == nil {
+		t.Fatalf("windowed continuation request = %+v", resumed)
+	}
+	if len(next.Data) != 1 || next.Data[0].ID != "turn-older" || next.NextCursor != "" {
+		t.Fatalf("windowed continuation page = %+v", next)
 	}
 }
 

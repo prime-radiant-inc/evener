@@ -1064,21 +1064,32 @@ func localDaemonSourceIncarnation(incarnation string) string {
 }
 
 // localDaemonNextWindowPage names the daemon read that fetches the turns the
-// page withheld. A since window continues strictly after its newest turn; a
-// latest or before window continues strictly before its oldest turn.
+// page withheld. A since window continues strictly after its logical newest
+// served turn; a latest or before window continues strictly before its logical
+// oldest served turn. The boundary comes from the page's window result because
+// a reopened turn's fragments interleave with the turns around it: the page's
+// physical last (or first) fragment need not belong to the turn the next
+// selector must resume from, and a selector that names an already-served turn
+// spends its limit on that turn instead of the withheld one.
 func localDaemonNextWindowPage(selector appwire.ThreadTurnWindow, page appwire.ThreadReadResponse) (appwire.ThreadTurnWindow, bool) {
 	if page.Window == nil || page.Window.WithheldTurns <= 0 || len(page.Thread.Turns) == 0 {
 		return appwire.ThreadTurnWindow{}, false
 	}
 	limit := page.Window.WithheldTurns
 	if selector.Since != "" {
-		newest := page.Thread.Turns[len(page.Thread.Turns)-1].ID
+		newest := page.Window.LastServedTurnID
+		if newest == "" {
+			newest = page.Thread.Turns[len(page.Thread.Turns)-1].ID
+		}
 		if newest == "" {
 			return appwire.ThreadTurnWindow{}, false
 		}
 		return appwire.ThreadTurnWindow{Since: newest, Limit: limit}, true
 	}
-	oldest := page.Thread.Turns[0].ID
+	oldest := page.Window.FirstServedTurnID
+	if oldest == "" {
+		oldest = page.Thread.Turns[0].ID
+	}
 	if oldest == "" {
 		return appwire.ThreadTurnWindow{}, false
 	}
