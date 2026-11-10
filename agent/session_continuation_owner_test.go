@@ -310,3 +310,74 @@ func TestStopAfterSamplingFencesTheSuccessorClaim(t *testing.T) {
 		t.Fatal("claimed successor remained pending after the Stop finalized")
 	}
 }
+
+// TestStopDuringContinuationAdmissionKeepsTheReservedStart covers the window
+// after the session marks itself processing but before beginExecution registers
+// the continuation: the execution sample is empty while the durable slot names
+// an accepted-but-unrun start. The fence must not name that bystander, because
+// finalizing would delete the accepted input it never ran.
+func TestStopDuringContinuationAdmissionKeepsTheReservedStart(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	sess := newQueuePersistTestSession(t, dir)
+	id := sess.ID()
+	reserved := appwire.TurnStartParams{
+		ClientMutationID: "start-reserved-beside-continuation",
+		Input:            []appwire.InputItem{{Type: "text", Text: "input that must survive the Stop"}},
+	}
+	if _, err := sess.AcceptClientMutationStart(reserved); err != nil {
+		t.Fatalf("AcceptClientMutationStart(reserved): %v", err)
+	}
+	// processOneInput has entered SessionProcessing, but beginExecution has not
+	// registered the continuation yet, so the execution sample is empty.
+	sess.mu.Lock()
+	sess.state = SessionProcessing
+	sess.mu.Unlock()
+	sess.cfg.testOnly.interruptSampled = func() {
+		sess.cfg.testOnly.interruptSampled = nil
+		// The continuation starts before the fence is reserved, but its id was
+		// not in the sample. The fence must still leave the accepted start
+		// alone: it never ran, and the cancellation ends the continuation.
+		sess.beginExecution("")
+	}
+	interrupt := appwire.TurnInterruptParams{
+		ClientMutationID: "interrupt-during-continuation-admission",
+	}
+	if _, err := sess.InterruptClientMutation(context.Background(), interrupt, nil); err != nil {
+		t.Fatalf("InterruptClientMutation: %v", err)
+	}
+	snapshot := sess.clientMutations.snapshot()
+	pending, ok := snapshot.PendingExecutions[reserved.ClientMutationID]
+	if !ok {
+		t.Fatal("the accepted start was deleted by an interrupt that never ran it")
+	}
+	if pending.ExecutionState != "accepted" {
+		t.Fatalf("accepted start state = %q, want accepted", pending.ExecutionState)
+	}
+	if len(snapshot.Journal[reserved.ClientMutationID].Payload) == 0 {
+		t.Fatal("the accepted start's payload was cleared by an interrupt that never ran it")
+	}
+	if got := snapshot.Journal[interrupt.ClientMutationID].StableTurnID; got != "" {
+		t.Fatalf("interrupt targeted %q, want no durable target during continuation admission", got)
+	}
+	sess.Close()
+
+	restored := restoreQueuePersistTestSession(t, dir, id)
+	defer restored.Close()
+	recovered := restored.clientMutations.snapshot()
+	recoveredPending, ok := recovered.PendingExecutions[reserved.ClientMutationID]
+	if !ok || recoveredPending.ExecutionState != "accepted" {
+		t.Fatalf("recovered accepted start = %#v, present=%v; want an accepted pending execution", recoveredPending, ok)
+	}
+	if len(recovered.Journal[reserved.ClientMutationID].Payload) == 0 {
+		t.Fatal("recovery lost the accepted start's payload")
+	}
+	claimed, ok, err := restored.claimClientMutationStart()
+	if err != nil || !ok {
+		t.Fatalf("reserved start not claimable after recovery: claimed=%#v ok=%v err=%v", claimed, ok, err)
+	}
+	if claimed.ClientMutationID != reserved.ClientMutationID {
+		t.Fatalf("recovered claim = %q, want the reserved start %q", claimed.ClientMutationID, reserved.ClientMutationID)
+	}
+}

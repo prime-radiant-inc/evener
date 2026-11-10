@@ -1040,11 +1040,18 @@ func sessionIsQuiesced(running bool, claimedTurnID string) bool {
 // the turn that is running, even when recovery runs it under a fresh execution
 // id, and its pending name is the one finalization must match.
 func activeTurnIsUnrunReservation(snapshot *clientMutationSnapshot) bool {
-	if snapshot.ActiveTurnID == "" {
+	return pendingTurnIsUnrunReservation(snapshot, snapshot.ActiveTurnID)
+}
+
+// pendingTurnIsUnrunReservation reports whether turnID names a mutation that
+// was accepted but never claimed. Such a pending execution has not started, so
+// a Stop must not retire it as the turn it cancelled.
+func pendingTurnIsUnrunReservation(snapshot *clientMutationSnapshot, turnID string) bool {
+	if turnID == "" {
 		return false
 	}
 	for _, pending := range snapshot.PendingExecutions {
-		if pending.TurnID == snapshot.ActiveTurnID {
+		if pending.TurnID == turnID {
 			return pending.ExecutionState == "accepted"
 		}
 	}
@@ -1084,6 +1091,10 @@ func (s *Session) InterruptClientMutation(
 	// reserved mutation turn that has not started (#5802).
 	s.mu.Lock()
 	execution := s.execution
+	// s.state, unlike WireState, does not count pending work: it tells a
+	// continuation that has entered processing apart from an idle session that
+	// merely has an accepted start waiting to run.
+	sessionProcessing := s.state == SessionProcessing
 	s.mu.Unlock()
 	if s.cfg.testOnly.interruptSampled != nil {
 		s.cfg.testOnly.interruptSampled()
@@ -1099,16 +1110,25 @@ func (s *Session) InterruptClientMutation(
 		}
 		// The fence records the durable name of the mutation this interrupt is
 		// actually cancelling, which is the name finalization and recovery match
-		// against. The running execution's own id differs from that name only
-		// when the durable slot is an accepted-but-unrun reservation and an
-		// unnamed continuation runs beside it; there the execution id is the turn
-		// that is cancelled. A claimed or recovered mutation keeps the pending
-		// name even when the execution runs under a fresh id (#5802), and a
-		// successor claimed between the sample above and this reservation keeps
-		// its own name rather than inheriting the stale execution's.
+		// against. A claimed or recovered mutation keeps its pending name even
+		// when the execution runs under a fresh id (#5802), and a successor
+		// claimed between the sample above and this reservation keeps its own
+		// name rather than inheriting the stale execution's.
+		//
+		// The durable slot answers differently only while a processing session
+		// runs beside an accepted-but-unrun start: an unnamed continuation owns
+		// no slot entry, so the start is a bystander the Stop must not retire.
+		// Name the execution when the sample already saw it; when admission has
+		// not registered one yet, name nothing. The empty target matches no
+		// pending execution, which is right -- cancelling the continuation ends
+		// the turn and the accepted input stays for its next run.
 		target := snapshot.ActiveTurnID
-		if execution.running && execution.turnID != "" && activeTurnIsUnrunReservation(snapshot) {
-			target = execution.turnID
+		if sessionProcessing && activeTurnIsUnrunReservation(snapshot) {
+			target = ""
+			if execution.running && execution.turnID != "" &&
+				!pendingTurnIsUnrunReservation(snapshot, execution.turnID) {
+				target = execution.turnID
+			}
 		}
 
 		record.StableTurnID = target
