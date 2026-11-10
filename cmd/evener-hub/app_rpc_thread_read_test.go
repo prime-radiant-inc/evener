@@ -2685,6 +2685,13 @@ func TestSessionOperationsContinuesCurrentRemoteHubWindow(t *testing.T) {
 			if err := json.Unmarshal(params, &read); err != nil {
 				t.Fatal(err)
 			}
+			if read.FetchCursor != "" {
+				fetch, err := serveScriptedRemoteRetainedFetch(flattenTestItems(turns), read.FetchCursor)
+				if err != nil {
+					return appwire.InternalError(err.Error())
+				}
+				return fetch
+			}
 			response := appwire.ThreadReadResponse{Thread: appwire.Thread{
 				ID: "remote", Source: "local", Evener: appwire.EvenerThread{Ref: "local:remote", Capabilities: appwire.ThreadCapabilities{WindowRead: true}}, Turns: turns,
 			}, Snapshot: &appwire.SnapshotIdentity{Incarnation: "remote-history", Length: turnCount}}
@@ -2867,6 +2874,35 @@ func packCurrentRemoteHubRead(response appwire.ThreadReadResponse, params appwir
 	}
 	response.Snapshot.Incarnation = params.ViewIncarnation(response.Snapshot.Incarnation, itemLimit)
 	return withReadHistoryIdentity(packed, response), nil
+}
+
+// serveScriptedRemoteRetainedFetch answers a fetch-cursor read the way the
+// owning hub does: from the canonical encoding of the item its minted token
+// fences. The peer retains no separate copy, so it reconstructs that encoding
+// from the source item the cursor names instead of re-reading a window.
+func serveScriptedRemoteRetainedFetch(items []appwire.ThreadItem, fetchCursor string) (appwire.ThreadReadResponse, error) {
+	cursor, identity, err := appitempaging.DecodeFetchCursorForRef(fetchCursor, "local:remote")
+	if err != nil {
+		return appwire.ThreadReadResponse{}, err
+	}
+	index := slices.IndexFunc(items, func(item appwire.ThreadItem) bool {
+		return item.Position != nil && *item.Position == cursor.Position && item.Version == cursor.ItemVersion
+	})
+	if index < 0 {
+		return appwire.ThreadReadResponse{}, appwire.TranscriptItemCursorStale()
+	}
+	canonical, err := json.Marshal(items[index])
+	if err != nil {
+		return appwire.ThreadReadResponse{}, err
+	}
+	fetch, err := appitempaging.BuildFetchResponseBytes(canonical, identity, cursor)
+	if err != nil {
+		return appwire.ThreadReadResponse{}, err
+	}
+	return appwire.ThreadReadResponse{
+		Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: "local:remote"}},
+		Fetch:  &fetch,
+	}, nil
 }
 
 func packCurrentRemoteHubPage(turns []appwire.Turn, params appwire.ThreadWindowParams, requestedLimit int, cursor string) (appwire.ThreadTurnsListResponse, error) {
@@ -4434,6 +4470,13 @@ func TestSessionOperationsRetiresRemoteCursorWhenControllerRetainsAgain(t *testi
 			var read appwire.ThreadReadParams
 			if err := json.Unmarshal(raw, &read); err != nil {
 				return appwire.InternalError(err.Error())
+			}
+			if read.FetchCursor != "" {
+				fetch, err := serveScriptedRemoteRetainedFetch([]appwire.ThreadItem{item()}, read.FetchCursor)
+				if err != nil {
+					return appwire.InternalError(err.Error())
+				}
+				return fetch
 			}
 			response := appwire.ThreadReadResponse{
 				Thread: appwire.Thread{
