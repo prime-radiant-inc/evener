@@ -42,12 +42,12 @@ dedupes by text.
 - the thread model's status for the Stop-parked queue state.
 
 The projection keys rows by the effective wire identity (`clientMutationId`).
-A legacy queue row with no identity is keyed `queue:<entryId>` and merged with
-the one local queue row whose complete content matches it. A preview-only
-legacy row stays visible on its own rather than merging on truncated text. A
-drain or promote row owns the queue entries named by `queueEntryIds`, so those
-rows do not render beside it. A queue row whose identity is visible as a
-transcript item is suppressed.
+A legacy queue row with no identity is keyed `queue:<entryId>` and merged in
+queue order with an unmatched local queue row whose complete content matches
+it. A preview-only legacy row stays visible on its own rather than merging on
+truncated text. A drain or promote row owns the queue entries named by
+`queueEntryIds`, so those rows do not render beside it. A queue row whose
+identity is visible as a transcript item is suppressed.
 
 Row states:
 
@@ -73,11 +73,19 @@ Transport settlement stays as strict as it is today: a receipt or an
 authoritative identity settles the outbox row so it cannot be dispatched again.
 The accepted optimistic copy is retained for display.
 
+An explicit queue Edit, Remove or Steer now ends that queue row's display copy
+as part of the action; the row does not remain as a permanent `delivering`
+entry after its queue entry is gone.
+
 `handleNotification` settles an identity only when the accepted model makes its
 message visible: a recorded transcript item for history frames, or a queue row
 for queue frames. A history frame the client ignores or invalidates must not
 delete the only pending row. Consumed queue ids are the one positive-evidence
 exception: a drain's own row carries them.
+
+An accepted history frame settles the identities it names even when the
+projected model has not exposed the item yet; the frame itself proves the
+recording. Only an ignored or invalidated frame leaves the pending copy alone.
 
 A session-scoped `deliveredHere` set remembers identities already seen as
 delivered so a later bounded read cannot resurrect a row.

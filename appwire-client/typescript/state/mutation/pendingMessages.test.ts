@@ -259,6 +259,22 @@ test("a legacy queue row with complete text merges with its one local queue row"
   expect(rows[0]).toMatchObject({ id: "m1", text: "hello", queueEntryId: "q1" });
 });
 
+test("a preview-only legacy row keeps its named skill marker", () => {
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 1,
+      ids: ["q1"],
+      texts: undefined,
+      preview: ["[1 skill]"],
+      skillNames: [["pkg:probe"]],
+    },
+  });
+  const rows = project({ model });
+  expect(rows[0]?.displayText).toBe("[skill: pkg:probe]");
+  expect(rows[0]?.textComplete).toBe(false);
+});
+
 test("a legacy queue preview never merges with a different full local text", () => {
   const model = threadModel({
     queue: {
@@ -271,6 +287,62 @@ test("a legacy queue preview never merges with a different full local text", () 
   });
   const rows = project({ model, outbox: [local("m1", "turn/queue", "hello world")] });
   expect(rows.map((row) => row.id).sort()).toEqual(["m1", "queue:q1"]);
+});
+
+test("two identical legacy queue rows pair with two local rows in order", () => {
+  const model = threadModel({
+    queue: {
+      depth: 2,
+      revision: 2,
+      ids: ["q1", "q2"],
+      texts: ["hello", "hello"],
+      preview: ["hello", "hello"],
+    },
+  });
+  const rows = project({
+    model,
+    outbox: [local("m1", "turn/queue", "hello"), local("m2", "turn/queue", "hello")],
+  });
+  expect(rows).toHaveLength(2);
+  expect(rows.map((row) => row.id).sort()).toEqual(["m1", "m2"]);
+  expect(rows.every((row) => row.queueEntryId !== undefined)).toBe(true);
+});
+
+test("a retargeted Stop-canceled row stays visible under the displayed ref", () => {
+  const record = local("m1", "turn/start", "hello", {
+    state: "canceled",
+    targetRef: "ref_b",
+    displayedRef: "ref_a",
+  });
+  const rows = project({ outbox: [record] });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: "m1", ref: "ref_a", state: "canceled", text: "hello" });
+});
+
+test("a Retry-minted row is suppressed by its wire id", () => {
+  const record = local("fresh", "turn/start", "hello", {
+    payload: { ref: "ref_a", input: textInput("hello"), clientMutationId: "m1" },
+  });
+  expect(project({ outbox: [record], deliveredHere: new Set(["m1"]) })).toEqual([]);
+});
+
+test("a Retry-minted row merges with its wire-id queue row", () => {
+  const record = local("fresh", "turn/start", "hello", {
+    payload: { ref: "ref_a", input: textInput("hello"), clientMutationId: "m1" },
+  });
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 1,
+      ids: ["q1"],
+      clientMutationIds: ["m1"],
+      texts: ["hello"],
+      preview: ["hello"],
+    },
+  });
+  const rows = project({ outbox: [record], model });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: "m1", text: "hello", queueEntryId: "q1" });
 });
 
 test("durable local and recovery states map to their pending states", () => {

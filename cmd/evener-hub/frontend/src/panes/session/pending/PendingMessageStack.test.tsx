@@ -78,6 +78,19 @@ test("the composer's active recovery row is not duplicated in the stack", () => 
   expect(screen.queryByTestId("pending-message-stack")).toBeNull();
 });
 
+test("the active recovery is excluded by its storage key when the row is wire-keyed", () => {
+  renderStack(
+    [
+      row({
+        id: "m1",
+        recovery: { clientMutationId: "fresh" } as PendingMessage["recovery"],
+      }),
+    ],
+    { ...context, activeRecoveryId: "fresh" },
+  );
+  expect(screen.queryByTestId("pending-message-stack")).toBeNull();
+});
+
 test("a row without a composer context renders no actions", () => {
   renderStack([row({ state: "waiting" })]);
   expect(screen.getByTestId("pending-message-row")).toBeTruthy();
@@ -95,6 +108,12 @@ test("a legacy queue row with only a preview shows it but offers no Edit", () =>
   expect(screen.getByTestId("user-bubble").textContent).toContain("truncated…");
   expect(screen.queryByRole("button", { name: "Edit message" })).toBeNull();
   expect(screen.getByRole("button", { name: "Remove from queue" })).toBeTruthy();
+});
+
+test("a queue row with no entry id exposes no edit or remove action", () => {
+  renderStack([row({ id: "queue:0", queueIndex: 0, queueEntryId: undefined, textComplete: false })], context);
+  expect(screen.queryByRole("button", { name: "Edit message" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Remove from queue" })).toBeNull();
 });
 
 test("steering captions distinguish the running step, the next turn, a hub wait, and elapsed time", () => {

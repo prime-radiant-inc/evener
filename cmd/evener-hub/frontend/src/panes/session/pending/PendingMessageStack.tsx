@@ -8,7 +8,7 @@ import { SessionNowContext } from "../liveness";
 import { UserMessageView } from "../transcript/messages/UserMessageItem";
 import type { PendingActionContext } from "./actionContext";
 import { pendingMessageCaption } from "./pendingMessageCaption";
-import { withoutActiveRecovery } from "./pendingMessageLiveEdge";
+import { rowMatchesIdentity, withoutActiveRecovery } from "./pendingMessageLiveEdge";
 import styles from "./pendingmessagestack.module.css";
 import { usePendingMessageActions } from "./usePendingMessageActions";
 
@@ -58,7 +58,12 @@ export function PendingMessageStack({
                 text: row.displayText,
                 images: row.images,
               }}
-              status={pendingMessageCaption(row, turnActive, now, row.id === refusedId)}
+              status={pendingMessageCaption(
+                row,
+                turnActive,
+                now,
+                refusedId !== undefined && rowMatchesIdentity(row, refusedId),
+              )}
               footer={
                 context === undefined ? undefined : (
                   <PendingMessageRowActions row={row} handlers={handlers} canDrain={canDrain} disabled={context.busy} />

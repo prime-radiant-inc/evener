@@ -10,7 +10,12 @@ import { useState } from "react";
 import { copyToClipboard } from "../../../shell/palette/commands";
 import { pressLocalRecoveryFenced, pressRefusal } from "../../../stores/liveControls";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
-import { captureRecoveryStopBarrier, retryBlockedForTarget, threadsStore } from "../../../stores/threads";
+import {
+  captureRecoveryStopBarrier,
+  retryBlockedForTarget,
+  settleDisplayCopy,
+  threadsStore,
+} from "../../../stores/threads";
 import { useToasts } from "../../../widgets";
 import {
   discardRecoveryPendingTurn,
@@ -39,6 +44,10 @@ function rowKind(row: PendingMessage): PendingRowKind {
   if (row.recovery) return "recovery";
   if (row.queueEntryId !== undefined && row.outbox === undefined) return "queue";
   return "local";
+}
+
+function displayCopyId(row: PendingMessage): string {
+  return row.outbox?.clientMutationId ?? row.optimistic?.clientMutationId ?? row.recovery?.clientMutationId ?? row.id;
 }
 
 // The action owner for one pending-message row. It preserves the rules the
@@ -127,6 +136,7 @@ export function usePendingMessageActions(context: PendingActionContext) {
         skillNames: row.skillNames,
         commandNames: row.commandNames,
       });
+      await settleDisplayCopy(displayCopyId(row), context.ref).catch(() => undefined);
     } catch (error) {
       toasts.push("error", sessionActionError("Couldn't steer with this message now", error));
     } finally {
@@ -143,6 +153,7 @@ export function usePendingMessageActions(context: PendingActionContext) {
     setBusy(row.id, true);
     try {
       await threadsStore.getState().cancelQueued(context.ref, row.queueIndex, row.queueEntryId);
+      await settleDisplayCopy(displayCopyId(row), context.ref).catch(() => undefined);
     } catch (error) {
       toasts.push("error", sessionActionError("Couldn't remove this message from the queue", error));
     } finally {
@@ -166,6 +177,7 @@ export function usePendingMessageActions(context: PendingActionContext) {
         return;
       }
       await threadsStore.getState().cancelQueued(context.ref, row.queueIndex, row.queueEntryId);
+      await settleDisplayCopy(displayCopyId(row), context.ref).catch(() => undefined);
     } catch (error) {
       toasts.push("error", `Moved to the composer, but couldn't remove it from the queue: ${errorText(error)}`);
     } finally {

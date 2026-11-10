@@ -16,6 +16,7 @@ import { isQueueParked } from "../../submitRouting";
 import type { InputItem, PendingMutation } from "../../types.gen";
 import { composerVerb } from "./composerMethods";
 import {
+  commandMarkers,
   compareKnownNumber,
   normalizeText,
   outboxInput,
@@ -23,6 +24,7 @@ import {
   parseImagePlaceholder,
   pendingEntryPreview,
   reconcilePendingEntries,
+  skillMarkers,
   textualInput,
   transcriptMutationIds,
 } from "./pendingEntries";
@@ -165,6 +167,15 @@ function composeDisplayText(
     skillNames,
     commandNames,
   });
+}
+
+// A preview-only legacy row still carries the daemon's selection arrays. The
+// named markers replace a synthetic selection-only preview, while literal user
+// text keeps its own brackets.
+function legacyQueueDisplayText(text: string, skillNames: readonly string[], commandNames: readonly string[]): string {
+  const namedMarkers = [skillMarkers(skillNames), commandMarkers(commandNames)].filter(Boolean).join(" ");
+  const genericSelection = namedMarkers !== "" && /^\[\d*\s*(skills?|commands?)\]$/i.test(text.trim());
+  return [genericSelection ? "" : text, namedMarkers].filter((part) => part !== "").join(" ");
 }
 
 interface LocalFamily<A extends MutationAttachmentRef> {
@@ -351,10 +362,20 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
   for (const id of input.deliveredHere ?? []) delivered.add(id);
 
   const families = new Map<string, LocalFamily<A>>();
-  for (const record of input.outbox) if (record.targetRef === ref) addLocal(families, record);
+  const localOutbox = input.outbox.filter((record) => record.targetRef === ref || record.displayedRef === ref);
+  for (const record of localOutbox) addLocal(families, record);
   for (const record of input.optimistic) if (record.targetRef === ref) addLocal(families, record);
   for (const record of input.recovery) {
     if (record.targetRef === ref || record.displayedRef === ref) addLocal(families, record);
+  }
+  // A Retry mints a fresh storage key that travels under its predecessor's
+  // wire id. The projection's row identity, delivered set and family lookups
+  // use the wire id; the record keeps its own key for actions.
+  const wireByStorageKey = new Map<string, string>();
+  for (const [wireId, family] of families) {
+    for (const record of [family.recovery, family.outbox, family.optimistic]) {
+      if (record) wireByStorageKey.set(record.clientMutationId, wireId);
+    }
   }
 
   const pendingById = new Map<string, PendingMutation>();
@@ -373,15 +394,19 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
     : undefined;
   const base = reconcilePendingEntries(
     ref,
-    [...input.outbox, ...input.optimistic],
+    [
+      ...localOutbox.map((record) => (record.targetRef === ref ? record : { ...record, targetRef: ref })),
+      ...input.optimistic.filter((record) => record.targetRef === ref),
+    ],
     reconciliationModel,
     input.submittedHere ?? new Map(),
     input.isOwnMutationRecord,
-  ).filter((entry) => !delivered.has(entry.id));
+  ).filter((entry) => !delivered.has(wireByStorageKey.get(entry.id) ?? entry.id));
 
   const rows = new Map<string, PendingMessage<A>>();
   for (const entry of base) {
-    rows.set(entry.id, rowFromBase(entry, families, pendingById));
+    const wireId = wireByStorageKey.get(entry.id) ?? entry.id;
+    rows.set(wireId, rowFromBase({ ...entry, id: wireId }, families, pendingById));
   }
 
   // Recovery rows that never became a pending entry (refused, orphaned,
@@ -463,7 +488,7 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
               skillNames,
               commandNames,
             })
-          : text,
+          : legacyQueueDisplayText(text, skillNames, commandNames),
       textComplete: fullText !== undefined,
       images: [],
       imageCount,
@@ -519,12 +544,15 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
   // local queue entry whose own preview matches it, in order, so the same
   // message does not render once from the queue and once from local storage.
   // A legacy queue row carries no clientMutationId and no entry-id link. Merge
-  // it only when its complete text matches exactly one local queue row; a
-  // preview alone must not be restored or acted on as if it were full content.
+  // it only when its complete text matches a still-unmatched local queue row;
+  // a preview alone must not be restored or acted on as if it were full
+  // content. Pairing in queue order keeps two identical messages as two rows.
+  const matchedLocalIds = new Set<string>();
   for (const row of queueRows) {
     if (!row.id.startsWith("queue:") || !row.textComplete) continue;
-    const matches = [...rows.values()].filter(
+    const match = [...rows.values()].find(
       (candidate) =>
+        !matchedLocalIds.has(candidate.id) &&
         candidate.method === "queue" &&
         (candidate.state === "waiting" || candidate.state === "sending") &&
         !candidate.queueEntryId &&
@@ -532,9 +560,8 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
         normalizeText(candidate.text) === normalizeText(row.text) &&
         candidate.queueEntryIds.length === 0,
     );
-    if (matches.length !== 1) continue;
-    const match = matches[0];
     if (!match) continue;
+    matchedLocalIds.add(match.id);
     row.id = match.id;
     row.text = match.text;
     row.displayText = match.displayText || row.displayText;

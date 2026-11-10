@@ -2638,6 +2638,16 @@ function requireMutationRuntime(): MutationRuntime {
   return runtime;
 }
 
+// A queue action that removes or promotes a row has no transcript item to
+// prove delivery, but the user explicitly ended that queue row. Settle its
+// retained display copy so the stack cannot keep a permanent Delivering row.
+export async function settleDisplayCopy(clientMutationId: string, ref: string): Promise<void> {
+  const runtime = getMutationRuntime();
+  if (!runtime) return;
+  await runtime.dispatcher.reconcileIdentities([clientMutationId]);
+  await refreshMutationPins(runtime, [ref]);
+}
+
 export interface MutationPersistenceSnapshot {
   outbox: MutationOutboxRecord[];
   optimistic: MutationOptimisticRecord[];
@@ -6628,18 +6638,40 @@ function handleNotification(n: AnyNotification): void {
     const settledModel =
       publishableThreads?.get(settlementRef) ??
       nextWatchedThreads?.get(settlementRef) ??
+      nextThreads?.get(settlementRef) ??
       threads.get(settlementRef) ??
       watchedThreads.get(settlementRef);
     const transcriptIds = settledModel ? transcriptMutationIds(settledModel) : undefined;
     const queueIds = new Set(settledModel?.queue?.clientMutationIds ?? []);
     const consumed =
       n.method === "thread/queueChanged" ? validConsumedClientMutationIds(n.params.consumedClientMutationIds) : [];
-    const retireIds = transcriptIds
-      ? mutationIdentities.filter((id) => transcriptIds.has(id) || consumed.includes(id))
-      : consumed;
-    const retainIds = transcriptIds
-      ? mutationIdentities.filter((id) => queueIds.has(id) && !transcriptIds.has(id))
-      : [];
+    // An accepted history frame proves the identities it names applied, even
+    // when the projected model has not exposed the item yet. Only an ignored
+    // or invalidated frame must leave the pending copy alone.
+    const historyInvalid =
+      settledModel?.history?.invalidatedAtGeneration !== undefined || settledModel?.history?.awaited !== undefined;
+    const frameEpoch =
+      n.method === "history/updated" && typeof n.params.epoch === "number" ? n.params.epoch : undefined;
+    const staleEpoch =
+      frameEpoch !== undefined && settledModel?.history?.epoch !== undefined && frameEpoch < settledModel.history.epoch;
+    const frameNamesIdentity =
+      n.method === "history/updated" &&
+      !staleEpoch &&
+      (n.params.items ?? []).some(
+        (item) => "clientMutationId" in item && mutationIdentities.includes(String(item.clientMutationId)),
+      );
+    const acceptedFrame =
+      n.method === "history/updated" &&
+      (acceptedFrameRefs.has(settlementRef) || (!historyInvalid && frameNamesIdentity));
+    const retireIds = acceptedFrame
+      ? mutationIdentities
+      : transcriptIds
+        ? mutationIdentities.filter((id) => transcriptIds.has(id) || consumed.includes(id))
+        : consumed;
+    const retainIds =
+      !acceptedFrame && transcriptIds
+        ? mutationIdentities.filter((id) => queueIds.has(id) && !transcriptIds.has(id))
+        : [];
     const runtime = getMutationRuntime();
     if (runtime && retireIds.length > 0) {
       void runtime.dispatcher

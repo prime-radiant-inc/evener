@@ -17,14 +17,33 @@ export function heldSteerEntries(
   );
 }
 
+type PendingRowIdentity = {
+  id: string;
+  outbox?: { clientMutationId: string };
+  optimistic?: { clientMutationId: string };
+  recovery?: { clientMutationId: string };
+};
+
+// A row is keyed by its wire id, while the composer's activation and the
+// refusal pace name the storage key. A Retry-minted row carries both; match
+// either so the one message is excluded or captioned once.
+export function rowMatchesIdentity(row: PendingRowIdentity, id: string): boolean {
+  return (
+    row.id === id ||
+    row.outbox?.clientMutationId === id ||
+    row.optimistic?.clientMutationId === id ||
+    row.recovery?.clientMutationId === id
+  );
+}
+
 // The composer owns the recovery row it has activated. One predicate for the
 // mount gate and the stack's own list, so the arrival epoch and the rendered
 // rows cannot disagree.
-export function withoutActiveRecovery<T extends { id: string }>(
+export function withoutActiveRecovery<T extends PendingRowIdentity>(
   rows: readonly T[],
   activeRecoveryId: string | undefined,
 ): readonly T[] {
-  return activeRecoveryId === undefined ? rows : rows.filter((row) => row.id !== activeRecoveryId);
+  return activeRecoveryId === undefined ? rows : rows.filter((row) => !rowMatchesIdentity(row, activeRecoveryId));
 }
 
 // The live-edge arrival counter: bumps when a new pending identity joins the

@@ -377,20 +377,9 @@ const NO_PENDING_MESSAGES: PendingMessage[] = [];
 
 type ThreadsPortModel = ReturnType<typeof threadsPort.getThreadModel>;
 
-// Both pending projections read the same two stores. The pending store's
-// listener receives (state, previous), so unrelated writes such as
-// submittingRefs changes do not wake either view.
-function subscribePendingInputs(ref: string, onStoreChange: () => void, includeRecovery: boolean): () => void {
-  const unsubscribePending = pendingTurnsStore.subscribe((state, previous) => {
-    if (
-      state.outbox !== previous.outbox ||
-      state.optimistic !== previous.optimistic ||
-      state.submittedHere !== previous.submittedHere ||
-      (includeRecovery && state.recovery !== previous.recovery)
-    ) {
-      onStoreChange();
-    }
-  });
+// Both pending projections read the same two stores.
+function subscribePendingInputs(ref: string, onStoreChange: () => void): () => void {
+  const unsubscribePending = pendingTurnsStore.subscribe(() => onStoreChange());
   const unsubscribeThreads = threadsStore.subscribe((state, previous) => {
     if (state.threads.get(ref) !== previous.threads.get(ref)) onStoreChange();
   });
@@ -425,10 +414,7 @@ export function usePendingTurnEntries(ref: string, method?: PendingMethod): Pend
     void refreshPendingTurnsProjection(ref);
   }, [ref]);
 
-  const subscribe = useCallback(
-    (onStoreChange: () => void) => subscribePendingInputs(ref, onStoreChange, false),
-    [ref],
-  );
+  const subscribe = useCallback((onStoreChange: () => void) => subscribePendingInputs(ref, onStoreChange), [ref]);
 
   const cacheRef = useRef<{
     outbox: ReturnType<typeof pendingTurnsStore.getState>["outbox"];
@@ -499,7 +485,7 @@ export function usePendingMessages(ref: string): PendingMessage[] {
     for (const id of transcriptMutationIds(model)) deliveredHere.add(id);
   }, [model]);
 
-  const subscribe = useCallback((onStoreChange: () => void) => subscribePendingInputs(ref, onStoreChange, true), [ref]);
+  const subscribe = useCallback((onStoreChange: () => void) => subscribePendingInputs(ref, onStoreChange), [ref]);
 
   const cacheRef = useRef<{
     outbox: ReturnType<typeof pendingTurnsStore.getState>["outbox"];
