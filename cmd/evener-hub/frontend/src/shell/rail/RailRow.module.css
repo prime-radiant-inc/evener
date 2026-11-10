@@ -305,6 +305,18 @@
   color: var(--ink-mid);
 }
 
+/* The second line of a session row waiting out a provider usage limit. A
+ * sentence rather than a measurement, so --ink-mid like .notStarted, and no
+ * semantic hue: the wait is not an error, the session resumes by itself. It
+ * truncates rather than wrapping so the row stays two lines tall. */
+.quotaWait {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
 /* Right-aligned relative timestamp - an occupant of the shared .rightSlot
  * cell (the Task-7 needs-you Badge and "Not started" are the other two;
  * RailRow.tsx renders at most one of the three, and the hover-revealed
