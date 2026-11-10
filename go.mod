@@ -8,7 +8,7 @@ require github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 
 require (
 	github.com/spf13/afero v1.15.0
-	golang.org/x/mod v0.34.0
+	golang.org/x/mod v0.43.0
 	pgregory.net/rapid v1.3.0
 	primeradiant.com/evener/fuzz v0.0.0
 	primeradiant.com/evener/identifier v0.0.0
@@ -23,11 +23,11 @@ require (
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/modelcontextprotocol/go-sdk v1.3.0
 	github.com/muesli/termenv v0.16.0
-	golang.org/x/net v0.50.0
-	golang.org/x/sync v0.20.0
-	golang.org/x/sys v0.42.0
-	golang.org/x/term v0.40.0
-	golang.org/x/tools v0.42.0
+	golang.org/x/net v0.62.0
+	golang.org/x/sync v0.25.0
+	golang.org/x/sys v0.50.0
+	golang.org/x/term v0.48.0
+	golang.org/x/tools v0.52.0
 	modernc.org/sqlite v1.50.1
 )
 
@@ -65,9 +65,10 @@ require (
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	github.com/yuin/goldmark v1.7.13 // indirect
 	github.com/yuin/goldmark-emoji v1.0.5 // indirect
-	golang.org/x/crypto v0.57.0
-	golang.org/x/oauth2 v0.30.0 // indirect
-	golang.org/x/text v0.34.0 // indirect
+	golang.org/x/crypto v0.58.0
+	golang.org/x/image v0.48.0 // indirect
+	golang.org/x/oauth2 v0.38.0 // indirect
+	golang.org/x/text v0.44.0 // indirect
 	modernc.org/libc v1.72.3 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect

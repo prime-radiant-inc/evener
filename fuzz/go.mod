@@ -12,4 +12,4 @@ require (
 	pgregory.net/rapid v1.3.0
 )
 
-require golang.org/x/text v0.36.0 // indirect
+require golang.org/x/text v0.44.0 // indirect
