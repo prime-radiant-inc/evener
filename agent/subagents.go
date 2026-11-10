@@ -1546,7 +1546,7 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 		stopped := sub.driveStopped
 		sub.driveCancel, sub.driveStopped = nil, false
 		sub.mu.Unlock()
-		if err != nil && !(stopped && errors.Is(err, context.Canceled)) {
+		if err != nil && (!stopped || !errors.Is(err, context.Canceled)) {
 			if cleanupErr := sub.gateFatalRun(err); cleanupErr != nil {
 				childSess.emit(warningDataFromError("delegate owned-work cleanup incomplete", cleanupErr))
 			}

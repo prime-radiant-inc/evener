@@ -3,11 +3,11 @@ package agent
 import (
 	"context"
 	"errors"
-	"primeradiant.com/evener/agent/internal/clock"
 	"sync"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -118,11 +118,16 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 	timer := s.sclock().NewTimer(resetAt.Sub(now))
 	defer timer.Stop()
 	wait := &quotaWait{failure: quotaWaitFailure(callErr, model, resetAt), wake: make(chan struct{}, 1)}
+	drive := driveTurnFor(ctx, s)
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		return false, nil
 	}
+	// A drive's slot is given back and its hung-turn bound paused before the
+	// wait is published, so whoever sees the session waiting sees a drive
+	// whose bound no longer runs.
+	drive.waitBegins()
 	s.quotaWait = wait
 	// A wake that came while the request was in flight, a switch already
 	// picked, or a steer that arrived after the last steering drain began
@@ -131,6 +136,7 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 		wait.wake <- struct{}{}
 	}
 	s.mu.Unlock()
+	defer drive.waitEnded()
 	end := sync.OnceFunc(func() {
 		s.mu.Lock()
 		if s.quotaWait == wait {
@@ -142,9 +148,6 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 
 	s.noteParentJobActivity(jobPhaseModelRetrying)
 	s.emitQuotaWait(callErr, model, resetAt.Sub(now))
-	drive := driveTurnFor(ctx, s)
-	drive.waitBegins()
-	defer drive.waitEnded()
 	select {
 	case <-ctx.Done():
 		return false, ctx.Err()
