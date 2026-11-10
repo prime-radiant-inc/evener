@@ -52,6 +52,7 @@ var notShownMetaFields = []string{
 	"EnvInfo.Platform", "EnvInfo.OSVersion", "EnvInfo.Today", "EnvInfo.KnowledgeCutoff",
 	"EnvInfo.IsGitRepo", "EnvInfo.GitOriginURL", "EnvInfo.GitModifiedFiles",
 	"EnvInfo.GitUntrackedFiles", "EnvInfo.GitStatusUnknown", "EnvInfo.GitRecentCommitTitles",
+	"EnvInfo.GitSnapshotFailed",
 	"EnvInfo.Workspace",
 	"EnvInfo.Resources",
 }

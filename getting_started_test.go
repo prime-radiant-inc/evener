@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"strings"
 	"testing"
 )
@@ -18,10 +17,18 @@ func TestGettingStartedExercisePreservesExistingWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	fences, err := markdownFences(string(doc))
+	if err != nil {
+		t.Fatalf("docs/getting-started.md: %v", err)
+	}
 	var script string
-	for _, block := range regexp.MustCompile("(?s)```sh\\n(.*?)\\n```").FindAllSubmatch(doc, -1) {
-		if bytes.Contains(block[1], []byte("evener-first-task")) {
-			script = string(block[1])
+	for _, fence := range fences {
+		if fence.Lang != "sh" {
+			continue
+		}
+		block := strings.Join(fence.Lines, "\n")
+		if strings.Contains(block, "evener-first-task") {
+			script = block
 			break
 		}
 	}

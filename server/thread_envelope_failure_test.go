@@ -56,9 +56,9 @@ func TestThreadSnapshotsCarryTheRestingFailureOnlyWhileFailed(t *testing.T) {
 // A model call waiting out a usage limit keeps its session working, so the
 // failure gate above would hide the wait. A summary that names when the call
 // resumes is shown on a working row too, so the row can say the session waits
-// for quota. The wait's start (MODEL_RETRY) samples it, and the call's next
-// answer (ASSISTANT_TEXT_END) or a model switch re-samples it once the wait
-// is over.
+// for quota. The wait's start (MODEL_RETRY) samples it, and the retry that
+// ends it (another MODEL_RETRY, with no delay), the call's next answer
+// (ASSISTANT_TEXT_END) or a model switch re-samples it once the wait is over.
 func TestThreadSnapshotsCarryAQuotaWaitWhileWorking(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "root")
@@ -75,6 +75,9 @@ func TestThreadSnapshotsCarryAQuotaWaitWhileWorking(t *testing.T) {
 
 	waiting := &appwire.ThreadFailure{Title: "Usage limit reached", Cause: &appwire.DiagnosticCause{Kind: "provider", Provider: "openai", Status: 429}, ResumesAt: 1_800_000_000_000}
 	for _, ended := range []events.EventData{
+		// The retry that ends the wait is announced as it goes out, so the
+		// row drops the wait before the retry's response streams.
+		events.ModelRetryData{Attempt: 1},
 		events.AssistantTextEndData{Text: "back at work"},
 		events.ModelChangedData{NewProvider: "openai", NewModel: "gpt-5.4"},
 	} {

@@ -17,13 +17,18 @@ import (
 type truncationGitEnv struct {
 	execenv.ExecutionEnvironment
 	results map[string]execenv.ExecResult
+	errs    map[string]error
 }
 
 func (e truncationGitEnv) ExecArgv(_ context.Context, _ string, args []string, _ int, _ string, _ map[string]string) (execenv.ExecResult, error) {
-	if res, ok := e.results[strings.Join(args, " ")]; ok {
+	key := strings.Join(args, " ")
+	if res, ok := e.results[key]; ok {
 		return res, nil
 	}
-	return execenv.ExecResult{}, errors.New("unscripted git: " + strings.Join(args, " "))
+	if err, ok := e.errs[key]; ok {
+		return execenv.ExecResult{}, err
+	}
+	return execenv.ExecResult{}, errors.New("unscripted git: " + key)
 }
 
 // TestGitRunnerRefusesATruncatedPorcelainCapture pins the worktree GitRunner
@@ -58,7 +63,7 @@ func TestSnapshotGitRefusesATruncatedStatus(t *testing.T) {
 		"status --porcelain":                {Stdout: " M a\n?? b\n", StdoutTruncated: true},
 		"log -n 5 --pretty=format:%h%x20%s": {Stdout: "abc first\n"},
 	}}
-	inRepo, branch, mod, untracked, _, statusKnown := snapshotGit(context.Background(), env, root)
+	inRepo, branch, mod, untracked, _, statusKnown, _ := snapshotGit(context.Background(), env, root)
 	if !inRepo || branch != "main" {
 		t.Fatalf("snapshotGit on a truncated status = inRepo %v branch %q, want true/main", inRepo, branch)
 	}
@@ -88,7 +93,7 @@ func TestSnapshotGitKeepsCountsWhenOnlyStderrTrippedTheCap(t *testing.T) {
 		"status --porcelain":                {Stdout: " M a\n?? b\n", StderrTruncated: true},
 		"log -n 5 --pretty=format:%h%x20%s": {Stdout: "abc first\n", StderrTruncated: true},
 	}}
-	inRepo, branch, mod, untracked, commits, statusKnown := snapshotGit(context.Background(), env, root)
+	inRepo, branch, mod, untracked, commits, statusKnown, _ := snapshotGit(context.Background(), env, root)
 	if !inRepo || branch != "main" {
 		t.Fatalf("inRepo %v branch %q, want true/main", inRepo, branch)
 	}
@@ -152,6 +157,45 @@ func TestGitStatusPromptGoldens(t *testing.T) {
 	}
 }
 
+// TestGitSnapshotFailurePromptGoldens pins the system prompt's distinct
+// rendering for a git probe that could not run (#4517). A failed probe must
+// never render as "Not a git repository." — that is a positive claim about the
+// repository, and the empty values beside it are not evidence of one. The
+// goldens are whole-output by the repo's convention for prompt prose.
+func TestGitSnapshotFailurePromptGoldens(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		data promptData
+	}{
+		{
+			name: "probe-failed-not-in-repo",
+			data: promptData{GitSnapshotFailed: true},
+		},
+		{
+			name: "probe-failed-in-repo",
+			data: promptData{
+				GitSnapshotFailed:     true,
+				IsGitRepo:             true,
+				GitBranch:             "main",
+				GitModifiedFiles:      3,
+				GitUntrackedFiles:     2,
+				GitRecentCommitTitles: []string{"abc first"},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out, err := executeSystemPromptTemplate(tc.data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			agenttest.CheckGolden(t, filepath.Join("testdata", "gitprompt", tc.name+".md"), []byte(gitFragment(out)+"\n"), *updatePromptGoldens,
+				"Regenerate with `go test ./agent -run 'TestGitSnapshotFailurePromptGoldens$' -count=1 -update-prompt` and read the diff.")
+		})
+	}
+}
+
 // gitFragment returns the rendered prompt's <git> block for a failure message.
 func gitFragment(prompt string) string {
 	if i := strings.Index(prompt, "<git>"); i >= 0 {
@@ -177,7 +221,7 @@ func TestSnapshotGitReportsStatusKnownWhenTheStatusWasRead(t *testing.T) {
 		"status --porcelain":                {Stdout: " M a\n?? b\n"},
 		"log -n 5 --pretty=format:%h%x20%s": {Stdout: "abc first\n"},
 	}}
-	_, _, mod, untracked, _, statusKnown := snapshotGit(context.Background(), env, root)
+	_, _, mod, untracked, _, statusKnown, _ := snapshotGit(context.Background(), env, root)
 	if !statusKnown {
 		t.Fatal("a status read that succeeded reported the counts as unknown")
 	}

@@ -777,6 +777,9 @@ func TestModuleRunnerCapturesTheTimingRowsItAlreadyRan(t *testing.T) {
 	for _, want := range []string{
 		"PKG\texample.com/timingmod\n",
 		"SUM\texample.com/timingmod\t",
+		// The CPU row is the package's budgeted number: the gate runs the test
+		// binary under test-cpu-exec, which puts it into the stream.
+		"CPU\texample.com/timingmod\t",
 		"TEST\texample.com/timingmod\tTestCounted\t",
 	} {
 		if !strings.Contains(string(rows), want) {

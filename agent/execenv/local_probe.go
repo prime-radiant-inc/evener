@@ -3,6 +3,8 @@ package execenv
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -11,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"primeradiant.com/evener/agent/internal/cappedoutput"
@@ -78,20 +81,59 @@ var (
 	venvCandidateDirs      = func(root, binDir string) []string {
 		return []string{filepath.Join(root, ".venv", binDir), filepath.Join(root, "venv", binDir)}
 	}
-	loginShellPATHOutput = func(ctx context.Context, name string, args ...string) (probeCapture, error) {
-		cmd := execCommandContext(ctx, name, args...)
+	loginShellPATHOutput = func(timeout time.Duration, name string, args ...string) (probeCapture, error) {
+		cmd := execCommand(name, args...)
 		cmd.WaitDelay = loginShellPATHWaitDelay
 		out := cappedoutput.New(probeOutputCaptureCap)
 		cmd.Stdout = out
-		err := cmd.Run()
-		return newProbeCapture(out), orphanpipe.ChildErr(cmd, err)
+		if err := cmd.Start(); err != nil {
+			return newProbeCapture(out), err
+		}
+		// Arm the deadline only after Start returns. Process creation (fork and
+		// exec) is the host's cost under load, not the user's rc chain's; charging
+		// it against loginShellPATHTimeout killed the shell before it ran and
+		// silently dropped the login-shell PATH (#4495).
+		var timedOut atomic.Bool
+		stop := loginShellPATHAfterFunc(timeout, func() {
+			timedOut.Store(true)
+			_ = cmd.Process.Kill()
+		})
+		err := cmd.Wait()
+		stop()
+		// A successful exit survives the deadline. WaitDelay can keep Wait
+		// pending past timeout while a background job holds stdout open; if the
+		// shell itself exited 0 in that window, its answer is valid and
+		// orphanpipe.ChildErr folds the drain-only exec.ErrWaitDelay away.
+		childErr := orphanpipe.ChildErr(cmd, err)
+		if childErr == nil {
+			return newProbeCapture(out), nil
+		}
+		if timedOut.Load() {
+			return newProbeCapture(out), errLoginShellPATHTimeout
+		}
+		return newProbeCapture(out), childErr
 	}
 )
 
 var (
-	loginShellPATHOnce  sync.Once
+	// loginShellPATHAfterFunc is the probe's deadline seam. Tests replace it to
+	// fire the deadline only after the fixture has established its process;
+	// production uses time.AfterFunc and returns its Stop.
+	loginShellPATHAfterFunc = func(timeout time.Duration, fire func()) func() bool {
+		timer := time.AfterFunc(timeout, fire)
+		return timer.Stop
+	}
+
+	loginShellPATHMu    sync.Mutex
 	loginShellPATHValue string
+	// loginShellPATHDone means the cache holds a definitive answer. A failed
+	// probe leaves it false so the next caller retries.
+	loginShellPATHDone bool
 )
+
+// errLoginShellPATHTimeout distinguishes "the shell was killed at the rc-chain
+// deadline" from an answer the shell printed and from a start failure.
+var errLoginShellPATHTimeout = errors.New("login-shell PATH probe timed out")
 
 // loginShellPATHTimeout bounds the login-shell probe so a wedged or slow rc
 // file can never block session/daemon launch — a short timeout, never a hard
@@ -118,32 +160,66 @@ const probeOutputCaptureCap = 64 * 1024
 // that skips the shell rc chain (macOS launchd, a GUI app, systemd) can still
 // give spawned commands the developer's real PATH — including entries like
 // /opt/homebrew/bin that only the rc chain adds (kata 31gh). Resolved once
-// per process and cached, exactly like OSVersion: a wedged or slow rc file
-// costs at most one short-timeout probe, never one per session or per spawn.
-// Returns "" when $SHELL is unset, the probe fails, it times out, or the
-// capture truncated across the answer's start (a cut fragment) — callers then
-// leave the inherited process PATH unchanged.
+// per process and cached when the shell answers, exactly like OSVersion: a
+// wedged or slow rc file costs at most one short-timeout probe per RETRY, and
+// a failed probe is not cached. Returns "" when $SHELL is unset, the probe
+// fails, it times out, or the capture truncated across the answer's start (a
+// cut fragment) — callers then leave the inherited process PATH unchanged.
 func LoginShellPATH() string {
-	loginShellPATHOnce.Do(func() { loginShellPATHValue = resolveLoginShellPATH() })
-	return loginShellPATHValue
+	path, _ := LoginShellPATHProbe()
+	return path
 }
 
-func resolveLoginShellPATH() string {
+// LoginShellPATHProbe is LoginShellPATH with the failure made distinct: the
+// second result is a short human-readable reason when the probe could not run
+// (start failure or timeout), and "" for every definitive answer, including an
+// unset $SHELL. A definite answer is cached; a failure is not, so the next
+// caller retries — the retry path a loaded host needs (#4495).
+func LoginShellPATHProbe() (path, failure string) {
+	loginShellPATHMu.Lock()
+	defer loginShellPATHMu.Unlock()
+	if loginShellPATHDone {
+		return loginShellPATHValue, ""
+	}
+	answer, err := resolveLoginShellPATHProbe()
+	if err != nil {
+		return "", loginShellPATHFailureText(err)
+	}
+	loginShellPATHValue = answer
+	loginShellPATHDone = true
+	return answer, ""
+}
+
+func resolveLoginShellPATHProbe() (string, error) {
 	shell := strings.TrimSpace(os.Getenv(envvars.Shell.Name))
 	if shell == "" {
-		return ""
+		return "", nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), loginShellPATHTimeout)
-	defer cancel()
-	capture, err := loginShellPATHOutput(ctx, shell, "-lc", "echo $"+envvars.Path.Name)
+	capture, err := loginShellPATHOutput(loginShellPATHTimeout, shell, "-lc", "echo $"+envvars.Path.Name)
 	if err != nil {
-		return ""
+		return "", err
 	}
 	answer, ok := probeTrustedAnswer(capture)
 	if !ok {
-		return ""
+		return "", nil
 	}
-	return answer
+	return answer, nil
+}
+
+// loginShellPATHFailureText renders a probe failure for the capability
+// preamble: bounded and single-line, because it lands in prompt prose.
+func loginShellPATHFailureText(err error) string {
+	if errors.Is(err, errLoginShellPATHTimeout) {
+		return fmt.Sprintf("timed out after %s", loginShellPATHTimeout)
+	}
+	text := strings.TrimSpace(strings.ReplaceAll(err.Error(), "\n", " "))
+	if len(text) > 120 {
+		text = text[:120] + "…"
+	}
+	if text == "" {
+		text = "probe could not run"
+	}
+	return text
 }
 
 // lastNonEmptyLine returns the last non-blank line of s, trimmed. An rc file

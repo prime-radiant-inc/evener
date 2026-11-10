@@ -16,7 +16,8 @@
 // by checking each link independently. Composite types (pointer/slice/map/chan/
 // signature/tuple) are followed.
 //
-// Run via `make lint-internal` (or directly: `go run ./cmd/evener-internalcheck`).
+// Run via `make lint-internal`, or directly through the dev binary that
+// dispatches it: `go run ./cmd/evener-dev/bin internalcheck`.
 // Exits non-zero, one `message` per line, when a leak exists.
 package internalcheck
 

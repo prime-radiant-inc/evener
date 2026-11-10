@@ -147,7 +147,7 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 	defer end()
 
 	s.noteParentJobActivity(jobPhaseModelRetrying)
-	s.emitQuotaWait(callErr, model, resetAt.Sub(now))
+	s.emitQuotaRetry(callErr, model, resetAt.Sub(now))
 	select {
 	case <-ctx.Done():
 		return false, ctx.Err()
@@ -168,6 +168,11 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
+	// The wait is over: announce the retry it starts, with no delay. That
+	// event re-samples the session's failure summary (now clear), so a list
+	// row stops saying the session waits as soon as the retry goes out,
+	// not when its response ends.
+	s.emitQuotaRetry(callErr, model, 0)
 	s.injectDrainedSteering()
 	return true, nil
 }
@@ -204,11 +209,13 @@ func quotaWaitFailure(callErr error, model string, resetAt time.Time) appwire.Th
 	return failure
 }
 
-// emitQuotaWait announces the wait the way the retry loop announces each of
-// its backoffs: a model retry whose delay runs to the reset. Like a
-// wall-budgeted rate limit, it counts no attempts against a budget, so every
-// wait says attempt 1 and clients read only its delay.
-func (s *Session) emitQuotaWait(callErr error, model string, delay time.Duration) {
+// emitQuotaRetry announces a wait and the retry that ends it the way the
+// retry loop announces each of its backoffs: a model retry whose delay runs
+// to the reset when the wait begins, and one with no delay when the retry
+// goes out. Like a wall-budgeted rate limit, it counts no attempts against a
+// budget, so every announcement says attempt 1 and clients read only its
+// delay.
+func (s *Session) emitQuotaRetry(callErr error, model string, delay time.Duration) {
 	data := events.ModelRetryData{
 		Attempt:    1,
 		DelayMS:    delay.Milliseconds(),

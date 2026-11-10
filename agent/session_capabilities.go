@@ -99,7 +99,10 @@ type capabilityFacts struct {
 	policy     *sandbox.ResolvedPolicy
 	scratchDir string
 	loginPATH  bool
-	probe      capabilityProbe
+	// loginPATHFailure names why the login-shell probe produced no PATH, when it
+	// could not run. Empty for a probe that answered.
+	loginPATHFailure string
+	probe            capabilityProbe
 
 	// unknownEnv marks facts read from an execution environment this renderer
 	// cannot inspect (nil, or an implementation other than the local one). The
@@ -150,6 +153,7 @@ func capabilityFactsFromEnv(env execenv.ExecutionEnvironment, probe capabilityPr
 	facts.scratchDir = le.SessionScratchDir()
 	facts.fileToolConfined = le.Sandbox != nil && le.Sandbox.FileToolConfined()
 	facts.loginPATH = le.LoginPATH != ""
+	facts.loginPATHFailure = le.LoginPATHProbeError
 	return facts
 }
 
@@ -180,7 +184,7 @@ func capabilityPreambleLines(f capabilityFacts) []string {
 		)
 	}
 	if !f.unknownEnv {
-		lines = append(lines, "PATH: "+pathSource(f.loginPATH))
+		lines = append(lines, "PATH: "+pathSource(f.loginPATH, f.loginPATHFailure))
 	}
 	if f.scratchDir != "" {
 		label := "$" + envvars.EVENERScratchDir.Name
@@ -271,12 +275,15 @@ func writableRootsSummary(p sandbox.ResolvedPolicy) string {
 	return out
 }
 
-// pathSource names where spawned commands' PATH came from. Both values are
-// resolved facts: the login-shell probe either produced a PATH or it did not,
-// in which case the inherited process PATH stands unchanged.
-func pathSource(loginPATH bool) string {
+// pathSource names where spawned commands' PATH came from. The login-shell
+// probe either produced a PATH or it did not; when it could not run, the
+// inherited process PATH is a stated fallback, not a resolved fact.
+func pathSource(loginPATH bool, probeFailure string) string {
 	if loginPATH {
 		return "login shell ($" + envvars.Shell.Name + " -lc)"
+	}
+	if probeFailure != "" {
+		return "inherited process environment (login-shell PATH probe failed: " + probeFailure + ")"
 	}
 	return "inherited process environment"
 }

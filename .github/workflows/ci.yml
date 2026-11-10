@@ -39,8 +39,6 @@ jobs:
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: cmd/evener-hub/frontend/package-lock.json
 
       # The gate itself is Go: make test-web builds and runs evener-dev.
       - uses: actions/setup-go@v7
@@ -70,11 +68,14 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-      # The cache save must precede the timing gate: the gate fails on wall
-      # time while the cache this run warmed is good, and the save only acts
-      # on main pushes, so gating it behind the gate would leave a failing
-      # lane building cold until it fails again.
+      # The cache save precedes the timing gate: the gate fails on wall time
+      # while the cache this run warmed is good, and a save after a failed
+      # step keeps everything it restored instead of trimming to this job's
+      # build, so a budget breach on main would grow the entry.
       - uses: ./.github/actions/go-cache-save
+        if: ${{ !cancelled() }}
+        with:
+          job-status: ${{ job.status }}
 
       # The frontend's durations come from the same vitest run above (issue
       # #144): the JSON reporter it wrote is turned into the ratchet's rows and
@@ -110,8 +111,6 @@ jobs:
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: cmd/evener-hub/frontend/package-lock.json
 
       # The retirement, skill, cascade and background guards run go test
       # against cmd/evener-hub, with and without the browserguard tag.
@@ -120,9 +119,13 @@ jobs:
           go-version-file: go.work
           cache: false
 
+      # The shards compile the same dependencies; only the overflow shard's
+      # retirement guard builds cmd/evener-hub without the browserguard tag.
+      # So they share one kind, saved by the cascade shard, the slowest, and
+      # the overflow shard alone recompiles its untagged hub test.
       - uses: ./.github/actions/go-cache-restore
         with:
-          kind: web-${{ matrix.shard }}
+          kind: web-browser
 
       # Two guards at a time, whatever the load average: the one-minute
       # average still carries the frontend build when the gate sizes its
@@ -146,6 +149,9 @@ jobs:
         run: go test -tags browserguard ./cmd/evener-hub -run '^TestRetryContinuation' -count=1 -v
 
       - uses: ./.github/actions/go-cache-save
+        if: ${{ !cancelled() && matrix.shard == 'cascade' }}
+        with:
+          job-status: ${{ job.status }}
 
       # The skill guard keeps its driver log, screenshots and helper logs under
       # a temporary directory when it fails, deliberately, so a failing run can
@@ -195,8 +201,6 @@ jobs:
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: mobile-native/package-lock.json
 
       - name: Install native dependencies
         run: npm ci --prefix mobile-native
@@ -206,7 +210,7 @@ jobs:
 
       - name: Bundle, test native app and shared session core
         timeout-minutes: 30
-        run: make test-native
+        run: make test-native check-mermaid-freshness
 
   api-package:
     runs-on: ubuntu-24.04
@@ -217,8 +221,6 @@ jobs:
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: appwire-client/typescript/package-lock.json
 
       - name: Install protocol development dependencies
         run: npm ci --prefix appwire-client/typescript
@@ -249,7 +251,13 @@ jobs:
       - name: Vet (GOOS=windows — Unix-only sources must carry a build tag)
         run: GOOS=windows make vet
 
+      # Building and vetting every GO_MODULES module downloads the modules
+      # nearly every kind needs, so this lane saves the shared module cache.
       - uses: ./.github/actions/go-cache-save
+        if: ${{ !cancelled() }}
+        with:
+          job-status: ${{ job.status }}
+          modules: "true"
 
   lint-golangci:
     runs-on: ubuntu-24.04
@@ -270,8 +278,10 @@ jobs:
       # points. That path hashes the checkout path, which is the same on every
       # hosted runner, so a restored cache lands where make lint looks. The
       # key carries the linter version, its config, and the Go version; like
-      # the Go build cache it restores the newest entry by prefix and saves
-      # only on main.
+      # the Go build cache it restores the newest entry by prefix, saves only
+      # on main, and saves after a failed lint too: a cold run that times out
+      # has still filled it, and skipping the save would leave every later
+      # run as cold.
       - name: Resolve golangci-lint cache
         id: golangci-cache
         env:
@@ -299,12 +309,15 @@ jobs:
         run: make lint-golangci
 
       - uses: actions/cache/save@v6
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.golangci-restore.outputs.cache-hit != 'true'
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.golangci-restore.outputs.cache-hit != 'true' }}
         with:
           path: ${{ steps.golangci-cache.outputs.dir }}
           key: ${{ steps.golangci-cache.outputs.prefix }}${{ github.sha }}
 
       - uses: ./.github/actions/go-cache-save
+        if: ${{ !cancelled() }}
+        with:
+          job-status: ${{ job.status }}
 
   # The tagged compile floors take minutes of their own, compiling and linting
   # every module under the evenerfuzz and eval tags, so they run on a runner
@@ -351,12 +364,15 @@ jobs:
         run: make lint-evenerfuzz lint-eval
 
       - uses: actions/cache/save@v6
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.golangci-restore.outputs.cache-hit != 'true'
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.golangci-restore.outputs.cache-hit != 'true' }}
         with:
           path: ${{ steps.golangci-cache.outputs.dir }}
           key: ${{ steps.golangci-cache.outputs.prefix }}${{ github.sha }}
 
       - uses: ./.github/actions/go-cache-save
+        if: ${{ !cancelled() }}
+        with:
+          job-status: ${{ job.status }}
 
   lint-repository:
     runs-on: ubuntu-24.04
@@ -384,6 +400,9 @@ jobs:
         run: make lint-generated lint-naming lint-gofmt lint-internal lint-package-imports lint-js-toolchain-pins lint-tracked-file-size lint-repo-audit secret-scan
 
       - uses: ./.github/actions/go-cache-save
+        if: ${{ !cancelled() }}
+        with:
+          job-status: ${{ job.status }}
 
   # Both fuzz consistency checks are fast, static AST analyses over the same
   # target manifest and registry inputs; running them in one lane pays a
@@ -412,6 +431,9 @@ jobs:
         run: make fuzz-registry-check
 
       - uses: ./.github/actions/go-cache-save
+        if: ${{ !cancelled() }}
+        with:
+          job-status: ${{ job.status }}
 
   static:
     if: always()
@@ -483,6 +505,9 @@ jobs:
             /tmp/evener-module-tests.*/tmp/_/hub-test-shards.*/shard[0-9]*.log
 
       - uses: ./.github/actions/go-cache-save
+        if: ${{ !cancelled() }}
+        with:
+          job-status: ${{ job.status }}
 
   race-root:
     if: always()
@@ -529,6 +554,9 @@ jobs:
             /tmp/evener-module-tests.*/agent.log
 
       - uses: ./.github/actions/go-cache-save
+        if: ${{ !cancelled() }}
+        with:
+          job-status: ${{ job.status }}
 
   race-modules:
     if: always()
@@ -564,6 +592,15 @@ jobs:
       - name: Prepare enforcing sandbox for root tests
         if: matrix.scope == 'root'
         uses: ./.github/actions/enforcing-sandbox
+      - name: Retirement timing environment
+        if: ${{ matrix.scope == 'root' }}
+        run: |
+          uname -r
+          nproc
+          lscpu
+          findmnt -T /dev/shm -o TARGET,FSTYPE,OPTIONS
+          findmnt -T /tmp -o TARGET,FSTYPE,OPTIONS
+          df -Pk /dev/shm /tmp
 
       # The runner is this job's alone, but its checkout and cache restore are
       # still in the load average when the gate sizes its budgets; at 1.85
@@ -572,10 +609,31 @@ jobs:
         env:
           LOAD_AWARE_LOAD1: "0"
           EVENER_GATE_TIMING_TSV: /tmp/gate-timing-${{ matrix.scope }}.tsv
+          EVENER_RETIRE_OVERLAP_DIAGNOSTIC_FILE: /tmp/evener-module-tests.retire/retire-overlap-phases.tsv
         run: ROOT_FULL=1 WEB=0 make test TEST_SCOPE=${{ matrix.scope }}
 
-      # Survey failure replay is abbreviated. Keep the full surveys and raw
-      # timing-capture shard text, never the surrounding homes or test binaries.
+
+      # Same ordering rule as web-unit above: the cache save precedes the
+      # timing gate so a budget failure still saves a trimmed entry.
+      - uses: ./.github/actions/go-cache-save
+        if: ${{ !cancelled() }}
+        with:
+          job-status: ${{ job.status }}
+
+      # The timing ratchet's rows come from the test run above (issue #144), so
+      # the budget is enforced without a second full pass. Each lane checks its
+      # own scope: the rows name only the packages this lane measured, and a
+      # missing file fails the check rather than passing silently. A merge
+      # group is warn-only, for the reason given in web-unit.
+      - name: Timing budget (rows from the same test run)
+        env:
+          BUDGET_POLICY: ${{ github.event_name == 'merge_group' && '--local' || '--strict' }}
+        run: scripts/gate/test-timing-budget.sh --check "$BUDGET_POLICY" --measured /tmp/gate-timing-${{ matrix.scope }}.tsv
+
+      # Survey failure replay is abbreviated. Keep the full surveys, raw
+      # timing-capture shard text and the retirement phase trace, never the
+      # surrounding homes or test binaries. After the timing check so a
+      # timing-only failure still collects them.
       # A job stopped at its time limit can end cancelled rather than failed,
       # and a hang's logs are the ones most worth keeping, so a cancelled job
       # keeps them too. The same holds for every failed-log step in this workflow.
@@ -595,20 +653,8 @@ jobs:
             /tmp/evener-module-tests.*/tmp/agent/agent-test-shards.*/survey.log
             /tmp/evener-module-tests.*/json/shards/hub/hub-shard[0-9]*.v
             /tmp/evener-module-tests.*/json/shards/agent/agent-shard[0-9]*.v
-
-      # Same ordering rule as web-unit above: the cache save precedes the
-      # timing gate so a budget failure cannot skip the save.
-      - uses: ./.github/actions/go-cache-save
-
-      # The timing ratchet's rows come from the test run above (issue #144), so
-      # the budget is enforced without a second full pass. Each lane checks its
-      # own scope: the rows name only the packages this lane measured, and a
-      # missing file fails the check rather than passing silently. A merge
-      # group is warn-only, for the reason given in web-unit.
-      - name: Timing budget (rows from the same test run)
-        env:
-          BUDGET_POLICY: ${{ github.event_name == 'merge_group' && '--local' || '--strict' }}
-        run: scripts/gate/test-timing-budget.sh --check "$BUDGET_POLICY" --measured /tmp/gate-timing-${{ matrix.scope }}.tsv
+            /dev/shm/evener-module-tests.*/retire-overlap-phases.tsv
+            /tmp/evener-module-tests.*/retire-overlap-phases.tsv
 
   # The hub's runner-bound integration tests: daemon retirement, host deploy,
   # live-stack E2E, and the remote-hub source-budget cases. The default gate
@@ -657,6 +703,49 @@ jobs:
         run: make fuzz
 
       - uses: ./.github/actions/go-cache-save
+        if: ${{ !cancelled() }}
+        with:
+          job-status: ${{ job.status }}
+
+  # The repository's Actions cache holds 10GB and evicts the least recently
+  # accessed entries beyond it. Every main push saves a new entry for each Go
+  # cache kind, the golangci-lint analysis caches and the shared module cache,
+  # all keyed by commit, and runs restore only the newest entry per key
+  # prefix. This job keeps main at that one generation: once every lane has
+  # finished it deletes each such entry on main that a newer entry with the
+  # same prefix supersedes. It never deletes the newest entry of a prefix, so
+  # a lane that saved nothing this run keeps its last entry; an entry another
+  # main run deleted first is already gone, which is not a failure.
+  cache-prune:
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    needs: [web, tests, static, race-root, race-modules, fuzz]
+    runs-on: ubuntu-24.04
+    permissions:
+      # Lists and deletes cache entries. No other job in this workflow gets
+      # write access to Actions.
+      actions: write
+    steps:
+      - name: Delete superseded cache entries on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          entries="$(gh cache list --repo "$GITHUB_REPOSITORY" --ref refs/heads/main \
+            --sort created_at --order desc --limit 1000 --json id,key \
+            --jq '.[] | select(.key | test("^(go|gomod|golangci-lint)-.*-[0-9a-f]{40}$")) | "\(.id) \(.key | sub("[0-9a-f]{40}$"; ""))"')"
+          # Newest first, so the first entry of each prefix is the one kept.
+          superseded="$(printf '%s\n' "$entries" | awk 'NF == 2 && seen[$2]++ { print $1 }')"
+          deleted=0
+          for id in $superseded; do
+            if gh cache delete "$id" --repo "$GITHUB_REPOSITORY"; then
+              deleted=$((deleted + 1))
+            else
+              echo "Cache entry $id was not deleted; another main run may have deleted it first."
+            fi
+          done
+          echo "Deleted $deleted superseded cache entries."
+          gh api "repos/$GITHUB_REPOSITORY/actions/cache/usage" \
+            --jq '"Cache usage: \(.active_caches_count) entries, \(.active_caches_size_in_bytes / 1e9 * 100 | round / 100) GB"'
 
   # A merge-group run reports its results on the group's read-only queue
   # branch, never on the member PRs. When the group fails a required check —

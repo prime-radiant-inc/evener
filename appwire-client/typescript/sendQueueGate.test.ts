@@ -1,7 +1,8 @@
 // @vitest-environment node
 //
-// The shared send/queue gate's oracle, copied row by row from
-// docs/superpowers/plans/2026-10-24-client-state-send-queue-gate.md §5 and §3.
+// The shared send/queue gate's oracle, copied row by row from the browser and
+// native status tables it had to agree with (the deleted plan it came with is
+// docs/superpowers/plans/2026-10-24-client-state-send-queue-gate.md).
 // Every expected action and reason below is a literal from the plan; nothing
 // here derives an expectation by running sendQueueGate on some other input or
 // by reimplementing its branches.

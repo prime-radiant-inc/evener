@@ -68,6 +68,7 @@ func startRefused(err error) (appwire.ThreadStartResponse, error) {
 }
 
 func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadStartParams) (response appwire.ThreadStartResponse, startErr error) {
+	ctx, trace := withThreadLifecycleLog(ctx, "start", "", nil)
 	remote, forward, err := routeThreadStart(ctx, sources, params)
 	if err != nil {
 		return startRefused(err)
@@ -75,7 +76,9 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	if remote != nil {
 		return remote.StartThread(ctx, forward)
 	}
+	prepared := trace.stage(ctx, "local_spawn_preparation")
 	plan, err := prepareLocalSpawn(ctx, cfg, params)
+	prepared(err)
 	if err != nil {
 		return startRefused(err)
 	}
@@ -90,6 +93,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	// this shields only the handler's own awaits.
 	ctx, cancelDetached := context.WithTimeout(context.WithoutCancel(ctx), threadStartDetachedTimeout)
 	defer cancelDetached()
+	spawned := trace.stage(ctx, "spawner_spawn")
 	entry, err := cfg.Spawner.Spawn(ctx, hubcore.SpawnRequest{
 		Project:       plan.resolved.Project,
 		Resolved:      plan.resolved,
@@ -99,6 +103,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		Provider:      plan.modelRef.Provider,
 		Manager:       params.Manager,
 	})
+	spawned(err)
 	if err != nil {
 		return appwire.ThreadStartResponse{}, appwire.HubLaunchError(err.Error())
 	}
@@ -118,7 +123,10 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	}()
 	canUseSpawnEntry := entry.Protocol == appwire.ProtocolVersion && entry.Endpoint != "" && entry.ThreadID != ""
 	if cfg.Roster != nil {
-		if err := hubRosterRefresh(ctx, cfg.Roster); err != nil {
+		refreshed := trace.stage(ctx, "start_roster_refresh")
+		refreshErr := hubRosterRefresh(ctx, cfg.Roster)
+		refreshed(refreshErr)
+		if err := refreshErr; err != nil {
 			if !canUseSpawnEntry {
 				return appwire.ThreadStartResponse{}, appwire.Unavailable(err.Error())
 			}
@@ -174,10 +182,12 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		return source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref})
 	}
 	var threadResp appwire.ThreadReadResponse
+	readDone := trace.stage(ctx, "start_daemon_read")
 	if cfg.Roster != nil && canUseSpawnEntry {
 		if !cfg.Roster.HasConfirmedEntry(entry) {
 			threadResp, err = cfg.Roster.ReadSpawnedThread(ctx, entry, read)
 			if err != nil && threadResp.Thread.ID != "" {
+				readDone(err)
 				return appwire.ThreadStartResponse{}, appwire.Unavailable(err.Error())
 			}
 		} else {
@@ -186,6 +196,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	} else {
 		threadResp, err = read(ctx)
 	}
+	readDone(err)
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || isSessionRecoveryAdmissionError(err) {
 		return appwire.ThreadStartResponse{}, err
 	}
@@ -225,6 +236,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 			ExpectedInstanceID: expectedInstanceID,
 			Input:              params.Input,
 		}
+		turnStarted := trace.stage(ctx, "initial_turn")
 		turnResp, err := withDeletionTargetOwnership(ctx, cfg, ref, "", clientMutationID, func() (appwire.TurnStartResponse, error) {
 			if err := sessionActionRecoveryError(ctx, cfg, ref, "", startEpoch); err != nil {
 				return appwire.TurnStartResponse{}, err
@@ -238,6 +250,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 			}
 			return source.StartTurn(ctx, turnParams)
 		})
+		turnStarted(err)
 		if err != nil {
 			return appwire.ThreadStartResponse{}, err
 		}
@@ -303,6 +316,7 @@ type localSpawnPlan struct {
 // a caller still waiting. Everything it refuses, it refuses before any session
 // exists.
 func prepareLocalSpawn(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadStartParams) (localSpawnPlan, error) {
+	trace := threadLifecycleFromContext(ctx)
 	if cfg.Spawner == nil {
 		return localSpawnPlan{}, wireRefusal(appwire.Unavailable, errSpawnerNotConfigured)
 	}
@@ -365,10 +379,15 @@ func prepareLocalSpawn(ctx context.Context, cfg hubcore.WebConfig, params appwir
 	if err != nil {
 		return localSpawnPlan{}, appwire.InvalidParams(err.Error())
 	}
-	if err := validateEvenerLaunchModel(ctx, cfg, modelRef, workingDir); err != nil {
+	modelChecked := trace.stage(ctx, "start_model_validation")
+	modelErr := validateEvenerLaunchModel(ctx, cfg, modelRef, workingDir)
+	modelChecked(modelErr)
+	if err := modelErr; err != nil {
 		return localSpawnPlan{}, err
 	}
+	pluginsResolved := trace.stage(ctx, "start_plugin_resolution")
 	pluginResolution, pluginErr := hubResolvePlugins(ctx, cfg.PluginRoot, spawnResolved.Effective.PluginDirs, spawnResolved.Effective.EnabledPlugins, cfg.PluginManager)
+	pluginsResolved(pluginErr)
 	if pluginErr != nil {
 		// A resolver failure is fatal when a selection has to be honoured, and
 		// always when the failure IS the caller leaving: the next thing this
