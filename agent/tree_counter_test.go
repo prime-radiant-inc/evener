@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -10,38 +12,31 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
-// waitForTreeCount polls the tree counter until it reaches want or the deadline
-// elapses. Reservations and releases happen on spawn/resume/drive/finalize
-// goroutines, so the count is observed asynchronously. The 5 s deadline is
-// generous enough to accommodate -race on slow/few-core boxes without being so
-// long that a genuine hang goes undetected.
+// waitForTreeCount waits for the tree counter to reach want. Reservations and
+// releases happen on spawn/resume/drive/finalize goroutines, so the count is
+// observed asynchronously.
 func waitForTreeCount(t *testing.T, c *treeCounter, want int64) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if got := c.n.Load(); got == want {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("tree counter = %d, want %d (timed out)", c.n.Load(), want)
+	waitForCount(t, "tree counter", c, want)
 }
 
 // waitForDriveCount mirrors waitForTreeCount for the drive-down budget
 // counter.
 func waitForDriveCount(t *testing.T, c *treeCounter, want int64) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if got := c.n.Load(); got == want {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("drive counter = %d, want %d (timed out)", c.n.Load(), want)
+	waitForCount(t, "drive counter", c, want)
+}
+
+func waitForCount(t *testing.T, name string, c *treeCounter, want int64) {
+	t.Helper()
+	testwait.UntilSeen(t, fmt.Sprintf("%s = %d", name, want), func() (bool, string) {
+		got := c.n.Load()
+		return got == want, strconv.FormatInt(got, 10)
+	})
 }
 
 // TestTreeCounterReserveRelease verifies the atomic check-and-reserve logic:

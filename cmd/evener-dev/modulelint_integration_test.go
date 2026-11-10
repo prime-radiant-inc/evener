@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // These run the real golangci-lint — never a stand-in. Where `make lint`
@@ -86,17 +88,10 @@ func TestModuleLintHonorsARealSignalThroughTheBinary(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.Until(t, "the run to mint its scratch", func() bool {
 		scratch, err := filepath.Glob(filepath.Join(tmp, "evener-module-lint.*"))
-		if err == nil && len(scratch) > 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the run never minted its scratch")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return err == nil && len(scratch) > 0
+	})
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}

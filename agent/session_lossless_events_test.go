@@ -10,6 +10,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // The session's event buffer. These tests exist to cross it, so they name it
@@ -366,10 +367,10 @@ func TestNotificationHookRunningAtShutdownIsInterrupted(t *testing.T) {
 		defer close(hookDone)
 		s.fireNotificationHook("warning", "")
 	}()
-	waitFor(t, func() bool {
+	testwait.Until(t, "the notification hook command to start running", func() bool {
 		_, err := os.Stat(marker)
 		return err == nil
-	}, "the notification hook command to start running")
+	})
 
 	closeDone := make(chan struct{})
 	go func() {
@@ -526,11 +527,11 @@ func TestAuthoritativeConsumerReceivesEveryEventPastTheBuffer(t *testing.T) {
 	close(s.events)
 	s.eventsMu.Unlock()
 
-	waitFor(t, func() bool {
+	testwait.Until(t, "the consumer to drain every event", func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return seen >= total
-	}, "the consumer to drain every event")
+	})
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -769,16 +770,5 @@ func TestSessionConstructionStaysWellInsideTheBuffer(t *testing.T) {
 	if limit := testEventBuffer / 4; buffered >= limit {
 		t.Fatalf("construction emitted %d events, within reach of the %d-deep buffer (alarm at %d): "+
 			"events emitted before a consumer can attach are at risk", buffered, testEventBuffer, limit)
-	}
-}
-
-func waitFor(t *testing.T, cond func() bool, what string) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", what)
-		}
-		time.Sleep(time.Millisecond)
 	}
 }
