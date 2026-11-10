@@ -20,8 +20,8 @@ import (
 // something else does not. A path names its whole value unless longer paths
 // beneath it narrow the choice.
 //
-// Why each moves the fingerprint while Status holds still: ActiveFlags hides
-// the fork action; PendingAsk, PendingEscalation and the escalation card IDs
+// Why each moves the fingerprint while Status holds still: PendingAsk,
+// PendingEscalation and the escalation card IDs
 // (a card's ID names it for its whole life) move the Clear bit and the card a
 // row names; PendingQuestion, Failure and LastMessage are the row's why line (a
 // question answered and another asked, or a turn retried and failed again,
@@ -37,7 +37,7 @@ import (
 // settles; ProbeState moves when a local probe is retained or recovers;
 // CurrentModel is what a model switch moves.
 var rosterShownFields = []string{
-	"Status", "ActiveFlags", "ActiveTurnID", "ActiveTurnStartedAt", "ProbeState", "Crashed", "PendingAsk", "PendingEscalation",
+	"Status", "ActiveTurnID", "ActiveTurnStartedAt", "ProbeState", "Crashed", "PendingAsk", "PendingEscalation",
 	"PendingEscalations.EscalationID",
 	"PendingQuestion", "PendingAskState", "Failure",
 	"Capabilities", "CapabilitiesKnown",
@@ -144,7 +144,6 @@ func hashFields(h hash.Hash64, v reflect.Value, node fieldTrie) {
 // aggregate is an empty one, since neither puts a task line on the row, and
 // the turn end is a millisecond instant like the rest of the wire.
 func orderInsensitive(e LiveEntry) LiveEntry {
-	e.ActiveFlags = slices.Sorted(slices.Values(e.ActiveFlags))
 	e.RunningSubagentIDs = slices.Sorted(slices.Values(e.RunningSubagentIDs))
 	e.RunningJobs = sortedJobs(e.RunningJobs)
 	e.CompletedJobs = sortedJobs(e.CompletedJobs)
