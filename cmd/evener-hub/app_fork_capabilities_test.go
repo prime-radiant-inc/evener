@@ -549,7 +549,7 @@ func TestHubForkAdmissionRefusesEveryProjectedRecoveryFence(t *testing.T) {
 		fence func(t *testing.T, cfg *hubcore.WebConfig, runDir, sessionID string)
 		// projected overrides the thread the capability projection is asked
 		// about. The past projection has no way to express a live daemon's own
-		// status flags, so the row that fences on them supplies the shape
+		// recovery status, so the row that fences on it supplies the shape
 		// applyHubForkCapability sees on a thread/read of that daemon instead.
 		projected   func(sessionID string) appwire.Thread
 		wantRefusal func(error) bool
