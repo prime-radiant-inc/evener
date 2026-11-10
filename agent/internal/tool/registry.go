@@ -310,6 +310,14 @@ func normalizeAskUserArgs(args map[string]any) (map[string]any, error) {
 	return nil, errors.New(errorMsg)
 }
 
+// TruncationReason names the registry output limit that shortened a result.
+type TruncationReason string
+
+const (
+	TruncatedByLines TruncationReason = "lines"
+	TruncatedByChars TruncationReason = "chars"
+)
+
 // ExecResult holds the outcome of executing a single tool call, including
 // the truncated output sent to the model, the full untruncated output, timing,
 // and any image or state side-channel data.
@@ -331,6 +339,11 @@ type ExecResult struct {
 	// Truncated reports whether the registry's generic output limit changed the
 	// model-facing text.
 	Truncated bool
+
+	// TruncatedBy says which of the registry's limits cut the output when
+	// Truncated is set: a search that hit the line cap can be raised, one that
+	// hit the character cap has to be narrowed.
+	TruncatedBy TruncationReason
 
 	IsError bool
 
@@ -858,7 +871,7 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 	// omits intent.
 	ctx = context.WithValue(ctx, ctxIntentKey{}, strings.TrimSpace(intent))
 	v, err := t.Exec(ctx, env, args)
-	res := dispatchedResult(name, callID, t.Limit, v, err)
+	res := dispatchedResult(name, callID, dispatchLimit(name, t.Limit, args), v, err)
 	if judged {
 		// Recorded on the untruncated body, before any nudge is appended, so
 		// the nudge cannot poison the body hash. FullOutput rather than
@@ -957,21 +970,29 @@ func dispatchedResult(name, callID string, lim schema.ToolOutputLimit, v any, er
 
 func truncateResult(toolName, callID, full string, isErr bool, lim schema.ToolOutputLimit) ExecResult {
 	out := full
-	truncated := false
+	var reason TruncationReason
 	if lim.Strategy == schema.TruncHeadCount {
-		out, truncated = truncateHeadCountWithStatus(out, lim.MaxLines, lim.MaxChars)
+		out, reason = truncateHeadCountReason(out, lim.MaxLines, lim.MaxChars)
 	} else {
 		var charTruncated bool
 		out, charTruncated = truncateCharsWithStatus(out, lim.MaxChars, lim.Strategy)
-		truncated = charTruncated
+		if charTruncated {
+			reason = TruncatedByChars
+		}
 		if lim.MaxLines > 0 {
 			var lineTruncated bool
 			out, lineTruncated = truncateLinesWithStatus(out, lim.MaxLines)
-			truncated = truncated || lineTruncated
+			if lineTruncated && reason == "" {
+				reason = TruncatedByLines
+			}
 		}
 	}
+	truncated := reason != ""
 	if truncated && out != full {
 		out += "\n[Tool output was truncated.]"
+		if toolName == "grep" && reason == TruncatedByChars {
+			out += "\n[The size cap cut this search; raising max_results will not return more. Narrow the path or glob_filter.]"
+		}
 	}
 	return ExecResult{
 		ToolName:          toolName,
@@ -980,6 +1001,7 @@ func truncateResult(toolName, callID, full string, isErr bool, lim schema.ToolOu
 		FullOutput:        full,
 		RecoverableOutput: full,
 		Truncated:         truncated,
+		TruncatedBy:       reason,
 		IsError:           isErr,
 	}
 }
@@ -1029,11 +1051,19 @@ func truncateHeadCount(s string, maxEntries, maxChars int) string {
 }
 
 func truncateHeadCountWithStatus(s string, maxEntries, maxChars int) (string, bool) {
+	out, reason := truncateHeadCountReason(s, maxEntries, maxChars)
+	return out, reason != ""
+}
+
+// truncateHeadCountReason is truncateHeadCountWithStatus naming the limit that
+// cut the output. The character cap is reported when both fire: it is the one
+// a larger entry cap cannot lift.
+func truncateHeadCountReason(s string, maxEntries, maxChars int) (string, TruncationReason) {
 	if maxEntries <= 0 || s == "" {
-		return s, false
+		return s, ""
 	}
 	out := s
-	truncated := false
+	var reason TruncationReason
 	lines := strings.Split(s, "\n")
 	total := len(lines)
 	if total > maxEntries {
@@ -1042,14 +1072,16 @@ func truncateHeadCountWithStatus(s string, maxEntries, maxChars int) (string, bo
 		// line (searchresult.WithNotes), so no reader counts it as a hit.
 		summary := fmt.Sprintf("\n\n[%d total lines; showing first %d; %d lines omitted]", total, maxEntries, total-maxEntries)
 		out = strings.Join(shown, "\n") + summary
-		truncated = true
+		reason = TruncatedByLines
 	}
 	if maxChars > 0 {
 		var charTruncated bool
 		out, charTruncated = truncateCharsFromTailWithStatus(out, maxChars)
-		truncated = truncated || charTruncated
+		if charTruncated {
+			reason = TruncatedByChars
+		}
 	}
-	return out, truncated
+	return out, reason
 }
 
 // truncateCharsFromTailWithStatus keeps an entry prefix and a complete warning
@@ -1097,6 +1129,24 @@ func truncateLinesWithStatus(s string, limit int) (string, bool) {
 	head := strings.Join(lines[:headCount], "\n")
 	tail := strings.Join(lines[len(lines)-tailCount:], "\n")
 	return head + marker + tail, true
+}
+
+// grepNoteLines is the room past max_results that a grep result's blank line
+// and trailing notes (result cap, retained-output cap, overlong lines) need.
+const grepNoteLines = 4
+
+// dispatchLimit is the output limit for one call. grep's max_results counts
+// output lines, so a caller who raises it past the registry's line cap must not
+// be cut back to that cap; the character cap still bounds the result.
+func dispatchLimit(name string, lim schema.ToolOutputLimit, args map[string]any) schema.ToolOutputLimit {
+	if name != "grep" || lim.Strategy != schema.TruncHeadCount {
+		return lim
+	}
+	if v, ok := args["max_results"].(float64); ok {
+		// The clamp keeps an absurd value from overflowing the conversion.
+		lim.MaxLines = max(lim.MaxLines, int(min(v, 1<<30))+grepNoteLines)
+	}
+	return lim
 }
 
 func defaultToolLimit(toolName string) schema.ToolOutputLimit {
