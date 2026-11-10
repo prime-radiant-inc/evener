@@ -45,7 +45,7 @@ import { activitySidebarStore } from "../../../shell/activitybar/activitySidebar
 import type { SessionMenuTurnVerbs } from "../../../shell/sessionMenu/SessionMenu";
 import { ActivityChips } from "../../../shell/statusbar/ActivityChips";
 import { useIsMobile } from "../../../shell/useIsMobile";
-import { useMountAutofocus } from "../../../shell/useMountAutofocus";
+import { mountAutofocusEnabled, useMountAutofocus } from "../../../shell/useMountAutofocus";
 import {
   controlsFor,
   isRecoveryFenced,
@@ -271,7 +271,7 @@ export function Composer({
   // paint. Start engaged so the card does not paint folded and then animate
   // open on every session load; the DOM attribute still follows the real
   // focus event.
-  const [editorEngaged, setEditorEngaged] = useState(() => focused && !!mountAutofocus && !isMobile);
+  const [editorEngaged, setEditorEngaged] = useState(() => mountAutofocusEnabled(focused && !!mountAutofocus));
   const followUpFocusSequenceRef = useRef(0);
 
   // Steer moves into the menu below the phone-width boundary.
@@ -743,7 +743,8 @@ export function Composer({
   // the editor, a draft, a staged attachment or a pending question restores
   // the full card. Focus on the row's own controls does not: the folded row
   // is usable as it stands.
-  const folded = !askPending && !mutationWriteStalled && !editorEngaged && !hasContent;
+  const resting = !editorEngaged && !hasContent && !mutationWriteStalled;
+  const folded = !askPending && resting;
   let minLines = 2;
   if (folded) minLines = 1;
   else if (ended) minLines = followUpEngaged ? 3 : 1;
@@ -760,14 +761,7 @@ export function Composer({
   // controls is pressed. The exited follow-up keeps the model picker in its
   // resting row: that surface is the one place on a phone the picker is
   // directly reachable without engaging the editor.
-  const controlsCollapsed =
-    isMobile &&
-    !ended &&
-    !fence.fencedLocal &&
-    !fence.sendDriven &&
-    !editorEngaged &&
-    !hasContent &&
-    !mutationWriteStalled;
+  const controlsCollapsed = isMobile && !ended && !fence.fencedLocal && !fence.sendDriven && resting;
 
   function handleTextChange(value: SkillEditorValue, caret: number): void {
     editSkillNames(value.skillNames);

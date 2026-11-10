@@ -1,6 +1,6 @@
 {
   "name": "compact-session-footer",
-  "description": "inline composer controls stay on one row and compress status facts in priority order",
+  "description": "inline composer controls stay on one row and compress status facts in priority order, in both the expanded card and the folded one-line shape",
   "cssFiles": [
     "styles/global.css",
     "widgets/promptcard/promptcard.module.css",
@@ -15,7 +15,7 @@
   ],
   "viewport": {
     "width": 1200,
-    "height": 900,
+    "height": 1600,
     "deviceScaleFactor": 1,
     "mobile": false
   },
@@ -28,7 +28,10 @@
     { "width": 698.421875, "expectedStatusWidth": 559 },
     { "width": 699.421875, "expectedStatusWidth": 560 },
     { "width": 900 },
-    { "width": 900, "shortModel": true }
+    { "width": 900, "shortModel": true },
+    { "width": 620.421875, "folded": true },
+    { "width": 900, "folded": true },
+    { "width": 900, "folded": true, "shortModel": true }
   ],
   "forcePseudoStates": [
     { "selector": ".focusAttach", "pseudoClasses": ["focus-visible"] },

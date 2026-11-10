@@ -66,7 +66,6 @@ export function PromptCard({
   const priorShape = useRef<{ folded: boolean; height: number | null }>({ folded, height: null });
   const shapeChanged = useRef(false);
   const hiddenBefore = useRef(hidden);
-  const heightAnimation = useRef<ReturnType<typeof animate> | null>(null);
   const reducedMotion = useReducedMotion();
 
   if (priorShape.current.folded !== folded) {
@@ -74,24 +73,23 @@ export function PromptCard({
     shapeChanged.current = true;
   }
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the fold flag is the shape-change trigger; the measured heights live in refs.
   useLayoutEffect(() => {
     const card = cardRef.current;
     const wasHidden = hiddenBefore.current;
     hiddenBefore.current = hidden;
     const changed = shapeChanged.current;
     shapeChanged.current = false;
-    heightAnimation.current?.stop();
-    heightAnimation.current = null;
     if (!card) return undefined;
     // Height stays auto at rest: the field's own autogrow and any control
     // change reflow normally. Only the fold switch interpolates.
     card.style.removeProperty("height");
-    const from = wasHidden ? null : priorShape.current.folded === folded ? priorShape.current.height : null;
+    const from = wasHidden ? null : priorShape.current.height;
+    if (!changed || hidden || reducedMotion || from === null) return undefined;
     const to = card.offsetHeight;
-    if (!changed || hidden || reducedMotion || from === null || Math.abs(to - from) < 1) return undefined;
+    if (Math.abs(to - from) < 1) return undefined;
     card.style.height = `${from}px`;
     const animation = animate(card, { height: `${to}px` }, spatialTransition());
-    heightAnimation.current = animation;
     animation.finished
       .then(() => {
         card.style.removeProperty("height");
@@ -101,7 +99,6 @@ export function PromptCard({
       });
     return () => {
       animation.stop();
-      if (heightAnimation.current === animation) heightAnimation.current = null;
     };
   }, [folded, hidden, reducedMotion]);
 

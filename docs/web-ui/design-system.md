@@ -126,20 +126,16 @@ losing the conversation that made the evidence relevant.
   (About) and never stacks a second strip below the composer. A phone chip shows its
   glyph, its name when the width can carry it, and a single active count (settled for
   Tasks); the full active/total fraction stays in its accessible name, tooltip and the
-  Overview. While the card rests — an empty editor, unfocused, with no send in
-  flight — a composer with room folds to one row: the placeholder sits beside the
-  model and effort, which join the session menu and Send at the right edge. The
-  paperclip returns with the expanded card, and focusing the editor or typing grows
-  the card back to its stacked writing height through the spatial-motion budget. Where
-  the folded row renders, it names the model, so the resting composer never hides
-  which model the next turn will use; the phone's existing menu-only resting row is
-  unchanged. A narrow pane and the phone keep the stacked control row, but the folded
-  card still keeps its one-line field and hides the paperclip. The phone's resting
-  row sheds Attach and the chips as it always has, and the exited follow-up keeps the
-  model picker reachable at rest. At the 466px Duo cover width, the same control row
-  uses tighter framing and the folded field keeps its one line; focus, drafts,
-  attachments, and question/approval docks keep their ordinary writing and response
-  space. The four activity counters stay in the
+  Overview. While the card rests — empty, unfocused, no send in flight — a composer
+  with room folds to one row: the placeholder beside the model and effort, with the
+  session menu and Send at the right. The paperclip returns with the expanded card,
+  and focusing or typing grows it back through the spatial-motion budget. The folded
+  row names the model; the phone's menu-only resting row is unchanged. A card under
+  620px keeps the stacked control row but keeps the folded one-line field and hides
+  the paperclip. The phone's resting row still sheds Attach and the chips, and the
+  exited follow-up keeps the model picker reachable. At the 466px Duo cover width the
+  control row tightens; focus, drafts, attachments, and question/approval docks keep
+  their writing and response space. The four activity counters stay in the
   app with their existing Overview links. The OS-owned Duo system rail is not a public
   customization surface, so no counters move there.
 - **Keep session inspection together.** Both session action menus offer Overview, retaining

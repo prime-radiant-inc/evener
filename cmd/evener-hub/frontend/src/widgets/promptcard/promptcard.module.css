@@ -91,12 +91,10 @@
    * of above them. */
   .card[data-folded="true"] .field {
     flex: 1 1 10ch;
-    min-width: 0;
   }
 }
 
 .card[data-folded="true"] .controls {
-  flex: 0 1 auto;
   min-width: 0;
 }
 

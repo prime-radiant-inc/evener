@@ -295,8 +295,7 @@ test("the prompt card IS the shared PromptCard widget, not a lookalike", async (
 // the slot must not grow to fill the space after Attach, or the model label
 // sits left while its effort drifts right.
 test("the model trigger hugs effort at the row's far end", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "spawn.module.css"), "utf8");
+  const css = readModuleCss(import.meta.url, "spawn.module.css");
   expect(css).toMatch(/\.modelTrigger\s*\{[^}]*flex:\s*0 1 auto;[^}]*margin-left:\s*auto/);
 });
 

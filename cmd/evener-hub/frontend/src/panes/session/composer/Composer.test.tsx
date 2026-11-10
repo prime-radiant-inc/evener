@@ -1,6 +1,3 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { Thread } from "@evener/appwire-client";
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -25,6 +22,7 @@ import { resetPrefsStoreForTests } from "../../../stores/prefs";
 import { answerActivityRead } from "../../../stores/sessionActivityTestUtils";
 import { holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../stores/threads";
+import { readModuleCss, topRuleBlock } from "../../../styles/cssBlock";
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { ALL_CAPABILITIES as FULL_CAPABILITIES } from "../../../threadTestUtils";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
@@ -534,7 +532,7 @@ test("clicking the current task opens the existing mobile tasks sheet for this s
 });
 
 test("the composer region fills pane height and bottom-anchors the replacement slot", () => {
-  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "composer.module.css"), "utf8");
+  const css = readModuleCss(import.meta.url, "composer.module.css");
   expect(css).toContain("flex: 1 1 auto");
   expect(css).toContain("min-height: 0");
   expect(css).toContain("justify-content: flex-end");
@@ -546,8 +544,8 @@ test("the composer region fills pane height and bottom-anchors the replacement s
 // (the overflowguard's 390px-pane-in-desktop-window measurement proved it).
 // The 559px boundary matches the status row's own first compression threshold (statusrow.module.css).
 test("the Send button's word collapses to the glyph below the compact pane threshold", () => {
-  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "composer.module.css"), "utf8");
-  expect(css).toMatch(/\.composer\s*\{[^}]*container-type:\s*inline-size/);
+  const css = readModuleCss(import.meta.url, "composer.module.css");
+  expect(topRuleBlock(css, ".composer")).toMatch(/container-type:\s*inline-size/);
   expect(css).toMatch(/@container \(max-width: 559px\)[\s\S]*?\.submitLabel\s*\{[^}]*display:\s*none/);
 });
 
@@ -556,18 +554,19 @@ test("the Send button's word collapses to the glyph below the compact pane thres
 // fills the row so the status facts keep their full width; the row's own
 // `align="end"` places the facts at its far end.
 test("the session chrome fills the expanded row", () => {
-  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "composer.module.css"), "utf8");
-  expect(css).toMatch(/\.chromeSlot\s*\{[^}]*flex:\s*1 1 auto/);
+  const css = readModuleCss(import.meta.url, "composer.module.css");
+  expect(topRuleBlock(css, ".chromeSlot")).toMatch(/flex:\s*1 1 auto/);
 });
 
 // The folded row is content-sized, so the leading reports an intrinsic width
 // for it. It must keep the `statusbar` query container: phone exited/fenced
 // composers still render activity chips in this slot.
 test("the folded composer keeps the statusbar container the phone chips query", () => {
-  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "composer.module.css"), "utf8");
-  expect(css).toMatch(/\.leading\s*\{[^}]*container:\s*statusbar \/ inline-size/);
-  expect(css).toMatch(/\.leading\[data-folded="true"\]\s*\{[^}]*contain-intrinsic-inline-size:/);
-  expect(css).not.toMatch(/\.leading\[data-folded="true"\]\s*\{[^}]*container-type:\s*normal/);
+  const css = readModuleCss(import.meta.url, "composer.module.css");
+  expect(topRuleBlock(css, ".leading")).toMatch(/container:\s*statusbar \/ inline-size/);
+  const folded = topRuleBlock(css, '.leading[data-folded="true"]');
+  expect(folded).toMatch(/contain-intrinsic-inline-size:/);
+  expect(folded).not.toMatch(/container-type:\s*normal/);
 });
 
 beforeEach(() => {
