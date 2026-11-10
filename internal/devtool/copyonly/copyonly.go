@@ -81,7 +81,7 @@ func Inventory(root, prefix string) (Report, error) {
 // withHits is set: they look up every literal in every test, which the
 // audit's copy-only scan does not need.
 func inventory(root, prefix string, withHits bool) (Report, error) {
-	files, err := listFiles(root)
+	files, err := TrackedFiles(root)
 	if err != nil {
 		return Report{}, err
 	}
@@ -128,8 +128,8 @@ func inventory(root, prefix string, withHits bool) (Report, error) {
 	return r, nil
 }
 
-// listFiles lists root's files as git sees them, minus vendored dependencies.
-func listFiles(root string) ([]string, error) {
+// TrackedFiles lists root's files as git sees them, minus vendored dependencies.
+func TrackedFiles(root string) ([]string, error) {
 	cmd := exec.CommandContext(context.Background(), "git", "-C", root, "ls-files", "-z")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

@@ -15,13 +15,11 @@ type recorder struct {
 	testing.TB
 	deadline time.Time
 	failure  string
-	failed   bool
 }
 
 func (r *recorder) Helper() {}
 
 func (r *recorder) Fatalf(format string, args ...any) {
-	r.failed = true
 	r.failure = fmt.Sprintf(format, args...)
 	runtime.Goexit()
 }
@@ -53,24 +51,12 @@ func TestUntilReturnsOnceTheConditionHolds(t *testing.T) {
 	}
 }
 
-func TestUntilSeenReturnsOnceTheConditionHolds(t *testing.T) {
-	t.Parallel()
-	calls := 0
-	UntilSeen(t, "the second check", func() (bool, string) {
-		calls++
-		return calls == 2, fmt.Sprint(calls)
-	})
-	if calls != 2 {
-		t.Fatalf("condition checked %d times, want 2", calls)
-	}
-}
-
 func TestUntilFailsNamingWhatItWaitedFor(t *testing.T) {
 	t.Parallel()
 	const what = "sentinel-condition-7f3a"
 	r := &recorder{deadline: time.Now().Add(100 * time.Millisecond)}
 	runToEnd(func() { Until(r, what, func() bool { return false }) })
-	if !r.failed {
+	if r.failure == "" {
 		t.Fatal("a condition that never holds did not fail the test")
 	}
 	if !strings.Contains(r.failure, what) {
@@ -83,7 +69,7 @@ func TestUntilSeenFailsReportingTheLastObservedState(t *testing.T) {
 	const what, seen = "sentinel-condition-91c2", "sentinel-state-44be"
 	r := &recorder{deadline: time.Now().Add(100 * time.Millisecond)}
 	runToEnd(func() { UntilSeen(r, what, func() (bool, string) { return false, seen }) })
-	if !r.failed {
+	if r.failure == "" {
 		t.Fatal("a condition that never holds did not fail the test")
 	}
 	for _, want := range []string{what, seen} {

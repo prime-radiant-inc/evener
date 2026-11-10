@@ -290,7 +290,7 @@ lint-tracked-file-size:
 ##   TMPDIR, before its trap, or deletes recursively from a variable beyond
 ##   the reviewed allowlists; mobile-native/.gitignore keeps the
 ##   mobile-native/build derived-data tree untracked; and Go tests call
-##   time.Sleep no more often than test_sleep_baseline.txt allows, with a
+##   time.Sleep no more often than the checked-in baseline allows, with a
 ##   NOTE to lower the baseline when they call it less.
 ## trigger: Required CI (via make lint); local pre-merge.
 ## requires: None beyond the Go toolchain and git.

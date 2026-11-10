@@ -205,9 +205,9 @@ Pick the first of these that fits:
 Never use a fixed `time.Sleep` to wait for work to happen. `make lint`'s
 `test-sleeps-within-baseline` check (in `make lint-repo-audit`) counts the
 `time.Sleep` calls in tracked Go tests and fails when the count rises above
-`internal/devtool/repoaudit/test_sleep_baseline.txt`. When a change brings the
-count down, the check passes and prints a `NOTE` with the new count; put that
-number in the baseline file in the same change. The count leaves out every
+`testSleepBaseline` in `internal/devtool/repoaudit/testsleeps.go`. When a
+change brings the count down, the check passes and prints a `NOTE` with the new
+count; set the constant to that number in the same change. The count leaves out every
 file that imports `testing/synctest`, since a sleep in a bubble is free, and
 files under `testdata`. It reads imports rather than following calls, so a
 sleep outside the bubble in a synctest file goes uncounted.

@@ -1,5 +1,0 @@
-# The most time.Sleep calls Go tests may hold, outside files that import
-# testing/synctest and outside testdata. `make lint-repo-audit` fails above it
-# and prints a NOTE with the new count below it: replace the number with that
-# count. See "Waiting in Go tests" in docs/developing-evener/testing.md.
-294

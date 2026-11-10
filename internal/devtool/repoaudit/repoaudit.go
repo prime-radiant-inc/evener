@@ -80,19 +80,18 @@ func (a *audit) Fatalf(format string, args ...any) {
 	panic(stopCheck{})
 }
 
-// runCheck runs one check and returns its findings and notes.
-func runCheck(c check) (findings, notes []string) {
-	a := &audit{}
+// runCheck runs one check and returns what it recorded.
+func runCheck(c check) (a *audit) {
+	a = &audit{}
 	defer func() {
 		if r := recover(); r != nil {
 			if _, stopped := r.(stopCheck); !stopped {
 				panic(r)
 			}
 		}
-		findings, notes = a.findings, a.notes
 	}()
 	c.run(a)
-	return a.findings, a.notes
+	return a
 }
 
 // Run runs every check against the repository in the working directory, which
@@ -105,19 +104,18 @@ func Run(stdout io.Writer) int {
 // runChecks runs cs concurrently, since the copy-only scans dominate the wall
 // time, and reports them in order so the output is stable.
 func runChecks(cs []check, stdout io.Writer) int {
-	findings := make([][]string, len(cs))
-	notes := make([][]string, len(cs))
+	results := make([]*audit, len(cs))
 	var wg sync.WaitGroup
 	for i, c := range cs {
-		wg.Go(func() { findings[i], notes[i] = runCheck(c) })
+		wg.Go(func() { results[i] = runCheck(c) })
 	}
 	wg.Wait()
 	status := 0
 	for i, c := range cs {
-		for _, note := range notes[i] {
+		for _, note := range results[i].notes {
 			_, _ = fmt.Fprintf(stdout, "NOTE %s: %s\n", c.name, note)
 		}
-		for _, finding := range findings[i] {
+		for _, finding := range results[i].findings {
 			status = 1
 			_, _ = fmt.Fprintf(stdout, "FAIL %s: %s\n", c.name, finding)
 		}

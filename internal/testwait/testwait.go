@@ -28,7 +28,7 @@ const (
 	// maxPollInterval caps the backoff between checks: short enough that a
 	// condition that holds is seen promptly, long enough that a wait lasting
 	// minutes does not spin a core.
-	maxPollInterval = 50 * time.Millisecond
+	maxPollInterval = 20 * time.Millisecond
 )
 
 // Until polls cond until it holds. what names the condition, so a hang fails
@@ -52,10 +52,10 @@ func UntilSeen(t testing.TB, what string, check func() (done bool, seen string))
 			return
 		}
 		if !time.Now().Before(giveUp) {
-			if seen == "" {
-				t.Fatalf("still waiting for %s after %s", what, time.Since(start).Round(time.Millisecond))
+			if seen != "" {
+				seen = " (last seen: " + seen + ")"
 			}
-			t.Fatalf("still waiting for %s after %s (last seen: %s)", what, time.Since(start).Round(time.Millisecond), seen)
+			t.Fatalf("still waiting for %s after %s%s", what, time.Since(start).Round(time.Millisecond), seen)
 		}
 		time.Sleep(interval)
 		interval = min(2*interval, maxPollInterval)
@@ -66,14 +66,11 @@ func UntilSeen(t testing.TB, what string, check func() (done bool, seen string))
 // the test's deadline, or halfway there when less than twice the margin is
 // left, and noDeadlineCeiling after now when the test has no deadline.
 func giveUpAt(t testing.TB, now time.Time) time.Time {
-	withDeadline, ok := t.(interface{ Deadline() (time.Time, bool) })
-	if !ok {
-		return now.Add(noDeadlineCeiling)
+	if withDeadline, ok := t.(interface{ Deadline() (time.Time, bool) }); ok {
+		if deadline, ok := withDeadline.Deadline(); ok {
+			remaining := deadline.Sub(now)
+			return now.Add(remaining - min(deadlineMargin, remaining/2))
+		}
 	}
-	deadline, ok := withDeadline.Deadline()
-	if !ok {
-		return now.Add(noDeadlineCeiling)
-	}
-	remaining := deadline.Sub(now)
-	return now.Add(remaining - min(deadlineMargin, remaining/2))
+	return now.Add(noDeadlineCeiling)
 }
