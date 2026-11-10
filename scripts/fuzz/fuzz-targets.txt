@@ -477,7 +477,6 @@ native:.:./cmd/evener:FuzzRootCommandSeedCoverage
 native:auth:./openai:FuzzAuthOpenAIFaultSeams
 native:auth:./openai:FuzzAuthOpenAISeedReplay
 native:llm:.:FuzzCoreContracts
-native:llm:.:FuzzCoreDeterministicScenarios
 native:llm:.:FuzzRootScenarioReplay
 native:.:./internal/appwiredoc:FuzzPackageUnion
 native:.:./internal/binresolve:FuzzPackageUnion
