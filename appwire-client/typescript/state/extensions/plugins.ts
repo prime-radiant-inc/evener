@@ -379,7 +379,9 @@ export function createPluginsStore(client: PluginsClient, gate: HubWriteGate): P
                 const key = pluginComponentsKey(entry);
                 const before = previous.get(key);
                 return s.pluginComponents.has(key) &&
-                  (before?.version !== entry.version || before?.installPath !== entry.installPath)
+                  (before?.version !== entry.version ||
+                    before?.installPath !== entry.installPath ||
+                    before?.broken !== entry.broken)
                   ? [key]
                   : [];
               });
@@ -395,7 +397,7 @@ export function createPluginsStore(client: PluginsClient, gate: HubWriteGate): P
             // The list's rows show component counts without per-row reads, so
             // its landing issues one batch for every installed pair key. Keys
             // already settled send nothing; only the keys a mutation or a
-            // notification retired, or whose installed revision changed, come back.
+            // notification retired, or whose installed revision or load health changed, come back.
             void get().fetchPluginComponents(resp.plugins.map(({ plugin, marketplace }) => ({ plugin, marketplace })));
           },
           onFailure: (err) => () => set({ pluginsLoading: false, pluginsError: friendlyErrorMessage(err) }),

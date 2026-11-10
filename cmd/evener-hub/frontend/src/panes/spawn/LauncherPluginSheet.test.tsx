@@ -4,9 +4,10 @@ import {
   SCOPED_HOST_READ_DEBOUNCE_MS,
   WireError,
 } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { deferRequest, FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 import { useIsMobile } from "../../shell/useIsMobile";
 import sheetStyles from "../../widgets/sheet/sheet.module.css";
@@ -163,6 +164,77 @@ test("an erroring read degrades with the quiet notice where Contents would be, a
   expect(fake.calls.filter((call) => call.method === "evener/plugin/components")).toHaveLength(2);
   expect(sheet.querySelector('[data-kind="plugin-contents"]')).toBeTruthy();
   expect(within(sheet).queryByRole("status")).toBeNull();
+});
+
+test("keyboard Retry keeps focus inside launcher details while loading and Escape dismisses", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  const fake = new FakeClient();
+  fake.on("evener/plugin/components", () => {
+    throw new WireError("unavailable-method-sentinel", -32601);
+  });
+  function Harness() {
+    const [open, setOpen] = useState(true);
+    return (
+      <LauncherPluginSheet
+        open={open}
+        candidate={DIRECTORY_CANDIDATE}
+        selected={false}
+        onClose={() => setOpen(false)}
+        onToggleSelected={() => {}}
+        client={fake}
+      />
+    );
+  }
+  render(<Harness />);
+  await settleRead();
+  const sheet = screen.getByRole("dialog");
+  const retry = within(within(sheet).getByRole("status")).getByRole("button");
+  for (let i = 0; i < 5 && document.activeElement !== retry; i++) await user.tab();
+  expect(document.activeElement).toBe(retry);
+  const release = deferRequest<{ results: [] }>(fake, "evener/plugin/components");
+  await user.keyboard("{Enter}");
+  await settleRead();
+  expect(fake.calls.filter((call) => call.method === "evener/plugin/components")).toHaveLength(2);
+  expect(retry.isConnected).toBe(false);
+  expect(sheet.contains(document.activeElement)).toBe(true);
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("dialog")).toBeNull();
+  await act(async () => release({ results: [] }));
+});
+
+test("a remove-only inclusion toggle rehomes focus when its own activation disables it", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  const fake = componentsClient();
+  function Harness() {
+    const [open, setOpen] = useState(true);
+    const [selected, setSelected] = useState(true);
+    return (
+      <LauncherPluginSheet
+        open={open}
+        candidate={DIRECTORY_CANDIDATE}
+        selected={selected}
+        selectionDisabled={!selected}
+        onClose={() => setOpen(false)}
+        onToggleSelected={setSelected}
+        client={fake}
+      />
+    );
+  }
+  render(<Harness />);
+  await settleRead();
+  const sheet = screen.getByRole("dialog");
+  const included = within(sheet).getByRole("switch");
+  for (let i = 0; i < 5 && document.activeElement !== included; i++) await user.tab();
+  expect(document.activeElement).toBe(included);
+  await user.keyboard("{Enter}");
+  expect(included.getAttribute("aria-checked")).toBe("false");
+  expect((included as HTMLButtonElement).disabled).toBe(true);
+  expect(document.activeElement).not.toBe(included);
+  expect(sheet.contains(document.activeElement)).toBe(true);
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("dialog")).toBeNull();
 });
 
 test("a plugin whose own load fails shows the failure where Contents would be, never manifest-only", async () => {

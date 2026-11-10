@@ -553,6 +553,43 @@ describe("pluginComponents cache", () => {
     },
   );
 
+  test.each([true, false])(
+    "a fresh list changing broken from %s retires and refetches the inventory",
+    async (broken) => {
+      const { fake, store } = storeWithFake();
+      const target = { plugin: LINTER.plugin, marketplace: LINTER.marketplace };
+      const loadError = "in-place-load-failure-sentinel";
+      fake.on(LIST, () => ({ plugins: [{ ...LINTER, broken }, FORMATTER] }));
+      fake.on(COMPONENTS, () => ({
+        results: [
+          broken ? { ...target, error: loadError } : componentRow(LINTER.plugin),
+          componentRow(FORMATTER.plugin),
+        ],
+      }));
+      await store.getState().fetchPlugins();
+      await store.getState().fetchPluginComponents([target]);
+      const before = store.getState().pluginComponents;
+      expect(before.get("linter@acme")?.status).toBe(broken ? "error" : "loaded");
+
+      fake.on(LIST, () => ({ plugins: [{ ...LINTER, broken: !broken }, FORMATTER] }));
+      const release = deferRequest<PluginComponentsResponse>(fake, COMPONENTS);
+      await store.getState().fetchPlugins();
+      expect(store.getState().plugins?.[0]).toEqual({ ...LINTER, broken: !broken });
+      expect(fake.calls.filter((call) => call.method === COMPONENTS)).toHaveLength(2);
+      expect(fake.calls.at(-1)?.params).toEqual({ targets: [target] });
+      expect(store.getState().pluginComponents.get("linter@acme")).toEqual({ status: "loading" });
+      expect(store.getState().pluginComponents.get("formatter@acme")).toBe(before.get("formatter@acme"));
+      const reading = store.getState().fetchPluginComponents([target]);
+      const fresh = { commands: ["repaired-command-sentinel"] };
+      release({ results: [broken ? { ...target, components: fresh } : { ...target, error: loadError }] });
+      await reading;
+      expect(store.getState().pluginComponents.get("linter@acme")).toEqual(
+        broken ? { status: "loaded", components: fresh } : { status: "error", source: "target", error: loadError },
+      );
+      store.dispose();
+    },
+  );
+
   test("a fresh list fences an old inventory still in flight before refilling its changed revision", async () => {
     const { fake, store } = storeWithFake();
     const target = { plugin: "linter", marketplace: "acme" };

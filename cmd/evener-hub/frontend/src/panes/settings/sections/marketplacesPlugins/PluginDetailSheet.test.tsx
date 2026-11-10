@@ -1,5 +1,6 @@
 import type { MarketplaceEntry, PluginComponents, PluginEntry } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
+import { deferRequest } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
@@ -518,6 +519,37 @@ test.each([false, true])("a request error has working Retry even when the entry 
   expect(fake.calls.at(-1)?.params).toEqual({ targets: [{ plugin: "linter", marketplace: "acme-plugins" }] });
   await waitFor(() => expect(sheet.querySelector('[data-kind="plugin-contents"]')).toBeTruthy());
   expect(within(sheet).queryByRole("status")).toBeNull();
+});
+
+test("keyboard Retry keeps focus inside settings details while loading and Escape dismisses", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  extensionsStore.setState({
+    plugins: [LINTER],
+    marketplaces: [ACME],
+    browseCatalogs: seededCatalog([{ name: LINTER.plugin }]),
+  });
+  fake.on("evener/plugin/components", () => {
+    throw new WireError("unavailable-method-sentinel", -32601);
+  });
+  function Harness() {
+    const [target, setTarget] = useState<PluginDetailTarget | null>(TARGET);
+    return <PluginDetailSheet target={target} onClose={() => setTarget(null)} />;
+  }
+  render(<Harness />);
+  const sheet = screen.getByRole("dialog");
+  const notice = await within(sheet).findByRole("status");
+  const retry = within(notice).getByRole("button");
+  for (let i = 0; i < 8 && document.activeElement !== retry; i++) await user.tab();
+  expect(document.activeElement).toBe(retry);
+  const release = deferRequest<{ results: [] }>(fake, "evener/plugin/components");
+  await user.keyboard("{Enter}");
+  expect(fake.calls.filter((call) => call.method === "evener/plugin/components")).toHaveLength(2);
+  expect(retry.isConnected).toBe(false);
+  expect(sheet.contains(document.activeElement)).toBe(true);
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("dialog")).toBeNull();
+  await act(async () => release({ results: [] }));
 });
 
 test("catalog mode renders description and metadata with no switches, and installs through the confirm flow", async () => {

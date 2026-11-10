@@ -11,8 +11,8 @@
 
 import type { AppwireClientLike, PluginComponentsReadArgs, PluginLaunchCandidate } from "@evener/appwire-client";
 import type { PluginComponentsEntry } from "@evener/appwire-client/state/extensions";
-import type { ReactElement } from "react";
-import { Switch } from "../../widgets";
+import { type ReactElement, useRef } from "react";
+import { Switch, useFocusRehome } from "../../widgets";
 import { PluginContentsBlock } from "../plugins/PluginContents";
 import { type PluginMetadataRow, PluginSheet } from "../plugins/PluginSheet";
 import { usePluginComponents } from "./usePluginComponents";
@@ -54,6 +54,10 @@ export function LauncherPluginSheet({
   // match the catalog name used in installed registry keys.
   const target: PluginComponentsReadArgs["target"] = { path: candidate.path ?? "" };
   const read = usePluginComponents({ client, host, target }, JSON.stringify(candidate));
+  // Remove-only selection disables its own switch after deselection. Cover
+  // all sheet controls, not just the shared contents block's Retry.
+  const focusRoot = useRef<HTMLDivElement>(null);
+  useFocusRehome(focusRoot);
 
   const metaRows: PluginMetadataRow[] = [
     ...(candidate.version
@@ -73,22 +77,24 @@ export function LauncherPluginSheet({
   const contentsBlock = <PluginContentsBlock entry={contentsEntry(read.state)} onRetry={read.retry} />;
 
   return (
-    <PluginSheet
-      open={open}
-      onClose={onClose}
-      title={candidate.name}
-      mode="launcher"
-      description={candidate.description}
-      contents={contentsBlock}
-      metadata={metaRows}
-    >
-      <Switch
-        checked={selected}
-        disabled={selectionDisabled}
-        onChange={onToggleSelected}
-        label="Included in this session"
-        description="Turn off to start this session without this plugin. Only this launch's plugin selection changes."
-      />
-    </PluginSheet>
+    <div ref={focusRoot}>
+      <PluginSheet
+        open={open}
+        onClose={onClose}
+        title={candidate.name}
+        mode="launcher"
+        description={candidate.description}
+        contents={contentsBlock}
+        metadata={metaRows}
+      >
+        <Switch
+          checked={selected}
+          disabled={selectionDisabled}
+          onChange={onToggleSelected}
+          label="Included in this session"
+          description="Turn off to start this session without this plugin. Only this launch's plugin selection changes."
+        />
+      </PluginSheet>
+    </div>
   );
 }

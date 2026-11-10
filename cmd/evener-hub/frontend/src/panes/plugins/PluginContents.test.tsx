@@ -1,9 +1,10 @@
 import type { PluginComponents } from "@evener/appwire-client";
+import type { PluginComponentsEntry } from "@evener/appwire-client/state/extensions";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { expect, test } from "vitest";
-import { PluginContents } from "./PluginContents";
+import { PluginContents, PluginContentsBlock } from "./PluginContents";
 import { PluginSheet } from "./PluginSheet";
 
 const NINE_SERVERS: string[] = Array.from({ length: 9 }, (_, i) => `server-0${i + 1}`);
@@ -69,6 +70,44 @@ test("keyboard expansion keeps focus inside the sheet and Escape dismisses it", 
   await user.keyboard("{Escape}");
   expect(screen.queryByRole("dialog")).toBeNull();
 });
+
+test.each([undefined, { status: "loading" as const }])(
+  "the shared block rehomes keyboard Retry without a sheet owner rerender: %j",
+  async (loading) => {
+    const user = userEvent.setup();
+    function Contents() {
+      const [entry, setEntry] = useState<PluginComponentsEntry | undefined>({
+        status: "error",
+        source: "request",
+        error: "retry-error-sentinel",
+      });
+      return <PluginContentsBlock entry={entry} onRetry={() => setEntry(loading)} />;
+    }
+    function Harness() {
+      const [open, setOpen] = useState(true);
+      return (
+        <PluginSheet
+          open={open}
+          onClose={() => setOpen(false)}
+          title="retry-focus-sentinel"
+          mode="launcher"
+          metadata={[]}
+          contents={<Contents />}
+        />
+      );
+    }
+    render(<Harness />);
+    const sheet = screen.getByRole("dialog");
+    const retry = within(within(sheet).getByRole("status")).getByRole("button");
+    for (let i = 0; i < 5 && document.activeElement !== retry; i++) await user.tab();
+    expect(document.activeElement).toBe(retry);
+    await user.keyboard("{Enter}");
+    expect(retry.isConnected).toBe(false);
+    expect(sheet.contains(document.activeElement)).toBe(true);
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+  },
+);
 
 test("a manifest-only object reads as the empty case, never as an error or empty-styled list", () => {
   const components: PluginComponents = {};

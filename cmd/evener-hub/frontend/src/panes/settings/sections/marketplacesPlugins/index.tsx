@@ -211,7 +211,7 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
             onOpen={handleSelectCatalog}
           />
         ))}
-      {plugins !== null && <PluginDetailSheet target={selectedPlugin} onClose={() => setSelectedPlugin(null)} />}
+      <PluginDetailSheet target={selectedPlugin} onClose={() => setSelectedPlugin(null)} />
       {marketplaces !== null && (
         <MarketplaceSheet
           name={selectedMarketplace}

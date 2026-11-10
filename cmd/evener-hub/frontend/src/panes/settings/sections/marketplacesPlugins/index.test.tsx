@@ -79,6 +79,34 @@ test("cached inventory keeps install disabled throughout a delayed retry", async
   expect((screen.getByRole("button", { name: "Install" }) as HTMLButtonElement).disabled).toBe(false);
 });
 
+test("catalog details open after the initial plugin list fails without allowing writes", async () => {
+  const fake = connectSeededClient();
+  fake.on("evener/plugin/list", () => {
+    throw new Error("initial-list-failure-sentinel");
+  });
+  fake.on("evener/marketplace/browse", () => ({ name: ACME.name, plugins: [{ name: "formatter" }] }));
+  const user = userEvent.setup();
+  render(<MarketplacesPluginsSection />);
+  await waitFor(() => expect(extensionsStore.getState().pluginsError).not.toBeNull());
+  expect(extensionsStore.getState().plugins).toBeNull();
+  await user.click(screen.getByRole("radio", { name: "Browse" }));
+  await user.click(screen.getByText(ACME.name, { selector: "summary" }));
+  const catalog = await screen.findByRole("list", { name: `${ACME.name} plugins` });
+  await user.click(within(catalog).getByRole("button", { name: /formatter/ }));
+  const sheet = screen.getByRole("dialog", { name: "formatter" });
+  expect(sheet.querySelector('[data-kind="plugin-detail"]')?.getAttribute("data-mode")).toBe("catalog");
+  expect(within(sheet).queryByRole("switch")).toBeNull();
+  const install = within(sheet).getByRole("button", { name: "Install" });
+  expect((install as HTMLButtonElement).disabled).toBe(true);
+  await user.click(install);
+  expect(screen.getAllByRole("dialog")).toHaveLength(1);
+  expect(
+    fake.calls.filter((call) =>
+      /evener\/plugin\/(install|enable|disable|setAutoUpgrade|remove|upgrade)$/.test(call.method),
+    ),
+  ).toHaveLength(0);
+});
+
 test("an install confirmation reconciles a target installed during inventory recovery", async () => {
   const fake = connectSeededClient();
   fake.on("evener/marketplace/browse", () => ({ name: ACME.name, plugins: [{ name: "formatter" }] }));

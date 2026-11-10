@@ -91,13 +91,24 @@ export function PluginContents({ components }: { components: PluginComponents })
   );
 }
 
-export function PluginContentsBlock({
-  entry,
-  onRetry,
-}: {
+interface PluginContentsBlockProps {
   entry: PluginComponentsEntry | undefined;
   onRetry: () => void;
-}): ReactElement | null {
+}
+
+export function PluginContentsBlock(props: PluginContentsBlockProps): ReactElement {
+  // Both sheets replace Retry with loading content. Own recovery here so
+  // callers need no sheet-level rerender to keep the keyboard in its modal.
+  const focusRoot = useRef<HTMLDivElement>(null);
+  useFocusRehome(focusRoot);
+  return (
+    <div ref={focusRoot}>
+      <ContentsBlockBody {...props} />
+    </div>
+  );
+}
+
+function ContentsBlockBody({ entry, onRetry }: PluginContentsBlockProps): ReactElement | null {
   if (entry === undefined || entry.status === "loading") return null;
   if (entry.status === "loaded") return <PluginContents components={entry.components} />;
   if (entry.source === "target") {
