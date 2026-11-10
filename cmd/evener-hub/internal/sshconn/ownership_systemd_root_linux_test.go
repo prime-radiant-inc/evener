@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"testing"
 
+	"golang.org/x/sys/unix"
+
 	"primeradiant.com/evener/execsupport/shellquote"
 )
 
@@ -213,6 +215,57 @@ func TestSystemdFallbackRequiresSelectedRootEvidence(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestServiceLockVnodeChecksEveryDescriptor pins the multi-open case: the
+// first descriptor to the selected inode is unlocked, the second holds the
+// flock. The witness must keep scanning and match the locked descriptor.
+func TestServiceLockVnodeChecksEveryDescriptor(t *testing.T) {
+	root := t.TempDir()
+	lockPath := filepath.Join(root, "hub.lock")
+	if err := os.WriteFile(lockPath, []byte("test-owned lock bytes\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.OpenFile(lockPath, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.OpenFile(lockPath, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Duplicate both to two-digit descriptors so the shell's lexicographic
+	// /proc/<pid>/fd/* walk sees the unlocked descriptor first, then close the
+	// originals so no smaller descriptor bypasses the intended order.
+	unlocked, err := unix.FcntlInt(first.Fd(), unix.F_DUPFD, 10)
+	if err != nil {
+		_ = first.Close()
+		_ = second.Close()
+		t.Fatal(err)
+	}
+	locked, err := unix.FcntlInt(second.Fd(), unix.F_DUPFD, 10)
+	if err != nil {
+		_ = first.Close()
+		_ = second.Close()
+		_ = unix.Close(unlocked)
+		t.Fatal(err)
+	}
+	_ = first.Close()
+	_ = second.Close()
+	if err := syscall.Flock(locked, syscall.LOCK_EX); err != nil {
+		_ = unix.Close(unlocked)
+		_ = unix.Close(locked)
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = syscall.Flock(locked, syscall.LOCK_UN)
+		_ = unix.Close(unlocked)
+		_ = unix.Close(locked)
+	})
+	out, err := exec.Command("/bin/sh", "-c", serviceLockVnodeRemote(root, strconv.Itoa(os.Getpid()))).Output()
+	if err != nil || string(out) != "match\n" {
+		t.Fatalf("witness = (%q, %v), want match; first descriptor unlocked, second held", out, err)
 	}
 }
 
