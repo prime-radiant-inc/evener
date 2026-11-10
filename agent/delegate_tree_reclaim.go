@@ -1002,12 +1002,20 @@ func (s *Session) rescheduleIdleRuntimeReleaseRetry() {
 // none of the session-local residue retirement refuses on: a
 // delegate-delivery parcel the pump has not consumed, a manager already
 // closing, or restore side effects still settling on this manager's
-// children. In-flight notification and delivery consumers are absent here
-// deliberately: they hold the tree's shared retirement mutation, which
-// ClaimIdleRuntimeRelease takes before any pre-gate runs, so the claim
-// itself refuses while one is executing.
+// children -- nor a turn in flight on the runtime. A parent's notification
+// drive runs a turn on an idle, terminal delegate, and the retirement
+// mutation that turn holds is shared, so it does not refuse the claim on its
+// own.
 func (s *Session) idleReleasePregatesClear() bool {
 	if s.peekNotifications() != 0 {
+		return false
+	}
+	// A drive turn's model call can wait out a usage limit for hours; the
+	// release must not tear the runtime out from under it.
+	s.mu.Lock()
+	inTurn := s.turnInFlightLocked()
+	s.mu.Unlock()
+	if inTurn {
 		return false
 	}
 	if s.jobManager != nil && (s.jobManager.hasPendingWatchSends() || s.jobManager.hasRuntimeObligations()) {

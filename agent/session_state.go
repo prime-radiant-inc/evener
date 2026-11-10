@@ -113,11 +113,17 @@ func (s *Session) restingWireState() string {
 // the session publishes systemError, and a restored session summarizes the
 // failure the live one did. It is nil when the session rests on no failed
 // turn, or when the failure recorded no diagnostic (a legacy entry): the row
-// still reads Failed, and there is nothing more to say. While the session
-// waits for quota it also says when it resumes.
+// still reads Failed, and there is nothing more to say.
+//
+// While a model call waits out a usage limit (session_quota_wait.go) the
+// session is busy in its turn, not resting, and this is that limit's summary
+// instead: the failure the call met, and when it resumes by itself.
 func (s *Session) RestingFailure() *appwire.ThreadFailure {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.quotaWait != nil {
+		return appwire.CloneThreadFailure(&s.quotaWait.failure)
+	}
 	turn, failed := s.restingFailureLocked()
 	if !failed || turn.Error == nil {
 		return nil
@@ -129,31 +135,18 @@ func (s *Session) RestingFailure() *appwire.ThreadFailure {
 	if failure.Title == "" && failure.Cause == nil {
 		return nil
 	}
-	if s.quotaWait != nil {
-		failure.ResumesAt = s.quotaWait.resetAt.UnixMilli()
-	}
 	return failure
 }
 
 // restingFailureLocked is the recorded turn failure the session rests on: it is
 // idle, or awaiting with no pending question, and its history ends in the
 // failure (historyTurnFailure). The caller holds s.mu.
-//
-// A session waiting for quota still rests on the failure that began the
-// wait when notifications appended to the transcript since have hidden it:
-// they are held work, not a turn that ended the failure.
 func (s *Session) restingFailureLocked() (schema.Turn, bool) {
 	resting := s.state == SessionIdle || s.state == SessionAwaiting
 	if !resting || len(s.askPending) != 0 {
 		return schema.Turn{}, false
 	}
-	if turn, failed := historyTurnFailure(s.history); failed {
-		return turn, true
-	}
-	if s.quotaWait != nil && s.quotaWait.failure.Kind == schema.TurnFailure {
-		return s.quotaWait.failure, true
-	}
-	return schema.Turn{}, false
+	return historyTurnFailure(s.history)
 }
 
 // historyTurnFailure returns the recorded turn failure the history ends in,
@@ -181,15 +174,8 @@ func historyTurnFailure(history []schema.Turn) (schema.Turn, bool) {
 // sessionWorkPending reports whether work owned by this session can resume it
 // without user input. Child activity is excluded because it is projected on
 // the child session, while its eventual notification is included once queued.
-//
-// While the session waits for quota only user work counts: the autonomous
-// wakes are held until the wait ends, so they cannot move the session.
 func (s *Session) sessionWorkPending() bool {
-	userWork := s.pendingQueueDepth() > 0 || s.hasRunnableClientMutationStart()
-	if userWork || s.waitingForQuota() {
-		return userWork
-	}
-	return s.hasPendingDelegateDeliveries() || s.pendingRootDelegateAttention() || s.hasPendingDelegateAttentionArmRetry() || s.hasPendingDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) || s.peekNotifications() > 0
+	return s.pendingQueueDepth() > 0 || s.hasRunnableClientMutationStart() || s.hasPendingDelegateDeliveries() || s.pendingRootDelegateAttention() || s.hasPendingDelegateAttentionArmRetry() || s.hasPendingDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) || s.peekNotifications() > 0
 }
 
 func (s *Session) hasPendingDelegateAttention() bool {

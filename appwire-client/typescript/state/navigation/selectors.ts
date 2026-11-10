@@ -275,11 +275,11 @@ export function selectSessionSummary(ref: string, state: NavigationStoreState): 
 }
 export const findSessionNode = selectSessionSummary;
 
-/** How long until a Failed row waiting out a provider usage limit resumes by
- * itself, or null when it is not waiting: its failure names no resume time,
- * or that time has passed. A passed time is not shown because the daemon
- * resumes the session then, and nothing refreshes the row until its next
- * turn. */
+/** How long until a session whose model call waits out a provider usage
+ * limit resumes by itself, or null when it is not waiting: its failure names
+ * no resume time, or that time has passed. The waiting session is working, so
+ * the summary rides a working row. A passed time is not shown because the
+ * call resumes then, and the row may refresh a little after it. */
 export function quotaWaitRemainingMs(session: NavigationSessionSummary, nowMs: number): number | null {
   const resumesAt = parseTimestampMs(session.failure?.resumes_at);
   if (resumesAt === undefined || resumesAt <= nowMs) return null;

@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -490,14 +491,6 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 	// its work, and the ladder behind the external wake that carries the
 	// steer runs it.
 	if s.steeringParked && kind != EntryUserInput && s.hasPendingUserSteeringLocked() {
-		s.mu.Unlock()
-		return "", nil
-	}
-	// The same refusal while the provider's usage limit holds the session
-	// (session_quota_wait.go): a notification or goal turn would only meet the
-	// same quota failure. The notification queues and the goal keep their
-	// work, and the wait's end asks for the wake this one was.
-	if s.quotaWait != nil && (kind == EntryNotification || kind == EntryContinuation) {
 		s.mu.Unlock()
 		return "", nil
 	}
@@ -1475,15 +1468,63 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		default:
 		}
 
-		// Notifications that arrived since the opener's drain or the previous
-		// request join this request, including a pause_turn continuation, which
-		// does not advance the round. They count as delivered only once a request
-		// is dispatched (below), so any exit before that leaves them owed.
-		if kind == EntryNotification {
-			s.injectLaterJobNotifications(ctx)
+		var (
+			profile, usedProfile *provider.Profile
+			sys, reqEffort       string
+			req                  llm.Request
+			fullHistory          []llm.Message
+			modelResp            sessionModelResponse
+			attempt              ModelAttemptMetadata
+			tPhaseStart          time.Time
+			err, prepareErr      error
+		)
+		// A call that waited out a usage limit (waitOutUsageLimit) makes the
+		// round's request again: prepared afresh, so it runs on a model
+		// switched to meanwhile and carries steering and notifications that
+		// arrived meanwhile, and within the same round, so waiting spends no
+		// round.
+		for {
+			// Notifications that arrived since the opener's drain or the
+			// previous request join this request, including a pause_turn
+			// continuation, which does not advance the round. They count as
+			// delivered only once a request is dispatched (below), so any exit
+			// before that leaves them owed.
+			if kind == EntryNotification {
+				s.injectLaterJobNotifications(ctx)
+			}
+			profile, sys, _, req, fullHistory, reqEffort, prepareErr = s.prepareModelRequestWithError(ctx, round, &timings)
+			if prepareErr != nil {
+				break
+			}
+			// --- Phase: LLMCall ---
+			tPhaseStart = s.sclock().Now()
+			quotaWakes := s.quotaWakeCount()
+			s.noteParentJobActivity(jobPhaseAwaitingModel)
+			// Completions awaiting a request settle only once one built from
+			// the transcript holding their reminders has actually been handed
+			// to the provider; the client reports that moment. A provider
+			// error after it still settles them (the turn fails visibly, or
+			// waits and retries from the same transcript), while a Stop, an
+			// admission refusal or any other failure before it leaves them
+			// owed.
+			var requestSent atomic.Bool
+			sentCtx := llm.WithRequestSentObserver(ctx, func() { requestSent.Store(true) })
+			modelResp, req, attempt, usedProfile, err = s.callModelWithFallback(sentCtx, profile, req, fullHistory, reqEffort, round)
+			if requestSent.Load() {
+				s.settleJobNotificationsCarriedByRequest(ctx)
+			}
+			for _, callID := range modelResp.CommunicatePreviewCallIDs {
+				communicatePreviewCalls[callID] = struct{}{}
+			}
+			retry, waitErr := s.waitOutUsageLimit(ctx, err, req.Model, quotaWakes)
+			if waitErr != nil {
+				err = waitErr
+			}
+			if !retry {
+				break
+			}
+			s.resetCommunicatePreviews(communicatePreviewCalls)
 		}
-
-		profile, sys, _, req, fullHistory, reqEffort, prepareErr := s.prepareModelRequestWithError(ctx, round, &timings)
 		if prepareErr != nil {
 			if isLocalContextCompactionError(prepareErr) && !localAdmissionCompacted && s.contextMgr != nil {
 				s.emit(warningDataFromError(
@@ -1493,24 +1534,6 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				continue
 			}
 			return "", progressed, prepareErr
-		}
-		// --- Phase: LLMCall ---
-		tPhaseStart := s.sclock().Now()
-
-		s.noteParentJobActivity(jobPhaseAwaitingModel)
-		// Completions awaiting a request settle only once one built from the
-		// transcript holding their reminders has actually been handed to the
-		// provider; the client reports that moment. A provider error after it
-		// still settles them (the turn fails visibly), while a Stop, an
-		// admission refusal or any other failure before it leaves them owed.
-		var requestSent atomic.Bool
-		sentCtx := llm.WithRequestSentObserver(ctx, func() { requestSent.Store(true) })
-		modelResp, req, attempt, usedProfile, err := s.callModelWithFallback(sentCtx, profile, req, fullHistory, reqEffort, round)
-		if requestSent.Load() {
-			s.settleJobNotificationsCarriedByRequest(ctx)
-		}
-		for _, callID := range modelResp.CommunicatePreviewCallIDs {
-			communicatePreviewCalls[callID] = struct{}{}
 		}
 		resp := modelResp.Response
 
@@ -1559,9 +1582,6 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// turn away — never reaches here, so coverage always means
 		// "presented in a settled call of this turn".
 		s.promoteStagedAttentionCoverage(req)
-		// The provider answered, so any quota wait is over; this turn's own
-		// drain delivers what the wait held.
-		s.endQuotaWait()
 
 		if abortErr := errors.Join(s.abortResponseProcessing(ctx), sessionLifecycleFault(ctx, "abort_after_log")); abortErr != nil {
 			return "", progressed, abortErr

@@ -661,24 +661,25 @@ describe("compact session status", () => {
     expect(within(panel).getByTestId("rail-context-status").textContent).toBe("Reading the board's row tests.");
   });
 
-  // A session waiting out a usage limit until a known reset is not just
-  // Failed: its status says it is waiting and resumes by itself. Once the
-  // resume time has passed it reads Failed again, as the hub refreshes the row
-  // only at the session's next turn.
+  // A working session whose model call waits out a usage limit until a known
+  // reset is not just working: its status says it waits and resumes by itself.
+  // Once the resume time has passed the wait is over, and the status is the
+  // working row's own again.
   test.each([
-    ["ahead", 90 * 60_000, "quota"],
-    ["passed", -60_000, "failed"],
+    ["ahead", 90 * 60_000, true],
+    ["passed", -60_000, false],
   ] as const)(
-    "a failed session whose quota wait resume time is %s (%d ms away) has the %s status",
-    (_when, offsetMs, kind) => {
+    "a working session whose quota wait resume time is %s (%d ms away) shows the quota status: %s",
+    (_when, offsetMs, quota) => {
       const resumesAt = new Date(Date.now() + offsetMs).toISOString();
       renderRow({
-        state: "errored",
+        state: "active",
         failure: { title: "Usage limit reached", cause_kind: "provider", status: 429, resumes_at: resumesAt },
       });
 
       const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
-      expect(within(panel).getByTestId("rail-context-status").getAttribute("data-status-kind")).toBe(kind);
+      const kind = within(panel).getByTestId("rail-context-status").getAttribute("data-status-kind");
+      expect(kind === "quota").toBe(quota);
     },
   );
 

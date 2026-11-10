@@ -334,10 +334,12 @@ type SubagentTally struct {
 // and its structured cause. It never carries the failure's message, which can
 // quote a provider's error body; the transcript's error row has that.
 //
-// ResumesAt is set while the session waits out a provider usage limit that
-// named its reset time: the Unix millisecond instant the session resumes its
-// held work by itself. It is absent for any other failure, for a usage limit
-// with no known reset, and once the wait ends.
+// ResumesAt is set while a model call waits out a provider usage limit that
+// named its reset time: the Unix millisecond instant the call resumes by
+// itself. The session is working, not resting, while it waits, so a summary
+// with ResumesAt is the waiting call's limit rather than a failed turn's, and
+// it travels on a working thread. It is absent for any other failure, for a
+// usage limit with no known reset, and once the wait ends.
 type ThreadFailure struct {
 	Title     string           `json:"title,omitempty"`
 	Cause     *DiagnosticCause `json:"cause,omitempty"`

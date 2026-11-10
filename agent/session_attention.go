@@ -1589,16 +1589,15 @@ func rootAttentionPausedMessage(turnErr error) string {
 	}
 }
 
-// resumePausedRootAttention re-arms attention a permanent failure
-// deferred, when something changed that can make it deliverable: a new model,
-// or the end of a quota wait. A Stop's park still wins; its re-engagement
-// re-arms instead.
+// resumeRootAttentionAfterModelSwitch re-arms attention a permanent failure
+// deferred: a new model is a change that can make it deliverable. A Stop's
+// park still wins; its re-engagement re-arms instead.
 //
 // Only a permanent failure's deferral is resumed: attention waiting out a
 // transient failure keeps its paced backoff. The parked read comes before
 // attentionMu, the rail's lock order; a Stop that lands after it still wins,
 // since its park stands a straggler wake down before any model turn.
-func (s *Session) resumePausedRootAttention() {
+func (s *Session) resumeRootAttentionAfterModelSwitch() {
 	if s.rootAttentionRailParked() {
 		return
 	}

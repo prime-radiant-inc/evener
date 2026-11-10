@@ -480,11 +480,9 @@ function sessionStatusLabel(
   read: RailActivityRead | null,
 ): RailStatus {
   if (notStarted) return { kind: "not-started", text: "Not started" };
-  if (state === "failed") {
-    const quotaWait = quotaWaitRemainingMs(session, Date.now());
-    if (quotaWait !== null) return { kind: "quota", text: waitingForQuotaText(quotaWait) };
-    return { kind: "failed", text: STATUS_LABEL.failed };
-  }
+  const quotaWait = quotaWaitRemainingMs(session, Date.now());
+  if (quotaWait !== null) return { kind: "quota", text: waitingForQuotaText(quotaWait) };
+  if (state === "failed") return { kind: "failed", text: STATUS_LABEL.failed };
   if (state === "working") return workingStatus(session, read);
   const label = humanizeState(session.state, session.ask_pending === true, session.approval_pending === true);
   return { kind: "state", text: label.charAt(0).toUpperCase() + label.slice(1) };

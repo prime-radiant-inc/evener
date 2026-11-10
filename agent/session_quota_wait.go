@@ -3,217 +3,208 @@ package agent
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
-	"primeradiant.com/evener/agent/internal/clock"
-	"primeradiant.com/evener/agent/provenance"
-	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
-// quotaWait is a session waiting out its provider's usage limit. After a
-// quota failure no request can succeed until the allowance returns, so the
-// autonomous wakes that would start turns against it — job completions,
-// delegate reports, watch frames, goal continuations — are refused at the
-// entry gate and keep their work pending. The wait ends on its own at the
-// provider's reset time, on a model switch, or when a turn succeeds (a user
-// message still tries the provider, since the user may know the quota came
-// back). Ending it by the clock or a switch asks for the wakes it refused.
-// A delegate's own run waits too (holdingForQuota): its generation stays
-// open, and resumes when the wait ends.
+// quotaWait is a model call waiting out its provider's usage limit. When a
+// call meets a usage limit that names its reset time, every request before
+// the reset would fail the same way, so the call waits inside itself instead
+// of failing the turn (waitOutUsageLimit). Every kind of turn — a user's, a
+// notification's, a goal continuation, a delegate's generation, nudge,
+// stop-hook, finalization or notification-drive turn — makes its model calls
+// through the same round loop, so every one of them waits the same way and
+// none of them sees the error. The session stays busy in its turn while it
+// waits: it does not retire, a drain running the turn does not end, and
+// notifications queue behind the turn as they queue behind any running turn.
 //
-// Only a quota failure that names its reset time begins a wait. One that
-// does not keeps the permanent-failure pause the root attention rail already
-// takes (finishRootDelegateAttentionTurn), with no timer invented for it.
-//
-// Only a long-lived session waits. A one-shot run (TurnEndsProcess: `evener
-// run` and every delegate under it) has no human to switch models and would
-// hold its process until the reset, so its turn fails fast as any provider
-// failure does.
+// The wait ends at the reset, when a model switch is picked (the call
+// retries on the new model at once), when the user steers or queues a
+// message (the call tries the provider once more, carrying the steer: the
+// user may know the quota came back), or when the turn's context ends (a
+// Stop or Close, which ends the turn as an ordinary cancellation).
 type quotaWait struct {
-	// resetAt is when the provider said the allowance returns.
-	resetAt time.Time
-	// timer ends the wait at resetAt.
-	timer clock.Timer
-	// err is the quota failure that began the wait, which a job-tree drain
-	// returns instead of running turns that would meet it again.
-	err error
+	// failure is what the session's row says while the call waits: the
+	// usage limit, and when the call resumes by itself.
+	failure appwire.ThreadFailure
+	// wake asks the wait to retry now.
+	wake chan struct{}
 	// ended is closed when the wait ends, however it ends.
 	ended chan struct{}
-	// failure is the recorded turn failure that began the wait. The session
-	// rests on it for as long as it waits: a notification appended to the
-	// transcript meanwhile is held work, not a turn that ended the failure.
-	failure schema.Turn
 }
 
-// beginQuotaWait starts waiting out a quota failure that names its reset
-// time, or restarts the wait with the latest one. It runs after the failed
-// turn recorded its failure. A reset time already past is no reason to wait:
-// the provider says the allowance is back, and a one-shot run never waits.
-func (s *Session) beginQuotaWait(err error) {
-	resetAt, ok := llm.UsageLimitResetAt(err)
-	if !ok || llm.Kind(err) != llm.KindQuotaExceeded || s.cfg.TurnEndsProcess {
-		return
-	}
-	now := s.sclock().Now()
-	if !resetAt.After(now) {
-		return
-	}
+// quotaWakeCount is how many times something has asked a waiting call to
+// retry now. A model call reads it before it starts; a wake asked for while
+// the request was in flight then reaches the wait the request's failure
+// begins.
+func (s *Session) quotaWakeCount() uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closingOrClosedLocked() {
-		return
-	}
-	failure, _ := historyTurnFailure(s.history)
-	s.stopQuotaWaitLocked()
-	wait := &quotaWait{resetAt: resetAt, err: err, failure: failure, ended: make(chan struct{})}
-	wait.timer = s.sclock().AfterFunc(resetAt.Sub(now), func() { s.quotaResetReached(wait) })
-	s.quotaWait = wait
-	s.lastQuotaWait = wait
+	return s.quotaWakes
 }
 
-// quotaResetReached ends the wait its timer belongs to, unless something
-// already ended or replaced it.
-func (s *Session) quotaResetReached(wait *quotaWait) {
-	s.mu.Lock()
-	current := s.quotaWait == wait && !s.closingOrClosedLocked()
-	if current {
-		s.stopQuotaWaitLocked()
+// wakeQuotaWaitLocked asks a waiting model call to retry now: the user sent
+// a message, or picked another model. The caller holds s.mu.
+func (s *Session) wakeQuotaWaitLocked() {
+	s.quotaWakes++
+	if wait := s.quotaWait; wait != nil {
+		select {
+		case wait.wake <- struct{}{}:
+		default:
+		}
 	}
+}
+
+// wakeQuotaWait is wakeQuotaWaitLocked for a caller that does not hold s.mu.
+func (s *Session) wakeQuotaWait() {
+	s.mu.Lock()
+	s.wakeQuotaWaitLocked()
 	s.mu.Unlock()
-	if current {
-		s.wakeAfterQuotaWait()
-	}
 }
 
-// endQuotaWaitForModelSwitch ends a wait because the session now runs on
-// another model, which the spent allowance may not limit, and asks for the
-// wakes the wait refused.
-func (s *Session) endQuotaWaitForModelSwitch() {
-	if s.endQuotaWait() {
-		s.wakeAfterQuotaWait()
-	}
-}
-
-// endQuotaWait ends any wait without asking for a wake, reporting whether
-// one was in progress. A successful model call ends it this way: the turn
-// that made the call delivers what was held through its own drain.
-func (s *Session) endQuotaWait() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.quotaWait == nil {
-		return false
-	}
-	s.stopQuotaWaitLocked()
-	return true
-}
-
-// stopQuotaWaitLocked ends any wait: its timer no longer holds the session,
-// and whatever waits on it is released. Closing the session stops it too.
-func (s *Session) stopQuotaWaitLocked() {
-	if s.quotaWait != nil {
-		s.quotaWait.timer.Stop()
-		close(s.quotaWait.ended)
-	}
-	s.quotaWait = nil
-}
-
-// quotaWaitEndedFor returns a channel closed when the quota wait that err
-// began ends, or false when err began none: it is not a quota failure, or
-// its reset time had already passed.
-func (s *Session) quotaWaitEndedFor(err error) (<-chan struct{}, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	wait := s.lastQuotaWait
-	if err == nil || wait == nil || !errors.Is(err, wait.err) {
-		return nil, false
-	}
-	return wait.ended, true
-}
-
-// waitingForQuota reports whether a quota wait holds autonomous turns.
+// waitingForQuota reports whether a model call is waiting out a usage limit.
 func (s *Session) waitingForQuota() bool {
-	return s.quotaWaitError() != nil
+	return s.quotaWaitEnded() != nil
 }
 
-// quotaWaitError is the quota failure the session is waiting out, nil when
-// it is not waiting.
-func (s *Session) quotaWaitError() error {
+// quotaWaitEnded is closed when the model call now waiting out a usage limit
+// stops waiting; nil while none waits.
+func (s *Session) quotaWaitEnded() <-chan struct{} {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.quotaWait == nil {
 		return nil
 	}
-	return s.quotaWait.err
+	return s.quotaWait.ended
 }
 
-// quotaWaitKeepsGoal reports whether err is a quota failure the session is
-// now waiting out. An active goal stays active through the wait and
-// continues when it ends, rather than blocking on a failure that clears by
-// itself.
-func (s *Session) quotaWaitKeepsGoal(err error) bool {
-	return llm.Kind(err) == llm.KindQuotaExceeded && s.waitingForQuota()
-}
-
-// wakeAfterQuotaWait asks for the turns the wait held back. Held
-// notifications — queued ones, root attention, and watch sends addressed to
-// this session, whose own wake the entry gate refused — get one notification
-// turn, whose idle settle then continues an active goal; with none held, the
-// active goal is kicked directly. Root attention a quota failure paused is
-// re-armed first, so the notification turn carries it.
-func (s *Session) wakeAfterQuotaWait() {
-	s.resumePausedRootAttention()
-	watchSendsPending := s.jobManager != nil && s.jobManager.hasPendingWatchSends()
-	if s.peekNotifications() > 0 || s.pendingRootDelegateAttention() || watchSendsPending {
-		s.notify()
-		return
+// waitOutUsageLimit waits out callErr when it is a usage limit with a future
+// reset time and the session is long-lived, and reports whether the call
+// should be made again. wakesBefore is quotaWakeCount as the call began. A
+// wait that ends because ctx ended returns ctx's error, which the round
+// handles as it handles a cancellation during any model call.
+//
+// A one-shot run (TurnEndsProcess: `evener run` and every delegate under it)
+// never waits: it has no human to switch models and would hold its process
+// until the reset, so its turn fails fast as on any provider failure. Nor
+// does a usage limit that names no reset time, or one already past: the
+// turn fails as before, and the permanent-failure handling stands.
+//
+// Before the retry it applies a model switch picked meanwhile and delivers
+// steering that arrived, as a round boundary does, so the retry runs on the
+// model the user picked and carries what they said.
+func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model string, wakesBefore uint64) (retry bool, err error) {
+	resetAt, ok := llm.UsageLimitResetAt(callErr)
+	if !ok || llm.Kind(callErr) != llm.KindQuotaExceeded || s.cfg.TurnEndsProcess {
+		return false, nil
 	}
+	now := s.sclock().Now()
+	if !resetAt.After(now) {
+		return false, nil
+	}
+	// The timer is armed before the wait is published, so anything that sees
+	// the session waiting sees a wait whose reset will end it.
+	timer := s.sclock().NewTimer(resetAt.Sub(now))
+	defer timer.Stop()
+	wait := &quotaWait{failure: quotaWaitFailure(callErr, model, resetAt), wake: make(chan struct{}, 1), ended: make(chan struct{})}
 	s.mu.Lock()
-	var kick func(string)
-	var prompt string
-	if !s.goalInTurn {
-		kick, prompt = s.idleGoalKickLocked()
+	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
+		return false, nil
+	}
+	s.quotaWait = wait
+	if s.quotaWakes != wakesBefore || s.pendingModel.model != "" {
+		wait.wake <- struct{}{}
 	}
 	s.mu.Unlock()
-	if prompt != "" {
-		kick(prompt)
+	end := sync.OnceFunc(func() {
+		s.mu.Lock()
+		s.quotaWait = nil
+		s.mu.Unlock()
+		close(wait.ended)
+	})
+	defer end()
+
+	s.noteParentJobActivity(jobPhaseModelRetrying)
+	s.emitQuotaWait(callErr, model, resetAt.Sub(now))
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-timer.C():
+	case <-wait.wake:
 	}
+	end()
+	s.applyQueuedModelSwitches(true)
+	s.injectDrainedSteering()
+	return true, nil
 }
 
-// holdingForQuota runs one of a delegate run's turns — its generation turn,
-// a missing-report reminder, a stop-hook turn, or its finalization drain —
-// and holds the run while a usage limit with a known reset holds its
-// session, instead of letting the failure settle the run as failed and stop
-// the work its subtree owns. When the wait ends (at the reset, or on a model
-// switch) it runs resume and holds again if that meets the limit too. A Stop
-// or cancellation during the wait ends the run as cancelled, the ordinary
-// nonfatal path. A one-shot run never waits, so it fails fast.
-func (a *subagent) holdingForQuota(ctx context.Context, turn, resume func() (string, error)) (string, error) {
-	res, err := turn()
-	for {
-		ended, waiting := a.sess.quotaWaitEndedFor(err)
-		if !waiting {
-			return res, err
-		}
-		select {
-		case <-ended:
-		case <-ctx.Done():
-		}
-		a.mu.Lock()
-		cancelRequested := a.cancelRequested
-		a.mu.Unlock()
-		if cancelRequested || ctx.Err() != nil {
-			return res, errors.Join(err, context.Canceled)
-		}
-		res, err = resume()
+// quotaWaitFailure is the row summary of a call waiting out callErr: the
+// failure's headline and cause, as a failed turn's summary carries them, and
+// when the call resumes by itself.
+func quotaWaitFailure(callErr error, model string, resetAt time.Time) appwire.ThreadFailure {
+	failure := appwire.ThreadFailure{
+		Title:     appwire.Excerpt(errorDataFromError(callErr).Title, appwire.MaxFailureTitleRunes),
+		ResumesAt: resetAt.UnixMilli(),
 	}
+	if cause := providerCauseFromError(callErr, model); cause != nil {
+		failure.Cause = &appwire.DiagnosticCause{Kind: cause.Kind, Provider: cause.Provider, Model: cause.Model, Status: cause.Status}
+	}
+	return failure
 }
 
-// resumeFromTranscript continues a held run as a runtime turn: the turn that
-// met the limit already recorded its input, and repeating it would say it
-// twice.
-func (a *subagent) resumeFromTranscript(ctx context.Context, inputProvenance *provenance.Causal) func() (string, error) {
-	return func() (string, error) {
-		return a.sess.processRuntimeInput(ctx, a.followUpProvenance(inputProvenance))
+// emitQuotaWait announces the wait the way the retry loop announces each of
+// its backoffs: a model retry whose delay runs to the reset. Like a
+// wall-budgeted rate limit, it counts no attempts against a budget.
+func (s *Session) emitQuotaWait(callErr error, model string, delay time.Duration) {
+	data := events.ModelRetryData{
+		Attempt:    1,
+		DelayMS:    delay.Milliseconds(),
+		ErrorClass: llm.Kind(callErr).String(),
+		Message:    callErr.Error(),
+		Model:      model,
 	}
+	if le, ok := errors.AsType[llm.Error](callErr); ok {
+		data.StatusCode = le.StatusCode()
+	}
+	s.emit(data)
+}
+
+// boundHungTurn cancels a turn that runs past timeout, the way a hung turn
+// is cut loose, except while sess's model call waits out a usage limit: that
+// turn is waiting by design and resumes by itself, so the bound starts over
+// once the wait ends instead of cutting the turn loose and failing its owner.
+// stop disarms it.
+func boundHungTurn(sess *Session, timeout time.Duration, cancel context.CancelFunc) (stop func()) {
+	stopped := make(chan struct{})
+	var timer *time.Timer
+	var mu sync.Mutex
+	mu.Lock()
+	defer mu.Unlock()
+	timer = time.AfterFunc(timeout, func() {
+		ended := sess.quotaWaitEnded()
+		if ended == nil {
+			cancel()
+			return
+		}
+		go func() {
+			select {
+			case <-ended:
+				mu.Lock()
+				timer.Reset(timeout)
+				mu.Unlock()
+			case <-stopped:
+			}
+		}()
+	})
+	return sync.OnceFunc(func() {
+		close(stopped)
+		mu.Lock()
+		timer.Stop()
+		mu.Unlock()
+	})
 }

@@ -338,15 +338,13 @@ function workingWhyLine(row: NavigationSessionSummary, activity: SessionActivity
 /** The row's why line. activity and msSinceReadMs are S5's live read (the
  * Board polls evener/activity/read); omitting them keeps every state exactly
  * as it read before S5, including a working row's pre-S5 fallback
- * (workingActivity). A Failed row waiting out a usage limit says when it
- * resumes while that time is still ahead. */
+ * (workingActivity). A row whose model call waits out a usage limit says
+ * when it resumes while that time is still ahead. */
 export function whyLine(item: ClassifiedRow, activity?: SessionActivity, msSinceReadMs = 0): WhyLine | null {
+	const quotaWait = quotaWaitRemainingMs(item.row, Date.now());
+	if (quotaWait !== null) return { kind: "quota", text: waitingForQuotaText(quotaWait) };
 	if (item.state === "working")
 		return activity ? workingWhyLine(item.row, activity, msSinceReadMs) : workingActivity(item.row);
-	if (item.state === "failed") {
-		const quotaWait = quotaWaitRemainingMs(item.row, Date.now());
-		if (quotaWait !== null) return { kind: "quota", text: waitingForQuotaText(quotaWait) };
-	}
 	const reason = REASONS[item.state];
 	return reason ? { kind: "reason", word: WORDS[item.state], ...reason } : null;
 }

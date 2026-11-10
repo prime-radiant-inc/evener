@@ -57,8 +57,9 @@ type LiveEntry struct {
 	PendingAskState *appwire.PendingAskState
 	// Failure summarizes the failed turn the session rests on (S1c), from the
 	// same root row as Status; the daemon sends it only while that status is
-	// systemError. rosterFingerprint hashes it: a turn retried and failed
-	// again between two probes leaves Status where it was.
+	// systemError, or while a working session's model call waits out a usage
+	// limit (its ResumesAt is set). rosterFingerprint hashes it: a turn
+	// retried and failed again between two probes leaves Status where it was.
 	Failure *appwire.ThreadFailure
 	// Capabilities mirrors the daemon's own Evener capability set from the
 	// probe that produced this entry, so list projections can advertise the

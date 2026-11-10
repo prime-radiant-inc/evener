@@ -745,12 +745,12 @@ type Session struct {
 	// Guarded by mu.
 	terminalCommunicateAccepted bool
 
-	// quotaWait is set while the provider's usage limit holds the session's
-	// autonomous turns (session_quota_wait.go); nil otherwise. lastQuotaWait
-	// is the most recent wait, ended or not, so a delegate run can tell
-	// whether its own failure began one. Guarded by mu.
-	quotaWait     *quotaWait
-	lastQuotaWait *quotaWait
+	// quotaWait is the model call waiting out a provider usage limit, nil
+	// while none waits (session_quota_wait.go). quotaWakes counts the asks
+	// (a user message, a model switch) for such a wait to retry now.
+	// Guarded by mu.
+	quotaWait  *quotaWait
+	quotaWakes uint64
 
 	// askPending is the per-turn pending set of questions posted by ask_user
 	// calls this turn (spec §5.1): its length lets a round-boundary check tell
@@ -1881,6 +1881,9 @@ func (s *Session) queueModelSwitch(model string, pickSeq uint64) error {
 	if s.modelPickAccepted <= pickSeq {
 		s.pendingModel = pendingModelSwitch{model: model, primedInstance: primedInstance, primedListing: primedListing, seq: pickSeq}
 		s.modelPickAccepted = pickSeq
+		// A call waiting out the old model's usage limit retries on this
+		// one now rather than at the turn boundary it is waiting to reach.
+		s.wakeQuotaWaitLocked()
 	}
 	s.mu.Unlock()
 	return nil
@@ -1898,9 +1901,19 @@ func (s *Session) queueModelSwitch(model string, pickSeq uint64) error {
 // pick may have been accepted while the superseded one was still fetching,
 // and it must still land before the turn the caller is about to admit.
 func (s *Session) applyPendingModelSwitch() {
+	s.applyQueuedModelSwitches(false)
+}
+
+// applyQueuedModelSwitches is the shared pending applier. inWaitingCall is
+// its one caller that applies while the state is still processing: a model
+// call that waited out a usage limit (waitOutUsageLimit). The switch is what
+// lets that call retry on a model the spent allowance may not limit; the
+// call owns the input, and its round has started nothing the new profile
+// could be swapped under.
+func (s *Session) applyQueuedModelSwitches(inWaitingCall bool) {
 	for {
 		s.mu.Lock()
-		if s.state == SessionProcessing {
+		if s.state == SessionProcessing && !inWaitingCall {
 			s.mu.Unlock()
 			return
 		}
@@ -2012,6 +2025,7 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 		if s.modelPickAccepted < fence.pickSeq {
 			s.modelPickAccepted = fence.pickSeq
 		}
+		s.wakeQuotaWaitLocked()
 		s.mu.Unlock()
 		return nil
 	}
@@ -2112,8 +2126,7 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 	// boundary doesn't leave on-disk model stale. Kata wnfz. maybeAutoSave
 	// re-acquires s.mu via s.Meta(), so the lock must be released first.
 	s.maybeAutoSave()
-	s.resumePausedRootAttention()
-	s.endQuotaWaitForModelSwitch()
+	s.resumeRootAttentionAfterModelSwitch()
 	return nil
 }
 

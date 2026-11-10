@@ -671,8 +671,9 @@ Waiting alone does not expire the user's instruction. Recheck cancellation,
 applicable budgets and newer instructions before resuming, so recovery continues
 the user's current intent.
 
-A usage limit that names its reset time is handled: the session waits for
-the reset with its goal active (see S09 in the [subsystem map](subsystems.md)).
+A usage limit that names its reset time is handled: the model call waits for
+the reset inside its turn, with the goal active (see S09 in the
+[subsystem map](subsystems.md)).
 
 **Still pending.** Other temporary provider failures (an outage outlasting the
 transport retries, or a usage limit with no reset time) still block the goal.

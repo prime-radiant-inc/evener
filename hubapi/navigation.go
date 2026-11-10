@@ -195,10 +195,11 @@ const NavigationFailureCrashed = "crashed"
 // sign-in expired (401)"). It never carries the failure's message, which can
 // quote a provider's error body.
 //
-// ResumesAt is set while the session waits out a provider usage limit that
-// named its reset time: when the session resumes its held work by itself
-// (appwire.ThreadFailure.ResumesAt). A client shows it only while it is
-// still ahead.
+// ResumesAt is set while a working session's model call waits out a
+// provider usage limit that named its reset time: when the call resumes by
+// itself (appwire.ThreadFailure.ResumesAt). A failure with it rides a
+// working row, not a Failed one. A client shows it only while it is still
+// ahead.
 type NavigationFailure struct {
 	Title     string     `json:"title,omitempty"`
 	CauseKind string     `json:"cause_kind,omitempty"`

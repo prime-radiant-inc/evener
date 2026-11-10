@@ -1476,13 +1476,18 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 	// and fires the driveCtx.Done() arm of the re-drive select, so sendersWG
 	// drains promptly and the Close comment "already cancelled above" is true
 	// again. The ctx is still independent of the LAUNCHING turn's ctx:
-	// sessionCtx outlives every turn and dies only at Close.
-	driveCtx, driveCancel := context.WithTimeout(s.sessionCtx, driveTurnTimeout)
+	// sessionCtx outlives every turn and dies only at Close. The timeout is
+	// boundHungTurn's: a child turn waiting out a usage limit inside its
+	// model call is not hung, and cutting it loose would fail the child
+	// fatally on a limit that clears by itself.
+	driveCtx, driveCancel := context.WithCancel(s.sessionCtx)
+	stopDriveBound := boundHungTurn(sub.sess, driveTurnTimeout, driveCancel)
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		sub.mu.Unlock()
 		treeSlot.release()
+		stopDriveBound()
 		driveCancel()
 		return false
 	}
@@ -1497,6 +1502,7 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 		defer release()
 		defer s.sendersWG.Done()
 		defer driveCancel()
+		defer stopDriveBound()
 		// The re-check defer is registered BEFORE treeSlot.release so LIFO runs
 		// the release first: the paced re-drive wait below holds no slot, and
 		// the re-drive can claim one even at drive budget 1.
@@ -1691,8 +1697,7 @@ func (a *subagent) deliverCommunicateNudge(ctx context.Context, inputProvenance 
 		// still runs as a runtime entry, never as caller input.
 		a.sess.appendSteeringTurn(wrapHookContext(nudge), events.SteeringKindDelegateNudge)
 	}
-	resume := a.resumeFromTranscript(ctx, inputProvenance)
-	return a.holdingForQuota(ctx, resume, resume)
+	return a.sess.processRuntimeInput(ctx, a.followUpProvenance(inputProvenance))
 }
 
 func (a *subagent) run(ctx context.Context, input string, inputProvenance *provenance.Causal) {
@@ -1715,9 +1720,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		if observer := a.sess.cfg.testOnly.subagentRunIteration; observer != nil {
 			observer(a, iteration)
 		}
-		res, err = a.holdingForQuota(ctx, func() (string, error) {
-			return a.sess.processInputKindWithProvenance(ctx, input, nil, kind, inputProvenance)
-		}, a.resumeFromTranscript(ctx, inputProvenance))
+		res, err = a.sess.processInputKindWithProvenance(ctx, input, nil, kind, inputProvenance)
 		_, budgetExhausted := budgetExhaustionFromError(err)
 		a.mu.Lock()
 		cancelRequested := a.cancelRequested
@@ -2108,26 +2111,7 @@ func (a *subagent) drainForFinalization(ctx context.Context, result string) (str
 	// a foreign prune can release the lane mid-finalization.
 	stopEvidenceTicker := a.sess.startLaneEvidenceTicker(ctx)
 	defer stopEvidenceTicker()
-	drain := func() (string, error) { return a.sess.drainJobTreeKeepingReport(ctx) }
-	// A drain turn that met the limit already recorded what it was carrying
-	// (a completion it accepted is in the transcript, not the queue), so
-	// draining again alone would skip it: resume that turn from the
-	// transcript, keeping the accepted report as a drain turn does, then
-	// drain whatever is left.
-	resume := func() (string, error) {
-		resumed, err := a.sess.keepingReport(func(ctx context.Context, _ string, _ []ImageAttachment, _ EntryKind) (string, error) {
-			return a.sess.processRuntimeInput(ctx, nil)
-		})(ctx, "", nil, EntryRuntime)
-		if err != nil {
-			return resumed, err
-		}
-		drained, err := drain()
-		if drained == "" {
-			drained = resumed
-		}
-		return drained, err
-	}
-	drained, err := a.holdingForQuota(ctx, drain, resume)
+	drained, err := a.sess.drainJobTreeKeepingReport(ctx)
 	if err != nil {
 		return result, parentDriveNotify, err
 	}
@@ -2521,9 +2505,7 @@ func (a *subagent) runSubagentStopHook(ctx context.Context, res string, err erro
 	if reason == "" {
 		reason = "SubagentStop hook blocked completion. Continue and address the hook feedback before stopping."
 	}
-	return a.holdingForQuota(ctx, func() (string, error) {
-		return a.sess.processInputWithProvenance(ctx, reason, nil, inputProvenance)
-	}, a.resumeFromTranscript(ctx, inputProvenance))
+	return a.sess.processInputWithProvenance(ctx, reason, nil, inputProvenance)
 }
 
 func (a *subagent) followUpProvenance(inputProvenance *provenance.Causal) *provenance.Causal {

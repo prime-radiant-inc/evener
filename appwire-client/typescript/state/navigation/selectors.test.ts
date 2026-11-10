@@ -196,9 +196,9 @@ test("subagentTallyToShow shows a live root's running and failed counts and hide
   expect(subagentTallyToShow(row({ live: false, subagents: { running: 3, failed: 0, done: 0 } }))).toBeNull();
 });
 
-// A Failed row waiting out a usage limit says how long until it resumes, only
-// while that time is still ahead: the daemon resumes the session then, and
-// the row is not refreshed until its next turn.
+// A row whose model call waits out a usage limit says how long until it
+// resumes, only while that time is still ahead: the call resumes then, and the
+// row may refresh a little after it.
 test("quotaWaitRemainingMs counts down to a waiting row's resume time and stops there", () => {
   const now = Date.parse("2026-11-07T12:00:00Z");
   const row = (failure: NavigationSessionSummary["failure"]): NavigationSessionSummary => ({
@@ -207,7 +207,7 @@ test("quotaWaitRemainingMs counts down to a waiting row's resume time and stops 
     session_id: "s",
     title: "t",
     project: "p",
-    state: "errored",
+    state: "active",
     kind: "session",
     live: true,
     children: [],

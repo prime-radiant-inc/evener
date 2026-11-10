@@ -186,10 +186,13 @@ const (
 	facetVision
 	facetMeta
 	// facetTurnFailure is the summary of the failed turn the session rests on
-	// (S1c). No row of facetsByEvent names it on its own: a failed turn ends
-	// with TURN_ENDED, which samples every facet (the failed-turn path emits
-	// nothing else), and a snapshot shows the summary only while the status
-	// is systemError, so one left over once the next turn starts is never read.
+	// (S1c). A failed turn ends with TURN_ENDED, which samples every facet (the
+	// failed-turn path emits nothing else), and a snapshot shows that summary
+	// only while the status is systemError, so one left over once the next
+	// turn starts is never read. Mid-turn it is the summary of a model call
+	// waiting out a usage limit: MODEL_RETRY announces the wait, and the
+	// call's next answer (ASSISTANT_TEXT_END) or a model switch (MODEL_CHANGED)
+	// follows its end.
 	facetTurnFailure
 )
 
@@ -283,14 +286,14 @@ var facetsByEvent = map[events.EventKind]envelopeFacet{
 	// A model response moves cumulative usage and context pressure. Compaction
 	// rewrites history outright, and an idle /compact has no turn boundary to
 	// rescue the preview it can change.
-	events.EventAssistantTextEnd:  facetContext | facetWork,
+	events.EventAssistantTextEnd:  facetContext | facetWork | facetTurnFailure,
 	events.EventCommunicate:       facetContext,
 	events.EventContextCompaction: facetContext | facetMeta,
 	events.EventCompactionTurn:    facetContext,
 
 	// Values whose events are not direct task/goal carriers.
 	events.EventSessionNameChanged:     facetMeta,
-	events.EventModelChanged:           facetReasoning | facetContext | facetDiagnostics,
+	events.EventModelChanged:           facetReasoning | facetContext | facetDiagnostics | facetTurnFailure,
 	events.EventReasoningEffortChanged: facetReasoning,
 	events.EventVisionModelChanged:     facetVision,
 
@@ -299,6 +302,10 @@ var facetsByEvent = map[events.EventKind]envelopeFacet{
 	// producers that predate the structured update.
 	events.EventGoalContinuation: facetGoal | facetQueue | facetAsk,
 	events.EventGoalEnded:        facetGoal,
+
+	// A model call waiting out a usage limit announces the wait as a retry
+	// whose delay runs to the reset (facetTurnFailure above).
+	events.EventModelRetry: facetTurnFailure,
 
 	// Sandbox escalations block a tool call awaiting a human.
 	events.EventSandboxEscalationRequested: facetEscalations,

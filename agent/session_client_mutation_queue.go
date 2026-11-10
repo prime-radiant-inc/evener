@@ -181,6 +181,9 @@ func (s *Session) AcceptClientMutationQueueAs(params appwire.TurnQueueParams, ac
 		return queueResponseFromRecord(s.ID(), lookup.Record, appwire.MutationDispositionReplayed)
 	}
 	s.reflectDurableInputQueue()
+	// A model call waiting out a usage limit tries once more: the user may
+	// know the quota came back.
+	s.wakeQuotaWait()
 	s.wakeForPendingQueuedInput()
 	return response, nil
 }
@@ -817,6 +820,9 @@ func (s *Session) AcceptClientMutationSteerAs(params appwire.TurnSteerParams, ac
 		return replayed, nil
 	}
 	s.reflectDurableClientSteering()
+	// A model call waiting out a usage limit tries once more, carrying the
+	// steer: the user may know the quota came back.
+	s.wakeQuotaWait()
 	s.wakeForPendingSteering()
 	return response, nil
 }

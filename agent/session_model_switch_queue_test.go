@@ -121,7 +121,7 @@ func (a *pickFailingStreamAdapter) LiveModels(context.Context) ([]registry.Model
 // failure ordering: a switch queued during a turn that then fails
 // permanently must apply AFTER that turn's deferred attention settlement. A
 // committed switch re-arms attention a permanent failure deferred
-// (resumePausedRootAttention); applied before the settlement
+// (resumeRootAttentionAfterModelSwitch); applied before the settlement
 // instead, the finalizer's pause lands last and the session sits paused
 // despite the fresh, healthy model.
 func TestQueuedModelSwitchAppliesAfterTheFailedTurnSettlesAttention(t *testing.T) {

@@ -80,9 +80,11 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 	statusType := appStatus(status.State, processing)
 	// A failure summary describes the failed turn the session rests on, so it
 	// shows only while the status says so: the next turn moves the status
-	// before any facet re-samples the summary (S1c).
+	// before any facet re-samples the summary (S1c). The one summary a working
+	// session carries is a model call waiting out a usage limit, which names
+	// when the call resumes.
 	var failure *appwire.ThreadFailure
-	if statusType == appwire.ThreadStatusSystemError {
+	if statusType == appwire.ThreadStatusSystemError || envelope.Failure != nil && envelope.Failure.ResumesAt > 0 {
 		failure = envelope.Failure
 	}
 	reasoningEffort := envelope.ReasoningEffort
