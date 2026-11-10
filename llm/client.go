@@ -348,6 +348,7 @@ func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 				return Response{}, err
 			}
 		}
+		observeRequestSent(ctx)
 		if t.override != nil {
 			return t.override.Complete(ctx, req)
 		}
@@ -389,6 +390,7 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 				return nil, err
 			}
 		}
+		observeRequestSent(ctx)
 		if t.override != nil {
 			return t.override.Stream(ctx, req)
 		}

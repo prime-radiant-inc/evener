@@ -17,7 +17,7 @@ import { hasUsageLines, projectNativeTranscript, usageRows } from "./transcriptP
 
 function conversation(
 	items: MobileTimelineItem[],
-	overrides: Partial<Pick<MobileConversation, "usage" | "turns" | "olderCursor" | "cost">> = {},
+	overrides: Partial<Pick<MobileConversation, "usage" | "turns" | "olderCursor" | "cost" | "kind">> = {},
 ): MobileConversation {
 	return {
 		items,
@@ -397,6 +397,15 @@ it("falls back to summing the loaded turns when the thread has no cumulative tot
 		cumulative: null,
 		cost: null,
 	});
+});
+
+// A fork child's inherited prefix is the parent's spend; never show it.
+it("does not charge a fork child's inherited turns to its footer", () => {
+	const result = projectNativeTranscript(
+		conversation([], { usage: undefined, kind: "fork", turns: [usageTurn("t1", 6961, 73)] }),
+		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts: true, estimatedCost: false }),
+	);
+	expect(result.usage).toEqual({ derived: null, cumulative: null, cost: null });
 });
 
 // thread/read windows items via itemLimit and reports the truncation through

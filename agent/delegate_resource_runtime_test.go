@@ -329,12 +329,10 @@ func TestDelegateResourceRuntime_RegisteredIdleSendClampsInlineWaitOnSuccessAndF
 			{name: "maximum", requested: 60_001, want: 60 * time.Second},
 		} {
 			t.Run(path+"/"+tc.name, func(t *testing.T) {
-				fixture := newColdDelegateFixture(t, "")
-				root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
-				if err != nil {
-					t.Fatalf("restore root: %v", err)
-				}
-				defer root.Close()
+				// The child holds its first model turn until cleanup, so on the
+				// success path no terminal packet can answer the inline wait:
+				// the cancelled wait is the only thing that ends the send.
+				root, fixture, entered, _ := newBlockingColdDelegateRuntime(t)
 				if failure {
 					root.cfg.testOnly.sessionInitFault = func(point string) error {
 						if point == "builtin_agents" {
@@ -354,6 +352,10 @@ func TestDelegateResourceRuntime_RegisteredIdleSendClampsInlineWaitOnSuccessAndF
 					observed = true
 					observedDuration = duration
 					_, observedDeadline = waitCtx.Deadline()
+					if !failure {
+						// Cancel only once the launched child is mid-turn.
+						<-entered
+					}
 					cancelCall()
 				}
 				arguments, err := json.Marshal(map[string]any{
