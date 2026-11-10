@@ -170,6 +170,18 @@ test("a status frame before the initial read keeps askPending in the activity ru
   expect(store.getSnapshot().runtime?.askPending).toBe(true);
 });
 
+test("a status frame askPending updates runtime before the registry listener", async () => {
+  const client = runtimeClient();
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().runtime?.askPending === false);
+  client.emitNotification({
+    method: "thread/status/changed",
+    params: { ref: activityRef, threadId: "wire-root", status: { type: "awaiting" }, askPending: true },
+  });
+  expect(store.getSnapshot().runtime?.askPending).toBe(true);
+});
+
 test("a resolved frame before the initial response keeps the other approval in the activity runtime", async () => {
   const client = activityClient(),
     late = deferred<ThreadReadResponse>(),

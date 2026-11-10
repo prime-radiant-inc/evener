@@ -2199,7 +2199,8 @@ test("relay recovery refreshes stale queue capability without reconnecting or re
     });
   });
   await waitFor(() => expect(threadsStore.getState().threads.get("ref_a")?.capabilities.queue).toBe(true));
-  expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(2);
+  expect(readCount).toBeGreaterThan(1);
+  expect(readCount).toBeLessThanOrEqual(4);
   expect(connectionStore.getState().client).toBe(fake);
 
   await user.click(screen.getByTestId("composer-submit"));

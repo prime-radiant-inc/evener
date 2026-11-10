@@ -56,9 +56,9 @@ interface Membership {
   // An askPending flag can arrive before the first read admits metadata. Keep
   // the newest one, keyed by its thread, and apply it when that read lands.
   pendingAsk?: { threadId: string; askPending: boolean };
-  // True while metadata's askPending is the current answer. A resync or a
-  // replacement thread retires it so the recovery snapshot can seed the value;
-  // a status frame received during that read sets it again.
+  // True while a live status frame's askPending is newer than snapshots. A
+  // resync or a replacement thread retires it so snapshots can seed the value;
+  // a status frame that explicitly carries askPending sets it again.
   askAuthoritative: boolean;
   // Reads started before the latest resync cannot admit their snapshots after
   // it; the recovery read is the one that gets to seed the retired answers.
@@ -164,19 +164,19 @@ class ThreadSubscriptions {
     >,
   ): void {
     const { ref, threadId, escalationId } = notification.params;
-    const direct = this.members.get(ref);
-    const member = direct ?? [...this.members.values()].find((candidate) => candidate.metadata?.threadId === threadId);
-    if (!member) return;
-    if (notification.method === "evener/sandbox/escalation/requested") {
-      member.requestedEscalations.add(escalationId);
-      member.resolvedEscalations.delete(escalationId);
-      member.pendingEscalations.add(escalationId);
-    } else {
-      member.requestedEscalations.delete(escalationId);
-      member.resolvedEscalations.add(escalationId);
-      member.pendingEscalations.delete(escalationId);
+    for (const member of this.members.values()) {
+      if (member.ref !== ref && member.metadata?.threadId !== threadId) continue;
+      if (notification.method === "evener/sandbox/escalation/requested") {
+        member.requestedEscalations.add(escalationId);
+        member.resolvedEscalations.delete(escalationId);
+        member.pendingEscalations.add(escalationId);
+      } else {
+        member.requestedEscalations.delete(escalationId);
+        member.resolvedEscalations.add(escalationId);
+        member.pendingEscalations.delete(escalationId);
+      }
+      if (member.metadata) member.metadata = this.approvalMetadata(member, member.metadata);
     }
-    if (member.metadata) member.metadata = this.approvalMetadata(member, member.metadata);
   }
 
   private approvalMetadata(member: Membership, metadata: ThreadSubscriptionMetadata): ThreadSubscriptionMetadata {
@@ -191,18 +191,17 @@ class ThreadSubscriptions {
 
   private admitResync(notification: Extract<AnyNotification, { method: "evener/thread/resync" }>): void {
     const { ref, threadId } = notification.params;
-    const member =
-      this.members.get(ref) ??
-      [...this.members.values()].find((candidate) => candidate.metadata?.threadId === threadId);
-    if (!member) return;
-    // The source is authoritative again: requests from before the interruption
-    // may have resolved while the relay was down. Retire both cached answers
-    // and re-read the thread; a request/resolution frame arriving after this
-    // resync overlays that read.
-    member.requestedEscalations.clear();
-    member.resolvedEscalations.clear();
-    member.askAuthoritative = false;
-    member.resyncRevision += 1;
+    for (const member of this.members.values()) {
+      if (member.ref !== ref && member.metadata?.threadId !== threadId) continue;
+      // The source is authoritative again: requests from before the
+      // interruption may have resolved while the relay was down. Retire both
+      // cached answers and re-read the thread; a request/resolution frame
+      // arriving after this resync overlays that read.
+      member.requestedEscalations.clear();
+      member.resolvedEscalations.clear();
+      member.askAuthoritative = false;
+      member.resyncRevision += 1;
+    }
   }
 
   acquire(ref: string): ThreadSubscriptionLease {
@@ -386,7 +385,6 @@ class ThreadSubscriptions {
     };
     member.metadata =
       hadApprovals || member.pendingEscalations.size > 0 ? this.approvalMetadata(member, metadata) : metadata;
-    member.askAuthoritative = true;
   }
 
   private track(member: Membership, transition: Promise<void>, generation: number): void {

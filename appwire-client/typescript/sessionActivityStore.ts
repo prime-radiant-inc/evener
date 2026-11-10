@@ -1157,7 +1157,13 @@ export class SessionActivityStore {
           notification.params.threadId === metadata.threadId &&
           this.state.context?.sessionId === metadata.sessionId
         )
-          this.publish({ runtime: this.seedEscalations({ ...metadata, status: this.statusUpdate.status }) });
+          this.publish({
+            runtime: this.seedEscalations({
+              ...metadata,
+              status: this.statusUpdate.status,
+              ...(notification.params.askPending === undefined ? {} : { askPending: notification.params.askPending }),
+            }),
+          });
         return;
       }
       case "evener/sandbox/escalation/requested":
@@ -1216,10 +1222,8 @@ export class SessionActivityStore {
         // lease.ensure() without refreshing metadata, so this read cannot
         // depend on summary success. A resync naming a replacement thread
         // retires the old runtime instead: that subscription describes the
-        // thread being left behind. An owner without an activity context yet
-        // has no runtime to qualify and still holds its initial reads, so it
-        // waits for those rather than adding a duplicate metadata read.
-        if (!replaced && this.lease && this.state.context !== null) {
+        // thread being left behind.
+        if (!replaced && this.lease) {
           const lease = this.lease;
           const generation = this.generation;
           // Let every notification listener for this resync run first: the
