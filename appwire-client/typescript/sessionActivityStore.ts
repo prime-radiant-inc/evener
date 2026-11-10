@@ -1200,14 +1200,20 @@ export class SessionActivityStore {
         this.runtimeThreadId = notification.params.threadId;
         if (this.statusUpdate?.threadId !== this.runtimeThreadId) this.statusUpdate = null;
         if (this.state.runtime && this.state.runtime.threadId !== this.runtimeThreadId) this.publish({ runtime: null });
-        else if (this.state.runtime?.approvalPending) {
-          // A relay interruption can hide an escalation resolution. The
-          // recovery read is authoritative; clear the stale approval now and
-          // let that read add back anything still pending.
-          this.pendingEscalations.clear();
-          this.publish({
-            runtime: { ...this.state.runtime, approvalPending: false, pendingEscalationIds: [] },
-          });
+        else if (this.state.runtime && this.state.summaryState.error === null) {
+          // A relay interruption can hide a resolution or a new question. The
+          // recovery thread read is authoritative; keep the current glyph until
+          // it lands, then reconcile from it.
+          const lease = this.lease;
+          if (lease) {
+            void lease
+              .read({ includeTurns: false })
+              .then(() => {
+                const metadata = lease.metadata();
+                if (metadata) this.publish({ runtime: this.seedEscalations(metadata) });
+              })
+              .catch(() => {});
+          }
         }
         // A resync re-establishes the source identity, so the pushed-frame merge
         // waits for the refreshed context as it does across a reconnect. Without

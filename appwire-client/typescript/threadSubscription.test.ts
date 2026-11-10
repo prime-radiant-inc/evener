@@ -325,10 +325,43 @@ test("a resync clears requested approvals that the recovery snapshot resolves", 
     method: "evener/thread/resync",
     params: { ref: activityRef, threadId: "wire-root" },
   });
-  expect(lease.metadata?.()?.approvalPending).toBeFalsy();
   await lease.read({ includeTurns: true });
   expect(lease.metadata?.()?.approvalPending).toBeFalsy();
   expect(lease.metadata?.()?.pendingEscalationIds ?? []).toEqual([]);
+  lease.release();
+});
+
+test("a resync lets the recovery snapshot restore an ask hidden by the cached answer", async () => {
+  const client = activityClient();
+  const idle: ThreadReadResponse = {
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-root",
+      sessionId: "root-session",
+      evener: { ...threadFixture().thread.evener, askPending: false },
+    },
+  };
+  const question: ThreadReadResponse = {
+    thread: {
+      ...idle.thread,
+      status: { type: "awaiting" },
+      evener: { ...idle.thread.evener, askPending: true },
+    },
+  };
+  let reads = 0;
+  client.on("thread/read", () => {
+    reads += 1;
+    return reads === 1 ? idle : question;
+  });
+  const lease = acquireThreadSubscription(client, activityRef);
+  await lease.ensure();
+  expect(lease.metadata?.()?.askPending).toBe(false);
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref: activityRef, threadId: "wire-root" },
+  });
+  await lease.read({ includeTurns: true });
+  expect(lease.metadata?.()?.askPending).toBe(true);
   lease.release();
 });
 

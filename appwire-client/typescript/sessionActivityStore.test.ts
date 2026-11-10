@@ -216,7 +216,7 @@ test("a resolved frame before the initial response keeps the other approval in t
   });
 });
 
-test("a resync clears obsolete approval attention from the activity runtime", async () => {
+test("a resync keeps an approval that remains pending in the activity runtime", async () => {
   const client = activityClient();
   const escalation = {
     threadId: "wire-root",
@@ -246,8 +246,8 @@ test("a resync clears obsolete approval attention from the activity runtime", as
     method: "evener/thread/resync",
     params: { ref: activityRef, threadId: "wire-root" },
   });
-  expect(store.getSnapshot().runtime?.approvalPending).toBe(false);
-  expect(store.getSnapshot().runtime?.pendingEscalationIds).toEqual([]);
+  expect(store.getSnapshot().runtime?.approvalPending).toBe(true);
+  expect(store.getSnapshot().runtime?.pendingEscalationIds).toEqual(["esc_1"]);
 });
 
 test("replacement activity identity retires the previous runtime atomically", async () => {

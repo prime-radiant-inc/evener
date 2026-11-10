@@ -56,6 +56,10 @@ interface Membership {
   // An askPending flag can arrive before the first read admits metadata. Keep
   // the newest one, keyed by its thread, and apply it when that read lands.
   pendingAsk?: { threadId: string; askPending: boolean };
+  // True while metadata's askPending is the current answer. A resync or a
+  // replacement thread retires it so the recovery snapshot can seed the value;
+  // a status frame received during that read sets it again.
+  askAuthoritative: boolean;
   // Escalation frames received before or during a read. The snapshot seeds the
   // set and these frame facts overlay it, so a resolved(A) before the response
   // cannot discard a still-pending B from that response.
@@ -92,6 +96,7 @@ class ThreadSubscriptions {
         member.statusRevision = 0;
         member.statusThreadId = "";
         member.pendingAsk = undefined;
+        member.askAuthoritative = false;
         member.requestedEscalations.clear();
         member.resolvedEscalations.clear();
         member.pendingEscalations.clear();
@@ -122,6 +127,7 @@ class ThreadSubscriptions {
       direct.statusRevision += 1;
       direct.statusThreadId = threadId;
       direct.pendingAsk = { threadId, askPending };
+      direct.askAuthoritative = true;
     }
     for (const member of this.members.values()) {
       if (member !== direct && member.metadata?.threadId === threadId)
@@ -139,6 +145,7 @@ class ThreadSubscriptions {
     member.statusRevision += 1;
     member.statusThreadId = threadId;
     member.pendingAsk = undefined;
+    if (askPending !== undefined) member.askAuthoritative = true;
     member.metadata = {
       ...member.metadata,
       status: copyStatus(status),
@@ -185,14 +192,12 @@ class ThreadSubscriptions {
       [...this.members.values()].find((candidate) => candidate.metadata?.threadId === threadId);
     if (!member) return;
     // The source is authoritative again: requests from before the interruption
-    // may have resolved while the relay was down. A frame arriving after this
-    // resync re-adds itself.
+    // may have resolved while the relay was down. Retire both cached answers
+    // and re-read the thread; a request/resolution frame arriving after this
+    // resync overlays that read.
     member.requestedEscalations.clear();
     member.resolvedEscalations.clear();
-    member.pendingEscalations.clear();
-    if (member.metadata) {
-      member.metadata = { ...member.metadata, approvalPending: false, pendingEscalationIds: [] };
-    }
+    member.askAuthoritative = false;
   }
 
   acquire(ref: string): ThreadSubscriptionLease {
@@ -211,6 +216,7 @@ class ThreadSubscriptions {
         statusRevision: 0,
         statusThreadId: "",
         pendingAsk: undefined,
+        askAuthoritative: false,
         requestedEscalations: new Set(),
         resolvedEscalations: new Set(),
         pendingEscalations: new Set(),
@@ -345,10 +351,11 @@ class ThreadSubscriptions {
     // a fresh status frame is what changes the question state.
     const earlyAsk = member.pendingAsk?.threadId === thread.id ? member.pendingAsk.askPending : undefined;
     member.pendingAsk = undefined;
+    if (member.metadata?.threadId !== thread.id) member.askAuthoritative = false;
     const askPending =
       earlyAsk !== undefined
         ? earlyAsk
-        : member.metadata?.askPending !== undefined
+        : member.askAuthoritative && member.metadata?.askPending !== undefined
           ? member.metadata.askPending
           : thread.evener?.askPending === true;
     // Seed from the snapshot, then overlay every escalation frame received
@@ -369,6 +376,7 @@ class ThreadSubscriptions {
       askPending,
       ...approvalFields,
     };
+    member.askAuthoritative = true;
   }
 
   private track(member: Membership, transition: Promise<void>, generation: number): void {
