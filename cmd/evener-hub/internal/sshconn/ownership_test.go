@@ -107,6 +107,22 @@ func TestRemoteOwnerSelectedEndpoint(t *testing.T) {
 	}
 }
 
+// TestRemoteOwnerAcceptsCandidateProofAfterEmptyGlobalRead drives the full
+// resolver through the fallback: the global lock read is empty, the running
+// endpoint's own fdinfo proves it holds the lock, and every later generation,
+// process and revalidation check still runs.
+func TestRemoteOwnerAcceptsCandidateProofAfterEmptyGlobalRead(t *testing.T) {
+	host, base := ownerCommands(t)
+	commands := []ownerCommand{base[0], {"selected-lock", ""}, {selectedLockCandidateRemote("/srv/state", "4242"), "4242\n"}}
+	commands = append(commands, base[2:]...)
+	fr, index := ownerRunner(t, commands)
+	m := newTestManager(t, testRegistry(t, host), fr, Options{})
+	owner, err := m.resolveOwnedEndpoint(t.Context(), host, selectedRestartFacts())
+	if err != nil || owner.pid != "4242" || *index != len(commands) {
+		t.Fatalf("candidate proof owner=%+v err=%v commands=%d/%d", owner, err, *index, len(commands))
+	}
+}
+
 func mustOwnerJSON(t *testing.T, v any) string {
 	t.Helper()
 	b, err := json.Marshal(v)

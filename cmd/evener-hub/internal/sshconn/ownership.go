@@ -532,12 +532,16 @@ func uniqueOwnerPID(out []byte, ambiguous, invalid string) (string, error) {
 	if len(fields) == 0 {
 		return "", errNoUniqueLockOwner
 	}
-	if len(fields) != 1 {
-		return "", fmt.Errorf("%w: %s", errOwnerEvidence, ambiguous)
-	}
 	pid, err := numericPID(fields[0])
 	if err != nil || pid == "0" {
 		return "", fmt.Errorf("%w: %s", errOwnerEvidence, invalid)
+	}
+	// A global-list read can repeat the same held row under churn; repeated
+	// identical PIDs are one owner, while any distinct PID is a real conflict.
+	for _, field := range fields[1:] {
+		if field != pid {
+			return "", fmt.Errorf("%w: %s", errOwnerEvidence, ambiguous)
+		}
 	}
 	return pid, nil
 }
@@ -604,7 +608,7 @@ func selectedLockCandidateRemote(root, pid string) string {
 	return lockIdentityRemote(root) + lockKeyRemote() + lockPinRemote() +
 		// grep tolerates a descriptor that closes between the glob and the read;
 		// awk exits nonzero if any file in its argument list is unreadable.
-		"owners=$( { grep -h -s \"$key\" \"/proc/" + pid + "/fdinfo/\"* 2>/dev/null || true; } | awk -v key=\"$key\" '$1 == \"lock:\" && $3 == \"FLOCK\" && $4 == \"ADVISORY\" && $5 == \"WRITE\" && $7 == key && !seen[$6]++ { print $6 }' && printf '.') || exit; owners=${owners%.}; " +
+		"owners=$( { grep -h -s \"$key\" \"/proc/" + pid + "/fdinfo/\"* 2>/dev/null || true; } | awk -v key=\"$key\" -v pid=" + pid + " '$1 == \"lock:\" && $3 == \"FLOCK\" && $4 == \"ADVISORY\" && $5 == \"WRITE\" && $6 == pid && $7 == key && !seen[$6]++ { print $6 }' && printf '.') || exit; owners=${owners%.}; " +
 		lockPinRemote() +
 		"printf '%s' \"$owners\""
 }
