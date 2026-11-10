@@ -17,7 +17,53 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # The verdict of every aggregate job below (web, static, race-root,
+  # race-modules, tests), read from toJSON(needs): each lane succeeded, or
+  # was skipped because the changes job named it. A skip nothing named (a
+  # cancelled run, or any skip in a merge group or on main, where changes
+  # names none) fails the aggregate.
+  REQUIRE_LANES: >-
+    (.changes.outputs.skip // "") as $s
+    | (if .changes.result == "success" and $s != "" then $s | fromjson else [] end) as $skipped
+    | del(.changes) | to_entries
+    | all(.value.result == "success" or (.value.result == "skipped" and (.key as $job | $skipped | any(. == $job))))
+
 jobs:
+  # On a pull request, names the lanes the change cannot reach, as
+  # cmd/evener-cilanes decides them (docs/developing-evener/testing.md, "Pull
+  # Requests Skip Lanes a Change Cannot Reach"). `skip` lists whole jobs, and
+  # each exclude_* output lists matrix cells to drop. Every lane runs in a
+  # merge group and on main, where the classifier does not run, and when it
+  # fails: its outputs are then empty, so nothing is skipped. Those runs keep
+  # main safe from a wrong skip, which can only bounce a pull request in the
+  # merge queue.
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      skip: ${{ steps.plan.outputs.skip }}
+      exclude_race_root_parts: ${{ steps.plan.outputs.exclude_race_root_parts }}
+      exclude_race_module_shards: ${{ steps.plan.outputs.exclude_race_module_shards }}
+      exclude_tests_parts: ${{ steps.plan.outputs.exclude_tests_parts }}
+    steps:
+      # The pull request's merge commit and its first parent, the base it
+      # merges onto: HEAD^1...HEAD is exactly what the merge changes.
+      - if: github.event_name == 'pull_request'
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+
+      - if: github.event_name == 'pull_request'
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.work
+          cache: false
+
+      - id: plan
+        if: github.event_name == 'pull_request'
+        run: go run ./cmd/evener-cilanes/bin --base HEAD^1 >> "$GITHUB_OUTPUT"
+
   # Every job carries a timeout-minutes of about three times its slowest green
   # run, never under 20, so a hang ends in tens of minutes instead of at the
   # hosted runner's six-hour limit. They are backstops, not budgets: the timing
@@ -30,7 +76,13 @@ jobs:
   # plus the real-browser guards in web-browser, which is itself split into
   # shards, one runner each. `web`, the required check, passes only when every
   # lane does.
+  #
+  # Each lane the changes job can name runs unless it names it, and runs
+  # when the changes job fails (!cancelled() instead of the implicit
+  # success()).
   web-unit:
+    needs: [changes]
+    if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'web-unit') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -99,6 +151,8 @@ jobs:
   # cmd/evener-dev/webbrowser.go); together the shards run every guard.
   web-browser:
     name: web-browser / ${{ matrix.shard }}
+    needs: [changes]
+    if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'web-browser') }}
     strategy:
       fail-fast: false
       matrix:
@@ -181,7 +235,7 @@ jobs:
 
   web:
     if: always()
-    needs: [web-unit, web-browser]
+    needs: [changes, web-unit, web-browser]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -190,9 +244,11 @@ jobs:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           echo "$RESULTS"
-          test "$(jq -r '[.[].result] | all(. == "success")' <<<"$RESULTS")" = true
+          test "$(jq -r "$REQUIRE_LANES" <<<"$RESULTS")" = true
 
   native:
+    needs: [changes]
+    if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'native') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
@@ -213,6 +269,8 @@ jobs:
         run: make test-native check-mermaid-freshness
 
   api-package:
+    needs: [changes]
+    if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'api-package') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -229,6 +287,8 @@ jobs:
         run: make test-api-package
 
   static-build:
+    needs: [changes]
+    if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'static-build') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -260,6 +320,8 @@ jobs:
           modules: "true"
 
   lint-golangci:
+    needs: [changes]
+    if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'lint-golangci') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
@@ -325,6 +387,8 @@ jobs:
   # golangci analysis differ from the untagged sweep's, so both caches are
   # this lane's own kind. `static` requires this lane too.
   lint-tagged:
+    needs: [changes]
+    if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'lint-tagged') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -410,6 +474,8 @@ jobs:
   # its own script directly and fails the lane on its own verdict, so both
   # gates keep their teeth.
   fuzz-checks:
+    needs: [changes]
+    if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'fuzz-checks') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -437,7 +503,7 @@ jobs:
 
   static:
     if: always()
-    needs: [static-build, lint-golangci, lint-tagged, lint-repository, fuzz-checks, api-package, native]
+    needs: [changes, static-build, lint-golangci, lint-tagged, lint-repository, fuzz-checks, api-package, native]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -446,7 +512,7 @@ jobs:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           echo "$RESULTS"
-          test "$(jq -r '[.[].result] | all(. == "success")' <<<"$RESULTS")" = true
+          test "$(jq -r "$REQUIRE_LANES" <<<"$RESULTS")" = true
 
   # The root module's race run is two lanes on separate runners: cmd/evener-hub
   # (its ~2100 mostly serial tests, as 12 shards) and everything else. On one
@@ -454,10 +520,13 @@ jobs:
   # `race-root`, the required check, passes only when both lanes do.
   race-root-parts:
     name: race-root / ${{ matrix.part }}
+    needs: [changes]
+    if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'race-root-parts') }}
     strategy:
       fail-fast: false
       matrix:
         part: [hub, rest]
+        exclude: ${{ fromJSON(needs.changes.outputs.exclude_race_root_parts || '[]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -511,7 +580,7 @@ jobs:
 
   race-root:
     if: always()
-    needs: [race-root-parts]
+    needs: [changes, race-root-parts]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -520,15 +589,18 @@ jobs:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           echo "$RESULTS"
-          test "$(jq -r '[.[].result] | all(. == "success")' <<<"$RESULTS")" = true
+          test "$(jq -r "$REQUIRE_LANES" <<<"$RESULTS")" = true
 
   race-module-shards:
     name: race-modules / ${{ matrix.scope }}
+    needs: [changes]
+    if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'race-module-shards') }}
     strategy:
       fail-fast: false
       max-parallel: 2
       matrix:
         scope: [agent, nonagent]
+        exclude: ${{ fromJSON(needs.changes.outputs.exclude_race_module_shards || '[]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
@@ -560,7 +632,7 @@ jobs:
 
   race-modules:
     if: always()
-    needs: [race-module-shards]
+    needs: [changes, race-module-shards]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -569,17 +641,20 @@ jobs:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           echo "$RESULTS"
-          test "$(jq -r '[.[].result] | all(. == "success")' <<<"$RESULTS")" = true
+          test "$(jq -r "$REQUIRE_LANES" <<<"$RESULTS")" = true
 
   # The gate's two waves, the root module (full suite) and every other module,
   # took 131s and 142s one after the other on a single runner; each part runs
   # on its own runner instead. `tests` below keeps the required check name.
   tests-parts:
     name: tests / ${{ matrix.scope }}
+    needs: [changes]
+    if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'tests-parts') }}
     strategy:
       fail-fast: false
       matrix:
         scope: [root, nonroot]
+        exclude: ${{ fromJSON(needs.changes.outputs.exclude_tests_parts || '[]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -661,6 +736,8 @@ jobs:
   # skips this exact set so the timing ratchet measures the stable suite; this
   # lane runs it without a timing budget because its wall time tracks the runner.
   hub-integration:
+    needs: [changes]
+    if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'hub-integration') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -678,7 +755,7 @@ jobs:
 
   tests:
     if: always()
-    needs: [tests-parts, hub-integration]
+    needs: [changes, tests-parts, hub-integration]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -687,9 +764,13 @@ jobs:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           echo "$RESULTS"
-          test "$(jq -r '[.[].result] | all(. == "success")' <<<"$RESULTS")" = true
+          test "$(jq -r "$REQUIRE_LANES" <<<"$RESULTS")" = true
 
+  # fuzz is a required check with no aggregate of its own. A skip reports as
+  # passing, and it is skipped only when the changes job names it.
   fuzz:
+    needs: [changes]
+    if: ${{ !cancelled() && !contains(fromJSON(needs.changes.outputs.skip || '[]'), 'fuzz') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
