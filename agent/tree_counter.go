@@ -112,7 +112,7 @@ type treeCounter struct {
 	limit  int64
 
 	// freedMu guards freed, which is closed at the next release so a turn
-	// waiting to take a slot back (heldDriveSlot.retake) wakes on it instead
+	// waiting to take a slot back (driveTurn.retakeSlot) wakes on it instead
 	// of polling.
 	freedMu sync.Mutex
 	freed   chan struct{}

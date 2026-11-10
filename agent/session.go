@@ -748,9 +748,13 @@ type Session struct {
 	// quotaWait is the model call waiting out a provider usage limit, nil
 	// while none waits (session_quota_wait.go). quotaWakes counts the asks
 	// (a user message, a model switch) for such a wait to retry now.
-	// Guarded by mu.
-	quotaWait  *quotaWait
-	quotaWakes uint64
+	// steerArrivals counts accepted user steering and steerArrivalsDrained is
+	// its value as the latest steering drain began, so a wait can tell a
+	// steer that may not be in its request. Guarded by mu.
+	quotaWait            *quotaWait
+	quotaWakes           uint64
+	steerArrivals        uint64
+	steerArrivalsDrained uint64
 
 	// askPending is the per-turn pending set of questions posted by ask_user
 	// calls this turn (spec §5.1): its length lets a round-boundary check tell

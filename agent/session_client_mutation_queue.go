@@ -822,7 +822,7 @@ func (s *Session) AcceptClientMutationSteerAs(params appwire.TurnSteerParams, ac
 	s.reflectDurableClientSteering()
 	// A model call waiting out a usage limit tries once more, carrying the
 	// steer: the user may know the quota came back.
-	s.wakeQuotaWait()
+	s.wakeQuotaWaitForSteer()
 	s.wakeForPendingSteering()
 	return response, nil
 }
@@ -969,6 +969,9 @@ func (s *Session) AcceptClientMutationDrainAsSteerAs(params appwire.TurnDrainAsS
 	}
 	s.reflectDurableInputQueue(consumedClientMutationIDs...)
 	s.reflectDurableClientSteering()
+	// The drained messages are steering now: a waiting call carries them in
+	// one more try, as it does a steer.
+	s.wakeQuotaWaitForSteer()
 	s.wakeForPendingSteering()
 	return response, nil
 }
@@ -1085,6 +1088,9 @@ func (s *Session) AcceptClientMutationPromoteQueuedAsSteerAs(params appwire.Turn
 	}
 	s.reflectDurableInputQueue()
 	s.reflectDurableClientSteering()
+	// The promoted message is steering now: a waiting call carries it in one
+	// more try, as it does a steer.
+	s.wakeQuotaWaitForSteer()
 	s.wakeForPendingSteering()
 	return response, nil
 }

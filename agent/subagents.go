@@ -114,6 +114,8 @@ type subagent struct {
 	closed                bool                      // session torn down; record retained as terminal history
 	closeTimedOut         bool                      // session-close wait exceeded its bound; close not confirmed
 	driving               bool                      // a drive-down notification turn (§3), or a committed delegate start not yet handed to its run, is in flight on this idle child
+	driveCancel           context.CancelFunc        // cancels the drive turn in flight; nil when none is
+	driveStopped          bool                      // a Stop (stopDrive) cancelled the drive turn in flight
 	fatalRunGated         bool                      // terminal run error freezes automatic drives until an explicit resume
 	finalizing            bool                      // the run accepts no input while owned work drains and terminal state/notify ownership are handed off
 	// disposeGated freezes a quiescent, retained TERMINAL child while a dispose op
@@ -1461,13 +1463,12 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 	// honors (no settle), so the child's durable ledger stays queued and the next
 	// loop boundary retries (spec §3). A child call waiting out a usage limit
 	// gives the slot back for the wait and takes one again to retry
-	// (heldDriveSlot), so waits that can last days never fill the budget.
+	// (driveTurn), so waits that can last days never fill the budget.
 	reserved, ok := s.reserveDriveSlot()
 	if !ok {
 		sub.mu.Unlock()
 		return false
 	}
-	treeSlot := &heldDriveSlot{owner: s, turn: sub.sess, slot: reserved}
 	// The drive ctx is parented to the session's lifetime ctx (cancelled by
 	// cancelFunc at the very start of close(), before child closes and before
 	// sendersWG.Wait) — NOT to context.Background(): the drive goroutine holds
@@ -1480,23 +1481,23 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 	// drains promptly and the Close comment "already cancelled above" is true
 	// again. The ctx is still independent of the LAUNCHING turn's ctx:
 	// sessionCtx outlives every turn and dies only at Close. The timeout is
-	// boundHungTurn's: a child turn waiting out a usage limit inside its
-	// model call is not hung, and cutting it loose would fail the child
-	// fatally on a limit that clears by itself.
+	// the driveTurn's hung-turn bound: a child turn waiting out a usage limit
+	// inside its model call is not hung, so the bound pauses for the wait.
+	// A Stop of the delegate reaches the drive through sub.driveCancel.
 	driveCtx, driveCancel := context.WithCancel(s.sessionCtx)
-	stopDriveBound := boundHungTurn(sub.sess, driveTurnTimeout, driveCancel)
+	drive := startDriveTurn(s, sub.sess, reserved, driveTurnTimeout, driveCancel)
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		sub.mu.Unlock()
-		treeSlot.release()
-		stopDriveBound()
+		drive.end()
 		driveCancel()
 		return false
 	}
 	s.sendersWG.Add(1)
 	s.mu.Unlock()
 	sub.driving = true
+	sub.driveCancel = driveCancel
 	childSess := sub.sess
 	sub.mu.Unlock()
 
@@ -1505,8 +1506,7 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 		defer release()
 		defer s.sendersWG.Done()
 		defer driveCancel()
-		defer stopDriveBound()
-		// The re-check defer is registered BEFORE treeSlot.release so LIFO runs
+		// The re-check defer is registered BEFORE drive.end so LIFO runs
 		// the release first: the paced re-drive wait below holds no slot, and
 		// the re-drive can claim one even at drive budget 1.
 		defer func() {
@@ -1515,9 +1515,16 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 			}
 			s.redriveChildIfAttentionRemains(driveCtx, sub, childSess)
 		}()
-		defer treeSlot.release()
-		_, err := childSess.ProcessInputKind(withHeldDriveSlot(driveCtx, treeSlot), "", nil, EntryNotification)
-		if err != nil {
+		defer drive.end()
+		_, err := childSess.ProcessInputKind(withDriveTurn(driveCtx, drive), "", nil, EntryNotification)
+		// A Stop of the delegate (stopDrive) cancelled the turn: that is the
+		// ordinary nonfatal end of a stopped run, so the work the delegate
+		// owns is left alone.
+		sub.mu.Lock()
+		stopped := sub.driveStopped
+		sub.driveCancel, sub.driveStopped = nil, false
+		sub.mu.Unlock()
+		if err != nil && !(stopped && errors.Is(err, context.Canceled)) {
 			if cleanupErr := sub.gateFatalRun(err); cleanupErr != nil {
 				childSess.emit(warningDataFromError("delegate owned-work cleanup incomplete", cleanupErr))
 			}

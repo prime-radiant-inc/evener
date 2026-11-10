@@ -685,12 +685,6 @@ func TestDelegateFinalizationTurnWaitsForQuota(t *testing.T) {
 // that would fail the delegate fatally on a limit that clears by itself. At
 // the reset the turn delivers the notification and the drive ends.
 func TestIdleDelegateNotificationDriveWaitsForQuota(t *testing.T) {
-	// NOT parallel: this test shrinks a package-level timing var; parallel
-	// siblings must never observe the mutated value.
-	old := driveTurnTimeout
-	driveTurnTimeout = 200 * time.Millisecond
-	t.Cleanup(func() { driveTurnTimeout = old })
-
 	adapter := &streamingAdapter{name: "openai"}
 	limitAfterFirstAnswer(adapter, usageLimitError(t, "openai", quotaResetAt))
 	root, clk := newQuotaDelegateRoot(t, adapter)
@@ -703,18 +697,18 @@ func TestIdleDelegateNotificationDriveWaitsForQuota(t *testing.T) {
 		t.Fatal("the notification drive did not launch")
 	}
 	waitUntil(t, trip, "the drive turn waits for quota", sub.sess.waitingForQuota)
-	// Several hung-turn bounds pass while the turn waits.
-	time.Sleep(5 * driveTurnTimeout)
-	sub.mu.Lock()
-	driving := sub.driving
-	sub.mu.Unlock()
-	if !sub.sess.waitingForQuota() || !driving {
-		t.Fatalf("after the drive's bound: waiting=%t driving=%t, want the drive turn still waiting", sub.sess.waitingForQuota(), driving)
+	// Several hung-turn bounds pass on the session clock while the turn waits.
+	for range 3 {
+		clk.Advance(driveTurnTimeout)
+		clk.Drain()
+	}
+	if !sub.sess.waitingForQuota() || !driving(sub) {
+		t.Fatalf("after the drive's bound: waiting=%t driving=%t, want the drive turn still waiting", sub.sess.waitingForQuota(), driving(sub))
 	}
 
 	recoverProvider(adapter)
 	reachReset(clk)
-	waitUntil(t, trip, "the drive ends after the reset", func() bool { return root.driveCounter.n.Load() == 0 })
+	waitUntil(t, trip, "the drive ends after the reset", func() bool { return !driving(sub) })
 	sub.mu.Lock()
 	fatal := sub.fatalRunGated
 	sub.mu.Unlock()
@@ -801,7 +795,7 @@ func TestWaitingDriveGivesBackItsDriveSlot(t *testing.T) {
 		t.Fatal("a healthy child's drive could not launch: the waiting drive kept the only drive slot")
 	}
 	waitUntil(t, trip, "the healthy child's drive delivers", func() bool { return healthy.sess.jobNotificationsDelivered() == 1 })
-	waitUntil(t, trip, "the healthy drive ends", func() bool { return root.driveCounter.n.Load() == 0 })
+	waitUntil(t, trip, "the healthy drive ends", func() bool { return !driving(healthy) })
 	if !limited.sess.waitingForQuota() {
 		t.Fatal("the limited child stopped waiting while its limit holds")
 	}
@@ -809,7 +803,7 @@ func TestWaitingDriveGivesBackItsDriveSlot(t *testing.T) {
 	adapter.limited.Store(false)
 	reachReset(clk)
 	waitUntil(t, trip, "the limited child's drive delivers after the reset", func() bool { return limited.sess.jobNotificationsDelivered() == 1 })
-	waitUntil(t, trip, "the limited drive ends", func() bool { return root.driveCounter.n.Load() == 0 })
+	waitUntil(t, trip, "the limited drive ends", func() bool { return !driving(limited) })
 	if got := adapter.refused.Load(); got != 1 {
 		t.Fatalf("requests against the limit = %d, want only the one that began the wait", got)
 	}
@@ -893,5 +887,221 @@ func TestNotificationArrivingDuringAWaitIsDeliveredOnce(t *testing.T) {
 	// mentions it exactly as often as the retry that first carried it.
 	if carried, again := mentions(reqs[1]), mentions(reqs[2]); carried == 0 || again != carried {
 		t.Fatalf("mentions of the notification that arrived during the wait: %d in the retry, %d at the reset; want it injected once", carried, again)
+	}
+}
+
+// Turning queued messages into steering while a call waits ("Steer now", or
+// draining the queue as steer) is the user speaking again: the call tries
+// once more, carrying the steer, instead of leaving it until the reset.
+func TestSteeringQueuedMessagesWhileWaitingRetriesOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		steer func(t *testing.T, s *Session)
+	}{
+		{"drain as steer", func(t *testing.T, s *Session) {
+			t.Helper()
+			if _, err := s.AcceptClientMutationDrainAsSteer(appwire.TurnDrainAsSteerParams{
+				ClientMutationID: "drain-during-wait", ExpectedQueueRevision: s.clientMutations.snapshot().QueueRevision,
+			}); err != nil {
+				t.Fatalf("drain as steer: %v", err)
+			}
+		}},
+		{"promote as steer", func(t *testing.T, s *Session) {
+			t.Helper()
+			if _, err := s.AcceptClientMutationPromoteQueuedAsSteer(appwire.TurnPromoteQueuedAsSteerParams{
+				ClientMutationID: "promote-during-wait", Index: 0,
+			}); err != nil {
+				t.Fatalf("promote as steer: %v", err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, clk, _, adapter := newAttentionLivelockSession(t, usageLimitError(t, "openai", quotaResetAt))
+			serveSessionWithMutationStore(t, s)
+			trip := tripwireCtx(t).Done()
+			run := startInput(context.Background(), s, "start the work", EntryUserInput)
+			run.awaitQuotaWait(t, s, trip)
+			if _, err := s.AcceptClientMutationQueue(appwire.TurnQueueParams{
+				ClientMutationID: "queued-during-wait",
+				Input:            []appwire.InputItem{{Type: "text", Text: "use the other branch"}},
+			}); err != nil {
+				t.Fatalf("queue: %v", err)
+			}
+			waitUntil(t, trip, "the queued message retries the call", func() bool { return streamCalls(adapter) == 2 })
+			run.awaitQuotaWait(t, s, trip)
+
+			tc.steer(t, s)
+			waitUntil(t, trip, "the steer retries the call", func() bool { return streamCalls(adapter) == 3 })
+			run.awaitQuotaWait(t, s, trip)
+			if !requestsContain(adapterRequests(adapter)[2:], "use the other branch") {
+				t.Fatal("the retry the steer woke did not carry it")
+			}
+			recoverProvider(adapter)
+			reachReset(clk)
+			run.awaitEnd(t, trip, "the call resumes at the reset")
+		})
+	}
+}
+
+// waitingDrive is a root whose idle delegate's notification drive waits
+// for quota on a fake clock, with a job the delegate owns still running.
+func waitingDrive(t *testing.T, adapter *streamingAdapter) (*Session, *agenttest.FakeClock, *subagent, string, *jobstore.JobRecord) {
+	t.Helper()
+	root, clk := newQuotaDelegateRoot(t, adapter)
+	trip := tripwireCtx(t).Done()
+	sub, delegateID := startQuotaDelegate(t, root)
+	waitUntil(t, trip, "the delegate's first run finishes", func() bool { return subagentDone(sub) })
+	jm := sub.sess.jobManager
+	owned := &jobstore.JobRecord{JobID: "job_owned_by_driven", Type: jobstore.JobShell, Status: jobstore.StatusRunning, Background: true, OwnerSessionID: sub.sess.ID()}
+	jm.mu.Lock()
+	jm.running[owned.JobID] = &runningJob{rec: owned}
+	jm.mu.Unlock()
+	t.Cleanup(func() {
+		jm.mu.Lock()
+		delete(jm.running, owned.JobID)
+		jm.mu.Unlock()
+	})
+	enqueueCompletedJobNotification(t, sub.sess, "job_for_drive")
+	if !root.driveSubagentNotificationTurn(sub) {
+		t.Fatal("the notification drive did not launch")
+	}
+	waitUntil(t, trip, "the drive turn waits for quota", sub.sess.waitingForQuota)
+	return root, clk, sub, delegateID, owned
+}
+
+func driving(sub *subagent) bool {
+	sub.mu.Lock()
+	defer sub.mu.Unlock()
+	return sub.driving
+}
+
+// Stopping a delegate whose parent-driven notification turn waits for quota
+// stops that turn at once, as Stop does for a running delegate: the turn
+// ends as a cancellation, not a fatal failure, and the work the delegate owns
+// survives. Both the user's Stop and a subtree stop reach it.
+func TestStoppingADelegateWhoseDriveWaitsForQuota(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		stop func(t *testing.T, root *Session, delegateID string)
+	}{
+		{"user stop", func(t *testing.T, root *Session, delegateID string) {
+			t.Helper()
+			outcome, err := root.StopDelegateRun(delegateID)
+			if err != nil || outcome != appwire.DelegateStopStopping {
+				t.Fatalf("StopDelegateRun = %q, %v; want it stopping the waiting drive", outcome, err)
+			}
+		}},
+		{"subtree stop", func(t *testing.T, root *Session, delegateID string) {
+			t.Helper()
+			if _, err := jobStopTool(context.Background(), root, map[string]any{"target": delegateID}, jobToolResultDefaultMaxChar); err != nil {
+				t.Fatalf("job_stop: %v", err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			adapter := &streamingAdapter{name: "openai"}
+			limitAfterFirstAnswer(adapter, usageLimitError(t, "openai", quotaResetAt))
+			root, _, sub, delegateID, owned := waitingDrive(t, adapter)
+			trip := tripwireCtx(t).Done()
+
+			tc.stop(t, root, delegateID)
+			waitUntil(t, trip, "the stopped drive ends", func() bool { return !driving(sub) && !sub.sess.waitingForQuota() })
+			sub.mu.Lock()
+			fatal := sub.fatalRunGated
+			sub.mu.Unlock()
+			if fatal {
+				t.Fatal("stopping the waiting drive gated the delegate as fatally failed")
+			}
+			jm := sub.sess.jobManager
+			jm.mu.Lock()
+			_, survived := jm.running[owned.JobID]
+			jm.mu.Unlock()
+			if !survived {
+				t.Fatal("stopping the waiting drive stopped the work the delegate owns")
+			}
+		})
+	}
+}
+
+// The drive's hung-turn bound measures the turn's work, not its wait: once
+// a wait ends, the turn gets the whole bound again. A turn that waited four
+// minutes and then needs two more to answer is not cut loose a minute after
+// it resumed.
+func TestDriveHungTurnBoundStartsOverWhenAWaitEnds(t *testing.T) {
+	adapter := &streamingAdapter{name: "openai"}
+	limitAfterFirstAnswer(adapter, usageLimitError(t, "openai", quotaResetAt))
+	_, clk, sub, _, _ := waitingDrive(t, adapter)
+	trip := tripwireCtx(t).Done()
+	clk.Advance(4 * time.Minute)
+	clk.Drain()
+
+	// The provider answers the retry only once the test lets it.
+	answering := make(chan struct{})
+	answer := make(chan struct{})
+	adapter.mu.Lock()
+	adapter.streamErr = nil
+	adapter.streamScript = func(st *llm.ChanStream) {
+		close(answering)
+		<-answer
+		call := communicateCall("after-switch", "back at work")
+		sendCommunicatePreview(st, call)
+		st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &call})
+		finish := llm.FinishReason{Reason: llm.FinishReasonToolCalls}
+		st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &finish})
+	}
+	adapter.mu.Unlock()
+	if err := sub.sess.SetModel("gpt-5.4"); err != nil {
+		t.Fatalf("SetModel: %v", err)
+	}
+	select {
+	case <-answering:
+	case <-trip:
+		t.Fatal("the switch did not retry the call")
+	}
+	clk.Advance(2 * time.Minute)
+	clk.Drain()
+	close(answer)
+	waitUntil(t, trip, "the drive ends", func() bool { return !driving(sub) })
+	sub.mu.Lock()
+	fatal := sub.fatalRunGated
+	sub.mu.Unlock()
+	if fatal {
+		t.Fatal("the hung-turn bound cut loose a turn that had worked two minutes since its wait")
+	}
+	if got := sub.sess.jobNotificationsDelivered(); got != 1 {
+		t.Fatalf("job notifications delivered = %d, want the drive's one", got)
+	}
+}
+
+// A steer accepted after the last steering drain began may not be in the
+// request that met the limit, whenever it landed relative to that request:
+// the wait that request begins retries at once to carry it, instead of
+// leaving it until the reset.
+func TestQuotaWaitRetriesAtOnceForASteerNoDrainCovered(t *testing.T) {
+	s, _, _, _ := newAttentionLivelockSession(t, nil)
+	limit := usageLimitError(t, "openai", quotaResetAt)
+	trip := tripwireCtx(t)
+	wakes := s.quotaWakeCount()
+	s.mu.Lock()
+	s.steerArrivals++
+	s.mu.Unlock()
+	retried := make(chan bool, 1)
+	go func() {
+		retry, err := s.waitOutUsageLimit(trip, limit, "gpt-5.6", wakes)
+		retried <- retry && err == nil
+	}()
+	select {
+	case retry := <-retried:
+		if !retry {
+			t.Fatal("the wait ended without asking for the retry that carries the steer")
+		}
+	case <-trip.Done():
+		t.Fatal("the wait held a steer no drain covered until the reset")
+	}
+	s.mu.Lock()
+	drained := s.steerArrivalsDrained == s.steerArrivals
+	s.mu.Unlock()
+	if !drained {
+		t.Fatal("the retry's steering drain did not cover the steer")
 	}
 }
