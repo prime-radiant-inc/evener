@@ -34,7 +34,9 @@ func defCompact() llm.ToolDefinition {
 						"IDs, paths, numbers, decisions, next steps. Empty string clears a pending note. " +
 						"It requests no new compaction only when compaction_instructions is also empty " +
 						"and reload_skills is absent or null; any present reload_skills value, even [], " +
-						"requests one. A compaction requested by an earlier call still runs.",
+						"requests one. A request made while context pressure is below the floor (0.30) " +
+						"is a no-op: nothing is scheduled or pinned and the result says it is not needed, " +
+						"with the current pressure. A compaction requested by an earlier call still runs.",
 				},
 				"compaction_instructions": map[string]any{
 					"type": "string",
