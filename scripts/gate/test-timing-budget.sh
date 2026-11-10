@@ -61,7 +61,8 @@
 #
 # A package the budget file does not mention is a WARN, not silently skipped —
 # see kata b6rv's stop condition. When the budget file is missing or its
-# "packages" map is empty, the WHOLE run is that same warn state and --check
+# "packages" and "wallPackages" maps are both empty, the WHOLE run is that same
+# warn state and --check
 # always exits 0: the tree must stay green until a real baseline is blessed
 # (`make test-rebaseline`), never fail on a budget nobody has measured yet.
 # A MALFORMED budget file is different: only a missing (or empty) file is the
