@@ -61,3 +61,14 @@ func TestCovNewTurnPreservesMessage(t *testing.T) {
 		t.Fatalf("Timestamp = %v, want non-zero UTC", turn.Timestamp)
 	}
 }
+
+// An unwritten turn must not alias durable entry 0. Every write path stamps the
+// spent Seq over this default, including a real entry 0, so the sentinel is
+// safe by construction and a producer that forgets to stamp cannot make a fold
+// record name entry 0.
+func TestNewTurnDefaultsToNoTranscriptEntrySeq(t *testing.T) {
+	turn := NewTurn(TurnUserInput, llm.User("hi"))
+	if turn.Seq != NoTranscriptEntrySeq {
+		t.Fatalf("NewTurn Seq = %d, want NoTranscriptEntrySeq (%d)", turn.Seq, NoTranscriptEntrySeq)
+	}
+}

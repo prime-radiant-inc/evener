@@ -304,5 +304,8 @@ type Turn struct {
 
 // NewTurn creates a Turn with the current UTC time.
 func NewTurn(kind TurnKind, msg llm.Message) Turn {
-	return Turn{Kind: kind, Message: msg, Timestamp: time.Now().UTC()}
+	// Seq names no durable entry until a write stamps the spent Seq over it.
+	// Zero is a valid durable entry, so an unwritten turn must not default to
+	// it: a fold record that named entry 0 would replay the wrong turn.
+	return Turn{Kind: kind, Message: msg, Timestamp: time.Now().UTC(), Seq: NoTranscriptEntrySeq}
 }
