@@ -58,11 +58,6 @@ const (
 	// not make. Refused here, so the hub's truncation only ever sees a row from
 	// some other producer. Counted in runes, like every other "...Chars" bound here.
 	maxWatchConditionChars = 512
-	// watchDeliveryBudget caps the condition fires a watch config may deliver
-	// before the circuit breaker auto-clears it (spec §4 F1). A periodic progress
-	// tick counts a delivery but is a clock rather than a condition, so it never
-	// counts against this. Hard-coded, no config knob.
-	watchDeliveryBudget = 50
 	// watchDeliveryTimeCap bounds the per-watch ring of recent delivery instants
 	// that feeds the activity panel's delivery timeline. The ring is a display
 	// aid, not an audit log: progress ticks make a watch's delivery count
@@ -91,8 +86,7 @@ const (
 	// so no live watch goes missing without the agent hearing about it.
 	maxLiveWatches = 32
 	// runawaySelfInfluenceDepth caps how many delivered self-influenced priors a
-	// watch send may descend from before the breaker drops it as a runaway. The
-	// existing watchDeliveryBudget is the coarser whole-watch volume floor.
+	// watch send may descend from before the breaker drops it as a runaway.
 	runawaySelfInfluenceDepth = 8
 	stableWatchReceiverTarget = "stable_watch_receiver"
 )
@@ -191,18 +185,6 @@ func watchLostAtRestartDelegateMessage(source string) string {
 	return fmt.Sprintf("watch ended: this session restarted and the watch did not survive it; stable delegate %s may still emit matching events — re-arm the watch if you still care", source)
 }
 
-// watchBudgetClearedMessage is the single final notification text emitted when a
-// watch trips the delivery budget on condition fires (spec §4 F1). The count is
-// the budget itself, so the notice names condition matches rather than
-// deliveries, and offers only the levers that narrow a condition: a longer
-// progress_interval_ms cannot help, because periodic ticks do not count here.
-func watchBudgetClearedMessage(target string) string {
-	return fmt.Sprintf(
-		"watch cleared: %s matched %d times; re-arm with a tighter condition (higher every or narrower output_match)",
-		target, watchDeliveryBudget,
-	)
-}
-
 type watchKey struct {
 	VisibleSessionID   string
 	Target             string
@@ -282,20 +264,14 @@ type watchConfig struct {
 	progressStop            chan struct{}
 	// deliveries counts model-facing deliveries for this watch config (rendered
 	// caller frames + delivered sidecar sends + no-send watch notifications +
-	// periodic progress ticks). It is the volume job_list reports, not the
-	// breaker's trigger. Counted jm-side under jm.mu; survives the
-	// observation/drain split with the cfg pointer; a replacement cfg from
-	// newWatchConfig starts fresh at 0.
+	// periodic progress ticks). It is the volume job_list reports. Counted
+	// jm-side under jm.mu; survives the observation/drain split with the cfg
+	// pointer; a replacement cfg from newWatchConfig starts fresh at 0.
 	deliveries int
 	// conditionFires counts actual condition matches, distinct from deliveries:
 	// progress ticks and teardown notices are deliveries but do not satisfy the
-	// condition the model asked this watch to observe. The circuit breaker
-	// latches here — the watch auto-clears on its watchDeliveryBudget-th
-	// condition fire (spec §4 F1) — so a watch that only ever ticks survives.
+	// condition the model asked this watch to observe.
 	conditionFires int
-	// budgetTripped latches the breaker to one teardown per config, so a send
-	// watch settling several frames at or past the budget reports it just once.
-	budgetTripped bool
 	// createdAt is the install time of this live watch config, stamped from
 	// jm.now() in newWatchConfig and surfaced by job_list (spec §4 F2). A
 	// replacement config is a new watch, so it gets a fresh timestamp. Configs

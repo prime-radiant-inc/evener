@@ -334,7 +334,7 @@ descriptor persisted ParentWatchGranted. The grant is non-transitive.
 watch_parent never grants arbitrary ancestor or sibling access.
 
 All shipped watch semantics remain: event/output/progress filters, every,
-bounded frames, latest-frame-wins coalescing, the delivery budget, list/inspect/
+bounded frames, latest-frame-wins coalescing, list/inspect/
 clear, terminal ordering, observer callbacks, restart cancellation/end notices,
 and append-only deduplicated SessionMeta.ObservedBy UI metadata. Legacy rows
 whose source or receiver is addressed through a delegate JobRecord are ignored

@@ -67,11 +67,8 @@ func (jm *jobManager) watchConfigForKeyLocked(key jobstore.WatchSendKey) *watchC
 // coalesced cursor is preserved while this delivered source is acknowledged.
 // The caller is responsible for any error-notification behavior. This is the
 // model-facing completion for both watch-send rails (delegate sidecar sends and
-// caller frames), so it is where the send half of the delivery budget is counted;
-// observation/coalescing does not count (spec §4 F1). It is not, however, the
-// only place the condition-fire breaker can trip — the match site latches it
-// too, so frames that never settle stay bounded — and the latch keeps the two
-// to one teardown.
+// caller frames), so it is where the send half of the delivery count is kept;
+// observation/coalescing does not count.
 func (jm *jobManager) settleWatchSendDelivered(cfg *watchConfig, state jobstore.WatchSendState) error {
 	defer jm.publishWatchActivity()
 	delivered := state
@@ -87,13 +84,35 @@ func (jm *jobManager) settleWatchSendDelivered(cfg *watchConfig, state jobstore.
 	jm.mu.Lock()
 	if delivered.DeliveryID != "" {
 		jm.deliveredWatchSendIDs[delivered.DeliveryID] = struct{}{}
+		delete(jm.transcribedWatchSends, delivered.DeliveryID)
 	}
-	crossedBudget := jm.recordWatchDeliveryLocked(cfg)
+	jm.countWatchDeliveryLocked(cfg)
 	jm.mu.Unlock()
-	if crossedBudget {
-		jm.autoClearWatchOverBudget(cfg)
-	}
 	return nil
+}
+
+// noteWatchSendTranscribed records that the caller frame deliveryID reached the
+// receiver's transcript, so a settle that fails afterwards is retried without
+// rendering the frame to the model a second time.
+func (jm *jobManager) noteWatchSendTranscribed(deliveryID string) {
+	if deliveryID == "" {
+		return
+	}
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	if jm.transcribedWatchSends == nil {
+		jm.transcribedWatchSends = make(map[string]struct{})
+	}
+	jm.transcribedWatchSends[deliveryID] = struct{}{}
+}
+
+// watchSendTranscribed reports whether the caller frame deliveryID is already
+// in the receiver's transcript with its settle outstanding.
+func (jm *jobManager) watchSendTranscribed(deliveryID string) bool {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	_, ok := jm.transcribedWatchSends[deliveryID]
+	return ok
 }
 
 // watchSendDeliveredLocked reports whether a watch-send with deliveryID has

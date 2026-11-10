@@ -41,16 +41,12 @@ func FuzzWatchCoreConfigEdges(f *testing.F) {
 			t.Fatalf("stored-only configure error = %v", err)
 		}
 
-		// Settlement is the production accounting edge. The breaker latches on
-		// condition fires, which a send watch counts at snapshot time, so a config
-		// whose fires already sit at the cap forces exactly this settle to cross
-		// the budget and invoke teardown.
+		// Settlement is the production accounting edge for a send watch's
+		// delivery count.
 		cfg, err := newWatchConfig(watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"job.notification"}}, jm.now(), "")
 		if err != nil {
-			t.Fatalf("new budget config: %v", err)
+			t.Fatalf("new config: %v", err)
 		}
-		cfg.deliveries = watchDeliveryBudget - 1
-		cfg.conditionFires = watchDeliveryBudget
 		key := jobstore.WatchSendKey{VisibleSessionID: jm.sessionID, WatchID: cfg.watchID, WatchTarget: cfg.target, ResolvedWatchedIdentity: jm.sessionID, WatchGeneration: cfg.generation}
 		state := jobstore.WatchSendState{Key: key, DeliveryID: "wd_core", UpdateSeq: 1}
 		cfg.pending = make(map[jobstore.WatchSendKey]*jobstore.WatchSendState)
@@ -60,10 +56,10 @@ func FuzzWatchCoreConfigEdges(f *testing.F) {
 		jm.watches[watchKey{VisibleSessionID: jm.sessionID, Target: cfg.target}] = cfg
 		jm.mu.Unlock()
 		if err := jm.settleWatchSendDelivered(cfg, state); err != nil {
-			t.Fatalf("settle budget delivery: %v", err)
+			t.Fatalf("settle delivery: %v", err)
 		}
-		if cfg.deliveries != watchDeliveryBudget {
-			t.Fatalf("deliveries = %d, want %d", cfg.deliveries, watchDeliveryBudget)
+		if cfg.deliveries != 1 {
+			t.Fatalf("deliveries = %d, want 1", cfg.deliveries)
 		}
 
 		// A normal durable pending event proves restore continues to function in

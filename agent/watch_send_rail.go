@@ -904,7 +904,7 @@ type watchConfigTerminalSnapshot struct {
 	cfg      *watchConfig
 	terminal watchSendTerminalSnapshot
 	// endReason, when set, is recorded to the watch history ring as the config is
-	// detached from the active set (cleared / budget_exhausted). Left empty by
+	// detached from the active set (cleared / replaced / auto_removed_terminal). Left empty by
 	// snapshot callers that are not removing an active watch.
 	endReason string
 }
@@ -1352,18 +1352,12 @@ func (jm *jobManager) kick() {
 // frames in the notification queue: on a long progress interval the queue is
 // empty between frames, and inferring from it would re-announce — and eventually
 // kill — a job the model explicitly said it was waiting on. A cleared watch
-// (model-cleared, or the delivery-budget auto-clear) leaves this map, so the job
-// counts as undisposed again. A watch that has just tripped the budget is
-// retained as a temporary excuse while its asynchronous teardown persists the
-// clear and queues the final notification; otherwise the drain can announce in
-// that handoff window before it receives the notification that explains the
-// clear. That window is keyed on conditionFires, the counter the breaker
-// latches on, so it closes when the teardown removes the config.
+// leaves this map, so the job counts as undisposed again.
 func (jm *jobManager) hasLiveUnfiredWatchOnTarget(jobID string) bool {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	for key, cfg := range jm.watches {
-		if key.Target == jobID && (cfg.conditionFires == 0 || cfg.conditionFires >= watchDeliveryBudget) {
+		if key.Target == jobID && cfg.conditionFires == 0 {
 			return true
 		}
 	}
