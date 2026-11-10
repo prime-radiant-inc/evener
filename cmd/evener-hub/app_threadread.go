@@ -6,7 +6,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"primeradiant.com/evener/agent"
@@ -829,25 +828,18 @@ func hubForkLiveDelegateFenced(cfg hubcore.WebConfig, threadID string) bool {
 	return cfg.Roster != nil && cfg.Roster.IsSubagentActive(threadID)
 }
 
-// resumeRequiredActiveFlag is the ThreadStatus.ActiveFlags entry that says a
-// session's own daemon is holding it behind recovery.
-//
-// NOTHING IN THE TREE EMITS IT. The daemon's status egress builds
-// appwire.ThreadStatus with a Type and no flags (server/appwire_thread_projection.go's
-// appCapabilities path, internal/appprojector's threadStatus), and appwire
-// defines no constant for it, so this spelling has one side. It is named here
-// rather than left as a literal so the hub's own uses cannot be spelled apart,
-// and so a producer added later has one name to match.
-//
-// The hub-side recovery signal this complements — the one that does have a
-// producer — is cfg.ResumeLocks.RecoveryState, which hubForkRecoveryFencedNow
-// consults beside this predicate.
-const resumeRequiredActiveFlag = "resumeRequired"
-
+// hubForkRecoveryFenced reads the recovery signals that have a producer: the
+// hub's own Evener.ResumeRequired stamp and the restart-required status a
+// daemon publishes when it cannot serve. ThreadStatus.ActiveFlags carries no
+// recovery entry from any daemon in the tree, so it is not a fence.
 func hubForkRecoveryFenced(thread appwire.Thread) bool {
-	return thread.Evener.ResumeRequired ||
-		thread.Status.Type == appwire.ThreadStatusRestartRequired ||
-		slices.Contains(thread.Status.ActiveFlags, resumeRequiredActiveFlag)
+	return thread.Evener.ResumeRequired || hubForkStatusFenced(thread.Status)
+}
+
+// hubForkStatusFenced is the status half of the fence, shared with callers
+// that hold a status without a whole thread.
+func hubForkStatusFenced(status appwire.ThreadStatus) bool {
+	return status.Type == appwire.ThreadStatusRestartRequired
 }
 
 // hubForkRecoveryFencedNow fences the alias the client is holding against
@@ -875,13 +867,13 @@ func hubForkRecoveryFencedNow(cfg hubcore.WebConfig, thread appwire.Thread, owne
 // signal stays its own shared predicate, hubForkLiveDelegateFenced, because an
 // explicit thread/resume cannot clear it and so it carries its own refusal.
 //
-// A daemon's recovery flags reach the hub only through the roster: the local
-// source builds its listed threads from roster entries that carry no status
-// flags, and a live thread/read is answered by the daemon itself, whose response
-// has never carried them either. Asking the roster is what keeps this projection
-// and fork admission on one answer. owner is the roster's answer for threadID,
-// resolved by the caller so a pass that needs it more than once asks the roster
-// once; the predicate itself never probes a daemon.
+// A daemon's recovery status is on the wire thread whenever the projection
+// reads one, but a fork also touches identities that are not in that
+// projection: the alias a client named and the session it resolves to. The
+// roster is the hub's one answer for those identities, so admission asks it
+// the same question the projection does. owner is the roster's answer for
+// threadID, resolved by the caller so a pass that needs it more than once asks
+// the roster once; the predicate itself never probes a daemon.
 func hubForkIdentityFenced(cfg hubcore.WebConfig, threadID string, owner forkThreadOwner) bool {
 	if owner.statusFenced() {
 		return true
