@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -98,6 +99,37 @@ func TestMintRunningTurnIDNamesAnAgentStartedTurn(t *testing.T) {
 	s.releaseRunningTurnID(turnID)
 	if got := s.clientMutations.snapshot().ActiveTurnID; got != "" {
 		t.Fatalf("durable ActiveTurnID after release = %q, want empty", got)
+	}
+}
+
+// TestMintRunningTurnIDDirectorySyncFailureReturnsPublishedID covers a mint
+// whose directory sync failed after the rename: the id is the durable turn
+// authority, so the caller must receive it and release it when the turn ends
+// instead of discarding it and leaving ActiveTurnID set for the life of the
+// session.
+func TestMintRunningTurnIDDirectorySyncFailureReturnsPublishedID(t *testing.T) {
+	t.Parallel()
+	s := newTwoStageMutationSession(t)
+	serveSession(t, s)
+	s.clientMutations.faults.SnapshotDirSync = func() error {
+		return errors.New("injected mint directory sync failure")
+	}
+
+	turnID, refusal := s.mintRunningTurnID()
+	if turnID == "" {
+		t.Fatalf("mintRunningTurnID returned no id (refusal %v) for a published mint", refusal)
+	}
+	if refusal != turnNameMinted {
+		t.Fatalf("refusal = %v, want turnNameMinted", refusal)
+	}
+	if got := s.clientMutations.snapshot().ActiveTurnID; got != turnID {
+		t.Fatalf("published ActiveTurnID = %q, want the minted %q", got, turnID)
+	}
+
+	s.clientMutations.faults.SnapshotDirSync = nil
+	s.releaseRunningTurnID(turnID)
+	if got := s.clientMutations.snapshot().ActiveTurnID; got != "" {
+		t.Fatalf("ActiveTurnID after release = %q, want empty; the published id was not handed back", got)
 	}
 }
 

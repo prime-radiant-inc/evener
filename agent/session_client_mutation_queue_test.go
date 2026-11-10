@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
@@ -654,6 +655,82 @@ func TestClientMutation_BudgetSerializesDirectTurnAgainstQueuedFinalSlot(t *test
 	snapshot := sess.clientMutations.snapshot()
 	if got := snapshot.AcceptedTurns + reservedClientMutationTurns(&snapshot); got != 1 {
 		t.Fatalf("durable turn allocation = %d, want 1", got)
+	}
+}
+
+// TestClientMutationDirectInputRunsAfterPublishedBudgetClaim covers the
+// accepted-input half of a direct budget claim whose directory sync failed
+// after the AcceptedTurns increment was renamed into place. With MaxTurns=1
+// the input must still run and keep that one published unit; before the fix
+// the claim's error refused the input with the budget already spent.
+func TestClientMutationDirectInputRunsAfterPublishedBudgetClaim(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t,
+		withStateDir(t.TempDir()),
+		withSteps(func(llm.Request) llm.Response { return agenttest.FinalResponse("done") }),
+		withConfig(SessionConfig{
+			MaxTurns:         1,
+			MaxSubagentDepth: 1,
+			testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+		}),
+	)
+	if err := sess.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	var snapshotSyncs atomic.Int32
+	sess.clientMutations.faults.SnapshotDirSync = func() error {
+		// The direct claim is the input's first client-mutation write.
+		if snapshotSyncs.Add(1) == 1 {
+			return errors.New("injected claim directory sync failure")
+		}
+		return nil
+	}
+	defer func() { sess.clientMutations.faults.SnapshotDirSync = nil }()
+
+	result, err := sess.ProcessInput(context.Background(), "run after a published budget claim", nil)
+	if err != nil {
+		t.Fatalf("ProcessInput after a published budget claim = %v, want the input to run", err)
+	}
+	if result != "done" {
+		t.Fatalf("ProcessInput result = %q, want the model's answer", result)
+	}
+	if got := sess.clientMutations.snapshot().AcceptedTurns; got != 1 {
+		t.Fatalf("accepted turns after the input = %d, want the one published claim", got)
+	}
+}
+
+// TestClaimDirectClientMutationTurnDirectorySyncFailureKeepsClaim covers a
+// budget claim whose directory sync failed after the AcceptedTurns increment
+// was renamed into place. The claim is published, so the input must proceed and
+// own the increment; reporting the durability error refused an input the
+// session had already charged against MaxTurns, and restore preserved the
+// inflated count.
+func TestClaimDirectClientMutationTurnDirectorySyncFailureKeepsClaim(t *testing.T) {
+	t.Parallel()
+	sess := newQueuePersistTestSession(t, t.TempDir())
+	defer sess.Close()
+	if err := sess.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	start := sess.clientMutations.snapshot().AcceptedTurns
+	sess.clientMutations.faults.SnapshotDirSync = func() error {
+		return errors.New("injected claim directory sync failure")
+	}
+
+	if err := sess.claimDirectClientMutationTurn(start); err != nil {
+		t.Fatalf("claimDirectClientMutationTurn after a published increment = %v, want the claim", err)
+	}
+	if got := sess.clientMutations.snapshot().AcceptedTurns; got != start+1 {
+		t.Fatalf("accepted turns = %d, want the published %d", got, start+1)
+	}
+
+	// The published increment stays refundable by the normal release path.
+	sess.clientMutations.faults.SnapshotDirSync = nil
+	if err := sess.returnClaimedDirectClientMutationTurn(); err != nil {
+		t.Fatalf("return the published claim: %v", err)
+	}
+	if got := sess.clientMutations.snapshot().AcceptedTurns; got != start {
+		t.Fatalf("accepted turns after the refund = %d, want %d", got, start)
 	}
 }
 

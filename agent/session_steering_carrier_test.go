@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -92,6 +93,54 @@ func TestSteeringOnlyCarrierDeliversAtMaxTurnsCeilingWithoutAnEmptyUserTurn(t *t
 	// wrong reason if it only checked the transcript after the turn returned.
 	if !requestHasExactUserMessage(requests[0], "steer at the ceiling") {
 		t.Fatalf("first model request missing the steering message: %+v", requests[0].Messages)
+	}
+}
+
+// TestSteeringCarrierDirectorySyncFailureStillRunsTheCarrier covers the
+// consumer half of a claim whose directory sync failed after the rename: the
+// published carrier must run, report its turn id to the daemon, and drain the
+// steering. Before the fix the claim reported failure, parked the steer, and
+// this call stood down with the steer still pending.
+func TestSteeringCarrierDirectorySyncFailureStillRunsTheCarrier(t *testing.T) {
+	t.Parallel()
+	sess := newTwoStageMutationSession(t)
+	const clientMutationID = "published-carrier-run"
+	steer, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: clientMutationID,
+		Input:            []appwire.InputItem{{Type: "text", Text: "carry me into the turn"}},
+	})
+	if err != nil {
+		t.Fatalf("AcceptClientMutationSteer: %v", err)
+	}
+	wantTurnID := steer.Receipt.TurnID
+	if wantTurnID == "" {
+		t.Fatal("the steer's Applied receipt carried no turn id")
+	}
+	var snapshotSyncs atomic.Int32
+	sess.clientMutations.faults.SnapshotDirSync = func() error {
+		// The wake's empty queue pop writes first; the carrier claim is second.
+		if snapshotSyncs.Add(1) == 2 {
+			return errors.New("injected claim directory sync failure")
+		}
+		return nil
+	}
+	defer func() { sess.clientMutations.faults.SnapshotDirSync = nil }()
+
+	var reportedTurnID string
+	_, ran, err := sess.ProcessPendingUserInput(context.Background(), func(turnID string) {
+		reportedTurnID = turnID
+	})
+	if err != nil {
+		t.Fatalf("ProcessPendingUserInput after a published carrier claim: %v", err)
+	}
+	if !ran {
+		t.Fatal("the steering carrier did not run although its claim was published")
+	}
+	if reportedTurnID != wantTurnID {
+		t.Fatalf("reported turn id = %q, want the published carrier's %q", reportedTurnID, wantTurnID)
+	}
+	if sess.hasPendingSteering() {
+		t.Fatal("steering is still pending after the published carrier ran")
 	}
 }
 

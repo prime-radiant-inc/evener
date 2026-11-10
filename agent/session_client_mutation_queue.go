@@ -430,6 +430,14 @@ func (s *Session) claimSteeringCarrierInput() (queuedInput, error) {
 		return queuedInput{}, err
 	}
 	if err != nil {
+		if errors.Is(err, fsatomic.ErrPublished) && carrier.SteeringCarrier {
+			// The rename published the carrier and its ActiveTurnID before the
+			// directory sync failed. The steer is owned by a turn that must now
+			// run: discarding the carrier would park the steer behind the slot
+			// this claim just published, with no runner left to drain it.
+			s.emitClientMutationDurabilityWarning(err)
+			return carrier, nil
+		}
 		// A refused write parks the steer the way a failed append does: it
 		// stays accepted and queued, runnable (hasRunnableUserSteering keeps
 		// the session from resting), and nothing here arms a wake of its own
@@ -620,7 +628,7 @@ func (s *Session) claimDirectClientMutationTurn(acceptedTurnsFloor uint64) error
 	if err := s.ensureClientMutationStore(); err != nil {
 		return err
 	}
-	return s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+	err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		if snapshot.AcceptedTurns < acceptedTurnsFloor {
 			snapshot.AcceptedTurns = acceptedTurnsFloor
 		}
@@ -634,6 +642,18 @@ func (s *Session) claimDirectClientMutationTurn(acceptedTurnsFloor uint64) error
 		snapshot.AcceptedTurns++
 		return nil
 	})
+	if err != nil && !errors.Is(err, fsatomic.ErrPublished) {
+		return err
+	}
+	if errors.Is(err, fsatomic.ErrPublished) {
+		// The rename published the AcceptedTurns increment before the directory
+		// sync failed. The budget unit is claimed, and the input this claim
+		// admits keeps ownership of it through the normal acceptance and
+		// refund paths; reporting the barrier failure would refuse an input
+		// already charged against MaxTurns.
+		s.emitClientMutationDurabilityWarning(err)
+	}
+	return nil
 }
 
 // returnClaimedDirectClientMutationTurn gives back the one turn a direct input's

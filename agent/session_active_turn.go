@@ -1,10 +1,12 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/execsupport/fsatomic"
 )
 
 // A turn's identity has one owner: whatever opened it. A client's turn/start
@@ -103,6 +105,15 @@ func (s *Session) mintRunningTurnID() (string, turnNameRefusal) {
 		refusal = turnNameMinted
 		return nil
 	}); err != nil {
+		if errors.Is(err, fsatomic.ErrPublished) && turnID != "" {
+			// The rename published ActiveTurnID as this turn's durable name
+			// before the directory sync failed. The name is authority every
+			// later start and release acts on, so hand it to the caller: the
+			// turn runs under it and the deferred release clears the slot.
+			s.emitClientMutationDurabilityWarning(err)
+			s.clearStoreUnhealthyWarning()
+			return turnID, refusal
+		}
 		s.warnStoreUnhealthyOnce(fmt.Sprintf("name running turn failed: %v", err))
 		return "", turnNameStoreFailed
 	}

@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
@@ -2183,6 +2185,62 @@ func TestTaskListTool_AppendResponseIsMinimal(t *testing.T) {
 		if strings.Contains(appendRes.Output, substr) {
 			t.Fatalf("append response should not contain %q; got: %s", substr, appendRes.Output)
 		}
+	}
+}
+
+// TestTaskListAppendReportsPublishedDurability covers an add-only call whose
+// directory sync failed after the task store renamed its new snapshot. Append
+// adopted the published tasks, so the tool must publish that state and report a
+// durability warning rather than fail the call and invite a retry that adds the
+// same tasks again under new ids.
+func TestTaskListAppendReportsPublishedDurability(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("test"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	store := sess.getOrCreateTaskStore()
+	publishedFS := afero.NewOsFs()
+	store.SetFs(&dirOpenFailFS{Fs: publishedFS, dir: filepath.Join(dir, "tasks")})
+
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:   "c-published",
+		Name: "task_list",
+		Arguments: json.RawMessage(`{
+			"add": [
+				{"type": "research", "description": "Published task", "prompt": "Do it"}
+			]
+		}`),
+	})
+	if res.IsError {
+		t.Fatalf("task_list add after a published directory-sync failure = error %q, want the committed result with a durability warning", res.Output)
+	}
+	if !strings.Contains(res.Output, "Added 1 task(s).") {
+		t.Fatalf("task_list output = %q, want the added task acknowledgment", res.Output)
+	}
+	if !strings.Contains(res.Output, "durability is unconfirmed") {
+		t.Fatalf("task_list output = %q, want the durability warning", res.Output)
+	}
+	tasks := store.View()
+	if len(tasks) != 1 || tasks[0].Description != "Published task" {
+		t.Fatalf("in-memory tasks after the published add = %#v", tasks)
+	}
+	data, readErr := afero.ReadFile(publishedFS, filepath.Join(dir, "tasks", sess.id+".json"))
+	if readErr != nil {
+		t.Fatalf("read published task file: %v", readErr)
+	}
+	var published []taskpkg.Task
+	if err := json.Unmarshal(data, &published); err != nil {
+		t.Fatalf("decode published tasks: %v", err)
+	}
+	if len(published) != 1 || published[0].Description != "Published task" {
+		t.Fatalf("published task file = %#v", published)
 	}
 }
 

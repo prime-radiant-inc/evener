@@ -3,14 +3,18 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/execsupport/fsatomic"
 )
 
 // This file carries the item-8 and item-9 discriminators from
@@ -197,6 +201,55 @@ func assertNotesSaveRejected(t *testing.T, s *Session, mutationErr error, want n
 		default:
 			return
 		}
+	}
+}
+
+// TestMutateAgentNoteDirectorySyncFailurePublishesStagedNote covers a metadata
+// save that renamed the new note into place and then failed the directory
+// sync. The new note is published on disk, so the live store and the committed
+// cut must keep it: rolling back to the old note would let the next autosave
+// overwrite the visible file with pre-save state.
+func TestMutateAgentNoteDirectorySyncFailurePublishesStagedNote(t *testing.T) {
+	t.Parallel()
+	s := newNotesToolSession(t)
+	s.stateDir = t.TempDir()
+	if _, _, _, _, err := s.mutateAgentNoteSerialized("committed note"); err != nil {
+		t.Fatalf("seed agent note: %v", err)
+	}
+	drainNotesEvents(s)
+
+	publishedFS := afero.NewMemMapFs()
+	s.cfg.testOnly.metaFS = &dirOpenFailFS{Fs: publishedFS, dir: filepath.Join(s.stateDir, "sessions")}
+	_, _, _, _, err := s.mutateAgentNoteSerialized("published note")
+	if !errors.Is(err, fsatomic.ErrPublished) {
+		t.Fatalf("mutateAgentNoteSerialized error = %v, want fsatomic.ErrPublished", err)
+	}
+	if got := s.agentNoteForTest(); got != "published note" {
+		t.Fatalf("live agent note after a published save = %q, want the published %q", got, "published note")
+	}
+	if _, agent := s.notesSnapshot(); agent != "published note" {
+		t.Fatalf("committed agent note after a published save = %q, want the published %q", agent, "published note")
+	}
+	published, loadErr := schema.LoadSessionMetaWithFS(publishedFS, s.stateDir, s.id)
+	if loadErr != nil {
+		t.Fatalf("load published meta: %v", loadErr)
+	}
+	if published.AgentNote != "published note" {
+		t.Fatalf("meta.json agent note = %q, want the published %q", published.AgentNote, "published note")
+	}
+
+	// A later autosave must persist the published note, not overwrite it with
+	// the pre-mutation in-memory value.
+	s.cfg.testOnly.metaFS = nil
+	if err := s.autoSaveMeta(); err != nil {
+		t.Fatalf("autosave after the published save: %v", err)
+	}
+	reloaded, loadErr := schema.LoadSessionMeta(s.stateDir, s.id)
+	if loadErr != nil {
+		t.Fatalf("load meta after autosave: %v", loadErr)
+	}
+	if reloaded.AgentNote != "published note" {
+		t.Fatalf("meta.json agent note after a later autosave = %q, want the published %q", reloaded.AgentNote, "published note")
 	}
 }
 

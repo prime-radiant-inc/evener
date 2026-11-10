@@ -521,9 +521,18 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 
 			return mutateAndPublishTaskStore(store, func(epoch, revision uint64) (any, error) {
 				if len(updates) == 0 {
+					var durabilityErr error
 					added, err := store.Append(adds)
 					if err != nil {
-						return nil, err
+						if !errors.Is(err, fsatomic.ErrPublished) {
+							return nil, err
+						}
+						// Append adopted the tasks the rename published
+						// before the directory sync failed. Report the
+						// committed result and carry the uncertainty, the
+						// same as a published update batch: failing the
+						// call would invite a retry that adds duplicates.
+						durabilityErr = err
 					}
 					// Adds only: terse acknowledgement. The current task is
 					// announced via a separate SYSTEM-REMINDER steering message
@@ -533,8 +542,12 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					summary := taskpkg.Summarize(tasks)
 					taskUpdate := taskUpdatedData(summary, "", epoch, revision)
 					deps.emit(taskUpdate)
+					output := fmt.Sprintf("Added %d task(s). Progress: %s.", len(added), summary.ProgressText())
+					if durabilityErr != nil {
+						output += fmt.Sprintf(" Task update durability is unconfirmed: %v.", durabilityErr)
+					}
 					return tool.StateResult{
-						Output: fmt.Sprintf("Added %d task(s). Progress: %s.", len(added), summary.ProgressText()),
+						Output: output,
 						State:  tasks,
 					}, nil
 				}
@@ -703,7 +716,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				taskUpdate := taskUpdatedData(summary, "", epoch, revision)
 				deps.emit(taskUpdate)
 				if durabilityErr != nil {
-					msg.WriteString(fmt.Sprintf("Task update durability is unconfirmed: %v. ", durabilityErr))
+					fmt.Fprintf(&msg, "Task update durability is unconfirmed: %v. ", durabilityErr)
 				}
 				if postCommitErr != nil {
 					msg.WriteString(postCommitErr.Error())

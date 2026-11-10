@@ -293,11 +293,13 @@ func (s *Session) restoreSessionURLsLocked(urls []schema.SessionURL) {
 // mutateAgentNoteSerialized stores the agent note, persists it, and emits
 // the resulting snapshot as one serialized unit under notesUpdateMu, so
 // concurrent mutations publish in store order (G1). The emission runs
-// without Session.mu (emit re-acquires it). On a persistence failure the
-// store rolls back and the caller reports the error with no emission. The
-// committed notes cut is published after the save returns nil, so readers
-// keep seeing the previous value while the save is in flight and after it
-// fails.
+// without Session.mu (emit re-acquires it). A failure before publication
+// rolls the store back and the caller reports the error with no emission. A
+// post-rename directory-sync failure (fsatomic.ErrPublished) instead keeps
+// the staged note and publishes it as committed: the new note is already
+// visible on disk, so rolling back would let the next autosave overwrite the
+// published file with the pre-mutation value. The caller still reports the
+// durability error.
 func (s *Session) mutateAgentNoteSerialized(note string) (stored string, changed bool, human, agent string, err error) {
 	s.notesUpdateMu.Lock()
 	defer s.notesUpdateMu.Unlock()
@@ -305,9 +307,15 @@ func (s *Session) mutateAgentNoteSerialized(note string) (stored string, changed
 	_, prevAgent := s.notesSnapshot()
 	stored, changed = s.stageAgentNote(note)
 	if err = s.persistNotesMetaLocked(); err != nil {
-		s.mu.Lock()
-		s.agentNote = prevAgent
-		s.mu.Unlock()
+		if errors.Is(err, fsatomic.ErrPublished) {
+			// Publish the staged note the rename already made visible instead
+			// of restoring the previous one memory-only.
+			s.publishCommittedNotesLocked()
+		} else {
+			s.mu.Lock()
+			s.agentNote = prevAgent
+			s.mu.Unlock()
+		}
 		s.metaSaveMu.Unlock()
 		return stored, changed, "", "", err
 	}

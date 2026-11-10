@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/afero"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/execsupport/fsatomic"
 )
 
@@ -101,6 +102,46 @@ func TestClientMutationSnapshotDirectorySyncFailureReportsPublished(t *testing.T
 	}
 	if reloaded.SessionID != "session-1" {
 		t.Fatalf("published snapshot session = %q", reloaded.SessionID)
+	}
+}
+
+// TestSteeringCarrierClaimDirectorySyncFailureKeepsPublishedCarrier covers a
+// claim whose directory sync failed after the rename: the active-turn slot and
+// the carrier were published, so the claim must hand the carrier to the normal
+// execution path instead of parking the steer behind the occupied slot it just
+// published.
+func TestSteeringCarrierClaimDirectorySyncFailureKeepsPublishedCarrier(t *testing.T) {
+	t.Parallel()
+	sess := newTwoStageMutationSession(t)
+	const clientMutationID = "published-carrier"
+	steer, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: clientMutationID,
+		Input:            []appwire.InputItem{{Type: "text", Text: "carry me"}},
+	})
+	if err != nil {
+		t.Fatalf("AcceptClientMutationSteer: %v", err)
+	}
+	wantTurnID := steer.Receipt.TurnID
+	if wantTurnID == "" {
+		t.Fatal("the steer's Applied receipt carried no turn id")
+	}
+	sess.clientMutations.faults.SnapshotDirSync = func() error {
+		return errors.New("injected claim directory sync failure")
+	}
+	defer func() { sess.clientMutations.faults.SnapshotDirSync = nil }()
+
+	carrier, refusal := sess.claimSteeringCarrierInput()
+	if refusal != nil {
+		t.Fatalf("claimSteeringCarrierInput refusal = %v, want the published claim", refusal)
+	}
+	if !carrier.SteeringCarrier || carrier.ClientMutationID != clientMutationID || carrier.StableTurnID != wantTurnID {
+		t.Fatalf("carrier = %#v, want the published carrier for %q turn %q", carrier, clientMutationID, wantTurnID)
+	}
+	if got := sess.clientMutations.snapshot().ActiveTurnID; got != wantTurnID {
+		t.Fatalf("published ActiveTurnID = %q, want %q", got, wantTurnID)
+	}
+	if sess.steeringParkedNow() {
+		t.Fatal("the steering was parked although its carrier claim was published")
 	}
 }
 
