@@ -47,6 +47,36 @@ another job or change the event type. Watch and watch-send frames do not
 acknowledge shell completion. If delivery marking must retry after the runtime
 completion entry was recorded, that retry does not inject it again.
 
+A completion that finishes while a notification turn is already running reaches
+the model at that turn's next round boundary: the next model request carries it,
+and the turn does not hold it until the turn ends. An ordinary turn instead
+yields at the boundary so the drain runs a notification turn. Each completion is
+delivered and recorded once.
+
+A completion counts as delivered once the model client hands the provider a
+request built from a transcript holding its runtime entry, not when the entry is
+written. A provider error after that point also settles it, because the turn
+fails visibly. A turn that ends before any request is sent (stopped, out of
+rounds, refused by local context admission, or failing any other check on the
+way) leaves the completion owed. That includes a Stop before the turn's
+first request, because job notifications are not the user's to stop. The session
+wakes again, and the next turn's request carries the entry already in the
+transcript, or the compaction summary that folded it, without writing it a
+second time. A completion gets one such retry: if the next turn also ends without
+a request, the completion settles with that turn's failure visible, and its entry
+stays in the transcript for whatever request comes next. Only turns that run
+count; a wake that stands down before its turn starts (for example, while the
+turn cannot be named) spends nothing, and the completion stays owed under the
+paced retry. A restart loses the
+in-memory owed state, so after one the recorded entry settles the completion as
+described above.
+
+Watch and watch-send frames settle when the notification turn writes them,
+before its model call. They have no replay detection, so a restart during the
+call would otherwise render the same frame twice. A turn that ends before its
+request leaves the written frame in the transcript, and the next request
+carries it.
+
 ```mermaid
 flowchart LR
   Start[Launch managed work] --> ID[Retain typed identity]
