@@ -603,6 +603,20 @@ func TestEmbeddedSectionDumpDecodes(t *testing.T) {
 	}
 }
 
+func TestEmbeddedSectionDumpDecodesArm64Words(t *testing.T) {
+	t.Parallel()
+	// A thin arm64 binary makes otool print little-endian four-byte words
+	// instead of byte pairs. Run 42769642647 failed verification because the
+	// decoder read no bytes from this shape.
+	dump := []byte("Contents of (__TEXT,__entitlements) section\n" +
+		"000000010212a142\t6d783f3c 6576206c 6f697372 31223d6e \n")
+	want := []byte(`<?xml version="1`)
+	got, err := decodeSectionDump(dump)
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("decodeSectionDump = %q, %v; want %q", got, err, want)
+	}
+}
+
 func TestProductEntitlementsPreferSignatureThenEmbeddedSection(t *testing.T) {
 	t.Parallel()
 	appGroup := map[string]any{"com.apple.security.application-groups": []any{"group.com.primeradiant.evener.native"}}

@@ -100,19 +100,24 @@ func podUnlockCommand(names []string) []string {
 }
 
 // decodeSectionDump turns `otool -X -s __TEXT __entitlements` output into the
-// section's raw bytes. Only two-character hex tokens are bytes; anything else
-// (a section header, an address column) is skipped.
+// section's raw bytes. otool prints two-character byte tokens for a universal
+// binary and little-endian four-byte words for a thin arm64 one, so both shapes
+// decode; anything else (a section header, an address column) is skipped.
 func decodeSectionDump(dump []byte) ([]byte, error) {
 	var out []byte
 	for token := range strings.FieldsSeq(string(dump)) {
-		if len(token) != 2 || !isHexPair(token) {
+		if (len(token) != 2 && len(token) != 4 && len(token) != 8) || !isHexPair(token) {
 			continue
 		}
-		value, err := strconv.ParseUint(token, 16, 8)
+		value, err := strconv.ParseUint(token, 16, 32)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, byte(value))
+		// A word prints its byte pairs in reverse: the token's last pair is
+		// the section's first byte.
+		for shift := 0; shift < 8*(len(token)/2); shift += 8 {
+			out = append(out, byte(value>>shift))
+		}
 	}
 	if len(out) == 0 {
 		return nil, errors.New("entitlements section dump has no bytes")
