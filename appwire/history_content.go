@@ -144,6 +144,30 @@ func ThreadWindowSourceIncarnation(incarnation string) (string, bool) {
 
 func (s ThreadContentSelection) Diagnostics() bool { return s&excludeDiagnostics == 0 }
 
+// NormalizeWindowContent translates the one coarse window selection with an
+// exact-type equivalent — the messages shape — into itemTypes and clears the
+// coarse flags. A windowed request carries exactly one content filter: the
+// exact-type predicate its view identity names. Any other coarse selection is
+// refused typed rather than silently dropped before the elision pass.
+func NormalizeWindowContent(window *ThreadTurnWindow, params ThreadContentParams, itemTypes []string) (ThreadContentParams, []string, error) {
+	if window == nil || params == (ThreadContentParams{}) {
+		return params, itemTypes, nil
+	}
+	no := false
+	messagesOnly := ThreadContentParams{
+		IncludeThinking: &no, IncludeToolCalls: &no, IncludeToolCallIntents: &no,
+		IncludeSystemMessages: &no, IncludeDiagnostics: &no,
+	}
+	if params.Selection() != messagesOnly.Selection() {
+		return ThreadContentParams{}, nil, InvalidParams("window content selection must use exact itemTypes")
+	}
+	types := slices.Clone(itemTypes)
+	if !slices.Contains(types, "messages") {
+		types = append(types, "messages")
+	}
+	return ThreadContentParams{}, types, nil
+}
+
 func (s ThreadContentSelection) ToolCalls() bool { return s&excludeToolCalls == 0 }
 
 func (s ThreadContentSelection) HasItems() bool {

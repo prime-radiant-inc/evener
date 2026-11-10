@@ -81,7 +81,10 @@ same live and saved history owners. A request selects one turn window: latest,
 one exact turn, a bounded forward window since a turn, or a bounded backward
 window before a turn. Exact `itemTypes` filtering happens before the per-turn
 item cap; `messages` selects user messages, agent messages and human steering
-according to recorded source metadata. Message and tool-output body bounds apply
+according to recorded source metadata. A window has one content filter: a
+request that names the coarse `messages` selection is translated into that
+exact `itemTypes` predicate, and any other coarse combination is refused typed.
+The legacy global selection never re-pages a window. Message and tool-output body bounds apply
 without removing item identity or lifecycle metadata.
 
 The existing history packer owns both ordinary and Manager views. Its Manager

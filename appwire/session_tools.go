@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"slices"
 	"strings"
 
 	"primeradiant.com/evener/agent/provenance"
@@ -106,19 +105,12 @@ func NormalizeSessionOperationRequest(request SessionOperationRequest) (SessionO
 	if request.Turns == nil || request.Turns.TurnWindow == nil || request.Turns.ThreadContentParams == (ThreadContentParams{}) {
 		return request, nil
 	}
-	no := false
-	messagesOnly := ThreadContentParams{
-		IncludeThinking: &no, IncludeToolCalls: &no, IncludeToolCallIntents: &no,
-		IncludeSystemMessages: &no, IncludeDiagnostics: &no,
-	}
-	if request.Turns.Selection() != messagesOnly.Selection() {
-		return SessionOperationRequest{}, InvalidParams("window content selection must use exact itemTypes")
+	content, itemTypes, err := NormalizeWindowContent(request.Turns.TurnWindow, request.Turns.ThreadContentParams, request.Turns.ItemTypes)
+	if err != nil {
+		return SessionOperationRequest{}, err
 	}
 	turns := *request.Turns
-	turns.ThreadContentParams = ThreadContentParams{}
-	if !slices.Contains(turns.ItemTypes, "messages") {
-		turns.ItemTypes = append(append([]string(nil), turns.ItemTypes...), "messages")
-	}
+	turns.ThreadContentParams, turns.ItemTypes = content, itemTypes
 	request.Turns = &turns
 	return request, nil
 }

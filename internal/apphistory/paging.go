@@ -100,6 +100,13 @@ func Read(ctx context.Context, params appwire.ThreadReadParams, read ReadFunc, l
 	if err := appwire.ValidateThreadReadParams(params); err != nil {
 		return appwire.ThreadReadResponse{}, err
 	}
+	// A windowed request filters by exact item types only, so its normalized
+	// selection is empty and the legacy global fill below never runs for it.
+	content, itemTypes, err := appwire.NormalizeWindowContent(params.TurnWindow, params.ThreadContentParams, params.ItemTypes)
+	if err != nil {
+		return appwire.ThreadReadResponse{}, err
+	}
+	params.ThreadContentParams, params.ItemTypes = content, itemTypes
 	selection := params.Selection()
 	source := params
 	source.ThreadContentParams = appwire.ThreadContentParams{}
@@ -179,6 +186,11 @@ func List(ctx context.Context, params appwire.ThreadTurnsListParams, list ListFu
 	if err := appwire.ValidateThreadTurnsListParams(params); err != nil {
 		return appwire.ThreadTurnsListResponse{}, err
 	}
+	content, itemTypes, err := appwire.NormalizeWindowContent(params.TurnWindow, params.ThreadContentParams, params.ItemTypes)
+	if err != nil {
+		return appwire.ThreadTurnsListResponse{}, err
+	}
+	params.ThreadContentParams, params.ItemTypes = content, itemTypes
 	selection := params.Selection()
 	source := params
 	source.ThreadContentParams = appwire.ThreadContentParams{}

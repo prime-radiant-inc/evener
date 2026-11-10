@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -199,6 +200,96 @@ func TestWindowedHistoryViewFencesHeldSnapshot(t *testing.T) {
 	}
 	if f.held != nil {
 		t.Fatal("incompatible window held snapshot sent to source")
+	}
+}
+
+// A window has one content filter: the exact item types its view identity
+// names. A coarse messages selection is translated into that predicate at this
+// boundary, so the per-turn limit the window names survives and the legacy
+// global selection never re-pages a window.
+func TestWindowedHistoryTranslatesCoarseMessagesIntoItemTypes(t *testing.T) {
+	t.Parallel()
+	f := fixtureHistory()
+	p := appwire.ThreadReadParams{
+		ThreadContentParams: conversationParams(), Ref: "local:thread", IncludeTurns: true, ItemLimit: 2,
+		TurnWindow: &appwire.ThreadTurnWindow{Latest: 1},
+	}
+	var seen appwire.ThreadReadParams
+	r, err := Read(t.Context(), p, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		seen = params
+		return f.read(ctx, params)
+	}, f.list)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seen.Selection() != 0 || !slices.Contains(seen.ItemTypes, "messages") || seen.ItemLimit != 2 {
+		t.Fatalf("windowed source request = selection %v types %v limit %d, want messages types at the window's per-turn limit", seen.Selection(), seen.ItemTypes, seen.ItemLimit)
+	}
+	if f.lists != 0 {
+		t.Fatalf("windowed read fell back to legacy global paging (%d list calls)", f.lists)
+	}
+	if got := ids(r.Thread.Turns); !reflect.DeepEqual(got, []string{"204", "205"}) {
+		t.Fatalf("windowed page=%v, want the source's own window page", got)
+	}
+}
+
+// A window continuation cursor names the exact-type view it resumes. Following
+// it through the public handler must forward that cursor untouched, not decode
+// it as a legacy selection cursor or re-page the transcript around it.
+func TestWindowedHistoryForwardsWindowContinuationWithTranslatedTypes(t *testing.T) {
+	t.Parallel()
+	content := conversationParams()
+	window := appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Latest: 1}}
+	var seen appwire.ThreadTurnsListParams
+	page, err := List(t.Context(), appwire.ThreadTurnsListParams{
+		ThreadContentParams: content, Ref: "local:thread", Cursor: "window-continuation", ItemLimit: 1, ThreadWindowParams: window,
+	}, func(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+		seen = params
+		return appwire.ThreadTurnsListResponse{
+			Data:     []appwire.Turn{{ID: "turn", ItemsView: appwire.TurnItemsViewFragment}},
+			Snapshot: &appwire.SnapshotIdentity{Incarnation: "inc", Length: 205},
+		}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seen.Cursor != "window-continuation" || seen.Selection() != 0 || !slices.Contains(seen.ItemTypes, "messages") || seen.ItemLimit != 1 || seen.TurnWindow == nil {
+		t.Fatalf("windowed continuation request = %+v", seen)
+	}
+	if len(page.Data) != 1 || page.Data[0].ID != "turn" || page.NextCursor != "" {
+		t.Fatalf("windowed continuation page = %+v", page)
+	}
+}
+
+// Only the coarse shape with an exact-type equivalent is translated. Any other
+// coarse selection is refused before reaching the source, because a window has
+// no second filter to apply it with.
+func TestWindowedHistoryRefusesCoarseSelectionWithoutExactEquivalent(t *testing.T) {
+	t.Parallel()
+	no := false
+	content := appwire.ThreadContentParams{IncludeConversation: &no}
+	window := appwire.ThreadTurnWindow{Latest: 1}
+	called := false
+	read := func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		called = true
+		return appwire.ThreadReadResponse{}, nil
+	}
+	list := func(context.Context, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+		called = true
+		return appwire.ThreadTurnsListResponse{}, nil
+	}
+	cases := map[string]error{}
+	_, cases["read"] = Read(t.Context(), appwire.ThreadReadParams{ThreadContentParams: content, Ref: "local:thread", IncludeTurns: true, TurnWindow: &window}, read, list)
+	_, cases["list"] = List(t.Context(), appwire.ThreadTurnsListParams{ThreadContentParams: content, Ref: "local:thread", Cursor: "window-continuation", TurnWindow: &window}, list)
+	for name, err := range cases {
+		wire, ok := errors.AsType[appwire.WireError](err)
+		data, hasData := appwire.ErrorDataOf(wire.Data)
+		if !ok || !hasData || data.EvenerErrorInfo != appwire.ErrorInvalidParams {
+			t.Fatalf("%s windowed coarse selection = %v, want a typed invalid-params refusal", name, err)
+		}
+	}
+	if called {
+		t.Fatal("refused windowed selection reached the source")
 	}
 }
 
