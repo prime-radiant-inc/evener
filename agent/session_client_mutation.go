@@ -1062,6 +1062,12 @@ func (s *Session) InterruptClientMutation(
 	// pressed as its turn ended then cancels nothing, which is the outcome it
 	// asked for.
 	sessionRunning := s.WireState() == string(SessionProcessing)
+	// The running execution is sampled alongside it for the same reason. Its id
+	// names the turn that is actually cancelled; the durable slot can name a
+	// reserved mutation turn that has not started (#5802).
+	s.mu.Lock()
+	execution := s.execution
+	s.mu.Unlock()
 	lookup, err := s.clientMutations.reservePrepared(request, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
 		if snapshot.InterruptFence != nil {
 			rejectClientMutation(record, appwire.Conflict("turn interrupt is already pending"))
@@ -1077,6 +1083,10 @@ func (s *Session) InterruptClientMutation(
 		// execution is correct there: the cancellation is what ends such a turn,
 		// and there is no accepted input to mark interrupted.
 		target := snapshot.ActiveTurnID
+		if execution.running && execution.turnID != "" {
+			target = execution.turnID
+		}
+
 		record.StableTurnID = target
 		record.ExecutionState = "interruptRequested"
 		snapshot.InterruptFence = &clientMutationInterruptFence{

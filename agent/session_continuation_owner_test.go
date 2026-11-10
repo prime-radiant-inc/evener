@@ -80,3 +80,59 @@ func TestUnnamedContinuationOwnsItsSteering(t *testing.T) {
 		t.Fatalf("ActiveTurnID = %q after the continuation, want the held %q untouched", got, held)
 	}
 }
+
+// TestStopDuringUnnamedContinuationTargetsRunningTurn pins #5802: a Stop
+// accepted while an unnamed continuation runs must fence the execution that is
+// running, not the reserved mutation turn that holds the durable active-turn
+// slot. The fence is captured from inside the running step, before the turn can
+// finalize.
+func TestStopDuringUnnamedContinuationTargetsRunningTurn(t *testing.T) {
+	t.Parallel()
+
+	var sess *Session
+	var runningID, fencedID string
+	step := func(llm.Request) llm.Response {
+		sess.mu.Lock()
+		runningID = sess.execution.turnID
+		sess.mu.Unlock()
+		// The fence is read inside cancelAndWait: it is persisted before the
+		// cancellation and finalized after it, so this is the only point where
+		// it is still visible.
+		cancelAndWait := func() {
+			if fence := sess.clientMutations.snapshot().InterruptFence; fence != nil {
+				fencedID = fence.ExpectedTurnID
+			}
+		}
+		if _, err := sess.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
+			ClientMutationID: "cm-stop-during-continuation",
+		}, cancelAndWait); err != nil {
+			t.Errorf("InterruptClientMutation during the continuation: %v", err)
+		}
+		return agenttest.FinalResponse("continued")
+	}
+	sess = newTestSessionForEnvctx(t, withSteps(step))
+	serveSessionWithMutationStore(t, sess)
+
+	accepted, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: "cm-reserved-for-stop",
+		Input:            []appwire.InputItem{{Type: "text", Text: "reserve the active turn"}},
+	})
+	if err != nil {
+		t.Fatalf("AcceptClientMutationStart: %v", err)
+	}
+	held := accepted.Turn.ID
+	if held == "" {
+		t.Fatal("turn/start reserved no active turn; the test is not in the state it means to be")
+	}
+
+	if _, err := sess.ProcessInputKind(context.Background(), "keep going", nil, EntryContinuation); err != nil {
+		t.Fatalf("ProcessInputKind(EntryContinuation): %v", err)
+	}
+
+	if runningID == "" || runningID == held {
+		t.Fatalf("continuation ran under %q, want its own execution id distinct from the held %q", runningID, held)
+	}
+	if fencedID != runningID {
+		t.Fatalf("Stop fenced turn %q, want the running execution %q (held reserved turn %q)", fencedID, runningID, held)
+	}
+}
