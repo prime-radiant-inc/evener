@@ -317,9 +317,10 @@ func isHexPair(name string) bool {
 // copyTree recursively copies src to dst (files, dirs, and symlink targets as
 // regular files), creating directories as needed and overwriting existing files.
 // Every entry named .git is skipped, and a symlink reaching Git metadata is
-// refused: those bytes must never enter a published plugin tree (#4768). A
-// named pipe or other non-regular entry fails the copy rather than blocking on
-// its open (#4847).
+// refused: those bytes must never enter a published plugin tree (#4768). The
+// opened descriptor is what gets copied, so a retarget cannot substitute Git
+// metadata. A named pipe or other non-regular entry fails the copy rather than
+// blocking on its open (#4847).
 func copyTree(src, dst string) error {
 	info, err := sourceStat(src)
 	if err != nil {
@@ -338,11 +339,6 @@ func copyTree(src, dst string) error {
 			}
 			return nil
 		}
-		if fi.Mode()&os.ModeSymlink != 0 {
-			if err := refuseGitSymlink(src, path); err != nil {
-				return err
-			}
-		}
 		rel, err := filepath.Rel(src, path)
 		if err != nil {
 			return err
@@ -354,22 +350,18 @@ func copyTree(src, dst string) error {
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
 		}
-		return copyRegularFile(path, target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, fi.Mode().Perm())
+		var in *os.File
+		if fi.Mode()&os.ModeSymlink != 0 {
+			in, err = openPluginSourceLink(src, path)
+		} else {
+			in, err = openRegularNoBlock(path)
+		}
+		if err != nil {
+			return err
+		}
+		defer func() { _ = in.Close() }()
+		return copyOpenedFile(in, target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, fi.Mode().Perm())
 	})
-}
-
-// refuseGitSymlink refuses a source symlink whose lexical or resolved target
-// names a .git component. Ordinary links keep copyTree's existing dereference
-// behavior; only links into Git metadata are refused.
-func refuseGitSymlink(src, path string) error {
-	reachesGit, err := symlinkReachesGit(src, path)
-	if err != nil {
-		return err
-	}
-	if reachesGit {
-		return gitSymlinkError(src, path)
-	}
-	return nil
 }
 
 func gitSymlinkError(src, path string) error {
