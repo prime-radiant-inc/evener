@@ -92,19 +92,55 @@ export class DraftLibrary {
 			transfer = this.repository()
 				.outstandingTransfers()
 				.find((row) => sameDestination(row.from, from) && sameDestination(row.to, to));
-			if (transfer === undefined) transfer = this.repository().beginTransfer(from, to, this.createTransferId());
 		} catch {
 			// The drafts store cannot record the hop; keep the in-memory intent
 			// so a later call retries once the store is reachable.
 			this.deferHandoff(from, to);
 			return false;
 		}
+		if (transfer === undefined) {
+			transfer = this.beginOrDefer(from, to);
+			if (transfer === undefined) return false;
+		}
 		this.pending.delete(this.handoffKey(to));
-		// A committed hop owes settlement, not another transfer: its bytes
-		// already landed, and re-attempting would read the occupied destination
-		// as a refusal and destroy the committed pointer.
-		if (transfer.deliveredHash !== null) return this.settleTransfer(transfer);
+		// A committed hop owes settlement, not re-attempting the same record:
+		// its bytes already landed, and re-attempting would read the occupied
+		// destination as a refusal and destroy the committed pointer. Once it
+		// settles, however, a record A composed after the commit needs a hop
+		// of its own; matching only the endpoints would settle the old row and
+		// leave that new work unrecorded at A.
+		if (transfer.deliveredHash !== null) return this.settleCommittedHandoff(transfer);
 		return this.attemptHandoff(transfer);
+	}
+
+	/** Settle a committed hop, then record and attempt the successor a source
+	 * record composed after the commit needs. An unreadable source defers in
+	 * memory: unknown is not new work. */
+	private settleCommittedHandoff(transfer: DraftTransfer): boolean {
+		if (!this.settleTransfer(transfer)) return false;
+		const source = this.open(transfer.from);
+		const snapshot = this.loadedSnapshot(source);
+		if (!snapshot.loaded) {
+			this.deferHandoff(transfer.from, transfer.to);
+			return false;
+		}
+		const unchanged = compositionFingerprint(snapshot.record) === transfer.deliveredHash;
+		const hasNewRecord =
+			!unchanged && (destinationContent(snapshot.record) || (snapshot.record.unconfirmedCaptureToken ?? null) !== null);
+		if (!hasNewRecord) return true;
+		const next = this.beginOrDefer(transfer.from, transfer.to);
+		if (next === undefined) return false;
+		return this.attemptHandoff(next);
+	}
+
+	/** Record a hop, or keep its in-memory intent when the store cannot. */
+	private beginOrDefer(from: DraftDestination, to: DraftDestination): DraftTransfer | undefined {
+		try {
+			return this.repository().beginTransfer(from, to, this.createTransferId());
+		} catch {
+			this.deferHandoff(from, to);
+			return undefined;
+		}
 	}
 
 	/** Retry what previous calls or previous processes left unfinished: the
@@ -142,7 +178,7 @@ export class DraftLibrary {
 			}
 			if (current === undefined) continue;
 			if (current.deliveredHash === null) this.attemptHandoff(current);
-			else this.settleTransfer(current);
+			else this.settleCommittedHandoff(current);
 		}
 		this.reconcileResolvedObligations();
 	}
@@ -254,11 +290,7 @@ export class DraftLibrary {
 	 * occupied destination takes the row out of the pending set. */
 	private attemptHandoff(transfer: DraftTransfer): boolean {
 		const source = this.open(transfer.from);
-		let snapshot = source.getSnapshot();
-		if (!snapshot.loaded) {
-			source.retry();
-			snapshot = source.getSnapshot();
-		}
+		const snapshot = this.loadedSnapshot(source);
 		if (!snapshot.loaded) return false;
 		const destination = this.open(transfer.to);
 		let current = destination.getSnapshot();
@@ -278,10 +310,9 @@ export class DraftLibrary {
 		// preserves that evidence in its own savepoint, written atomically
 		// with the move it evidences - or an unreadable ledger defers the
 		// commit, which never writes without the evidence.
-		const owed = this.resolvedObligationsAt(transfer.from);
+		const owed = this.resolvedObligationsAt(transfer.from, snapshot.record);
 		if (owed === undefined) return false;
-		const completed = [...new Set([...(snapshot.record.completedCommandRecoveryIds ?? []), ...owed.completed])];
-		const released = [...new Set([...releasedSources(snapshot.record), ...owed.released])];
+		const { completed, released } = mergeObligationEvidence(snapshot.record, owed);
 		// A destination that consumed its composition keeps only its
 		// historical settlement markers. Markers are evidence about work
 		// already done, never work: they must not strand an incoming hop at
@@ -370,7 +401,10 @@ export class DraftLibrary {
 	 * are the evidence. A ledger this library does not have owes nothing;
 	 * one that exists but cannot answer is unknown evidence, and unknown
 	 * defers the commit. */
-	private resolvedObligationsAt(origin: DraftDestination): { completed: string[]; released: string[] } | undefined {
+	private resolvedObligationsAt(
+		origin: DraftDestination,
+		record?: DraftRecord,
+	): { completed: string[]; released: string[] } | undefined {
 		let ledger: DraftSubmissionLedgerSQLite | undefined;
 		try {
 			ledger = this.submissionLedger?.();
@@ -386,8 +420,13 @@ export class DraftLibrary {
 		}
 		const completed: string[] = [];
 		const released: string[] = [];
+		const captureToken = record?.unconfirmedCaptureToken;
 		for (const obligation of obligations) {
-			if (!clearsCapture(obligation.state) || !sameDestination(obligation.origin, origin)) continue;
+			if (!clearsCapture(obligation.state)) continue;
+			// The obligation names where its submission began, but a hop can
+			// have carried that submission's capture to this record. Match the
+			// durable capture too, as openObligationRecoveryIds does.
+			if (!sameDestination(obligation.origin, origin) && obligation.obligationId !== captureToken) continue;
 			completed.push(...obligation.completedCommandIds);
 			released.push(...obligation.releasedRecoveryIds);
 		}
@@ -400,12 +439,16 @@ export class DraftLibrary {
 	 * failed release leaves the row pending so the next pass converges it. */
 	private refuseHandoff(transfer: DraftTransfer, source: DraftDocument, destination: DraftDocument): void {
 		const record = source.getSnapshot().record;
+		// A completion can resolve while the hop cannot commit; the source
+		// screen's cleanup may then strip the record's own markers. The
+		// obligation rows are the evidence, so the refusal carries them too.
+		const owed = this.resolvedObligationsAt(transfer.from, record);
+		if (owed === undefined) return;
 		// The refusal delivers everything the composition had settled so far -
 		// completed commands and prior releases as much as the still-cited
 		// sources - or the rows a retarget already moved could restore content
 		// an executed command consumed.
-		const completed = [...(record.completedCommandRecoveryIds ?? [])];
-		const released = releasedSources(record);
+		const { completed, released } = mergeObligationEvidence(record, owed);
 		try {
 			if (completed.length && !destination.adoptCompletedCommandRecovery(completed)) return;
 			if (released.length && !destination.releaseRecoverySources(released)) return;
@@ -465,11 +508,7 @@ export class DraftLibrary {
 		// An owner that cannot load must not receive markers: persisting an
 		// unloaded document would write its default empty record over the
 		// owner's saved draft and delete its image bytes. Defer instead.
-		let ownerSnapshot = document.getSnapshot();
-		if (!ownerSnapshot.loaded) {
-			document.retry();
-			ownerSnapshot = document.getSnapshot();
-		}
+		const ownerSnapshot = this.loadedSnapshot(document);
 		if (!ownerSnapshot.loaded) return false;
 		try {
 			// A marker write that did not persist leaves the settlement owed:
@@ -483,23 +522,23 @@ export class DraftLibrary {
 			if (transfer.releasedRecoveryIds.length && !document.releaseRecoverySources(transfer.releasedRecoveryIds))
 				return false;
 			const ledger = this.availableSubmissionLedger();
-			if (ledger !== undefined)
-				ledger.writeDeliveries([
-					...transfer.completedCommandRecoveryIds.map((recoveryId) => ({
+			const deliveries = [
+				...transfer.completedCommandRecoveryIds.map((recoveryId) => ({
+					destination: owner,
+					recoveryId,
+					disposition: "completed" as const,
+					transferId: transfer.transferId,
+				})),
+				...transfer.releasedRecoveryIds
+					.filter((recoveryId) => !transfer.completedCommandRecoveryIds.includes(recoveryId))
+					.map((recoveryId) => ({
 						destination: owner,
 						recoveryId,
-						disposition: "completed" as const,
+						disposition: "released" as const,
 						transferId: transfer.transferId,
 					})),
-					...transfer.releasedRecoveryIds
-						.filter((recoveryId) => !transfer.completedCommandRecoveryIds.includes(recoveryId))
-						.map((recoveryId) => ({
-							destination: owner,
-							recoveryId,
-							disposition: "released" as const,
-							transferId: transfer.transferId,
-						})),
-				]);
+			];
+			if (ledger !== undefined && deliveries.length) ledger.writeDeliveries(deliveries);
 			this.repository().markTransferSettled(transfer.transferId);
 			return true;
 		} catch {
@@ -751,6 +790,16 @@ export class DraftLibrary {
 		}
 	}
 
+	/** A document's snapshot after at most one retry of a failed load. */
+	private loadedSnapshot(document: DraftDocument) {
+		let snapshot = document.getSnapshot();
+		if (!snapshot.loaded) {
+			document.retry();
+			snapshot = document.getSnapshot();
+		}
+		return snapshot;
+	}
+
 	private allDocuments(): DraftDocument[] {
 		const documents = [...[...this.hubs.values()].flatMap((sessions) => [...sessions.values()])];
 		for (const set of this.retired.values()) documents.push(...set);
@@ -844,13 +893,36 @@ function releasedSources(record: DraftRecord): string[] {
 	];
 }
 
+/** A record's own settlement markers merged with a hop's obligation evidence. */
+function mergeObligationEvidence(
+	record: DraftRecord,
+	owed: { completed: string[]; released: string[] },
+): { completed: string[]; released: string[] } {
+	return {
+		completed: [...new Set([...(record.completedCommandRecoveryIds ?? []), ...owed.completed])],
+		released: [...new Set([...releasedSources(record), ...owed.released])],
+	};
+}
+
 /** A stable identity for a composition, independent of the settlement markers
  * and captures the destination's later life can change. */
 function compositionFingerprint(record: DraftRecord): string {
 	const canonical = JSON.stringify({
 		draft: record.draft,
 		images: (record.images ?? []).map((image) => [image.id, image.marker, image.mediaType]),
-		composer: record.composer?.recoveryIds ?? [],
+		unconfirmed: record.unconfirmed,
+		unconfirmedImages: (record.unconfirmedImages ?? []).map((image) => [image.id, image.marker, image.mediaType]),
+		composer: [
+			record.composer?.recoveryIds ?? [],
+			record.composer?.skillNames ?? [],
+			record.composer?.commandNames ?? [],
+		],
+		unconfirmedComposer: [
+			record.unconfirmedComposer?.recoveryIds ?? [],
+			record.unconfirmedComposer?.skillNames ?? [],
+			record.unconfirmedComposer?.commandNames ?? [],
+		],
+		unconfirmedCaptureToken: record.unconfirmedCaptureToken ?? null,
 		parked: (record.parkedCompositions ?? []).map((parked) => [
 			parked.text,
 			parked.composer?.recoveryIds ?? [],

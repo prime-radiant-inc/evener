@@ -21,10 +21,10 @@ export function useComposerDraft({
 	const draft = useSyncExternalStore(document.subscribe, document.getSnapshot);
 	// A handoff can fail its storage write while the resume itself already moved
 	// the rows. Retry it as the replacement screen mounts and whenever the draft
-	// becomes writable again; the source composition stays under the old ref
-	// until the destination write commits.
+	// changes; a destination whose own draft failed to load must not stall the
+	// retry, or storage recovering alone could never finish the handoff.
 	useEffect(() => {
-		if (draft.loaded && !draft.error) drafts.retryPendingHandoffs();
+		drafts.retryPendingHandoffs();
 	}, [draft.loaded, draft.error, draft.record]);
 	const imageSelection = useMemo(() => new ImageSelection(document, nativeImagePicker), [document]);
 	const imageState = useSyncExternalStore(imageSelection.subscribe, imageSelection.getSnapshot);

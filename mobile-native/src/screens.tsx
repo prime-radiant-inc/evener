@@ -2883,7 +2883,7 @@ function ConversationScreenView({
 		acks: draft.record.recoveryResendAcks,
 	});
 	useEffect(() => {
-		if (!recoveryAvailable || !draft.loaded || draft.submitting || imageState.busy) return;
+		if (!recoveryAvailable || draft.submitting || imageState.busy) return;
 		let current = true;
 		let ownershipRetryTimer: ReturnType<typeof setTimeout> | null = null;
 		const targetKey = recovery.targetKey;
@@ -2913,23 +2913,18 @@ function ConversationScreenView({
 				deferUntilOwnershipReads();
 				return;
 			}
-			// A document whose completion could not save holds the error the
-			// composer skips. Its composer reconciliation and restoration wait
-			// for the error to clear, but the delivery liveness above does
-			// not: this effect's retry pass is the only runner that
-			// redelivers the held completion, and no document retry timer
-			// remains while the ledger's own writes succeeded. So while any
-			// handoff or completion for this screen is still outstanding the
-			// retry timer stays armed, and storage recovering alone converges
-			// the document - no user action, no remount.
-			if (draft.error) {
+			// An errored or unloaded document holds the composer back, but not
+			// handoff and completion delivery: this effect's retry pass is the
+			// only runner that redelivers them, and storage recovering alone must
+			// converge them - no user action, no remount. Only the reconciliation
+			// and restoration below need the loaded document.
+			if (draft.error || !draft.loaded) {
 				const handoffOutstanding = drafts.hasPendingHandoff({
 					hubId: route.params.hubId,
 					sessionRef: route.params.ref,
 				});
 				const undelivered = drafts.hasUndeliveredCompletions();
-				if (handoffOutstanding === undefined || handoffOutstanding || undelivered === undefined || undelivered)
-					deferUntilOwnershipReads();
+				if ((handoffOutstanding ?? true) || (undelivered ?? true)) deferUntilOwnershipReads();
 				return;
 			}
 			// Ownership is passed as a reader, so the serialized reconciliation

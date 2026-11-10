@@ -51,6 +51,7 @@ const harness = vi.hoisted(() => ({
 	handoffPendingnessReads: 0,
 	handoffPendingnessReadFailFrom: 0,
 	handoffEdgesReadFailFrom: 0,
+	draftRecordReadFailure: "",
 	completionRoutingReadFailure: false,
 	completionWriteFailure: false,
 	rpcFailure: "" as string,
@@ -164,6 +165,14 @@ vi.mock("expo-sqlite", async () => {
 					const index = ++harness.handoffPendingnessReads;
 					return index >= harness.handoffPendingnessReadFailFrom;
 				};
+				// Fails the named destination's own draft-row read: a screen
+				// whose initial draft load cannot complete while the handoff
+				// ledger stays readable must still retry its pending hop.
+				const draftRecordReadFails = (sql: unknown, params: unknown[]) => {
+					if (!harness.draftRecordReadFailure || database !== "evener-drafts.db") return false;
+					if (!String(sql).includes("FROM drafts")) return false;
+					return params.includes(harness.draftRecordReadFailure);
+				};
 				// Fails the capture-routing read of the transfer log while every
 				// ownership and pendingness read succeeds, so a test can leave a
 				// resolved submission's completion undelivered in isolation.
@@ -197,11 +206,13 @@ vi.mock("expo-sqlite", async () => {
 					getFirstSync: (...args: Parameters<SqliteSync["getFirstSync"]>) => {
 						if (handoffReadFails(args[0])) throw new Error("handoff read failed");
 						if (pendingnessReadFails(args[0])) throw new Error("pendingness read failed");
+						if (draftRecordReadFails(args[0], args.slice(1))) throw new Error("draft record read failed");
 						if (completionRoutingFails(args[0])) throw new Error("completion routing read failed");
 						return opened.port.getFirstSync(...args);
 					},
 					getAllSync: (...args: Parameters<SqliteSync["getAllSync"]>) => {
 						if (handoffReadFails(args[0])) throw new Error("handoff read failed");
+						if (draftRecordReadFails(args[0], args.slice(1))) throw new Error("draft record read failed");
 						if (edgesReadFails(args[0])) throw new Error(`handoff edges read #${harness.handoffEdgesReads} failed`);
 						return opened.port.getAllSync(...args);
 					},
@@ -318,6 +329,7 @@ afterEach(async () => {
 	harness.handoffEdgesReadFailFrom = 0;
 	harness.handoffPendingnessReads = 0;
 	harness.handoffPendingnessReadFailFrom = 0;
+	harness.draftRecordReadFailure = "";
 	harness.completionRoutingReadFailure = false;
 	harness.completionWriteFailure = false;
 	harness.rpcFailure = "";
@@ -332,9 +344,21 @@ async function mount(
 	command = false,
 	draftText?: string,
 	selectionKind: "skill" | "command" = "skill",
-	options: { goal?: { objective: string; status: "active"; iterations: number } } = {},
+	options: {
+		goal?: { objective: string; status: "active"; iterations: number };
+		pendingHandoffFrom?: string;
+		failDraftRead?: boolean;
+	} = {},
 ) {
 	const ref = `queued-${++serial}`;
+	if (options.pendingHandoffFrom) {
+		nativeDrafts().write(
+			{ hubId: "hub-1", sessionRef: options.pendingHandoffFrom },
+			{ draft: "incoming work", unconfirmed: null },
+		);
+		if (options.failDraftRead) harness.draftRecordReadFailure = ref;
+		drafts.handoff({ hubId: "hub-1", sessionRef: options.pendingHandoffFrom }, { hubId: "hub-1", sessionRef: ref });
+	}
 	if (selectionOnly)
 		nativeDrafts().write(
 			{ hubId: "hub-1", sessionRef: ref },
@@ -1021,6 +1045,26 @@ it("actual screen completes a pending handoff after its write failures recover",
 	harness.handoffWriteFailure = false;
 	// No Retry press, no remount: the screen retries the pending handoff on
 	// its own timer, and restoring the storage alone completes the transfer.
+	await act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 1500));
+	});
+	await settle();
+	expect(drafts.hasPendingHandoff({ hubId: "hub-1", sessionRef: f.ref })).toBe(false);
+	expect(f.document.getSnapshot().record.draft).toBe("incoming work");
+});
+
+it("actual screen finishes a pending handoff after its initial draft load recovers", async () => {
+	const f = await mount(false, false, undefined, "skill", {
+		pendingHandoffFrom: "sibling-load-failure",
+		failDraftRead: true,
+	});
+	await settle();
+	// The destination's own draft read fails on mount, so the composer is
+	// unloaded; the pending hop must still be recovered by the screen's own
+	// pass rather than waiting for the user to press Retry loading.
+	expect(f.document.getSnapshot().loaded).toBe(false);
+	expect(drafts.hasPendingHandoff({ hubId: "hub-1", sessionRef: f.ref })).toBe(true);
+	harness.draftRecordReadFailure = "";
 	await act(async () => {
 		await new Promise((resolve) => setTimeout(resolve, 1500));
 	});
