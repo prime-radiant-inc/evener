@@ -1515,3 +1515,70 @@ func TestWorktreeSwitchByPath_RejectsPointerSwappedAfterClassification(t *testin
 	}
 	requireSwitchKeptScope(t, s, fixture, fixture, otherMain, filepath.Join(otherMain, ".git"), otherLinked, filepath.Join(otherLinked, ".git"))
 }
+
+// A MainCheckout session can write the worktree registry, so it can fabricate
+// an entry naming an external directory that has no Git metadata at all. The
+// target's empty layout proves nothing about membership in the retained
+// repository; its root must still be inside the retained workspace
+// (#3724 review).
+func TestWorktreeSwitchByPath_RejectsExternalNonGitTarget(t *testing.T) {
+	repo := canonicalFixtureTempDir(t, "worktree-nongit-main-*")
+	copyWorktreeBaseRepo(t, repo)
+	_, _, env := newSandboxedFixtureSession(t, repo, "worktree-nongit-state-*")
+	if env.Sandbox.Git.Kind == sandbox.NonGit {
+		t.Fatalf("fixture sandbox kind = %v, want a Git layout", env.Sandbox.Git.Kind)
+	}
+	external := canonicalFixtureTempDir(t, "worktree-nongit-external-*")
+	if err := rejectUntrustedSwitchTarget(env, external); err == nil {
+		t.Fatal("switch target accepted an external directory with no Git metadata")
+	}
+	next := &execenv.LocalExecutionEnvironment{
+		RootDir: external,
+		Sandbox: &sandbox.ResolvedPolicy{Git: sandbox.GitLayout{Kind: sandbox.NonGit, WorktreeRoot: external}},
+	}
+	if err := rejectUntrustedCandidateEnvironment(env, next); err == nil {
+		t.Fatal("candidate environment accepted an external directory with no Git metadata")
+	}
+	wrapper, err := sandbox.NewWrapper(sandbox.ResolvedPolicy{
+		Mode:    sandbox.ModeWorkspaceWrite,
+		Backend: sandbox.BackendSeatbelt,
+		Git:     sandbox.GitLayout{Kind: sandbox.NonGit, WorktreeRoot: external},
+	}, "/usr/bin/sandbox-exec", t.TempDir())
+	if err != nil {
+		t.Fatalf("build test wrapper: %v", err)
+	}
+	env.Wrapper = wrapper
+	t.Cleanup(func() { env.Wrapper = nil })
+	next.Wrapper = wrapper
+	if err := rejectUntrustedCandidateEnvironment(env, next); err == nil {
+		t.Fatal("candidate wrapper policy accepted an external directory with no Git metadata")
+	}
+}
+
+// The retained policy's credential masks bind commondir reads too. A NonGit
+// session rooted at HOME can create .git/commondir as a symlink at
+// ~/.git-credentials; containment alone accepts it because the file is inside
+// the workspace, but the host must not read a masked file (#3724 review).
+func TestWorktreeList_RefusesMaskedCommondir(t *testing.T) {
+	fixture := canonicalFixtureTempDir(t, "worktree-masked-commondir-*")
+	_, _, env := newSandboxedFixtureSession(t, fixture, "worktree-masked-commondir-state-*")
+	if env.Sandbox.Git.Kind != sandbox.NonGit {
+		t.Fatalf("fixture sandbox kind = %v, want NonGit", env.Sandbox.Git.Kind)
+	}
+	writeMinimalMainGitDir(t, fixture)
+	credentials := filepath.Join(fixture, ".git-credentials")
+	if err := os.WriteFile(credentials, []byte(".\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env.Sandbox.MaskedPaths = append(env.Sandbox.MaskedPaths, credentials)
+	if err := os.Symlink(credentials, filepath.Join(fixture, ".git", "commondir")); err != nil {
+		t.Fatal(err)
+	}
+	err := rejectUntrustedMainRoot(env, fixture)
+	if err == nil {
+		t.Fatal("main root with a commondir symlinked at a masked file was accepted")
+	}
+	if !errors.Is(err, errUntrustedWorktreeProject) {
+		t.Fatalf("main root error = %v, want the untrusted-project refusal", err)
+	}
+}
