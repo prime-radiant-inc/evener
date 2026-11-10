@@ -275,8 +275,9 @@ const (
 // travels the delegate delivery path, which has never carried a watch's causal
 // provenance. A feedback loop between an observer and the parent it watches is
 // bounded the same way for updates as for reports: the update is a communicate
-// event, which the watch on the sender counts toward watchDeliveryBudget, and
-// the watch auto-clears at the budget (TestWatchDeliveryCounterAndBudget).
+// event, which the watch on the sender delivers through its every setting, the
+// runaway self-influence guard on its send rail, and the folding of its
+// undelivered frames.
 func (s *Session) postDelegateUpdate(ctx context.Context, message string) *delegateUpdateDelivery {
 	if !s.reportsToParent() {
 		return nil

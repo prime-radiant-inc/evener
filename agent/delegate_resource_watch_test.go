@@ -175,7 +175,7 @@ func TestDelegateWatch_ParentGrantIsNonTransitive(t *testing.T) {
 	}
 }
 
-func TestDelegateWatch_PreservesFiltersEveryCoalescingAndBudget(t *testing.T) {
+func TestDelegateWatch_PreservesFiltersEveryAndCoalescing(t *testing.T) {
 	_ = requireDelegateWatchArgs(t)
 	jm := newStableWatchTestJobManager(t)
 	installWatchBelowValidation(t, jm, watchArgs{
@@ -199,14 +199,6 @@ func TestDelegateWatch_PreservesFiltersEveryCoalescingAndBudget(t *testing.T) {
 	state := deliveries[0].state
 	if state.UpdateSeq != 2 || state.CoalescedCount != 1 {
 		t.Fatalf("stable watch coalescing = seq %d count %d, want 2/1", state.UpdateSeq, state.CoalescedCount)
-	}
-	cfg := deliveries[0].cfg
-	jm.mu.Lock()
-	cfg.conditionFires = watchDeliveryBudget
-	crossed := jm.recordWatchDeliveryLocked(cfg)
-	jm.mu.Unlock()
-	if !crossed {
-		t.Fatal("stable watch did not preserve the delivery budget")
 	}
 }
 

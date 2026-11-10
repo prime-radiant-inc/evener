@@ -170,7 +170,5 @@ Run 2:
 - Duplicate notifications across a daemon crash/restore are legal
   (at-least-once) — only duplicates within one uninterrupted run
   falsify coalescing.
-- Each watch has a 50-delivery budget (`watchDeliveryBudget`,
-  `agent/watch_types.go#watchDeliveryBudget`); a watch that exhausts it is auto-cleared
-  with one final notification. Neither run comes close, but a runaway
-  `output_match` in a variant of this card will hit it.
+- A watch has no delivery cap: a runaway `output_match` in a variant of
+  this card keeps firing until the watch is cleared or its job ends.

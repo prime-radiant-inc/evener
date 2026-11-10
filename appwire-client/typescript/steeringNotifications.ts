@@ -772,7 +772,8 @@ function titleForJobNotification(attrs: Record<string, string>, type: string, pr
     const reason = decodeNotificationAttributeEntities(attrs.reason ?? "").trim();
     // Teardown notices are endings, never firings:
     // watchEndedUnfiredMessage / watchLostAtRestartMessage start with
-    // "watch ended:", watchBudgetClearedMessage with "watch cleared:". The
+    // "watch ended:"; older runs' budget auto-clear notice started with
+    // "watch cleared:" and still titles as an ending. The
     // prose/reason carries which watch and why, so the title stays short.
     if (reason.startsWith("watch ended:")) return "Watch ended";
     if (reason.startsWith("watch cleared:")) return "Watch auto-cleared";

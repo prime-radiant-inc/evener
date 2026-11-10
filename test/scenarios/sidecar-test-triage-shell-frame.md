@@ -120,5 +120,4 @@ go run ./cmd/evener doctor transcript "$OBSERVER_REF" --count communicate
   no watch_id to clear.
 - Clear the watch as soon as the note arrives: the parent's own
   acknowledgement is another tool round, and a broad `assistant.tool`
-  watch keeps waking the observer until the 50-delivery budget
-  auto-clears it.
+  watch keeps waking the observer until it is cleared.

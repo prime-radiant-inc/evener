@@ -14,7 +14,6 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 	kind := ev.Kind
 	var notifications []jobNotification
 	var deliveries []watchSendDelivery
-	var overBudget []*watchConfig
 
 	jm.mu.Lock()
 	for _, cfg := range jm.watches {
@@ -23,15 +22,7 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 		if !dec.matched {
 			continue
 		}
-		// The match is offered to the breaker before the rails split: the send
-		// rail counts its delivery only when the frame settles, which a frame the
-		// receiver never takes never reaches, so latching at the match is what
-		// bounds an unsettled watch. A refused match is a match this watch is no
-		// longer entitled to, so nothing is built from it.
-		accepted, crossedBudget := noteConditionFireLocked(cfg)
-		if !accepted {
-			continue
-		}
+		cfg.conditionFires++
 		if dec.send {
 			deliveries = append(deliveries, jm.watchSendSnapshot(cfg, dec.watchedIdentity, fmt.Sprintf("event: %s", kind), ev).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, ev.Provenance)))
 		} else {
@@ -48,11 +39,8 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 			notifications = append(notifications, n)
 			jm.countWatchDeliveryLocked(cfg)
 		}
-		if crossedBudget {
-			overBudget = append(overBudget, cfg)
-		}
 	}
-	emitting := len(notifications) > 0 || len(overBudget) > 0
+	emitting := len(notifications) > 0
 	if emitting {
 		jm.noticesInFlight++
 	}
@@ -60,20 +48,7 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 
 	// Called from Session.emit; only persist + wake here so watch delivery does
 	// not re-enter session event emission (spec §3).
-	//
-	// The fired sends are recorded BEFORE the over-budget teardown, the way the
-	// output rail and the attach scan already order it, so the frame whose match
-	// crossed the budget is pending by the time its watch is torn down and
-	// leaves on the terminal-flush rail: the budget bounds how many times a
-	// watch may fire, not whether a frame it already produced reaches its
-	// receiver. The teardown's cleared notification still rides out with this
-	// event's matched notifications, so the model is woken once for both.
 	jm.recordWatchSendsAndKick(deliveries)
-	for _, cfg := range overBudget {
-		if notification, ok := jm.autoClearWatchOverBudgetNotification(cfg); ok {
-			notifications = append(notifications, notification)
-		}
-	}
 	jm.enqueueWatchNotifications(notifications)
 	if emitting {
 		jm.noteNoticeEmission(-1)
@@ -315,7 +290,6 @@ func (jm *jobManager) feedJobOutputWithProvenance(jobID string, chunk []byte, en
 	}
 	var notifications []jobNotification
 	var deliveries []watchSendDelivery
-	var overBudget []*watchConfig
 
 	root := events.SessionEvent{SessionID: jm.sessionID, Provenance: provenance.Union(jobProvenanceForWatch(jm, jobID), p)}
 	jm.mu.Lock()
@@ -334,10 +308,7 @@ func (jm *jobManager) feedJobOutputWithProvenance(jobID string, chunk []byte, en
 		}
 		matches := cfg.outputMatcher.FeedAtWithProvenance(chunk, endOffset, root.Provenance)
 		for _, match := range matches {
-			accepted, crossedBudget := noteConditionFireLocked(cfg)
-			if !accepted {
-				break
-			}
+			cfg.conditionFires++
 			matchRoot := root
 			matchRoot.Provenance = provenance.Clone(match.Provenance)
 			if cfg.send != nil {
@@ -346,24 +317,12 @@ func (jm *jobManager) feedJobOutputWithProvenance(jobID string, chunk []byte, en
 				notifications = append(notifications, jm.watchNotificationFromWatch(cfg, jobID, "output_match: "+match.Text, match.Provenance))
 				jm.countWatchDeliveryLocked(cfg)
 			}
-			if crossedBudget {
-				overBudget = append(overBudget, cfg)
-				// The matcher hands back every match in the chunk at once, and
-				// the teardown this crossing schedules cannot run until jm.mu is
-				// released. Without this break the rest of the chunk would fire a
-				// watch that is already over budget — one chunk carrying a
-				// thousand matches would deliver a thousand frames. The crossing
-				// match itself has been recorded above: it is inside the budget,
-				// and it is the last one this watch gets.
-				break
-			}
 		}
 	}
 	jm.mu.Unlock()
 
 	jm.enqueueWatchNotifications(notifications)
 	jm.recordWatchSendsAndKick(deliveries)
-	jm.autoClearOverBudgetWatches(overBudget)
 }
 
 // prepareAttachScanLocked primes a freshly installed output_match matcher for a
@@ -446,32 +405,17 @@ func (jm *jobManager) fireAttachScan(cfg *watchConfig, jobID string, data []byte
 	if cfg.send != nil {
 		root := events.SessionEvent{SessionID: jm.sessionID, Provenance: jobProvenanceForWatch(jm, jobID)}
 		jm.mu.Lock()
-		accepted, crossedBudget := noteConditionFireLocked(cfg)
-		if !accepted {
-			jm.mu.Unlock()
-			return false
-		}
+		cfg.conditionFires++
 		delivery := jm.watchSendSnapshot(cfg, jobID, reason, root)
 		jm.mu.Unlock()
 		jm.recordWatchSendsAndKick([]watchSendDelivery{delivery})
-		if crossedBudget {
-			jm.autoClearWatchOverBudget(cfg)
-		}
 		return true
 	}
 	jm.mu.Lock()
-	accepted, crossedBudget := noteConditionFireLocked(cfg)
-	if accepted {
-		jm.countWatchDeliveryLocked(cfg)
-	}
+	cfg.conditionFires++
+	jm.countWatchDeliveryLocked(cfg)
 	jm.mu.Unlock()
-	if !accepted {
-		return false
-	}
 	jm.enqueueWatchNotifications([]jobNotification{jm.watchNotificationFromWatch(cfg, jobID, reason, jobProvenanceForWatch(jm, jobID))})
-	if crossedBudget {
-		jm.autoClearWatchOverBudget(cfg)
-	}
 	return true
 }
 
