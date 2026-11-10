@@ -71,7 +71,12 @@ func resolveTranscriptWindowContinuation(
 		if err := appitempaging.ValidateWindowCursorBoundary(anchorCandidates, cursor); err != nil {
 			return zero, "", err
 		}
-		if direction == appitempaging.WindowCursorDirectionForward {
+		// A whole-turn continuation carries the resolved logical range in
+		// its Since/Before resume window and is validated by its anchor.
+		// Position slicing compares physical positions, which interleaved
+		// reopened turns do not order like their logical turns, so it
+		// applies only where the cursor resumes inside one turn.
+		if direction == appitempaging.WindowCursorDirectionForward && transcriptWindowContinuationResumesInsideTurn(cursor) {
 			continued, spendErr := spendTranscriptWindowCursor(loaded.Result, params.ThreadWindowParams, itemLimit, params.Cursor)
 			if spendErr != nil {
 				return zero, "", spendErr
@@ -86,6 +91,14 @@ func resolveTranscriptWindowContinuation(
 		loaded.Result.Exhausted = true
 	}
 	return loaded, direction, nil
+}
+
+// transcriptWindowContinuationResumesInsideTurn reports whether a continuation
+// cuts inside one turn rather than at a whole-turn boundary. A Turn resume
+// window names that intra-turn cut; a Since or Before window carries the
+// resolved logical range of whole turns.
+func transcriptWindowContinuationResumesInsideTurn(cursor appitempaging.WindowCursor) bool {
+	return cursor.ResumeWindow != nil && cursor.ResumeWindow.Turn != ""
 }
 
 func transcriptWindowContinuationDirectionFor(window *appwire.ThreadTurnWindow) appitempaging.WindowCursorDirection {

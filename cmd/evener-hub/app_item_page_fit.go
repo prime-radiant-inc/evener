@@ -168,8 +168,11 @@ func transcriptWindowStructuredPageSize(
 	return len(encoded), nil
 }
 
-// spendTranscriptWindowCursor selects the remaining candidates from the same
-// resolved turn window. Forward cursors name the first withheld item and are
+// spendTranscriptWindowCursor selects the remaining candidates of one turn from
+// an intra-turn continuation. Position slicing orders physical positions, which
+// a reopened turn's fragments do not order like the logical turns, so a
+// whole-turn continuation never reaches here: the resolver keeps its loaded
+// logical range instead. Forward cursors name the first withheld item and are
 // inclusive. Backward cursors name the first served item and are exclusive.
 func spendTranscriptWindowCursor(result transcriptItemCandidateResult, params appwire.ThreadWindowParams, itemLimit int, encoded string) (transcriptItemCandidateResult, error) {
 	identity := transcriptWindowCursorIdentity(result.Identity, params, itemLimit)
@@ -177,13 +180,7 @@ func spendTranscriptWindowCursor(result transcriptItemCandidateResult, params ap
 	cursor, err := appitempaging.DecodeWindowCursor(encoded, identity, appitempaging.WindowCursorDirectionForward)
 	if err == nil {
 		if err := appitempaging.ValidateWindowCursorBoundary(candidates, cursor); err != nil {
-			// A forward continuation whose proof anchors on the last served
-			// item resumes a source range that starts strictly after it. The
-			// anchor turn was validated separately, and every item this range
-			// holds is withheld, so no loaded position names the boundary.
-			if len(candidates) == 0 || appitempaging.ComparePosition(candidates[0].Position, cursor.Position) <= 0 {
-				return transcriptItemCandidateResult{}, err
-			}
+			return transcriptItemCandidateResult{}, err
 		}
 		first := len(candidates)
 		boundaryTurnID := ""
@@ -393,40 +390,81 @@ func transcriptWindowLastBoundaryCandidate(
 func setTranscriptWindowContinuationProof(
 	continuation *transcriptWindowContinuation,
 	turns []transcriptWindowCandidateTurn,
-	boundaryStart int,
-	boundaryEnd int,
+	direction transcriptWindowContinuationDirection,
+	servedStart int,
+	servedEnd int,
 	resumeStart int,
 	resumeEnd int,
+	upstreamWithheld bool,
 ) error {
-	// A resumed range with no positioned item has no version to fence, so its
-	// proof is a digest of the shells it will replay. Anchoring a served-side
-	// item instead would leave those shells unvalidated: a changed shell, or a
-	// newly positioned item inside one, would replay as if nothing moved.
-	if !transcriptWindowHasPositionedCandidates(turns, resumeStart, resumeEnd) {
-		remaining := transcriptItemCandidateResult{}
-		for _, turn := range turns[resumeStart:resumeEnd] {
-			remaining.TurnIDs = append(remaining.TurnIDs, turn.turn.ID)
-			remaining.TurnShells = append(remaining.TurnShells, turn.turn)
+	// A continuously positioned boundary anchors on the item the continuation
+	// resumes at. A backward whole-turn continuation resumes behind the served
+	// page, so its boundary is the oldest served item, the edge the resumed
+	// range abuts.
+	boundaryStart, boundaryEnd := resumeStart, resumeEnd
+	if direction == transcriptWindowContinuationBackward {
+		boundaryStart, boundaryEnd = servedStart, servedEnd
+	}
+	if transcriptWindowHasPositionedCandidates(turns, resumeStart, resumeEnd) {
+		boundary, err := transcriptWindowBoundaryCandidate(turns, boundaryStart, boundaryEnd)
+		if err != nil {
+			boundary, err = transcriptWindowBoundaryCandidate(turns, resumeStart, resumeEnd)
 		}
-		digest, err := emptyTranscriptWindowDigest(remaining)
 		if err != nil {
 			return err
 		}
-		continuation.EmptyRangeDigest = digest
+		setTranscriptWindowAnchor(continuation, boundary)
 		return nil
 	}
 
-	boundary, err := transcriptWindowBoundaryCandidate(turns, boundaryStart, boundaryEnd)
-	if err != nil {
-		boundary, err = transcriptWindowBoundaryCandidate(turns, resumeStart, resumeEnd)
+	// The resumed range has no positioned item to fence. A digest can prove only
+	// a range this page already knows: when the source transfer left turns
+	// unread, the resume window reaches past anything the digest covers, so the
+	// served edge proves the boundary instead.
+	if upstreamWithheld {
+		boundary, err := transcriptWindowServedEdgeCandidate(turns, direction, servedStart, servedEnd)
+		if err != nil {
+			return err
+		}
+		setTranscriptWindowAnchor(continuation, boundary)
+		return nil
 	}
+
+	// The entire resumed range is known and empty: its digest covers every shell
+	// the continuation will replay, so a changed shell or a newly positioned
+	// item inside one is refused rather than replayed as if nothing moved.
+	remaining := transcriptItemCandidateResult{}
+	for _, turn := range turns[resumeStart:resumeEnd] {
+		remaining.TurnIDs = append(remaining.TurnIDs, turn.turn.ID)
+		remaining.TurnShells = append(remaining.TurnShells, turn.turn)
+	}
+	digest, err := emptyTranscriptWindowDigest(remaining)
 	if err != nil {
 		return err
 	}
+	continuation.EmptyRangeDigest = digest
+	return nil
+}
+
+func setTranscriptWindowAnchor(continuation *transcriptWindowContinuation, boundary appitempaging.TranscriptItemCandidate) {
 	continuation.AnchorTurnID = boundary.TurnID
 	continuation.Position = boundary.Position
 	continuation.Version = boundary.Item.Version
-	return nil
+}
+
+// transcriptWindowServedEdgeCandidate returns the positioned item at the served
+// page's edge: its oldest item for a backward continuation and its newest for a
+// forward one.
+func transcriptWindowServedEdgeCandidate(
+	turns []transcriptWindowCandidateTurn,
+	direction transcriptWindowContinuationDirection,
+	start int,
+	end int,
+) (appitempaging.TranscriptItemCandidate, error) {
+	if direction == transcriptWindowContinuationBackward {
+		return transcriptWindowBoundaryCandidate(turns, start, end)
+	}
+	return transcriptWindowLastBoundaryCandidate(turns, start, end)
 }
 
 func transcriptWindowHasPositionedCandidates(turns []transcriptWindowCandidateTurn, start int, end int) bool {
@@ -1101,7 +1139,7 @@ func packItemCandidates[T any](
 					request.ResumeWindow = &appwire.ThreadTurnWindow{Before: &appwire.ThreadTurnBoundary{
 						TurnID: turns[0].ID, Limit: windowResult.WithheldTurns,
 					}}
-					if proofErr := setTranscriptWindowContinuationProof(&request, candidateTurns, start, end, 0, start); proofErr != nil {
+					if proofErr := setTranscriptWindowContinuationProof(&request, candidateTurns, direction, start, end, 0, start, sourceWithheldTurns > 0); proofErr != nil {
 						return zero, proofErr
 					}
 				case end < len(prepared):
@@ -1116,7 +1154,7 @@ func packItemCandidates[T any](
 					request.ResumeWindow = &appwire.ThreadTurnWindow{
 						Since: turns[len(turns)-1].ID, Limit: windowResult.WithheldTurns,
 					}
-					if proofErr := setTranscriptWindowContinuationProof(&request, candidateTurns, end, len(candidateTurns), end, len(candidateTurns)); proofErr != nil {
+					if proofErr := setTranscriptWindowContinuationProof(&request, candidateTurns, direction, start, end, end, len(candidateTurns), sourceWithheldTurns > 0); proofErr != nil {
 						return zero, proofErr
 					}
 				default:
