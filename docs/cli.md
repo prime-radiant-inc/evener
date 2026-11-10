@@ -175,10 +175,12 @@ not necessarily the value the session uses. For a new one-shot session:
 - `--max-rounds`: omitted `-1` resolves to **unlimited**, as does explicit `0`.
   A positive value sets a cap. The [conversion](../cmdutil/cmdutil.go) and
   [session defaults](../agent/session_config.go) define the current behavior.
-- `--max-subagent-depth`: omitted `-1` leaves the session default of **2**.
+- `--max-subagent-depth`: omitted `-1` leaves the session default of **2**;
+  explicit `0` disables subagents entirely, and a positive value caps nesting.
+  A resumed session keeps the depth persisted in its metadata; the flag selects
+  the depth for a new session.
 - `--max-concurrent-delegates`: omitted `-1` leaves the session default of **50**.
-  For these two delegation limits, explicit `0` also selects the default; it
-  does not mean unlimited or disabled.
+  Explicit `0` also selects the default; it does not mean unlimited or disabled.
 - `--max-retained-terminal`: omitted `-1` or explicit `0` selects **2048**
   retained terminal delegate records per session.
 - `--vision-model`: omitted `""` uses the **active session model** for image
@@ -201,7 +203,7 @@ runtime meaning across flags.
 | `--resume-last` | `false` | resume the most recent session |
 | `--list-sessions` | `false` | list saved sessions and exit |
 | `--max-rounds` | `-1` | max tool rounds per input (0=unlimited, effective default: unlimited) |
-| `--max-subagent-depth` | `-1` | max subagent nesting depth (default: 2) |
+| `--max-subagent-depth` | `-1` | max subagent nesting depth (default: 2, 0 disables) |
 | `--max-concurrent-delegates` | `-1` | max concurrently running delegate turns per session tree (default: 50) |
 | `--max-retained-terminal` | `-1` | max retained terminal delegate records per session (default: 2048) |
 | `--share-task-store` | `false` | share task list between parent and child sessions |

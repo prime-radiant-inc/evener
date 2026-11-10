@@ -17,7 +17,8 @@ type ConfigSnapshot struct {
 	MaxTurns                   int                        `json:"max_turns,omitempty"`                     // lifetime cap on user inputs (0 = unlimited)
 	DefaultCommandTimeoutMS    int                        `json:"default_command_timeout_ms,omitempty"`    // default shell/exec timeout
 	MaxCommandTimeoutMS        int                        `json:"max_command_timeout_ms,omitempty"`        // ceiling on a requested per-command timeout
-	MaxSubagentDepth           int                        `json:"max_subagent_depth,omitempty"`            // how deeply sub-agents may nest
+	MaxSubagentDepth           int                        `json:"max_subagent_depth"`                      // resolved nesting depth, zero when DisableSubagents is set
+	DisableSubagents           bool                       `json:"disable_subagents,omitempty"`             // the launch selected max_subagent_depth=0
 	MaxConcurrentDelegateTurns int                        `json:"max_concurrent_delegate_turns,omitempty"` // tree-wide cap on running delegate turns
 	MaxRetainedTerminal        int                        `json:"max_retained_terminal,omitempty"`         // per-parent cap on retained terminal child records
 	ToolOutputLimits           map[string]ToolOutputLimit `json:"tool_output_limits,omitempty"`            // per-tool output truncation overrides

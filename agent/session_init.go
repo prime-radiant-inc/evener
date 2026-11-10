@@ -297,8 +297,8 @@ func requireSessionDeps(client *llm.Client, profile *provider.Profile, env exece
 // bindSpawnCounters returns the delegation allowance and tree-wide counters a
 // session starts with and mirrors the counters onto cfg.spawn, so
 // s.cfg.spawn.treeCounter always reflects the live counter. Root sessions
-// derive their allowance from MaxSubagentDepth (already defaulted to 1 by
-// applyDefaults) and mint the counters; children inherit the spawn carrier's.
+// derive their allowance from the resolved MaxSubagentDepth and mint the
+// counters; children inherit the spawn carrier's.
 // prepareSubagentRun threads the pointers to children via subCfg := s.cfg, so
 // the mirror is what carries the root's minted counters down the tree.
 func (cfg *SessionConfig) bindSpawnCounters() (delegationAllowance int, tc, dc *treeCounter) {

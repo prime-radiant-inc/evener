@@ -297,12 +297,13 @@ func delegateDrainScenario(t *testing.T, tweak func(*runConfig)) *scriptedProvid
 
 	var stdout, stderr bytes.Buffer
 	cfg := runConfig{
-		prompt:  rootPrompt + ": delegate the build to a subagent and report BUILD-COMPLETE when it finishes.",
-		model:   "openai/gpt-test",
-		workDir: tmp,
-		verbose: true,
-		stdout:  &stdout,
-		stderr:  &stderr,
+		prompt:           rootPrompt + ": delegate the build to a subagent and report BUILD-COMPLETE when it finishes.",
+		model:            "openai/gpt-test",
+		workDir:          tmp,
+		verbose:          true,
+		maxSubagentDepth: -1,
+		stdout:           &stdout,
+		stderr:           &stderr,
 	}
 	if tweak != nil {
 		tweak(&cfg)
