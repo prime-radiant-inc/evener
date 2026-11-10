@@ -1183,7 +1183,6 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 			read.finish(false)
 			read = nil
 		}
-		err = nil
 		remoteSavedWindowAttempt = false
 		hubCompatibility = true
 		sourceParams.ThreadWindowParams = appwire.ThreadWindowParams{}
