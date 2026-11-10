@@ -7,20 +7,8 @@
 // confirmed rename, and a re-anchor or a refused next save.
 import type { InstanceEditParams, InstanceEntry } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
+import { instance } from "./credentialsTestUtils";
 import { renamedInstanceLanded, supersededSaveLanded } from "./instanceLanding";
-
-function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
-  return {
-    protocol: "openai-chat",
-    auth: "bearer",
-    implicit: false,
-    isDefault: false,
-    activeSource: "none",
-    hasStoredOAuth: false,
-    credentialRequired: true,
-    ...overrides,
-  };
-}
 
 /** A row the hub cannot key: no endpointFingerprint at all. */
 function unkeyable(fields: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {

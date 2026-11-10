@@ -13,7 +13,6 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -32,10 +31,7 @@ func TestSession_DrainAsSteer_CarriesImagesIntoSteeringMessage(t *testing.T) {
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai"}
 	c.Register(f)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	imgs := []ImageAttachment{{
@@ -93,10 +89,7 @@ func TestSession_DrainAsSteerWithInput_AppendsAndDrainsAtomically(t *testing.T) 
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai"}
 	c.Register(f)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	if err := sess.Enqueue(context.Background(), "already queued"); err != nil {
@@ -114,7 +107,7 @@ func TestSession_DrainAsSteerWithInput_AppendsAndDrainsAtomically(t *testing.T) 
 		t.Fatalf("DrainAsSteerWithInput: %v", err)
 	}
 
-	if depth := sess.QueueDepth(); depth != 0 {
+	if depth := sess.queueDepth(); depth != 0 {
 		t.Fatalf("QueueDepth=%d, want 0", depth)
 	}
 	queue := sess.SteeringQueueSnapshot()
@@ -146,10 +139,7 @@ func TestSession_Enqueue_DrainCarriesImagesIntoUserTurn(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	imgs := []ImageAttachment{{

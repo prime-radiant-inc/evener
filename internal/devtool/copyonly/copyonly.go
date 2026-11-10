@@ -1,8 +1,8 @@
 // Package copyonly finds Go tests that exist only to check wording, the
 // ratchet behind docs/developing-evener/testing.md's "Copy Is Not a Test
-// Oracle". The root copyonly_audit_test.go runs Scan over the repository and
-// fails on any target missing from allowlist.tsv. TypeScript tests have their
-// own scanner, on the TypeScript compiler, in
+// Oracle". `make lint-repo-audit` (internal/devtool/repoaudit) runs Scan over
+// the repository and fails on any target missing from allowlist.tsv.
+// TypeScript tests have their own scanner, on the TypeScript compiler, in
 // cmd/evener-hub/frontend/src/dev/copyonly.
 //
 // A target is a test whose name says its subject is wording (it shows,

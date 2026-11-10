@@ -12,13 +12,13 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - uses: actions/setup-node@v7.1.0
@@ -64,13 +64,13 @@ jobs:
       - name: Check diagrams, search and navigation in Chromium
         working-directory: docs-site
         run: npx playwright test
-      - uses: actions/upload-pages-artifact@v4
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: docs-site/.vitepress/dist
   deploy:
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       pages: write
       id-token: write
@@ -80,4 +80,4 @@ jobs:
     steps:
       - name: Deploy checked artifact
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

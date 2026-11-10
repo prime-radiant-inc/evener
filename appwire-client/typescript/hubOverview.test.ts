@@ -169,7 +169,12 @@ describe("fetch and refresh", () => {
 });
 
 describe("wire decoding", () => {
-  test("omitted empty collections and zero counters decode to [] and 0; absent sections stay absent", async () => {
+  // The store caches the hub's response as sent: Go's omitempty drops empty
+  // arrays and zero counters from the wire, and each read site supplies its own
+  // [] / 0, the way every other package store leaves decoding to its reader.
+  // The store inventing fields here would make its data disagree with the wire
+  // type every reader is typed against (#1465).
+  test("keeps the hub's omitted fields omitted; the store invents nothing", async () => {
     const { fake, store } = storeWithFake();
     fake.on(OVERVIEW, () => ({
       hub: { pastIndex: { path: "/index" }, daemonIdleTimeoutMillis: 3600000 },
@@ -179,11 +184,12 @@ describe("wire decoding", () => {
     await store.getState().refresh();
 
     expect(store.getState().data).toEqual({
-      hub: { pastIndex: { path: "/index", count: 0, perPage: 0 }, daemonIdleTimeoutMillis: 3600000 },
-      mcpDiscovered: { servers: [] },
-      agents: [],
+      hub: { pastIndex: { path: "/index" }, daemonIdleTimeoutMillis: 3600000 },
+      mcpDiscovered: {},
     });
     expect(store.getState().data?.storage).toBeUndefined();
+    expect(store.getState().data?.agents).toBeUndefined();
+    expect(store.getState().data?.mcpDiscovered?.servers).toBeUndefined();
   });
 
   test("populated collections and counters are left alone", async () => {

@@ -16,7 +16,7 @@
 // (Cadence already carries live activity via its trace - see
 // widgets/cadence). These are session-level thresholds only.
 
-import { isStuck } from "@evener/appwire-client";
+import { isStuck, RUNNING_QUIET_AFTER_MS } from "@evener/appwire-client";
 
 export type LivenessLevel = "none" | "quiet" | "stalled" | "waiting" | "retrying";
 
@@ -25,8 +25,10 @@ export interface LivenessInfo {
   text: string | null;
 }
 
-// The short quiet hint. "Stalled" is the shared stuck rule (isStuck).
-export const QUIET_THRESHOLD_MS = 20_000;
+// The short quiet hint. "Stalled" is the shared stuck rule (isStuck). The
+// threshold is the shared client's RUNNING_QUIET_AFTER_MS (#4520), named for the
+// transcript's liveness vocabulary.
+export const QUIET_THRESHOLD_MS = RUNNING_QUIET_AFTER_MS;
 
 const SECOND_MS = 1_000;
 const MINUTE_MS = 60 * SECOND_MS;

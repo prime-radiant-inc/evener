@@ -80,14 +80,14 @@ const MaxHostMutationIDBytes = 128
 // durable state, and a replay renders what committed, never whatever a later
 // attach happens to show.
 type HostMutationReceiptRow struct {
-	Name       string   `toml:"name"`
-	Address    string   `toml:"address,omitempty"`
-	User       string   `toml:"user,omitempty"`
-	KeyPath    string   `toml:"keyPath,omitempty"`    //nolint:tagliatelle // §6 stores this row in the wire's lowerCamel spelling
-	EvenerPath string   `toml:"evenerPath,omitempty"` //nolint:tagliatelle // §6 stores this row in the wire's lowerCamel spelling
-	ConfigPath string   `toml:"configPath,omitempty"` //nolint:tagliatelle // §6 stores this row in the wire's lowerCamel spelling
-	Addr       string   `toml:"addr,omitempty"`
-	Roots      []string `toml:"roots,omitempty"`
+	Name       string   `toml:"name" json:"name"`
+	Address    string   `toml:"address,omitempty" json:"address,omitempty"`
+	User       string   `toml:"user,omitempty" json:"user,omitempty"`
+	KeyPath    string   `toml:"keyPath,omitempty" json:"keyPath,omitempty"`       //nolint:tagliatelle // §6 stores this row in the wire's lowerCamel spelling
+	EvenerPath string   `toml:"evenerPath,omitempty" json:"evenerPath,omitempty"` //nolint:tagliatelle // §6 stores this row in the wire's lowerCamel spelling
+	ConfigPath string   `toml:"configPath,omitempty" json:"configPath,omitempty"` //nolint:tagliatelle // §6 stores this row in the wire's lowerCamel spelling
+	Addr       string   `toml:"addr,omitempty" json:"addr,omitempty"`
+	Roots      []string `toml:"roots,omitempty" json:"roots,omitempty"`
 }
 
 // HostMutationReceipt is one [mutation_receipts."<scoped-key>"] record (spec 08
@@ -105,54 +105,54 @@ type HostMutationReceiptRow struct {
 type HostMutationReceipt struct {
 	// Outcome is the finalized outcome; "committed" is the only constructible
 	// value in this slice.
-	Outcome string `toml:"outcome"`
+	Outcome string `toml:"outcome" json:"outcome"`
 	// Row is the effective configuration the mutation committed, in the shape
 	// the response renders.
-	Row HostMutationReceiptRow `toml:"row"`
+	Row HostMutationReceiptRow `toml:"row" json:"row"`
 	// Generation and IncarnationID are the post-commit pair the receipt pins:
 	// for add, the insert identity; for update, the bumped generation with the
 	// live incarnation id; for remove, the removed incarnation's pair. The
 	// scoped key repeats both, and validateHostMutationReceipts pins them equal.
-	Generation    uint64 `toml:"generation"`
-	IncarnationID string `toml:"incarnation_id"`
+	Generation    uint64 `toml:"generation" json:"generation"`
+	IncarnationID string `toml:"incarnation_id" json:"incarnation_id"`
 	// CommittedAt is the UTC RFC3339 instant the commit's atomic write landed.
-	CommittedAt string `toml:"committed_at"`
+	CommittedAt string `toml:"committed_at" json:"committed_at"`
 	// Audit marks a keyless-add audit record (spec §11: "a keyless `add`
 	// commits the server-keyed audit record with no client idempotency
 	// semantics"). It is written exactly on the receipt a keyless add commits
 	// under its server-generated key, and it selects the audit compaction
 	// bound (at most 64 newest per name under the owner-set audit TTL, §11)
 	// instead of the keyed receipts' superseded/current rules.
-	Audit bool `toml:"audit,omitempty"`
+	Audit bool `toml:"audit,omitempty" json:"audit,omitempty"`
 	// DroppedEntry is the staged entry the post-rename reconcile dropped,
 	// persisted "in the same lowerCamel effective-config shape as `HostRow`'s
 	// config fields" (spec §6). Present exactly on `collision-dropped` receipts.
-	DroppedEntry *HostMutationReceiptRow `toml:"dropped_entry,omitempty"`
+	DroppedEntry *HostMutationReceiptRow `toml:"dropped_entry,omitempty" json:"dropped_entry,omitempty"`
 	// WinningFingerprint is the winning hub.toml fingerprint the post-rename
 	// reconcile observed. Present exactly on `collision-dropped` receipts, so "a
 	// lost-response retry, even after restart, reconstructs both what was
 	// dropped and which fingerprint won".
-	WinningFingerprint string `toml:"winning_fingerprint,omitempty"`
+	WinningFingerprint string `toml:"winning_fingerprint,omitempty" json:"winning_fingerprint,omitempty"`
 	// Removed is the hand-edit-deletion marker: "the arm carries no `host` and
 	// sets `removed: true` — the winning arm is the deletion, with the marker
 	// tombstone rows use". Present exactly on a `collision-dropped` receipt
 	// whose winning arm is the deletion.
-	Removed bool `toml:"removed,omitempty"`
+	Removed bool `toml:"removed,omitempty" json:"removed,omitempty"`
 	// RemnantID is the pre-minted remnant id the commit staged. Present exactly
 	// when the commit staged a remnant, and it is what the
 	// committed-with-teardown-failure response names beside the seam.
-	RemnantID string `toml:"remnant_id,omitempty"`
+	RemnantID string `toml:"remnant_id,omitempty" json:"remnant_id,omitempty"`
 	// RemnantResolvedAt is present exactly after `teardown-retry` or
 	// `teardown-recover` resolves the remnant.
-	RemnantResolvedAt string `toml:"remnant_resolved_at,omitempty"`
+	RemnantResolvedAt string `toml:"remnant_resolved_at,omitempty" json:"remnant_resolved_at,omitempty"`
 	// RecoveryAttestation is "the `{operator, statement, observedAt}`
 	// attestation the recovery call validated — the audited recovery contract's
 	// durable record". Present exactly on receipts resolved through
 	// `teardown-recover`.
-	RecoveryAttestation *HostRecoveryAttestation `toml:"recovery_attestation,omitempty"`
+	RecoveryAttestation *HostRecoveryAttestation `toml:"recovery_attestation,omitempty" json:"recovery_attestation,omitempty"`
 	// BootRecovered is true exactly when boot finalized a crash-window
 	// staged-receipt marker (spec §5: "the receipt records `bootRecovered: true`").
-	BootRecovered bool `toml:"boot_recovered,omitempty"`
+	BootRecovered bool `toml:"boot_recovered,omitempty" json:"boot_recovered,omitempty"`
 }
 
 // hostReceiptScope is a scoped receipt key's five parts (spec §6: "mutation-id
@@ -411,20 +411,11 @@ func hostReceiptRowFor(entry hostreg.Host) HostMutationReceiptRow {
 // deliberately absent (attached false, midEnsure/midAttach false): the row a
 // replay renders is the durable outcome, not a later attach's state.
 func hostReceiptRow(receipt HostMutationReceipt, kind hostMutationKind) appwire.HostRow {
-	return appwire.HostRow{
-		Name:          receipt.Row.Name,
-		Address:       receipt.Row.Address,
-		User:          receipt.Row.User,
-		KeyPath:       receipt.Row.KeyPath,
-		EvenerPath:    receipt.Row.EvenerPath,
-		ConfigPath:    receipt.Row.ConfigPath,
-		Addr:          receipt.Row.Addr,
-		Roots:         append([]string(nil), receipt.Row.Roots...),
-		Origin:        hostOriginHubTOML,
-		Generation:    receipt.Generation,
-		IncarnationID: receipt.IncarnationID,
-		Removed:       kind == hostMutationRemove,
-	}
+	row := hostRowForReceiptRow(receipt.Row)
+	row.Generation = receipt.Generation
+	row.IncarnationID = receipt.IncarnationID
+	row.Removed = kind == hostMutationRemove
+	return row
 }
 
 // validateHostMutationReceipts checks the receipts a hub.toml document carries

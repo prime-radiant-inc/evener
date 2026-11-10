@@ -85,6 +85,10 @@ type shellResult struct {
 	Truncated     bool
 	TotalBytes    int64
 	DroppedBytes  int64
+	// RetainedStartPartial reports that Output's first byte continues a line
+	// whose beginning the retention cap evicted, so the first visible "line"
+	// is a fragment and must not be read as diff structure.
+	RetainedStartPartial bool
 	// settle is non-nil when the command finished within its max_wait_ms bound.
 	// Calling settle(true) commits the delayed job (making it durable) and
 	// finalizes it, returning its job_id. Calling settle(false) discards the
@@ -98,7 +102,7 @@ type shellWaitResult struct {
 	err        error
 }
 
-type stableDelegateShellReceipt struct {
+type delegateShellReceipt struct {
 	mu         sync.Mutex
 	controller *delegateTreeController
 	token      delegateWorkToken
@@ -107,7 +111,7 @@ type stableDelegateShellReceipt struct {
 	resolved   bool
 }
 
-func (receipt *stableDelegateShellReceipt) commit(cancel context.CancelFunc) error {
+func (receipt *delegateShellReceipt) commit(cancel context.CancelFunc) error {
 	if receipt == nil {
 		return nil
 	}
@@ -127,7 +131,7 @@ func (receipt *stableDelegateShellReceipt) commit(cancel context.CancelFunc) err
 	return nil
 }
 
-func (receipt *stableDelegateShellReceipt) abort() {
+func (receipt *delegateShellReceipt) abort() {
 	if receipt == nil {
 		return
 	}
@@ -140,7 +144,7 @@ func (receipt *stableDelegateShellReceipt) abort() {
 	receipt.resolved = true
 }
 
-func (receipt *stableDelegateShellReceipt) finish() {
+func (receipt *delegateShellReceipt) finish() {
 	if receipt == nil {
 		return
 	}
@@ -237,6 +241,7 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 			}
 			return shellResult{Type: string(jobstore.JobShell), Status: string(jobstore.StatusFailed), Reason: "start_failed"}
 		}
+		jm.armLongRunningReminder()
 		go jm.finalizeShellWhenDone(run, waitCh, &runtimeTimedOut)
 		return shellResult{
 			JobID:               run.rec.JobID,
@@ -286,17 +291,18 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 			return run.rec.JobID
 		}
 		return shellResult{
-			Type:                string(run.rec.Type),
-			Status:              string(status),
-			Reason:              reason,
-			RunningInBackground: false,
-			TimedOut:            runtimeTimedOut.Load(),
-			ExitCode:            exitCode,
-			Output:              output,
-			Truncated:           truncated,
-			TotalBytes:          total,
-			DroppedBytes:        run.output.RetainedStart(),
-			settle:              settle,
+			Type:                 string(run.rec.Type),
+			Status:               string(status),
+			Reason:               reason,
+			RunningInBackground:  false,
+			TimedOut:             runtimeTimedOut.Load(),
+			ExitCode:             exitCode,
+			Output:               output,
+			Truncated:            truncated,
+			TotalBytes:           total,
+			DroppedBytes:         run.output.RetainedStart(),
+			RetainedStartPartial: run.output.RetainedStartPartial(),
+			settle:               settle,
 		}
 	case <-runtimeTimeoutCh:
 		wait := <-waitCh
@@ -322,19 +328,21 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 			return shellResult{Type: string(jobstore.JobShell), Status: string(jobstore.StatusFailed), Reason: "start_failed"}
 		}
 		output, total, truncated, _ := tailOutput(run.output, shellDefaultTailBytes)
+		jm.armLongRunningReminder()
 		go jm.finalizeShellWhenDone(run, waitCh, &runtimeTimedOut)
 		return shellResult{
-			JobID:               run.rec.JobID,
-			Type:                string(run.rec.Type),
-			Status:              string(jobstore.StatusRunning),
-			Reason:              "foreground_timeout",
-			RunningInBackground: true,
-			TimedOut:            true,
-			WaitElapsedMS:       jm.clock.Now().Sub(waitStarted).Milliseconds(),
-			Output:              output,
-			Truncated:           truncated,
-			TotalBytes:          total,
-			DroppedBytes:        run.output.RetainedStart(),
+			JobID:                run.rec.JobID,
+			Type:                 string(run.rec.Type),
+			Status:               string(jobstore.StatusRunning),
+			Reason:               "foreground_timeout",
+			RunningInBackground:  true,
+			TimedOut:             true,
+			WaitElapsedMS:        jm.clock.Now().Sub(waitStarted).Milliseconds(),
+			Output:               output,
+			Truncated:            truncated,
+			TotalBytes:           total,
+			DroppedBytes:         run.output.RetainedStart(),
+			RetainedStartPartial: run.output.RetainedStartPartial(),
 		}
 	case <-ctxDone:
 		handle.Signal()
@@ -342,16 +350,17 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 		output, total, truncated, _ := fullOutput(run.output)
 		jm.discardDelayedShell(run)
 		return shellResult{
-			Type:                string(run.rec.Type),
-			Status:              string(jobstore.StatusStopped),
-			Reason:              "cancelled",
-			RunningInBackground: false,
-			TimedOut:            false,
-			ExitCode:            &wait.exitCode,
-			Output:              output,
-			Truncated:           truncated,
-			TotalBytes:          total,
-			DroppedBytes:        run.output.RetainedStart(),
+			Type:                 string(run.rec.Type),
+			Status:               string(jobstore.StatusStopped),
+			Reason:               "cancelled",
+			RunningInBackground:  false,
+			TimedOut:             false,
+			ExitCode:             &wait.exitCode,
+			Output:               output,
+			Truncated:            truncated,
+			TotalBytes:           total,
+			DroppedBytes:         run.output.RetainedStart(),
+			RetainedStartPartial: run.output.RetainedStartPartial(),
 		}
 	}
 }
@@ -465,34 +474,37 @@ func (jm *jobManager) finishForegroundRuntimeTimeout(run *runningJob, wait shell
 	}
 	output, total, truncated, _ := tailOutput(run.output, shellDefaultTailBytes)
 	dropped := run.output.RetainedStart()
+	partial := run.output.RetainedStartPartial()
 	if err := jm.finalizeShellWithRetry(run.rec.JobID, status, reason, exitCode); err != nil {
 		go jm.finalizeShellUntilDurable(run.rec.JobID, status, reason, exitCode)
 		return shellResult{
-			JobID:               run.rec.JobID,
-			Type:                string(run.rec.Type),
-			Status:              string(jobstore.StatusFailed),
-			Reason:              "finalize_failed",
-			RunningInBackground: true,
-			TimedOut:            false,
-			ExitCode:            exitCode,
-			Output:              output,
-			Truncated:           truncated,
-			TotalBytes:          total,
-			DroppedBytes:        dropped,
+			JobID:                run.rec.JobID,
+			Type:                 string(run.rec.Type),
+			Status:               string(jobstore.StatusFailed),
+			Reason:               "finalize_failed",
+			RunningInBackground:  true,
+			TimedOut:             false,
+			ExitCode:             exitCode,
+			Output:               output,
+			Truncated:            truncated,
+			TotalBytes:           total,
+			DroppedBytes:         dropped,
+			RetainedStartPartial: partial,
 		}
 	}
 	return shellResult{
-		JobID:               run.rec.JobID,
-		Type:                string(run.rec.Type),
-		Status:              string(status),
-		Reason:              reason,
-		RunningInBackground: false,
-		TimedOut:            false,
-		ExitCode:            exitCode,
-		Output:              output,
-		Truncated:           truncated,
-		TotalBytes:          total,
-		DroppedBytes:        dropped,
+		JobID:                run.rec.JobID,
+		Type:                 string(run.rec.Type),
+		Status:               string(status),
+		Reason:               reason,
+		RunningInBackground:  false,
+		TimedOut:             false,
+		ExitCode:             exitCode,
+		Output:               output,
+		Truncated:            truncated,
+		TotalBytes:           total,
+		DroppedBytes:         dropped,
+		RetainedStartPartial: partial,
 	}
 }
 
@@ -516,7 +528,7 @@ func (jm *jobManager) newDelayedShell(args shellArgs) (*runningJob, error) {
 		return nil, err
 	}
 	parentJobID, parentDelegateID := jm.currentJobParent()
-	receipt, err := jm.beginStableDelegateShellReceipt(jobID)
+	receipt, err := jm.beginDelegateShellReceipt(jobID)
 	if err != nil {
 		_ = output.Close()
 		_ = jobstore.RemoveOutputArtifacts(outputPath)
@@ -557,11 +569,18 @@ func (jm *jobManager) newDelayedShell(args shellArgs) (*runningJob, error) {
 		return nil, errJobManagerClosing
 	}
 	jm.running[jobID] = run
+	owner := jm.stableOwner
 	jm.mu.Unlock()
+	// A managed job on a delegate child holds the lane-marker parent's
+	// activity evidence from its start until the last running job ends —
+	// the child may settle with this job still live.
+	if owner != nil {
+		owner.managedJobStarted()
+	}
 	return run, nil
 }
 
-func (jm *jobManager) beginStableDelegateShellReceipt(jobID string) (*stableDelegateShellReceipt, error) {
+func (jm *jobManager) beginDelegateShellReceipt(jobID string) (*delegateShellReceipt, error) {
 	jm.mu.Lock()
 	controller := jm.delegateController
 	lease := jm.delegateLease
@@ -573,7 +592,7 @@ func (jm *jobManager) beginStableDelegateShellReceipt(jobID string) (*stableDele
 	if err != nil {
 		return nil, err
 	}
-	return &stableDelegateShellReceipt{controller: controller, token: token, jobID: jobID}, nil
+	return &delegateShellReceipt{controller: controller, token: token, jobID: jobID}, nil
 }
 
 func (jm *jobManager) setShellSignal(run *runningJob, signal func()) {
@@ -648,10 +667,16 @@ func (jm *jobManager) commitDelayedShell(run *runningJob) error {
 			return errors.Join(errDelayedShellStartForwardTerminalFailed, err, terminalErr)
 		}
 		err = errors.Join(errDelayedShellStartForwardFailed, err)
+		leavingRunning := false
 		if jm.running[run.rec.JobID] == run {
 			delete(jm.running, run.rec.JobID)
+			leavingRunning = true
 		}
+		owner := jm.stableOwner
 		jm.mu.Unlock()
+		if leavingRunning && owner != nil {
+			owner.managedJobFinished()
+		}
 		run.delegateShell.abort()
 		run.closeDone()
 		return err
@@ -670,10 +695,16 @@ func (jm *jobManager) commitDelayedShell(run *runningJob) error {
 
 func (jm *jobManager) discardDelayedShell(run *runningJob) {
 	jm.mu.Lock()
+	leavingRunning := false
 	if jm.running[run.rec.JobID] == run {
 		delete(jm.running, run.rec.JobID)
+		leavingRunning = true
 	}
+	owner := jm.stableOwner
 	jm.mu.Unlock()
+	if leavingRunning && owner != nil {
+		owner.managedJobFinished()
+	}
 
 	run.delegateShell.abort()
 	_ = run.output.Close()

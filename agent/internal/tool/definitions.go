@@ -1,9 +1,12 @@
 package tool
 
 import (
+	"fmt"
 	"slices"
 	"strings"
+	"time"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
@@ -170,7 +173,8 @@ func DefShellWithDetach(detachAvailable bool) llm.ToolDefinition {
 			"The command runs in Bash with pipefail, so a failed stage fails the whole command; check the exit code. " +
 			"Small foreground output comes back in full. Larger or background output is bounded: a finished command with large output returns a head-and-tail digest and a job_id under which the full output is kept, so there is no need to pipe through head or tail. " +
 			"A background job reports a launch failure at once; once it is running you get its job_id and a notification when it finishes, so it needs no completion marker or redirect. " +
-			"To keep a complete log beyond the retained output, tee inside the command, for example `( make test ) 2>&1 | tee \"$EVENER_SCRATCH_DIR/test.log\"` when EVENER_SCRATCH_DIR is set: pipefail keeps the command's exit status, and tee overwrites the file.",
+			"To keep a complete log beyond the retained output, tee inside the command, for example `( make test ) 2>&1 | tee \"$EVENER_SCRATCH_DIR/test.log\"` when EVENER_SCRATCH_DIR is set: pipefail keeps the command's exit status, and tee overwrites the file. " +
+			"A `&` inside the command creates neither a tracked job nor an escape from teardown: when the command ends or its job is stopped, its whole process group is torn down — descendants holding an inherited output pipe get the SIGTERM/SIGKILL escalation, and any other group member, for example a child that redirected its own output, is killed with the group. Run a helper that must outlive the command as its own background job or in detached mode instead.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -225,14 +229,31 @@ func DelegateModelDescriptionAdditionBudget(maxBytes int) int {
 	return budget
 }
 
+// delegateReasoningEffortLevels is the portable effort vocabulary the delegate
+// tool advertises and its handler accepts: the session's canonical levels plus
+// the explicit off sentinel. Deriving it from llm keeps the tool schema from
+// being narrower than createDelegate's validation, which rejected a legitimate
+// level at argument validation before the handler ever saw it.
+func delegateReasoningEffortLevels() []string {
+	return llm.AcceptedReasoningEfforts()
+}
+
+// delegateReasoningEffortDescription names the levels the schema enumerates,
+// built from the same source so the prose and the enum cannot drift.
+func delegateReasoningEffortDescription() string {
+	return fmt.Sprintf("Reasoning effort for this delegate (%s, or %s to turn thinking off where the model supports it). Default inherits from parent.",
+		strings.Join(llm.ReasoningEffortVocabulary(), ", "), llm.ReasoningEffortNone)
+}
+
 // DefDelegate defines the delegate tool, which starts a NEW delegate
 // conversation (independent agentic work) and returns its durable stable identity.
 // agentTypes constrains the agent_type enum to the session's
 // available roles; pass nil to omit the enum (free-form). reasoning_effort uses
-// the delegate contract's portable low/medium/high enum; the handler resolves
-// provider-specific details. The legacy constructor exposes the full sandbox
-// surface; session-owned callers should use DefDelegateWithSandbox so the
-// advertised controls match the host and parent capabilities.
+// the delegate contract's portable vocabulary (delegateReasoningEffortLevels);
+// the handler clamps it to the child model's own ladder. The legacy constructor
+// exposes the full sandbox surface; session-owned callers should use
+// DefDelegateWithSandbox so the advertised controls match the host and parent
+// capabilities.
 func DefDelegate(agentTypes []string) llm.ToolDefinition {
 	return DefDelegateWithSandbox(agentTypes, DelegateSandboxSchema{
 		Available: true,
@@ -252,6 +273,7 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 // result tool is named resultTool.
 func DefDelegateWithResultTool(agentTypes []string, sandboxSchema DelegateSandboxSchema, resultTool string) llm.ToolDefinition {
 	strictFalse := false
+	effortLevels := delegateReasoningEffortLevels()
 	agentTypeSchema := map[string]any{
 		"type":        "string",
 		"description": "Role for the delegate. Choose from the enum; the roles are described in your agents section.",
@@ -269,7 +291,8 @@ func DefDelegateWithResultTool(agentTypes []string, sandboxSchema DelegateSandbo
 			"metadata and initial input are durable; use notifications or `delegate_send` for subsequent interaction. " +
 			"A delegate may itself delegate: by default it gets an allowance one below yours; " +
 			"pass `delegation_allowance` 0 to make it a leaf, or a smaller value to cap its depth. Set watch_parent=true for an observer sidecar: the child can call job_watch(source=\"parent\"). " + ObserverReporting(resultTool) + " For delegate readiness, status, findings, and final reports, ask the " +
-			"delegate to call `" + resultTool + "` with the exact marker/report. Observer readiness results can include `watching:true` and `watches` when the observer installed watches. Use the delegate's output as the evidence for judging the work.",
+			"delegate to call `" + resultTool + "` with the exact marker/report. Observer readiness results can include `watching:true` and `watches` when the observer installed watches. Use the delegate's output as the evidence for judging the work. " +
+			"A delegate's shell jobs end with its activation. A watch the delegate registers on its parent lives in the parent's job manager and survives the delegate, so clear it explicitly when observation should stop. Notifications from a delegate's own jobs wake the delegate, not you, so an external wait whose verdict you need (CI, a deploy) runs in your session, not a delegate's. A delegate completion notification may omit the full report; read the delegate's transcript for it before relying on the summary.",
 		Strict: &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -288,7 +311,7 @@ func DefDelegateWithResultTool(agentTypes []string, sandboxSchema DelegateSandbo
 						"properties": map[string]any{
 							"title":            map[string]any{"type": "string", "description": shortTaskTitleDescription},
 							"prompt":           map[string]any{"type": "string", "description": "Full, self-contained instruction for this step."},
-							"reasoning_effort": map[string]any{"type": "string", "enum": []string{"low", "medium", "high"}, "description": "Reasoning effort while this task is in progress."},
+							"reasoning_effort": map[string]any{"type": "string", "enum": append(slices.Clone(effortLevels), "inherit"), "description": "Reasoning effort while this task is in progress; \"inherit\" uses the delegate's effort."},
 							"type":             map[string]any{"type": "string", "enum": []string{"research", "implement", "verify", "fix"}, "description": "Kind of work; defaults to implement."},
 						},
 						"required": []string{"title", "prompt"},
@@ -296,7 +319,7 @@ func DefDelegateWithResultTool(agentTypes []string, sandboxSchema DelegateSandbo
 				},
 				"agent_type":           agentTypeSchema,
 				"model":                map[string]any{"type": "string", "description": delegateModelOverrideDescription},
-				"reasoning_effort":     map[string]any{"type": "string", "description": "Reasoning effort for this delegate (low, medium, or high). Default inherits from parent.", "enum": []string{"low", "medium", "high"}},
+				"reasoning_effort":     map[string]any{"type": "string", "description": delegateReasoningEffortDescription(), "enum": effortLevels},
 				"delegation_allowance": map[string]any{"type": "integer", "description": "Absent (default): the delegate gets an allowance one below yours and may delegate in turn. 0: a leaf delegate that cannot itself delegate. >0: the delegate may delegate, granting onward allowances strictly smaller than this; must be strictly less than your own allowance. The allowance only takes effect if the chosen agent_type carries the `delegate` tool (the built-in `default` and `subagent` roles do; `explorer` does not)."},
 				"watch_parent":         map[string]any{"type": "boolean", "description": "Grant this child permission to observe your session with job_watch(source=\"parent\"). This does not grant delegation or any transitive watch permission."},
 				"fork_context": map[string]any{
@@ -391,7 +414,7 @@ func DefDelegateSendNamed(resultTool string) llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "delegate_send",
 		Description: "Sends a message to one of your own delegates, by the durable delegate_id you got when you created it. " +
-			"To reach your own parent, use `" + resultTool + "` instead: end_turn=false for an update, end_turn=true for your final report. " +
+			"To reach your own parent, use `" + resultTool + "` instead: end_turn=false for an update, end_turn=true for your report, the one line naming the work you are waiting on, or a readiness line before a watch frame. " +
 			"`to` accepts only a `dlg_...` delegate_id this session owns; it rejects `caller`, job/turn handles, and runtime aliases. " +
 			"If the delegate is running or being driven, the message is steered and returns on delivery. " +
 			"Idle delegates are started/resumed automatically through the existing restore path, so follow-up messages resume them without an explicit idle-mode flag.",
@@ -500,10 +523,30 @@ func DefJobWatchNamed(eventKinds []string, resultTool string) llm.ToolDefinition
 }
 
 func DefJobStatus() llm.ToolDefinition {
+	return DefJobStatusNamed(DefaultResultToolName, false)
+}
+
+// EndTurnToWait is the guidance for an agent that has nothing else to do until
+// its background work finishes: end the turn and let the completion wake it.
+// It is the one wording shared by the job tool descriptions and the refusals of
+// wait-shaped calls. hasEndReason is whether the session's result tool takes
+// end_reason (only a root with a human partner does); advice to pass it
+// elsewhere would fail the tool's schema.
+func EndTurnToWait(resultTool string, hasEndReason bool) string {
+	call := "call `" + resultTool + "` with `end_turn=true`"
+	if hasEndReason {
+		call += " and `end_reason=\"waiting_on_work\"`"
+	}
+	return "When you have nothing else to do until your background work finishes, end your turn: " + call + ". Its completion wakes you. To wake on a condition instead, set `job_watch` with `output_match`."
+}
+
+// DefJobStatusNamed is DefJobStatus for a session whose result tool is named
+// resultTool and does (hasEndReason) or does not take end_reason.
+func DefJobStatusNamed(resultTool string, hasEndReason bool) llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        "job_status",
-		Description: "Inspect one durable shell job or stable delegate by target. Use this for metadata-only orientation: type, lifecycle status, observable phase, running/quiet time, and transcript_ref. Delegate status never returns terminal packet contents or acknowledges delivery. Completion is notification-driven; do not poll this waiting for completed. Read raw evidence with read_transcript(transcript_ref).",
+		Description: "Inspect one durable shell job or stable delegate by target. Use this for metadata-only orientation: type, lifecycle status, observable phase, running/quiet time, and transcript_ref. Delegate status never returns terminal packet contents or acknowledges delivery. Completion is notification-driven, and a repeat call on a running target whose status and phase have not changed is refused. " + EndTurnToWait(resultTool, hasEndReason) + " Read raw evidence with read_transcript(transcript_ref).",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -517,18 +560,27 @@ func DefJobStatus() llm.ToolDefinition {
 }
 
 func DefJobList() llm.ToolDefinition {
-	return DefJobListNamed(DefaultResultToolName)
+	return DefJobListNamed(DefaultResultToolName, false)
 }
+
+var jobListStatusEnum = func() []any {
+	names := appwire.JobListStatusFilterNames()
+	out := make([]any, len(names))
+	for i, name := range names {
+		out[i] = name
+	}
+	return out
+}()
 
 // DefJobListNamed is DefJobList for a session whose result tool is named
 // resultTool.
-func DefJobListNamed(resultTool string) llm.ToolDefinition {
+func DefJobListNamed(resultTool string, hasEndReason bool) llm.ToolDefinition {
 	strictFalse := false
-	statusEnum := []any{"running", "idle", "completed", "failed", "command_exited_nonzero", "command_killed", "exhausted", "cancelled", "stopped"}
+	statusEnum := append([]any(nil), jobListStatusEnum...)
 	typeEnum := []any{"shell", "delegate"}
 	return llm.ToolDefinition{
 		Name:        "job_list",
-		Description: "List this session's durable shell jobs and stable delegates, newest first; filter by `status` or `type`. Rows include typed identity, status, phase, running_for_ms, quiet_for_ms, and transcript_ref, so this is usually enough to re-orient without a follow-up status call. Completion is notification-driven; if you have waited a long time with no notification, list work to re-orient instead of re-running it. " + ObserverReporting(resultTool) + " Use transcript evidence after an observer's report when you need audit or diagnosis context. The result also includes your active watches. Terminal outcome statuses: completed, failed, command_exited_nonzero, command_killed, exhausted, cancelled, stopped. A short shell can finish before a running-only filter sees it, and an ended delegate becomes idle; when recency matters, list unfiltered or inspect the typed resource by id.",
+		Description: "List this session's durable shell jobs and stable delegates, newest first; filter by `status` or `type`. Rows include typed identity, status, phase, running_for_ms, quiet_for_ms, and transcript_ref, so this is usually enough to re-orient without a follow-up status call. Completion is notification-driven. " + EndTurnToWait(resultTool, hasEndReason) + " " + ObserverReporting(resultTool) + " Use transcript evidence after an observer's report when you need audit or diagnosis context. The result also includes your active watches. Terminal outcome statuses: completed, failed, command_exited_nonzero, command_killed, exhausted, cancelled, stopped. A short shell can finish before a running-only filter sees it, and an ended delegate becomes idle; when recency matters, list unfiltered or inspect the typed resource by id.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -557,7 +609,7 @@ func DefJobListNamed(resultTool string) llm.ToolDefinition {
 func DefJobStop() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "job_stop",
-		Description: "Request cancellation of a shell job or stable delegate by `target`; stopping never deletes output or history. `max_wait_ms > 0` waits for the stop to finalize. A delegate target is always stopped recursively, so include_children cannot weaken it; for a shell target, include_children=true also stops nested children.",
+		Description: "Request cancellation of a shell job or stable delegate by `target`; stopping never deletes output or history. Stopping a delegate also stops its running shell jobs; a delegate resumed later restarts them rather than continuing them. `max_wait_ms > 0` waits for the stop to finalize. A delegate target is always stopped recursively, so include_children cannot weaken it; for a shell target, include_children=true also stops nested children.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -585,7 +637,7 @@ func DefGrep() llm.ToolDefinition {
 				"case_insensitive": map[string]any{"type": "boolean", "description": "Match the pattern case-insensitively."},
 				"max_results": map[string]any{
 					"type":        "integer",
-					"description": "Maximum number of results to return: lines, file paths, or count entries by output mode. Defaults to 100.",
+					"description": "Maximum output to return. In content mode the cap counts output lines — matches plus context lines — not the number of matches; in files_with_matches and count modes it caps returned files or entries. Defaults to 100.",
 				},
 				"context_lines": map[string]any{
 					"type":        "integer",
@@ -670,7 +722,7 @@ Example combining all operations:
 Important:
 - Always include a header (Add/Delete/Update) for each file.
 - Prefix every new line with + even when creating a new file.
-- File paths must be relative, NEVER absolute.
+- File paths resolve against the session's current working directory, which a worktree switch changes; prefer relative paths from that directory. An absolute path is correct when the file lives outside it, such as inside a delegate's worktree while you work from the main checkout.
 - Do NOT use standard unified diff format (--- a/ +++ b/). Use only the format above.
 - Try to use apply_patch for single file edits. Use scripting for bulk search-and-replace.`,
 		Parameters: map[string]any{
@@ -731,7 +783,7 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        name,
-		Description: "Send a user-facing message. Use this tool for every message, readiness marker, requested status marker, request for input, and final answer the user or caller should see. A valid call has visible text in `message` or `output.message`. If you will immediately keep working after this message, set `end_turn=false` and continue by calling the next work tool in the following round. Use `end_turn=false` only for visible narration or status before immediate continued work. Use `end_turn=true` when this message should stop the current activation: final answers, completed results, blocking requests for input, or readiness markers that wait for future user/caller/watch-frame input. Set `message` to the exact visible text. Always include `output` as an object with exactly these top-level fields: `message`, `data`, and `artifacts`. For ordinary status or conversational messages, use `output.message=\"\"`, `output.data={}`, and `output.artifacts=[]`. When handing back completed work or machine-readable results, populate `output` with the evidence and structured data the caller needs.",
+		Description: "Send a user-facing message. Use this tool for every message, readiness line, requested status marker, request for input, and final answer the user or caller should see. A valid call has visible text in `message` or `output.message`. If you will immediately keep working after this message, set `end_turn=false` and continue by calling the next work tool in the following round. Use `end_turn=false` only for visible narration or status before immediate continued work. Use `end_turn=true` when this message should stop the current activation: final answers, completed results, blocking requests for input, readiness lines that wait for future user/caller/watch-frame input, and a line naming the work you are waiting on. Set `message` to the exact visible text. Always include `output` as an object with exactly these top-level fields: `message`, `data`, and `artifacts`. For ordinary status or conversational messages, use `output.message=\"\"`, `output.data={}`, and `output.artifacts=[]`. When handing back completed work or machine-readable results, populate `output` with the evidence and structured data the caller needs.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -743,7 +795,7 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 				},
 				"end_turn": map[string]any{
 					"type":        "boolean",
-					"description": "Set to false only for visible narration/status before immediate continued work. Set to true when this message ends the current activation: final answer, completed result, blocking input request, or readiness marker that waits for future user/caller/watch-frame input.",
+					"description": "Set to false only for visible narration/status before immediate continued work. Set to true when this message ends the current activation: final answer, completed result, blocking input request, readiness line that waits for future user/caller/watch-frame input, or a line naming the work you are waiting on.",
 				},
 				"output": map[string]any{
 					"type":                 "object",
@@ -798,7 +850,7 @@ func WithCommunicateEndReason(def llm.ToolDefinition) llm.ToolDefinition {
 	props["end_reason"] = map[string]any{
 		"type":        "string",
 		"enum":        slices.Clone(CommunicateEndReasons),
-		"description": "Why this message ends your turn; read only when end_turn=true, and done when omitted. `done`: you finished or answered, and nothing waits on your human partner; the session rests idle. `needs_response`: you cannot go on until your human partner answers or acts, such as a decision, a review, or something only they can do; the session shows it is waiting on them. `waiting_on_work`: you are waiting on delegates or background jobs that will wake you; the session rests idle and asks nobody for attention.",
+		"description": "Why this message ends your turn; read only when end_turn=true, and done when omitted. `done`: you finished or answered, and nothing waits on your human partner; the session rests idle. `needs_response`: you cannot go on until your human partner answers or acts, such as a decision, a review, or something only they can do; the session shows it is waiting on them. `waiting_on_work`: you are waiting on delegates or background jobs that will wake you; the session rests idle and asks nobody for attention. The call is refused when nothing can wake the session: use `done` if finished, `needs_response` if your partner must act, or start the work or arm a watch before ending the turn.",
 	}
 	def.Parameters = params
 	return def
@@ -808,7 +860,7 @@ func WithCommunicateEndReason(def llm.ToolDefinition) llm.ToolDefinition {
 // watches through resultTool, shared by every tool description and error that
 // teaches it.
 func ObserverReporting(resultTool string) string {
-	return "Observers send updates with `" + resultTool + "(end_turn=false)` and report findings with `" + resultTool + "(end_turn=true)`."
+	return "Observers send updates with `" + resultTool + "(end_turn=false)`, and a readiness line or their findings with `" + resultTool + "(end_turn=true)`."
 }
 
 // communicateDelegateDescription is communicate worded for a delegate, whose
@@ -818,13 +870,13 @@ func ObserverReporting(resultTool string) string {
 const communicateDelegateDescription = "Send a message to your parent agent; it is the only way your parent hears from you. Put the text your parent should read in `message`. " +
 	"With `end_turn=false` the message is an update: your parent receives it, and it wakes a parent that is waiting on you, so send one only when your parent needs to know something or act on it, never to narrate progress, and keep working in the following round. " +
 	"The result's `delivery` says whether your parent has the update (`delivered`), will get it at its next step (`queued`), or cannot get it (`not_delivered`, with a `reason`); the call succeeds either way. " +
-	"With `end_turn=true` the message is your final report and ends your turn: put the complete result in it. A readiness marker you send before waiting for watch frames also uses `end_turn=true`. " +
+	"With `end_turn=true` the message ends your turn with your report, your one line naming the work you are waiting on, or a readiness line before you wait for watch frames: put the complete result in a report. A `result_schema` still requires its output on every call, so when the schema has no truthful pending value, keep the turn open rather than invent one. " +
 	"Always include `output` in the shape its schema gives; when you hand back completed work or machine-readable results, fill it with the evidence and structured data your parent needs."
 
 // WithCommunicateDelegateUpdates returns a copy of a communicate definition
 // worded for a delegate: end_turn=false sends an update its parent receives,
-// end_turn=true its final report. The output schema stays as the caller
-// built it.
+// end_turn=true its report, its wait line, or an observer readiness line. The
+// output schema stays as the caller built it.
 func WithCommunicateDelegateUpdates(def llm.ToolDefinition) llm.ToolDefinition {
 	params := CloneSchemaMap(def.Parameters)
 	props, _ := params["properties"].(map[string]any)
@@ -832,7 +884,7 @@ func WithCommunicateDelegateUpdates(def llm.ToolDefinition) llm.ToolDefinition {
 		message["description"] = "The text your parent agent receives. When the task asks for concrete findings, put them here."
 	}
 	if endTurn, ok := props["end_turn"].(map[string]any); ok {
-		endTurn["description"] = "false: send an update and keep working; your parent receives it, and it wakes a parent that is waiting on you. true: send your final report, or a readiness marker before you wait for watch frames, and end your turn."
+		endTurn["description"] = "false: send an update and keep working; your parent receives it, and it wakes a parent that is waiting on you. true: send your report, the one line naming the work you are waiting on, or a readiness line before you wait for watch frames, and end your turn."
 	}
 	def.Description = communicateDelegateDescription
 	def.Parameters = params
@@ -981,7 +1033,7 @@ func DefFindSessionTranscripts() llm.ToolDefinition {
 // and the agent-layer dispatcher both derive from DoctorEvenerCommands, so
 // the tool surface and dispatch cannot drift.
 func DoctorEvenerCommands() []string {
-	return []string{"locate", "transcript", "apilog", "jobs", "mutations", "watches", "tree", "turnids", "sessions", "audit", "plugins"}
+	return []string{"locate", "transcript", "apilog", "jobs", "mutations", "watches", "tree", "turnids", "sessions", "audit", "plugins", "lifecycle"}
 }
 
 // DoctorEvenerSelectorDialect is the selector grammar phrase shared by the
@@ -989,11 +1041,20 @@ func DoctorEvenerCommands() []string {
 // schema and the errors cannot drift apart.
 const DoctorEvenerSelectorDialect = "local:<id>, proj:<project-id>:<id>, or bare <id>"
 
+// DoctorSessionsDefaultSince bounds a doctor_evener sessions census that names
+// no since. A state root can hold tens of thousands of sessions; an unbounded
+// census from a turn would run for the better part of an hour.
+const DoctorSessionsDefaultSince = 7 * 24 * time.Hour
+
+// doctorSessionsDefaultSinceText renders the default in the duration syntax
+// the since argument accepts.
+var doctorSessionsDefaultSinceText = fmt.Sprintf("%dh", int(DoctorSessionsDefaultSince.Hours()))
+
 func DefDoctorEvener() llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        "doctor_evener",
-		Description: "Read-only forensic inspection of evener durable state — the in-process equivalent of the `evener doctor` CLI, run against this session's own state root by default (no shell, no PATH, no cwd dependence). Commands: locate (resolve a selector to its file paths), transcript (render turns; count=<tool> for the structural invocation count; health=true for mechanical per-session metrics), apilog (API-call diagnostics: empties, errors, cache spikes, summary, validate, recompute, health), jobs (job records for a session, or one --job), mutations (client-mutation journal and queue), watches (distinct deliveries, provenance, breaker telemetry; self_loops=true for runaway-only), tree (parent/delegate/observer tree; observers=true), turnids (reserved-turn-id sweep), sessions (enumerate sessions; since=<dur>, bucket=<id>), audit (run a runbook's mechanical checks over a session set; runbook required, sessions xor since), plugins (plugin-store health). First positional in the CLI is the `selector` argument here: " + DoctorEvenerSelectorDialect + ", searched across buckets. Results are the CLI's --json struct shapes. Read-only: it never mutates state (the plugins command's store-writability probe creates and removes one temp file, mirroring the CLI).",
+		Description: "Read-only forensic inspection of evener durable state — the in-process equivalent of the `evener doctor` CLI, run against this session's own state root by default (no shell, no PATH, no cwd dependence). Commands: locate (resolve a selector to its file paths), transcript (render turns; count=<tool> for the structural invocation count; health=true for mechanical per-session metrics), apilog (API-call diagnostics: empties, errors, cache spikes, summary, validate, recompute, health), jobs (job records for a session, or one --job), mutations (client-mutation journal and queue), watches (distinct deliveries, provenance, breaker telemetry; self_loops=true for runaway-only), tree (parent/delegate/observer tree; observers=true), turnids (reserved-turn-id sweep), sessions (enumerate sessions; since=<dur> defaults to " + doctorSessionsDefaultSinceText + ", bucket=<id>), audit (run a runbook's mechanical checks over a session set; runbook required, sessions xor since), plugins (plugin-store health), lifecycle (the declared state machines: states, classes, terminality and legal transitions; takes no selector and reads no state root). First positional in the CLI is the `selector` argument here: " + DoctorEvenerSelectorDialect + ", searched across buckets. Results are the CLI's --json struct shapes. Read-only: it never mutates state (the plugins command's store-writability probe creates and removes one temp file, mirroring the CLI).",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -1004,8 +1065,8 @@ func DefDoctorEvener() llm.ToolDefinition {
 					"enum":        DoctorEvenerCommands(),
 					"description": "Doctor subcommand, matching `evener doctor <cmd>`.",
 				},
-				"selector":  map[string]any{"type": "string", "description": "Session selector: " + DoctorEvenerSelectorDialect + ". Required by selector-taking commands; rejected by sessions/audit/turnids/plugins."},
-				"state_dir": map[string]any{"type": "string", "description": "State root override. Defaults to this session's own state root. Rejected by plugins (the plugin store lives in the config root, not a state root)."},
+				"selector":  map[string]any{"type": "string", "description": "Session selector: " + DoctorEvenerSelectorDialect + ". Required by selector-taking commands; rejected by sessions/audit/turnids/plugins/lifecycle."},
+				"state_dir": map[string]any{"type": "string", "description": "State root override. Defaults to this session's own state root. Rejected by plugins (the plugin store lives in the config root, not a state root) and lifecycle (the machines are compiled declarations)."},
 				"count":     map[string]any{"type": "string", "description": "transcript: print the structural invocation count of this tool name."},
 				"health":    map[string]any{"type": "boolean", "description": "transcript/apilog: mechanical health metrics / one-line API-health verdict."},
 				"range":     map[string]any{"type": "string", "description": "transcript: window of read_transcript turn numbers, with read_transcript's grammar: last:N | start:N | N-M. Omit for the whole transcript; a malformed range also renders it, with range_warning. Entries read_transcript omits carry no turn number and render with the turn before them."},
@@ -1032,7 +1093,7 @@ func DefDoctorEvener() llm.ToolDefinition {
 				},
 				"depth":     map[string]any{"type": "integer", "description": "tree: max depth to expand; 0 or omitted means the max (50)."},
 				"observers": map[string]any{"type": "boolean", "description": "tree: include observer edges."},
-				"since":     map[string]any{"type": "string", "description": "sessions/audit: only sessions with last activity within this duration (e.g. 120h)."},
+				"since":     map[string]any{"type": "string", "description": "sessions/audit: only sessions with last activity within this duration (e.g. 120h). sessions defaults to " + doctorSessionsDefaultSinceText + "; audit has no default."},
 				"bucket":    map[string]any{"type": "string", "description": "sessions: scope to one bucket (project id). Enumerating every bucket is already the default (the CLI --all flag is that default made explicit, so it has no tool argument)."},
 				"runbook":   map[string]any{"type": "string", "description": "audit: runbook name, resolved from the bundled doctoring-evener skill's runbooks/."},
 				"sessions":  map[string]any{"type": "string", "description": "audit: comma-separated session selectors (mutually exclusive with since)."},
@@ -1061,7 +1122,8 @@ func DefManageWorktree() llm.ToolDefinition {
 		"exit (return to the main checkout); remove (delete a worktree by `name`; `delete_branch` also deletes its branch, " +
 		"`force` overrides provenance/merge gating, `force_dirty` overrides the refusal to discard uncommitted changes); " +
 		"prune (remove worktrees that have no unmerged work — unchanged or already-merged lanes, including ones left behind " +
-		"by finished sessions — the one-call way to clean up); " +
+		"by finished sessions — the one-call way to clean up; with orphaned_delegate_days it also releases the locks of " +
+		"delegate lanes whose parent session is gone or long-inactive — crash residue no other path may unlock); " +
 		"dispose (retire a delegate's isolation worktree lane by its delegate `id` once you are done with its work — unlocks, " +
 		"removes the worktree, deletes its branch, and marks the delegate disposed; `force` overrides the refusal to discard " +
 		"unmerged commits, `force_dirty` overrides the refusal to discard uncommitted changes). " +
@@ -1106,6 +1168,10 @@ func DefManageWorktree() llm.ToolDefinition {
 				"delete_branch": map[string]any{
 					"type":        "boolean",
 					"description": "For remove: also delete the worktree's branch. Default false.",
+				},
+				"orphaned_delegate_days": map[string]any{
+					"type":        "number",
+					"description": "For prune: also release delegate-lane locks whose parent session provably cannot act as the disposer — its own disposal already ran (the store records the delegate's isolation disposal), or the session is gone or inactive at least this many days. Removal still requires the ordinary unchanged/merged gates; a released lane with unmerged work stays put, unlocked and visible to the merge and force paths. 0 (default) keeps the locked-lane rule absolute. A positive value below the supported minimum (one minute plus the refresh cadence's tick, ~0.00072 days) is refused: the activity evidence a live tree refreshes is only as fresh as that window, so a shorter threshold could release a lane under a running delegate.",
 				},
 			},
 			"required": []string{"operation"},

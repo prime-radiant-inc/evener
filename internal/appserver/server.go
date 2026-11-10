@@ -12,6 +12,7 @@ import (
 )
 
 type Server struct {
+	sessionToolsBind       func(context.Context, appwire.SessionBinding, appwire.SessionHubClient) error
 	cfg                    ServerConfig
 	router                 *Router
 	subs                   *Subscriptions
@@ -23,9 +24,8 @@ type Server struct {
 	// requestQueueCapacity is requestQueueCap, overridable by tests that
 	// need to saturate the queue without pipelining 65 real frames.
 	requestQueueCapacity int
-	// blockedEnqueue runs when the receive loop is about to park on a full
-	// request queue, so a saturation test can wait for the loop to actually
-	// block instead of sleeping. Production leaves it nil.
+	// blockedEnqueue is a test fence just after the sole nonblocking admission
+	// attempt finds a full queue. Production leaves it nil.
 	blockedEnqueue func()
 	// afterWorkerDequeue runs on the worker goroutine after each dequeue and
 	// before the post-dequeue cancellation re-check, so a test can pin the

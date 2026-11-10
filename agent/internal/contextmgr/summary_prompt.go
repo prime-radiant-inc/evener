@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/mdfence"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -131,21 +132,21 @@ func checkSummaryReply(reply, instructions string) error {
 	// This reads the reply as the model wrote it and edits nothing: the framing a
 	// model may echo back around its own text stays in the stored turn.
 	inSection := false
-	var fence fenceTracker
+	var fence mdfence.Tracker
 	// The lines are read as written: the reply's own indentation is Markdown's,
 	// and trimming it would turn an indented block into a fence.
 	for raw := range strings.Lines(reply) {
 		line := strings.TrimSpace(raw)
 		// The tracker reads the line as written: a delimiter indented by four
 		// spaces is code inside the block, not a delimiter.
-		if fence.step(raw) {
+		if fence.Step(raw) {
 			continue
 		}
 		// A model sometimes echoes the framing around its own heading. Read through
 		// the markers at the line's edges so the heading still counts; a marker
 		// inside the line's own text is that text. An indented line is code: it is
 		// content under a section, never one.
-		if section, rest, ok := summarySectionHeading(withoutEdgeFraming(line)); ok && !fence.inside() && !indentedCode(raw) {
+		if section, rest, ok := summarySectionHeading(withoutEdgeFraming(line)); ok && !fence.Inside() && !indentedCode(raw) {
 			inSection = !strings.EqualFold(section, permissionsSection)
 			// The heading's own text counts only if it is text: the edge markers
 			// are read through above, but markup can hold one inside it

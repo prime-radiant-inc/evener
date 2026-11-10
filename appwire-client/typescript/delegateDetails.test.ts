@@ -75,6 +75,13 @@ test("attention phases read as attention while the run is open", () => {
   }
 });
 
+test("pending delivered input is not human attention", () => {
+  const now = Date.parse(RUNNING_AT) + 5_000;
+  const pendingInput: ActivityDelegate = { ...silentSinceStart(), needsAttention: true };
+  expect(delegateDotState(pendingInput, now)).toBe("fresh");
+  expect(delegateDotState({ ...pendingInput, terminal: true, outcome: "completed" }, now)).toBe("idle");
+});
+
 test("a terminal row reads by its outcome: failed red, done idle, terminal over attention", () => {
   const now = Date.parse(RUNNING_AT) + 5_000;
   expect(delegateDotState({ ...silentSinceStart(), terminal: true, outcome: "failed" }, now)).toBe("failed");

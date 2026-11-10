@@ -28,18 +28,18 @@ func TestSession_OpenAIResponsesContinuationPhase4DIProducesStoredFullHistoryAnc
 		PlanResponsesContinuationFunc: func(req llm.Request) (llm.ResponsesContinuationPlan, error) {
 			return phase4DIContinuationPlan(req), nil
 		},
-		Steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				resp := agenttest.FinalResponse("phase 4d anchor stored")
-				resp.ID = "resp_phase4d_anchor"
-				resp.Raw = map[string]any{
-					"endpoint_url": "https://api.openai.com/v1/responses",
-					"id_hash":      "cont-handle-v1:response_id:phase4d",
-				}
-				return resp
-			},
-		},
 	}
+	adapter.SetSteps([]func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			resp := agenttest.FinalResponse("phase 4d anchor stored")
+			resp.ID = "resp_phase4d_anchor"
+			resp.Raw = map[string]any{
+				"endpoint_url": "https://api.openai.com/v1/responses",
+				"id_hash":      "cont-handle-v1:response_id:phase4d",
+			}
+			return resp
+		},
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 
@@ -114,12 +114,12 @@ func TestSession_OpenAIResponsesContinuationPhase4DIIConsumesStoredAnchorAsDelta
 		PlanResponsesContinuationFunc: func(req llm.Request) (llm.ResponsesContinuationPlan, error) {
 			return phase4DIContinuationPlan(req), nil
 		},
-		Steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("phase 4d delta consumed")
-			},
-		},
 	}
+	adapter.SetSteps([]func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			return agenttest.FinalResponse("phase 4d delta consumed")
+		},
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 

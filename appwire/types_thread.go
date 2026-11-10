@@ -60,7 +60,20 @@ type TaskAggregate struct {
 	Current   *TaskSummary `json:"current,omitempty"`
 }
 
+type ThreadProbeState string
+
+const (
+	ThreadProbeStateFresh    ThreadProbeState = "fresh"
+	ThreadProbeStateRetained ThreadProbeState = "retained"
+)
+
 type EvenerThread struct {
+	ConversationProvenance *ConversationProvenanceState `json:"conversationProvenance,omitempty"`
+	PendingAsk             *PendingAskState             `json:"pendingAsk,omitempty"`
+	// Manager is the session's start-time Manager property, reported by the
+	// session itself. It is not a runtime setting: nothing can turn it on or
+	// off after the session starts.
+	Manager bool `json:"manager,omitempty"`
 	// ResumeRequired means recovery stopped this session and automatic actions
 	// must wait for an explicit thread/resume. Saved transcripts remain readable.
 	ResumeRequired bool `json:"resumeRequired,omitempty"`
@@ -83,6 +96,9 @@ type EvenerThread struct {
 	// independent of Turns so a bounded metadata read never loads the transcript.
 	TurnCount        int                `json:"turnCount,omitempty"`
 	ActiveTurnID     string             `json:"activeTurnId,omitempty"`
+	QuietForMS       *int64             `json:"quietForMs,omitempty"`
+	ProbeState       ThreadProbeState   `json:"probeState,omitempty"`
+	Crashed          bool               `json:"crashed,omitempty"`
 	ContextPressure  float64            `json:"contextPressure,omitempty"`
 	ContextUsed      int                `json:"contextUsed,omitempty"`
 	ContextWindow    int                `json:"contextWindow,omitempty"`
@@ -91,7 +107,7 @@ type EvenerThread struct {
 	Capabilities     ThreadCapabilities `json:"capabilities"`
 	Diagnostics      *EvenerDiagnostics `json:"diagnostics,omitempty"`
 	// Queue carries authoritative queue depth + preview for the per-session
-	// input queue (kata r80p). Both UIs derive their queue-preview chrome
+	// input queue. Both UIs derive their queue-preview chrome
 	// from this field rather than mirroring queue mutations locally, which
 	// fixes multi-client incoherence and post-reload state. The empty zero
 	// value (Depth==0, Preview==nil) means "no queued messages".
@@ -130,6 +146,15 @@ type EvenerThread struct {
 	// hub's doc route serves that request out of. Clients compare a link
 	// against it rather than guessing whether the hub can open it.
 	ArtifactsDir string `json:"artifactsDir,omitempty"`
+	// ScratchDir is the session's named scratch directory on the hub that
+	// serves it, empty when no local path names one (a remote thread, an
+	// unknown ref, a session with no scratch directory on disk). Tools write
+	// screenshots and other session-local output there and name those files by
+	// absolute path in messages and tool results; the transcript turns such a
+	// path into a document-pane request, and this is the directory the hub's
+	// doc route serves that request out of. Clients compare an absolute path
+	// against it rather than guessing whether the hub can open it.
+	ScratchDir string `json:"scratchDir,omitempty"`
 	// Usage, WorkMillis, and ActiveTurnStartedAt are the daemon's live
 	// working-state/token metrics (WS2), served from the daemon's materialized
 	// thread envelope, which is refreshed at the turn boundaries that move
@@ -192,6 +217,11 @@ type EvenerThread struct {
 	// absent on old daemons and source-backed threads that omit the field,
 	// decoding as false.
 	AskPending bool `json:"askPending,omitempty"`
+	// AttentionLevel and AttentionAsOf are the Manager roster's derived level
+	// and its Unix-millisecond observation moment. Discovery alone populates
+	// them, and rows outside the live top-level roster leave them absent.
+	AttentionLevel string `json:"attentionLevel,omitempty"`
+	AttentionAsOf  int64  `json:"attentionAsOf,omitempty"`
 	// PendingQuestion is the first question of the session's pending ask and
 	// how many the ask holds (S1b). The daemon reads both from one sample of
 	// the pending set, so it is present exactly when AskPending is true; it is
@@ -319,6 +349,13 @@ type PendingQuestion struct {
 	Question string   `json:"question"`
 	Options  []string `json:"options,omitempty"`
 	Count    int      `json:"count"`
+	// The displayed question's composite identity is absent for call-less asks.
+	TurnID string `json:"turnId,omitempty"`
+	CallID string `json:"callId,omitempty"`
+	// Live append computes these flags from the full ask. Restore cannot
+	// reconstruct that evidence, so unknown stays absent rather than false.
+	Complete  *bool `json:"complete,omitempty"`
+	Truncated *bool `json:"truncated,omitempty"`
 }
 
 // GoalState is the wire representation of a session's /goal. Status is the
@@ -394,7 +431,7 @@ type QueueState struct {
 // transition (currently: a drain folding the queue into steering), never a
 // property of the durable queue a client caches — a client settles those
 // optimistic records by positive evidence instead of inferring consumption
-// from sequence order (issue #1704). Absent on old daemons and on every push
+// from sequence order. Absent on old daemons and on every push
 // that is not the consuming transition.
 type ThreadQueueChangedParams struct {
 	ThreadID                  string     `json:"threadId"`
@@ -542,25 +579,29 @@ type DelegateStopResponse struct {
 // pending escalation. Approve re-runs the single denied invocation with the one
 // path granted; deny returns the typed error to the model.
 type SandboxEscalationResolveParams struct {
-	ThreadID     string `json:"threadId,omitempty"`
-	Ref          string `json:"ref,omitempty"`
-	EscalationID string `json:"escalationId"`
-	Approve      bool   `json:"approve"`
+	ManagerProof *SessionActorProof `json:"managerProof,omitempty"`
+	ThreadID     string             `json:"threadId,omitempty"`
+	Ref          string             `json:"ref,omitempty"`
+	EscalationID string             `json:"escalationId"`
+	Approve      bool               `json:"approve"`
 }
 
 type ThreadCapabilities struct {
-	Send         bool `json:"send"`
-	Steer        bool `json:"steer"`
-	Interrupt    bool `json:"interrupt"`
-	Compact      bool `json:"compact"`
-	Clear        bool `json:"clear"`
-	ForkFromTurn bool `json:"forkFromTurn"`
-	Shutdown     bool `json:"shutdown"`
-	ChangeModel  bool `json:"changeModel"`
+	// AskFence supports pair-fenced answers and paged pending-ask reads.
+	AskFence                   bool `json:"askFence,omitempty"`
+	VoicePresentationContextV1 bool `json:"voicePresentationContextV1,omitempty"`
+	Send                       bool `json:"send"`
+	Steer                      bool `json:"steer"`
+	Interrupt                  bool `json:"interrupt"`
+	Compact                    bool `json:"compact"`
+	Clear                      bool `json:"clear"`
+	ForkFromTurn               bool `json:"forkFromTurn"`
+	Shutdown                   bool `json:"shutdown"`
+	ChangeModel                bool `json:"changeModel"`
 	// ChangeVisionModel advertises support for thread/vision-model/set. True for
 	// a live evener session whose daemon wires a vision-model hook.
 	ChangeVisionModel bool `json:"changeVisionModel"`
-	// Queue advertises harness support for turn/queue (kata 111a, #1375): true
+	// Queue advertises harness support for turn/queue: true
 	// when the daemon wires a queue seam and the thread is not closed, not when
 	// a turn happens to be in flight. The client applies the status, so
 	// turn/queue is still meaningful only mid-turn.
@@ -602,9 +643,17 @@ type ThreadCapabilities struct {
 	// before position, with or without a cursor: a client that trimmed rows
 	// from the top of its window can page them back. The hub answers for its
 	// own local and saved threads. A thread on another host stays masked until
-	// the hub can join such a page to its remote paging window (#3176); an
+	// the hub can join such a page to its remote paging window; an
 	// older hub never sends it.
 	PageBefore bool `json:"pageBefore,omitempty"`
+	// VoiceArm advertises that the iPhone may offer voice for this session now:
+	// it is a live manager whose conversation provenance is authoritative for
+	// this instance, and this hub has an OpenAI voice instance with a
+	// credential. The hub owns the bit, so it refreshes with every read instead
+	// of a client-side preflight. FeatureSet.VoiceArmV1 marks a hub that
+	// stamps it; a client talking to a hub without that feature keeps the
+	// earlier behavior.
+	VoiceArm bool `json:"voiceArm,omitempty"`
 }
 
 // EvenerHookEventStatus describes a single hook event's registration state.

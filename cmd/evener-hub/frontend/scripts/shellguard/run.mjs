@@ -349,6 +349,16 @@ function assertResult(result) {
   // measurement of a loaded shell, not of an empty one that never drew the
   // rail (docs/developing-evener/testing.md's unfalsifiable-fixture trap).
   if (result.treeRows < 120) failures.push(`expected the tall tree in the page, found ${result.treeRows} rows`);
+  if (!result.railNewSession?.present) failures.push("the rail's New session control did not render");
+  if (result.railNewSession?.primary) {
+    failures.push("the rail's New session control is a filled primary and outranks the current task");
+  }
+  if (!result.railNewSession?.secondary) {
+    failures.push("the rail's New session control lost its secondary treatment");
+  }
+  if (result.primaryButtons > 1) {
+    failures.push(`the shell route shows ${result.primaryButtons} filled primaries, expected at most one`);
+  }
 
   // The property the bug broke: with a tree taller than the viewport, the
   // RAIL's own body must be the box that scrolls...
@@ -760,7 +770,7 @@ function fullTextMeasurement(element, expected) {
 async function measureOverview(send) {
   return evaluate(
     send,
-    `(() => {
+    `(async () => {
     const aside = document.querySelector(${JSON.stringify(OVERVIEW)});
     if (!aside) throw new Error('Overview never rendered');
     const measure = ${fullTextMeasurement.toString()};
@@ -768,6 +778,15 @@ async function measureOverview(send) {
       const r = element.getBoundingClientRect();
       return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
     };
+    // The phone's activity counts live in the composer's own control row,
+    // which rests until the editor is engaged: focus the editor so the row
+    // carries its chips where this measurement can see them.
+    const mobile = matchMedia('(max-width: 899px)').matches;
+    if (mobile) {
+      const editor = document.querySelector('[data-testid="composer-form"] [role="textbox"]');
+      editor?.focus();
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    }
     const categories = Array.from(aside.querySelectorAll('[role="radio"]'), element => ({
       text: element.textContent, checked: element.getAttribute('aria-checked'), box: box(element),
       label: measure(element.querySelector('span'), element.textContent)
@@ -778,13 +797,32 @@ async function measureOverview(send) {
       return measure(element, expected);
     });
     const close = aside.querySelector('button[aria-label="Close Overview"]');
+    // The activity surface: the pane's status bar on desktop, the engaged
+    // composer row on a phone (the phone pane renders no footer strip).
+    const surface = mobile
+      ? document.querySelector('[data-testid="composer-form"]')
+      : Array.from(document.querySelectorAll('[data-testid="statusbar"]'))
+          .find(e => !e.closest('[data-pane-footer-fixture]')) ?? null;
+    const chips = surface ? Array.from(surface.querySelectorAll('[data-activity-tab]')) : [];
+    const chipRow = chips[0]?.parentElement ?? null;
+    const path = surface?.querySelector('[data-testid="composer-repo-path"]');
     return {
       theme: document.documentElement.dataset.theme, font: document.body.dataset.fontSize,
       sidebar: box(aside), categories, values, close: close && box(close),
       tapMin: parseFloat(getComputedStyle(aside).getPropertyValue('--tap-min')),
-      footerTabs: Array.from(document.querySelectorAll('[data-testid="statusbar"]'))
-        .filter(e => !e.closest('[data-pane-footer-fixture]'))
-        .map(e => Array.from(e.querySelectorAll('[data-activity-tab]'), button => button.dataset.activityTab)),
+      footerTabs: surface ? [chips.map(button => button.dataset.activityTab)] : [],
+      footer: surface ? (() => {
+        return {
+          box: box(mobile ? (chipRow ?? surface) : surface),
+          path: !mobile && path ? box(path) : null,
+          chips: chips.map(element => ({
+            tab: element.dataset.activityTab, box: box(element)
+          })),
+          chipRow: chipRow && {
+            box: box(chipRow), scrollWidth: chipRow.scrollWidth, clientWidth: chipRow.clientWidth
+          },
+        };
+      })() : null,
       document: { width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight },
       errors: window.__shellGuardErrors || [], state: window.overviewGuardState()
     };
@@ -880,13 +918,14 @@ function assertOverview(result, viewport, theme) {
     result.close.bottom > viewport.height + 1
   )
     failures.push(`close control escapes viewport: ${JSON.stringify(result.close)}`);
+  // The focused session pane carries its activity tabs on both viewports:
+  // desktop draws them in the pane's status bar, a phone keeps them in the
+  // engaged composer's control row, which is the pane's one bottom surface.
   if (
-    !viewport.mobile &&
-    (result.footerTabs.length !== 1 ||
-      JSON.stringify(result.footerTabs[0]) !== JSON.stringify(["agents", "jobs", "watches", "tasks"]))
+    result.footerTabs.length !== 1 ||
+    JSON.stringify(result.footerTabs[0]) !== JSON.stringify(["agents", "jobs", "watches", "tasks"])
   )
     failures.push(`actual pane footer identities ${JSON.stringify(result.footerTabs)}`);
-  if (viewport.mobile && result.footerTabs.length) failures.push("phone unexpectedly rendered activity footers");
   if (JSON.stringify(result.categories.map((c) => c.text)) !== JSON.stringify(labels))
     failures.push(`categories/counts ${JSON.stringify(result.categories.map((c) => c.text))}`);
   if (
@@ -924,6 +963,40 @@ function assertOverview(result, viewport, theme) {
     for (const control of [...result.categories.map((c) => c.box), result.close]) {
       if (!control || control.width < result.tapMin - 1 || control.height < result.tapMin - 1)
         failures.push(`sub-floor Overview target: ${JSON.stringify(control)}`);
+    }
+    const footer = result.footer;
+    if (!footer) {
+      failures.push("phone composer activity row is not rendered");
+    } else {
+      // The phone pane renders no footer strip: the engaged composer row
+      // carries the same four activity tabs, each at the tap floor and
+      // never clipped - the strip wraps to another line rather than
+      // crushing the status chrome beside it.
+      if (footer.chips.length !== 4) failures.push(`phone composer activity chips: ${JSON.stringify(footer.chips)}`);
+      for (const chip of footer.chips) {
+        if (
+          chip.box.width < result.tapMin - 1 ||
+          chip.box.height < result.tapMin - 1 ||
+          chip.box.top < footer.box.top - 1 ||
+          chip.box.bottom > footer.box.bottom + 1
+        )
+          failures.push(`phone composer activity chip ${chip.tab} misses the tap floor: ${JSON.stringify(chip.box)}`);
+      }
+      const row = footer.chipRow;
+      if (!row || row.box === null) {
+        failures.push(`phone composer chip row is missing: ${JSON.stringify(footer)}`);
+      } else {
+        if (row.scrollWidth > row.clientWidth + 1)
+          failures.push(
+            `phone composer chip row clips its chips (${row.scrollWidth}px in ${row.clientWidth}px): ${JSON.stringify(row)}`,
+          );
+        for (const chip of footer.chips) {
+          if (chip.box.left < row.box.left - 1 || chip.box.right > row.box.right + 1)
+            failures.push(
+              `phone composer activity chip ${chip.tab} is clipped by its row: ${JSON.stringify(chip.box)}`,
+            );
+        }
+      }
     }
   }
   if (result.document.width > viewport.width + 1 || result.document.height > viewport.height + 1)

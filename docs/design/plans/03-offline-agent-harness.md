@@ -144,7 +144,7 @@ Public + package-internal methods the op table calls (all verified):
 - `Enqueue(ctx, text)` (`session_queue.go:169`) — queue a user message for the drain loop.
 - `SetGoal(ctx, objective)` (`session_goal.go:32`) / `ClearGoal()` (`session_goal.go:63`) / `GoalStatus()` (`session_goal.go:74`) — the goal engine; continuation timers (`armGoalContinuation`, `session_goal.go:158`) run on the injected clock.
 - Job/subagent/delegate ops are driven **through fuzzed model tool calls** (response vocabulary #3/#4), not direct Session methods, so the surface is the tool registry; the rapid machine pairs each spawn with a `opAdvanceClock` op (§2.3) to fire watchdogs/finalize.
-- Observers: `State()` (`session_state.go:24`), `QueueDepth()`/`QueuePreview()` (`session_queue.go:271/284`).
+- Observers: `State()` (`session_state.go:24`), `queueDepth()`/`QueuePreview()` (`session_queue.go:271/284`).
 - `Close()` (`session_lifecycle.go:73`).
 - **Interrupt** is modeled by passing a *cancellable* ctx to `ProcessInput` and cancelling it mid-turn; the loop's `isTurnCancellation` path (`session_lifecycle.go:333`) applies interrupt semantics (flip to idle, append the interrupt system-reminder, optionally drain the queue head).
 
@@ -158,12 +158,12 @@ Op set (v1):
 | `opProcessInput` | `ProcessInput(boundedCtx, drawnText, nil)` with the fuzzer scripting the round responses (may include job/compact/communicate kinds) | ends `SessionIdle` (or `SessionClosed`); `turns`↑ if accepted; `modelResponses`↑ |
 | `opProcessInterrupted` | `ProcessInput` with a ctx cancelled after a drawn round | ends `SessionIdle` unless closed; transcript gains an interrupt marker; no panic |
 | `opSteer` | `Steer(drawnText)` | enqueues steering; no state regression |
-| `opEnqueue` | `Enqueue(ctx, drawnText)` | `QueueDepth`↑ |
+| `opEnqueue` | `Enqueue(ctx, drawnText)` | `queueDepth`↑ |
 | `opFollowUp` | `FollowUp(drawnText)` | per-turn followup recorded |
 | `opSetGoal` / `opClearGoal` | `SetGoal`/`ClearGoal` | goal state set/cleared; no state regression |
 | `opAdvanceClock` | `fakeClock.BlockUntil(n)` then `Advance(drawnDuration)` | fires due timers/watchdogs/finalize-sleeps; jobs reach terminal state deterministically |
 | `opClose` | `Close()` | terminal: `State()==SessionClosed`, idempotent |
-| `opObserve` | read `State()`/`QueueDepth()`/`GoalStatus()` | pure; must not panic or mutate |
+| `opObserve` | read `State()`/`queueDepth()`/`GoalStatus()` | pure; must not panic or mutate |
 
 The fuzzer also draws, *per `ProcessInput` op*, a short script of round-response kinds (§1.1 vocabulary) the `Responder` will play, plus the deny-env draws for that run. So one drawn artifact = (op sequence) × (per-input response scripts) × (interrupt timing) × (clock-advance durations) × (env draws). All of it is recorded for replay.
 

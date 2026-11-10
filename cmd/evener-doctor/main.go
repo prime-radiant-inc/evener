@@ -25,6 +25,7 @@
 package doctor
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -76,6 +77,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdAudit(rest, stdout, stderr)
 	case "plugins":
 		return cmdPlugins(rest, stdout, stderr)
+	case "lifecycle":
+		return cmdLifecycle(rest, stdout, stderr)
 	case "-h", "--help", "help":
 		return usage(stdout)
 	default:
@@ -108,6 +111,7 @@ SUBCOMMANDS:
   sessions    enumerate every session (or one --bucket's), sorted by last activity, for batch forensic studies (no selector)
   audit       run a runbook's mechanical checks across a session set, emitting deduped, contract-valid Findings (no selector — see "evener doctor audit -h")
   plugins     plugin-store health check: registry/disk drift, marketplace health, component validity, auto-upgrade sanity (no selector — see "evener doctor plugins -h")
+  lifecycle   the declared state machines: states, classes, terminality and legal transitions (no selector)
 
 SELECTOR:
   "" | current  (rejected — name a session)   local:<id>   proj:<project-id>:<id>   <id> (searched across buckets)
@@ -242,7 +246,7 @@ func cmdTranscript(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if *health {
-		res, err := doctor.TranscriptHealth(base, sel)
+		res, err := doctor.TranscriptHealth(context.Background(), base, sel)
 		if err != nil {
 			return fail(stderr, "transcript", err)
 		}
@@ -314,7 +318,7 @@ func cmdAPILog(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if *health {
-		res, err := doctor.APIHealth(base, sel)
+		res, err := doctor.APIHealth(context.Background(), base, sel)
 		if err != nil {
 			return fail(stderr, "apilog", err)
 		}
@@ -332,7 +336,7 @@ func cmdAPILog(args []string, stdout, stderr io.Writer) int {
 		SummaryOnly:    *summary,
 		Recompute:      *recompute,
 	}
-	res, err := doctor.APILog(base, sel, opts)
+	res, err := doctor.APILog(context.Background(), base, sel, opts)
 	if err != nil {
 		return fail(stderr, "apilog", err)
 	}
@@ -495,7 +499,7 @@ func cmdSessions(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, "state", err)
 	}
-	res, err := doctor.ListSessions(base, doctor.SessionsOpts{Since: sinceDur, Bucket: *bucketFlag})
+	res, err := doctor.ListSessions(context.Background(), base, doctor.SessionsOpts{Since: sinceDur, Bucket: *bucketFlag})
 	if err != nil {
 		return fail(stderr, "sessions", err)
 	}
@@ -563,7 +567,7 @@ func cmdAudit(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, "state", err)
 	}
-	res, err := doctor.RunAudit(base, runbook, opts)
+	res, err := doctor.RunAudit(context.Background(), base, runbook, opts)
 	if err != nil {
 		return fail(stderr, "audit", err)
 	}
@@ -592,4 +596,26 @@ func cmdPlugins(args []string, stdout, stderr io.Writer) int {
 		return emitJSON(stdout, findings)
 	}
 	return writeText(stdout, plugins.RenderDoctorFindings(findings))
+}
+
+// cmdLifecycle prints the compiled lifecycle registry. It takes no selector and
+// reads no state root: the machines are declarations, not session evidence.
+func cmdLifecycle(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("lifecycle", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "emit JSON instead of the human table")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() > 0 {
+		if code := writef(stderr, "evener doctor lifecycle: takes no selector (got %q)\n", fs.Arg(0)); code != 0 {
+			return code
+		}
+		return 2
+	}
+	machines := doctor.Lifecycle()
+	if *asJSON {
+		return emitJSON(stdout, machines)
+	}
+	return writeText(stdout, doctor.RenderLifecycle(machines))
 }

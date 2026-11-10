@@ -466,6 +466,48 @@ func TestDelegateControllerModelRequestUsesOutgoingReplayScope(t *testing.T) {
 	}
 }
 
+// The held-row filter drops turns from the projection, so every turn after a
+// dropped one moves one position left; the in-flight boundary is an index into
+// the projection, and a drop strictly before it must move the boundary with it
+// — the same rule the resident drop applies to turnHistoryBaseline. Unshifted,
+// the run's first in-flight turn falls below the boundary and loses its N4
+// exemption: a same-protocol fallback that changes models mid-run strips its
+// thinking from the outgoing request.
+func TestHeldAttentionDropShiftsTheInFlightBoundary(t *testing.T) {
+	profile := namedInstanceProfile("ant", "anthropic", "claude-sonnet-4-5")
+	runtime := newSession(t, withAdapter(&fakeAdapter{name: "ant"}), withProfile(profile), withoutGitSnapshot())
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+	runtime.delegateController = c
+	c.mu.Lock()
+	c.live[lease.delegateID].runtime = runtime
+	c.live[lease.delegateID].binding.runtime = runtime
+	c.mu.Unlock()
+
+	const heldID = "delegate:dlg_worker/delivery/1/reopened/2"
+	held := schema.NewTurn(schema.TurnSteering, llm.User("held report"))
+	held.AttentionID = heldID
+	inFlight := assistantThinkingTurn("ant", "claude-opus-4-6", "claude-opus-4-6")
+	runtime.mu.Lock()
+	runtime.history = []schema.Turn{held, inFlight}
+	runtime.turnHistoryBaseline = 1
+	runtime.mu.Unlock()
+	runtime.attentionMu.Lock()
+	runtime.attentionAutomaticDriveHolds = map[string]struct{}{heldID: {}}
+	runtime.attentionMu.Unlock()
+
+	ctx := context.WithValue(context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease), delegateAttentionRunContextKey{}, struct{}{})
+	var timings events.RoundTimings
+	_, _, history, _, _, _, err := runtime.prepareModelRequestWithError(ctx, 1, &timings)
+	if err != nil {
+		t.Fatalf("prepare delegate model request: %v", err)
+	}
+	if !hasContentKind(history, llm.ContentThinking) {
+		t.Fatalf("the held-row drop moved the in-flight boundary past the run's first turn, stripping its thinking on the model switch: %#v", history)
+	}
+}
+
 type delegateBlockingContextStrategy struct {
 	spyStrategy
 	entered chan struct{}

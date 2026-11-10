@@ -96,6 +96,47 @@ test("pending input retains a command alongside the same-spelling skill across s
   ).toMatchObject([{ skillNames: ["probe"], commandNames: ["probe"] }]);
 });
 
+// RoboRev round-1 M3: a mint's replacement carries the ORIGINAL wire id in
+// its payload while owning a fresh storage key, so the durable record and
+// the daemon's feed name the same composition under two ids. The pending
+// projection is keyed by the effective wire identity, or the one composition
+// projects twice - and a reflected feed id must retire the durable
+// replacement that carries it.
+function mintedReplacement(): MutationOutboxRecord {
+  const record = outbox("mutation_20");
+  return {
+    ...record,
+    payload: { ...record.payload, clientMutationId: "mutation_1" },
+  };
+}
+
+test("a replacement row and its feed identity project as one pending entry", () => {
+  const pending: PendingMutation = {
+    clientMutationId: "mutation_1",
+    method: "turn/steer",
+    input: [{ type: "text", text: "hello" }],
+    executionState: "claimed",
+    projectionState: "reflected",
+  };
+  expect(
+    reconcilePendingEntries(
+      "ref_a",
+      [mintedReplacement()],
+      model({ pendingMutations: [pending] }),
+      NOTHING_SUBMITTED_HERE,
+      UNATTRIBUTED_ONLY,
+    ),
+  ).toHaveLength(1);
+});
+
+test("a reflected wire identity retires the replacement's pending entry", () => {
+  const reflected = model();
+  reflected.queue = { revision: 1, clientMutationIds: ["mutation_1"] };
+  expect(
+    reconcilePendingEntries("ref_a", [mintedReplacement()], reflected, NOTHING_SUBMITTED_HERE, UNATTRIBUTED_ONLY),
+  ).toEqual([]);
+});
+
 test("the authoritative pending projection replaces the same outbox identity", () => {
   const pending: PendingMutation = {
     clientMutationId: "mutation_1",
@@ -185,7 +226,7 @@ test("a pending mutation this client never submitted is not its own", () => {
       new Map([["mutation_1", 1]]),
       UNATTRIBUTED_ONLY,
     ),
-    // createdAt: undefined pins spec §4's no-inheritance from the
+    // createdAt: undefined pins no-inheritance from the
     // authoritative side: the foreign id lands in the unknown-createdAt
     // bucket even beside a populated submittedHere map - nothing lets
     // mutation_1's timestamp leak into another client's entry.

@@ -296,7 +296,7 @@ func TestProjectTurnSteeringCarriesKindOnReload(t *testing.T) {
 
 // TestProjectTurnSteeringCarriesDirectAppendKindOnReload (system steering
 // voice, review round 2): the kinds above all reach schema.Turn through the
-// SteerKind/consumeSteeringMessage queue-drain path. Review round 2 found
+// steerKind/consumeSteeringMessage queue-drain path. Review round 2 found
 // seven sites that append a steering turn directly instead (loop detection,
 // task reminders, hook context, the interrupt marker, job notifications, and
 // the three pre-compact sources) and fixed them to set SteeringKind the same

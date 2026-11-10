@@ -2,6 +2,7 @@ package chatcompletions
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"primeradiant.com/evener/llm"
@@ -78,6 +79,9 @@ func buildFuzzChatCompletionsRequest(model, system, user string, toolArgs, toolP
 	}
 	req.WebSearch = sel&4 == 4
 	req.StopSequences = []string{system, user}
+	if sel&128 == 128 {
+		req.PromptCacheKey = "fuzz-pk"
+	}
 	return req
 }
 
@@ -97,6 +101,12 @@ func FuzzChatCompletionsBuildBody(f *testing.F) {
 	f.Add("glm-4", "", "", []byte(`{}`), []byte(`{"oneOf":[{"type":"string"}]}`), byte(3), byte(255))
 	f.Add("m", "sys", "u", []byte(`not json`), []byte(`null`), byte(11), byte(17))
 	f.Add("", "s", "u", []byte(``), []byte(`{"anyOf":[1,2]}`), byte(20), byte(42))
+	// tool_choice mode "none" on the wire, and mode "named" without a name —
+	// a structured configuration error.
+	f.Add("m", "s", "u", []byte(`{}`), []byte(`{}`), byte(2), byte(0))
+	f.Add("named", "s", "u", []byte(`{}`), []byte(`{}`), byte(4), byte(0))
+	// A request-carried prompt_cache_key reaches the wire verbatim.
+	f.Add("m", "s", "u", []byte(`{}`), []byte(`{}`), byte(128), byte(0))
 
 	f.Fuzz(func(t *testing.T, model, system, user string, toolArgs, toolParams []byte, sel, capSel byte) {
 		req := buildFuzzChatCompletionsRequest(model, system, user, toolArgs, toolParams, sel)
@@ -114,7 +124,21 @@ func FuzzChatCompletionsBuildBody(f *testing.F) {
 
 		body, err := buildBody(req, res, sel&8 == 8)
 		if err != nil {
-			return // structured build error (e.g. unsupported tool_choice) is acceptable.
+			// A structured build error is acceptable, but only as a typed
+			// llm.Error — never a bare error or a panic recovery.
+			if _, ok := errors.AsType[llm.Error](err); !ok {
+				t.Fatalf("buildBody error is not a typed llm.Error: %v", err)
+			}
+			return
+		}
+
+		if sel&128 == 128 {
+			if body["prompt_cache_key"] != "fuzz-pk" {
+				t.Fatalf("prompt_cache_key = %v, want the request-carried key", body["prompt_cache_key"])
+			}
+		}
+		if sel%5 == 2 && body["tool_choice"] != "none" {
+			t.Fatalf("tool_choice = %#v, want the bare \"none\" string", body["tool_choice"])
 		}
 
 		b, err := json.Marshal(body)

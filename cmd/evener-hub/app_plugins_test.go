@@ -123,6 +123,31 @@ func TestPlugins_Marketplace_AddListRemove(t *testing.T) {
 	}
 }
 
+// The add form must not toast success on an overwrite: a second add whose
+// catalog name is already registered is the caller's Conflict, and the first
+// registration stays in place (#1047).
+func TestPlugins_Marketplace_AddRefusesATakenName(t *testing.T) {
+	ctl := newTestPluginsController(t)
+	first := t.TempDir()
+	writeTestMarketplace(t, first)
+	addTestMarketplace(t, ctl, first)
+
+	second := t.TempDir()
+	writeTestMarketplace(t, second)
+	_, err := ctl.AddMarketplace(context.Background(), appwire.MarketplaceAddParams{
+		Source: appwire.MarketplaceSourceInput{Kind: "directory", Path: second},
+	})
+	requireWireError(t, err, appwire.CodeConflict)
+
+	list, err := ctl.ListMarketplaces(context.Background())
+	if err != nil {
+		t.Fatalf("ListMarketplaces: %v", err)
+	}
+	if len(list.Marketplaces) != 1 || list.Marketplaces[0].Source.Path != first {
+		t.Fatalf("marketplaces after refused add = %+v, want only the first directory", list.Marketplaces)
+	}
+}
+
 func TestPlugins_Marketplace_AddInvalidKind_Errors(t *testing.T) {
 	ctl := newTestPluginsController(t)
 	_, err := ctl.AddMarketplace(context.Background(), appwire.MarketplaceAddParams{

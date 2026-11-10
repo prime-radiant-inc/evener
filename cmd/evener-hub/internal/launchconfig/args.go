@@ -54,6 +54,14 @@ func ToArgs(r Resolved) []string {
 	if e.NonInteractive != nil && *e.NonInteractive {
 		out = append(out, "--non-interactive")
 	}
+	// Emitted in both directions so the spawned argv names the resolved choice
+	// and a launch layer can re-enable over a disabling default; an unset value
+	// emits nothing (evener's own default, which is enabled). The flag spells
+	// the negation, and as a Bool flag it takes only the single equals-form
+	// token.
+	if e.MemoryEnabled != nil {
+		out = append(out, "--disable-memory="+strconv.FormatBool(!*e.MemoryEnabled))
+	}
 	if e.AppReplaySize != nil {
 		add("--app-replay-size", strconv.Itoa(*e.AppReplaySize))
 	}
@@ -127,6 +135,12 @@ func ToArgs(r Resolved) []string {
 	// child's own default" — the standalone serve default and the Hub's
 	// one-hour default are different values for the same flag.
 	add("--daemon-idle-timeout", r.DaemonIdleTimeout.String())
+	// Boolean flag, rendered only when set: Manager is a start-time property and
+	// absent is the ordinary session. Unlike the idle deadline there is no
+	// "explicitly off" distinction worth carrying to every ordinary launch.
+	if r.Manager {
+		out = append(out, "--manager")
+	}
 	return out
 }
 

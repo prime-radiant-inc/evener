@@ -147,7 +147,7 @@ func TestDelegateStartupCarriesTheCurrentPromptOnce(t *testing.T) {
 // queue still holds the spawn-time plan. Re-announcing would duplicate it.
 func TestRestoreDoesNotRepeatPersistedPlanSteering(t *testing.T) {
 	t.Parallel()
-	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+	fixture := newColdDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.TaskTemplates = []taskpkg.TaskTemplate{{
 			Title:  "Restored committed workflow",
 			Prompt: "Resume the committed workflow.",
@@ -209,7 +209,7 @@ func TestRestoreDoesNotRepeatPersistedPlanSteering(t *testing.T) {
 // announce the plan rather than treating the tasks as proof.
 func TestRestoreAnnouncesAPlanThatWasNeverDelivered(t *testing.T) {
 	t.Parallel()
-	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+	fixture := newColdDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.TaskTemplates = []taskpkg.TaskTemplate{{
 			Title:  "Crash-window workflow",
 			Prompt: "CRASH_WINDOW_PROMPT",
@@ -258,7 +258,7 @@ func TestRestoreAnnouncesAPlanThatWasNeverDelivered(t *testing.T) {
 // the transcript. Restore must find it there and stay silent.
 func TestRestoreSeesADeliveredPlanInTheTranscript(t *testing.T) {
 	t.Parallel()
-	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+	fixture := newColdDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.TaskTemplates = []taskpkg.TaskTemplate{{
 			Title:  "Delivered workflow",
 			Prompt: "DELIVERED_PROMPT",
@@ -277,7 +277,7 @@ func TestRestoreSeesADeliveredPlanInTheTranscript(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restore root: %v", err)
 	}
-	defer root.Close()
+	t.Cleanup(root.Close)
 	sub := restoreFixtureDelegate(t, root, fixture.delegateID)
 
 	if got := countPlanSteering(sub.sess); got != 0 {
@@ -307,7 +307,9 @@ func writeDeliveredPlanTranscript(t *testing.T, stateDir, childID, parentID stri
 	}
 }
 
-// restoreFixtureDelegate runs one cold restore of a committed delegate.
+// restoreFixtureDelegate runs one cold restore of a committed delegate. Its
+// cleanup fails the restored start, which must run before root closes, so the
+// caller registers root's Close with t.Cleanup before calling it.
 func restoreFixtureDelegate(t *testing.T, root *Session, delegateID string) *subagent {
 	t.Helper()
 	reservation, err := root.delegateController.ReserveStart(rootDelegateActor(root.id), delegateID)

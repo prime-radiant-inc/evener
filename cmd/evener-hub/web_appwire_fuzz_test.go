@@ -201,8 +201,8 @@ func FuzzAppWireDispatch(f *testing.F) {
 	}
 	f.Cleanup(func() { runHubUpdateCheck = previousUpdateCheck })
 	// The self-update apply path execs the process in place; stub it to a
-	// no-op so the fuzz harness can never replace itself, even if built
-	// with release ldflags (isDevBuild would otherwise be the only guard).
+	// no-op so the fuzz harness can never replace itself, including when the
+	// binary under test is a local build that may now install an update.
 	previousScheduleHubRestart := scheduleHubRestart
 	scheduleHubRestart = func(context.Context, restartPin, string, []string) {}
 	f.Cleanup(func() { scheduleHubRestart = previousScheduleHubRestart })

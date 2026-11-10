@@ -64,6 +64,42 @@ const (
 // ~shellDigestHalfBytes with the middle elided. The full output stays in the
 // OutputStore, reachable via the job transcript_ref.
 func shellInlineDigest(full string, total, dropped int64) string {
+	return shellInlineDigestFrom(full, total, dropped, false, 0, 0)
+}
+
+// shellInlineDigestFrom is shellInlineDigest with the retention boundary's line
+// state: startsMidLine says the first visible byte continues a line whose
+// beginning was evicted, so that fragment is not structural diff text.
+// lineBudget is the registry's rendered-line bound (0 = unbounded); a diff
+// digest drops its optional tail rather than let the registry re-cut a hunk.
+// charBudget is the registry's rendered-character bound (0 = unbounded); a
+// diff digest shrinks its byte windows at file or hunk boundaries so the
+// marker itself survives instead of being cut away by the registry.
+func shellInlineDigestFrom(full string, total, dropped int64, startsMidLine bool, lineBudget, charBudget int) string {
+	headBudget, tailBudget := shellDigestHalfBytes, shellDigestHalfBytes
+	var lastWindow diffWindow
+	haveWindow := false
+	for {
+		window, ok := unifiedDiffWindow(full, headBudget, tailBudget, dropped > 0, startsMidLine, lineBudget)
+		if !ok {
+			break
+		}
+		lastWindow, haveWindow = window, true
+		digest := renderDiffDigest(full, window, total, dropped)
+		if charBudget <= 0 || len([]rune(digest)) <= charBudget {
+			return digest
+		}
+		if tailBudget > 1 {
+			tailBudget /= 2
+		} else if headBudget > 1 {
+			headBudget /= 2
+		} else {
+			return digest
+		}
+	}
+	if haveWindow {
+		return renderDiffDigest(full, lastWindow, total, dropped)
+	}
 	b := []byte(full)
 	headRaw := b
 	if len(headRaw) > shellDigestHalfBytes {

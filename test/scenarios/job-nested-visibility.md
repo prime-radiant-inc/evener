@@ -129,7 +129,7 @@ nested shell output and does not imply observer grants or delegate
   `parent_delegate_id` = the delegate's `delegate_id`, an EMPTY
   `parent_job_id` — a delegate-owned shell is bound with `parentJobID`
   cleared and `parentDelegateID` set to the delegate's lease
-  (`agent/jobs.go#jobManager.bindStableDelegateParent`), and
+  (`agent/jobs.go#jobManager.bindDelegateParent`), and
   "`parent_job_id` never encodes delegate lineage" ("Vocabulary");
   `parent_job_id` is shell-to-shell only — and `owner_session_id` = the
   child session, NOT `$SID` (the child session owns the runtime —

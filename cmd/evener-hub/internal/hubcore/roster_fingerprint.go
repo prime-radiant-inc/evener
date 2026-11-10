@@ -25,17 +25,21 @@ import (
 // (a card's ID names it for its whole life) move the Clear bit and the card a
 // row names; PendingQuestion, Failure and LastMessage are the row's why line (a
 // question answered and another asked, or a turn retried and failed again,
-// between two probes); Capabilities folds daemon state the status string does
-// not, and walking the whole set means a new bit moves the fingerprint with no
-// one remembering this site; the subagent, job, watch and task fields render on
+// between two probes). PendingAskState binds that question to its serving boot
+// and revision even when the excerpt and status hold still. Capabilities folds
+// daemon state the status string does not. Walking the whole set means a new bit
+// moves the fingerprint with no one remembering this site; the subagent, job,
+// watch and task fields render on
 // the row, a child's watches on the child's row; Lifecycle and LifecycleFresh
 // change what resident UI surfaces; Subagents tallies the last line;
 // LastTurnEndedAt turns a row Finished when a turn starts and ends between two
-// probes; CurrentModel is what a model switch moves.
+// probes; ActiveTurnID and ActiveTurnStartedAt move when a turn starts or
+// settles; ProbeState moves when a local probe is retained or recovers;
+// CurrentModel is what a model switch moves.
 var rosterShownFields = []string{
-	"Status", "ActiveFlags", "Crashed", "PendingAsk", "PendingEscalation",
+	"Status", "ActiveFlags", "ActiveTurnID", "ActiveTurnStartedAt", "ProbeState", "Crashed", "PendingAsk", "PendingEscalation",
 	"PendingEscalations.EscalationID",
-	"PendingQuestion", "Failure",
+	"PendingQuestion", "PendingAskState", "Failure",
 	"Capabilities", "CapabilitiesKnown",
 	"RunningSubagentIDs", "RunningSubagentStates", "ChildWatches",
 	"RunningJobs.JobID", "RunningJobs.JobType", "RunningJobs.Status",
@@ -56,12 +60,14 @@ var rosterShownFields = []string{
 // Entry is the rendezvous record and SessionID is the map key the fingerprint
 // already hashes. Activity's bars move every minute a session works, so
 // hashing them would broadcast an invalidation on every probe. Profile and
-// Project reach no row. The rest are the parts of a shown struct that no row
+// Project reach no row. Manager is read from the session, outside navigation.
+// RosterInstanceID belongs to remote Manager roster publications, not local probes.
+// The rest are the parts of a shown struct that no row
 // reads: an escalation card's body (the ID names the card), a job's exit and
 // provenance details, a task list's Remaining (its three counts determine it)
 // and a lifecycle's last retirement attempt.
 var rosterNotShownFields = []string{
-	"Entry", "SessionID", "Activity", "Profile", "Project",
+	"Entry", "SessionID", "RosterInstanceID", "Activity", "Profile", "Project", "Manager",
 	"PendingEscalations.ThreadID", "PendingEscalations.Ref", "PendingEscalations.Mode",
 	"PendingEscalations.Tool", "PendingEscalations.Kind", "PendingEscalations.DeniedPath",
 	"PendingEscalations.Command", "PendingEscalations.OutputSoFar", "PendingEscalations.PartiallyRan",

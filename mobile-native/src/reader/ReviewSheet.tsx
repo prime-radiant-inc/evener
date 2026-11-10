@@ -33,7 +33,7 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 	const { client, state } = useConnection();
 	const online = state === "ready" && client !== null;
 	const memory = documentMemory(hubId);
-	const key = { sessionRef, path, ...(root === "artifacts" ? { root } : {}) };
+	const key = { sessionRef, path, ...(root !== undefined ? { root } : {}) };
 	useSyncExternalStore(memory.subscribe, memory.getRevision);
 	const comments = memory.comments(key);
 	const [verdict, setVerdict] = useState<Verdict | null>(null);

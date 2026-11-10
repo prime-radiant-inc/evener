@@ -136,7 +136,7 @@ func TestRestoredQueuedInputWakesWhenTheDaemonAttaches(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AcceptClientMutationQueue: %v", err)
 	}
-	if s.QueueDepth() == 0 {
+	if s.queueDepth() == 0 {
 		t.Fatal("the queue is empty; this test is not in the state it means to be")
 	}
 

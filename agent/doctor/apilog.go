@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -144,14 +145,14 @@ type APILogResult struct {
 // never provider body content, so it decodes metadata-only to avoid paying
 // for base64 body decode/revalidation on large logs. ValidateAPILog (the
 // --validate path) keeps the strict default.
-func APILog(stateBase, selector string, opts APILogOpts) (APILogResult, error) {
-	return apiLog(stateBase, selector, opts, apilog.DecodeMetadataOnly)
+func APILog(ctx context.Context, stateBase, selector string, opts APILogOpts) (APILogResult, error) {
+	return apiLog(ctx, stateBase, selector, opts, apilog.DecodeMetadataOnly)
 }
 
 // apiLog is APILog's implementation, parameterized on decode mode so tests
 // can pin that metadata-only summarization is identical to strict
 // summarization over the same log.
-func apiLog(stateBase, selector string, opts APILogOpts, mode apilog.DecodeMode) (APILogResult, error) {
+func apiLog(ctx context.Context, stateBase, selector string, opts APILogOpts, mode apilog.DecodeMode) (APILogResult, error) {
 	paths, err := Locate(stateBase, selector)
 	if err != nil {
 		return APILogResult{}, err
@@ -178,6 +179,9 @@ func apiLog(stateBase, selector string, opts APILogOpts, mode apilog.DecodeMode)
 	var latencySum int64
 	var inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, cacheWrite1hTokens, totalTokens optionalIntSum
 	for {
+		if err := ctx.Err(); err != nil {
+			return APILogResult{}, err
+		}
 		record, decodeErr := decoder.Next()
 		if errors.Is(decodeErr, io.EOF) {
 			break
@@ -333,7 +337,7 @@ type apiHealthGroup struct {
 // APIHealth computes APIHealthResult for one session: a single pass over the
 // whole canonical API log, independent of APILog's row/settlement caps so a
 // batch study's verdict never silently drops evidence from a long session.
-func APIHealth(stateBase, selector string) (APIHealthResult, error) {
+func APIHealth(ctx context.Context, stateBase, selector string) (APIHealthResult, error) {
 	paths, err := Locate(stateBase, selector)
 	if err != nil {
 		return APIHealthResult{}, err
@@ -366,6 +370,9 @@ func APIHealth(stateBase, selector string) (APIHealthResult, error) {
 
 	decoder := apilog.NewDecoder(f, doctorAPILogMaxLineBytes)
 	for {
+		if err := ctx.Err(); err != nil {
+			return APIHealthResult{}, err
+		}
 		record, decodeErr := decoder.Next()
 		if errors.Is(decodeErr, io.EOF) {
 			break

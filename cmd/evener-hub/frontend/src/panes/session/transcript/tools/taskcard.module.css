@@ -66,6 +66,14 @@
   min-width: 0;
 }
 
+/* A status-less note's row has no state glyph (a note is not a touch); this
+ * empty mark reserves the same 16px as TaskCheck so its text column lines up
+ * with the mutation rows above it. */
+.noteMark {
+  flex: none;
+  width: 16px;
+}
+
 .desc {
   color: var(--ink-hi);
 }

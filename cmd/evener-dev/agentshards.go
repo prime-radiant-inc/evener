@@ -9,8 +9,12 @@ package dev
 // measurements this design rests on: one ~2750-test binary spends ~26-32s as
 // a single invocation, and cost-balanced shards (4 × -parallel 3) take it to
 // ~21s. BALANCE is what matters, not shard count — the weights come from a
-// survey cached by test-set identity, so a run pays the survey only when a
-// test is added, renamed, or removed.
+// survey cached by test-set identity. When a test is added, renamed, or
+// removed, a run whose shard logs are verbose (EVENER_SHARD_JSON_DIR, the
+// gate's timing capture) packs from the lane's last survey instead of
+// surveying again, charges an unmeasured test the packing minimum, and records
+// the costs its own shards measured as the new test set's survey. Any other
+// run surveys, as does a lane with no survey at all.
 //
 // Interface (unchanged from the script):
 //
@@ -40,6 +44,11 @@ package dev
 // the execve argument list: a large shard's regex can exceed Linux's
 // MAX_ARG_STRLEN (128KB per single argument string).
 //
+// hub-shards also builds ./cmd/evener once, before any child runs, and exports
+// the directory through EVENER_HUB_LIVE_STACK_BIN. cmd/evener-hub's TestMain
+// warms that same build before m.Run; without this it would build and link a
+// copy in every shard process and in the survey.
+//
 // Scratch is "<label>-test-shards.<pid>" under TMPDIR, reclaimed from dead
 // runs at startup (internal/devtool/scratch): the janitor this replaced is
 // gone, and a SIGKILLed run's debris lives exactly until the next run.
@@ -62,6 +71,7 @@ import (
 
 	"primeradiant.com/evener/internal/devtool/procgroup"
 	"primeradiant.com/evener/internal/devtool/scratch"
+	"primeradiant.com/evener/internal/devtool/shardrun"
 )
 
 // defaultSurveyParallel is the survey pass's default -parallel. The shards get
@@ -88,6 +98,15 @@ type shardsConfig struct {
 	stdout         io.Writer
 	stderr         io.Writer
 	signals        <-chan os.Signal
+	// liveStack builds ./cmd/evener once, before any child runs, and exports
+	// the directory to every process through shardrun.PrebuiltBinDirEnv. The
+	// hub package's TestMain warms the same binaries otherwise, once per shard
+	// and once for the survey.
+	liveStack bool
+	// env is inherited by every child this run starts. prepareLiveStack fills
+	// it when liveStack is set; tests that build a config directly leave it
+	// empty.
+	env []string
 	// jsonDir, when set (EVENER_SHARD_JSON_DIR), writes each shard's run as
 	// durable `-test.v` text under it and one package-wall row at the end, so
 	// run-module-tests.sh can turn a sharded package into the timing ratchet's
@@ -104,26 +123,32 @@ type shardsConfig struct {
 // runAgentShards and runHubShards are the subcommand entries: environment in,
 // exit code out. Each package reads its own <PREFIX>_SHARD_* variables.
 func runAgentShards(args []string) int {
-	return runPackageShards("agent", "agent", "agent", "AGENT", args)
+	return runPackageShards("agent", "agent", "agent", "AGENT", false, args)
 }
 
 // runHubShards builds from the repository root, the module cmd/evener-hub
 // belongs to, so path-valued build flags resolve where the gate's root-module
-// go test resolves them; the shards still run in the package directory.
+// go test resolves them; the shards still run in the package directory. It also
+// owns the live-stack prebuild: the hub tests share ./cmd/evener, and a module
+// without that package (the shard fixtures) has no live stack to build.
 func runHubShards(args []string) int {
-	return runPackageShards("hub", ".", filepath.Join("cmd", "evener-hub"), "HUB", args)
+	liveStack := false
+	if info, err := os.Stat(filepath.Join("cmd", "evener")); err == nil && info.IsDir() {
+		liveStack = true
+	}
+	return runPackageShards("hub", ".", filepath.Join("cmd", "evener-hub"), "HUB", liveStack, args)
 }
 
 // runCLIShards shards cmd/evener, the CLI's ~340 mostly-serial serve and run
 // lifecycle tests, the same way.
 func runCLIShards(args []string) int {
-	return runPackageShards("cli", ".", filepath.Join("cmd", "evener"), "CLI", args)
+	return runPackageShards("cli", ".", filepath.Join("cmd", "evener"), "CLI", false, args)
 }
 
 // runPackageShards shards the package in pkgDir, building it from moduleDir
 // (its module's root; both relative to the repository root), naming it label
 // in its output and reading envPrefix_SHARD_* for its settings.
-func runPackageShards(label, moduleDir, pkgDir, envPrefix string, args []string) int {
+func runPackageShards(label, moduleDir, pkgDir, envPrefix string, liveStack bool, args []string) int {
 	env := func(name string) string { return envPrefix + "_SHARD_" + name }
 	count, err := envPositiveInt(env("COUNT"), 4)
 	if err != nil {
@@ -171,6 +196,7 @@ func runPackageShards(label, moduleDir, pkgDir, envPrefix string, args []string)
 		stdout:         os.Stdout,
 		stderr:         os.Stderr,
 		signals:        signals,
+		liveStack:      liveStack,
 		jsonDir:        os.Getenv("EVENER_SHARD_JSON_DIR"),
 		jsonPackage:    os.Getenv("EVENER_SHARD_JSON_PACKAGE"),
 	})
@@ -407,6 +433,18 @@ func runShards(cfg shardsConfig) int {
 		return code
 	}
 
+	if cfg.liveStack {
+		env, err := cfg.prepareLiveStack(in, logdir)
+		if err != nil {
+			if code := in.exitCode(); code != 0 {
+				return code
+			}
+			_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %v\n", cfg.label, err)
+			return 1
+		}
+		cfg.env = env
+	}
+
 	// The test set's identity keys the survey cache; the same listing also
 	// backs the equal-weights fallback.
 	listOut, _ := cfg.captureChild(in, cfg.pkgDir, build, "-test.list", ".*")
@@ -416,6 +454,10 @@ func runShards(cfg shardsConfig) int {
 	cachedSurvey := cfg.cachedSurveyPath(listOut, parsed, goflags)
 
 	var costs []testCost
+	// borrowed is set when the run packs from a survey of a different test
+	// set: its shards then measure the current one, and a green run records
+	// that as this test set's survey.
+	borrowed := false
 	if !cfg.noSurvey {
 		surveyLog := filepath.Join(logdir, "survey.log")
 		cacheHit := false
@@ -429,7 +471,21 @@ func runShards(cfg shardsConfig) int {
 			// written by concurrent gate runs, so a nonempty file can be a
 			// partial write caught mid-flight.
 		}
-		if !cacheHit {
+		// A changed test set has no survey of its own, but surveying runs the
+		// whole suite once more before the shards run it. The lane's last
+		// survey prices every test the two sets share. Only a run whose shard
+		// logs carry per-test costs borrows: it can record them, so the lane
+		// never settles on a survey that no longer describes it.
+		var older []byte
+		if !cacheHit && !cfg.resurvey && cfg.jsonDir != "" {
+			older = olderSurvey(cachedSurvey)
+		}
+		switch {
+		case cacheHit:
+		case older != nil:
+			costs = costsFromOlderSurvey(parseSurvey(string(older)), cfg.shardedTestNames(listOut))
+			borrowed = true
+		default:
 			_, _ = fmt.Fprintf(cfg.stdout, "%s-shards: surveying test costs (one-time for this test set)\n", cfg.label)
 			args := surveyArgs(cfg.surveyParallel, cfg.skip, parsed.short, parsed.test)
 			if err := cfg.runToLog(in, surveyLog, cfg.pkgDir, build, args...); err != nil {
@@ -447,8 +503,10 @@ func runShards(cfg shardsConfig) int {
 				}
 			}
 		}
-		if data, err := os.ReadFile(surveyLog); err == nil {
-			costs = parseSurvey(string(data))
+		if !borrowed {
+			if data, err := os.ReadFile(surveyLog); err == nil {
+				costs = parseSurvey(string(data))
+			}
 		}
 	}
 	if code := in.exitCode(); code != 0 {
@@ -578,7 +636,7 @@ func runShards(cfg shardsConfig) int {
 		cmd := exec.CommandContext(context.Background(), build, args...)
 		cmd.Dir = cfg.pkgDir
 		cmd.Stdout, cmd.Stderr = log, log
-		cmd.Env = append(os.Environ(), "EVENER_SHARD_RUN_FILE="+runFile)
+		cmd.Env = append(cfg.childEnv(), "EVENER_SHARD_RUN_FILE="+runFile)
 		started := time.Now()
 		err = procgroup.Start(cmd)
 		_ = log.Close()
@@ -658,6 +716,22 @@ func runShards(cfg shardsConfig) int {
 		_, _ = fmt.Fprintf(cfg.stdout, "full logs: %s\n", fullLogs)
 		return 1
 	}
+	// Like every cache write, a failure here costs a later run a survey and
+	// nothing else.
+	if borrowed {
+		var measured []byte
+		for i := range bins {
+			data, err := os.ReadFile(shardLogPath(i))
+			if err != nil {
+				measured = nil
+				break
+			}
+			measured = append(measured, data...)
+		}
+		if cfg.surveyCoversTestSet(measured, listOut) {
+			_ = writeFileAtomic(cachedSurvey, measured)
+		}
+	}
 	green = true
 	return 0
 }
@@ -712,7 +786,37 @@ func (cfg shardsConfig) cachedSurveyPath(listOut string, parsed parsedFlags, gof
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return ""
 	}
-	return filepath.Join(cacheDir, "survey-"+testSetKey(listOut, parsed, goflags, cfg.skip)+".log")
+	return filepath.Join(cacheDir, "survey-"+surveyLaneKey(parsed, goflags, cfg.skip)+"-"+testSetKey(listOut, parsed, goflags, cfg.skip)+".log")
+}
+
+// olderSurvey returns the lane's most recent survey of a different test set,
+// or nil when the cache holds none. A cache file is named for its lane and
+// then its test set, so only a survey measured under this build, mode and
+// skip is a candidate.
+func olderSurvey(cachedSurvey string) []byte {
+	if cachedSurvey == "" {
+		return nil
+	}
+	siblings, _ := filepath.Glob(cachedSurvey[:strings.LastIndex(cachedSurvey, "-")] + "-*.log")
+	var newest string
+	var newestAt time.Time
+	for _, path := range siblings {
+		info, err := os.Stat(path)
+		if err != nil || path == cachedSurvey || info.Size() == 0 {
+			continue
+		}
+		if newest == "" || info.ModTime().After(newestAt) {
+			newest, newestAt = path, info.ModTime()
+		}
+	}
+	if newest == "" {
+		return nil
+	}
+	data, err := os.ReadFile(newest)
+	if err != nil {
+		return nil
+	}
+	return data
 }
 
 // surveyCoversTestSet reports whether a cached survey accounts for every test
@@ -727,19 +831,28 @@ func (cfg shardsConfig) surveyCoversTestSet(data []byte, listOut string) bool {
 	for _, tc := range parseSurvey(string(data)) {
 		have[tc.name] = true
 	}
-	var skip *regexp.Regexp
-	if cfg.skip != "" {
-		skip, _ = regexp.Compile(cfg.skip)
-	}
-	for _, tc := range equalWeights(listOut) {
-		if skip != nil && skip.MatchString(tc.name) {
-			continue
-		}
-		if !have[tc.name] {
+	for _, name := range cfg.shardedTestNames(listOut) {
+		if !have[name] {
 			return false
 		}
 	}
 	return true
+}
+
+// shardedTestNames is the listed tests this run must place in a shard: every
+// one the -test.skip regex does not match.
+func (cfg shardsConfig) shardedTestNames(listOut string) []string {
+	var skip *regexp.Regexp
+	if cfg.skip != "" {
+		skip, _ = regexp.Compile(cfg.skip)
+	}
+	var names []string
+	for _, tc := range equalWeights(listOut) {
+		if skip == nil || !skip.MatchString(tc.name) {
+			names = append(names, tc.name)
+		}
+	}
+	return names
 }
 
 // writeFileAtomic replaces path with data by writing a uniquely named temp
@@ -777,6 +890,36 @@ func writeFileAtomic(path string, data []byte) error {
 	return nil
 }
 
+// prepareLiveStack builds ./cmd/evener once for the whole run and returns the
+// environment that hands the directory to every child. The hub package's
+// TestMain warms these binaries before m.Run, so without this build each shard
+// and the survey pay for their own compile. An outer runner's directory wins
+// over building another copy.
+func (cfg shardsConfig) prepareLiveStack(in *interrupter, logdir string) ([]string, error) {
+	if dir := os.Getenv(shardrun.PrebuiltBinDirEnv); dir != "" {
+		return []string{shardrun.PrebuiltBinWarmEnv + "=1"}, nil
+	}
+	dir := filepath.Join(logdir, "live-stack-bin")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("build live-stack binaries: %w", err)
+	}
+	buildLog := filepath.Join(logdir, "live-stack-build.log")
+	if err := cfg.runToLog(in, buildLog, cfg.moduleDir, "go", "build", "-o", filepath.Join(dir, shardrun.PrebuiltBinName), shardrun.PrebuiltBinTarget); err != nil {
+		data, _ := os.ReadFile(buildLog)
+		return nil, fmt.Errorf("build live-stack binaries: %w\n%s", err, data)
+	}
+	return []string{
+		shardrun.PrebuiltBinDirEnv + "=" + dir,
+		shardrun.PrebuiltBinWarmEnv + "=1",
+	}, nil
+}
+
+// childEnv is the environment every child inherits: the caller's own plus the
+// entries a preparation step added.
+func (cfg shardsConfig) childEnv() []string {
+	return append(os.Environ(), cfg.env...)
+}
+
 // runToLog runs a child in its own process group with both output streams in
 // one log file, registered with the interrupter for signal forwarding.
 func (cfg shardsConfig) runToLog(in *interrupter, logPath, dir, name string, args ...string) error {
@@ -788,6 +931,7 @@ func (cfg shardsConfig) runToLog(in *interrupter, logPath, dir, name string, arg
 	cmd := exec.CommandContext(context.Background(), name, args...)
 	cmd.Dir = dir
 	cmd.Stdout, cmd.Stderr = log, log
+	cmd.Env = cfg.childEnv()
 	if err := procgroup.Start(cmd); err != nil {
 		return err
 	}
@@ -802,6 +946,7 @@ func (cfg shardsConfig) captureChild(in *interrupter, dir, name string, args ...
 	cmd.Dir = dir
 	var out strings.Builder
 	cmd.Stdout = &out
+	cmd.Env = cfg.childEnv()
 	if err := procgroup.Start(cmd); err != nil {
 		return "", err
 	}

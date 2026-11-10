@@ -77,20 +77,20 @@ func run(args []string, stdout, stderr io.Writer) int {
 	dryRun := flags.Bool("dry-run", false, "preview changes without moving anything")
 	verbose := flags.Bool("verbose", false, "print detailed output including skipped paths")
 	flags.Usage = func() {
-		_, _ = fmt.Fprintln(stderr, "Usage: evener-migrate [--dry-run] [--verbose]")
+		_, _ = fmt.Fprintln(stderr, "Usage: evener migrate [--dry-run] [--verbose]")
 		flags.PrintDefaults()
 	}
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
 	if flags.NArg() != 0 {
-		_, _ = fmt.Fprintln(stderr, "evener-migrate: positional arguments are not accepted")
+		_, _ = fmt.Fprintln(stderr, "evener migrate: positional arguments are not accepted")
 		return 2
 	}
 
 	home, err := os.UserHomeDir()
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "evener-migrate: resolve home directory: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "evener migrate: resolve home directory: %v\n", err)
 		return 1
 	}
 
@@ -101,13 +101,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	stateBase, err := userdirs.StateHome(os.Getenv(envvars.XDGStateHome.Name), func() (string, error) { return home, nil })
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "evener-migrate: resolve state home: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "evener migrate: resolve state home: %v\n", err)
 		return 1
 	}
 
 	cwd, err := os.Getwd()
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "evener-migrate: get current directory: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "evener migrate: get current directory: %v\n", err)
 		return 1
 	}
 
@@ -240,14 +240,14 @@ func migrate(m migration, dryRun, verbose bool, stdout, stderr io.Writer) status
 	_, srcErr := os.Lstat(m.src)
 	srcMissing := errors.Is(srcErr, os.ErrNotExist)
 	if srcErr != nil && !srcMissing {
-		_, _ = fmt.Fprintf(stderr, "evener-migrate: stat %s: %v\n", m.src, srcErr)
+		_, _ = fmt.Fprintf(stderr, "evener migrate: stat %s: %v\n", m.src, srcErr)
 		return statusFailed
 	}
 
 	_, dstErr := os.Lstat(m.dst)
 	dstExists := dstErr == nil
 	if dstErr != nil && !errors.Is(dstErr, os.ErrNotExist) {
-		_, _ = fmt.Fprintf(stderr, "evener-migrate: stat %s: %v\n", m.dst, dstErr)
+		_, _ = fmt.Fprintf(stderr, "evener migrate: stat %s: %v\n", m.dst, dstErr)
 		return statusFailed
 	}
 
@@ -280,12 +280,12 @@ func migrate(m migration, dryRun, verbose bool, stdout, stderr io.Writer) status
 	// can be the very first thing to land in a config/state root that
 	// EnsureUserConfigDirs hasn't created yet.
 	if err := os.MkdirAll(filepath.Dir(m.dst), 0o700); err != nil {
-		_, _ = fmt.Fprintf(stderr, "evener-migrate: create %s: %v\n", filepath.Dir(m.dst), err)
+		_, _ = fmt.Fprintf(stderr, "evener migrate: create %s: %v\n", filepath.Dir(m.dst), err)
 		return statusFailed
 	}
 
 	if err := os.Rename(m.src, m.dst); err != nil {
-		_, _ = fmt.Fprintf(stderr, "evener-migrate: move %s -> %s: %v\n", m.src, m.dst, err)
+		_, _ = fmt.Fprintf(stderr, "evener migrate: move %s -> %s: %v\n", m.src, m.dst, err)
 		return statusFailed
 	}
 	_, _ = fmt.Fprintf(stdout, "moved  %s -> %s\n", m.src, m.dst)
@@ -299,7 +299,7 @@ func migrate(m migration, dryRun, verbose bool, stdout, stderr io.Writer) status
 // file) shouldn't be reported as a failed migration.
 func repairLegacyPaths(m migration, stdout, stderr io.Writer) {
 	if err := rewriteLegacyPaths(m.dst, m.src, m.dst, stdout); err != nil {
-		_, _ = fmt.Fprintf(stderr, "evener-migrate: rewriting legacy paths under %s: %v\n", m.dst, err)
+		_, _ = fmt.Fprintf(stderr, "evener migrate: rewriting legacy paths under %s: %v\n", m.dst, err)
 	}
 }
 
@@ -324,7 +324,7 @@ func repairHomeRootFileReferences(opts options, stdout, stderr io.Writer) {
 					continue // nothing migrated there yet
 				}
 				if err := rewriteLegacyPaths(tree, oldPath, newPath, stdout); err != nil {
-					_, _ = fmt.Fprintf(stderr, "evener-migrate: rewriting legacy paths under %s: %v\n", tree, err)
+					_, _ = fmt.Fprintf(stderr, "evener migrate: rewriting legacy paths under %s: %v\n", tree, err)
 				}
 			}
 		}

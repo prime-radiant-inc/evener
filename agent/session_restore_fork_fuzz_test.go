@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -175,7 +176,7 @@ func FuzzRfzForkSession(f *testing.F) {
 		}
 
 		childPath := schema.SessionTranscriptPath(stateDir, childID)
-		_, entries, _, rerr := readTranscript(childPath, "")
+		_, entries, _, rerr := readTranscript(context.Background(), childPath, "")
 		if rerr != nil {
 			t.Fatalf("child transcript unreadable after successful fork: %v", rerr)
 		}
@@ -274,8 +275,8 @@ func FuzzRfzRestoreSessionFromMeta(f *testing.F) {
 		if sess.fork.parentID != meta.ParentSessionID {
 			t.Fatalf("restored fork.parentID = %q, want meta.ParentSessionID %q", sess.fork.parentID, meta.ParentSessionID)
 		}
-		if sess.pinnedNote != meta.PinnedNote {
-			t.Fatalf("restored pinnedNote = %q, want meta.PinnedNote %q", sess.pinnedNote, meta.PinnedNote)
+		if sess.pinnedNoteText != meta.PinnedNote {
+			t.Fatalf("restored pinnedNoteText = %q, want meta.PinnedNote %q", sess.pinnedNoteText, meta.PinnedNote)
 		}
 	})
 }

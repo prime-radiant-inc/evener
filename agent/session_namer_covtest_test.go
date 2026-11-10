@@ -187,7 +187,7 @@ func TestSuppressSessionNamerIfQuotaExhausted_NonQuota(t *testing.T) {
 func TestContextPressure_NilContextMgr(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
-	if got := s.ContextPressure(); got != 0 {
+	if got := s.contextPressure(); got != 0 {
 		t.Fatalf("expected 0, got %f", got)
 	}
 }

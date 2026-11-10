@@ -32,7 +32,6 @@ func sbxGit(t *testing.T, dir string, args ...string) {
 	cmd.Env = append(cmd.Environ(),
 		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@e",
 		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@e",
-		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
@@ -594,4 +593,36 @@ func TestDisposeUnadoptedSubagentSessionLeavesTheParentsProcessesAlone(t *testin
 	// same failure with a clearer report.
 	parentEnv.Cleanup()
 	<-exited
+}
+
+// A hub-creation call never launches the ordinary delegate the sandbox guard
+// protects, so on the composed Manager delegate — the only schema that
+// declares hub — the guard must leave those calls to the hub-branch refusal,
+// which names every rejected argument, placeholders included. A plain
+// delegate schema declares no hub and has no hub-branch refusal: a hub
+// object a caller sends there is repair's unknown to drop, and the
+// confinement request traveling beside it is exactly what the guard must
+// refuse. A null hub still marks an ordinary call and keeps the guard.
+func TestSandboxControlsGuardSkipsHubCalls(t *testing.T) {
+	t.Parallel()
+	plain := map[string]any{"properties": map[string]any{"prompt": map[string]any{"type": "string"}}}
+	composed := map[string]any{"properties": map[string]any{
+		"prompt": map[string]any{"type": "string"},
+		"hub":    map[string]any{"type": "object"},
+	}}
+	hubCall := map[string]any{
+		"prompt":  "worker task",
+		"hub":     map[string]any{"cwd": "/tmp", "model": "m", "watch": map[string]any{"completion": true}},
+		"sandbox": "read-only",
+	}
+	if err := rejectUnavailableDelegateSandboxControls("delegate", composed, hubCall); err != nil {
+		t.Fatalf("hub call was refused by the sandbox controls guard: %v", err)
+	}
+	if err := rejectUnavailableDelegateSandboxControls("delegate", plain, hubCall); err == nil {
+		t.Fatal("hub object on a schema that does not declare hub lost the sandbox controls guard")
+	}
+	nullHub := map[string]any{"prompt": "worker task", "hub": nil, "sandbox": "read-only"}
+	if err := rejectUnavailableDelegateSandboxControls("delegate", composed, nullHub); err == nil {
+		t.Fatal("ordinary call with a null hub lost the sandbox controls guard")
+	}
 }

@@ -99,6 +99,11 @@ export function railCaptureReady(refs) {
  });
 }
 
+export function newSessionButton(page) {
+ // Welcome can offer the same action after its lazy pane finishes loading.
+ return page.getByTestId('rail').getByRole('button', { name: /^(?:\+ )?New session$/ });
+}
+
 export async function open(options) {
  const { url, authURL, workspace, viewport, outputDir } = options;
  assert.deepEqual(viewport, { width: 1280, height: 900 });
@@ -132,7 +137,7 @@ export async function open(options) {
   try {
   if (new URL(page.url()).pathname.startsWith('/settings/')) await page.goto(url);
   phase = 'new session';
-  await page.getByRole('button', { name: /^(?:\+ )?New session$/ }).click();
+  await newSessionButton(page).click();
   requestedPaths.splice(0,requestedPaths.length,...workspaceLabels(selectedWorkspace));
   await page.evaluate(installDirectoryProbe,requestedPaths);
   phase = 'directory-open';
@@ -163,7 +168,7 @@ export async function open(options) {
      // Each journey begins outside settings, so an earlier project's form and
      // saved status cannot satisfy the next project's readiness checks.
      if(new URL(page.url()).pathname.startsWith('/settings/')) {
-      await page.getByRole('button',{name:/^(?:\+ )?New session$/}).click();
+      await newSessionButton(page).click();
       await page.waitForURL(u=>u.pathname==='/new');
      }
      const selectedWorkspace=args.workspace??workspace;

@@ -30,7 +30,11 @@ type delegateStopState struct {
 	waiters           []*delegateInlineWaiter
 	done              chan struct{}
 	progress          chan struct{}
-	driver            *delegateStopDriver
+	// retryArmed marks a scheduled wake for a transient stop-delivery
+	// acknowledgment failure. The drain parks on progress meanwhile, so one
+	// arm per failure keeps repeated store errors from stacking timers.
+	retryArmed bool
+	driver     *delegateStopDriver
 }
 
 type delegateStopDriver struct {

@@ -1077,6 +1077,20 @@ excepted), `Resolve` derives, in this order:
    Opus 4.7/4.8 and Mythos), applied on every instance that serves those
    rows.
 
+Independently of the numbered derivations, `Resolve` rank-orders the served
+`EffortValues` ladder: least to most by the vocabulary, with the off level and
+any tier outside the vocabulary keeping their authored relative order ahead
+of the ranked tiers (a stable sort — the same pass-through the clamp gives
+them). The sources copy their ladders verbatim — models.dev
+`reasoning_options`, the OpenAI-compatible live listing's
+`reasoning.supported_efforts`, user overlays — so served order is a registry
+guarantee rather than a per-source accident: a gateway or catalog that lists
+its levels unsorted must not leak that order onto every picker that renders
+the resolved ladder. A provider-level ladder leaves the instance views
+rank-ordered the same way. The registry keeps its own copy of the rank (llm
+imports registry and cannot be imported back), pinned against
+`ReasoningEffortRank` by `llm/registry_shape_test.go`.
+
 Provenance records `derived` for each.
 
 **The effort a request carries** (amended 2026-08-30, Jesse: a session with

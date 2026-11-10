@@ -1,10 +1,11 @@
-import type { HostRow, LaunchOptionSchemaResponse } from "@evener/appwire-client";
+import type { LaunchOptionSchemaResponse } from "@evener/appwire-client";
 import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { connectionStore } from "../../../stores/connection";
+import { resetConnectionStoreForTests } from "../../../stores/connection";
 import { hostsStore } from "../../../stores/hosts";
+import { hostRow } from "../../../stores/hostsTestUtils";
 import { resetLaunchConfigHostStoresForTests, resetLaunchConfigStoreForTests } from "../../../stores/launchConfig";
 import { resetSettingsHostForTests, setSettingsHost } from "../../../stores/settingsHost";
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
@@ -19,18 +20,6 @@ import { shownReasons } from "./reasonTestUtils";
 // (the frame's own selection). Local is today's plain-call section; a remote
 // selection routes every read and write through evener/host/request and never
 // touches the controller's launch config.
-
-function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
-  return {
-    generation: 1,
-    incarnationId: "inc-1",
-    origin: "hub.toml",
-    attached: false,
-    midAttach: false,
-    removed: false,
-    ...overrides,
-  };
-}
 
 function setQueryCwd(cwd: string | null): void {
   const url = new URL(window.location.href);
@@ -74,7 +63,7 @@ function controllerLaunchCalls(fake: FakeClient): string[] {
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetLaunchConfigStoreForTests();
   resetLaunchConfigHostStoresForTests();
   resetToastStoreForTests();
@@ -89,7 +78,7 @@ afterEach(() => {
   cleanup();
   resetLaunchConfigHostStoresForTests();
   setQueryCwd(null);
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   window.history.pushState({}, "", "/");
   vi.useRealTimers();
   vi.unstubAllGlobals();

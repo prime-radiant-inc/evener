@@ -28,6 +28,8 @@ Use this boundary when adding or fixing tests:
 - Do not mock Evener internals to make a test pass. Keep the fake boundary at an
   external dependency: LLM provider, network server, filesystem root, clock, or
   process launcher.
+- When setup is shared, add cases to an existing test or table before adding a
+  test function. A new function is for a code path no existing test reaches.
 
 When a test needs a model, name that as the behavior under test and keep it out
 of the default suite. When the model is only a way to drive Evener, replace it with
@@ -93,8 +95,8 @@ Two audits enforce the rule against tests whose whole claim is that some copy
 exists. Each fails on a test whose name says it shows, renders or says
 something and whose every check compares output with production copy:
 
-- `copyonly_audit_test.go` (part of `go test`) runs `internal/devtool/copyonly`
-  over every tracked Go test. Its allowlist is
+- `make lint-repo-audit`'s `copy-only-tests` check (part of `make lint`) runs
+  `internal/devtool/copyonly` over every tracked Go test. Its allowlist is
   `internal/devtool/copyonly/allowlist.tsv`.
 - `cmd/evener-hub/frontend/src/dev/copyonly/copyonlyAudit.test.ts` (part of
   `make test-web`) reads every tracked TypeScript test in the frontend,
@@ -111,7 +113,8 @@ and the reason it is kept, tab-separated. Rows are keyed by file and test name,
 not line. Each audit also fails on a row whose test is no longer flagged, so
 remove the row when you convert, delete or rename the test.
 
-A third audit covers Go tests that are not named for wording. It counts the
+A third audit, `lint-repo-audit`'s `error-text-assertions` check, covers Go
+tests that are not named for wording. It counts the
 checks of an error's text against a phrase from production source
 (`strings.Contains(err.Error(), "not found")`) anywhere in a test file. Its
 allowlist, `internal/devtool/copyonly/errstring_allowlist.tsv`, has one row per
@@ -132,15 +135,22 @@ now checks and confirms the test fails.
 
 ## Flakes and Timeouts
 
-Two rules, both absolute.
+Two rules.
 
-**A sighted flake gets a root-cause fix on the spot.** Even one failure, even
-under heavy load, even in code you don't own. "Pre-existing" and "another
+**A flake that repeats gets a root-cause fix.** A fix is warranted when the test
+fails again on rerun, fails on an idle host, or recurs across independent runs,
+even in code you don't own. "Pre-existing" and "another
 session's area" are not exemptions; a deferred flake gets re-triaged at full cost
 by every session that hits it, and it poisons every run's signal in between. The
-fix must address the mechanism, not the symptom. Honest irreproducibility after
+fix must address the mechanism, not the symptom: it removes the test's
+dependence on wall-clock time or ordering. Honest irreproducibility after
 serious looped effort is reportable, but only with mechanism analysis, not a
 shrug.
+
+A failure seen once on a loaded host or runner is recorded on the existing issue
+for that test, when a search finds one. By itself it is no reason for a fix PR.
+A failure that exposes a race in the product is a product bug and gets fixed,
+whatever the host load.
 
 **Never widen or hardcode a timeout to absorb awaitable work.** A widened
 deadline hides a guess that re-flakes as the suite grows, and it converts real
@@ -154,6 +164,12 @@ failures into timeout mysteries. The preference hierarchy:
 3. Never fixed sleeps, fixed flush counts, or widened deadlines to paper over
    load-dependent work. Where pacing itself is under test, use the codebase's
    clock abstraction.
+
+For a helper process, the await is a pipe on `exec.Cmd.ExtraFiles`: the child
+writes a milestone line after its file barrier exists, and the parent blocks on
+the read. EOF means the child died before signaling, which is the failure to
+report. The file stays as an ordering witness for other assertions; the parent
+never polls it against a deadline.
 
 Every flake family root-caused here (a vite-cache digest, an auth stopwatch, a
 composer projection refresh) was an awaitable completion nobody was awaiting.
@@ -189,8 +205,9 @@ that keep scratch on failure or reclaim it across runs: the directory is named
 abandons nothing, and the next run reclaims leftovers whose pid suffix no longer
 answers `kill -0` (scripts/lib/covscratch-lib.sh). Every remaining variable-fed
 recursive delete in the repository's shell (scripts/ and the repo-root
-install.sh) lives on `TestNoScriptFeedsVariableToRecursiveDelete`'s count-pinned
-list with the reason it is allowed to exist. The list grows only with an
+install.sh) lives on the count-pinned list of `make lint-repo-audit`'s
+`script-recursive-delete` check (`recursiveDeleteAllowedLines` in
+internal/devtool/repoaudit) with the reason it is allowed to exist. The list grows only with an
 explicitly reviewed reason and shrinks as scripts convert or retire.
 
 Two parts of the rule the audit cannot hold. Its scan is textual, so `find -exec
@@ -264,16 +281,19 @@ frontend tooling, outside Evener.
 
 ### `ROOT_FULL=1 make test`
 
-The full intended non-fuzz surface: the whole root suite plus every non-root
-module plus the frontend. `ROOT_FULL=1` removes root's ordinary `-short` mode
-while retaining the non-fuzz `Test`/`Example` name filter and the explicit
-fuzz-owned exclusions, which is what preserves the complete non-fuzz
-post-merge surface.
+The default non-fuzz surface: the whole root suite except the hub's
+runner-bound integration tests, every non-root module, and the frontend.
+`ROOT_FULL=1` removes root's ordinary `-short` mode while retaining the
+non-fuzz `Test`/`Example` name filter and the explicit fuzz-owned exclusions.
+The hub integration tests are the one deliberate exception: the gate skips the
+members of `GATE_HUB_INTEGRATION_RUN`, and `make test-hub-integration` runs
+them outside the timing ratchet.
 
 Run it locally pre-merge and post-merge; `make merge-approval-gate` runs it as
-its third phase. The required CI equivalent is `ROOT_FULL=1 WEB=0 make test`,
-because the web job owns `make test-web` and the deterministic Go job must not
-duplicate it.
+its third phase and `make test-hub-integration` after the timing check. The
+required CI equivalents are `ROOT_FULL=1 WEB=0 make test` plus the
+`hub-integration` job, because the web job owns `make test-web` and the
+deterministic Go jobs must not duplicate it.
 
 Requirements are the same as `make test`. `ROOT_FULL=1` enables no provider and
 no fuzz search. Any root or module failure is nonzero, and live tests stay
@@ -511,12 +531,36 @@ sanity functions; their deterministic replay, and all other fuzz coverage, is
 owned and run by `make fuzz`. Ordinary `make test` keeps the root wave in short
 mode unless `ROOT_FULL=1` is set.
 
+The gate scripts pass `-count=1` deliberately (`scripts/gate/run-module-tests.sh`
+behind `make test`, plus the timing, fuzz and coverage scripts): a gate's evidence
+is fresh execution, and Go's per-package test cache would otherwise replay a
+previous result. A new *local* convenience target must not copy that flag:
+`-count=1` throws the cache away and turns every warm re-run into a full run.
+The test cache is Go's only changed-only mechanism (there is no `--changed`
+flag), and it invalidates a package on any input change, `testdata` fixtures
+included. Caching and scope solve different halves of local latency, too: a
+fully cached run still loads its packages and validates their cache entries
+(a cached package's result is replayed without running its test binary), so a
+warm run of a broad scope stays slow; a cache miss adds the compile, link and
+execution costs on top. Measure both halves before concluding which one a
+slowness comes from.
+
+`-count=N` repeats every test in the package inside one test binary, so a
+package's wall time multiplies by N while one `-test.timeout` covers the whole
+process. `cmd/evener-hub` takes 205-234s per iteration under `-race` (the
+#1326 report), so `-count=2` is a 7-8 minute run before any host load; when
+the addition or the load pushes it past the default ten minutes it dies with
+a goroutine dump and no assertion failure, which reads as a hang (#1326)
+while the package was still executing tests. Pass `-timeout` whenever you ask
+for repeats.
+
 CI runs the web check as two lanes on separate runners, web-unit (`make
 test-web`) and web-browser (`make test-web-browser`), and the required `web` job
 passes only when both do. The deterministic Go check runs the same way: `tests /
-root` (`ROOT_FULL=1 WEB=0 make test TEST_SCOPE=root`) and `tests / nonroot`
-(`TEST_SCOPE=nonroot`, every other module) on separate runners, with the required
-`tests` job passing only when both do. `WEB=0` keeps frontend tests from being
+root` (`ROOT_FULL=1 WEB=0 make test TEST_SCOPE=root`), `tests / nonroot`
+(`TEST_SCOPE=nonroot`, every other module), and `hub-integration`
+(`make test-hub-integration`) on separate runners, with the required `tests`
+job passing only when every lane does. `WEB=0` keeps frontend tests from being
 duplicated.
 
 `make test` runs three packages as cost-balanced shards: the agent module,
@@ -747,8 +791,8 @@ test can satisfy this test's assertion.
 The connection store follows the same rule: reset it with
 `resetConnectionStoreForTests()` (`stores/connection.ts`) rather than a
 hand-written `setState`, and wire a ready fake with `connectReadyFakeClient()`
-(`src/testing/connectionTestUtils.ts`) rather than a per-file
-`connectFakeClient`.
+(or `connectFakeClient(state)` for a non-ready one) from
+`src/testing/connectionTestUtils.ts` rather than a per-file helper.
 
 ### Frontend store-fixture contracts
 
@@ -757,7 +801,7 @@ from the assertion that fails:
 
 - A store fixture's `thread/read` handler must echo the request generation
   (`requestGeneration: params.requestGeneration ?? …`), or the response is
-  thrown away: `readDisposition` (appwire-client/typescript/reducer.ts)
+  thrown away: `readDisposition` (appwire-client/typescript/transcriptHistory.ts)
   discards a latest-window response whose `requestGeneration` is older than
   the held history's `issuedGeneration`, so a handler returning a static
   fixture with a stale default generation turns the read into a silent no-op
@@ -877,7 +921,10 @@ everywhere else.
 aggregate for the frontend, against the checked-in `testing-budget.json`, so a
 timing regression cannot silently erode the suite's runtime. It fails at 1.5x a
 package's checked-in budget and warns at 1.1x, and it applies a per-test ceiling
-segmented by test class. It reuses `gate-surface-lib.sh`, so it measures the same
+segmented by test class. Failure limits, class ceilings included, scale by the
+run's slowdown (the median measured/budget ratio over at least three packages
+budgeted at 5s or more, when above 1), so a uniformly slow runner does not fail
+the gate while one package far above its peers still does. It reuses `gate-surface-lib.sh`, so it measures the same
 surface `ROOT_FULL=1 make test` proves.
 
 ### Per-Test Ceilings Are Segmented by Test Class
@@ -901,13 +948,23 @@ trips its ceiling.
 | plugin-git integration | 15s | plugin materialization over real git |
 | live-stack E2E | 15s | hub end-to-end suite |
 
+The `deploy-host integration`, `retirement`, and `live-stack E2E` classes are
+the membership of `make test-hub-integration`: the default gate and the timing
+ratchet skip exactly their members, and the gate runs them without a ratchet.
+The `gatesurface` tests pin the shell and Go run lists to this table. The
+required `race-root / hub` lane sets `EVENER_GATE_KEEP_HUB_INTEGRATION=1`, so
+the deploy-host cases still run under `-race`; the `-short`-gated retirement
+and live-stack E2E cases skip there, as they did before. The gate itself is
+not `-race`.
+
 A wall ceiling on a test whose time tracks runner load measures the runner, not
 the code, so such tests are deliberately unclassified: dev-tool compile and CLI
 tests, install tests, large transcript fixtures, gate-runner integration, and
 bounded-wait unit tests whose whole job is to sit out a wait. A live-stack E2E
-that starts one stack per subtest (`TestE2E_RetireOverlappedByAnotherOwnershipAction`)
-is the sum of its stack starts, so it stays out of the class too. A parallel test
-whose wall time tracks its package's parallel load
+that runs several runner-bound stacks at once
+(`TestE2E_RetireOverlappedByAnotherOwnershipAction`) measures the runner's
+capacity to host them rather than its own code, so it stays out of the class
+too. A parallel test whose wall time tracks its package's parallel load
 (`TestLoadSessionJobActivityTree_TuesdayFullyFoldsAndFullyPaginates`) stays out of
 its topical class for the same reason. A class of one member is a smell, so the
 web repo-audit test is split into one case per slice of the tracked TypeScript
@@ -963,6 +1020,18 @@ passes that file to `--check --measured`, so the budget is enforced there withou
 a second non-fuzz run; CI's two Go test lanes and its web lane each check the rows
 their own scope produced. A run that writes no file fails the check rather than
 passing silently.
+
+The budget blocks a pull request's run and a push to main. A merge-group run
+checks with the warn-only policy (`--local`): it reports a breach without
+failing the lane, and still fails on a broken measurement. Each member's
+pull-request run already enforced the budget on that change, and a wall-time
+breach in the group would remove every member from the queue.
+
+The frontend's row is one number for the whole suite, so it cannot say which
+test file grew. The `web-unit` lane keeps the vitest JSON report it was rolled
+up from as the `web-vitest-report-<run>-<attempt>` artifact, pass or fail, for
+seven days: each entry in its `testResults` carries the file's `startTime` and
+`endTime`, which rank the slow files.
 
 ## The Browser Guards
 
@@ -1021,7 +1090,7 @@ and wait for the real evidence global separately, with its own timeout.
 
 The full-stack skill guard is a different KIND of check:
 
-- **`web-skillguard`** (`make test-web-browser`'s last step;
+- **`web-skillguard`** (a production-build-dependent `make test-web-browser` check;
   `cmd/evener-hub/skill_composer_browser_test.go` driving
   `cmd/evener-hub/frontend/scripts/skillguard/run.mjs`, behind the `browserguard`
   build tag) proves canonical SKILL SELECTION through the real stack: the
@@ -1319,6 +1388,17 @@ on nothing else in the repository) and keeps its own helper. A fixture builder
 that wants to prove it never copies a repository while git maintenance is still
 writing into it wraps its runner in `gittest.MaintenanceProbe`.
 
+`gittest.Env` covers only the fixture's own commands. Code under test spawns git
+with the process environment, so a package whose tests run that code against a
+real repository calls `gittest.IsolateProcess` from `TestMain`: it points
+`GIT_CONFIG_GLOBAL` at one file with automatic maintenance and gc off, sets
+`GIT_CONFIG_NOSYSTEM`, and drops ambient config injection, so every git the
+process spawns is isolated the same way. A detached maintenance writer would
+otherwise outlive the command and race the test's cleanup. Pin the wiring with
+`gittest.RequireIsolated`, passing the runner the code under test uses. The
+`agent`, `agent/execenv`, `internal/plugins`, `cmd/evener-hub` and
+`tools/tool-fluency/cmd/evener-fluency` test binaries do this.
+
 ### Adding a worktree test
 
 Default to the scripted boundary. Reach for real git only when you can name the
@@ -1437,6 +1517,63 @@ When adding a runtime env var:
 - Keep live-test opt-in gates explicit; a provider credential alone must not make a
   default test issue network requests.
 
+## Test File Layout
+
+A test file covers one topic and stays under roughly 2,500 lines. The cap is a
+guide, not a gate: a lint on file length makes every large test addition a
+rule fight. Split a file that has outgrown it, and split before adding to one
+that is already far past it.
+
+- Name a file for the behavior it covers (`app_rpc_deletion_fence_test.go`),
+  never a sprint, round, pass or coverage label.
+- Shared helpers live in one `<area>_helpers_test.go` (Go) or
+  `<area>Fixtures.ts` / `<area>TestHarness.tsx` (TypeScript) beside the tests.
+  A helper used by one topical file stays in that file.
+- Topical files import the helpers file. Helpers never import topical files,
+  and topical files never import each other; a helper two of them need moves
+  to the helpers file.
+- A split moves tests whole. It never merges, deletes or rewrites one, so the
+  test names are the same before and after. Where a file has `describe`
+  blocks, a block moves whole. Where it has none, group by the first noun in
+  the test names, and add a `describe` in the new file only when the group
+  already shares a `beforeEach`.
+- Mocks that vitest hoists (`vi.mock`) move with the tests that need them.
+
+Prove a split lost nothing with `scripts/ops/test-inventory.sh`: list the
+test names before, list them after, and diff. The diff must be empty, and the
+PR description carries it.
+
+```sh
+scripts/ops/test-inventory.sh go cmd/evener-hub > before.txt
+# ...move tests...
+scripts/ops/test-inventory.sh go cmd/evener-hub > after.txt
+scripts/ops/test-inventory.sh diff before.txt after.txt
+```
+
+## Deleting and Consolidating Tests
+
+Deleting a test, or merging tests into one test or table, is its own kind of
+change, separate from a file split. Three kinds of test are candidates:
+
+- a test that executes lines and asserts nothing meaningful about them,
+- a test that repeats another test's scenario, and
+- a test whose subject is test-only code.
+
+The change proves no behavior coverage was lost, and the PR description carries
+the proof:
+
+- A seeded mutation of the behavior the removed test covered still fails a
+  remaining test. Name the mutation and the test that catches it.
+- The package's statement coverage under `go test -cover` is the same before
+  and after a merge or the removal of a duplicate.
+- Removing a test that asserted nothing can lower statement coverage. List the
+  statements it alone executed and show that the removed test passed against a
+  seeded mutation of them: it caught nothing there, so nothing is lost.
+
+Here the `scripts/ops/test-inventory.sh` diff lists the names that went away, and
+it goes in the PR description beside the proof. A test folded into a table as
+a subtest appears in that diff as removed; name the subtest that replaces it.
+
 ## Targets
 
 <!-- BEGIN GENERATED: make targets. Edit make/testing.mk, then run `make generate`. -->
@@ -1444,6 +1581,7 @@ When adding a runtime env var:
 | --- | --- | --- | --- | --- | --- |
 | `make test-web` | The frontend's single gate entry point: typecheck, unit tests, then lint, run concurrently. | jsdom/unit-level frontend behavior, type safety, and source lint. | Local pre-merge; required CI web job. | The Go toolchain (the gate is the prebuilt evener-dev) and the installed Node dependencies; deterministic after those. Each check owns a private process home plus temporary/XDG roots and disables Node's compile cache; no real browser, provider, or network service. | Any of the three streams is nonzero; a missing or unhealthy frontend install fails preflight. |
 | `make test-web-browser` | The real browser-only frontend guards (layoutguard, overflowguard, shellguard, spawnguard, transcriptscrollguard, retirementguard, mermaidguard) plus the full-stack `web-skillguard` (TestSkillComposerBrowser behind the `browserguard` tag) that jsdom cannot evaluate. | Headless Chrome evaluates real CSS geometry, the real Session reducer/tree, the real Spawn staging/breakpoint path, the real transcript scroll/jump-to-latest path, and the real selected-thread recovery contract when its daemon retires and is replaced; the skill guard additionally drives the production composer through a REAL hub and two REAL `evener serve` daemons with only the LLM provider scripted. | Required CI web job; local pre-merge on a Chrome-capable host. | Chrome/Chromium and the Go toolchain (the gate is the prebuilt evener-dev); each guard gets a private process home, temporary/XDG roots, and a private browser profile. No WebKit/Safari runner. retirementguard also needs the Go toolchain: its npm script runs the isolated TestRetirementBrowser fixture, which starts the Hub and drives the guard against it. The skill guard also needs the Go toolchain and the built frontend, which this target builds first (`build-web`); the gate still builds one when the dist is missing. | Any guard error, Vite failure, cleanup failure, or missing Chrome/Chromium is nonzero. |
+| `make test-hub-integration` | The hub's runner-bound integration tests, outside the timing ratchet. | The hub's daemon-retirement, host-deploy, live-stack E2E, and remote-hub source-budget tests pass with the full stack. | Required CI hub-integration job; local `make merge-approval-gate`. | Go and the live-stack binaries built by TestMain; an enforcing bwrap sandbox on CI. The default gate skips this exact set. | Any selected test fails, or the pattern matches no test. |
 | `make test-native` | The native iPhone app gate. | Metro bundles the real iOS entry point, the native Vitest suites plus strict native TypeScript compilation pass against the checked-in Expo/React Native sources, the `mobile-native/src` sources match the native Biome formatter config (`mobile-native/biome.jsonc`, the `npm run lint` step), and the hand-run scripts/*.mts tools still resolve their module graph under tsx. | Native CI; local pre-merge when native sources change. | Node 22.13+ and an already-installed mobile-native dependency tree; does not contact a hub or provider - script resolution is checked without loading anything, since every one of those scripts opens a socket the moment its body runs. | Bundling, native tests, native typechecking, formatting, or script module resolution fail. |
 | `make native-preflight` | Ensure the mobile-native dependency install is present, real, and lockfile-compatible before any native target runs. | mobile-native/node_modules exists as a real directory, matches package-lock.json, and holds an executable .bin/expo, so Metro bundles with the pinned Expo instead of whatever `npx` finds on PATH. | Setup prerequisite for the native gates. | Node 22.13+; never installs, refusing instead with the command to run. | node_modules is missing, is a symlink (the bundler resolves no module through one, whatever the lockfiles say), is older than package-lock.json, or has no executable .bin/expo; the message names `cd mobile-native && npm ci`. |
 | `make test-native-bundle` | The native app's Metro bundling gate. | Metro resolves every specifier the real iOS entry point reaches — the app's own sources, the frontend sources its resolveRequest redirects, and the AppWire client wherever that package lives — and the export writes an iOS bundle. | Native CI (via make test-native); local pre-merge when native sources or metro.config.js change. | Node 22.13+ and an already-installed mobile-native dependency tree; no device, simulator, packager, hub, or provider. Runs with a private process home plus temporary and XDG roots and passes --clear, so the verdict never comes from a warm Metro cache. ~10s on a developer Mac, bounded by `timeout 900` where coreutils provides it (the ubuntu runner, or a Mac with gtimeout); without it the run is unbounded and the CI step's timeout-minutes is the backstop. | Metro cannot resolve a module, the export fails, or the export writes no iOS bundle. |
@@ -1451,7 +1589,7 @@ When adding a runtime env var:
 | `make api-package-preflight` | Ensure the appwire-client/typescript dependency install is present and healthy before the qualification runner starts. | node_modules carries the pinned tsc and the ws the qualification runner imports, or is repaired with npm ci. | Setup prerequisite for test-api-package. | Node 22+; never runs npm ci through a symlinked node_modules. | node_modules is missing and npm ci fails, is a mismatched symlink, or lacks a working tsc / ws; on a real install the message names `cd appwire-client/typescript && npm ci`, and on a symlinked one it names the shared install instead. |
 | `make test-api-package` | The independently consumable AppWire package qualification gate. | A packed package installs outside the checkout, exposes ESM and CommonJS runtime/type entry points, and executes its shipped read-only example against a scripted local WebSocket server. | Package CI; local pre-merge when protocol sources change. | Node 22+ and the protocol package's installed development dependencies (installed by api-package-preflight); qualification makes no external network requests. | Build, pack, outside-checkout install, runtime import/require, declaration checking, example protocol exchange or output validation fails. |
 | `make test` | The default local test gate: Go modules (short mode) plus the frontend, run concurrently. | Root short-mode tests, other module tests, and frontend typecheck/Vitest/Biome all pass. | Local quick check; included by the merge gate. | Scripted/fake external boundaries for default tests; runs ZERO fuzz-family tests, even at reduced depth. WEB=0 skips the frontend stream. TEST_SCOPE picks the Go modules: all (default), root (the root module alone) or nonroot (every other module); CI runs root and nonroot on separate runners. | Any module, frontend stream, or setup failure is nonzero. |
-| `make merge-approval-gate` | The canonical serial post-merge gate: lint, build, full tests, and native/package qualification. | make lint, make build, ROOT_FULL=1 make test, the timing budget checked against the rows that same test run produced, make test-native and make test-api-package all pass, in that order. | Local pre-merge/post-merge; CI keeps equivalent checks in separate named jobs. | Does not run fuzz search, race testing, provider calls, or browser guards; those have separate owners. The timing check reads the gate's own run (EVENER_GATE_TIMING_TSV), so no test executes twice; it is strict where the ratchet's own policy is (CI) and warn-only on a local run; a blessed-class per-test ceiling breach is nonzero there, while an unclassified test over the flat ceiling only warns (#4601). | The first failing phase stops the gate and returns nonzero; do not infer a verdict from partial logs. |
+| `make merge-approval-gate` | The canonical serial post-merge gate: lint, build, full tests, and native/package qualification. | make lint, make build, ROOT_FULL=1 make test, the timing budget checked against the rows that same test run produced, make test-hub-integration, make test-native and make test-api-package all pass, in that order. | Local pre-merge/post-merge; CI keeps equivalent checks in separate named jobs. | Does not run fuzz search, race testing, provider calls, or browser guards; those have separate owners. The timing check reads the gate's own run (EVENER_GATE_TIMING_TSV), so no test executes twice; it is strict where the ratchet's own policy is (CI) and warn-only on a local run; a blessed-class per-test ceiling breach is nonzero there, while an unclassified test over the flat ceiling only warns (#4601). | The first failing phase stops the gate and returns nonzero; do not infer a verdict from partial logs. |
 | `make test-race` | The permanent -race gate across every non-fuzz module. | Data races in the non-fuzz modules surface; frontend is intentionally not duplicated. | Required CI; local diagnostic. | A race-capable Go toolchain and more CPU/memory; WEB=0, AGENT_SHARDS=0 and AGENT_PARALLEL=6 to cap test concurrency under -race's ~10x slowdown, while cmd/evener-hub and cmd/evener stay sharded (12 hub shards, no cost survey: under -race the survey costs as much as the run). RACE_SCOPE defaults to all; CI uses the explicit root scope plus agent and nonagent on separate runners. The two new scopes derive from GO_MODULES; nonroot remains the local aggregate. RACE_ROOT_PART (root scope only) splits the root module across runners: all (default), hub (only cmd/evener-hub's shards), or rest (everything else in the root module). | Any race report, test failure, or setup failure is nonzero. |
 | `make vet` | go vet across every non-fuzz workspace module. | go vet diagnostics for every module, independent of the tagged lint floors. | Required CI; local diagnostic. | Deterministic Go analysis; no provider calls. | Any module's vet failure is nonzero. |
 | `make test-timing-budget` | Ratchet per-package test wall time against testing-budget.json. | A timing regression does not silently erode the suite's runtime wins — fail at 1.5x the checked-in budget, warn at 1.1x, plus a per-test ceiling segmented by test class: a test named in a class is compared strictly against that class's ceiling (a breach is nonzero under CHECK=1 in a CI-shaped environment), while a test in no class keeps the flat perTestCeilingSeconds and is warn-only in every mode, CHECK=1 included, so the unclassified backlog cannot red the gate (#4601). The checked-in budget carries the package-wall-seconds metric marker, so per-package ratios (frontend "web" included) are enforced; a budget file without the marker downgrades every ratio failure to a warning. | Local/on-demand. merge-approval-gate runs the check through --measured over the rows its own ROOT_FULL=1 make test run captured, so enforcing the budget no longer needs a second full test run (issue #144); invoked bare it still measures by running the suite itself. CHECK=1 enforces the ratios; bare invocation only measures and prints them, except for a broken measurement, which is nonzero either way. | Deterministic; no provider calls. Reuses gate-surface-lib.sh, so it measures the same surface ROOT_FULL=1 make test proves. | A broken measurement — go list or go test exiting nonzero, or a go list package with no terminal event in the stream — is nonzero in every mode, and --bless refuses it. A narrowed bless refreshes the packages it measured and preserves the rest of the file instead of deleting entries it did not measure; a full rebaseline also drops entries go list no longer reports. Under CHECK=1 in a CI-shaped environment a Go package over 1.5x its budget is nonzero once the budget file carries the wall-time metric marker; while the marker is absent those ratios warn, the "web" row among them. A blessed-class per-test ceiling breach is nonzero under CHECK=1; an unclassified test over the flat ceiling is reported and named but nonzero in no mode. A missing budget file, or one whose packages map is empty, always exits zero; a malformed budget file (a top-level value that is not an object, invalid JSON, a packages value that is present but not an object, a package budget value that is not a finite number, a perTestCeilingSeconds that is present but not a finite number, a perTestCeilingClasses that is present but not an object, or a class ceilingSeconds that is not a finite, float-convertible number including an integer too large to convert) is a broken config and is nonzero in every mode, naming the file and the entry (#4609, #4614, #4618, #4622, #4629). |

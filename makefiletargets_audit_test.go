@@ -11,32 +11,23 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/internal/devtool/repoaudit"
 )
 
-// makefileSourcePaths returns every file that contributes rules to the build:
-// the root Makefile plus the family files it includes. Tests that audit the
-// Makefile must read all of them — reading only the root would silently stop
-// auditing most of the repo's targets the moment they moved into make/.
+// makefileSourcePaths returns repoaudit.MakefileSources: the root Makefile
+// plus the family files it includes, root first.
 //
 // t is testing.TB rather than *testing.T because FuzzInstallScript's
 // installedBins helper (install_fuzz_test.go) reads the Makefile from a
 // *testing.F, which is not a *testing.T but does satisfy testing.TB.
 func makefileSourcePaths(t testing.TB) []string {
 	t.Helper()
-	paths := []string{"Makefile"}
-	family, err := filepath.Glob("make/*.mk")
+	paths, err := repoaudit.MakefileSources()
 	if err != nil {
-		t.Fatalf("globbing make/*.mk: %v", err)
+		t.Fatal(err)
 	}
-	// filepath.Glob returns (nil, nil) when the pattern matches nothing, so a
-	// renamed or missing make/ directory would silently narrow every audit
-	// built on this helper down to the rule-free root Makefile and leave them
-	// all passing vacuously. Refuse that instead.
-	if len(family) == 0 {
-		t.Fatal("make/*.mk matched no files; every Makefile audit would pass vacuously against the rule-free root Makefile. Did make/ move?")
-	}
-	sort.Strings(family)
-	return append(paths, family...)
+	return paths
 }
 
 // ruleLineName reports whether line declares a make rule, and if so returns the
@@ -771,17 +762,20 @@ func TestEveryGeneratedRegionIsInTheStalenessDiff(t *testing.T) {
 // you are reading this because the map and LINT_TARGETS disagree, the question
 // is which of them is wrong, not which is easier to edit.
 var lintGateCommands = map[string]string{
-	"lint-naming":          "./evener-dev tomlcheck",
-	"lint-gofmt":           "/bin/gofmt\" -l",
-	"lint-evenerfuzz":      "-tags evenerfuzz",
-	"lint-eval":            "-tags eval ",
-	"lint-internal":        "./evener-dev internalcheck",
-	"lint-golangci":        "module-lint",
-	"lint-generated":       "docs/appwire-protocol.md",
-	"lint-fuzz-registry":   "scripts/fuzz/fuzz-registry-check.sh",
-	"lint-package-imports": "scripts/sdk/package-import-paths-check.sh",
-	"lint-biome":           "npm run lint",
-	"secret-scan":          "scripts/ops/gitleaks-scan.sh repo",
+	"lint-naming":            "./evener-dev tomlcheck",
+	"lint-gofmt":             "/bin/gofmt\" -l",
+	"lint-evenerfuzz":        "-tags evenerfuzz",
+	"lint-eval":              "-tags eval ",
+	"lint-internal":          "./evener-dev internalcheck",
+	"lint-golangci":          "module-lint",
+	"lint-generated":         "docs/appwire-protocol.md",
+	"lint-fuzz-registry":     "scripts/fuzz/fuzz-registry-check.sh",
+	"lint-package-imports":   "scripts/sdk/package-import-paths-check.sh",
+	"lint-js-toolchain-pins": "scripts/sdk/js-toolchain-pins-check.mjs",
+	"lint-tracked-file-size": "scripts/ops/tracked-file-size-check.sh",
+	"lint-repo-audit":        "./evener-dev dev repo-audit",
+	"lint-biome":             "npm run lint",
+	"secret-scan":            "scripts/ops/gitleaks-scan.sh repo",
 }
 
 // makefileRecipes returns every rule's recipe across makefileSourcePaths,

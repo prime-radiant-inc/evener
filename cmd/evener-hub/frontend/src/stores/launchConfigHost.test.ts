@@ -1,10 +1,11 @@
 // @vitest-environment node
 
-import type { HostRow, LaunchOptionSchemaResponse } from "@evener/appwire-client";
+import type { LaunchOptionSchemaResponse } from "@evener/appwire-client";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { connectReadyFakeClient } from "../testing/connectionTestUtils";
-import { connectionStore } from "./connection";
+import { resetConnectionStoreForTests } from "./connection";
 import { hostsStore } from "./hosts";
+import { hostRow } from "./hostsTestUtils";
 import {
   launchConfigStore,
   launchConfigStoreForHost,
@@ -15,18 +16,6 @@ import {
 // Host-scoped launch-config instances (component 07b). Local is today's store
 // byte-for-byte; a remote host gets its own instance over evener/host/request,
 // with its own schema cache, so one host's schema is never served for another.
-
-function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
-  return {
-    generation: 1,
-    incarnationId: "inc-1",
-    origin: "hub.toml",
-    attached: false,
-    midAttach: false,
-    removed: false,
-    ...overrides,
-  };
-}
 
 function schema(agent: string): LaunchOptionSchemaResponse {
   return {
@@ -46,14 +35,14 @@ function schema(agent: string): LaunchOptionSchemaResponse {
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetLaunchConfigStoreForTests();
   resetLaunchConfigHostStoresForTests();
   hostsStore.getState().resetForTests();
 });
 
 afterEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetLaunchConfigHostStoresForTests();
 });
 

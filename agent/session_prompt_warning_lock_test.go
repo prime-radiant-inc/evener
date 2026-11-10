@@ -39,7 +39,7 @@ func awaitOrFail(t *testing.T, what string, fn func()) {
 	select {
 	case <-done:
 	// TRIPWIRE: fn is a single in-process session call (SetModel,
-	// RegisterTool, swapEnvAndRefresh) with no real I/O; it normally returns
+	// registerTool, swapEnvAndRefresh) with no real I/O; it normally returns
 	// in well under a second. 30s only fires on a genuine self-deadlock, not
 	// scheduler contention under a loaded suite.
 	case <-time.After(30 * time.Second):
@@ -75,6 +75,10 @@ func TestSetModelReportsRenderFailureWithoutSelfDeadlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
+	const cachedSentinel = "CACHED_VALID_PROMPT_SENTINEL"
+	sess.mu.Lock()
+	sess.cachedSystemPrompt = cachedSentinel
+	sess.mu.Unlock()
 	forceSystemPromptRenderFailure(t)
 
 	awaitOrFail(t, "SetModel with a failing prompt render", func() {
@@ -85,6 +89,9 @@ func TestSetModelReportsRenderFailureWithoutSelfDeadlock(t *testing.T) {
 
 	if !sawRenderFailureWarning(sess) {
 		t.Fatal("no warning emitted: the render failure was swallowed")
+	}
+	if sess.cachedSystemPrompt != cachedSentinel {
+		t.Fatalf("cached prompt after a failed SetModel refresh = %q, want the previous valid prompt", sess.cachedSystemPrompt)
 	}
 	// Closed here rather than in a t.Cleanup, and deliberately: the failure this
 	// test exists to catch leaves s.mu held by a parked goroutine, and Close
@@ -172,7 +179,7 @@ func promptWarningSession(t *testing.T) *Session {
 // TestRegisterToolReportsRenderFailureWithoutSelfDeadlock pins the lock
 // discipline for the system prompt's own failure warning.
 //
-// RegisterTool rebuilds the prompt cache under s.mu, and it must: the cache and
+// registerTool rebuilds the prompt cache under s.mu, and it must: the cache and
 // the env it derives from are both guarded by that mutex. But the render can
 // fail, and reporting that failure means emitting -- and emit's very first act
 // is activeCausalProvenance(), which takes s.mu. On a non-reentrant mutex that
@@ -187,7 +194,7 @@ func TestRegisterToolReportsRenderFailureWithoutSelfDeadlock(t *testing.T) {
 	s := promptWarningSession(t)
 
 	awaitOrFail(t, "RegisterTool with a failing prompt render", func() {
-		s.RegisterTool("probe", "d", map[string]any{}, func(context.Context, any) (any, error) { return nil, nil })
+		s.registerTool("probe", "d", map[string]any{}, func(context.Context, any) (any, error) { return nil, nil })
 	})
 
 	// The failure must still be reported. A fix that silences the warning to

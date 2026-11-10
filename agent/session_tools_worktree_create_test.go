@@ -102,6 +102,14 @@ func TestMain(m *testing.M) {
 		// value would hand the tests the real cache.
 		_ = os.Setenv("XDG_CACHE_HOME", filepath.Join(testHome, ".cache"))
 	}
+	// Production code spawns git with the process environment, so the isolation
+	// has to be the process's: a fixture-only setting would leave the code under
+	// test reading host config and starting detached maintenance.
+	removeGitConfig, err := gittest.IsolateProcess()
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "agent TestMain: %v\n", err)
+		os.Exit(2)
+	}
 	// A developer with EVENER_NO_USER_SKILLS exported would otherwise flip
 	// which user-global sources sessions discover: Discover skips the global
 	// MCP layer and DiscoverEvenerWideCommands skips the user-global commands
@@ -126,6 +134,7 @@ func TestMain(m *testing.M) {
 	if testHome != "" {
 		_ = os.RemoveAll(testHome)
 	}
+	removeGitConfig()
 	if sharedWorkspace != "" {
 		_ = os.Chmod(sharedWorkspace, 0o755)
 		_ = os.RemoveAll(sharedWorkspace)
@@ -167,22 +176,11 @@ type wtRepo struct {
 	head     string // SHA of the initial commit
 }
 
-// wtGit runs a git command in dir through a throwaway local env, failing the
-// test on any non-zero exit.
-func gitTestEnv() map[string]string {
-	return map[string]string{
-		"GIT_CONFIG_GLOBAL":   os.DevNull,
-		"GIT_CONFIG_NOSYSTEM": "1",
-	}
-}
-
+// runWorktreeGit runs a git command in dir under the process environment,
+// which TestMain's gittest.IsolateProcess has already isolated.
 func runWorktreeGit(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
-	cmd.Env = os.Environ()
-	for k, v := range gitTestEnv() {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
@@ -1198,10 +1196,6 @@ func branchExistsInRepo(t *testing.T, root, name string) bool {
 	t.Helper()
 	cmd := exec.Command("git", "show-ref", "--verify", "--quiet", "refs/heads/"+name)
 	cmd.Dir = root
-	cmd.Env = os.Environ()
-	for k, v := range gitTestEnv() {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
 	return cmd.Run() == nil
 }
 

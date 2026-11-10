@@ -20,7 +20,13 @@ import { AnsiLineContent } from "../../widgets/codeblock/ansiLine";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { isAtBottom } from "../session/transcript/flow/scrollMetrics";
 import { type JobLogReader, type JobLogScrollCapture, retainedJobLogReader } from "./jobLogReader";
-import { type JobLogRow, type JobLogWindows, jobLogRows, jobLogSourceBytes } from "./jobLogWindow";
+import {
+  type JobLogRow,
+  type JobLogWindows,
+  jobLogDemandGapIndex,
+  jobLogRows,
+  jobLogSourceBytes,
+} from "./jobLogWindow";
 import styles from "./transcript.module.css";
 
 const CLASS = {
@@ -187,13 +193,13 @@ function JobLogBody({ reader, jobId, paneId }: { reader: JobLogReader; jobId: st
     if (!scroller || !mounted.current) return;
     // Byte-count and status notes can move the scroll port inside the pane.
     const originTop = scroller.closest(`.${CLASS.body}`)?.getBoundingClientRect().top ?? 0;
+    const instance = virtualizer.current;
     const pending = restore.current;
     if (pending !== null) {
       const item = rows[restorationIndex(pending)];
       const element = scroller.querySelector<HTMLElement>(
         `[data-index="${restorationIndex(pending)}"] [data-joblog-kind]`,
       );
-      const instance = virtualizer.current;
       if (!instance) return;
       if (!element) {
         list.current?.scrollToIndex(restorationIndex(pending), { align: pending.following ? "end" : "start" });
@@ -232,16 +238,27 @@ function JobLogBody({ reader, jobId, paneId }: { reader: JobLogReader; jobId: st
       const rect = element.getBoundingClientRect();
       return element.dataset.joblogKind === "unloaded" && rect.bottom >= viewport.top && rect.top <= viewport.bottom;
     });
-    const gapIndex =
-      gaps.find(
-        ({ row }) =>
-          row.startBytes === Number(marker?.dataset.sourceStart) ||
-          (previous !== null &&
-            !(previous.following && following) &&
-            byte !== undefined &&
-            ((previous.byteOffset < row.startBytes && byte >= row.endBytes) ||
-              (previous.byteOffset >= row.endBytes && byte < row.startBytes))),
-      )?.index ?? -1;
+    const decision = jobLogDemandGapIndex({
+      rows,
+      gaps,
+      markerStartBytes: marker ? Number(marker.dataset.sourceStart) : undefined,
+      previous,
+      byteOffset: byte,
+      following,
+      geometry: {
+        viewportTop: viewport.top,
+        viewportHeight: viewport.bottom - viewport.top,
+        // The virtualizer measures every row, so the boundary row's position
+        // survives even when a fast scroll has not rendered it yet. Row
+        // measurements are content-local; shift them into the viewport's
+        // client space so they compare with viewport.top.
+        rowBottom: (rowIndex) => {
+          const item = instance?.measurementsCache[rowIndex];
+          return item === undefined ? undefined : viewport.top + item.end - scroller.scrollTop;
+        },
+      },
+    });
+    const gapIndex = decision.index;
     const gap = rows[gapIndex];
     if (gap && gap.kind === "unloaded") {
       const direction = (previous?.byteOffset ?? byte ?? 0) >= gap.endBytes ? "backward" : "forward";
@@ -269,7 +286,10 @@ function JobLogBody({ reader, jobId, paneId }: { reader: JobLogReader; jobId: st
         direction === "backward" ? "start" : "end",
       );
       // A missing interval is a paging boundary, not a shortcut to its far side.
-      if (restore.current === null)
+      // A geometric boundary gap is already at the viewport edge: scrolling to it
+      // would jump the reader up to a screen, while the prepended page lands
+      // above the reader anyway.
+      if (restore.current === null && !decision.geometric)
         list.current?.scrollToIndex(gapIndex, { align: direction === "forward" ? "end" : "start" });
     } else if (capture) {
       reader.capture(capture);

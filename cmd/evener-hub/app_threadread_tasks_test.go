@@ -207,8 +207,8 @@ func (s sessionTaskEnvelopeSource) WorkMetrics() (int64, *appwire.EvenerUsage, i
 func (s sessionTaskEnvelopeSource) PendingEscalations() []appwire.SandboxEscalationRequested {
 	return nil
 }
-func (s sessionTaskEnvelopeSource) PendingQuestion() *appwire.PendingQuestion {
-	return nil
+func (s sessionTaskEnvelopeSource) PendingAskSnapshot() (*appwire.PendingQuestion, *appwire.PendingAskState) {
+	return nil, nil
 }
 func (s sessionTaskEnvelopeSource) RestingFailure() *appwire.ThreadFailure {
 	return nil

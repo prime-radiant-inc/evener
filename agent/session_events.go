@@ -133,12 +133,12 @@ func (s *Session) ConsumeEventsLossless(consume func(events.SessionEvent), onDra
 // not audit every call site reachable before this function runs. Kata 57j8
 // found and fixed the rest: resumeWorktreeReentry's re-entry-failure notice
 // (resume only, called from RestoreSessionFromMetaWithConfig before
-// initSessionState) AND applyInitInsideWorktreeLock's four warnings (called
+// initSessionState) AND applyInitInsideWorktreeLock's five warnings (called
 // from initSessionState, so reachable on BOTH NewSession and
 // RestoreSessionFromMetaWithConfig — a fresh session launched inside an
-// existing managed worktree lane hits this too, not only a resume). All five
+// existing managed worktree lane hits this too, not only a resume). All six
 // now buffer into pendingTranscriptWarnings, same as the two et0x fixed.
-// Consequence worth knowing: these five sites run before s.hookRunner is
+// Consequence worth knowing: these six sites run before s.hookRunner is
 // assigned, so a direct s.emit there never fired the Notification hook;
 // buffering them here means they now fire it, for the first time, once
 // hookRunner exists.
@@ -147,6 +147,11 @@ func (s *Session) emitSessionStartEnvelope(start events.SessionStartData, prompt
 	// carries it so a subagent's thread reports its own access (S15).
 	start.Sandbox = s.cfg.Sandbox
 	start.SandboxNet = appwire.ClonePointer(s.cfg.SandboxNet)
+	// Construction (including restored worktree re-entry) has installed the
+	// environment before this seed. Do not use the cached launch directory.
+	s.mu.Lock()
+	start.WorkingDir = s.envInfo.WorkingDir
+	s.mu.Unlock()
 	store := s.getOrCreateTaskStore()
 	_ = store.MutateAndPublish(func(epoch, revision uint64) error {
 		// Sample current work only after entering the shared store's publication
@@ -194,6 +199,12 @@ func (s *Session) emitSessionStartEnvelope(start events.SessionStartData, prompt
 		s.emitDiagnosticWarning(w)
 	}
 	s.pendingMCPWarnings = nil
+	// Instruction-doc truncation is a construction-time config diagnostic too:
+	// visible on the stream, no Notification hook (#1048).
+	for _, w := range s.pendingInstructionWarnings {
+		s.emitDiagnosticWarning(w)
+	}
+	s.pendingInstructionWarnings = nil
 	for _, src := range promptSources {
 		s.emit(events.PromptLoadedData{Label: src.Label, Size: src.Size})
 	}
@@ -282,8 +293,8 @@ func (s *Session) emitTurnFailure(data events.ErrorData) {
 // carrier-claim's own steer selection failure, is set directly by
 // recordFailedSteeringSelection (session_queue.go) without going through
 // this function, gated by the same answering check.
-func (s *Session) emitSteeringCarrierTurnFailure(data events.ErrorData) {
-	data.Recorded = s.recordTurnFailure(data, true).Recorded
+func (s *Session) emitSteeringCarrierTurnFailure(data events.ErrorData, clientMutationID string) {
+	data.Recorded = s.recordTurnFailureWithAsk(data, true, s.clientMutationAskResolution(clientMutationID)).Recorded
 	s.emit(data)
 }
 
@@ -292,6 +303,10 @@ func (s *Session) emitSteeringCarrierTurnFailure(data events.ErrorData) {
 // stored source/title/hint match what the live event carried. It reports the
 // entry's record.
 func (s *Session) recordTurnFailure(data events.ErrorData, steeringCarrier bool) transcript.Record {
+	return s.recordTurnFailureWithAsk(data, steeringCarrier, nil)
+}
+
+func (s *Session) recordTurnFailureWithAsk(data events.ErrorData, steeringCarrier bool, resolution *schema.AskResolution) transcript.Record {
 	enriched := enrichErrorData(data)
 	info := schema.TurnFailureInfo{
 		Message:         strings.TrimSpace(enriched.Error),
@@ -312,6 +327,13 @@ func (s *Session) recordTurnFailure(data events.ErrorData, steeringCarrier bool)
 	// turn text still show the failure.
 	turn := schema.NewTurn(schema.TurnFailure, llm.System(info.Message))
 	turn.Error = &info
+	turn.AskResolution = resolution
+	if resolution != nil {
+		s.mu.Lock()
+		activeExecution := s.execution.turnID
+		s.mu.Unlock()
+		turn.AnswerToTurnIDs = askResolutionTurnIDs(resolution, activeExecution)
+	}
 	return s.recordTurn(turn, turn)
 }
 

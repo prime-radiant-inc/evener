@@ -41,7 +41,7 @@ type KeybindingsOverrides struct {
 	// Rules then carries the shipped-default fallback (what is actually in
 	// effect) while the diagnostic tells the client to keep editing read-only
 	// - PATCH rejects in this state, so a client that treated the fallback as
-	// writable would fail every save (roborev PR #884 round 6). Absent from
+	// writable would fail every save. Absent from
 	// broadcasts and patch responses, which only exist post-load.
 	LoadError string `json:"loadError,omitempty"`
 }

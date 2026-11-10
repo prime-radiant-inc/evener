@@ -197,6 +197,89 @@ exit 2
 	}
 }
 
+// writeResumeFakeEvener writes the fake evener the automatic-resume tests
+// share: launch-check answers the wire contract and serve runs serveScript,
+// which must end with a newline.
+func writeResumeFakeEvener(t *testing.T, path, serveScript string) {
+	t.Helper()
+	script := `#!/bin/sh
+if [ "$1" = "launch-check" ]; then
+  printf '{"protocol":"evener-appwire-v7","launch_flags":["api-log"]}\n'
+  exit 0
+fi
+if [ "$1" = "serve" ]; then
+` + serveScript + `fi
+exit 2
+`
+	writeFakeEvener(t, path, script)
+}
+
+// An automatic resume's rendezvous wait is bounded by the resume budget, not
+// the fresh-spawn budget: a restore that outlasts SpawnTimeout still hands
+// off instead of being killed mid-restore.
+func TestHubSpawnerAutomaticResumeWaitsForSlowRestore(t *testing.T) {
+	dir := t.TempDir()
+	runDir := filepath.Join(dir, "run")
+	bin := filepath.Join(dir, "fake-evener")
+	writeResumeFakeEvener(t, bin, `  sleep 1
+  mkdir -p "$EVENER_RUN_DIR"
+  cat > "$EVENER_RUN_DIR/$$.json" <<EOF
+{"pid":$$,"address":"127.0.0.1:1","started_at":"2999-01-01T00:00:00Z"}
+EOF
+  sleep 1
+  exit 0
+`)
+
+	cfg := DefaultConfig()
+	cfg.SpawnTimeout = 100 * time.Millisecond
+	spawner := HubSpawner{Cfg: cfg, EvenerBinary: bin, RunDir: runDir, HubToken: "generated-token"}
+	entry, err := spawner.Resume(context.Background(), hubcore.ResumeRequest{
+		SessionID:  "01JRESUME",
+		Resolved:   launchconfig.Resolved{Effective: launchconfig.Layer{Model: "openai/gpt-5"}},
+		WorkingDir: dir,
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if entry.PID == 0 {
+		t.Fatalf("Resume returned no rendezvous entry: %+v", entry)
+	}
+}
+
+// The same automatic resume stays bounded: a child that never registers is
+// killed at the resume budget even when the spawn budget would have waited
+// longer, so a hung restore cannot hold the session's ownership aliases
+// indefinitely.
+func TestHubSpawnerAutomaticResumeBoundByResumeBudget(t *testing.T) {
+	dir := t.TempDir()
+	runDir := filepath.Join(dir, "run")
+	bin := filepath.Join(dir, "fake-evener")
+	writeResumeFakeEvener(t, bin, `  sleep 30
+  exit 0
+`)
+
+	originalBudget := resumeRendezvousTimeout
+	defer func() { resumeRendezvousTimeout = originalBudget }()
+	resumeRendezvousTimeout = 500 * time.Millisecond
+
+	// The spawn budget is only a stale threshold now: Resume no longer reads
+	// it, and settling before it proves the wait ran on the resume budget.
+	const staleSpawnBudget = 10 * time.Second
+	spawner := HubSpawner{Cfg: DefaultConfig(), EvenerBinary: bin, RunDir: runDir, HubToken: "generated-token"}
+	started := time.Now()
+	_, err := spawner.Resume(context.Background(), hubcore.ResumeRequest{
+		SessionID:  "01JRESUME",
+		Resolved:   launchconfig.Resolved{Effective: launchconfig.Layer{Model: "openai/gpt-5"}},
+		WorkingDir: dir,
+	})
+	if !errors.Is(err, errRendezvousTimeout) {
+		t.Fatalf("Resume err = %v, want errRendezvousTimeout", err)
+	}
+	if elapsed := time.Since(started); elapsed >= staleSpawnBudget {
+		t.Fatalf("automatic resume settled on the spawn budget after %s, want the resume budget", elapsed)
+	}
+}
+
 func TestBuildSpawnArgsNonInteractiveOnlyWhenRequested(t *testing.T) {
 	interactive := buildSpawnArgs(hubcore.SpawnRequest{Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{Model: "openai/gpt-5"}}})
 	if hasArg(interactive, "--non-interactive") {
@@ -856,6 +939,98 @@ exit 2
 	}
 	if got := resp.Data[1]; got.Provider != "team" || got.Model != "first" || got.InstanceDefault {
 		t.Fatalf("descriptor=%+v, want team/first unmarked", got)
+	}
+}
+
+// TestListEvenerLaunchModelContractCarriesEveryDescriptorCapability: the
+// contract's rows are appwire.ModelDescriptor, and a capability the child's
+// contract states — context window, token limits, tools, vision, costs — must
+// survive the hub's parse into the composer's model list, not be rebuilt down
+// to a hand-maintained subset that silently drops whatever was not re-listed
+// (the failure mode behind 52315a95de, fixed wholesale).
+func TestListEvenerLaunchModelContractCarriesEveryDescriptorCapability(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "fake-evener")
+	script := `#!/bin/sh
+if [ "$1" = "launch-check" ]; then
+	  printf '{"protocol":"evener-appwire-v7","models":[{"provider":"team","model":"glm-5.3","contextWindow":200000,"maxInputTokens":190000,"maxOutputTokens":32000,"supportsTools":true,"supportsVision":true,"inputCostPerMillion":3,"outputCostPerMillion":15}]}\n'
+	  exit 0
+fi
+exit 2
+`
+	writeFakeEvener(t, bin, script)
+
+	resp, err := listEvenerLaunchModelContract(context.Background(), bin, nil)
+	if err != nil {
+		t.Fatalf("listEvenerLaunchModelContract: %v", err)
+	}
+	if len(resp.Data) != 1 {
+		t.Fatalf("data=%+v, want one model", resp.Data)
+	}
+	got := resp.Data[0]
+	if got.ContextWindow == nil || *got.ContextWindow != 200000 {
+		t.Fatalf("contextWindow=%v, want the stated 200000", got.ContextWindow)
+	}
+	if got.MaxInputTokens == nil || *got.MaxInputTokens != 190000 {
+		t.Fatalf("maxInputTokens=%v, want the stated 190000", got.MaxInputTokens)
+	}
+	if got.MaxOutputTokens == nil || *got.MaxOutputTokens != 32000 {
+		t.Fatalf("maxOutputTokens=%v, want the stated 32000", got.MaxOutputTokens)
+	}
+	if got.SupportsTools == nil || !*got.SupportsTools {
+		t.Fatalf("supportsTools=%v, want the stated tools support", got.SupportsTools)
+	}
+	if got.SupportsVision == nil || !*got.SupportsVision {
+		t.Fatalf("supportsVision=%v, want the stated vision support", got.SupportsVision)
+	}
+	if got.InputCostPerMillion == nil || *got.InputCostPerMillion != 3 {
+		t.Fatalf("inputCostPerMillion=%v, want the stated 3", got.InputCostPerMillion)
+	}
+	if got.OutputCostPerMillion == nil || *got.OutputCostPerMillion != 15 {
+		t.Fatalf("outputCostPerMillion=%v, want the stated 15", got.OutputCostPerMillion)
+	}
+}
+
+// TestListEvenerLaunchModelContractCarriesEffortLevels: the spawn composer
+// builds its effort options from the served descriptor's ladder
+// (catalogEffortLevels), so the child's reasoning-effort facts must survive
+// the parse instead of being flattened to provider/model - a flattened row
+// falls back to a generic ladder, and the composer's levels stop matching the
+// running session's.
+func TestListEvenerLaunchModelContractCarriesEffortLevels(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "fake-evener")
+	script := `#!/bin/sh
+if [ "$1" = "launch-check" ]; then
+	  printf '{"protocol":"evener-appwire-v7","models":[{"provider":"lunaroute","model":"glm-5.3","reasoningEffortLevels":["low","high","max"],"supportsReasoning":true},{"provider":"lunaroute","model":"plain"}]}\n'
+  exit 0
+fi
+exit 2
+`
+	writeFakeEvener(t, bin, script)
+
+	resp, err := listEvenerLaunchModelContract(context.Background(), bin, nil)
+	if err != nil {
+		t.Fatalf("listEvenerLaunchModelContract: %v", err)
+	}
+	if len(resp.Data) != 2 {
+		t.Fatalf("data=%+v, want two models", resp.Data)
+	}
+	glm := resp.Data[0]
+	if glm.Provider != "lunaroute" || glm.Model != "glm-5.3" {
+		t.Fatalf("descriptor=%+v, want lunaroute/glm-5.3", glm)
+	}
+	if !slices.Equal(glm.ReasoningEffortLevels, []string{"low", "high", "max"}) {
+		t.Fatalf("reasoningEffortLevels=%v, want the ladder the contract carried", glm.ReasoningEffortLevels)
+	}
+	if glm.SupportsReasoning == nil || !*glm.SupportsReasoning {
+		t.Fatalf("supportsReasoning=%v, want the carried capability", glm.SupportsReasoning)
+	}
+	plain := resp.Data[1]
+	if len(plain.ReasoningEffortLevels) != 0 || plain.SupportsReasoning != nil {
+		t.Fatalf("plain carries no reasoning facts the contract did not state: %+v", plain)
 	}
 }
 

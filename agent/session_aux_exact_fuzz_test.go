@@ -74,7 +74,7 @@ func FuzzSessionAuxExactProgram(f *testing.F) {
 			s.contextMgr.PreserveRecentTurns = 0
 			s.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) { return "note", nil }
 			s.maybeElicitNoteBeforeCompaction(context.Background(), []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("x"))}, 0)
-			if s.PinnedNote() != "note" {
+			if s.pinnedNote() != "note" {
 				t.Fatal("note not pinned")
 			}
 		case 6:

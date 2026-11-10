@@ -23,6 +23,13 @@ GATE_FUZZ_TEST_SKIP='(SeqFuzz|SchemaFuzz|Structured.*Reach|LifecycleAdapter|Tool
 # which is make fuzz's job, not the default gate's.
 GATE_TEST_RUN='^(Test|Example)'
 
+# The hub's runner-bound integration tests: the members of testing-budget.json's
+# deploy-host integration, retirement, and live-stack E2E classes. The default
+# gate skips them so the timing ratchet measures the stable suite; the
+# hub-integration gate runs exactly this set, outside the ratchet, and the
+# gatesurface tests pin this list to those classes.
+GATE_HUB_INTEGRATION_RUN='^(TestHostDeployFilesystemSafety|TestHubRPCThreadListServesRemoteHostWhoseAttachOutlastsLocalBudget|TestValidateDeployBinaryAcceptsAGenuineEvenerArtifact|TestDaemonRetirementProcessAdmittedWorkResetsInterval|TestDaemonRetirementProcessDirectPositiveExits|TestDaemonRetirementProcessDirectZeroStaysResident|TestDaemonRetirementProcessHelperExitsWithItsFixture|TestDaemonRetirementProcessHubZeroStaysResident|TestDaemonRetirementProcessReadsDoNotResetInterval|TestDaemonRetirementProcessRestartedHubRediscoversOrResumes|TestE2E_StopIsOfferedWheneverTheWireSaysActive|TestE2E_SendPromptToARetiredSession|TestE2E_SendPromptAfterDaemonDiedMidTurn|TestE2E_ControlInvariantDuringPreTurnWorkOnTheFirstTurn|TestE2E_ControlInvariantDuringPreTurnWorkAtATurnBoundary)$'
+
 # gate_shard_skip GATE USER — the -skip regex a shard runner gets: the gate's
 # own skip, plus a caller's *_SHARD_SKIP as an alternative when one is set, so
 # a test the caller asked to skip stays skipped under the gate too.

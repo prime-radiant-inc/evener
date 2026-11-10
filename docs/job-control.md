@@ -26,11 +26,26 @@ provisioned, or a platform without detached-process attributes — omits
 that must keep running lives as a session-owned background job and stops when
 the session ends; it cannot outlive the session.
 
-For background work, keep the returned ID, continue independent work, then wait
-for the completion notification. Use `job_status` or `job_list` once to orient
+For background work, keep the returned ID, continue independent work, then end
+your turn; the completion notification wakes you. A `shell` command that does
+nothing but sleep (`sleep N`, `sleep N && echo ...`, a bare loop whose body is
+only sleep) is refused before it runs, with a park-prefixed error (the same `evener did not execute this call:` prefix the breaker uses). Anything Evener does
+not recognise as sleep-only, such as `sleep 2 && curl ...` or
+`until curl ...; do sleep 1; done`, runs. Use `job_status` or `job_list` once to orient
 yourself when necessary, not in a polling loop. A status read is not delivery of
 a delegate's result. Read retained shell bytes with `job:<job_id>` and delegate
 history with its session `transcript_ref`.
+
+Shell completion wakes the owning session through a runtime notification entry.
+Replay detection uses those steering entries, including older entries with no
+kind or source metadata. Notification-shaped text in assistant replies, user
+input, tool output, human or parent steering, or another known steering kind
+does not acknowledge a pending completion. Such text remains conversation
+content; the real completion still reaches the model. Only the runtime frame's
+opening attributes identify its job and event; output excerpts cannot acknowledge
+another job or change the event type. Watch and watch-send frames do not
+acknowledge shell completion. If delivery marking must retry after the runtime
+completion entry was recorded, that retry does not inject it again.
 
 ```mermaid
 flowchart LR
@@ -51,6 +66,110 @@ need, and read retained evidence when a frame alone cannot answer the question.
 Keep application-owned logs outside session scratch when a detached process must
 outlive the session (where the environment supports detaching; a session-owned
 background job cannot outlive it).
+
+### Manager observation evidence
+
+A Manager's session history, snapshot, and live history updates expose recorded
+`communicate` messages with `observation` metadata. `endTurn` and `endReason`
+describe the recorded request, not proof that the request ended the run.
+`terminalAccepted` is present only when the matching tool result says whether
+terminal arbitration accepted it. A missing value means **unknown**, not false;
+another concurrent terminal call may have won. `causalKnown` is true for newly
+recorded messages even when their causal chain is empty. An older unstamped
+message has `causalKnown: false`: it remains readable without invented ancestry.
+When present, `causal` uses the original bounded watch keys and chain, including
+its truncation marker. Recover a missed update by reading the recorded session
+instead of guessing from the last live notification.
+
+In a [Manager session](automation.md#manager-sessions), call
+`job_watch(operation="create", hub={"ref": "local:<workspace>", "events":
+["communicate"], "completion": true})` to watch the target's recorded observations
+through the Manager's own hub. `status`, `question`, `approval`, and `communicate`
+are supported event selectors; omit `events` to watch only completion.
+Completion means the watched turn was **accepted as ended**. Targets that do
+not offer an end reason, including delegates and headless sessions, complete
+the watch when their accepted terminal end turn arrives with an empty reason.
+An active or question-pending watch
+binds the authoritative active turn and retains it across reconnect, even when
+later work is active. A fresh idle watch may catch up with the latest recorded
+completed work across a daemon restart, but never skip later unfinished work
+to accept an older done. The serving generation scopes the subscription, not
+the original historical execution.
+Questions, waits, rejected terminal calls, and idle state do not complete it.
+For a completed watch, the terminal send and the watch's clear are persisted
+together, then the completion wake token is queued, and only then does the live
+watch read ended. A Manager that sees it ended therefore finds the completion
+frame already pending, and the separate terminal flush entry keeps the wake
+resolvable until it is delivered.
+
+An accepted answer records the question execution it resolves. Completion also
+follows those recorded links across successive questions, whether the answer
+comes from a human or a Manager. It never follows unrelated later work or
+infers a link from an older record that lacks one. For a different terminal
+execution, the watch asks the existing history reader for a single-cut verdict;
+it keeps no continuation graph or terminal backlog. The existing subscription
+consumer retains the original candidate and held history cut while retrying a
+transient read-call failure. That answer-continuation retry reads with a
+two-second budget per call, two seconds between retries, and at most five
+consecutive failed calls. An operation timeout while the watch remains alive, transport
+unavailability, index contention or rebuilding, and an unclassified internal
+read error can recover without re-registration. The watch keeps its ID and
+pending-send identities and emits one interruption notice for that episode.
+Clearing, replacing or canceling the subscription stops its recovery.
+
+Missing required evidence, wrong requested turns, incompatible ref, instance
+or generation, and history truncation end observation immediately. A
+same-target history discontinuity — a new epoch or incarnation for the same
+ref, instance and generation — re-anchors the observation when it arrives as
+the fresh cut a re-read serves. The re-anchor replays the rebuilt history's
+latest window; unlike a continuing thread's re-read it does not page further
+back, so recorded evidence older than that window is not replayed to the
+watcher. One surfacing mid-read — while a continuing
+gap is still paging, or against a held cut a live continuation verdict still
+needs — ends the observation with re-registration guidance instead. Permanent
+request refusals and typed history failures also end it;
+none is a negative verdict. Exhausted retries end the watch with one durable
+end notice and re-registration guidance, never inferred completion. Index
+traversal checks cancellation between reads; existing catch-up and OS I/O may
+still finish after the caller stops waiting, so the operation budget is not a
+hard wall-clock bound on underlying I/O.
+
+The watch keeps its ID and pending notices through a connection interruption.
+A stream end suspends the watch quietly while recovery is in progress: it
+checks the Manager caller's ref and instance before resubscribing, and a
+rebind that succeeds inside the outage budget delivers no interruption
+notice. The notice belongs to a loss the Manager must act on, not to a blip
+that recovers by itself; delivered up front it reads as an incident on a
+healthy lane. A restored connection retains the watch
+only when the target also has the same ref, instance and generation. Recovery
+is bounded by one outage budget rather than a retry count, whether the
+binding cannot answer state reads or its rebind attempts keep failing with
+retryable errors: a recovery that rebinds within the budget retains the
+watch, and only an outage that outlasts it counts as exhausted
+connection recovery. A replaced caller or
+target, an unsupported observation, exhausted connection recovery, or a
+subscription that ended on a healthy connection ends the
+watch durably with re-registration guidance, and that durable end is the one
+notice a genuine loss delivers. A runtime restart likewise
+ends continuing hub watches and sends a re-registration notice, including
+watches that had already reported events. Reconnect never revives an ended watch.
+Unstamped replay entries remain readable in history and generate a replay-gap
+notice instead of an automatic event trigger. Human session consumers keep
+their own relay subscriptions, and watch notices never answer human questions.
+
+Local and remote Manager watches use the hub's shared, connection-owned
+subscription path. Use a canonical `HOST:WORKSPACE_ID` ref for a remote target.
+Resync re-reads the authoritative snapshot even for completion-only watches,
+while the notification drain continues, and a stream that keeps draining owes no
+interruption notice for it: the notice belongs to observation loss, not to the
+re-read that follows it. The re-read rebuilds recorded evidence only. Status
+events are stream signals, not recorded history, so a watch waiting on status
+events can miss the ones that fired during the relay gap, and the re-read
+carries no separate sign of them. Each Manager and human client keeps
+its own subscription lifetime. Remote question/answer/completion is qualified;
+sandbox approval caused by a live remote prompt remains unexercised end to end.
+Manager schemas come from session configuration and remain present during a
+transport outage, even when a call cannot reach its target.
 
 ## Summary
 
@@ -131,8 +250,9 @@ This reference contract is not itself the runtime system prompt, but the followi
   resumable delegate starts its next private run through the same call.
 - Use `delegate_send(to=<delegate_id>)` for follow-up on a durable child
   conversation; it reaches only your own delegates. A delegate reaches its
-  parent only through `communicate`: `end_turn=false` for an update,
-  `end_turn=true` for observer completion and its final report.
+  parent only through `communicate`: `end_turn=false` for an update, and
+  `end_turn=true` for its report, a readiness line before a watch frame, or
+  the one line naming the work it is waiting on.
   `delegate_send` rejects `caller`, `job_id`, `transcript_ref`, and
   unsupported runtime aliases.
 - A delegate's `communicate(end_turn=false)` is an update its parent receives
@@ -283,7 +403,7 @@ or `idle`; its prior generation is summarized separately in `last_outcome` with
 | `failed` | shell status or delegate `last_outcome` | For a shell, the job system's own machinery failed (launch, supervision, reaping, finalization); for a delegate `last_outcome`, the delegate's run itself failed. | `start_failed`, `wait_failed`, `finalize_failed`, `forward_failed`, `missing_terminal`, `terminal_error`, `runtime_lost` as applicable | typed terminal attention |
 | `command_exited_nonzero` | shell status | The supervised command exited nonzero. The job machinery launched, supervised, and reaped it fine — the COMMAND is what failed. | `exit_nonzero` | typed terminal attention |
 | `command_killed` | shell status | The supervised command died on a signal. | `killed_by_signal: SIGNAL` | typed terminal attention |
-| `exhausted` | delegate `last_outcome` | A delegate generation reached its turn or tool-round budget. | `turn_budget_exhausted`, `tool_round_budget_exhausted` | delegate terminal packet |
+| `exhausted` | delegate `last_outcome` | A delegate generation reached its turn, tool-round, or server-continuation budget. | `turn_budget_exhausted`, `tool_round_budget_exhausted`, `server_continuation_budget_exhausted` | delegate terminal packet |
 | `cancelled` | shell status or delegate `last_outcome` | Evener intentionally stopped work and confirmed cancellation. | `stopped_by_parent` | typed terminal attention |
 | `stopped` | shell status or delegate `last_outcome` | Work did not complete and Evener cannot attribute it to normal failure or confirmed cancellation. | `runtime_lost`, `cancelled`, `run_timeout` | typed terminal attention |
 
@@ -375,7 +495,7 @@ Defaults and timeout semantics:
 - `mode="background"`: Evener starts the command and returns a `job_id` immediately without waiting. The terminal notification fires when it finishes.
 - `mode="detached"`: where the environment can disown a process, Evener starts a disowned process and returns only its PID immediately. A sandboxed environment with a wrapper cannot detach — the mode is absent from the shell schema and `DetachCommand` refuses it — so a process that must keep running there belongs in `mode="background"` and stops with the session. A detached process is not a job, so Evener neither retains output nor sends notifications nor offers job control for it. It also gets no session scratch: the child's environment drops `EVENER_SCRATCH_DIR`, because the scratch is deleted when the root session is archived and the disowned process may outlive that. `TMPDIR` names the world-usable session temp container when provisioned. Otherwise, an unconfined environment keeps its inherited or caller-supplied `TMPDIR` (or leaves it absent); a scratch-naming environment drops `TMPDIR` rather than pointing the detached child at session scratch. Give a detached command absolute paths for its output and for any file it reads.
 - `max_runtime_ms` is an optional process runtime limit for shell jobs. If the process is still running after `max_runtime_ms`, Evener stops it and finalizes the job as `stopped` with reason `run_timeout`. It bounds how long the process may *run*, distinct from the foreground wait.
-- Omitted or zero `max_runtime_ms` sets no process-runtime deadline for streaming shell jobs, whether foreground, promoted, or background. Session shutdown and explicit cancellation can still stop session-owned jobs. The model-facing shell schema no longer exposes `max_runtime_ms`; the parser still accepts it for compatibility.
+- Omitted or zero `max_runtime_ms` sets no process-runtime deadline for streaming shell jobs, whether foreground, promoted, or background. Session shutdown and explicit cancellation can still stop session-owned jobs. Instead of a deadline, Evener reminds the owning session about jobs that have run too long: every 30 minutes, while the session owns shell jobs that have been running for at least 30 minutes, it sends ONE reminder listing all of them (job id, truncated command, age, and time since last output). The reminder rides the job-notification rail, so an idle session is woken for it and an active turn receives it with its next model request. The cadence is fixed (no backoff, no cap, no acknowledgement); a job that finished is not listed, delegates are not listed, and nothing is persisted: after a restart the jobs end as `runtime_lost`, so there is nothing to remind about. The model decides whether a listed job is expected or should be stopped with `job_stop`. The model-facing shell schema no longer exposes `max_runtime_ms`; the parser still accepts it for compatibility.
 - A shell command that completes before the tool returns does not inject a terminal notification; the terminal result is already in the tool result. Return field `timed_out`, when present, means the foreground wait expired; it never means the process hit `max_runtime_ms`.
 - To learn when a launch-and-return command reaches a state (e.g. a server printing "ready"), use `job_watch(operation="create", source=<job_id>, output_match=...)` and continue from the notification — an output-match watch catch-up-scans a job's retained output even if it already finished.
 
@@ -762,7 +882,8 @@ Observer/sidecar pattern:
 Observer sidecars are composition, not a separate model-facing observer tool.
 Use `delegate_send(to=<delegate_id>)` for parent-to-child follow-up and
 `communicate(end_turn=false)` for a non-terminal update to the parent.
-Use `communicate(end_turn=true)` for observer completion and final results.
+Use `communicate(end_turn=true)` for an observer's readiness line, its
+completion, final results, or the one line naming work it waits on.
 
 Practical observer guidance for agents:
 
@@ -959,6 +1080,7 @@ Canonical behavior:
   session `transcript_ref`. `last_outcome` carries the latest terminal metadata.
 - Quiet/running timing is a supervision hint, not proof of a stall.
 - Completion is notification-driven. `job_status` is for orientation and recovery, not for waiting: it never blocks, and calling it in a loop is the polling anti-pattern.
+- Evener refuses a repeat `job_status` call on a running target when nothing it reports has changed since this session's previous call on it. The comparison is the lifecycle status and phase; a delegate also compares its attention flag and the count of activity reports it has recorded (new progress allows the next read, the passage of time does not). Elapsed clocks such as `running_for_ms` never count. The refusal is an error beginning with the park prefix `evener did not execute this call:` and the status is not returned. The first call on a target, a call after the comparison changed, a call after a notification about the target or after a self-timer wake, a call after any delegate attention report, and any call on a finished target are allowed. Evener adds no wait primitive: an agent with nothing else to do ends its turn with the result tool (`end_turn=true`, plus `end_reason="waiting_on_work"` where the result tool takes it) and the completion wakes it, or sets a `job_watch` with `output_match` to wake on a condition.
 - Reading an owner's terminal shell status consumes that shell's pending terminal
   notification. Delegate status never consumes its terminal packet; exact
   transcript-backed attention is consumed only by a successful notification turn.
@@ -1585,7 +1707,10 @@ Rules:
 - Evener supervises each running stable delegate with a built-in quiet watchdog.
   Ten minutes without parent-observable activity emits one owner attention keyed
   by `delegate_id`, and it repeats once per further ten-minute window while the
-  delegate stays silent and running. Fresh activity resets the baseline, so a
+  delegate stays silent and running. Each frame names the silence measured
+  from the last parent-observable activity, so a repeat reports the ongoing
+  total — "quiet for 20m", then "quiet for 3h5m" — instead of re-stating the
+  window as a fresh quiet event. Fresh activity resets the baseline, so a
   progressing delegate never fires. The watchdog only reports—it never steers,
   resumes, or stops the delegate.
 - Notification delivery state is internal; there is no `job_ack`.
@@ -1699,6 +1824,12 @@ Rules:
   `job:<job_id>` use the same shell ID. Stable delegate status, watch, stop, and
   `delegate_send` use `delegate_id`; its conversation uses `transcript_ref`.
 - Shell jobs created by subagents are visible to the parent through forwarded durable job events.
+- Restoring a child re-forwards every terminal record it owns, so a forward
+  interrupted before the parent appended it is repaired. Forwarding is
+  idempotent: the parent journal keeps one `job_started` per job and one
+  `job_finished` or `job_notification_pending` per `(job_id, terminal_generation)`,
+  however many times the child restores. The forwarded `job_started` carries
+  the original `background` and `working_dir`.
 - Dedupe rule: the shell owner's durable record is authoritative over a
   forwarded copy. Stable delegates have no forwarded job copy; the controller
   fold is their sole lifecycle authority.

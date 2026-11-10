@@ -1,11 +1,12 @@
 import type { InstanceEntry, InstanceListResponse, ProviderDescriptor } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { urlToPane } from "../../../../shell/routing";
-import { connectionStore } from "../../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
@@ -48,14 +49,6 @@ function provider(id: string, name: string, setup?: InstanceEntry): ProviderDesc
   };
 }
 
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
-}
-
 /** The dialog as the app mounts it: `onClose` is what makes it go away, so the
  * harness owns that state and the test can see the dialog actually leave. */
 function Harness({ onClose, onConnected = () => {} }: { onClose(): void; onConnected?: (name?: string) => void }) {
@@ -76,7 +69,7 @@ function Harness({ onClose, onConnected = () => {} }: { onClose(): void; onConne
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetCredentialsStoreForTests();
   resetToastStoreForTests();
   // The auth mutations carry the page's identity on the wire; pinning it keeps
@@ -86,7 +79,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   window.history.pushState({}, "", "/");
   vi.restoreAllMocks();
 });

@@ -9,7 +9,7 @@ import {
 import type { LiveReadiness } from "./connectionDisplay";
 import { space } from "./design/tokens";
 import { createProviderParams, draftChanged, editProviderParams, type ProviderDraft } from "./providerForm";
-import { type TextInput, View } from "react-native";
+import { type TextInputInstance, View } from "react-native";
 import {
 	FormError,
 	Group,
@@ -178,11 +178,11 @@ export function ProviderEditor({
 	const order = instance
 		? ["baseUrl"]
 		: ["name", "baseUrl", ...varFields.map(([template]) => template), "apiKeyEnv", "credentialHeader"];
-	const inputs = useRef<Record<string, TextInput | null>>({});
+	const inputs = useRef<Record<string, TextInputInstance | null>>({});
 	function chain(key: string) {
 		const next = order[order.indexOf(key) + 1];
 		return {
-			ref: (input: TextInput | null) => {
+			ref: (input: TextInputInstance | null) => {
 				inputs.current[key] = input;
 			},
 			returnKeyType: next ? ("next" as const) : ("done" as const),

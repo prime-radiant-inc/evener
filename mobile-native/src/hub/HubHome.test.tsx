@@ -31,7 +31,6 @@ const connection = vi.hoisted(() => ({
 	value: { state: "ready", fatal: false, client: null, activeProfile: null } as Record<string, unknown>,
 }));
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => connection.value }));
-vi.mock("expo-crypto", () => ({ randomUUID: () => "fixture-uuid" }));
 vi.mock("@react-navigation/native", async () => {
 	const { useEffect } = await import("react");
 	return {

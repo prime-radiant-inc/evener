@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -739,7 +740,7 @@ func safeTokenForRepro(name string) bool {
 // cannot read is recorded in Unreadable, never silently skipped — matching
 // ListSessions' sweep for the --since path, and Locate's own error for an
 // explicit --sessions selector that doesn't resolve.
-func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, error) {
+func RunAudit(ctx context.Context, stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, error) {
 	if len(opts.Sessions) > 0 && opts.Since > 0 {
 		return AuditResult{}, errors.New("--sessions and --since are mutually exclusive")
 	}
@@ -753,7 +754,7 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 	if len(opts.Sessions) > 0 {
 		refs = opts.Sessions
 	} else {
-		sweep, err := ListSessions(stateBase, SessionsOpts{Since: opts.Since})
+		sweep, err := ListSessions(ctx, stateBase, SessionsOpts{Since: opts.Since})
 		if err != nil {
 			return AuditResult{}, err
 		}
@@ -794,6 +795,9 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 	sessionsBySig := map[string]map[string]bool{}
 
 	for _, ref := range refs {
+		if err := ctx.Err(); err != nil {
+			return AuditResult{}, err
+		}
 		paths, err := Locate(stateBase, ref)
 		if err != nil {
 			res.Unreadable = append(res.Unreadable, UnreadableSession{SessionID: ref, TranscriptRef: ref, Error: err.Error()})
@@ -894,14 +898,14 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 				}
 			}
 		}
-		health, err := TranscriptHealth(stateBase, sel)
+		health, err := TranscriptHealth(ctx, stateBase, sel)
 		if err != nil {
 			res.Unreadable = append(res.Unreadable, UnreadableSession{SessionID: paths.SessionID, TranscriptRef: paths.TranscriptRef, Error: err.Error()})
 			continue
 		}
 		source := metricSource{health: health}
 		if needsAPILog {
-			apiRes, err := APILog(stateBase, sel, APILogOpts{SummaryOnly: true})
+			apiRes, err := APILog(ctx, stateBase, sel, APILogOpts{SummaryOnly: true})
 			if err != nil {
 				res.Unreadable = append(res.Unreadable, UnreadableSession{SessionID: paths.SessionID, TranscriptRef: paths.TranscriptRef, Error: err.Error()})
 				continue
@@ -910,7 +914,7 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 			source.haveAPILog = true
 		}
 		if needsAPIHealth {
-			apiHealthRes, err := APIHealth(stateBase, sel)
+			apiHealthRes, err := APIHealth(ctx, stateBase, sel)
 			if err != nil {
 				res.Unreadable = append(res.Unreadable, UnreadableSession{SessionID: paths.SessionID, TranscriptRef: paths.TranscriptRef, Error: err.Error()})
 				continue
@@ -1116,6 +1120,9 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 		res.Summary = append(res.Summary, AuditSummaryRow{Title: f.Title, Severity: f.Severity, Sessions: trueCount})
 	}
 	sort.Slice(res.Unreadable, func(i, j int) bool { return res.Unreadable[i].SessionID < res.Unreadable[j].SessionID })
+	if err := ctx.Err(); err != nil {
+		return AuditResult{}, err
+	}
 	return res, nil
 }
 

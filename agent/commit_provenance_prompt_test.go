@@ -15,8 +15,8 @@ func TestSystemPromptCarriesCommitTrailer(t *testing.T) {
 	}
 
 	s := newSession(t, withConfig(SessionConfig{MaxSubagentDepth: 1}))
-	prompt, warning := s.renderSystemPrompt(s.env)
-	if warning != "" {
+	prompt, warning, renderFailed := s.renderSystemPrompt(s.env)
+	if warning != "" || renderFailed {
 		t.Fatalf("render failed: %s", warning)
 	}
 	want, err := commitprovenance.Trailer(BuildVersion, s.profile.ID()+"/"+s.profile.Model(), host, s.ID())
@@ -33,8 +33,8 @@ func TestSystemPromptOmitsCommitTrailerWhenOff(t *testing.T) {
 		MaxSubagentDepth: 1,
 		CommitProvenance: commitprovenance.ModeOff,
 	}))
-	prompt, warning := s.renderSystemPrompt(s.env)
-	if warning != "" {
+	prompt, warning, renderFailed := s.renderSystemPrompt(s.env)
+	if warning != "" || renderFailed {
 		t.Fatalf("render failed: %s", warning)
 	}
 	if strings.Contains(prompt, "Co-authored-by: Evener") {
@@ -68,8 +68,8 @@ func TestSessionConfigCommitProvenanceApplyDefaults(t *testing.T) {
 
 func TestSystemPromptWarnsOnInvalidCommitProvenance(t *testing.T) {
 	s := newSession(t, withConfig(SessionConfig{MaxSubagentDepth: 1, CommitProvenance: "bogus"}))
-	prompt, warning := s.renderSystemPrompt(s.env)
-	if warning != "" {
+	prompt, warning, renderFailed := s.renderSystemPrompt(s.env)
+	if warning != "" || renderFailed {
 		t.Fatal("configuration diagnostic used the prompt-render failure channel")
 	}
 	if s.commitProvenanceWarning() == "" {

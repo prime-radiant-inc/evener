@@ -12,6 +12,7 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
+	"primeradiant.com/evener/internal/testfs"
 )
 
 func assertHubLaunchError(t *testing.T, err error) {
@@ -83,7 +84,7 @@ func TestHubLaunchControllerSchema_WireMatchesInternal(t *testing.T) {
 
 func TestLaunchController_Resolve_Empty(t *testing.T) {
 	stateRoot := t.TempDir()
-	cwd := canonicalTempDir(t)
+	cwd := testfs.CanonicalTempDir(t)
 	// Fixed empty env so an ambient EVENER_MODEL can never leak in and
 	// flip this assertion on a developer machine.
 	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" }, false)
@@ -101,7 +102,7 @@ func TestLaunchController_Resolve_Empty(t *testing.T) {
 
 func TestLaunchController_SetLayer_GlobalRoundtrip(t *testing.T) {
 	stateRoot := t.TempDir()
-	cwd := canonicalTempDir(t)
+	cwd := testfs.CanonicalTempDir(t)
 	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" }, false)
 	model := "openai/gpt-5"
 	fastCheapModel := "openai/gpt-5-mini"
@@ -135,7 +136,7 @@ func TestLaunchController_SetLayer_PublishedButUnsyncedSaveCountsAsApplied(t *te
 		t.Skip("root opens any directory")
 	}
 	stateRoot := t.TempDir()
-	cwd := canonicalTempDir(t)
+	cwd := testfs.CanonicalTempDir(t)
 	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" }, false)
 	paths, err := launchconfig.PathsFor(stateRoot, cwd)
 	if err != nil {
@@ -170,7 +171,7 @@ func TestLaunchController_SetLayer_PublishedButUnsyncedSaveCountsAsApplied(t *te
 
 func TestLaunchController_SetLayer_RejectsEnabledPlugins(t *testing.T) {
 	stateRoot := t.TempDir()
-	cwd := canonicalTempDir(t)
+	cwd := testfs.CanonicalTempDir(t)
 	empty := []string{}
 	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" }, false)
 	_, err := c.SetLayer(context.Background(), appwire.LaunchConfigSetLayerParams{
@@ -191,7 +192,7 @@ func TestLaunchController_SetLayer_RejectsEnabledPlugins(t *testing.T) {
 
 func TestLaunchController_SetLayer_RejectsProjectCommitProvenance(t *testing.T) {
 	stateRoot := t.TempDir()
-	cwd := canonicalTempDir(t)
+	cwd := testfs.CanonicalTempDir(t)
 	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" }, false)
 	_, err := c.SetLayer(context.Background(), appwire.LaunchConfigSetLayerParams{
 		CWD: cwd, Layer: "project",
@@ -204,7 +205,7 @@ func TestLaunchController_SetLayer_RejectsProjectCommitProvenance(t *testing.T) 
 
 func TestLaunchController_SetLayer_RejectsInvalidCommitProvenance(t *testing.T) {
 	stateRoot := t.TempDir()
-	cwd := canonicalTempDir(t)
+	cwd := testfs.CanonicalTempDir(t)
 	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" }, false)
 	_, err := c.SetLayer(context.Background(), appwire.LaunchConfigSetLayerParams{
 		CWD: cwd, Layer: "global",
@@ -217,7 +218,7 @@ func TestLaunchController_SetLayer_RejectsInvalidCommitProvenance(t *testing.T) 
 
 func TestLaunchController_SetLayer_ProjectWritesLocalFile(t *testing.T) {
 	stateRoot := t.TempDir()
-	cwd := canonicalTempDir(t)
+	cwd := testfs.CanonicalTempDir(t)
 	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" }, false)
 	_, err := c.SetLayer(context.Background(), appwire.LaunchConfigSetLayerParams{
 		CWD:    cwd,
@@ -248,7 +249,7 @@ func TestLaunchController_SetLayer_ProjectWritesLocalFile(t *testing.T) {
 
 func TestLaunchController_GetLayer_ProjectReadsLegacyFallback(t *testing.T) {
 	stateRoot := t.TempDir()
-	cwd := canonicalTempDir(t)
+	cwd := testfs.CanonicalTempDir(t)
 	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" }, false)
 	paths, err := launchconfig.PathsFor(stateRoot, cwd)
 	if err != nil {
@@ -268,7 +269,7 @@ func TestLaunchController_GetLayer_ProjectReadsLegacyFallback(t *testing.T) {
 
 func TestLaunchController_TrustRepo_RecordsDecision(t *testing.T) {
 	stateRoot := t.TempDir()
-	cwd := canonicalTempDir(t)
+	cwd := testfs.CanonicalTempDir(t)
 	repoPath := filepath.Join(cwd, ".evener", "launch.toml")
 	if err := os.MkdirAll(filepath.Dir(repoPath), 0o755); err != nil {
 		t.Fatal(err)
@@ -297,7 +298,7 @@ func TestLaunchController_TrustRepo_RecordsDecision(t *testing.T) {
 
 func TestLaunchController_TrustRepo_DoesNotCarryRejectedHashes(t *testing.T) {
 	stateRoot := t.TempDir()
-	cwd := canonicalTempDir(t)
+	cwd := testfs.CanonicalTempDir(t)
 	repoPath := filepath.Join(cwd, ".evener", "launch.toml")
 	if err := os.MkdirAll(filepath.Dir(repoPath), 0o755); err != nil {
 		t.Fatal(err)
@@ -352,7 +353,7 @@ func TestLaunchController_TrustRepo_DoesNotCarryRejectedHashes(t *testing.T) {
 
 func TestLaunchController_TrustRepo_HashMismatch(t *testing.T) {
 	stateRoot := t.TempDir()
-	cwd := canonicalTempDir(t)
+	cwd := testfs.CanonicalTempDir(t)
 	repoPath := filepath.Join(cwd, ".evener", "launch.toml")
 	if err := os.MkdirAll(filepath.Dir(repoPath), 0o755); err != nil {
 		t.Fatal(err)
@@ -368,7 +369,7 @@ func TestLaunchController_TrustRepo_HashMismatch(t *testing.T) {
 
 func TestLaunchController_ResolveAppliesRuntimeDefaults(t *testing.T) {
 	stateRoot := t.TempDir()
-	cwd := canonicalTempDir(t)
+	cwd := testfs.CanonicalTempDir(t)
 	env := map[string]string{
 		"EVENER_MODEL": "anthropic/claude-sonnet-4",
 	}
@@ -412,7 +413,7 @@ func TestLaunchController_ResolveAppliesRuntimeDefaults(t *testing.T) {
 
 func TestLaunchController_ResolveLayerValueWinsOverRuntimeDefault(t *testing.T) {
 	stateRoot := t.TempDir()
-	cwd := canonicalTempDir(t)
+	cwd := testfs.CanonicalTempDir(t)
 	if err := os.MkdirAll(stateRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -441,7 +442,7 @@ func TestLaunchController_ResolveLayerValueWinsOverRuntimeDefault(t *testing.T) 
 // file in the process working directory - what SaveLayer("") would do once
 // hubLaunchConfigRoot can return "".
 func TestLaunchController_SetLayer_RefusesUnavailableRoot(t *testing.T) {
-	cwd := canonicalTempDir(t)
+	cwd := testfs.CanonicalTempDir(t)
 	c := newHubLaunchControllerWithEnv("", func(string) string { return "" }, false)
 	_, err := c.SetLayer(context.Background(), appwire.LaunchConfigSetLayerParams{
 		CWD:    cwd,
@@ -463,7 +464,7 @@ func TestLaunchController_SetLayer_RefusesUnavailableRoot(t *testing.T) {
 // with no user root there is nowhere to record the trust decision, so it
 // refuses before SaveMeta("") fails against the process working directory.
 func TestLaunchController_TrustRepo_RefusesUnavailableRoot(t *testing.T) {
-	cwd := canonicalTempDir(t)
+	cwd := testfs.CanonicalTempDir(t)
 	repoPath := filepath.Join(cwd, ".evener", "launch.toml")
 	if err := os.MkdirAll(filepath.Dir(repoPath), 0o755); err != nil {
 		t.Fatal(err)

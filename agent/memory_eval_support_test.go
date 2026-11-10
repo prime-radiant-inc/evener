@@ -473,7 +473,11 @@ func memoryEvalRequireHost(t *testing.T, live bool, facts sandbox.HostFacts) {
 	}
 }
 func memoryEvalConfig(ctx context.Context, root string, disabled bool, stageCap int) SessionConfig {
-	return SessionConfig{LifetimeContext: ctx, LLMRetryPolicy: &llm.RetryPolicy{MaxRetries: 0}, MemoryStateRoot: filepath.Join(root, "wiki"), MemoryProjectID: "fixture-project", DisableMemory: disabled, StateDir: filepath.Join(root, "history"), AgentsDocPath: filepath.Join(root, "no-user-AGENTS.md"), ReasoningEffort: "high", NonInteractive: true, MaxToolRoundsPerInput: stageCap, MaxSubagentDepth: 1, TurnEndsProcess: true, VisionModel: "off", DefaultCommandTimeoutMS: 10000, MaxCommandTimeoutMS: 180000}
+	// The application oracle reads the recorded result of the fixture checker,
+	// which runs `go test ./...`. The 10s budget cut that real run off under a
+	// loaded runner, leaving a running job and application=false even though the
+	// held-out verifier passed; use production's default command budget instead.
+	return SessionConfig{LifetimeContext: ctx, LLMRetryPolicy: &llm.RetryPolicy{MaxRetries: 0}, MemoryStateRoot: filepath.Join(root, "wiki"), MemoryProjectID: "fixture-project", DisableMemory: disabled, StateDir: filepath.Join(root, "history"), AgentsDocPath: filepath.Join(root, "no-user-AGENTS.md"), ReasoningEffort: "high", NonInteractive: true, MaxToolRoundsPerInput: stageCap, MaxSubagentDepth: 1, TurnEndsProcess: true, VisionModel: "off", DefaultCommandTimeoutMS: 120_000, MaxCommandTimeoutMS: 180_000}
 }
 func memoryEvalWrite(t *testing.T, path, body string) {
 	t.Helper()
@@ -566,14 +570,54 @@ type memoryEvalStageEvidence struct {
 	Unproven                                                                       []string
 	Counters                                                                       string
 	Elapsed                                                                        time.Duration
-	Limitation                                                                     string
-	Transcript                                                                     string
+	// Limitation marks a stage that ran but ended on a budget stop.
+	Limitation string
+	// Failure names the verifier infrastructure stop that retained this stage
+	// instead of completing it; a completed stage never carries one.
+	Failure    string
+	Transcript string
 }
 type memoryEvalEpisode struct {
 	Pair     string
 	Disabled bool
 	Stages   []memoryEvalStageEvidence
 	Elapsed  time.Duration
+}
+
+// memoryEvalVerifierStopError is the terminal error for a stage whose verifier could
+// not run. It carries the failing stage's evidence, so every caller can report
+// or retain the diagnostic from the error alone, and it unwraps to the
+// verifier's own failure.
+type memoryEvalVerifierStopError struct {
+	Phase    string // "initial" or "final"
+	Pair     string
+	Disabled bool
+	Stage    string
+	Evidence memoryEvalStageEvidence
+	Cause    error
+}
+
+func (e *memoryEvalVerifierStopError) Error() string {
+	return fmt.Sprintf("memory eval %s verifier infrastructure failure, pair %s disabled=%t stage %s: %v", e.Phase, e.Pair, e.Disabled, e.Stage, e.Cause)
+}
+
+func (e *memoryEvalVerifierStopError) Unwrap() error { return e.Cause }
+
+// memoryEvalStopVerifier records the failing stage, publishes its redacted
+// evidence, and fails the run before returning the terminal error that carries
+// the stage. The caller sets the stage's identity, counters and elapsed time
+// first. Its verifier output and reason are redacted before either copy is
+// kept, and the published artifact passes the whole stage through the same
+// redactor, so nothing this run marked sensitive is retained raw.
+func memoryEvalStopVerifier(t *testing.T, b *memoryEvalAdmission, phase, pair string, disabled bool, evidence memoryEvalStageEvidence, cause error) error {
+	t.Helper()
+	stop := &memoryEvalVerifierStopError{Phase: phase, Pair: pair, Disabled: disabled, Stage: evidence.Name, Cause: cause}
+	evidence.Verifier = b.redact(t, evidence.Verifier)
+	evidence.Failure = b.redact(t, stop.Error())
+	stop.Evidence = evidence
+	b.fail(stop)
+	memoryEvalPublishStage(t, b, pair, disabled, evidence, ".failed")
+	return stop
 }
 
 func memoryEvalJSON(v any) string {
@@ -1011,10 +1055,11 @@ func memoryEvalRunPairs(t *testing.T, b *memoryEvalAdmission, c *llm.Client, p *
 						hook(pair, disabled, stage, prior, workspace)
 					}
 					var verifyErr error
-					evidence.BeforeTask, _, verifyErr = memoryEvalVerify(ctx, t, home, workspace, stage.name)
+					evidence.BeforeTask, evidence.Verifier, verifyErr = memoryEvalVerify(ctx, t, home, workspace, stage.name)
 					if verifyErr != nil {
-						err := fmt.Errorf("memory eval initial verifier infrastructure failure: %w", verifyErr)
-						b.fail(err)
+						evidence.Counters = memoryEvalSnapshot(b)
+						evidence.Elapsed = time.Since(start)
+						err := memoryEvalStopVerifier(t, b, "initial", pair, disabled, evidence, verifyErr)
 						cancel()
 						stopStage()
 						return err
@@ -1076,8 +1121,9 @@ func memoryEvalRunPairs(t *testing.T, b *memoryEvalAdmission, c *llm.Client, p *
 					evidence.Task, evidence.Verifier, verifyErr = memoryEvalVerify(verifyCtx, t, home, workspace, stage.name)
 					verifyCancel()
 					if verifyErr != nil {
-						err := fmt.Errorf("memory eval final verifier infrastructure failure: %w", verifyErr)
-						b.fail(err)
+						evidence.Counters = memoryEvalSnapshot(b)
+						evidence.Elapsed = time.Since(start)
+						err := memoryEvalStopVerifier(t, b, "final", pair, disabled, evidence, verifyErr)
 						stopStage()
 						return err
 					}
@@ -1101,9 +1147,7 @@ func memoryEvalRunPairs(t *testing.T, b *memoryEvalAdmission, c *llm.Client, p *
 					evidence.Counters = memoryEvalSnapshot(b)
 					evidence.Elapsed = time.Since(start)
 					episode.Stages = append(episode.Stages, evidence)
-					if b.evidenceRoot != "" {
-						memoryEvalWriteEvidence(t, b, filepath.Join(b.evidenceRoot, fmt.Sprintf("%s-disabled-%t-%s.json", pair, disabled, stage.name)), evidence)
-					}
+					memoryEvalPublishStage(t, b, pair, disabled, evidence, "")
 					prior = s.ID()
 					return nil
 				}()
@@ -1147,7 +1191,11 @@ func (b *memoryEvalAdmission) observedUsage() llm.Usage {
 	defer b.mu.Unlock()
 	return b.usage.Add(llm.Usage{})
 }
-func memoryEvalWriteEvidence(t *testing.T, b *memoryEvalAdmission, path string, value any) {
+
+// redact replaces every sensitive value this run knows about, loading the
+// private auth record when the evaluation has one. Nothing reaches a published
+// log or a retained diagnostic without passing through it.
+func (b *memoryEvalAdmission) redact(t *testing.T, text string) string {
 	t.Helper()
 	if b.authRoot != "" {
 		record, err := openai.LoadAuth(b.authRoot, "codex-jesse-at-pr")
@@ -1156,7 +1204,6 @@ func memoryEvalWriteEvidence(t *testing.T, b *memoryEvalAdmission, path string, 
 		}
 		b.sensitive = append(b.sensitive, record.AccessToken, record.RefreshToken, record.IDToken, record.Email, record.AccountID, record.WorkspaceID)
 	}
-	text := memoryEvalJSON(value)
 	for _, value := range b.sensitive {
 		if value != "" {
 			for range 4 {
@@ -1166,7 +1213,23 @@ func memoryEvalWriteEvidence(t *testing.T, b *memoryEvalAdmission, path string, 
 			}
 		}
 	}
-	memoryEvalWrite(t, path, text)
+	return text
+}
+
+func memoryEvalWriteEvidence(t *testing.T, b *memoryEvalAdmission, path string, value any) {
+	t.Helper()
+	memoryEvalWrite(t, path, b.redact(t, memoryEvalJSON(value)))
+}
+
+// memoryEvalPublishStage writes one stage's evidence under the evidence root
+// when the run has one. Suffix distinguishes a retained failure artifact from
+// the per-stage file a completed stage writes.
+func memoryEvalPublishStage(t *testing.T, b *memoryEvalAdmission, pair string, disabled bool, evidence memoryEvalStageEvidence, suffix string) {
+	t.Helper()
+	if b.evidenceRoot == "" {
+		return
+	}
+	memoryEvalWriteEvidence(t, b, filepath.Join(b.evidenceRoot, fmt.Sprintf("%s-disabled-%t-%s%s.json", pair, disabled, evidence.Name, suffix)), evidence)
 }
 
 func (b *memoryEvalAdmission) approvedRequest(req llm.Request) error {

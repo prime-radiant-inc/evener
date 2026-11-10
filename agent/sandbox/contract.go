@@ -58,7 +58,7 @@ type ContractCase struct {
 // tier. It is data-only (no resolver call) so downstream backends can import the
 // cases directly.
 func ContractCases() []ContractCase {
-	const home = "/home/contract"
+	const home = "/fixture-home/contract"
 	bwrap := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
 	bwrapNoOverlay := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: false}
 	bare := HostFacts{OS: "linux", Home: home}
@@ -326,7 +326,7 @@ type ReRootCase struct {
 // tier) cell, so a backend's re-root path is pinned to the same re-anchoring
 // semantics M4 established. Data-only (no ReRoot call).
 func ReRootCases() []ReRootCase {
-	const home = "/home/contract"
+	const home = "/fixture-home/contract"
 	bwrap := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
 	seatbelt := HostFacts{OS: "darwin", Home: "/Users/contract", SandboxExecPath: "/usr/bin/sandbox-exec"}
 	var cases []ReRootCase
@@ -363,7 +363,7 @@ func assertReRootWith(t TestingT, cases []ReRootCase, materialize contractReRoot
 	for _, tc := range cases {
 		host := tc.Host
 		if host.Home == "" {
-			host.Home = "/home/contract"
+			host.Home = "/fixture-home/contract"
 		}
 		net := tc.Net
 		rp, err := Resolve(SandboxPolicy{Mode: tc.Mode, Network: &net}, host, laneA)

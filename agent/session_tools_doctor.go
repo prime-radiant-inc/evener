@@ -33,8 +33,7 @@ func doctorTools(deps *toolDeps) []tool.RegisteredTool {
 			Definition: tool.DefDoctorEvener(),
 			ReadOnly:   true,
 			Exec: func(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-				_ = ctx
-				return execDoctorEvener(deps, args)
+				return execDoctorEvener(ctx, deps, args)
 			},
 			Limit: schema.ToolOutputLimit{MaxChars: transcriptToolMaxChars, Strategy: schema.TruncTail},
 		},
@@ -45,6 +44,17 @@ func doctorTools(deps *toolDeps) []tool.RegisteredTool {
 // definition's schema and this dispatcher both derive from it, so the tool
 // surface and dispatch cannot drift.
 var doctorEvenerCommandNames = tool.DoctorEvenerCommands()
+
+// The commands that take no session selector, and the subset that also reads
+// no state root. The schema descriptions and both dispatcher branches consult
+// these, so adding a command cannot leave one of them stale.
+var doctorSelectorlessCommands = map[string]bool{
+	"turnids": true, "sessions": true, "audit": true, "plugins": true, "lifecycle": true,
+}
+
+var doctorNoStateRootCommands = map[string]bool{
+	"plugins": true, "lifecycle": true,
+}
 
 // doctorStateBase resolves the state root for one invocation: an explicit
 // state_dir argument wins; otherwise the session's own state root (the
@@ -74,7 +84,7 @@ var doctorBundledSkills = bundled.Skills
 // so the tool and `evener doctor --json` cannot disagree on shape.
 // Command-option precedence mirrors the CLI exactly (count, then health,
 // then render; validate over health on apilog).
-func execDoctorEvener(deps *toolDeps, args map[string]any) (any, error) {
+func execDoctorEvener(ctx context.Context, deps *toolDeps, args map[string]any) (any, error) {
 	command, _ := args["command"].(string)
 	if command == "" {
 		return nil, fmt.Errorf("doctor_evener requires a command (one of: %s)", strings.Join(doctorEvenerCommandNames, ", "))
@@ -83,10 +93,10 @@ func execDoctorEvener(deps *toolDeps, args map[string]any) (any, error) {
 		return nil, fmt.Errorf("unknown doctor command %q (one of: %s)", command, strings.Join(doctorEvenerCommandNames, ", "))
 	}
 
-	// The plugin check reads the config root, not a state root, so it runs
-	// without one.
+	// The plugin check reads the config root and lifecycle reads compiled
+	// declarations, so neither needs a state root.
 	stateBase := ""
-	if command != "plugins" {
+	if !doctorNoStateRootCommands[command] {
 		var err error
 		if stateBase, err = doctorStateBase(deps, stringArg(args, "state_dir")); err != nil {
 			return nil, err
@@ -98,18 +108,15 @@ func execDoctorEvener(deps *toolDeps, args map[string]any) (any, error) {
 	// passing a selector to a sweep command believing it scopes to one
 	// session would otherwise get a state-root-wide result with no signal,
 	// and selector-taking commands must not run with an empty selector.
-	switch command {
-	case "turnids", "sessions", "audit", "plugins":
+	if doctorSelectorlessCommands[command] {
 		if strings.TrimSpace(selector) != "" {
-			return nil, fmt.Errorf("doctor command %q takes no selector (it is a state-root-wide sweep)", command)
+			return nil, fmt.Errorf("doctor command %q takes no selector", command)
 		}
-	default:
-		if err := doctorRequireSelector(command, selector); err != nil {
-			return nil, err
-		}
+	} else if err := doctorRequireSelector(command, selector); err != nil {
+		return nil, err
 	}
 
-	res, err := dispatchDoctorEvener(deps, args, command, stateBase, selector)
+	res, err := dispatchDoctorEvener(ctx, deps, args, command, stateBase, selector)
 	if err != nil {
 		// One seam for every command: a doctor miss is an explicit error and
 		// no data. The doctor functions return their zero structs alongside
@@ -127,7 +134,7 @@ func execDoctorEvener(deps *toolDeps, args map[string]any) (any, error) {
 // agent/doctor package. execDoctorEvener's error seam above is what makes a
 // miss explicit on this surface; the branches here may return the doctor
 // functions' (value, err) pairs directly.
-func dispatchDoctorEvener(deps *toolDeps, args map[string]any, command, stateBase, selector string) (any, error) {
+func dispatchDoctorEvener(ctx context.Context, deps *toolDeps, args map[string]any, command, stateBase, selector string) (any, error) {
 	switch command {
 	case "locate":
 		return doctor.Locate(stateBase, selector)
@@ -137,7 +144,7 @@ func dispatchDoctorEvener(deps *toolDeps, args map[string]any, command, stateBas
 			return doctor.Count(stateBase, selector, v)
 		}
 		if shellBoolArg(args, "health") {
-			return doctor.TranscriptHealth(stateBase, selector)
+			return doctor.TranscriptHealth(ctx, stateBase, selector)
 		}
 		// No format argument: the tool returns the CLI's --json struct shape,
 		// where render format doesn't apply (the CLI's --format governs its own
@@ -161,7 +168,7 @@ func dispatchDoctorEvener(deps *toolDeps, args map[string]any, command, stateBas
 			return doctor.ValidateAPILog(stateBase, selector)
 		}
 		if shellBoolArg(args, "health") {
-			return doctor.APIHealth(stateBase, selector)
+			return doctor.APIHealth(ctx, stateBase, selector)
 		}
 		opts := doctor.APILogOpts{}
 		opts.EmptyOnly = shellBoolArg(args, "empty")
@@ -172,7 +179,7 @@ func dispatchDoctorEvener(deps *toolDeps, args map[string]any, command, stateBas
 		}
 		opts.SummaryOnly = shellBoolArg(args, "summary")
 		opts.Recompute = shellBoolArg(args, "recompute")
-		return doctor.APILog(stateBase, selector, opts)
+		return doctor.APILog(ctx, stateBase, selector, opts)
 
 	case "jobs":
 		opts := doctor.JobOpts{}
@@ -208,7 +215,7 @@ func dispatchDoctorEvener(deps *toolDeps, args map[string]any, command, stateBas
 		return doctor.ScanTurnIDs(stateBase)
 
 	case "sessions":
-		opts := doctor.SessionsOpts{}
+		opts := doctor.SessionsOpts{Since: tool.DoctorSessionsDefaultSince}
 		if v := stringArg(args, "since"); v != "" {
 			d, err := time.ParseDuration(v)
 			if err != nil {
@@ -219,7 +226,7 @@ func dispatchDoctorEvener(deps *toolDeps, args map[string]any, command, stateBas
 		if v := stringArg(args, "bucket"); v != "" {
 			opts.Bucket = v
 		}
-		res, err := doctor.ListSessions(stateBase, opts)
+		res, err := doctor.ListSessions(ctx, stateBase, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -248,7 +255,7 @@ func dispatchDoctorEvener(deps *toolDeps, args map[string]any, command, stateBas
 			}
 			opts.Since = d
 		}
-		res, err := doctor.RunAudit(stateBase, runbook, opts)
+		res, err := doctor.RunAudit(ctx, stateBase, runbook, opts)
 		return res, err
 
 	case "plugins":
@@ -265,6 +272,12 @@ func dispatchDoctorEvener(deps *toolDeps, args map[string]any, command, stateBas
 			return nil, fmt.Errorf("plugins: %w", err)
 		}
 		return findings, nil
+
+	case "lifecycle":
+		if strings.TrimSpace(stringArg(args, "state_dir")) != "" {
+			return nil, errors.New("doctor command \"lifecycle\" takes no state_dir (the machines are compiled declarations, not session evidence)")
+		}
+		return doctor.Lifecycle(), nil
 	}
 
 	// Unreachable: execDoctorEvener's enum gate covers every command.

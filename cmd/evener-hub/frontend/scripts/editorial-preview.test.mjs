@@ -125,7 +125,7 @@ test("normal app-route reloads remain fixture-backed; backend and outside files 
   const sentinel = path.join(scratch, "not-served.txt");
   await writeFile(sentinel, "private sentinel — never serve");
   phase("port:start");
-  const port = await findAvailablePort([9180]);
+  const requestedPort = await findAvailablePort([9180]);
   phase("create:start");
   // This HTTP routing test never executes modules. Do not admit background
   // dependency writes that can outlive server.close(); browser tests retain
@@ -143,7 +143,7 @@ test("normal app-route reloads remain fixture-backed; backend and outside files 
         config.optimizeDeps.include = [];
       },
     }],
-    server: { port },
+    server: { port: requestedPort },
     logLevel: "silent",
   });
   phase("create:done");
@@ -152,7 +152,27 @@ test("normal app-route reloads remain fixture-backed; backend and outside files 
     phase("listen:start");
     await server.listen();
     phase("listen:done");
+    // findAvailablePort only proves the port was free when it probed: it closes
+    // its listener before Vite binds, and Vite's strictPort defaults to false,
+    // so anything that takes the port in that gap makes Vite silently listen on
+    // a DIFFERENT one. Fetching the reserved port then fails with
+    // TypeError: fetch failed (ECONNREFUSED) while the server this test owns is
+    // healthy (#3909). Read the address the listener actually bound, and name
+    // the route, both ports and the underlying cause if a fetch still fails.
+    const address = server.httpServer?.address();
+    assert(address && typeof address !== "string", "Vite server.listen() left no TCP listener");
+    const port = address.port;
     const origin = `http://127.0.0.1:${port}`;
+    const get = async (route, init) => {
+      try {
+        return await fetch(`${origin}${route}`, init);
+      } catch (error) {
+        throw new Error(
+          `fetch failed for ${route} from ${origin} (requested port ${requestedPort}, listening on ${address.address}:${port}): ${error.message}`,
+          { cause: error },
+        );
+      }
+    };
     for (const route of [
       "/",
       "/index.html",
@@ -162,7 +182,7 @@ test("normal app-route reloads remain fixture-backed; backend and outside files 
       "/accidental-normal-route",
     ]) {
       phase(`fetch:start ${route}`);
-      const response = await fetch(`${origin}${route}`, { headers: { accept: "text/html", host: `m5:${port}` } });
+      const response = await get(route, { headers: { accept: "text/html", host: `m5:${port}` } });
       assert.equal(response.status, 200, route);
       const html = await response.text();
       assert(html.includes("/src/dev/editorial-preview-entry.tsx"), route);
@@ -171,11 +191,11 @@ test("normal app-route reloads remain fixture-backed; backend and outside files 
     }
     for (const route of ["/rpc", "/api/test", "/auth/test", "/doc/test", "/s/local:editorial-parent/images/test"]) {
       phase(`fetch:start ${route}`);
-      assert.equal((await fetch(`${origin}${route}`)).status, 403, route);
+      assert.equal((await get(route)).status, 403, route);
       phase(`fetch:done ${route}`);
     }
     phase("fetch:start outside");
-    const outside = await fetch(`${origin}/@fs${sentinel}`);
+    const outside = await get(`/@fs${sentinel}`);
     assert.equal(outside.status, 403);
     assert(!(await outside.text()).includes("private sentinel"));
     phase("fetch:done outside");

@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { MotionProvider } from "../../motion";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import {
   activityClient,
   activityContext,
@@ -15,8 +15,8 @@ import { resetThreadsStoreForTests } from "../../stores/threads";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
 import { installFocusedScope } from "../statusbar/scopeTestUtils";
 import { resetWorkspaceStoreForTests } from "../workspace";
-import { ActivitySidebar } from "./ActivitySidebar";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitySidebarStore";
+import { ActivitySidebar } from "./activitySidebarTestUtils";
 
 const ref = "remote:owner";
 const otherRef = "remote:other";
@@ -50,7 +50,7 @@ function clearLiveState() {
   resetActivitySidebarStoreForTests({ preserveStorage: true });
   resetDisclosureStoreForTests();
   resetThreadsStoreForTests();
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
 }
 
 beforeEach(() => installLocalStorage(new MemoryStorage()));

@@ -281,3 +281,122 @@ func TestRetryDelay_SaturatesInsteadOfWrappingNegative(t *testing.T) {
 		})
 	}
 }
+
+// stepClock is a policy clock that walks a fixed list of offsets from a single
+// epoch, repeating the last one if more calls arrive than steps were planned.
+// The wall-budget checks consult the clock at known points, so exact steps pin
+// which budget check observes the exhaustion.
+type stepClock struct {
+	steps []time.Duration
+	calls int
+}
+
+func (c *stepClock) now() time.Time {
+	at := c.calls
+	if at >= len(c.steps) {
+		at = len(c.steps) - 1
+	}
+	c.calls++
+	return time.Unix(0, 0).UTC().Add(c.steps[at])
+}
+
+func wallBudgetPolicy(clock func() time.Time, budget, reserve time.Duration) RetryPolicy {
+	return RetryPolicy{
+		MaxRetries: 5, BaseDelay: time.Millisecond, MaxDelay: time.Second, BackoffMultiplier: 2,
+		RateLimitWallBudget: budget, RateLimitShutdownReserve: reserve, Now: clock,
+	}
+}
+
+func alwaysRateLimited() (Response, error) {
+	return Response{}, ErrorFromHTTPStatus("openai", 429, "rate limited", nil, nil)
+}
+
+// A wall budget already spent when the first rate limit arrives ends the group
+// there: with a deadline on the context, the budget error surfaces as
+// context.DeadlineExceeded rather than the provider's own error.
+func TestRetryWallBudgetExhaustedBeforeTheFirstRetrySleep(t *testing.T) {
+	clock := &stepClock{steps: []time.Duration{0, 5 * time.Second}}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	attempts := 0
+	_, err := Retry(ctx, wallBudgetPolicy(clock.now, time.Second, 0), noSleepRetry, nil, func() (Response, error) {
+		attempts++
+		return alwaysRateLimited()
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
+	}
+	if errors.Is(err, ErrRunBudgetExhausted) {
+		t.Fatalf("a context with no run budget must not report the run-budget sentinel: %v", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1: a spent budget must not earn another attempt", attempts)
+	}
+}
+
+// A budget that runs out between the delay computation and the wait still ends
+// the group without sleeping; without a context deadline the caller gets the
+// provider's own error back.
+func TestRetryWallBudgetExhaustedWhileComputingTheWait(t *testing.T) {
+	clock := &stepClock{steps: []time.Duration{0, 0, 30 * time.Second}}
+	slept := 0
+	attempts := 0
+	rateLimited := ErrorFromHTTPStatus("openai", 429, "rate limited", nil, nil)
+	_, err := Retry(context.Background(), wallBudgetPolicy(clock.now, 10*time.Second, 0), func(context.Context, time.Duration) error {
+		slept++
+		return nil
+	}, nil, func() (Response, error) {
+		attempts++
+		return Response{}, rateLimited
+	})
+	//nolint:errorlint // identity is the assertion: the spent budget hands back the provider's own error
+	if err != rateLimited {
+		t.Fatalf("err = %v, want the original rate-limit error handed back unchanged", err)
+	}
+	if attempts != 1 || slept != 0 {
+		t.Fatalf("attempts = %d slept = %d, want 1 and no sleep: the group must end before waiting", attempts, slept)
+	}
+}
+
+// Cancellation observed only after the wait — a sleep that swallows the
+// cancellation — must surface the context error from the budget check, not
+// start another attempt.
+func TestRetryWallBudgetExhaustedAfterACancelledWait(t *testing.T) {
+	clock := &stepClock{steps: []time.Duration{0, 0, 0, 30 * time.Second}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	attempts := 0
+	_, err := Retry(ctx, wallBudgetPolicy(clock.now, 10*time.Second, 0), func(context.Context, time.Duration) error {
+		cancel()
+		return nil // a sleep that missed the cancellation window
+	}, nil, func() (Response, error) {
+		attempts++
+		return alwaysRateLimited()
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+}
+
+// A run-budget context measures the wall budget against the run's own
+// deadline, net of the shutdown reserve. The exhausted run reports the
+// run-budget sentinel, which unwraps to context.DeadlineExceeded.
+func TestRetryRunBudgetExhaustionReportsTheRunBudgetSentinel(t *testing.T) {
+	for _, reserve := range []time.Duration{0, 200 * time.Millisecond} {
+		clock := &stepClock{steps: []time.Duration{0, 2 * time.Second}}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		_, err := Retry(WithRunBudget(ctx), wallBudgetPolicy(clock.now, time.Hour, reserve), noSleepRetry, nil, alwaysRateLimited)
+		// Release in the loop body, not via defer: the budget context is
+		// per-iteration, and the assertions below cannot outlive this arm.
+		cancel()
+		if !errors.Is(err, ErrRunBudgetExhausted) {
+			t.Fatalf("reserve %v: err = %v, want the run-budget sentinel", reserve, err)
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("reserve %v: the sentinel must unwrap to context.DeadlineExceeded: %v", reserve, err)
+		}
+	}
+}

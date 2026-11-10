@@ -1,10 +1,10 @@
-import type { HostRow } from "@evener/appwire-client";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { connectionStore } from "../../../stores/connection";
+import { resetConnectionStoreForTests } from "../../../stores/connection";
 import { resetExtensionsStoreForTests } from "../../../stores/extensions";
 import { hostsStore } from "../../../stores/hosts";
+import { hostRow } from "../../../stores/hostsTestUtils";
 import { resetSettingsHostForTests, setSettingsHost } from "../../../stores/settingsHost";
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { Toast } from "../../../widgets";
@@ -15,20 +15,8 @@ import { SkillsDirsHostScope } from "./skillsDirs";
 // selection shows that host's own skill directories and writes them back
 // through evener/host/request, never this hub's launch layer.
 
-function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
-  return {
-    generation: 1,
-    incarnationId: "inc-1",
-    origin: "hub.toml",
-    attached: false,
-    midAttach: false,
-    removed: false,
-    ...overrides,
-  };
-}
-
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetExtensionsStoreForTests();
   resetToastStoreForTests();
   hostsStore.getState().resetForTests();
@@ -40,7 +28,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   resetExtensionsStoreForTests();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   window.history.pushState({}, "", "/");
 });
 

@@ -39,8 +39,8 @@ export function createBrowserSync(options: BrowserSyncOptions): BrowserSync {
   const channel = createVersionedChannel<LocalMessage>({
     name: options.channelName,
     getSourceId: () => sourceId,
-    isMessage: isLocalMessage,
-    onMessage: applyIncomingLocal,
+    isMessage: (value): value is LocalMessage => isLocalMessage(value),
+    onMessage: (message) => applyIncomingLocal(message),
   });
 
   function isLayout(value: unknown): value is ViewportClass {

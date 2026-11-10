@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/llm"
 )
 
@@ -23,14 +24,14 @@ type sessionScriptAdapter struct {
 	otherwise sessionStep
 
 	mu      sync.Mutex
-	scripts map[string][]sessionStep
+	scripts map[string]*agenttest.Script[sessionStep]
 }
 
 func newSessionScriptAdapter(name string) *sessionScriptAdapter {
 	return &sessionScriptAdapter{
 		name:      name,
 		otherwise: answerStep(llm.Response{Message: llm.Assistant("done")}),
-		scripts:   map[string][]sessionStep{},
+		scripts:   map[string]*agenttest.Script[sessionStep]{},
 	}
 }
 
@@ -38,7 +39,12 @@ func newSessionScriptAdapter(name string) *sessionScriptAdapter {
 func (a *sessionScriptAdapter) script(sessionID string, steps ...sessionStep) *sessionScriptAdapter {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.scripts[sessionID] = append(a.scripts[sessionID], steps...)
+	script := a.scripts[sessionID]
+	if script == nil {
+		script = &agenttest.Script[sessionStep]{}
+		a.scripts[sessionID] = script
+	}
+	script.Append(steps...)
 	return a
 }
 
@@ -51,10 +57,13 @@ func (a *sessionScriptAdapter) Stream(context.Context, llm.Request) (llm.Stream,
 func (a *sessionScriptAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
 	a.mu.Lock()
 	step := a.otherwise
-	if steps := a.scripts[req.SessionID]; len(steps) > 0 {
-		step, a.scripts[req.SessionID] = steps[0], steps[1:]
-	}
+	steps := a.scripts[req.SessionID]
 	a.mu.Unlock()
+	if steps != nil {
+		if scripted, ok := steps.Shift(); ok {
+			step = scripted
+		}
+	}
 	resp, err := step(ctx, req)
 	if err != nil {
 		return llm.Response{}, err

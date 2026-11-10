@@ -72,7 +72,7 @@ func TestDetachedShellProseGoldens(t *testing.T) {
 			// renders a caps paragraph only when they exist. Pin them so the
 			// same golden holds on every host.
 			sess.envInfo.Resources = &schema.ResourceCaps{CPUs: 2, MemoryMB: 4096}
-			prompt, warning := sess.renderSystemPrompt(sess.env)
+			prompt, warning, _ := sess.renderSystemPrompt(sess.env)
 			if warning != "" {
 				t.Fatalf("render system prompt: %s", warning)
 			}

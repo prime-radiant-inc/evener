@@ -36,11 +36,18 @@ export interface StartInput {
 	 * startMayRepeat), so starting it again could make a second session. The
 	 * store refuses it; this only holds Start. */
 	startMayRepeat: boolean;
+	/** A chosen Memory off this start would carry (the draft's
+	 * memoryEnabled === false), which the chosen host must be able to honor. */
+	memoryOff: boolean;
+	/** Whether the chosen host's launch schema offers the memory option; null
+	 * while the hub hasn't answered or couldn't. A Memory off waits for the
+	 * hub's confirmation rather than trusting silence. */
+	hostOffersMemory: boolean | null;
 }
 
 export interface StartBlock {
 	/** The row the reason belongs to, or null when no row is to blame. */
-	field: "host" | "project" | "model" | "plugins" | null;
+	field: "host" | "project" | "model" | "plugins" | "moreOptions" | null;
 	/** The sentence to show, or null when the row or the status line already
 	 * says it. */
 	message: string | null;
@@ -65,6 +72,14 @@ export function startBlock(input: StartInput): StartBlock | null {
 		return {
 			field: "plugins",
 			message: input.pluginIssues.map((issue) => `${issue.name}: ${issue.reason}`).join("\n"),
+		};
+	// An older host would silently drop the choice, and a schema that hasn't
+	// answered can't say it won't, so Start is held until the hub confirms
+	// the host honors it — or the choice is cleared or another host chosen.
+	if (input.memoryOff && input.hostOffersMemory !== true)
+		return {
+			field: "moreOptions",
+			message: `${input.hostLabel} can't turn memory off for a session. Clear it in More options or choose another host.`,
 		};
 	return null;
 }

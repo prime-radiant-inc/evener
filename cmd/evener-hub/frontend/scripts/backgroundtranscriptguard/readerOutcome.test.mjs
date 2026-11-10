@@ -9,7 +9,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
+import { applyReadResponse, hydrateThread, invalidateHistory, makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { createElement } from "react";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
@@ -18,6 +18,7 @@ import { TranscriptRenderProvider } from "../../src/transcriptDisplay/renderCont
 import "../../src/panes/session/transcript/tools/shellTool"; // registers the real "shell" descriptor
 import { connectionStore } from "../../src/stores/connection";
 import { resetDisclosureStoreForTests } from "../../src/widgets/disclosure/disclosureStore";
+import { ReactionBudget } from "../skillguard/budgets.mjs";
 import * as guard from "./run.mjs";
 
 const REF = "local:tgt";
@@ -44,6 +45,16 @@ const readRes = (connection, id, cursor, turns) =>
   frame(connection, "hub_to_browser", {
     id,
     result: { olderCursor: cursor, ...(turns === undefined ? {} : { thread: { turns } }) },
+  });
+const readResWithSnapshot = (connection, id, cursor, turns, length, generation) =>
+  frame(connection, "hub_to_browser", {
+    id,
+    result: {
+      olderCursor: cursor,
+      requestGeneration: generation,
+      snapshot: { incarnation: "inc_a", length },
+      ...(turns === undefined ? {} : { thread: { turns } }),
+    },
   });
 const sameConnPath = path.join(scratchRoot, "same-connection.jsonl");
 const newConnPath = path.join(scratchRoot, "new-connection.jsonl");
@@ -147,6 +158,10 @@ function fakeDriver({ online = true } = {}) {
   };
   return {
     send,
+    // The real Driver carries the load-observation budget every condition
+    // wait sizes itself from. With no completed wait to observe, the budget
+    // returns each wait's floor unchanged, so this test stays deterministic.
+    reactions: new ReactionBudget(),
     waitPage: async (expr) => {
       const seen = evalExpr(expr);
       if (!seen) throw new Error("waitPage: not ready");
@@ -391,6 +406,353 @@ describe("finding 1: reconnect window", () => {
   test("repaired: a same-connection refresh is not a reconnect", () => {
     const ev = guard.targetPagingEvidence(REF, sameConnPath);
     expect(guard.reconnectValidator(before, ev, { cursor: "c2", domain: appliedWindow() }).reconnected).toBe(false);
+  });
+});
+
+// --- finding 1b: two overlapping partial-turn reads on one reconnected connection ---
+//
+// A window-capped read can stop in the middle of a turn. After a reconnect the
+// first new-connection read then ends at item_user_247 and the follow-up read
+// starts at entry 248 of the same turn_m50. The entry route normally merges the
+// follow-up into the history it holds and keeps the older edge (cursor 243), so
+// the applied turn_m50 is the ordered union of both reads. But a reconciling
+// follow-up whose window starts above the cached shell's anchor REPLACES the
+// loaded pages (applyCacheGapRule), leaving the follow-up's own cursor (248) and
+// exactly its window. The comparison must accept the merge and the replacement,
+// while still rejecting a model that ignored the follow-up, lost content, or
+// reordered it.
+describe("finding 1b: overlapping partial-turn reads on the reconnect connection", () => {
+  const before = { readResponses: 1, connections: ["conn-1"] };
+  const NOW = 4000;
+  const wireItem = (turnId, entry, type, text, id) => ({
+    id: id ?? `item_${entry}`,
+    turnId,
+    type,
+    position: { entry, item: 0 },
+    version: entry,
+    text,
+  });
+  const wireTurn = (id, items) => ({ id, itemsView: "full", status: "completed", version: 1, items });
+  const olderTurn = wireTurn("turn_m49", [
+    wireItem("turn_m49", 243, "userMessage", "older ask", "item_user_243"),
+    wireItem("turn_m49", 244, "commandExecution", "", "item_cmd_244"),
+    wireItem("turn_m49", 245, "agentMessage", "older reply", "item_agent_245"),
+  ]);
+  const gapHead = wireTurn("turn_m50", [wireItem("turn_m50", 247, "userMessage", "gap ask", "item_user_247")]);
+  const gapTail = wireTurn("turn_m50", [
+    wireItem("turn_m50", 247, "userMessage", "gap ask", "item_user_247"),
+    wireItem("turn_m50", 248, "agentMessage", "gap answer", "item_agent_248"),
+    wireItem("turn_m50", 249, "agentMessage", "gap done", "item_agent_249"),
+  ]);
+  const afterTurn = wireTurn("turn_m51", [wireItem("turn_m51", 250, "agentMessage", "after", "item_agent_250")]);
+
+  function readResponse(turns, olderCursor) {
+    return {
+      thread: {
+        id: "tgt",
+        sessionId: "sess_tgt",
+        preview: "",
+        ephemeral: false,
+        modelProvider: "anthropic/claude-sonnet-4-5",
+        createdAt: 1000,
+        updatedAt: 1000,
+        status: { type: "idle" },
+        cwd: "/tmp/project",
+        cliVersion: "1.0.0",
+        source: "evener",
+        turns,
+        evener: { ref: REF, capabilities: {}, queue: { revision: 0 } },
+      },
+      requestGeneration: 1,
+      bootGeneration: "1",
+      epoch: 0,
+      snapshot: { incarnation: "inc_a", length: 100 },
+      overlay: [],
+      olderCursor,
+    };
+  }
+
+  // The target domain readTargetDomain returns, through the guard's own
+  // projection so the test cannot drift from what the guard reads.
+  function domainOfModel(model) {
+    evidenceModel = model;
+    return evalExpr(guard.targetDomainExpr(REF));
+  }
+
+  // The production path: a model holding the pre-gap window applies the
+  // reconnect read, then merges the follow-up read on the same connection.
+  function mergedModel() {
+    let model = hydrateThread(readResponse([olderTurn, gapHead], "243"), REF, NOW);
+    model = applyReadResponse(model, readResponse([olderTurn, gapHead], "243"), NOW);
+    return applyReadResponse(model, readResponse([gapTail, afterTurn], "248"), NOW);
+  }
+
+  function mergedDomain() {
+    return domainOfModel(mergedModel());
+  }
+
+  // The model a reconnect read produces when it is the only read applied:
+  // turn_m50 stops at item_user_247.
+  function initialReplacementDomain() {
+    const model = hydrateThread(readResponse([olderTurn, gapHead], "243"), REF, NOW);
+    return domainOfModel(applyReadResponse(model, readResponse([olderTurn, gapHead], "243"), NOW));
+  }
+
+  // The model a follow-up read produces when it is the only read applied:
+  // turn_m49 and item_user_247 are gone.
+  function followUpOnlyDomain() {
+    return domainOfModel(hydrateThread(readResponse([gapTail, afterTurn], "248"), REF, NOW));
+  }
+
+  const overlapTraceLines = [
+    readReq("conn-1", 1),
+    readRes("conn-1", 1, "243", [olderTurn, gapHead]),
+    readReq("conn-2", 1),
+    readRes("conn-2", 1, "243", [olderTurn, gapHead]),
+    readReq("conn-2", 2),
+    readRes("conn-2", 2, "248", [gapTail, afterTurn]),
+  ];
+  const overlapPath = path.join(scratchRoot, "overlapping-partial-turns.jsonl");
+  writeFileSync(overlapPath, overlapTraceLines.join("\n"));
+
+  // The guard's check against the shared overlap trace for one candidate model.
+  const validate = (domain) =>
+    guard.reconnectValidator(before, guard.targetPagingEvidence(REF, overlapPath), {
+      cursor: domain.cursor,
+      domain,
+    });
+
+  test("required: the applied window is the ordered union of both reads", () => {
+    const domain = mergedDomain();
+    expect(domain.cursor).toBe("243");
+    expect(domain.items.filter((item) => item.turnId === "turn_m50").map((item) => item.id)).toEqual([
+      "item_user_247",
+      "item_agent_248",
+      "item_agent_249",
+    ]);
+    const check = validate(domain);
+    expect(check.newConnectionReads).toBe(2);
+    expect(check.appliedMatches).toBe(true);
+  });
+
+  test("RED: an initial replacement that ignores the follow-up merge is rejected", () => {
+    expect(validate(initialReplacementDomain()).appliedMatches).toBe(false);
+  });
+
+  test("repaired: a same-connection follow-up that replaced the window is accepted", () => {
+    // applyCacheGapRule (stores/cacheLifetime.ts) replaces the loaded pages when a
+    // same-connection reconciling read's window starts above the cached shell's
+    // anchor; readDisposition does the same for an invalidated history. The model
+    // then carries that read's cursor and exactly its window, so a new-connection
+    // read WAS applied and the reconnect observation is satisfied.
+    const domain = followUpOnlyDomain();
+    expect(domain.cursor).toBe("248");
+    expect(validate(domain).appliedMatches).toBe(true);
+  });
+
+  test("control: a follow-up cursor does not excuse a model missing the follow-up's content", () => {
+    const domain = followUpOnlyDomain();
+    const items = domain.items.filter((item) => item.id !== "item_agent_250");
+    expect(validate({ ...domain, items }).appliedMatches).toBe(false);
+  });
+
+  test("repaired: a stale shorter follow-up does not displace the applied longer read", () => {
+    // Responses can arrive out of order. applyReadResponse discards a
+    // same-incarnation response whose snapshot is shorter than the one already
+    // applied, so the model correctly keeps the longer read even though the
+    // shorter response is last in the trace. The validator must use the same
+    // length ordering, not trace position.
+    const stalePath = path.join(scratchRoot, "stale-shorter-follow-up.jsonl");
+    writeFileSync(
+      stalePath,
+      [
+        readReq("conn-1", 1),
+        readRes("conn-1", 1, "c1"),
+        readReq("conn-2", 1),
+        readResWithSnapshot("conn-2", 1, "243", [olderTurn, gapHead], 100),
+        readReq("conn-2", 2),
+        readResWithSnapshot("conn-2", 2, "248", [gapTail, afterTurn], 200),
+        readReq("conn-2", 3),
+        readResWithSnapshot("conn-2", 3, "247", [gapHead], 150),
+      ].join("\n"),
+    );
+    const domain = followUpOnlyDomain();
+    const check = guard.reconnectValidator(before, guard.targetPagingEvidence(REF, stalePath), {
+      cursor: domain.cursor,
+      domain,
+    });
+    expect(check.newConnectionReads).toBe(3);
+    expect(check.appliedMatches).toBe(true);
+  });
+
+  test("repaired: an out-of-order stale longer read does not displace the newer generation", () => {
+    // The client issues gen 1 (longer window) then gen 2 (shorter, newer
+    // snapshot). gen 2's response lands first and is applied; gen 1's older
+    // response arrives last and readDisposition DISCARDS it by generation even
+    // though its snapshot is longer. The trace's response order therefore ends
+    // on a read the product never applied, so the applied read must be chosen
+    // by generation before length.
+    const tracePath = path.join(scratchRoot, "stale-longer-generation.jsonl");
+    writeFileSync(
+      tracePath,
+      [
+        readReq("conn-1", 1),
+        readRes("conn-1", 1, "c1"),
+        readReq("conn-2", 1),
+        readReq("conn-2", 2),
+        readResWithSnapshot("conn-2", 2, "248", [gapTail, afterTurn], 200, 2),
+        readResWithSnapshot("conn-2", 1, "243", [olderTurn, gapHead], 300, 1),
+      ].join("\n"),
+    );
+    const domain = followUpOnlyDomain();
+    const check = guard.reconnectValidator(before, guard.targetPagingEvidence(REF, tracePath), {
+      cursor: domain.cursor,
+      domain,
+    });
+    expect(check.appliedMatches).toBe(true);
+  });
+
+  test("RED: the merged turn's items reordered are rejected", () => {
+    const domain = mergedDomain();
+    const head = domain.items.findIndex((item) => item.turnId === "turn_m50");
+    const merged = domain.items.filter((item) => item.turnId === "turn_m50");
+    const items = [...domain.items];
+    items.splice(head, merged.length, merged[0], merged[2], merged[1]);
+    expect(validate({ ...domain, items }).appliedMatches).toBe(false);
+  });
+
+  test("repaired: a failed check reports the composed window it compared against", () => {
+    // Only the reconnect read applied, so the check fails. Its error payload
+    // must carry the window the guard compared against (the ordered union of
+    // both reads), not only the follow-up read's window, which points
+    // debugging at the wrong read.
+    const check = validate(initialReplacementDomain());
+    expect(check.appliedMatches).toBe(false);
+    expect(check.expectedWindow.map((turn) => turn.turnId)).toEqual(["turn_m49", "turn_m50", "turn_m51"]);
+    expect(check.expectedWindow.find((turn) => turn.turnId === "turn_m50").items.map((item) => item.id)).toEqual([
+      "item_user_247",
+      "item_agent_248",
+      "item_agent_249",
+    ]);
+    expect(check.responseWindow.map((turn) => turn.turnId)).toEqual(["turn_m50", "turn_m51"]);
+  });
+
+  test("repaired: a second reconnect's read replaces the first connection's window", () => {
+    // The socket dropped again during the wait. conn-3 re-read the thread and
+    // the app replaced its history with those turns, so the guard must expect
+    // conn-3's window rather than keep waiting for the conn-2 turns it
+    // composed from the first reconnect.
+    const secondReconnectPath = path.join(scratchRoot, "second-reconnect.jsonl");
+    writeFileSync(
+      secondReconnectPath,
+      [
+        ...overlapTraceLines,
+        readReq("conn-3", 1),
+        readRes("conn-3", 1, "248", [gapTail, afterTurn]),
+      ].join("\n"),
+    );
+    // Every reconnect invalidates the held model, so conn-3's read replaces
+    // the first reconnect's history instead of merging with it. The replacement
+    // read is issued after invalidation, so its requestGeneration is higher.
+    const domain = domainOfModel(
+      applyReadResponse(
+        invalidateHistory(mergedModel()),
+        { ...readResponse([gapTail, afterTurn], "248"), requestGeneration: 2 },
+        NOW,
+      ),
+    );
+    const check = guard.reconnectValidator(before, guard.targetPagingEvidence(REF, secondReconnectPath), {
+      cursor: domain.cursor,
+      domain,
+    });
+    expect(check.newConnectionReads).toBe(3);
+    expect(check.appliedMatches).toBe(true);
+    expect(check.expectedWindow.map((turn) => turn.turnId)).toEqual(["turn_m50", "turn_m51"]);
+  });
+
+  test("repaired: a second reconnect's follow-up read still merges on the new connection", () => {
+    // conn-3's first read is window-capped, and its follow-up lands on the same
+    // connection. Composition restarts at conn-3 and then merges that follow-up,
+    // so the expected window is conn-3's ordered union, not its first read's
+    // window.
+    const secondReconnectFollowUpPath = path.join(scratchRoot, "second-reconnect-follow-up.jsonl");
+    writeFileSync(
+      secondReconnectFollowUpPath,
+      [
+        ...overlapTraceLines,
+        readReq("conn-3", 1),
+        readRes("conn-3", 1, "247", [gapHead]),
+        readReq("conn-3", 2),
+        readRes("conn-3", 2, "248", [gapTail, afterTurn]),
+      ].join("\n"),
+    );
+    const replaced = applyReadResponse(
+      invalidateHistory(mergedModel()),
+      { ...readResponse([gapHead], "247"), requestGeneration: 2 },
+      NOW,
+    );
+    const domain = domainOfModel(
+      applyReadResponse(replaced, { ...readResponse([gapTail, afterTurn], "248"), requestGeneration: 3 }, NOW),
+    );
+    const check = guard.reconnectValidator(before, guard.targetPagingEvidence(REF, secondReconnectFollowUpPath), {
+      cursor: domain.cursor,
+      domain,
+    });
+    expect(check.appliedMatches).toBe(true);
+    expect(check.expectedWindow.map((turn) => turn.turnId)).toEqual(["turn_m50", "turn_m51"]);
+    expect(check.expectedWindow.find((turn) => turn.turnId === "turn_m50").items.map((item) => item.id)).toEqual([
+      "item_user_247",
+      "item_agent_248",
+      "item_agent_249",
+    ]);
+  });
+
+  test("required: a follow-up read that lands after the first trace snapshot is composed", async () => {
+    // The guard's first trace snapshot can predate the follow-up read. The poll
+    // must re-read the trace, or the composed window stays at the reconnect
+    // read while the model already holds the merged turn.
+    const earlyPath = path.join(scratchRoot, "overlapping-partial-turns-early.jsonl");
+    writeFileSync(
+      earlyPath,
+      [
+        readReq("conn-1", 1),
+        readRes("conn-1", 1, "243", [olderTurn, gapHead]),
+        readReq("conn-2", 1),
+        readRes("conn-2", 1, "243", [olderTurn, gapHead]),
+      ].join("\n"),
+    );
+    const early = guard.targetPagingEvidence(REF, earlyPath);
+    const full = guard.targetPagingEvidence(REF, overlapPath);
+    const domain = mergedDomain();
+    expect(guard.reconnectValidator(before, early, { cursor: domain.cursor, domain }).appliedMatches).toBe(false);
+    let evidenceReads = 0;
+    const applied = await guard.waitForReconnectApplied({
+      before,
+      readEvidence: () => (evidenceReads++ === 0 ? early : full),
+      readDomain: async () => domain,
+      deadlineMs: 1000,
+      sleep: async () => {},
+    });
+    expect(evidenceReads).toBeGreaterThan(1);
+    expect(applied.check.appliedMatches).toBe(true);
+    expect(applied.check.newConnectionReads).toBe(2);
+    expect(applied.evidence.lastReadOlderCursor).toBe("248");
+  });
+
+  test("RED: foreign content inside the merged turn is rejected", () => {
+    const domain = mergedDomain();
+    const head = domain.items.findIndex((item) => item.turnId === "turn_m50");
+    const items = [...domain.items];
+    items.splice(head + 1, 0, {
+      turnId: "turn_m50",
+      id: "item_stale",
+      type: "agentMessage",
+      text: "stale",
+      output: "",
+      arguments: undefined,
+      status: "completed",
+    });
+    expect(validate({ ...domain, items }).appliedMatches).toBe(false);
   });
 });
 

@@ -186,3 +186,17 @@ func TestUsageValidateNegativeTotalTokens(t *testing.T) {
 
 // suppress unused import warnings
 var _ = json.Marshal
+
+// TestValidateRecordNegativeCacheWrite1hTokens covers the negative 1-hour
+// cache write token path (lines 225-227).
+func TestValidateRecordNegativeCacheWrite1hTokens(t *testing.T) {
+	negTokens := -1
+	r := validRecordForValidation(t)
+	r.Response = &APIAttemptResponse{
+		Body:  EncodeBody([]byte(`{}`)),
+		Usage: Usage{CacheWrite1hTokens: &negTokens},
+	}
+	if err := r.validateRecord(DecodeStrict); err == nil {
+		t.Fatal("negative 1-hour cache write tokens should error")
+	}
+}

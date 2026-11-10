@@ -187,10 +187,7 @@ func TestSystemPromptSurfaceFollowsTheVendorForANamedInstance(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "work"})
 	renamedProfile := namedOpenAIInstanceProfile("work", "gpt-5.5")
-	sess, err := NewSession(c, renamedProfile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(renamedProfile), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	defer sess.Close()
 	data, _ := sess.buildPromptData(sess.env)
 	if got := data.Surface; got != registry.SurfaceOpenAI {
@@ -206,10 +203,7 @@ func TestSystemPromptSurfaceIsGenericForACompatInstance(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai-compatible"})
 	compatProfile := testOpenAICompatProfile("openai-compatible", "gpt-4o", 128_000)
-	sess, err := NewSession(c, compatProfile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(compatProfile), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	defer sess.Close()
 	data, _ := sess.buildPromptData(sess.env)
 	if got := data.Surface; got != registry.SurfaceGeneric {

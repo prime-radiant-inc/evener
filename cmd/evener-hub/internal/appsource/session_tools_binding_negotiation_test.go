@@ -1,0 +1,766 @@
+package appsource
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/rendezvous"
+)
+
+func TestSessionToolsBindingRequiresNegotiatedBind(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name           string
+		sessionTools   bool
+		bindReject     bool
+		managerAllowed bool
+		wantHubID      string
+	}{
+		{name: "feature unavailable", wantHubID: "hub-local"},
+		{name: "bind rejected", sessionTools: true, bindReject: true},
+		{name: "negotiated binding", sessionTools: true, managerAllowed: true, wantHubID: "hub-local"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := rendezvous.Entry{
+				Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon", SourceID: "local",
+				ThreadID: "thread", SessionID: "instance", InstanceID: "instance", WorkspaceRef: "local:thread",
+			}
+			source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+				return []LocalDaemonEntry{{Entry: entry}}
+			}, nil)
+			wanted := source.threadFromEntry(LocalDaemonEntry{Entry: entry})
+			if wanted.Evener.InstanceID != entry.SessionID {
+				t.Fatalf("wanted instance = %q, binding instance = %q", wanted.Evener.InstanceID, entry.SessionID)
+			}
+			var bindingRequests atomic.Int32
+			source.SetSessionTools(func(appwire.SessionBinding) (appwire.SessionHubClient, error) {
+				return bindingTestOwner{}, nil
+			}, func() (string, error) { return "hub-local", nil })
+			source.dial = func(context.Context, string, *http.Client, http.Header) (appwire.Transport, error) {
+				transport := newScriptedAppwireTransport(nil)
+				transport.send = func(_ context.Context, message appwire.Message) error {
+					if message.Request == nil {
+						return nil
+					}
+					var response any
+					switch message.Request.Method {
+					case appwire.MethodInitialize:
+						response = appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, Features: appwire.FeatureSet{SessionTools: tc.sessionTools, TurnStart: true}}
+					case appwire.MethodRuntimeSessionBind:
+						bindingRequests.Add(1)
+						if tc.bindReject {
+							transport.recv <- appwire.ErrorMessage(message.Request.ID, appwire.Unavailable("binding refused"))
+							return nil
+						}
+						var binding appwire.SessionBinding
+						if err := json.Unmarshal(message.Request.Params, &binding); err != nil {
+							return err
+						}
+						response = binding
+					case appwire.MethodThreadRead:
+						response = appwire.ThreadReadResponse{Thread: appwire.Thread{
+							ID: "instance", Source: "local",
+							Evener: appwire.EvenerThread{Ref: "local:thread", InstanceID: "instance"},
+						}}
+					case appwire.MethodTurnStart:
+						response = appwire.TurnStartResponse{}
+					default:
+						return errors.New("unexpected AppWire method")
+					}
+					transport.recv <- appwire.ResponseMessage(message.Request.ID, response)
+					return nil
+				}
+				return transport, nil
+			}
+
+			ref, err := appwire.ParseRef("local:thread")
+			if err != nil {
+				t.Fatal(err)
+			}
+			lease, err := source.AcquireRelaySession(ref)
+			if err != nil {
+				t.Fatalf("acquire relay: %v", err)
+			}
+			t.Cleanup(lease.Close)
+			read, err := lease.Read(t.Context(), appwire.ThreadReadParams{Ref: ref.String()})
+			if err != nil {
+				t.Fatalf("read through negotiated connection: %v", err)
+			}
+			if read.Handoff != nil {
+				read.Handoff.Commit()
+			}
+
+			source.sessionToolsMu.Lock()
+			published := source.sessionToolsConnections[ref.String()].binding
+			source.sessionToolsMu.Unlock()
+
+			managerProof := &appwire.SessionActorProof{CallerRef: "local:manager", Actor: appwire.SessionActor{Kind: "manager"}}
+			mutation := appwire.TurnStartParams{
+				Ref: ref.String(), ThreadID: "instance", ExpectedInstanceID: "instance",
+				ClientMutationID: "mutation-id", Input: []appwire.InputItem{{Type: "text", Text: "sentinel"}},
+				ManagerProof: managerProof,
+			}
+			if tc.managerAllowed {
+				if _, err := source.StartTurnAtEntry(t.Context(), entry, mutation); err != nil {
+					t.Fatalf("Manager mutation through negotiated binding: %v", err)
+				}
+			} else if _, err := source.StartTurnAtEntry(t.Context(), entry, mutation); err == nil {
+				t.Fatal("Manager mutation accepted without a successful SessionTools bind")
+			}
+			if published.HubID != tc.wantHubID {
+				t.Fatalf("published HubID = %q, want %q", published.HubID, tc.wantHubID)
+			}
+			if tc.managerAllowed {
+				if published.BindingID == "" {
+					t.Fatal("successful SessionTools bind did not publish binding ID")
+				}
+			} else if published.BindingID != "" {
+				t.Fatal("unadmitted SessionTools connection published a binding ID")
+			}
+
+			// Human input has no ManagerProof and remains on the ordinary relay path.
+			mutation.ManagerProof = nil
+			if _, err := source.StartTurnAtEntry(t.Context(), entry, mutation); err != nil {
+				t.Fatalf("human mutation without ManagerProof: %v", err)
+			}
+			if got := bindingRequests.Load(); got != boolCount(tc.sessionTools) {
+				t.Fatalf("runtime-session-bind calls = %d, want %d", got, boolCount(tc.sessionTools))
+			}
+		})
+	}
+}
+
+func TestLocalDaemonSessionToolsSupportUsesNegotiatedFeature(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		supported bool
+	}{
+		{name: "old daemon"},
+		{name: "upgraded daemon", supported: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon", SourceID: "local", ThreadID: "thread", SessionID: "instance", WorkspaceRef: "local:thread"}
+			source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry { return []LocalDaemonEntry{{Entry: entry}} }, nil)
+			source.SetSessionTools(func(appwire.SessionBinding) (appwire.SessionHubClient, error) { return bindingTestOwner{}, nil }, func() (string, error) { return "hub-local", nil })
+			source.dial = func(context.Context, string, *http.Client, http.Header) (appwire.Transport, error) {
+				transport := newScriptedAppwireTransport(nil)
+				transport.send = func(_ context.Context, message appwire.Message) error {
+					if message.Request == nil {
+						return nil
+					}
+					var response any
+					switch message.Request.Method {
+					case appwire.MethodInitialize:
+						response = appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, Features: appwire.FeatureSet{SessionTools: tc.supported}}
+					case appwire.MethodRuntimeSessionBind:
+						var binding appwire.SessionBinding
+						if err := json.Unmarshal(message.Request.Params, &binding); err != nil {
+							return err
+						}
+						response = binding
+					case appwire.MethodThreadRead:
+						response = appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "instance", SessionID: "instance", Evener: appwire.EvenerThread{Ref: "local:thread", InstanceID: "instance"}}}
+					default:
+						return errors.New("unexpected AppWire method")
+					}
+					transport.recv <- appwire.ResponseMessage(message.Request.ID, response)
+					return nil
+				}
+				return transport, nil
+			}
+			ref, _ := appwire.ParseRef("local:thread")
+			lease, err := source.AcquireRelaySession(ref)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer lease.Close()
+			if _, err := lease.Read(t.Context(), appwire.ThreadReadParams{Ref: ref.String()}); err != nil {
+				t.Fatal(err)
+			}
+			got, known := source.SessionToolsSupported(ref)
+			if !known || got != tc.supported {
+				t.Fatalf("negotiated support = (%t, %t), want (%t, true)", got, known, tc.supported)
+			}
+		})
+	}
+}
+
+func boolCount(value bool) int32 {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+type bindingTestOwner struct{}
+
+func (bindingTestOwner) State(context.Context) (appwire.ManagerView, error) {
+	return appwire.ManagerView{Manager: true}, nil
+}
+func (bindingTestOwner) Invoke(context.Context, appwire.SessionOperationRequest) (appwire.SessionOperationResponse, error) {
+	return appwire.SessionOperationResponse{}, nil
+}
+func (bindingTestOwner) Watch(context.Context, appwire.SessionWatchRequest) (<-chan appwire.SessionWatchUpdate, error) {
+	return nil, nil
+}
+func TestSessionToolsRejectedBindRecoversThroughRunOwner(t *testing.T) {
+	entry := rendezvous.Entry{
+		Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon", SourceID: "local",
+		ThreadID: "thread", SessionID: "instance", InstanceID: "instance", WorkspaceRef: "local:thread",
+	}
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{{Entry: entry}}
+	}, nil)
+	wanted := source.threadFromEntry(LocalDaemonEntry{Entry: entry})
+	if wanted.Evener.InstanceID != entry.SessionID {
+		t.Fatalf("wanted instance = %q, binding instance = %q", wanted.Evener.InstanceID, entry.SessionID)
+	}
+	var bindingRequests atomic.Int32
+	firstBindAttempt := make(chan struct{}, 1)
+	releaseFirstBind := make(chan struct{})
+	secondBindAttempt := make(chan struct{}, 1)
+	releaseSecondBind := make(chan struct{})
+	recoveredRead := make(chan struct{}, 1)
+	// recoveredBindingIDs is the set of binding IDs the daemon successfully
+	// negotiated after the refusal. The paced recovery and a concurrent
+	// Manager read can each dial, so "the" recovered binding is a set, and a
+	// proof naming any of them is a proof through recovery.
+	var recoveredBindingIDs sync.Map
+	managerTurnBindingID := make(chan string, 1)
+	source.SetSessionTools(func(appwire.SessionBinding) (appwire.SessionHubClient, error) {
+		return bindingTestOwner{}, nil
+	}, func() (string, error) { return "hub-local", nil })
+	source.dial = func(context.Context, string, *http.Client, http.Header) (appwire.Transport, error) {
+		transport := newScriptedAppwireTransport(nil)
+		transport.send = func(ctx context.Context, message appwire.Message) error {
+			if message.Request == nil {
+				return nil
+			}
+			var response any
+			switch message.Request.Method {
+			case appwire.MethodInitialize:
+				response = appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, Features: appwire.FeatureSet{SessionTools: true, TurnStart: true}}
+			case appwire.MethodRuntimeSessionBind:
+				attempt := bindingRequests.Add(1)
+				if attempt == 1 {
+					// Evidence sends are non-blocking drops: a racing
+					// re-entrant dialer (the paced recovery re-reading
+					// while the Manager mutation holds its own dial)
+					// must never park inside the script past the test
+					// body, or cleanup's join of RunSessionTools hangs
+					// on a capture the idle path cannot retire.
+					select {
+					case firstBindAttempt <- struct{}{}:
+					default:
+					}
+					// TRIPWIRE: bound the test-controlled first refusal so a broken test cannot hang.
+					select {
+					case <-releaseFirstBind:
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+					transport.recv <- appwire.ErrorMessage(message.Request.ID, appwire.Unavailable("transient bind refusal"))
+					return nil
+				}
+				select {
+				case secondBindAttempt <- struct{}{}:
+				default:
+				}
+				// TRIPWIRE: keep the recovered bind pending until authority checks finish.
+				select {
+				case <-releaseSecondBind:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+				var binding appwire.SessionBinding
+				if err := json.Unmarshal(message.Request.Params, &binding); err != nil {
+					return err
+				}
+				response = binding
+				recoveredBindingIDs.Store(binding.BindingID, struct{}{})
+			case appwire.MethodThreadRead:
+				response = appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID: "instance", Source: "local",
+					Evener: appwire.EvenerThread{Ref: "local:thread", InstanceID: "instance"},
+				}}
+				if bindingRequests.Load() >= 2 {
+					select {
+					case recoveredRead <- struct{}{}:
+					default:
+					}
+				}
+			case appwire.MethodTurnStart:
+				var params appwire.TurnStartParams
+				if err := json.Unmarshal(message.Request.Params, &params); err != nil {
+					return err
+				}
+				if params.ManagerProof != nil {
+					if params.ManagerProof.BindingID == "" {
+						return errors.New("recovered Manager mutation had no binding proof")
+					}
+					if _, ok := recoveredBindingIDs.Load(params.ManagerProof.BindingID); !ok {
+						return errors.New("recovered Manager mutation named a binding the daemon never negotiated")
+					}
+					select {
+					case managerTurnBindingID <- params.ManagerProof.BindingID:
+					default:
+					}
+				}
+				response = appwire.TurnStartResponse{}
+			default:
+				return errors.New("unexpected AppWire method")
+			}
+			transport.recv <- appwire.ResponseMessage(message.Request.ID, response)
+			return nil
+		}
+		return transport, nil
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		source.RunSessionTools(ctx)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		// TRIPWIRE: every exit cancels and joins the RunSessionTools owner.
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("RunSessionTools did not stop during cleanup")
+		}
+	})
+	// TRIPWIRE: bound event waits; no sleeps or widened deadlines.
+	select {
+	case <-firstBindAttempt:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunSessionTools did not attempt the initial binding")
+	}
+	close(releaseFirstBind)
+	select {
+	case <-secondBindAttempt:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunSessionTools did not attempt recovery after the refusal")
+	}
+	ref, err := appwire.ParseRef("local:thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	managerMutation := appwire.TurnStartParams{
+		Ref: ref.String(), ThreadID: "instance", ExpectedInstanceID: "instance",
+		ClientMutationID: "manager-mutation", Input: []appwire.InputItem{{Type: "text", Text: "manager"}},
+		ManagerProof: &appwire.SessionActorProof{CallerRef: "local:manager", Actor: appwire.SessionActor{Kind: "manager"}},
+	}
+	// Manager input during the recovery window waits for the binding it needs
+	// instead of being refused by it: the mutation stays parked while the
+	// recovered bind is still gated, then succeeds through it. Failing closed
+	// for a target that can never bind stays pinned by the negotiation test.
+	managerWaiting := managerMutation
+	managerQueued := make(chan error, 1)
+	go func() {
+		_, err := source.StartTurnAtEntry(t.Context(), entry, managerWaiting)
+		managerQueued <- err
+	}()
+	managerMutation.ManagerProof = nil
+	managerMutation.ClientMutationID = "human-mutation"
+	if _, err := source.StartTurnAtEntry(t.Context(), entry, managerMutation); err != nil {
+		t.Fatalf("human mutation should remain available: %v", err)
+	}
+	close(releaseSecondBind)
+	select {
+	case <-recoveredRead:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunSessionTools did not recover, publish, and read after the transient refusal")
+	}
+	if got := bindingRequests.Load(); got < 2 {
+		t.Fatalf("binding attempts = %d, want recovery attempt", got)
+	}
+	select {
+	case got := <-managerTurnBindingID:
+		if _, ok := recoveredBindingIDs.Load(got); !ok {
+			t.Fatalf("Manager proof binding = %q, which the daemon never recovered", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("recovered Manager mutation was not observed")
+	}
+	select {
+	case err := <-managerQueued:
+		if err != nil {
+			t.Fatalf("Manager mutation after delayed recovery: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Manager mutation parked on the delayed binding never completed")
+	}
+}
+
+// TestManagerQueueInputAwaitsDelayedBinding pins Manager input against a
+// newly discovered worker whose background RunSessionTools binding is still
+// mid-setup: the queue request must establish or await the canonical relay
+// binding under its own context instead of being refused outright.
+func TestManagerQueueInputAwaitsDelayedBinding(t *testing.T) {
+	entry := rendezvous.Entry{
+		Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon", SourceID: "local",
+		ThreadID: "thread", SessionID: "instance", InstanceID: "instance", WorkspaceRef: "local:thread",
+	}
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{{Entry: entry}}
+	}, nil)
+	var bindingRequests atomic.Int32
+	bindAttempted := make(chan struct{}, 1)
+	releaseBind := make(chan struct{})
+	boundBindingID := make(chan string, 1)
+	queueProofBindingID := make(chan string, 1)
+	source.SetSessionTools(func(appwire.SessionBinding) (appwire.SessionHubClient, error) {
+		return bindingTestOwner{}, nil
+	}, func() (string, error) { return "hub-local", nil })
+	source.dial = func(context.Context, string, *http.Client, http.Header) (appwire.Transport, error) {
+		transport := newScriptedAppwireTransport(nil)
+		transport.send = func(ctx context.Context, message appwire.Message) error {
+			if message.Request == nil {
+				return nil
+			}
+			var response any
+			switch message.Request.Method {
+			case appwire.MethodInitialize:
+				response = appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, Features: appwire.FeatureSet{SessionTools: true, TurnStart: true}}
+			case appwire.MethodRuntimeSessionBind:
+				bindingRequests.Add(1)
+				// TRIPWIRE: bound the delayed setup so a broken test cannot hang.
+				select {
+				case bindAttempted <- struct{}{}:
+				default:
+				}
+				select {
+				case <-releaseBind:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+				var binding appwire.SessionBinding
+				if err := json.Unmarshal(message.Request.Params, &binding); err != nil {
+					return err
+				}
+				response = binding
+				select {
+				case boundBindingID <- binding.BindingID:
+				default:
+				}
+			case appwire.MethodThreadRead:
+				response = appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID: "instance", Source: "local",
+					Evener: appwire.EvenerThread{Ref: "local:thread", InstanceID: "instance"},
+				}}
+			case appwire.MethodTurnQueue:
+				var params appwire.TurnQueueParams
+				if err := json.Unmarshal(message.Request.Params, &params); err != nil {
+					return err
+				}
+				if params.ManagerProof == nil || params.ManagerProof.BindingID == "" {
+					return errors.New("queued Manager input had no binding proof")
+				}
+				select {
+				case queueProofBindingID <- params.ManagerProof.BindingID:
+				default:
+				}
+				response = appwire.TurnQueueResponse{}
+			default:
+				return errors.New("unexpected AppWire method")
+			}
+			transport.recv <- appwire.ResponseMessage(message.Request.ID, response)
+			return nil
+		}
+		return transport, nil
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		source.RunSessionTools(ctx)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		// TRIPWIRE: every exit cancels and joins the RunSessionTools owner.
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("RunSessionTools did not stop during cleanup")
+		}
+	})
+	// TRIPWIRE: bound event waits; no sleeps or widened deadlines.
+	select {
+	case <-bindAttempted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunSessionTools did not reach the delayed binding")
+	}
+
+	// The Manager queues input while the background binding is still gated
+	// mid-setup: the queue must wait for the binding, not be refused by it.
+	queued := make(chan error, 1)
+	go func() {
+		_, err := source.QueueTurn(t.Context(), appwire.TurnQueueParams{
+			Ref: "local:thread", ClientMutationID: "manager-queue",
+			Input:        []appwire.InputItem{{Type: "text", Text: "queued"}},
+			ManagerProof: &appwire.SessionActorProof{CallerRef: "local:manager", Actor: appwire.SessionActor{Kind: "manager"}},
+		})
+		queued <- err
+	}()
+	// Barrier, not a timing sleep: today the refusal returns in microseconds
+	// while the bind is still gated, so the first branch fires; a queue that
+	// awaits the binding instead stays parked and this select falls through
+	// to release the gate.
+	select {
+	case err := <-queued:
+		t.Fatalf("Manager queue input refused during delayed binding: %v", err)
+	case <-time.After(time.Second):
+	}
+	close(releaseBind)
+	select {
+	case err := <-queued:
+		if err != nil {
+			t.Fatalf("Manager queue input against delayed binding: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Manager queue input never completed")
+	}
+	var publishedBindingID string
+	select {
+	case publishedBindingID = <-boundBindingID:
+	case <-time.After(5 * time.Second):
+		t.Fatal("binding request was not observed")
+	}
+	select {
+	case got := <-queueProofBindingID:
+		if got != publishedBindingID {
+			t.Fatalf("queued proof binding = %q, published binding = %q", got, publishedBindingID)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("queued Manager input was not observed")
+	}
+	if got := bindingRequests.Load(); got == 0 {
+		t.Fatal("delayed binding setup never completed")
+	}
+}
+
+func TestManagerQueueInputAwaitsStaleBindingRedial(t *testing.T) {
+	entry := rendezvous.Entry{
+		Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon", SourceID: "local",
+		ThreadID: "thread", SessionID: "instance", InstanceID: "instance", WorkspaceRef: "local:thread",
+	}
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{{Entry: entry}}
+	}, nil)
+	var bindingRequests atomic.Int32
+	// The daemon honors one live session-tools binding: it records the binding
+	// each successful bind negotiates and cancels it when the connection that
+	// bound it dies, exactly like the real daemon's per-connection binding.
+	var liveBinding atomic.Value
+	liveBinding.Store("")
+	relayConns := make(chan *scriptedAppwireTransport, 4)
+	secondBindAttempted := make(chan struct{}, 1)
+	releaseSecondBind := make(chan struct{})
+	firstBindingID := make(chan string, 1)
+	queueProofBindingID := make(chan string, 1)
+	source.SetSessionTools(func(appwire.SessionBinding) (appwire.SessionHubClient, error) {
+		return bindingTestOwner{}, nil
+	}, func() (string, error) { return "hub-local", nil })
+	source.dial = func(context.Context, string, *http.Client, http.Header) (appwire.Transport, error) {
+		transport := newScriptedAppwireTransport(nil)
+		transport.send = func(ctx context.Context, message appwire.Message) error {
+			if message.Request == nil {
+				return nil
+			}
+			var response any
+			switch message.Request.Method {
+			case appwire.MethodInitialize:
+				response = appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, Features: appwire.FeatureSet{SessionTools: true, TurnStart: true}}
+			case appwire.MethodRuntimeSessionBind:
+				if bindingRequests.Add(1) >= 2 {
+					// TRIPWIRE: bound the delayed re-dial so a broken test cannot hang.
+					select {
+					case secondBindAttempted <- struct{}{}:
+					default:
+					}
+					select {
+					case <-releaseSecondBind:
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				}
+				var binding appwire.SessionBinding
+				if err := json.Unmarshal(message.Request.Params, &binding); err != nil {
+					return err
+				}
+				response = binding
+				liveBinding.Store(binding.BindingID)
+				select {
+				case relayConns <- transport:
+				default:
+				}
+				if bindingRequests.Load() == 1 {
+					select {
+					case firstBindingID <- binding.BindingID:
+					default:
+					}
+				}
+			case appwire.MethodThreadRead:
+				response = appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID: "instance", Source: "local",
+					Evener: appwire.EvenerThread{Ref: "local:thread", InstanceID: "instance"},
+				}}
+			case appwire.MethodTurnQueue:
+				var params appwire.TurnQueueParams
+				if err := json.Unmarshal(message.Request.Params, &params); err != nil {
+					return err
+				}
+				if params.ManagerProof == nil || params.ManagerProof.BindingID == "" {
+					return errors.New("queued Manager input had no binding proof")
+				}
+				if got := params.ManagerProof.BindingID; got != liveBinding.Load().(string) {
+					return errors.New("daemon refused canceled binding " + got)
+				}
+				select {
+				case queueProofBindingID <- params.ManagerProof.BindingID:
+				default:
+				}
+				response = appwire.TurnQueueResponse{}
+			default:
+				return errors.New("unexpected AppWire method")
+			}
+			transport.recv <- appwire.ResponseMessage(message.Request.ID, response)
+			return nil
+		}
+		return transport, nil
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		source.RunSessionTools(ctx)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		// TRIPWIRE: every exit cancels and joins the RunSessionTools owner.
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("RunSessionTools did not stop during cleanup")
+		}
+	})
+	// TRIPWIRE: bound event waits; no sleeps or widened deadlines.
+	var originalBindingID string
+	select {
+	case originalBindingID = <-firstBindingID:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunSessionTools did not reach the first binding")
+	}
+	var firstConn *scriptedAppwireTransport
+	select {
+	case firstConn = <-relayConns:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first binding did not identify its relay connection")
+	}
+	// The relay's read loop observes a closed transport asynchronously, and
+	// the dialer publishes its entry before the connection is even installed,
+	// so "serving state unknown" alone cannot distinguish a registered
+	// disconnection from a dial that has not finished. Wait for the first
+	// connection to be live first, so that after the close, unknown can only
+	// mean the disconnection was actually observed.
+	ref, err := appwire.ParseRef("local:thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	liveDeadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, known := source.SessionToolsSupported(ref); known {
+			break
+		}
+		if time.Now().After(liveDeadline) {
+			t.Fatal("first relay connection never became live")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// The relay's daemon connection drops. The daemon cancels the binding it
+	// carried; the map still holds the old binding until the re-dial replaces
+	// it, and that re-dial is gated mid-negotiation.
+	liveBinding.Store("")
+	firstConn.Close()
+	// The relay's read loop observes the closed transport asynchronously, so
+	// a closing race exists before the hub has learned the connection died.
+	// Wait for the disconnection to register on the session before queuing:
+	// the scenario under test is input arriving once reconnection is
+	// pending, and the ref's serving state is the observable for that.
+	disconnectionDeadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, known := source.SessionToolsSupported(ref); !known {
+			break
+		}
+		if time.Now().After(disconnectionDeadline) {
+			t.Fatal("relay did not register the disconnection")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// The Manager queues input while reconnection is pending: the queue must
+	// await the replacement binding, not send the canceled one.
+	queued := make(chan error, 1)
+	go func() {
+		_, err := source.QueueTurn(t.Context(), appwire.TurnQueueParams{
+			Ref: "local:thread", ClientMutationID: "manager-queue",
+			Input:        []appwire.InputItem{{Type: "text", Text: "queued"}},
+			ManagerProof: &appwire.SessionActorProof{CallerRef: "local:manager", Actor: appwire.SessionActor{Kind: "manager"}},
+		})
+		queued <- err
+	}()
+	// Barrier, not a timing sleep: today the canceled binding is refused in
+	// microseconds while the re-dial is still gated, so the first branch
+	// fires; a queue that awaits the re-dial stays parked and this select
+	// falls through to release the gate.
+	select {
+	case err := <-queued:
+		t.Fatalf("Manager queue input refused over canceled binding: %v", err)
+	case <-time.After(time.Second):
+	}
+	close(releaseSecondBind)
+	select {
+	case err := <-queued:
+		if err != nil {
+			t.Fatalf("Manager queue input after relay re-dial: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Manager queue input never completed")
+	}
+	select {
+	case got := <-queueProofBindingID:
+		if got == originalBindingID {
+			t.Fatal("queued input rode the binding canceled with the dead relay connection")
+		}
+		if got != liveBinding.Load().(string) {
+			t.Fatalf("queued proof binding = %q, live binding = %q", got, liveBinding.Load().(string))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("queued Manager input was not observed")
+	}
+	if got := bindingRequests.Load(); got < 2 {
+		t.Fatalf("relay re-dial bindings = %d, want at least 2", got)
+	}
+	source.sessionToolsMu.Lock()
+	published := source.sessionToolsConnections["local:thread"].binding.BindingID
+	source.sessionToolsMu.Unlock()
+	if published == originalBindingID {
+		t.Fatal("stale binding still published after the relay re-dial")
+	}
+}

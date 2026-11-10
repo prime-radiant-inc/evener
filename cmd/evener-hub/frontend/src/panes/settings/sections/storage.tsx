@@ -117,13 +117,9 @@ export function StorageSection() {
                         </>
                       ),
                     },
-                  ]
-                : []),
-              ...(pastIndex?.perPage !== undefined
-                ? [
                     {
                       label: "Past results per page",
-                      value: <FieldValue field="past-results-per-page">{pastIndex.perPage}</FieldValue>,
+                      value: <FieldValue field="past-results-per-page">{pastIndex.perPage ?? 0}</FieldValue>,
                     },
                   ]
                 : []),

@@ -36,7 +36,7 @@ func (s *Session) maybeElicitNoteBeforeCompaction(ctx context.Context, history [
 	if s.contextMgr == nil {
 		return
 	}
-	if s.PinnedNote() != "" {
+	if s.pinnedNote() != "" {
 		return // a note is already set — don't overwrite the agent's (or this cycle's) note
 	}
 	if s.pendingSkillCompactionSnapshot() != nil {
@@ -90,16 +90,16 @@ func (s *Session) maybeElicitNoteBeforeCompaction(ctx context.Context, history [
 
 func (s *Session) setPinnedNote(note string) {
 	s.mu.Lock()
-	s.pinnedNote = note
+	s.pinnedNoteText = note
 	s.pinnedNoteGen++
 	s.mu.Unlock()
 }
 
-// PinnedNote returns the current agent-authored note (empty if none).
-func (s *Session) PinnedNote() string {
+// pinnedNote returns the current agent-authored note (empty if none).
+func (s *Session) pinnedNote() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.pinnedNote
+	return s.pinnedNoteText
 }
 
 // pinnedNoteSnapshot returns the current note together with its generation,
@@ -109,7 +109,7 @@ func (s *Session) PinnedNote() string {
 func (s *Session) pinnedNoteSnapshot() (note string, gen uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.pinnedNote, s.pinnedNoteGen
+	return s.pinnedNoteText, s.pinnedNoteGen
 }
 
 // claimPinnedNoteLocked consumes the pinned note a fold captured at
@@ -121,7 +121,7 @@ func (s *Session) claimPinnedNoteLocked(gen uint64) {
 	if s.pinnedNoteGen != gen {
 		return
 	}
-	s.pinnedNote = ""
+	s.pinnedNoteText = ""
 	s.pinnedNoteGen++
 }
 
@@ -196,7 +196,7 @@ func (s *Session) maybeNudgeSelfCompact(sysPromptChars int) bool {
 	s.mu.Lock()
 	s.nudgedSinceCompact = true
 	s.mu.Unlock()
-	if err := s.SteerKind(selfCompactNudge(s.canInstructTool("compact_context"), skillInventoryNames(s.advertisedSkillInventory())), events.SteeringKindCompactNudge); err != nil {
+	if err := s.steerKind(selfCompactNudge(s.canInstructTool("compact_context"), skillInventoryNames(s.advertisedSkillInventory())), events.SteeringKindCompactNudge); err != nil {
 		s.mu.Lock()
 		s.nudgedSinceCompact = false
 		s.mu.Unlock()
@@ -276,7 +276,7 @@ func (s *Session) applyPendingForceCompact(ctx context.Context) {
 	// caller's compaction_instructions are different: they are intent, not
 	// pressure, and the competitor did not honor them, so losing them
 	// without a trace hides real steering loss.
-	if ok, refusal := s.foldWithForceCompact(ctx, instructions, captured); !ok {
+	if ok, refusal := s.foldWithForceCompact(ctx, instructions, captured, false); !ok {
 		if strings.TrimSpace(instructions) != "" {
 			reason := "a concurrent compaction published first"
 			if refusal != nil {

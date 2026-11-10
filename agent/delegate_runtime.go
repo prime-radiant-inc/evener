@@ -20,7 +20,7 @@ type delegateRuntime struct {
 	owner *Session
 }
 
-type stableDelegateSendOutcome struct {
+type delegateSendOutcome struct {
 	result sendMessageResult
 	commit *delegateToolResultCommit
 	// earlierCommits acknowledge, in order and before commit, the earlier
@@ -31,8 +31,8 @@ type stableDelegateSendOutcome struct {
 // inlineOutcome is the send's reply for a resolved inline wait: result, which
 // already carries the newest result, plus the earlier results the wait
 // collected, oldest first, with their commits (#3906, #3951).
-func inlineOutcome(result sendMessageResult, resolution delegateInlineResolution) stableDelegateSendOutcome {
-	outcome := stableDelegateSendOutcome{result: result, commit: resolution.commit}
+func inlineOutcome(result sendMessageResult, resolution delegateInlineResolution) delegateSendOutcome {
+	outcome := delegateSendOutcome{result: result, commit: resolution.commit}
 	for _, earlier := range resolution.earlier {
 		outcome.result.Earlier = append(outcome.result.Earlier, earlier.packet)
 		outcome.earlierCommits = append(outcome.earlierCommits, earlier.commit)

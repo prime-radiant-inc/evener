@@ -226,7 +226,7 @@ func TestSkillCompactionRestore_MissingLegacyMetadataResumesWithoutBackfill(t *t
 	if !called {
 		t.Fatal("a legacy session must elicit as a fresh session does — no phantom latch")
 	}
-	if got := restored.PinnedNote(); got != "STUB legacy note" {
+	if got := restored.pinnedNote(); got != "STUB legacy note" {
 		t.Fatalf("legacy session note = %q", got)
 	}
 }

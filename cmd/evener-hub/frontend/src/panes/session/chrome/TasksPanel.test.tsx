@@ -382,6 +382,44 @@ test("every row carries a visually hidden status word beside its aria-hidden gly
   await expectWord("Prepare release notes", "pending");
 });
 
+test("a task with an unrecognized status stays in the list, with a neutral glyph and its raw status word", async () => {
+  // A newer daemon can mint a status this client has no glyph or word for.
+  // The aggregate counts it as remaining, so dropping it made the list
+  // shorter than its own footer (issue #2256). It renders as remaining work,
+  // in the neutral unfilled box, with the wire word as written.
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  const futureStatus = {
+    id: 4,
+    type: "implement",
+    description: "Wait on the review",
+    prompt: "",
+    status: "blocked",
+  } as unknown as Task;
+  fake.on("evener/tasks/list", () => ({ data: [...TASKS_DATA, futureStatus] }));
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+
+  const description = await screen.findByText("Wait on the review");
+  const row = description.closest("[data-testid='task-row']");
+  expect(row).not.toBeNull();
+  const group = row?.closest("[data-testid='task-group-live']");
+  // Remaining work: the unknown row joins the open group, whose count it
+  // raises, and the settled history group does not grow.
+  expect(group?.getAttribute("data-status")).toBe("open");
+  expect(group?.querySelectorAll("[data-testid='task-row']")).toHaveLength(2);
+  // The settled disclosure still starts collapsed and renders none of these
+  // rows, so the unknown task is in the live list, not the history.
+  expect(screen.getByTestId("task-settled-group").querySelectorAll("[data-testid='task-row']")).toHaveLength(0);
+  expect(row?.querySelector('[data-testid="task-check"]')?.getAttribute("data-touch")).toBe("pending");
+  expect(row?.querySelector('[data-testid="task-status-word"]')?.textContent).toBe("blocked");
+  // The visible caption is itself announced, so the row does not also repeat
+  // the word in the visually-hidden slot: one announcement, one derivation.
+  expect(row?.querySelectorAll(`.${VISUALLY_HIDDEN_CLASS}`)).toHaveLength(0);
+  expect(row?.textContent?.match(/blocked/g)).toHaveLength(1);
+});
+
 test("a live row shows a relative updated time", async () => {
   const user = userEvent.setup();
   const fake = connectReadyFakeClient();

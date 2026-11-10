@@ -205,14 +205,43 @@ func (tg *testGate) assertRunning(t *testing.T, why string) {
 	}
 }
 
-// startAll starts and returns every guard, in order, with slots for all.
+// startAll starts every guard, with slots for all, and returns them indexed by
+// their verdict position, whatever order the gate launched them in.
 func startAll(t *testing.T, launcher *fakeLauncher) []*fakeGuard {
 	t.Helper()
 	guards := make([]*fakeGuard, len(browserGuards))
-	for i := range browserGuards {
-		guards[i] = launcher.awaitStart(t)
+	for range browserGuards {
+		g := launcher.awaitStart(t)
+		i := slices.Index(browserGuards, g.name)
+		if i < 0 {
+			t.Fatalf("gate started unknown guard %q", g.name)
+		}
+		if guards[i] != nil {
+			t.Fatalf("gate started %q twice", g.name)
+		}
+		guards[i] = g
 	}
 	return guards
+}
+
+func TestBrowserSkillGuardRequiresSuccessfulBuild(t *testing.T) {
+	launcher := newFakeLauncher()
+	launcher.buildStatus = 17
+	gate := newBrowserGate(1, true)
+	gate.checks = []string{skillGuard}
+	tg := startGate(t, gate, launcher, make(chan os.Signal, 1))
+	select {
+	case name := <-launcher.started:
+		launcher.guard(name).exit <- 0
+		tg.await(t)
+		t.Fatalf("%s launched despite failed frontend build", name)
+	case result := <-tg.result:
+		if result.status != 17 || !launcher.built {
+			t.Fatalf("failed build result = %+v, built=%t", result, launcher.built)
+		}
+	case <-time.After(tripwire):
+		t.Fatal("skillguard build fence did not settle")
+	}
 }
 
 func TestBrowserGateSuccessIsConcise(t *testing.T) {
@@ -357,8 +386,8 @@ func TestBrowserGateRunsGuardsInItsSlots(t *testing.T) {
 				last.exit <- 0
 				live = append(live, launcher.awaitStart(t))
 			}
-			if slots > 1 && live[0].name != browserGuards[0] {
-				t.Fatalf("the first guard did not stay held: live = %v", live)
+			if slots > 1 && live[0].name != skillGuard {
+				t.Fatalf("the first guard (the long skill guard) did not stay held: live = %v", live)
 			}
 			for _, g := range live {
 				g.exit <- 0
@@ -375,6 +404,71 @@ func TestBrowserGuardSlots(t *testing.T) {
 		if got := browserGuardSlots(value); got != want {
 			t.Errorf("browserGuardSlots(%q) = %d, want %d", value, got, want)
 		}
+	}
+}
+
+// skillguard is the longest guard, so a lane with more than one slot starts it
+// first: it then runs alongside the short guards instead of queueing behind all
+// of them (#3634). The rest keep their verdict order, and verdicts still print
+// in browserGuards order.
+func TestBrowserGateLaunchesSkillGuardFirst(t *testing.T) {
+	launcher := newFakeLauncher()
+	tg := startTestGate(t, launcher, len(browserGuards), false)
+	guards := make([]*fakeGuard, 0, len(browserGuards))
+	for range browserGuards {
+		guards = append(guards, launcher.awaitStart(t))
+	}
+	if got := guards[0].name; got != skillGuard {
+		t.Fatalf("first guard started = %q, want %q: the long guard must not queue behind every short one", got, skillGuard)
+	}
+	if got := guards[1].name; got != browserGuards[0] {
+		t.Fatalf("second guard started = %q, want %q: the rest keep their verdict order", got, browserGuards[0])
+	}
+	for _, g := range guards {
+		g.exit <- 0
+	}
+	if r := tg.await(t); r.status != 0 {
+		t.Fatalf("status = %d, want 0; stderr = %s", r.status, tg.stderr.String())
+	}
+}
+
+// One slot has nothing to overlap, so it keeps verdict order; moving the long
+// guard first there would only make an interrupt wait for it.
+func TestBrowserGateKeepsVerdictOrderOnOneSlot(t *testing.T) {
+	launcher := newFakeLauncher()
+	tg := startTestGate(t, launcher, 1, false)
+	for i, want := range browserGuards {
+		g := launcher.awaitStart(t)
+		if g.name != want {
+			t.Fatalf("guard %d started = %q, want %q", i, g.name, want)
+		}
+		g.exit <- 0
+	}
+	if r := tg.await(t); r.status != 0 {
+		t.Fatalf("status = %d, want 0; stderr = %s", r.status, tg.stderr.String())
+	}
+}
+
+// launchFirst moves that check to the front and leaves every other order
+// alone; an empty or unknown name is checks' own order.
+func TestWebGateLaunchOrder(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		first string
+		want  []int
+	}{
+		{"empty", "", []int{0, 1, 2}},
+		{"unknown", "z", []int{0, 1, 2}},
+		{"first", "a", []int{0, 1, 2}},
+		{"middle", "b", []int{1, 0, 2}},
+		{"last", "c", []int{2, 0, 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gate := &webGate{checks: []string{"a", "b", "c"}, launchFirst: tc.first}
+			if got := gate.launchOrder(); !slices.Equal(got, tc.want) {
+				t.Fatalf("launchOrder() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -703,25 +797,46 @@ func TestBrowserGateInterruptDuringGuardSetupWaitsAndNeverStartsTheGuard(t *test
 	launcher.homeEntered = make(chan struct{})
 	tg := startTestGate(t, launcher, len(browserGuards), false)
 	var earlier []*fakeGuard
-	for range 5 {
-		earlier = append(earlier, launcher.awaitStart(t))
+	take := func(name string) { earlier = append(earlier, launcher.guard(name)) }
+	setupDeadline := time.After(tripwire)
+awaitSetup:
+	for {
+		select {
+		case name := <-launcher.started:
+			take(name)
+		case <-launcher.homeEntered:
+			break awaitSetup
+		case <-setupDeadline:
+			t.Fatal("the gate never prepared the retirement guard's Go home")
+		}
 	}
-	select {
-	case <-launcher.homeEntered:
-	case <-time.After(tripwire):
-		t.Fatal("the gate never prepared the retirement guard's Go home")
+drain:
+	for {
+		select {
+		case name := <-launcher.started:
+			take(name)
+		default:
+			break drain
+		}
 	}
 	tg.signals <- syscall.SIGTERM
 	tg.assertRunning(t, "the setup was still running")
 	close(launcher.homeHold)
 	for _, g := range earlier {
+		if slices.Contains(waitedNotSignalled, g.name) {
+			// The interrupt waits for a go-test guard rather than signalling
+			// it; its fake finishes on its own.
+			g.exit <- 0
+			continue
+		}
 		<-g.terminated
 		g.exit <- 143
 	}
 	if r := tg.await(t); r.status != 143 {
 		t.Fatalf("status = %d, want 143", r.status)
 	}
-	if launcher.guard(retirementGuard) != nil || launcher.guard(skillGuard) != nil {
+	// mermaidguard is the first guard after retirementguard in launch order:
+	if launcher.guard(retirementGuard) != nil || launcher.guard("mermaidguard") != nil {
 		t.Fatal("a guard started after the interrupt")
 	}
 }

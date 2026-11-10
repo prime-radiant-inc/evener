@@ -21,6 +21,23 @@ function evaluateExpr(expr) {
   return new Function(`return (${expr});`)();
 }
 
+// A fresh driver with no browser; tests assign `page` or stub the methods they
+// exercise.
+function newDriver() {
+  return new Driver({ url: "http://127.0.0.1/", artifactDir: "", controlPath: "", milestonePath: "" });
+}
+
+// A fake CDP page: Runtime.evaluate runs the driver's own expression in jsdom
+// and returns the envelope `evaluate` unwraps.
+function fakePage() {
+  return {
+    send: async (method, params) => {
+      if (method !== "Runtime.evaluate") throw new Error(`unexpected CDP method ${method}`);
+      return { result: { result: { value: evaluateExpr(params.expression) } } };
+    },
+  };
+}
+
 function renderRail(refs) {
   document.body.innerHTML = refs.map((ref) => `<div data-session-ref="${ref}">row ${ref}</div>`).join("");
 }
@@ -49,6 +66,100 @@ describe("railRowsExpr readiness predicate", () => {
 
   test("keeps the always-truthy { rows } shape when no minimum is given", () => {
     expect(evaluateExpr(driver.railRowsExpr())).toEqual({ rows: [] });
+  });
+});
+
+// settleExpression is the one consecutive-reads barrier: settleComposer's editor
+// state and cascadeguard's scroll geometry both delegate to it (#3686). These
+// cases drive the REAL expression through a fake CDP send, so the two-equal-read
+// contract, the null break, and the per-settle key scoping are pinned without a
+// browser.
+describe("settleExpression holds two consecutive equal readings", () => {
+  // The expressions consume the scripted window.__samples on each poll.
+  const script = (samples) => {
+    window.__samples = [...samples];
+  };
+
+  afterEach(() => {
+    Reflect.deleteProperty(window, "__samples");
+    Reflect.deleteProperty(window, "__driverSettleSamples");
+  });
+
+  test("returns the value two non-null polls agree on", async () => {
+    script([{ text: "a" }, { text: "a" }]);
+    const d = newDriver();
+    d.page = fakePage();
+    await expect(d.settleExpression("window.__samples.shift()", { timeoutMs: 2000, label: "sample" })).resolves.toEqual({
+      text: "a",
+    });
+    expect(window.__samples).toHaveLength(0);
+  });
+
+  test("a null poll between equal readings breaks the run", async () => {
+    script([{ text: "b" }, null, { text: "b" }, { text: "b" }]);
+    const d = newDriver();
+    d.page = fakePage();
+    await expect(d.settleExpression("window.__samples.shift()", { timeoutMs: 3000, label: "sample" })).resolves.toEqual({
+      text: "b",
+    });
+    expect(window.__samples).toHaveLength(0);
+  });
+
+  test("a second settle cannot reuse the first settle's sample", async () => {
+    script([{ text: "c" }, { text: "c" }, { text: "c" }, { text: "c" }]);
+    const d = newDriver();
+    d.page = fakePage();
+    await d.settleExpression("window.__samples.shift()", { timeoutMs: 2000, label: "sample" });
+    await d.settleExpression("window.__samples.shift()", { timeoutMs: 2000, label: "sample" });
+    // Each settle consumed two readings; an unscoped stamp would let the second
+    // settle confirm off the first, leaving one sample unread.
+    expect(window.__samples).toHaveLength(0);
+  });
+
+  test("false is a reading, not 'not ready'", async () => {
+    script([false, false]);
+    const d = newDriver();
+    d.page = fakePage();
+    await expect(d.settleExpression("window.__samples.shift()", { timeoutMs: 2000, label: "sample" })).resolves.toBe(
+      false,
+    );
+  });
+
+  test("rejects when the reading never repeats", async () => {
+    script(Array.from({ length: 40 }, (_, index) => ({ n: index })));
+    const d = newDriver();
+    d.page = fakePage();
+    await expect(
+      d.settleExpression("window.__samples.shift()", { timeoutMs: 300, label: "changing sample" }),
+    ).rejects.toBeInstanceOf(Error);
+  });
+});
+
+// composerState used to return null whenever a call site raced the mount, and
+// the next `.text` crashed with a TypeError under load (#3686). The read owns
+// its mount wait now, so it cannot hand a caller null.
+describe("composerState waits for the composer to mount", () => {
+  test("resolves with the state once the composer and its pane appear", async () => {
+    document.body.innerHTML = `<div data-pane-scaffold="session:ref_a"></div>`;
+    const d = newDriver();
+    d.page = fakePage();
+    const pending = d.composerState("ref_a", { timeoutMs: 2000 });
+    setTimeout(() => {
+      document.body.innerHTML = `<div><div data-pane-scaffold="session:ref_a"></div><div data-composer="ref_a"><div contenteditable="true" role="textbox" aria-label="Message">hello</div></div></div>`;
+    }, 60);
+    await expect(pending).resolves.toMatchObject({ text: "hello" });
+  });
+
+  test("the mount wait is not recorded as a reaction that widens later waits", async () => {
+    document.body.innerHTML = `<div data-pane-scaffold="session:ref_a"></div>`;
+    const d = newDriver();
+    d.page = fakePage();
+    const pending = d.composerState("ref_a", { timeoutMs: 2000 });
+    setTimeout(() => {
+      document.body.innerHTML = `<div><div data-pane-scaffold="session:ref_a"></div><div data-composer="ref_a"><div contenteditable="true" role="textbox" aria-label="Message">hello</div></div></div>`;
+    }, 60);
+    await expect(pending).resolves.toMatchObject({ text: "hello" });
+    expect(d.reactions.slowestMs).toBe(0);
   });
 });
 

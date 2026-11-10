@@ -8,7 +8,10 @@ import { pressable, render, screenConnection, textOf } from "./renderNative.test
 
 const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown> }));
 vi.mock("react-native", async () => (await import("./renderNative.testkit")).nativeModuleMock());
-vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
+vi.mock("react-native-safe-area-context", () => ({
+	SafeAreaView: "SafeAreaView",
+	useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
 vi.mock("./ConnectionProvider", () => ({ useConnection: () => harness.connection }));
 vi.mock("@react-navigation/native", async () => {
 	const { useEffect } = await import("react");
@@ -117,5 +120,31 @@ it.each([
 				String(node.type) === "Text" && [node.props.style].flat().some((style) => style?.fontFamily === "Menlo"),
 		);
 		expect(machineText).toHaveLength(1);
+	}
+});
+
+it("supplies the zero defaults for a past index that omits its counters", async () => {
+	const hub = new FakeClient("ready");
+	hub.on("evener/settings/overview", () => ({
+		hub: { daemonIdleTimeoutMillis: 3600000, pastIndex: { path: "/fixture/past.db" } },
+	}));
+	harness.connection = screenConnection(hub, "ready");
+	const tree = render(<HubSettingsScreen {...props} />);
+	await act(async () => {});
+	const opener = pressable(tree, "Runtime and storage");
+	if (!opener) throw new Error("Missing Runtime and storage section control");
+	act(() => opener.props.onPress());
+
+	// The labels only locate the two details; the assertion is on each row's
+	// value Text, so rewording the copy cannot break the counter-default check.
+	for (const label of ["Indexed sessions", "Past results per page"]) {
+		const row = tree.root.find(
+			(node) =>
+				String(node.type) === "View" &&
+				node.props.accessible === true &&
+				node.props.accessibilityLabel?.startsWith(label),
+		);
+		const texts = row.findAll((node) => String(node.type) === "Text").map((node) => textOf(node));
+		expect(texts.at(-1)).toBe("0");
 	}
 });

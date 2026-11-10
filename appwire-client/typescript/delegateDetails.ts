@@ -14,6 +14,7 @@
 // only when no anchor parses or the clock is not a finite number.
 import { type ActivityDelegate, isActivityFailure, isFailedDelegateOutcome } from "./activityData";
 import { firstLine } from "./displayFormat";
+import { RUNNING_QUIET_AFTER_MS } from "./quiet";
 import { nonblank } from "./toolCallText";
 
 export type DelegateTimingFields = Pick<
@@ -47,9 +48,9 @@ export type DelegateDotFields = Pick<ActivityDelegate, "outcome" | "status" | "p
 export type DelegateDotState = "fresh" | "quiet" | "attention" | "failed" | "idle";
 
 /** How long a running row may stay silent before its dot dims - the same
- * threshold the why-line's quiet words used. One constant, because every
- * surface must flip at the same instant. */
-export const DELEGATE_QUIET_AFTER_MS = 20_000;
+ * threshold the why-line's quiet words used. This is the shared quiet rule's
+ * name for delegate rows; every surface flips on RUNNING_QUIET_AFTER_MS. */
+export const DELEGATE_QUIET_AFTER_MS = RUNNING_QUIET_AFTER_MS;
 
 // The phases that owe a person something, in the wire's own vocabulary.
 const ATTENTION_PHASES = new Set(["awaiting_approval", "awaiting_input", "needs-you"]);
@@ -57,7 +58,7 @@ const ATTENTION_PHASES = new Set(["awaiting_approval", "awaiting_input", "needs-
 /** A subagent row's dot state, the one rule every surface consumes so the
  * web sidebar, the web tree and the native list cannot drift. A terminal row
  * reads by its outcome (failed red, done no dot) over any stale phase it
- * carries; an open run owing attention is attention over anything else;
+ * carries; a row owing attention is attention over anything else;
  * an open run whose status reads as failure (its own or the child aggregate
  * it reports) is failure; otherwise the row is fresh while its quiet age
  * stays under the threshold and quiet once it passes it, with no quiet
@@ -188,6 +189,7 @@ const ENDING_WORDS = new Map([
   ["stopped_by_parent", "stopped by its coordinator"],
   ["tool_round_budget_exhausted", "ran out of tool rounds"],
   ["turn_budget_exhausted", "ran out of turns"],
+  ["server_continuation_budget_exhausted", "ran out of server continuations"],
   ["launch_failed", "couldn't start"],
   ["construction_failed", "couldn't be set up"],
   ["artifacts_dir_failed", "couldn't create its artifacts folder"],

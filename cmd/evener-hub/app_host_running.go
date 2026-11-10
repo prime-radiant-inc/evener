@@ -143,10 +143,10 @@ func (m *hubHostManager) admitPresentedEpoch(epoch appwire.FencingEpoch) error {
 	if epoch.BootID == "" || epoch.OpSeq == 0 {
 		return wireRefusal(appwire.Unavailable, errProbeEpochMissing)
 	}
-	if m.cfg.ops == nil {
+	if m.opsStore() == nil {
 		return appwire.Unavailable("evener/host/running: no operation store is configured, so the presented fencing epoch cannot be persisted; refusing rather than authorizing an unfenced write")
 	}
-	err := m.cfg.ops.AdmitGuardEpoch(hostops.GuardEpoch{BootID: epoch.BootID, OpSeq: epoch.OpSeq})
+	err := m.opsStore().AdmitGuardEpoch(hostops.GuardEpoch{BootID: epoch.BootID, OpSeq: epoch.OpSeq})
 	switch {
 	case err == nil:
 		return nil

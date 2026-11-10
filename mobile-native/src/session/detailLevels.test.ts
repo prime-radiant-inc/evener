@@ -86,6 +86,7 @@ describe("the config a session projects at", () => {
 					toolCalls: false,
 					reasoning: true,
 					expandByDefault: false,
+					thinkingOpenByDefault: false,
 				}),
 			),
 		).toBe("custom");

@@ -76,6 +76,9 @@ export interface NativeTranscriptPresentation {
 	items: MobileTimelineItem[];
 	activityPresentation: ReadonlyMap<string, ActivityPresentation>;
 	expandByDefault: boolean;
+	/** The initial state of THINKING disclosures (the "Open thinking by
+	 * default" switch); tool and run rows keep expandByDefault. */
+	thinkingOpenByDefault: boolean;
 	/** The live run shows its steps: at the levels that show tool calls. At
 	 * Chat and Intent the tray shows the live step, so the run keeps to its
 	 * line (S7). */
@@ -193,8 +196,18 @@ function conversationOnly(items: MobileTimelineItem[]): MobileTimelineItem[] {
 		(item) =>
 			!isDroppedStep(item) &&
 			!isDaemonSteering(item) &&
-			!(item.kind === "notice" && item.eventKind === "notes-context"),
+			!(item.kind === "notice" && item.eventKind === "notes-context") &&
+			!isSettledThoughtTrace(item),
 	);
+}
+
+// A healthy settled thought is conversation-only's excess: the phone reaches
+// Chat through its intent projection plus this filter, so a settled trace the
+// intent level now keeps (ruling 2026-11-01) must fall out here. The live
+// thought's placeholder stays (it is the running status line), and a broken
+// turn's thought is a failure row, which Chat still shows.
+function isSettledThoughtTrace(item: MobileTimelineItem): boolean {
+	return item.kind === "activity" && item.family === "reasoning" && item.state !== "running";
 }
 
 // A settled or running step; a failed one is not dropped (see above).
@@ -220,6 +233,7 @@ export function projectNativeTranscript(
 			items,
 			activityPresentation,
 			expandByDefault: false,
+			thinkingOpenByDefault: false,
 			liveRunsOpen: false,
 			usage: null,
 			showDuration: true,
@@ -229,6 +243,7 @@ export function projectNativeTranscript(
 		items,
 		activityPresentation,
 		expandByDefault: content.expandByDefault,
+		thinkingOpenByDefault: content.thinkingOpenByDefault,
 		liveRunsOpen: content.toolCalls,
 		usage: accountingFor(conversation, config),
 		showDuration: config.advanced.roundTimings,

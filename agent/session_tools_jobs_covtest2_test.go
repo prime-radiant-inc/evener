@@ -984,18 +984,18 @@ func TestCovPendingQueueDepth(t *testing.T) {
 	}
 }
 
-// TestCovQueueDepth covers QueueDepth.
+// TestCovQueueDepth covers queueDepth.
 func TestCovQueueDepth(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
-	if got := s.QueueDepth(); got != 0 {
+	if got := s.queueDepth(); got != 0 {
 		t.Fatalf("empty: got %d", got)
 	}
 
 	s.mu.Lock()
 	s.inputQueue = []queuedInput{{ID: "q1"}, {ID: "q2"}}
 	s.mu.Unlock()
-	if got := s.QueueDepth(); got != 2 {
+	if got := s.queueDepth(); got != 2 {
 		t.Fatalf("with 2: got %d", got)
 	}
 }
@@ -1038,57 +1038,6 @@ func TestCovDelegateSendResultFormat(t *testing.T) {
 	formatted = formatDelegateSend(out)
 	if !strings.Contains(formatted, "structured_result") {
 		t.Fatalf("should contain structured_result: %q", formatted)
-	}
-}
-
-// TestCovDelegateWorktreeToolResultFrom covers delegateWorktreeToolResultFrom.
-func TestCovDelegateWorktreeToolResultFrom(t *testing.T) {
-	t.Parallel()
-	// nil — returns nil.
-	if delegateWorktreeToolResultFrom(nil) != nil {
-		t.Fatal("nil should return nil")
-	}
-
-	// Valid worktree.
-	wt := &delegateWorktreeReport{
-		Path:         "/path",
-		Branch:       "main",
-		HeadSHA:      "abc123",
-		Ahead:        3,
-		Dirty:        true,
-		DisposalHint: "dispose me",
-	}
-	result := delegateWorktreeToolResultFrom(wt)
-	if result == nil {
-		t.Fatal("should return non-nil")
-	}
-	if result.Path != "/path" || result.Branch != "main" || result.HeadSHA != "abc123" {
-		t.Fatalf("mismatch: %+v", result)
-	}
-	if result.Ahead != 3 || result.Dirty != true {
-		t.Fatalf("ahead/dirty mismatch: %+v", result)
-	}
-	if result.DisposalHint != "dispose me" {
-		t.Fatalf("disposal hint: %q", result.DisposalHint)
-	}
-}
-
-// TestCovDelegateSandboxToolResultFrom covers delegateSandboxToolResultFrom.
-func TestCovDelegateSandboxToolResultFrom(t *testing.T) {
-	t.Parallel()
-	// nil — returns nil.
-	if delegateSandboxToolResultFrom(nil) != nil {
-		t.Fatal("nil should return nil")
-	}
-
-	// Valid sandbox.
-	sb := &delegateSandboxReport{Mode: "bwrap", Network: true}
-	result := delegateSandboxToolResultFrom(sb)
-	if result == nil {
-		t.Fatal("should return non-nil")
-	}
-	if result.Mode != "bwrap" || !result.Network {
-		t.Fatalf("mismatch: %+v", result)
 	}
 }
 
@@ -1259,15 +1208,15 @@ func TestCovConsumeTerminalJobNotification(t *testing.T) {
 	}
 }
 
-// TestCovProjectStableDelegateListItem is a helper test covering the projection
+// TestCovProjectDelegateListItem is a helper test covering the projection
 // of a stable delegate into a job list entry (used by job_list).
-func TestCovProjectStableDelegateListItem(t *testing.T) {
+func TestCovProjectDelegateListItem(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	startedAt := now.Add(-10 * time.Second)
 	endedAt := now.Add(-2 * time.Second)
 	latestActivityAt := now.Add(-3 * time.Second)
-	entry := projectStableDelegateListItem(now, stableDelegateVisibleRow{
+	entry := projectDelegateListItem(now, delegateVisibleRow{
 		depth: 2,
 		snapshot: delegateSnapshot{
 			id: "dlg_1", parentID: "dlg_parent", lifecycle: delegateLifecycleIdle,
@@ -1356,7 +1305,7 @@ func TestCovDeliverHookContext(t *testing.T) {
 	s.deliverHookContext("")
 	// Whitespace text — no-op.
 	s.deliverHookContext("  ")
-	// Valid text — should call SteerKind (which calls trySteerEnqueue,
+	// Valid text — should call steerKind (which calls trySteerEnqueue,
 	// which needs s.mu and checks closingOrClosedLocked; bare Session
 	// with no mu set will work since sync.Mutex zero value is usable).
 	s.deliverHookContext("additional model context")
@@ -1404,7 +1353,7 @@ func TestCovAppendSteeringTurnDurably(t *testing.T) {
 		if len(s.history) != 1 || s.history[0].Kind != schema.TurnSteering || s.history[0].SteeringKind != events.SteeringKindNotification || s.history[0].Message.Text() != "durable steer" {
 			t.Fatalf("durable steering history = %+v", s.history)
 		}
-		loaded, err := readTranscriptFull(path, "")
+		loaded, err := readTranscriptFull(context.Background(), path, "")
 		if err != nil {
 			t.Fatalf("read persisted transcript: %v", err)
 		}

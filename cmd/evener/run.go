@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/envvars/userdirs"
@@ -192,14 +193,10 @@ func run(ctx context.Context, cfg runConfig) error {
 	if err := startupInterrupted(ctx, stepSeedingMarketplaces); err != nil {
 		return err
 	}
-	if _, err := agent.ParseProviderIdleTimeout(cfg.providerIdleTimeout); err != nil {
-		return err
-	}
-	apiLogEnabled, err := parseAPILog(cfg.apiLog)
+	settings, err := resolveLaunchSettings(cfg.providerIdleTimeout, cfg.apiLog, cfg.openAIResponsesContinuation)
 	if err != nil {
 		return err
 	}
-	openAIResponsesContinuation := resolveOpenAIResponsesContinuation(cfg.openAIResponsesContinuation, nil)
 
 	// Compute runtime state directory.
 	// Priority: --state-dir flag > EVENER_STATE_DIR env > XDG-computed default.
@@ -290,7 +287,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		return err
 	}
 
-	reserveSession, closeAPILog, err := runAttachAPILogger(client, stateDir, cfg.stderr, apiLogEnabled)
+	reserveSession, closeAPILog, err := runAttachAPILogger(client, stateDir, cfg.stderr, settings.apiLogEnabled)
 	if err != nil {
 		return err
 	}
@@ -396,7 +393,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		NonInteractive:              true,
 		TurnEndsProcess:             true,
 		SystemPromptAsUser:          cfg.systemPromptAsUser,
-		OpenAIResponsesContinuation: openAIResponsesContinuation,
+		OpenAIResponsesContinuation: settings.openAIResponsesContinuation,
 		ProviderIdleTimeout:         cfg.providerIdleTimeout,
 		CommitProvenance:            commitProvenance,
 		ResolveProfile:              cmdutil.BuildResolveProfile(client),
@@ -451,10 +448,14 @@ func run(ctx context.Context, cfg runConfig) error {
 			StartupModelListing:         startupListing,
 			AcquireSessionOwnership:     reserveSession,
 			OwnershipAlreadyAcquired:    true,
-			OpenAIResponsesContinuation: openAIResponsesContinuation,
+			OpenAIResponsesContinuation: settings.openAIResponsesContinuation,
 			ProviderIdleTimeout:         cfg.providerIdleTimeout,
 			CommitProvenance:            cfg.commitProvenance,
 			TurnEndsProcess:             baseSessionCfg.TurnEndsProcess,
+			// See RestoreSessionConfig.ExportATIFPath: the flag is json:"-" on
+			// SessionConfig, so restore cannot recover it from the saved meta.
+			ExportATIFPath:            baseSessionCfg.ExportATIFPath,
+			ExportATIFProviderHandles: baseSessionCfg.ExportATIFProviderHandles,
 		})
 		if err != nil {
 			// The restore reopens the session's kept scratch and can fail
@@ -493,6 +494,11 @@ func run(ctx context.Context, cfg runConfig) error {
 	if err := startupInterrupted(ctx, stepCreatingSession); err != nil {
 		return err
 	}
+	bootGeneration, err := schema.NextBootGeneration(stateDir, sess.ID(), 0)
+	if err != nil {
+		return fmt.Errorf("boot generation: %w", err)
+	}
+	sess.SetBootGeneration(appwire.BootGeneration(bootGeneration))
 
 	// One startup line, loudly, states exactly what this host enforces (read from
 	// the env's resolved policy so it never overstates). Empty for an unsandboxed

@@ -182,7 +182,7 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	// still mint a scratch on it, so the close has to keep a reference.
 	s.recordAbandonedEnvironmentLocked(prior, next)
 	s.rebuildToolDefsCache()
-	promptWarning := s.refreshSystemPromptCache(next)
+	promptWarning, _ := s.refreshSystemPromptCache(next)
 	installedWorkingDir := s.envInfo.WorkingDir
 	s.mu.Unlock()
 	s.emit(events.EnvironmentChangedData{WorkingDir: installedWorkingDir})

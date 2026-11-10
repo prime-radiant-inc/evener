@@ -210,3 +210,54 @@ test("the folded-run summary meets the phone tap floor", () => {
   expect(phone, "toolrungroup.module.css must have a max-width:899px block").not.toBeNull();
   expect(phone![1]).toMatch(/\.summary\s*\{[^}]*min-height:\s*var\(--tap-min\)/);
 });
+
+// A phone mounts no status bar: the session's activity counts ride the
+// composer's engaged control row instead, sharing that row's width with the
+// status chrome and Send. The wrap contract is what keeps every control
+// tappable there: the chip strip yields before the chrome compresses
+// (shrink 999 beside the chrome's 1) and wraps to a second line rather than
+// scrolling sideways or crushing a target below the tap floor.
+test("the phone composer's activity chips yield to the row and wrap at the tap floor", () => {
+  const srcRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  const css = readFileSync(join(srcRoot, "shell/statusbar/statusbar.module.css"), "utf8");
+  const blocks = mediaBlocks(css);
+  const tapFloor = blocks.find((block) => block.prelude === TAP_FLOOR_QUERY);
+  expect(tapFloor, `statusbar.module.css must have a ${TAP_FLOOR_QUERY} block`).toBeDefined();
+  expect(tapFloor!.body).toMatch(/\.chip\s*\{[^}]*min-height:\s*var\(--tap-min\)[^}]*min-width:\s*var\(--tap-min\)/);
+  const phone = blocks.find((block) => block.prelude === "(max-width: 899px)");
+  expect(phone, "statusbar.module.css must have a max-width:899px block").toBeDefined();
+  // The phone's chips are the composer's wrapped row, and the narrow-pane
+  // grid below (two max-content columns, ~130px) overflows a leading slot
+  // the open Overview can squeeze under that; the phone must stay a
+  // wrapping flex row. mediaBlocks strips comments, so this reads rules only.
+  expect(phone!.body).toMatch(/\.chips\s*\{[^}]*display:\s*flex/);
+  const chipsWrap = /\.chipsWrap\s*\{[^}]*margin-left:\s*0[^}]*flex:\s*0 999 auto[^}]*flex-wrap:\s*wrap/.exec(
+    css.replace(/\/\*[\s\S]*?\*\//g, " "),
+  );
+  expect(chipsWrap, "statusbar.module.css must keep the wrapped chips strip yielding and wrapping").not.toBeNull();
+  // The line break itself is decided by honest bases, not a threshold query:
+  // the chrome's .body container containment hides its status content from
+  // the flex algorithm, so the composer placement's .inline must carry its
+  // measured compact rung as the basis. With the rung honest, the leading's
+  // flex-wrap breaks the line - the strip takes its own line - exactly when
+  // one line cannot hold both the rung and the strip, and no band of widths
+  // starves the model picker beside the counts.
+  const chromeCss = readFileSync(join(srcRoot, "panes/session/chrome/sessionchrome.module.css"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    " ",
+  );
+  // The pending-question mount stands alone in the composer's vertical
+  // column, so the shared .inline rule must keep an automatic basis: a fixed
+  // width-oriented rung there would supply a height basis and inflate the
+  // chrome out of the transcript.
+  const inline = /\.inline\s*\{[^}]*flex:\s*1 1 auto[^}]*min-width:\s*0[^}]*\}/.exec(chromeCss);
+  const rung = /\.inlineRung\s*\{[^}]*flex-basis:\s*200px/.exec(chromeCss);
+  expect(
+    inline,
+    "sessionchrome.module.css must keep the standalone composer chrome on an automatic basis",
+  ).not.toBeNull();
+  expect(
+    rung,
+    "sessionchrome.module.css must give the composer chrome its compact-rung flex basis so the row wraps instead of starving it",
+  ).not.toBeNull();
+});

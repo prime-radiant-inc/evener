@@ -152,6 +152,10 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 		// Periodic ticks never trip the condition-fire budget.
 		jm.countWatchDeliveryLocked(cfg)
 	}
+	emitting := len(notifications) > 0
+	if emitting {
+		jm.noticesInFlight++
+	}
 	jm.mu.Unlock()
 
 	// A one-shot ends on the tick that fires it, or on a later tick retrying an
@@ -165,6 +169,9 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 	}
 	jm.enqueueWatchNotifications(notifications)
 	jm.recordWatchSendsAndKick(deliveries)
+	if emitting {
+		jm.noteNoticeEmission(-1)
+	}
 	return dec.keepAlive
 }
 

@@ -51,6 +51,14 @@ export function expandDetailsByDefault(config: TranscriptDisplayConfigV1): boole
   return contentVectorForConfig(config).expandByDefault;
 }
 
+/** The initial state of THINKING disclosures specifically (never a
+ * content-visibility gate): the one job the "Thinking open by default"
+ * switch owns, while expandDetailsByDefault keeps tool calls and system
+ * rows. */
+export function thinkingOpenByDefault(config: TranscriptDisplayConfigV1): boolean {
+  return contentVectorForConfig(config).thinkingOpenByDefault;
+}
+
 export function summaryOpenByDefault(config: TranscriptDisplayConfigV1): boolean {
   return contentVectorForConfig(config).toolCalls;
 }

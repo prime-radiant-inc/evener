@@ -25,7 +25,8 @@ import type { ConnectionState } from "../client";
 import { FakeClient } from "../testing/fakeClient";
 import { createCredentialInstancesStore } from "./credentials/instances";
 import { createHubWriteGate } from "./extensions/hubWriteGate";
-import { createPluginsStore, PLUGIN_REFETCH_DEBOUNCE_MS } from "./extensions/plugins";
+import { createPluginsStore } from "./extensions/plugins";
+import { REFETCH_DEBOUNCE_MS } from "./refetchDebounce";
 
 /** One core reduced to what the predicate acts on, over clients this harness
  * owns so a read can be counted wherever it was sent. */
@@ -83,7 +84,7 @@ function extensions(): Encoding {
 // Both cores debounce their notification read by the same window; asserted
 // rather than assumed, because a window that had drifted apart would make the
 // third case below pass for the wrong reason.
-const DEBOUNCE_MS = PLUGIN_REFETCH_DEBOUNCE_MS;
+const DEBOUNCE_MS = REFETCH_DEBOUNCE_MS;
 
 describe.each([
   ["credentials", credentials],

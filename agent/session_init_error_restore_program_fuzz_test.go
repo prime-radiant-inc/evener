@@ -204,8 +204,8 @@ func sierRestoreProjection(t *testing.T, r *sierReader, client *llm.Client, prof
 		t.Fatalf("restore projection: %v", err)
 	}
 	defer sess.Close()
-	if sess.id != meta.ID || sess.modelResponses != meta.TurnCount || sess.pinnedNote != meta.PinnedNote || sess.origin != meta.Origin {
-		t.Fatalf("restore projection mismatch: id=%q turns=%d note=%q origin=%q", sess.id, sess.modelResponses, sess.pinnedNote, sess.origin)
+	if sess.id != meta.ID || sess.modelResponses != meta.TurnCount || sess.pinnedNoteText != meta.PinnedNote || sess.origin != meta.Origin {
+		t.Fatalf("restore projection mismatch: id=%q turns=%d note=%q origin=%q", sess.id, sess.modelResponses, sess.pinnedNoteText, sess.origin)
 	}
 	if got := sess.cfg.OpenAIResponsesContinuation; got != "auto" {
 		t.Fatalf("continuation = %q, want auto", got)

@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/gittest"
 )
 
 func TestHubGitHeadFailSoft(t *testing.T) {
@@ -224,12 +225,10 @@ func TestResolveGitOriginRealRepo(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
-	// Isolate the fixture AND the resolver from the developer's own git
-	// configuration: `git remote get-url` honours url.*.insteadOf rewrites, so
-	// an ambient rule would change the URL under test.
-	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
-	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
-	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	// TestMain's git isolation keeps the developer's own git configuration from
+	// the fixture AND the resolver: `git remote get-url` honours
+	// url.*.insteadOf rewrites, so an ambient rule would change the URL under
+	// test.
 	repo := t.TempDir()
 	for _, args := range [][]string{
 		{"init", "-q"},
@@ -252,6 +251,17 @@ func TestResolveGitOriginRealRepo(t *testing.T) {
 	if _, err := resolveGitOrigin(context.Background(), t.TempDir()); err == nil {
 		t.Fatal("resolveGitOrigin(non-repo) = nil error, want an error")
 	}
+}
+
+// TestHubGitRunsUnderTheTestProcessGitConfig pins TestMain's git isolation at
+// gitCommand, which the hub's git-head reads spawn git through with the
+// process environment: TestMain's gittest.IsolateProcess must reach it.
+func TestHubGitRunsUnderTheTestProcessGitConfig(t *testing.T) {
+	t.Parallel()
+	gittest.RequireIsolated(t, func(dir string, args ...string) (string, error) {
+		out, err := gitCommand(t.Context(), "git", append([]string{"-C", dir}, args...)...).Output()
+		return string(out), err
+	})
 }
 
 func TestHubRPCGitHeadUsesCanonicalDirectory(t *testing.T) {

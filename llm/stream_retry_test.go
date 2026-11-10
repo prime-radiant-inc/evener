@@ -320,3 +320,42 @@ func TestRetryStream_UnhealthyWinsOverPartialOutputBlock(t *testing.T) {
 		t.Fatalf("calls=%d, want 1", *calls)
 	}
 }
+
+// A wall budget already spent when the first rate-limited stream failure
+// arrives ends the group there, handing back the provider's own error without
+// another attempt. The step clock pins which budget check observes the
+// exhaustion: the one before the wait for the first case, the one computing
+// the remaining slice for the second.
+func TestRetryStreamWallBudgetExhaustion(t *testing.T) {
+	rateLimited := ErrorFromHTTPStatus("openai", 429, "rate limited", nil, nil)
+	for _, tc := range []struct {
+		name  string
+		steps []time.Duration
+	}{
+		{"exhausted before the first wait", []time.Duration{0, 30 * time.Second}},
+		{"exhausted while computing the wait", []time.Duration{0, 0, 30 * time.Second}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := &stepClock{steps: tc.steps}
+			calls := 0
+			slept := 0
+			err := RetryStream(context.Background(), RetryStreamOptions{
+				Policy: wallBudgetPolicy(clock.now, 10*time.Second, 0),
+				Sleep: func(context.Context, time.Duration) error {
+					slept++
+					return nil
+				},
+			}, func(context.Context) (AttemptReport, error) {
+				calls++
+				return AttemptReport{}, rateLimited
+			})
+			//nolint:errorlint // identity is the assertion: the spent budget hands back the provider's own error
+			if err != rateLimited {
+				t.Fatalf("err = %v, want the original rate-limit error handed back unchanged", err)
+			}
+			if calls != 1 || slept != 0 {
+				t.Fatalf("calls = %d slept = %d, want 1 and no sleep", calls, slept)
+			}
+		})
+	}
+}

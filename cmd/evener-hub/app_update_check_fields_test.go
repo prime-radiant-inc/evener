@@ -132,11 +132,15 @@ func TestHubUpdateCheckReportsProbeFailure(t *testing.T) {
 	}
 }
 
-func TestHubUpdateCheckPopulatesDevFieldsBeforeEarlyReturn(t *testing.T) {
-	setBuild(t, "abc1234", "dev")
-	checkCalls := stubUpdateCheck(t, func(context.Context, selfupdate.CheckOptions) (selfupdate.CheckResult, error) {
-		t.Fatal("dev build reached the network check")
-		return selfupdate.CheckResult{}, nil
+func TestHubUpdateCheckLocalBuildReportsOnDiskAndRestart(t *testing.T) {
+	setBuild(t, "abc1234", "")
+	checkCalls := stubUpdateCheck(t, func(_ context.Context, opts selfupdate.CheckOptions) (selfupdate.CheckResult, error) {
+		return selfupdate.CheckResult{
+			Channel:         opts.Channel,
+			LatestTag:       "release",
+			LatestCommit:    "def5678" + strings.Repeat("f", 33),
+			UpdateAvailable: true,
+		}, nil
 	})
 	setRestartProbe(t, "echo 'evener def5678 (2026-10-21T00:00:00Z)'")
 
@@ -144,23 +148,17 @@ func TestHubUpdateCheckPopulatesDevFieldsBeforeEarlyReturn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hubUpdateCheck: %v", err)
 	}
-	if *checkCalls != 0 {
-		t.Fatalf("network check calls = %d, want 0", *checkCalls)
-	}
-	if resp.Applicable || resp.UpdateAvailable {
-		t.Fatalf("dev check = applicable:%v updateAvailable:%v, want both false", resp.Applicable, resp.UpdateAvailable)
+	if *checkCalls != 1 {
+		t.Fatalf("channel check calls = %d, want 1", *checkCalls)
 	}
 	if resp.OnDiskCommit != "def5678" {
 		t.Fatalf("on-disk commit = %q, want def5678", resp.OnDiskCommit)
 	}
 	if !resp.RestartSupported {
-		t.Fatal("restartSupported = false on a usable dev build")
-	}
-	if resp.InstallAvailable {
-		t.Fatal("installAvailable = true on a dev build")
+		t.Fatal("restartSupported = false on a usable local build")
 	}
 	if !resp.RestartPending {
-		t.Fatal("restartPending = false although the dev build on disk differs")
+		t.Fatal("restartPending = false although the build on disk differs")
 	}
 }
 

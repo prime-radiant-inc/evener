@@ -25,6 +25,7 @@ const CLASS = {
   leadingSample: requireClass(styles.leadingSample, MODULE, "leadingSample"),
   leadingUi: requireClass(styles.leadingUi, MODULE, "leadingUi"),
   leadingBody: requireClass(styles.leadingBody, MODULE, "leadingBody"),
+  leadingProse: requireClass(styles.leadingProse, MODULE, "leadingProse"),
   leadingTitle: requireClass(styles.leadingTitle, MODULE, "leadingTitle"),
   eyebrow: requireClass(styles.eyebrow, MODULE, "eyebrow"),
   rhythmRow: requireClass(styles.rhythmRow, MODULE, "rhythmRow"),
@@ -51,10 +52,10 @@ const RAMP: { label: string; sizeClass: string }[] = [
   { label: "caption 12", sizeClass: CLASS.sizeCaption },
   { label: "ui 13", sizeClass: CLASS.sizeUi },
   { label: "body 15", sizeClass: CLASS.sizeBody },
-  { label: "prose 18", sizeClass: CLASS.sizeProse },
-  { label: "pane-title 18", sizeClass: CLASS.sizePaneTitle },
-  { label: "page-title 22", sizeClass: CLASS.sizePageTitle },
-  { label: "display 28", sizeClass: CLASS.sizeDisplay },
+  { label: "prose 16", sizeClass: CLASS.sizeProse },
+  { label: "pane-title 20", sizeClass: CLASS.sizePaneTitle },
+  { label: "page-title 26", sizeClass: CLASS.sizePageTitle },
+  { label: "display 34", sizeClass: CLASS.sizeDisplay },
 ];
 
 const LEADING_SAMPLE =
@@ -63,6 +64,7 @@ const LEADING_SAMPLE =
 const LEADING: { label: string; leadingClass: string }[] = [
   { label: "line-height-ui", leadingClass: CLASS.leadingUi },
   { label: "line-height-body", leadingClass: CLASS.leadingBody },
+  { label: "line-height-prose", leadingClass: CLASS.leadingProse },
   { label: "line-height-title", leadingClass: CLASS.leadingTitle },
 ];
 
@@ -98,7 +100,7 @@ function Specimen() {
       <section className={CLASS.section}>
         <h2 className={CLASS.sectionTitle}>Faces</h2>
         <div className={CLASS.rampRow}>
-          <p className={CLASS.rowLabel}>Inter Variable</p>
+          <p className={CLASS.rowLabel}>Schibsted Grotesk Variable</p>
           <p className={CLASS.sans}>Controls and operations · Model · 12,345 tokens · 01:24</p>
         </div>
         <div className={CLASS.rampRow}>
@@ -162,7 +164,7 @@ function Specimen() {
       <section className={CLASS.section}>
         <h2 className={CLASS.sectionTitle}>Measure</h2>
         <p className={CLASS.note}>
-          The same 600-character paragraph at --font-size-prose and --line-height-body, at both measures.
+          The same 600-character paragraph at --font-size-prose and --line-height-prose, at both measures.
         </p>
         <div className={CLASS.measures}>
           {MEASURES.map(({ name, value, widthClass }) => (

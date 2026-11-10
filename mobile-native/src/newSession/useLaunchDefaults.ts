@@ -12,10 +12,10 @@ import { useHostRead, useHubRevision } from "./useHostRead";
 
 export type LaunchDefaults = Pick<
 	LaunchConfigLayer,
-	"sandbox" | "sandboxNet" | "contextStrategy" | "maxSubagentDepth" | "maxRounds"
+	"sandbox" | "sandboxNet" | "contextStrategy" | "maxSubagentDepth" | "maxRounds" | "memoryEnabled"
 >;
 
-const FIELDS = ["sandbox", "sandboxNet", "contextStrategy", "maxSubagentDepth", "maxRounds"] as const;
+const FIELDS = ["sandbox", "sandboxNet", "contextStrategy", "maxSubagentDepth", "maxRounds", "memoryEnabled"] as const;
 
 const LAUNCH_CHANGES = ["evener/launch/updated"] as const;
 

@@ -42,12 +42,14 @@ import (
 // refreshFacets always stores a freshly sampled value and never mutates one in
 // place, so a reader that copies the struct can hand the slices straight out.
 type threadEnvelope struct {
-	ContextPressure  float64
-	ContextMetrics   ContextMetrics
-	Detailed         *DetailedStatus
-	Queue            appwire.QueueState
-	PendingMutations []appwire.PendingMutation
-	Tasks            *appwire.TaskAggregate
+	ConversationProvenance *appwire.ConversationProvenanceState
+	PendingAsk             *appwire.PendingAskState
+	ContextPressure        float64
+	ContextMetrics         ContextMetrics
+	Detailed               *DetailedStatus
+	Queue                  appwire.QueueState
+	PendingMutations       []appwire.PendingMutation
+	Tasks                  *appwire.TaskAggregate
 	// TaskStoreOwnerSessionID is projection routing state. It never enters
 	// EvenerThread or any other public AppWire shape.
 	TaskStoreOwnerSessionID string
@@ -115,18 +117,23 @@ type threadEnvelope struct {
 	// the sandbox request its meta persists. A session's sandbox is fixed when
 	// it starts, so the seed at identity install is the sample that matters.
 	Access *appwire.ThreadAccess
+	// Manager is the session's start-time Manager property, persisted in its
+	// meta. Like Access it is fixed when the session starts, so the seed at
+	// identity install is the sample that matters: nothing can move it later.
+	Manager bool
 }
 
 // ThreadEnvelopeSource supplies the live session values the thread envelope
 // reports. cmd/evener/serve.go implements it over the running agent.Session.
 //
 // The root is seeded through it before the bridge starts, and the bridge samples
-// it at retained checkpoint/legacy moments -- never on a read. Direct task/goal
+// it at retained checkpoint/legacy moments, never under a read cut. Explicit
+// pending-ask pages sample only the ask snapshot outside projection locks. Direct task/goal
 // carriers bypass it and patch cached projections. That is the whole point of
 // the interface: it collapses sixteen separately
 // injected read-time callbacks into one seam with one caller, so a reader can
 // see at a glance where session state enters the daemon's projection and can be
-// sure it is not the read path.
+// sure it is not under the ordinary read cut.
 //
 // ADDING A METHOD HERE IS A CONCURRENCY DECISION, not just a wiring one. The
 // sampling runs on the authoritative consumer's drain goroutine, so a sample
@@ -145,9 +152,8 @@ type ThreadEnvelopeSource interface {
 	TaskAggregate() *appwire.TaskAggregate
 	WorkMetrics() (workMillis int64, usage *appwire.EvenerUsage, activeTurnStartedAt int64)
 	FailedToolCalls() (count int, measured bool)
-	// PendingQuestion is the first question of the session's pending ask, nil
-	// while none waits. The thread's AskPending is its presence.
-	PendingQuestion() *appwire.PendingQuestion
+	// PendingAskSnapshot returns the excerpt and complete pending set together.
+	PendingAskSnapshot() (*appwire.PendingQuestion, *appwire.PendingAskState)
 	// RestingFailure summarizes the failed turn the session rests on, nil
 	// when it rests on none.
 	RestingFailure() *appwire.ThreadFailure
@@ -278,6 +284,7 @@ var facetsByEvent = map[events.EventKind]envelopeFacet{
 	// rewrites history outright, and an idle /compact has no turn boundary to
 	// rescue the preview it can change.
 	events.EventAssistantTextEnd:  facetContext | facetWork,
+	events.EventCommunicate:       facetContext,
 	events.EventContextCompaction: facetContext | facetMeta,
 	events.EventCompactionTurn:    facetContext,
 
@@ -316,6 +323,9 @@ var facetsByEvent = map[events.EventKind]envelopeFacet{
 func (s *Server) SetThreadEnvelopeSource(src ThreadEnvelopeSource) {
 	s.mu.Lock()
 	s.appEnvelopeSource = src
+	s.appEnvelopeSourceGeneration++
+	s.appEnvelope.PendingQuestion = nil
+	s.appEnvelope.PendingAsk = nil
 	s.mu.Unlock()
 }
 
@@ -356,6 +366,7 @@ func (s *Server) refreshThreadEnvelopeForEvent(ev events.SessionEvent) {
 func (s *Server) refreshFacets(facets envelopeFacet) {
 	s.mu.RLock()
 	src := s.appEnvelopeSource
+	sourceGeneration := s.appEnvelopeSourceGeneration
 	threadID := s.appThreadID
 	sourceID := s.appSourceID
 	taskCarrierGeneration := s.appEnvelope.taskCarrierGeneration
@@ -387,6 +398,11 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	if facets&facetQueue != 0 {
 		next.Queue, next.PendingMutations = src.ClientMutationProjection()
 	}
+	if facets&(facetQueue|facetContext) != 0 {
+		if provenance, ok := src.(conversationProvenanceSource); ok {
+			next.ConversationProvenance = provenance.ConversationProvenance()
+		}
+	}
 	if facets&facetTasks != 0 {
 		next.Tasks = src.TaskAggregate()
 		next.TaskStoreOwnerSessionID = threadID
@@ -403,7 +419,9 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 		}
 	}
 	if facets&facetAsk != 0 {
-		next.PendingQuestion = src.PendingQuestion()
+		next.PendingQuestion, next.PendingAsk = src.PendingAskSnapshot()
+		next.PendingQuestion = appwire.ClonePendingQuestion(next.PendingQuestion)
+		next.PendingAsk = appwire.ClonePendingAsk(next.PendingAsk)
 	}
 	if facets&facetTurnFailure != 0 {
 		next.Failure = src.RestingFailure()
@@ -436,6 +454,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 			}
 			next.LastMessage = meta.LastMessage
 			next.Access = appwire.SessionAccess(meta.Config.Sandbox, meta.Config.SandboxNet)
+			next.Manager = meta.Manager
 		}
 		if facets&facetGoal != 0 {
 			if meta.Goal != nil {
@@ -471,7 +490,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	// failure count and escalation cards under its successor's identity, with
 	// nothing afterwards to correct it. The fix is NOT to sample under the gate:
 	// that is the I/O this change exists to move off it.
-	if s.appThreadID == threadID && s.appSourceID == sourceID {
+	if s.appThreadID == threadID && s.appSourceID == sourceID && s.appEnvelopeSourceGeneration == sourceGeneration {
 		assignFacets := facets
 		if assignFacets&facetTasks != 0 && s.appEnvelope.taskCarrierGeneration != taskCarrierGeneration {
 			assignFacets &^= facetTasks
@@ -493,6 +512,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 		s.appEnvelope.assign(assignFacets, next, cwdStale, notesStale, urlsStale)
 	}
 	s.mu.Unlock()
+	s.commitConversationProvenance(threadID, sourceID, ref, next.ConversationProvenance)
 }
 
 // assign copies exactly the named facets out of next. notesStale and urlsStale
@@ -544,7 +564,15 @@ func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope, cwdSt
 		e.FailedToolCalls = next.FailedToolCalls
 	}
 	if facets&facetAsk != 0 {
-		e.PendingQuestion = next.PendingQuestion
+		// The excerpt and state are one sample. Revisions only order samples
+		// within a boot, and a source replacement resets the stored state.
+		if e.PendingAsk == nil || next.PendingAsk != nil &&
+			(e.PendingAsk.InstanceID != next.PendingAsk.InstanceID ||
+				appwire.CompareBootGeneration(e.PendingAsk.BootGeneration, next.PendingAsk.BootGeneration) == appwire.BootGenerationReplace ||
+				e.PendingAsk.BootGeneration == next.PendingAsk.BootGeneration && e.PendingAsk.Revision < next.PendingAsk.Revision) {
+			e.PendingQuestion = next.PendingQuestion
+			e.PendingAsk = next.PendingAsk
+		}
 	}
 	if facets&facetTurnFailure != 0 {
 		e.Failure = next.Failure
@@ -569,5 +597,6 @@ func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope, cwdSt
 		e.LastTurnEndedAt = next.LastTurnEndedAt
 		e.LastMessage = next.LastMessage
 		e.Access = next.Access
+		e.Manager = next.Manager
 	}
 }
