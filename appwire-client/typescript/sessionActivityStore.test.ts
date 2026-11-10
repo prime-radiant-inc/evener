@@ -250,6 +250,45 @@ test("a resync keeps an approval that remains pending in the activity runtime", 
   expect(store.getSnapshot().runtime?.pendingEscalationIds).toEqual(["esc_1"]);
 });
 
+test("a resync with no pending approvals clears the activity runtime approval", async () => {
+  const client = activityClient();
+  const escalation = {
+    threadId: "wire-root",
+    ref: activityRef,
+    escalationId: "esc_1",
+    mode: "read-only",
+    tool: "read_file",
+    kind: "file",
+    deniedPath: "/outside",
+  };
+  let pending = true;
+  client.on("thread/read", () => ({
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-root",
+      sessionId: "root-session",
+      evener: {
+        ...threadFixture().thread.evener,
+        ...(pending ? { pendingEscalations: [escalation] } : {}),
+      },
+    },
+  }));
+  client.on("evener/thread/activity/read", () => ({
+    ...summaryFixture(),
+    context: { ...activityContext(), sessionId: "root-session", ref: "remote:canonical-root" },
+  }));
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().runtime?.approvalPending === true);
+  pending = false;
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref: activityRef, threadId: "wire-root" },
+  });
+  await activityState(store, () => store.getSnapshot().runtime?.approvalPending === false);
+  expect(store.getSnapshot().runtime?.pendingEscalationIds).toEqual([]);
+});
+
 test("a same-thread resync lets the recovery read replace a cached idle status", async () => {
   const client = runtimeClient();
   const store = owner(client);
@@ -334,6 +373,72 @@ test("a resync retries recovery metadata after a transient read failure", async 
   await vi.advanceTimersByTimeAsync(1000);
   await activityState(store, () => store.getSnapshot().runtime?.askPending === true);
   expect(reads).toBe(2);
+});
+
+test("a resync during the initial metadata read still recovers runtime", async () => {
+  const client = activityClient();
+  const initial = deferred<ThreadReadResponse>(),
+    entered = deferred<void>();
+  const question: ThreadReadResponse = {
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-root",
+      sessionId: "root-session",
+      status: { type: "awaiting" },
+      evener: { ...threadFixture().thread.evener, askPending: true },
+    },
+  };
+  let reads = 0;
+  client.on("thread/read", () => {
+    reads += 1;
+    if (reads === 1) {
+      entered.resolve();
+      return initial.promise;
+    }
+    return question;
+  });
+  const store = owner(client);
+  store.start();
+  await entered.promise;
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref: activityRef, threadId: "wire-root" },
+  });
+  initial.resolve({
+    thread: { ...threadFixture().thread, id: "wire-root", sessionId: "root-session" },
+  });
+  await activityState(store, () => store.getSnapshot().runtime?.askPending === true);
+  expect(reads).toBe(2);
+});
+
+test("a replacement resync fences a recovery read already in flight", async () => {
+  const client = runtimeClient();
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().runtime?.status.type === "idle");
+  const recovery = deferred<ThreadReadResponse>(),
+    entered = deferred<void>(),
+    settled = deferred<void>();
+  client.on("thread/read", () => {
+    entered.resolve();
+    return recovery.promise.finally(() => settled.resolve());
+  });
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref: activityRef, threadId: "wire-root" },
+  });
+  await entered.promise;
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref: activityRef, threadId: "wire-replacement" },
+  });
+  expect(store.getSnapshot().runtime).toBeNull();
+  recovery.resolve({
+    thread: { ...threadFixture().thread, id: "wire-root", sessionId: "root-session" },
+  });
+  await settled.promise;
+  await vi.advanceTimersByTimeAsync(0);
+  expect(store.getSnapshot().runtime).toBeNull();
 });
 
 test("replacement activity identity retires the previous runtime atomically", async () => {

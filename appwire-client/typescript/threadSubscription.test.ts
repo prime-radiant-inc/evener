@@ -324,8 +324,19 @@ test("a resync clears requested approvals that the recovery snapshot resolves", 
     params: { ref: activityRef, threadId: "wire-root" },
   });
   await lease.read({ includeTurns: true });
-  expect(lease.metadata?.()?.approvalPending).toBeFalsy();
-  expect(lease.metadata?.()?.pendingEscalationIds ?? []).toEqual([]);
+  expect(lease.metadata?.()?.approvalPending).toBe(false);
+  expect(lease.metadata?.()?.pendingEscalationIds).toEqual([]);
+  client.emitNotification({
+    method: "evener/sandbox/escalation/requested",
+    params: escalation("esc_2"),
+  });
+  expect(lease.metadata?.()?.pendingEscalationIds).toEqual(["esc_2"]);
+  client.emitNotification({
+    method: "evener/sandbox/escalation/resolved",
+    params: { threadId: "wire-root", ref: activityRef, escalationId: "esc_2" },
+  });
+  expect(lease.metadata?.()?.approvalPending).toBe(false);
+  expect(lease.metadata?.()?.pendingEscalationIds).toEqual([]);
   lease.release();
 });
 

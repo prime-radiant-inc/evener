@@ -372,20 +372,20 @@ class ThreadSubscriptions {
     // before this response. Keeping the frame facts also fences later stale
     // reads: a resolved id never comes back, and a requested id a snapshot
     // predates is added back.
+    const hadApprovals = member.metadata?.approvalPending !== undefined || member.pendingEscalations.size > 0;
     member.pendingEscalations.clear();
     for (const escalation of thread.evener?.pendingEscalations ?? [])
       member.pendingEscalations.add(escalation.escalationId);
     for (const escalationId of member.requestedEscalations) member.pendingEscalations.add(escalationId);
     for (const escalationId of member.resolvedEscalations) member.pendingEscalations.delete(escalationId);
-    const approvalIDs = [...member.pendingEscalations].sort();
-    const approvalFields = approvalIDs.length ? { approvalPending: true, pendingEscalationIds: approvalIDs } : {};
-    member.metadata = {
+    const metadata: ThreadSubscriptionMetadata = {
       threadId: thread.id,
       sessionId: thread.sessionId ?? thread.id,
       status: copyStatus((newer ? member.metadata?.status : undefined) ?? thread.status),
       askPending,
-      ...approvalFields,
     };
+    member.metadata =
+      hadApprovals || member.pendingEscalations.size > 0 ? this.approvalMetadata(member, metadata) : metadata;
     member.askAuthoritative = true;
   }
 
