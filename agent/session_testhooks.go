@@ -69,6 +69,11 @@ type testConfig struct {
 	// before the claim's own refusal -- the window a poisoning lands in. Nil in
 	// production.
 	clientMutationStartClaiming func()
+	// interruptSampled observes an accepted interrupt after it sampled the
+	// running execution and the session state, before it reserves the fence.
+	// Tests use it to move the active turn across that window. Nil in
+	// production.
+	interruptSampled func()
 	// failTurnBeforeRecording, when set, makes a turn fail before its user entry
 	// is recorded. It is the one seam that reaches the pre-incorporation,
 	// non-transcript failure the start path's give-back keys on: an integration

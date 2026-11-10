@@ -1034,6 +1034,23 @@ func sessionIsQuiesced(running bool, claimedTurnID string) bool {
 	return !running && strings.TrimSpace(claimedTurnID) == ""
 }
 
+// activeTurnIsUnrunReservation reports whether the durable active turn names a
+// mutation that was accepted but never claimed: the reserved slot an unnamed
+// continuation runs beside. A claimed or incorporated mutation owns the slot as
+// the turn that is running, even when recovery runs it under a fresh execution
+// id, and its pending name is the one finalization must match.
+func activeTurnIsUnrunReservation(snapshot *clientMutationSnapshot) bool {
+	if snapshot.ActiveTurnID == "" {
+		return false
+	}
+	for _, pending := range snapshot.PendingExecutions {
+		if pending.TurnID == snapshot.ActiveTurnID {
+			return pending.ExecutionState == "accepted"
+		}
+	}
+	return false
+}
+
 // InterruptClientMutation persists an interrupt fence under the lifecycle
 // serializer, then releases it before cancellation and runner waiting. The
 // runner may finalize the fence from completeClientMutationTurnWithState; if it
@@ -1068,6 +1085,9 @@ func (s *Session) InterruptClientMutation(
 	s.mu.Lock()
 	execution := s.execution
 	s.mu.Unlock()
+	if s.cfg.testOnly.interruptSampled != nil {
+		s.cfg.testOnly.interruptSampled()
+	}
 	lookup, err := s.clientMutations.reservePrepared(request, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
 		if snapshot.InterruptFence != nil {
 			rejectClientMutation(record, appwire.Conflict("turn interrupt is already pending"))
@@ -1077,13 +1097,17 @@ func (s *Session) InterruptClientMutation(
 			rejectClientMutation(record, appwire.Conflict("session is not processing"))
 			return nil
 		}
-		// The fence records the turn this interrupt is actually cancelling,
-		// which is the durable name of whatever was running -- and the empty
-		// name when that turn had none. An interrupt that matches no pending
-		// execution is correct there: the cancellation is what ends such a turn,
-		// and there is no accepted input to mark interrupted.
+		// The fence records the durable name of the mutation this interrupt is
+		// actually cancelling, which is the name finalization and recovery match
+		// against. The running execution's own id differs from that name only
+		// when the durable slot is an accepted-but-unrun reservation and an
+		// unnamed continuation runs beside it; there the execution id is the turn
+		// that is cancelled. A claimed or recovered mutation keeps the pending
+		// name even when the execution runs under a fresh id (#5802), and a
+		// successor claimed between the sample above and this reservation keeps
+		// its own name rather than inheriting the stale execution's.
 		target := snapshot.ActiveTurnID
-		if execution.running && execution.turnID != "" {
+		if execution.running && execution.turnID != "" && activeTurnIsUnrunReservation(snapshot) {
 			target = execution.turnID
 		}
 
