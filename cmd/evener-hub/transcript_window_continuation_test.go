@@ -676,7 +676,7 @@ func testSpendTranscriptWindowContinuations(t *testing.T, transcript testWindowT
 	t.Helper()
 	const itemLimit = transcriptWindowDefaultItemLimit
 	var pages []testWindowServedPage
-	for step := 0; step < 16; step++ {
+	for step := range 16 {
 		options := transcriptWindowOptionsFor(
 			result, params, itemLimit, transcriptWindowAppliedByServingDaemon,
 			appitempaging.FetchCursorOriginServingDaemon,
