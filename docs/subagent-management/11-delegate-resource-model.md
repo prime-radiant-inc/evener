@@ -261,8 +261,9 @@ delegate_send accepts to=dlg_..., message, and max_wait_ms:
   session is shutting down) and not_resumable (the delegate is closed or out
   of turns) are permanent, carry no retry-after, and tell the caller to stop
   retrying and start a new delegate or report.
-- If the delegate is permanently non-resumable, the call returns
-  target_not_resumable with the durable reason.
+- If the delegate is permanently non-resumable (closed, or out of turns), the
+  call returns target_busy with reason not_resumable and no retry-after; the
+  durable not_resumable_reason stays on the delegate's status.
 
 delegate_send never accepts a job_... target and never returns a job ID.
 A positive max_wait_ms applies only when that call starts an idle delegate. A

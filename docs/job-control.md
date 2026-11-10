@@ -440,7 +440,7 @@ or `idle`; its prior generation is summarized separately in `last_outcome` with
 Validation, lookup, and routing errors are synchronous tool errors and create
 neither a shell JobRecord nor a delegate generation. Canonical codes include
 `invalid_request`, `permission_required`, `target_not_found`,
-`target_not_messageable`, `target_terminal`, `target_not_resumable`,
+`target_not_messageable`, `target_terminal`, `target_busy`,
 `target_not_watchable`, and `not_controllable`.
 
 `status` is the primary machine branch field. `reason` is optional diagnostic
