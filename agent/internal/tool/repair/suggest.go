@@ -5,6 +5,8 @@ import (
 	"slices"
 	"sort"
 	"strings"
+
+	"primeradiant.com/evener/agent/internal/tool/wirenames"
 )
 
 // maxAvailableListed caps the available-tools list so an unknown-tool error
@@ -81,14 +83,6 @@ var toolNameAliases = map[string][]string{
 	"edit":               {"edit_file", "apply_patch"},
 }
 
-// providerToolNames lists every name a canonical alias target is exposed under
-// across provider surfaces (provider profiles rename shell to exec_command on
-// OpenAI and run_shell_command on Google). A target absent here is exposed
-// under its own name only.
-var providerToolNames = map[string][]string{
-	"shell": {"shell", "exec_command", "run_shell_command"},
-}
-
 // systemMessageTags are names of tags Evener injects into messages that
 // models try to call as tools.
 var systemMessageTags = map[string]bool{
@@ -113,13 +107,9 @@ func DiagnoseUnknownTool(requested string, available []string) UnknownToolDiagno
 	}
 	var suggestions []string
 	for _, target := range toolNameAliases[key] {
-		names := providerToolNames[target]
-		if names == nil {
-			names = []string{target}
-		}
 		// The name the model just called is not a suggestion, and only the
 		// session's own surface name for the tool is.
-		for _, name := range names {
+		for _, name := range wirenames.NamesOf(target) {
 			if name != requested && slices.Contains(available, name) {
 				suggestions = append(suggestions, name)
 				break
