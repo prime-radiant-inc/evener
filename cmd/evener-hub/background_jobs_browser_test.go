@@ -32,16 +32,7 @@ const backgroundJobsBrowserCount = 151
 // driver that ignores the signal. The default CommandContext behavior kills
 // the owner outright and skips both cleanup steps (#4787).
 func backgroundJobsDriverCommand(ctx context.Context) *exec.Cmd {
-	return backgroundJobsNodeCommand(ctx, "frontend/scripts/backgroundjobsguard/run.mjs")
-}
-
-// backgroundJobsNodeCommand is the shared setup for the fixture and its
-// cancellation proof, so the test and the real driver cannot drift on either
-// signal.
-func backgroundJobsNodeCommand(ctx context.Context, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, "node", args...)
-	configureBackgroundDriverCommand(cmd)
-	return cmd
+	return backgroundDriverCommand(ctx, "frontend/scripts/backgroundjobsguard/run.mjs")
 }
 
 func TestBackgroundJobsDriverCommandUsesGracefulCancellation(t *testing.T) {

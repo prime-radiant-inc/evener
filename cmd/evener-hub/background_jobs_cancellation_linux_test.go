@@ -95,7 +95,7 @@ console.log(JSON.stringify({pid: child.pid, profile: profileDir}));
 }
 
 func TestBackgroundJobsDriverFailure(t *testing.T) {
-	cmd := backgroundJobsNodeCommand(t.Context(), "-e", "process.exit(7)")
+	cmd := backgroundDriverCommand(t.Context(), "-e", "process.exit(7)")
 	output, err := cmd.CombinedOutput()
 	var exit *exec.ExitError
 	if !errors.As(err, &exit) || exit.ExitCode() != 7 {
@@ -130,7 +130,7 @@ type backgroundJobsDriverReady struct {
 
 func startBackgroundJobsCancellationDriver(ctx context.Context, t *testing.T, ready *backgroundJobsDriverReady, script string, args ...string) func() error {
 	t.Helper()
-	cmd := backgroundJobsNodeCommand(ctx, append([]string{"--input-type=module", "-e", script}, args...)...)
+	cmd := backgroundDriverCommand(ctx, append([]string{"--input-type=module", "-e", script}, args...)...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
