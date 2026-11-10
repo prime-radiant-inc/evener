@@ -292,6 +292,13 @@ type watchConfig struct {
 	// Guarded by jm.mu.
 	recentDeliveries   []time.Time
 	lastBackstopNotice time.Time
+	// conditionFrames are the delivery ids of this send watch's pending
+	// condition frames, which count toward the backstop when they settle;
+	// backstopNoticeFrame and backstopNoticeCount are the frame chosen to carry
+	// the notice and its count (watchSendBackstopFiresLocked). Guarded by jm.mu.
+	conditionFrames     map[string]struct{}
+	backstopNoticeFrame string
+	backstopNoticeCount int
 	// createdAt is the install time of this live watch config, stamped from
 	// jm.now() in newWatchConfig and surfaced by job_list (spec §4 F2). A
 	// replacement config is a new watch, so it gets a fresh timestamp. Configs
@@ -454,9 +461,6 @@ type watchSendDelivery struct {
 	deliveryID               string
 	message                  string
 	frame                    string
-	// backstopFires, when set, is the watch's delivery count within
-	// watchBackstopWindow, and the frame leads with the hourly backstop notice.
-	backstopFires int
 	// ownMessageHops, when set, is how many of the receiving session's own
 	// messages the event descends from, and the frame leads with
 	// ownMessageNotice.

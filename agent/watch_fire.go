@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -230,7 +231,14 @@ func (jm *jobManager) conditionFireNotificationLocked(cfg *watchConfig, jobID, r
 // hourly backstop and marks d to carry the notice when it is due. The caller
 // must hold jm.mu.
 func (jm *jobManager) conditionFireSendLocked(d watchSendDelivery) watchSendDelivery {
-	d.backstopFires = jm.watchBackstopNoticeLocked(d.cfg)
+	// A send watch's backstop counts delivered frames, not matches: the frame
+	// is marked as a condition frame here and counted when it settles
+	// (completeWatchSendSettle), and the notice rides whichever frame survives
+	// to delivery (watchSendBackstopFiresLocked).
+	if d.cfg.conditionFrames == nil {
+		d.cfg.conditionFrames = make(map[string]struct{})
+	}
+	d.cfg.conditionFrames[d.deliveryID] = struct{}{}
 	d.ownMessageHops = provenance.MessagesFrom(d.triggerProvenance, jm.watchReceiverSession(d.cfg))
 	return d
 }
@@ -256,18 +264,92 @@ func ownMessageNotice(hops int) string {
 // per window. It returns 0 otherwise. The caller must hold jm.mu.
 func (jm *jobManager) watchBackstopNoticeLocked(cfg *watchConfig) int {
 	now := jm.now()
-	cutoff := now.Add(-watchBackstopWindow)
-	stale := 0
-	for stale < len(cfg.recentDeliveries) && !cfg.recentDeliveries[stale].After(cutoff) {
-		stale++
-	}
-	cfg.recentDeliveries = append(slices.Delete(cfg.recentDeliveries, 0, stale), now)
-	count := len(cfg.recentDeliveries)
-	if count <= watchBackstopFires || (!cfg.lastBackstopNotice.IsZero() && now.Sub(cfg.lastBackstopNotice) < watchBackstopWindow) {
+	count := jm.noteConditionDeliveryLocked(cfg)
+	if !watchBackstopDue(cfg, count, now) {
 		return 0
 	}
 	cfg.lastBackstopNotice = now
 	return count
+}
+
+// noteConditionDeliveryLocked records one condition delivery of cfg now and
+// returns its delivery count within watchBackstopWindow. The caller must hold
+// jm.mu.
+func (jm *jobManager) noteConditionDeliveryLocked(cfg *watchConfig) int {
+	now := jm.now()
+	cfg.recentDeliveries = append(recentWithinBackstopWindow(cfg.recentDeliveries, now), now)
+	return len(cfg.recentDeliveries)
+}
+
+func recentWithinBackstopWindow(deliveries []time.Time, now time.Time) []time.Time {
+	cutoff := now.Add(-watchBackstopWindow)
+	stale := 0
+	for stale < len(deliveries) && !deliveries[stale].After(cutoff) {
+		stale++
+	}
+	return slices.Delete(deliveries, 0, stale)
+}
+
+// watchBackstopDue reports whether a delivery that brings cfg to count within
+// the window carries the notice: past watchBackstopFires, at most once per
+// window.
+func watchBackstopDue(cfg *watchConfig, count int, now time.Time) bool {
+	return count > watchBackstopFires && (cfg.lastBackstopNotice.IsZero() || now.Sub(cfg.lastBackstopNotice) >= watchBackstopWindow)
+}
+
+// watchSendBackstopFiresLocked returns the delivery count the frame state is
+// to carry the backstop notice with, or 0. It is decided once per frame, so a
+// retried delivery renders the same content; the notice counts as given when
+// the frame settles. The caller must hold jm.mu.
+func (jm *jobManager) watchSendBackstopFiresLocked(cfg *watchConfig, state jobstore.WatchSendState) int {
+	if cfg == nil {
+		return 0
+	}
+	if cfg.backstopNoticeFrame != "" && cfg.backstopNoticeFrame == state.DeliveryID {
+		return cfg.backstopNoticeCount
+	}
+	if _, condition := cfg.conditionFrames[state.DeliveryID]; !condition {
+		return 0
+	}
+	now := jm.now()
+	count := len(recentWithinBackstopWindow(cfg.recentDeliveries, now)) + 1
+	if !watchBackstopDue(cfg, count, now) {
+		return 0
+	}
+	cfg.backstopNoticeFrame, cfg.backstopNoticeCount = state.DeliveryID, count
+	return count
+}
+
+// watchSendBackstopFires is watchSendBackstopFiresLocked taking jm.mu.
+func (jm *jobManager) watchSendBackstopFires(cfg *watchConfig, state jobstore.WatchSendState) int {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	return jm.watchSendBackstopFiresLocked(cfg, state)
+}
+
+// settleConditionFrameLocked counts a settled condition frame toward cfg's
+// backstop and, when it carried the notice, records the notice as given. It
+// also forgets condition frames that no longer pend (superseded). The caller
+// must hold jm.mu.
+func (jm *jobManager) settleConditionFrameLocked(cfg *watchConfig, deliveryID string) {
+	if cfg == nil {
+		return
+	}
+	if _, condition := cfg.conditionFrames[deliveryID]; condition {
+		jm.noteConditionDeliveryLocked(cfg)
+		if cfg.backstopNoticeFrame == deliveryID {
+			cfg.lastBackstopNotice = jm.now()
+			cfg.backstopNoticeFrame, cfg.backstopNoticeCount = "", 0
+		}
+	}
+	for id := range cfg.conditionFrames {
+		if !slices.ContainsFunc(cfg.pendingOrder, func(key jobstore.WatchSendKey) bool {
+			state := cfg.pending[key]
+			return state != nil && state.DeliveryID == id
+		}) {
+			delete(cfg.conditionFrames, id)
+		}
+	}
 }
 
 // watchBackstopNotice is the hourly backstop's notice for watchID, which has

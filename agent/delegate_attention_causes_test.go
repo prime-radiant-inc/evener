@@ -164,3 +164,43 @@ func TestSendWatchFrameMarksAnEventCausedByTheWatchersOwnMessage(t *testing.T) {
 		t.Fatalf("pending frames = %d, want one marked as caused by the watcher's own message", len(pending))
 	}
 }
+
+// An attention item the running turn's settled request presents joins that
+// turn's lineage when its coverage is promoted, however late in the turn it
+// arrived.
+func TestPresentedAttentionCauseJoinsTheRunningTurn(t *testing.T) {
+	fixture := newStableWatchRuntimeFixture(t, nil)
+	root := fixture.root
+	const attentionID = "delegate:dlg_x/update/7"
+	root.delegateController.attentionCauses.remember(attentionID, provenance.WithMessage(nil, "child-session", attentionID))
+	root.attentionMu.Lock()
+	root.attentionStagedIDs = map[string]struct{}{attentionID: {}}
+	root.attentionMu.Unlock()
+
+	root.promoteStagedAttentionCoverage(llm.Request{})
+	if got := provenance.MessagesFrom(root.activeCausalProvenance(), "child-session"); got != 1 {
+		t.Fatalf("the running turn's lineage holds %d messages from the delegate, want the presented update", got)
+	}
+}
+
+// The trigger of an accepted attention generation is resolved before the
+// generation runs; its cause still reaches the generation when its request
+// presents the trigger.
+func TestAcceptedTriggerCauseReachesTheGenerationItLaunches(t *testing.T) {
+	fixture := newStableWatchRuntimeFixture(t, nil)
+	root := fixture.root
+	const trigger = "watch:frame/1"
+	causes := &root.delegateController.attentionCauses
+	causes.remember(trigger, provenance.WithMessage(nil, "child-session", trigger))
+
+	root.holdAcceptedTrigger(trigger) // accept latches the trigger, then resolves it
+	causes.forget(trigger)            // resolution drops the controller's copy
+	root.attentionMu.Lock()
+	root.attentionStagedIDs = map[string]struct{}{trigger: {}}
+	root.attentionMu.Unlock()
+	root.promoteStagedAttentionCoverage(llm.Request{})
+
+	if got := provenance.MessagesFrom(root.activeCausalProvenance(), "child-session"); got != 1 {
+		t.Fatalf("the launched generation's lineage holds %d messages behind its trigger, want 1", got)
+	}
+}

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -59,9 +60,6 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 	if d.ownMessageHops > 0 {
 		d.frame = ownMessageNotice(d.ownMessageHops) + "\n" + d.frame
 	}
-	if d.backstopFires > 0 && d.cfg != nil {
-		d.frame = watchBackstopNotice(d.cfg.watchID, d.backstopFires) + "\n" + d.frame
-	}
 	return d
 }
 
@@ -73,6 +71,15 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 // Pure observation: no delivery, no Session calls (spec §3).
 func (jm *jobManager) recordWatchSend(d watchSendDelivery, terminalEvents ...[]jobstore.Event) (state jobstore.WatchSendState, cfg *watchConfig, ok bool, err error) {
 	if d.cfg == nil || d.send == nil || !jm.isCurrentWatchSendDelivery(d) {
+		return jobstore.WatchSendState{}, nil, false, nil
+	}
+	// A fire descending from a chain the runaway guard already stopped records
+	// nothing and raises nothing: the stop's one diagnostic has been given.
+	chainFires := ownWatchFires(d.triggerProvenance, d.cfg.watchID)
+	jm.mu.Lock()
+	stopped := slices.ContainsFunc(chainFires, d.cfg.inStoppedRunawayChain)
+	jm.mu.Unlock()
+	if stopped {
 		return jobstore.WatchSendState{}, nil, false, nil
 	}
 	target, terr := resolveWatchSendTarget(d.send.To, d.watchedIdentity)
@@ -112,7 +119,13 @@ func (jm *jobManager) recordWatchSend(d watchSendDelivery, terminalEvents ...[]j
 		return state, d.cfg, false, jm.dropWatchSend(state, d.cfg, terr.Error())
 	}
 	if state.SelfInfluenceDepth >= runawaySelfInfluenceDepth {
-		return state, d.cfg, false, jm.dropWatchSend(state, d.cfg, "runaway")
+		// The diagnostic carries the triggering lineage unchanged, so it is not
+		// a fire, and the stopped chain's fires are remembered, so a turn it
+		// causes stays in the stopped chain.
+		jm.mu.Lock()
+		d.cfg.rememberStoppedRunawayChain(chainFires)
+		jm.mu.Unlock()
+		return state, d.cfg, false, jm.dropWatchSendWithLineage(state, d.cfg, "runaway", d.triggerProvenance)
 	}
 	return state, d.cfg, true, nil
 }
@@ -239,6 +252,11 @@ func (jm *jobManager) deliverPendingWatchSend(cfg *watchConfig, state jobstore.W
 }
 
 func (jm *jobManager) dropWatchSend(state jobstore.WatchSendState, cfg *watchConfig, reason string) error {
+	return jm.dropWatchSendWithLineage(state, cfg, reason, nil)
+}
+
+// dropWatchSendWithLineage is dropWatchSend whose diagnostic carries lineage.
+func (jm *jobManager) dropWatchSendWithLineage(state jobstore.WatchSendState, cfg *watchConfig, reason string, lineage *provenance.Causal) error {
 	if !jm.isCurrentPendingWatchSend(cfg, state) {
 		return nil
 	}
@@ -259,9 +277,9 @@ func (jm *jobManager) dropWatchSend(state jobstore.WatchSendState, cfg *watchCon
 	}
 	jm.removePendingWatchSend(cfg, dropped.Key, dropped.UpdateSeq)
 	jm.releaseStableWatchReceipt(dropped.DeliveryID)
-	jm.enqueueWatchNotifications([]jobNotification{
-		watchSendDiagnosticNotification(state.Key.WatchID, state.Key.ResolvedWatchedIdentity, "watch send failed: delivery_id="+state.DeliveryID+": "+dropped.DiagnosticReason),
-	})
+	diagnostic := watchSendDiagnosticNotification(state.Key.WatchID, state.Key.ResolvedWatchedIdentity, "watch send failed: delivery_id="+state.DeliveryID+": "+dropped.DiagnosticReason)
+	diagnostic.Provenance = provenance.Clone(lineage)
+	jm.enqueueWatchNotifications([]jobNotification{diagnostic})
 	return nil
 }
 
@@ -324,7 +342,7 @@ func (jm *jobManager) deliverStableWatchSend(cfg *watchConfig, state jobstore.Wa
 	attentionID := stableWatchAttentionID(state)
 	// The receiver's turn that consumes the frame adopts the frame's lineage.
 	controller.attentionCauses.remember(attentionID, state.Provenance)
-	_, appendErr := receiver.appendDelegateNotificationDurably(attentionID, stableWatchNotificationContent(state))
+	_, appendErr := receiver.appendDelegateNotificationDurably(attentionID, stableWatchNotificationContent(jm.renderWatchSendFrame(cfg, state)))
 	if !jm.isCurrentPendingWatchSend(cfg, state) {
 		if appendErr != nil {
 			// A frame the receiver took on an earlier attempt keeps its
@@ -419,8 +437,20 @@ func stableWatchAttentionID(state jobstore.WatchSendState) string {
 	return "watch:" + state.DeliveryID + ":" + strconv.FormatUint(state.UpdateSeq, 10)
 }
 
-func stableWatchNotificationContent(state jobstore.WatchSendState) string {
-	lines := strings.Split(state.Frame, "\n")
+// renderWatchSendFrame is the frame text cfg's pending state delivers to a
+// stable receiver: the frame, led by the hourly backstop notice when this frame
+// carries it.
+func (jm *jobManager) renderWatchSendFrame(cfg *watchConfig, state jobstore.WatchSendState) string {
+	if fires := jm.watchSendBackstopFires(cfg, state); fires > 0 {
+		return watchBackstopNotice(cfg.watchID, fires) + "\n" + state.Frame
+	}
+	return state.Frame
+}
+
+// stableWatchNotificationContent is the attention content a stable receiver
+// gets for frame: the frame without its delivery_id lines.
+func stableWatchNotificationContent(frame string) string {
+	lines := strings.Split(frame, "\n")
 	out := lines[:0]
 	for _, line := range lines {
 		if strings.HasPrefix(strings.TrimSpace(line), "delivery_id:") {

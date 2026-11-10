@@ -94,6 +94,7 @@ func (jm *jobManager) completeWatchSendSettle(cfg *watchConfig, delivered jobsto
 		delete(jm.transcribedWatchSends, delivered.DeliveryID)
 	}
 	jm.countWatchDeliveryLocked(cfg)
+	jm.settleConditionFrameLocked(cfg, delivered.DeliveryID)
 	jm.mu.Unlock()
 }
 

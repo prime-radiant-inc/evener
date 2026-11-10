@@ -87,7 +87,6 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 		notificationProvenance = provenance.Union(notificationProvenance, n.notification.Provenance)
 	}
 	s.replaceActiveProvenance(notificationProvenance)
-	s.adoptPendingAttentionCauses()
 
 	// Persist before announcing. appendSteeringTurnDurably is this turn's last
 	// refusal, and a turn announced before it can still be refused -- which
@@ -351,6 +350,9 @@ func (s *Session) filterDeliverableJobNotifications(raw []jobNotification) ([]de
 				continue
 			}
 			n.watchSendFrame = state.Frame
+			if n.backstopFires = jm.watchSendBackstopFires(cfg, state); n.backstopFires > 0 && n.OriginWatchID == "" {
+				n.OriginWatchID = cfg.watchID
+			}
 			n.Provenance = provenance.Union(n.Provenance, state.Provenance)
 			survivors = append(survivors, deliverableJobNotification{notification: n, watchJM: jm, watchCfg: cfg, watchState: state})
 			continue

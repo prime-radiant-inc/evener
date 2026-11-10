@@ -294,7 +294,7 @@ func TestWatchBackstopNoticeRidesTheDeliveryPastTheHourlyThreshold(t *testing.T)
 	}
 }
 
-// A send watch's frame past the hourly threshold carries the notice too.
+// A send watch's frame delivered past the hourly threshold carries the notice too.
 func TestSendWatchBackstopNoticeRidesTheFrame(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -313,10 +313,11 @@ func TestSendWatchBackstopNoticeRidesTheFrame(t *testing.T) {
 		if len(pending) != 1 {
 			t.Fatalf("pending frames = %d, want 1", len(pending))
 		}
+		rendered := jm.renderWatchSendFrame(pending[0].cfg, pending[0].state)
 		if err := jm.settleWatchSendDelivered(pending[0].cfg, pending[0].state); err != nil {
 			t.Fatalf("settle: %v", err)
 		}
-		return pending[0].state.Frame
+		return rendered
 	}
 	for i := range watchBackstopFires {
 		if strings.Contains(frameOfFire(), llm.SystemNotificationOpenTag) {
@@ -328,5 +329,104 @@ func TestSendWatchBackstopNoticeRidesTheFrame(t *testing.T) {
 	}
 	if strings.Contains(frameOfFire(), llm.SystemNotificationOpenTag) {
 		t.Fatal("the next frame repeated the notice within the hour")
+	}
+}
+
+// A send watch's runaway drop raises one diagnostic carrying the triggering
+// lineage (not a fire), and the stopped chain stays stopped: a later fire in
+// it, even after its lineage truncates, records nothing and raises nothing. A
+// fire from outside the chain records a frame again.
+func TestSendRunawayDiagnosticCarriesTheLineageAndTheChainStaysStopped(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	var diagnostics []jobNotification
+	jm.enqueue = func(n jobNotification) { diagnostics = append(diagnostics, n) }
+	installWatchBelowValidation(t, jm, watchArgs{
+		Target: runtimeMessageAliasCaller,
+		Events: []string{"communicate"},
+		Send:   &watchSendArgs{To: "dlg_observer", Message: "observe"},
+	})
+	cfg := onlyWatchConfigForTest(t, jm)
+	ownFires := func(p *provenance.Causal) int {
+		return provenance.SelfInfluenceDepth(p, cfg.watchID, "", func(string) bool { return true })
+	}
+	var chain *provenance.Causal
+	jm.mu.Lock()
+	for range runawaySelfInfluenceDepth {
+		id := jobstore.NewWatchSendDeliveryID()
+		jm.deliveredWatchSendIDs[id] = struct{}{}
+		chain = provenance.WithWatch(chain, cfg.watchID, cfg.generation, id, jm.sessionID, "")
+	}
+	jm.mu.Unlock()
+
+	communicateWith(jm, chain)
+	if jm.hasPendingWatchSends() || len(diagnostics) != 1 {
+		t.Fatalf("at the runaway depth: pending=%t diagnostics=%d, want the frame dropped with one diagnostic", jm.hasPendingWatchSends(), len(diagnostics))
+	}
+	notice := diagnostics[0]
+	if notice.Provenance == nil || ownFires(notice.Provenance) != ownFires(chain) {
+		t.Fatalf("the diagnostic's lineage holds %d own fires, want the triggering %d", ownFires(notice.Provenance), ownFires(chain))
+	}
+
+	reply := notice.Provenance
+	for range 5 {
+		for range 20 {
+			reply = provenance.WithWatch(reply, "watch_other", "wg_other", jobstore.NewWatchSendDeliveryID(), jm.sessionID, "")
+		}
+		communicateWith(jm, reply)
+	}
+	if jm.hasPendingWatchSends() || len(diagnostics) != 1 {
+		t.Fatalf("after the diagnostic's turn: pending=%t diagnostics=%d, want the chain to stay stopped", jm.hasPendingWatchSends(), len(diagnostics))
+	}
+
+	communicateWith(jm, nil)
+	if !jm.hasPendingWatchSends() {
+		t.Fatal("a fire from outside the stopped chain recorded no frame")
+	}
+}
+
+// The hourly backstop counts delivered frames: matches that coalesce into one
+// pending frame are one delivery, and a due notice rides whichever frame
+// survives to delivery.
+func TestSendWatchBackstopCountsDeliveredFramesAcrossCoalescing(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	now := frozenTestTime
+	jm.now = func() time.Time { return now }
+	installWatchBelowValidation(t, jm, watchArgs{
+		Target: runtimeMessageAliasCaller,
+		Events: []string{"communicate"},
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+	})
+	deliverPending := func() string {
+		t.Helper()
+		pending := jm.pendingWatchSendDeliveries(nil)
+		if len(pending) != 1 {
+			t.Fatalf("pending frames = %d, want 1", len(pending))
+		}
+		rendered := jm.renderWatchSendFrame(pending[0].cfg, pending[0].state)
+		if err := jm.settleWatchSendDelivered(pending[0].cfg, pending[0].state); err != nil {
+			t.Fatalf("settle: %v", err)
+		}
+		return rendered
+	}
+	// Two matches coalesce into each delivered frame, so the matches pass the
+	// threshold long before the deliveries do.
+	for i := range watchBackstopFires {
+		communicateWith(jm, nil)
+		communicateWith(jm, nil)
+		now = now.Add(10 * time.Second)
+		if strings.Contains(deliverPending(), llm.SystemNotificationOpenTag) {
+			t.Fatalf("delivered frame %d carried the notice, want none before the threshold", i+1)
+		}
+	}
+	communicateWith(jm, nil) // the frame that will be delivery 61...
+	communicateWith(jm, nil) // ...replaced before the receiver takes it
+	if !strings.Contains(deliverPending(), llm.SystemNotificationOpenTag) {
+		t.Fatal("the delivered frame past the threshold does not carry the notice")
+	}
+	communicateWith(jm, nil)
+	if strings.Contains(deliverPending(), llm.SystemNotificationOpenTag) {
+		t.Fatal("the next delivered frame repeated the notice within the hour")
 	}
 }
