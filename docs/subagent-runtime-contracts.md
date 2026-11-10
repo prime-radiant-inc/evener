@@ -32,7 +32,7 @@ historical proposals, not current behavior. Source citations use paths and
 symbols so readers can locate the implementation after line numbers change.
 
 Stable attention drives revalidate transcript-owned pending IDs after claiming
-the retained child for a start (`Session.driveStableDelegateAttention`). A delayed
+the retained child for a start (`Session.driveDelegateAttention`). A delayed
 drive cannot reserve an ID an intervening generation already consumed and
 finished. A start already accepted into the transcript retains its exact
 reservation and generation across a failed delegate-journal commit; retry does
@@ -49,7 +49,7 @@ same accepted capture under the session lock
 (`delegateTerminalRunInputs.captureCommunicateReport`, `agent/subagents.go`).
 Competing terminal calls cannot replace that capture. Failed, cancelled,
 exhausted, and unreported runs retain their diagnostic result semantics, and
-root-session return values and `CommunicateOutput` keep their structured-output
+root-session return values and `communicateOutput` keep their structured-output
 semantics.
 
 Settlement persists an immutable terminal packet. Owner notifications and

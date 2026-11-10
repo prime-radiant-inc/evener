@@ -121,6 +121,25 @@ describe("NewSessionService", () => {
 		expect(params.reasoningEffort).toBe("high");
 	});
 
+	it("start() sends manager true only when chosen", async () => {
+		const client = new FakeAppwireClient();
+		client.on(
+			"thread/start",
+			() =>
+				({
+					thread: makeThread(),
+					turn: makeTurn(),
+				}) as ThreadStartResponse,
+		);
+
+		const service = createNewSessionService(client);
+		await service.start({ cwd: "/tmp", manager: true });
+		await service.start({ cwd: "/tmp", manager: false });
+
+		expect((client.calls[0]?.params as { manager?: boolean }).manager).toBe(true);
+		expect(client.calls[1]?.params).not.toHaveProperty("manager");
+	});
+
 	it("start() with empty input sends no input field", async () => {
 		const client = new FakeAppwireClient();
 		client.on(

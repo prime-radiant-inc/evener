@@ -169,7 +169,7 @@ func TestNotificationTurnOwnsDurableReminderAndPendingClientSteering(t *testing.
 	var sess *Session
 	steerAccepted := make(chan struct{})
 	adapter := &fakeAdapter{name: "openai"}
-	adapter.steps = []func(req llm.Request) llm.Response{
+	adapter.setSteps([]func(req llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warmup") },
 		func(llm.Request) llm.Response {
 			if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
@@ -183,7 +183,7 @@ func TestNotificationTurnOwnsDurableReminderAndPendingClientSteering(t *testing.
 			return agenttest.CommunicateResponse(false, "notification handled")
 		},
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("steering handled") },
-	}
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 	dir := t.TempDir()
@@ -211,7 +211,7 @@ func TestNotificationTurnOwnsDurableReminderAndPendingClientSteering(t *testing.
 		t.Fatalf("notification EventTurnStarted = %#v, want one nonempty owner", starts)
 	}
 	owner := starts[0].TurnID
-	data, err := readTranscriptFull(sess.TranscriptPath(), "")
+	data, err := readTranscriptFull(context.Background(), sess.TranscriptPath(), "")
 	if err != nil {
 		t.Fatalf("read transcript: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestNotificationTurnOwnsDaemonSteeringAfterCompletedUserTurn(t *testing.T) 
 		t.Fatalf("warmup ProcessInput: %v", err)
 	}
 	recorder := serveAndRecord(t, sess)
-	sess.SteerKind("daemon steering", events.SteeringKindLoopDetected)
+	sess.steerKind("daemon steering", events.SteeringKindLoopDetected)
 	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
 	}
@@ -257,7 +257,7 @@ func TestNotificationTurnOwnsDaemonSteeringAfterCompletedUserTurn(t *testing.T) 
 	if len(starts) != 1 || starts[0].TurnID == "" {
 		t.Fatalf("notification EventTurnStarted = %#v, want one nonempty owner", starts)
 	}
-	data, err := readTranscriptFull(sess.TranscriptPath(), "")
+	data, err := readTranscriptFull(context.Background(), sess.TranscriptPath(), "")
 	if err != nil {
 		t.Fatalf("read transcript: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestNotificationTurnOwnsDirectRetrySteering(t *testing.T) {
 		t.Fatalf("warmup ProcessInput: %v", err)
 	}
 	recorder := serveAndRecord(t, sess)
-	sess.SteerKind("daemon steering", events.SteeringKindLoopDetected)
+	sess.steerKind("daemon steering", events.SteeringKindLoopDetected)
 	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
 	}
@@ -301,7 +301,7 @@ func TestNotificationTurnOwnsDirectRetrySteering(t *testing.T) {
 		t.Fatalf("notification EventTurnStarted = %#v, want one named boundary", starts)
 	}
 
-	data, err := readTranscriptFull(sess.TranscriptPath(), "")
+	data, err := readTranscriptFull(context.Background(), sess.TranscriptPath(), "")
 	if err != nil {
 		t.Fatalf("read transcript: %v", err)
 	}
@@ -374,7 +374,7 @@ func TestNotificationPendingAfterToolRunsBeforeAnotherNormalRound(t *testing.T) 
 		},
 	}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{}))
-	sess.RegisterTool(
+	sess.registerTool(
 		"enqueue_test_notification",
 		"test-only: finish a managed job while another tool round is running",
 		map[string]any{"type": "object", "properties": map[string]any{}},
@@ -404,7 +404,7 @@ func TestNotificationPendingAfterToolRunsBeforeAnotherNormalRound(t *testing.T) 
 // notification reminder turn carries SteeringKind on schema.Turn, not only on
 // the live SteeringInjectedData event, so a reload labels it the same way the
 // live transcript did (review round 2: this direct-append site bypasses the
-// SteerKind/consumeSteeringMessage queue path that already persisted its
+// steerKind/consumeSteeringMessage queue path that already persisted its
 // kind). Uses the same minimal durable-record construction as
 // TestAcceptNotificationInputAdoptsNotificationProvenance
 // (session_provenance_test.go) rather than a full background delegate run.
@@ -457,10 +457,7 @@ func TestNotification_EmptyNoOpDoesNotSuppressNextTurnEnd(t *testing.T) {
 		},
 	}
 	c.Register(adapter)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	collect := drainEvents(sess)
 
 	// No job notification is queued: the notification queue is empty.
@@ -506,10 +503,7 @@ func TestNotificationTurn_EmptyQueueIsNoOp(t *testing.T) {
 		},
 	}
 	c.Register(adapter)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	collect := drainEvents(sess)
 
 	// No job notification is queued: the queue is empty.
@@ -616,38 +610,35 @@ func TestNotification_InterleavesWithActiveGoal(t *testing.T) {
 		},
 	}
 	c.Register(adapter)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
 	sess.getOrCreateGoalStore().Set("interleave objective", time.Now())
 
 	// Enqueue the notification as continuation #1 ends (its round-1 step, steps[3]),
 	// so after continuation #1 folds at its gate the tail interleaves a notification
 	// turn ahead of the deferred continuation #2.
-	base3 := adapter.steps[3]
-	adapter.steps[3] = func(req llm.Request) llm.Response {
+	base3 := adapter.stepAt(3)
+	adapter.setStepAt(3, func(req llm.Request) llm.Response {
 		enqueueCompletedJobNotification(t, sess, "job_interleave")
 		return base3(req)
-	}
+	})
 	// Snapshot the goal counters from inside the notification turn (steps[4]):
 	// continuation #1 has already folded at its own gate, so Iterations == 1 here.
-	base4 := adapter.steps[4]
-	adapter.steps[4] = func(req llm.Request) llm.Response {
+	base4 := adapter.stepAt(4)
+	adapter.setStepAt(4, func(req llm.Request) llm.Response {
 		snapInNotif = readGoalCounters(t, sess)
 		snapCaptured = true
 		return base4(req)
-	}
+	})
 	// Snapshot the counters at the START of the deferred continuation #2 (steps[5]),
 	// i.e. right after the notification turn ended but before continuation #2 folds.
 	// The notification turn must have folded nothing, so this equals snapInNotif.
-	base5 := adapter.steps[5]
-	adapter.steps[5] = func(req llm.Request) llm.Response {
+	base5 := adapter.stepAt(5)
+	adapter.setStepAt(5, func(req llm.Request) llm.Response {
 		snapAfterNotifTurn = readGoalCounters(t, sess)
 		snapAfterCaptured = true
 		return base5(req)
-	}
+	})
 
 	collect := drainEvents(sess)
 
@@ -806,10 +797,7 @@ func TestNotification_BreakerFiresUnderSustainedNotifications(t *testing.T) {
 	c := llm.NewClient()
 	adapter := &sustainedNotificationAdapter{name: "openai", t: t, ceil: 60}
 	c.Register(adapter)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	adapter.sess = sess
 	collect := drainEvents(sess)
 
@@ -891,10 +879,7 @@ func TestNotification_GoalContinuesInlineWithoutKickFunc(t *testing.T) {
 		},
 	}
 	c.Register(adapter)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	// Deliberately do NOT call SetKickFunc: kickFunc stays nil, modelling `evener run`.
 	collect := drainEvents(sess)
 
@@ -902,11 +887,11 @@ func TestNotification_GoalContinuesInlineWithoutKickFunc(t *testing.T) {
 
 	// Arm the notification as continuation #1 ends (its round-1 step, steps[3]) so the
 	// tail-drain peek preempts the next continuation.
-	base3 := adapter.steps[3]
-	adapter.steps[3] = func(req llm.Request) llm.Response {
+	base3 := adapter.stepAt(3)
+	adapter.setStepAt(3, func(req llm.Request) llm.Response {
 		enqueueCompletedJobNotification(t, sess, "job_inline")
 		return base3(req)
-	}
+	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
@@ -977,11 +962,11 @@ func TestNotificationNoOpDroppedDeferredGoalContinuationDoesNotSuppressSessionEn
 		}
 		return origAppend(e)
 	}
-	base1 := adapter.steps[1]
-	adapter.steps[1] = func(req llm.Request) llm.Response {
+	base1 := adapter.stepAt(1)
+	adapter.setStepAt(1, func(req llm.Request) llm.Response {
 		sess.enqueueJobNotification(jobNotification{JobID: "job_X"})
 		return base1(req)
-	}
+	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
@@ -1053,33 +1038,30 @@ func TestNotification_GoalClearedDuringInterleaveStops(t *testing.T) {
 		},
 	}
 	c.Register(adapter)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	collect := drainEvents(sess)
 
 	sess.getOrCreateGoalStore().Set("clear-me objective", time.Now())
 
 	// Arm the notification as continuation #1 ends (steps[3]) so it interleaves ahead
 	// of the gate-time deferred continuation #2.
-	base3 := adapter.steps[3]
-	adapter.steps[3] = func(req llm.Request) llm.Response {
+	base3 := adapter.stepAt(3)
+	adapter.setStepAt(3, func(req llm.Request) llm.Response {
 		enqueueCompletedJobNotification(t, sess, "job_clear")
 		return base3(req)
-	}
+	})
 	// During the notification turn (steps[4]), clear the goal — modelling `/goal clear`
 	// landing while the notification interleaves. This makes the gate-time deferred
 	// continuation string stale.
-	base4 := adapter.steps[4]
-	adapter.steps[4] = func(req llm.Request) llm.Response {
+	base4 := adapter.stepAt(4)
+	adapter.setStepAt(4, func(req llm.Request) llm.Response {
 		if lastMessageIsNotification(req) {
 			if err := sess.ClearGoal(); err != nil {
 				t.Error(err)
 			}
 		}
 		return base4(req)
-	}
+	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
@@ -1147,41 +1129,38 @@ func TestNotification_GoalRetargetedDuringInterleaveUsesNewObjective(t *testing.
 		},
 	}
 	c.Register(adapter)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
 	sess.getOrCreateGoalStore().Set(oldObjective, time.Now())
 
 	// Arm the notification as continuation #1 ends (steps[3]).
-	base3 := adapter.steps[3]
-	adapter.steps[3] = func(req llm.Request) llm.Response {
+	base3 := adapter.stepAt(3)
+	adapter.setStepAt(3, func(req llm.Request) llm.Response {
 		enqueueCompletedJobNotification(t, sess, "job_retarget")
 		return base3(req)
-	}
+	})
 	// During the notification turn (steps[4]), retarget the goal to NEW — modelling
 	// `/goal <new>` landing while the notification interleaves. This makes the
 	// gate-time deferred render (of OLD) stale.
-	base4 := adapter.steps[4]
-	adapter.steps[4] = func(req llm.Request) llm.Response {
+	base4 := adapter.stepAt(4)
+	adapter.setStepAt(4, func(req llm.Request) llm.Response {
 		if lastMessageIsNotification(req) {
 			if _, err := sess.SetGoal(context.Background(), newObjective); err != nil {
 				t.Errorf("SetGoal(new) during notification turn: %v", err)
 			}
 		}
 		return base4(req)
-	}
+	})
 	// Capture the request that drives the post-notification continuation (steps[5]):
 	// its history must carry the NEW objective render, not OLD.
 	var postNotifReq llm.Request
 	var postNotifCaptured bool
-	base5 := adapter.steps[5]
-	adapter.steps[5] = func(req llm.Request) llm.Response {
+	base5 := adapter.stepAt(5)
+	adapter.setStepAt(5, func(req llm.Request) llm.Response {
 		postNotifReq = req
 		postNotifCaptured = true
 		return base5(req)
-	}
+	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { Alert, Text, TextInput, View } from "react-native";
+import { Alert, Text, type TextInputInstance, View } from "react-native";
 import { marketplaceSourceLabel } from "@evener/appwire-client";
 import type { ConnectionState, MarketplaceAddParams, MarketplaceEntry, PluginRefParams } from "@evener/appwire-client";
 import {
@@ -669,7 +669,7 @@ export function AddMarketplace({
 	const [name, setName] = useState("");
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useFormError();
-	const nameInput = useRef<TextInput>(null);
+	const nameInput = useRef<TextInputInstance>(null);
 	const page = useErrorInView(error);
 	// Everything below gates on this, not on `busy` alone: `busy` is only true
 	// while a submission is actually in flight, and disables nothing while

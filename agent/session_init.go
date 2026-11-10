@@ -516,6 +516,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		installID:                     resolveInstallationID(cfg, cfg.StateDir),
 		state:                         SessionIdle,
 		jobActivityClock:              jobClock,
+		hubWatchSignal:                make(chan struct{}),
 		events:                        make(chan events.SessionEvent, 256),
 		history:                       []schema.Turn{},
 		responsesContinuationDisabled: map[responsesContinuationDisabledKey]bool{},
@@ -527,6 +528,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		ownsArtifactStore:             ownsArtifactStore,
 		subscriberCountFn:             cfg.spawn.subscriberCount,
 	}
+	s.bindDescendantTranscriptPublication()
 	s.bufferArtifactStoreWarning(artifactStoreErr)
 	// Publish the first committed notes cut before anything can read one: a
 	// fresh session's live store is empty, and its mutation store may already
@@ -599,6 +601,16 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	if err != nil {
 		return nil, err
 	}
+	// initSessionState minted this root's process livelock as its last step,
+	// so every failure below this point — a fallible constructor step after
+	// init — must give it back: a construction that never came to life must
+	// not hold false-live evidence until process exit (review round 6,
+	// finding 4). On success the normal close path releases it.
+	defer func() {
+		if !initComplete {
+			s.releaseSessionLivelock()
+		}
+	}()
 
 	// initSessionState (via initMCP) may have set s.mcpMgr to a manager holding
 	// live server connections; every error return below this point must close
@@ -789,8 +801,12 @@ type RestoreSessionConfig struct {
 	// the live parent's, replacing whatever the delegate saved.
 	parentMemoryProjectID string
 	StateDir              string
-	Project               identifier.Project
-	ResolveProfile        func(ref string) (*provider.Profile, error)
+	// RendezvousDir is the hosting daemon's rendezvous run directory, the
+	// same field SessionConfig carries — see its doc there. The host that
+	// resolved it for its own registration supplies it here too.
+	RendezvousDir  string
+	Project        identifier.Project
+	ResolveProfile func(ref string) (*provider.Profile, error)
 	// StartupModelListing reuses a listing the launcher already fetched for
 	// this session's model instance instead of fetching it again.
 	StartupModelListing     *StartupModelListing
@@ -826,6 +842,16 @@ type RestoreSessionConfig struct {
 	// exists so a CHILD session inherits its parent's answer (children are built
 	// from the parent's own toSnapshot), which is a different question.
 	TurnEndsProcess bool
+
+	// ExportATIFPath and ExportATIFProviderHandles carry the restoring
+	// invocation's --export-atif choice. They are json:"-" on SessionConfig and
+	// therefore never in the persisted snapshot, so a restored session (`evener
+	// run --resume`, `--resume-with`, or `evener serve --resume`) must be given
+	// them by the launcher or its Close exports nothing. REPLACING rather than
+	// merging matches TurnEndsProcess: the flag, not the saved session, decides
+	// whether this run writes a trajectory.
+	ExportATIFPath            string
+	ExportATIFProviderHandles string
 
 	// AgentsDocPath carries through to the restored Session's SessionConfig,
 	// REPLACING the persisted value rather than merging with it, exactly like
@@ -882,7 +908,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// A delegate's own environment was named when it was prepared, and a shared
 	// delegate is handed its parent's, so only a root restore names env.
 	if restoreCfg.spawn.parentSessionID == "" {
-		nameRootScratch(env, restoredScratchTreeRoot(meta), meta.ID)
+		nameRootScratch(env, meta.RestoredScratchTreeRoot(), meta.ID)
 	}
 
 	restoreComplete := false
@@ -945,6 +971,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	cfg.LifetimeContext = restoreCfg.LifetimeContext
 	cfg.StateDir = canonicalStateDir(restoreCfg.StateDir)
+	cfg.RendezvousDir = restoreCfg.RendezvousDir
 	cfg.Project = restoreCfg.Project
 	cfg.ResolveProfile = restoreCfg.ResolveProfile
 	cfg.AcquireSessionOwnership = restoreCfg.AcquireSessionOwnership
@@ -978,6 +1005,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	cfg.testOnly = restoreCfg.testOnly
 	cfg.TurnEndsProcess = restoreCfg.TurnEndsProcess
+	cfg.ExportATIFPath = restoreCfg.ExportATIFPath
+	cfg.ExportATIFProviderHandles = restoreCfg.ExportATIFProviderHandles
 	cfg.ForceRealIO = restoreCfg.ForceRealIO
 	cfg.SessionStartKind = plugin.SessionStartKindResume
 	cfg.applyDefaults()
@@ -1060,11 +1089,16 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// Where each reopened turn's latest attempt begins in resumeHistory: the
 	// restored state reads an end reason from that attempt alone.
 	var attemptStarts map[string]int
+	// The superseded attention identities the history build and the
+	// coordinate mappers below share: the transcript folds for them once,
+	// not once per reopen marker and boundary they map.
+	var superseded map[string]bool
 	if restoreCfg.resumeHistory != nil {
 		resumeHistory = append([]schema.Turn(nil), restoreCfg.resumeHistory...)
 	} else if len(transcriptEntries) > 0 {
-		resumeHistory, repairInsertions = resumeHistoryIndexed(transcriptEntries)
-		attemptStarts = latestAttemptStarts(transcriptEntries, repairInsertions)
+		superseded = supersededDelegateAttentionIDs(transcriptEntries)
+		resumeHistory, repairInsertions = resumeHistoryIndexedWithSuperseded(transcriptEntries, superseded)
+		attemptStarts = latestAttemptStarts(transcriptEntries, repairInsertions, superseded)
 	}
 	if resumeHistory == nil {
 		resumeHistory = []schema.Turn{}
@@ -1085,7 +1119,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		// transcript-only entries, and repair insertions before the fork
 		// boundary shift it right by one each (resumedDivergence carries the
 		// mechanism).
-		divergenceTurn = resumedDivergence(transcriptEntries, divergenceTurn, repairInsertions)
+		divergenceTurn = resumedDivergence(transcriptEntries, divergenceTurn, repairInsertions, superseded)
 	}
 	resumeHistory = escapeHistoryWithSessionProvenance(resumeHistory, divergenceTurn, clientMutations.steeringOrigins())
 	restoredClientMutationTurns := make(map[string]string)
@@ -1132,6 +1166,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		depth:                    cfg.spawn.depth,
 		delegationAllowance:      delegationAllowance,
 		jobActivityClock:         jobClock,
+		hubWatchSignal:           make(chan struct{}),
 		treeCounter:              tc,
 		driveCounter:             dc,
 		env:                      env,
@@ -1170,6 +1205,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		ownsArtifactStore:           ownsArtifactStore,
 		subscriberCountFn:           cfg.spawn.subscriberCount,
 	}
+	s.bindDescendantTranscriptPublication()
+	s.restoreConversation(transcriptEntries)
 	s.bufferArtifactStoreWarning(artifactStoreErr)
 	s.retirementController.Store(cfg.spawn.retirementController)
 	s.initEnvContext(meta.EnvContext)
@@ -1253,7 +1290,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		g := meta.Goal
 		s.getOrCreateGoalStore().Restore(g.Objective, g.Status, g.StopReason, g.Iterations, g.NoProgressStreak, g.MadeProgressOnce, g.CreatedAt, g.UpdatedAt)
 	}
-	s.pinnedNote = meta.PinnedNote
+	s.pinnedNoteText = meta.PinnedNote
 	// Legacy values predate the write-path control strip: a note or URL label
 	// persisted then can still drive a terminal through the details drawer, the
 	// model copy or the tool output. Normalizing at the load boundary closes
@@ -1310,7 +1347,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// A delegate resumed on its own keeps its scratch in its root's tree, and
 	// Meta() keeps recording that root for the next resume.
 	if restoreCfg.spawn.parentSessionID == "" {
-		if root := restoredScratchTreeRoot(meta); root != meta.ID {
+		if root := meta.RestoredScratchTreeRoot(); root != meta.ID {
 			s.restoredScratchTreeRoot = root
 		}
 	}
@@ -1346,6 +1383,15 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if err != nil {
 		return nil, err
 	}
+	// The restore twin of NewSession's post-init livelock release: the mint
+	// happened inside initSessionState, and any restore-replay failure below
+	// must not leave the restored root reading live until process exit
+	// (review round 6, finding 4).
+	defer func() {
+		if !restoreComplete {
+			s.releaseSessionLivelock()
+		}
+	}()
 
 	// initSessionState (via initMCP) may have set s.mcpMgr to a manager holding
 	// live server connections; every error return below this point must close
@@ -1405,7 +1451,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// one turn behind the file. Both refresh triggers share it so there is
 	// one refresh, not two mechanisms.
 	refreshFromDisk := func(reason string) error {
-		refreshed, err := readTranscriptFull(transcriptPath(s.stateDir, s.id), s.stateDir)
+		refreshed, err := readTranscriptFull(context.Background(), transcriptPath(s.stateDir, s.id), s.stateDir)
 		if err != nil {
 			return fmt.Errorf("refresh transcript after %s: %w", reason, err)
 		}
@@ -1533,7 +1579,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if !restoreCfg.deferRestoreSideEffects {
 		s.recomputeRestoredState(divergenceTurn, attemptStarts)
 	}
-
 	s.emitSessionStartEnvelope(events.SessionStartData{
 		Profile:           profile.ID(),
 		Model:             profile.Model(),
@@ -1761,21 +1806,51 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	// before the permanent prompt and inventory carry it.
 	s.dropUnavailableSkillPreloads()
 
+	// Manager is a start-time property carried by the session itself: the
+	// hub tools are installed here, before the first tool cache build, and no
+	// later hub state read can add or remove them. hubClient may still be nil
+	// at this point; it is transport, not authority.
+	s.mu.Lock()
+	s.hubEnabled = s.cfg.Manager
+	s.mu.Unlock()
+
 	// Cache instruction docs once; reused every round for system prompt rebuilds.
 	s.projectDocs, s.projectDocsTruncated = LoadInstructionDocs(s.currentEnv(), personalDocPath(s.cfg.AgentsDocPath), s.profile.ProjectDocFiles()...)
+	if s.projectDocsTruncated {
+		// A truncated doc silently drops the tail of the user's standing
+		// instructions from the prompt. Buffer the diagnostic here and let
+		// emitSessionStartEnvelope release it after SESSION_START (#1048).
+		s.pendingInstructionWarnings = append(s.pendingInstructionWarnings, events.WarningData{
+			Source:  "evener",
+			Code:    "instruction_docs_truncated",
+			Message: fmt.Sprintf("instruction docs exceeded the %dKB budget and were truncated; the prompt carries only the beginning of the oversized file", projectDocByteBudget/1024),
+		})
+	}
 
 	// Cache tool definitions and the rendered prompt. A render failure here is a
 	// construction-time diagnostic, so it BUFFERS rather than emitting: nothing
 	// may reach the stream before SESSION_START (see emitSessionStartEnvelope).
 	s.rebuildToolDefsCache()
-	if warning := s.refreshSystemPromptCache(env); warning != "" {
+	warning, renderFailed := s.refreshSystemPromptCache(env)
+	if warning != "" {
 		s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings,
 			events.WarningData{Message: warning})
-	} else {
+	}
+	// A disclosed unreadable append degrades the prompt but does not fail the
+	// render: the permanent prompt carrying the role preloads was admitted, so
+	// they still join the skill inventory. Only a failed render skips them.
+	if !renderFailed {
 		// Role preloads join the skill inventory only after the permanent
 		// prompt carrying their complete instructions was admitted.
 		s.seedFrozenSkillPreloads()
 	}
+
+	// Take the root session's process livelock (issue #5471): the lifetime
+	// flock whose release-by-OS at process death is what a later prune's
+	// owner-liveness REPORTING reads. Root sessions only, non-blocking, and
+	// silent on failure — nothing gates or retries on it (see
+	// acquireSessionLivelock).
+	s.acquireSessionLivelock()
 
 	return s.promptSourceLog, nil
 }
@@ -2578,7 +2653,7 @@ func reconnectRecoveryWarning(name string) events.WarningData {
 // on resume, and removed when the hub archives or deletes the session. A
 // scratch the environment already minted is unaffected. rootID is the tree the
 // scratch lives in: the session's own ID, except for a delegate resumed as a
-// top-level session (restoredScratchTreeRoot).
+// top-level session (SessionMeta.RestoredScratchTreeRoot).
 func nameRootScratch(env execenv.ExecutionEnvironment, rootID, sessionID string) {
 	local, ok := env.(*execenv.LocalExecutionEnvironment)
 	if !ok {
@@ -2587,20 +2662,6 @@ func nameRootScratch(env execenv.ExecutionEnvironment, rootID, sessionID string)
 	if root, _ := local.ScratchIdentity(); root == "" {
 		local.SetScratchIdentity(rootID, sessionID)
 	}
-}
-
-// restoredScratchTreeRoot is the root whose scratch tree a restored top-level
-// session's scratch lives in. A delegate resumed on its own (`serve --resume
-// <delegate>`) keeps its directory in the tree of the root that spawned it,
-// which its meta records, so it reopens what it had and goes when that root is
-// archived.
-func restoredScratchTreeRoot(meta schema.SessionMeta) string {
-	for _, root := range []string{meta.ScratchTreeRootID, meta.JobTreeRootSessionID} {
-		if root = strings.TrimSpace(root); meta.IsSubagent && schema.ValidateSessionID(root) == nil {
-			return root
-		}
-	}
-	return meta.ID
 }
 
 // PickFreshSessionID picks the ID a new top-level session will take, unless cfg

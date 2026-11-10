@@ -358,7 +358,7 @@ summary turn was actually produced, `false` when there is no client or the histo
 is too short.
 
 The `instructions` parameter (empty string for default behavior) is forwarded to
-`summarizeWithLLMSteered`, which replaces the default mandatory-sections prompt with
+`summarizeFold`, which replaces the default mandatory-sections prompt with
 the caller's directive. This is how agent-invoked self-compaction steers the summary.
 
 `ForceCompact` is used by two callers:

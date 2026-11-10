@@ -313,7 +313,12 @@ func TestNativePreflightRefusesUnreadyInstalls(t *testing.T) {
 
 }
 
-func TestInstallHomeGeneratedHome(t *testing.T) {
+// TestInstallTarget runs the install target's cases from one copy of the
+// tracked working tree. They share the copy because the Go build cache keys a
+// package on its directory: a second copy recompiles evener from scratch,
+// while a second install from the same copy reuses the first one's build.
+// Each case installs into its own HOME and staging directory.
+func TestInstallTarget(t *testing.T) {
 	if testing.Short() {
 		t.Skip("install integration test")
 	}
@@ -322,8 +327,17 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
 	}
-
 	fixtureRoot := copyTrackedWorkingTree(t, repoRoot)
+
+	t.Run("GeneratedHome", func(t *testing.T) {
+		installGeneratedHome(t, repoRoot, fixtureRoot)
+	})
+	t.Run("FailsWhenABinaryCopyFails", func(t *testing.T) {
+		installFailsWhenABinaryCopyFails(t, fixtureRoot)
+	})
+}
+
+func installGeneratedHome(t *testing.T, repoRoot, fixtureRoot string) {
 	sourceNodeModulesPath := filepath.Join(repoRoot, "cmd", "evener-hub", "frontend", "node_modules")
 	sourceNodeModulesBefore := fingerprintInstallTree(t, sourceNodeModulesPath)
 	home := t.TempDir()
@@ -420,7 +434,7 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 	}
 }
 
-// TestInstallFailsWhenABinaryCopyFails pins install's failure propagation
+// installFailsWhenABinaryCopyFails pins install's failure propagation
 // (SAFE-09): a copy failure into the managed share dir must make the install
 // target exit nonzero. The defect was the loop reporting its last command's
 // status, so a failed `install` followed by a succeeding `ln` — and a later
@@ -432,20 +446,11 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 // successfully. That is exactly the sequence that used to mask the first
 // failure. Asserting the output names evener-missing keeps the failure pinned
 // to the copy rather than to an unrelated build-stage error.
-func TestInstallFailsWhenABinaryCopyFails(t *testing.T) {
-	if testing.Short() {
-		t.Skip("install integration test")
-	}
+func installFailsWhenABinaryCopyFails(t *testing.T, fixtureRoot string) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the install loop requires a Unix shell")
 	}
 
-	repoRoot, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-
-	fixtureRoot := copyTrackedWorkingTree(t, repoRoot)
 	home := t.TempDir()
 	env := installTestEnv(t, home, map[string]string{
 		"XDG_CONFIG_HOME": filepath.Join(home, ".config"),
@@ -453,7 +458,7 @@ func TestInstallFailsWhenABinaryCopyFails(t *testing.T) {
 		"XDG_CACHE_HOME":  filepath.Join(home, ".cache"),
 	})
 
-	// -o build-web is left off for the reason TestInstallHomeGeneratedHome
+	// -o build-web is left off for the reason installGeneratedHome
 	// gives: this is about install's own error propagation, not the SPA.
 	out, err := combinedOutputRetryingETXTBSY(fixtureRoot, env,
 		"make", "-o", "build-web", "install", "EVENER_INSTALL_BINS=evener-missing evener")

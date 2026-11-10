@@ -529,9 +529,7 @@ func TestHubRPCConcurrentMutationsResumeExitedSessionOnce(t *testing.T) {
 	clientB := dialHubRPC(t, hub)
 	defer clientB.Close()
 	for _, c := range []*appwire.Client{clientA, clientB} {
-		if _, err := c.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-			t.Fatalf("Initialize: %v", err)
-		}
+		mustInitializeHubClient(t, c)
 	}
 
 	var wg sync.WaitGroup
@@ -621,7 +619,7 @@ func TestSessionResumeRetryCorrelation(t *testing.T) {
 			ref := "local:" + sessionID
 
 			attempts := 0
-			_, err := withSessionResume(context.Background(), cfg, web.sources, ref, mutationID, func() (appwire.EmptyResponse, error) {
+			_, err := withSessionResume(context.Background(), cfg, web.sources, ref, mutationID, nil, func() (appwire.EmptyResponse, error) {
 				attempts++
 				if attempts == 1 {
 					return appwire.EmptyResponse{}, tc.firstErr
@@ -700,7 +698,7 @@ func TestSessionResumeResumeDeletionFailureKeepsDeletionOutcome(t *testing.T) {
 	cfg.DeletionStore = store
 
 	attempts := 0
-	_, err = withSessionResume(context.Background(), cfg, web.sources, ref, verbatim, func() (appwire.EmptyResponse, error) {
+	_, err = withSessionResume(context.Background(), cfg, web.sources, ref, verbatim, nil, func() (appwire.EmptyResponse, error) {
 		attempts++
 		if _, err := store.Begin("project-fence-0123456789", []hubcore.DeletionTarget{{
 			Ref:      ref,
@@ -1045,9 +1043,7 @@ func TestHubRPCResumeRetrySourceResolutionFailureIsNotAccepted(t *testing.T) {
 
 			client := dialHubRPC(t, server)
 			defer client.Close()
-			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-				t.Fatalf("Initialize: %v", err)
-			}
+			mustInitializeHubClient(t, client)
 
 			mutationID := "mutation-source-resolution-retry"
 			ref := "local:" + sessionID

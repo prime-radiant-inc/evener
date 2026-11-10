@@ -153,7 +153,7 @@ func TestCommunicate_CompetingCallsNeverMixCapture(t *testing.T) {
 					t.Fatalf("second call %s reported accepted=true, want false (a rejected call must not report accepted): %v", secondID, respSecond)
 				}
 
-				if !sess.Communicated() {
+				if !sess.communicated() {
 					t.Fatal("Communicated() = false, want true after a terminal communicate")
 				}
 				// The captured message must be the FIRST call's, the canonical
@@ -171,7 +171,7 @@ func TestCommunicate_CompetingCallsNeverMixCapture(t *testing.T) {
 				if wantOutput := canonicalNodeOutputText(communicateEffectiveOutput(firstMsg, firstVal)); capturedOutput != wantOutput {
 					t.Fatalf("captured canonical output = %q, want %q (first call's canonicalization)", capturedOutput, wantOutput)
 				}
-				if got := sess.CommunicateOutput(); got != capturedOutput {
+				if got := sess.communicateOutput(); got != capturedOutput {
 					t.Fatalf("CommunicateOutput() = %q, want the first call's canonical output %q", got, capturedOutput)
 				}
 				if firstVal == nil {
@@ -248,7 +248,7 @@ func TestCommunicate_SingleCallSemanticsPreserved(t *testing.T) {
 			t.Parallel()
 			sess := newCompetingCommunicateSession(t, tc.custom)
 			execCommunicateCall(t, sess, "c1", communicateArgsFor(tc.custom, tc.message, tc.output))
-			if !sess.Communicated() {
+			if !sess.communicated() {
 				t.Fatal("Communicated() = false, want true")
 			}
 			// Pin the exact captured text, reply, and canonical output — the
@@ -265,7 +265,7 @@ func TestCommunicate_SingleCallSemanticsPreserved(t *testing.T) {
 			if wantOutput := canonicalNodeOutputText(communicateEffectiveOutput(tc.message, tc.output)); output != wantOutput {
 				t.Fatalf("captured canonical output = %q, want %q", output, wantOutput)
 			}
-			if got := sess.CommunicateOutput(); got != output {
+			if got := sess.communicateOutput(); got != output {
 				t.Fatalf("CommunicateOutput() = %q, want %q", got, output)
 			}
 			structured, present := sess.communicateStructuredResult()
@@ -278,6 +278,29 @@ func TestCommunicate_SingleCallSemanticsPreserved(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCommunicateRenamedResultPersistsTypedAcceptance(t *testing.T) {
+	t.Parallel()
+	profile := provider.NewOpenAIProfile("gpt-5.2")
+	sess, err := newResultToolSession(t, profile, SessionConfig{ResultToolName: "deliver_result"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID: "renamed-call", Name: "deliver_result",
+		Arguments: mustMarshalJSON(t, communicateArgsFor(nil, "done", communicateDefaultEnvelope("", nil))), Type: "function",
+	})
+	if res.IsError {
+		t.Fatalf("renamed result tool error: %s", res.Output)
+	}
+	var state communicateEndState
+	if err := json.Unmarshal(res.ToolState, &state); err != nil {
+		t.Fatalf("decode ToolState %q: %v", res.ToolState, err)
+	}
+	if state.Accepted == nil || !*state.Accepted || state.EndTurn == nil || !*state.EndTurn {
+		t.Fatalf("typed result verdict = %+v, want accepted terminal completion", state)
 	}
 }
 

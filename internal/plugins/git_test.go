@@ -136,3 +136,13 @@ func TestFetchPluginSource_RejectsExtTransport(t *testing.T) {
 		t.Fatal("ext:: command executed — RCE not blocked")
 	}
 }
+
+// TestGitRunsUnderTheTestProcessGitConfig pins TestMain's git isolation at the
+// runner plugin materialization clones, fetches and merges through, which
+// spawns git with the process environment: TestMain's gittest.IsolateProcess
+// must reach it.
+func TestGitRunsUnderTheTestProcessGitConfig(t *testing.T) {
+	gittest.RequireIsolated(t, func(dir string, args ...string) (string, error) {
+		return git(t.Context(), dir, args...)
+	})
+}

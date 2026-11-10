@@ -73,13 +73,15 @@
  */
 
 .primary {
-  /* The AA companion also supplies a readable ground for inverted text. */
-  background: var(--accent-ink);
+  /* The editorial action: ink on paper. Accent is spent on focus, links and
+   * selection, so the primary action earns its weight from contrast and
+   * placement rather than a blue fill. */
+  background: var(--ink-hi);
   color: var(--surface-0);
 }
 
 .primary:hover:not(:disabled):not([aria-disabled="true"]) {
-  background: color-mix(in oklab, var(--accent-ink) 78%, var(--ink-hi));
+  background: color-mix(in oklab, var(--ink-hi) 86%, var(--surface-0));
 }
 
 /* The design language's bordered common control (2026-05-22 design language

@@ -243,11 +243,14 @@ func delegateQuietAttentionIDForStretch(lease delegateLease, sequence uint64) st
 	return fmt.Sprintf("quiet:%s:%d:%d", lease.delegateID, lease.generation, sequence)
 }
 
-func delegateQuietAttentionContent(lease delegateLease, activityAt time.Time) string {
+// delegateQuietAttentionContent builds one quiet notice's frame. quietFor is
+// the silence the wake reports, measured at its due boundary (see
+// BeginQuietAttention).
+func delegateQuietAttentionContent(lease delegateLease, quietFor time.Duration, activityAt time.Time) string {
 	return fmt.Sprintf(
 		"<delegate-notification delegate_id=%q>%s</delegate-notification>",
 		html.EscapeString(lease.delegateID),
-		html.EscapeString(quietWatchdogMessage(delegateQuietWindow, activityAt)),
+		html.EscapeString(quietWatchdogMessage(quietFor, activityAt)),
 	)
 }
 
@@ -301,7 +304,13 @@ func (c *delegateTreeController) BeginQuietAttention(receiver *Session, lease de
 	if live.quietNotified {
 		quietSince = live.quietNotifiedAt
 	}
-	if now.Before(quietSince.Add(delegateQuietWindow)) {
+	// The frame names the silence at the wake's due boundary: the first wake
+	// names the window and each repeat of the stretch the ongoing total, so an
+	// owner can tell a continuing silence from a fresh quiet event. The
+	// boundary is committed quiet state, so a deferred or re-admitted claim
+	// re-mints the same content under the same stretch identity.
+	due := quietSince.Add(delegateQuietWindow)
+	if now.Before(due) {
 		return nil, nil
 	}
 	if live.quietSequence == 0 {
@@ -315,7 +324,7 @@ func (c *delegateTreeController) BeginQuietAttention(receiver *Session, lease de
 		activityAt:  activityAt,
 		notifiedAt:  now,
 		attentionID: delegateQuietAttentionIDForStretch(lease, live.quietSequence),
-		content:     delegateQuietAttentionContent(lease, activityAt),
+		content:     delegateQuietAttentionContent(lease, due.Sub(activityAt), activityAt),
 		receiver:    receiver,
 		done:        make(chan struct{}),
 	}

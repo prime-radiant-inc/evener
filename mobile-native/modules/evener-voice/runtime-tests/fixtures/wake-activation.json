@@ -1,0 +1,16 @@
+{
+  "cloudMicrophone" : false,
+  "state" : "conversing",
+  "wake" : {
+    "detections" : 1,
+    "error" : "",
+    "lastDetectionScore" : 0.99850630760192871,
+    "modelId" : "openwakeword-alexa-v0.1-preview",
+    "phrase" : "Alexa",
+    "score" : null,
+    "state" : "paused",
+    "trials" : [
+
+    ]
+  }
+}

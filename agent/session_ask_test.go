@@ -646,7 +646,7 @@ func TestAskUser_InterruptedTurnEndsIdle(t *testing.T) {
 		},
 	}
 	sess := newSession(t, withAdapter(f))
-	sess.RegisterTool("trigger_cancel", "cancels the test's ProcessInput context mid-round, after ask_user has already posted",
+	sess.registerTool("trigger_cancel", "cancels the test's ProcessInput context mid-round, after ask_user has already posted",
 		map[string]any{"type": "object", "properties": map[string]any{}},
 		func(context.Context, any) (any, error) {
 			cancel()
@@ -1008,7 +1008,7 @@ func TestAskUser_BoundaryDrainHoldsNotifications(t *testing.T) {
 		},
 	}
 	sess := newSession(t, withAdapter(f))
-	sess.RegisterTool("enqueue_test_notification",
+	sess.registerTool("enqueue_test_notification",
 		"test-only: enqueues a job notification mid-round, simulating a job finishing while the model is asking a question",
 		map[string]any{"type": "object", "properties": map[string]any{}},
 		func(context.Context, any) (any, error) {
@@ -1071,7 +1071,7 @@ func TestAskUser_QueuedInputDrainsAsReply(t *testing.T) {
 	}
 	sess := newSession(t, withAdapter(f))
 	ctx := tripwireCtx(t)
-	sess.RegisterTool("enqueue_test_queued_input",
+	sess.registerTool("enqueue_test_queued_input",
 		"test-only: enqueues a user message mid-round, simulating the user typing ahead while the model is asking a question",
 		map[string]any{"type": "object", "properties": map[string]any{}},
 		func(context.Context, any) (any, error) {
@@ -1694,10 +1694,7 @@ func TestAskUser_RestoreResolvesAcrossInterrupt(t *testing.T) {
 			},
 		},
 	})
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
 
 	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	if _, err := sess.ProcessInput(context.Background(), "which db should we use?", nil); err != nil {
@@ -1759,11 +1756,8 @@ func TestAskUser_RestoreResolvesAcrossInterruptSameRound(t *testing.T) {
 			},
 		},
 	})
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	sess.RegisterTool("trigger_cancel", "cancels the test's ProcessInput context mid-round, after ask_user has already posted",
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
+	sess.registerTool("trigger_cancel", "cancels the test's ProcessInput context mid-round, after ask_user has already posted",
 		map[string]any{"type": "object", "properties": map[string]any{}},
 		func(context.Context, any) (any, error) {
 			cancel()
@@ -1836,7 +1830,7 @@ func TestAskUser_InterruptMarkerWriteFailurePreservesBoundary(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AcceptClientMutationQueue: %v", err)
 	}
-	if got := sess.QueueDepth(); got != 1 {
+	if got := sess.queueDepth(); got != 1 {
 		t.Fatalf("queue depth before already-canceled input = %d, want 1", got)
 	}
 	drainPendingEvents(sess)
@@ -1878,7 +1872,7 @@ func TestAskUser_InterruptMarkerWriteFailurePreservesBoundary(t *testing.T) {
 	if got := sess.WireState(); got != string(SessionAwaiting) {
 		t.Fatalf("live wire state after failed interrupt marker = %q, want %q", got, SessionAwaiting)
 	}
-	if got := sess.QueueDepth(); got != 1 {
+	if got := sess.queueDepth(); got != 1 {
 		t.Fatalf("queue depth after failed interrupt marker = %d, want 1", got)
 	}
 	for _, turn := range sessionHistory(sess) {
@@ -1925,7 +1919,7 @@ func TestAskUser_InterruptMarkerWriteFailurePreservesBoundary(t *testing.T) {
 	if got := restored.WireState(); got != string(SessionAwaiting) {
 		t.Fatalf("restored wire state = %q, want %q", got, SessionAwaiting)
 	}
-	if got := restored.QueueDepth(); got != 1 {
+	if got := restored.queueDepth(); got != 1 {
 		t.Fatalf("restored queue depth = %d, want 1", got)
 	}
 	for _, turn := range sessionHistory(restored) {
@@ -1962,10 +1956,10 @@ func TestAskUser_FailedInterruptMarkerAfterAnsweredToolRoundMatchesRestore(t *te
 	c := llm.NewClient()
 	c.Register(adapter)
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{StateDir: dir}))
-	sess.RegisterTool("loop_tool", "returns a completed result", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
+	sess.registerTool("loop_tool", "returns a completed result", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
 		return "ok", nil
 	})
-	sess.RegisterTool("trigger_cancel", "lets the post-tool hook cancel", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
+	sess.registerTool("trigger_cancel", "lets the post-tool hook cancel", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
 		return "triggered", nil
 	})
 
@@ -2207,7 +2201,7 @@ func TestAskUser_InterruptMarkerRetainedWriteIsAdopted(t *testing.T) {
 		},
 	})
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{StateDir: dir}))
-	sess.RegisterTool("trigger_cancel", "cancels after ask_user posts",
+	sess.registerTool("trigger_cancel", "cancels after ask_user posts",
 		map[string]any{"type": "object", "properties": map[string]any{}},
 		func(context.Context, any) (any, error) { return "cancel after the tool results are durable", nil })
 	syncFailure := errors.New("retained interrupt marker sync failure")
@@ -2878,10 +2872,7 @@ func TestAskUser_RestoreDoesNotResolveAcrossASuccessfulHumanNoteCarrierCompletio
 			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(comm) },
 		},
 	})
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
 
 	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
@@ -3194,11 +3185,7 @@ func TestAskUser_InjectPostToolSteeringClearsPendingAskForAnAcceptedUserSteer(t 
 	}
 	c := llm.NewClient()
 	c.Register(fa)
-	var err error
-	sess, err = NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess = newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
 	defer sess.Close()
 
 	runAskRound(t, sess)
@@ -3263,11 +3250,7 @@ func TestAskUser_SteeringInjectedNeverObservesAskPendingStillTrue(t *testing.T) 
 	}
 	c := llm.NewClient()
 	c.Register(fa)
-	var err error
-	sess, err = NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess = newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
 	defer sess.Close()
 
 	var samples []int
@@ -3699,10 +3682,7 @@ func TestAskUser_RestoreRebuildsPendingCountAndOrder(t *testing.T) {
 			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask1, ask2) },
 		},
 	})
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
 
 	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "pick a db and a name", nil); err != nil {
@@ -4138,11 +4118,7 @@ func TestAskUser_MidRoundResolvingSteerClearingAFreshAskDoesNotForceAwaitingEarl
 		},
 	}
 	c.Register(fa)
-	var err error
-	sess, err = NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess = newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
 	defer sess.Close()
 
 	ctx := tripwireCtx(t)
@@ -4242,7 +4218,7 @@ func TestAskUser_LiveStateAfterPoisonedTranscriptRefusalMatchesRestore(t *testin
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	sess.RegisterTool("loop_tool", "runs one non-terminal tool round", map[string]any{"type": "object"}, func(ctx context.Context, args any) (any, error) {
+	sess.registerTool("loop_tool", "runs one non-terminal tool round", map[string]any{"type": "object"}, func(ctx context.Context, args any) (any, error) {
 		return "ok", nil
 	})
 
@@ -4382,7 +4358,7 @@ func TestAskUser_LiveStateAfterToolRoundBudgetCarrierMatchesRestore(t *testing.T
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	sess.RegisterTool("loop_tool", "runs one non-terminal tool round", map[string]any{"type": "object"}, func(ctx context.Context, args any) (any, error) {
+	sess.registerTool("loop_tool", "runs one non-terminal tool round", map[string]any{"type": "object"}, func(ctx context.Context, args any) (any, error) {
 		return "ok", nil
 	})
 
@@ -4434,10 +4410,7 @@ func TestAskUser_LiveStateAfterNotificationYieldMatchesRestore(t *testing.T) {
 			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(taskList) },
 		},
 	})
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
 
 	// TRIPWIRE: scripted adapter and queued notification are deterministic; this only trips on a genuine lifecycle deadlock.
 	ctx := tripwireCtx(t)
@@ -4498,11 +4471,7 @@ func TestAskUser_LiveStateAfterCommunicateWithPendingNotificationMatchesRestore(
 		},
 	}
 	c.Register(adapter)
-	var err error
-	sess, err = NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess = newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
 
 	// TRIPWIRE: scripted provider and in-memory notification are deterministic;
 	// this only fires on a genuine lifecycle deadlock.
@@ -4597,7 +4566,7 @@ func TestAskUser_LiveStateAfterObserverYieldMatchesRestore(t *testing.T) {
 	}, 4096); err != nil {
 		t.Fatalf("create stable observer watch: %v", err)
 	}
-	sess.RegisterTool("loop_tool", "runs one non-terminal tool round", map[string]any{"type": "object"}, func(ctx context.Context, args any) (any, error) {
+	sess.registerTool("loop_tool", "runs one non-terminal tool round", map[string]any{"type": "object"}, func(ctx context.Context, args any) (any, error) {
 		return "ok", nil
 	})
 
@@ -4682,5 +4651,110 @@ func TestRoundEntryResolvesAskBoundary_SkipsNonCarrierFailureToFindTheRealEntry(
 	}
 	if !roundEntryResolvesAskBoundary(history, 3, 0, nil) {
 		t.Fatal("roundEntryResolvesAskBoundary = false, want true (a non-carrier TurnFailure is transparent bookkeeping before the resolving TurnUserInput entry)")
+	}
+}
+
+// Typed verdicts separate restorable end reasons from calls the input never
+// settled on: since typed state rides every result path, a rejected or
+// nonterminal call records a reason the restore scan must not hand back.
+// Legacy states — an end reason with no explicit verdict, the only shape
+// written before the verdict fields — still count, because those were only
+// ever recorded on the accepted terminal path.
+func TestCommunicateEndReasonOfGatesOnTypedVerdict(t *testing.T) {
+	t.Parallel()
+	yes, no := true, false
+	for _, tc := range []struct {
+		name  string
+		state communicateEndState
+		want  string
+	}{
+		{name: "accepted terminal reason", state: communicateEndState{Accepted: &yes, EndTurn: &yes, EndReason: "needs_response"}, want: "needs_response"},
+		{name: "rejected terminal reason", state: communicateEndState{Accepted: &no, EndTurn: &yes, EndReason: "done"}, want: ""},
+		{name: "accepted nonterminal reason", state: communicateEndState{Accepted: &yes, EndTurn: &no, EndReason: "done"}, want: ""},
+		{name: "rejected nonterminal reason", state: communicateEndState{Accepted: &no, EndTurn: &no, EndReason: "done"}, want: ""},
+		{name: "legacy end reason only", state: communicateEndState{EndReason: "needs_response"}, want: "needs_response"},
+		{name: "no verdict no reason", state: communicateEndState{}, want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			raw, err := json.Marshal(tc.state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := communicateEndReasonOf(&llm.ToolResultData{ToolState: raw}); got != tc.want {
+				t.Fatalf("communicateEndReasonOf(%s) = %q, want %q", raw, got, tc.want)
+			}
+		})
+	}
+}
+
+// An input's terminal capture is first-wins, and a Stop hook block can send
+// the input on past the call it accepted, so a later terminal call in the
+// same attempt loses the capture and records accepted:false with its own
+// requested end reason. The restore scan reads that attempt back-to-front;
+// if the rejected call's reason were restorable, the session would restore
+// idle while its settlement still awaits the user — live and restore would
+// disagree.
+func TestCommunicateRestoreKeepsSettledNeedsResponseBehindRejectedRetry(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	blocked := filepath.Join(t.TempDir(), "stop-hook-blocked-once")
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(communicateCallArgs("comm-1", map[string]any{
+					"message": "which db should we use?", "end_turn": true, "end_reason": "needs_response",
+				}))
+			},
+			func(req llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(communicateCallArgs("comm-2", map[string]any{
+					"message": "settling on done regardless", "end_turn": true, "end_reason": "done",
+				}))
+			},
+		},
+	}
+	// The Stop hook blocks the first turn end — sending the input on past its
+	// accepted terminal communicate — and allows the second.
+	runner := hooks.NewRunner(nil, "")
+	runner.Add(plugin.HookStop, plugin.RegisteredHook{
+		Matcher: "*",
+		Type:    "command",
+		Command: "if [ -f " + blocked + " ]; then exit 0; else touch " + blocked + "; printf '%s' '{\"decision\":\"block\",\"reason\":\"one more round\"}'; fi",
+		Timeout: 5,
+	})
+	var sess *Session
+	c := llm.NewClient()
+	c.Register(f)
+	var err error
+	cfg := SessionConfig{StateDir: dir}
+	// The needs_response rest arms synchronously here (no quiet period): the
+	// live-against-restore comparison below reads sess.State() as soon as
+	// ProcessInput returns.
+	cfg.testOnly.needsResponseQuietPeriod = new(time.Duration)
+	sess, err = NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), cfg)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	sess.hookRunner = runner
+
+	// TRIPWIRE: scripted in-process adapter; the Stop hook is a real
+	// subprocess writing a real marker file. Only fires on a genuine hang.
+	ctx := tripwireCtx(t)
+	if _, err := sess.ProcessInput(ctx, "talk", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := len(f.Requests()); got != 2 {
+		t.Fatalf("provider requests = %d, want 2 (the block decision must send the input on to a second round)", got)
+	}
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("live state = %q, want %q (the input settled on comm-1's accepted needs_response)", got, SessionAwaiting)
+	}
+	meta := sess.Meta()
+	sess.Close()
+
+	restored := restoreAskSession(t, meta, dir)
+	if got := restored.State(); got != SessionAwaiting {
+		t.Fatalf("restored state = %q, want %q: comm-2's rejected done must not read as the restorable verdict ahead of comm-1's accepted needs_response", got, SessionAwaiting)
 	}
 }

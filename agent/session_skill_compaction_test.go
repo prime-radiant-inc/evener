@@ -97,7 +97,7 @@ func TestSkillCompaction_AcceptanceSecondRequestRejected(t *testing.T) {
 	if second != 0 {
 		t.Fatalf("rejected request must not mint a generation, got %d", second)
 	}
-	if got := s.PinnedNote(); got != "first" {
+	if got := s.pinnedNote(); got != "first" {
 		t.Fatalf("rejected request mutated the note: %q", got)
 	}
 	sel := cycleSkillReloadSelection(s)
@@ -135,7 +135,7 @@ func TestSkillCompaction_AcceptanceForcedRequestSupersedesAutomaticOperation(t *
 	if op == nil || op.Generation != gen || op.Origin != "forced" || op.Instructions != "opaque-instructions" {
 		t.Fatalf("pending operation = %+v, want the superseding forced operation", op)
 	}
-	if got := s.PinnedNote(); got != "replacing-note" {
+	if got := s.pinnedNote(); got != "replacing-note" {
 		t.Fatalf("replacing note = %q", got)
 	}
 	if sel := cycleSkillReloadSelection(s); sel.State != "absent" {
@@ -159,7 +159,7 @@ func TestSkillCompaction_StaleCapturedGenerationRejected(t *testing.T) {
 	if accepted {
 		t.Fatal("a stale captured note generation must be rejected")
 	}
-	if got := s.PinnedNote(); got != "changed mid-elicitation" {
+	if got := s.pinnedNote(); got != "changed mid-elicitation" {
 		t.Fatalf("rejected acceptance mutated the note: %q", got)
 	}
 	if s.pendingSkillCompactionSnapshot() != nil {
@@ -213,7 +213,7 @@ func TestSkillCompaction_LatchNonemptyNoteSkipsElicitation(t *testing.T) {
 	if called {
 		t.Fatal("elicitor must not be called when a note is already set")
 	}
-	if got := s.PinnedNote(); got != "AGENT'S OWN NOTE" {
+	if got := s.pinnedNote(); got != "AGENT'S OWN NOTE" {
 		t.Fatalf("agent note must be preserved, got %q", got)
 	}
 }
@@ -240,7 +240,7 @@ func TestSkillCompaction_LatchPendingOperationSkipsElicitation(t *testing.T) {
 	if called {
 		t.Fatal("a pending compaction operation must latch elicitation")
 	}
-	if got := s.PinnedNote(); got != "" {
+	if got := s.pinnedNote(); got != "" {
 		t.Fatalf("empty note must stay empty, got %q", got)
 	}
 }
@@ -309,7 +309,7 @@ func TestSkillCompaction_ClearNoteCancelsAutomaticOperation(t *testing.T) {
 	if generation != 0 {
 		t.Fatalf("clear must not mint an operation generation, got %d", generation)
 	}
-	if got := s.PinnedNote(); got != "" {
+	if got := s.pinnedNote(); got != "" {
 		t.Fatalf("clear must empty the note, got %q", got)
 	}
 	if s.pendingSkillCompactionSnapshot() != nil {
@@ -348,7 +348,7 @@ func TestSkillCompaction_ClearNoteLeavesForcedOperation(t *testing.T) {
 		schema.SkillReloadSelection{State: "absent"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := s.PinnedNote(); got != "" {
+	if got := s.pinnedNote(); got != "" {
 		t.Fatalf("note must be cleared, got %q", got)
 	}
 	op := s.pendingSkillCompactionSnapshot()
@@ -378,14 +378,14 @@ func TestSkillCompaction_ClearNotePersistsWithoutPendingOperation(t *testing.T) 
 	if err := s.cancelSkillCompaction(context.Background(), gen, "test"); err != nil {
 		t.Fatal(err)
 	}
-	if got := s.PinnedNote(); got != "keep" {
+	if got := s.pinnedNote(); got != "keep" {
 		t.Fatalf("note must still be pinned before the clear, got %q", got)
 	}
 	if _, err := s.requestSkillCompaction(context.Background(), "", "",
 		schema.SkillReloadSelection{State: "absent"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := s.PinnedNote(); got != "" {
+	if got := s.pinnedNote(); got != "" {
 		t.Fatalf("note must be cleared, got %q", got)
 	}
 	loaded, err := schema.LoadSessionMeta(stateDir, s.Meta().ID)
@@ -511,7 +511,7 @@ func TestSkillCompaction_SaveFailedRequestIsTypedAndRetryable(t *testing.T) {
 		// The elicited note itself survives in memory — the same best-effort
 		// pinning a successful elicitation always had before persistence
 		// existed; only the durable operation record is retired.
-		if got := s.PinnedNote(); got != "auto-note" {
+		if got := s.pinnedNote(); got != "auto-note" {
 			t.Fatalf("elicited note must survive as the best-effort pin, got %q", got)
 		}
 

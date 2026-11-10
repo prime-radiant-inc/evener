@@ -144,8 +144,8 @@ Native open-session rehydration also retains open status on failure, outside its
 initial-read retry loop. The server can repair a projection on a later read.
 
 **Evidence.** Browser
-[hydrateAndSubscribe](../../cmd/evener-hub/frontend/src/stores/threads.ts#L1818),
-native [rehydrate](../../mobile-native/src/conversation/state/conversation.ts#L2017) and
+[refreshTrackedThread](../../cmd/evener-hub/frontend/src/stores/threads.ts),
+native [rehydrate](../../mobile-native/src/conversation/state/conversation.ts) and
 [entry read actor](../../mobile-native/src/session/nativeConversationSessions.ts#L417), and server
 [recoverForRead](../../server/thread_history.go#L355) expose the ownership gap.
 Shared `reducer.history.test.ts` specifies that a later success clears history failure.
@@ -194,7 +194,9 @@ resending, and retry the original operation when authoritative state establishes
 that it was not accepted. Preserve stop epochs, stale-client rejection and
 explicit Stop or cancel holds. Unknown outcomes require reconciliation, not
 blind replay. Empty or fully settled outboxes need no added recovery polling.
-Implementation remains pending.
+One browser-side bound is implemented: a failed send-resumes resume drive is
+retried automatically with capped backoff while the restart obligation stands.
+Native convergence itself remains pending.
 
 **Acceptance.** Queue input, leave for Board, reconnect, fail the first proof
 read through a prolonged outage, then let reads succeed without another event.
@@ -427,15 +429,15 @@ no in-memory ordering guard, so the per-ref ordering gap applies without
 a refusal, and its dispatch gate does not apply to the fallback. With no
 ready connection the storage error is the send's failure.
 
-**Evidence.** [enqueueMutationIntent](../../cmd/evener-hub/frontend/src/stores/threads.ts#L2999)
-and its [direct-fallback branch and ordering guard](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3092);
-[dispatchMutationDirectly](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3303)
+**Evidence.** [enqueueMutationIntent](../../cmd/evener-hub/frontend/src/stores/threads.ts)
+and its [direct-fallback branch and ordering guard](../../cmd/evener-hub/frontend/src/stores/threads.ts);
+[dispatchMutationDirectly](../../cmd/evener-hub/frontend/src/stores/threads.ts)
 mints one `clientMutationId` before its retry ladder; the missing fence is the
 [click-time stop epoch](../../appwire-client/typescript/state/mutation/outbox.ts#L73)
 the enqueue compares against. The [reconcile
-classification](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3865)
+classification](../../cmd/evener-hub/frontend/src/stores/threads.ts)
 splits the storage-caused failure from a genuine one, and
-[currentDispatchClient](../../cmd/evener-hub/frontend/src/stores/threads.ts#L1150)
+[currentDispatchClient](../../cmd/evener-hub/frontend/src/stores/threads.ts)
 fences a storage-blocked ref everywhere except the send fallback's own re-earn.
 [NativeMutationRuntime.submit](../../mobile-native/src/nativeMutationRuntime.ts)
 and `isSqliteStorageFailure` in
@@ -508,7 +510,7 @@ the diagnostic instructs a restart.
 
 **Evidence.** [failClosed and retryDurabilityUntilSettledOrExhausted](../../agent/session_fail_closed.go#L54)
 set the cause without a reset;
-[refuseOnUnhealthyTranscript](../../agent/session_lifecycle.go#L1804) checks it
+[refuseOnUnhealthyTranscript](../../agent/session_transcript_refusal.go#L98) checks it
 before current writer health. Existing
 `TestRetainedCompletionFailsAServedSessionClosedAfterExhaustingRetries` and
 `TestRetainedCompletionSettlesAfterRetryingTheBarrier` distinguish
@@ -568,6 +570,14 @@ every active saved registration with `runtime_lost`. Future monitoring stops,
 including declarative repeating timers whose configuration is saved. A repeating
 send watch that has already spoken can also skip an individual restart-end
 notice. Saved pending deliveries and future registrations have different lifetimes.
+Manager is an immutable session-start role. Its local and remote hub watches use
+the shared human/Manager subscription path, with independent subscriber lifetimes.
+They retain pending notices across interruption and resume only after checking
+the caller's ref and instance and the target's ref, instance and generation.
+Resync re-reads authoritative state; replacement or exhausted recovery ends the
+watch with re-registration guidance. Runtime restart also ends a continuing watch
+with an explicit re-registration notice, even after prior event delivery. This
+does not restore ordinary watches or repeating timers.
 
 **Evidence.** [newJobManagerWithStoreOpen](../../agent/jobs.go) and
 [clearUnrestoredActiveWatches](../../agent/jobs.go) clear all active records;
@@ -600,7 +610,7 @@ the need to communicate that future observation ended. Preserve enough watch
 identity and intent for the session to act on the notification, and respect
 explicit Stop and the watched target's lifetime. Automatic restoration is not
 required where reliable cancellation notification provides the simpler recovery.
-Implementation remains pending.
+Implementation remains pending for ordinary watches and repeating timers.
 
 **Acceptance.** Restart with active timers and watches, including a repeating
 watch that has already delivered a result. Each continuing intent either resumes
@@ -669,14 +679,15 @@ resume; newer instructions take precedence over the objective that was waiting.
 
 ### R06 Read-only goal progress
 
-**Current behavior.** Goal progress accounting treats eligible mutating or unknown
-tool-call attempts as progress, excluding result/communicate and task_list,
-rather than measuring successful contribution. Useful read-only investigation
-can accumulate no-progress turns while an attempted mutation resets them.
-Thresholds differ before and after mutating activity.
+**Current behavior.** Goal progress accounting credits only executed,
+successful, progress-eligible tool results. Read-only tools,
+result/communicate, task_list, unknown tool names, and failed calls (including
+structured shell, delegate-send and invalid-argument failures) do not reset
+the no-progress streak. Useful read-only investigation can therefore still
+accumulate no-progress turns even when it advances the work.
 
-**Evidence.** [callsMadeProgress](../../agent/session_goal.go#L173), its
-[lifecycle call site](../../agent/session_lifecycle.go#L2403), and
+**Evidence.** [toolResultsMadeProgress](../../agent/session_goal.go#L178), its
+[lifecycle call site](../../agent/session_lifecycle.go#L2034), and
 [goal progress state](../../agent/internal/goal/goal.go#L18) encode the rule.
 Root daemon sessions with continuation and notification wiring already exempt
 waiting for dependents that can guarantee a wake. Child and one-shot sessions
@@ -731,7 +742,7 @@ replacement/crash restoration rather than every idle transition.
 
 **Evidence.** [Goal restoration](../../agent/session_init.go#L1271),
 [continuation callback wiring](../../agent/session_goal.go#L18), and daemon
-[wiring](../../cmd/evener/serve.go#L1268) load and wire without a restore wake.
+[wiring](../../cmd/evener/serve_bridge.go#L174) load and wire without a restore wake.
 Existing goal/ask tests distinguish persisted state from pending-question holds.
 
 **Decision.** Automatically resume an unfinished active goal when its runtime
@@ -758,7 +769,7 @@ preserving an unanswered question.
 
 **Evidence.** [Compact](../../agent/session_compaction.go#L30) checks pending asks
 before compaction, and the [explicit command
-callback](../../cmd/evener/serve.go#L1430) uses that entry point. Automatic
+callback](../../cmd/evener/serve_wiring.go#L59) uses that entry point. Automatic
 [context management](../../agent/internal/contextmgr/context_strategy.go#L68)
 calls the context manager separately. Existing `session_ask_test.go` tests the
 explicit-compaction refusal.
@@ -782,7 +793,7 @@ history, local navigation and unrelated provider instances unavailable. Provider
 configuration has a separate degraded path, so failure scope is inconsistent.
 
 **Evidence.** [Credential loading](../../internal/credentials/store.go#L58) rejects
-the file; [hub startup](../../cmd/evener-hub/main.go#L385) returns the error.
+the file; [hub startup](../../cmd/evener-hub/hub_startup.go#L374) returns the error.
 `TestStore_PermissionsEnforced` specifies the store's permission refusal.
 Separately, `TestAuth_UnreadableCredentialsStoreRefusesInsteadOfPanicking` tests
 an auth controller that keeps reads working while refusing writes; it does not
@@ -828,7 +839,7 @@ path; this case concerns API-key snapshots.
 
 **Evidence.** [LoadRegistry](../../cmdutil/registry.go#L64),
 [Store.Get](../../internal/credentials/store.go#L86),
-[daemon client construction](../../cmd/evener/serve.go#L588),
+[daemon client construction](../../cmd/evener/serve.go#L615),
 [session client retention](../../agent/session_init.go#L1116), and
 [hub credential save](../../cmd/evener-hub/app_auth.go#L613) have different
 lifetimes. A new runtime reloads configuration; a running one lacks that repair
@@ -855,8 +866,8 @@ complete quarantine custody aborts hub startup. Remote host administration can
 therefore block unrelated local sessions and history. Complete quarantine and
 some other IO failures already have degraded recovery paths.
 
-**Evidence.** [openHostOpsStore](../../cmd/evener-hub/main.go#L952) and its
-[startup handling](../../cmd/evener-hub/main.go#L606);
+**Evidence.** [openHostOpsStore](../../cmd/evener-hub/main.go#L394) and its
+[startup handling](../../cmd/evener-hub/hub_startup.go#L461);
 `TestOpenHostOpsStoreRefusesStartupOnIncompleteCustody` pins the global
 refusal. This does not justify discarding the journal or following untrusted
 stash paths.
@@ -1137,10 +1148,13 @@ scenario here.
 ### T01 Tool-call parking
 
 **Current behavior.** After two actual failures of the same semantic tool call
-and failure class, dispatch parks the third and subsequent attempts. The parked
-result cannot discover that a file, server or dependency has healed. Elapsed
-time and successful different calls do not clear it. Repeated successful calls
-are explicitly never parked.
+and failure class, dispatch parks the third and subsequent attempts of a tool
+that can change state. Read-only tools are never parked on repeated failures: a
+read cannot make a failed retry worse, and the call must be able to observe
+that a file, server or dependency has healed. A parked result cannot discover
+that a file, server or dependency has healed. Elapsed time and successful
+different calls do not clear a park. Repeated successful calls are explicitly
+never parked.
 
 **Evidence.** [Registry dispatch](../../agent/internal/tool/registry.go#L719) and
 [breaker state](../../agent/internal/tool/breaker.go#L280) own the fingerprint and
@@ -1357,8 +1371,10 @@ explicit. A resumed attempt would need a backend-verifiable way to keep a grante
 pathname from being re-pointed, which six review rounds did not find.
 
 **Current behavior.** `restricted` grants the user's global git config FILES
-read-only (`$XDG_CONFIG_HOME/git/config`, `~/.gitconfig`) so git can run at all on a
-host that has one. It grants nothing of its own for the files those configs NAME
+read-only (`$XDG_CONFIG_HOME/git/config`, `~/.gitconfig`, or the file
+`GIT_CONFIG_GLOBAL` names instead, plus a non-default `GIT_CONFIG_SYSTEM` unless
+`GIT_CONFIG_NOSYSTEM` is set) so git can run at all on a host that has one. It
+grants nothing of its own for the files those configs NAME
 through `core.excludesFile` or `core.attributesFile`: such a file is readable only
 where it already sits under a root the mode grants — the project worktree, `/etc`,
 `/opt`, `/nix/store` and the other system read roots — and not elsewhere, typically

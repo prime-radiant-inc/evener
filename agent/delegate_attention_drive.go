@@ -7,15 +7,15 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
-func bindStableDelegateActivity(child *Session, controller *delegateTreeController, lease delegateLease) {
+func bindDelegateActivity(child *Session, controller *delegateTreeController, lease delegateLease) {
 	if child == nil || controller == nil {
 		return
 	}
-	owner := controller.stableDelegateOwnerRuntime(lease)
-	bindStableDelegateActivityToOwner(child, controller, lease, owner)
+	owner := controller.delegateOwnerRuntime(lease)
+	bindDelegateActivityToOwner(child, controller, lease, owner)
 }
 
-func bindStableDelegateActivityToOwner(child *Session, controller *delegateTreeController, lease delegateLease, owner *Session) {
+func bindDelegateActivityToOwner(child *Session, controller *delegateTreeController, lease delegateLease, owner *Session) {
 	if child == nil || controller == nil {
 		return
 	}
@@ -38,11 +38,11 @@ func bindStableDelegateActivityToOwner(child *Session, controller *delegateTreeC
 	jm := child.jobManager
 	child.mu.Unlock()
 	if jm != nil {
-		jm.bindStableDelegateParent(controller, lease, forward, child)
+		jm.bindDelegateParent(controller, lease, forward, child)
 	}
 }
 
-func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
+func (s *Session) driveDelegateAttention(sub *subagent) bool {
 	if s == nil || sub == nil || sub.sess == nil || sub.sess.owningDelegateID == "" || s.delegateController == nil || sub.sess.delegateController != s.delegateController {
 		return false
 	}
@@ -51,7 +51,7 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 		ids = []string{retryID}
 	} else {
 		var err error
-		ids, err = sub.sess.pendingDelegateAttentionIDs()
+		ids, err = sub.sess.automaticDelegateAttentionIDs()
 		if err != nil {
 			s.emit(warningDataFromError("inspect delegate attention", err))
 			return true
@@ -78,7 +78,7 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 	// CommitStart, the delegate update emit), and the run goroutine only sets
 	// running at the far end of it. Without the claim a wake-edge drive landing
 	// in that gap reads an idle child: the reservation is already consumed and
-	// the attention is no longer pending, so driveStableDelegateAttention itself
+	// the attention is no longer pending, so driveDelegateAttention itself
 	// declines, and driveChildIfNotStopGated falls through to
 	// driveSubagentNotificationTurn, which starts a second, UNLEASED turn on the
 	// session this generation is about to run. The two turns then share one
@@ -90,7 +90,7 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 	// childCommittedSendStart is consulted here, at the decision point, so every
 	// path into the attention drive is gated at the depth the decision is made
 	// rather than relying on each caller to remember (#940).
-	// drivePendingStableDelegateAttention reaches this primitive directly with no
+	// drivePendingDelegateAttention reaches this primitive directly with no
 	// caller-side gate.
 	// startBlockedLocked is the shared drive-guard predicate delegate_send reads
 	// through takeSendDriveGuard, so the two busy lists cannot drift. The
@@ -133,7 +133,7 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 	if retryID := s.delegateController.reservedAttentionID(sub.sess); retryID != "" {
 		ids = []string{retryID}
 	} else {
-		pending, err := sub.sess.pendingDelegateAttentionIDs()
+		pending, err := sub.sess.automaticDelegateAttentionIDs()
 		if err != nil {
 			s.emit(warningDataFromError("inspect delegate attention", err))
 			return true
@@ -159,9 +159,37 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 		s.delegateController.retryDelegateAttentionLater()
 		return true
 	}
-	started, err := s.delegateController.CommitStart(reservation)
-	if err != nil {
-		s.emit(warningDataFromError("commit delegate attention", err))
+	var commitErr error
+	// The seam is runtime-mutable through updateSessionTestConfig, so its
+	// read shares the setter's session mutex — the convention every
+	// mid-run-mutable test seam follows.
+	s.mu.Lock()
+	fault := s.cfg.testOnly.delegateAttentionCommitStartFault
+	s.mu.Unlock()
+	if fault != nil {
+		// A test seam, nil in production: its error stands in for a commit the
+		// controller refused, so the recovery arms below can be pinned without
+		// racing a real refusal. A busy refusal releases the reservation, so
+		// the seam aborts the start on that error class to mirror the release
+		// a real busy commit performed before the arm below reads it.
+		if commitErr = fault(); commitErr != nil && errors.Is(commitErr, errDelegateTargetBusy) {
+			_ = s.delegateController.AbortStart(reservation)
+		}
+	}
+	var started delegateStartCommit
+	if commitErr == nil {
+		started, commitErr = s.delegateController.CommitStart(reservation)
+	}
+	if commitErr != nil {
+		s.emit(warningDataFromError("commit delegate attention", commitErr))
+		// A busy commit released the reservation, so nothing retries this
+		// start: without the reopen the consume marker acceptDelegateAttention
+		// already wrote would strand the report forever. A failed journal append
+		// keeps the reservation, so the sticky retry re-presents it and the
+		// reopen is left to that retry's own failure.
+		if errors.Is(commitErr, errDelegateTargetBusy) {
+			s.reopenFailedDelegateAttention(sub, ids[0])
+		}
 		s.delegateController.retryDelegateAttentionLater()
 		return true
 	}
@@ -172,18 +200,65 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 	launchErr := s.launchAcceptedDelegateAttention(sub, started)
 	launched = launchErr == nil
 	if launchErr != nil {
-		plans, finishErr := s.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(launchErr, "launch_failed"))
+		// FinishGeneration, not FailCommittedRestart: an attention
+		// generation's binding is born ready, and FailCommittedRestart refuses
+		// ready bindings — its cleanup would no-op and leave the delegate
+		// running in the controller's live state forever, ineligible for every
+		// later start. The launch refused after the commit, so the generation
+		// is failed the way any unlaunched start is, quiescence report
+		// included, or the delegate stays refused as still finalizing.
+		plans, finishErr := s.delegateController.FinishGeneration(started.lease, delegatePermanentStartFailure(launchErr, "launch_failed"))
 		if executeErr := s.executeDelegateMutationPlans(plans); finishErr == nil {
 			finishErr = executeErr
 		}
+		s.releaseFinishedGeneration(started.lease, sub.sess)
 		s.emit(warningDataFromError("launch delegate attention", errors.Join(launchErr, finishErr)))
+		// The committed start closed and the launch refused, so this
+		// generation will never present the report it consumed.
+		s.reopenFailedDelegateAttention(sub, ids[0])
+		s.delegateController.retryDelegateAttentionLater()
 	}
 	return true
+}
+
+// reopenFailedDelegateAttention restores a report a presentation start
+// consumed and then abandoned. A closing owner, a closing tree and a
+// deliberately stopped child are left to their teardown: those paths already
+// discard pending attention, and a report re-delivered into a tearing-down
+// tree would only race the discard.
+func (s *Session) reopenFailedDelegateAttention(sub *subagent, attentionID string) {
+	if s == nil || sub == nil || sub.sess == nil || attentionID == "" {
+		return
+	}
+	if s.childStopGated(sub.sess.id) {
+		return
+	}
+	if s.delegateController.attentionReopenRefused(sub.sess.owningDelegateID) {
+		return
+	}
+	s.mu.Lock()
+	closed := s.closingOrClosedLocked()
+	s.mu.Unlock()
+	if closed {
+		return
+	}
+	if _, err := sub.sess.reopenConsumedDelegateAttention(attentionID); err != nil {
+		s.emit(warningDataFromError("reopen unpresented delegate attention", err))
+	}
 }
 
 func (s *Session) launchAcceptedDelegateAttention(sub *subagent, started delegateStartCommit) error {
 	if s == nil || sub == nil || sub.sess == nil || s.delegateController == nil {
 		return errDelegateDeliveryReceiverUnavailable
+	}
+	if err := s.reviveValidateIsolationLane(started); err != nil {
+		// The refused lane strands the attention this drive owed exactly as
+		// a refused notification drive strands its pending: without the
+		// stamp every later drive retries the revalidation and the drain
+		// counts the owed attention as live deliverable work. A later revive
+		// that revalidates the lane successfully clears it.
+		s.recordDrainAbandonedChildOnLaneRefusal(sub, "its lane failed revalidation before an attention launch")
+		return err
 	}
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
@@ -205,7 +280,7 @@ func (s *Session) launchAcceptedDelegateAttention(sub *subagent, started delegat
 	// harmless because running is already true under this same hold.
 	sub.driving = false
 	sub.mu.Unlock()
-	bindStableDelegateActivity(sub.sess, s.delegateController, started.lease)
+	bindDelegateActivity(sub.sess, s.delegateController, started.lease)
 	s.launchSubagentRun(runCtx, sub, runCancel, "", descriptorProvenance(started.descriptor))
 	s.startDelegateQuietWatchdog(started.ctx, started.lease)
 	return nil
@@ -255,6 +330,20 @@ func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started de
 		finishRestore(nil, err)
 		return nil, err
 	}
+	if restored {
+		// The idle release may have reclaimed the runtime that held a user
+		// stop's quiet in memory; a freshly built session rebuilds that
+		// quiet from the durable outcome and the fold BEFORE the candidate
+		// joins the tree, so a drive landing in the admit-to-attach window
+		// below reads the automatic list with the hold already in place
+		// instead of presenting the stopped reopen riding the stale armed
+		// wake. The candidate is disposable — a resident winner discards it,
+		// derived holds and all — so a pass that only found the runtime
+		// resident never rebuilds a hold on quiet its in-memory state never
+		// lost. The call is a no-op for every restored runtime that owes no
+		// such stop.
+		sub.sess.deriveHeldDelegateAttentionFromOutcome()
+	}
 	var installation *delegateIdleRuntimeInstallation
 	if mode == delegateRuntimeAttachIdle {
 		installation, err = s.delegateController.beginIdleRuntimeInstallation(started.lease.delegateID)
@@ -297,7 +386,7 @@ func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started de
 	if restored && owner.delegateRestoreBeforeSideEffects != nil {
 		owner.delegateRestoreBeforeSideEffects(sub.sess)
 	}
-	bindStableDelegateActivityToOwner(sub.sess, s.delegateController, started.lease, owner)
+	bindDelegateActivityToOwner(sub.sess, s.delegateController, started.lease, owner)
 	if restored && len(gates) != 0 {
 		if err := gates[0].add(owner, sub, started); err != nil {
 			finishRestore(nil, err)
@@ -328,7 +417,7 @@ func (s *Session) restoreColdDelegateOwnerRuntime(parentID string, gates ...*owe
 	return parent.sess, nil
 }
 
-func (s *Session) drivePendingStableDelegateAttention() bool {
+func (s *Session) drivePendingDelegateAttention() bool {
 	if s == nil || s.delegateController == nil || !s.isRootDelegateAttentionReceiver() {
 		return false
 	}
@@ -348,7 +437,7 @@ func (s *Session) drivePendingStableDelegateAttention() bool {
 	if err != nil {
 		s.warnDelegateAttentionFailed(delegateAttentionRestoreLabel, delegateID, err)
 		s.countDelegateAttentionRestoreFailure(delegateID, err)
-		s.scheduleStableDelegateAttentionRetry()
+		s.scheduleDelegateAttentionRetry()
 		return true
 	}
 	s.delegateController.delegateAttentionRestored(delegateID)
@@ -356,11 +445,11 @@ func (s *Session) drivePendingStableDelegateAttention() bool {
 	if hook := s.cfg.testOnly.afterDelegateAttentionRestore; hook != nil {
 		hook(delegateID, sub)
 	}
-	owner.driveStableDelegateAttention(sub)
+	owner.driveDelegateAttention(sub)
 	if s.delegateController.hasPendingDelegateAttention() {
-		s.scheduleStableDelegateAttentionRetry()
+		s.scheduleDelegateAttentionRetry()
 	} else {
-		s.resetStableDelegateAttentionRetry()
+		s.resetDelegateAttentionRetry()
 	}
 	return true
 }

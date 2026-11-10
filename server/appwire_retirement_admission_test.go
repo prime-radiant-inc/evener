@@ -88,7 +88,7 @@ func TestRetirementAdmissionCatalogCoverage(t *testing.T) {
 		appwire.MethodEvenerThreadWatchesList:   "read",
 
 		appwire.MethodThreadList: "read", appwire.MethodThreadRead: "read", appwire.MethodThreadUnsubscribe: "read", appwire.MethodThreadTurnsList: "read", appwire.MethodEvenerTasksList: "read", appwire.MethodEvenerJobsList: "read", appwire.MethodEvenerJobsOutput: "read", appwire.MethodEvenerJobsGet: "read", appwire.MethodModelList: "read",
-		appwire.MethodThreadClear: "mutation", appwire.MethodThreadModelSet: "mutation", appwire.MethodEvenerThreadNameSet: "mutation", appwire.MethodThreadReasoningEffortSet: "mutation", appwire.MethodThreadVisionModelSet: "mutation", appwire.MethodThreadCompactStart: "mutation", appwire.MethodTurnStart: "mutation", appwire.MethodTurnSteer: "mutation", appwire.MethodTurnInterrupt: "mutation", appwire.MethodTurnQueue: "mutation", appwire.MethodTurnDrainAsSteer: "mutation", appwire.MethodTurnPromoteQueuedAsSteer: "mutation", appwire.MethodTurnCancelQueued: "mutation", appwire.MethodGoalSet: "mutation", appwire.MethodEvenerSandboxEscalationResolve: "mutation", appwire.MethodEvenerDelegateStop: "mutation", appwire.MethodNotesHumanSet: "mutation", appwire.MethodUrlsRemove: "mutation", appwire.MethodThreadShutdown: "control", appwire.MethodEvenerDaemonStatus: "control", appwire.MethodEvenerDaemonRetire: "control", appwire.MethodEvenerDaemonIdleTimeoutSet: "control",
+		appwire.MethodThreadClear: "mutation", appwire.MethodThreadModelSet: "mutation", appwire.MethodEvenerThreadNameSet: "mutation", appwire.MethodThreadReasoningEffortSet: "mutation", appwire.MethodThreadVisionModelSet: "mutation", appwire.MethodThreadCompactStart: "mutation", appwire.MethodTurnStart: "mutation", appwire.MethodTurnSteer: "mutation", appwire.MethodTurnInterrupt: "mutation", appwire.MethodTurnQueue: "mutation", appwire.MethodTurnDrainAsSteer: "mutation", appwire.MethodTurnPromoteQueuedAsSteer: "mutation", appwire.MethodTurnCancelQueued: "mutation", appwire.MethodGoalSet: "mutation", appwire.MethodEvenerSandboxEscalationResolve: "mutation", appwire.MethodEvenerDelegateStop: "mutation", appwire.MethodEvenerJobsStop: "mutation", appwire.MethodNotesHumanSet: "mutation", appwire.MethodUrlsRemove: "mutation", appwire.MethodThreadShutdown: "control", appwire.MethodEvenerDaemonStatus: "control", appwire.MethodEvenerDaemonRetire: "control", appwire.MethodEvenerDaemonIdleTimeoutSet: "control",
 	}
 	catalog := appwire.CatalogMethodNames(appwire.ScopeDaemon)
 	if len(daemonRetirementAccessKinds) != len(catalog) {
@@ -325,7 +325,7 @@ func TestRetirementRoutedEngineEffectsRefused(t *testing.T) {
 	if !reflect.DeepEqual(before, after) {
 		t.Fatal("routed refusal changed engine metadata")
 	}
-	if root.QueueDepth() != 0 || len(root.SteeringQueueSnapshot()) != 0 {
+	if durablyAcceptedMutations(root) != 0 {
 		t.Fatal("routed refusal changed input")
 	}
 	// Reads may finish while preparing, but cannot enter after commit.

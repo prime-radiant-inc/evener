@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/cappedoutput"
 	"primeradiant.com/evener/envvars"
 )
 
@@ -72,8 +73,8 @@ func (e *LocalExecutionEnvironment) execPreparedCommandStdout(ctx context.Contex
 	}
 
 	start := time.Now()
-	stdout := newCappedOutputBuffer(e.outputCaptureCapBytes())
-	stderr := newCappedOutputBuffer(e.outputCaptureCapBytes())
+	stdout := cappedoutput.New(e.outputCaptureCapBytes())
+	stderr := cappedoutput.New(e.outputCaptureCapBytes())
 	env := e.launchEnv(dir, envVars)
 	config := commandRuntimeConfig{
 		Dir:              dir,
@@ -164,8 +165,8 @@ func (e *LocalExecutionEnvironment) execPreparedCommandStdout(ctx context.Contex
 		ExitCode:        exitCode,
 		TimedOut:        timedOut,
 		DurationMS:      time.Since(start).Milliseconds(),
-		StdoutTruncated: stdout.truncated(),
-		StderrTruncated: stderr.truncated(),
+		StdoutTruncated: stdout.Truncated(),
+		StderrTruncated: stderr.Truncated(),
 	}, waitErr
 }
 

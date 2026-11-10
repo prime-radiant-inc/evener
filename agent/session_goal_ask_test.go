@@ -108,7 +108,7 @@ func TestGoalHoldsAwaiting_DeferredContinuationHeldPastNotificationAsk(t *testin
 		},
 	}
 	sess := newSession(t, withAdapter(f))
-	sess.RegisterTool("enqueue_test_notification_goal",
+	sess.registerTool("enqueue_test_notification_goal",
 		"test-only: enqueues a job notification mid-round, simulating a job finishing during the goal's own continuation turn",
 		map[string]any{"type": "object", "properties": map[string]any{}},
 		func(context.Context, any) (any, error) {

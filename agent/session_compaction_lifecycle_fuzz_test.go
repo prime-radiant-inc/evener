@@ -164,7 +164,7 @@ func sclRun(t *testing.T, p sclProgram) sclTrace {
 			t.Fatalf("empty note produced %d note handoffs", noteSteering)
 		}
 	} else {
-		if got := sess.PinnedNote(); got != "" {
+		if got := sess.pinnedNote(); got != "" {
 			t.Fatalf("pinned note survived its one-shot compaction handoff: %q", got)
 		}
 		if noteSteering != 1 {

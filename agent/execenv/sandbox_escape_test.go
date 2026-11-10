@@ -329,7 +329,6 @@ func runGitInit(t *testing.T, dir string) {
 	t.Helper()
 	cmd := exec.Command("git", "init", "-q")
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v\n%s", err, out)
 	}

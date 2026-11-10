@@ -29,23 +29,24 @@ func allRemoteThreadFeatures() appwire.FeatureSet {
 // its own daemon.
 func allRemoteDaemonCapabilities() appwire.ThreadCapabilities {
 	return appwire.ThreadCapabilities{
-		Send:              true,
-		Steer:             true,
-		Interrupt:         true,
-		Compact:           true,
-		Clear:             true,
-		ForkFromTurn:      true,
-		Shutdown:          true,
-		ChangeModel:       true,
-		ChangeVisionModel: true,
-		Queue:             true,
-		Goal:              true,
-		SharedNotes:       true,
-		Rename:            true,
-		SkillInput:        true,
-		CommandInput:      true,
-		StopSubagent:      true,
-		PageBefore:        true,
+		VoicePresentationContextV1: true,
+		Send:                       true,
+		Steer:                      true,
+		Interrupt:                  true,
+		Compact:                    true,
+		Clear:                      true,
+		ForkFromTurn:               true,
+		Shutdown:                   true,
+		ChangeModel:                true,
+		ChangeVisionModel:          true,
+		Queue:                      true,
+		Goal:                       true,
+		SharedNotes:                true,
+		Rename:                     true,
+		SkillInput:                 true,
+		CommandInput:               true,
+		StopSubagent:               true,
+		PageBefore:                 true,
 	}
 }
 
@@ -169,6 +170,61 @@ func TestRemoteHostShutDownSessionAdvertisesSend(t *testing.T) {
 	got := listRemoteThreadCapabilities(t, registry)
 	if !got.Send {
 		t.Fatalf("notLoaded remote session capabilities = %+v, want Send advertised", got)
+	}
+}
+
+// Remote turn methods reach the peer's public hub input, not its journal-backed
+// voice transport. Even an explicit peer claim cannot make that path preserve
+// trusted presentation evidence, so ordinary Send and Steer remain available
+// while the voice capability stays masked.
+func TestRemoteHostVoicePresentationStaysMaskedAtPublicHubBoundary(t *testing.T) {
+	features := allRemoteThreadFeatures()
+	features.VoicePresentationContextV1 = true
+	registry := remoteCapabilityFixture(t, appwire.ThreadStatusIdle, features)
+	if got := listRemoteThreadCapabilities(t, registry); got.VoicePresentationContextV1 || !got.Send || !got.Steer {
+		t.Fatalf("remote capabilities = %+v, want ordinary Send and Steer without voice presentation", got)
+	}
+
+	peer := newHubAppServer(hubcore.WebConfig{}, appsource.NewRegistry())
+	defer peer.Shutdown(t.Context())
+	transport, err := peer.NewInProcessTransport(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := appwire.NewClient(transport)
+	client.Start(t.Context())
+	defer client.Close()
+	mustInitializeHubClient(t, client)
+	if !client.Features().VoicePresentationContextV1 {
+		t.Fatal("peer does not advertise its own voice presentation support")
+	}
+	source := appsource.NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+	input := []appwire.InputItem{{Type: "text", Text: "REFERENCE-149", VoicePresentation: &appwire.VoicePresentationContext{
+		Version: 1, DeliveryID: "delivery", BindingID: "binding", Epoch: "epoch", InstanceID: "instance",
+		CanonicalSourceItemID: "source", OriginatingRequestID: "request", FrontierID: "frontier",
+		RunGeneration: 1, PresentationGeneration: 1, GeneratedTranscript: "SPEECH-151", SampleRateHz: 24000,
+		Items: []appwire.VoicePresentationItem{{ResponseID: "response", ItemID: "item", GeneratedSamples: 480, QueuedSamples: 480, PlayedSamples: 240}},
+	}}}
+	for _, method := range []string{appwire.MethodTurnStart, appwire.MethodTurnSteer} {
+		t.Run(method, func(t *testing.T) {
+			if err := appwire.ValidateVoicePresentationInput(input, method, "human", "instance"); err != nil {
+				t.Fatalf("invalid presentation fixture: %v", err)
+			}
+			// The controller's private identity cannot cross the peer transport.
+			ctx := context.WithValue(t.Context(), voicePresentationContextKey{}, true)
+			var err error
+			if method == appwire.MethodTurnStart {
+				_, err = source.StartTurn(ctx, appwire.TurnStartParams{Ref: "host:thread", ExpectedInstanceID: "instance", ClientMutationID: "mutation", Input: input})
+			} else {
+				_, err = source.SteerTurn(ctx, appwire.TurnSteerParams{Ref: "host:thread", ExpectedInstanceID: "instance", ClientMutationID: "mutation", Input: input})
+			}
+			wire, ok := wireErrorFromError(err)
+			if !ok || wire.Code != appwire.CodeInvalidParams {
+				t.Fatalf("forwarded presentation reached session routing: %v", err)
+			}
+		})
 	}
 }
 

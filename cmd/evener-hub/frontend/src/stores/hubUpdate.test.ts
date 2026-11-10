@@ -4,7 +4,7 @@ import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectReadyFakeClient } from "../testing/connectionTestUtils";
-import { connectionStore } from "./connection";
+import { resetConnectionStoreForTests } from "./connection";
 import {
   APPLY_TIMEOUT_MS,
   hubUpdateStore,
@@ -76,7 +76,7 @@ function settler(settlers: CheckSettler[], index: number): CheckSettler {
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetHubUpdateStoreForTests();
 });

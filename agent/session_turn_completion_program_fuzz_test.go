@@ -522,7 +522,7 @@ func FuzzSandboxEscalationLifecycleProgram(f *testing.F) {
 				t.Fatal("closed session unexpectedly reran an escalation")
 				return tool.ExecResult{}
 			})
-			if !errors.Is(got.Err, res.Err) || !got.IsError || sess.HasPendingEscalations() {
+			if !errors.Is(got.Err, res.Err) || !got.IsError || sess.hasPendingEscalations() {
 				t.Fatalf("closed session changed escalation result: %+v", got)
 			}
 			return
@@ -541,7 +541,7 @@ func FuzzSandboxEscalationLifecycleProgram(f *testing.F) {
 			if !errors.Is(got.Err, res.Err) || !got.IsError {
 				t.Fatalf("non-escalating result changed: got=%+v want error=%v", got, res.Err)
 			}
-			if sess.HasPendingEscalations() || len(sess.PendingEscalations()) != 0 {
+			if sess.hasPendingEscalations() || len(sess.PendingEscalations()) != 0 {
 				t.Fatal("non-escalating result registered a pending escalation")
 			}
 			return
@@ -606,7 +606,7 @@ func FuzzSandboxEscalationLifecycleProgram(f *testing.F) {
 				t.Fatalf("non-approved escalation changed typed denial: got=%+v want=%v", got, run.res.Err)
 			}
 		}
-		if sess.HasPendingEscalations() || len(sess.PendingEscalations()) != 0 {
+		if sess.hasPendingEscalations() || len(sess.PendingEscalations()) != 0 {
 			t.Fatal("resolved, cancelled, or closed escalations remained pending")
 		}
 		if err := sess.ResolveSandboxEscalation(requested[0].EscalationID, true); err == nil {

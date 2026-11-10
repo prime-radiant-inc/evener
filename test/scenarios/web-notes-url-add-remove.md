@@ -14,7 +14,7 @@ The Go layer covers the store and the gate with unit tests
 (`agent/session_notes_test.go:TestAddSessionURLDedupsCanonically`,
 `TestAddSessionURLRejectsOverCapAndBadScheme`,
 `agent/session_tools_notes_test.go:98` `TestUrlsAddRemoveTool`,
-`cmd/evener-hub/app_rpc_test.go:11390`
+`cmd/evener-hub/app_rpc_test.go:1525`
 `TestHubRPCUrlsRemoveGatedByCapability`); this is the live-stack counterpart
 that proves the add→render→remove→converge loop actually works. It exercises
 four things in one run:

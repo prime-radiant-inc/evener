@@ -34,8 +34,9 @@ type Input struct {
 	ToolResponse   string `json:"tool_response,omitempty"`
 	AgentID        string `json:"agent_id,omitempty"`
 	AgentType      string `json:"agent_type,omitempty"`
-	// Effort is the reasoning effort level for the current session (e.g. "low", "medium", "high").
-	// Used by Task 7 to set the CLAUDE_EFFORT env var for command hooks.
+	// Effort is the session's configured reasoning effort:
+	// minimal|low|medium|high|xhigh|max, or "none". Used by Task 7 to set the
+	// CLAUDE_EFFORT env var for command hooks.
 	Effort string `json:"effort,omitempty"`
 	// Prompt is the official Claude UserPromptSubmit field. It carries the same
 	// value as the legacy UserPrompt alias; Claude-style hooks read "prompt".
@@ -45,6 +46,10 @@ type Input struct {
 	// tool_result = tool_response; user_prompt = prompt.
 	ToolResult string `json:"tool_result,omitempty"`
 	UserPrompt string `json:"user_prompt,omitempty"`
+
+	// UnmarshalToolArguments preserves the selected tool's opted-in argument
+	// values in updatedInput. It is per-call metadata, never hook protocol data.
+	UnmarshalToolArguments func([]byte, *map[string]any) error `json:"-"`
 }
 
 // hookResult captures the output of a hook execution.
@@ -367,12 +372,42 @@ type parsedHookOutput struct {
 	UserFacing bool
 }
 
+// decodeHookUpdatedInput leaves ordinary envelope decoding and fallback in
+// charge. Only a successfully decoded, opted-in update leaves the default view.
+func decodeHookUpdatedInput(raw []byte, unmarshalArgs func([]byte, *map[string]any) error) ([]byte, map[string]any) {
+	if unmarshalArgs == nil {
+		return raw, nil
+	}
+	var envelope, fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return raw, nil
+	}
+	if err := json.Unmarshal(envelope["hookSpecificOutput"], &fields); err != nil {
+		return raw, nil
+	}
+	var updated map[string]any
+	if err := unmarshalArgs(fields["updatedInput"], &updated); err != nil || updated == nil {
+		return raw, nil
+	}
+	delete(fields, "updatedInput")
+	hookRaw, err := json.Marshal(fields)
+	if err != nil {
+		return raw, nil
+	}
+	envelope["hookSpecificOutput"] = hookRaw
+	ordinaryRaw, err := json.Marshal(envelope)
+	if err != nil {
+		return raw, nil
+	}
+	return ordinaryRaw, updated
+}
+
 // parseHookOutput interprets hook stdout and exit code into structured output.
 // For command hooks, JSON is parsed only when exitCode == 0; on exit 2 the
 // caller should pass the stderr content as stdout and JSON is not attempted.
 // This function is event-agnostic: blocking decisions are made by the callers
 // that consult exitBehavior(event).BlockOnExit2.
-func parseHookOutput(stdout string, exitCode int) parsedHookOutput {
+func parseHookOutput(stdout string, exitCode int, unmarshalArgs func([]byte, *map[string]any) error) parsedHookOutput {
 	result := parsedHookOutput{Continue: true, RawExitCode: exitCode}
 
 	if exitCode != 0 {
@@ -387,11 +422,15 @@ func parseHookOutput(stdout string, exitCode int) parsedHookOutput {
 	}
 
 	// Try JSON parse
+	ordinaryRaw, updated := decodeHookUpdatedInput([]byte(stdout), unmarshalArgs)
 	var parsed map[string]any
-	if err := json.Unmarshal([]byte(stdout), &parsed); err != nil {
+	if err := json.Unmarshal(ordinaryRaw, &parsed); err != nil {
 		// Plain text: treat as system message
 		result.SystemMessage = stdout
 		return result
+	}
+	if updated != nil {
+		parsed["hookSpecificOutput"].(map[string]any)["updatedInput"] = updated
 	}
 
 	// Extract standard fields
@@ -493,7 +532,7 @@ func (r *Runner) runHook(ctx context.Context, hook plugin.RegisteredHook, event 
 	if event == plugin.HookSessionStart && hr.ExitCode != 0 {
 		return sessionStartFailureWarning(hook, output, hr.ExitCode)
 	}
-	return parseHookOutput(output, hr.ExitCode)
+	return parseHookOutput(output, hr.ExitCode, input.UnmarshalToolArguments)
 }
 
 // maxHookFailureDetail bounds the excerpt of a failed SessionStart hook's output

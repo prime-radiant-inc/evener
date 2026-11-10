@@ -164,7 +164,21 @@ func runServeForegroundShellPersistenceCase(t *testing.T, mode foregroundShellSe
 	}
 
 	gatePath := filepath.Join(workDir, "shell-release")
-	shellCommand := fmt.Sprintf("while [ ! -f %s ]; do sleep 0.01; done; printf shell-complete", strconv.Quote(gatePath))
+	// The loop also has a deadline: cleanup writes the gate file, but t.TempDir
+	// removes the workspace immediately afterwards, so a loop that misses that
+	// window must not poll a vanished path forever (#4078). The wall-clock
+	// deadline is far beyond this test's 15s context.
+	shellCommand := fmt.Sprintf("deadline=$((SECONDS+60)); while [ ! -f %s ] && [ \"$SECONDS\" -lt \"$deadline\" ]; do sleep 0.01; done; printf shell-complete", strconv.Quote(gatePath))
+	// The shell loop polls for this file. The explicit release below follows the
+	// earlier rendezvous and setup assertions, not the tool round: that write is
+	// what lets the round complete. If an earlier assertion fails, the loop would
+	// keep polling a temp dir that cleanup removes, outliving the test process as
+	// an orphan (#4078). Release it here too. This is
+	// best-effort: t.TempDir removal can follow before the loop's next poll, so
+	// the deadline above is what guarantees the loop exits. t.Cleanup is LIFO,
+	// so the write runs before removal starts, and it is harmless once the shell
+	// has already finished.
+	t.Cleanup(func() { _ = os.WriteFile(gatePath, nil, 0o600) })
 	secondRequest := make(chan struct{})
 	secondResponseRelease := make(chan struct{})
 	releaseSecondResponse := sync.OnceFunc(func() { close(secondResponseRelease) })

@@ -10,7 +10,7 @@
 // focusable; the row's visually-hidden status word (taskCard.tsx) is what
 // assistive tech reads. Both task surfaces share it: the transcript's
 // inline card and the tasks pane.
-import type { TaskStatus } from "@evener/appwire-client";
+import { isKnownTaskStatus, type TaskStatus, type TaskStatusValue } from "@evener/appwire-client";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./taskcheck.module.css";
 
@@ -45,6 +45,17 @@ export const TOUCH_WORD: Record<TaskTouch, string> = {
   started: "started",
   pending: "pending",
 };
+
+// The glyph for a task's state, and the word assistive tech reads beside it.
+// A status outside the enum takes the neutral unfilled box and its own raw
+// word instead of rendering as `undefined` (issue #2256).
+export function taskStatusTouch(status: TaskStatusValue): TaskTouch {
+  return isKnownTaskStatus(status) ? STATUS_TOUCH[status] : STATUS_TOUCH.open;
+}
+
+export function taskStatusWord(status: TaskStatusValue): string {
+  return isKnownTaskStatus(status) ? TOUCH_WORD[STATUS_TOUCH[status]] : status;
+}
 
 const CLASS = {
   check: requireClass(styles.check, "taskcheck.module.css", "check"),

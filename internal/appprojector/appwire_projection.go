@@ -109,6 +109,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 					SessionID:     p.threadID,
 					Source:        "local",
 					ModelProvider: data.Model,
+					CWD:           data.WorkingDir,
 					Status:        appwire.ThreadStatus{Type: status},
 					Evener: appwire.EvenerThread{
 						Ref:     p.ref,

@@ -88,7 +88,7 @@ func newWedgedDelegateFixtureIn(t *testing.T, delegateID string, turnEndsProcess
 
 func TestRetryActivityDoesNotRefreshDrainLiveness(t *testing.T) {
 	f := newWedgedDelegateFixture(t, "dlg_retry")
-	bindStableDelegateActivityToOwner(f.child, f.root.delegateController, f.lease, f.root)
+	bindDelegateActivityToOwner(f.child, f.root.delegateController, f.lease, f.root)
 	f.child.mu.Lock()
 	activity := f.child.cfg.spawn.parentJobActivity
 	f.child.mu.Unlock()
@@ -126,7 +126,7 @@ func TestRetryActivityDoesNotRefreshDrainLiveness(t *testing.T) {
 
 func TestRetryActivityRemainsParentVisible(t *testing.T) {
 	f := newWedgedDelegateFixture(t, "dlg_retry_visible")
-	bindStableDelegateActivityToOwner(f.child, f.root.delegateController, f.lease, f.root)
+	bindDelegateActivityToOwner(f.child, f.root.delegateController, f.lease, f.root)
 	f.root.delegateController.mu.Lock()
 	beforeEvidence := f.root.delegateController.evidenceVersion
 	f.root.delegateController.mu.Unlock()
@@ -158,7 +158,7 @@ func TestRetryActivityRemainsParentVisible(t *testing.T) {
 	descriptor := stableToolDescriptor(f.root, f.delegateID, "")
 	descriptor.ChildSessionID = f.child.ID()
 	sub := &subagent{sess: f.child, startedAt: retryAt.Add(-time.Minute), stableDescriptor: &descriptor}
-	metadata := decodeDelegatePacketMetadata(t, *sub.stableDelegateFinish("", errors.New("failed")).packet)
+	metadata := decodeDelegatePacketMetadata(t, *sub.buildDelegateFinish("", errors.New("failed")).packet)
 	if got := metadata["latest_activity_at"]; got != retryAt.Format(time.RFC3339Nano) {
 		t.Fatalf("terminal latest_activity_at = %#v, want %q", got, retryAt.Format(time.RFC3339Nano))
 	}
@@ -242,7 +242,7 @@ func (f *wedgedDelegateFixture) reportAndLeaveStopPending(t *testing.T) {
 
 func (f *wedgedDelegateFixture) snapshot(t *testing.T) delegateSnapshot {
 	t.Helper()
-	row, ok := f.root.directStableDelegateForChildSession(f.child.ID())
+	row, ok := f.root.directDelegateForChildSession(f.child.ID())
 	if !ok {
 		t.Fatalf("delegate %s is not a direct stable delegate of the root", f.delegateID)
 	}

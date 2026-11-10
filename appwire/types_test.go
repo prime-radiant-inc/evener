@@ -89,6 +89,26 @@ func TestThreadResumeParamsRemainSelectionFree(t *testing.T) {
 	}
 }
 
+func TestArchiveResponseNavigationDeferredWireShape(t *testing.T) {
+	committed, err := json.Marshal(ArchiveResponse{OK: true, Navigation: NavigationMutation{GenerationID: "gen"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(committed, []byte(`"navigationDeferred"`)) {
+		t.Fatalf("committed response carries the deferred flag: %s", committed)
+	}
+	deferred, err := json.Marshal(ArchiveResponse{OK: true, Navigation: NavigationMutation{GenerationID: "gen"}, NavigationDeferred: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(deferred, []byte(`"navigationDeferred":true`)) {
+		t.Fatalf("deferred response lost the flag: %s", deferred)
+	}
+	if !bytes.Contains(deferred, []byte(`"generation_id":"gen"`)) {
+		t.Fatalf("deferred response lost the live generation: %s", deferred)
+	}
+}
+
 func TestThreadItemOutputImagesJSONRoundTrip(t *testing.T) {
 	item := ThreadItem{
 		Type:     "commandExecution",
@@ -1154,5 +1174,24 @@ func TestEvenerDiagnosticsPluginsJSONPresence(t *testing.T) {
 	}
 	if roundTrip.Plugins == nil || len(roundTrip.Plugins) != 0 {
 		t.Fatalf("empty plugin inventory round trip = %#v", roundTrip.Plugins)
+	}
+}
+
+// ClientMutationTurnID is a pure
+// format function.
+func TestClientMutationTurnID(t *testing.T) {
+	cases := []struct {
+		seq  uint64
+		want string
+	}{
+		{0, "turn_m0"},
+		{1, "turn_m1"},
+		{42, "turn_m42"},
+		{18446744073709551615, "turn_m18446744073709551615"},
+	}
+	for _, c := range cases {
+		if got := ClientMutationTurnID(c.seq); got != c.want {
+			t.Errorf("ClientMutationTurnID(%d) = %q, want %q", c.seq, got, c.want)
+		}
 	}
 }

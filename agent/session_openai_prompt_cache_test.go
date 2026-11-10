@@ -18,11 +18,8 @@ func TestOpenAIPromptCacheDefaults_RequestCapture(t *testing.T) {
 	}}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	_, err = sess.ProcessInput(context.Background(), "run", nil)
+	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("gpt-5.5")), withDir(dir), withConfig(SessionConfig{}))
+	_, err := sess.ProcessInput(context.Background(), "run", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -151,10 +148,7 @@ func TestPromptCacheDefaults_AnthropicRowDropsBothFields(t *testing.T) {
 	}}
 	c.Register(f)
 
-	sess, err := NewSession(c, newAnthropicProfile("claude-opus-4-6"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(newAnthropicProfile("claude-opus-4-6")), withDir(dir), withConfig(SessionConfig{}))
 	if _, err := sess.ProcessInput(context.Background(), "run", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}

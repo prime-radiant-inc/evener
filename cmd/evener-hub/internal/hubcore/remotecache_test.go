@@ -2,6 +2,8 @@ package hubcore
 
 import (
 	"fmt"
+	"reflect"
+	"slices"
 	"sync/atomic"
 	"testing"
 
@@ -536,5 +538,44 @@ func TestRemoteThreadCacheEmptyCaptureWalkStillFiltersRemovedSource(t *testing.T
 	}
 	if _, ok := c.Snapshot().Sources["host-late"]; ok {
 		t.Fatal("late walk resurrected the removed host's per-source snapshot")
+	}
+}
+
+// TestInferRemoteSources pins how a flat remote thread list is grouped into
+// per-source snapshots: a thread is attributed to its Source, or failing that
+// to the host its ref names, carries the walk's completeness, and a thread
+// with neither is left out. The input list is not modified.
+func TestInferRemoteSources(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		threads []appwire.Thread
+		want    map[string]RemoteSourceSnapshot
+	}{
+		{
+			name:    "no source and no ref",
+			threads: []appwire.Thread{{ID: "t1", Source: "", Evener: appwire.EvenerThread{Ref: ""}}},
+			want:    map[string]RemoteSourceSnapshot{},
+		},
+		{
+			name:    "source taken from the ref",
+			threads: []appwire.Thread{{ID: "t1", Source: "", Evener: appwire.EvenerThread{Ref: "remote1:s1"}}},
+			want: map[string]RemoteSourceSnapshot{
+				"remote1": {
+					Threads:  []appwire.Thread{{ID: "t1", Source: "", Evener: appwire.EvenerThread{Ref: "remote1:s1"}}},
+					Complete: true,
+				},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := slices.Clone(tc.threads)
+			sources := inferRemoteSources(input, true)
+			if !reflect.DeepEqual(sources, tc.want) {
+				t.Fatalf("sources = %#v, want %#v", sources, tc.want)
+			}
+			if !reflect.DeepEqual(input, tc.threads) {
+				t.Fatalf("input threads mutated: got %#v, want %#v", input, tc.threads)
+			}
+		})
 	}
 }

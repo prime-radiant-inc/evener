@@ -133,6 +133,9 @@ var parameterMessagePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`Unknown parameter: '([^']+)'`),
 	regexp.MustCompile(`Unsupported parameter: '([^']+)'`),
 	regexp.MustCompile(`(?i)unknown field ([A-Za-z0-9_.]+)`),
+	// A gateway whose Responses backend cannot serve the content-part array
+	// names the offending part type in prose instead of error.param.
+	regexp.MustCompile(`(?i)supports text and image content only; got '([^']+)'`),
 }
 
 // parameterNameFromMessage extracts the rejected field from the message
@@ -148,12 +151,23 @@ func parameterNameFromMessage(message string) string {
 
 // fieldHint picks the spec §12 hint for a rejected field: the other
 // max-tokens spelling when the name is the row's current one, a
-// fields.<name> = false pointer when the name is prunable, else the generic
+// fields.<name> = false pointer when the name is prunable, a protocol pin
+// when a Responses endpoint rejected a content-part type, else the generic
 // inspect hint (a cap-governed or nested path is not a valid fields key).
 func fieldHint(name string, res registry.Resolved) string {
 	ref := res.Instance + "/" + res.ModelID
 	if name == "" {
 		return genericFieldHint(ref)
+	}
+	if res.Protocol == registry.ProtocolOpenAIResponses {
+		// The Responses wire shape carries these content-part types inside
+		// `input`. A gateway that rejects one is rejecting the shape itself, so
+		// no prunable field can fix it; pinning the row to the chat protocol is
+		// the remedy.
+		switch name {
+		case "input_text", "input_image", "input_file", "output_text":
+			return fmt.Sprintf("set protocol = %q on %s", registry.ProtocolOpenAIChat, ref)
+		}
 	}
 	if res.Protocol == registry.ProtocolOpenAIChat {
 		current := registry.StringValue(res.Caps.MaxTokensField)

@@ -28,6 +28,16 @@ test("an all-settled list yields empty live groups", () => {
   expect(groups.settled).toHaveLength(2);
 });
 
+test("an unrecognized status groups with the work that remains, never the settled history", () => {
+  // The daemon counts every non-done, non-cancelled task as remaining
+  // (agent/task/task_store.go's Summarize); settled would label counted live
+  // work as finished history (issue #2256).
+  const groups = groupTasks([row(1, "done"), row(2, "blocked"), row(3, "open")]);
+  expect(groups.open.map((r) => r.id)).toEqual([2, 3]);
+  expect(groups.settled.map((r) => r.id)).toEqual([1]);
+  expect(groups.inProgress).toEqual([]);
+});
+
 test("an empty list yields three empty groups", () => {
   expect(groupTasks([])).toEqual({ inProgress: [], open: [], settled: [] });
 });

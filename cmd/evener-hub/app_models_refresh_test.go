@@ -1,12 +1,10 @@
 package hub
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -23,11 +21,8 @@ import (
 // In particular, a provider diagnostic is a successful RPC, not a transport error.
 func TestModelListExplicitRefreshRecoversProvider(t *testing.T) {
 	root := t.TempDir()
-	binary := filepath.Join(root, "evener")
-	build := exec.CommandContext(t.Context(), "go", "build", "-o", binary, "../evener")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
-	}
+	// TestMain already builds the ordinary evener binary for this process.
+	binary := filepath.Join(liveStackBinaries(t, repoRootForTestMain()), "evener")
 	for _, item := range os.Environ() {
 		key, _, _ := strings.Cut(item, "=")
 		switch key {
@@ -90,9 +85,7 @@ func TestModelListExplicitRefreshRecoversProvider(t *testing.T) {
 			defer hub.Close()
 			client := dialHubRPC(t, hub)
 			defer client.Close()
-			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-				t.Fatal(err)
-			}
+			mustInitializeHubClient(t, client)
 			list := func(refresh bool) appwire.ModelListResponse {
 				t.Helper()
 				var resp appwire.ModelListResponse

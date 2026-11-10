@@ -57,7 +57,7 @@ func TestAFailedRestoreTakesTheDelegatesTurn(t *testing.T) {
 	if err := os.Remove(schema.SessionMetaPath(fixture.stateDir, fenced.grandchildSessionID)); err != nil {
 		t.Fatalf("remove grandchild session meta: %v", err)
 	}
-	root.drivePendingStableDelegateAttention()
+	root.drivePendingDelegateAttention()
 	c := root.delegateController
 	c.mu.Lock()
 	state := c.attention[fenced.grandchildDelegateID]

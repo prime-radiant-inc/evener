@@ -24,7 +24,7 @@ const WEB_TEXT: Record<ToolWireCall, string> = {
   call_shell: "Ran cat agent/tree_order.go",
   call_shell_failed: "Ran test -f agent/missing.go",
   call_shell_windowed: "Ran seq 1 3000",
-  call_shell_timeout: "Ran printf 'started\\n'; sleep 600",
+  call_shell_timeout: "Ran printf 'started\\n'; exec tail -f /dev/null",
   call_read_transcript: "Read transcript 02wMz5Txv5aIxgf9yVdd0N · all 1 turn",
   call_read_transcript_outline: "Read transcript 02wMz5Txv5aIxgf9yVdd0N · outline of 1 turn",
   call_find_sessions: 'Searched sessions for "settle race" · 1 match',

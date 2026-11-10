@@ -1,4 +1,4 @@
-import type { HostPushCredentialsResponse, HostRow, InstanceEntry } from "@evener/appwire-client";
+import type { HostPushCredentialsResponse } from "@evener/appwire-client";
 import { RequestTimeoutError, WireError } from "@evener/appwire-client";
 import { deferRequest, FakeClient, gateSettlements } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
@@ -7,12 +7,14 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
 import { resetCredentialsStoreForTests, resetHostInstancesForTests } from "../../../../stores/credentials";
 import { HOST_GATE_TIMEOUT_MS, hostsStore } from "../../../../stores/hosts";
+import { hostRow } from "../../../../stores/hostsTestUtils";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { resetSettingsHostForTests, settingsHostStore } from "../../../../stores/settingsHost";
 import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { shownReasons, statusReasons } from "../reasonTestUtils";
 import { CredentialsHostScope } from "./CredentialsHostScope";
+import { instance } from "./credentialsTestUtils";
 
 // What the push action and the listing above it say, read by reason rather
 // than by their words.
@@ -26,31 +28,6 @@ const reasonShown = (reason: string): boolean => document.querySelector(`[data-r
 // beside failed beside added) is never collapsed into one aggregate success, and
 // an action string the four-value doc comment does not list renders exactly as
 // the host sent it rather than being mapped onto a known label.
-
-function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
-  return {
-    protocol: "openai-chat",
-    auth: "bearer",
-    implicit: false,
-    isDefault: false,
-    activeSource: "none",
-    hasStoredOAuth: false,
-    credentialRequired: true,
-    ...overrides,
-  };
-}
-
-function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
-  return {
-    generation: 1,
-    incarnationId: "inc-1",
-    origin: "hub.toml",
-    attached: false,
-    midAttach: false,
-    removed: false,
-    ...overrides,
-  };
-}
 
 const CONTROLLER_ROW = instance({ name: "controller-only", providerId: "anthropic", authModes: ["apiKey"] });
 const HOST_ROW = instance({ name: "on-beta", providerId: "anthropic", authModes: ["apiKey"] });

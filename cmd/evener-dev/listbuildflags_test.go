@@ -11,6 +11,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/internal/testfs"
 )
 
 // fixtureEnv is the environment every fixture command runs with: the ambient
@@ -259,10 +261,7 @@ func TestListBuildFlagsFailsOnAShortWrite(t *testing.T) {
 // symlinks resolved, so paths built from it match what the toolchain records.
 func writeFixture(t *testing.T, files map[string]string) string {
 	t.Helper()
-	module, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	module := testfs.CanonicalTempDir(t)
 	for name, body := range files {
 		path := filepath.Join(module, name)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

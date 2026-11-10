@@ -31,8 +31,10 @@ vi.mock("react-native", async () => {
 	const mock = (await import("../renderNative.testkit")).nativeModuleMock();
 	return { ...mock, Alert: { alert: alerts.alert } };
 });
-vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
-vi.mock("expo-crypto", () => ({ randomUUID: () => "fixture-uuid" }));
+vi.mock("react-native-safe-area-context", () => ({
+	SafeAreaView: "SafeAreaView",
+	useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
 vi.mock("expo-clipboard", () => ({ setStringAsync: async () => {}, getStringAsync: clipboard.getStringAsync }));
 vi.mock("expo-web-browser", () => ({
 	openBrowserAsync: async () => ({ type: "dismiss" }),

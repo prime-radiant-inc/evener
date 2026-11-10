@@ -65,6 +65,10 @@ func (s *stubThreadEnvelopeSource) PendingQuestion() *appwire.PendingQuestion {
 	return nil
 }
 
+func (s *stubThreadEnvelopeSource) PendingAskSnapshot() (*appwire.PendingQuestion, *appwire.PendingAskState) {
+	return s.PendingQuestion(), nil
+}
+
 func (s *stubThreadEnvelopeSource) SessionMeta() schema.SessionMeta {
 	s.metaCalls++
 	if s.parkOnMeta != nil {

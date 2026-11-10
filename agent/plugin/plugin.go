@@ -14,13 +14,18 @@ import (
 	"slices"
 	"strings"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/mcpconfig"
 	"primeradiant.com/evener/agent/skill"
 )
 
 var (
-	pluginAbs              = filepath.Abs
-	pluginReadFile         = os.ReadFile
+	pluginAbs = filepath.Abs
+	// pluginReadFile is the single whole-file read the loaders in this package
+	// go through (manifests, hooks files, .mcp.json, plugin and evener-wide
+	// component files). It must refuse a FIFO or device instead of parking the
+	// load on it.
+	pluginReadFile         = execenv.ReadFileCapped
 	pluginReadDir          = os.ReadDir
 	pluginStat             = os.Stat
 	pluginDiscoverAgents   = discoverPluginAgents

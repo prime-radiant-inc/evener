@@ -405,7 +405,7 @@ func TestSteeringArrivingDuringToolResultAppendWaitsForTheRoundToFinish(t *testi
 		t.Fatal("tool-result append never reached the fsync barrier")
 	}
 
-	if err := root.SteerKind("arrived during tool round", events.SteeringKindNoteHandoff); err != nil {
+	if err := root.steerKind("arrived during tool round", events.SteeringKindNoteHandoff); err != nil {
 		t.Fatalf("steer: %v", err)
 	}
 	queue := root.SteeringQueueSnapshot()

@@ -1,4 +1,4 @@
-import { findBuiltinArgument } from "@evener/appwire-client";
+import { FALLBACK_EFFORT_LEVELS, findBuiltinArgument } from "@evener/appwire-client";
 import { splitModelId } from "../../shell/palette/commands";
 import type { ModelCatalog, ModelCatalogEntry } from "../../widgets";
 import { resolveSpawnEffortItems, resolveSpawnModelItems } from "./spawnSlashMenu";
@@ -7,7 +7,8 @@ import { resolveSpawnEffortItems, resolveSpawnModelItems } from "./spawnSlashMen
 // enumerate. The select's real ladder comes from the selected model's catalog
 // entry (reasoningEffortLevels/supportsReasoning, served by model/list);
 // "(default)" + an explicit "none" ride every ladder.
-export const FALLBACK_EFFORT_LEVELS = ["minimal", "low", "medium", "high"];
+// The fallback ladder is one shared-client export, generated from llm/effort,
+// so the spawn and session pickers cannot drift (#5553).
 // Shared empty-ladder constant so the derived value keeps a stable identity
 // across renders (the stale-effort effect keys off it).
 export const NO_EFFORT_LEVELS: string[] = [];

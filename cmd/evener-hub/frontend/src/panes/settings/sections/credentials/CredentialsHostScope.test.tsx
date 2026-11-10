@@ -1,5 +1,6 @@
-import type { HostForwardedResult, HostRequestParams, HostRow, InstanceEntry } from "@evener/appwire-client";
+import type { HostForwardedResult, HostRequestParams } from "@evener/appwire-client";
 import { friendlyErrorMessage, WireError } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { deferRequest, FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -15,6 +16,7 @@ import {
   resetHostInstancesForTests,
 } from "../../../../stores/credentials";
 import { hostsStore } from "../../../../stores/hosts";
+import { hostRow } from "../../../../stores/hostsTestUtils";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { resetSettingsHostForTests, settingsHostStore } from "../../../../stores/settingsHost";
 import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
@@ -22,6 +24,7 @@ import { emptyStateReasons } from "../../../../widgets/emptystate/emptyStateTest
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { shownReasons, statusReasons } from "../reasonTestUtils";
 import { CredentialsHostScope } from "./CredentialsHostScope";
+import { instance } from "./credentialsTestUtils";
 
 // The surface's states, read from their markers rather than from the words it
 // shows for them.
@@ -35,31 +38,6 @@ const credentialStateOf = (name: HTMLElement): string | null | undefined =>
 // The controller's rows and a remote host's are separate partitions by
 // construction, so these tests pin that a remote selection never shows the
 // controller's rows (and vice versa), and that this hub is exactly the default.
-
-function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
-  return {
-    protocol: "openai-chat",
-    auth: "bearer",
-    implicit: false,
-    isDefault: false,
-    activeSource: "none",
-    hasStoredOAuth: false,
-    credentialRequired: true,
-    ...overrides,
-  };
-}
-
-function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
-  return {
-    generation: 1,
-    incarnationId: "inc-1",
-    origin: "hub.toml",
-    attached: false,
-    midAttach: false,
-    removed: false,
-    ...overrides,
-  };
-}
 
 const CONTROLLER_ROW = instance({ name: "controller-only", providerId: "anthropic", authModes: ["apiKey"] });
 const HOST_ROW = instance({ name: "on-beta", providerId: "anthropic", authModes: ["apiKey"] });
@@ -130,14 +108,6 @@ function codexHostRequest(poll: () => { state: string }): (params: HostRequestPa
 
 // A read whose answer this test releases itself, so the state under test is the
 // one while that answer is still out.
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
-}
-
 // A device flow polls at its own interval, never faster than once a second
 // (oauthDialogs.tsx). Fake timers own that clock, and the stubbed `jest` global
 // lets Testing Library's findBy/waitFor polls advance it, so a flow's ticks cost

@@ -21,7 +21,7 @@ import {
   workspaceStore,
 } from "../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import {
   activityContext,
@@ -30,6 +30,7 @@ import {
   activityThread,
 } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { emptyStateReasons } from "../../widgets/emptystate/emptyStateTestUtils";
 import { readDraft } from "../session/composer/draft";
 import { replaceEditorText } from "../session/testing/editor";
@@ -48,13 +49,14 @@ import "./index";
 let height: PropertyDescriptor | undefined;
 beforeEach(() => {
   installLocalStorage(new MemoryStorage());
-  connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetNavigationStoreForTests();
   resetTranscriptPagingForTests();
   resetNavigationStoreForTests();
   resetWorkspaceStoreForTests();
   resetTranscriptViewRegistryForTests();
+  resetTranscriptDisplayStoreForTests();
   height = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
   Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, value: 500 });
 });
@@ -63,7 +65,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   resetNavigationStoreForTests();
   resetWorkspaceStoreForTests();
-  connectionStore.setState({ state: "idle", client: null });
+  resetConnectionStoreForTests();
   resetNavigationStoreForTests();
   if (height) Object.defineProperty(HTMLElement.prototype, "offsetHeight", height);
   else Reflect.deleteProperty(HTMLElement.prototype, "offsetHeight");
@@ -250,6 +252,43 @@ function inspectedCascade() {
   return { source, inspector };
 }
 
+test.each(["loading", "deleted"])("a %s nested seat keeps its Verbosity control and composer source", async (state) => {
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  const { fake, response } = fixture();
+  const pending = deferred<ThreadReadResponse>();
+  fake.on("thread/read", ({ ref, requestGeneration }) => {
+    if (ref === "child") {
+      if (state === "loading") return pending.promise;
+      throw new WireError("child deleted", -32001, {
+        evenerErrorInfo: "actionUnavailable",
+        mutationOutcome: "targetDeleted",
+        retryDisposition: "none",
+      });
+    }
+    return { ...response(ref!), requestGeneration };
+  });
+  mount(fake);
+  await waitFor(() => expect(conversationPaneLifetime(currentPane()).composers.get("child")).toBeDefined());
+  if (state === "deleted") await waitFor(() => expect(threadsStore.getState().deletedRefs.has("child")).toBe(true));
+  const pane = currentPane();
+  const source = conversationPaneLifetime(pane).composers.get("child");
+  expect(source).toBeDefined();
+  const url = window.location.href;
+  fireEvent.click(within(cascadeScope("child", "cascade-column")).getByRole("button", { name: "Verbosity" }));
+  expect(screen.getByRole("dialog", { name: "Verbosity" })).toBeTruthy();
+  expect(currentPane()).toBe(pane);
+  expect(conversationPaneLifetime(currentPane()).composers.get("child")).toBe(source);
+  expect(window.location.href).toBe(url);
+  expect(within(cascadeScope("child", "cascade-column")).getByRole("button", { name: "Verbosity" })).toBeTruthy();
+});
+
 test("genuine cascade column movement supersedes reflow without Return or neighboring movement", async () => {
   const { fake, response } = fixture();
   fake.on("thread/read", ({ ref, requestGeneration, includeTurns }) => {
@@ -337,6 +376,32 @@ test("root and child render through real conversation readers inside one scaffol
   // more than the columns on screen.
   expect(screen.getAllByRole("textbox")).toHaveLength(2);
   expect(screen.getByRole("button", { name: "Return to previous view" })).toBeTruthy();
+  expect(fake.calls.filter((call) => /send|resume|steer|interrupt/.test(call.method))).toHaveLength(0);
+});
+
+// A phone cascade column renders its conversation's activity controls below
+// the conversation footer (CascadeColumn's ScopeActivityControls), so the
+// shared composer inside that footer must not mount a second set of activity
+// chips beside the status chrome.
+test("a phone cascade column keeps its activity counts out of the composer row", async () => {
+  const { fake } = fixture();
+  installMobileViewport();
+  mount(fake);
+  await screen.findByText("child content child-id");
+  const columns = screen.getAllByTestId("cascade-column");
+  expect(columns.length).toBeGreaterThan(0);
+  for (const column of columns) {
+    expect(within(column).getAllByTestId("cascade-activity-controls").length).toBeGreaterThan(0);
+    expect(within(column).queryAllByTestId("composer-form").length).toBeGreaterThan(0);
+  }
+  // Focusing the shared composer engages the phone row that would otherwise
+  // carry the chips (a resting phone row sheds them by design).
+  const [editor] = screen.getAllByRole("textbox");
+  if (!editor) throw new Error("cascade column conversation rendered no composer editor");
+  fireEvent.focus(editor);
+  await waitFor(() => expect(screen.getByTestId("composer-attach")).toBeTruthy());
+  // The column's controls own the counts; no composer row duplicates them.
+  expect(document.querySelectorAll('[data-testid="composer-form"] [data-activity-tab]')).toHaveLength(0);
   expect(fake.calls.filter((call) => /send|resume|steer|interrupt/.test(call.method))).toHaveLength(0);
 });
 
@@ -1221,8 +1286,8 @@ test("a live origin replaced before its first summary resolves still retires sta
   expect(screen.getByRole("button", { name: "Return to previous view" })).toBeTruthy();
 });
 
-// AppShell.test.tsx's installMobileViewport, verbatim: the mobile query
-// matches, every other query (the reduced-motion read included) does not.
+// Match the mobile browser query and publish the viewport for this standalone
+// Zoom mount, which has no AppShell media-query listener.
 function installMobileViewport(): void {
   vi.stubGlobal(
     "matchMedia",
@@ -1233,6 +1298,7 @@ function installMobileViewport(): void {
       removeEventListener: () => {},
     })),
   );
+  transcriptDisplayStore.getState().setViewport("mobile");
 }
 
 test("a replaced nested origin never renders a non-leaf column on the phone", async () => {

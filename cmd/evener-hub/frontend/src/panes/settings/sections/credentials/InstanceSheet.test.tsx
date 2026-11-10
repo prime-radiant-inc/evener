@@ -4,12 +4,13 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { connectionStore } from "../../../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { Toast } from "../../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { toastKinds } from "../../../../widgets/toast/toastTestUtils";
+import { instance } from "./credentialsTestUtils";
 import { InstanceSheet } from "./InstanceSheet";
 
 /** The refusal these controls use instead of the native attribute: a click that
@@ -33,19 +34,6 @@ const formErrorReason = (): string | null => screen.getByRole("alert").getAttrib
 const refusalShown = (reason: string): boolean =>
   document.querySelector(`[role="alert"][data-reason="${reason}"]`) !== null;
 const renameNote = (): string | null => document.querySelector("form")?.getAttribute("data-rename") ?? null;
-
-function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
-  return {
-    protocol: "openai-chat",
-    auth: "bearer",
-    implicit: false,
-    isDefault: false,
-    activeSource: "none",
-    hasStoredOAuth: false,
-    credentialRequired: true,
-    ...overrides,
-  };
-}
 
 /** A row the hub cannot key: an endpoint the user can see and NO
  * endpointFingerprint at all. The key is deleted rather than left out of the
@@ -110,7 +98,7 @@ function renderSheet(
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetCredentialsStoreForTests();
   resetToastStoreForTests();
   // Every instance mutation now stamps originClientId, so the assertions that
@@ -2169,7 +2157,7 @@ describe("the form", () => {
     // is then torn down before the edit's response arrives.
     fake.on("evener/instance/list", () => new Promise<InstanceListResponse>(() => {}));
     void credentialsStore.getState().fetch();
-    act(() => connectionStore.setState({ client: null, state: "idle" }));
+    act(() => resetConnectionStoreForTests());
 
     await act(async () => {
       finish({ instances: [before], availableProviders: [OPENAI] });

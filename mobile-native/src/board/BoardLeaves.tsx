@@ -18,7 +18,16 @@ import { Button } from "../sheet/Grouped";
  * controls wait. Its text follows Dynamic Type up to xxxLarge only, since the
  * bar's height is fixed, so a long press shows the whole name in the Large
  * Content Viewer, as Apple asks of text that stops growing. */
-export function HubButton({ hubName, onOpen }: { hubName: string; onOpen: () => void }) {
+export function HubButton({
+	hubName,
+	onOpen,
+	maxWidth,
+}: {
+	hubName: string;
+	onOpen: () => void;
+	/** A pane narrower than the window caps the name itself. */
+	maxWidth?: number;
+}) {
 	const { palette } = useColors();
 	const scale = useHeaderTextScale();
 	const { width } = useWindowDimensions();
@@ -33,7 +42,7 @@ export function HubButton({ hubName, onOpen }: { hubName: string; onOpen: () => 
 			style={{
 				// A custom header view sizes itself, so a long hub name needs a
 				// cap to truncate against instead of growing into Search.
-				maxWidth: Math.round(width * 0.6),
+				maxWidth: maxWidth ?? Math.round(width * 0.6),
 				minHeight: 44,
 				paddingHorizontal: 12,
 				flexDirection: "row",

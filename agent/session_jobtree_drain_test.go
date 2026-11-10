@@ -44,8 +44,8 @@ func outstandingWorkReasons(s *Session) []string {
 	if s.hasPendingDelegateAttentionArmRetry() {
 		reasons = append(reasons, "hasPendingDelegateAttentionArmRetry")
 	}
-	if s.hasPendingStableDelegateAttention() {
-		reasons = append(reasons, "hasPendingStableDelegateAttention")
+	if s.hasPendingDelegateAttention() {
+		reasons = append(reasons, "hasPendingDelegateAttention")
 	}
 	for _, sub := range s.liveDirectSubagents() {
 		sub.mu.Lock()
@@ -268,7 +268,7 @@ func TestDrainJobTreeWaitsWhilePendingDelegateDeliveryUnflushed(t *testing.T) {
 // from a FALSE quiescence. Something still has to resolve it, or the drain
 // just waits out its stall timeout instead of making progress. kickDriveTree
 // runs at the top of every pass (before the outstanding check), alongside
-// drivePendingStableDelegateAttention and rematerializeDurablePendings -- the
+// drivePendingDelegateAttention and rematerializeDurablePendings -- the
 // same "drive whatever is waiting" role -- so it is where the flush belongs.
 //
 // The seeded entry is a placeholder with no live controller, not a delegate
@@ -1056,7 +1056,7 @@ func TestDrainDoesNotExcuseFiredReadinessWatch(t *testing.T) {
 	}}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{TurnEndsProcess: true}))
 	shell := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
-		ID: "shell", Name: "shell", Arguments: json.RawMessage(`{"command":"printf READY\\n; sleep 5","mode":"background"}`),
+		ID: "shell", Name: "shell", Arguments: json.RawMessage(`{"command":"printf READY\\n; ` + idleShellCommand + `","mode":"background"}`),
 	})
 	if shell.IsError {
 		t.Fatalf("shell: %s", shell.Output)

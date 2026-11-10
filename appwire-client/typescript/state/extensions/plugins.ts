@@ -27,6 +27,7 @@ import type {
   PluginEntry,
   PluginListResponse,
 } from "../../types.gen";
+import { REFETCH_DEBOUNCE_MS } from "../refetchDebounce";
 import { HubWriteBusyError, type HubWriteGate } from "./hubWriteGate";
 import { createKeyedRevision } from "./keyedRevision";
 import { createListRevision, readRevisioned, writeRevisioned } from "./listRevision";
@@ -124,8 +125,6 @@ export interface PluginsStore extends FrameworkFreeStore<PluginsState>, HostLife
   dispose(): void;
 }
 
-export const PLUGIN_REFETCH_DEBOUNCE_MS = 250;
-
 /** The check waits on every plugin's remote, a few at a time and each under
  * the hub's own per-remote timeout, so it can run far past a plain read's
  * default timeout. The hub cuts off the whole check at its overall deadline
@@ -180,7 +179,7 @@ export function createPluginsStore(client: PluginsClient, gate: HubWriteGate): P
 
   const lifecycle = createStoreLifecycle<PluginsState>(client, {
     method: "evener/plugin/updated",
-    debounceMs: PLUGIN_REFETCH_DEBOUNCE_MS,
+    debounceMs: REFETCH_DEBOUNCE_MS,
     store: () => store,
     refetch: (state) => state.fetchPlugins(),
     revision: listRevision,

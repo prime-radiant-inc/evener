@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"time"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
@@ -104,6 +105,17 @@ func (c *delegateTreeController) ReportActivityPhase(lease delegateLease, at tim
 	aggregate, live, err := c.admitLeaseLocked(lease, delegatestore.PhaseRunning)
 	if err != nil {
 		c.mu.Unlock()
+		// A retained child's notification turns run without opening a
+		// generation, so their reports arrive on the finished generation's
+		// lease and stay rejected: no clock moves, nothing publishes. The
+		// rejection is not the whole story — the report is the turn's own
+		// activity, so the marker parent's evidence refreshes through it
+		// anyway, or a foreign prune can judge the tree inactive past the
+		// operator's threshold and release the lane under the running
+		// notification turn.
+		if errors.Is(err, errDelegateStaleLease) {
+			c.refreshLaneParentActivityEvidence(lease.delegateID)
+		}
 		return err
 	}
 	rearm := live.quietRearmPendingLocked()
@@ -118,6 +130,7 @@ func (c *delegateTreeController) ReportActivityPhase(lease delegateLease, at tim
 	}
 	if activityChanged {
 		live.activityAt = at
+		live.activityReports++
 	}
 	if productiveChanged {
 		live.productiveActivityAt = at
@@ -132,6 +145,51 @@ func (c *delegateTreeController) ReportActivityPhase(lease delegateLease, at tim
 	live.activityPublishedAt = at
 	plan := c.capturedPlanLocked(aggregate.DelegateID)
 	c.mu.Unlock()
+	// The published report doubles as the marker parent's activity evidence
+	// while the turn runs; the refresh rides this publication, so the floor
+	// that bounds it bounds the refresh too.
+	c.refreshLaneParentActivityEvidence(aggregate.DelegateID)
 	c.emitDelegateUpdate(plan)
 	return nil
+}
+
+// refreshLaneParentActivityEvidence records a running delegate's ongoing
+// activity in the last-activity evidence the orphan reclaim and the session
+// listings read: the transcript mtime of the session each isolated lane in
+// the delegate's ancestry names. A turn that outlasts the operator's
+// inactivity threshold leaves its lane's marker parent idle — the parent runs
+// no turn of its own while it waits — and a descendant that wakes after its
+// parent generation settled leaves every settled isolated ancestor idle the
+// same way, with neither a turn ticker nor a finalization drain of its own.
+// Without the walk a foreign prune, whose live-work view cannot see the turn's
+// work under the lanes, could judge a settled ancestor long-inactive and
+// release its lane under the running turn. Best-effort, like the launch
+// refresh: a delegate with no isolation lane, and a tree with no root runtime
+// or state directory, has no evidence to refresh.
+func (c *delegateTreeController) refreshLaneParentActivityEvidence(delegateID string) {
+	if c == nil {
+		return
+	}
+	var markers []string
+	c.mu.Lock()
+	seen := make(map[string]struct{})
+	for id := delegateID; id != ""; {
+		aggregate := c.durable[id]
+		if aggregate == nil {
+			break
+		}
+		if aggregate.Descriptor.Isolation == "worktree" && aggregate.Descriptor.WorkingDir != "" {
+			if marker := c.markerSessionIDLocked(aggregate); marker != "" {
+				if _, ok := seen[marker]; !ok {
+					seen[marker] = struct{}{}
+					markers = append(markers, marker)
+				}
+			}
+		}
+		id = aggregate.Descriptor.ParentDelegateID
+	}
+	c.mu.Unlock()
+	for _, marker := range markers {
+		c.rootRuntime.refreshActivityEvidence(marker)
+	}
 }

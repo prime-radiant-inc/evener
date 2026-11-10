@@ -24,6 +24,12 @@ import (
 type CompactionMeta struct {
 	SessionID       string   // session id; non-empty only when the session is persistent (has a stateDir)
 	ActivatedSkills []string // skill names activated during this session
+	// PendingAskTurnIDs is an operation-local snapshot from the session's
+	// pending owner. Folds retain that execution tail, not a reconstructed ask.
+	PendingAskTurnIDs []string
+	// Live history can precede the writer's TurnID placement. Exact call IDs
+	// identify the same source there without changing transcript identity.
+	PendingAskCallIDs []string
 
 	// AvailableTranscriptTools names the transcript tools this session's
 	// registry actually serves. Compaction artifacts tell the agent how to
@@ -102,6 +108,12 @@ type Manager struct {
 	// unknown-window disclosure: the assumption is news once per session, not
 	// once per round.
 	assumedWindowDisclosed bool
+
+	// lastSummaryFailureRepeat is the signature of the most recently
+	// published summary failure (warning or daemon log), guarded by mu. An
+	// automatic pass failing the same way as the one before it stays quiet —
+	// see summary_failure.go.
+	lastSummaryFailureRepeat string
 
 	// Thresholds are fractions (0.0–1.0) of the context window.
 	// ObservationMaskThreshold and ThinkingClearThreshold are not used by the

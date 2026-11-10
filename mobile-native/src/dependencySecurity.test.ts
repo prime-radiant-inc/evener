@@ -22,7 +22,7 @@ describe("native dependency security resolutions", () => {
 		const expected = {
 			"@react-navigation/core": "7.23.0",
 			"brace-expansion": "5.0.12",
-			dompurify: "3.4.16",
+			dompurify: "3.4.17",
 		};
 
 		expect(manifest.devDependencies?.["@react-navigation/core"]).toBe("^7.23.0");
@@ -42,5 +42,12 @@ describe("native dependency security resolutions", () => {
 			expect(lock.packages).not.toHaveProperty(`node_modules/${name}`);
 			expect(existsSync(fileURLToPath(new URL(`../node_modules/${name}`, import.meta.url)))).toBe(false);
 		}
+	});
+
+	it("removes the old CLI validator from every installed dependency path", () => {
+		const lock = readJson<PackageLock>("../package-lock.json");
+		const validators = Object.keys(lock.packages).filter((path) => /(?:^|\/)node_modules\/zod$/.test(path));
+		expect(validators).toEqual([]);
+		expect(existsSync(fileURLToPath(new URL("../node_modules/zod", import.meta.url)))).toBe(false);
 	});
 });

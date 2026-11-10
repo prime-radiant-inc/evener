@@ -478,7 +478,7 @@ func (t *table) buffer(slot uint64) error {
 	if end <= int64(len(t.buf)) {
 		return nil
 	}
-	if end > recordBufferLimit {
+	if end > recordBufferLimit && t.file != nil {
 		if t.onWriteThrough != nil {
 			if err := t.onWriteThrough(); err != nil {
 				return err
@@ -559,7 +559,7 @@ func (b *blob) putString(s string) (strRef, error) {
 // reserve makes room for one more string of n bytes, flushing and giving up
 // on buffering when it would carry the file past the limit.
 func (b *blob) reserve(n int) error {
-	if b.buf == nil || b.n+uint64(n) <= uint64(recordBufferLimit) {
+	if b.buf == nil || b.file == nil || b.n+uint64(n) <= uint64(recordBufferLimit) {
 		return nil
 	}
 	if err := b.flush(); err != nil {

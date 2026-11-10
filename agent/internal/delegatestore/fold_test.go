@@ -237,6 +237,27 @@ func TestApplyTypedExhaustionValidatesAndClonesResumability(t *testing.T) {
 	}
 }
 
+func TestApplyTypedServerContinuationExhaustionIsResumable(t *testing.T) {
+	resumable := true
+	state := applyEvents(t,
+		createdEvent("dlg_alpha", ""),
+		startedEvent("dlg_alpha", 1, TriggerOwnerInput),
+		preparedEvent("dlg_alpha", 1, TerminalPacket{Kind: PacketTerminalError, Message: json.RawMessage(`"pause budget exhausted"`)}),
+	)
+	event := finishedEvent("dlg_alpha", 1, OutcomeExhausted, DispositionTerminalError, "dlg_alpha/delivery/1", nil)
+	event.RunFinished.Outcome.Reason = "server_continuation_budget_exhausted"
+	event.RunFinished.Outcome.ExhaustionBudget = ExhaustionBudgetServerContinuations
+	event.RunFinished.Outcome.ExhaustionLimit = 8
+	event.RunFinished.Outcome.Resumable = &resumable
+	if err := Apply(state, event); err != nil {
+		t.Fatalf("Apply typed server-continuation exhaustion: %v", err)
+	}
+	got := state["dlg_alpha"].LatestOutcome
+	if got == nil || got.Status != OutcomeExhausted || got.ExhaustionBudget != ExhaustionBudgetServerContinuations || got.ExhaustionLimit != 8 || got.Resumable == nil || !*got.Resumable {
+		t.Fatalf("typed exhaustion = %#v, want cloned server-continuation metadata", got)
+	}
+}
+
 func TestApplyRejectsIncoherentTypedExhaustion(t *testing.T) {
 	trueValue := true
 	falseValue := false
@@ -250,6 +271,8 @@ func TestApplyRejectsIncoherentTypedExhaustion(t *testing.T) {
 		{name: "missing resumability", outcome: Outcome{Status: OutcomeExhausted, Reason: "turn_budget_exhausted", ExhaustionBudget: ExhaustionBudgetTurns, ExhaustionLimit: 4}, want: "resumability"},
 		{name: "turn marked resumable", outcome: Outcome{Status: OutcomeExhausted, Reason: "turn_budget_exhausted", ExhaustionBudget: ExhaustionBudgetTurns, ExhaustionLimit: 4, Resumable: &trueValue}, want: "turn exhaustion is resumable"},
 		{name: "tool round marked terminal", outcome: Outcome{Status: OutcomeExhausted, Reason: "tool_round_budget_exhausted", ExhaustionBudget: ExhaustionBudgetToolRounds, ExhaustionLimit: 4, Resumable: &falseValue}, want: "tool-round exhaustion is not resumable"},
+		{name: "server continuation marked terminal", outcome: Outcome{Status: OutcomeExhausted, Reason: "server_continuation_budget_exhausted", ExhaustionBudget: ExhaustionBudgetServerContinuations, ExhaustionLimit: 4, Resumable: &falseValue}, want: "server-continuation exhaustion is not resumable"},
+		{name: "server continuation reason mismatch", outcome: Outcome{Status: OutcomeExhausted, Reason: "wrong", ExhaustionBudget: ExhaustionBudgetServerContinuations, ExhaustionLimit: 4, Resumable: &trueValue}, want: "server-continuation exhaustion reason"},
 		{name: "reason mismatch", outcome: Outcome{Status: OutcomeExhausted, Reason: "wrong", ExhaustionBudget: ExhaustionBudgetTurns, ExhaustionLimit: 4, Resumable: &falseValue}, want: "reason"},
 	}
 	for _, test := range tests {
@@ -291,7 +314,7 @@ func TestApplyStoppedDeliverySuppressesCoveredOwnerWithoutDelivery(t *testing.T)
 	}
 }
 
-func TestFoldUsesOneAggregatePerStableDelegate(t *testing.T) {
+func TestFoldUsesOneAggregatePerDelegate(t *testing.T) {
 	events := sequence(
 		createdEvent("dlg_alpha", ""),
 		startedEvent("dlg_alpha", 1, TriggerOwnerInput),

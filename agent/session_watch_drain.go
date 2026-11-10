@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
-	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
 )
@@ -99,7 +98,7 @@ func (s *Session) driveChildrenWithUndeliveredAttention() {
 // the dropped wake. Two exits use it:
 //   - a committed-send-start rollback (#940): while the claim was held the
 //     wake edge (driveChildIfNotStopGated) and the attention primitive
-//     (driveStableDelegateAttention) refused every drive for that child, so a
+//     (driveDelegateAttention) refused every drive for that child, so a
 //     child notification, pending watch send or armed stable attention that
 //     landed in the window was DROPPED;
 //   - an attention drive that launched no run, or a notification turn, after
@@ -147,7 +146,7 @@ func (s *Session) driveChildIfNotStopGated(sub *subagent) {
 	if s.childDriveGated(sub.sess.id) {
 		return
 	}
-	if s.driveStableDelegateAttention(sub) {
+	if s.driveDelegateAttention(sub) {
 		return
 	}
 	if s.driveSubagentNotificationTurn(sub) {
@@ -238,11 +237,11 @@ func (s *Session) renderUnreachableChildPendingsWithLoaders(
 // childResumable reports whether the stable controller holds a direct child
 // descriptor that is currently resumable.
 func (s *Session) childResumable(childSessionID string) bool {
-	row, ok := s.directStableDelegateForChildSession(childSessionID)
+	row, ok := s.directDelegateForChildSession(childSessionID)
 	return ok && row.resumable
 }
 
-func (s *Session) directStableDelegateForChildSession(childSessionID string) (delegateSnapshot, bool) {
+func (s *Session) directDelegateForChildSession(childSessionID string) (delegateSnapshot, bool) {
 	if s == nil || s.delegateController == nil || childSessionID == "" {
 		return delegateSnapshot{}, false
 	}
@@ -258,7 +257,7 @@ func (s *Session) directStableDelegateForChildSession(childSessionID string) (de
 // generation was deliberately stopped by its parent. A newer running
 // generation clears the gate.
 func (s *Session) childStopGated(childSessionID string) bool {
-	row, ok := s.directStableDelegateForChildSession(childSessionID)
+	row, ok := s.directDelegateForChildSession(childSessionID)
 	return ok && delegateRowStopGated(row)
 }
 
@@ -327,10 +326,7 @@ func (s *Session) releaseChildCommittedSendStart(childSessionID string) {
 // and asks several questions of each row, so it must not re-snapshot the whole
 // controller to ask this one.
 func delegateRowStopGated(row delegateSnapshot) bool {
-	if !delegateRunTerminal(row.lastOutcome, row.currentRunOpen) {
-		return false
-	}
-	return row.lastOutcome.Status == delegatestore.OutcomeStopped && row.lastOutcome.Reason == delegatestore.ReasonStoppedByParent
+	return delegateOutcomeStopGated(row.lastOutcome, row.currentRunOpen)
 }
 
 // settleDrivenChildForwardedPendings marks the parent's forwarded pending COPIES

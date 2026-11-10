@@ -38,21 +38,23 @@ type SessionActivityListParams struct {
 
 // SessionActivityAncestor provides breadcrumbs without reading sibling activity.
 type SessionActivityAncestor struct {
-	Ref        string `json:"ref"`
-	SessionID  string `json:"sessionId"`
-	DelegateID string `json:"delegateId,omitempty"`
-	Title      string `json:"title"`
+	Ref          string `json:"ref"`
+	SessionID    string `json:"sessionId"`
+	DelegateID   string `json:"delegateId,omitempty"`
+	DelegateName string `json:"delegateName,omitempty"`
+	Title        string `json:"title"`
 }
 
 // SessionActivityContext separates the routing alias from the resolved session
 // identity. Epoch identifies the read source incarnation, not its recency.
 type SessionActivityContext struct {
-	Ref        string                    `json:"ref"`
-	SessionID  string                    `json:"sessionId"`
-	RootRef    string                    `json:"rootRef"`
-	ParentRef  string                    `json:"parentRef,omitempty"`
-	DelegateID string                    `json:"delegateId,omitempty"`
-	Ancestors  []SessionActivityAncestor `json:"ancestors"`
+	Ref          string                    `json:"ref"`
+	SessionID    string                    `json:"sessionId"`
+	RootRef      string                    `json:"rootRef"`
+	ParentRef    string                    `json:"parentRef,omitempty"`
+	DelegateID   string                    `json:"delegateId,omitempty"`
+	DelegateName string                    `json:"delegateName,omitempty"`
+	Ancestors    []SessionActivityAncestor `json:"ancestors"`
 	// AncestryKnown distinguishes proven root/lineage from bounded retained index progress.
 	AncestryKnown bool   `json:"ancestryKnown"`
 	Epoch         string `json:"epoch"`
@@ -140,12 +142,16 @@ type SessionDelegate struct {
 	Error                  string `json:"error,omitempty"`
 	Terminal               bool   `json:"terminal"`
 	Resumable              bool   `json:"resumable"`
-	NotResumableReason     string `json:"notResumableReason,omitempty"`
-	Model                  string `json:"model,omitempty"`
-	ReasoningEffort        string `json:"reasoningEffort,omitempty"`
-	RunStartedAt           string `json:"runStartedAt,omitempty"`
-	RunEndedAt             string `json:"runEndedAt,omitempty"`
-	LatestActivityAt       string `json:"latestActivityAt,omitempty"`
+	// NeedsAttention means the delegate has delivered input it has not consumed
+	// yet, such as a question, a descendant report or a job completion. The
+	// delegate processes it autonomously; it is not by itself a human question.
+	NeedsAttention     bool   `json:"needsAttention,omitempty"`
+	NotResumableReason string `json:"notResumableReason,omitempty"`
+	Model              string `json:"model,omitempty"`
+	ReasoningEffort    string `json:"reasoningEffort,omitempty"`
+	RunStartedAt       string `json:"runStartedAt,omitempty"`
+	RunEndedAt         string `json:"runEndedAt,omitempty"`
+	LatestActivityAt   string `json:"latestActivityAt,omitempty"`
 	// LatestIntent is the open generation's newest stated tool-call intent
 	// ("Reading the board's row tests."), one line of at most MaxIntentRunes:
 	// the controller's live value when non-empty, else the folded journal

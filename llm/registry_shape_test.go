@@ -1,7 +1,13 @@
 package llm
 
 import (
+	"cmp"
+	"os"
+	"path/filepath"
 	"reflect"
+	"slices"
+	"strconv"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/llm/registry"
@@ -107,5 +113,46 @@ func TestDefaultEffortVocabularyMatchesTheSessionVocabulary(t *testing.T) {
 		if _, err := registry.ParseConfig([]byte("[providers.x]\ndefault_effort = \"" + bad + "\"\n")); err == nil {
 			t.Errorf("default_effort = %q parsed, want a refusal", bad)
 		}
+	}
+}
+
+// The registry rank-orders a resolved row's effort ladder with its own copy
+// of the session vocabulary's rank, because llm imports registry and cannot
+// be imported back. This is the seam that keeps the two orders honest: for
+// every level the session ranks, the ladder a resolve serves must order it
+// the way ReasoningEffortRank ranks it, and the levels the session cannot
+// rank (the off level, a tier outside the vocabulary) must keep their
+// authored relative order ahead of the ranked tiers.
+func TestResolveServesEffortLaddersInSessionRankOrder(t *testing.T) {
+	authored := []string{"max", "turbo", "low", "none", "high", "minimal", "medium", "xhigh"}
+	want := append([]string(nil), authored...)
+	slices.SortStableFunc(want, func(a, b string) int {
+		return cmp.Compare(ReasoningEffortRank(a), ReasoningEffortRank(b))
+	})
+	path := filepath.Join(t.TempDir(), "providers.toml")
+	levels := make([]string, 0, len(authored))
+	for _, level := range authored {
+		levels = append(levels, strconv.Quote(level))
+	}
+	config := "[providers.anthropic.models.\"ladder-probe\"]\neffort_values = [" + strings.Join(levels, ", ") + "]\n"
+	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := registry.Load(
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+		registry.WithConfigPath(path),
+		registry.WithOffline(true),
+		registry.WithoutCache(),
+	)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	res, err := r.Resolve("anthropic/ladder-probe")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if !reflect.DeepEqual(res.Caps.EffortValues, want) {
+		t.Fatalf("resolved ladder = %v, want %v (authored %v, ordered by the session rank)", res.Caps.EffortValues, want, authored)
 	}
 }

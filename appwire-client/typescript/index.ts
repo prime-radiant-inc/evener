@@ -460,6 +460,15 @@ export {
   resolvedValue,
   schemaPathKind,
 } from "./launchSchema";
+export type { LifecycleMachineFacts, LifecycleStateFacts } from "./lifecycle";
+export {
+  lifecycleMachine,
+  lifecycleState,
+  lifecycleStateClass,
+  lifecycleStateIsFailed,
+  lifecycleStateIsResting,
+  lifecycleStateIsTerminal,
+} from "./lifecycle";
 export type { FenceToken } from "./markdownFence";
 export { fenceTokenTerminated, isMermaidCodeToken, MERMAID_FENCE, mermaidText } from "./markdownFence";
 export { marketplaceSourceLabel, marketplaceSourcePin, marketplaceSourceTakesRef } from "./marketplaceSourceLabel";
@@ -495,6 +504,7 @@ export type {
   ItemImage,
   ItemModel,
   ModelRetryState,
+  OlderFrontier,
   ThreadDiagnostics,
   ThreadModel,
   TurnModel,
@@ -515,57 +525,21 @@ export {
 export type { PathPickableRow, PathRow } from "./pathRows";
 export { basename, buildPathRows, childrenPrefix, isDirEntry, parentOf, pickablePathRows } from "./pathRows";
 export { isPlainObject, sameJsonValue } from "./plainObject";
+export { RUNNING_QUIET_AFTER_MS } from "./quiet";
 export { humanizeState, needsResponseRest } from "./railSessionState";
 export type { ReadyGenerationFence } from "./readyGenerationFence";
 export { createReadyGenerationFence } from "./readyGenerationFence";
-export { effortLabel, effortOptionLevels, sessionEffortLevels } from "./reasoningEffort";
+export { effortLabel, effortOptionLevels, FALLBACK_EFFORT_LEVELS, sessionEffortLevels } from "./reasoningEffort";
 export type { AskBatch } from "./reconcileBatches";
 export { reconcileBatches } from "./reconcileBatches";
-export type {
-  CachedSessionRecord,
-  CurrentTranscriptAdmission,
-  NotificationRoutingKey,
-  OlderItemPageMerge,
-  TurnHistoryFoldDetail,
-  TurnHistoryMergeResult,
-} from "./reducer";
+export type { NotificationRoutingKey } from "./reducer";
 export {
-  applyHistoryReadFailure,
   applyNotification,
   applyOverlayEndForTranscriptHandoff,
-  applyReadModel,
-  applyReadResponse,
-  cachedSessionRecord,
-  collectAuthoritativeMutationIds,
-  comparePositions,
-  currentTranscriptState,
-  decodeCurrentTranscriptState,
-  decodeTranscriptItem,
-  encodeTranscriptItem,
-  hydrateThread,
-  ITEM_OMISSION_TOLERANT_FIELDS,
-  imageSessionRouteForSession,
-  invalidateHistory,
-  issueLatestWindowRead,
-  itemIdentityMatches,
-  mergeOlderItemPage,
-  mergeOlderItemPageWithFolds,
-  mergeTailTurns,
-  mergeTranscriptItemVersioned,
-  mergeTranscriptReaderWindow,
-  mergeTranscriptTurnVersioned,
-  mergeTurnHistory,
-  mergeTurnHistoryWithFolds,
   notificationRoutingKey,
   notificationTargetsThread,
   notificationTouchesTranscript,
-  prependOlderTurns,
-  pruneBackgroundHistoryBodies,
-  readDisposition,
-  readWindowBounds,
   resolvePendingEscalation,
-  threadModelFromCache,
-  threadModelFromCurrentState,
 } from "./reducer";
 export {
   type RetryEligibility,
@@ -694,8 +668,8 @@ export {
   TURN_RUNNING,
 } from "./submitRouting";
 export { ERROR_EVENT_KIND, echoesTurnError, isErrorEvent, systemEventWords } from "./systemEventCopy";
-export type { TaskCounts, TaskRow, TaskStatus } from "./taskListData";
-export { parseTaskListData, taskAggregateLabel, taskSettledCount } from "./taskListData";
+export type { TaskCounts, TaskRow, TaskStatus, TaskStatusValue } from "./taskListData";
+export { isKnownTaskStatus, parseTaskListData, taskAggregateLabel, taskSettledCount } from "./taskListData";
 export type { TaskGroups } from "./taskListGroups";
 export { groupTasks } from "./taskListGroups";
 export {
@@ -705,6 +679,7 @@ export {
   SUMMARY_MARK,
   type TaskListStep,
   type TouchedRow,
+  taskLabel,
   taskMutationRecap,
   taskMutationSummary,
 } from "./taskListStep";
@@ -735,7 +710,7 @@ export type {
   ThreadSubscriptionMetadata,
   ThreadSubscriptionReadParams,
 } from "./threadSubscription";
-export { acquireThreadSubscription } from "./threadSubscription";
+export { acquireThreadSubscription, retireThreadSubscriptions, wireThreadSubscriptions } from "./threadSubscription";
 export type { SessionTokens, TokenPair, UsageSummary } from "./threadUsage";
 export { sessionTokens, threadUsageSummary, tokenUnitLabel, turnUsageTokens } from "./threadUsage";
 export {
@@ -795,6 +770,19 @@ export {
   words,
   writeFileSummary,
 } from "./toolSummaries";
+export type {
+  CachedSessionRecord,
+  CurrentTranscriptAdmission,
+} from "./transcriptCache";
+export {
+  cachedSessionRecord,
+  currentTranscriptState,
+  decodeCurrentTranscriptState,
+  decodeTranscriptItem,
+  encodeTranscriptItem,
+  threadModelFromCache,
+  threadModelFromCurrentState,
+} from "./transcriptCache";
 // TranscriptDisplayConfig (an unused alias of TranscriptDisplayConfigV1) is
 // deliberately absent: the root publishes the wire type of that name from
 // types.gen, which it would shadow.
@@ -822,18 +810,19 @@ export {
   configSummary,
   contentSummary,
   contentVectorForConfig,
+  customContentForSelection,
   decodeLocalConfig,
   encodeLocalConfig,
   fromWireConfig,
   fromWireDefault,
   fromWireDefaults,
   HOOK_EXIT_DETAILS,
+  hidesThinkingTraces,
   LEGACY_PREF_KEYS,
   legacyConfigFromValues,
   makeTranscriptDisplayConfig,
   normalizeConfig,
   normalizeContent,
-  presetContent,
   resolveEffectiveConfig,
   shippedConfig,
   shippedDefault,
@@ -859,9 +848,39 @@ export type {
   TranscriptDraftCheckpoint,
   TranscriptDraftStorage,
 } from "./transcriptDisplayStore";
-export { createTranscriptDisplayStore, fromWireChange, transcriptDisplaySupport } from "./transcriptDisplayStore";
+export {
+  acknowledgesConfig,
+  createTranscriptDisplayStore,
+  fromWireChange,
+  transcriptDisplaySupport,
+} from "./transcriptDisplayStore";
+export {
+  applyHistoryReadFailure,
+  applyReadModel,
+  applyReadResponse,
+  collectAuthoritativeMutationIds,
+  comparePositions,
+  frontierFromCursor,
+  hydrateThread,
+  ITEM_OMISSION_TOLERANT_FIELDS,
+  invalidateHistory,
+  issueLatestWindowRead,
+  mergeOlderItemPage,
+  mergeTailTurns,
+  mergeTranscriptItemVersioned,
+  mergeTranscriptReaderWindow,
+  mergeTranscriptTurnVersioned,
+  olderFrontierOf,
+  olderHistoryExhausted,
+  prependOlderTurns,
+  pruneBackgroundHistoryBodies,
+  readDisposition,
+  readWindowBounds,
+  withOlderFrontier,
+} from "./transcriptHistory";
 export {
   copyItemTextPresence,
+  imageSessionRouteForSession,
   isToolCallItemId,
   isToolResultItemId,
   itemTextPresence,
@@ -876,7 +895,13 @@ export type {
   TranscriptMetadataVisibility,
   TranscriptProjection,
 } from "./transcriptProjector";
-export { ACTION_SUMMARY_UNAVAILABLE, entryDisplayKey, PROMPT_EVENT_KINDS, projectThread } from "./transcriptProjector";
+export {
+  ACTION_SUMMARY_UNAVAILABLE,
+  entryDisplayKey,
+  isLiveCurrentReasoning,
+  PROMPT_EVENT_KINDS,
+  projectThread,
+} from "./transcriptProjector";
 export {
   findSessionsSummary,
   readTranscriptEnvelope,
@@ -899,6 +924,13 @@ export {
   type RetryTurnThread,
   TURN_CONTINUATION_TEXT,
 } from "./turnContinuation";
+export type { OlderItemPageMerge, TurnHistoryFoldDetail, TurnHistoryMergeResult } from "./turnHistoryMerge";
+export {
+  itemIdentityMatches,
+  mergeOlderItemPageWithFolds,
+  mergeTurnHistory,
+  mergeTurnHistoryWithFolds,
+} from "./turnHistoryMerge";
 export type * from "./types.gen";
 export {
   HOST_REQUEST_METHODS,

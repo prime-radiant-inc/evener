@@ -453,6 +453,39 @@ test("a reasoning model with a current effort but no named ladder gets the defau
   expect(Array.from(select.options).map((o) => o.value)).toEqual(["", "minimal", "low", "medium", "high"]);
 });
 
+// A cold (not-loaded, daemonless) session reads its reasoning trio from the
+// hub's past-entry projection — current effort from the saved Config, ladder
+// and supportsReasoning from the registry row — so the effort control renders
+// beside the model picker without a live daemon, and a pick sends the same
+// wire call the hub resumes the session behind.
+test("a not-loaded session with the hub-stamped trio renders the effort control and a pick sends the wire call", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  let called: unknown;
+  fake.on("thread/reasoning-effort/set", (params) => {
+    called = params;
+    return {};
+  });
+
+  render(
+    <StatusRow
+      sessionRef="ref_a"
+      model={testModel({
+        status: { type: "notLoaded" },
+        reasoningEffort: "high",
+        reasoningEffortLevels: ["low", "medium", "high", "xhigh"],
+        supportsReasoning: true,
+      })}
+      now={1000}
+    />,
+  );
+  const select = screen.getByRole("combobox", { name: /reasoning effort/i }) as HTMLSelectElement;
+  expect(select.value).toBe("high");
+  await user.selectOptions(select, "medium");
+
+  await waitFor(() => expect(called).toEqual({ ref: "ref_a", reasoningEffort: "medium" }));
+});
+
 // --- work-time clock --------------------------------------------------------
 //
 // The clock reports an IN-FLIGHT turn's elapsed time, so it renders only while

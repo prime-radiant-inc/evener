@@ -289,7 +289,7 @@ func tdrpTurns(token string, n int) []schema.Turn {
 
 func tdrpFind(t *testing.T, deps *toolDeps, args map[string]any) findSessionsEnvelope {
 	t.Helper()
-	v, err := execFindSessionTranscripts(deps, args)
+	v, err := execFindSessionTranscripts(context.Background(), deps, args)
 	if err != nil {
 		t.Fatalf("find transcript sessions %v: %v", args, err)
 	}

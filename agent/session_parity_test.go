@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -251,7 +252,7 @@ func TestParity_ShellBackgroundLaunch(t *testing.T) {
 							Content: []llm.ContentPart{
 								{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
 									ID: "c1", Name: canonicalShell(pc.name), Type: "function",
-									Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
+									Arguments: idleShellJSON(`,"mode":"background"`),
 								}},
 							},
 						},
@@ -529,9 +530,36 @@ func TestParity_LoopDetectionWarning(t *testing.T) {
 				return agenttest.FinalResponse("done")
 			})
 
-			sess, _ := newParitySessionWithConfig(t, pc, steps, SessionConfig{LoopDetectionWindow: 3, MaxToolRoundsPerInput: 8})
+			// The assertion is loop detection, not process execution: skip the
+			// launch-time git, environment, sandbox and capability-probe
+			// subprocesses, and serve the repeated shell call from an in-process
+			// tool, so this test's wall time cannot track a forked command's.
+			sess, _ := newParitySessionWithConfig(t, pc, steps, SessionConfig{
+				LoopDetectionWindow:   3,
+				MaxToolRoundsPerInput: 8,
+				testOnly: testConfig{
+					// skipGitSnapshot also gates probeCapabilities (session_init.go).
+					skipGitSnapshot: true,
+					environmentInfo: scriptedEnvironmentInfo,
+					sandboxProber:   unsandboxedProber(t.TempDir()),
+				},
+			})
 
 			defer sess.Close()
+
+			if sess.reg.Get("shell") == nil {
+				t.Fatal("session registry has no canonical shell tool to replace")
+			}
+			var shellCalls atomic.Int32
+			if err := sess.reg.Register(tool.RegisteredTool{
+				Definition: llm.ToolDefinition{Name: "shell", Description: "Return a fixed result for the loop-detection parity test."},
+				Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+					shellCalls.Add(1)
+					return "loop", nil
+				},
+			}); err != nil {
+				t.Fatalf("register scripted shell: %v", err)
+			}
 
 			eventsPtr, mu, doneCh := collectEvents(sess)
 
@@ -553,6 +581,9 @@ func TestParity_LoopDetectionWarning(t *testing.T) {
 			}
 			if !loopDetected {
 				t.Fatal("expected LOOP_DETECTION event")
+			}
+			if got := shellCalls.Load(); got != 3 {
+				t.Fatalf("provider-mapped shell calls that reached the tool = %d, want 3", got)
 			}
 		})
 	}

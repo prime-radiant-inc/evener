@@ -202,6 +202,7 @@ func newEmptyClientMutationSnapshot(sessionID string) clientMutationSnapshot {
 }
 
 type clientMutationPendingExecutionJSON struct {
+	Actor            appwire.SessionActor            `json:"actor,omitzero"`
 	ClientMutationID string                          `json:"client_mutation_id"`
 	Method           string                          `json:"method"`
 	Input            []appwire.InputItem             `json:"input,omitempty"`
@@ -270,6 +271,7 @@ func (pending clientMutationPendingExecutions) MarshalJSON() ([]byte, error) {
 	encoded := make(map[string]clientMutationPendingExecutionJSON, len(pending))
 	for id, mutation := range pending {
 		encoded[id] = clientMutationPendingExecutionJSON{
+			Actor:            mutation.Actor,
 			ClientMutationID: mutation.ClientMutationID,
 			Method:           mutation.Method,
 			Input:            mutation.Input,
@@ -307,6 +309,7 @@ func (pending *clientMutationPendingExecutions) UnmarshalJSON(data []byte) error
 			return fmt.Errorf("decode pending execution %q: %w", id, err)
 		}
 		decoded[id] = appwire.PendingMutation{
+			Actor:            stored.Actor,
 			ClientMutationID: stored.ClientMutationID,
 			Method:           stored.Method,
 			Input:            stored.Input,

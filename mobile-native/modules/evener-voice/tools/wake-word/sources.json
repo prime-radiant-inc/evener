@@ -1,0 +1,27 @@
+{
+  "melspectrogram.onnx": {
+    "url": "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/melspectrogram.onnx",
+    "sha256": "ba2b0e0f8b7b875369a2c89cb13360ff53bac436f2895cced9f479fa65eb176f",
+    "license": "Apache-2.0, David Scripka, openWakeWord"
+  },
+  "embedding_model.onnx": {
+    "url": "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/embedding_model.onnx",
+    "sha256": "70d164290c1d095d1d4ee149bc5e00543250a7316b59f31d056cff7bd3075c1f",
+    "license": "Apache-2.0, Google speech_embedding/1 and David Scripka's ONNX conversion"
+  },
+  "en_US-libritts_r-medium.onnx": {
+    "url": "https://huggingface.co/rhasspy/piper-voices/resolve/e7229f7d33a10e145e109b886d661984201ac3c4/en/en_US/libritts_r/medium/en_US-libritts_r-medium.onnx",
+    "sha256": "10bb85e071d616fcf4071f369f1799d0491492ab3c5d552ec19fb548fac13195",
+    "license": "Voice model card: LibriTTS-R dataset CC BY 4.0, https://www.openslr.org/141/"
+  },
+  "en_US-libritts_r-medium.onnx.json": {
+    "url": "https://huggingface.co/rhasspy/piper-voices/resolve/e7229f7d33a10e145e109b886d661984201ac3c4/en/en_US/libritts_r/medium/en_US-libritts_r-medium.onnx.json",
+    "sha256": "b471dc60d2d8335e819c393d196d6fbf792817f40051257b269878505bc9afb3",
+    "license": "Same voice model card as en_US-libritts_r-medium.onnx"
+  },
+  "test-clean.tar.gz": {
+    "url": "https://www.openslr.org/resources/12/test-clean.tar.gz",
+    "sha256": "39fde525e59672dc6d1551919b1478f724438a95aa55f874b576be21967e6c23",
+    "license": "CC BY 4.0, LibriSpeech, Vassil Panayotov, Guoguo Chen, Daniel Povey and Sanjeev Khudanpur, https://www.openslr.org/12/"
+  }
+}

@@ -250,7 +250,7 @@ func TestDelegateCallResponseReportsSelectedAgentCapabilities(t *testing.T) {
 	if call.IsError {
 		t.Fatalf("delegate call: %s", call.Output)
 	}
-	var state stableDelegateCreateResult
+	var state delegateCreateResult
 	if err := json.Unmarshal(toolResultJSON(call), &state); err != nil {
 		t.Fatalf("decode delegate result: %v", err)
 	}
@@ -272,5 +272,5 @@ func delegateToolsForRegisteredAgent(t *testing.T, sess *Session, name string) [
 		t.Fatalf("agent registry missing %q", name)
 	}
 	allTools, allowed, denied := baseSubagentToolPolicy(&agent, false)
-	return stableDelegateToolNameCeiling(sess.reg, sess.resultToolName(), allTools, allowed, denied, false, "")
+	return delegateToolNameCeiling(sess.reg, sess.resultToolName(), allTools, allowed, denied, false, "")
 }

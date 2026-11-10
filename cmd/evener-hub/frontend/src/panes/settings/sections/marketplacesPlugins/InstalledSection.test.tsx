@@ -3,7 +3,7 @@ import { type PluginComponentsEntry, pluginComponentsKey } from "@evener/appwire
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { connectionStore } from "../../../../stores/connection";
+import { resetConnectionStoreForTests } from "../../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
@@ -30,7 +30,7 @@ const FORMATTER: PluginEntry = {
 };
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetExtensionsStoreForTests();
   resetToastStoreForTests();
 });

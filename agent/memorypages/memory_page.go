@@ -14,6 +14,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/frontmatter"
+	"primeradiant.com/evener/agent/internal/mdfence"
 	"primeradiant.com/evener/agent/internal/tool"
 )
 
@@ -143,23 +144,14 @@ func ParsePage(rel string, raw []byte, modTime time.Time) Page {
 // fenced code block, without closing hashes and with whitespace runs
 // collapsed, or "".
 func firstMarkdownHeading(body string) string {
-	var fence string // the open fence's run ("```", "~~~~", ...), "" outside one
+	var fence mdfence.Tracker
 	for line := range strings.SplitSeq(body, "\n") {
+		if fence.StepInBlock(line) {
+			continue
+		}
 		text := strings.TrimLeft(line, " ")
 		if len(line)-len(text) > 3 {
 			continue // indented code
-		}
-		if run := fenceRun(text); run != "" {
-			switch {
-			case fence == "":
-				fence = run
-			case run[0] == fence[0] && len(run) >= len(fence) && strings.TrimSpace(text[len(run):]) == "":
-				fence = ""
-			}
-			continue
-		}
-		if fence != "" {
-			continue
 		}
 		trimmed := strings.TrimLeft(text, "#")
 		level := len(text) - len(trimmed)
@@ -174,21 +166,6 @@ func firstMarkdownHeading(body string) string {
 		}
 	}
 	return ""
-}
-
-// fenceRun returns the leading run of three or more backticks or tildes in
-// line, which opens or closes a code fence, or "". A backtick run followed by
-// another backtick on the line is no fence (CommonMark: a backtick fence's
-// info string holds no backtick), so "```a`b" is inline code.
-func fenceRun(line string) string {
-	if line == "" || (line[0] != '`' && line[0] != '~') {
-		return ""
-	}
-	run := line[:len(line)-len(strings.TrimLeft(line, line[:1]))]
-	if len(run) < 3 || (run[0] == '`' && strings.Contains(line[len(run):], "`")) {
-		return ""
-	}
-	return run
 }
 
 // memoryFallbackDescription is the description of a page without one: its

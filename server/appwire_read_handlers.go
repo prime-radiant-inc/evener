@@ -31,6 +31,7 @@ func (s *Server) registerAppWireHandlers() {
 	appserver.HandleTyped(router, appwire.MethodTurnSteer, s.handleAppTurnSteer)
 	appserver.HandleTyped(router, appwire.MethodEvenerSandboxEscalationResolve, s.handleAppSandboxEscalationResolve)
 	appserver.HandleTyped(router, appwire.MethodEvenerDelegateStop, s.handleAppDelegateStop)
+	appserver.HandleTyped(router, appwire.MethodEvenerJobsStop, s.handleAppJobsStop)
 	appserver.HandleTyped(router, appwire.MethodTurnInterrupt, s.handleAppTurnInterrupt)
 	appserver.HandleTyped(router, appwire.MethodTurnQueue, s.handleAppTurnQueue)
 	appserver.HandleTyped(router, appwire.MethodTurnDrainAsSteer, s.handleAppTurnDrainAsSteer)
@@ -97,6 +98,30 @@ func (s *Server) handleAppThreadList(_ context.Context, params appwire.ThreadLis
 func (s *Server) handleAppThreadRead(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 	if err := appwire.ValidateThreadReadParams(params); err != nil {
 		return appwire.ThreadReadResponse{}, s.readError(err, s.appThreadIDForRead(params))
+	}
+	if params.IsPendingAskPage() {
+		return s.appPendingAskPage(params)
+	}
+	if err := params.ValidateAnswerContinuation(); err != nil {
+		return appwire.ThreadReadResponse{}, err
+	}
+	if params.AnswerContinuation != nil {
+		cut := s.appThreadReadCutForTarget(params, s.appThreadIDForRead(params))
+		if !cut.found || cut.history == nil {
+			return appwire.ThreadReadResponse{}, appwire.Unavailable("answer continuation history unavailable")
+		}
+		verdict, snapshot, err := cut.history.answerContinuation(ctx, params)
+		if err != nil {
+			return appwire.ThreadReadResponse{}, appwire.WithHistoryReadIdentity(appserver.WireError(err), cut.response.BootGeneration, cut.response.Epoch)
+		}
+		current := s.appThreadReadCutForTarget(params, s.appThreadIDForRead(params))
+		if !current.found || current.history != cut.history || current.response.Thread.Evener.Ref != cut.response.Thread.Evener.Ref || current.response.Thread.Evener.InstanceID != cut.response.Thread.Evener.InstanceID || current.response.BootGeneration != cut.response.BootGeneration || current.response.Epoch != cut.response.Epoch {
+			return appwire.ThreadReadResponse{}, appwire.Unavailable("answer continuation target changed during read")
+		}
+		response := cut.response
+		response.Thread.Turns = nil
+		response.AnswerContinuation, response.Snapshot = &verdict, &snapshot
+		return response, nil
 	}
 	if !params.Subscribe {
 		return s.appThreadReadSnapshotChecked(params)
@@ -177,8 +202,8 @@ func (s *Server) appThreadReadSnapshotChecked(params appwire.ThreadReadParams) (
 // lock another component holds across disk I/O. That is now structural rather
 // than a rule to remember: the envelope is materialized (server/thread_envelope.go),
 // this is a struct copy, the overlay capture copies in-memory state under a
-// leaf lock, and the Server holds no callback that could reach a session from
-// a read path.
+// leaf lock, and this capture never calls the session. Explicit pending-ask
+// pages sample their owner separately, outside the read cut and projection locks.
 func (s *Server) appThreadReadCutForTarget(params appwire.ThreadReadParams, threadID string) appThreadReadCut {
 	thread, ok := s.appThreadForID(threadID)
 	if !ok {
@@ -209,14 +234,23 @@ func (s *Server) finishAppThreadRead(params appwire.ThreadReadParams, cut appThr
 	}
 	response := cut.response
 	if params.IncludeTurns && cut.history != nil {
-		turns, olderCursor, snapshot, overlay, err := cut.history.latest(cut.capture, cut.history.ref, params.ItemLimit)
+		turns, olderCursor, snapshot, latestExecutionTurnID, overlay, err := cut.history.latest(cut.capture, cut.history.ref, params.ItemLimit)
 		if err != nil {
 			return appwire.ThreadReadResponse{}, appwire.WithHistoryReadIdentity(appserver.WireError(err), response.BootGeneration, response.Epoch)
 		}
 		response.Thread.Turns = turns
 		response.OlderCursor = olderCursor
 		response.Snapshot = &snapshot
+		response.LatestExecutionTurnID = latestExecutionTurnID
 		response.Overlay = overlay
+	}
+	// History may have advanced after the subscription cut. Its immutable
+	// producer snapshot must cover the entries just projected, not the older
+	// envelope captured before projection. This never samples a live Session.
+	if cut.history != nil {
+		if state := cut.history.conversationProvenance(); state != nil {
+			response.Thread.Evener.ConversationProvenance = appwire.CloneConversationProvenance(state)
+		}
 	}
 	if err := appwire.ValidateThreadReadItemResponse(response); err != nil {
 		if cut.history != nil {

@@ -5,7 +5,7 @@ import { activityChangedNotification } from "@evener/appwire-client/testing/noti
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import "../../panes/transcript";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { activityClient, activityContext, activityJob, activityWatch } from "../../stores/sessionActivityTestUtils";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
 import { deriveScope } from "../statusbar/statusScope";
@@ -30,7 +30,7 @@ afterEach(() => {
   resetActivitySidebarStoreForTests();
   resetWorkspaceStoreForTests();
   vi.restoreAllMocks();
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
 });
 test("jobs show supplied terminal status and have no invented transcript action", async () => {
   const client = activityClient();

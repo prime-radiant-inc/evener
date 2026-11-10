@@ -2,14 +2,14 @@
 // in a Menlo inset (the first 40 lines, then the full log), an edit as a diff
 // with the web's add and delete washes, the file a write wrote, a task list,
 // an error, and the images the step produced.
-import { formatByteCount, lineCount } from "@evener/appwire-client";
+import { formatByteCount, isKnownTaskStatus, lineCount } from "@evener/appwire-client";
 import { type ReactNode, useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import type { AnsiLine } from "@evener/appwire-client";
 import { expandTabs, parseOutputLines } from "../ansiOutputStyles";
 import { AnsiOutputLine } from "../AnsiOutputLine";
 import { MarkdownResponse } from "../MarkdownResponse";
-import { TaskStatusMark, TASK_STATUS_LABEL } from "../taskStatus";
+import { TaskStatusMark, taskStatusLabel } from "../taskStatus";
 import { scaledType, typeRoles } from "../design/tokens";
 import { TranscriptImages } from "../TranscriptImages";
 import type { RunStep } from "../timeline";
@@ -90,16 +90,26 @@ function Checklist({ tasks }: { tasks: readonly ChecklistTask[] }) {
 			{shown.map((task) => (
 				<View key={task.id} style={{ gap: 2 }}>
 					<View style={{ flexDirection: "row", alignItems: "flex-start", gap: 6 }}>
-						{/* The composed label below already reads the state in words. */}
+						{/* The composed label below reads the state in words; an unrecognized
+						    state has no word there, so its raw value also shows as a
+						    visible caption. */}
 						<TaskStatusMark status={task.status} size={15 * scale} style={{ marginTop: 2 * scale }} />
-						<View style={{ flex: 1, minWidth: 0 }}>
+						<View style={{ flex: 1, minWidth: 0, gap: 2 }}>
 							<Text
 								allowFontScaling={allowFontScaling}
-								accessibilityLabel={`${TASK_STATUS_LABEL[task.status]}: ${task.description}`}
+								accessibilityLabel={`${taskStatusLabel(task.status)}: ${task.description}`}
 								style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkHi }}
 							>
 								{task.description}
 							</Text>
+							{!isKnownTaskStatus(task.status) && (
+								<Text
+									allowFontScaling={allowFontScaling}
+									style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
+								>
+									{task.status}
+								</Text>
+							)}
 						</View>
 					</View>
 					{task.note ? (

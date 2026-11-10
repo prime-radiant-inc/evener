@@ -32,7 +32,6 @@ vi.mock("./OwnHostPage", () => ({ OwnHostPage: () => null }));
 vi.mock("../KeybindingPreferencesScreen", () => ({ KeybindingPreferencesScreen: () => null }));
 vi.mock("../LaunchSettingsScreen", () => ({ LaunchSettingsScreen: () => null }));
 vi.mock("../HubSettingsScreen", () => ({ HubSettingsScreen: () => null }));
-vi.mock("expo-crypto", () => ({ randomUUID: () => "hub-sheet-uuid" }));
 vi.mock("../hosts/useHubFleet", () => ({ useHubFleet: () => ({}) }));
 vi.mock("@react-navigation/native-stack", () => ({
 	createNativeStackNavigator: () => ({ Navigator: () => null, Screen: () => null }),

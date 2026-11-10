@@ -3,11 +3,11 @@ import type {
   AuthTestResponse,
   HostForwardedResult,
   HostRequestParams,
-  HostRow,
   InstanceEntry,
   InstanceListResponse,
 } from "@evener/appwire-client";
 import { CONNECTION_REPLACED_ERROR, friendlyErrorMessage, WireError } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { deferRequest, FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { threadStartedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
@@ -31,6 +31,7 @@ import {
   useHostInstances,
 } from "./credentials";
 import { hostsStore } from "./hosts";
+import { registryRow } from "./hostsTestUtils";
 import { setMutationClientIdentityForTests } from "./mutationClientIdentity";
 
 const ONE_INSTANCE: InstanceEntry = {
@@ -2715,30 +2716,8 @@ describe("notification-triggered refetch", () => {
   });
 });
 
-// registryRow builds one registry row for the invalidation tests below - the
-// same shape stores/hosts.ts publishes in its ready snapshot.
-function registryRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
-  return {
-    generation: 1,
-    incarnationId: "inc-1",
-    origin: "hub.toml",
-    attached: true,
-    midAttach: false,
-    removed: false,
-    ...overrides,
-  };
-}
-
 function remoteReads(fake: FakeClient): number {
   return fake.calls.filter((call) => call.method === "evener/host/request").length;
-}
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
 }
 
 // --- The registry-revision rule (round 7 consolidation) ----------------------

@@ -104,18 +104,18 @@ func FuzzJobtoolsContractProgram(f *testing.F) {
 			return marshalDelegateSendResult(ordinarySend, 1+r.intn(2048))
 		})
 
-		delegate := stableDelegateCreateResult{
+		delegate := delegateCreateResult{
 			DelegateID:     "dlg_contract",
 			ChildSessionID: "child-dlg_contract",
 			Type:           delegateResourceType,
 			Status:         string(jobstore.StatusRunning),
 			TranscriptRef:  "local:child-dlg_contract",
 			Model:          r.str(),
-			Sandbox:        delegateSandboxToolResultFrom(&delegateSandboxReport{Mode: "workspace-write", Network: r.booln()}),
+			Sandbox:        &delegateSandboxReport{Mode: "workspace-write", Network: r.booln()},
 		}
 		maxChars := 800 + r.intn(1200)
-		first, firstErr := marshalStableDelegateCreateResult(delegate, maxChars)
-		second, secondErr := marshalStableDelegateCreateResult(delegate, maxChars)
+		first, firstErr := marshalDelegateCreateResult(delegate, maxChars)
+		second, secondErr := marshalDelegateCreateResult(delegate, maxChars)
 		if (firstErr == nil) != (secondErr == nil) || first != second {
 			t.Fatalf("delegate result is non-deterministic: (%q, %v) != (%q, %v)", first, firstErr, second, secondErr)
 		}

@@ -433,7 +433,7 @@ func TestDelegateIdleRelease_ReleasesWholeSubtreeLeafFirst(t *testing.T) {
 	sub.mu.Unlock()
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second): // TRIPWIRE: fixture rendezvous normally takes milliseconds; this only bounds a deadlock.
+	case <-time.After(idleReleaseFirstGenerationTripwire):
 		t.Fatal("parent delegate runner did not finish")
 	}
 
@@ -468,7 +468,7 @@ func TestDelegateIdleRelease_ReleasesWholeSubtreeLeafFirst(t *testing.T) {
 	grandchildSub.mu.Unlock()
 	select {
 	case <-grandchildDone:
-	case <-time.After(10 * time.Second): // TRIPWIRE: fixture rendezvous normally takes milliseconds; this only bounds a deadlock.
+	case <-time.After(idleReleaseFirstGenerationTripwire):
 		t.Fatal("grandchild delegate runner did not finish")
 	}
 
@@ -704,7 +704,7 @@ func driveWideSubtreeIdleRelease(t *testing.T, wideChildren, limit int, parkDead
 	sub.mu.Unlock()
 	select {
 	case <-done:
-	case <-time.After(20 * time.Second): // TRIPWIRE: the scripted turn takes seconds; this only bounds a deadlock.
+	case <-time.After(idleReleaseFirstGenerationTripwire):
 		t.Fatal("parent delegate runner did not finish")
 	}
 
@@ -741,7 +741,7 @@ func driveWideSubtreeIdleRelease(t *testing.T, wideChildren, limit int, parkDead
 		childSub.mu.Unlock()
 		select {
 		case <-childDone:
-		case <-time.After(20 * time.Second): // TRIPWIRE: the children's scripted turns take seconds; this only bounds a deadlock.
+		case <-time.After(idleReleaseFirstGenerationTripwire):
 			t.Fatalf("child delegate runner %d did not finish", i)
 		}
 	}
@@ -1023,22 +1023,27 @@ func TestDelegateIdleRelease_PregateRefusalLeavesRuntimeWarm(t *testing.T) {
 	}
 }
 
-// idleReleaseFirstGenerationTripwire bounds this fixture's wait for the delegate
-// runner's first generation to finish: sub.done, closed at the end of the
-// stable-run finalize tail (subagents.go). It is a hang guard, never a speed
-// assertion, and it is NOT the fixture's rendezvous — the residue plant and the
-// forced refusal begin only after this wait returns. Nothing the fixture
-// controls closes `done`: it follows the runner goroutine's whole first turn —
-// the model turn, the durable generation settlement (this fixture sets
+// idleReleaseFirstGenerationTripwire bounds the idle-release fixtures' waits for
+// a delegate runner's first generation to finish: sub.done, closed at the end of
+// the stable-run finalize tail (subagents.go). It is a hang guard, never a speed
+// assertion, and it is NOT the fixture's rendezvous — the residue plants and
+// forced refusals begin only after this wait returns, and each subtree release
+// begins only after every member's runner has reported done. Nothing the
+// fixture controls closes `done`: it follows the runner goroutine's whole first
+// turn — the model turn, the durable generation settlement (these fixtures set
 // ForceRealIO, so the append path fsyncs), the announcement, and the attention
 // re-arm. (The child Session's construction is not in the span: createDelegate
-// builds it synchronously before it launches the runner.) The inline 10s this
-// replaces was sized as if `done` closed at the millisecond rendezvous its old
-// comment claimed; a controlled 12s pause on one legitimate post-publication
-// finalize step (testOnly.subagentAfterFinalStatePublish) makes a 10s bound fire
-// at 10.03s with the runner healthy, while this bound passes. 30s matches this
-// package's standing whole-operation tripwire for in-process work
-// (stallHandshakeTimeout, retirementCreateBarrierTripwire,
+// builds it synchronously before it launches the runner.) No production
+// deadline bounds the wait either: the runner's context adds only cancellation
+// (context.WithCancel(started.ctx), delegate_create.go), and these fixtures pass
+// context.Background(). The inline 10s the original wait used was sized as if
+// `done` closed at the millisecond rendezvous its old comment claimed; a
+// controlled 12s pause on one legitimate post-publication finalize step
+// (testOnly.subagentAfterFinalStatePublish) makes a 10s bound fire at 10.03s
+// with the runner healthy, while this bound passes. The wide-subtree fixture's
+// inline 20s was likewise sized for the scripted turn rather than for the whole
+// generation. 30s matches this package's standing whole-operation tripwire for
+// in-process work (stallHandshakeTimeout, retirementCreateBarrierTripwire,
 // stalledRefreshTripwire).
 const idleReleaseFirstGenerationTripwire = 30 * time.Second
 
@@ -1179,7 +1184,7 @@ func TestDelegateIdleRelease_RefusalsKeepSingleGraceTimer(t *testing.T) {
 	sub.mu.Unlock()
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second): // TRIPWIRE: fixture rendezvous normally takes milliseconds; this only bounds a deadlock.
+	case <-time.After(idleReleaseFirstGenerationTripwire):
 		t.Fatal("delegate runner did not finish")
 	}
 	// The finalize tail arms the grace timer after the done handshake.
@@ -1469,7 +1474,7 @@ func TestDelegateIdleRelease_PregateRefusesLocalRetirementResidue(t *testing.T) 
 	sub.mu.Unlock()
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second): // TRIPWIRE: fixture rendezvous normally takes milliseconds; this only bounds a deadlock.
+	case <-time.After(idleReleaseFirstGenerationTripwire):
 		t.Fatal("delegate runner did not finish")
 	}
 	tree := sess.delegateController
@@ -1591,7 +1596,7 @@ func TestDelegateAttentionRestore_HoldsOffIdleReleaseMidWake(t *testing.T) {
 	sub.mu.Unlock()
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second): // TRIPWIRE: fixture rendezvous normally takes milliseconds; this only bounds a deadlock.
+	case <-time.After(idleReleaseFirstGenerationTripwire):
 		t.Fatal("delegate runner did not finish")
 	}
 	runtime := sub.sess
@@ -1630,7 +1635,7 @@ func TestDelegateAttentionRestore_HoldsOffIdleReleaseMidWake(t *testing.T) {
 		// must count, so this pass's exit cannot drop the other pass's hold.
 		tree.holdAttentionRestore(res.DelegateID)
 	}
-	sess.drivePendingStableDelegateAttention()
+	sess.drivePendingDelegateAttention()
 	if !hookFired {
 		t.Fatal("wake pass restored nothing; fixture setup broken")
 	}

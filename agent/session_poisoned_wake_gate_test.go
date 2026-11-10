@@ -201,7 +201,7 @@ func TestWakeDoesNotPublishWhenPoisonLandsAtTheClaimCommit(t *testing.T) {
 	if ran || len(announced) != 0 {
 		t.Fatalf("published %v (ran=%v) for a transcript poisoned at the claim commit", announced, ran)
 	}
-	if got := sess.QueueDepth(); got != 1 {
+	if got := sess.queueDepth(); got != 1 {
 		t.Fatalf("queue depth after the refused wake = %d, want the message returned to the queue", got)
 	}
 }
@@ -235,7 +235,7 @@ func TestQueuedRecoveryClaimPoisonedAtTheCommitIsReturned(t *testing.T) {
 	if _, _, err := sess.ProcessClientMutationStart(t.Context(), func(string, ClientMutationStartPhase) {}); !errors.Is(err, transcript.ErrWriterPoisoned) {
 		t.Fatalf("queued recovery claim poisoned at the commit = %v, want a refusal", err)
 	}
-	if got := sess.QueueDepth(); got != 1 {
+	if got := sess.queueDepth(); got != 1 {
 		t.Fatalf("queue depth after the refused queued claim = %d, want the message returned to the queue rather than left claimed", got)
 	}
 	if got := sess.clientMutations.snapshot().ActiveTurnID; got != "" {
@@ -303,7 +303,7 @@ func TestStopReturnsAClaimedQueuedMessageRatherThanLosingIt(t *testing.T) {
 	if pending, still := sess.clientMutations.snapshot().PendingExecutions["stopped-during-claim"]; still && pending.ExecutionState == "interrupted" {
 		t.Fatal("the Stop retired a claimed-but-unrun message as interrupted: it is lost")
 	}
-	if got := sess.QueueDepth(); got != 1 {
+	if got := sess.queueDepth(); got != 1 {
 		t.Fatalf("queue depth after the Stop = %d, want the claimed-but-unrun message returned to the queue", got)
 	}
 	if got := sess.clientMutations.snapshot().ActiveTurnID; got != "" {
@@ -368,7 +368,7 @@ func TestStopDoesNotRequeueAClaimedQueuedMessageAlreadyInTheTranscript(t *testin
 	}, func() {}); err != nil {
 		t.Fatalf("stop over the recorded claim: %v", err)
 	}
-	if got := sess.QueueDepth(); got != 0 {
+	if got := sess.queueDepth(); got != 0 {
 		t.Fatalf("queue depth after the Stop = %d, want the already-recorded input left alone; requeued, it is appended and processed twice", got)
 	}
 }
@@ -405,7 +405,7 @@ func TestClosedTranscriptClaimIsRefusedBeforeItCommits(t *testing.T) {
 	if got := sess.clientMutations.snapshot().ActiveTurnID; got != "" {
 		t.Fatalf("ActiveTurnID = %q after the refusal, want no claim taken", got)
 	}
-	if got := sess.QueueDepth(); got != 1 {
+	if got := sess.queueDepth(); got != 1 {
 		t.Fatalf("queue depth after the refusal = %d, want the message untouched", got)
 	}
 }
@@ -529,7 +529,7 @@ func TestCompletionDoesNotRequeueAClaimedQueuedMessageAlreadyInTheTranscript(t *
 	if _, err := sess.completeClientMutationTurnWithState(claimed.ClientMutationID, "terminal"); err != nil {
 		t.Fatalf("complete the turn: %v", err)
 	}
-	if got := sess.QueueDepth(); got != 0 {
+	if got := sess.queueDepth(); got != 0 {
 		t.Fatalf("queue depth after completion = %d, want the already-recorded input left alone; requeued, it is appended and processed twice", got)
 	}
 	// Not requeued is only half of it: left claimed, the execution keeps the
@@ -643,7 +643,7 @@ func TestPoisonedTranscriptRefusesTheQueueHeadClaim(t *testing.T) {
 	if claimed.ClientMutationID != "" {
 		t.Fatalf("popQueueHead claimed %q on a poisoned transcript; the turn it announced cannot be recorded", claimed.ClientMutationID)
 	}
-	if got := sess.QueueDepth(); got != 1 {
+	if got := sess.queueDepth(); got != 1 {
 		t.Fatalf("queue depth after the refused claim = %d, want the message still queued", got)
 	}
 	if got := sess.clientMutations.snapshot().ActiveTurnID; got != "" {
@@ -843,7 +843,7 @@ func TestRefusedTurnGateReturnsADrainClaimedQueuedMessage(t *testing.T) {
 	if refusal != nil || claimed.ClientMutationID != "claimed-then-refused" {
 		t.Fatalf("setup: claimed = %#v refusal = %v, want the queued message", claimed, refusal)
 	}
-	if got := sess.QueueDepth(); got != 0 {
+	if got := sess.queueDepth(); got != 0 {
 		t.Fatalf("setup: queue depth = %d, want the message claimed out of the queue", got)
 	}
 
@@ -855,7 +855,7 @@ func TestRefusedTurnGateReturnsADrainClaimedQueuedMessage(t *testing.T) {
 	if _, err := sess.ProcessInputKind(ctx, claimed.Text, claimed.Images, EntryUserInput); !errors.Is(err, transcript.ErrWriterPoisoned) {
 		t.Fatalf("turn gate over a claimed queued message = %v, want transcript.ErrWriterPoisoned", err)
 	}
-	if got := sess.QueueDepth(); got != 1 {
+	if got := sess.queueDepth(); got != 1 {
 		t.Fatalf("queue depth after the refused gate = %d, want the message returned to the queue", got)
 	}
 	if got := sess.clientMutations.snapshot().ActiveTurnID; got != "" {

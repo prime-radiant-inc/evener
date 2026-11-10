@@ -80,9 +80,20 @@ var keyedWireTypes = []string{
 }
 
 var stringEnums = []stringEnum{
+	{reflect.TypeFor[appwire.LifecycleClass](), "LIFECYCLE_CLASSES", "LifecycleClass", appwire.AllLifecycleClasses()},
+	{reflect.TypeFor[appwire.MachineKind](), "MACHINE_KINDS", "MachineKind", appwire.AllMachineKinds()},
+	{reflect.TypeFor[appwire.SessionState](), "SESSION_STATES", "SessionState", appwire.AllSessionStates()},
+	{reflect.TypeFor[appwire.JobStatus](), "JOB_STATUSES", "JobStatus", appwire.AllJobStatuses()},
+	{reflect.TypeFor[appwire.DelegatePhase](), "DELEGATE_PHASES", "DelegatePhase", appwire.AllDelegatePhases()},
+	{reflect.TypeFor[appwire.DelegateRunStatus](), "DELEGATE_RUN_STATUSES", "DelegateRunStatus", appwire.AllDelegateRunStatuses()},
+	{reflect.TypeFor[appwire.DelegateOutcome](), "DELEGATE_OUTCOMES", "DelegateOutcome", appwire.AllDelegateOutcomes()},
+	{reflect.TypeFor[appwire.GoalStatus](), "GOAL_STATUSES", "GoalStatus", appwire.AllGoalStatuses()},
+	{reflect.TypeFor[appwire.OperationState](), "OPERATION_STATES", "OperationState", appwire.AllOperationStates()},
 	{reflect.TypeFor[appwire.SessionActivityScope](), "SESSION_ACTIVITY_SCOPES", "SessionActivityScope", []string{string(appwire.SessionActivityScopeSession), string(appwire.SessionActivityScopeSubtree)}},
 	{reflect.TypeFor[appwire.SessionActivityResource](), "SESSION_ACTIVITY_RESOURCES", "SessionActivityResource", []string{string(appwire.SessionActivityResourceSummary), string(appwire.SessionActivityResourceDelegates), string(appwire.SessionActivityResourceJobs), string(appwire.SessionActivityResourceWatches)}},
+	{reflect.TypeFor[appwire.SessionSourceState](), "SESSION_SOURCE_STATES", "SessionSourceState", []string{string(appwire.SessionSourceAnswered), string(appwire.SessionSourceAttemptedFailed), string(appwire.SessionSourceNotSelected), string(appwire.SessionSourceSkippedUnattached)}},
 	{reflect.TypeFor[appwire.SessionWatchState](), "SESSION_WATCH_STATES", "SessionWatchState", []string{string(appwire.SessionWatchStateArmed), string(appwire.SessionWatchStateEnded), string(appwire.SessionWatchStateUnknown)}},
+	{reflect.TypeFor[appwire.ThreadProbeState](), "THREAD_PROBE_STATES", "ThreadProbeState", []string{string(appwire.ThreadProbeStateFresh), string(appwire.ThreadProbeStateRetained)}},
 	{reflect.TypeFor[appwire.ThreadItemEventKind](), "THREAD_ITEM_EVENT_KINDS", "ThreadItemEventKind", appwire.AllThreadItemEventKinds},
 	{reflect.TypeFor[appwire.TaskStatus](), "TASK_STATUSES", "TaskStatus", appwire.AllTaskStatuses},
 	{reflect.TypeFor[appwire.TranscriptLevel](), "TRANSCRIPT_LEVELS", "TranscriptLevel", appwire.AllTranscriptLevels},
@@ -598,6 +609,35 @@ func writeNameCatalog(b *strings.Builder, constName, typeName string, names []st
 	fmt.Fprintf(b, "export type %s = (typeof %s)[number];\n\n", typeName, constName)
 }
 
+// writeLifecycleMachines emits the declared lifecycle tables as one runtime
+// constant. A client derives a state's class and its legal successors from the
+// daemon's own declaration, so a new state or edge cannot reach one side
+// without the other.
+func writeLifecycleMachines(b *strings.Builder) {
+	b.WriteString("export const LIFECYCLE_MACHINES = ")
+	b.WriteString("{\n")
+	for _, machine := range appwire.LifecycleMachines() {
+		fmt.Fprintf(b, "  %q: {\n", machine.Kind)
+		if machine.Initial != "" {
+			fmt.Fprintf(b, "    initial: %q,\n", machine.Initial)
+		}
+		b.WriteString("    states: {\n")
+		for _, state := range machine.States {
+			fmt.Fprintf(b, "      %q: { class: %q, terminal: %v", state.Name, state.Class, state.Terminal)
+			if state.Resting {
+				b.WriteString(", resting: true")
+			}
+			if state.Summary != "" {
+				fmt.Fprintf(b, ", summary: %q", state.Summary)
+			}
+			b.WriteString(" },\n")
+		}
+		b.WriteString("    },\n  },\n")
+	}
+	b.WriteString("} as const;\n\n")
+	b.WriteString("export type LifecycleMachineCatalog = typeof LIFECYCLE_MACHINES;\n\n")
+}
+
 // writeShippedTranscriptDisplayDefaults emits the Go-owned shipped transcript
 // display defaults as a constant, so a client test can pin its own copy to
 // what the hub serves.
@@ -713,6 +753,7 @@ func EmitCatalog() string {
 	for _, e := range stringEnums {
 		writeNameCatalog(&b, e.constName, e.typeName, e.values)
 	}
+	writeLifecycleMachines(&b)
 	writeNameCatalog(&b, "STEERING_KINDS", "SteeringKind", events.AllSteeringKinds)
 	writeNameCatalog(&b, "RETRY_SAFE_MUTATION_METHODS", "RetrySafeMutationMethod", appwire.RetrySafeMutationMethods)
 	writeShippedTranscriptDisplayDefaults(&b)

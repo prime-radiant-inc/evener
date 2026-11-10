@@ -56,3 +56,24 @@ may not.
 
 Routing keys on the instance name, never on a model-string prefix or a
 base-URL guess — a gateway in front of the vendor makes URL sniffing wrong.
+
+## Streaming and retry commitment
+
+`StreamGenerate` retries a stream attempt only while it has not committed
+content: an open failure, a 429/5xx, or a stream that truncated before its
+finish event. A text delta commits the attempt, and so does a content-bearing
+passthrough (below). The normalized reasoning, tool-argument and object deltas
+keep their pre-existing retry behavior; they are not part of this commitment
+yet.
+
+Text deltas commit an attempt. A `PROVIDER_EVENT` passthrough commits one only
+when the adapter sets `StreamEvent.ContentBearing`, because the adapter is the
+layer that knows which raw frame carries model output rather than lifecycle or
+control traffic. The criterion is "a retry would republish it": if the caller
+has observed the frame's content, the attempt is committed. The Responses
+decoder classifies the frames it knows carry content (`response.refusal.*`,
+audio and transcript deltas, unmappable tool-call fragments) and leaves
+lifecycle frames unclassified, so a control-only stream that truncates still
+retries. The guarantee is scoped to the adapter: a custom adapter that emits
+its own `Raw` payloads must set the flag to get the same no-duplication
+behavior (#4941).

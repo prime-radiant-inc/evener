@@ -215,7 +215,7 @@ func TestDelegateResourceCreate_RegisteredPostCommitFailureRetainsStableIdentity
 	if got := jsonCharLen(resultJSON); got > jobToolResultMinJSONChars {
 		t.Fatalf("registered post-commit result length = %d, want <= %d", got, jobToolResultMinJSONChars)
 	}
-	var result stableDelegateCreateResult
+	var result delegateCreateResult
 	if err := json.Unmarshal(resultJSON, &result); err != nil {
 		t.Fatalf("decode registered post-commit result %q: %v", resultJSON, err)
 	}
@@ -723,7 +723,7 @@ func TestDelegateResourceCreate_ToolCapabilityCeiling(t *testing.T) {
 		t.Cleanup(adapter.releaseRun)
 
 		const runtimeOnlyTool = "mcp__task6__runtime_only"
-		root.RegisterTool(runtimeOnlyTool, "exists only on the live parent", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
+		root.registerTool(runtimeOnlyTool, "exists only on the live parent", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
 			return nil, nil
 		})
 
@@ -1339,6 +1339,7 @@ func prepareCommittedDelegate(t *testing.T, root *Session, args delegateArgs) (d
 		t.Fatal(err)
 	}
 	t.Cleanup(prepared.disposeUnadopted)
+	t.Cleanup(func() { endUnlaunchedDelegate(root, started) })
 	return runtime, started, isolation, prepared
 }
 
@@ -1366,7 +1367,7 @@ func buildCommittedDelegate(root *Session, args delegateArgs, lane committedDele
 	if err != nil {
 		return runtime, delegateStartCommit{}, delegateIsolation{}, nil, fmt.Errorf("selectSubagentModel: %w", err)
 	}
-	toolNameCeiling := root.stableDelegateEffectiveToolNameCeiling(selection, args, "")
+	toolNameCeiling := root.delegateEffectiveToolNameCeiling(selection, args, "")
 	requestedSandbox := lane.sandbox
 	if requestedSandbox == nil {
 		requestedSandbox, err = root.requestedDelegateSandbox(args, toolNameCeiling)
@@ -1502,7 +1503,7 @@ func TestDelegateResourceCreate_ChildTranscriptIsPreseededBeforeRun(t *testing.T
 	case <-time.After(30 * time.Second):
 		t.Fatal("provider was not reached")
 	}
-	_, entries, _, err := readTranscript(filepath.Join(stateDir, "", schema.SessionsSubdir, childID+".transcript.jsonl"), "")
+	_, entries, _, err := readTranscript(context.Background(), filepath.Join(stateDir, "", schema.SessionsSubdir, childID+".transcript.jsonl"), "")
 	if err != nil {
 		t.Fatalf("read child transcript at provider boundary: %v", err)
 	}
@@ -1556,7 +1557,7 @@ func TestDelegateResourceCreate_InputTranscriptAppendRunsAfterControllerUnlock(t
 	if providerChildID != childID {
 		t.Fatalf("provider child = %q, want registered child %q", providerChildID, childID)
 	}
-	_, entries, _, err := readTranscript(filepath.Join(root.stateDir, "", schema.SessionsSubdir, childID+".transcript.jsonl"), "")
+	_, entries, _, err := readTranscript(context.Background(), filepath.Join(root.stateDir, "", schema.SessionsSubdir, childID+".transcript.jsonl"), "")
 	if err != nil {
 		t.Fatalf("read real child transcript at provider boundary: %v", err)
 	}
@@ -1572,7 +1573,7 @@ func TestDelegateResourceCreate_InputTranscriptAppendRunsAfterControllerUnlock(t
 	adapter.releaseRun()
 }
 
-func TestDelegateResourceCreate_RegisteredToolReturnsOnlyStableDelegateIdentity(t *testing.T) {
+func TestDelegateResourceCreate_RegisteredToolReturnsOnlyDelegateIdentity(t *testing.T) {
 	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	result := executeTask6RegisteredDelegate(context.Background(), t, root, "registered stable identity", 0)

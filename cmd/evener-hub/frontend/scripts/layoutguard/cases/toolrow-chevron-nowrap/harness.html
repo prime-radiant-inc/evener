@@ -165,8 +165,10 @@ function anchorRow(intent, path, meta, glued) {
 }
 
 // The intent from the bug report's screenshot, and a long desktop one.
-const LONG_INTENT = "Confirming the native textarea constraint and the smallest editor boundary that would need replacement.";
-const LONG_INTENT_WIDE = "Reading the actual built-in matching call rather than surrounding suppositions, confirming the native textarea constraint and the smallest editor boundary that would need replacement, and checking that a line which fills exactly keeps the trailing disclosure arrow on the words it opens.";
+const LONG_INTENT =
+  "Confirming the native textarea constraint and the smallest editor boundary that would need replacement, then checking the trailing disclosure arrow at every width the row may take.";
+const LONG_INTENT_WIDE =
+  "Reading the actual built-in matching call rather than surrounding suppositions, confirming the native textarea constraint and the smallest editor boundary that would need replacement, and checking that a line which fills exactly keeps the trailing disclosure arrow on the words it opens, ending at a trailing-disclosure-arrow.";
 const SHORT_INTENT = "List the directory contents.";
 // Shell-ish and web_fetch-ish summaries long enough to wrap at every swept
 // base, and the read_file shape's own path + line-range grammar.
@@ -176,10 +178,10 @@ const READ_META = " · lines 100-260";
 
 // Every swept fixture walks its box width from the base across SWEEP_SPAN_PX
 // in SWEEP_STEP_PX steps. Binding widths occur wherever a wrap arrangement's
-// last line leaves less room than the trailing glyph unit needs, so a 300px
+// last line leaves less room than the trailing glyph unit needs, so a 600px
 // span at 2px steps crosses many of them wherever the platform's font metrics
 // put them.
-const SWEEP_SPAN_PX = 300;
+const SWEEP_SPAN_PX = 600;
 const SWEEP_STEP_PX = 2;
 
 // The shapes. `glued` mirrors the PRODUCTION markup of each shape as this

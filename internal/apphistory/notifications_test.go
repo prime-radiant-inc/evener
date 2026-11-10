@@ -93,3 +93,21 @@ func TestContentFilterIntentOnlySuppressesToolOutput(t *testing.T) {
 		t.Fatal("essential status suppressed")
 	}
 }
+
+// A notification whose params cannot decode is an error, not a silently
+// dropped event: the filter hands the decode failure back to the caller
+// for every overlay method.
+func TestContentFilterRejectsUndecodableNotificationParams(t *testing.T) {
+	t.Parallel()
+	no := false
+	f := NewFilter(appwire.ThreadContentParams{IncludeDiagnostics: &no}.Selection())
+	for _, method := range []string{
+		appwire.NotifyOverlayUpserted,
+		appwire.NotifyOverlayDelta,
+	} {
+		n := appwire.Notification{Method: method, Params: json.RawMessage(`not json`)}
+		if _, _, err := f.Notification(n); err == nil {
+			t.Fatalf("%s: undecodable params were accepted", method)
+		}
+	}
+}

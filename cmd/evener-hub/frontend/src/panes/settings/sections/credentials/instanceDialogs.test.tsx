@@ -17,24 +17,12 @@ import { enterText } from "../../../../textEntryTestUtils";
 import { Toast } from "../../../../widgets";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { toastKinds } from "../../../../widgets/toast/toastTestUtils";
+import { instance } from "./credentialsTestUtils";
 import { AddInstanceDialog, ApiKeyDialog, CredentialJsonDialog } from "./instanceDialogs";
 
 // The dialogs' outcomes, read from their markers: the inline refusal by its
 // data-reason and the toasts by kind, never by the words either shows.
 const alertReason = (): string | null => screen.getByRole("alert").getAttribute("data-reason");
-
-function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
-  return {
-    protocol: "openai-chat",
-    auth: "bearer",
-    implicit: false,
-    isDefault: false,
-    activeSource: "none",
-    hasStoredOAuth: false,
-    credentialRequired: true,
-    ...overrides,
-  };
-}
 
 function provider(overrides: Partial<ProviderDescriptor> & Pick<ProviderDescriptor, "id">): ProviderDescriptor {
   return {

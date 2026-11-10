@@ -72,9 +72,13 @@ Results are the CLI's `--json` struct shapes. The same commands also run as
 | `turnids` | sweep every session under the state root for reserved turn ids minted inside the transcript's entry-index namespace — duplicate/overflow collisions | — |
 | `audit` | run a runbook's mechanical `audit:` checks across a whole session set, deduped into contract-valid Findings, plus a pattern × session-count summary and every non-mechanical CLASSIFY step surfaced as `manual` (never silently skipped) | `runbook NAME`, `sessions <sel,...>` \| `since DUR` |
 | `plugins` | plugin-store health — registry/disk drift, marketplace health, component validity, auto-upgrade sanity. Note: its store-writability probe creates and removes one temp file in the plugin store (not session state), and it reads the default plugin store root, not the session's state root. | — |
+| `lifecycle` | the declared state machines — every state with its class, terminality and resting polarity, plus the legal transitions. Use it when a row's status or a tool result needs to be read against the machine that owns it; it takes no selector and reads no state root. | — |
 
 Flag-level detail lives in the CLI's per-subcommand `--help` and in the
 `doctor_evener` tool's argument descriptions, not here.
+
+The declared states, terminality and legal transitions are catalogued in
+`docs/product/lifecycles.md`. Read it before treating a status as a bug.
 
 **apilog empties caveat:** `recorded_empty` (and `apilog --health`'s
 `errors_by_class`) reflect the compact fields recorded at call time, not a

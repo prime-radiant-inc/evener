@@ -210,7 +210,7 @@ func delegateRuns(ctx context.Context, t *testing.T, root *Session) []delegateRu
 // readEntries reads a transcript's entries.
 func readEntries(t *testing.T, path string) []transcript.Entry {
 	t.Helper()
-	data, err := readTranscriptFull(path, "")
+	data, err := readTranscriptFull(context.Background(), path, "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}

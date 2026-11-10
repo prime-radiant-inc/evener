@@ -34,8 +34,23 @@
   display: flex;
   align-items: center;
   gap: var(--space-1);
+  /* The engaged row's line break is decided by honest flex bases: the status
+     chrome carries its measured compact rung as its basis
+     (sessionchrome.module.css, because its container-contained .body cannot
+     report one), so the chrome plus the wrapped strip no longer fit on one
+     line exactly when one line cannot hold both - and the strip takes the
+     next line, keeping the model picker at a real width and every count at
+     the tap floor. When everything fits, no line breaks and this behaves
+     exactly like the single-line row. */
+  flex-wrap: wrap;
   flex: 1 1 auto;
   min-width: 0;
+  /* The phone's activity chips ride in this slot (ActivityChips reuses the
+     statusbar's compact presentation), so the slot carries the same named
+     container the statusbar's own bar declares: chips drop their names and
+     glyphs by this slot's measured width, not the page's. Desktop renders
+     no chips here, so the container only ever holds them on a phone. */
+  container: statusbar / inline-size;
 }
 
 .attachments {
@@ -199,5 +214,14 @@
 @container (max-width: 559px) {
   .submitLabel {
     display: none;
+  }
+}
+
+/* The 466pt cover-width session dock keeps its existing controls but gives
+ * more of the display back to the transcript. PromptCard owns the matching
+ * empty, unfocused card spacing variant. */
+@media (min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4) {
+  .composer {
+    gap: var(--space-1);
   }
 }

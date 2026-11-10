@@ -133,6 +133,66 @@ test("detached command-only recovery persists instead of being discarded", async
   });
 });
 
+// RoboRev round-1 M5: an edit-recovery born of a retargeted row is
+// associated with the displayed session by displayedRef while its durable
+// destination is the resumed session. The displayed composer must activate
+// its associated record, or the row the strip surfaced stays inert. The
+// fixture is built the way the product builds it: the recovery row is the
+// canceled retargeted RESEND the strip surfaces (displayedRef is the
+// resend's displayed barrier, never a retarget stamp), moved to recovery by
+// the strip's own Edit.
+test("the displayed composer activates a recovery record associated by displayed ref", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const input = [{ type: "text" as const, text: "retargeted" }];
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  await storage.retargetOutbox("root", "ref_b", { threadId: "thr_ref_b" });
+  const sent = await storage.resendRecoveryResult(
+    original.clientMutationId,
+    {
+      targetRef: "ref_b",
+      threadId: "thr_ref_b",
+      method: "turn/start",
+      payload: { ref: "ref_b", input },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input },
+    },
+    undefined,
+    undefined,
+    undefined,
+    { stopEpoch: 0, displayedRef: "root" },
+  );
+  if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
+  // A Stop on the still-displayed session cancels the unattempted resend -
+  // the canceled row the strip surfaces under the displayed ref.
+  await storage.enqueueInterruptAndCancel({
+    targetRef: "root",
+    threadId: "thr_root",
+    method: "turn/interrupt",
+    payload: { ref: "root" },
+    attachments: [],
+    optimisticDisplay: { method: "turn/interrupt" },
+  });
+  const canceled = await storage.getOutbox(sent.record.clientMutationId);
+  if (canceled?.state !== "canceled") throw new Error("missing canceled retargeted row");
+  await storage.transferToRecovery(sent.record.clientMutationId, "editing");
+  const recovery = await storage.getRecovery(sent.record.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  expect(recovery.targetRef).toBe("ref_b");
+  expect(recovery.displayedRef).toBe("root");
+  const source = createTestComposerSource("root");
+  await expect(source.activateRecovery(recovery)).resolves.toBe(true);
+  expect(source.getSnapshot().activeRecoveryId).toBe(sent.record.clientMutationId);
+  expect(source.getSnapshot().text).toBe("retargeted");
+});
+
 test("an autosave finishing after goal replacement cannot restore the retired lease", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);

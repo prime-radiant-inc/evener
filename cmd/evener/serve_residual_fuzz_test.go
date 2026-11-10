@@ -7,8 +7,11 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"io"
 	"net"
 	"net/http"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -42,7 +45,7 @@ type residualServeServer struct {
 	name           func(string) error
 	effort         func(string) error
 	tasks          func() []appwire.Task
-	jobs           func(appwire.JobsListParams) (any, error)
+	jobs           func(context.Context, appwire.JobsListParams) (any, error)
 	jobOutput      func(string, *int64, int64) (appwire.JobOutputPage, bool, error)
 	jobGet         func(string) (appwire.JobActivityJob, bool, error)
 	clear          func(context.Context, appwire.ThreadClearParams) error
@@ -78,7 +81,7 @@ func (s *residualServeServer) SetVisionModelFunc(f func(string) error)     { s.v
 func (s *residualServeServer) SetNameFunc(f func(string) error)            { s.name = f }
 func (s *residualServeServer) SetReasoningEffortFunc(f func(string) error) { s.effort = f }
 func (s *residualServeServer) SetTasksFunc(f func() []appwire.Task)        { s.tasks = f }
-func (s *residualServeServer) SetJobsFunc(f func(appwire.JobsListParams) (any, error)) {
+func (s *residualServeServer) SetJobsFunc(f func(context.Context, appwire.JobsListParams) (any, error)) {
 	s.jobs = f
 }
 func (s *residualServeServer) SetJobOutputFunc(f func(string, *int64, int64) (appwire.JobOutputPage, bool, error)) {
@@ -159,7 +162,7 @@ func exerciseResidualCallbacks(t *testing.T, s *residualServeServer, sessionID s
 	_ = s.envelopeSource.TaskAggregate()
 	_, _, _ = s.envelopeSource.WorkMetrics()
 	_, _ = s.envelopeSource.FailedToolCalls()
-	_ = s.envelopeSource.PendingQuestion()
+	_, _ = s.envelopeSource.PendingAskSnapshot()
 	_ = s.envelopeSource.RestingFailure()
 	_ = s.envelopeSource.PendingEscalations()
 	_, _, _ = s.envelopeSource.ReasoningInfo()
@@ -174,9 +177,68 @@ func exerciseResidualCallbacks(t *testing.T, s *residualServeServer, sessionID s
 		t.Fatal(err)
 	}
 	_ = s.tasks()
-	_, _ = s.jobs(appwire.JobsListParams{Ref: "local:" + sessionID})
+	_, _ = s.jobs(context.Background(), appwire.JobsListParams{Ref: "local:" + sessionID})
 	_, _, _ = s.jobOutput("job_1", nil, 1024)
 	_, _, _ = s.jobGet("job_1")
+}
+
+// serveDiagnostic is one parsed "[serve <instant> session=<id>] <message>" line.
+type serveDiagnostic struct{ session, message string }
+
+// parseServeDiagnostics splits captured serve output into its diagnostics. A
+// line that is not shaped like a serve log line fails the test.
+func parseServeDiagnostics(t *testing.T, output string) []serveDiagnostic {
+	t.Helper()
+	var diagnostics []serveDiagnostic
+	for line := range strings.SplitSeq(strings.TrimSuffix(output, "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		rest, ok := strings.CutPrefix(line, "[serve ")
+		if !ok {
+			t.Fatalf("unexpected serve output %q: not a [serve] line", line)
+		}
+		header, message, ok := strings.Cut(rest, "] ")
+		if !ok {
+			t.Fatalf("unexpected serve output %q: no message separator", line)
+		}
+		_, session, ok := strings.Cut(header, " session=")
+		if !ok {
+			t.Fatalf("unexpected serve output %q: no session field", line)
+		}
+		diagnostics = append(diagnostics, serveDiagnostic{session: session, message: message})
+	}
+	return diagnostics
+}
+
+// assertServeDiagnostics requires exactly the diagnostics the
+// callbacks_and_input fixture provokes, all belonging to the daemon's session.
+// Each line is identified by the value the fixture owns — its injected error,
+// context.Canceled, or the fixture listener's address — not by the production
+// wording around it, which the serve log has no structured form for. A
+// missing, extra, or foreign diagnostic fails the test.
+func assertServeDiagnostics(t *testing.T, output, sessionID, listenAddr string, injected error) {
+	t.Helper()
+	diagnostics := parseServeDiagnostics(t, output)
+	var listening, registration, turnFailure int
+	for _, diagnostic := range diagnostics {
+		if diagnostic.session != sessionID {
+			t.Fatalf("diagnostic session = %q, want %q", diagnostic.session, sessionID)
+		}
+		switch {
+		case strings.HasSuffix(diagnostic.message, listenAddr):
+			listening++
+		case strings.HasSuffix(diagnostic.message, injected.Error()):
+			registration++
+		case strings.HasSuffix(diagnostic.message, context.Canceled.Error()):
+			turnFailure++
+		default:
+			t.Fatalf("unexpected serve diagnostic: %q", diagnostic.message)
+		}
+	}
+	if listening != 1 || registration != 1 || turnFailure != 1 {
+		t.Fatalf("serve diagnostics = %+v: listening=%d registration=%d turnFailure=%d, want one of each", diagnostics, listening, registration, turnFailure)
+	}
 }
 
 type residualTaskEnvelopeSampling struct {
@@ -309,6 +371,24 @@ func TestRunServeResidualCoverage(t *testing.T) {
 
 	t.Run("callbacks and input", func(t *testing.T) {
 		d, args := base(t)
+		adapter := &shutdownBlockingAdapter{
+			entered:   make(chan struct{}, 1),
+			cancelled: make(chan struct{}, 1),
+			release:   make(chan struct{}),
+		}
+		var releaseOnce sync.Once
+		releaseAdapter := func() { releaseOnce.Do(func() { close(adapter.release) }) }
+		t.Cleanup(releaseAdapter)
+		d.newClient = func(string, io.Writer) (*llm.Client, func() error, error) {
+			client := llm.NewClient()
+			client.Register(adapter)
+			return client, func() error { return nil }, nil
+		}
+		var diagnostics bytes.Buffer
+		d.serveLogOut = &diagnostics
+		// --verbose is part of the fixture's coverage, but its NDJSON is not a
+		// diagnostic under test: keep it out of the sink the assertions read.
+		d.verboseOut = io.Discard
 		var captured *residualServeServer
 		var sessionID string
 		d.newServer = func(cfg server.ServerConfig) serveServer { captured = newResidualServeServer(cfg); return captured }
@@ -326,10 +406,15 @@ func TestRunServeResidualCoverage(t *testing.T) {
 			c.setSession(nil)
 			c.setSession(c.session)
 		}
-		d.register = func(*rvreg.Registration, string, rendezvous.Entry) error { return boom }
+		registrationErr := errors.New("residual fixture registration rejected")
+		registered := false
+		d.register = func(*rvreg.Registration, string, rendezvous.Entry) error {
+			registered = true
+			return registrationErr
+		}
 		d.serveHTTP = func(*http.Server, net.Listener) error {
 			exerciseResidualCallbacks(t, captured, sessionID)
-			data, err := captured.jobs(appwire.JobsListParams{Ref: "local:" + sessionID})
+			data, err := captured.jobs(context.Background(), appwire.JobsListParams{Ref: "local:" + sessionID})
 			if err != nil {
 				t.Fatalf("jobs callback: %v", err)
 			}
@@ -342,8 +427,22 @@ func TestRunServeResidualCoverage(t *testing.T) {
 			}
 			captured.input <- server.InputMessage{Text: "hello", Kind: agent.EntryUserInput}
 			close(captured.input)
-			time.Sleep(20 * time.Millisecond)
-			_ = captured.clear(context.Background(), appwire.ThreadClearParams{Ref: "local:" + sessionID, ClientMutationID: "clear", ExpectedInstanceID: sessionID})
+			select {
+			case <-adapter.entered:
+			case <-time.After(10 * time.Second):
+				t.Fatal("fixture turn never reached the provider")
+			}
+			clearDone := make(chan error, 1)
+			go func() {
+				clearDone <- captured.clear(context.Background(), appwire.ThreadClearParams{Ref: "local:" + sessionID, ClientMutationID: "clear", ExpectedInstanceID: sessionID})
+			}()
+			select {
+			case <-adapter.cancelled:
+			case <-time.After(10 * time.Second):
+				t.Fatal("clear did not cancel the fixture turn")
+			}
+			releaseAdapter()
+			<-clearDone
 			captured.shutdown()
 			return http.ErrServerClosed
 		}
@@ -353,9 +452,13 @@ func TestRunServeResidualCoverage(t *testing.T) {
 		if captured == nil || captured.jobs == nil {
 			t.Fatal("jobs callback not captured")
 		}
-		if _, err := captured.jobs(appwire.JobsListParams{Ref: "local:wrong"}); err == nil {
+		if _, err := captured.jobs(context.Background(), appwire.JobsListParams{Ref: "local:wrong"}); err == nil {
 			t.Fatal("jobs callback accepted a ref for another local session")
 		}
+		if !registered {
+			t.Fatal("injected rendezvous registration failure did not run")
+		}
+		assertServeDiagnostics(t, diagnostics.String(), sessionID, exactServeListenAddr, registrationErr)
 	})
 
 	for _, clearCase := range []struct {

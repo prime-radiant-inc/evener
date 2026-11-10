@@ -8,6 +8,7 @@ import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { markFor } from "../board/StateMark";
 import { PulseMeter } from "../board/PulseMeter";
 import { meterTone } from "../board/pulse";
+import { useDetailPaneWidth } from "../duo/paneWidth";
 import { useHeaderTextScale } from "../headerText";
 import { allowFontScaling, useColors } from "../ui";
 import type { SessionStateLine } from "./sessionState";
@@ -116,7 +117,8 @@ export function SessionTitle({
 }) {
 	const { palette } = useColors();
 	const scale = useHeaderTextScale();
-	const { width } = useWindowDimensions();
+	const { width: windowWidth } = useWindowDimensions();
+	const width = useDetailPaneWidth() ?? windowWidth;
 	const span = navBarButtonSpan(backCount, scale);
 	const mark = markFor(line.state, false);
 	const liveAction = line.live && onJumpToLive;

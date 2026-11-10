@@ -13,6 +13,7 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
+	"primeradiant.com/evener/rendezvous"
 )
 
 // ResumeLocks hands out one mutex per session id so concurrent resume attempts
@@ -29,11 +30,114 @@ type ResumeLocks struct {
 	recovery      map[string]SessionRecoveryState
 	sequence      uint64
 	fences        []*ForceStopFence // held admission fences, newest last; guarded by mu
+	// replacementFailures remembers the last failed attempt to replace a
+	// session's registered owner, keyed by session id and the exact owner that
+	// could not serve it. A retry against that same owner must report the
+	// failure instead of launching another child for a daemon still holding the
+	// session.
+	replacementFailures map[string]replacementFailure
+	// pendingReplacements remembers a launched replacement and the exact owner
+	// it superseded when the launching request could not confirm the replacement.
+	// A later request retries the replacement's direct confirmation before
+	// rejecting unconfirmed ownership, then finishes the retirement; without it
+	// the replacement's unconfirmed claim blocks every retry and the old record
+	// and relay outlive the resume.
+	pendingReplacements map[string]pendingReplacement
+}
+
+// replacementFailure is one recorded failed replacement attempt.
+type replacementFailure struct {
+	ownerFingerprint string
+	err              error
+}
+
+// pendingReplacement is one launched replacement awaiting confirmation and the
+// exact owner it superseded awaiting retirement.
+type pendingReplacement struct {
+	replacement rendezvous.Entry
+	superseded  rendezvous.Entry
 }
 
 // NewResumeLocks returns an empty registry ready for use.
 func NewResumeLocks() *ResumeLocks {
 	return &ResumeLocks{locks: map[string]*ResumeMutex{}}
+}
+
+// NoteReplacementFailure records that replacing the owner named by
+// ownerFingerprint failed for sessionID.
+func (r *ResumeLocks) NoteReplacementFailure(sessionID, ownerFingerprint string, err error) {
+	if r == nil || sessionID == "" || ownerFingerprint == "" || err == nil {
+		return
+	}
+	r.mu.Lock()
+	if r.replacementFailures == nil {
+		r.replacementFailures = map[string]replacementFailure{}
+	}
+	r.replacementFailures[sessionID] = replacementFailure{ownerFingerprint: ownerFingerprint, err: err}
+	r.mu.Unlock()
+}
+
+// ReplacementFailure returns the recorded failed replacement when a retry
+// would replace the same exact owner.
+func (r *ResumeLocks) ReplacementFailure(sessionID, ownerFingerprint string) (bool, error) {
+	if r == nil || sessionID == "" || ownerFingerprint == "" {
+		return false, nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	failure, ok := r.replacementFailures[sessionID]
+	if !ok || failure.ownerFingerprint != ownerFingerprint {
+		return false, nil
+	}
+	return true, failure.err
+}
+
+// ClearReplacementFailure forgets a recorded failed replacement, after the
+// owner recovered or a replacement succeeded.
+func (r *ResumeLocks) ClearReplacementFailure(sessionID string) {
+	if r == nil || sessionID == "" {
+		return
+	}
+	r.mu.Lock()
+	delete(r.replacementFailures, sessionID)
+	r.mu.Unlock()
+}
+
+// NotePendingReplacement records a launched replacement and the exact owner it
+// superseded, until the replacement is confirmed and the retirement completes.
+func (r *ResumeLocks) NotePendingReplacement(sessionID string, replacement, superseded rendezvous.Entry) {
+	if r == nil || sessionID == "" {
+		return
+	}
+	r.mu.Lock()
+	if r.pendingReplacements == nil {
+		r.pendingReplacements = map[string]pendingReplacement{}
+	}
+	r.pendingReplacements[sessionID] = pendingReplacement{replacement: replacement, superseded: superseded}
+	r.mu.Unlock()
+}
+
+// PendingReplacement returns the recorded replacement and superseded owner
+// awaiting confirmation and retirement.
+func (r *ResumeLocks) PendingReplacement(sessionID string) (replacement, superseded rendezvous.Entry, ok bool) {
+	if r == nil || sessionID == "" {
+		return rendezvous.Entry{}, rendezvous.Entry{}, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	pending, ok := r.pendingReplacements[sessionID]
+	return pending.replacement, pending.superseded, ok
+}
+
+// ClearPendingReplacement forgets a confirmed replacement and completed
+// retirement.
+func (r *ResumeLocks) ClearPendingReplacement(sessionID string) {
+	if r == nil || sessionID == "" {
+		return
+	}
+	r.mu.Lock()
+	delete(r.pendingReplacements, sessionID)
+	r.mu.Unlock()
 }
 
 // NewPersistentResumeLocks restores explicit-resume authority before serving.

@@ -21,12 +21,15 @@ import {
 	Platform,
 	Pressable,
 	ScrollView,
+	type ScrollViewInstance,
 	Switch,
 	Text,
 	TextInput,
+	type TextInputInstance,
 	View,
 	useWindowDimensions,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { fonts, type Palette, scaledType, space, uiType } from "../design/tokens";
 import { haptic } from "../haptics";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
@@ -38,13 +41,14 @@ const GLYPH = 22;
 
 /** The scrolling page a grouped sheet page sits in. `scrollRef` is for a page
  * that brings something into view itself, such as a form's refusal. */
-export function GroupedPage({ children, scrollRef }: { children: ReactNode; scrollRef?: Ref<ScrollView> }) {
+export function GroupedPage({ children, scrollRef }: { children: ReactNode; scrollRef?: Ref<ScrollViewInstance> }) {
 	const { palette } = useColors();
+	const { left, right } = useSafeAreaInsets();
 	return (
 		<ScrollView
 			ref={scrollRef}
 			style={{ flex: 1, backgroundColor: palette.canvas }}
-			contentContainerStyle={{ paddingBottom: 32 }}
+			contentContainerStyle={{ paddingBottom: 32, paddingLeft: left, paddingRight: right }}
 			keyboardShouldPersistTaps="handled"
 			keyboardDismissMode="on-drag"
 			automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
@@ -520,7 +524,7 @@ export function TextFieldRow({
 	/** "next" to lead on to the form's next field, "done" on its last. */
 	returnKeyType?: "next" | "done";
 	onSubmitEditing?: () => void;
-	ref?: Ref<TextInput>;
+	ref?: Ref<TextInputInstance>;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -761,8 +765,8 @@ export function useFormError(): [FormErrorReport | null, (message: string | null
 /** A ref for a form's GroupedPage that scrolls back to the top, where its
  * FormError shows, each time a new error appears: a person scrolled down to
  * the last field who taps Save in the header would otherwise miss it. */
-export function useErrorInView(error: FormErrorReport | null): RefObject<ScrollView | null> {
-	const page = useRef<ScrollView>(null);
+export function useErrorInView(error: FormErrorReport | null): RefObject<ScrollViewInstance | null> {
+	const page = useRef<ScrollViewInstance>(null);
 	useEffect(() => {
 		if (error) page.current?.scrollTo({ y: 0, animated: true });
 	}, [error]);

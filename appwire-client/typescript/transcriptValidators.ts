@@ -54,6 +54,7 @@ export type CurrentTranscriptFields = Pick<
   | "jobsUpdatedAt"
   | "jobsTreeRevision"
   | "olderCursor"
+  | "olderFrontier"
   | "lastFrameAt"
   | "modelRetry"
   | "goal"
@@ -108,13 +109,24 @@ function validPosition(value: unknown): value is ThreadItemPosition {
   );
 }
 
+function validSessionActor(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, ["kind", "managerRef"]) &&
+    (value.kind === "human" || value.kind === "manager") &&
+    (value.managerRef === undefined || typeof value.managerRef === "string")
+  );
+}
+
 const ITEM_MODEL_KEYS = new Set([
+  "authorship",
   "id",
   "turnId",
   "transcriptKey",
   "position",
   "transcriptEntryIndex",
   "clientMutationId",
+  "actor",
   "type",
   "text",
   "pendingText",
@@ -157,6 +169,7 @@ export function validItem(value: unknown): value is CachedSessionItem {
   )
     return false;
   if (value.position !== undefined && !validPosition(value.position)) return false;
+  if (value.actor !== undefined && !validSessionActor(value.actor)) return false;
   for (const key of [
     "transcriptKey",
     "clientMutationId",
@@ -312,6 +325,7 @@ function validWireItem(value: unknown): value is ThreadItem {
   )
     return false;
   if (value.position !== undefined && !validPosition(value.position)) return false;
+  if (value.actor !== undefined && !validSessionActor(value.actor)) return false;
   for (const key of [
     "transcriptEntryIndex",
     "startedAt",
@@ -723,6 +737,7 @@ export function validCurrentFields(value: unknown): value is CurrentTranscriptFi
   if (value.parentRef !== undefined && typeof value.parentRef !== "string") return false;
   if (value.imageSessionId !== undefined && typeof value.imageSessionId !== "string") return false;
   if (value.olderCursor !== undefined && typeof value.olderCursor !== "string") return false;
+  if (value.olderFrontier !== undefined && typeof value.olderFrontier !== "string") return false;
   if (value.cost !== undefined && value.cost !== null && typeof value.cost !== "string") return false;
   if (value.failedToolCalls !== undefined && !isFiniteNumber(value.failedToolCalls)) return false;
   if (value.activeTurnId !== undefined && typeof value.activeTurnId !== "string") return false;

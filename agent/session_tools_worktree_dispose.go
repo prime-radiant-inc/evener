@@ -50,7 +50,7 @@ func (s *Session) worktreeDispose(ctx context.Context, id string, force, forceDi
 		return WorktreeDisposeResult{}, errors.New("manage_worktree dispose: session is closing")
 	}
 	defer s.endDispose()
-	return s.disposeStableDelegateLane(ctx, id, force, forceDirty)
+	return s.disposeDelegateLane(ctx, id, force, forceDirty)
 }
 
 // isDelegateID reports whether id has the delegate id shape (dlg_…). Only a
@@ -68,11 +68,11 @@ func disposeOwnerError(id string, err error) error {
 	return fmt.Errorf("invalid_request: manage_worktree dispose: %w", err)
 }
 
-// disposeStableDelegateLane performs explicit isolation disposal from the
+// disposeDelegateLane performs explicit isolation disposal from the
 // stable delegate descriptor and controller state. jobs.jsonl remains solely
 // the shell/watch authority and is never consulted for delegate ownership or
 // lifecycle.
-func (s *Session) disposeStableDelegateLane(ctx context.Context, id string, force, forceDirty bool) (WorktreeDisposeResult, error) {
+func (s *Session) disposeDelegateLane(ctx context.Context, id string, force, forceDirty bool) (WorktreeDisposeResult, error) {
 	if s.delegateController == nil {
 		return WorktreeDisposeResult{}, errors.New("manage_worktree dispose: stable delegate controller is unavailable")
 	}
@@ -224,7 +224,7 @@ func (s *Session) disposeStableDelegateLane(ctx context.Context, id string, forc
 // disposeStableExecute receives the lane's git branch (Sidecar.BranchOrName())
 // separately from the delegate id because a parent-named lane's branch differs
 // from every id-keyed surface.
-func (s *Session) disposeStableExecute(ctx context.Context, run worktree.GitRunner, state stableDelegateWorktreeSnapshot, lanePath, metaDir, branch string, sub *subagent, lanePresent bool, st worktree.LockState, forceDirty, alreadyClosed bool) (WorktreeDisposeResult, error) {
+func (s *Session) disposeStableExecute(ctx context.Context, run worktree.GitRunner, state delegateWorktreeSnapshot, lanePath, metaDir, branch string, sub *subagent, lanePresent bool, st worktree.LockState, forceDirty, alreadyClosed bool) (WorktreeDisposeResult, error) {
 	id := state.delegateID
 	if sub != nil && sub.sess != nil {
 		teardownChildSession(ctx, sub.sess)

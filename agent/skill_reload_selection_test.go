@@ -179,8 +179,8 @@ func TestSkillReloadSelection_CompactToolStoresValidSelection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compact exec: %v", err)
 	}
-	if s.PinnedNote() != "keep the plan" {
-		t.Fatalf("note not pinned: %q", s.PinnedNote())
+	if s.pinnedNote() != "keep the plan" {
+		t.Fatalf("note not pinned: %q", s.pinnedNote())
 	}
 	if _, ok := s.takeForceRequest(); !ok {
 		t.Fatal("compaction not scheduled")
@@ -205,8 +205,8 @@ func TestSkillReloadSelection_CompactToolUnknownNameKeepsNote(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compact exec: %v", err)
 	}
-	if s.PinnedNote() != "keep the plan" {
-		t.Fatalf("invalid selection must not discard the valid note, got %q", s.PinnedNote())
+	if s.pinnedNote() != "keep the plan" {
+		t.Fatalf("invalid selection must not discard the valid note, got %q", s.pinnedNote())
 	}
 	if _, ok := s.takeForceRequest(); !ok {
 		t.Fatal("compaction not scheduled")
@@ -232,8 +232,8 @@ func TestSkillReloadSelection_CompactToolSelectionOnlyRequestsCompaction(t *test
 	}); err != nil {
 		t.Fatalf("selection-only exec: %v", err)
 	}
-	if s.PinnedNote() != "" {
-		t.Fatalf("empty note must clear, got %q", s.PinnedNote())
+	if s.pinnedNote() != "" {
+		t.Fatalf("empty note must clear, got %q", s.pinnedNote())
 	}
 	if _, ok := s.takeForceRequest(); !ok {
 		t.Fatal("an explicit empty selection must still request the compaction")
@@ -272,7 +272,7 @@ func TestSkillReloadSelection_CompactToolDoubleCallKeepsFirstSelection(t *testin
 	}); err == nil {
 		t.Fatal("second compact in the same round must error")
 	}
-	if got := s.PinnedNote(); got != "first" {
+	if got := s.pinnedNote(); got != "first" {
 		t.Fatalf("rejected double-call mutated the note: %q", got)
 	}
 	if sel := cycleSkillReloadSelection(s); sel.State != "valid" || !reflect.DeepEqual(sel.Names, []string{"scope:probe"}) {
@@ -326,8 +326,8 @@ func TestSkillReloadSelection_CompactToolSchemaInvalidSchedulesNothing(t *testin
 			if !res.IsError {
 				t.Fatalf("schema-invalid call was not rejected: %q", res.Output)
 			}
-			if s.PinnedNote() != "" {
-				t.Fatalf("schema-invalid call pinned a note: %q", s.PinnedNote())
+			if s.pinnedNote() != "" {
+				t.Fatalf("schema-invalid call pinned a note: %q", s.pinnedNote())
 			}
 			if _, ok := s.takeForceRequest(); ok {
 				t.Fatal("schema-invalid call scheduled a compaction")
@@ -350,7 +350,7 @@ func TestSkillReloadElicitation_SessionParsesBlockAndStoresSelection(t *testing.
 	forcePressureAbove(t, s, s.contextMgr.CheckpointThreshold)
 
 	s.maybeElicitNoteBeforeCompaction(context.Background(), currentHistory(t, s), 0)
-	if got := s.PinnedNote(); got != "keep the token OPAQUE-77" {
+	if got := s.pinnedNote(); got != "keep the token OPAQUE-77" {
 		t.Fatalf("pinned note = %q, want the free text without the selection block", got)
 	}
 	if sel := cycleSkillReloadSelection(s); sel.State != "valid" || !reflect.DeepEqual(sel.Names, []string{"scope:probe"}) {
@@ -371,7 +371,7 @@ func TestSkillReloadElicitation_SessionInvalidSelectionPreservesNote(t *testing.
 	forcePressureAbove(t, s, s.contextMgr.CheckpointThreshold)
 
 	s.maybeElicitNoteBeforeCompaction(context.Background(), currentHistory(t, s), 0)
-	if got := s.PinnedNote(); got != raw {
+	if got := s.pinnedNote(); got != raw {
 		t.Fatalf("invalid parsing must preserve the note verbatim, got %q", got)
 	}
 	if sel := cycleSkillReloadSelection(s); sel.State != "invalid" || sel.ErrorCode != "unknown_skill" {

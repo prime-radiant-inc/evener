@@ -42,30 +42,30 @@ vi.mock("./ConnectionProvider", () => ({
 	useConnection: () => harness.connection,
 }));
 
-const tasks = {
-	data: [
-		{
-			id: 1,
-			type: "implement",
-			description: "finish it",
-			prompt: "",
-			status: "done",
-			created_at: "2026-09-23T13:40:00Z",
-			updated_at: "2026-09-23T14:59:00Z",
-			completed_at: "2026-09-23T14:59:00Z",
-		},
-		{
-			id: 2,
-			type: "implement",
-			description: "drop it",
-			prompt: "",
-			status: "cancelled",
-			created_at: "2026-09-23T13:40:00Z",
-			updated_at: "2026-09-23T14:00:00Z",
-			completed_at: "2026-09-23T14:00:00Z",
-		},
-	],
-} as unknown as InstanceListResponse;
+const taskRows = [
+	{
+		id: 1,
+		type: "implement",
+		description: "finish it",
+		prompt: "",
+		status: "done",
+		created_at: "2026-09-23T13:40:00Z",
+		updated_at: "2026-09-23T14:59:00Z",
+		completed_at: "2026-09-23T14:59:00Z",
+	},
+	{
+		id: 2,
+		type: "implement",
+		description: "drop it",
+		prompt: "",
+		status: "cancelled",
+		created_at: "2026-09-23T13:40:00Z",
+		updated_at: "2026-09-23T14:00:00Z",
+		completed_at: "2026-09-23T14:00:00Z",
+	},
+];
+
+const tasks = { data: taskRows } as unknown as InstanceListResponse;
 
 function taskList(client: ConversationClientLike, connected: boolean) {
 	return <TaskList client={client} sessionRef="local:s" threadId="s" hasTasks connected={connected} />;
@@ -123,6 +123,36 @@ it("keeps its last list through a dropped connection", async () => {
 	expect(renderedText(tree)).toContain("Done · settled · 2");
 	expect(hasTestID(tree, "tasks-disconnected")).toBe(true);
 	expect(offersButton(tree, /reconnect/i)).toBe(false);
+});
+
+it("keeps a task with an unrecognized status in the list, with a neutral mark and its raw status word", async () => {
+	// A newer daemon can mint a status this client has no mark or word for.
+	// The aggregate counts it as remaining, so dropping it made the sheet
+	// shorter than the count (issue #2256). It renders as remaining work, in
+	// the neutral unfilled mark, with the wire word as written.
+	const futureStatus = {
+		data: [...taskRows, { id: 3, type: "implement", description: "Wait on the review", prompt: "", status: "blocked" }],
+	} as unknown as InstanceListResponse;
+	const { client } = scriptedClient(futureStatus);
+	const tree = render(taskList(client, true));
+	await act(async () => {});
+
+	// Remaining work, never settled history: the unknown row is the one task
+	// row rendered, because the settled disclosure starts collapsed. Its group
+	// membership is pinned structurally by taskListGroups.test.ts.
+	const taskRowLabels = tree.root
+		.findAll((node) => node.props.accessibilityRole === "button")
+		.map((node) => node.props.accessibilityLabel)
+		.filter((label): label is string => typeof label === "string" && label.includes(": "));
+	expect(taskRowLabels).toEqual(["blocked: Wait on the review"]);
+
+	const rowButton = tree.root
+		.findAll((node) => node.props.accessibilityRole === "button")
+		.find((node) => node.props.accessibilityLabel === "blocked: Wait on the review");
+	expect(rowButton).toBeDefined();
+	expect(rowButton?.findAll((node) => String(node.type) === "SymbolView").map((node) => node.props.name)).toEqual([
+		"circle",
+	]);
 });
 
 type TasksSheetProps = ComponentProps<typeof TasksSheet>;

@@ -1,0 +1,62 @@
+[
+  {
+    "detections" : 1,
+    "droppedSamples" : 0,
+    "id" : "A93DD984-BBF6-4180-998B-DB5F29DE0C21",
+    "interrupted" : false,
+    "label" : "positive",
+    "lastScore" : 1.1026858999999999e-06,
+    "modelId" : "openwakeword-alexa-v0.1-preview",
+    "phrase" : "Alexa",
+    "running" : false,
+    "scoredSamples" : 74240,
+    "settings" : {
+      "embeddingFrames" : 16,
+      "holdoffMs" : 2500,
+      "hopSamples" : 1280,
+      "releaseThreshold" : 0.20000000000000001,
+      "threshold" : 0.5
+    },
+    "startedAt" : 0
+  },
+  {
+    "detections" : 0,
+    "droppedSamples" : 0,
+    "id" : "C83FABB9-0E0A-4861-81D7-9D29824ABC2C",
+    "interrupted" : true,
+    "label" : "negative",
+    "lastScore" : 1.1026858999999999e-06,
+    "modelId" : "openwakeword-alexa-v0.1-preview",
+    "phrase" : "Alexa",
+    "running" : false,
+    "scoredSamples" : 102400,
+    "settings" : {
+      "embeddingFrames" : 16,
+      "holdoffMs" : 2500,
+      "hopSamples" : 1280,
+      "releaseThreshold" : 0.20000000000000001,
+      "threshold" : 0.5
+    },
+    "startedAt" : 1
+  },
+  {
+    "detections" : 0,
+    "droppedSamples" : 0,
+    "id" : "49DAD10A-7723-4F5F-92EA-586260A3008C",
+    "interrupted" : false,
+    "label" : "negative",
+    "lastScore" : 1.1026858999999999e-06,
+    "modelId" : "openwakeword-alexa-v0.1-preview",
+    "phrase" : "Alexa",
+    "running" : false,
+    "scoredSamples" : 102400,
+    "settings" : {
+      "embeddingFrames" : 16,
+      "holdoffMs" : 2500,
+      "hopSamples" : 1280,
+      "releaseThreshold" : 0.20000000000000001,
+      "threshold" : 0.5
+    },
+    "startedAt" : 2
+  }
+]

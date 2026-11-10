@@ -328,7 +328,7 @@ func TestSystemPromptRendersForEveryConfiguration(t *testing.T) {
 		t.Run(cfg.name, func(t *testing.T) {
 			t.Parallel()
 			s := cfg.build(t)
-			prompt, warning := s.renderSystemPrompt(s.env)
+			prompt, warning, _ := s.renderSystemPrompt(s.env)
 			if warning != "" {
 				t.Fatalf("render failed: %s", warning)
 			}
@@ -403,7 +403,7 @@ func TestSystemPromptCarriesEachOperatorInputOnce(t *testing.T) {
 		{"delegate spawn inputs", buildDelegateWithRoleOverrideSession(t), []string{sentinelRole, sentinelActivatedSkill}},
 	}
 	for _, tc := range cases {
-		prompt, warning := tc.session.renderSystemPrompt(tc.session.env)
+		prompt, warning, _ := tc.session.renderSystemPrompt(tc.session.env)
 		if warning != "" {
 			t.Fatalf("%s: render failed: %s", tc.name, warning)
 		}
@@ -494,7 +494,7 @@ func TestSystemPromptRendersTheSessionData(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			s := tc.build(t)
-			prompt, warning := s.renderSystemPrompt(s.env)
+			prompt, warning, _ := s.renderSystemPrompt(s.env)
 			if warning != "" {
 				t.Fatalf("render failed: %s", warning)
 			}
@@ -578,7 +578,7 @@ func TestSystemPromptLoadedSources(t *testing.T) {
 func TestSystemPromptDiagramGuidanceClaimsNoRendering(t *testing.T) {
 	t.Parallel()
 	s := buildRootInteractiveAnthropicSession(t)
-	prompt, warning := s.renderSystemPrompt(s.env)
+	prompt, warning, _ := s.renderSystemPrompt(s.env)
 	if warning != "" {
 		t.Fatalf("render failed: %s", warning)
 	}

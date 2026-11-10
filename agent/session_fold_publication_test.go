@@ -284,7 +284,7 @@ func TestFoldPublication_ClaimedNoteNotReinjectedByConcurrentFold(t *testing.T) 
 	if n := countSteering(currentHistory(t, s), noteHandoffPrefix); n != 1 {
 		t.Fatalf("note handoff appears %d time(s) in history; a note already handed off by a published fold must not be re-injected by a concurrent fold", n)
 	}
-	if got := s.PinnedNote(); got != "" {
+	if got := s.pinnedNote(); got != "" {
 		t.Fatalf("pinned note not consumed after both folds: %q", got)
 	}
 }
@@ -325,7 +325,7 @@ func TestFoldPublication_NoteRepinnedMidFoldSurvivesPublication(t *testing.T) {
 		t.Fatalf("Compact: %v", err)
 	}
 
-	if got := s.PinnedNote(); got != newNote {
+	if got := s.pinnedNote(); got != newNote {
 		t.Fatalf("pinned note = %q after the fold published; the fold captured %q and must not erase the newer note", got, oldNote)
 	}
 	if n := countSteering(currentHistory(t, s), oldNote); n != 1 {
@@ -464,7 +464,7 @@ func TestFoldPublication_CompetingFoldsCommitTranscriptEntriesInPublishOrder(t *
 		t.Fatalf("Compact (A): %v", err)
 	}
 
-	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id), "")
+	data, err := readTranscriptFull(context.Background(), transcriptPath(s.stateDir, s.id), "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
@@ -549,7 +549,7 @@ func TestFoldPublication_ConcurrentAppendTranscriptEntryLandsAfterCompactionMark
 	if indexOfTurnText(currentHistory(t, s), concurrentText) < 0 {
 		t.Fatal("test setup: the concurrently recorded turn is not in live history")
 	}
-	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id), "")
+	data, err := readTranscriptFull(context.Background(), transcriptPath(s.stateDir, s.id), "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
@@ -597,7 +597,7 @@ func TestFoldPublication_TurnRecordedDuringFoldSurvivesRestart(t *testing.T) {
 	if indexOfTurnText(currentHistory(t, s), concurrentText) < 0 {
 		t.Fatal("test setup: the merge-back did not carry the concurrently recorded turn into live history")
 	}
-	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id), "")
+	data, err := readTranscriptFull(context.Background(), transcriptPath(s.stateDir, s.id), "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
@@ -819,7 +819,7 @@ func TestFoldPublication_MergedTailRewriteUsesPersistedForm(t *testing.T) {
 		t.Fatal("test setup: the live history no longer carries the private evidence")
 	}
 
-	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id), "")
+	data, err := readTranscriptFull(context.Background(), transcriptPath(s.stateDir, s.id), "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
@@ -912,7 +912,7 @@ func TestFoldPublication_AttentionTurnRemovedMidTransactionNotResurrected(t *tes
 	if indexOfTurnText(currentHistory(t, s), attnText) >= 0 {
 		t.Fatal("test setup: the removed attention turn is still in live history")
 	}
-	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id), "")
+	data, err := readTranscriptFull(context.Background(), transcriptPath(s.stateDir, s.id), "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
@@ -1422,7 +1422,7 @@ func TestFoldPublication_ConcurrentFoldsShareNoCompactionMeta(t *testing.T) {
 	if err := s.Compact(context.Background()); err != nil {
 		t.Fatalf("final quiescent Compact: %v", err)
 	}
-	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id), "")
+	data, err := readTranscriptFull(context.Background(), transcriptPath(s.stateDir, s.id), "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
@@ -1949,7 +1949,7 @@ func TestFoldPublication_DurablyRecordedTurnSurvivesRestartBeforeRewriteSync(t *
 	if err := os.WriteFile(restoredPath, crashFS.snapshot(), 0o600); err != nil {
 		t.Fatalf("write restored transcript: %v", err)
 	}
-	data, err := readTranscriptFull(restoredPath, "")
+	data, err := readTranscriptFull(context.Background(), restoredPath, "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}

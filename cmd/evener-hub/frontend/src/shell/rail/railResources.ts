@@ -134,6 +134,31 @@ function projectPageDependencies(states: readonly GraphResource[]): ProjectPageD
     return [{ id: keyID(state.key), tier: state.key.tier, graph: state.normalized.graph as object }];
   });
 }
+
+function sessionCreatedAt(row: RailSession): number | undefined {
+  const stamp = row.created_at ?? row.updated_at;
+  const parsed = stamp ? Date.parse(stamp) : Number.NaN;
+  return Number.isNaN(parsed) ? undefined : parsed;
+}
+
+/** Orders a project's joined Current and Recent rows newest-created first,
+ * matching the hub's project session comparator. A hub that predates
+ * created_at falls back to updated_at. */
+export function compareProjectSessions(a: RailSession, b: RailSession): number {
+  const at = sessionCreatedAt(a);
+  const bt = sessionCreatedAt(b);
+  // Untimestamped rows form one class at the end; two of them keep their
+  // input order. Treating a row with one timestamped neighbour as equal to
+  // both would make the comparator non-transitive.
+  if (at === undefined && bt === undefined) return 0;
+  if (at === undefined) return 1;
+  if (bt === undefined) return -1;
+  if (at !== bt) return bt - at;
+  const foldedTitle = a.title.localeCompare(b.title, undefined, { sensitivity: "base" });
+  if (foldedTitle !== 0) return foldedTitle;
+  if (a.title !== b.title) return a.title < b.title ? -1 : 1;
+  return a.row_id.localeCompare(b.row_id);
+}
 function sameProjectPageDependencies(
   left: readonly ProjectPageDependency[],
   right: readonly ProjectPageDependency[],
@@ -287,6 +312,7 @@ function projectFromGraph(
     const metadataRemaining = metadata[`${tier}_remaining`];
     more[tier] = pageRemaining?.remaining ?? (typeof metadataRemaining === "number" ? metadataRemaining : 0);
   }
+  all.sort(compareProjectSessions);
   return cacheProject(summary, normalized.graph as object, pageDependencies, {
     ...summary,
     loaded: true,

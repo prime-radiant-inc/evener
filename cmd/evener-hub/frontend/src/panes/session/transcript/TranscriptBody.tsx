@@ -24,6 +24,7 @@ import { exchangeOpenersFor } from "./exchangeOpeners";
 import { FlowOverlay } from "./flow/FlowOverlay";
 import type { CapturedTranscriptView } from "./flow/transcriptViewRegistry";
 import { useTranscriptViewRegistration } from "./flow/useTranscriptViewRegistration";
+import { readingEntryPoint } from "./flow/viewAnchor";
 import { ProjectedIntentGroup, TurnBlock } from "./TurnBlock";
 import { foldTurnEntries } from "./toolRuns";
 import type { TranscriptReadView } from "./transcriptReadView";
@@ -472,6 +473,11 @@ export function TranscriptBody({
     );
   };
 
+  const readingPoint = () => {
+    const port = listRef?.current?.getScrollElement();
+    return port ? readingEntryPoint(port) : undefined;
+  };
+
   const rowAt = (index: number) => {
     const row = rows[index];
     if (!row) throw new Error(`Transcript row ${index} out of range for ${rows.length} rows`);
@@ -495,6 +501,7 @@ export function TranscriptBody({
         ref={listRef}
         dynamic
         anchorToEnd={!viewRegistration.hasRetainedPlacement()}
+        readingPoint={readingPoint}
         count={rows.length + (trailingRow === undefined ? 0 : 1)}
         estimateSize={() => ESTIMATED_TURN_HEIGHT}
         getItemKey={(index) => (isTrailingRowIndex(index) && trailingRow ? trailingRow.id : rowAt(index).id)}

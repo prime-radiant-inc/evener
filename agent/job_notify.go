@@ -294,6 +294,9 @@ func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt, 
 			}
 			return fmt.Sprintf("<job-notification %s>\n%s\n</job-notification>", strings.Join(attrs, " "), withNotificationNote(sentence, n.Note))
 		}
+		if n.isLongRunningJobsReminder() {
+			return fmt.Sprintf("<job-notification %s>\n%s\n</job-notification>", strings.Join(attrs, " "), escapeNotificationBody(n.Note))
+		}
 		body := fmt.Sprintf("Watch event triggered: %s.", escapeNotificationBody(n.Reason))
 		return fmt.Sprintf("<job-notification %s>\n%s\n</job-notification>", strings.Join(attrs, " "), withNotificationNote(body, n.Note))
 	}

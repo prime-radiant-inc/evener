@@ -71,18 +71,15 @@ func TestSummaryFailureRoutingAndRecovery(t *testing.T) {
 		wantCalls        []string
 		priorKind        string
 	}{
-		{"validation then failure", "cheap-fixture", false, false, []string{"cheap-fixture", "active-fixture"}, "rejected_output"},
-		{"validation then success", "cheap-fixture", false, true, []string{"cheap-fixture", "active-fixture"}, ""},
+		{"validation then failure", "cheap-fixture", false, false, []string{"cheap-fixture", "cheap-fixture", "cheap-fixture", "active-fixture"}, "rejected_output"},
+		{"validation then success", "cheap-fixture", false, true, []string{"cheap-fixture", "cheap-fixture", "cheap-fixture", "active-fixture"}, ""},
 		{"refusal then failure", "cheap-fixture", true, false, []string{"cheap-fixture", "active-fixture"}, "invalid_request"},
 		{"no cheap route", "", false, false, []string{"active-fixture"}, ""},
 		{"unservable cheap route", "missing-instance/cheap-fixture", false, false, []string{"active-fixture"}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var calls []string
 			activeErr := llm.ErrorFromHTTPStatus("openai", 503, "private-active-e4f1", nil, nil)
-			client := llm.NewClient()
-			client.Register(&stubSummarizeAdapter{name: "openai", respFn: func(req llm.Request) (llm.Response, error) {
-				calls = append(calls, req.Model)
+			client, calls := summarizerScript(func(_ int, req llm.Request) (llm.Response, error) {
 				if req.Model == "cheap-fixture" {
 					if tc.refused {
 						return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 400, "model unavailable", nil, nil)
@@ -93,12 +90,12 @@ func TestSummaryFailureRoutingAndRecovery(t *testing.T) {
 					return llm.Response{Message: llm.Assistant("## Progress\nrecovered-summary-8c2f")}, nil
 				}
 				return llm.Response{}, activeErr
-			}})
+			})
 			profile := WithCheapModel(testProfile("openai", "active-fixture", 1000), tc.cheap)
 			cm := NewManager(profile, client, cheapmodel.New(client))
 			resp, err := cm.completeSummarization(context.Background(), profile, "private-prompt-1f2e", func(resp llm.Response) error { return checkSummaryReply(resp.Text(), "") })
-			if !reflect.DeepEqual(calls, tc.wantCalls) {
-				t.Fatalf("routes = %v, want %v", calls, tc.wantCalls)
+			if !reflect.DeepEqual(calls(), tc.wantCalls) {
+				t.Fatalf("routes = %v, want %v", calls(), tc.wantCalls)
 			}
 			if tc.succeed {
 				if err != nil || !strings.Contains(resp.Text(), "recovered-summary-8c2f") {
@@ -134,6 +131,41 @@ func TestSummaryFailureRoutingAndRecovery(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestSummaryFailureKeepsCheapRefusalBehindRejectedSessionFallback pins #4662:
+// a recognized cheap-model refusal followed by a session-model fallback that
+// succeeds at the API level must keep the refusal in the failure's previous
+// evidence when that fallback reply fails local validation. The cheap caller
+// resolves the refusal internally, so only returned resolution provenance can
+// carry it to the diagnostic.
+func TestSummaryFailureKeepsCheapRefusalBehindRejectedSessionFallback(t *testing.T) {
+	t.Parallel()
+	client, calls := summarizerScript(func(_ int, req llm.Request) (llm.Response, error) {
+		if req.Model == "cheap-fixture" {
+			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 400, "provided model identifier is invalid", nil, nil)
+		}
+		return rejectedSummaryReply, nil
+	})
+	profile := WithCheapModel(testProfile("openai", "active-fixture", 1000), "cheap-fixture")
+	cm := retryTestManager(client, profile)
+	_, err := cm.completeSummarization(context.Background(), profile, "prompt", summaryAccept(""))
+	if err == nil {
+		t.Fatal("every session sample was rejected, want a failure")
+	}
+	assertCallSequence(t, calls(), "cheap-fixture", "active-fixture", "active-fixture", "active-fixture")
+	failure := summarizerFailureWarning(err).SummaryFailure
+	if failure == nil {
+		t.Fatal("missing summary failure diagnostic")
+	}
+	if failure.Terminal.Route != "session" || failure.Terminal.Model != "active-fixture" ||
+		failure.Terminal.Kind != "rejected_output" || failure.Terminal.Reason != "empty_reply" {
+		t.Fatalf("wrong terminal attempt: %+v", failure.Terminal)
+	}
+	if len(failure.Previous) == 0 || failure.Previous[0].Route != "cheap" ||
+		failure.Previous[0].Model != "cheap-fixture" || failure.Previous[0].Kind != "invalid_request" {
+		t.Fatalf("cheap refusal lost from previous: %+v", failure.Previous)
 	}
 }
 
@@ -189,6 +221,8 @@ func TestSummaryFailureValidationReasons(t *testing.T) {
 	}
 }
 
+// A rejected reply is still a successful API call, and every resample of both
+// routes stays one logical group that settles on the API outcome alone.
 func TestSummaryFailureValidationPreservesAPISuccess(t *testing.T) {
 	t.Parallel()
 	client, logger, path := contextManagerAttemptClient(t,
@@ -208,7 +242,7 @@ func TestSummaryFailureValidationPreservesAPISuccess(t *testing.T) {
 	if err := logger.Close(); err != nil {
 		t.Fatal(err)
 	}
-	assertContextManagerLogicalGroup(t, readContextManagerAttemptRecords(t, path), apilog.AttemptSuccess)
+	assertContextManagerLogicalGroup(t, readContextManagerAttemptRecords(t, path), 6, apilog.AttemptSuccess)
 }
 
 func TestSummaryFailureUncondensablePartnerMessages(t *testing.T) {
@@ -216,33 +250,31 @@ func TestSummaryFailureUncondensablePartnerMessages(t *testing.T) {
 	for _, tc := range []struct {
 		name, cheap, model, route string
 		refused                   bool
+		wantCalls                 int
 	}{
-		{"session", "", "active-fixture", "session", false},
-		{"cheap", "cheap-fixture", "cheap-fixture", "cheap", false},
-		{"refused cheap", "cheap-fixture", "active-fixture", "session", true},
+		{"session", "", "active-fixture", "session", false, 11},
+		{"cheap", "cheap-fixture", "cheap-fixture", "cheap", false, 11},
+		{"refused cheap", "cheap-fixture", "active-fixture", "session", true, 12},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			client := llm.NewClient()
-			var calls []string
-			client.Register(&stubSummarizeAdapter{name: "openai", respFn: func(req llm.Request) (llm.Response, error) {
-				calls = append(calls, req.Model)
+			client, calls := summarizerScript(func(_ int, req llm.Request) (llm.Response, error) {
 				if tc.refused && req.Model == "cheap-fixture" {
 					return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 400, "provided model identifier is invalid", nil, nil)
 				}
 				return llm.Response{Message: llm.Assistant(strings.Repeat("x", 6001))}, nil
-			}})
+			})
 			profile := WithCheapModel(testProfile("openai", "active-fixture", 100000), tc.cheap)
 			cm := NewManager(profile, client, cheapmodel.New(client))
 			lines := []string{strings.Repeat("x", 6001)}
 			original := append([]string(nil), lines...)
 			_, err := cm.condensePartnerMessages(context.Background(), cm.currentProfile(), lines, 6000)
-			if !errors.Is(err, errSummaryUncondensable) || len(calls) < 4 {
-				t.Fatal("non-shrinking summary was accepted")
+			if !errors.Is(err, errSummaryUncondensable) || len(calls()) != tc.wantCalls {
+				t.Fatalf("condensation err = %v, calls = %d (%v), want exactly %d calls and the uncondensable rejection", err, len(calls()), calls(), tc.wantCalls)
 			}
 			if !reflect.DeepEqual(lines, original) {
 				t.Fatal("condensation changed the original messages")
 			}
-			for i, model := range calls {
+			for i, model := range calls() {
 				want := tc.model
 				if tc.refused && i == 0 {
 					want = "cheap-fixture"

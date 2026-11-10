@@ -249,6 +249,10 @@ func TestBackpressureRefusalCarriesTheTransientEnvelope(t *testing.T) {
 	if marshalErr != nil {
 		t.Fatalf("marshal WireError: %v", marshalErr)
 	}
+	const originalWire = `{"code":-32014,"message":"the hub's inbound queue is busy and did not accept this message","data":{"evenerErrorInfo":"connectionBackpressure","clientMutationId":"cmid-7","mutationOutcome":"notAccepted","retryDisposition":"automatic","cause":"queueSaturated"}}`
+	if string(encoded) != originalWire {
+		t.Fatalf("automatic refusal wire = %s, want %s", encoded, originalWire)
+	}
 	for _, part := range []string{
 		`"evenerErrorInfo":"connectionBackpressure"`,
 		`"clientMutationId":"cmid-7"`,
@@ -259,6 +263,22 @@ func TestBackpressureRefusalCarriesTheTransientEnvelope(t *testing.T) {
 		if !bytes.Contains(encoded, []byte(part)) {
 			t.Fatalf("wire error %s lacks %s", encoded, part)
 		}
+	}
+	hardCap := HardCapRefusal("cmid-8", "queue full")
+	hardData, ok := hardCap.Data.(ErrorData)
+	if !ok || hardCap.Code != CodeUnavailable || hardCap.Message != "queue full" || hardData != (ErrorData{
+		EvenerErrorInfo: ErrorConnectionBackpressure, ClientMutationID: "cmid-8", MutationOutcome: MutationOutcomeNotAccepted,
+		RetryDisposition: RetryDispositionNone, Cause: BackpressureCauseQueueSaturated,
+	}) {
+		t.Fatalf("hard-cap refusal = %+v, want notAccepted with no automatic retry", hardCap)
+	}
+	hardEncoded, marshalErr := json.Marshal(hardCap)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	const hardCapWire = `{"code":-32014,"message":"queue full","data":{"evenerErrorInfo":"connectionBackpressure","clientMutationId":"cmid-8","mutationOutcome":"notAccepted","retryDisposition":"none","cause":"queueSaturated"}}`
+	if string(hardEncoded) != hardCapWire {
+		t.Fatalf("hard-cap refusal wire = %s, want %s", hardEncoded, hardCapWire)
 	}
 }
 

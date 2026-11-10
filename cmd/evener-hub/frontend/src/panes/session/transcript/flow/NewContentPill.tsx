@@ -55,6 +55,27 @@ export interface NewContentPillProps {
   onClick: () => void;
 }
 
+// Whether the pill would render anything for these inputs: the pill's one
+// render gate, shared with ConversationBody's slot-mounting decision so the
+// two cannot drift. count alone is not the gate: a turn's failed settle stamp
+// on the real wire carries no items (turn/completed's EventError path -
+// itemsView:"", no items array), so a genuinely unseen failure can arrive
+// with count still 0 - the failure is itself the news, not the (absent) item
+// count. And scrolled-back-with-nothing-new is the pill's primary case (the
+// `visible` prop), not an edge: the reader needs the jump-to-latest offer
+// even when no items ever arrived while away.
+export function newContentPillVisible({
+  visible,
+  count,
+  error,
+}: {
+  visible?: boolean;
+  count: number;
+  error?: boolean;
+}): boolean {
+  return visible === true || count > 0 || error === true;
+}
+
 export function NewContentPill({
   count,
   visible = false,
@@ -63,14 +84,7 @@ export function NewContentPill({
   pillArrowDirection = "down",
   onClick,
 }: NewContentPillProps) {
-  // count alone is not the render gate: a turn's failed settle stamp on
-  // the real wire carries no items (turn/completed's EventError path -
-  // itemsView:"", no items array), so a genuinely unseen failure can
-  // arrive with count still 0 - the failure is itself the news, not the
-  // (absent) item count. And scrolled-back-with-nothing-new is the pill's
-  // primary case (the `visible` prop), not an edge: the reader needs the
-  // jump-to-latest offer even when no items ever arrived while away.
-  if (!visible && count <= 0 && !error) return null;
+  if (!newContentPillVisible({ visible, count, error })) return null;
   const kind = error ? "failed-turn" : needsYou ? "needs-you" : count > 0 ? "count" : "latest";
 
   return (

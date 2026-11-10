@@ -1,4 +1,4 @@
-import type { ThreadReadResponse } from "@evener/appwire-client";
+import type { AppwireClientLike, GitHeadParams, GitHeadResponse, ThreadReadResponse } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -7,7 +7,7 @@ import { MotionProvider } from "../../motion";
 import { NOW_TICK_MS } from "../../panes/session/liveness";
 import { CommittedSession } from "../../panes/session/testing/CommittedSession";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
-import { connectionStore } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { sessionActivitySnapshot } from "../../stores/sessionActivity";
 import {
   activityClient,
@@ -23,12 +23,34 @@ import { ActivitySidebar } from "./ActivitySidebar";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitySidebarStore";
 
 const ref = "remote:about-owner";
-function mountSidebar() {
+function mountSidebar(client: AppwireClientLike) {
   return render(
-    <MotionProvider>
-      <ActivitySidebar />
-    </MotionProvider>,
+    <ClientProvider client={client}>
+      <MotionProvider>
+        <ActivitySidebar />
+      </MotionProvider>
+    </ClientProvider>,
   );
+}
+
+// The About tests' shared scaffold: a client answering thread/read (and
+// evener/git/head when given), connected, with the scope focused and the
+// sidebar opened on About. Returns the client for injections and call audits.
+function mountAbout(
+  scopeRef: string,
+  options: {
+    thread?: (ref: string | undefined) => ThreadReadResponse;
+    gitHead?: (params: GitHeadParams) => GitHeadResponse | Promise<GitHeadResponse>;
+  } = {},
+) {
+  const client = activityClient();
+  client.on("thread/read", ({ ref }) => (options.thread ?? activityDetailsThread)(ref));
+  if (options.gitHead) client.on("evener/git/head", options.gitHead);
+  connectionStore.getState().connect(client);
+  installFocusedScope(scopeRef);
+  activitySidebarStore.getState().openWith("about");
+  mountSidebar(client);
+  return client;
 }
 beforeEach(() => installLocalStorage(new MemoryStorage()));
 afterEach(() => {
@@ -36,7 +58,7 @@ afterEach(() => {
   resetWorkspaceStoreForTests();
   resetActivitySidebarStoreForTests();
   resetThreadsStoreForTests();
-  connectionStore.setState({ client: null, state: "idle" });
+  resetConnectionStoreForTests();
   vi.restoreAllMocks();
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -48,7 +70,7 @@ test("About renders the explicit remote session's hydrated accounting", async ()
   connectionStore.getState().connect(client);
   installFocusedScope(ref);
   activitySidebarStore.getState().openWith("about");
-  mountSidebar();
+  mountSidebar(client);
   await screen.findByText("about-owner");
   expect(screen.getByText("anthropic/claude-sonnet")).toBeTruthy();
   expect(screen.getByText("idle")).toBeTruthy();
@@ -85,7 +107,7 @@ test.each(["ended", "closed"] as const)("About preserves %s accounting without l
   connectionStore.getState().connect(client);
   installFocusedScope(ref);
   activitySidebarStore.getState().openWith("about");
-  mountSidebar();
+  mountSidebar(client);
   await screen.findByText("about-owner");
   expect(screen.getByText(status)).toBeTruthy();
   expect(screen.queryByTestId("session-details-context")).toBeNull();
@@ -104,7 +126,7 @@ test("About omits unavailable accounting and empty sections", async () => {
   connectionStore.getState().connect(client);
   installFocusedScope(ref);
   activitySidebarStore.getState().openWith("about");
-  mountSidebar();
+  mountSidebar(client);
   await screen.findByText("owner");
   expect(screen.queryByRole("heading", { name: "Usage" })).toBeNull();
   expect(screen.queryByRole("heading", { name: "Location" })).toBeNull();
@@ -123,7 +145,7 @@ test("About clears A immediately while B's model read is pending", async () => {
   connectionStore.getState().connect(client);
   installFocusedScope("remote:a");
   activitySidebarStore.getState().openWith("about");
-  mountSidebar();
+  mountSidebar(client);
   await screen.findByText("identity-A");
   act(() => installFocusedScope("remote:b"));
   expect(screen.queryByText("identity-A")).toBeNull();
@@ -148,7 +170,7 @@ test.each(["close", "switch-tab"] as const)(
     connectionStore.getState().connect(client);
     installFocusedScope(ref);
     activitySidebarStore.getState().openWith("about");
-    mountSidebar();
+    mountSidebar(client);
     await waitFor(() => expect(richReads).toBe(1));
     const sidebar = screen.getByTestId("activity-sidebar");
     act(() => {
@@ -180,7 +202,7 @@ test("rapid reopen during About exit preserves its pending reader", async () => 
   connectionStore.getState().connect(client);
   installFocusedScope(ref);
   activitySidebarStore.getState().openWith("about");
-  mountSidebar();
+  mountSidebar(client);
   await waitFor(() => expect(richReads).toBe(1));
   const sidebar = screen.getByTestId("activity-sidebar");
   act(() => activitySidebarStore.getState().close());
@@ -203,7 +225,7 @@ test("About accepts a replacement instance at the same public ref", async () => 
   connectionStore.getState().connect(client);
   installFocusedScope(ref);
   activitySidebarStore.getState().openWith("about");
-  mountSidebar();
+  mountSidebar(client);
   await screen.findByText("instance-first");
   instance = "instance-replacement";
   act(() => client.emitNotification({ method: "evener/thread/resync", params: { ref, threadId: "instance-first" } }));
@@ -223,7 +245,7 @@ test("About releases prior collection demand through invalidation and reconnect"
   connectionStore.getState().connect(client);
   installFocusedScope(ref);
   activitySidebarStore.getState().openWith("agents");
-  mountSidebar();
+  mountSidebar(client);
   await screen.findByRole("button", { name: /inspect/ });
   fireEvent.click(screen.getByRole("radio", { name: "About" }));
   await screen.findByText("about-owner");
@@ -262,7 +284,7 @@ test("leaving About releases its rich model while the sidebar keeps its summary"
   connectionStore.getState().connect(client);
   installFocusedScope(ref);
   activitySidebarStore.getState().openWith("about");
-  mountSidebar();
+  mountSidebar(client);
   await screen.findByText("about-owner");
   expect(
     client.calls.some(
@@ -305,7 +327,7 @@ test("closing About preserves the independent conversation's updating model", as
   connectionStore.getState().connect(client);
   installFocusedScope(ref);
   activitySidebarStore.getState().openWith("about");
-  mountSidebar();
+  mountSidebar(client);
   await screen.findByText("about-owner");
   const conversation = render(
     <ClientProvider client={client}>
@@ -349,7 +371,7 @@ test("visible About work time advances during an active turn", async () => {
   vi.useFakeTimers({ now });
   activitySidebarStore.getState().openWith("about");
   await act(async () => {
-    mountSidebar();
+    mountSidebar(client);
   });
   act(() => threadsStore.getState().releaseThread(ref));
   expect(screen.getByTestId("session-details-work-time").textContent).toContain("14s");
@@ -381,7 +403,7 @@ test("About keeps accepted accounting during disconnection and refreshes on read
   connectionStore.getState().connect(client);
   installFocusedScope(ref);
   activitySidebarStore.getState().openWith("about");
-  mountSidebar();
+  mountSidebar(client);
   await screen.findByText("about-owner");
   expect(screen.getByTestId("session-details-cost").textContent).toContain("~$1.00");
   act(() => client.emitStateChange("reconnecting"));
@@ -390,4 +412,93 @@ test("About keeps accepted accounting during disconnection and refreshes on read
   cost = "~$2.00";
   act(() => client.emitReady());
   await waitFor(() => expect(screen.getByTestId("session-details-cost").textContent).toContain("~$2.00"));
+});
+
+// A local session's About is the phone's only branch surface: the footer's
+// RepoLocation line is a desktop line (Session.tsx folds the phone's bottom
+// chrome into the composer), and the hub's local read paths never populate
+// the wire's thread.gitInfo, so the model alone cannot answer "what branch is
+// this on". About resolves the branch at view time from the session's cwd on
+// this hub — the same evener/git/head lookup the Spawn pane's branch chip
+// uses — and only for local refs: a source-backed session's cwd belongs to
+// another host, whose repositories this hub cannot speak for (RepoLocation's
+// own locality rule).
+const localRef = "local:about-owner";
+
+test("About resolves a local session's branch from its cwd when the wire carries none", async () => {
+  const client = mountAbout(localRef, {
+    thread: (threadRef) => activityDetailsThread(threadRef, { gitInfo: undefined }),
+    gitHead: () => ({ head: "trunk" }),
+  });
+  await screen.findByText("about-owner");
+  await waitFor(() => expect(client.calls.some((call) => call.method === "evener/git/head")).toBe(true));
+  // Branch-only caller: the request carries the cwd and never asks for the
+  // origin remote the panel cannot render.
+  expect(client.calls.find((call) => call.method === "evener/git/head")?.params).toEqual({
+    cwd: "/work/session",
+  });
+  expect((await screen.findByTestId("session-details-branch")).textContent).toContain("trunk");
+});
+
+test("About resolves no branch for a source-backed session's cwd", async () => {
+  const client = mountAbout(ref, {
+    thread: (threadRef) => activityDetailsThread(threadRef, { gitInfo: undefined }),
+  });
+  await screen.findByText("about-owner");
+  expect(client.calls.some((call) => call.method === "evener/git/head")).toBe(false);
+  expect(screen.queryByTestId("session-details-branch")).toBeNull();
+});
+
+test("About keeps the wire's branch and skips the local lookup", async () => {
+  const client = mountAbout(localRef);
+  await screen.findByText("about-owner");
+  expect(screen.getByTestId("session-details-branch").textContent).toContain("feature/overview");
+  expect(client.calls.some((call) => call.method === "evener/git/head")).toBe(false);
+});
+
+test("About omits the branch when the local lookup finds no repository", async () => {
+  const client = mountAbout(localRef, {
+    thread: (threadRef) => activityDetailsThread(threadRef, { gitInfo: undefined }),
+    gitHead: () => ({ head: "" }),
+  });
+  await screen.findByText("about-owner");
+  await waitFor(() => expect(client.calls.some((call) => call.method === "evener/git/head")).toBe(true));
+  expect(screen.queryByTestId("session-details-branch")).toBeNull();
+});
+
+// A lookup attempted while the hub is away fails soft to "" — and neither
+// `client` nor `cwd` changes when the SAME client reconnects, so only a
+// connection-state transition can tell About the lookup is worth retrying
+// (issue #1355, the same contract RepoLocation's footer line keeps).
+test("About retries a branch lookup that failed while the hub was away", async () => {
+  let head = "";
+  const client = mountAbout(localRef, {
+    thread: (threadRef) => activityDetailsThread(threadRef, { gitInfo: undefined }),
+    gitHead: () => ({ head }),
+  });
+  await screen.findByText("about-owner");
+  await waitFor(() => expect(client.calls.some((call) => call.method === "evener/git/head")).toBe(true));
+  expect(screen.queryByTestId("session-details-branch")).toBeNull();
+  head = "main";
+  act(() => client.emitStateChange("reconnecting"));
+  act(() => client.emitReady());
+  await waitFor(() => expect(screen.getByTestId("session-details-branch").textContent).toContain("main"));
+});
+
+test("About fences a branch answer from a cwd it has left", async () => {
+  const pendingA = deferred<{ head: string }>();
+  mountAbout("local:a", {
+    thread: (threadRef) =>
+      threadRef === "local:a"
+        ? activityDetailsThread(threadRef, { gitInfo: undefined, id: "session-a", cwd: "/repo-a" })
+        : activityDetailsThread(threadRef, { gitInfo: undefined, id: "session-b", cwd: "/repo-b" }),
+    gitHead: ({ cwd }) => (cwd === "/repo-a" ? pendingA.promise : { head: "branch-b" }),
+  });
+  await screen.findByText("session-a");
+  act(() => installFocusedScope("local:b"));
+  await screen.findByText("session-b");
+  expect((await screen.findByTestId("session-details-branch")).textContent).toContain("branch-b");
+  await act(async () => pendingA.resolve({ head: "branch-a" }));
+  expect(screen.getByTestId("session-details-branch").textContent).toContain("branch-b");
+  expect(screen.queryByText("branch-a")).toBeNull();
 });

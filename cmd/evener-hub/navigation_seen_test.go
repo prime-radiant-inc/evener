@@ -144,17 +144,19 @@ func TestNavigationInputsCloneOwnsTheSeenRecords(t *testing.T) {
 // without them, so the clone's JSON omits the same keys.
 func TestNavigationSummaryCloneOwnsItsTimestamps(t *testing.T) {
 	updatedAt := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	createdAt := updatedAt.Add(-time.Hour)
 	turnEndedAt := updatedAt.Add(-time.Minute)
-	updated, ended := updatedAt, turnEndedAt
-	original := hubapi.NavigationSessionSummary{UpdatedAt: &updated, TurnEndedAt: &ended}
+	updated, created, ended := updatedAt, createdAt, turnEndedAt
+	original := hubapi.NavigationSessionSummary{UpdatedAt: &updated, CreatedAt: &created, TurnEndedAt: &ended}
 	clone := cloneNavigationSummary(original)
 	*original.UpdatedAt = updatedAt.Add(time.Hour)
+	*original.CreatedAt = createdAt.Add(time.Hour)
 	*original.TurnEndedAt = turnEndedAt.Add(time.Hour)
-	if clone.UpdatedAt == nil || !clone.UpdatedAt.Equal(updatedAt) || clone.TurnEndedAt == nil || !clone.TurnEndedAt.Equal(turnEndedAt) {
-		t.Fatalf("clone timestamps = %v, %v; want its own %v, %v", clone.UpdatedAt, clone.TurnEndedAt, updatedAt, turnEndedAt)
+	if clone.UpdatedAt == nil || !clone.UpdatedAt.Equal(updatedAt) || clone.CreatedAt == nil || !clone.CreatedAt.Equal(createdAt) || clone.TurnEndedAt == nil || !clone.TurnEndedAt.Equal(turnEndedAt) {
+		t.Fatalf("clone timestamps = %v, %v, %v; want its own %v, %v, %v", clone.UpdatedAt, clone.CreatedAt, clone.TurnEndedAt, updatedAt, createdAt, turnEndedAt)
 	}
-	if bare := cloneNavigationSummary(hubapi.NavigationSessionSummary{}); bare.UpdatedAt != nil || bare.TurnEndedAt != nil {
-		t.Fatalf("clone of a summary without timestamps = %v, %v; want none", bare.UpdatedAt, bare.TurnEndedAt)
+	if bare := cloneNavigationSummary(hubapi.NavigationSessionSummary{}); bare.UpdatedAt != nil || bare.CreatedAt != nil || bare.TurnEndedAt != nil {
+		t.Fatalf("clone of a summary without timestamps = %v, %v, %v; want none", bare.UpdatedAt, bare.CreatedAt, bare.TurnEndedAt)
 	}
 }
 

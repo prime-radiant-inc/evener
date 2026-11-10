@@ -38,6 +38,9 @@ const digestMarkerBudget = 512
 //   - VALID UTF-8: a valid-UTF-8 input yields valid-UTF-8 output.
 //   - DETERMINISM.
 func FuzzArShellInlineDigest(f *testing.F) {
+	multiHunkDiff := strings.Repeat("diff --git a/f b/f\nindex 1..2 100644\n--- a/f\n+++ b/f\n@@ -1,3 +1,3 @@\n context\n-removed\n+added\n", 40)
+	pathLikeHunkDiff := strings.Repeat("diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n--- sql comment\n+++ added line\n", 40)
+	longHeaderDiff := "diff --git a/" + strings.Repeat("p", 400) + " b/" + strings.Repeat("q", 400) + "\n--- a/x\n+++ b/y\n@@ -1 +1 @@ " + strings.Repeat("f", 400) + "\n context\n"
 	type seed struct {
 		full           string
 		total, dropped int64
@@ -51,6 +54,13 @@ func FuzzArShellInlineDigest(f *testing.F) {
 		// A long output with no newlines at all (partial-line trim never fires).
 		{strings.Repeat("z", 4096), 4096, 0},
 		{"héllo\n世界\n" + strings.Repeat("é", 5000), 999999, 12345},
+		// Unified diffs exercise the boundary-aligned arms: many hunks, one
+		// huge hunk, hunk-body "--- "/"+++ " lines, and a long path/hunk header
+		// that must be clipped to stay inside the bound.
+		{multiHunkDiff, int64(len(multiHunkDiff)), 0},
+		{multiHunkDiff, int64(len(multiHunkDiff)) + 5000, 5000},
+		{pathLikeHunkDiff, int64(len(pathLikeHunkDiff)), 0},
+		{longHeaderDiff, int64(len(longHeaderDiff)), 0},
 	}
 	for _, s := range seeds {
 		f.Add(s.full, s.total, s.dropped)

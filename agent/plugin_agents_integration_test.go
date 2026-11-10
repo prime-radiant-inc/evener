@@ -206,7 +206,7 @@ func TestSpawnAgent_PluginAgentType_Model(t *testing.T) {
 			}
 			if tc.name == "override" {
 				lister := newFakeEnumerableAdapter("openai", "gpt-5.2", "gpt-4.1-nano")
-				lister.steps = steps
+				lister.setSteps(steps)
 				// gpt-4.1-nano is a catalog row of the openai provider, so the
 				// registry can name an instance that serves it.
 				c = registryClient(t, map[string]registry.Provider{

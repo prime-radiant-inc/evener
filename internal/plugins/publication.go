@@ -226,8 +226,15 @@ func copyEntryExact(src, dst string) error {
 	}
 }
 
+// errNotRegular reports a path that is no longer the regular file the caller's
+// earlier metadata check saw.
+var errNotRegular = errors.New("not a regular file")
+
+// copyRegularFile copies one file's bytes and permissions. The source is opened
+// through openRegularNoBlock, so a FIFO substituted for the regular file the
+// caller checked fails the copy instead of blocking on its open (#4847).
 func copyRegularFile(src, dst string, flags int, mode fs.FileMode) error {
-	in, err := os.Open(src)
+	in, err := openRegularNoBlock(src)
 	if err != nil {
 		return err
 	}

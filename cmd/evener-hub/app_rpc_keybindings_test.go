@@ -50,9 +50,7 @@ func TestHubRPCKeybindingsPatchBroadcastsCanonicalValue(t *testing.T) {
 	clientB := dialHubRPC(t, hub)
 	defer clientB.Close()
 	for _, client := range []*appwire.Client{clientA, clientB} {
-		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-			t.Fatal(err)
-		}
+		mustInitializeHubClient(t, client)
 	}
 
 	config := appwire.KeybindingsConfig{Version: 1, Rules: []appwire.KeybindingsRule{
@@ -96,9 +94,7 @@ func TestHubRPCKeybindingsPatchPostRenameErrorStillBroadcasts(t *testing.T) {
 	clientB := dialHubRPC(t, hub)
 	defer clientB.Close()
 	for _, client := range []*appwire.Client{clientA, clientB} {
-		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-			t.Fatal(err)
-		}
+		mustInitializeHubClient(t, client)
 	}
 
 	config := appwire.KeybindingsConfig{Version: 1, Rules: []appwire.KeybindingsRule{
@@ -170,9 +166,7 @@ func TestHubRPCKeybindingsPatchFailuresDoNotNotify(t *testing.T) {
 	clientB := dialHubRPC(t, hub)
 	defer clientB.Close()
 	for _, client := range []*appwire.Client{clientA, clientB} {
-		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-			t.Fatal(err)
-		}
+		mustInitializeHubClient(t, client)
 	}
 
 	defaults := appwire.KeybindingsShippedDefaults()
@@ -317,9 +311,7 @@ func TestHubRPCKeybindingsMalformedStateUsesFallbackAndRemainsReadOnly(t *testin
 	clientB := dialHubRPC(t, hub)
 	defer clientB.Close()
 	for _, client := range []*appwire.Client{clientA, clientB} {
-		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-			t.Fatal(err)
-		}
+		mustInitializeHubClient(t, client)
 	}
 	var got appwire.KeybindingsOverrides
 	if err := clientA.Request(context.Background(), appwire.MethodEvenerSettingsKeybindingsGet, appwire.EmptyParams{}, &got); err != nil {

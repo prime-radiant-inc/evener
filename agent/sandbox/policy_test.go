@@ -117,7 +117,7 @@ func TestAtLeastAsConfiningMatrix(t *testing.T) {
 // here is a silent hole in the containment floor.
 func TestDefaultDenylistIncludesPseudoFS(t *testing.T) {
 	t.Parallel()
-	home := "/home/tester"
+	home := "/fixture-home/tester"
 	got := DefaultDenylist(home)
 
 	wantPseudoFS := []string{
@@ -172,7 +172,7 @@ func TestDefaultDenylistIncludesPseudoFS(t *testing.T) {
 // escape).
 func TestDefaultDenylistIsCopy(t *testing.T) {
 	t.Parallel()
-	home := "/home/tester"
+	home := "/fixture-home/tester"
 	a := DefaultDenylist(home)
 	if len(a) == 0 {
 		t.Fatal("default denylist is empty")
@@ -190,7 +190,7 @@ func TestDefaultDenylistIsCopy(t *testing.T) {
 // the model could reach mid-session.
 func TestPolicyDenylistAddRemove(t *testing.T) {
 	t.Parallel()
-	home := "/home/tester"
+	home := "/fixture-home/tester"
 
 	pol := SandboxPolicy{
 		Mode:        ModeRestricted,

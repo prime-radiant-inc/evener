@@ -33,7 +33,7 @@ func TestHubRelayStableCompletedLifecycle(t *testing.T) {
 			}, http.DefaultClient)
 			sources := appsource.NewRegistry()
 			sources.Add(source)
-			cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+			cfg := testWebConfig(t, hubcore.WebConfig{})
 			server := newHubAppServer(cfg, sources)
 			wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
 			defer wire.Close()
@@ -94,7 +94,7 @@ func TestHubRelayNonAtomicUnsubscribeGap(t *testing.T) {
 				case <-ctx.Done():
 				}
 			}
-			cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+			cfg := testWebConfig(t, hubcore.WebConfig{})
 			if existing {
 				cfg.RelayHooks.BeforeExistingRegistration = gate
 			} else {

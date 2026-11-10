@@ -5,6 +5,7 @@
 // races the spec's scenario 13 concedes — the shared-lookup join (Review
 // Focus 5), the release during the lookup, and the lookup that lost its own
 // deadline race.
+import { connectReadyFakeClient } from "../testing/connectionTestUtils";
 import { type TestThreadOverrides, testThread } from "../threadTestUtils";
 import "fake-indexeddb/auto";
 import type {
@@ -16,13 +17,20 @@ import type {
   Turn,
   TurnModel,
 } from "@evener/appwire-client";
-import { FakeClient, type RequestHandler } from "@evener/appwire-client/testing/fakeClient";
+import type { FakeClient, RequestHandler } from "@evener/appwire-client/testing/fakeClient";
 import { IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readComposerDraft, writeComposerDraft } from "../panes/session/composer/draft";
-import { connectionStore } from "./connection";
+import { settleProjectionWorkForTests } from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
+import { setCacheChannelFactoryForTests } from "./cacheLifetime";
+import { resetConnectionStoreForTests } from "./connection";
+import {
+  isEntryTranscriptLocalOpening,
+  productionEntryTranscriptForTests,
+  setProductionEntryCacheForTests,
+} from "./entryTranscriptRoutes";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
-import { settleProjectionWorkForTests } from "./projectionWork";
+import { deleteMutationDatabase } from "./mutationOutboxTestUtils";
 import { entryHistoryKey, type TranscriptResolvedIdentity } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { observeProductionEntryForTests } from "./testing/entryProductionHarness";
@@ -32,14 +40,10 @@ import {
   backgroundTranscriptSnapshotForTests,
   clearCachedSessions,
   installHydrationRetrySchedulerForTests,
-  isEntryTranscriptLocalOpening,
   markCacheSessionsDeleted,
   pendingThreadHydrationBaseModelsForTests,
   pendingThreadHydrationUpdatesForTests,
-  productionEntryTranscriptForTests,
   resetThreadsStoreForTests,
-  setCacheChannelFactoryForTests,
-  setProductionEntryCacheForTests,
   settleBackgroundTranscriptsForTests,
   threadsStore,
 } from "./threads";
@@ -99,21 +103,9 @@ function turnFixture(id: string, text = "cached turn"): TurnModel & Turn {
 let connectedFakeClient: FakeClient | undefined;
 
 function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
+  const fake = connectReadyFakeClient();
   connectedFakeClient = fake;
   return fake;
-}
-
-async function deleteMutationDatabase(): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const request = indexedDB.deleteDatabase("evener-mutation-outbox");
-    request.addEventListener("success", () => resolve(), { once: true });
-    request.addEventListener("error", () => reject(request.error), { once: true });
-    request.addEventListener("blocked", () => reject(new Error("mutation database deletion blocked")), {
-      once: true,
-    });
-  });
 }
 
 // echoingReadHandler answers a thread/read with the file's fixture, echoing
@@ -249,7 +241,7 @@ let scheduledHydrationRetries: ScheduledHydrationRetry[] = [];
 let restoreHydrationRetryScheduler: (() => void) | null = null;
 
 beforeEach(async () => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   connectedFakeClient = undefined;
   _pendingReadRef = undefined;

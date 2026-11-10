@@ -84,7 +84,7 @@ func fuzzExactState(t *testing.T) {
 	if cumulativeUsageSnapshot(llm.Usage{CacheReadTokens: &cache}).CacheReadTokens != 3 {
 		t.Fatal("cache usage missing")
 	}
-	if (&Session{}).ContextPressure() != 0 {
+	if (&Session{}).contextPressure() != 0 {
 		t.Fatal("nil context pressure nonzero")
 	}
 	closed := &Session{closing: true}

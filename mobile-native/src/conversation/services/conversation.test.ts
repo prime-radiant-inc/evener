@@ -1121,6 +1121,47 @@ describe("ConversationService", () => {
 			expect(client.calls.filter((c) => c.method === "turn/start")).toHaveLength(1);
 		});
 
+		// voiceArm is the hub's per-session answer, stamped on reads and on the
+		// status frames it relays; a push that races the read must not drop it,
+		// or an eligible session loses its voice controls until the next read.
+		it.each([
+			["an armable session", { voiceArm: true }, true],
+			["a session that cannot arm", { voiceArm: false }, false],
+			["a hub that never says", {}, undefined],
+		] as const)("keeps voiceArm from a push during rehydration, from %s", async (_hub, stamp, expected) => {
+			const { client, service } = setup();
+			await service.open("ref-1");
+			service.subscribeNotifications(() => {});
+			let resolve!: (response: ThreadReadResponse) => void;
+			client.on(
+				"thread/read",
+				() =>
+					new Promise<ThreadReadResponse>((done) => {
+						resolve = done;
+					}),
+			);
+			const hydration = service.readProjection("ref-1");
+			await Promise.resolve();
+			client.emitNotification({
+				method: "thread/status/changed",
+				params: {
+					ref: "ref-1",
+					threadId: "thread-1",
+					status: { type: "active" },
+					capabilities: { ...ALL_TRUE_CAPS, ...stamp },
+				},
+			});
+			resolve(
+				makeReadResponse(
+					makeThread({
+						evener: { ref: "ref-1", capabilities: { ...ALL_TRUE_CAPS, ...stamp }, queue: { revision: 0 } },
+					}),
+				),
+			);
+			const hydrated = await hydration;
+			expect(hydrated.conversation.capabilities.voiceArm).toBe(expected);
+		});
+
 		it("uses the active capability set for mutations and rejects other thread updates", async () => {
 			const { client, service } = setup({
 				thread: makeThread({
@@ -1357,6 +1398,70 @@ describe("ConversationService", () => {
 			expect(call).toBeDefined();
 			const params = call?.params as Record<string, unknown>;
 			expect(params).not.toHaveProperty("cursor");
+		});
+
+		it("recovers from a stale held snapshot by re-reading without one", async () => {
+			const { client, service } = setup();
+			await service.open("ref-1");
+			client.calls.length = 0;
+			let readCalls = 0;
+			client.on("thread/read", () => {
+				readCalls += 1;
+				if (readCalls === 1) {
+					throw new WireError("stale transcript cursor", -32020, {
+						evenerErrorInfo: "transcriptItemCursorStale",
+					});
+				}
+				return makeReadResponse(makeThread());
+			});
+			const result = await service.readProjection("ref-1", { incarnation: "inc-1", length: 3 });
+			const reads = client.calls.filter((c) => c.method === "thread/read");
+			expect(reads).toHaveLength(2);
+			expect((reads[0].params as Record<string, unknown>).heldSnapshot).toEqual({
+				incarnation: "inc-1",
+				length: 3,
+			});
+			expect((reads[1].params as Record<string, unknown>).heldSnapshot).toBeUndefined();
+			expect(result?.conversation.threadId).toBe("thread-1");
+		});
+
+		it("marks the stale-snapshot recovery as replacing the held history", async () => {
+			const { client, service } = setup();
+			await service.open("ref-1");
+			client.calls.length = 0;
+			let readCalls = 0;
+			client.on("thread/read", () => {
+				readCalls += 1;
+				if (readCalls === 1) {
+					throw new WireError("stale transcript cursor", -32020, {
+						evenerErrorInfo: "transcriptItemCursorStale",
+					});
+				}
+				return makeReadResponse(makeThread());
+			});
+			const recovered = await service.readProjection("ref-1", { incarnation: "inc-1", length: 3 });
+			expect(recovered?.replacedHeldHistory).toBe(true);
+			// A plain projection is a merge candidate like before: only the
+			// stale-snapshot recovery replaces.
+			const plain = await service.readProjection("ref-1");
+			expect(plain?.replacedHeldHistory).toBeUndefined();
+		});
+
+		it("retries a stale held snapshot exactly once, then surfaces the refusal", async () => {
+			const { client, service } = setup();
+			await service.open("ref-1");
+			client.calls.length = 0;
+			client.on("thread/read", () => {
+				throw new WireError("stale transcript cursor", -32020, {
+					evenerErrorInfo: "transcriptItemCursorStale",
+				});
+			});
+			await expect(service.readProjection("ref-1", { incarnation: "inc-1", length: 3 })).rejects.toThrow(
+				"stale transcript cursor",
+			);
+			const reads = client.calls.filter((c) => c.method === "thread/read");
+			expect(reads).toHaveLength(2);
+			expect((reads[1].params as Record<string, unknown>).heldSnapshot).toBeUndefined();
 		});
 	});
 

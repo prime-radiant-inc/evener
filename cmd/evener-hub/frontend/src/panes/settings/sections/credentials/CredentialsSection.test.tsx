@@ -13,6 +13,7 @@ import {
   friendlyErrorMessage,
   WireError,
 } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -28,6 +29,7 @@ import { emptyStateReasons } from "../../../../widgets/emptystate/emptyStateTest
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { toastKinds, toastReasons } from "../../../../widgets/toast/toastTestUtils";
 import { CredentialsSection } from "./CredentialsSection";
+import { instance } from "./credentialsTestUtils";
 
 // The section's outcomes, read from their markers rather than from the words
 // shown for them: toasts by kind and reason, a row by its credential state, and
@@ -48,19 +50,6 @@ const testResultShown = (status: string): boolean =>
  * aria-disabled (Button/Switch swallow the activation themselves). */
 const isRefused = (el: HTMLElement): boolean => el.getAttribute("aria-disabled") === "true";
 
-function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
-  return {
-    protocol: "openai-chat",
-    auth: "bearer",
-    implicit: false,
-    isDefault: false,
-    activeSource: "none",
-    hasStoredOAuth: false,
-    credentialRequired: true,
-    ...overrides,
-  };
-}
-
 const WORK = instance({
   name: "work",
   providerId: "anthropic",
@@ -77,16 +66,6 @@ const PERSONAL = instance({
   authModes: ["oauth"],
 });
 const LIST: InstanceListResponse = { instances: [WORK, PERSONAL], availableProviders: [] };
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
 
 async function advanceTime(milliseconds: number): Promise<void> {
   await act(() => vi.advanceTimersByTimeAsync(milliseconds));

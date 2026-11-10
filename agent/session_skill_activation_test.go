@@ -66,8 +66,8 @@ func TestSkillActivation_RestoreSessionFromMeta(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("RestoreSessionFromMeta lifecycle mismatch: got=%s want=%s", wire["skills"], skillActivationSnapshotFixture)
 	}
-	if s.PinnedNote() != "opaque-note" || s.pinnedNoteGen != 19 {
-		t.Fatalf("note=%q gen=%d", s.PinnedNote(), s.pinnedNoteGen)
+	if s.pinnedNote() != "opaque-note" || s.pinnedNoteGen != 19 {
+		t.Fatalf("note=%q gen=%d", s.pinnedNote(), s.pinnedNoteGen)
 	}
 }
 
@@ -297,7 +297,7 @@ func TestSkillActivation_SaveMetaAndSnapshotIsolation(t *testing.T) {
 	if err := json.Unmarshal([]byte(skillActivationSnapshotFixture), &s.skillLifecycle); err != nil {
 		t.Fatal(err)
 	}
-	s.pinnedNote = "opaque-note"
+	s.pinnedNoteText = "opaque-note"
 	s.pinnedNoteGen = 31 // Existing note generation, not stale lifecycle gen 19, wins.
 	snapshot := s.Meta()
 	snapshot.Skills.Inventory["scope:alpha"].Ordinary.Identity.Source = "mutated-ordinary"
@@ -377,7 +377,7 @@ func TestSkillActivation_LegacyRestoreHasEmptyOrdinaryState(t *testing.T) {
 	if s.skillLifecycle.Inventory == nil || len(s.skillLifecycle.Inventory) != 0 || len(s.skillLifecycle.Obligations) != 0 || s.pinnedNoteGen != 0 {
 		t.Fatalf("legacy state inferred: %+v gen=%d", s.skillLifecycle, s.pinnedNoteGen)
 	}
-	if s.PinnedNote() != "opaque-legacy-note" {
+	if s.pinnedNote() != "opaque-legacy-note" {
 		t.Fatal("legacy note lost")
 	}
 }
@@ -410,7 +410,7 @@ func TestSkillActivation_RecordTurnCopiesTypedState(t *testing.T) {
 		t.Fatal("recordTurn inferred inventory from provisional outcome")
 	}
 	s.Close()
-	data, err := readTranscriptFull(path, "")
+	data, err := readTranscriptFull(context.Background(), path, "")
 	if err != nil {
 		t.Fatal(err)
 	}

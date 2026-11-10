@@ -255,10 +255,9 @@ func TestHubCommandList_ViaTypedRPCClient(t *testing.T) {
 	pluginDir := t.TempDir()
 	writeCommandListTestPlugin(t, pluginDir, "greeter")
 
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		Past:       hubcore.NewPastIndex(""),
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 		PluginDirs: []string{pluginDir},
-	})
+	}))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
 	resp, err := appwiretest.CommandList(context.Background(), client)

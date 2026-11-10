@@ -1,6 +1,7 @@
 import type { ComposerMention } from "@evener/appwire-client";
 import {
   awaitingFirstFrameSend,
+  canceledEntries,
   createMutationProjectionFence,
   createPendingTurnsStore,
   createSubmissionRunner,
@@ -21,9 +22,12 @@ import type {
   MutationAttachment,
   MutationOutboxRecord,
   MutationRecoveryRecord,
-  MutationStopBarrier,
+  MutationStopCapture,
 } from "../../../../stores/mutationOutbox";
-import type { MutationRecoveryResendResult } from "../../../../stores/mutationOutboxIndexedDB";
+import type {
+  DisplayedRecoveryStopCapture,
+  MutationRecoveryResendResult,
+} from "../../../../stores/mutationOutboxIndexedDB";
 import { clearProjectionWorkForTests, trackProjectionWork } from "../../../../stores/projectionWork";
 import {
   type ComposerMutationRoute,
@@ -39,6 +43,7 @@ import {
   resendRecoveryMutation,
   retryBlockedMutation,
   setPendingProjectionLoaded,
+  subscribeDirectSendAdmission,
   subscribeMutationPersistence,
   threadsStore,
   transientRefusalRetryPending,
@@ -81,6 +86,11 @@ const pendingTurnsStore = createPendingTurnsStore<MutationAttachment>({
   identity: { isOwnMutationRecord },
 });
 
+// The direct fallback's provenance seam: see pendingTurns' recordDirectSend.
+subscribeDirectSendAdmission(({ clientMutationId, createdAt }) => {
+  pendingTurnsStore.recordDirectSend(clientMutationId, createdAt);
+});
+
 installQueuedMutationProjection({
   subscribe: pendingTurnsStore.subscribe,
   getOutbox: () => pendingTurnsStore.getState().outbox,
@@ -100,6 +110,17 @@ installQueuedMutationProjection({
 // reset hook too.
 const loadedRefs = new Set<string>();
 
+// The ref's standing delivery-uncertain rows in one pass, unsorted: the fence
+// predicate needs only WHETHER any stand, so this never pays the sorted
+// projection's sort.
+function blockedUnknownRowsFor(ref: string): MutationOutboxRecord[] {
+  const rows: MutationOutboxRecord[] = [];
+  for (const record of pendingTurnsStore.getState().outbox.values()) {
+    if (record.targetRef === ref && record.state === "blockedUnknown") rows.push(record);
+  }
+  return rows;
+}
+
 // Publish this projection's synchronous delivery-uncertain read into the
 // threads store's shared resume-only predicate (installResumeOnlyProjection):
 // the predicate the press, enqueue and dispatch paths share cannot import this
@@ -109,8 +130,7 @@ const loadedRefs = new Set<string>();
 // published, exactly as the composer's own useBlockedMutationEntries does.
 installResumeOnlyProjection({
   isLoaded: (ref) => loadedRefs.has(ref),
-  hasBlockedUnknown: (ref) =>
-    outboxEntriesByState(pendingTurnsStore.getState().outbox, ref, "blockedUnknown").length > 0,
+  hasBlockedUnknown: (ref) => blockedUnknownRowsFor(ref).length > 0,
   // A queued non-turn/start row (still "submitting") parks at the target's
   // FIFO: a turn/start queued behind it never dispatches, so a ref holding one
   // is not the foldable shape. An ATTEMPTED row counts too: the method-aware
@@ -487,9 +507,19 @@ export function useBlockedMutationEntries(ref: string): MutationOutboxRecord[] {
 
 // Stop-canceled rows (stop-cancellation-outbox §6): QueueStrip surfaces them
 // in the same durable-rows slot as blocked ones, where their explicit Retry
-// affordance lives.
+// affordance lives. The canceled state is the one projected by displayedRef
+// too (canceledEntries): a retargeted resend's born-canceled row is the
+// composition's only durable copy, and the session the user is looking at
+// must still show it.
 export function useCanceledMutationEntries(ref: string): MutationOutboxRecord[] {
-  return useOutboxRecordsByState(ref, "canceled");
+  const outbox = useStore(pendingTurnsStore, (state) => state.outbox);
+  useEffect(() => {
+    void refreshPendingTurnsProjection(ref);
+  }, [ref]);
+  return useMemo(() => {
+    const records = canceledEntries(outbox, ref);
+    return records.length > 0 ? records : NO_BLOCKED;
+  }, [outbox, ref]);
 }
 
 // A durable mutation and the projection refresh that publishes it are one
@@ -516,7 +546,8 @@ export function retryBlockedPendingTurn(clientMutationId: string, ref: string): 
     (async (): Promise<BlockedRetryOutcome> => {
       if (await mutateThenRefresh(ref, () => retryBlockedMutation(clientMutationId))) return { released: true };
       const { outbox } = await readMutationPersistence(ref);
-      return { released: false, current: outbox.find((entry) => entry.clientMutationId === clientMutationId) };
+      const current = outbox.find((entry) => entry.clientMutationId === clientMutationId);
+      return { released: false, current };
     })(),
   );
 }
@@ -622,9 +653,10 @@ export function resendRecoveryPendingTurn(
   skillNames?: readonly string[],
   commandNames?: readonly string[],
   mentions?: readonly ComposerMention[],
-  barrierRead?: Promise<MutationStopBarrier>,
+  barrierRead?: MutationStopCapture | Promise<MutationStopCapture>,
   expectedRecoveryRevisions?: Readonly<Record<string, number>>,
   compositionOwnerId?: string,
+  displayedBarrierRead?: DisplayedRecoveryStopCapture | Promise<DisplayedRecoveryStopCapture>,
 ): Promise<MutationRecoveryResendResult> {
   // Resend publishes its committed handoff directly. Reading the recovery
   // tray again cannot hold up a submission that already has a durable owner.
@@ -642,6 +674,7 @@ export function resendRecoveryPendingTurn(
         barrierRead,
         expectedRecoveryRevisions,
         compositionOwnerId,
+        displayedBarrierRead,
       );
       void refreshPendingTurnsProjection(ref);
       return result;

@@ -13,7 +13,7 @@ import { LOCAL_HOST } from "@evener/appwire-client";
 import { hasHub } from "../connection";
 import { useConnection } from "../ConnectionProvider";
 import { isReady } from "../connectionDisplay";
-import { useHubFleet } from "../hosts/useHubFleet";
+import { useHubFleet, useOptionalSnapshot } from "../hosts/useHubFleet";
 import { nativeDrafts } from "../nativeDrafts";
 import { appGroupSharePort } from "../share/appGroupSharePort";
 import { completeShare } from "../share/sharePayload";
@@ -34,6 +34,7 @@ import { PluginChecklist } from "./PluginChecklist";
 import { ProjectPicker } from "./ProjectPicker";
 import { useSheetPlugins } from "./sheetPlugins";
 import { useSheetLaunchDefaults } from "./useLaunchDefaults";
+import { useSheetLaunchSchema } from "./useLaunchSchema";
 import { seedSharedPrompt, shareSeedLanded } from "./shareSeed";
 import { currentShareIntake } from "../share/shareIntakeHost";
 
@@ -146,9 +147,11 @@ function NewSessionSheetBody({ route }: NativeStackScreenProps<Routes, "NewSessi
 	);
 
 	const { hosts, live } = useHubFleet(renderClient, randomUUID);
+	const hostRows = useOptionalSnapshot(hosts)?.rows ?? null;
 	const hostLabel = useCallback((host: string) => (host === LOCAL_HOST ? hubName : host), [hubName]);
 	const plugins = useSheetPlugins(store, renderClient, ready);
 	const launchDefaults = useSheetLaunchDefaults(store, renderClient, ready);
+	const launchSchema = useSheetLaunchSchema(store, renderClient, ready, hostRows);
 	const value = useMemo<NewSessionContextValue>(
 		() => ({
 			store,
@@ -162,8 +165,9 @@ function NewSessionSheetBody({ route }: NativeStackScreenProps<Routes, "NewSessi
 			hostLabel,
 			plugins,
 			launchDefaults,
+			launchSchema,
 		}),
-		[store, hubId, hubName, renderClient, ready, hosts, live, memory, hostLabel, plugins, launchDefaults],
+		[store, hubId, hubName, renderClient, ready, hosts, live, memory, hostLabel, plugins, launchDefaults, launchSchema],
 	);
 	return (
 		<NewSessionProvider value={value}>

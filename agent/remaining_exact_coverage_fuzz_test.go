@@ -89,7 +89,7 @@ func remainingPromptCoverage(t *testing.T) {
 		return "", errors.New("forced render failure")
 	}
 	t.Cleanup(func() { executeSystemPromptTemplate = oldExecute })
-	got, warning := s.renderSystemPrompt(execenv.NewLocalExecutionEnvironment(t.TempDir()))
+	got, warning, _ := s.renderSystemPrompt(execenv.NewLocalExecutionEnvironment(t.TempDir()))
 	if !strings.Contains(got, "forced render failure") {
 		t.Fatalf("render failure prompt = %q", got)
 	}

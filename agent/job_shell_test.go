@@ -110,7 +110,7 @@ func setShellReceiptPollHook(t *testing.T, fire func(jobID string)) {
 
 // shellReceiptHeld reports whether the stable-delegate controller still holds a
 // committed process receipt for jobID. Only a job manager bound to a stable
-// delegate parent has a lease, and beginStableDelegateShellReceipt takes a
+// delegate parent has a lease, and beginDelegateShellReceipt takes a
 // receipt only for a non-empty lease, so root-owned shells never hold one and
 // this is always false for them.
 func shellReceiptHeld(jm *jobManager, jobID string) bool {
@@ -374,7 +374,7 @@ func TestRunShellStartFailureIncludesDiagnostic(t *testing.T) {
 		t.Fatalf("start failure output = %q, want diagnostic", res.Output)
 	}
 
-	formatted, err := marshalShellToolResult(res, shellToolResultDefaultMaxChars, false)
+	formatted, err := marshalShellToolResult(res, shellToolResultDefaultMaxChars, 0, false)
 	if err != nil {
 		t.Fatalf("marshalShellToolResult: %v", err)
 	}
