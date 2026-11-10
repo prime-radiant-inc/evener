@@ -1,8 +1,10 @@
 version: "2"
 
+# No run.timeout: golangci-lint v2 sets no deadline by default. A cold
+# analysis cache legitimately takes longer than a fixed deadline allows, and
+# the CI job's timeout-minutes bounds a run that hangs.
 run:
   concurrency: 2
-  timeout: 5m
   tests: true
 
 # golangci truncates its own output by default — max-same-issues 3, and
