@@ -55,12 +55,14 @@
 
 /* The session's own status (model · effort, context, menu) sits at the row's
  * far end, beside the verbs: the field leads, and the facts that describe
- * where the prompt will go follow it. The slot fills an expanded row so the
- * status content keeps its full width; the folded row has no free space to
- * give, so there it takes the intrinsic width below. */
+ * where the prompt will go follow it. The slot carries the compact rung as
+ * its basis, so the leading's wrap calculation reserves room for the
+ * pickers before it decides whether the activity chips fit beside them; it
+ * grows into an expanded row. The folded row has no free space to give, so
+ * there it takes the intrinsic width below. */
 .chromeSlot {
   display: flex;
-  flex: 1 1 auto;
+  flex: 1 1 200px;
   min-width: 0;
 }
 

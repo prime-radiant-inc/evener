@@ -551,11 +551,12 @@ test("the Send button's word collapses to the glyph below the compact pane thres
 
 // The model and effort are the session's facts about the next turn, so they
 // sit beside the verbs rather than immediately after the paperclip. The slot
-// fills the row so the status facts keep their full width; the row's own
-// `align="end"` places the facts at its far end.
-test("the session chrome fills the expanded row", () => {
+// reserves the compact chrome rung for the leading's wrap calculation and
+// grows into the expanded row; the row's own `align="end"` places the facts
+// at its far end.
+test("the session chrome reserves its compact rung and fills the expanded row", () => {
   const css = readModuleCss(import.meta.url, "composer.module.css");
-  expect(topRuleBlock(css, ".chromeSlot")).toMatch(/flex:\s*1 1 auto/);
+  expect(topRuleBlock(css, ".chromeSlot")).toMatch(/flex:\s*1 1 200px/);
 });
 
 // The folded row is content-sized, so the leading reports an intrinsic width
