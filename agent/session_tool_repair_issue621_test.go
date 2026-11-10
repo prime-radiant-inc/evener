@@ -611,11 +611,10 @@ func TestExplainSchemaError_DynamicRef(t *testing.T) {
 // — rather than the gate's internal decisions.
 func exampleFromMessage(t *testing.T, msg string) (map[string]any, bool) {
 	t.Helper()
-	i := strings.LastIndex(msg, "Example: ")
-	if i < 0 {
+	_, rest, ok := strings.CutLast(msg, "Example: ")
+	if !ok {
 		return nil, false
 	}
-	rest := msg[i+len("Example: "):]
 	depth := 0
 	inString := false
 	escaped := false

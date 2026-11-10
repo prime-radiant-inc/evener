@@ -963,15 +963,15 @@ func stripDelegateAttentionReopenSegments(id string) string {
 // base, and the cold restore's derived hold, which keys the immediate
 // source's resume claim.
 func cutDelegateAttentionReopenSegment(id string) (source string, generation uint64, ok bool) {
-	at := strings.LastIndex(id, delegateAttentionReopenMarker)
-	if at < 0 {
+	base, segment, found := strings.CutLast(id, delegateAttentionReopenMarker)
+	if !found {
 		return id, 0, false
 	}
-	generation, err := strconv.ParseUint(id[at+len(delegateAttentionReopenMarker):], 10, 64)
+	generation, err := strconv.ParseUint(segment, 10, 64)
 	if err != nil {
 		return id, 0, false
 	}
-	return id[:at], generation, true
+	return base, generation, true
 }
 
 func (s *Session) pendingDelegateAttentionIDsLocked() ([]string, error) {

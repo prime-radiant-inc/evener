@@ -137,7 +137,7 @@ The Go toolchain requirement is bumped from **1.25.x** to **1.27.0**.
 
 ### golangci-lint
 
-golangci-lint is bumped from **v2.12.2** to **v2.13.1** (built with Go 1.27).
+golangci-lint is bumped from **v2.12.2** to **v2.15.0** (built with Go 1.27).
 Run `make tools` to install the new version. The `govet` `inline` analyzer is
 disabled in `.golangci.yml` — it produces false positives on test helper
 functions that are deliberately not inlined.
