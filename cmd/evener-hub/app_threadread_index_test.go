@@ -283,9 +283,7 @@ func TestSessionOperationsFetchesSavedItemCanonicalRanges(t *testing.T) {
 		ItemTypes:    []string{"agentMessage"},
 		MessageBytes: 64,
 	}, func(options *transcriptWindowPackOptions) {
-		options.RetainFetchItem = func(token string, candidate appitempaging.TranscriptItemCandidate) error {
-			return operations.canonicalItemStore().putItem(token, fetchEntryTriple(options.fetchTokens.identity, candidate), candidate.Item)
-		}
+		operations.retainCanonicalWindowOptions(options)
 	})
 	if err != nil {
 		t.Fatal(err)

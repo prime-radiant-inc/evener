@@ -108,6 +108,9 @@ func (o *sessionOperations) retainCanonicalWindowOptions(options *transcriptWind
 		return canonical, nil
 	}
 	options.RetainFetchItem = func(token string, candidate appitempaging.TranscriptItemCandidate) error {
+		if options.fetchTokens == nil {
+			return nil
+		}
 		return store.putItem(token, fetchEntryTriple(options.fetchTokens.identity, candidate), candidate.Item)
 	}
 	if options.fetchTokens != nil {

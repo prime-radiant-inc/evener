@@ -399,22 +399,22 @@ func (x *Index) window(r *reader, end uint64, limit int, flush []appitempaging.T
 	return window, nil
 }
 
-// span projects item records [lo, hi).
+// span projects item records [lo, hi). Each candidate's HasEarlierItems and
+// HasLaterItems follow the item's ordinal within its logical turn, so a turn a
+// later entry reopens (whose fragments are not physically adjacent) reports
+// completeness at its fragment boundaries.
 func (x *Index) span(r *reader, lo, hi uint64) ([]appitempaging.TranscriptItemCandidate, error) {
-	// One read covers the records plus a neighbour on each side, which say
-	// whether the edge items' turns continue past the span.
-	first, last := lo-min(lo, 1), min(hi+1, x.items.n)
-	buf, err := x.items.read(first, int(last-first))
+	buf, err := x.items.read(lo, int(hi-lo))
 	if err != nil {
 		return nil, x.fail(err)
 	}
-	records := make([]itemRecord, last-first)
+	records := make([]itemRecord, hi-lo)
 	for i := range records {
 		records[i] = decodeItem(buf[i*itemRecordSize:])
 	}
 	candidates := make([]appitempaging.TranscriptItemCandidate, 0, hi-lo)
 	for slot := lo; slot < hi; slot++ {
-		record := records[slot-first]
+		record := records[slot-lo]
 		stamped, err := r.turn(record.Turn)
 		if err != nil {
 			return nil, x.fail(err)
@@ -430,8 +430,8 @@ func (x *Index) span(r *reader, lo, hi uint64) ([]appitempaging.TranscriptItemCa
 			Turn:            turn,
 			Item:            item,
 			Position:        *item.Position,
-			HasEarlierItems: slot > 0 && records[slot-1-first].Turn == record.Turn,
-			HasLaterItems:   slot+1 < x.items.n && records[slot+1-first].Turn == record.Turn,
+			HasEarlierItems: record.ItemIndex > 0,
+			HasLaterItems:   uint64(record.ItemIndex)+1 < uint64(stamped.count),
 			Model:           stamped.model,
 		})
 	}
@@ -788,6 +788,9 @@ type reader struct {
 type stampedTurn struct {
 	turn  appwire.Turn
 	model string
+	// count is the turn's recorded item count across all its fragments, so an
+	// item inside a reopened turn can report whether later items follow it.
+	count uint32
 }
 
 // projectionKey is one projection of an entry: its seed is the tool name of
@@ -885,7 +888,7 @@ func (r *reader) turn(slot uint32) (stampedTurn, error) {
 		CacheReadTokens: &cacheRead,
 		TotalTokens:     int(record.Usage[3]),
 	})
-	stamped := stampedTurn{turn: turn, model: string(model)}
+	stamped := stampedTurn{turn: turn, model: string(model), count: record.ItemCount}
 	r.turns[slot] = stamped
 	return stamped, nil
 }

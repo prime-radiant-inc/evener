@@ -70,6 +70,13 @@ type builder struct {
 	summary     turnRecord
 	summarySlot uint64
 	hasSummary  bool
+	// entryItemSlot and entryItemIndex carry the item ordinal the entry being
+	// applied assigns within its turn; entryItemCount is that turn's count once
+	// the entry's items are appended, which stampTurn folds into the summary.
+	entryItemSlot  uint64
+	entryItemIndex uint32
+	entryItemCount uint32
+	entryItems     bool
 	// assistant is the latest ASSISTANT entry with tool calls this builder
 	// applied, at assistantOffset, so the results after it need not read it
 	// back.
@@ -179,6 +186,7 @@ func (b *builder) quarantine(ordinal uint64, offset int64, length uint32) error 
 		return err
 	}
 	b.summary.Version = ordinal + 1
+	b.summary.ItemCount = 1
 	if err := b.x.turns.write(slot, encodeTurnInto(b.turnBuf[:], b.summary)); err != nil {
 		return err
 	}
@@ -224,6 +232,11 @@ func (b *builder) applyLegacy(ordinal uint64, offset int64, length uint32, entry
 	items, parts := apptranscript.ProjectEntryParts(turnID, entryIndex, *entry, reg, apptranscript.AddressedImageProjector, apptranscript.ToolResultOutputImages)
 	b.recordNames(entry, seed)
 	base := contributor{Offset: offset, Ordinal: ordinal, Length: length}
+	summary, err := b.load(b.turnSlot)
+	if err != nil {
+		return err
+	}
+	b.entryItemSlot, b.entryItemIndex, b.entryItems = b.turnSlot, summary.ItemCount, true
 	for i, item := range items {
 		c := base
 		merges := apptranscript.MergesByCallID(item)
@@ -254,6 +267,7 @@ func (b *builder) applyLegacy(ordinal uint64, offset int64, length uint32, entry
 			b.calls[item.CallID] = slot
 		}
 	}
+	b.entryItemCount = b.entryItemIndex
 	b.recordCommState(entry, turnID, seed, base, items)
 	return b.stampTurn(b.turnSlot, entry, ordinal, offset, length)
 }
@@ -663,6 +677,11 @@ func (b *builder) appendItems(slot uint64, entry *schema.Turn, c contributor, se
 		LastAssistantText: b.lastAssistantText, LastAssistantTurnID: b.lastAssistantTurnID,
 	}
 	items, parts := apptranscript.ProjectEntryParts(entry.TurnID, int(c.Ordinal)+1, *entry, reg, apptranscript.AddressedImageProjector, apptranscript.ToolResultOutputImages)
+	summary, err := b.load(slot)
+	if err != nil {
+		return err
+	}
+	b.entryItemSlot, b.entryItemIndex, b.entryItems = slot, summary.ItemCount, true
 	for i, item := range items {
 		if absorb != nil {
 			absorbed, err := absorb(item)
@@ -684,6 +703,7 @@ func (b *builder) appendItems(slot uint64, entry *schema.Turn, c contributor, se
 			return err
 		}
 	}
+	b.entryItemCount = b.entryItemIndex
 	b.recordCommState(entry, entry.TurnID, seed, c, items)
 	return nil
 }
@@ -692,7 +712,8 @@ func (b *builder) appendItems(slot uint64, entry *schema.Turn, c contributor, se
 // part. Only deferred communicate results need Context (communicateContext).
 func (b *builder) appendItemWithContext(item appwire.ThreadItem, part int, turnSlot uint64, c contributor, context strRef) (uint64, error) {
 	version := c.Ordinal + 1
-	record := itemRecord{Entry: version, Part: uint32(part), Turn: uint32(turnSlot), Version: version, Opener: c, Context: context}
+	record := itemRecord{Entry: version, Part: uint32(part), Turn: uint32(turnSlot), Version: version, Opener: c, ItemIndex: b.entryItemIndex, Context: context}
+	b.entryItemIndex++
 	if apptranscript.MergesByCallID(item) || item.Type == "agentMessage" && item.Observation != nil && item.CallID != "" {
 		var err error
 		if record.Call, err = b.x.strings.putString(item.CallID); err != nil {
@@ -1105,6 +1126,9 @@ func (b *builder) stampTurn(slot uint64, entry *schema.Turn, ordinal uint64, off
 	r.FailedToolCalls += b.entryFailures
 	if b.entryInexact {
 		r.FailedInexact = true
+	}
+	if b.entryItems && b.entryItemSlot == slot {
+		r.ItemCount = b.entryItemCount
 	}
 	r.Version = version
 	if err := b.x.turns.write(slot, encodeTurnInto(b.turnBuf[:], r)); err != nil {

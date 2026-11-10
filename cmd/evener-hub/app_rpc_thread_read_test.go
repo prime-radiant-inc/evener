@@ -1186,6 +1186,69 @@ func TestSessionOperationsCompatibilityCountsLogicalTurnsAcrossFragments(t *test
 	}
 }
 
+func TestSessionOperationsCompatibilityLoadsEarlierReopenedTurnFragment(t *testing.T) {
+	item := func(turnID, itemID string, entry uint64, itemIndex uint32) appwire.ThreadItem {
+		position := appwire.ThreadItemPosition{Entry: entry, Item: itemIndex}
+		return appwire.ThreadItem{
+			ID: itemID, Type: "agentMessage", TurnID: turnID, TranscriptKey: itemID,
+			Text: itemID, Position: &position, Version: 1,
+		}
+	}
+	const ref = "local:reopened-fragment"
+	olderCursor, err := appitempaging.EncodeCursor(appitempaging.CursorIdentity{
+		ThreadRef: ref, Incarnation: "fixture", ProjectionVersion: 1,
+	}, appwire.ThreadItemPosition{Entry: 38, Item: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := &appwire.SnapshotIdentity{Incarnation: "reopened-fragment-view", Length: 41}
+	// The newest page is turn-b complete followed by the reopened turn-a's
+	// later fragment; turn-a's first fragment is one page further back.
+	read := appwire.ThreadReadResponse{
+		Thread: appwire.Thread{
+			ID: "reopened-fragment", SessionID: "reopened-fragment", Evener: appwire.EvenerThread{Ref: ref},
+			Turns: []appwire.Turn{
+				{ID: "turn-b", ItemsView: appwire.TurnItemsViewFull, Items: []appwire.ThreadItem{item("turn-b", "b-first", 2, 0), item("turn-b", "b-last", 39, 0)}},
+				{ID: "turn-a", ItemsView: appwire.TurnItemsViewFragment, HasEarlierItems: true, Items: []appwire.ThreadItem{item("turn-a", "a-second", 41, 0)}},
+			},
+		},
+		OlderCursor: olderCursor,
+		Snapshot:    snapshot,
+	}
+	pages := map[string]appwire.ThreadTurnsListResponse{
+		olderCursor: {
+			Data: []appwire.Turn{
+				{ID: "turn-a", ItemsView: appwire.TurnItemsViewFull, Items: []appwire.ThreadItem{item("turn-a", "a-first", 1, 0)}},
+			},
+			Snapshot: snapshot,
+		},
+	}
+	operations, source := newCompatibilityWindowOperations(t, read, pages)
+	response, err := operations.Invoke(t.Context(), appwire.ManagerView{Ref: "local:manager", Manager: true}, appwire.SessionOperationRequest{
+		Turns: &appwire.ThreadTurnsListParams{
+			Ref: ref, TurnWindow: &appwire.ThreadTurnWindow{Latest: 2}, ItemTypes: []string{"messages"}, ItemLimit: 10,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(source.pageCalls) != 1 {
+		t.Fatalf("older page reads = %d, want one page back for the reopened turn's earlier fragment", len(source.pageCalls))
+	}
+	var itemIDs []string
+	for _, turn := range response.Turns.Data {
+		for _, got := range turn.Items {
+			itemIDs = append(itemIDs, got.ID)
+		}
+	}
+	if !slices.Contains(itemIDs, "a-first") {
+		t.Fatalf("selected item IDs = %v, want the reopened turn's earlier fragment", itemIDs)
+	}
+	if !slices.Contains(itemIDs, "a-second") || !slices.Contains(itemIDs, "b-first") {
+		t.Fatalf("selected item IDs = %v, want both latest windows complete", itemIDs)
+	}
+}
+
 func TestSessionOperationsCompatibilityExhaustsSelectedWindowBeforeNativeHistory(t *testing.T) {
 	item := func(turnID, itemID string, entry uint64, itemIndex uint32) appwire.ThreadItem {
 		position := appwire.ThreadItemPosition{Entry: entry, Item: itemIndex}

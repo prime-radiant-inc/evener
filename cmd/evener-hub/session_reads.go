@@ -344,21 +344,28 @@ func resolveCompatibilityTurnWindow(turns []appwire.Turn, window *appwire.Thread
 	}
 	selectIDs := func(selected map[string]bool) ([]appwire.Turn, bool) {
 		var out []appwire.Turn
-		first := -1
+		starts := make(map[string]bool, len(selected))
 		for i := range turns {
 			if !selected[turns[i].ID] {
 				continue
 			}
-			if first < 0 {
-				first = i
-			}
 			out = append(out, turns[i])
+			// A fragment that reports no earlier items is where its logical turn
+			// starts on these pages. A turn selected without one continues above
+			// them, so the window is not complete yet.
+			if !turns[i].HasEarlierItems {
+				starts[turns[i].ID] = true
+			}
 		}
-		if first < 0 {
+		if len(out) == 0 {
 			return []appwire.Turn{}, true
 		}
-		if first == 0 && turns[first].HasEarlierItems && !exhausted {
-			return nil, false
+		if !exhausted {
+			for id := range selected {
+				if !starts[id] {
+					return nil, false
+				}
+			}
 		}
 		return out, true
 	}

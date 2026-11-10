@@ -27,7 +27,7 @@ import (
 const (
 	// formatVersion is the sidecar's layout. projectionID names the projection
 	// its records reproduce; either changing rebuilds every index.
-	formatVersion = 7
+	formatVersion = 8
 	// Dedicated COMMUNICATE records consume inherited call reconstruction.
 	// Older sidecars can contain duplicate messages from ordinary forks.
 	projectionID = "transcript-read-model-v11"
