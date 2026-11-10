@@ -13,12 +13,13 @@ package dev
 // and a serial package's wall time follows what happens to run beside it.
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"os/signal"
 	"syscall"
+
+	"primeradiant.com/evener/internal/devtool/procgroup"
 )
 
 // testCPUMarker starts the line the wrapper prints; the seconds follow a tab.
@@ -45,21 +46,16 @@ func testCPUExecMain(args []string) int {
 			_ = cmd.Process.Signal(s)
 		}
 	}()
-	err := cmd.Wait()
-	state := cmd.ProcessState
-	cpu := state.UserTime() + state.SystemTime()
-	_, _ = fmt.Fprintf(os.Stdout, "%s\t%s\n", testCPUMarker, formatSeconds(cpu.Seconds()))
-	var exit *exec.ExitError
-	switch {
-	case err == nil:
-		return 0
-	case errors.As(err, &exit):
-		if ws, ok := state.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
-			return 128 + int(ws.Signal())
-		}
-		return exit.ExitCode()
-	default:
+	if err := cmd.Wait(); err != nil && cmd.ProcessState == nil {
 		_, _ = fmt.Fprintf(os.Stderr, "evener-dev test-cpu-exec: %v\n", err)
 		return 1
 	}
+	_, _ = fmt.Fprintf(os.Stdout, "%s\t%s\n", testCPUMarker, formatSeconds(processCPUSeconds(cmd.ProcessState)))
+	return procgroup.ExitCode(cmd.ProcessState)
+}
+
+// processCPUSeconds is a reaped process's user+system CPU, every child it
+// waited for included.
+func processCPUSeconds(state *os.ProcessState) float64 {
+	return (state.UserTime() + state.SystemTime()).Seconds()
 }

@@ -50,6 +50,13 @@ timing_parse() {
 	fi
 }
 
+# timing_go_test_exec — the `go test -exec` value both producers pass, so each
+# test binary runs under test-cpu-exec and its stream carries the package's CPU
+# row. It needs EVENER_DEV_BIN, a built evener-dev.
+timing_go_test_exec() {
+	printf '%s dev test-cpu-exec' "$EVENER_DEV_BIN"
+}
+
 # go_test_json_to_tsv PACKAGE_JSON_LOG EXPECTED_PACKAGES_FILE
 # — the rows for one `go test -json` stream; a package in the inventory that the
 # stream never ends fails the parse.

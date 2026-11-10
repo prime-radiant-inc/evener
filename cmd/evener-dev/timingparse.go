@@ -105,7 +105,7 @@ func parseGoTestJSON(r io.Reader, expected []string) ([]string, error) {
 			if err == nil && timingTerminalActions[ev.Action] && ev.Package != "" {
 				if ev.Test == "" {
 					// Package-level terminal event: its Elapsed is the package's
-					// own wall time, the metric the budget compares.
+					// own wall time, the budget's wall-time row.
 					seen[ev.Package] = true
 					rows = append(rows, "PKG\t"+ev.Package)
 					if ev.Elapsed != nil {

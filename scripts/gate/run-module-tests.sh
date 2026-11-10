@@ -363,7 +363,7 @@ run_go_test_capture() {
 	rows="$timing_rows_dir/$slug.rows"
 	# test-cpu-exec runs each test binary and adds its CPU time to the
 	# package's stream, which is the number the ratchet budgets.
-	/usr/bin/time -p go test -json -exec "$EVENER_DEV_BIN dev test-cpu-exec" "$@" >"$jsonl" 2>"$stderrlog"
+	/usr/bin/time -p go test -json -exec "$(timing_go_test_exec)" "$@" >"$jsonl" 2>"$stderrlog"
 	rc=$?
 	# The human log first (it is what the failure dump and the zero-test check
 	# read), then the go command's own stderr (the `real` line and any build

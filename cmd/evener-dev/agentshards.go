@@ -657,7 +657,7 @@ func runShards(cfg shardsConfig) int {
 			<-slots
 			r := shardResult{err: err, seconds: time.Since(started).Seconds()}
 			if state := cmd.ProcessState; state != nil {
-				r.cpu = (state.UserTime() + state.SystemTime()).Seconds()
+				r.cpu = processCPUSeconds(state)
 			}
 			result <- r
 		}()

@@ -257,7 +257,7 @@ else
 		# Same capture-before-negation shape as the go list block above, for
 		# the same bash 3.2 reason: a failed outer redirection must land here,
 		# not be eaten by `!`.
-		( cd "$repo_root/$m" && go test -json -count=1 $short -exec "$EVENER_DEV_BIN dev test-cpu-exec" \
+		( cd "$repo_root/$m" && go test -json -count=1 $short -exec "$(timing_go_test_exec)" \
 			-run "$GATE_TEST_RUN" -skip "$(gate_shard_skip "$GATE_FUZZ_TEST_SKIP" "$GATE_HUB_INTEGRATION_RUN")" "${pkgs[@]}" ) >"$log" 2>"$log.stderr"
 		gt_status=$?
 		if [ "$gt_status" -ne 0 ]; then
@@ -480,21 +480,17 @@ packages = budget.get("packages", {})
 # 400-digit integer tracebacks the arithmetic (issue #4622). Route each through
 # the malformed-config path above, which fails in every mode naming the entry.
 # The loop runs only for an object `packages` (the top-level guard above).
-for pkg, budget_secs in packages.items():
-	problem = seconds_error(budget_secs)
-	if problem:
-		fail_malformed("packages[" + json.dumps(pkg) + "] must be a number of seconds (" + problem + ")")
-
-# wallPackages, each row's wall budget, is the same shape and is validated the
-# same way.
+# wallPackages, each row's wall budget, is the same shape as packages and is
+# validated the same way.
 if "wallPackages" in budget and not isinstance(budget["wallPackages"], dict):
 	fail_malformed("wallPackages must be an object mapping each package to its wall seconds (got "
 		+ type(budget["wallPackages"]).__name__ + ")")
 wall_packages = budget.get("wallPackages", {})
-for pkg, budget_secs in wall_packages.items():
-	problem = seconds_error(budget_secs)
-	if problem:
-		fail_malformed("wallPackages[" + json.dumps(pkg) + "] must be a number of seconds (" + problem + ")")
+for key, budgets in (("packages", packages), ("wallPackages", wall_packages)):
+	for pkg, budget_secs in budgets.items():
+		problem = seconds_error(budget_secs)
+		if problem:
+			fail_malformed(key + "[" + json.dumps(pkg) + "] must be a number of seconds (" + problem + ")")
 
 # The flat ceiling is read with budget.get, so a present null cannot be told from
 # an absent key — test the KEY, as `packages` and the class map do. A string,
@@ -645,7 +641,6 @@ for pkg in sorted(sums):
 	if pkg in cpus:
 		cpu = cpus[pkg]
 		cpu_budget = packages.get(pkg)
-		ok = True
 		if cpu_budget is None:
 			lines.append(f"WARN  {pkg}: {cpu:.2f}s cpu, {wall:.2f}s wall, no budget entry (add one to testing-budget.json)")
 			raise_worst("warn")

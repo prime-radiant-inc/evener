@@ -35,6 +35,7 @@ func cpuRowSeconds(t *testing.T, rows []string, pkg string) float64 {
 func goTestUnderCPUExec(t *testing.T, run string, env ...string) ([]byte, error) {
 	t.Helper()
 	bin := buildEvenerDev(t)
+	isolateToolchainEnv(t)
 	t.Setenv("GOWORK", "off")
 	cmd := exec.Command("go", "test", "-json", "-count=1", "-run", run, "-exec", bin+" dev test-cpu-exec", ".") //nolint:noctx // one bounded fixture run, reaped by Output
 	cmd.Dir = fixtureModule(t)
