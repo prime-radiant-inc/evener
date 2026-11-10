@@ -255,9 +255,11 @@ delegate_send accepts to=dlg_..., message, and max_wait_ms:
   that generation's input, and returns action=started.
 - If the delegate is starting, settling, or stopping, the call returns a typed
   target_busy error. It does not guess which generation should receive the
-  message. The error carries a reason (finalizing, stopping, concurrent_send
-  or closing) and, for finalizing, a retry-after hint; its guidance tells the
-  caller to end the turn and retry after the delegate's next notification.
+  message. The error carries a reason (finalizing, stopping, concurrent_send,
+  reclaiming or closing). Only finalizing is guaranteed to end with a delegate
+  report, so its guidance is to end the turn and retry after the next
+  notification; every other reason clears silently and carries a retry-after
+  delay instead.
 - If the delegate is permanently non-resumable, the call returns
   target_not_resumable with the durable reason.
 

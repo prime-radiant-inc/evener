@@ -207,8 +207,10 @@ const (
 	// delegateBusyConcurrentSend: another send, drive or run holds the
 	// delegate's next generation.
 	delegateBusyConcurrentSend delegateBusyReason = "concurrent_send"
-	// delegateBusyClosing: the controller is closing or a lane handoff or
-	// reclamation covers the delegate.
+	// delegateBusyReclaiming: the delegate's idle runtime is being released.
+	delegateBusyReclaiming delegateBusyReason = "reclaiming"
+	// delegateBusyClosing: the controller is closing or a lane handoff covers
+	// the delegate.
 	delegateBusyClosing delegateBusyReason = "closing"
 )
 
@@ -217,14 +219,48 @@ const (
 // fails the same way.
 const delegateFinalizationRetryAfter = 5 * time.Second
 
+// delegateBusyRetryAfter is the retry hint for refusals whose cause clears
+// without telling the parent.
+const delegateBusyRetryAfter = 2 * time.Second
+
+// delegateBusyGuidance is what the caller should do next, matching what the
+// system does after the refusal.
+type delegateBusyGuidance int
+
+const (
+	// delegateBusyWaitForNotification: the delegate reports to the parent when
+	// the cause clears, so the caller ends its turn and retries on that report.
+	delegateBusyWaitForNotification delegateBusyGuidance = iota
+	// delegateBusyRetryShortly: nothing notifies the parent when the cause
+	// clears, so the caller retries after retryAfter.
+	delegateBusyRetryShortly
+)
+
 // delegateBusyError is errDelegateTargetBusy with the reason the model needs
-// to act on it. retryAfter is zero where no wait is meaningful.
+// to act on it. retryAfter is always set for delegateBusyRetryShortly.
 type delegateBusyError struct {
 	reason     delegateBusyReason
 	retryAfter time.Duration
 }
 
-func busyBecause(reason delegateBusyReason) error { return delegateBusyError{reason: reason} }
+// busyBecause is the refusal for reason with its default retry hint.
+func busyBecause(reason delegateBusyReason) error {
+	e := delegateBusyError{reason: reason}
+	if e.guidance() == delegateBusyRetryShortly {
+		e.retryAfter = delegateBusyRetryAfter
+	}
+	return e
+}
+
+// guidance: only a finalizing delegate is guaranteed to report to its parent
+// when the refusal clears; stops, concurrent sends, reclamation and handoffs
+// clear silently.
+func (e delegateBusyError) guidance() delegateBusyGuidance {
+	if e.reason == delegateBusyFinalizing {
+		return delegateBusyWaitForNotification
+	}
+	return delegateBusyRetryShortly
+}
 
 func (e delegateBusyError) Is(target error) bool { return target == errDelegateTargetBusy }
 
@@ -233,7 +269,10 @@ func (e delegateBusyError) Error() string {
 	if e.retryAfter > 0 {
 		msg += fmt.Sprintf(" retry_after_ms=%d", e.retryAfter.Milliseconds())
 	}
-	return msg + ". Nothing was sent. End your turn and retry after the delegate's next notification instead of retrying immediately."
+	if e.guidance() == delegateBusyWaitForNotification {
+		return msg + ". Nothing was sent. End your turn and retry after the delegate's next notification instead of retrying immediately."
+	}
+	return msg + ". Nothing was sent. Retry after the retry_after_ms delay; no notification will announce that it cleared."
 }
 
 type delegateLiveState struct {

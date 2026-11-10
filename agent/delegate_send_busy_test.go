@@ -87,6 +87,23 @@ func TestDelegateSendTargetBusyCarriesReason(t *testing.T) {
 		}
 	})
 
+	t.Run("reclaiming is a delayed retry, not a wait for notification", func(t *testing.T) {
+		t.Parallel()
+		c, _ := newDelegateControllerTestHarness(t, 2, 2)
+		seedDelegateControllerIdle(t, c, "dlg_target", "")
+		c.mu.Lock()
+		c.reclaiming["dlg_target"] = 1
+		c.mu.Unlock()
+		_, err := c.ReserveStart(rootDelegateActor(c.rootSessionID), "dlg_target")
+		busy := busyErrorOf(t, err)
+		if busy.reason != delegateBusyReclaiming {
+			t.Fatalf("reason = %q, want %q", busy.reason, delegateBusyReclaiming)
+		}
+		if busy.guidance() != delegateBusyRetryShortly || busy.retryAfter <= 0 {
+			t.Fatalf("guidance = %v retryAfter = %v, want a delayed retry", busy.guidance(), busy.retryAfter)
+		}
+	})
+
 	t.Run("closing", func(t *testing.T) {
 		t.Parallel()
 		c, _ := newDelegateControllerTestHarness(t, 2, 2)
@@ -113,5 +130,21 @@ func TestWithBusyReasonTypesOnlyUntypedBusy(t *testing.T) {
 	other := errors.New("boom")
 	if got := withBusyReason(other); got != other {
 		t.Fatalf("non-busy error = %v, want it unchanged", got)
+	}
+}
+
+// Only a finalizing delegate is guaranteed to notify the parent when the
+// refusal clears; every other reason is a delayed retry.
+func TestDelegateBusyGuidanceMatchesWhatHappensNext(t *testing.T) {
+	t.Parallel()
+	for _, reason := range []delegateBusyReason{delegateBusyStopping, delegateBusyConcurrentSend, delegateBusyReclaiming, delegateBusyClosing} {
+		busy := busyErrorOf(t, busyBecause(reason))
+		if busy.guidance() != delegateBusyRetryShortly || busy.retryAfter <= 0 {
+			t.Fatalf("%s: guidance = %v retryAfter = %v, want a delayed retry", reason, busy.guidance(), busy.retryAfter)
+		}
+	}
+	finalizing := busyErrorOf(t, finalizationOutwaited())
+	if finalizing.guidance() != delegateBusyWaitForNotification {
+		t.Fatalf("finalizing guidance = %v, want wait for notification", finalizing.guidance())
 	}
 }

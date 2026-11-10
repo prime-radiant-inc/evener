@@ -631,7 +631,10 @@ func (c *delegateTreeController) ReserveStart(actor delegateActor, delegateID st
 	if aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable {
 		return nil, busyBecause(delegateBusyConcurrentSend)
 	}
-	if c.reclamationCoversLocked(delegateID) || c.laneHandoffCoversLocked(delegateID) {
+	if c.reclamationCoversLocked(delegateID) {
+		return nil, busyBecause(delegateBusyReclaiming)
+	}
+	if c.laneHandoffCoversLocked(delegateID) {
 		return nil, busyBecause(delegateBusyClosing)
 	}
 	// Idle but still finalizing: the finished generation's runtime has not
