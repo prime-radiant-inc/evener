@@ -248,6 +248,17 @@ func rawDeltaOnlySSE(field string, fragments ...string) []byte {
 	return b.Bytes()
 }
 
+// rawEmptyDoneSSE builds the gateway fallback shape where only deltas carry
+// the arguments, output_item.done reports an explicit empty arguments string,
+// and terminal output is empty. The accumulated arguments must survive both
+// the live settlement and recorded replay.
+func rawEmptyDoneSSE(args string) []byte {
+	return []byte("event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"write_file\"}}\n\n" +
+		"event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":" + string(jsonStringToken(args)) + "}\n\n" +
+		"event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"write_file\",\"arguments\":\"\"}}\n\n" +
+		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"model\":\"gpt-5.5\",\"output\":[]}}\n\n")
+}
+
 // decodeRawArgsStream runs the responses streaming decode with a scripted
 // SSE body and returns the tool-call Arguments from the final response.
 func decodeRawArgsStream(t *testing.T, sseBody string) []byte {
@@ -277,6 +288,29 @@ func decodeRawArgsStream(t *testing.T, sseBody string) []byte {
 		t.Fatalf("got %d tool calls, want 1: %+v", len(calls), final.Message.Content)
 	}
 	return calls[0].Arguments
+}
+
+func TestRawArgs_Stream_EmptyDonePreservesAccumulatedArguments(t *testing.T) {
+	want := []byte(`{"path":"draft.txt"}`)
+	got := decodeRawArgsStream(t, string(rawEmptyDoneSSE(string(want))))
+	if !bytes.Equal(got, want) {
+		t.Fatalf("stream Arguments = %q, want the accumulated arguments %q", got, want)
+	}
+}
+
+func TestRawArgs_Recorded_EmptyDonePreservesAccumulatedArguments(t *testing.T) {
+	want := []byte(`{"path":"draft.txt"}`)
+	resp, err := ExtractRecordedResponse(rawEmptyDoneSSE(string(want)), "gpt-5.5")
+	if err != nil {
+		t.Fatalf("ExtractRecordedResponse: %v", err)
+	}
+	calls := resp.ToolCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ToolCalls() = %d, want 1", len(calls))
+	}
+	if !bytes.Equal(calls[0].Arguments, want) {
+		t.Fatalf("recorded Arguments = %q, want the accumulated arguments %q", calls[0].Arguments, want)
+	}
 }
 
 // TestRawArgs_Stream_InvalidUTF8 asserts invalid-UTF-8 bytes in streamed

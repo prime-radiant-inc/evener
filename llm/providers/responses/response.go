@@ -72,7 +72,11 @@ func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.R
 				}
 			}
 			if rawArgs, rawOK := captureResponsesItemArgsRaw(token); rawOK && rawArgs != nil {
-				if content, cerr := protocolhttp.RawStringContent(rawArgs); cerr == nil {
+				// An empty raw arguments string does not establish that the call
+				// has no arguments: output_item.done can report "" after deltas
+				// supplied them, and the accumulated item already recovered
+				// those bytes. Keep that fallback rather than overwriting it.
+				if content, cerr := protocolhttp.RawStringContent(rawArgs); cerr == nil && len(content) > 0 {
 					args = string(content)
 				}
 			}
