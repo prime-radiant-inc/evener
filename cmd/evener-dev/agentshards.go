@@ -32,7 +32,11 @@ package dev
 //	AGENT_SHARD_RESURVEY   1 = force the survey to re-run even on a cache hit
 //	AGENT_SHARD_CACHE_DIR  survey cache (default $(go env GOCACHE)/evener-<label>-shards)
 //
-// plus pass-through `go test` flags. Every test lands in exactly one shard,
+// plus pass-through `go test` flags. The survey and every shard run under a
+// test timeout: the caller's -timeout, or `go test`'s own 10m default when the
+// caller gives none, since a binary run directly has no timeout at all. A test
+// that hangs past it panics with the names of the tests still running, and its
+// shard fails like any other. Every test lands in exactly one shard,
 // proven before running anything; one PASS/FAIL line per shard with wall
 // time; logs are deleted only on normal green completion and pointed at
 // otherwise; the exit is nonzero on any shard failure or partition
@@ -224,13 +228,13 @@ func (cfg shardsConfig) buildLocation() (dir, target string, err error) {
 // the survey's parallelism through AGENT_SHARD_SURVEY_PARALLEL without
 // changing the shard split.
 //
-// The caller's -timeout comes here too, and for the same reason it was raised:
-// the survey is the longest single run of the lot, one binary over the whole
-// suite, so a timeout that the shards need is a timeout the survey needed
-// first. -failfast stays with the shards: a survey that stops at the first
-// failure has measured part of the suite, and a partial measurement is worse
-// than none, since the shards would be packed from it as though it were
-// complete.
+// The run's -timeout comes here too, the caller's or the default, and for the
+// same reason a caller raises it: the survey is the longest single run of the
+// lot, one binary over the whole suite, so a timeout that the shards need is a
+// timeout the survey needed first. -failfast stays with the shards: a survey
+// that stops at the first failure has measured part of the suite, and a
+// partial measurement is worse than none, since the shards would be packed
+// from it as though it were complete.
 func surveyArgs(parallel int, skip string, short bool, testFlags []string) []string {
 	// A config built without runAgentShards leaves the field zero; never hand
 	// the test binary "-test.parallel 0".
@@ -250,6 +254,26 @@ func surveyArgs(parallel int, skip string, short bool, testFlags []string) []str
 		args = append(args, "-test.short")
 	}
 	return args
+}
+
+// defaultTestTimeout is `go test`'s own default -timeout, which a package's
+// test binary gets when go test runs it and does not get when this runner
+// runs it directly: a compiled binary's -test.timeout defaults to none.
+const defaultTestTimeout = 10 * time.Minute
+
+// withTestTimeout returns the test-binary flags with a -test.timeout among
+// them: the caller's own when it passed one, otherwise defaultTestTimeout. The
+// timeout is a tripwire, not a speed limit (the timing budget is that): a test
+// that never returns panics at it with the names of the tests still running,
+// where without it the process holds its shard until something outside kills
+// it and the log names nothing.
+func withTestTimeout(testFlags []string) []string {
+	for _, f := range testFlags {
+		if strings.HasPrefix(f, "-test.timeout=") {
+			return testFlags
+		}
+	}
+	return append(slices.Clone(testFlags), "-test.timeout="+defaultTestTimeout.String())
 }
 
 func envPositiveInt(name string, def int) (int, error) {
@@ -413,7 +437,7 @@ func runShards(cfg shardsConfig) int {
 		_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %v\n", cfg.label, err)
 		return 1
 	}
-	extraFlags := parsed.test
+	extraFlags := withTestTimeout(parsed.test)
 	buildArgs := append([]string{"test", "-c"}, parsed.build...)
 	buildDir, buildTarget, err := cfg.buildLocation()
 	if err != nil {
@@ -487,7 +511,7 @@ func runShards(cfg shardsConfig) int {
 			borrowed = true
 		default:
 			_, _ = fmt.Fprintf(cfg.stdout, "%s-shards: surveying test costs (one-time for this test set)\n", cfg.label)
-			args := surveyArgs(cfg.surveyParallel, cfg.skip, parsed.short, parsed.test)
+			args := surveyArgs(cfg.surveyParallel, cfg.skip, parsed.short, extraFlags)
 			if err := cfg.runToLog(in, surveyLog, cfg.pkgDir, build, args...); err != nil {
 				if code := in.exitCode(); code != 0 {
 					return code
@@ -1019,6 +1043,15 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 			start--
 		}
 		end := i + 1
+		// A panic's message continues on tab-indented lines, and a test
+		// timeout's lists every test still running there, one line each: the
+		// only lines naming a hung test. They are carried whole, ahead of the
+		// ordinary after-context, which their count would otherwise exhaust.
+		if strings.HasPrefix(lines[i], "panic:") {
+			for end < len(lines) && strings.HasPrefix(lines[end], "\t") {
+				end++
+			}
+		}
 		for n := 0; n < surveyContextAfter && end < len(lines) && !surveyFrameworkLine(lines[end]); n++ {
 			end++
 		}

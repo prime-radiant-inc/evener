@@ -135,6 +135,53 @@ func TestAgentShardsBuildsAndRunsWithTheCallersFlags(t *testing.T) {
 	}
 }
 
+// TestAgentShardsRunsEveryTestBinaryUnderATestTimeout pins the tripwire every
+// invocation that runs tests carries. A compiled test binary run directly has
+// no -test.timeout at all, so a hung test held its shard until something
+// outside killed it, and nothing named the test. `go test` gives a package
+// binary 10m by default; the survey and every shard get the same, and a
+// caller's -timeout replaces it. The fixture records the timeout each
+// invocation actually parsed.
+func TestAgentShardsRunsEveryTestBinaryUnderATestTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		flags []string
+		want  string
+	}{
+		{name: "default", want: "10m0s"},
+		{name: "caller", flags: []string{"-timeout", "7m"}, want: "7m0s"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, stdout, stderr, _ := e2eConfig(t)
+			cfg.flags = tc.flags
+			dir := t.TempDir()
+			t.Setenv("SHARD_FIXTURE_TIMEOUT_DIR", dir)
+			if rc := runShards(cfg); rc != 0 {
+				t.Fatalf("runShards = %d, want 0\nstdout:\n%s\nstderr:\n%s", rc, stdout, stderr)
+			}
+			seen := map[string][]string{}
+			records, err := os.ReadDir(dir)
+			if err != nil {
+				t.Fatalf("reading recorded timeouts: %v", err)
+			}
+			for _, record := range records {
+				data, err := os.ReadFile(filepath.Join(dir, record.Name()))
+				if err != nil {
+					t.Fatalf("reading %s: %v", record.Name(), err)
+				}
+				role, _, _ := strings.Cut(record.Name(), ".")
+				seen[role] = append(seen[role], string(data))
+			}
+			if got := seen["survey"]; !slices.Equal(got, []string{tc.want}) {
+				t.Fatalf("survey ran under -test.timeout %q, want [%s]", got, tc.want)
+			}
+			if got := seen["shard"]; !slices.Equal(got, []string{tc.want, tc.want}) {
+				t.Fatalf("shards ran under -test.timeout %q, want %s for each of 2", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestAgentShardsCaptureKeepsPerTestVerdictsUnderQuietForwardedFlags pins issue
 // #144 review finding 3. The capture appends -test.v so `go tool test2json` can
 // recover each test's duration from the shard logs, but the caller's own flags
