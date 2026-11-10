@@ -3915,3 +3915,46 @@ it("metadata-only publications do not rewalk the displayed range for the foregro
   reader.dispose();
   owner.dispose();
 });
+
+it("the last foreground reader detaching releases the floor scan's displayed-range reference (#4700)", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(readMany(400), { lifetime: 1, readId: "floor-release", boundary: "floor-release" });
+  await owner.settled();
+  const first = owner.attachReader();
+  await first.openLocal(40);
+  const second = owner.attachReader();
+  await second.openLocal(20);
+  expect(owner.getForegroundFloorForTesting().retainsScan).toBe(true);
+  const start = owner.getForegroundFloorForTesting().start;
+  expect(start).toBeDefined();
+
+  first.dispose();
+  expect(owner.getForegroundFloorForTesting().retainsScan).toBe(true);
+
+  // The last reader leaving must drop the scan's strong reference to the
+  // displayed range so a background lease can reclaim its payloads. The
+  // scalar floor stays: reader replacement does not relocate the floor.
+  second.dispose();
+  expect(owner.getForegroundFloorForTesting().retainsScan).toBe(false);
+  expect(owner.getForegroundFloorForTesting().start).toEqual(start);
+
+  owner.dispose();
+});
+
+it("disposing the repository releases the floor scan's displayed-range reference (#4700)", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  owner.acceptRead(readMany(400), { lifetime: 1, readId: "floor-dispose", boundary: "floor-dispose" });
+  await owner.settled();
+  const reader = owner.attachReader();
+  await reader.openLocal(40);
+  const start = owner.getForegroundFloorForTesting().start;
+  expect(owner.getForegroundFloorForTesting().retainsScan).toBe(true);
+
+  owner.dispose();
+  expect(owner.getForegroundFloorForTesting().retainsScan).toBe(false);
+  expect(owner.getForegroundFloorForTesting().start).toEqual(start);
+});
