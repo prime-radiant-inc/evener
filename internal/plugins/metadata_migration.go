@@ -269,8 +269,8 @@ func (m *Manager) targetIsMixedManagedContent(target string) bool {
 		}
 		for _, spelling := range spellings {
 			for _, candidate := range targets {
-				rel, err := filepath.Rel(spelling, candidate)
-				if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				rel, under := pathUnder(spelling, candidate)
+				if !under {
 					continue
 				}
 				if !hasGitComponent(rel) {

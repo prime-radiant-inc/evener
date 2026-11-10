@@ -95,7 +95,7 @@ func resolvedOrSelf(path string) string {
 func targetTouchesGit(sourceRoot, target string) bool {
 	root := filepath.Clean(sourceRoot)
 	target = filepath.Clean(target)
-	if rel, err := filepath.Rel(root, target); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if rel, under := pathUnder(root, target); under {
 		return hasGitComponent(rel)
 	}
 	rootParts := pathComponents(root)
