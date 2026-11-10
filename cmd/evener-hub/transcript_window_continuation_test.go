@@ -360,3 +360,22 @@ func testResolverTurn(turnID, itemID string, version uint64) appwire.Turn {
 		}},
 	}
 }
+
+func TestResolveCompatibilityTurnWindowKeepsInterleavedFragments(t *testing.T) {
+	turns := []appwire.Turn{
+		{ID: "turn-a", Items: []appwire.ThreadItem{{ID: "a-first"}}},
+		{ID: "turn-b", Items: []appwire.ThreadItem{{ID: "b-only"}}},
+		{ID: "turn-a", Items: []appwire.ThreadItem{{ID: "a-second"}}},
+	}
+	got, resolved := resolveCompatibilityTurnWindow(turns, &appwire.ThreadTurnWindow{Latest: 2}, true)
+	if !resolved {
+		t.Fatal("interleaved latest window was not resolved")
+	}
+	var ids []string
+	for _, turn := range got {
+		ids = append(ids, turn.ID)
+	}
+	if want := []string{"turn-a", "turn-b", "turn-a"}; !reflect.DeepEqual(ids, want) {
+		t.Fatalf("turn IDs = %v, want every fragment of the selected logical turns %v", ids, want)
+	}
+}

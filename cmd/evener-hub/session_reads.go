@@ -138,10 +138,10 @@ func continueLiveTranscriptWindowOwned(
 	// advertises the live daemon's capability, so the controller forwards every
 	// continuation form and passes the hub's typed failure through.
 	if remote, ok := source.(*appsource.RemoteHubSource); ok {
-		page, err := remote.ListTurns(ctx, params)
-		if err != nil {
-			return appwire.ThreadTurnsListResponse{}, err
-		} else if page.Window != nil {
+		page, listErr := remote.ListTurns(ctx, params)
+		continuation := params.Cursor != ""
+		latestWindow := params.TurnWindow != nil && params.TurnWindow.Latest > 0
+		if listErr == nil && page.Window != nil {
 			thread := enrichSourcedThreadImages(source, appwire.Thread{Turns: page.Data})
 			page.Data = thread.Turns
 			if owner != nil {
@@ -150,8 +150,19 @@ func continueLiveTranscriptWindowOwned(
 				}
 			}
 			return page, nil
-		} else if params.TurnWindow.Latest <= 0 {
+		}
+		if listErr == nil && !continuation && params.TurnWindow == nil {
+			return page, nil
+		}
+		if listErr == nil && !continuation && !latestWindow {
 			return appwire.ThreadTurnsListResponse{}, appwire.WindowUnsupportedOnDaemon()
+		}
+		// A controller-owned continuation of a window this hub rebuilt, or a
+		// latest window, may still be answered from the peer's legacy pages
+		// below. The peer's own refusals of those requests carry no content.
+		fallBack := !advertised && isOlderPeerWindowRefusal(listErr) && (continuation || latestWindow)
+		if listErr != nil && !fallBack {
+			return appwire.ThreadTurnsListResponse{}, listErr
 		}
 	}
 	itemLimit, err := normalizeTranscriptWindowItemLimit(params.TurnWindow, params.ItemLimit)
@@ -305,36 +316,54 @@ func resolveCompatibilityTurnWindow(turns []appwire.Turn, window *appwire.Thread
 	if window == nil {
 		return nil, false
 	}
-	type turnRun struct {
-		id         string
-		start, end int
-	}
-	runs := make([]turnRun, 0, len(turns))
+	// Selectors count logical turns, not transcript runs: an interleaved page
+	// can carry a turn's fragments on both sides of another turn, and every
+	// fragment of a selected turn belongs to the window.
+	ids := make([]string, 0, len(turns))
+	seen := make(map[string]bool, len(turns))
 	for i := range turns {
-		if turns[i].ID != "" && len(runs) > 0 && runs[len(runs)-1].id == turns[i].ID {
-			runs[len(runs)-1].end = i + 1
+		id := turns[i].ID
+		if id == "" || seen[id] {
 			continue
 		}
-		runs = append(runs, turnRun{id: turns[i].ID, start: i, end: i + 1})
+		seen[id] = true
+		ids = append(ids, id)
 	}
-	selectRuns := func(start, end int) ([]appwire.Turn, bool) {
-		if start < 0 || start > end || end > len(runs) {
-			return nil, false
+	selectIDs := func(selected map[string]bool) ([]appwire.Turn, bool) {
+		var out []appwire.Turn
+		first := -1
+		for i := range turns {
+			if !selected[turns[i].ID] {
+				continue
+			}
+			if first < 0 {
+				first = i
+			}
+			out = append(out, turns[i])
 		}
-		if start == end {
+		if first < 0 {
 			return []appwire.Turn{}, true
 		}
-		first := runs[start].start
 		if first == 0 && turns[first].HasEarlierItems && !exhausted {
 			return nil, false
 		}
-		return turns[first:runs[end-1].end], true
+		return out, true
 	}
-	if window.Latest > 0 {
-		if len(runs) < window.Latest && !exhausted {
+	pick := func(start, end int) ([]appwire.Turn, bool) {
+		if start < 0 || start > end || end > len(ids) {
 			return nil, false
 		}
-		return selectRuns(max(0, len(runs)-window.Latest), len(runs))
+		selected := make(map[string]bool, end-start)
+		for _, id := range ids[start:end] {
+			selected[id] = true
+		}
+		return selectIDs(selected)
+	}
+	if window.Latest > 0 {
+		if len(ids) < window.Latest && !exhausted {
+			return nil, false
+		}
+		return pick(max(0, len(ids)-window.Latest), len(ids))
 	}
 	boundaryID := window.Turn
 	if boundaryID == "" {
@@ -344,8 +373,8 @@ func resolveCompatibilityTurnWindow(turns []appwire.Turn, window *appwire.Thread
 		boundaryID = window.Before.TurnID
 	}
 	boundary := -1
-	for i := range runs {
-		if runs[i].id == boundaryID {
+	for i, id := range ids {
+		if id == boundaryID {
 			boundary = i
 			break
 		}
@@ -354,16 +383,16 @@ func resolveCompatibilityTurnWindow(turns []appwire.Turn, window *appwire.Thread
 		return nil, false
 	}
 	if window.Turn != "" {
-		return selectRuns(boundary, boundary+1)
+		return pick(boundary, boundary+1)
 	}
 	if window.Since != "" {
-		return selectRuns(boundary+1, min(len(runs), boundary+1+window.Limit))
+		return pick(boundary+1, min(len(ids), boundary+1+window.Limit))
 	}
 	start := max(0, boundary-window.Before.Limit)
 	if boundary-start < window.Before.Limit && !exhausted {
 		return nil, false
 	}
-	return selectRuns(start, boundary)
+	return pick(start, boundary)
 }
 
 func (o *sessionOperations) activity(ctx context.Context, p appwire.SessionActivityRequest) (appwire.SessionActivityResponse, error) {

@@ -1174,7 +1174,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 	}
 	read, err := liveThreadRead(ctx, relays, source, sourceParams, capture, params.LiveOnly)
 	if remoteSavedWindowAttempt && params.TurnWindow.Latest > 0 &&
-		((err != nil && isWindowUnsupportedOnDaemonError(err)) || (err == nil && read.response.Window == nil)) {
+		((err != nil && isOlderPeerWindowRefusal(err)) || (err == nil && read.response.Window == nil)) {
 		// An older remote hub cannot serve window fields for a live session.
 		// Rebuild the latest window from its legacy pages, exactly as a local
 		// older daemon's latest window is rebuilt; non-latest reads keep the

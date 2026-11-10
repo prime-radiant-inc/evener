@@ -232,15 +232,15 @@ func isTargetDeletedError(err error) bool {
 	return data.MutationOutcome == appwire.MutationOutcomeTargetDeleted
 }
 
-// isWindowUnsupportedOnDaemonError reports whether err is the typed refusal of
-// a daemon that predates transcript windows, including one that crossed a
-// remote hub hop.
-func isWindowUnsupportedOnDaemonError(err error) bool {
-	data, ok := typedWireErrorData(err)
-	if !ok {
-		return false
-	}
-	return data.EvenerErrorInfo == appwire.ErrorWindowUnsupportedOnDaemon
+// isOlderPeerWindowRefusal reports whether a peer refused the window request
+// itself. A peer that knows the feature bit answers with the typed
+// window-unsupported error; a peer whose request decoder predates the window
+// fields refuses them as invalid params. Both mean the same thing here: this
+// peer cannot serve a window, so the controller may rebuild one from its
+// legacy pages.
+func isOlderPeerWindowRefusal(err error) bool {
+	wireErr, ok := wireErrorFromError(err)
+	return ok && wireErr.Code == appwire.CodeInvalidParams
 }
 
 // typedWireErrorData returns the error data carried by a wire error. The wire

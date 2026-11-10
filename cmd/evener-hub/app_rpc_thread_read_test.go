@@ -1448,14 +1448,31 @@ func TestSessionOperationsCompletesOlderDaemonLatestWindow(t *testing.T) {
 }
 
 func TestSessionOperationsRebuildsOlderRemoteLatestWindow(t *testing.T) {
+	testOlderRemoteLatestWindow(t, appwire.WindowUnsupportedOnDaemon(), appwire.ErrorWindowUnsupportedOnDaemon)
+}
+
+func TestSessionOperationsRebuildsStrictDecoderLatestWindow(t *testing.T) {
+	// A peer whose request decoder predates the window fields refuses them as
+	// invalid params, not with this feature's typed refusal.
+	testOlderRemoteLatestWindow(t, appwire.InvalidParams(`json: unknown field "turnWindow"`), appwire.ErrorInvalidParams)
+}
+
+func testOlderRemoteLatestWindow(t *testing.T, refusal appwire.WireError, refusalInfo appwire.ErrorInfo) {
+	t.Helper()
 	var forwarded []appwire.ThreadReadParams
-	legacyTurn := appwire.Turn{
-		ID: "turn-legacy", Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFragment,
-		Items: []appwire.ThreadItem{{
-			ID: "message", TranscriptKey: "message", TurnID: "turn-legacy", Type: "agentMessage",
-			Position: &appwire.ThreadItemPosition{Entry: 1}, Version: 1, Text: "legacy",
-		}},
+	legacyTurn := func(index int) appwire.Turn {
+		id := fmt.Sprintf("turn-legacy-%d", index)
+		items := make([]appwire.ThreadItem, index)
+		for itemIndex := range items {
+			items[itemIndex] = appwire.ThreadItem{
+				ID: fmt.Sprintf("message-%s-%d", id, itemIndex), TranscriptKey: fmt.Sprintf("message-%s-%d", id, itemIndex),
+				TurnID: id, Type: "agentMessage",
+				Position: &appwire.ThreadItemPosition{Entry: uint64(index), Item: uint32(itemIndex)}, Version: 1,
+			}
+		}
+		return appwire.Turn{ID: id, Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFragment, Items: items}
 	}
+	turns := []appwire.Turn{legacyTurn(1), legacyTurn(2)}
 	remote, _ := newScriptedRemoteHub(t, func(method string, raw json.RawMessage) any {
 		switch method {
 		case appwire.MethodInitialize:
@@ -1470,9 +1487,9 @@ func TestSessionOperationsRebuildsOlderRemoteLatestWindow(t *testing.T) {
 				return appwire.InternalError(err.Error())
 			}
 			if params.TurnWindow != nil {
-				return appwire.WindowUnsupportedOnDaemon()
+				return refusal
 			}
-			return appwire.ThreadTurnsListResponse{Data: []appwire.Turn{legacyTurn}}
+			return appwire.ThreadTurnsListResponse{Data: turns}
 		case appwire.MethodThreadRead:
 			var params appwire.ThreadReadParams
 			if err := json.Unmarshal(raw, &params); err != nil {
@@ -1480,14 +1497,14 @@ func TestSessionOperationsRebuildsOlderRemoteLatestWindow(t *testing.T) {
 			}
 			forwarded = append(forwarded, params)
 			if params.TurnWindow != nil {
-				return appwire.WindowUnsupportedOnDaemon()
+				return refusal
 			}
 			return appwire.ThreadReadResponse{
 				Thread: appwire.Thread{
 					ID: "legacy-remote", Source: "local", Evener: appwire.EvenerThread{Ref: "local:legacy-remote"},
-					Turns: []appwire.Turn{legacyTurn},
+					Turns: turns,
 				},
-				Snapshot: &appwire.SnapshotIdentity{Incarnation: "legacy-history", Length: 1},
+				Snapshot: &appwire.SnapshotIdentity{Incarnation: "legacy-history", Length: int64(len(turns))},
 			}
 		default:
 			return appwire.EmptyResponse{}
@@ -1512,7 +1529,7 @@ func TestSessionOperationsRebuildsOlderRemoteLatestWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("older remote latest read: %v", err)
 	}
-	if read.Turns == nil || len(read.Turns.Data) != 1 || read.Turns.Data[0].ID != "turn-legacy" {
+	if read.Turns == nil || len(read.Turns.Data) != 1 || read.Turns.Data[0].ID != "turn-legacy-2" {
 		t.Fatalf("older remote latest read = %+v, want the legacy page rebuilt as a window", read.Turns)
 	}
 	if read.Turns.Window == nil || read.Turns.Window.AppliedBy != transcriptWindowAppliedByHubCompat {
@@ -1525,16 +1542,55 @@ func TestSessionOperationsRebuildsOlderRemoteLatestWindow(t *testing.T) {
 		t.Fatalf("compatibility read forwarded window fields: %+v", last)
 	}
 
+	// A truncated latest window leaves a controller-owned continuation. It must
+	// recover the withheld turn from the peer's legacy pages, not fail on a
+	// window the peer never served.
+	truncated, err := operations.Invoke(t.Context(), caller, appwire.SessionOperationRequest{Turns: &appwire.ThreadTurnsListParams{
+		Ref: "host-b:legacy-remote", ItemLimit: 1,
+		TurnWindow:   &appwire.ThreadTurnWindow{Latest: 2},
+		PreviewBytes: 321, MessageBytes: 654, WindowBudgetBytes: transcriptWindowBudgetFloorBytes,
+	}})
+	if err != nil {
+		t.Fatalf("older remote truncated read: %v", err)
+	}
+	if truncated.Turns == nil || len(truncated.Turns.Data) == 0 {
+		t.Fatalf("older remote truncated window = %+v, want a page with a cap continuation", truncated.Turns)
+	}
+	last := truncated.Turns.Data[len(truncated.Turns.Data)-1]
+	if last.Elision == nil || last.Elision.ContinuationCursor == "" {
+		t.Fatalf("older remote truncated turn = %+v, want a cap continuation", last)
+	}
+	continued, err := operations.Invoke(t.Context(), caller, appwire.SessionOperationRequest{Turns: &appwire.ThreadTurnsListParams{
+		Ref: "host-b:legacy-remote", ItemLimit: 1,
+		TurnWindow:   &appwire.ThreadTurnWindow{Latest: 2},
+		PreviewBytes: 321, MessageBytes: 654, WindowBudgetBytes: transcriptWindowBudgetFloorBytes,
+		Cursor: last.Elision.ContinuationCursor,
+	}})
+	if err != nil {
+		t.Fatalf("older remote continuation: %v", err)
+	}
+	served := make(map[string]bool)
+	for _, turn := range append(append([]appwire.Turn(nil), truncated.Turns.Data...), continued.Turns.Data...) {
+		for _, item := range turn.Items {
+			served[item.ID] = true
+		}
+	}
+	for _, want := range []string{"message-turn-legacy-2-0", "message-turn-legacy-2-1"} {
+		if !served[want] {
+			t.Fatalf("served items = %v, want %q recovered across the continuation", served, want)
+		}
+	}
+
 	// A non-latest window cannot be rebuilt from one legacy page, so the owning
 	// hub's typed refusal passes through unchanged.
 	_, err = operations.Invoke(t.Context(), caller, appwire.SessionOperationRequest{Turns: &appwire.ThreadTurnsListParams{
-		Ref: "host-b:legacy-remote", TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn-legacy"},
+		Ref: "host-b:legacy-remote", TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn-legacy-1"},
 	}})
 	wire, ok := errors.AsType[appwire.WireError](err)
 	if !ok {
 		t.Fatalf("older remote non-latest read = %T %v, want a typed wire error", err, err)
 	}
-	if data, _ := appwire.DecodedErrorData(wire.Data); data.EvenerErrorInfo != appwire.ErrorWindowUnsupportedOnDaemon {
+	if data, _ := appwire.DecodedErrorData(wire.Data); data.EvenerErrorInfo != refusalInfo {
 		t.Fatalf("older remote non-latest error info = %q, want the owning hub's typed failure", data.EvenerErrorInfo)
 	}
 }
