@@ -307,7 +307,8 @@ lint-repo-audit: build-dev
 LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-package-imports lint-js-toolchain-pins lint-tracked-file-size lint-repo-audit secret-scan
 
 ## Go lint, formatting, tagged floors, generated outputs, imports, repository
-## source audits, frontend Biome, and secrets.
+## source audits, and secrets. The frontend's Biome scopes run in `make
+## test-web`, not here.
 ## proves: TOML naming; gofmt over every tracked .go file; the evenerfuzz and
 ##   eval compile floors; the internal-type check; golangci-lint across every
 ##   workspace module; generated-output freshness; the fuzz registry check;
@@ -315,8 +316,7 @@ LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal l
 ##   path; that Biome, Vitest, TypeScript and React are pinned to one exact
 ##   version across the npm trees; that no tracked file is over 1 MiB beyond a
 ##   short allowlist; the repository source audits in
-##   internal/devtool/repoaudit; that the frontend's Biome lint script passes over both frontend scopes;
-##   and the repo secret scan.
+##   internal/devtool/repoaudit; and the repo secret scan.
 ## trigger: Required CI; local pre-merge.
 ## requires: golangci-lint, gitleaks, and the frontend node_modules install.
 ## fails-when: Any member of LINT_TARGETS exits nonzero.
