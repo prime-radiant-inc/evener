@@ -2191,3 +2191,53 @@ func TestRunAudit_ExplicitSessionsHonorCancellation(t *testing.T) {
 		})
 	}
 }
+
+// An audit check the doctor could not evaluate as written fails the whole
+// runbook parse rather than silently checking nothing.
+func TestParseRunbookRejectsAnInvalidCheck(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, check string
+	}{
+		{"missing title", "  - severity: high\n    category: timeout\n    metric: jobs.run_timeout\n    op: \">=\"\n    value: 5\n"},
+		{"invalid suggested_fix", "  - title: x\n    severity: high\n    category: timeout\n    suggested_fix: unknown\n    metric: jobs.run_timeout\n    op: \">=\"\n    value: 5\n"},
+		{"missing metric", "  - title: x\n    severity: high\n    category: timeout\n    op: \">=\"\n    value: 5\n"},
+		{"both metric and all", "  - title: x\n    severity: high\n    category: timeout\n    metric: jobs.run_timeout\n    op: \">=\"\n    value: 5\n    all:\n      - metric: longest_identical_run.length\n        op: \">=\"\n        value: 3\n"},
+		{"all condition missing metric", "  - title: x\n    severity: high\n    category: timeout\n    all:\n      - op: \">=\"\n        value: 3\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ParseRunbook("bad", []byte("## CLASSIFY\n```yaml\naudit:\n"+tc.check+"```\n")); err == nil {
+				t.Fatal("ParseRunbook accepted the invalid check")
+			}
+		})
+	}
+}
+
+// An audit fence with no entries, or with no audit key at all, is not an audit
+// block.
+func TestParseAuditFenceEmptyList(t *testing.T) {
+	t.Parallel()
+	if _, found := parseAuditFence("audit: []"); found {
+		t.Fatal("empty audit list should not be found")
+	}
+	if _, found := parseAuditFence("other: value"); found {
+		t.Fatal("non-audit YAML should not be found")
+	}
+}
+
+// A non-indented prose line closes the open manual step, so an indented line
+// after the prose is not folded into that step.
+func TestParseRunbookDefaultStepReset(t *testing.T) {
+	t.Parallel()
+	content := []byte("## CLASSIFY\n" +
+		"- A manual step.\n" +
+		"Some prose line that is not a bullet.\n" +
+		"  indented after the prose.\n")
+	rb, err := ParseRunbook("step-reset-test", content)
+	if err != nil {
+		t.Fatalf("ParseRunbook: %v", err)
+	}
+	if len(rb.ManualSteps) != 1 || rb.ManualSteps[0] != "A manual step." {
+		t.Fatalf("manual steps = %q, want only the bullet's own text", rb.ManualSteps)
+	}
+}

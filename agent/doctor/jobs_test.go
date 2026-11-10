@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/schema"
 )
 
 const (
@@ -257,5 +259,167 @@ func TestJobs_UnknownJobIDMessageIsUnambiguous(t *testing.T) {
 	}
 	if !strings.Contains(out, "job "+absentJobID+" not found in this session") {
 		t.Errorf("expected the not-found message:\n%s", out)
+	}
+}
+
+const (
+	legacyDelegateJobID = "job_legacydelegate_01"
+	legacyWatchID       = "watch_legacy_01"
+	delegateJobForWatch = "job_legacydelegate_02"
+)
+
+// richJobFixtureEvents produces a job carrying every optional field RenderJobs
+// prints: task, description, owner/visible, parent job, output path, and
+// exhaustion metadata.
+func richJobFixtureEvents() []jobstore.Event {
+	started := time.Date(2026, 7, 31, 18, 0, 0, 0, time.UTC)
+	ended := time.Date(2026, 7, 31, 18, 2, 0, 0, time.UTC)
+	exitOK := 0
+	return []jobstore.Event{
+		{Kind: jobstore.EventJobStarted, JobID: "job_rich_01", Type: jobstore.JobShell,
+			Command: "make all", Task: "build the thing", Description: "full build",
+			OwnerSessionID: sidA, VisibleToSession: sidA, ParentJobID: "job_parent_01",
+			StartedAt: &started, OutputPath: "/state/jobs/job_rich_01.log"},
+		{Kind: jobstore.EventJobFinished, JobID: "job_rich_01", Status: jobstore.StatusCompleted,
+			ExitCode: &exitOK, EndedAt: &ended, OutputBytes: 100, TerminalGen: "tg1",
+			ExhaustionBudget: "max_turns", ExhaustionLimit: 500},
+	}
+}
+
+// legacyDelegateJobEvents produces delegate-type job records and a watch on
+// one of them, which the jobs report must surface as state failures.
+func legacyDelegateJobEvents() []jobstore.Event {
+	return []jobstore.Event{
+		{Kind: jobstore.EventJobStarted, JobID: legacyDelegateJobID, Type: "delegate", OwnerSessionID: sidA},
+		{Kind: jobstore.EventJobStarted, JobID: delegateJobForWatch, Type: "delegate", OwnerSessionID: sidA},
+		{Kind: jobstore.EventWatchRegistered, WatchID: legacyWatchID,
+			Watch: &jobstore.WatchEvent{Target: "job:" + delegateJobForWatch,
+				OwnerSessionID: sidA, VisibleSessionID: sidA,
+				Generation: "gen1", ConfigHash: "hash1"}},
+	}
+}
+
+func jobsFixtureWithDelegate(t *testing.T) (base, sid string) {
+	t.Helper()
+	base = t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	sid = sidA
+	writeSession(t, bucket, sid)
+	writeJobsEvents(t, filepath.Join(bucket, "sessions", sid, "jobs.jsonl"), append(richJobFixtureEvents(), legacyDelegateJobEvents()...))
+	writeDelegateEvents(t, filepath.Join(bucket, "sessions", sid, "delegates.jsonl"), []delegatestore.Event{
+		{Kind: delegatestore.EventDelegateCreated, DelegateID: "dlg_jobs_01", Created: &delegatestore.DelegateCreated{Descriptor: delegatestore.Descriptor{
+			OwnerSessionID: sid, VisibleSessionID: sid, ChildSessionID: "child_01",
+			TranscriptRef: "proj:" + hash1 + ":child_01", Task: "do work", AgentType: "worker",
+			ResolvedModel: "model-x", Resumable: true, ToolNameCeiling: []string{"communicate"},
+		}}},
+	})
+	return base, sid
+}
+
+// RenderJobs prints every optional field a job or delegate carries.
+func TestJobs_RenderAllFormattingBranches(t *testing.T) {
+	base, sid := jobsFixtureWithDelegate(t)
+	r, err := Jobs(base, sid, JobOpts{})
+	if err != nil {
+		t.Fatalf("Jobs: %v", err)
+	}
+	out := RenderJobs(r)
+	for _, want := range []string{
+		"build the thing",
+		"full build",
+		sid,
+		"job_parent_01",
+		"/state/jobs/job_rich_01.log",
+		"max_turns",
+		"500",
+		"dlg_jobs_01",
+		"child_01",
+		"model-x",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("render missing %q; got:\n%s", want, out)
+		}
+	}
+}
+
+// A retired delegate-type job and a watch on one are reported as state
+// failures naming them, and rendered with the report.
+func TestJobs_LegacyDelegateFailures(t *testing.T) {
+	base, sid := jobsFixtureWithDelegate(t)
+	r, err := Jobs(base, sid, JobOpts{})
+	if err != nil {
+		t.Fatalf("Jobs: %v", err)
+	}
+	if len(r.Failures) != 2 || r.Failures[0].Code != "legacy_delegate_state" || r.Failures[1].Code != "legacy_delegate_watch_state" {
+		t.Fatalf("failures = %+v, want the legacy job and watch failures", r.Failures)
+	}
+	out := RenderJobs(r)
+	for _, want := range []string{legacyDelegateJobID, delegateJobForWatch, legacyWatchID} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rendered failures missing %q; got:\n%s", want, out)
+		}
+	}
+}
+
+// When a session's meta names a job-tree root, its delegates come from the
+// root session's journal.
+func TestJobs_JobTreeRootSessionIDRedirect(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	rootSID := "root_session_01"
+	childSID := sidA
+	writeSession(t, bucket, rootSID)
+	writeSession(t, bucket, childSID)
+	if err := schema.SaveSessionMeta(bucket, schema.SessionMeta{ID: childSID, JobTreeRootSessionID: rootSID}); err != nil {
+		t.Fatal(err)
+	}
+	writeJobsEvents(t, filepath.Join(bucket, "sessions", childSID, "jobs.jsonl"), nil)
+	writeDelegateEvents(t, filepath.Join(bucket, "sessions", rootSID, "delegates.jsonl"), []delegatestore.Event{
+		{Kind: delegatestore.EventDelegateCreated, DelegateID: "dlg_redirect_01", Created: &delegatestore.DelegateCreated{Descriptor: delegatestore.Descriptor{
+			OwnerSessionID: childSID, ChildSessionID: "child_redirect", TranscriptRef: "proj:" + hash1 + ":child_redirect",
+			AgentType: "worker", Task: "redirect test", ToolNameCeiling: []string{"communicate"},
+		}}},
+	})
+
+	r, err := Jobs(base, childSID, JobOpts{})
+	if err != nil {
+		t.Fatalf("Jobs: %v", err)
+	}
+	if len(r.Delegates) != 1 || r.Delegates[0].DelegateID != "dlg_redirect_01" {
+		t.Errorf("expected 1 delegate via redirect, got %v", r.Delegates)
+	}
+}
+
+// A delegates journal ending in a torn, unterminated batch still loads, and
+// the report carries a diagnostic for the ignored tail.
+func TestJobs_DelegateDiagnosticsTornTail(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	writeSession(t, bucket, sidA)
+	writeJobsEvents(t, filepath.Join(bucket, "sessions", sidA, "jobs.jsonl"), nil)
+	delPath := filepath.Join(bucket, "sessions", sidA, "delegates.jsonl")
+	writeDelegateEvents(t, delPath, []delegatestore.Event{
+		{Kind: delegatestore.EventDelegateCreated, DelegateID: "dlg_torn_01", Created: &delegatestore.DelegateCreated{Descriptor: delegatestore.Descriptor{
+			OwnerSessionID: sidA, ChildSessionID: "child_torn", TranscriptRef: "proj:" + hash1 + ":child_torn",
+			AgentType: "worker", Task: "torn tail test", ToolNameCeiling: []string{"communicate"},
+		}}},
+	})
+	f, err := os.OpenFile(delPath, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(`{"kind":"delegate_created","delegate_id":"dlg_torn`); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := Jobs(base, sidA, JobOpts{})
+	if err != nil {
+		t.Fatalf("Jobs: %v", err)
+	}
+	if len(r.Delegates) != 1 || len(r.Diagnostics) != 1 {
+		t.Errorf("delegates = %v, diagnostics = %v; want the stored delegate and one torn-tail diagnostic", r.Delegates, r.Diagnostics)
 	}
 }
