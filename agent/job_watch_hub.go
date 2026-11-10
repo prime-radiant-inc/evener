@@ -664,6 +664,9 @@ func (jm *jobManager) onHubObservationLookup(watchID string, update appwire.Sess
 	}
 	root := events.SessionEvent{SessionID: jm.sessionID, Kind: events.EventCommunicate, Provenance: m.Causal}
 	delivery := jm.watchSendSnapshot(cfg, identity, trigger, root).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, m.Causal))
+	if m.CausalKnown && !complete {
+		delivery = jm.conditionFireSendLocked(delivery)
+	}
 	jm.mu.Unlock()
 	if complete {
 		if err := jm.endHubWatchUntilPersisted(watchID, "completed", &delivery); err != nil {

@@ -89,6 +89,15 @@ const (
 	// watch send, or a no-send watch's fire, may descend from before the breaker
 	// drops it as a runaway.
 	runawaySelfInfluenceDepth = 8
+	// watchBackstopFires and watchBackstopWindow are the hourly backstop: the
+	// delivery after watchBackstopFires deliveries from one watch within
+	// watchBackstopWindow carries a notice with the count and how to throttle or
+	// clear the watch, at most once per window. Deliveries go on unchanged.
+	watchBackstopFires  = 60
+	watchBackstopWindow = time.Hour
+	// maxStoppedRunawayFires bounds the fires a no-send watch remembers from
+	// chains its runaway guard has stopped.
+	maxStoppedRunawayFires    = 64
 	stableWatchReceiverTarget = "stable_watch_receiver"
 )
 
@@ -273,6 +282,16 @@ type watchConfig struct {
 	// progress ticks and teardown notices are deliveries but do not satisfy the
 	// condition the model asked this watch to observe.
 	conditionFires int
+	// stoppedRunawayFires are the delivery ids of a no-send watch's fires in
+	// chains its runaway guard has stopped, newest last
+	// (conditionFireNotificationLocked). Guarded by jm.mu.
+	stoppedRunawayFires []string
+	// recentDeliveries are the instants of this watch's condition deliveries
+	// within watchBackstopWindow, oldest first, and lastBackstopNotice is when a
+	// delivery last carried the backstop notice (watchBackstopNoticeLocked).
+	// Guarded by jm.mu.
+	recentDeliveries   []time.Time
+	lastBackstopNotice time.Time
 	// createdAt is the install time of this live watch config, stamped from
 	// jm.now() in newWatchConfig and surfaced by job_list (spec §4 F2). A
 	// replacement config is a new watch, so it gets a fresh timestamp. Configs
@@ -435,14 +454,17 @@ type watchSendDelivery struct {
 	deliveryID               string
 	message                  string
 	frame                    string
-	visibleSessionID         string
-	watchTarget              string
-	watchedIdentity          string
-	trigger                  string
-	rosterPayload            string
-	rosterInitial            bool
-	rosterResync             bool
-	triggerProvenance        *provenance.Causal
+	// backstopFires, when set, is the watch's delivery count within
+	// watchBackstopWindow, and the frame leads with the hourly backstop notice.
+	backstopFires     int
+	visibleSessionID  string
+	watchTarget       string
+	watchedIdentity   string
+	trigger           string
+	rosterPayload     string
+	rosterInitial     bool
+	rosterResync      bool
+	triggerProvenance *provenance.Causal
 	// provenance is the delivery's causal chain: the triggering event's
 	// provenance extended with this watch's own (watch_id, generation) key and a
 	// chain entry naming this delivery. Persisted onto the pending WatchSendState

@@ -56,6 +56,9 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 	if notice := selfInfluenceNotice(d.selfInfluence, d.gradientDepth, d.truncated); notice != "" {
 		d.frame = notice + "\n" + d.frame
 	}
+	if d.backstopFires > 0 && d.cfg != nil {
+		d.frame = watchBackstopNotice(d.cfg.watchID, d.backstopFires) + "\n" + d.frame
+	}
 	return d
 }
 

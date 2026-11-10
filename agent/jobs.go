@@ -594,6 +594,10 @@ type jobNotification struct {
 	// orphaned tick once its watch detaches. Job-targeted fires, teardown
 	// notices, and send-rail diagnostics stamp this; timer fires keep WatchID.
 	OriginWatchID string
+	// backstopFires, when set, is how many times the originating watch has
+	// delivered within watchBackstopWindow; the rendered notification then
+	// carries the hourly backstop notice (watchBackstopNotice).
+	backstopFires int
 	// receiverSessionID/receiverNotify route no-send watch notifications for
 	// concrete descendant watches back to the ancestor session that installed
 	// them. They are in-memory only; active watches are not restored without a

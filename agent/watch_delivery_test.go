@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 // installCallerCommunicateWatch arms a caller-send communicate watch on a fresh
@@ -165,5 +167,166 @@ func TestTranscribedFrameWithFailingSettleStopsRetrying(t *testing.T) {
 	}
 	if got := len(watchFrameTurns(s, sentinel)); got != 1 {
 		t.Fatalf("frame reached the model %d times, want exactly once", got)
+	}
+}
+
+// noSendCommunicateWatch arms a no-send caller watch on communicate and
+// returns its config and the notifications it queues, in order.
+func noSendCommunicateWatch(t *testing.T, jm *jobManager) (*watchConfig, *[]jobNotification) {
+	t.Helper()
+	queued := &[]jobNotification{}
+	jm.enqueue = func(n jobNotification) { *queued = append(*queued, n) }
+	installWatchBelowValidation(t, jm, watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"communicate"}})
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	for _, cfg := range jm.watches {
+		return cfg, queued
+	}
+	t.Fatal("watch not installed")
+	return nil, nil
+}
+
+func communicateWith(jm *jobManager, p *provenance.Causal) {
+	jm.onSessionEvent(events.SessionEvent{Kind: events.EventCommunicate, SessionID: jm.sessionID, Data: events.CommunicateData{Message: "reply"}, Provenance: p})
+}
+
+func watchDeliveries(jm *jobManager, cfg *watchConfig) int {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	return cfg.deliveries
+}
+
+// The runaway notice is not a fire of the watch: it adds nothing to the
+// lineage, and a back-and-forth that carries the notice's lineage on — even one
+// long enough to truncate that lineage — stays stopped instead of raising a
+// notice per hop. A fire from outside the chain still delivers.
+func TestNoSendRunawayNoticeIsNotAFireAfterLineageTruncation(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	cfg, queued := noSendCommunicateWatch(t, jm)
+	ownFires := func(p *provenance.Causal) int {
+		return provenance.SelfInfluenceDepth(p, cfg.watchID, "", func(string) bool { return true })
+	}
+	// Hops through another watch push the lineage past its diagnostic bound.
+	otherHops := func(p *provenance.Causal) *provenance.Causal {
+		for range 20 {
+			p = provenance.WithWatch(p, "watch_other", "wg_other", jobstore.NewWatchSendDeliveryID(), jm.sessionID, "")
+		}
+		return p
+	}
+	var chain *provenance.Causal
+	for range runawaySelfInfluenceDepth {
+		chain = provenance.WithWatch(chain, cfg.watchID, cfg.generation, jobstore.NewWatchSendDeliveryID(), jm.sessionID, "")
+	}
+	chain = otherHops(chain)
+	if !chain.ChainTruncated || ownFires(chain) != runawaySelfInfluenceDepth {
+		t.Fatalf("setup: truncated=%t own fires=%d, want a truncated lineage holding %d own fires", chain.ChainTruncated, ownFires(chain), runawaySelfInfluenceDepth)
+	}
+
+	communicateWith(jm, chain)
+	if len(*queued) != 1 || watchDeliveries(jm, cfg) != 0 {
+		t.Fatalf("at the runaway depth: queued=%d deliveries=%d, want one notice and no delivery", len(*queued), watchDeliveries(jm, cfg))
+	}
+	notice := (*queued)[0]
+	if got := ownFires(notice.Provenance); got != ownFires(chain) {
+		t.Fatalf("the notice's lineage holds %d own fires, want %d: the notice is not a fire", got, ownFires(chain))
+	}
+
+	reply := notice.Provenance
+	for range 10 {
+		reply = otherHops(reply)
+		communicateWith(jm, reply)
+	}
+	if len(*queued) != 1 || watchDeliveries(jm, cfg) != 0 {
+		t.Fatalf("after the notice's turn and more hops: queued=%d deliveries=%d, want the chain to stay stopped", len(*queued), watchDeliveries(jm, cfg))
+	}
+
+	communicateWith(jm, nil)
+	if got := watchDeliveries(jm, cfg); got != 1 {
+		t.Fatalf("a communicate outside the chain delivered %d fires, want 1", got)
+	}
+}
+
+// After watchBackstopFires deliveries within watchBackstopWindow, the next
+// delivery still goes out and carries a notice with the count; the notice is
+// not repeated within the window, and comes back once the window has passed.
+func TestWatchBackstopNoticeRidesTheDeliveryPastTheHourlyThreshold(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	now := frozenTestTime
+	jm.now = func() time.Time { return now }
+	_, queued := noSendCommunicateWatch(t, jm)
+	fire := func() jobNotification {
+		t.Helper()
+		before := len(*queued)
+		communicateWith(jm, nil)
+		if len(*queued) != before+1 {
+			t.Fatalf("fire queued %d notifications, want 1", len(*queued)-before)
+		}
+		now = now.Add(10 * time.Second)
+		return (*queued)[before]
+	}
+
+	for i := range watchBackstopFires {
+		if n := fire(); n.backstopFires != 0 {
+			t.Fatalf("delivery %d carried the backstop notice, want none before the threshold", i+1)
+		}
+	}
+	crossing := fire()
+	if crossing.backstopFires != watchBackstopFires+1 {
+		t.Fatalf("delivery %d carried backstop count %d, want %d", watchBackstopFires+1, crossing.backstopFires, watchBackstopFires+1)
+	}
+	if block := formatJobNotificationBlock(crossing, notificationExcerpt{}, false); !strings.Contains(block, llm.SystemNotificationOpenTag) {
+		t.Fatal("the rendered delivery does not carry a system notification")
+	}
+	for i := range 20 {
+		if n := fire(); n.backstopFires != 0 {
+			t.Fatalf("delivery %d after the notice repeated it within the hour", i+1)
+		}
+	}
+
+	now = now.Add(watchBackstopWindow)
+	for range watchBackstopFires {
+		fire()
+	}
+	if again := fire(); again.backstopFires != watchBackstopFires+1 {
+		t.Fatalf("an hour later, the delivery past the threshold carried count %d, want %d", again.backstopFires, watchBackstopFires+1)
+	}
+}
+
+// A send watch's frame past the hourly threshold carries the notice too.
+func TestSendWatchBackstopNoticeRidesTheFrame(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	now := frozenTestTime
+	jm.now = func() time.Time { return now }
+	installWatchBelowValidation(t, jm, watchArgs{
+		Target: runtimeMessageAliasCaller,
+		Events: []string{"communicate"},
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+	})
+	frameOfFire := func() string {
+		t.Helper()
+		communicateWith(jm, nil)
+		now = now.Add(10 * time.Second)
+		pending := jm.pendingWatchSendDeliveries(nil)
+		if len(pending) != 1 {
+			t.Fatalf("pending frames = %d, want 1", len(pending))
+		}
+		if err := jm.settleWatchSendDelivered(pending[0].cfg, pending[0].state); err != nil {
+			t.Fatalf("settle: %v", err)
+		}
+		return pending[0].state.Frame
+	}
+	for i := range watchBackstopFires {
+		if strings.Contains(frameOfFire(), llm.SystemNotificationOpenTag) {
+			t.Fatalf("frame %d carried a system notification before the threshold", i+1)
+		}
+	}
+	if !strings.Contains(frameOfFire(), llm.SystemNotificationOpenTag) {
+		t.Fatal("the frame past the threshold does not carry the backstop notice")
+	}
+	if strings.Contains(frameOfFire(), llm.SystemNotificationOpenTag) {
+		t.Fatal("the next frame repeated the notice within the hour")
 	}
 }

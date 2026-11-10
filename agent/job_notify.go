@@ -226,6 +226,15 @@ func notificationAttr(key, value string) string {
 // read_transcript": false drops the output pointer rather than pointing at a
 // tool the receiver cannot call.
 func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt, canReadTranscript bool) string {
+	block := formatJobNotificationBody(n, excerpt, canReadTranscript)
+	if n.backstopFires > 0 {
+		block += "\n" + watchBackstopNotice(n.OriginWatchID, n.backstopFires)
+	}
+	return block
+}
+
+// formatJobNotificationBody renders the <job-notification> block itself.
+func formatJobNotificationBody(n jobNotification, excerpt notificationExcerpt, canReadTranscript bool) string {
 	if n.WatchSend != nil {
 		attrs := []string{
 			notificationAttr("job_id", n.JobID),

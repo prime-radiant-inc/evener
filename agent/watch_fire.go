@@ -3,6 +3,7 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"slices"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -24,7 +25,7 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 		}
 		cfg.conditionFires++
 		if dec.send {
-			deliveries = append(deliveries, jm.watchSendSnapshot(cfg, dec.watchedIdentity, fmt.Sprintf("event: %s", kind), ev).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, ev.Provenance)))
+			deliveries = append(deliveries, jm.conditionFireSendLocked(jm.watchSendSnapshot(cfg, dec.watchedIdentity, fmt.Sprintf("event: %s", kind), ev).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, ev.Provenance))))
 		} else {
 			n, fired := jm.conditionFireNotificationLocked(cfg, dec.notifyJobID, fmt.Sprintf("event: %s", kind), ev.Provenance)
 			if !fired {
@@ -196,26 +197,92 @@ func (jm *jobManager) fuseDepthLocked(cfg *watchConfig, p *provenance.Causal) in
 // conditionFireNotificationLocked builds what a no-send watch delivers for one
 // condition fire. fired reports a real delivery of the fire, which the caller
 // counts. The notification carries a delivery id on its lineage entry, so an
-// event the resulting notification turn emits descends from it; a fire
+// event the resulting notification turn emits descends from it. A fire
 // descending from runawaySelfInfluenceDepth of this watch's own fires is the
-// runaway that the send rail's fuse drops too. At exactly the cap it is replaced
-// by one runaway diagnostic whose lineage counts one fire deeper, so a turn the
-// diagnostic causes falls past the cap and its fires drop silently instead of
-// raising another. A fire from anything outside the chain starts again at 0.
-// The watch stays armed throughout. The caller must hold jm.mu.
+// runaway the send rail's fuse drops too: the first one queues a runaway notice
+// and records the chain's fires, and any later fire whose lineage holds one of
+// them drops silently. The notice carries the triggering lineage unchanged, so
+// it is not a fire: a turn it causes stays in the stopped chain however long
+// that lineage grows (or truncates). A fire from outside the chain starts again
+// at 0, and the watch stays armed. The caller must hold jm.mu.
 func (jm *jobManager) conditionFireNotificationLocked(cfg *watchConfig, jobID, reason string, root *provenance.Causal) (notifications []jobNotification, fired bool) {
-	everyFire := func(string) bool { return true }
-	depth := provenance.SelfInfluenceDepth(root, cfg.watchID, "", everyFire)
-	deliveryID := jobstore.NewWatchSendDeliveryID()
-	switch {
-	case depth < runawaySelfInfluenceDepth:
-		return []jobNotification{jm.watchNotificationWithDelivery(cfg, jobID, reason, root, deliveryID)}, true
-	case depth == runawaySelfInfluenceDepth:
-		diagnostic := watchSendDiagnosticNotification(cfg.watchID, jobID, "watch notification dropped: runaway")
-		diagnostic.Provenance = jm.watchNotificationWithDelivery(cfg, jobID, reason, root, deliveryID).Provenance
-		return []jobNotification{diagnostic}, false
-	default:
+	own := ownWatchFires(root, cfg.watchID)
+	if slices.ContainsFunc(own, cfg.inStoppedRunawayChain) {
 		return nil, false
+	}
+	if len(own) >= runawaySelfInfluenceDepth {
+		cfg.rememberStoppedRunawayChain(own)
+		diagnostic := watchSendDiagnosticNotification(cfg.watchID, jobID, "watch notification dropped: runaway")
+		diagnostic.Provenance = provenance.Clone(root)
+		return []jobNotification{diagnostic}, false
+	}
+	n := jm.watchNotificationWithDelivery(cfg, jobID, reason, root, jobstore.NewWatchSendDeliveryID())
+	n.backstopFires = jm.watchBackstopNoticeLocked(cfg)
+	return []jobNotification{n}, true
+}
+
+// conditionFireSendLocked counts a send watch's condition fire toward the
+// hourly backstop and marks d to carry the notice when it is due. The caller
+// must hold jm.mu.
+func (jm *jobManager) conditionFireSendLocked(d watchSendDelivery) watchSendDelivery {
+	d.backstopFires = jm.watchBackstopNoticeLocked(d.cfg)
+	return d
+}
+
+// watchBackstopNoticeLocked records one condition delivery of cfg and returns
+// the watch's delivery count within watchBackstopWindow when this delivery is
+// to carry the hourly backstop notice: past watchBackstopFires, at most once
+// per window. It returns 0 otherwise. The caller must hold jm.mu.
+func (jm *jobManager) watchBackstopNoticeLocked(cfg *watchConfig) int {
+	now := jm.now()
+	cutoff := now.Add(-watchBackstopWindow)
+	stale := 0
+	for stale < len(cfg.recentDeliveries) && !cfg.recentDeliveries[stale].After(cutoff) {
+		stale++
+	}
+	cfg.recentDeliveries = append(slices.Delete(cfg.recentDeliveries, 0, stale), now)
+	count := len(cfg.recentDeliveries)
+	if count <= watchBackstopFires || (!cfg.lastBackstopNotice.IsZero() && now.Sub(cfg.lastBackstopNotice) < watchBackstopWindow) {
+		return 0
+	}
+	cfg.lastBackstopNotice = now
+	return count
+}
+
+// watchBackstopNotice is the hourly backstop's notice for watchID, which has
+// delivered fires times within watchBackstopWindow.
+func watchBackstopNotice(watchID string, fires int) string {
+	return systemNotificationf("Watch %s has delivered %d times in the last hour. Its deliveries continue. To get fewer, re-create it with a higher `every`; to stop them, clear it with job_watch(operation=\"clear\", watch_id=%q).", watchID, fires, watchID)
+}
+
+// ownWatchFires returns the distinct delivery ids of watchID's own fires in
+// p's lineage.
+func ownWatchFires(p *provenance.Causal, watchID string) []string {
+	if p == nil {
+		return nil
+	}
+	var ids []string
+	for _, entry := range p.Chain {
+		if entry.Kind == "watch" && entry.WatchID == watchID && entry.DeliveryID != "" && !slices.Contains(ids, entry.DeliveryID) {
+			ids = append(ids, entry.DeliveryID)
+		}
+	}
+	return ids
+}
+
+// inStoppedRunawayChain reports whether fire is one of the fires of a chain the
+// runaway guard has stopped. The caller must hold jm.mu.
+func (cfg *watchConfig) inStoppedRunawayChain(fire string) bool {
+	return slices.Contains(cfg.stoppedRunawayFires, fire)
+}
+
+// rememberStoppedRunawayChain records the fires of a chain the runaway guard
+// has stopped, keeping the newest maxStoppedRunawayFires. The caller must hold
+// jm.mu.
+func (cfg *watchConfig) rememberStoppedRunawayChain(fires []string) {
+	cfg.stoppedRunawayFires = append(cfg.stoppedRunawayFires, fires...)
+	if extra := len(cfg.stoppedRunawayFires) - maxStoppedRunawayFires; extra > 0 {
+		cfg.stoppedRunawayFires = slices.Delete(cfg.stoppedRunawayFires, 0, extra)
 	}
 }
 
@@ -342,7 +409,7 @@ func (jm *jobManager) feedJobOutputWithProvenance(jobID string, chunk []byte, en
 			matchRoot := root
 			matchRoot.Provenance = provenance.Clone(match.Provenance)
 			if cfg.send != nil {
-				deliveries = append(deliveries, jm.watchSendSnapshot(cfg, jobID, "output_match: "+match.Text, matchRoot).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, match.Provenance)))
+				deliveries = append(deliveries, jm.conditionFireSendLocked(jm.watchSendSnapshot(cfg, jobID, "output_match: "+match.Text, matchRoot).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, match.Provenance))))
 			} else {
 				n, fired := jm.conditionFireNotificationLocked(cfg, jobID, "output_match: "+match.Text, match.Provenance)
 				notifications = append(notifications, n...)
@@ -439,7 +506,7 @@ func (jm *jobManager) fireAttachScan(cfg *watchConfig, jobID string, data []byte
 		root := events.SessionEvent{SessionID: jm.sessionID, Provenance: jobProvenanceForWatch(jm, jobID)}
 		jm.mu.Lock()
 		cfg.conditionFires++
-		delivery := jm.watchSendSnapshot(cfg, jobID, reason, root)
+		delivery := jm.conditionFireSendLocked(jm.watchSendSnapshot(cfg, jobID, reason, root))
 		jm.mu.Unlock()
 		jm.recordWatchSendsAndKick([]watchSendDelivery{delivery})
 		return true
