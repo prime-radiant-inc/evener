@@ -52,9 +52,12 @@ timing_parse() {
 
 # timing_go_test_exec — the `go test -exec` value both producers pass, so each
 # test binary runs under test-cpu-exec and its stream carries the package's CPU
-# row. It needs EVENER_DEV_BIN, a built evener-dev.
+# row. It needs EVENER_DEV_BIN, a built evener-dev. go splits the value into
+# words with its own quoting rules, so the path is single-quoted: a scratch
+# path with a space stays one word. (A path holding a single quote is not one
+# a scratch directory produces.)
 timing_go_test_exec() {
-	printf '%s dev test-cpu-exec' "$EVENER_DEV_BIN"
+	printf "'%s' dev test-cpu-exec" "$EVENER_DEV_BIN"
 }
 
 # go_test_json_to_tsv PACKAGE_JSON_LOG EXPECTED_PACKAGES_FILE

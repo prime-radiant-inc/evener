@@ -208,6 +208,28 @@ func TestTimingBudgetBlessRecordsCPUAndWallBudgets(t *testing.T) {
 	}
 }
 
+// The -exec value the producers pass must survive go's own splitting of it
+// when the evener-dev path holds a space, as a scratch directory under a
+// TMPDIR with a space does: the package's stream still carries its CPU line.
+func TestTimingGoTestExecSurvivesASpaceInThePath(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "dir with space", "evener-dev")
+	build := exec.Command("go", "build", "-o", bin, "./cmd/evener-dev/bin")
+	build.Env = append(os.Environ(), "GOFLAGS=")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("building evener-dev: %v\n%s", err, out)
+	}
+	cmd := exec.Command("bash", "-c", `. scripts/lib/timing-tsv-lib.sh && cd cmd/evener-dev/testdata/shardfixture && `+
+		`go test -json -count=1 -run '^TestFixtureDelta$' -exec "$(timing_go_test_exec)" .`)
+	cmd.Env = append(os.Environ(), "EVENER_DEV_BIN="+bin, "GOWORK=off", "GOFLAGS=")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go test under the exec value: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "evener-test-cpu-seconds") {
+		t.Fatalf("the package's stream carries no CPU line:\n%s", out)
+	}
+}
+
 // TestTimingBudgetBlessDoesNotStampAStaleFile is the other half: a narrowed
 // bless of a file still in old units must NOT add the metric marker,
 // or it would enforce ratios against the old-unit entries it preserved.
