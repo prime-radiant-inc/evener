@@ -33,6 +33,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { fonts, type Palette, scaledType, space, uiType } from "../design/tokens";
 import { haptic } from "../haptics";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
+import { useModalFrameAppliesInsets } from "./modalFrameInset";
 
 /** Above a section label. */
 const SECTION_TOP = 20;
@@ -44,11 +45,17 @@ const GLYPH = 22;
 export function GroupedPage({ children, scrollRef }: { children: ReactNode; scrollRef?: Ref<ScrollViewInstance> }) {
 	const { palette } = useColors();
 	const { left, right } = useSafeAreaInsets();
+	const modalFrameInset = useModalFrameAppliesInsets();
+	const pageInset = modalFrameInset ? { left: 0, right: 0 } : { left, right };
 	return (
 		<ScrollView
 			ref={scrollRef}
 			style={{ flex: 1, backgroundColor: palette.canvas }}
-			contentContainerStyle={{ paddingBottom: 32, paddingLeft: left, paddingRight: right }}
+			contentContainerStyle={{
+				paddingBottom: 32,
+				paddingLeft: pageInset.left,
+				paddingRight: pageInset.right,
+			}}
 			keyboardShouldPersistTaps="handled"
 			keyboardDismissMode="on-drag"
 			automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
