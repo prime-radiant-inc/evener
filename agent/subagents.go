@@ -1782,6 +1782,9 @@ func (s *Session) settleStoppedSubagentRun(ctx context.Context, sub *subagent, s
 		// stop it. Without this the unpresented-trigger recovery is skipped and
 		// the report is neither presented nor left pending.
 		attentionRun: attentionRun,
+		// The launch never reached the model, so the row is unpresented even
+		// though the run itself completed cleanly.
+		attentionUnpresented: true,
 	})
 }
 
@@ -2128,7 +2131,11 @@ type subagentFinalize struct {
 	// attentionRun marks a run an attention row triggered, so its finalize tail
 	// can reopen an unpresented report instead of leaving the consumed row
 	// stranded.
-	attentionRun             bool
+	attentionRun bool
+	// attentionUnpresented marks a run that consumed its attention row but never
+	// reached the model (a hook stopped it), so the row is still unpresented
+	// even though the run settled cleanly.
+	attentionUnpresented     bool
 	noActionClaim            *delegateSettlementClaim
 	restoreParentDriveNotify func()
 	inputProvenance          *provenance.Causal
@@ -2214,7 +2221,7 @@ func (a *subagent) finalizeRun(f subagentFinalize) {
 	// reopen reads is exactly the failed run's own. FinishGeneration has
 	// already journaled the outcome, so the stop and close guards inside the
 	// reopen still see this run's settled state.
-	if f.stableRun && f.attentionRun && !attentionRunPresentedItsReport(f.err) {
+	if f.stableRun && f.attentionRun && (f.attentionUnpresented || !attentionRunPresentedItsReport(f.err)) {
 		// The presentation turn died before its request could carry the
 		// report, and the accept that started it consumed the row. Reopen
 		// it so the re-arm below wakes a drive that presents it instead of
@@ -2440,8 +2447,13 @@ func (a *subagent) buildDelegateFinish(result string, runErr error) delegateFini
 	a.mu.Unlock()
 	a.sess.mu.Lock()
 	stopReplacedReply := a.sess.stopHookReplacedReply
+	stoppedInput := a.sess.hookStoppedInput
 	a.sess.mu.Unlock()
-	if stopReplacedReply {
+	// A prompt stop on the child's own input is the third way a hook ends this
+	// run, after SubagentStop and Stop. Without it the packet reads
+	// failed/ended_without_report with an empty message while finalizeRun marks
+	// the run completed.
+	if stopReplacedReply || stoppedInput {
 		// A Stop hook vetoed the reply this turn would have delivered, so the
 		// run's result (the hook's text) is the packet's message. Capturing the
 		// communicate report here would hand the parent the vetoed reply.
@@ -2843,6 +2855,12 @@ func (a *subagent) runSubagentStopHook(ctx context.Context, res string, err erro
 		}
 	}
 	if !stopResult.Blocked {
+		return res, err
+	}
+	if a.sess.hookStoppedTheInput() {
+		// The continuation below starts a user-input turn, whose per-turn reset
+		// clears the stopped marker, so a SessionStart stop would stop applying
+		// and the original assignment would reach the model.
 		return res, err
 	}
 	reason := strings.TrimSpace(stopResult.BlockReason)
