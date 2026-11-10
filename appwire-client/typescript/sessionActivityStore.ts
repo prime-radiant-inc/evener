@@ -1283,7 +1283,12 @@ export class SessionActivityStore {
     void lease
       .read({ includeTurns: false })
       .then(() => {
-        if (this.disposed || this.lease !== lease || generation !== this.generation) return;
+        if (this.disposed || this.lease !== lease) return;
+        if (generation !== this.generation) {
+          const next = this.generation;
+          void Promise.resolve().then(() => this.refreshThreadMetadata(lease, next));
+          return;
+        }
         const metadata = lease.metadata();
         if (!metadata) return;
         if (this.state.context && this.state.context.sessionId !== metadata.sessionId) return;
