@@ -2,6 +2,7 @@ package evener_test
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"regexp"
 	"strings"
@@ -111,9 +112,7 @@ func matrixCells(job cacheWorkflowJob) []map[string]string {
 		for _, cell := range cells {
 			for _, value := range list {
 				grown := map[string]string{name: fmt.Sprint(value)}
-				for k, v := range cell {
-					grown[k] = v
-				}
+				maps.Copy(grown, cell)
 				next = append(next, grown)
 			}
 		}
