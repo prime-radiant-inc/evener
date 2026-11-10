@@ -54,6 +54,8 @@ function restoreDistPlaceholder(): Plugin {
 // matter. A dynamic import is the boundary that makes everything below it
 // lazy, so a diagram chunk may statically import the parser without putting it
 // on the eager path.
+const LAZY_CHUNK_BYTES = 500_000;
+
 function largeChunksStayLazy(): Plugin {
   return {
     name: "large-chunks-stay-lazy",
@@ -72,7 +74,7 @@ function largeChunksStayLazy(): Plugin {
       }
       for (const output of Object.values(bundle)) {
         if (output.type !== "chunk") continue;
-        if (output.code.length > 500_000 && eager.has(output.fileName)) {
+        if (output.code.length > LAZY_CHUNK_BYTES && eager.has(output.fileName)) {
           this.error(
             `chunk ${output.fileName} is ${(output.code.length / 1000).toFixed(2)} kB and is reachable from an entry through static imports; split it or load it behind a dynamic import`,
           );
