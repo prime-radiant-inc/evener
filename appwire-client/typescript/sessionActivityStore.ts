@@ -198,6 +198,10 @@ export class SessionActivityStore {
   private delegatesRowSetFinal = false;
   /** The last accepted context's no-read-merge eligibility. */
   private pushEligible = false;
+  /** Escalations still pending for this scope, so resolving one of several
+   * keeps the approval state until the last one leaves. Seeded from the
+   * subscription metadata and updated by the requested/resolved frames. */
+  private readonly pendingEscalations = new Set<string>();
   constructor(
     private readonly client: SessionActivityClient,
     private readonly ref: string,
@@ -534,9 +538,10 @@ export class SessionActivityStore {
           const summary = result as SessionActivitySummary;
           const unavailable = (summary.issues?.length ?? 0) > 0;
           if (!unavailable) read.failures = 0;
+          const runtime = this.seedEscalations(this.runtimeFor(summary.context, statusRevision));
           this.publish({
             context: summary.context,
-            runtime: this.runtimeFor(summary.context, statusRevision),
+            runtime,
             summary,
             summaryState: {
               ...this.state.summaryState,
@@ -1152,7 +1157,20 @@ export class SessionActivityStore {
           notification.params.threadId === metadata.threadId &&
           this.state.context?.sessionId === metadata.sessionId
         )
-          this.publish({ runtime: { ...metadata, status: this.statusUpdate.status } });
+          this.publish({ runtime: this.seedEscalations({ ...metadata, status: this.statusUpdate.status }) });
+        return;
+      }
+      case "evener/sandbox/escalation/requested":
+      case "evener/sandbox/escalation/resolved": {
+        const runtime = this.state.runtime;
+        if (!runtime || notification.params.threadId !== runtime.threadId) return;
+        if (notification.method === "evener/sandbox/escalation/requested")
+          this.pendingEscalations.add(notification.params.escalationId);
+        else this.pendingEscalations.delete(notification.params.escalationId);
+        const ids = [...this.pendingEscalations].sort();
+        this.publish({
+          runtime: { ...runtime, approvalPending: ids.length > 0, pendingEscalationIds: ids },
+        });
         return;
       }
       case "evener/delegate/updated":
@@ -1209,6 +1227,20 @@ export class SessionActivityStore {
         void this.request(resource, "root", notification.method === "evener/thread/resync");
       }
     }
+  }
+
+  /** Keep the watcher's local escalation set aligned with the metadata a read
+   * or status frame supplies. A source that predates pendingEscalationIds
+   * cannot name them, so the frame-updated set is left alone. */
+  private seedEscalations(metadata: ThreadSubscriptionMetadata | null): ThreadSubscriptionMetadata | null {
+    if (!metadata) {
+      this.pendingEscalations.clear();
+      return null;
+    }
+    if (metadata.pendingEscalationIds === undefined) return metadata;
+    this.pendingEscalations.clear();
+    for (const id of metadata.pendingEscalationIds) this.pendingEscalations.add(id);
+    return metadata;
   }
   /** Whether this invalidation refreshes a resource other than delegates, so an
    * accepted response can carry a capability or availability change back to this

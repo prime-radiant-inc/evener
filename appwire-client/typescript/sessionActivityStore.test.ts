@@ -85,6 +85,59 @@ test("summary-only runtime is qualified by resolved session without adding any w
   });
 });
 
+test("escalation frames clear one approval at a time from the activity runtime", async () => {
+  const client = activityClient();
+  const escalation = (escalationId: string) => ({
+    threadId: "wire-root",
+    ref: activityRef,
+    escalationId,
+    mode: "read-only",
+    tool: "read_file",
+    kind: "file",
+    deniedPath: "/outside",
+  });
+  client.on("thread/read", () => ({
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-root",
+      sessionId: "root-session",
+      evener: {
+        ...threadFixture().thread.evener,
+        pendingEscalations: [escalation("esc_1"), escalation("esc_2")],
+      },
+    },
+  }));
+  client.on("evener/thread/activity/read", () => ({
+    ...summaryFixture(),
+    context: { ...activityContext(), sessionId: "root-session", ref: "remote:canonical-root" },
+  }));
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().summary !== null);
+  expect(store.getSnapshot().runtime).toMatchObject({
+    approvalPending: true,
+    pendingEscalationIds: ["esc_1", "esc_2"],
+  });
+
+  client.emitNotification({
+    method: "evener/sandbox/escalation/resolved",
+    params: { threadId: "wire-root", ref: activityRef, escalationId: "esc_1" },
+  });
+  expect(store.getSnapshot().runtime).toMatchObject({
+    approvalPending: true,
+    pendingEscalationIds: ["esc_2"],
+  });
+
+  client.emitNotification({
+    method: "evener/sandbox/escalation/resolved",
+    params: { threadId: "wire-root", ref: activityRef, escalationId: "esc_2" },
+  });
+  expect(store.getSnapshot().runtime).toMatchObject({
+    approvalPending: false,
+    pendingEscalationIds: [],
+  });
+});
+
 test("replacement activity identity retires the previous runtime atomically", async () => {
   const client = runtimeClient(),
     store = owner(client);

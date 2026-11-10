@@ -14,6 +14,8 @@ export interface ThreadSubscriptionMetadata {
   readonly askPending?: boolean;
   /** A pending sandbox escalation is actionable attention. */
   readonly approvalPending?: boolean;
+  /** The escalations still pending, so multiple approvals clear one at a time. */
+  readonly pendingEscalationIds?: readonly string[];
 }
 export interface ThreadSubscriptionLease {
   ensure(): Promise<void>;
@@ -51,6 +53,10 @@ interface Membership {
   // snapshot and must not revert the shared status (issue #4878 PAR).
   statusRevision: number;
   statusThreadId: string;
+  // Escalation frames are revisioned too: a delayed read must not resurrect an
+  // approval a newer resolved frame already removed.
+  approvalRevision: number;
+  pendingEscalations: Set<string>;
 }
 
 // All owners of a connection join this membership table. Transcript hydration
@@ -80,6 +86,8 @@ class ThreadSubscriptions {
         member.metadata = null;
         member.statusRevision = 0;
         member.statusThreadId = "";
+        member.approvalRevision = 0;
+        member.pendingEscalations.clear();
         member.orphanedSubscribe = false;
         this.releaseEmpty(member);
       }
@@ -90,6 +98,11 @@ class ThreadSubscriptions {
     // (issue #4878).
     this.stopNotifications = client.onNotification((notification) => {
       if (notification.method === "thread/status/changed") this.admitStatus(notification);
+      else if (
+        notification.method === "evener/sandbox/escalation/requested" ||
+        notification.method === "evener/sandbox/escalation/resolved"
+      )
+        this.admitEscalation(notification);
     });
   }
 
@@ -119,6 +132,32 @@ class ThreadSubscriptions {
     };
   }
 
+  private admitEscalation(
+    notification: Extract<
+      AnyNotification,
+      { method: "evener/sandbox/escalation/requested" | "evener/sandbox/escalation/resolved" }
+    >,
+  ): void {
+    const { ref, threadId, escalationId } = notification.params;
+    const direct = this.members.get(ref);
+    const member = direct ?? [...this.members.values()].find((candidate) => candidate.metadata?.threadId === threadId);
+    if (!member) return;
+    member.approvalRevision += 1;
+    if (notification.method === "evener/sandbox/escalation/requested") member.pendingEscalations.add(escalationId);
+    else member.pendingEscalations.delete(escalationId);
+    if (member.metadata) member.metadata = this.approvalMetadata(member, member.metadata);
+  }
+
+  private approvalMetadata(member: Membership, metadata: ThreadSubscriptionMetadata): ThreadSubscriptionMetadata {
+    const ids = [...member.pendingEscalations].sort();
+    return {
+      ...metadata,
+      ...(ids.length
+        ? { approvalPending: true, pendingEscalationIds: ids }
+        : { approvalPending: false, pendingEscalationIds: [] }),
+    };
+  }
+
   acquire(ref: string): ThreadSubscriptionLease {
     let member = this.members.get(ref);
     if (!member) {
@@ -134,6 +173,8 @@ class ThreadSubscriptions {
         metadata: null,
         statusRevision: 0,
         statusThreadId: "",
+        approvalRevision: 0,
+        pendingEscalations: new Set(),
       };
       this.members.set(ref, member);
     }
@@ -157,13 +198,14 @@ class ThreadSubscriptions {
       if (!held.subscribed) return this.acquireWire(held, params);
       const generation = this.generation;
       const statusRevision = held.statusRevision;
+      const approvalRevision = held.approvalRevision;
       const response = await this.client.request("thread/read", {
         ...params,
         ref,
         subscribe: false,
         replaceSubscription: false,
       });
-      if (!released) this.admitMetadata(held, response, generation, statusRevision);
+      if (!released) this.admitMetadata(held, response, generation, statusRevision, approvalRevision);
       return response;
     };
     return {
@@ -208,6 +250,7 @@ class ThreadSubscriptions {
     const generation = this.generation;
     const epoch = ++member.transitionEpoch;
     const statusRevision = member.statusRevision;
+    const approvalRevision = member.approvalRevision;
     member.outstandingAcquisitions += 1;
     const response = this.client.request("thread/read", {
       ...params,
@@ -224,7 +267,7 @@ class ThreadSubscriptions {
       // A failure propagates: reads joined on this transition must see it.
       if (generation === this.generation && epoch === member.transitionEpoch) {
         member.subscribed = true;
-        this.admitMetadata(member, result, generation, statusRevision);
+        this.admitMetadata(member, result, generation, statusRevision, approvalRevision);
         return;
       }
       if (generation !== this.generation || member.subscribed) return;
@@ -253,18 +296,45 @@ class ThreadSubscriptions {
     { thread }: ThreadReadResponse,
     generation: number,
     readStatusRevision: number,
+    readApprovalRevision: number,
   ): void {
     if (generation !== this.generation || this.client.state !== "ready" || member.holders === 0) return;
     // A status frame that landed after this read was issued is newer than the
     // read's snapshot: keep it rather than letting the late read revert the
     // status a re-acquired store would see.
     const newer = member.statusRevision > readStatusRevision && member.statusThreadId === thread.id;
+    // The same rule protects the pending-question flag: a status frame that
+    // carried askPending (true or false) is newer than this read's snapshot.
+    // When that frame did not carry it, the read remains the only evidence.
+    const askPending =
+      newer && member.metadata?.askPending !== undefined
+        ? member.metadata.askPending
+        : thread.evener?.askPending === true;
+    // Escalation frames revision the set the same way. A read issued before a
+    // requested/resolved frame carries an old snapshot and must not overwrite
+    // the frames that landed while it was on the wire.
+    const newerApprovals = member.approvalRevision > readApprovalRevision;
+    if (!newerApprovals) {
+      member.pendingEscalations.clear();
+      for (const escalation of thread.evener?.pendingEscalations ?? [])
+        member.pendingEscalations.add(escalation.escalationId);
+    }
+    const approvalIDs = [...member.pendingEscalations].sort();
+    const approvalFields = approvalIDs.length
+      ? { approvalPending: true, pendingEscalationIds: approvalIDs }
+      : newerApprovals
+        ? { approvalPending: false, pendingEscalationIds: [] }
+        : {};
     member.metadata = {
       threadId: thread.id,
       sessionId: thread.sessionId ?? thread.id,
       status: copyStatus((newer ? member.metadata?.status : undefined) ?? thread.status),
-      ...(thread.evener?.askPending === true ? { askPending: true } : {}),
-      ...((thread.evener?.pendingEscalations?.length ?? 0) > 0 ? { approvalPending: true } : {}),
+      ...(askPending
+        ? { askPending: true }
+        : newer && member.metadata?.askPending === false
+          ? { askPending: false }
+          : {}),
+      ...approvalFields,
     };
   }
 
