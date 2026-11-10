@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -709,6 +710,10 @@ type clearTestState struct {
 	// beforeClear runs after the old session is live and before thread/clear,
 	// for a test that must first move the session (enter a worktree lane).
 	beforeClear func(*agent.Session)
+	// clearDispatch sends thread/clear through the server's real RPC handler
+	// instead of calling the installed callback directly, so the mutation gate
+	// is held exactly as it is in production.
+	clearDispatch bool
 
 	srv *clearIdentityServer
 }
@@ -913,11 +918,23 @@ func runClearAttempt(t *testing.T, deps serveDeps, state *clearTestState, args [
 		}
 
 		before := len(state.recorded())
-		obs.clearErr = state.srv.clear(context.Background(), appwire.ThreadClearParams{
+		clearParams := appwire.ThreadClearParams{
 			Ref:                "local:" + obs.oldSessionID,
 			ClientMutationID:   "clear-test",
 			ExpectedInstanceID: obs.oldSessionID,
-		})
+		}
+		if state.clearDispatch {
+			raw, err := json.Marshal(clearParams)
+			if err != nil {
+				t.Fatalf("marshal clear params: %v", err)
+			}
+			_, obs.clearErr = state.srv.AppServer().Router().Dispatch(context.Background(), appwire.Request{
+				Method: appwire.MethodThreadClear,
+				Params: raw,
+			})
+		} else {
+			obs.clearErr = state.srv.clear(context.Background(), clearParams)
+		}
 		obs.steps = state.recorded()[before:]
 
 		if state.srv.envelopeSource != nil {

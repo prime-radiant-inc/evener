@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/execenv"
@@ -121,6 +122,41 @@ func TestRunServeClearKeepsTheWorktreeLane(t *testing.T) {
 		t.Errorf("rendezvous = session %q dir %q, want session %q dir %q", updatedEntry.SessionID, updatedEntry.WorkingDir, newMeta.ID, lane)
 	}
 
+}
+
+// TestRunServeClearHoldsAutomaticInputAdmission pins the clear/input ordering:
+// while clear prepares a replacement, an automatic input turn must not be
+// admitted. It must wait for the whole preparation and publication, then run
+// against the replacement.
+func TestRunServeClearHoldsAutomaticInputAdmission(t *testing.T) {
+	deps, state, args := newClearServeDeps(t)
+	state.clearDispatch = true
+	innerClearSession := deps.newClearSession
+	started := make(chan struct{})
+	deps.newClearSession = func(client *llm.Client, profile *agentprovider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+		go func() {
+			processWithMutationRead(state.srv, func() bool {
+				close(started)
+				return true
+			})
+		}()
+		select {
+		case <-started:
+			t.Error("automatic input was admitted while clear was preparing the replacement")
+		case <-time.After(50 * time.Millisecond):
+		}
+		return innerClearSession(client, profile, env, cfg)
+	}
+
+	obs := runClearAttempt(t, deps, state, args, nil)
+	if obs.clearErr != nil {
+		t.Fatalf("thread/clear: %v", obs.clearErr)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("automatic input did not run after clear published the replacement")
+	}
 }
 
 func manageWorktreeCreateCall(t *testing.T, name string) llm.ToolCallData {
