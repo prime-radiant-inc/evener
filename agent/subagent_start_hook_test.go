@@ -547,6 +547,8 @@ func TestSubagentStart_StoppedLaunchStillRearmsPendingAttention(t *testing.T) {
 	sub.mu.Unlock()
 	select {
 	case <-done:
+	// TRIPWIRE: finalizeRun closes done after its re-arm work, so only a
+	// genuine hang reaches this generous ceiling.
 	case <-time.After(60 * time.Second):
 		t.Fatal("timed out waiting for the hook-stopped run to finalize")
 	}
