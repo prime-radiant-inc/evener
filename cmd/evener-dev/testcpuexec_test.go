@@ -37,7 +37,7 @@ func goTestUnderCPUExec(t *testing.T, run string, env ...string) ([]byte, error)
 	bin := buildEvenerDev(t)
 	isolateToolchainEnv(t)
 	t.Setenv("GOWORK", "off")
-	cmd := exec.Command("go", "test", "-json", "-count=1", "-run", run, "-exec", bin+" dev test-cpu-exec", ".") //nolint:noctx // one bounded fixture run, reaped by Output
+	cmd := exec.Command("go", "test", "-json", "-count=1", "-run", run, "-exec", "'"+bin+"' dev test-cpu-exec", ".") //nolint:noctx // one bounded fixture run, reaped by Output
 	cmd.Dir = fixtureModule(t)
 	cmd.Env = append(cmd.Environ(), env...)
 	return cmd.Output()
