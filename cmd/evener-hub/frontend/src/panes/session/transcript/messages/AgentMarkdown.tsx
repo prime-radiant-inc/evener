@@ -1,4 +1,5 @@
 import { isValidTranscriptRef } from "@evener/appwire-client";
+import { parseFileReference } from "@evener/appwire-client/docContent";
 import { type ReactNode, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
@@ -8,18 +9,13 @@ import { openDocBeside } from "../../../doc/openDoc";
 import { enhanceEntityText } from "../EntityText";
 import { enhanceFileReferences, resolveAnchorReference } from "./fileReferenceDOM";
 
-// A bare relative href is the only shape an authored file reference can have
-// before the session's cwd arrives; anything with a scheme, an absolute path
-// or a fragment already names its own destination and must not be held.
+// A bare relative href the shared resolver accepts as a file link is the only
+// shape worth holding before cwd arrives: anything with a scheme, an absolute
+// path (a hub route), a fragment or a query already names its own
+// destination. parseFileReference classifies a relative link without the real
+// cwd, so every held href is one the replay resolves.
 function deferrableFileHref(href: string): boolean {
-  const value = href.trim();
-  return (
-    value !== "" &&
-    !value.startsWith("#") &&
-    !value.startsWith("/") &&
-    !value.startsWith("?") &&
-    !/^[a-z][a-z0-9+.-]*:/i.test(value)
-  );
+  return !href.startsWith("/") && parseFileReference(href, "link", "/", undefined) !== undefined;
 }
 
 /** Adds source-bound file actions to sanitized assistant prose without changing
@@ -52,11 +48,13 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
     const affordances: ReactNode[] = [];
     const slots: HTMLElement[] = [];
     const qualifiedRef = sessionRef?.includes(":") ? sessionRef : `local:${sessionRef ?? ""}`;
+    const ownerRef = sessionRef && sourcePaneId && isValidTranscriptRef(qualifiedRef) ? sessionRef : undefined;
+    const paneID = ownerRef === undefined ? undefined : sourcePaneId;
     const context =
-      sessionRef && isValidTranscriptRef(qualifiedRef) && cwd && sourcePaneId
-        ? { sessionRef, cwd, sourcePaneId, artifactsDir, scratchDir }
+      ownerRef && paneID && cwd
+        ? { sessionRef: ownerRef, cwd, sourcePaneId: paneID, artifactsDir, scratchDir }
         : undefined;
-    if (!context && sessionRef && sourcePaneId && isValidTranscriptRef(qualifiedRef)) {
+    if (!context && ownerRef && paneID) {
       const onClick = (event: MouseEvent) => {
         if (
           event.defaultPrevented ||
@@ -74,7 +72,7 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
         const href = target.getAttribute("href") ?? "";
         if (!deferrableFileHref(href)) return;
         event.preventDefault();
-        pendingFileClick.current = { href, sessionRef, sourcePaneId };
+        pendingFileClick.current = { href, sessionRef: ownerRef, sourcePaneId: paneID };
       };
       element.addEventListener("click", onClick, true);
       return () => element.removeEventListener("click", onClick, true);
@@ -82,11 +80,9 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
     if (context) {
       const held = pendingFileClick.current;
       pendingFileClick.current = null;
-      if (held && held.sessionRef === sessionRef) {
-        const reference = resolveAnchorReference(held.href, context.cwd, {
-          artifactsDir: context.artifactsDir,
-          scratchDir: context.scratchDir,
-        });
+      const refOptions = { artifactsDir: context.artifactsDir, scratchDir: context.scratchDir };
+      if (held) {
+        const reference = resolveAnchorReference(held.href, context.cwd, refOptions);
         if (reference) {
           openDocBeside({ session: held.sessionRef, reference, sourcePaneId: held.sourcePaneId });
         }
@@ -95,10 +91,7 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
       // destinations before the DOM adapter rewrites hrefs or generates links.
       for (const link of element.querySelectorAll<HTMLAnchorElement>("a[href]")) {
         if (link.closest(`pre, [data-entity-host], [${MERMAID_DIAGRAM_ATTR}]`)) continue;
-        const reference = resolveAnchorReference(link.getAttribute("href") ?? "", context.cwd, {
-          artifactsDir: context.artifactsDir,
-          scratchDir: context.scratchDir,
-        });
+        const reference = resolveAnchorReference(link.getAttribute("href") ?? "", context.cwd, refOptions);
         if (!reference) continue;
         const request = { session: context.sessionRef, reference, sourcePaneId: context.sourcePaneId };
         const slot = document.createElement("span");
