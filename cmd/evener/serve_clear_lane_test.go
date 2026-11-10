@@ -20,6 +20,7 @@ import (
 	"primeradiant.com/evener/cmd/evener/internal/rvreg"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/rendezvous"
+	"primeradiant.com/evener/server"
 )
 
 // TestRunServeClearKeepsTheWorktreeLane drives the exact #2957 path on a real
@@ -156,6 +157,19 @@ func TestRunServeClearHoldsAutomaticInputAdmission(t *testing.T) {
 	case <-started:
 	case <-time.After(2 * time.Second):
 		t.Fatal("automatic input did not run after clear published the replacement")
+	}
+}
+
+func TestInputBelongsToSession_DiscardsPredecessorContinuation(t *testing.T) {
+	oldContinuation := server.InputMessage{Kind: agent.EntryContinuation, SessionID: "old-session"}
+	if inputBelongsToSession(oldContinuation, "new-session") {
+		t.Fatal("a continuation queued for the predecessor was allowed in the replacement")
+	}
+	if !inputBelongsToSession(oldContinuation, "old-session") {
+		t.Fatal("a continuation was refused by its own session")
+	}
+	if !inputBelongsToSession(server.InputMessage{Kind: agent.EntryNotification}, "new-session") {
+		t.Fatal("an untagged notification wake was refused")
 	}
 }
 

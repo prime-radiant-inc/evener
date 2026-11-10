@@ -158,7 +158,7 @@ type serveServer interface {
 	SetDescendantQuotaWaitsFunc(func(threadIDs []string) map[string]*appwire.ThreadFailure)
 	SetSubagentTallyFunc(func() (appwire.SubagentTally, bool))
 	InputCh() <-chan server.InputMessage
-	SubmitContinuation(string)
+	SubmitContinuation(string, string)
 	SubmitNotification()
 	SubmitClientMutationStart(string)
 	SubmitPendingUserInput(string)
@@ -917,7 +917,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	go func() {
 		defer close(inputLoopDone)
 		processMessage := func(sess *agent.Session, msg server.InputMessage) bool {
-			if msg.ClientMutationStart && msg.SessionID != sess.ID() {
+			// User, queued, start and continuation messages that name a
+			// session belong only to it. A continuation queued while clear
+			// builds a replacement must not run its predecessor's objective
+			// in the replacement after the gate releases.
+			if !inputBelongsToSession(msg, sess.ID()) {
 				return false
 			}
 			runnerDone := make(chan struct{})
@@ -1196,6 +1200,14 @@ func processWithMutationRead(srv serveServer, fn func() bool) bool {
 		return processed
 	}
 	return fn()
+}
+
+// inputBelongsToSession reports whether msg may run against sessionID. An
+// untagged notification wake belongs to whichever session is live; every
+// input that names a session belongs only to that session, so a continuation
+// queued by a predecessor cannot execute its objective in the replacement.
+func inputBelongsToSession(msg server.InputMessage, sessionID string) bool {
+	return msg.SessionID == "" || msg.SessionID == sessionID
 }
 
 func mapServePendingEscalations(data []events.SandboxEscalationRequestedData) []appwire.SandboxEscalationRequested {

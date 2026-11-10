@@ -20,7 +20,7 @@ func TestSubmitNotification_DeliveredOnceTheSlotFrees(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 
 	// Occupy the single slot with unrelated input.
-	srv.SubmitContinuation("keep the slot busy")
+	srv.SubmitContinuation("session-1", "keep the slot busy")
 	srv.SubmitNotification()
 
 	occupant := <-srv.InputCh()
@@ -45,7 +45,7 @@ func TestSubmitNotification_DeliveredOnceTheSlotFrees(t *testing.T) {
 func TestSubmitNotification_RepeatedDropsWakeOnce(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 
-	srv.SubmitContinuation("keep the slot busy")
+	srv.SubmitContinuation("session-1", "keep the slot busy")
 	for range 5 {
 		srv.SubmitNotification()
 	}
