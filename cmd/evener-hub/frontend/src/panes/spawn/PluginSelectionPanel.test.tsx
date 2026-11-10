@@ -218,12 +218,12 @@ describe("the Details action opens the launcher sheet", () => {
     const fake = fakeWithComponents();
     renderPanel({ client: fake });
 
-    // alpha is installed from a marketplace (and also carries a path): the
-    // marketplace+name pair picks the read target.
+    // alpha is installed from a marketplace: the resolved winner's path
+    // picks the read target, not its manifest name.
     await user.click(within(rowOf("alpha")).getByRole("button", { name: "Details" }));
     await settleComponentsRead();
     const alphaSheet = screen.getByRole("dialog", { name: "alpha" });
-    expect(fake.calls.map((call) => call.params)).toEqual([{ targets: [{ plugin: "alpha", marketplace: "acme" }] }]);
+    expect(fake.calls.map((call) => call.params)).toEqual([{ targets: [{ path: "/plugins/alpha" }] }]);
     expect(alphaSheet.querySelector('[data-kind="plugin-contents"]')).toBeTruthy();
     expect(alphaSheet.querySelector('[data-kind="skills"]')).toBeTruthy();
     expect(within(alphaSheet).getByText("acme")).toBeTruthy();
@@ -237,7 +237,7 @@ describe("the Details action opens the launcher sheet", () => {
     await user.click(within(rowOf("beta")).getByRole("button", { name: "Details" }));
     await settleComponentsRead();
     expect(fake.calls.map((call) => call.params)).toEqual([
-      { targets: [{ plugin: "alpha", marketplace: "acme" }] },
+      { targets: [{ path: "/plugins/alpha" }] },
       { targets: [{ path: "/tmp/beta" }] },
     ]);
     const betaSheet = screen.getByRole("dialog", { name: "beta" });
@@ -348,12 +348,12 @@ describe("the Details action opens the launcher sheet", () => {
     const candidate = preview.plugins[0];
     if (!candidate) throw new Error("missing alpha fixture");
     fake.on("evener/plugin/components", () => ({
-      results: [{ plugin: "alpha", marketplace: "acme", components: { commands: ["revision-command"] } }],
+      results: [{ path: "/plugins/alpha", components: { commands: ["revision-command"] } }],
     }));
     rerender(panel({ plugins: [{ ...candidate, version: "2.0.0" }] }));
     await settleComponentsRead();
     expect(fake.calls).toHaveLength(2);
-    expect(fake.calls.at(-1)?.params).toEqual({ targets: [{ plugin: "alpha", marketplace: "acme" }] });
+    expect(fake.calls.at(-1)?.params).toEqual({ targets: [{ path: "/plugins/alpha" }] });
     expect(
       screen.getByRole("dialog", { name: "alpha" }).querySelector('[data-kind="commands"]')?.textContent,
     ).toContain("revision-command");

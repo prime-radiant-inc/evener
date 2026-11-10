@@ -3,9 +3,8 @@
 // candidate arrives as a prop together with the selection state its row
 // shows; launcher mode owns no editor - no install, remove or enable - so
 // the sheet is the Contents block, the candidate's metadata, and the one
-// switch that mirrors the row. The candidate names its own directory (an
-// installed plugin@marketplace pair, or the path every other source
-// resolved), so the components read starts when the sheet mounts; the panel
+// switch that mirrors the row. The candidate names its own resolved directory,
+// so the components read starts when the sheet mounts; the panel
 // mounts the sheet only while a candidate's sheet is open, and a read that
 // fails degrades quietly where Contents would be rather than blocking the
 // selection work around it.
@@ -51,14 +50,9 @@ export function LauncherPluginSheet({
   client,
   host,
 }: LauncherPluginSheetProps): ReactElement {
-  // The pair is the wire address when the candidate carries one; every other
-  // source reads by the path the preview already resolved. A hub always sets
-  // the path for a non-installed candidate, so the fallback only satisfies
-  // the type.
-  const target: PluginComponentsReadArgs["target"] =
-    candidate.marketplace !== undefined
-      ? { plugin: candidate.name, marketplace: candidate.marketplace }
-      : { path: candidate.path ?? "" };
+  // The preview's path identifies the winner. Its manifest name need not
+  // match the catalog name used in installed registry keys.
+  const target: PluginComponentsReadArgs["target"] = { path: candidate.path ?? "" };
   const read = usePluginComponents({ client, host, target }, JSON.stringify(candidate));
 
   const metaRows: PluginMetadataRow[] = [

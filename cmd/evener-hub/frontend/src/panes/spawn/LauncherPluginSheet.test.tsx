@@ -107,6 +107,29 @@ test("a directory-source candidate reads by its path and renders the answer as C
   expect(within(sheet).queryByRole("button", { name: "Remove" })).toBeNull();
 });
 
+test("an installed winner reads its resolved path when its manifest name differs from its catalog name", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const path = "/plugins/cache/m/zzz-enabled/1.0.0";
+  const fake = new FakeClient();
+  fake.on("evener/plugin/components", (params) => ({
+    results: params.targets.map((target) =>
+      target.path === path
+        ? { ...target, components: { commands: ["winner-command"] } }
+        : { ...target, error: "unresolved-pair-sentinel" },
+    ),
+  }));
+  renderSheet({
+    client: fake,
+    candidate: { ...DIRECTORY_CANDIDATE, name: "shared", source: "installed", marketplace: "m", path },
+  });
+  await settleRead();
+
+  expect(fake.calls).toEqual([{ method: "evener/plugin/components", params: { targets: [{ path }] } }]);
+  const sheet = screen.getByRole("dialog", { name: "shared" });
+  expect(sheet.querySelector('[data-kind="commands"]')?.textContent).toContain("winner-command");
+  expect(sheet.querySelector('[data-reason="plugin-broken"]')).toBeNull();
+});
+
 test("launcher details use bottom sheet geometry on mobile", () => {
   vi.mocked(useIsMobile).mockReturnValue(true);
   renderSheet();

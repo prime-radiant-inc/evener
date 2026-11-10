@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -96,6 +97,77 @@ func TestInspect(t *testing.T) {
 			t.Errorf("instance = %+v, want the empty Instance alongside the error", instance)
 		}
 	})
+}
+
+func TestInspectUnpublishedBundledCandidate(t *testing.T) {
+	m := NewManager(t.TempDir())
+	preview, err := m.PreviewForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := preview.ValidateSelection(); err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.Candidates) != 1 || preview.Candidates[0].Source != LaunchPluginSourceBundled {
+		t.Fatalf("Candidates = %+v, want one bundled candidate", preview.Candidates)
+	}
+	path := preview.Candidates[0].Path
+	assertUnpublished := func() {
+		t.Helper()
+		if _, err := os.Lstat(path); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("publication path exists or cannot be checked: %v", err)
+		}
+		if entries := bundledStoreEntries(t, m.bundledDir()); len(entries) != 0 {
+			t.Fatalf("inspection published entries: %v", entries)
+		}
+		if entries, err := os.ReadDir(m.bundledPublishingDir()); err != nil || len(entries) != 0 {
+			t.Fatalf("preview staging not cleaned: entries = %v, err = %v", entries, err)
+		}
+	}
+	assertUnpublished()
+	defer assertUnpublished()
+	instance, err := m.Inspect(context.Background(), InspectTarget{Path: path})
+	if err != nil {
+		t.Fatalf("Inspect unpublished bundled candidate: %v", err)
+	}
+	if instance.Manifest.Name != "coordinator-workflow" {
+		t.Fatalf("loaded manifest = %q", instance.Manifest.Name)
+	}
+	if _, ok := instance.Agents["coordinator-workflow:coordinator"]; !ok {
+		t.Errorf("Agents = %v, want the bundled coordinator", instance.Agents)
+	}
+	if len(instance.Agents) != preview.Candidates[0].AgentCount {
+		t.Errorf("loaded %d agents, preview described %d", len(instance.Agents), preview.Candidates[0].AgentCount)
+	}
+}
+
+func TestInspectDoesNotStageBrokenOrMissingInstalls(t *testing.T) {
+	m := NewManager(t.TempDir())
+	digest, err := bundledPluginDigest("coordinator-workflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	brokenBundle := m.bundledPluginPath("coordinator-workflow", digest)
+	if err := os.MkdirAll(brokenBundle, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	saveTestRegistry(t, m, map[string][]InstallEntry{
+		"coordinator-workflow@m": {{InstallPath: filepath.Join(m.cacheDir(), "coordinator-workflow")}},
+	})
+	for _, target := range []InspectTarget{
+		{Path: filepath.Join(m.cacheDir(), "coordinator-workflow")},
+		{Path: m.bundledPluginPath("coordinator-workflow", "0000000000000000")},
+		{Path: m.bundledPluginPath("not-bundled", digest)},
+		{Path: brokenBundle},
+		{Plugin: "coordinator-workflow", Marketplace: "m"},
+	} {
+		if instance, err := m.Inspect(context.Background(), target); err == nil || !reflect.DeepEqual(instance, agentplugin.Instance{}) {
+			t.Errorf("Inspect(%+v) = %+v, %v, want empty instance and load error", target, instance, err)
+		}
+	}
+	if _, err := os.Lstat(m.bundledPublishingDir()); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("broken or missing install created staging: %v", err)
+	}
 }
 
 func TestInspectBatchLoadsOnlyFreshTargets(t *testing.T) {
