@@ -1,6 +1,7 @@
 package evener_test
 
 import (
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
@@ -15,24 +16,10 @@ import (
 // of trimming to the job's own build, so a main run that failed the budget
 // would save an ever larger entry.
 func TestGoCacheSavePrecedesTheTimingBudgetGate(t *testing.T) {
-	data, err := os.ReadFile(".github/workflows/ci.yml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var workflow struct {
-		Jobs map[string]struct {
-			Steps []struct {
-				Name string `yaml:"name"`
-				Uses string `yaml:"uses"`
-			} `yaml:"steps"`
-		} `yaml:"jobs"`
-	}
-	if err := yaml.Unmarshal(data, &workflow); err != nil {
-		t.Fatal(err)
-	}
+	jobs := readCacheWorkflow(t, ".github/workflows/ci.yml")
 	for _, job := range []string{"web-unit", "tests-parts"} {
 		saveIndex, budgetIndex := -1, -1
-		for i, step := range workflow.Jobs[job].Steps {
+		for i, step := range jobs[job].Steps {
 			switch {
 			case step.Uses == "./.github/actions/go-cache-save":
 				saveIndex = i
@@ -82,7 +69,31 @@ func readCacheWorkflow(t *testing.T, path string) map[string]cacheWorkflowJob {
 	if err := yaml.Unmarshal(data, &workflow); err != nil {
 		t.Fatalf("parse %s: %v", path, err)
 	}
+	if len(workflow.Jobs) == 0 {
+		t.Fatalf("%s declares no jobs", path)
+	}
 	return workflow.Jobs
+}
+
+// readActionSteps parses a composite action's steps.
+func readActionSteps(t *testing.T, path string) []cacheWorkflowStep {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var action struct {
+		Runs struct {
+			Steps []cacheWorkflowStep `yaml:"steps"`
+		} `yaml:"runs"`
+	}
+	if err := yaml.Unmarshal(data, &action); err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	if len(action.Runs.Steps) == 0 {
+		t.Fatalf("%s has no steps", path)
+	}
+	return action.Runs.Steps
 }
 
 var matrixReference = regexp.MustCompile(`\$\{\{\s*matrix\.(\w+)\s*\}\}`)
@@ -99,7 +110,7 @@ func matrixCells(job cacheWorkflowJob) []map[string]string {
 		var next []map[string]string
 		for _, cell := range cells {
 			for _, value := range list {
-				grown := map[string]string{name: toString(value)}
+				grown := map[string]string{name: fmt.Sprint(value)}
 				for k, v := range cell {
 					grown[k] = v
 				}
@@ -109,14 +120,6 @@ func matrixCells(job cacheWorkflowJob) []map[string]string {
 		cells = next
 	}
 	return cells
-}
-
-func toString(value any) string {
-	if s, ok := value.(string); ok {
-		return s
-	}
-	out, _ := yaml.Marshal(value)
-	return strings.TrimSpace(string(out))
 }
 
 func expandMatrix(text string, cell map[string]string) string {
@@ -186,9 +189,6 @@ func TestEveryRestoredGoCacheKindIsSaved(t *testing.T) {
 		t.Fatal("no job restores a Go cache kind")
 	}
 	for kind, where := range restored {
-		if kind == "modules" {
-			t.Errorf("%s: kind %q collides with the shared module cache's key", where, kind)
-		}
 		if !saved[kind] {
 			t.Errorf("Go cache kind %q is restored (%s) but no job restoring it saves it", kind, where)
 		}
@@ -225,22 +225,7 @@ func TestCacheSavesRunAfterAFailedStep(t *testing.T) {
 		}
 	}
 
-	data, err := os.ReadFile(".github/actions/go-cache-save/action.yml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var action struct {
-		Runs struct {
-			Steps []cacheWorkflowStep `yaml:"steps"`
-		} `yaml:"runs"`
-	}
-	if err := yaml.Unmarshal(data, &action); err != nil {
-		t.Fatal(err)
-	}
-	if len(action.Runs.Steps) == 0 {
-		t.Fatal("go-cache-save has no steps")
-	}
-	for _, step := range action.Runs.Steps {
+	for _, step := range readActionSteps(t, ".github/actions/go-cache-save/action.yml") {
 		if !strings.Contains(step.If, "!cancelled()") {
 			t.Errorf("go-cache-save step %q: if %q lacks !cancelled()", step.Name, step.If)
 		}
@@ -279,17 +264,5 @@ func TestBuiltInToolchainCachesStayOff(t *testing.T) {
 			check(path+" "+name, job.Steps)
 		}
 	}
-	data, err := os.ReadFile(".github/actions/setup-toolchain/action.yml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var action struct {
-		Runs struct {
-			Steps []cacheWorkflowStep `yaml:"steps"`
-		} `yaml:"runs"`
-	}
-	if err := yaml.Unmarshal(data, &action); err != nil {
-		t.Fatal(err)
-	}
-	check("setup-toolchain", action.Runs.Steps)
+	check("setup-toolchain", readActionSteps(t, ".github/actions/setup-toolchain/action.yml"))
 }

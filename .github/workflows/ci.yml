@@ -688,7 +688,7 @@ jobs:
           set -euo pipefail
           entries="$(gh cache list --repo "$GITHUB_REPOSITORY" --ref refs/heads/main \
             --sort created_at --order desc --limit 1000 --json id,key \
-            --jq '.[] | select(.key | test("^(go|golangci-lint)-.*-[0-9a-f]{40}$")) | "\(.id) \(.key | sub("[0-9a-f]{40}$"; ""))"')"
+            --jq '.[] | select(.key | test("^(go|gomod|golangci-lint)-.*-[0-9a-f]{40}$")) | "\(.id) \(.key | sub("[0-9a-f]{40}$"; ""))"')"
           # Newest first, so the first entry of each prefix is the one kept.
           superseded="$(printf '%s\n' "$entries" | awk 'NF == 2 && seen[$2]++ { print $1 }')"
           deleted=0

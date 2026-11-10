@@ -935,7 +935,7 @@ What is cached, and where it is saved:
   tags) use different kinds; jobs that compile nearly the same thing share one,
   saved by one of them (the `web-browser` shards share `web-browser`, saved by
   the cascade shard).
-- **Go module cache, one entry for every kind**, `go-modules-…`, saved by
+- **Go module cache, one entry for every kind**, `gomod-…`, saved by
   `static-build` alone (go-cache-save's `modules: "true"`). A job that needs a
   module the entry lacks downloads it on each run.
 - **golangci-lint analysis caches**, `golangci-lint-…` and
@@ -952,10 +952,11 @@ What is cached, and where it is saved:
 The rules that keep the budget:
 
 - **One generation on main.** CI's `cache-prune` job runs after every lane of a
-  main push and deletes each `go-*` and `golangci-lint-*` entry on main that a
-  newer entry with the same prefix supersedes. It never deletes a prefix's
-  newest entry, so a lane that saved nothing keeps its last one. Entries left by
-  a renamed kind or an older Go version are nobody's newest-but-one; nothing
+  main push and deletes each `go-*`, `gomod-*` and `golangci-lint-*` entry on
+  main that a newer entry with the same prefix supersedes. It never deletes a
+  prefix's newest entry, so a lane that saved nothing keeps its last one.
+  Entries left by a renamed kind or an older Go version are their prefix's
+  newest, so the job keeps them; nothing
   restores them, so eviction takes them first, and they expire after 7 days.
 - **A saved entry is one job's build.** go-cache-restore dates every restored
   build cache entry two hours back on main, Go refreshes the mtime of an entry
@@ -978,8 +979,7 @@ compiles; if one does, restore that kind instead and save from only the job
 that compiles the most. If the job needs its own kind, read the size of a
 comparable kind's newest entry, add it to the current total, and keep the total
 under 6GB. Restore with go-cache-restore (or setup-toolchain's
-`go-cache-kind`), save with go-cache-save after the job's last Go step, and
-never name a kind `modules`.
+`go-cache-kind`), and save with go-cache-save after the job's last Go step.
 
 To read the budget, list the entries and the total:
 

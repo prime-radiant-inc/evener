@@ -23,9 +23,7 @@ runs:
       with:
         kind: ${{ inputs.go-cache-kind }}
 
-    # No npm cache: setup-node saves one from whichever ref first misses the
-    # key, pull requests and merge-queue branches included, and a warm
-    # ~/.npm does not make npm ci measurably faster here.
+    # No npm cache: see "CI Caches" in docs/developing-evener/testing.md.
     - uses: actions/setup-node@v7
       with:
         node-version: "22"
