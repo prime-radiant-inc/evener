@@ -10,5 +10,6 @@ func delegateControllerPlatformExcludedProductionFiles() map[string]bool {
 	return map[string]bool{
 		"process_alive_other.go":      true,
 		"process_started_at_linux.go": true,
+		"worktree_commondir_other.go": true,
 	}
 }
