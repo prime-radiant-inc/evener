@@ -130,11 +130,10 @@ func (m *Manager) checkServiceRoot(ctx context.Context, host hostreg.Host, pid s
 // row. Pin the selected vnode on both sides. Observe only, without acquiring a
 // lock.
 func serviceLockVnodeRemote(root, pid string) string {
-	return "lock=" + shellquote.RemoteWord(path.Join(root, "hub.lock")) + "; [ ! -L \"$lock\" ] && [ -f \"$lock\" ] || exit 1; identity=$(stat -c '%d %i' \"$lock\") || exit; found=; fdpath=; " +
-		"[ -r /proc/" + pid + "/fd ] && [ -x /proc/" + pid + "/fd ] || exit 1; for fd in /proc/" + pid + "/fd/*; do current=$(stat -Lc '%d %i' \"$fd\" 2>/dev/null) || continue; " +
-		"if [ \"$current\" = \"$identity\" ]; then found=yes; fdpath=$fd; break; fi; done; [ \"$found\" = yes ] || exit 1; " +
+	return "lock=" + shellquote.RemoteWord(path.Join(root, "hub.lock")) + "; [ ! -L \"$lock\" ] && [ -f \"$lock\" ] || exit 1; identity=$(stat -c '%d %i' \"$lock\") || exit; " +
 		lockKeyRemote() +
-		"fdinfo=/proc/" + pid + "/fdinfo/${fdpath##*/}; count=$(awk -v key=\"$key\" -v pid=" + pid + " '$1 == \"lock:\" && $3 == \"FLOCK\" && $4 == \"ADVISORY\" && $5 == \"WRITE\" && $6 == pid && $7 == key { count++ } END { print count + 0 }' \"$fdinfo\" 2>/dev/null) || exit; [ \"$count\" = 1 ] || exit 1; " +
+		"found=; [ -r /proc/" + pid + "/fd ] && [ -x /proc/" + pid + "/fd ] || exit 1; for fd in /proc/" + pid + "/fd/*; do current=$(stat -Lc '%d %i' \"$fd\" 2>/dev/null) || continue; [ \"$current\" = \"$identity\" ] || continue; " +
+		"count=$(awk -v key=\"$key\" -v pid=" + pid + " '$1 == \"lock:\" && $3 == \"FLOCK\" && $4 == \"ADVISORY\" && $5 == \"WRITE\" && $6 == pid && $7 == key { count++ } END { print count + 0 }' \"/proc/" + pid + "/fdinfo/${fd##*/}\" 2>/dev/null) || continue; if [ \"$count\" = 1 ]; then found=yes; break; fi; done; [ \"$found\" = yes ] || exit 1; " +
 		"[ ! -L \"$lock\" ] && [ -f \"$lock\" ] || exit 1; current=$(stat -c '%d %i' \"$lock\") || exit; " +
 		"[ \"$current\" = \"$identity\" ] || exit 1; printf 'match\\n'"
 }
