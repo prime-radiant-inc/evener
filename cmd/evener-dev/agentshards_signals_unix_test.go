@@ -126,18 +126,26 @@ func awaitPidGone(t *testing.T, pid int, label string) {
 // of holding the run until something outside kills it, the run is red, and
 // what it prints names the test that was running. The shard path replays the
 // failing shard's log; the survey path prints its excerpt. The caller's short
-// -timeout stands in for the 10m default so the hang costs seconds.
+// -timeout stands in for the 10m default so the hang costs seconds. Under the
+// timing capture the failed phase also writes no package row, so the gate reads
+// the hung test as the test failure it is and never as a missing measurement.
 func TestAgentShardsHungTestFailsItsRunAndIsNamed(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		noSurvey bool
+		capture  bool
 	}{
 		{name: "shard", noSurvey: true},
+		{name: "shard under the timing capture", noSurvey: true, capture: true},
 		{name: "survey"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, stdout, stderr, _ := e2eConfig(t)
 			cfg.noSurvey = tc.noSurvey
+			if tc.capture {
+				cfg.jsonDir = t.TempDir()
+				cfg.jsonPackage = "shardfixture"
+			}
 			cfg.flags = []string{"-timeout=3s"}
 			holdDir := t.TempDir()
 			fifo := filepath.Join(holdDir, "hold.fifo")
@@ -176,8 +184,46 @@ func TestAgentShardsHungTestFailsItsRunAndIsNamed(t *testing.T) {
 			if !strings.Contains(out, "TestFixtureHold") {
 				t.Fatalf("the failure output does not name the hung test\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
 			}
+			if tc.capture {
+				if _, err := os.Stat(filepath.Join(cfg.jsonDir, "agent.package.tsv")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("a hung phase wrote a package timing row (stat err %v), so it would read as a measurement", err)
+				}
+			}
 		})
 	}
+}
+
+// A test binary that hits go test's -timeout under test-cpu-exec panics and
+// exits nonzero; the wrapper hands that status back and passes the panic
+// through whole, so the package fails and its output still names the test
+// that was running. The CPU line follows the panic and the parser still finds
+// it, so the gate sees a failed package, not a missing measurement.
+func TestTestCPUExecPassesAHungTestsTimeoutPanicThrough(t *testing.T) {
+	holdDir := t.TempDir()
+	if err := syscall.Mkfifo(filepath.Join(holdDir, "hold.fifo"), 0o600); err != nil {
+		t.Fatalf("mkfifo: %v", err)
+	}
+	bin := buildEvenerDev(t)
+	isolateToolchainEnv(t)
+	t.Setenv("GOWORK", "off")
+	cmd := exec.Command("go", "test", "-json", "-count=1", "-timeout=3s", "-run", "^TestFixtureHold$", //nolint:noctx // bounded by the -timeout under test
+		"-exec", "'"+bin+"' dev test-cpu-exec", ".")
+	cmd.Dir = fixtureModule(t)
+	cmd.Env = append(cmd.Environ(), "SHARD_FIXTURE_HOLD="+holdDir)
+	out, err := cmd.Output()
+	if _, ok := errors.AsType[*exec.ExitError](err); !ok {
+		t.Fatalf("go test over a hung test under the wrapper = %v, want a failing exit\n%s", err, out)
+	}
+	for _, want := range []string{"panic: test timed out after 3s", "TestFixtureHold", `"Action":"fail","Package":"shardfixture"`} {
+		if !bytes.Contains(out, []byte(want)) {
+			t.Fatalf("the stream lacks %q:\n%s", want, out)
+		}
+	}
+	rows, err := parseGoTestJSON(bytes.NewReader(out), []string{"shardfixture"})
+	if err != nil {
+		t.Fatalf("parsing the wrapped stream: %v\n%s", err, out)
+	}
+	cpuRowSeconds(t, rows, "shardfixture")
 }
 
 func TestAgentShardsSIGTERMExits143RetainsLogsReapsChildren(t *testing.T) {

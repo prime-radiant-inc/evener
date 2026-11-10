@@ -6,7 +6,7 @@
 // The grammar is defined in
 // docs/superpowers/specs/2026-08-20-makefile-and-docs-decomposition-design.md
 // §2, and is authoritative over the summary in this file's comments.
-package main
+package makefile
 
 import (
 	"fmt"
@@ -24,6 +24,13 @@ type Target struct {
 	Trigger   string
 	Requires  string
 	FailsWhen string
+}
+
+// HasFields reports whether t carries at least one structured field. A target
+// with only a summary renders in the compact list instead of the wide table,
+// per spec §3.
+func (t Target) HasFields() bool {
+	return t.Proves != "" || t.Trigger != "" || t.Requires != "" || t.FailsWhen != ""
 }
 
 // fieldAttempt matches a "## " line's content when it OPENS with a
@@ -115,11 +122,11 @@ func ParseFamily(src []byte) ([]Target, error) {
 
 		case strings.TrimSpace(line) == "":
 			if pending != nil {
-				return nil, reject(errBlockDetached, "line %d: blank line separates the ## block (opened at line %d) from its rule; a block must be contiguous with the rule it documents", lineNo, pending.startLine)
+				return nil, reject(ErrBlockDetached, "line %d: blank line separates the ## block (opened at line %d) from its rule; a block must be contiguous with the rule it documents", lineNo, pending.startLine)
 			}
 
 		default:
-			name, rest, isRuleShape := ruleShape(line)
+			name, rest, isRuleShape := RuleShape(line)
 			switch {
 			case !isRuleShape:
 				// A plain "#" comment (anything here that isn't "##", which
@@ -129,13 +136,13 @@ func ParseFamily(src []byte) ([]Target, error) {
 				// "#" rationale directly above the rule, and a "##" summary
 				// placed above that rationale must not be forced to move.
 				if pending != nil && !strings.HasPrefix(line, "#") {
-					return nil, reject(errBlockDetached, "line %d: %q separates the ## block (opened at line %d) from its rule; a block must be contiguous with the rule it documents", lineNo, line, pending.startLine)
+					return nil, reject(ErrBlockDetached, "line %d: %q separates the ## block (opened at line %d) from its rule; a block must be contiguous with the rule it documents", lineNo, line, pending.startLine)
 				}
 
 			case strings.HasPrefix(name, "."):
 				// A directive such as .PHONY: never carries an annotation.
 				if pending != nil {
-					return nil, reject(errBlockOnDirective, "line %d: %q is a directive, not a rule; the ## block opened at line %d cannot attach to it", lineNo, line, pending.startLine)
+					return nil, reject(ErrBlockOnDirective, "line %d: %q is a directive, not a rule; the ## block opened at line %d cannot attach to it", lineNo, line, pending.startLine)
 				}
 
 			case targetSpecificVariable.MatchString(rest):
@@ -143,15 +150,15 @@ func ParseFamily(src []byte) ([]Target, error) {
 				// a rule line, but it carries a target-specific variable, not
 				// the prerequisites/recipe the annotation documents.
 				if pending != nil {
-					return nil, reject(errBlockOnTargetVariable, "line %d: %q is a target-specific variable line, not the rule; move the ## block (opened at line %d) to sit directly above the line that carries %s's prerequisites/recipe", lineNo, line, pending.startLine, name)
+					return nil, reject(ErrBlockOnTargetVariable, "line %d: %q is a target-specific variable line, not the rule; move the ## block (opened at line %d) to sit directly above the line that carries %s's prerequisites/recipe", lineNo, line, pending.startLine, name)
 				}
 
 			default:
 				if pending == nil {
-					return nil, reject(errTargetUnannotated, "line %d: target %q has no ## annotation block above it", lineNo, name)
+					return nil, reject(ErrTargetUnannotated, "line %d: target %q has no ## annotation block above it", lineNo, name)
 				}
 				if pending.Summary == "" {
-					return nil, reject(errBlockWithoutSummary, "line %d: target %q's ## block (opened at line %d) has no summary line; a summary is required even when structured fields are present", lineNo, name, pending.startLine)
+					return nil, reject(ErrBlockWithoutSummary, "line %d: target %q's ## block (opened at line %d) has no summary line; a summary is required even when structured fields are present", lineNo, name, pending.startLine)
 				}
 				t := pending.Target
 				t.Name = name
@@ -162,7 +169,7 @@ func ParseFamily(src []byte) ([]Target, error) {
 	}
 
 	if pending != nil {
-		return nil, reject(errBlockUnattached, "## block at line %d is never attached to a rule", pending.startLine)
+		return nil, reject(ErrBlockUnattached, "## block at line %d is never attached to a rule", pending.startLine)
 	}
 	return targets, nil
 }
@@ -181,12 +188,12 @@ func accumulate(pending *block, line string, lineNo int) (*block, error) {
 	case len(rest) >= 1 && rest[0] == ' ' && (len(rest) == 1 || rest[1] != ' '):
 		content = rest[1:]
 	default:
-		return nil, reject(errMalformedAnnotationLine, "line %d: %q is not a valid ## line; content must start with exactly one space (a summary or field line) or exactly three spaces (a continuation)", lineNo, line)
+		return nil, reject(ErrMalformedAnnotationLine, "line %d: %q is not a valid ## line; content must start with exactly one space (a summary or field line) or exactly three spaces (a continuation)", lineNo, line)
 	}
 
 	if continuation {
 		if pending == nil {
-			return nil, reject(errContinuationWithoutBlock, "line %d: continuation line %q has nothing to continue; it must follow a summary or field line already open in the same block", lineNo, line)
+			return nil, reject(ErrContinuationWithoutBlock, "line %d: continuation line %q has nothing to continue; it must follow a summary or field line already open in the same block", lineNo, line)
 		}
 		pending.appendToCurrent(content)
 		return pending, nil
@@ -225,7 +232,7 @@ func accumulate(pending *block, line string, lineNo int) (*block, error) {
 	return pending, nil
 }
 
-// ruleShape reports whether line could be a target/rule declaration: it
+// RuleShape reports whether line could be a target/rule declaration: it
 // starts at column zero (not a recipe, comment, or continuation), and its
 // text up to the first ':' is a single bare identifier. This mirrors the
 // predicate makefiletargets_audit_test.go uses to find rule lines across
@@ -234,7 +241,7 @@ func accumulate(pending *block, line string, lineNo int) (*block, error) {
 // rest is the (trimmed) text after that colon; the caller still has to rule
 // out a target-specific variable line and a directive like .PHONY before
 // treating name as an annotatable rule.
-func ruleShape(line string) (name, rest string, ok bool) {
+func RuleShape(line string) (name, rest string, ok bool) {
 	if line == "" || line[0] == '\t' || line[0] == ' ' || line[0] == '#' {
 		return "", "", false
 	}
