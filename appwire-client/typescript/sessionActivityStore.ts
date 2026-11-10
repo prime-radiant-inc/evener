@@ -1216,8 +1216,10 @@ export class SessionActivityStore {
         // lease.ensure() without refreshing metadata, so this read cannot
         // depend on summary success. A resync naming a replacement thread
         // retires the old runtime instead: that subscription describes the
-        // thread being left behind.
-        if (!replaced && this.lease) {
+        // thread being left behind. An owner without an activity context yet
+        // has no runtime to qualify and still holds its initial reads, so it
+        // waits for those rather than adding a duplicate metadata read.
+        if (!replaced && this.lease && this.state.context !== null) {
           const lease = this.lease;
           const generation = this.generation;
           // Let every notification listener for this resync run first: the

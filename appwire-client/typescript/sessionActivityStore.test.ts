@@ -376,6 +376,12 @@ test("a resync retries recovery metadata after a transient read failure", async 
 });
 
 test("a resync during the initial metadata read still recovers runtime", async () => {
+  const seedClient = activityClient();
+  const seed = owner(seedClient);
+  seed.start();
+  await activityState(seed, () => seed.getSnapshot().summary !== null);
+  const retained = seed.getSnapshot();
+  seed.dispose();
   const client = activityClient();
   const initial = deferred<ThreadReadResponse>(),
     entered = deferred<void>();
@@ -383,7 +389,7 @@ test("a resync during the initial metadata read still recovers runtime", async (
     thread: {
       ...threadFixture().thread,
       id: "wire-root",
-      sessionId: "root-session",
+      sessionId: "session",
       status: { type: "awaiting" },
       evener: { ...threadFixture().thread.evener, askPending: true },
     },
@@ -397,7 +403,7 @@ test("a resync during the initial metadata read still recovers runtime", async (
     }
     return question;
   });
-  const store = owner(client);
+  const store = owner(client, "session", retained);
   store.start();
   await entered.promise;
   client.emitNotification({
@@ -405,7 +411,7 @@ test("a resync during the initial metadata read still recovers runtime", async (
     params: { ref: activityRef, threadId: "wire-root" },
   });
   initial.resolve({
-    thread: { ...threadFixture().thread, id: "wire-root", sessionId: "root-session" },
+    thread: { ...threadFixture().thread, id: "wire-root", sessionId: "session" },
   });
   await activityState(store, () => store.getSnapshot().runtime?.askPending === true);
   expect(reads).toBe(2);
