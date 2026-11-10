@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -90,7 +91,7 @@ func TestRemoteSelectedLockCandidateProof(t *testing.T) {
 	host := hostreg.Host{Name: "injected", SSH: "fixture"}
 	fr := localShellRunner(t, true)
 	m := newTestManager(t, testRegistry(t), fr, Options{})
-	pid := fmt.Sprintf("%d", os.Getpid())
+	pid := strconv.Itoa(os.Getpid())
 
 	// Guard: the injected global read ran to completion and observed nothing.
 	if got, err := m.selectedLockPID(t.Context(), host, root); got != "" || !errors.Is(err, errNoUniqueLockOwner) {
@@ -101,7 +102,7 @@ func TestRemoteSelectedLockCandidateProof(t *testing.T) {
 		t.Fatalf("candidate proof = (%q, %v), want %s", got, err, pid)
 	}
 	// A live candidate that holds no lock is not authority.
-	if got, err := m.selectedLockPIDPreferring(t.Context(), host, root, fmt.Sprintf("%d", nonHolder.Process.Pid)); err == nil || got != "" {
+	if got, err := m.selectedLockPIDPreferring(t.Context(), host, root, strconv.Itoa(nonHolder.Process.Pid)); err == nil || got != "" {
 		t.Fatalf("non-holder candidate = (%q, %v), want refusal", got, err)
 	}
 	// A hostile candidate is refused before building any remote command.
@@ -203,9 +204,7 @@ func TestRemoteSelectedLockCandidateProofUnderChurn(t *testing.T) {
 	// A descriptor opening and closing between the glob and its fdinfo read is
 	// the vanish the production probe must tolerate; the lock churn alone only
 	// toggles existing descriptors.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for {
 			select {
 			case <-done:
@@ -220,7 +219,7 @@ func TestRemoteSelectedLockCandidateProofUnderChurn(t *testing.T) {
 			_ = f.Close()
 			_ = os.Remove(name)
 		}
-	}()
+	})
 	t.Cleanup(func() {
 		close(done)
 		wg.Wait()
@@ -231,8 +230,8 @@ func TestRemoteSelectedLockCandidateProofUnderChurn(t *testing.T) {
 
 	host := hostreg.Host{Name: "injected", SSH: "fixture"}
 	m := newTestManager(t, testRegistry(t), localShellRunner(t, false), Options{})
-	pid := fmt.Sprintf("%d", os.Getpid())
-	for i := 0; i < 20; i++ {
+	pid := strconv.Itoa(os.Getpid())
+	for i := range 20 {
 		got, err := m.selectedLockCandidatePID(t.Context(), host, root, pid)
 		if err != nil || got != pid {
 			t.Fatalf("churn proof %d = (%q, %v), want %s", i, got, err, pid)
@@ -250,7 +249,7 @@ func TestRemoteSelectedLockCandidateToleratesVanishedDescriptor(t *testing.T) {
 		t.Fatal(err)
 	}
 	heldSelectedLock(t, root)
-	pid := fmt.Sprintf("%d", os.Getpid())
+	pid := strconv.Itoa(os.Getpid())
 	script := `grep() { command grep "$@"; return 2; }; ` + selectedLockCandidateRemote(root, pid)
 	cmd := exec.Command("/bin/bash", "-o", "pipefail", "-c", script)
 	cmd.Env = append(selectedLockToolEnv(t), "PATH=/usr/bin:/bin")

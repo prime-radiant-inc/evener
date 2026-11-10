@@ -529,7 +529,7 @@ func selectedLockRemote(root string) string {
 // a malformed or ambiguous result keeps the caller's existing refusal.
 func uniqueOwnerPID(out []byte, ambiguous, invalid string) (string, error) {
 	var owners []string
-	for _, line := range strings.Split(string(out), "\n") {
+	for line := range strings.SplitSeq(string(out), "\n") {
 		if line = strings.TrimSpace(line); line != "" {
 			owners = append(owners, line)
 		}
