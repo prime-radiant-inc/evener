@@ -399,6 +399,7 @@ func (s *Session) hookStopText(reason, fallback string) string {
 	}
 	return fallback
 }
+
 // queuedInput is one entry on the per-session input queue. Text and Images
 // are forwarded together when the entry is drained as a fresh user turn.
 // Provenance carries the causal watch origin (nil for human-typed input) so a
