@@ -130,16 +130,20 @@ func decideNoToolCalls(noContent bool, t retryTracker, resultToolName string) no
 // through toolHookInput, which would run the whole hookInput builder (two mu
 // sections, currentEnv, TranscriptPath) per call for three of them:
 //
-// Deliberate divergence from the per-tool events: toolHookInput is told whether
-// the repair step rejected the raw bytes, but the batch has no per-call prep
-// result, so a call whose arguments the repair step rewrote shows its parsed
-// tool_input here, where PostToolUse for that same call shows none. A call with
-// no positional result (an aborted round) carries an empty tool_response.
+// A call whose raw bytes the repair step rejected omits tool_input, exactly as
+// PostToolUse does for the same call; the raw-argument bound is checked before
+// any decode, so oversized or invalid-UTF-8 bytes never reach a lossy
+// json.Unmarshal. A call with no positional result (an aborted round) carries an
+// empty tool_response.
 func (s *Session) batchToolCalls(calls []llm.ToolCallData, results []tool.ExecResult) []hooks.BatchToolCall {
 	out := make([]hooks.BatchToolCall, len(calls))
 	for i, call := range calls {
 		var input map[string]any
-		if len(call.Arguments) > 0 {
+		// A call whose raw bytes the repair step rejected must not be decoded
+		// here: decoding is exactly what those bytes are bounded against, and a
+		// lossy decode would show a hook an argument map the tool never saw.
+		// PostToolUse makes the same call, so the two agree on that case.
+		if len(call.Arguments) > 0 && tool.ValidateRawArguments(call.Arguments) == nil {
 			_ = json.Unmarshal(call.Arguments, &input)
 		}
 		response := ""
@@ -639,6 +643,20 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 		if stopResult.Stopped {
 			text = s.hookStopText(stopResult.StopReason, "Stop hook stopped this turn")
 			s.deliverHookUserMessage(text)
+			// The hook replaced the reply this turn would have delivered. A
+			// delegate's terminal packet must report this text, not the
+			// communicated reply it vetoed.
+			s.mu.Lock()
+			s.stopHookReplacedReply = true
+			s.mu.Unlock()
+			// A stop ends the turn exactly as the ordinary boundary does, so it
+			// must perform the same terminal-communicate bookkeeping: in a
+			// TurnEndsProcess session the latch is what lets the drain discard
+			// watch frames the model declined to wait for and keeps the process
+			// from waiting on undeliverable watch-send residue (#329, #865).
+			if delivered && s.cfg.TurnEndsProcess {
+				s.acceptTerminalCommunicate()
+			}
 			s.finishProcessingAtBoundary(ctx, boundaryState)
 			if hook := s.cfg.testOnly.afterCommunicateBoundary; hook != nil {
 				hook(s)

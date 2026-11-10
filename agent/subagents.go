@@ -98,26 +98,31 @@ type subagent struct {
 	err                   error
 	resultConsumed        bool // true after the first wait returns this run's result
 	endEmitted            bool
-	runProvenance         *provenance.Causal        // immutable causal provenance for the completed run result
-	runStructured         any                       // communicate structured result captured before this run releases its finalization gate
-	runStructuredCaptured bool                      // runStructured was captured, including an authoritative nil result
-	nudgeEnabled          bool                      // true for default subagents that should be nudged to communicate
-	cancel                context.CancelFunc        // cancels the current run's context
-	cancelRequested       bool                      // set by requestRunCancel (either caller), so finalize maps a context.Canceled run to cancelled
-	userStopRequested     bool                      // set by requestRunCancel(true): S6's direct user stop (StopDelegateRun), read by buildDelegateFinish so only this path reports "Stopped by the user."
-	settlementClaimed     bool                      // cancellation admission closes after the run's final pre-settlement check
-	agentType             string                    // plugin agent type name; empty for default subagents
-	createdAt             time.Time                 // set once at spawn; never reset on resume
-	startedAt             time.Time                 // set at spawn; re-stamped at each idle-resume
-	endedAt               *time.Time                // set at run finalize; cleared to nil at idle-resume
-	stableDescriptor      *delegatestore.Descriptor // immutable committed identity/config for stable terminal evidence
-	closed                bool                      // session torn down; record retained as terminal history
-	closeTimedOut         bool                      // session-close wait exceeded its bound; close not confirmed
-	driving               bool                      // a drive-down notification turn (§3), or a committed delegate start not yet handed to its run, is in flight on this idle child
-	driveCancel           context.CancelFunc        // cancels the drive turn in flight; nil when none is
-	driveStopped          bool                      // a Stop (stopDrive) cancelled the drive turn in flight
-	fatalRunGated         bool                      // terminal run error freezes automatic drives until an explicit resume
-	finalizing            bool                      // the run accepts no input while owned work drains and terminal state/notify ownership are handed off
+	runProvenance         *provenance.Causal // immutable causal provenance for the completed run result
+	runStructured         any                // communicate structured result captured before this run releases its finalization gate
+	runStructuredCaptured bool               // runStructured was captured, including an authoritative nil result
+	nudgeEnabled          bool               // true for default subagents that should be nudged to communicate
+	cancel                context.CancelFunc // cancels the current run's context
+	cancelRequested       bool               // set by requestRunCancel (either caller), so finalize maps a context.Canceled run to cancelled
+	userStopRequested     bool               // set by requestRunCancel(true): S6's direct user stop (StopDelegateRun), read by buildDelegateFinish so only this path reports "Stopped by the user."
+	settlementClaimed     bool               // cancellation admission closes after the run's final pre-settlement check
+	// hookStopped is set when a SubagentStop continue:false ended this run. The
+	// terminal packet is then built from the hook's reason alone: the child's own
+	// communicated report belongs to an earlier turn, and both the drain and
+	// captureCommunicateReport would otherwise replace the hook's result with it.
+	hookStopped      bool
+	agentType        string                    // plugin agent type name; empty for default subagents
+	createdAt        time.Time                 // set once at spawn; never reset on resume
+	startedAt        time.Time                 // set at spawn; re-stamped at each idle-resume
+	endedAt          *time.Time                // set at run finalize; cleared to nil at idle-resume
+	stableDescriptor *delegatestore.Descriptor // immutable committed identity/config for stable terminal evidence
+	closed           bool                      // session torn down; record retained as terminal history
+	closeTimedOut    bool                      // session-close wait exceeded its bound; close not confirmed
+	driving          bool                      // a drive-down notification turn (§3), or a committed delegate start not yet handed to its run, is in flight on this idle child
+	driveCancel      context.CancelFunc        // cancels the drive turn in flight; nil when none is
+	driveStopped     bool                      // a Stop (stopDrive) cancelled the drive turn in flight
+	fatalRunGated    bool                      // terminal run error freezes automatic drives until an explicit resume
+	finalizing       bool                      // the run accepts no input while owned work drains and terminal state/notify ownership are handed off
 	// disposeGated freezes a quiescent, retained TERMINAL child while a dispose op
 	// (spec §P1 step 4) evaluates and evicts it: no wake-edge drive may launch and
 	// no delegate_send may resume the child while it is set. Guarded by sub.mu; set
@@ -1963,7 +1968,10 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			res, err = a.runSubagentStopHook(ctx, res, err, a.followUpProvenance(inputProvenance))
 		}
 		restoreParentDriveNotify = nil
-		if err == nil {
+		if a.hookStoppedRun() {
+			// The hook ended the run. drainForFinalization would return the
+			// child's earlier communicated reply in place of the hook's result.
+		} else if err == nil {
 			res, restoreParentDriveNotify, err = a.drainForFinalization(ctx, res)
 		}
 		if stableRun && a.sess.delegateController != nil && nudgeAvailable && !cancelRequested && !budgetExhausted && a.nudgeEnabled &&
@@ -2119,11 +2127,11 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 // that never called the model (a SubagentStart hook's continue:false) passes the
 // same fields with the hook's reason as its result.
 type subagentFinalize struct {
-	result                   string
-	err                      error
-	finish                   delegateFinish
-	lease                    delegateLease
-	stableRun                bool
+	result    string
+	err       error
+	finish    delegateFinish
+	lease     delegateLease
+	stableRun bool
 	// attentionRun marks a run an attention row triggered, so its finalize tail
 	// can reopen an unpresented report instead of leaving the consumed row
 	// stranded.
@@ -2434,6 +2442,23 @@ func (a *subagent) buildDelegateFinish(result string, runErr error) delegateFini
 	if a == nil || a.sess == nil {
 		return buildDelegateFinish(nil, result, runErr)
 	}
+	a.mu.Lock()
+	hookStopped := a.hookStopped
+	a.mu.Unlock()
+	a.sess.mu.Lock()
+	stopReplacedReply := a.sess.stopHookReplacedReply
+	a.sess.mu.Unlock()
+	if stopReplacedReply {
+		// A Stop hook vetoed the reply this turn would have delivered, so the
+		// run's result (the hook's text) is the packet's message. Capturing the
+		// communicate report here would hand the parent the vetoed reply.
+		return a.hookStoppedFinish(result)
+	}
+	if hookStopped {
+		// The hook ended this run, so its reason IS the result. captureCommunicateReport
+		// would replace it with a report the child made on an earlier turn.
+		return a.hookStoppedFinish(result)
+	}
 	inputs := a.delegateTerminalRunInputs(result, runErr)
 	inputs.captureCommunicateReport(a.sess)
 	finish := delegateFinishFromRun(inputs)
@@ -2491,6 +2516,16 @@ func (a *subagent) delegateTerminalRunInputs(result string, runErr error) delega
 		inputs.scratchPath = le.SessionScratchDir()
 	}
 	return inputs
+}
+
+// hookStoppedRun reports whether a SubagentStop continue:false ended this run.
+func (a *subagent) hookStoppedRun() bool {
+	if a == nil {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.hookStopped
 }
 
 // hookStoppedFinish is the terminal result of a child run a SubagentStart hook's
@@ -2787,6 +2822,9 @@ func (a *subagent) runSubagentStopHook(ctx context.Context, res string, err erro
 	if stopResult.Stopped {
 		reason := a.sess.hookStopText(stopResult.StopReason, "SubagentStop hook stopped this run")
 		a.sess.deliverHookUserMessage(reason)
+		a.mu.Lock()
+		a.hookStopped = true
+		a.mu.Unlock()
 		return reason, err
 	}
 	if stopResult.Blocked || len(stopResult.ModelContext) != 0 || len(stopResult.UserMessages) != 0 {

@@ -726,6 +726,18 @@ type Session struct {
 	// turn start: it must survive until the turn it stops consumes it. The
 	// reason is already delivered to the user. Guarded by mu.
 	sessionStartHookStop string
+	// hookStoppedInput records that a UserPromptSubmit or SessionStart
+	// continue:false ended the whole input, not just the turn. The stop returns
+	// ordinary success, so without this the drain would fold the goal gate and
+	// schedule a continuation, which runs without those hooks and sends the
+	// stopped prompt to the model. Set where the stop is consumed and cleared at
+	// the start of every input. Guarded by mu.
+	hookStoppedInput bool
+	// stopHookReplacedReply records that a Stop hook's continue:false replaced
+	// the reply this turn would have delivered. A delegate's terminal packet must
+	// carry the hook's text, not the communicated reply it vetoed. Cleared at the
+	// start of every turn. Guarded by mu.
+	stopHookReplacedReply bool
 	// turnInterrupted records that the turn which just ran ended on a
 	// cancellation (an interrupt, a signal, a shutdown). It is set in the
 	// interrupt branch before the turn settles idle, because that settle would

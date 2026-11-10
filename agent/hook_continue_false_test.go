@@ -219,6 +219,23 @@ func TestSubagentStop_ContinueFalseEndsTheRunWithNoContinuation(t *testing.T) {
 	if n := requests.Load(); n != 0 {
 		t.Errorf("model requests = %d, want 0: a stop starts no continuation", n)
 	}
+	// The child reported on an earlier turn. The hook ended THIS run, so the
+	// terminal packet must carry the hook's reason, not the stale report.
+	subSess.mu.Lock()
+	subSess.comm.called = true
+	subSess.comm.reply = "the earlier report"
+	subSess.mu.Unlock()
+	finish := sub.buildDelegateFinish(got, nil)
+	if finish.packet == nil {
+		t.Fatal("the hook-stopped run built no terminal packet")
+	}
+	var message string
+	if err := json.Unmarshal(finish.packet.Message, &message); err != nil {
+		t.Fatalf("decode terminal message: %v", err)
+	}
+	if message != "subagent stop ended the run" {
+		t.Errorf("terminal message = %q, want the hook's stopReason, not the child's earlier report", message)
+	}
 }
 
 // TestPostToolUse_ContinueFalseWithNoReasonStillEndsTheTurn proves the stop is
@@ -415,5 +432,64 @@ func TestSessionStart_ContinueFalseSurvivesANotificationTurn(t *testing.T) {
 	}
 	if got := len(adapter.Requests()); got != 1 {
 		t.Fatalf("model requests = %d, want 1: a notification turn consumed the startup stop", got)
+	}
+}
+
+// TestStop_ContinueFalseKeepsTerminalCommunicateBookkeeping proves a Stop hook's
+// continue:false does not skip the terminal-communicate latch the ordinary
+// communicate boundary performs. In a TurnEndsProcess session that latch is what
+// lets the drain discard watch frames the model declined to wait for and keeps
+// the process from waiting on undeliverable watch-send residue.
+func TestStop_ContinueFalseKeepsTerminalCommunicateBookkeeping(t *testing.T) {
+	t.Parallel()
+	cmd := `printf '%s' '{"continue":false,"stopReason":"stop hook ended the turn"}'`
+	sess, adapter := postHookFixture(t, "Stop", cmd, func(round int, req llm.Request) llm.Response {
+		if round > 0 {
+			t.Fatalf("the Stop hook's continue:false must end the turn; reached request %d", round)
+		}
+		return agenttest.FinalResponse("the vetoed reply")
+	})
+	sess.cfg.TurnEndsProcess = true
+	warnings := collectWarnings(sess)
+
+	// TRIPWIRE: a scripted in-process adapter, so only a genuine hang reaches 30s.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "answer me", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	if !sess.hasAcceptedTerminalCommunicate() {
+		t.Error("the session never latched its terminal communicate; a TurnEndsProcess drain would keep waiting on watch residue")
+	}
+	if got := len(adapter.Requests()); got != 1 {
+		t.Errorf("model requests = %d, want 1", got)
+	}
+	awaitWarningNaming(t, warnings, "stop hook ended the turn")
+	sess.Close()
+}
+
+// TestUserPromptSubmit_ContinueFalseEndsTheInputUnderAnActiveGoal proves a
+// stopped prompt ends the whole input even when a goal is active. The stop
+// returns ordinary success, and a session with an active goal otherwise
+// schedules a continuation at the drain, which runs without UserPromptSubmit and
+// sends the very prompt the hook stopped to the model.
+func TestUserPromptSubmit_ContinueFalseEndsTheInputUnderAnActiveGoal(t *testing.T) {
+	t.Parallel()
+	cmd := `printf '%s' '{"continue":false,"stopReason":"prompt stopped by hook"}'`
+	sess, adapter := postHookFixture(t, "UserPromptSubmit", cmd, func(round int, req llm.Request) llm.Response {
+		return agenttest.FinalResponse("a goal continuation reached the model")
+	})
+	sess.getOrCreateGoalStore().Set("ship the goal", sess.sclock().Now())
+
+	// TRIPWIRE: a scripted in-process adapter, so only a genuine hang reaches 30s.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "the stopped prompt", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	if got := len(adapter.Requests()); got != 0 {
+		t.Errorf("model requests = %d, want 0: a stopped prompt must not reach the model through a goal continuation", got)
 	}
 }

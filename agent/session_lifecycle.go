@@ -326,6 +326,10 @@ type drainInputs struct {
 	// turn's last model call was already in flight. It carries no content of
 	// its own and runs as queued input.
 	QueuedCarrier bool
+	// HookStoppedInput reports that a hook's continue:false ended the whole
+	// input, so no autonomous turn (goal continuation, deferred continuation)
+	// may run behind it.
+	HookStoppedInput bool
 	// SteeringParked reports that pending user steering is parked after a
 	// failed attempt (Session.steeringParked): a carrier claim this ladder
 	// could not persist, most often. No autonomous turn runs behind it -- a
@@ -396,6 +400,12 @@ func selectDrainNextAction(in drainInputs) (action drainAction, skipGoalGate boo
 	switch {
 	case queued:
 		return runQueued, skipGoalGate
+	case in.HookStoppedInput:
+		// The hook stopped the input, not only its turn. Nothing autonomous runs
+		// behind it: a goal continuation would send the stopped prompt to the
+		// model without the hooks that stopped it, so the input ends here.
+		// Queued user work still runs (the case above).
+		return goIdle, true
 	case in.SteeringParked:
 		return goIdle, skipGoalGate
 	case in.RanKind != EntryNotification && in.NotificationsPending:
@@ -900,6 +910,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			Awaiting:             awaiting,
 			QueuedCarrier:        queued.SteeringCarrier,
 			SteeringParked:       s.steeringParkedNow(),
+			HookStoppedInput:     s.hookStoppedTheInput(),
 		})
 
 		if action == runQueued {
@@ -1256,6 +1267,11 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// A new turn is new work; the previous turn's interrupt no longer says
 	// anything about this session's idleness.
 	s.turnInterrupted = false
+	// The stopped-input marker belongs to the input whose prompt the hook
+	// stopped. The drain reads it for that input; the next input starts clean.
+	s.hookStoppedInput = false
+	// A Stop hook's replacement reply belongs to the turn that raised it.
+	s.stopHookReplacedReply = false
 	// A claimed answering steering carrier has already crossed its durable
 	// admission boundary before this carrier turn runs, so preserve its
 	// established entry-clear behavior. Ordinary user input clears only after
@@ -1436,6 +1452,12 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	promptStopped := s.takePromptHookStop()
 	startStopped := kind == EntryUserInput && s.takeSessionStartHookStop()
 	if promptStopped || startStopped {
+		// The stop owns the whole input, not only this turn: the drain would
+		// otherwise fold the goal gate and schedule a continuation, which runs
+		// without these hooks and sends the stopped prompt to the model.
+		s.mu.Lock()
+		s.hookStoppedInput = true
+		s.mu.Unlock()
 		s.finishProcessingAtBoundary(ctx, SessionIdle)
 		return "", false, nil
 	}
@@ -2052,6 +2074,14 @@ func (s *Session) clearSessionStartHookStop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sessionStartHookStop = ""
+}
+
+// hookStoppedTheInput reports whether a hook's continue:false ended the whole
+// input. Guarded by mu.
+func (s *Session) hookStoppedTheInput() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.hookStoppedInput
 }
 
 // acceptUserInputWithSkillSelection is acceptUserInput plus the typed skill
