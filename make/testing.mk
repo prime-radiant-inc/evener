@@ -267,7 +267,7 @@ merge-approval-gate:
 		ROOT_FULL=1 EVENER_GATE_TIMING_TSV="$$tsv" $(MAKE) test && \
 		scripts/gate/test-timing-budget.sh --check --measured "$$tsv" && \
 		$(MAKE) test-hub-integration && \
-		$(MAKE) test-native test-api-package
+		$(MAKE) test-native check-mermaid-freshness test-api-package
 
 # The permanent -race gate (CI), across every non-fuzz module. AGENT_PARALLEL=6
 # keeps the agent wave at the runner's measured cap: under -race (~10x slower),
