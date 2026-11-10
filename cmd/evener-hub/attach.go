@@ -90,6 +90,7 @@ func parseAttachOptions(args []string, stderr io.Writer) (attachOptions, error) 
 // runAttach resolves the hub's loopback address and capability token, then
 // runs the bidirectional bridge over the process streams carried in deps.
 func runAttach(args []string, stderr io.Writer, deps mainDeps) (err error) {
+	log := componentlog.NewWriter("hub", stderr)
 	var parseOutput bytes.Buffer
 	opts, err := parseAttachOptions(args, &parseOutput)
 	parseReported := parseOutput.Len() != 0
@@ -100,13 +101,13 @@ func runAttach(args []string, stderr io.Writer, deps mainDeps) (err error) {
 		}
 		// flag.Parse already reports syntax failures. Semantic parse errors do not.
 		if !parseReported {
-			componentlog.NewWriter("hub", stderr).Info(fmt.Sprintf("%v", err))
+			log.Info(fmt.Sprintf("%v", err))
 		}
 		return err
 	}
 	defer func() {
 		if err != nil {
-			componentlog.NewWriter("hub", stderr).Info(fmt.Sprintf("%v", err))
+			log.Info(fmt.Sprintf("%v", err))
 		}
 	}()
 	ctx, cancel := deps.notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

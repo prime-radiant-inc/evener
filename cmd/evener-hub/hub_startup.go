@@ -37,11 +37,12 @@ import (
 // first and then stops pprof, the reverse of the order they started in. On
 // error nothing is left running.
 func startDiagnostics(opts hubOptions, stderr io.Writer) (*appserver.WebSocketTrace, func(), error) {
+	log := componentlog.NewWriter("hub", stderr)
 	_, stopPprof, err := cmdutil.StartLivePprof(func(format string, args ...any) {
-		componentlog.NewWriter("hub", stderr).Info(fmt.Sprintf(format, args...))
+		log.Info(fmt.Sprintf(format, args...))
 	})
 	if err != nil {
-		componentlog.NewWriter("hub", stderr).Info(fmt.Sprintf("%v", err))
+		log.Info(fmt.Sprintf("%v", err))
 		return nil, nil, err
 	}
 	if opts.appwireTrace == "" {
@@ -50,19 +51,19 @@ func startDiagnostics(opts hubOptions, stderr io.Writer) (*appserver.WebSocketTr
 	tracePath, absErr := filepath.Abs(opts.appwireTrace)
 	if absErr != nil {
 		stopPprof()
-		componentlog.NewWriter("hub", stderr).Info(fmt.Sprintf("appwire trace path: %v", absErr))
+		log.Info(fmt.Sprintf("appwire trace path: %v", absErr))
 		return nil, nil, fmt.Errorf("resolve appwire trace path: %w", absErr)
 	}
 	trace, err := appserver.NewWebSocketTrace(tracePath)
 	if err != nil {
 		stopPprof()
-		componentlog.NewWriter("hub", stderr).Info(fmt.Sprintf("appwire trace: %v", err))
+		log.Info(fmt.Sprintf("appwire trace: %v", err))
 		return nil, nil, fmt.Errorf("create appwire trace: %w", err)
 	}
-	componentlog.NewWriter("hub", stderr).Info(fmt.Sprintf("recording raw browser AppWire frames at %s; this file contains sensitive data", tracePath))
+	log.Info(fmt.Sprintf("recording raw browser AppWire frames at %s; this file contains sensitive data", tracePath))
 	return trace, func() {
 		if closeErr := trace.Close(); closeErr != nil {
-			componentlog.NewWriter("hub", stderr).Info(fmt.Sprintf("close appwire trace: %v", closeErr))
+			log.Info(fmt.Sprintf("close appwire trace: %v", closeErr))
 		}
 		stopPprof()
 	}, nil

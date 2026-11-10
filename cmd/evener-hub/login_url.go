@@ -22,6 +22,7 @@ var (
 // runLoginURL deliberately discloses one login link for a verified running
 // instance. Unlike server startup, stdout redirection is an explicit choice.
 func runLoginURL(args []string, stdout, stderr io.Writer, deps mainDeps) error {
+	log := componentlog.NewWriter("hub", stderr)
 	opts := endpointOptions{configPath: DefaultConfigPath()}
 	fs := flag.NewFlagSet("evener hub login-url", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -35,21 +36,21 @@ func runLoginURL(args []string, stdout, stderr io.Writer, deps mainDeps) error {
 	opts.configExplicit = setFlagNames(fs)["config"]
 	report, err := resolveHubEndpoint(context.Background(), opts, deps)
 	if err != nil {
-		componentlog.NewWriter("hub", stderr).Info(fmt.Sprintf("login-url: %v", err))
+		log.Info(fmt.Sprintf("login-url: %v", err))
 		return err
 	}
 	if report.State != "running" || report.Running == nil {
-		componentlog.NewWriter("hub", stderr).Info("no verified running instance for login-url")
+		log.Info("no verified running instance for login-url")
 		return ErrLoginURLUnavailable
 	}
 	token, err := readAuthToken(report.Running.HubStateRoot)
 	if err != nil {
-		componentlog.NewWriter("hub", stderr).Info("cannot read running hub token")
+		log.Info("cannot read running hub token")
 		return ErrLoginURLToken
 	}
 	link, err := browserLoginURL(*report.Running, hubHostname, token)
 	if err != nil {
-		componentlog.NewWriter("hub", stderr).Info("running hub has no valid advertised origin")
+		log.Info("running hub has no valid advertised origin")
 		return fmt.Errorf("%w: invalid running origin", ErrLoginURLUnavailable)
 	}
 	_, err = fmt.Fprintln(stdout, link)
