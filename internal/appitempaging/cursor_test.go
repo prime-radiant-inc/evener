@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -257,7 +258,7 @@ func TestApplyBeforeRebasesTheCursorAndKeepsItsFence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != plain {
+	if !reflect.DeepEqual(got, plain) {
 		t.Fatalf("ApplyBefore without before = %+v, want %+v", got, plain)
 	}
 
@@ -289,7 +290,7 @@ func TestApplyBeforeRebasesTheCursorAndKeepsItsFence(t *testing.T) {
 
 	// No cursor: before is left for the source to take under its identity.
 	cursorless := appwire.ThreadTurnsListParams{Ref: "local:thread", Before: &boundary}
-	if got, err := ApplyBefore(cursorless); err != nil || got != cursorless {
+	if got, err := ApplyBefore(cursorless); err != nil || !reflect.DeepEqual(got, cursorless) {
 		t.Fatalf("ApplyBefore without a cursor = %+v, %v; want it unchanged", got, err)
 	}
 	if position, err := Boundary(cursorless, identity); err != nil || position != boundary {

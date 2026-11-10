@@ -13,7 +13,7 @@ import (
 func CloneThread(t Thread) Thread {
 	t.Status = cloneThreadStatus(t.Status)
 	t.GitInfo = ClonePointer(t.GitInfo)
-	t.Turns = cloneTurns(t.Turns)
+	t.Turns = CloneTurns(t.Turns)
 	t.Evener = cloneEvenerThread(t.Evener)
 	return t
 }
@@ -23,7 +23,8 @@ func cloneThreadStatus(s ThreadStatus) ThreadStatus {
 	return s
 }
 
-func cloneTurns(turns []Turn) []Turn {
+// CloneTurns returns a copy of turns that shares no mutable state with them.
+func CloneTurns(turns []Turn) []Turn {
 	if turns == nil {
 		return nil
 	}

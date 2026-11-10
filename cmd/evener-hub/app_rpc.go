@@ -1389,6 +1389,14 @@ func registerThreadHandlers(
 		if err := appwire.ValidateThreadTurnsListParams(params); err != nil {
 			return appwire.ThreadTurnsListResponse{}, err
 		}
+		if params.TurnWindow != nil {
+			// A window request is served by the same path the Manager's turns
+			// operation uses: an initial window is a windowed read, and only a
+			// cursor-bearing request resumes one. The plain item listing below
+			// ignores a window entirely, and a saved session's window must come
+			// from the past index instead of an empty cursor.
+			return operations.turns(ctx, params)
+		}
 		params, err := appitempaging.ApplyBefore(params)
 		if err != nil {
 			return appwire.ThreadTurnsListResponse{}, err

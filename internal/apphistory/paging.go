@@ -65,6 +65,31 @@ func sourceSnapshot(held *appwire.SnapshotIdentity, selection appwire.ThreadCont
 	return &source
 }
 
+func viewSnapshot(snapshot *appwire.SnapshotIdentity, selection appwire.ThreadContentSelection, window appwire.ThreadWindowParams, itemLimit int) *appwire.SnapshotIdentity {
+	selected := Snapshot(snapshot, selection)
+	if selected == nil || window.TurnWindow == nil {
+		return selected
+	}
+	view := *selected
+	view.Incarnation = window.ViewIncarnation(view.Incarnation, itemLimit)
+	return &view
+}
+
+func sourceViewSnapshot(held *appwire.SnapshotIdentity, selection appwire.ThreadContentSelection, window appwire.ThreadWindowParams, itemLimit int) *appwire.SnapshotIdentity {
+	if held == nil {
+		return nil
+	}
+	source := *held
+	if window.TurnWindow != nil {
+		incarnation, ok := window.SourceIncarnation(source.Incarnation, itemLimit)
+		if !ok {
+			return nil
+		}
+		source.Incarnation = incarnation
+	}
+	return sourceSnapshot(&source, selection)
+}
+
 // Read fills the public selected window from complete indexed source pages.
 // Internal reads deliberately request full content: their subscription can be
 // shared by downstream clients with different selections.
@@ -75,16 +100,30 @@ func Read(ctx context.Context, params appwire.ThreadReadParams, read ReadFunc, l
 	if err := appwire.ValidateThreadReadParams(params); err != nil {
 		return appwire.ThreadReadResponse{}, err
 	}
+	// A windowed request filters by exact item types only, so its normalized
+	// selection is empty and the legacy global fill below never runs for it.
+	content, itemTypes, err := appwire.NormalizeWindowContent(params.TurnWindow, params.ThreadContentParams, params.ItemTypes)
+	if err != nil {
+		return appwire.ThreadReadResponse{}, err
+	}
+	params.ThreadContentParams, params.ItemTypes = content, itemTypes
 	selection := params.Selection()
 	source := params
 	source.ThreadContentParams = appwire.ThreadContentParams{}
-	source.HeldSnapshot = sourceSnapshot(params.HeldSnapshot, selection)
+	source.HeldSnapshot = sourceViewSnapshot(params.HeldSnapshot, selection, params.ThreadWindowParams, params.ItemLimit)
 	if selection != 0 && params.IncludeTurns {
 		source.ItemLimit = appwire.TranscriptItemPageLimit
 	}
 	response, err := read(ctx, source)
-	if err != nil || selection == 0 {
+	if err != nil {
 		return response, err
+	}
+	if selection == 0 && params.TurnWindow != nil {
+		response.Snapshot = viewSnapshot(response.Snapshot, selection, params.ThreadWindowParams, params.ItemLimit)
+		return response, nil
+	}
+	if selection == 0 {
+		return response, nil
 	}
 	sourceWindow := response.Thread.Turns
 	if params.IncludeTurns {
@@ -98,7 +137,7 @@ func Read(ctx context.Context, params appwire.ThreadReadParams, read ReadFunc, l
 	if !selection.Diagnostics() {
 		response.Thread.Evener.Diagnostics = nil
 	}
-	response.Snapshot = Snapshot(response.Snapshot, selection)
+	response.Snapshot = viewSnapshot(response.Snapshot, selection, params.ThreadWindowParams, params.ItemLimit)
 	response.Overlay = SelectOverlay(response.Overlay, selection)
 	if response.Changes != nil {
 		changes := *response.Changes
@@ -147,6 +186,11 @@ func List(ctx context.Context, params appwire.ThreadTurnsListParams, list ListFu
 	if err := appwire.ValidateThreadTurnsListParams(params); err != nil {
 		return appwire.ThreadTurnsListResponse{}, err
 	}
+	content, itemTypes, err := appwire.NormalizeWindowContent(params.TurnWindow, params.ThreadContentParams, params.ItemTypes)
+	if err != nil {
+		return appwire.ThreadTurnsListResponse{}, err
+	}
+	params.ThreadContentParams, params.ItemTypes = content, itemTypes
 	selection := params.Selection()
 	source := params
 	source.ThreadContentParams = appwire.ThreadContentParams{}
@@ -177,11 +221,15 @@ func List(ctx context.Context, params appwire.ThreadTurnsListParams, list ListFu
 	if fence != nil && (!sameSnapshot(&fence.Snapshot, page.Snapshot) || fence.BootGeneration != page.BootGeneration || fence.Epoch != page.Epoch) {
 		return appwire.ThreadTurnsListResponse{}, appwire.TranscriptItemCursorStale()
 	}
+	if selection == 0 && params.TurnWindow != nil {
+		page.Snapshot = viewSnapshot(page.Snapshot, selection, params.ThreadWindowParams, params.ItemLimit)
+		return page, nil
+	}
 	if selection == 0 {
 		return page, nil
 	}
 	page, err = fill(ctx, params, page, list)
-	page.Snapshot = Snapshot(page.Snapshot, selection)
+	page.Snapshot = viewSnapshot(page.Snapshot, selection, params.ThreadWindowParams, params.ItemLimit)
 	return page, err
 }
 

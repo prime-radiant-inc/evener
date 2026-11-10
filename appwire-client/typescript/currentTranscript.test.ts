@@ -28,6 +28,51 @@ function readWithItems(ref: string, items: ThreadItem[]) {
   };
 }
 
+function filteredReadPage(): ThreadTurnsListResponse {
+  return {
+    data: [
+      {
+        id: "turn_filtered",
+        itemsView: "fragment",
+        status: "completed",
+        items: [
+          {
+            id: "item_filtered",
+            type: "commandExecution",
+            truncated: true,
+            truncatedBytes: 7,
+            inFlight: false,
+            fetchCursor: "fetch-cursor",
+          },
+        ],
+        elision: {
+          excludedByType: { reasoning: 1 },
+          capWithheld: 2,
+          truncatedBeyondCursorLimit: 3,
+          elidedBeyondCursorLimit: 4,
+          continuationCursor: "continuation-cursor",
+          typeExcludedRecovery: "type-recovery",
+          capWithheldRecovery: "cap-recovery",
+          truncatedBeyondCursorLimitRecovery: "truncated-recovery",
+          elidedBeyondCursorLimitRecovery: "elided-recovery",
+        },
+      },
+    ],
+    window: {
+      effectiveBudgetBytes: 16_384,
+      appliedBy: "serving-daemon",
+      servedTurns: 1,
+      withheldTurns: 2,
+      firstServedTurnId: "turn_filtered",
+      lastServedTurnId: "turn_filtered",
+      firstWithheldTurnId: "turn_older",
+      lastWithheldTurnId: "turn_oldest",
+      trimmedEnd: "oldest",
+      continuationCursor: "window-cursor",
+    },
+  };
+}
+
 describe("current transcript checkpoints", () => {
   it("preserves older-frontier provenance across a checkpoint restore", () => {
     const ref = "local:worker";
@@ -576,6 +621,87 @@ describe("current transcript checkpoints", () => {
     mutate(malformed);
 
     expect(decodeCurrentTranscriptState(malformed)).toBeUndefined();
+  });
+
+  it.each([
+    ["item truncated", (page: ThreadTurnsListResponse) => (page.data[0]!.items![0]!.truncated = "yes" as never)],
+    [
+      "item truncated bytes",
+      (page: ThreadTurnsListResponse) => (page.data[0]!.items![0]!.truncatedBytes = "many" as never),
+    ],
+    ["item in-flight", (page: ThreadTurnsListResponse) => (page.data[0]!.items![0]!.inFlight = 1 as never)],
+    ["item fetch cursor", (page: ThreadTurnsListResponse) => (page.data[0]!.items![0]!.fetchCursor = 7 as never)],
+    [
+      "turn excluded-by-type count",
+      (page: ThreadTurnsListResponse) => (page.data[0]!.elision!.excludedByType = { reasoning: -1 }),
+    ],
+    ["turn cap-withheld", (page: ThreadTurnsListResponse) => (page.data[0]!.elision!.capWithheld = "many" as never)],
+    [
+      "turn truncated-beyond-cursor count",
+      (page: ThreadTurnsListResponse) => (page.data[0]!.elision!.truncatedBeyondCursorLimit = 1.5),
+    ],
+    [
+      "turn elided-beyond-cursor count",
+      (page: ThreadTurnsListResponse) => (page.data[0]!.elision!.elidedBeyondCursorLimit = -1),
+    ],
+    [
+      "turn continuation cursor",
+      (page: ThreadTurnsListResponse) => (page.data[0]!.elision!.continuationCursor = 3 as never),
+    ],
+    [
+      "turn type-excluded recovery",
+      (page: ThreadTurnsListResponse) => (page.data[0]!.elision!.typeExcludedRecovery = false as never),
+    ],
+    [
+      "turn cap-withheld recovery",
+      (page: ThreadTurnsListResponse) => (page.data[0]!.elision!.capWithheldRecovery = false as never),
+    ],
+    [
+      "turn truncated recovery",
+      (page: ThreadTurnsListResponse) => (page.data[0]!.elision!.truncatedBeyondCursorLimitRecovery = false as never),
+    ],
+    [
+      "turn elided recovery",
+      (page: ThreadTurnsListResponse) => (page.data[0]!.elision!.elidedBeyondCursorLimitRecovery = false as never),
+    ],
+    [
+      "window effective budget",
+      (page: ThreadTurnsListResponse) => (page.window!.effectiveBudgetBytes = "large" as never),
+    ],
+    ["window applied-by", (page: ThreadTurnsListResponse) => (page.window!.appliedBy = false as never)],
+    ["window served turns", (page: ThreadTurnsListResponse) => (page.window!.servedTurns = 1.5)],
+    ["window withheld turns", (page: ThreadTurnsListResponse) => (page.window!.withheldTurns = -1)],
+    ["window first served turn", (page: ThreadTurnsListResponse) => (page.window!.firstServedTurnId = 1 as never)],
+    ["window last served turn", (page: ThreadTurnsListResponse) => (page.window!.lastServedTurnId = 1 as never)],
+    ["window first withheld turn", (page: ThreadTurnsListResponse) => (page.window!.firstWithheldTurnId = 1 as never)],
+    ["window last withheld turn", (page: ThreadTurnsListResponse) => (page.window!.lastWithheldTurnId = 1 as never)],
+    ["window trimmed end", (page: ThreadTurnsListResponse) => (page.window!.trimmedEnd = 1 as never)],
+    ["window continuation cursor", (page: ThreadTurnsListResponse) => (page.window!.continuationCursor = 1 as never)],
+  ])("rejects malformed filtered-read %s", (_name, mutate) => {
+    const encoded = currentTranscriptState(
+      hydrateThread(currentRead("local:filtered-malformed"), "local:filtered-malformed", 10),
+    );
+    if (!encoded) throw new Error("versioned fixture history did not encode");
+    const malformed = structuredClone(encoded);
+    const page = filteredReadPage();
+    malformed.history.deferredPages = [page];
+    mutate(page);
+
+    expect(decodeCurrentTranscriptState(malformed)).toBeUndefined();
+  });
+
+  it("round-trips valid filtered-read metadata in a deferred page", () => {
+    const original = hydrateThread(currentRead("local:filtered-valid"), "local:filtered-valid", 10);
+    if (!original.history) throw new Error("versioned fixture history did not hydrate");
+    const page = filteredReadPage();
+    original.history = { ...original.history, deferredPages: [page] };
+
+    const encoded = currentTranscriptState(original);
+    if (!encoded) throw new Error("filtered-read checkpoint did not encode");
+    const decoded = decodeCurrentTranscriptState(JSON.parse(JSON.stringify(encoded)));
+    if (!decoded) throw new Error("valid filtered-read checkpoint did not decode");
+
+    expect(threadModelFromCurrentState(decoded).history?.deferredPages).toEqual([page]);
   });
 
   it("does not leak unknown schema-owned fields from nested overlay items", () => {
@@ -1133,6 +1259,10 @@ describe("current transcript checkpoints", () => {
       description: "description",
       output: "output",
       error: "error",
+      truncated: true,
+      truncatedBytes: 7,
+      inFlight: false,
+      fetchCursor: "fetch-cursor",
       outputImages: [
         { source: "tool", name: "o.png", mediaType: "image/png", size: 5, url: "u", sha: "abc", path: "/tmp/o.png" },
       ],
@@ -1155,6 +1285,17 @@ describe("current transcript checkpoints", () => {
       id: "turn_full",
       items: [everyItemField],
       itemsView: "full",
+      elision: {
+        excludedByType: { reasoning: 1 },
+        capWithheld: 2,
+        truncatedBeyondCursorLimit: 3,
+        elidedBeyondCursorLimit: 4,
+        continuationCursor: "continuation-cursor",
+        typeExcludedRecovery: "widen itemTypes and reread this view",
+        capWithheldRecovery: "continue within this view",
+        truncatedBeyondCursorLimitRecovery: "continue within this view",
+        elidedBeyondCursorLimitRecovery: "continue within this view",
+      },
       status: "completed",
       error: { message: "failed" },
       version: 7,

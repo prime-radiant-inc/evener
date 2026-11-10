@@ -34,6 +34,7 @@ regexes = [
   '''a\.eyJlbWFpbCI6ImpAZXhhbXBsZS5jb20ifQ\.sig''', # fake JWT ({"email":"j@example.com"}) in auth/openai fuzz seeds
   '''att_02wMz5TxuyedWwYBSOAa[0-9a-z]*''', # deterministic attempt-id fixtures in cmd/evener-doctor/main_test.go, not keys
   '''synTHETIC_9mK3vL8pR2nW5tY0cF6hJ4bD1gA7eSqZx''', # fake hub-token-shaped fixture proving #795's /auth guard, cmd/evener-fuzz-harvest/coverage_test.go
+  '''0123456789abcdef-[0-9a-f]{1,16}''', # fake fetch-cursor entry token in Manager read/fetch fixtures, not a credential
 ]
 
 # The seed corpora are deliberately NOT path-allowlisted: that would make

@@ -452,7 +452,9 @@ func allTurns(projection []referenceTurn) []appwire.Turn {
 // referenceCandidates is the reference projection as the chronological
 // candidate list a window read returns: items in position order, each
 // candidate's Turn carrying no items, and HasEarlierItems/HasLaterItems
-// reporting whether the neighbouring item belongs to the same turn.
+// reporting whether any other item of the same logical turn comes before or
+// after it. A turn a later entry reopens is one logical turn across items that
+// are not physically adjacent.
 func referenceCandidates(t testing.TB, path string) []appitempaging.TranscriptItemCandidate {
 	t.Helper()
 	projection, reg := referenceProjectionAndRegistry(t, path)
@@ -483,8 +485,8 @@ func candidatesOf(projection []referenceTurn) []appitempaging.TranscriptItemCand
 	sorted := make([]appitempaging.TranscriptItemCandidate, len(order))
 	for i, at := range order {
 		sorted[i] = candidates[at]
-		sorted[i].HasEarlierItems = i > 0 && turnOf[order[i-1]] == turnOf[at]
-		sorted[i].HasLaterItems = i+1 < len(order) && turnOf[order[i+1]] == turnOf[at]
+		sorted[i].HasEarlierItems = slices.ContainsFunc(order[:i], func(before int) bool { return turnOf[before] == turnOf[at] })
+		sorted[i].HasLaterItems = slices.ContainsFunc(order[i+1:], func(after int) bool { return turnOf[after] == turnOf[at] })
 	}
 	return sorted
 }

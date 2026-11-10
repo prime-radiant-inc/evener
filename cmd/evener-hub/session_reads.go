@@ -5,12 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/appitempaging"
 )
 
 // A Manager read is deliberately below the runtime tool-result cap. This
@@ -72,34 +74,48 @@ func (o *sessionOperations) discover(ctx context.Context, params appwire.ThreadL
 }
 
 func (o *sessionOperations) turns(ctx context.Context, p appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+	p.Ref = canonicalTurnsListRef(p.Ref, p.ThreadID)
 	if p.Cursor == "" {
-		read, err := o.read(ctx, appwire.ThreadReadParams{Ref: p.Ref, IncludeTurns: true, ItemLimit: p.ItemLimit}, false)
+		read, err := o.read(ctx, appwire.ThreadReadParams{
+			Ref: p.Ref, ThreadID: p.ThreadID, IncludeTurns: true, ItemLimit: p.ItemLimit,
+			ThreadWindowParams: p.ThreadWindowParams,
+		}, false)
 		if err != nil {
 			return appwire.ThreadTurnsListResponse{}, err
 		}
-		return appwire.ThreadTurnsListResponse{Data: read.Thread.Turns, NextCursor: read.OlderCursor, BootGeneration: read.BootGeneration, Epoch: read.Epoch, Snapshot: read.Snapshot, Authoritative: read.Authoritative}, nil
+		return appwire.ThreadTurnsListResponse{Data: read.Thread.Turns, NextCursor: read.OlderCursor, BootGeneration: read.BootGeneration, Epoch: read.Epoch, Snapshot: read.Snapshot, Authoritative: read.Authoritative, Window: read.Window}, nil
 	}
 	if err := appwire.ValidateThreadTurnsListParams(p); err != nil {
 		return appwire.ThreadTurnsListResponse{}, err
 	}
-	source, err := sourceForThreadWithDeletionFence(ctx, o.cfg, o.sources, p.Ref, "")
+	source, err := sourceForThreadWithDeletionFence(ctx, o.cfg, o.sources, p.Ref, p.ThreadID)
 	if err == nil {
-		// The initial Manager read mints a hub-owned cursor through the
-		// candidate machinery; the continuation must resolve it the same
-		// way. A raw ListTurns forwards that cursor to the daemon, which
-		// rejects the foreign identity as stale. The handled flag needs no
-		// inspection here: without an error it only distinguishes a packed
-		// page from a legacy source's page, and both are success.
-		page, _, listErr := listItemTurns(ctx, source, p, nil)
-		if listErr == nil {
-			return page, nil
+		if p.TurnWindow != nil {
+			page, continuationErr := continueLiveTranscriptWindowOwned(ctx, source, p, o)
+			if continuationErr == nil {
+				return page, nil
+			}
+			err = continuationErr
+		} else {
+			// The initial Manager read mints a hub-owned cursor through the
+			// candidate machinery; the continuation must resolve it the same
+			// way. A raw ListTurns forwards that cursor to the daemon, which
+			// rejects the foreign identity as stale. The handled flag needs no
+			// inspection here: without an error it only distinguishes a packed
+			// page from a legacy source's page, and both are success.
+			page, _, listErr := listItemTurns(ctx, source, p, nil)
+			if listErr == nil {
+				return page, nil
+			}
+			err = listErr
 		}
-		err = listErr
 	}
 	if !isDeadSessionError(err) {
 		return appwire.ThreadTurnsListResponse{}, err
 	}
-	page, ok, pastErr := pastThreadTurnsList(ctx, o.cfg, p)
+	page, ok, pastErr := pastThreadTurnsListOwned(ctx, o.cfg, p, func(options *transcriptWindowPackOptions) {
+		o.retainCanonicalWindowOptions(options)
+	})
 	if pastErr != nil {
 		return appwire.ThreadTurnsListResponse{}, pastErr
 	}
@@ -107,6 +123,296 @@ func (o *sessionOperations) turns(ctx context.Context, p appwire.ThreadTurnsList
 		return page, nil
 	}
 	return appwire.ThreadTurnsListResponse{}, err
+}
+
+// canonicalTurnsListRef names the thread a turns-list request addresses when it
+// carries a thread id but no ref. Cursors and the saved index key on the
+// canonical ref, and a thread id addresses the local source (sourceForThread
+// treats that pair the same either way).
+func canonicalTurnsListRef(ref, threadID string) string {
+	if strings.TrimSpace(ref) != "" || strings.TrimSpace(threadID) == "" {
+		return ref
+	}
+	return appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: strings.TrimSpace(threadID)}.String()
+}
+
+func continueLiveTranscriptWindow(ctx context.Context, source appsource.Source, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+	return continueLiveTranscriptWindowOwned(ctx, source, params, nil)
+}
+
+func continueLiveTranscriptWindowOwned(
+	ctx context.Context,
+	source appsource.Source,
+	params appwire.ThreadTurnsListParams,
+	owner *sessionOperations,
+) (appwire.ThreadTurnsListResponse, error) {
+	advertised := sourceAdvertisesWindowRead(ctx, source, params.Ref, params.ThreadID)
+	// A remote hub owns its saved window whether or not its thread row
+	// advertises the live daemon's capability, so the controller forwards every
+	// continuation form and passes the hub's typed failure through.
+	if remote, ok := source.(*appsource.RemoteHubSource); ok {
+		page, listErr := remote.ListTurns(ctx, params)
+		continuation := params.Cursor != ""
+		latestWindow := params.TurnWindow != nil && params.TurnWindow.Latest > 0
+		if listErr == nil && page.Window != nil {
+			thread := enrichSourcedThreadImages(source, appwire.Thread{Turns: page.Data})
+			page.Data = thread.Turns
+			if owner != nil {
+				if err := owner.retainRemoteWindowItems(ctx, remote, params.Ref, thread); err != nil {
+					return appwire.ThreadTurnsListResponse{}, err
+				}
+			}
+			return page, nil
+		}
+		if listErr == nil && !continuation && params.TurnWindow == nil {
+			return page, nil
+		}
+		if listErr == nil && !continuation && !latestWindow {
+			return appwire.ThreadTurnsListResponse{}, appwire.WindowUnsupportedOnDaemon()
+		}
+		// A controller-owned continuation of a window this hub rebuilt, or a
+		// latest window, may still be answered from the peer's legacy pages
+		// below. The peer's own refusals of those requests carry no content.
+		fallBack := !advertised && isOlderPeerWindowRefusal(listErr) && (continuation || latestWindow)
+		if listErr != nil && !fallBack {
+			return appwire.ThreadTurnsListResponse{}, listErr
+		}
+	}
+	itemLimit, err := normalizeTranscriptWindowItemLimit(params.TurnWindow, params.ItemLimit)
+	if err != nil {
+		return appwire.ThreadTurnsListResponse{}, err
+	}
+	hubCompatibility := !advertised
+	var candidates transcriptItemCandidateResult
+	var read appwire.ThreadReadResponse
+	if hubCompatibility {
+		readParams := appwire.ThreadReadParams{
+			Ref: params.Ref, ThreadID: params.ThreadID, IncludeTurns: true, ItemLimit: itemLimit,
+			ThreadWindowParams: params.ThreadWindowParams,
+		}
+		sourceParams := readParams
+		sourceParams.ThreadWindowParams = appwire.ThreadWindowParams{}
+		sourceParams.ItemLimit = appwire.TranscriptItemPageLimit
+		read, err = source.ReadThread(ctx, sourceParams)
+		if err != nil {
+			return appwire.ThreadTurnsListResponse{}, err
+		}
+		loader, loadErr := newCompatibilityTranscriptWindowLoader(ctx, source, readParams, read)
+		if loadErr != nil {
+			return appwire.ThreadTurnsListResponse{}, loadErr
+		}
+		loaded, _, resolveErr := resolveTranscriptWindowContinuation(ctx, params, itemLimit, loader.load)
+		if resolveErr != nil {
+			return appwire.ThreadTurnsListResponse{}, resolveErr
+		}
+		candidates = loaded.Result
+		read.Thread = loaded.Thread
+	} else {
+		loaded, _, resolveErr := resolveTranscriptWindowContinuation(ctx, params, itemLimit, func(ctx context.Context, selector *appwire.ThreadTurnWindow) (transcriptWindowLoadedRange, error) {
+			windowParams := params.ThreadWindowParams
+			windowParams.TurnWindow = selector
+			readParams := appwire.ThreadReadParams{
+				Ref: params.Ref, ThreadID: params.ThreadID, IncludeTurns: true, ItemLimit: itemLimit,
+				ThreadWindowParams: windowParams,
+			}
+			loadedRead, loadErr := source.ReadThread(ctx, readParams)
+			if loadErr != nil {
+				return transcriptWindowLoadedRange{}, loadErr
+			}
+			result, loadErr := sourceItemCandidateResultForRead(ctx, source, readParams, loadedRead)
+			if loadErr != nil {
+				return transcriptWindowLoadedRange{}, loadErr
+			}
+			return transcriptWindowLoadedRange{Result: result, Thread: loadedRead.Thread}, nil
+		})
+		if resolveErr != nil {
+			return appwire.ThreadTurnsListResponse{}, resolveErr
+		}
+		candidates = loaded.Result
+		read.Thread = loaded.Thread
+	}
+	fetchOrigin := appitempaging.FetchCursorOriginServingDaemon
+	appliedBy := transcriptWindowAppliedByServingDaemon
+	if hubCompatibility {
+		appliedBy = transcriptWindowAppliedByHubCompat
+		fetchOrigin = appitempaging.FetchCursorOriginHubCompat
+	} else if _, remote := source.(*appsource.RemoteHubSource); remote {
+		fetchOrigin = appitempaging.FetchCursorOriginRemoteSource
+	}
+	options := transcriptWindowOptionsFor(candidates, params.ThreadWindowParams, itemLimit, appliedBy, fetchOrigin)
+	if owner != nil {
+		options = owner.canonicalWindowOptions(source, read.Thread, candidates, params.ThreadWindowParams, itemLimit, appliedBy, fetchOrigin)
+	} else {
+		options.CanonicalizeCandidates = func(candidates []appitempaging.TranscriptItemCandidate) ([]appitempaging.TranscriptItemCandidate, error) {
+			return canonicalizeTranscriptItemCandidates(source, read.Thread, candidates)
+		}
+	}
+	configureTranscriptWindowResponseFit(&options, params)
+	packed, err := packThreadTurnsWindowItemCandidates(candidates, func(response appwire.ThreadTurnsListResponse) (appwire.ThreadTurnsListResponse, error) {
+		return response, nil
+	}, options)
+	if err != nil {
+		return appwire.ThreadTurnsListResponse{}, err
+	}
+	return candidates.History.StampPage(packed), nil
+}
+
+type compatibilityTranscriptWindowLoader struct {
+	source     appsource.Source
+	readParams appwire.ThreadReadParams
+	read       appwire.ThreadReadResponse
+	identity   appitempaging.CursorIdentity
+	history    appsource.HistoryIdentity
+	turns      []appwire.Turn
+	cursor     string
+	seen       map[string]bool
+	pageCalls  int
+}
+
+func newCompatibilityTranscriptWindowLoader(
+	ctx context.Context,
+	source appsource.Source,
+	readParams appwire.ThreadReadParams,
+	read appwire.ThreadReadResponse,
+) (*compatibilityTranscriptWindowLoader, error) {
+	result, err := compatibilityItemCandidateResultForRead(ctx, source, readParams, read)
+	if err != nil {
+		return nil, err
+	}
+	return &compatibilityTranscriptWindowLoader{
+		source: source, readParams: readParams, read: read,
+		identity: result.Identity, history: result.History,
+		turns: append([]appwire.Turn(nil), read.Thread.Turns...), cursor: read.OlderCursor,
+		seen: make(map[string]bool),
+	}, nil
+}
+
+func (l *compatibilityTranscriptWindowLoader) load(ctx context.Context, selector *appwire.ThreadTurnWindow) (transcriptWindowLoadedRange, error) {
+	for {
+		selected, resolved := resolveCompatibilityTurnWindow(l.turns, selector, l.cursor == "")
+		if resolved {
+			selectedRead := l.read
+			selectedRead.Thread.Turns = selected
+			selectedRead.OlderCursor = ""
+			result, err := compatibilityItemCandidateResultForRead(ctx, l.source, l.readParams, selectedRead)
+			if err != nil {
+				return transcriptWindowLoadedRange{}, err
+			}
+			// The legacy page conversion reports only positioned candidates, so a
+			// selected but empty turn disappears without its shell and recovery
+			// metadata. Stamp the resolved selection back onto the result before
+			// the packer decides what it served.
+			result = normalizeTranscriptWindowLoadedResult(result, selectedRead.Thread)
+			result.Identity = l.identity
+			result.History = l.history
+			result.Exhausted = true
+			return transcriptWindowLoadedRange{Result: result, Thread: selectedRead.Thread}, nil
+		}
+		if l.cursor == "" || l.seen[l.cursor] || l.pageCalls >= hubCompatFetchPageLimit {
+			return transcriptWindowLoadedRange{}, appwire.TranscriptItemCursorStale()
+		}
+		l.seen[l.cursor] = true
+		page, err := l.source.ListTurns(ctx, appwire.ThreadTurnsListParams{
+			Ref: l.readParams.Ref, ThreadID: l.readParams.ThreadID, Cursor: l.cursor,
+			ItemsView: l.readParams.ItemsView, ItemLimit: appwire.TranscriptItemPageLimit,
+		})
+		l.pageCalls++
+		if err != nil {
+			return transcriptWindowLoadedRange{}, err
+		}
+		l.turns = append(append([]appwire.Turn(nil), page.Data...), l.turns...)
+		l.cursor = page.NextCursor
+	}
+}
+
+func resolveCompatibilityTurnWindow(turns []appwire.Turn, window *appwire.ThreadTurnWindow, exhausted bool) ([]appwire.Turn, bool) {
+	if window == nil {
+		return nil, false
+	}
+	// Selectors count logical turns, not transcript runs: an interleaved page
+	// can carry a turn's fragments on both sides of another turn, and every
+	// fragment of a selected turn belongs to the window.
+	ids := make([]string, 0, len(turns))
+	seen := make(map[string]bool, len(turns))
+	for i := range turns {
+		id := turns[i].ID
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	selectIDs := func(selected map[string]bool) ([]appwire.Turn, bool) {
+		var out []appwire.Turn
+		starts := make(map[string]bool, len(selected))
+		for i := range turns {
+			if !selected[turns[i].ID] {
+				continue
+			}
+			out = append(out, turns[i])
+			// A fragment that reports no earlier items is where its logical turn
+			// starts on these pages. A turn selected without one continues above
+			// them, so the window is not complete yet.
+			if !turns[i].HasEarlierItems {
+				starts[turns[i].ID] = true
+			}
+		}
+		if len(out) == 0 {
+			return []appwire.Turn{}, true
+		}
+		if !exhausted {
+			for id := range selected {
+				if !starts[id] {
+					return nil, false
+				}
+			}
+		}
+		return out, true
+	}
+	pick := func(start, end int) ([]appwire.Turn, bool) {
+		if start < 0 || start > end || end > len(ids) {
+			return nil, false
+		}
+		selected := make(map[string]bool, end-start)
+		for _, id := range ids[start:end] {
+			selected[id] = true
+		}
+		return selectIDs(selected)
+	}
+	if window.Latest > 0 {
+		if len(ids) < window.Latest && !exhausted {
+			return nil, false
+		}
+		return pick(max(0, len(ids)-window.Latest), len(ids))
+	}
+	boundaryID := window.Turn
+	if boundaryID == "" {
+		boundaryID = window.Since
+	}
+	if boundaryID == "" && window.Before != nil {
+		boundaryID = window.Before.TurnID
+	}
+	boundary := -1
+	for i, id := range ids {
+		if id == boundaryID {
+			boundary = i
+			break
+		}
+	}
+	if boundary < 0 {
+		return nil, false
+	}
+	if window.Turn != "" {
+		return pick(boundary, boundary+1)
+	}
+	if window.Since != "" {
+		return pick(boundary+1, min(len(ids), boundary+1+window.Limit))
+	}
+	start := max(0, boundary-window.Before.Limit)
+	if boundary-start < window.Before.Limit && !exhausted {
+		return nil, false
+	}
+	return pick(start, boundary)
 }
 
 func (o *sessionOperations) activity(ctx context.Context, p appwire.SessionActivityRequest) (appwire.SessionActivityResponse, error) {

@@ -1,7 +1,11 @@
 package appsource
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -534,6 +538,9 @@ func (s *RemoteHubSource) ReadThread(ctx context.Context, params appwire.ThreadR
 	if err := s.call(ctx, appwire.MethodThreadRead, remote, &out); err != nil {
 		return appwire.ThreadReadResponse{}, err
 	}
+	if err := translateRemoteWindowCursors(out.Thread.Turns, out.Window, ref.String(), remoteItemPagingKey(s.id, ref.ThreadID)); err != nil {
+		return appwire.ThreadReadResponse{}, err
+	}
 	return out, nil
 }
 
@@ -565,11 +572,59 @@ func (s *RemoteHubSource) ListTurns(ctx context.Context, params appwire.ThreadTu
 	// threadId the remote cannot resolve is rejected, while an empty one lets
 	// the remote resolve the (stable-aware) ref.
 	remote.ThreadID = params.ThreadID
+	controllerRef := remoteItemPagingKey(s.id, ref.ThreadID)
+	if remote.TurnWindow != nil && remote.Cursor != "" {
+		remote.Cursor, err = appitempaging.TranslateWindowCursorRef(remote.Cursor, controllerRef, ref.String())
+		if err != nil {
+			return appwire.ThreadTurnsListResponse{}, err
+		}
+	}
 	var out appwire.ThreadTurnsListResponse
 	if err := s.call(ctx, appwire.MethodThreadTurnsList, remote, &out); err != nil {
 		return appwire.ThreadTurnsListResponse{}, err
 	}
+	if err := translateRemoteWindowCursors(out.Data, out.Window, ref.String(), controllerRef); err != nil {
+		return appwire.ThreadTurnsListResponse{}, err
+	}
 	return out, nil
+}
+
+// translateRemoteWindowCursors makes a packed remote page belong to the
+// controller namespace without packing its already-bounded items a second
+// time. Fetches stay controller-resolved; window continuations are translated
+// back to the owning hub only when RemoteHubSource.ListTurns follows them.
+func translateRemoteWindowCursors(turns []appwire.Turn, window *appwire.ThreadWindowResult, remoteRef, controllerRef string) error {
+	for turnIndex := range turns {
+		turn := &turns[turnIndex]
+		for itemIndex := range turn.Items {
+			item := &turn.Items[itemIndex]
+			if item.FetchCursor == "" {
+				continue
+			}
+			translated, err := appitempaging.TranslateFetchCursorRef(
+				item.FetchCursor, remoteRef, controllerRef, appitempaging.FetchCursorOriginRemoteSource,
+			)
+			if err != nil {
+				return err
+			}
+			item.FetchCursor = translated
+		}
+		if turn.Elision != nil && turn.Elision.ContinuationCursor != "" {
+			translated, err := appitempaging.TranslateWindowCursorRef(turn.Elision.ContinuationCursor, remoteRef, controllerRef)
+			if err != nil {
+				return err
+			}
+			turn.Elision.ContinuationCursor = translated
+		}
+	}
+	if window != nil && window.ContinuationCursor != "" {
+		translated, err := appitempaging.TranslateWindowCursorRef(window.ContinuationCursor, remoteRef, controllerRef)
+		if err != nil {
+			return err
+		}
+		window.ContinuationCursor = translated
+	}
+	return nil
 }
 
 // FetchSessionImage fetches one image out of the owning host's own local
@@ -866,6 +921,144 @@ func (s *RemoteHubSource) ReadItemCandidates(ctx context.Context, params appwire
 	return s.ItemCandidatesFromRead(ctx, params, out)
 }
 
+// FetchTranscriptItem re-reads a remote item through the ordinary translated
+// read path. The controller's fetch cursor never crosses the remote boundary:
+// its source identity and addressed position are resolved here, after actor,
+// authorship, ref, and image routes have their controller-visible spellings.
+func (s *RemoteHubSource) FetchTranscriptItem(
+	ctx context.Context,
+	ref string,
+	identity appitempaging.CursorIdentity,
+	cursor appitempaging.FetchCursor,
+) (appwire.SessionFetchResponse, error) {
+	sourceIncarnation, ok := appwire.ThreadWindowSourceIncarnation(identity.Incarnation)
+	if !ok {
+		return appwire.SessionFetchResponse{}, appwire.TranscriptItemCursorStale()
+	}
+	readParams := appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: string(appwire.TurnItemsViewFragment), ItemLimit: appwire.TranscriptItemPageLimit}
+	response, err := s.ReadThread(ctx, readParams)
+	if err != nil {
+		return appwire.SessionFetchResponse{}, err
+	}
+	candidates, err := appitempaging.CandidatesFromTurns(response.Thread.Turns)
+	if err != nil {
+		return appwire.SessionFetchResponse{}, err
+	}
+	candidate, ok := remoteCandidateAt(candidates, cursor.Position)
+	if !ok {
+		return appwire.SessionFetchResponse{}, appwire.FetchUnavailableRemote()
+	}
+	if response.Snapshot != nil {
+		if response.Snapshot.Incarnation != sourceIncarnation {
+			return appwire.SessionFetchResponse{}, appwire.TranscriptItemCursorStale()
+		}
+	} else {
+		result, err := s.ItemCandidatesFromRead(ctx, readParams, response)
+		if err != nil {
+			return appwire.SessionFetchResponse{}, err
+		}
+		if result.Identity.ThreadRef != identity.ThreadRef || result.Identity.Incarnation != sourceIncarnation {
+			return appwire.SessionFetchResponse{}, appwire.TranscriptItemCursorStale()
+		}
+	}
+	return appitempaging.BuildFetchResponse(candidate.Item, identity, cursor)
+}
+
+// remoteRetainedItemMaxBytes bounds one item this controller reassembles from
+// an owning hub's retained fetch ranges. It matches the hub-side canonical
+// store budget, so a remote hub cannot make the controller buffer more than
+// the owner itself would retain.
+const remoteRetainedItemMaxBytes = 256 << 20
+
+// FetchRetainedItem resolves the owning hub's retained canonical encoding of
+// the item a fetch cursor names.
+//
+// A controller that retains a remote window's item must keep the exact bytes
+// behind the window's cursor, not a later ordinary re-read: a file-backed image
+// descriptor can change without an item-version change, and the re-read would
+// then describe different bytes under the same cursor. The controller forwards
+// the owning hub's token (the alias recorded when the window was retained) to
+// the owner as a fetch-cursor read; the owner answers that read from the entry
+// it retained when it minted the cursor. Range responses are capped, so the
+// complete encoding is assembled from consecutive offsets. A token the owner
+// no longer holds reports typed stale/unavailable, and an owner that predates
+// token resolution answers with no fetch at all: both report resolved false so
+// the caller keeps its ordinary re-read behavior.
+func (s *RemoteHubSource) FetchRetainedItem(
+	ctx context.Context,
+	ref string,
+	identity appitempaging.CursorIdentity,
+	cursor appitempaging.FetchCursor,
+) (appwire.ThreadItem, bool, error) {
+	var item appwire.ThreadItem
+	remoteRef, err := s.toRemoteRef(ref, "")
+	if err != nil {
+		return item, false, err
+	}
+	ownerIdentity := identity
+	ownerIdentity.ThreadRef = remoteRef.String()
+	ownerCursor := cursor
+	ownerCursor.Offset = 0
+	var canonical bytes.Buffer
+	var total uint64
+	for {
+		encoded, err := appitempaging.EncodeFetchCursor(ownerIdentity, ownerCursor)
+		if err != nil {
+			return item, false, err
+		}
+		response, err := s.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, FetchCursor: encoded})
+		if err != nil {
+			return item, false, err
+		}
+		if response.Fetch == nil {
+			return item, false, nil
+		}
+		fragment, err := base64.StdEncoding.DecodeString(response.Fetch.Data)
+		if err != nil || response.Fetch.Offset != ownerCursor.Offset || len(fragment) == 0 {
+			return item, false, appwire.TranscriptItemCursorStale()
+		}
+		if canonical.Len() != 0 && response.Fetch.TotalLength != total {
+			// A later range described a different item; its bytes cannot be
+			// concatenated with the ranges already assembled.
+			return item, false, appwire.TranscriptItemCursorStale()
+		}
+		total = response.Fetch.TotalLength
+		if total == 0 || total > remoteRetainedItemMaxBytes {
+			return item, false, appwire.FetchUnavailableRemote()
+		}
+		canonical.Write(fragment)
+		if uint64(canonical.Len()) > total {
+			return item, false, appwire.TranscriptItemCursorStale()
+		}
+		if uint64(canonical.Len()) == total {
+			break
+		}
+		ownerCursor.Offset = uint64(canonical.Len())
+	}
+	if err := json.Unmarshal(canonical.Bytes(), &item); err != nil {
+		return appwire.ThreadItem{}, false, appwire.TranscriptItemCursorStale()
+	}
+	if item.Position == nil || *item.Position != cursor.Position || item.Version != cursor.ItemVersion {
+		// The owner's retained entry does not describe the item the cursor
+		// fences; never retain bytes the item-version fence rejects.
+		return appwire.ThreadItem{}, false, nil
+	}
+	return item, true, nil
+}
+
+// TranslateItem applies the item-level translation a remote thread read
+// applies to every item: manager and authorship refs move into the controller
+// namespace, and the remote hub's own origin-relative image routes become the
+// host-qualified controller routes this hub proxies. Callers that resolve one
+// retained encoding directly, rather than reading a whole thread, use it so the
+// bytes they keep are the encoding the window showed.
+func (s *RemoteHubSource) TranslateItem(item appwire.ThreadItem) appwire.ThreadItem {
+	s.translateItemActor(&item)
+	s.translateItemAuthorship(&item)
+	rewriteItemImageURLs(s.id, &item)
+	return item
+}
+
 // ItemCandidatesFromRead converts an already-materialized remote item read
 // into the controller's candidate contract without issuing another read, so
 // the cursor minted from thread/read stays continuable through
@@ -905,6 +1098,63 @@ func (s *RemoteHubSource) ItemCandidatesFromRead(ctx context.Context, params app
 	}
 	identity, head, hasHead := s.remoteItemPageIdentity(key, candidates)
 	return s.recordRemoteItemPage(key, identity, candidates, response.OlderCursor, ReadHistoryIdentity(response), head, hasHead, nil)
+}
+
+// ItemCandidatesFromLegacyPage converts the supplied compatibility reread
+// without asking the remote hub to understand the controller's fetch cursor.
+// Unlike ItemCandidatesFromRead it is a pure conversion: a window read selects
+// several ranges from the same transcript, and retaining each selection would
+// rotate the cursor an ordinary item continuation of that thread still uses.
+func (s *RemoteHubSource) ItemCandidatesFromLegacyPage(ctx context.Context, params appwire.ThreadReadParams, response appwire.ThreadReadResponse) (ItemCandidateResult, error) {
+	if err := ctx.Err(); err != nil {
+		return ItemCandidateResult{}, err
+	}
+	ref, err := s.toRemoteRef(params.Ref, params.ThreadID)
+	if err != nil {
+		return ItemCandidateResult{}, err
+	}
+	candidates, err := appitempaging.CandidatesFromTurns(response.Thread.Turns)
+	if err != nil {
+		return ItemCandidateResult{}, err
+	}
+	if err := validateRemotePagePositions(candidates); err != nil {
+		return ItemCandidateResult{}, err
+	}
+	// The identity names the history the reread came from, so a compatibility
+	// fetch can compare it against the cursor it was minted with. The snapshot
+	// incarnation is stable across every range selected from one read.
+	key := remoteItemPagingKey(s.id, ref.ThreadID)
+	state, retained := s.itemPaging.peek(key)
+	var cursorIdentity appitempaging.CursorIdentity
+	if retained {
+		cursorIdentity = state.identity
+	} else {
+		cursorIdentity = s.compatRemoteItemIdentity(key)
+	}
+	if response.Snapshot != nil && response.Snapshot.Incarnation != "" {
+		cursorIdentity.Incarnation = response.Snapshot.Incarnation
+	}
+	return ItemCandidateResult{
+		Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates},
+		Identity:   cursorIdentity,
+		Exhausted:  response.OlderCursor == "",
+		History:    ReadHistoryIdentity(response),
+	}, nil
+}
+
+// compatRemoteItemIdentity names the history a compatibility conversion came
+// from when the peer reported neither a snapshot nor ordinary paging state. It
+// is a function of the thread alone, so every conversion of that thread mints
+// the same identity: an unchanged window's continuation and fetch keep
+// validating instead of failing stale the moment a conversion runs again. A
+// fresh incarnation here would make each conversion a different view.
+func (s *RemoteHubSource) compatRemoteItemIdentity(key string) appitempaging.CursorIdentity {
+	sum := sha256.Sum256([]byte(key))
+	return appitempaging.CursorIdentity{
+		ThreadRef:         key,
+		Incarnation:       "remote-hub-compat-" + hex.EncodeToString(sum[:8]),
+		ProjectionVersion: remoteHubItemCursorProjectionVersion,
+	}
 }
 
 // remoteItemPage issues one remote item-mode turn page and returns its

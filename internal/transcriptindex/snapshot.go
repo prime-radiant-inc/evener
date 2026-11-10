@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appitempaging"
 )
 
 // Snapshot exposes reads at one recorded byte boundary. It is valid only
@@ -13,6 +14,12 @@ type Snapshot struct{ index *Index }
 func (s *Snapshot) Latest(limit int) (Window, error) { return s.index.Latest(limit) }
 func (s *Snapshot) Before(before appwire.ThreadItemPosition, limit int) (Window, error) {
 	return s.index.Before(before, limit)
+}
+func (s *Snapshot) CandidateAt(position appwire.ThreadItemPosition) (appitempaging.TranscriptItemCandidate, error) {
+	return s.index.CandidateAt(position)
+}
+func (s *Snapshot) ResolveTurnWindow(selector appwire.ThreadTurnWindow) (ResolvedTurnWindow, error) {
+	return s.index.ResolveTurnWindow(selector)
 }
 func (s *Snapshot) Incarnation() (string, error)               { return s.index.Incarnation() }
 func (s *Snapshot) ChangedSince(length int64) (Changes, error) { return s.index.ChangedSince(length) }

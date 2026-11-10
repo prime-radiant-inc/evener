@@ -147,3 +147,12 @@ func TestSchemaFieldsRecordsKindAlongsideTypeString(t *testing.T) {
 		t.Errorf("schemaFields(withString) = %v, want it to contain %q (the field's kind recorded alongside its Type.String())", fields, want)
 	}
 }
+
+// TestSidecarIdentitySeparatesRecordLayouts pins the directory-key contract:
+// two binaries whose record layouts differ must not share one sidecar
+// directory, because each would rebuild over the other's indexes forever.
+func TestSidecarIdentitySeparatesRecordLayouts(t *testing.T) {
+	if projectionFor(7) == projectionFor(8) {
+		t.Fatal("two record layouts share one projection identity, so their sidecar directories collide")
+	}
+}
