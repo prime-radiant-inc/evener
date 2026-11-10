@@ -425,8 +425,8 @@ func TestDaemonlessThreadTurnsServesThreadIDOnlyWindowRequest(t *testing.T) {
 	)
 	operations := &sessionOperations{cfg: cfg, sources: newExitedLocalRegistry()}
 	page, err := operations.turns(t.Context(), appwire.ThreadTurnsListParams{
-		ThreadID:           entry.Meta.ID,
-		ThreadWindowParams: appwire.ThreadWindowParams{TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn_id_only"}},
+		ThreadID:   entry.Meta.ID,
+		TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn_id_only"},
 	})
 	if err != nil {
 		t.Fatalf("thread id only windowed turns list: %v", err)
