@@ -12,6 +12,7 @@ import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { resetConnectionStoreForTests } from "./connection";
 import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutationOutboxIndexedDB";
+import { deleteMutationDatabase } from "./mutationOutboxTestUtils";
 import { SessionEntryCache } from "./sessionEntryCache";
 import {
   installHydrationRetrySchedulerForTests,
@@ -77,17 +78,6 @@ afterEach(() => {
   cache.close();
   vi.restoreAllMocks();
 });
-
-async function deleteMutationDatabase(): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const request = indexedDB.deleteDatabase("evener-mutation-outbox");
-    request.addEventListener("success", () => resolve(), { once: true });
-    request.addEventListener("error", () => reject(request.error), { once: true });
-    request.addEventListener("blocked", () => reject(new Error("mutation database deletion blocked")), {
-      once: true,
-    });
-  });
-}
 
 test.each(["active", "idle"])("manual retry stays blocked after reload of a saved %s delegate", async (status) => {
   const storage = new MutationOutboxIndexedDB({ createMutationId: () => "saved-manual-retry" });

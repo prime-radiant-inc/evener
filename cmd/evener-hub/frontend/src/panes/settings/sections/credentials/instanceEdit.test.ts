@@ -1,21 +1,9 @@
 // @vitest-environment node
 
-import type { InstanceEntry, ProviderDescriptor } from "@evener/appwire-client";
+import type { ProviderDescriptor } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
+import { instance } from "./credentialsTestUtils";
 import { draftFor, instanceEditParams, PROTOCOL_OPTIONS, SURFACE_OPTIONS, varRows } from "./instanceEdit";
-
-function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
-  return {
-    protocol: "openai-chat",
-    auth: "bearer",
-    implicit: false,
-    isDefault: false,
-    activeSource: "none",
-    hasStoredOAuth: false,
-    credentialRequired: true,
-    ...overrides,
-  };
-}
 
 // A descriptor's vars map a template PLACEHOLDER to the environment variable
 // name the docs give it, and the two differ for real providers (the registry's

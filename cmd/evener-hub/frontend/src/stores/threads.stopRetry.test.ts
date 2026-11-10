@@ -18,6 +18,7 @@ import { connectionStore, resetConnectionStoreForTests } from "./connection";
 import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import type { MutationOutboxRecord } from "./mutationOutbox";
 import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutationOutboxIndexedDB";
+import { deleteMutationDatabase } from "./mutationOutboxTestUtils";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { holdNextWriteTransaction, wedgeDatabaseOpens } from "./testing/stalledIndexedDB";
 import {
@@ -115,17 +116,6 @@ function versionedReadResponse(
     epoch: 1,
     snapshot: { incarnation: "inc-1", length: snapshotLength },
   };
-}
-
-async function deleteMutationDatabase(): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const request = indexedDB.deleteDatabase("evener-mutation-outbox");
-    request.addEventListener("success", () => resolve(), { once: true });
-    request.addEventListener("error", () => reject(request.error), { once: true });
-    request.addEventListener("blocked", () => reject(new Error("mutation database deletion blocked")), {
-      once: true,
-    });
-  });
 }
 
 // docs/design/stop-cancellation-outbox.md §9 items 2-4: the durability

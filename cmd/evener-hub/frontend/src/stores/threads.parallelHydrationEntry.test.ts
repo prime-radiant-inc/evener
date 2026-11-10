@@ -1,5 +1,5 @@
 import type { MethodName, MethodTypes, ThreadReadResponse } from "@evener/appwire-client";
-import { acquireThreadSubscription, RequestTimeoutError, type ThreadSubscriptionLease } from "@evener/appwire-client";
+import { RequestTimeoutError } from "@evener/appwire-client";
 import { FakeClient, type RequestHandler } from "@evener/appwire-client/testing/fakeClient";
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
@@ -7,20 +7,18 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/pendingTurnsStore";
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { connectReadyFakeClient } from "../testing/connectionTestUtils";
-import { type TestThreadOverrides, testThread } from "../threadTestUtils";
 import { connectionStore, resetConnectionStoreForTests } from "./connection";
 import { productionEntryTranscriptForTests, setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { SessionEntryCache } from "./sessionEntryCache";
+import {
+  establishedMemberships,
+  establishMembership,
+  readResponse,
+  runScheduledHydrationRetry,
+  type ScheduledHydrationRetry,
+  scheduledHydrationRetries,
+} from "./threadHydrationTestUtils";
 import { installHydrationRetrySchedulerForTests, resetThreadsStoreForTests, threadsStore } from "./threads";
-
-const establishedMemberships: ThreadSubscriptionLease[] = [];
-async function establishMembership(fake: FakeClient, ref = "ref_a"): Promise<void> {
-  fake.on("thread/read", () => readResponse(ref));
-  const lease = acquireThreadSubscription(fake, ref);
-  establishedMemberships.push(lease);
-  await lease.ensure();
-  fake.calls.length = 0;
-}
 
 // Ordinary storage lookups use IndexedDB tasks. Yield to those tasks while
 // retaining each original wait's bounded predicate and observation order.
@@ -43,28 +41,7 @@ function nextHandledRequest<M extends MethodName>(
 
 const settleCallerContinuations = nextMacrotask;
 
-function readResponse(ref: string, overrides: TestThreadOverrides = {}): ThreadReadResponse {
-  return { thread: testThread(ref, overrides) };
-}
-
-interface ScheduledHydrationRetry {
-  attempt: number;
-  retry: () => void;
-  cancelled: boolean;
-}
-
-let scheduledHydrationRetries: ScheduledHydrationRetry[] = [];
 let restoreHydrationRetryScheduler: (() => void) | null = null;
-
-// runScheduledHydrationRetry invokes exactly one scheduled retry, proving first
-// that it exists and was not cancelled - a cancelled entry that still fires
-// would make every "release/swap cancels the retry" assertion below vacuous.
-function runScheduledHydrationRetry(index = 0): void {
-  const scheduled = scheduledHydrationRetries[index];
-  expect(scheduled, `no hydration retry scheduled at index ${index}`).toBeDefined();
-  expect(scheduled?.cancelled).toBe(false);
-  scheduled?.retry();
-}
 
 let cache: SessionEntryCache;
 beforeEach(() => {
@@ -80,7 +57,7 @@ beforeEach(() => {
     databaseName: `parallel-hydration-entry-${crypto.randomUUID()}`,
   });
   setProductionEntryCacheForTests(cache);
-  scheduledHydrationRetries = [];
+  scheduledHydrationRetries.length = 0;
   restoreHydrationRetryScheduler = installHydrationRetrySchedulerForTests((attempt, retry) => {
     const scheduled: ScheduledHydrationRetry = { attempt, retry, cancelled: false };
     scheduledHydrationRetries.push(scheduled);

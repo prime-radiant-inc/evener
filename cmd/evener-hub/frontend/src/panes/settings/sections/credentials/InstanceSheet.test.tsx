@@ -10,6 +10,7 @@ import { setMutationClientIdentityForTests } from "../../../../stores/mutationCl
 import { Toast } from "../../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { toastKinds } from "../../../../widgets/toast/toastTestUtils";
+import { instance } from "./credentialsTestUtils";
 import { InstanceSheet } from "./InstanceSheet";
 
 /** The refusal these controls use instead of the native attribute: a click that
@@ -33,19 +34,6 @@ const formErrorReason = (): string | null => screen.getByRole("alert").getAttrib
 const refusalShown = (reason: string): boolean =>
   document.querySelector(`[role="alert"][data-reason="${reason}"]`) !== null;
 const renameNote = (): string | null => document.querySelector("form")?.getAttribute("data-rename") ?? null;
-
-function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
-  return {
-    protocol: "openai-chat",
-    auth: "bearer",
-    implicit: false,
-    isDefault: false,
-    activeSource: "none",
-    hasStoredOAuth: false,
-    credentialRequired: true,
-    ...overrides,
-  };
-}
 
 /** A row the hub cannot key: an endpoint the user can see and NO
  * endpointFingerprint at all. The key is deleted rather than left out of the

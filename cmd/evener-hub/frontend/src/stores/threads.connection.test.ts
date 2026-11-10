@@ -1,13 +1,13 @@
-import type { ConnectionState, ThreadReadResponse } from "@evener/appwire-client";
+import type { ConnectionState } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectFakeClient } from "../testing/connectionTestUtils";
-import { type TestThreadOverrides, testThread } from "../threadTestUtils";
 import { connectionStore, resetConnectionStoreForTests, useConnectionStore } from "./connection";
 import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { SessionEntryCache } from "./sessionEntryCache";
+import { readResponse } from "./threadHydrationTestUtils";
 import { resetThreadsStoreForTests } from "./threads";
 
 let cache: SessionEntryCache;
@@ -27,10 +27,6 @@ afterEach(() => {
   cache.close();
   vi.restoreAllMocks();
 });
-
-function readResponse(ref: string, overrides: TestThreadOverrides = {}): ThreadReadResponse {
-  return { thread: testThread(ref, overrides) };
-}
 
 describe("FakeClient", () => {
   test("request() rejects while not ready, mirroring AppwireClient's own ready-gate, without recording the call", async () => {

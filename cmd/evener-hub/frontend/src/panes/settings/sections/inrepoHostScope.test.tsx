@@ -1,4 +1,4 @@
-import type { HostRow, LaunchConfigResolved } from "@evener/appwire-client";
+import type { LaunchConfigResolved } from "@evener/appwire-client";
 import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -6,6 +6,7 @@ import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { installLocalStorage } from "../../../storageTestUtils";
 import { resetConnectionStoreForTests } from "../../../stores/connection";
 import { hostsStore } from "../../../stores/hosts";
+import { hostRow } from "../../../stores/hostsTestUtils";
 import { resetLaunchConfigHostStoresForTests } from "../../../stores/launchConfig";
 import { resetSettingsHostForTests, setSettingsHost } from "../../../stores/settingsHost";
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
@@ -38,18 +39,6 @@ beforeAll(() => {
   // @ts-expect-error minimal storage fixture implements only the used methods
   installLocalStorage(new MemoryStorage());
 });
-
-function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
-  return {
-    generation: 1,
-    incarnationId: "inc-1",
-    origin: "hub.toml",
-    attached: false,
-    midAttach: false,
-    removed: false,
-    ...overrides,
-  };
-}
 
 function resolvedWithRepo(repo: LaunchConfigResolved["repo"]): LaunchConfigResolved {
   return { effective: {}, layers: {}, provenance: {}, repo };
