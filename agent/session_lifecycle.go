@@ -2151,6 +2151,11 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// stop_hook_active is per turn: a continuation a Stop hook blocked into this
 	// turn must not leak into the next one.
 	s.stopHookActive = false
+	// A tool post-hook's continue:false belongs to the round that raised it; the
+	// round loop consumes it, and a new turn must not inherit an unconsumed one.
+	s.toolHookStop = ""
+	// Likewise a UserPromptSubmit stop belongs to the input that raised it.
+	s.promptHookStop = ""
 	// A new turn is new work; the previous turn's interrupt no longer says
 	// anything about this session's idleness.
 	s.turnInterrupted = false
@@ -2317,6 +2322,17 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			return "", false, nil
 		}
 		return "", false, err
+	}
+	// A UserPromptSubmit hook's continue:false ends the turn before its first
+	// model request: its reason was delivered to the user while the input was
+	// accepted, and no model work dispatches. A SessionStart hook's stop does the
+	// same for the first turn. Both are consumed unconditionally: a short-circuit
+	// would leave the second flag set and stop an unrelated later turn.
+	promptStopped := s.takePromptHookStop()
+	startStopped := s.takeSessionStartHookStop()
+	if promptStopped || startStopped {
+		s.finishProcessingAtBoundary(ctx, SessionIdle)
+		return "", false, nil
 	}
 	if skillRouteErr != nil {
 		// A known but failed skill route is a visible failed input: the
@@ -2616,8 +2632,16 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// deliverIfCommunicated reports done == false: a round that also called
 		// communicate keeps its reply, and one that posted ask_user stays
 		// awaiting. A batch of nothing never fires (no tool_calls to describe).
-		batchBlocked := false
-		batchStop := ""
+		// A PostToolUse/PostToolUseFailure continue:false is recorded by the
+		// round's own tool executions and read here, where the results are
+		// already durable. It joins PostToolBatch's block in the same turn-ending
+		// tail below, so a round that also communicated keeps its reply.
+		s.mu.Lock()
+		toolHookStop := s.toolHookStop
+		s.toolHookStop = ""
+		s.mu.Unlock()
+		batchBlocked := toolHookStop != ""
+		batchStop := toolHookStop
 		if s.hookRunner != nil && len(calls) > 0 {
 			hi := s.hookInput(plugin.HookPostToolBatch)
 			hi.ToolCalls = s.batchToolCalls(calls, results)
@@ -2632,7 +2656,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			}
 			if batchRes.Stopped {
 				batchBlocked = true
-				batchStop = strings.TrimSpace(batchRes.StopReason)
+				if stop := strings.TrimSpace(batchRes.StopReason); batchStop == "" {
+					batchStop = stop
+				}
 			}
 		}
 
@@ -2673,10 +2699,11 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		if done {
 			return text, progressed, nil
 		}
-		// The round did not produce a reply or a question, so the batch hook's
-		// recorded block owns the turn: deliver its reason, record it as
-		// steering, and end through the same failure boundary the other
-		// pre-request stops use. The tool results are already persisted.
+		// The round did not produce a reply or a question, so the recorded stop
+		// owns the turn: a PostToolUse/PostToolUseFailure continue:false, or
+		// PostToolBatch's block. Deliver its reason, record it as steering, and
+		// end through the same failure boundary the other pre-request stops use.
+		// The tool results are already persisted.
 		//
 		// A Stop hook that vetoed one of this round's communicate calls lands
 		// here too (deliverIfCommunicated returned not-done), so the batch block
@@ -2689,7 +2716,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			if batchStop == "" {
 				// A block with no stated reason still ends the turn with a
 				// legible line, rather than a silent stop.
-				batchStop = "PostToolBatch hook stopped this round"
+				batchStop = "a tool hook stopped this round"
 			}
 			s.deliverHookUserMessage(batchStop)
 			s.appendSteeringTurn(batchStop, events.SteeringKindHookContext)
@@ -2812,6 +2839,28 @@ func (s *Session) appendUserInputTurnRefusingPoison(turn schema.Turn) error {
 
 func (s *Session) acceptUserInput(ctx context.Context, input string, images []ImageAttachment, inputProvenance *provenance.Causal, drainResumeSessionStart bool) error {
 	return s.acceptUserInputWithSkillSelection(ctx, input, images, inputProvenance, drainResumeSessionStart, nil)
+}
+
+// takePromptHookStop consumes a UserPromptSubmit hook's recorded continue:false.
+// It reports whether the turn must end before its first model request. The
+// reason was already delivered to the user when the input was accepted.
+func (s *Session) takePromptHookStop() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stopped := s.promptHookStop != ""
+	s.promptHookStop = ""
+	return stopped
+}
+
+// takeSessionStartHookStop consumes a SessionStart hook's recorded
+// continue:false. It reports whether the first turn must end before its model
+// request. The reason was already delivered to the user when the hook ran.
+func (s *Session) takeSessionStartHookStop() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stopped := s.sessionStartHookStop != ""
+	s.sessionStartHookStop = ""
+	return stopped
 }
 
 // acceptUserInputWithSkillSelection is acceptUserInput plus the typed skill
@@ -3007,6 +3056,19 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 		}
 		for _, m := range result.UserMessages {
 			s.deliverHookUserMessage(m)
+		}
+		// continue:false here means the prompt never reaches the model. The stop
+		// reason is delivered to the user now and carried to the turn loop, which
+		// ends the turn before its first request (see promptHookStop).
+		if result.Stopped {
+			reason := strings.TrimSpace(result.StopReason)
+			if reason == "" {
+				reason = "UserPromptSubmit hook stopped this prompt"
+			}
+			s.deliverHookUserMessage(reason)
+			s.mu.Lock()
+			s.promptHookStop = reason
+			s.mu.Unlock()
 		}
 	}
 

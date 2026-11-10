@@ -2231,6 +2231,7 @@ func (s *Session) deliverSessionStartHookResultForUserTurn(result hooks.RunResul
 	for _, m := range result.UserMessages {
 		s.deliverHookUserMessage(m)
 	}
+	s.recordSessionStartStop(result)
 }
 
 func (s *Session) runPendingSessionStartHooksForRestoreSideEffects(ctx context.Context) {
@@ -2285,6 +2286,25 @@ func (s *Session) deliverSessionStartHookResult(result hooks.RunResult) {
 	for _, m := range result.UserMessages {
 		s.deliverHookUserMessage(m)
 	}
+	s.recordSessionStartStop(result)
+}
+
+// recordSessionStartStop carries a SessionStart hook's continue:false to the
+// first turn, which ends before its model request. Sessions still exist without
+// one: the startup dispatch runs during init, before any turn, so the reason is
+// delivered here and the flag is read by the next turn to start.
+func (s *Session) recordSessionStartStop(result hooks.RunResult) {
+	if !result.Stopped {
+		return
+	}
+	reason := strings.TrimSpace(result.StopReason)
+	if reason == "" {
+		reason = "SessionStart hook stopped this session"
+	}
+	s.deliverHookUserMessage(reason)
+	s.mu.Lock()
+	s.sessionStartHookStop = reason
+	s.mu.Unlock()
 }
 
 func (s *Session) runSessionStartHooksWithContext(ctx context.Context, sessionStartKind plugin.SessionStartKind) hooks.RunResult {

@@ -647,6 +647,27 @@ type Session struct {
 	// clears it (execTool), because the work the block asked for has been done.
 	// Cleared with comm when the next turn starts. Guarded by mu.
 	stopHookActive bool
+	// toolHookStop carries a PostToolUse or PostToolUseFailure hook's
+	// continue:false out of execTool to the round loop, which ends the turn the
+	// same way PostToolBatch's block does -- after the tool results are already
+	// persisted. execTool runs one call at a time on the round's goroutine (or
+	// several in parallel), so the first non-empty reason wins and later ones do
+	// not overwrite it. Consumed and cleared each tool-executing round. Guarded
+	// by mu.
+	toolHookStop string
+	// promptHookStop carries a UserPromptSubmit hook's continue:false out of
+	// acceptUserInput to the turn loop, which ends the turn before the first
+	// model request: the prompt never reaches the model. The reason is already
+	// delivered to the user. Consumed and cleared when the turn starts. Guarded
+	// by mu.
+	promptHookStop string
+	// sessionStartHookStop carries a SessionStart hook's continue:false to the
+	// first turn. A startup dispatch runs during session init, before any turn
+	// exists, and a deferred resume dispatch runs inside the turn that triggered
+	// it, so this is kept separately from promptHookStop and is NOT cleared at
+	// turn start: it must survive until the turn it stops consumes it. The
+	// reason is already delivered to the user. Guarded by mu.
+	sessionStartHookStop string
 	// turnInterrupted records that the turn which just ran ended on a
 	// cancellation (an interrupt, a signal, a shutdown). It is set in the
 	// interrupt branch before the turn settles idle, because that settle would

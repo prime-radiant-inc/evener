@@ -221,8 +221,8 @@ only `clear`/`prompt_input_exit`/`other`, and a retirement close runs no `Sessio
 hook; `Notification`'s only type is `warning`; `Stop`/`SubagentStop` omit
 `background_tasks`, `session_crons`, and `agent_transcript_path`; and
 `suppressOutput`/`terminalSequence` are **parsed but have no consumer**.
-`continue:false` is acted on by `SubagentStart` and `PostToolBatch` only; the other
-dispatch sites record it but do not yet stop on it, and `StopFailure`, `Notification`,
+`continue:false` stops the action each fired event guards — the call, the turn, the
+child run, the prompt, or the round loop — and only `StopFailure`, `Notification`,
 `PreCompact`, `PostCompact`, and `SessionEnd` discard it. `if`/`async`/`statusMessage`
 and the `http`/`mcp_tool`/`agent` handlers
 are parsed-but-inert. See `hooks.md` for the full caveat list and

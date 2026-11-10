@@ -483,7 +483,7 @@ Delivery channels (shipped): `hookSpecificOutput.additionalContext` is delivered
 
 The universal fields:
 
-- `continue` (default `true`) — a value of `false` halts further processing for the event. Evener **acts on it** on `SubagentStart` (the child never launches) and `PostToolBatch` (the round loop stops); the stop reason becomes a user-visible warning. On the other fired events the runner records the stop but no dispatch site consumes it yet. It **discards** it on `StopFailure`, `Notification`, `PreCompact`, `PostCompact`, and `SessionEnd`, exactly as Claude does (`continueDiscardedEvents`, `agent/internal/hooks/hookinput.go`; consumers `agent/subagents.go:1807`, `agent/session_lifecycle.go:2633`).
+- `continue` (default `true`) — a value of `false` halts further processing for the event. Evener **acts on it** on every fired event except five: it stops the tool call (`PreToolUse`), ends the turn after the results persist (`PostToolUse`, `PostToolUseFailure`), ends the turn with the vetoed reply replaced (`Stop`), ends the child run with no continuation (`SubagentStop`), stops the child launch (`SubagentStart`), keeps the prompt from the model (`UserPromptSubmit`, `SessionStart`), or stops the round loop (`PostToolBatch`). The stop reason becomes a user-visible warning. It **discards** it on `StopFailure`, `Notification`, `PreCompact`, `PostCompact`, and `SessionEnd`, exactly as Claude does (`continueDiscardedEvents`, `agent/internal/hooks/hookinput.go`).
 - `stopReason` — the message surfaced to the user when `continue` is `false`. Evener reads it (falling back to the JSON `reason`) and reduces it to one line.
 - `suppressOutput` (default `false`) — Claude: suppress normal hook-output display. Evener parses it but does not act on it.
 
@@ -668,7 +668,7 @@ Phase 1 is the shipped `claude-compatible-subset`, documented in [Hooks](../hook
 - `PreToolUse` `allow`/`deny` decisions, `permissionDecisionReason`, and the deprecated `approve`/`block` top-level mapping.
 - `hookSpecificOutput.additionalContext` model-delivery channel (system reminder); `systemMessage` user-display channel.
 - `PostToolUseFailure`, `PostToolBatch`, `SubagentStart`, `StopFailure`, and `PostCompact` — fired at real evener runtime boundaries, with their matcher targets and the caveats named in [Hooks](../hooks.md#claude-compatibility-caveats).
-- `continue: false` acted on by `SubagentStart` and `PostToolBatch`; discarded on `StopFailure`, `Notification`, `PreCompact`, `PostCompact`, and `SessionEnd`.
+- `continue: false` honored at every fired event's dispatch site; discarded on `StopFailure`, `Notification`, `PreCompact`, `PostCompact`, and `SessionEnd`.
 
 **Remaining reserved (`reserved-placeholder`):**
 - Parser recognition and runner methods for `PermissionRequest`, `PermissionDenied`, `ConfigChange`, `UserPromptExpansion` — wired only at real evener runtime boundaries.

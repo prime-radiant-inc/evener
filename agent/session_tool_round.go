@@ -631,6 +631,23 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 		for _, m := range stopResult.UserMessages {
 			s.deliverHookUserMessage(m)
 		}
+		// continue:false on Stop ends the turn: the hook's stopReason becomes the
+		// text this boundary delivers, replacing a reply the hook is vetoing. A
+		// stop takes precedence over a block -- the hook asked for the action to
+		// end, not to continue -- so it is checked first.
+		if stopResult.Stopped {
+			if reason := strings.TrimSpace(stopResult.StopReason); reason != "" {
+				text = reason
+			} else {
+				text = "Stop hook stopped this turn"
+			}
+			s.deliverHookUserMessage(text)
+			s.finishProcessingAtBoundary(ctx, boundaryState)
+			if hook := s.cfg.testOnly.afterCommunicateBoundary; hook != nil {
+				hook(s)
+			}
+			return true, text, nil
+		}
 		if stopResult.Blocked {
 			// Don't finish — keep looping. The next Stop dispatch in this turn
 			// is a continuation, which is what stop_hook_active reports.

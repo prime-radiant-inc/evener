@@ -128,16 +128,16 @@ existing plugin sees.
   neither. A plugin that relied on `PostToolUse` also seeing failures must add
   `PostToolUseFailure` (`agent/session_tools.go:1036`; the switch is
   `case !res.IsError`).
-- **`continue: false` is honored where a dispatch site acts on it.** On
-  `SubagentStart` the child never launches; on `PostToolBatch` the round loop
-  stops before the next model call. In both, the hook's `stopReason` is
-  delivered as a user-visible warning. The runner computes the same `Stopped`
-  result on the other fired events, but their dispatch sites do not yet end the
-  action on it. It is discarded entirely on `StopFailure`, `Notification`,
-  `PreCompact`, `PostCompact`, and `SessionEnd`, exactly as Claude discards it
-  (`agent/internal/hooks/hookinput.go`, `continueDiscardedEvents`;
-  `agent/internal/hooks/hooks.go`, `applyStopped`; the only consumers are
-  `agent/subagents.go:1807` and `agent/session_lifecycle.go:2633`).
+- **`continue: false` is honored.** At every fired event except five, it stops
+  the action it guards, and the hook's `stopReason` is delivered as a user-visible
+  warning: `PreToolUse` stops the call, the two tool post-hooks end the turn,
+  `Stop` and `SubagentStop` end the turn or run, `UserPromptSubmit` and
+  `SessionStart` keep the prompt from the model, `SubagentStart` stops the
+  launch, and `PostToolBatch` stops the round loop. It is discarded on
+  `StopFailure`, `Notification`, `PreCompact`, `PostCompact`, and `SessionEnd`,
+  exactly as Claude discards it (`agent/internal/hooks/hookinput.go`,
+  `continueDiscardedEvents`; `agent/internal/hooks/hooks.go`, `applyStopped`;
+  [per-event consumers](#claude-compatibility-caveats)).
 - **`effort` is an object** — `{"level": "high"}` — and the field is absent when
   no effort is configured. A plugin that expected the old bare string now gets an
   object, or no field at all
@@ -259,13 +259,20 @@ and each is traced to the code that implements it.
   leaks across turns (`agent/session.go:644-649`;
   `agent/session_tool_round.go:606,623,638`; `agent/session_tools.go:862`;
   `agent/session_lifecycle.go:2153`).
-- **`continue: false` stops only two events so far.** `SubagentStart` (the child
-  never launches) and `PostToolBatch` (the round loop stops) act on it; the
-  runner records `Stopped` for the others, but no other dispatch site consumes
-  it yet. The five discarding events are `StopFailure`, `Notification`,
-  `PreCompact`, `PostCompact`, and `SessionEnd`
-  (`agent/subagents.go:1807`; `agent/session_lifecycle.go:2633`;
-  `agent/internal/hooks/hookinput.go`, `continueDiscardedEvents`).
+- **`continue: false` stops what each event guards.** The event-to-action map:
+  `PreToolUse` stops the call (`agent/session_tools.go`, the `preResult.Stopped`
+  arm); `PostToolUse` and `PostToolUseFailure` end the turn after the results are
+  persisted (`agent/session_tools.go` records the stop, `agent/session_lifecycle.go`
+  applies it after `deliverIfCommunicated`); `Stop` ends the turn and its
+  `stopReason` replaces the vetoed reply (`agent/session_tool_round.go`);
+  `SubagentStop` ends the child run with no continuation (`agent/subagents.go`);
+  `SubagentStart` keeps the child from launching (`agent/subagents.go`);
+  `UserPromptSubmit` and `SessionStart` end the turn before its first model
+  request (`agent/session_lifecycle.go`, `takePromptHookStop` and
+  `takeSessionStartHookStop`); `PostToolBatch` stops the round loop
+  (`agent/session_lifecycle.go`). `StopFailure`, `Notification`, `PreCompact`,
+  `PostCompact`, and `SessionEnd` discard it (`agent/internal/hooks/hookinput.go`,
+  `continueDiscardedEvents`).
 - **`effort` is an object and is absent when unset.** `{"level": "high"}`, not
   `"high"`; the field is omitted entirely when no effort is configured
   (`agent/internal/hooks/hookinput.go`, `Effort`; `agent/session_events.go:645-647`).
@@ -629,12 +636,11 @@ The output JSON Evener reads (exit 0):
 }
 ```
 
-- `continue` is **honored on `SubagentStart` and `PostToolBatch`**: there,
-  `continue: false` stops the child launch or the round loop and `stopReason`
-  becomes a user-visible warning. On the other fired events the runner records
-  the stop but no dispatch site acts on it yet. On `StopFailure`,
-  `Notification`, `PreCompact`, `PostCompact`, and `SessionEnd` it is discarded.
-  `suppressOutput` is still parsed but has no runtime effect.
+- `continue` is **honored** on every fired event except five: `continue: false`
+  stops the action the event guards and `stopReason` becomes a user-visible
+  warning. It is discarded on `StopFailure`, `Notification`, `PreCompact`,
+  `PostCompact`, and `SessionEnd`, as Claude discards it. `suppressOutput` is
+  still parsed but has no runtime effect.
 - `hookSpecificOutput.additionalContext` is delivered to the **model**, wrapped in
   a `<SYSTEM-REMINDER>`.
 - The top-level `systemMessage` field is shown to the **user** (a `[warning]`-style

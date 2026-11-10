@@ -820,6 +820,25 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		for _, m := range preResult.UserMessages {
 			s.deliverHookUserMessage(m)
 		}
+		// continue:false stops the tool call, like a deny: the tool never runs and
+		// the model gets the hook's stopReason as the call's error result. A
+		// stop outranks any allow the same dispatch returned, so it is checked
+		// before updatedInput is applied. Like a deny, it returns before the
+		// stop_hook_active reset below: the work a Stop hook's block asked for is
+		// still undone.
+		if !prep.RawArgumentsRejected && preResult.Stopped {
+			stopMsg := strings.TrimSpace(preResult.StopReason)
+			if stopMsg == "" {
+				stopMsg = "Tool call stopped by hook"
+			}
+			return tool.ExecResult{
+				ToolName:   call.Name,
+				CallID:     call.ID,
+				Output:     stopMsg,
+				FullOutput: stopMsg,
+				IsError:    true,
+			}
+		}
 		if !prep.RawArgumentsRejected && preResult.Denied {
 			denyMsg := "Tool call denied by hook"
 			if preResult.DenyMessage != "" {
@@ -1058,6 +1077,18 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		}
 		for _, m := range hookResult.UserMessages {
 			s.deliverHookUserMessage(m)
+		}
+		// continue:false on either tool post-hook ends the TURN, not the call:
+		// the tool already ran, so the stop is recorded for the round loop, which
+		// persists these results first and then ends the turn through
+		// finishProcessingAtFailureBoundary (the same tail PostToolBatch's block
+		// uses). The reason becomes a user warning and a steering turn there.
+		if hookResult.Stopped {
+			s.mu.Lock()
+			if s.toolHookStop == "" {
+				s.toolHookStop = strings.TrimSpace(hookResult.StopReason)
+			}
+			s.mu.Unlock()
 		}
 	}
 
