@@ -469,6 +469,10 @@ test("an empty exited follow-up keeps its phone menus usable", async () => {
     await user.click(screen.getByRole("button", { name: "Session actions" }));
     expect(screen.queryByRole("menu")).not.toBeNull();
     await user.keyboard("{Escape}");
+    // The phone's resting row is the compact one-line row; engaging the
+    // editor brings the model picker back.
+    await user.click(textarea());
+    await waitFor(() => expect(screen.getByTestId("model-switch-trigger")).toBeTruthy());
     await user.click(screen.getByTestId("model-switch-trigger"));
     expect(screen.getByRole("dialog", { name: "Choose model" })).toBeTruthy();
     await user.click(await screen.findByRole("option", { name: /gpt-5.5/ }));

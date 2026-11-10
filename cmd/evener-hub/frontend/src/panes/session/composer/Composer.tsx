@@ -752,16 +752,15 @@ export function Composer({
 
   // The phone layout's one bottom surface is this card's own control row,
   // and a resting card sheds what an empty editor does not need: no attach,
-  // no status chips, no activity chips. The session menu and Send stay -
+  // no status chrome, no activity chips. The session menu and Send stay -
   // both remain useful with nothing drafted, and the menu is a phone's one
-  // surface for session actions. Editor engagement (a draft, the editor's
-  // own focus, a send in flight, a stalled storage write) brings the full
-  // row back; the actions slot never sheds, so Stop stays reachable while a
+  // surface for session actions. That resting card is one line; editor
+  // engagement (a draft, the editor's own focus, a send in flight, a stalled
+  // storage write) brings the full row back, including the model picker and
+  // Attach. The actions slot never sheds, so Stop stays reachable while a
   // turn runs, and the resting leading never swaps while one of its own
-  // controls is pressed. The exited follow-up keeps the model picker in its
-  // resting row: that surface is the one place on a phone the picker is
-  // directly reachable without engaging the editor.
-  const controlsCollapsed = isMobile && !ended && !fence.fencedLocal && !fence.sendDriven && resting;
+  // controls is pressed.
+  const controlsCollapsed = isMobile && resting;
 
   function handleTextChange(value: SkillEditorValue, caret: number): void {
     editSkillNames(value.skillNames);
@@ -993,7 +992,11 @@ export function Composer({
   // The attach control is a resting-card affordance, so the folded row drops
   // it: focusing the editor brings it back with the rest of the full row.
   const leadingControls = (
-    <div className={CLASS.leading} data-folded={folded ? "true" : undefined}>
+    <div
+      className={CLASS.leading}
+      data-folded={folded ? "true" : undefined}
+      data-compact={controlsCollapsed ? "true" : undefined}
+    >
       {controlsCollapsed ? (
         <MemoizedSessionChrome ref={ref} paneId={paneId} placement="menu" discoverActivity turnVerbs={turnVerbs} />
       ) : (
@@ -1145,6 +1148,7 @@ export function Composer({
                 data-testid="composer-input-card"
                 hidden={askPending}
                 folded={folded}
+                foldedCompact={controlsCollapsed}
                 field={
                   <SkillEditor
                     ref={editorRef}

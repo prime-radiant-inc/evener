@@ -19,6 +19,10 @@ export interface PromptCardProps {
    * instead of stacking, and the card animates the height between the two
    * shapes. Callers own what the row contains; the card only lays it out. */
   folded?: boolean;
+  /** Use the folded one-line row even when the card is narrower than its
+   * normal width threshold. The caller guarantees its control row fits; the
+   * composer uses it for the phone's menu-only resting row. */
+  foldedCompact?: boolean;
   /** Forwarded to the card element so a test can address it by a stable hook
    * (the composer's `composer-input-card`, spawn's `spawn-prompt-card`). */
   "data-testid"?: string;
@@ -54,6 +58,7 @@ export function PromptCard({
   leading,
   actions,
   folded = false,
+  foldedCompact = false,
   hidden,
   controlsTestId,
   "data-testid": testId,
@@ -113,6 +118,7 @@ export function PromptCard({
         className={CLASS.card}
         data-testid={testId}
         data-folded={folded ? "true" : undefined}
+        data-folded-compact={foldedCompact ? "true" : undefined}
         hidden={hidden}
         inert={hidden}
       >

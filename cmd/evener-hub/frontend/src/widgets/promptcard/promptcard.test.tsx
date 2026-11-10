@@ -32,6 +32,7 @@ function LiveCard(props: {
   actions?: React.ReactNode;
   hidden?: boolean;
   folded?: boolean;
+  foldedCompact?: boolean;
   controlsTestId?: string;
 }) {
   const [value, setValue] = useState("");
@@ -40,6 +41,7 @@ function LiveCard(props: {
       data-testid="card"
       hidden={props.hidden}
       folded={props.folded}
+      foldedCompact={props.foldedCompact}
       controlsTestId={props.controlsTestId}
       leading={props.leading}
       actions={props.actions}
@@ -199,6 +201,17 @@ test("the folded card goes one line only when the card has room", () => {
   const oneLine = blockBody(css, css.indexOf("{", queryStart));
   expect(oneLine).toMatch(/\.card\[data-folded="true"\]\s*\{[^}]*flex-direction:\s*row;/);
   expect(css).toMatch(/\.card\[data-folded="true"\] \.field\s*\{[^}]*flex:\s*1 1 10ch;/);
+});
+
+test("a compact folded card goes one line below the normal width threshold", () => {
+  const css = moduleCss();
+  expect(css).toMatch(/\.card\[data-folded="true"\]\[data-folded-compact="true"\]\s*\{[^}]*flex-direction:\s*row;/);
+  expect(css).toMatch(/\.card\[data-folded="true"\]\[data-folded-compact="true"\] \.field\s*\{[^}]*flex:\s*1 1 10ch;/);
+});
+
+test("foldedCompact marks the card for the narrow one-line row", () => {
+  render(<LiveCard folded foldedCompact />);
+  expect(screen.getByTestId("card").getAttribute("data-folded-compact")).toBe("true");
 });
 
 // jsdom has no layout, so the height measurement that drives the transition

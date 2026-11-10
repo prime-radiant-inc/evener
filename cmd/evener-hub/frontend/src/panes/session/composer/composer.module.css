@@ -247,3 +247,11 @@
 .leading[data-folded="true"] {
   contain-intrinsic-inline-size: 356px;
 }
+
+/* The phone's compact resting row keeps only the menu in this slot; it must
+ * hug that menu so the field keeps the line and Send stays at the far edge. */
+.leading[data-compact="true"] {
+  flex: 0 0 var(--tap-min);
+  min-width: var(--tap-min);
+  overflow: hidden;
+}

@@ -106,6 +106,17 @@
   min-width: 0;
 }
 
+/* A caller that knows its control row is compact can use the same one-line
+ * shape below the normal width threshold (the phone's menu-only resting row). */
+.card[data-folded="true"][data-folded-compact="true"] {
+  flex-direction: row;
+  align-items: center;
+}
+
+.card[data-folded="true"][data-folded-compact="true"] .field {
+  flex: 1 1 10ch;
+}
+
 /* The row never wraps. It once did, below 399px, for a three-verb cluster
  * (Stop, Send, Steer) that could not sit beside the status row at phone
  * width (issue #1339) - but the wrapped second line read badly, so Jesse's

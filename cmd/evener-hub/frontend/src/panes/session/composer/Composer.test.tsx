@@ -136,6 +136,27 @@ test("the wide empty composer folds to one line and unfolds on focus", async () 
   expect(editor.style.minHeight).toBe("1lh");
 });
 
+test("a phone's folded composer is compact, and focus reveals the full row", async () => {
+  const restoreViewport = installMobileViewport();
+  try {
+    await mountComposerWithHandle("ref_a");
+    const card = screen.getByTestId("composer-input-card");
+    expect(card.getAttribute("data-folded")).toBe("true");
+    expect(card.getAttribute("data-folded-compact")).toBe("true");
+    expect(screen.queryByTestId("composer-attach")).toBeNull();
+    expect(screen.queryByTestId("model-switch-trigger")).toBeNull();
+    expect(screen.getByTestId("composer-submit")).toBeTruthy();
+
+    act(() => textarea().focus());
+    await waitFor(() => expect(card.getAttribute("data-folded-compact")).toBeNull());
+    expect(screen.getByTestId("model-switch-trigger")).toBeTruthy();
+    expect(screen.getByTestId("composer-attach")).toBeTruthy();
+  } finally {
+    cleanup();
+    restoreViewport();
+  }
+});
+
 test("the composer's inline status row packs its facts to the far end", async () => {
   await mountComposerWithHandle("ref_a");
   act(() => textarea().focus());
