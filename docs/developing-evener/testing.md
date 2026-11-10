@@ -941,15 +941,67 @@ everywhere else.
 
 ## The Test Timing Ratchet
 
-`make test-timing-budget` measures per-Go-package test wall time, plus one
-aggregate for the frontend, against the checked-in `testing-budget.json`, so a
-timing regression cannot silently erode the suite's runtime. It fails at 1.5x a
-package's checked-in budget and warns at 1.1x, and it applies a per-test ceiling
-segmented by test class. Failure limits, class ceilings included, scale by the
-run's slowdown (the median measured/budget ratio over at least three packages
-budgeted at 5s or more, when above 1), so a uniformly slow runner does not fail
-the gate while one package far above its peers still does. It reuses `gate-surface-lib.sh`, so it measures the same
-surface `ROOT_FULL=1 make test` proves.
+`make test-timing-budget` budgets each Go package's test CPU time, plus one
+wall-time aggregate for the frontend, against the checked-in
+`testing-budget.json`, so a timing regression cannot silently erode the suite's
+runtime. It reuses `gate-surface-lib.sh`, so it measures the same surface
+`ROOT_FULL=1 make test` proves.
+
+### What Is Budgeted
+
+The gate oversubscribes its runner on purpose: the `tests / root` lane runs the
+root module's packages four at a time beside the hub and CLI shard runners on
+four vCPUs, and keeps 17 to 20 threads runnable on average. A package's wall
+time is mostly how long its threads waited for a core, so it follows what ran
+beside it. A serial package shows it most: `server` (549 tests, CPU about a
+quarter of its wall time) read 11.7s to 21.6s of wall time on the same commit
+while its CPU stayed at 3.7s to 6.0s, and its window ran with up to 29 threads
+runnable. Per-package wall budgets failed such runs at 1.83x with no change to
+the package.
+
+So each Go package is budgeted on **CPU time**: the user and system time of its
+test binary, every child process it waited for included. It fails at 1.5x its
+`packages` budget and warns at 1.1x. A package that does more work spends more
+CPU wherever it runs; waiting for a core costs none.
+
+CPU time cannot see a package that gets slower by waiting: a longer sleep, a
+poll that runs out its deadline, a blocked lock. The **wall backstop** is for
+that: a package with a CPU row also fails at 2.5x its `wallPackages` budget. It
+catches a gross wait and is deliberately too loose to fire on contention: across
+40 runs on main the worst package sat at 1.83x its wall budget after scaling.
+A wait regression smaller than that shows only in the per-test ceilings below,
+which fail only for a test named in a class.
+
+A row with no CPU measurement keeps the wall rule, 1.5x to fail and 1.1x to
+warn against its `wallPackages` budget: that is the frontend's `"web"` row
+(vitest reports no CPU time) and a package with no test files.
+
+### How Rows Are Produced
+
+Every Go test binary in the gate runs under `go test -exec "evener-dev dev
+test-cpu-exec"`. The wrapper runs the binary with the caller's stdio, forwards
+the signals that stop a run, keeps the binary's exit status, and prints the
+binary's CPU seconds as a line of the package's own output, which
+`evener-dev timing-parse` turns into the package's `CPU` row beside its `SUM`
+(wall) row. A sharded package (`agent`, `cmd/evener-hub`, `cmd/evener`) sums
+its shard processes' CPU into one `CPU` row; its `SUM` row is the shard phase's
+wall time. A Go package that ran tests and has no `CPU` row is a broken
+measurement, nonzero in every mode, never judged by its wall time instead.
+
+### Scaling by the Run's Speed
+
+Runners differ: on one commit an EPYC 9V45 runner ran the root lane about 25%
+faster than a Xeon 8370C or EPYC 7763, in CPU and wall time alike. Failure
+limits therefore scale by the run's slowdown, the median measured/budget ratio
+over at least three packages budgeted at 5s or more, when above 1, so a
+uniformly slow runner does not fail the gate while one package far above its
+peers still does. Each measure has its own median: the CPU median scales the
+CPU limit, and the wall median scales the wall backstop, the wall rule for
+rows without CPU, and the named per-test ceilings, which are wall times.
+Warnings stay on the raw ratio. Across five runs of one commit on three CPU
+models, a package's CPU after scaling varied by at most 1.14x run to run
+(`internal/plugins`, which drives real git, 1.27x), its wall time by up to
+1.93x.
 
 ### Per-Test Ceilings Are Named Per Test
 
@@ -1008,26 +1060,48 @@ float-convertible number fails in every mode, naming the test and the field; a
 huge but finite value is a legitimate ceiling that simply disables that test's.
 
 Enforcement of the package ratios is conditional. A local run only warns. A
-package over 1.5x its budget is nonzero only under `CHECK=1` in a CI-shaped
-environment (`$CI` set, or `--strict`). A `testing-budget.json` that is missing, or whose `packages` map is empty, is an
-explicit warn state, so `CHECK=1` exits zero until `make test-rebaseline` lands a
-measured baseline. A file that cannot be parsed, or whose top level, `packages`,
-`perTestCeilingSeconds` or `perTestCeiling` has the wrong type, or whose
-package budget is not a finite number, is a broken config and fails in every
-mode, naming the file and the entry.
+package over its limits is nonzero only under `CHECK=1` in a CI-shaped
+environment (`$CI` set, or `--strict`). A `testing-budget.json` that is missing,
+or whose `packages` and `wallPackages` maps are both empty, is an explicit warn
+state, so `CHECK=1` exits zero until `make test-rebaseline` lands a measured
+baseline. A file that cannot be parsed, or whose top level, `packages`,
+`wallPackages`, `perTestCeilingSeconds` or `perTestCeiling` has the wrong
+type, or whose package budget is not a finite number, is a broken config and
+fails in every mode, naming the file and the entry.
 
-The checked-in baseline carries the `"metric": "package-wall-seconds"` marker, so
+The checked-in baseline carries the `"metric": "package-cpu-seconds"` marker, so
 per-package ratios, the `"web"` row included, are enforced under `CHECK=1` in CI.
-Each number is the slowest wall time seen across recent green CI runs on main,
-floored at 2s for Go packages so sub-second packages do not trip the ratio on
-runner noise. A budget file without the marker downgrades every ratio failure to
-a warning with its numbers; a full rebaseline on a CI-class host records the
-marker, while a narrowed `--modules`/`--no-web` rebaseline never adds it and only
-preserves one already stamped.
+Each number is the slowest seen across recent green CI runs on main, floored at
+2s for Go packages so sub-second packages do not trip the ratio on runner noise:
+`packages` holds CPU seconds and `wallPackages` wall seconds. The first CPU
+budgets were taken once, when the CPU measure was introduced and no run on main
+had CPU rows yet, as the per-package maximum over that change's own CI runs (its
+first run of the tests lanes and three reruns of the same commit); its
+`wallPackages` kept the wall budgets recorded on main. Every later rebaseline
+follows the rule above.
+
+A package whose tests compile Go as a child process (`go build`, `go test -c`,
+`go run`, `go vet`, a cross-compile) counts that compile as its own CPU, and a
+compile costs more on a cold build cache, which CI runs on whenever its cache is
+evicted or a toolchain bump changes the key. The slowest legitimate observation
+for such a package is therefore a cold one: its CPU budget is the larger of its
+warm and cold-cache measurements. Those packages are the root package,
+`agent`, `cmd/evener`, `cmd/evener-dev`, `cmd/evener-hub` and its `sshconn`,
+`cmd/evener-internalcheck`, the `mcp-server` extension example and
+`tools/tool-fluency/cmd/evener-fluency`. In practice the gap is small: most of
+what a test's child compile needs, the enclosing `go test` has just compiled
+into the same cache. On a run whose cache restored nothing, the largest
+difference was the `mcp-server` example, about 20% above its warm runs and still
+under its 2s floor. A budget file without the marker holds numbers in
+other units and downgrades every ratio failure to a warning with its numbers; a
+full rebaseline on a CI-class host records the marker, while a narrowed
+`--modules`/`--no-web` rebaseline never adds it and only preserves one already
+stamped.
 
 A broken measurement is not conditional. `go list` or `go test` exiting nonzero,
-or a package `go list` reported that the `go test -json` stream never mentions, is
-nonzero in every mode, and `--bless` refuses rather than record a budget from a
+a package `go list` reported that the `go test -json` stream never mentions, or a
+Go package that ran tests with no `CPU` row is nonzero in every mode, and
+`--bless` refuses rather than record a budget from a
 stream that may have stopped early. `--measured` takes an already-measured file,
 so nothing vouches for the packages a bless would record, and `--bless` with it is
 refused for that reason. A bless writes every package it measured and preserves
@@ -1037,9 +1111,10 @@ entries it did not measure.
 
 Enforcement reads the gate's own run, not a second one. When
 `EVENER_GATE_TIMING_TSV` names a file, `make test`'s runner captures the ratchet's
-rows from the tests it already runs (plain modules through `go test -json`, a
-sharded package from its shards' own `-test.v` logs, the frontend from the vitest
-JSON reporter) and writes them there on a green run. `make merge-approval-gate`
+rows from the tests it already runs (plain modules through `go test -json` under
+`test-cpu-exec`, a sharded package from its shards' own `-test.v` logs and the
+shard runner's CPU sum, the frontend from the vitest JSON reporter) and writes
+them there on a green run. `make merge-approval-gate`
 passes that file to `--check --measured`, so the budget is enforced there without
 a second non-fuzz run; CI's two Go test lanes and its web lane each check the rows
 their own scope produced. A run that writes no file fails the check rather than
@@ -1636,7 +1711,7 @@ a subtest appears in that diff as removed; name the subtest that replaces it.
 | `make merge-approval-gate` | The canonical serial post-merge gate: lint, build, full tests, and native/package qualification. | make lint, make build, ROOT_FULL=1 make test, the timing budget checked against the rows that same test run produced, make test-hub-integration, make test-native and make test-api-package all pass, in that order. | Local pre-merge/post-merge; CI keeps equivalent checks in separate named jobs. | Does not run fuzz search, race testing, provider calls, or browser guards; those have separate owners. The timing check reads the gate's own run (EVENER_GATE_TIMING_TSV), so no test executes twice; it is strict where the ratchet's own policy is (CI) and warn-only on a local run; a named per-test ceiling breach is nonzero there, while an unnamed test over the flat ceiling only warns (#4601). | The first failing phase stops the gate and returns nonzero; do not infer a verdict from partial logs. |
 | `make test-race` | The permanent -race gate across every non-fuzz module. | Data races in the non-fuzz modules surface; frontend is intentionally not duplicated. | Required CI; local diagnostic. | A race-capable Go toolchain and more CPU/memory; WEB=0, AGENT_SHARDS=0 and AGENT_PARALLEL=6 to cap test concurrency under -race's ~10x slowdown, while cmd/evener-hub and cmd/evener stay sharded (12 hub shards, no cost survey: under -race the survey costs as much as the run). RACE_SCOPE defaults to all; CI uses the explicit root scope plus agent and nonagent on separate runners. The two new scopes derive from GO_MODULES; nonroot remains the local aggregate. RACE_ROOT_PART (root scope only) splits the root module across runners: all (default), hub (only cmd/evener-hub's shards), or rest (everything else in the root module). | Any race report, test failure, or setup failure is nonzero. |
 | `make vet` | go vet across every non-fuzz workspace module. | go vet diagnostics for every module, independent of the tagged lint floors. | Required CI; local diagnostic. | Deterministic Go analysis; no provider calls. | Any module's vet failure is nonzero. |
-| `make test-timing-budget` | Ratchet per-package test wall time against testing-budget.json. | A timing regression does not silently erode the suite's runtime wins — fail at 1.5x the checked-in budget, warn at 1.1x, plus a per-test ceiling: a test named in the map is compared strictly against its ceiling (a breach is nonzero under CHECK=1 in a CI-shaped environment), while a test named nowhere keeps the flat perTestCeilingSeconds and is warn-only in every mode, CHECK=1 included, so the unnamed backlog cannot red the gate (#4601). The checked-in budget carries the package-wall-seconds metric marker, so per-package ratios (frontend "web" included) are enforced; a budget file without the marker downgrades every ratio failure to a warning. | Local/on-demand. merge-approval-gate runs the check through --measured over the rows its own ROOT_FULL=1 make test run captured, so enforcing the budget no longer needs a second full test run (issue #144); invoked bare it still measures by running the suite itself. CHECK=1 enforces the ratios; bare invocation only measures and prints them, except for a broken measurement, which is nonzero either way. | Deterministic; no provider calls. Reuses gate-surface-lib.sh, so it measures the same surface ROOT_FULL=1 make test proves. | A broken measurement — go list or go test exiting nonzero, or a go list package with no terminal event in the stream — is nonzero in every mode, and --bless refuses it. A narrowed bless refreshes the packages it measured and preserves the rest of the file instead of deleting entries it did not measure; a full rebaseline also drops entries go list no longer reports. Under CHECK=1 in a CI-shaped environment a Go package over 1.5x its budget is nonzero once the budget file carries the wall-time metric marker; while the marker is absent those ratios warn, the "web" row among them. A named per-test ceiling breach is nonzero under CHECK=1; a test named nowhere that is over the flat ceiling is reported but nonzero in no mode. A missing budget file, or one whose packages map is empty, always exits zero; a malformed budget file (a top-level value that is not an object, invalid JSON, a packages value that is present but not an object, a package budget value that is not a finite number, a perTestCeilingSeconds that is present but not a finite number, a perTestCeiling that is present but not an object, or a per-test ceiling that is not a finite, float-convertible number including an integer too large to convert) is a broken config and is nonzero in every mode, naming the file and the entry (#4609, #4614, #4618, #4622, #4629). |
+| `make test-timing-budget` | Ratchet per-package test CPU time, with a wall-time backstop, against testing-budget.json. | A timing regression does not silently erode the suite's runtime wins — fail at 1.5x the checked-in CPU budget, warn at 1.1x, fail at 2.5x the wall budget (a package slowed by waiting), plus a per-test ceiling: a test named in the map is compared strictly against its ceiling (a breach is nonzero under CHECK=1 in a CI-shaped environment), while a test named nowhere keeps the flat perTestCeilingSeconds and is warn-only in every mode, CHECK=1 included, so the unnamed backlog cannot red the gate (#4601). The checked-in budget carries the package-cpu-seconds metric marker, so per-package ratios are enforced; the frontend "web" row, which has no CPU measurement, keeps 1.5x/1.1x of its wall budget. A budget file without the marker downgrades every ratio failure to a warning. | Local/on-demand. merge-approval-gate runs the check through --measured over the rows its own ROOT_FULL=1 make test run captured, so enforcing the budget no longer needs a second full test run (issue #144); invoked bare it still measures by running the suite itself. CHECK=1 enforces the ratios; bare invocation only measures and prints them, except for a broken measurement, which is nonzero either way. | Deterministic; no provider calls. Reuses gate-surface-lib.sh, so it measures the same surface ROOT_FULL=1 make test proves. | A broken measurement — go list or go test exiting nonzero, a go list package with no terminal event in the stream, or a Go package that ran tests with no CPU row — is nonzero in every mode, and --bless refuses it. A narrowed bless refreshes the packages it measured and preserves the rest of the file instead of deleting entries it did not measure; a full rebaseline also drops entries go list no longer reports. Under CHECK=1 in a CI-shaped environment a Go package over 1.5x its CPU budget or 2.5x its wall budget is nonzero once the budget file carries the CPU metric marker; while the marker is absent those ratios warn, the "web" row among them. A named per-test ceiling breach is nonzero under CHECK=1; a test named nowhere that is over the flat ceiling is reported but nonzero in no mode. A missing budget file, or one whose packages and wallPackages maps are both empty, always exits zero; a malformed budget file (a top-level value that is not an object, invalid JSON, a packages or wallPackages value that is present but not an object, a package budget value that is not a finite number, a perTestCeilingSeconds that is present but not a finite number, a perTestCeiling that is present but not an object, or a per-test ceiling that is not a finite, float-convertible number including an integer too large to convert) is a broken config and is nonzero in every mode, naming the file and the entry (#4609, #4614, #4618, #4622, #4629). |
 
 ### Other targets
 

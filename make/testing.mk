@@ -300,8 +300,9 @@ test-race:
 vet:
 	@for m in $(GO_MODULES); do (cd $$m && go vet ./...) || exit 1; done
 
-# test-timing-budget ratchets per-package test wall time against
-# testing-budget.json (kata b6rv): fail at 1.5x the budget, warn at 1.1x, plus
+# test-timing-budget ratchets per-package test CPU time against
+# testing-budget.json (kata b6rv): fail at 1.5x the budget, warn at 1.1x, a
+# wall-time backstop at 2.5x, plus
 # a per-test ceiling (#4601), so an unexamined timing
 # regression cannot silently erode the wins
 # docs/superpowers/specs/2026-08-01-test-gate-runtime-design.md recorded. CHECK=1
@@ -309,17 +310,19 @@ vet:
 # the map is enforced against its ceiling, while a test named nowhere keeps the
 # flat perTestCeilingSeconds and stays warn-only in every mode. Bare
 # invocation measures by running the suite itself. Companion to coverage-floor.
-## Ratchet per-package test wall time against testing-budget.json.
+## Ratchet per-package test CPU time, with a wall-time backstop, against testing-budget.json.
 ## proves: A timing regression does not silently erode the suite's runtime
-##   wins — fail at 1.5x the checked-in budget, warn at 1.1x, plus a per-test
+##   wins — fail at 1.5x the checked-in CPU budget, warn at 1.1x, fail at
+##   2.5x the wall budget (a package slowed by waiting), plus a per-test
 ##   ceiling: a test named in the map is compared strictly against
 ##   its ceiling (a breach is nonzero under CHECK=1 in
 ##   a CI-shaped environment), while a test named nowhere keeps the flat
 ##   perTestCeilingSeconds and is warn-only in every mode, CHECK=1 included, so
 ##   the unnamed backlog cannot red the gate (#4601). The checked-in
-##   budget carries the package-wall-seconds metric marker, so per-package ratios
-##   (frontend "web" included) are enforced; a budget file without the marker
-##   downgrades every ratio failure to a warning.
+##   budget carries the package-cpu-seconds metric marker, so per-package ratios
+##   are enforced; the frontend "web" row, which has no CPU measurement, keeps
+##   1.5x/1.1x of its wall budget. A budget file without the marker downgrades
+##   every ratio failure to a warning.
 ## trigger: Local/on-demand. merge-approval-gate runs the check through
 ##   --measured over the rows its own ROOT_FULL=1 make test run captured, so
 ##   enforcing the budget no longer needs a second full test run (issue #144);
@@ -328,21 +331,23 @@ vet:
 ##   for a broken measurement, which is nonzero either way.
 ## requires: Deterministic; no provider calls. Reuses gate-surface-lib.sh, so
 ##   it measures the same surface ROOT_FULL=1 make test proves.
-## fails-when: A broken measurement — go list or go test exiting nonzero, or a
-##   go list package with no terminal event in the stream — is nonzero in every
+## fails-when: A broken measurement — go list or go test exiting nonzero, a
+##   go list package with no terminal event in the stream, or a Go package that
+##   ran tests with no CPU row — is nonzero in every
 ##   mode, and --bless refuses it. A narrowed bless refreshes the packages it
 ##   measured and preserves the rest of the file instead of deleting entries it
 ##   did not measure; a full rebaseline also drops entries go list no longer
 ##   reports. Under CHECK=1 in a CI-shaped environment a Go package over 1.5x
-##   its budget is nonzero once the budget file carries the wall-time metric
-##   marker; while the marker is absent those ratios warn, the "web" row among
-##   them. A named per-test ceiling breach is nonzero under CHECK=1; a
-##   test named nowhere that is over the flat ceiling is reported but nonzero in
-##   no mode. A missing budget file, or one whose packages map is empty, always
-##   exits zero; a malformed budget file (a top-level value that is not an object,
-##   invalid JSON, a packages value that is present but not an object, a package
-##   budget value that is not a finite number, a perTestCeilingSeconds that is
-##   present but not a finite number, a perTestCeiling that is present
+##   its CPU budget or 2.5x its wall budget is nonzero once the budget file
+##   carries the CPU metric marker; while the marker is absent those ratios
+##   warn, the "web" row among them. A named per-test ceiling breach is nonzero
+##   under CHECK=1; a test named nowhere that is over the flat ceiling is
+##   reported but nonzero in no mode. A missing budget file, or one whose
+##   packages and wallPackages maps are both empty, always exits zero; a
+##   malformed budget file (a top-level value that is not an object, invalid
+##   JSON, a packages or wallPackages value that is present but not an object, a
+##   package budget value that is not a finite number, a perTestCeilingSeconds
+##   that is present but not a finite number, a perTestCeiling that is present
 ##   but not an object, or a per-test ceiling that is not a finite,
 ##   float-convertible number including an integer too large to convert) is a
 ##   broken config and is nonzero in every mode, naming the file and the entry
