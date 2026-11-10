@@ -473,7 +473,11 @@ func memoryEvalRequireHost(t *testing.T, live bool, facts sandbox.HostFacts) {
 	}
 }
 func memoryEvalConfig(ctx context.Context, root string, disabled bool, stageCap int) SessionConfig {
-	return SessionConfig{LifetimeContext: ctx, LLMRetryPolicy: &llm.RetryPolicy{MaxRetries: 0}, MemoryStateRoot: filepath.Join(root, "wiki"), MemoryProjectID: "fixture-project", DisableMemory: disabled, StateDir: filepath.Join(root, "history"), AgentsDocPath: filepath.Join(root, "no-user-AGENTS.md"), ReasoningEffort: "high", NonInteractive: true, MaxToolRoundsPerInput: stageCap, MaxSubagentDepth: 1, TurnEndsProcess: true, VisionModel: "off", DefaultCommandTimeoutMS: 10000, MaxCommandTimeoutMS: 180000}
+	// The application oracle reads the recorded result of the fixture checker,
+	// which runs `go test ./...`. The 10s budget cut that real run off under a
+	// loaded runner, leaving a running job and application=false even though the
+	// held-out verifier passed; use production's default command budget instead.
+	return SessionConfig{LifetimeContext: ctx, LLMRetryPolicy: &llm.RetryPolicy{MaxRetries: 0}, MemoryStateRoot: filepath.Join(root, "wiki"), MemoryProjectID: "fixture-project", DisableMemory: disabled, StateDir: filepath.Join(root, "history"), AgentsDocPath: filepath.Join(root, "no-user-AGENTS.md"), ReasoningEffort: "high", NonInteractive: true, MaxToolRoundsPerInput: stageCap, MaxSubagentDepth: 1, TurnEndsProcess: true, VisionModel: "off", DefaultCommandTimeoutMS: 120_000, MaxCommandTimeoutMS: 180_000}
 }
 func memoryEvalWrite(t *testing.T, path, body string) {
 	t.Helper()
