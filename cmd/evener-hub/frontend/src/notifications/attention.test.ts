@@ -23,7 +23,9 @@ function row(
 
 describe("levelFromState", () => {
   test("active is working", () => expect(levelFromState("active")).toBe("working"));
-  test("awaiting is needs_you", () => expect(levelFromState("awaiting")).toBe("needs_you"));
+  test("awaiting is idle (a finished turn)", () => expect(levelFromState("awaiting")).toBe("idle"));
+  test("awaiting with a question is needs_you", () =>
+    expect(levelFromState("awaiting", { askPending: true })).toBe("needs_you"));
   test("warning is needs_you", () => expect(levelFromState("warning")).toBe("needs_you"));
   test("errored is error", () => expect(levelFromState("errored")).toBe("error"));
   test("idle is idle", () => expect(levelFromState("idle")).toBe("idle"));
@@ -68,14 +70,14 @@ describe("snapshotFromNavigation", () => {
       needsResponse: false,
     });
   });
-  // Awaiting with no question is the needs_response rest, the same rule the
-  // hub's attention entry uses; a plain reply rests idle and is absent.
-  test("an awaiting row with no question carries needsResponse", () => {
+  // A turn that merely finished rests idle: it is not an attention entry and
+  // never fires a notification (#2629).
+  test("a finished awaiting row is absent", () => {
     const snap = snapshotFromNavigation([
       row({ ref: "local:r", state: "awaiting" }),
       row({ ref: "local:i", state: "idle" }),
     ]);
-    expect(snap.get("local:r")?.needsResponse).toBe(true);
+    expect(snap.has("local:r")).toBe(false);
     expect(snap.has("local:i")).toBe(false);
   });
   test("a failed row stays an error with an approval pending", () => {
@@ -115,21 +117,20 @@ describe("detectFires", () => {
   test("dropping out of the tier does not fire", () => {
     expect(detectFires(snap(row({ ref: "local:a", state: "awaiting" })), snap(), all)).toEqual([]);
   });
-  test("asks: a needs_response rest fires, like a question", () => {
+  test("asks: a needs_response rest is silent", () => {
     expect(
       detectFires(snap(), snap(row({ ref: "local:a", state: "awaiting", ask_pending: false })), asks).map((e) => e.ref),
-    ).toEqual(["local:a"]);
+    ).toEqual([]);
   });
-  // A row already in the tier fires when it becomes loud: a warning that
-  // settles into a needs_response rest asks for a reply.
-  test("asks: a quiet row that becomes a reply request fires", () => {
+  // A warning that settles into a finished turn is not a request for a reply.
+  test("asks: a quiet row that becomes a finished turn does not fire", () => {
     expect(
       detectFires(
         snap(row({ ref: "local:a", state: "warning" })),
         snap(row({ ref: "local:a", state: "awaiting" })),
         asks,
       ).map((e) => e.ref),
-    ).toEqual(["local:a"]);
+    ).toEqual([]);
   });
   test("asks: a loud row that stays loud does not re-fire", () => {
     expect(
@@ -170,7 +171,11 @@ describe("detectFires", () => {
     expect(
       detectFires(
         snap(a),
-        snap(a, row({ ref: "local:b", state: "awaiting" }), row({ ref: "local:c", state: "errored" })),
+        snap(
+          a,
+          row({ ref: "local:b", state: "awaiting", ask_pending: true }),
+          row({ ref: "local:c", state: "errored" }),
+        ),
         all,
       )
         .map((e) => e.ref)

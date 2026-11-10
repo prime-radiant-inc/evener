@@ -96,19 +96,18 @@ describe("session alerts (spec 13.3)", () => {
 		expect(later.states.get("a")).toBe("idle");
 	});
 
-	// A turn that ended on needs_response waits on you like a question does,
-	// so it alerts as one (#4093).
-	it("alerts a session that needs your reply", () => {
+	// A turn that merely finished is not a request for a reply (#2629).
+	it("stays quiet when a turn ends needing no reply", () => {
 		const start = detectSessionAlerts(null, bands([row("a", { state: "active" })]), none).states;
 		const later = detectSessionAlerts(start, bands([row("a", { state: "awaiting" })]), none);
-		expect(later.alerts.map((alert) => alert.kind)).toEqual(["needsYou"]);
+		expect(later.alerts).toEqual([]);
 	});
 
-	it("alerts again when an answered question's turn ends needing your reply", () => {
+	it("stays quiet when an answered question's turn merely finishes", () => {
 		const asking = row("a", { state: "awaiting", ask_pending: true });
 		const start = detectSessionAlerts(null, bands([asking], [asking]), none).states;
 		const later = detectSessionAlerts(start, bands([row("a", { state: "awaiting" })]), none);
-		expect(later.alerts.map((alert) => alert.kind)).toEqual(["needsYou"]);
+		expect(later.alerts).toEqual([]);
 	});
 
 	it("stays quiet when a host goes offline and comes back", () => {

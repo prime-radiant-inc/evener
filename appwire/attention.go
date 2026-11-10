@@ -25,9 +25,10 @@ type AttentionEntry struct {
 	// question's equivalent.
 	ApprovalPending bool `json:"approvalPending,omitempty"`
 	// NeedsResponse is true while the session rests awaiting with no pending
-	// question: its turn ended with end_reason needs_response, asking for a
-	// reply. A plain reply rests idle and never carries it. Additive: an
-	// older hub omits it, decoding as false.
+	// question: its turn ended with end_reason needs_response. The rest is
+	// informative rather than actionable — a plain reply and a finished turn
+	// both rest idle, and neither makes the session needs_you (#2629).
+	// Additive: an older hub omits it, decoding as false.
 	NeedsResponse     bool             `json:"needsResponse,omitempty"`
 	PendingQuestion   *PendingQuestion `json:"pendingQuestion,omitempty"`
 	AskBootGeneration string           `json:"askBootGeneration,omitempty"`

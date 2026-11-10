@@ -119,7 +119,7 @@ func TestBuildTreeNeedsYouCarriesSessionJobs(t *testing.T) {
 	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{{ID: "parent", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}}}
 	tree := BuildTreeAt(metas, []LiveEntry{{
-		PID: 1, SessionID: "parent", Status: appwire.ThreadStatusAwaiting,
+		PID: 1, SessionID: "parent", Status: appwire.ThreadStatusAwaiting, PendingAsk: true,
 		RunningJobs: []appwire.EvenerJobInfo{{JobID: "job-running", JobType: "shell", Status: "running"}},
 	}}, nil, now)
 	if len(tree.NeedsYou) != 1 || len(tree.NeedsYou[0].RunningJobs) != 1 || tree.NeedsYou[0].RunningJobs[0].JobID != "job-running" {

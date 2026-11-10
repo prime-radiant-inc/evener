@@ -7,7 +7,6 @@
 export type AttentionClass =
   | "failed"
   | "question"
-  | "needsYou"
   | "approval"
   | "warning"
   | "restartNeeded"
@@ -51,9 +50,11 @@ export function approvalWaiting(wireState: string, approvalPending: boolean): bo
 }
 
 // attentionState is the precedence order: offline, failed, restart needed,
-// shut down, then a blocking warning, a question, an approval, awaiting,
-// working, a nonblocking warning, idle. Only a nonblocking warning yields to
-// running children; a failed child never decides the parent's class.
+// shut down, then a blocking warning, a question, an approval, working, a
+// nonblocking warning, idle. Only a nonblocking warning yields to running
+// children; a failed child never decides the parent's class. An awaiting turn
+// with no pending question is a turn that merely finished: it rests idle, not
+// in the needs-you family (#2629).
 export function attentionState(wireState: string, facts: AttentionFacts = {}): AttentionClass {
   if (facts.offline) return "shutDown";
   const state = normalizeWireState(wireState);
@@ -61,10 +62,10 @@ export function attentionState(wireState: string, facts: AttentionFacts = {}): A
   if (decisive && (decisive !== "warning" || facts.askPending || facts.approvalPending)) return decisive;
   if (state === "awaiting" && facts.askPending) return "question";
   if (facts.approvalPending) return "approval";
-  // Awaiting without a question is a turn that ended on needs_response: it
-  // waits on a person like a question does, ahead of any running work.
-  if (state === "awaiting") return "needsYou";
   if (state === "active") return "working";
+  // Awaiting without a question is a turn that ended on needs_response: it is
+  // finished, not blocked on a person. It rests idle unless children are still
+  // running, which keeps the session Working (#2629).
   if (facts.runningChildren) return "working";
   return decisive ?? "idle";
 }
@@ -85,11 +86,11 @@ function decisiveClass(state: string): AttentionClass | null {
 }
 
 // attentionNeedsYou says the class belongs to the needs-you family: someone
-// has to look, as opposed to working, idle, shut down or failed.
+// has to look, as opposed to working, idle, shut down or failed. A finished
+// turn is idle, so it never qualifies (#2629).
 export function attentionNeedsYou(attention: AttentionClass): boolean {
   switch (attention) {
     case "question":
-    case "needsYou":
     case "approval":
     case "warning":
     case "restartNeeded":
