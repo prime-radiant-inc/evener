@@ -621,6 +621,10 @@ async function runOutputPagingJourney(fixture) {
   const finalLive = page(finalPage).totalBytes - liveStart;
   assert.ok(finalLive <= 512*1024, 'post-rollover contiguous interval fits the live budget');
   await wait(`${stateExpr}?.live === ${finalLive}`, 'fresh final bytes enter the retained live window');
+  // Keeps the state the post-rollover history wheel loop starts from, so a
+  // future failure says whether it began at an edge or inside the loaded
+  // window (#4825).
+  save('paging-post-rollover-start.json', {state: await state(), wheelEvents, finalLive, liveStart});
   const finalHistoryAfter = frames.length;
   const finalHistoryPages = () => outputCalls(finalHistoryAfter).filter(request => request.params.beforeBytes !== undefined && page(request));
   const finalProgress = { checked: 0, end: undefined };
