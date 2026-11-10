@@ -31,8 +31,27 @@ func TestConfigureHermeticRunEnvDefaultHidesUserSkills(t *testing.T) {
 		t.Fatalf("%s = %q, want 1", envvars.EVENERNoUserSkills.Name, got)
 	}
 	want := envvars.EVENERNoUserSkills.Assignment("1")
-	if !slices.Contains(fixtureEnv(t.TempDir()), want) {
+	env, err := fixtureEnv(t.TempDir())
+	if err != nil {
+		t.Fatalf("fixtureEnv: %v", err)
+	}
+	if !slices.Contains(env, want) {
 		t.Fatalf("fixtureEnv does not carry %q", want)
+	}
+}
+
+// A fixture parent containing the platform path-list separator (":" on Unix,
+// so a run directory such as results/2026-11-08T12:00) cannot be encoded in
+// GIT_CEILING_DIRECTORIES: git splits it into entries that name no parent and
+// walks past the fixture into the enclosing checkout. Both fixture paths must
+// refuse it before a probe launches (#3724 review).
+func TestFixtureCeilingRejectsPathListSeparator(t *testing.T) {
+	workDir := filepath.Join(t.TempDir(), "run"+string(os.PathListSeparator)+"1", "work")
+	if _, err := fixtureEnv(workDir); err == nil {
+		t.Fatal("fixtureEnv accepted a ceiling containing the path-list separator")
+	}
+	if _, err := setFixtureGitCeiling(workDir); err == nil {
+		t.Fatal("setFixtureGitCeiling accepted a ceiling containing the path-list separator")
 	}
 }
 

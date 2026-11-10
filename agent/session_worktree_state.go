@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -495,7 +496,7 @@ func rejectUntrustedMainRoot(local *execenv.LocalExecutionEnvironment, mainRepoR
 	}
 	layout, err := sandbox.ClassifyWorkspace(mainRepoRoot)
 	if err != nil {
-		return fmt.Errorf("%w: classify Git metadata at %s: %v", errUntrustedWorktreeProject, mainRepoRoot, err)
+		return fmt.Errorf("%w: classify Git metadata at %s: %w", errUntrustedWorktreeProject, mainRepoRoot, err)
 	}
 	return rejectUntrustedLayout(local, policy, layout)
 }
@@ -509,24 +510,10 @@ func rejectUntrustedLayout(local *execenv.LocalExecutionEnvironment, retained *s
 	}
 	root := filepath.Clean(layout.WorktreeRoot)
 	trusted := trustedMainRoot(local, retained)
-	if root != trusted && !(retained.Git.Kind == sandbox.NonGit && identifier.PathUnder(root, trusted)) {
+	if root != trusted && (retained.Git.Kind != sandbox.NonGit || !identifier.PathUnder(root, trusted)) {
 		return fmt.Errorf("%w: main root %s does not match the retained sandbox layout (%s)", errUntrustedWorktreeProject, root, trusted)
 	}
-	metadata, err := gitMetadataPaths(layout)
-	if err != nil {
-		return fmt.Errorf("%w: resolve Git metadata at %s: %v", errUntrustedWorktreeProject, root, err)
-	}
-	trustedMetadata := trustedMetadataRoots(retained, trusted)
-	for _, path := range metadata {
-		resolved, err := resolveMetadataPath(path)
-		if err != nil {
-			return fmt.Errorf("%w: resolve Git metadata %s: %v", errUntrustedWorktreeProject, path, err)
-		}
-		if !identifier.PathUnderAny(resolved, trustedMetadata) {
-			return fmt.Errorf("%w: Git metadata %s escapes the retained workspace", errUntrustedWorktreeProject, resolved)
-		}
-	}
-	return nil
+	return rejectUntrustedGitMetadata(layout, trustedMetadataRoots(retained, trusted))
 }
 
 // rejectUntrustedSwitchTarget refuses a switch target whose own Git metadata
@@ -541,24 +528,68 @@ func rejectUntrustedSwitchTarget(local *execenv.LocalExecutionEnvironment, targe
 	}
 	layout, err := sandbox.ClassifyWorkspace(target)
 	if err != nil {
-		return fmt.Errorf("%w: classify switch target %s: %v", errUntrustedWorktreeProject, target, err)
+		return fmt.Errorf("%w: classify switch target %s: %w", errUntrustedWorktreeProject, target, err)
 	}
 	trusted := trustedMainRoot(local, policy)
 	if policy.Git.Kind == sandbox.NonGit && !identifier.PathUnder(filepath.Clean(layout.WorktreeRoot), trusted) {
 		return fmt.Errorf("%w: switch target %s is outside the non-git workspace %s", errUntrustedWorktreeProject, layout.WorktreeRoot, trusted)
 	}
-	metadata, err := gitMetadataPaths(layout)
-	if err != nil {
-		return fmt.Errorf("%w: resolve switch target metadata at %s: %v", errUntrustedWorktreeProject, target, err)
+	return rejectUntrustedGitMetadata(layout, trustedMetadataRoots(policy, trusted))
+}
+
+// rejectUntrustedCandidateEnvironment validates the exact environment a worktree
+// switch is about to install. enterWorktree builds the candidate once with
+// WithWorkingDirectory, which re-resolves the target's Git metadata; the
+// pre-switch classification of the path is a different resolution and a
+// sandboxed job can swap the target's .git pointer between them. Validating the
+// candidate's own Sandbox and Wrapper closes that window: both are checked
+// against the retained previous policy, and the same candidate is then
+// installed, never a second re-resolution (#3724 review).
+func rejectUntrustedCandidateEnvironment(local *execenv.LocalExecutionEnvironment, next *execenv.LocalExecutionEnvironment) error {
+	if local == nil || local.Sandbox == nil {
+		return nil
 	}
-	trustedMetadata := trustedMetadataRoots(policy, trusted)
+	if next == nil || next.Sandbox == nil {
+		return fmt.Errorf("%w: candidate environment lost its sandbox policy", errUntrustedWorktreeProject)
+	}
+	trusted := trustedMainRoot(local, local.Sandbox)
+	if local.Sandbox.Git.Kind == sandbox.NonGit && !identifier.PathUnder(filepath.Clean(next.Sandbox.Git.WorktreeRoot), trusted) {
+		return fmt.Errorf("%w: candidate worktree %s is outside the non-git workspace %s", errUntrustedWorktreeProject, next.Sandbox.Git.WorktreeRoot, trusted)
+	}
+	trustedMetadata := trustedMetadataRoots(local.Sandbox, trusted)
+	if err := rejectUntrustedGitMetadata(next.Sandbox.Git, trustedMetadata); err != nil {
+		return err
+	}
+	if local.Wrapper != nil {
+		if next.Wrapper == nil {
+			return fmt.Errorf("%w: candidate environment lost its kernel wrapper", errUntrustedWorktreeProject)
+		}
+		if err := rejectUntrustedGitMetadata(next.Wrapper.Policy().Git, trustedMetadata); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// rejectUntrustedGitMetadata validates every Git metadata path a resolved
+// layout exposes, including a commondir redirection git reads but
+// ClassifyWorkspace does not follow. trustedMetadata is the resolved, retained
+// boundary; nothing is re-resolved to derive it, so a session-planted symlink
+// cannot become its own trust anchor.
+func rejectUntrustedGitMetadata(layout sandbox.GitLayout, trustedMetadata []string) error {
+	metadata, err := gitMetadataPaths(layout, trustedMetadata)
+	if err != nil {
+		return err
+	}
 	for _, path := range metadata {
 		resolved, err := resolveMetadataPath(path)
 		if err != nil {
-			return fmt.Errorf("%w: resolve switch target metadata %s: %v", errUntrustedWorktreeProject, path, err)
+			// Do not echo the path: gitMetadataPaths appends a commondir's
+			// contents here, and those contents may be a masked file's text.
+			return fmt.Errorf("%w: a Git metadata path is unresolvable", errUntrustedWorktreeProject)
 		}
 		if !identifier.PathUnderAny(resolved, trustedMetadata) {
-			return fmt.Errorf("%w: switch target metadata %s escapes the retained workspace", errUntrustedWorktreeProject, resolved)
+			return fmt.Errorf("%w: Git metadata %s escapes the retained workspace", errUntrustedWorktreeProject, resolved)
 		}
 	}
 	return nil
@@ -568,23 +599,68 @@ func rejectUntrustedSwitchTarget(local *execenv.LocalExecutionEnvironment, targe
 // from layout, including the worktree registry grant ControlPolicy adds, plus a
 // commondir redirection git reads but ClassifyWorkspace does not follow.
 // Missing leaves stay in the list: resolveMetadataPath walks their existing
-// prefix, so a symlinked parent is still caught.
-func gitMetadataPaths(layout sandbox.GitLayout) ([]string, error) {
-	paths := []string{layout.GitDir, layout.CommonDir}
-	paths = append(paths, layout.WritablePaths...)
-	paths = append(paths, layout.ReadGrantPaths...)
+// prefix, so a symlinked parent is still caught. Empty entries are omitted:
+// resolving "" names the process working directory, which is not a metadata
+// path and would refuse a legitimate NonGit target.
+//
+// The commondir file itself is read only after its Git directory and its own
+// symlink target are proven inside trustedMetadata, and only through a
+// no-follow descriptor with a bounded read. A commondir symlinked at a masked
+// file is therefore refused before its contents enter this process (#3724
+// review).
+func gitMetadataPaths(layout sandbox.GitLayout, trustedMetadata []string) ([]string, error) {
+	var paths []string
+	add := func(path string) {
+		if path != "" {
+			paths = append(paths, path)
+		}
+	}
+	add(layout.GitDir)
+	add(layout.CommonDir)
+	for _, path := range layout.WritablePaths {
+		add(path)
+	}
+	for _, path := range layout.ReadGrantPaths {
+		add(path)
+	}
 	if layout.CommonDir != "" {
-		paths = append(paths, filepath.Join(layout.CommonDir, "worktrees"))
+		add(filepath.Join(layout.CommonDir, "worktrees"))
 	}
 	if layout.GitDir == "" {
 		return paths, nil
 	}
-	data, err := os.ReadFile(filepath.Join(layout.GitDir, "commondir"))
+	gitDir, err := resolveMetadataPath(layout.GitDir)
 	if err != nil {
+		return nil, fmt.Errorf("%w: the Git directory is unresolvable", errUntrustedWorktreeProject)
+	}
+	if !identifier.PathUnderAny(gitDir, trustedMetadata) {
+		return nil, fmt.Errorf("%w: the Git directory %s escapes the retained workspace", errUntrustedWorktreeProject, gitDir)
+	}
+	commondirPath := filepath.Join(gitDir, "commondir")
+	if _, err := os.Lstat(commondirPath); err != nil {
 		if os.IsNotExist(err) {
 			return paths, nil
 		}
 		return nil, err
+	}
+	resolvedCommondir, err := resolveMetadataPath(commondirPath)
+	if err != nil {
+		return nil, fmt.Errorf("%w: the commondir file is unresolvable", errUntrustedWorktreeProject)
+	}
+	if !identifier.PathUnderAny(resolvedCommondir, trustedMetadata) {
+		return nil, fmt.Errorf("%w: the commondir file escapes the retained workspace", errUntrustedWorktreeProject)
+	}
+	file, err := openCommondir(resolvedCommondir)
+	if err != nil {
+		return nil, fmt.Errorf("%w: the commondir file cannot be opened safely", errUntrustedWorktreeProject)
+	}
+	data, readErr := io.ReadAll(io.LimitReader(file, commondirReadLimit))
+	closeErr := file.Close()
+	if readErr != nil {
+		return nil, fmt.Errorf("%w: the commondir file cannot be read", errUntrustedWorktreeProject)
+	}
+	if closeErr != nil {
+		return nil, fmt.Errorf("%w: the commondir file cannot be closed", errUntrustedWorktreeProject)
 	}
 	common := strings.TrimSpace(string(data))
 	if common == "" {
@@ -593,14 +669,18 @@ func gitMetadataPaths(layout sandbox.GitLayout) ([]string, error) {
 	if !filepath.IsAbs(common) {
 		// Concatenate rather than Join: Join would collapse ".." lexically,
 		// while git resolves ".." after following a symlinked component.
-		common = layout.GitDir + string(filepath.Separator) + common
+		common = gitDir + string(filepath.Separator) + common
 	}
-	resolved, err := filepath.EvalSymlinks(common)
-	if err != nil {
-		return nil, err
-	}
-	return append(paths, resolved), nil
+	// Leave the contents unresolved here: rejectUntrustedGitMetadata resolves
+	// and bounds it, and a resolution failure must not echo the contents.
+	add(common)
+	return paths, nil
 }
+
+// commondirReadLimit bounds the commondir read. Git's own file is one short
+// path; anything larger is not a valid redirection and must not be pulled into
+// memory from a masked file.
+const commondirReadLimit = 4096
 
 // resolveMetadataPath resolves path's existing symlinks, walking up past
 // components that do not exist yet so a symlinked ancestor is still followed. A
@@ -834,6 +914,13 @@ func (s *Session) enterWorktree(path string, managed bool) error {
 	// session in its prior (confined) env rather than running unconfined in the new
 	// worktree. ReRoot's contract is that a worktree switch is refused here.
 	if err := next.SandboxReRootError(); err != nil {
+		return err
+	}
+	// The candidate above is what will be installed. Validate its actual
+	// resolved policy, not the path classification the switch made earlier: a
+	// sandboxed job can replace the target's .git pointer between the two, and
+	// a re-resolution at install time would then carry unchecked grants.
+	if err := rejectUntrustedCandidateEnvironment(local, next); err != nil {
 		return err
 	}
 

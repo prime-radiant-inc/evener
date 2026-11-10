@@ -76,11 +76,6 @@ func (s *Session) worktreeEnterManagedWithPorcelain(st worktreeState, run worktr
 	if _, err := os.Stat(filepath.Join(target, ".git")); err != nil {
 		return WorktreeSwitchResult{}, fmt.Errorf("manage_worktree switch: no worktree at %s", target)
 	}
-	if st.env != nil {
-		if err := rejectUntrustedSwitchTarget(st.env, target); err != nil {
-			return WorktreeSwitchResult{}, fmt.Errorf("manage_worktree switch: %w", err)
-		}
-	}
 	targetState := worktree.Unlocked
 	if locked {
 		targetState = worktree.ClassifyReason(reason, s.id, "")

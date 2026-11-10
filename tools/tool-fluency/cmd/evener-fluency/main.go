@@ -1016,7 +1016,11 @@ func runCLIProbe(ctx context.Context, cfg runConfig, probe probeFile, res probeR
 		return err
 	}
 	cmd := exec.CommandContext(ctx, cfg.evenerBin, args...)
-	cmd.Env = fixtureEnv(res.WorkDir)
+	env, err := fixtureEnv(res.WorkDir)
+	if err != nil {
+		return err
+	}
+	cmd.Env = env
 	if cfg.clearOpenAIAPIKey {
 		cmd.Env = append(cmd.Env, envvars.OpenAIAPIKey.Assignment(""))
 	}
@@ -1138,7 +1142,10 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 	// The live harness resolves the sandbox in-process, so the fixture's
 	// repository-discovery bound must be in the environment before provisioning
 	// (fixtureEnv carries it for the CLI child). Restore it for the next probe.
-	restoreCeiling := setFixtureGitCeiling(res.WorkDir)
+	restoreCeiling, err := setFixtureGitCeiling(res.WorkDir)
+	if err != nil {
+		return err
+	}
 	defer restoreCeiling()
 
 	if err := cmdutil.EnsureUserConfigDirs(); err != nil {
@@ -1437,28 +1444,40 @@ func commitFixture(workDir string) error {
 // agent's evener process and the task checks. It cuts the fixture off from any
 // Go workspace or git repository above it, so results that land inside a
 // repository, such as evener's own, still run each fixture as its own project.
-func fixtureEnv(workDir string) []string {
+//
+// GIT_CEILING_DIRECTORIES is a path LIST. A fixture parent containing the
+// platform separator (":" on Unix, so a directory named 2026-11-08T12:00)
+// would split into entries that name no real parent; git would then walk past
+// the ceiling into the enclosing checkout and the sandbox would adopt its
+// write scope. Refuse the fixture instead of encoding a boundary git cannot
+// represent (#3724 review).
+func fixtureEnv(workDir string) ([]string, error) {
 	env := append(os.Environ(), "GOWORK=off")
-	if parent, err := filepath.Abs(filepath.Dir(workDir)); err == nil {
+	parent, err := fixtureCeiling(workDir)
+	if err != nil {
+		return nil, err
+	}
+	if parent != "" {
 		env = append(env, "GIT_CEILING_DIRECTORIES="+parent)
 	}
-	return env
+	return env, nil
 }
 
 // setFixtureGitCeiling applies the same GIT_CEILING_DIRECTORIES value fixtureEnv
 // gives a CLI child, for a live probe's in-process sandbox resolution. It
-// returns a restore function; an empty work dir is a no-op.
-func setFixtureGitCeiling(workDir string) func() {
+// returns a restore function; an empty work dir is a no-op. A parent the list
+// encoding cannot name is an error, never a silently absent ceiling.
+func setFixtureGitCeiling(workDir string) (func(), error) {
 	if strings.TrimSpace(workDir) == "" {
-		return func() {}
+		return func() {}, nil
 	}
-	parent, err := filepath.Abs(filepath.Dir(workDir))
+	parent, err := fixtureCeiling(workDir)
 	if err != nil {
-		return func() {}
+		return nil, err
 	}
 	previous, had := os.LookupEnv("GIT_CEILING_DIRECTORIES")
 	if err := os.Setenv("GIT_CEILING_DIRECTORIES", parent); err != nil {
-		return func() {}
+		return nil, err
 	}
 	return func() {
 		if had {
@@ -1466,7 +1485,21 @@ func setFixtureGitCeiling(workDir string) func() {
 			return
 		}
 		_ = os.Unsetenv("GIT_CEILING_DIRECTORIES")
+	}, nil
+}
+
+// fixtureCeiling returns the absolute parent a fixture's Git discovery must
+// stop at, or an error when the platform's path-list encoding cannot name it
+// unambiguously.
+func fixtureCeiling(workDir string) (string, error) {
+	parent, err := filepath.Abs(filepath.Dir(workDir))
+	if err != nil {
+		return "", err
 	}
+	if strings.ContainsRune(parent, os.PathListSeparator) {
+		return "", fmt.Errorf("fixture parent %q contains the path-list separator %q, which GIT_CEILING_DIRECTORIES cannot encode", parent, string(os.PathListSeparator))
+	}
+	return parent, nil
 }
 
 func parseEvents(data []byte) (map[string]int, map[string]int, []string) {
@@ -1685,7 +1718,11 @@ func runCheck(workDir string, check checkSpec, timeout time.Duration) (bool, str
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "bash", "-c", check.Run)
 	cmd.Dir = workDir
-	cmd.Env = fixtureEnv(workDir)
+	env, err := fixtureEnv(workDir)
+	if err != nil {
+		return false, err.Error()
+	}
+	cmd.Env = env
 	// The check runs in its own process group, so the kill at the deadline
 	// reaches everything it started, such as a go test binary stuck in a loop.
 	// The cost: a Ctrl-C of the runner no longer reaches a running check.

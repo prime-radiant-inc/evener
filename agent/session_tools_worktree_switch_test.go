@@ -1429,3 +1429,89 @@ func TestWorktreeCreateExitSwitch_RoundTripRelocks(t *testing.T) {
 		t.Errorf("currentEnv WorkingDirectory = %q, want %q", got, pathA)
 	}
 }
+
+// A NonGit session can plant a .git directory whose commondir is a symlink at
+// a masked file. worktree list's host-side validation must refuse that
+// redirection before reading it, and must not turn the file's contents into a
+// path that an error echoes back through the tool result (#3724 review).
+func TestWorktreeList_DoesNotReadCommondirOutsideWorkspace(t *testing.T) {
+	fixture := canonicalFixtureTempDir(t, "worktree-commondir-leak-*")
+	_, _, env := newSandboxedFixtureSession(t, fixture, "worktree-commondir-leak-state-*")
+	if env.Sandbox.Git.Kind != sandbox.NonGit {
+		t.Fatalf("fixture sandbox kind = %v, want NonGit", env.Sandbox.Git.Kind)
+	}
+	writeMinimalMainGitDir(t, fixture)
+	secretDir := canonicalFixtureTempDir(t, "worktree-commondir-secret-*")
+	const secret = "AKIA-EXAMPLE-COMMONDIR-CONTENTS"
+	secretPath := filepath.Join(secretDir, "credentials")
+	if err := os.WriteFile(secretPath, []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secretPath, filepath.Join(fixture, ".git", "commondir")); err != nil {
+		t.Fatal(err)
+	}
+
+	// This is the validation worktree list performs on the discovered main
+	// root before it builds the control environment.
+	err := rejectUntrustedMainRoot(env, fixture)
+	if err == nil {
+		t.Fatal("main root with a commondir symlinked outside the workspace was accepted")
+	}
+	if !errors.Is(err, errUntrustedWorktreeProject) {
+		t.Fatalf("main root error = %v, want the untrusted-project refusal", err)
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("validation error exposed the masked file's contents: %v", err)
+	}
+}
+
+// The switch classifies the target before enterWorktree builds the environment
+// it actually installs. A sandboxed job in the retained NonGit workspace can
+// swap the target's .git pointer between those two resolutions. The installed
+// candidate must be the one validated; otherwise the switch adopts the external
+// repository's Git metadata and write grants (#3724 review).
+func TestWorktreeSwitchByPath_RejectsPointerSwappedAfterClassification(t *testing.T) {
+	otherMain := canonicalFixtureTempDir(t, "worktree-swap-main-*")
+	copyWorktreeBaseRepo(t, otherMain)
+	_, head := worktreeBaseRepo(t)
+	otherLinked := canonicalFixtureTempDir(t, "worktree-swap-linked-*")
+	wtGit(t, otherMain, "worktree", "add", "-q", "-b", "linked", otherLinked, head)
+
+	fixture := canonicalFixtureTempDir(t, "worktree-swap-fixture-*")
+	s, stateDir, env := newSandboxedFixtureSession(t, fixture, "worktree-swap-state-*")
+	if env.Sandbox.Git.Kind != sandbox.NonGit {
+		t.Fatalf("fixture sandbox kind = %v, want NonGit", env.Sandbox.Git.Kind)
+	}
+	// The fixture becomes a real main checkout after the sandbox was resolved,
+	// so the retained policy stays NonGit while discovery finds a repository.
+	copyWorktreeBaseRepo(t, fixture)
+	st := s.worktreeStateSnapshot()
+	if st.mainRepoRoot != fixture {
+		t.Fatalf("project discovery main root = %q, want the fixture %q", st.mainRepoRoot, fixture)
+	}
+	pointer, err := os.ReadFile(filepath.Join(otherLinked, ".git"))
+	if err != nil {
+		t.Fatalf("read external linked pointer: %v", err)
+	}
+
+	s.cfg.testOnly.worktree.enterWorktree = func(path string, managed bool) error {
+		if filepath.Clean(path) != fixture {
+			return nil
+		}
+		// Swap the pointer after the switch's own classification has passed.
+		if err := os.RemoveAll(filepath.Join(fixture, ".git")); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(fixture, ".git"), pointer, 0o644)
+	}
+
+	r := &wtRepo{s: s, mainRoot: fixture, stateDir: stateDir}
+	result, switchErr := r.switchOp(t, map[string]any{"path": fixture})
+	if switchErr == nil {
+		t.Fatalf("switch installed an environment whose Git metadata was swapped after classification: %+v", result)
+	}
+	if !errors.Is(switchErr, errUntrustedWorktreeProject) {
+		t.Fatalf("switch error = %v, want the untrusted-project refusal", switchErr)
+	}
+	requireSwitchKeptScope(t, s, fixture, fixture, otherMain, filepath.Join(otherMain, ".git"), otherLinked, filepath.Join(otherLinked, ".git"))
+}
