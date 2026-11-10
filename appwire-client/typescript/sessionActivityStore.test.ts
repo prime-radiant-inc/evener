@@ -168,6 +168,7 @@ test("a status frame before the initial read keeps askPending in the activity ru
   });
   await activityState(store, () => store.getSnapshot().runtime?.askPending === true);
   expect(store.getSnapshot().runtime?.askPending).toBe(true);
+  expect(store.getSnapshot().runtime?.status.type).toBe("awaiting");
 });
 
 test("a status frame askPending updates runtime before the registry listener", async () => {
@@ -299,6 +300,50 @@ test("a resync with no pending approvals clears the activity runtime approval", 
   });
   await activityState(store, () => store.getSnapshot().runtime?.approvalPending === false);
   expect(store.getSnapshot().runtime?.pendingEscalationIds).toEqual([]);
+});
+
+test("a collection runtime seeds pending approvals before the summary recovers", async () => {
+  const client = activityClient();
+  const escalation = (escalationId: string) => ({
+    threadId: "wire-root",
+    ref: activityRef,
+    escalationId,
+    mode: "read-only",
+    tool: "read_file",
+    kind: "file",
+    deniedPath: "/outside",
+  });
+  client.on("thread/read", () => ({
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-root",
+      sessionId: "root-session",
+      evener: {
+        ...threadFixture().thread.evener,
+        pendingEscalations: [escalation("esc_1"), escalation("esc_2")],
+      },
+    },
+  }));
+  client.on("evener/thread/activity/read", () => {
+    throw new WireError("summary failed", -32014, { retryDisposition: "automatic" });
+  });
+  client.on("evener/thread/jobs/list", () => ({
+    context: { ...activityContext(), sessionId: "root-session", ref: "remote:canonical-root" },
+    scope: "session",
+    jobs: [jobFixture()],
+    page: { complete: true, issues: [] },
+  }));
+  const store = owner(client);
+  store.start();
+  store.observe("jobs");
+  await activityState(store, () => store.getSnapshot().runtime?.approvalPending === true);
+  expect(store.getSnapshot().runtime?.pendingEscalationIds).toEqual(["esc_1", "esc_2"]);
+  client.emitNotification({
+    method: "evener/sandbox/escalation/resolved",
+    params: { threadId: "wire-root", ref: activityRef, escalationId: "esc_1" },
+  });
+  expect(store.getSnapshot().runtime?.approvalPending).toBe(true);
+  expect(store.getSnapshot().runtime?.pendingEscalationIds).toEqual(["esc_2"]);
 });
 
 test("a same-thread resync lets the recovery read replace a cached idle status", async () => {

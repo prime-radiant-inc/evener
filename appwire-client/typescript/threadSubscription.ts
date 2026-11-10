@@ -55,7 +55,7 @@ interface Membership {
   statusThreadId: string;
   // An askPending flag can arrive before the first read admits metadata. Keep
   // the newest one, keyed by its thread, and apply it when that read lands.
-  pendingAsk?: { threadId: string; askPending: boolean };
+  pendingAsk?: { threadId: string; askPending: boolean; status: ThreadStatus };
   // True while a live status frame's askPending is newer than snapshots. A
   // resync or a replacement thread retires it so snapshots can seed the value;
   // a status frame that explicitly carries askPending sets it again.
@@ -130,7 +130,7 @@ class ThreadSubscriptions {
     else if (direct && askPending !== undefined) {
       direct.statusRevision += 1;
       direct.statusThreadId = threadId;
-      direct.pendingAsk = { threadId, askPending };
+      direct.pendingAsk = { threadId, askPending, status: copyStatus(status) };
       direct.askAuthoritative = true;
     }
     for (const member of this.members.values()) {
@@ -359,7 +359,8 @@ class ThreadSubscriptions {
     // carried askPending (true or false) is newer than this read's snapshot.
     // Once metadata has an explicit value, later snapshots cannot revert it;
     // a fresh status frame is what changes the question state.
-    const earlyAsk = member.pendingAsk?.threadId === thread.id ? member.pendingAsk.askPending : undefined;
+    const pending = member.pendingAsk?.threadId === thread.id ? member.pendingAsk : undefined;
+    const earlyAsk = pending?.askPending;
     member.pendingAsk = undefined;
     if (member.metadata?.threadId !== thread.id) member.askAuthoritative = false;
     const askPending =
@@ -381,7 +382,7 @@ class ThreadSubscriptions {
     const metadata: ThreadSubscriptionMetadata = {
       threadId: thread.id,
       sessionId: thread.sessionId ?? thread.id,
-      status: copyStatus((newer ? member.metadata?.status : undefined) ?? thread.status),
+      status: copyStatus((newer ? (member.metadata?.status ?? pending?.status) : undefined) ?? thread.status),
       askPending,
     };
     member.metadata =

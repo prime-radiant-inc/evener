@@ -650,7 +650,10 @@ export class SessionActivityStore {
           });
           if (resource === "delegates") this.settleBufferedFrames(rowsFinal);
           if (dropped()) continue;
-          this.publish({ context: page.context, runtime: this.runtimeFor(page.context, statusRevision) });
+          this.publish({
+            context: page.context,
+            runtime: this.seedEscalations(this.runtimeFor(page.context, statusRevision)),
+          });
           if (dropped()) continue;
           this.noteContext(page.context);
           // Collection reads can warm retained count indexes without emitting

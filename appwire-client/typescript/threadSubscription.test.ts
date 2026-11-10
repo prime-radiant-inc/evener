@@ -407,6 +407,37 @@ test("successive snapshots can change askPending until a status frame makes it a
   lease.release();
 });
 
+test("a status frame's status survives the initial snapshot", async () => {
+  const client = activityClient();
+  const initial = deferred<ThreadReadResponse>(),
+    entered = deferred<void>();
+  const idle: ThreadReadResponse = {
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-root",
+      sessionId: "root-session",
+      status: { type: "idle" },
+      evener: { ...threadFixture().thread.evener, askPending: false },
+    },
+  };
+  client.on("thread/read", () => {
+    entered.resolve();
+    return initial.promise;
+  });
+  const lease = acquireThreadSubscription(client, activityRef);
+  const ensuring = lease.ensure();
+  await entered.promise;
+  client.emitNotification({
+    method: "thread/status/changed",
+    params: { ref: activityRef, threadId: "wire-root", status: { type: "awaiting" }, askPending: true },
+  });
+  initial.resolve(idle);
+  await ensuring;
+  expect(lease.metadata?.()?.status.type).toBe("awaiting");
+  expect(lease.metadata?.()?.askPending).toBe(true);
+  lease.release();
+});
+
 test("escalation frames update every membership for the thread", async () => {
   const client = activityClient();
   client.on("thread/read", () => ({
