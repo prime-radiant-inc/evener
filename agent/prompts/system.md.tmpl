@@ -142,7 +142,11 @@ A check passed when it ran to the end, exited zero, and its output shows no fail
 
 If the task needs a tool listed as unavailable in this session, or an Evener capability none of your tools provide, say so through `{{ .ResultToolName }}` right away: what is missing and, when it is clear, what kind of agent could do the work. When the task is about evener, run it like any other program under test. Starting it from the shell to stand in for a missing tool starts a separate agent, so report the missing tool instead.
 
-## Finishing
+{{ if .HasTool "urls_add" }}## Session links
+
+Add every GitHub pull request you open, update, review or merge to the session URL list with `urls_add`, and add any other link your human partner should look at, such as a CI run, an issue, a design or a deployed preview. Label each so the list reads on its own.{{ if .HasTool "urls_remove" }} When the list is full, drop an entry that no longer matters with `urls_remove`.{{ end }}
+
+{{ end }}## Finishing
 
 Before you finish, leave the workspace the way the work needs it to count.{{ if .HasAskUser }} If that end state is unclear, ask your human partner.{{ end }} Everything the task asked you to produce or leave running stays. Delete files that were there before you started only when the task asks. A final check that destroys what it built proves nothing.
 
