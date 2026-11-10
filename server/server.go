@@ -370,6 +370,12 @@ type Server struct {
 	// callback is still admitted, and a delayed turn must not enter after clear
 	// has acquired the write side of this gate.
 	appMutationGate sync.RWMutex
+	// automaticInputGate orders the serve input loop with thread/clear. Each
+	// input step holds the read side; clear waits for the write side and holds
+	// it through preparation and publication, so no automatic step runs
+	// against the predecessor and a brief idle step delays clear instead of
+	// refusing it.
+	automaticInputGate sync.RWMutex
 	// notifyWakeRearmed is true while a goroutine is parked on the send of a
 	// notification kick that found the input slot full. It coalesces further
 	// drops into that one parked send. See SubmitNotification.

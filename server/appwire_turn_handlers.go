@@ -397,16 +397,16 @@ func (s *Server) admitRetrySafeMutation(rawRef, threadID string, expectedInstanc
 	return s.appMutationGate.RUnlock, nil
 }
 
-// WithMutationRead runs fn under the mutation gate's read side. A thread/clear
-// holds the write side for its whole preparation and publication, so an
-// automatic input turn that would otherwise move the old session's worktree
-// lane waits until clear has installed the replacement. The serve loop calls
-// this for every input message and samples the live session inside fn, which is
-// what makes a queued wake run against the replacement rather than the closed
-// predecessor.
+// WithMutationRead runs fn under the automatic input gate's read side. A
+// thread/clear holds the write side for its whole preparation and
+// publication, so an automatic input turn that would otherwise move the old
+// session's worktree lane waits until clear has installed the replacement. The
+// serve loop calls this for every input message and samples the live session
+// inside fn, which is what makes a queued wake run against the replacement
+// rather than the closed predecessor.
 func (s *Server) WithMutationRead(fn func()) {
-	s.appMutationGate.RLock()
-	defer s.appMutationGate.RUnlock()
+	s.automaticInputGate.RLock()
+	defer s.automaticInputGate.RUnlock()
 	fn()
 }
 

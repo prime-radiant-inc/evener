@@ -68,10 +68,19 @@ func (s *Server) handleAppThreadClear(ctx context.Context, params appwire.Thread
 	if decision, ok := s.replayAppliedThreadClear(params, requestHash); ok {
 		return decision.response, decision.err
 	}
+	// A turn the server reports as running refuses clear now; waiting on the
+	// input gate below would otherwise hold the clear for the whole turn.
+	if reason := s.clearBlockedReason(); reason != "" {
+		return appwire.ThreadClearResponse{}, appwire.MutationNotAccepted(params.ClientMutationID, reason)
+	}
 	if !s.appMutationGate.TryLock() {
 		return appwire.ThreadClearResponse{}, appwire.MutationNotAccepted(params.ClientMutationID, "a retry-safe mutation is already in progress")
 	}
 	defer s.appMutationGate.Unlock()
+	// The serve input loop holds the read side only for one step, so clear
+	// waits for it; decideThreadClear rechecks the turn state once it is held.
+	s.automaticInputGate.Lock()
+	defer s.automaticInputGate.Unlock()
 
 	decision := s.decideThreadClear(params, requestHash)
 	switch decision.action {
@@ -208,6 +217,12 @@ func (s *Server) runThreadClear(ctx context.Context, params appwire.ThreadClearP
 		return appwire.ThreadClearResponse{}, appwire.MutationUnknown(params.ClientMutationID, "thread clear receipt could not be persisted")
 	}
 	return response, nil
+}
+
+func (s *Server) clearBlockedReason() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.clearBlockedReasonLocked()
 }
 
 func (s *Server) clearBlockedReasonLocked() string {
