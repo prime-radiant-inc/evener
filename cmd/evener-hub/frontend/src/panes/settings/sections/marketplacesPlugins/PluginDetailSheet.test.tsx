@@ -2,10 +2,12 @@ import type { MarketplaceEntry, PluginComponents, PluginEntry } from "@evener/ap
 import { WireError } from "@evener/appwire-client";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { resetConnectionStoreForTests } from "../../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
+import { Button } from "../../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { chipKinds } from "./marketplacesTestUtils";
 import { PluginDetailSheet, type PluginDetailTarget } from "./PluginDetailSheet";
@@ -558,3 +560,70 @@ test("catalog mode renders description and metadata with no switches, and instal
   await waitFor(() => expect(onClose).toHaveBeenCalled());
   expect(screen.queryByRole("dialog", { name: "Install plugin" })).toBeNull();
 });
+
+test.each(["current", "different", "reopened"] as const)(
+  "a deferred install closes only its own still-open sheet: %s",
+  async (scenario) => {
+    const user = userEvent.setup();
+    const fake = connectReadyFakeClient();
+    const original: PluginDetailTarget = { mode: "catalog", plugin: "formatter", marketplace: ACME.name };
+    const next: PluginDetailTarget = { ...original, plugin: scenario === "different" ? "inspector" : original.plugin };
+    extensionsStore.setState({
+      plugins: [LINTER],
+      marketplaces: [ACME],
+      browseCatalogs: seededCatalog([{ name: original.plugin }, { name: next.plugin }]),
+    });
+    let resolveInstall: (value: { plugins: PluginEntry[] }) => void = () => {};
+    fake.on(
+      "evener/plugin/install",
+      () =>
+        new Promise((resolve) => {
+          resolveInstall = resolve;
+        }),
+    );
+    const onClose = vi.fn();
+    function Harness() {
+      const [target, setTarget] = useState<PluginDetailTarget | null>(original);
+      return (
+        <>
+          <Button onClick={() => setTarget(next)}>Open next</Button>
+          <PluginDetailSheet
+            target={target}
+            onClose={() => {
+              onClose();
+              setTarget(null);
+            }}
+          />
+        </>
+      );
+    }
+    render(<Harness />);
+    const originalSheet = screen.getByRole("dialog", { name: original.plugin });
+    await user.click(within(originalSheet).getByRole("button", { name: "Install" }));
+    const confirm = screen.getByRole("dialog", { name: "Install plugin" });
+    await user.click(within(confirm).getByRole("button", { name: "Install" }));
+    expect(fake.calls.filter((call) => call.method === "evener/plugin/install").map((call) => call.params)).toEqual([
+      { plugin: original.plugin, marketplace: original.marketplace },
+    ]);
+    expect(extensionsStore.getState().hubWriteBusy).toBe(true);
+
+    if (scenario !== "current") {
+      await user.keyboard("{Escape}");
+      expect(confirm.isConnected).toBe(false);
+      expect(screen.getByRole("dialog", { name: original.plugin })).toBe(originalSheet);
+      expect(originalSheet.contains(document.activeElement)).toBe(true);
+      await user.keyboard("{Escape}");
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(onClose).toHaveBeenCalledTimes(1);
+      await user.click(screen.getByRole("button", { name: "Open next" }));
+      expect(screen.getByRole("dialog", { name: next.plugin })).toBeTruthy();
+    }
+
+    await act(async () => resolveInstall({ plugins: [LINTER, { ...LINTER, plugin: original.plugin }] }));
+    await waitFor(() => expect(getToasts().filter((toast) => toast.kind === "success")).toHaveLength(1));
+    expect(extensionsStore.getState().hubWriteBusy).toBe(false);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    if (scenario === "current") expect(screen.queryByRole("dialog")).toBeNull();
+    else expect(screen.getByRole("dialog", { name: next.plugin })).toBeTruthy();
+  },
+);

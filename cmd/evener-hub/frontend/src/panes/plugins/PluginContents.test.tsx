@@ -1,8 +1,10 @@
 import type { PluginComponents } from "@evener/appwire-client";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { expect, test } from "vitest";
 import { PluginContents } from "./PluginContents";
+import { PluginSheet } from "./PluginSheet";
 
 const NINE_SERVERS: string[] = Array.from({ length: 9 }, (_, i) => `server-0${i + 1}`);
 
@@ -39,6 +41,33 @@ test("a kind with more than eight names shows the first eight and expands the re
   for (const name of NINE_SERVERS) expect(expanded).toContain(name);
   // The expansion is one-way: the affordance goes away with the truncation.
   expect(screen.queryByRole("button", { name: "+1 more" })).toBeNull();
+});
+
+test("keyboard expansion keeps focus inside the sheet and Escape dismisses it", async () => {
+  const user = userEvent.setup();
+  function Harness() {
+    const [open, setOpen] = useState(true);
+    return (
+      <PluginSheet
+        open={open}
+        onClose={() => setOpen(false)}
+        title="plugin-focus-sentinel"
+        mode="launcher"
+        metadata={[]}
+        contents={<PluginContents components={{ mcpServers: NINE_SERVERS }} />}
+      />
+    );
+  }
+  render(<Harness />);
+  const sheet = screen.getByRole("dialog");
+  const expander = within(rowFor("mcpServers")).getByRole("button");
+  expect(document.activeElement).toBe(expander);
+  await user.keyboard("{Enter}");
+  expect(expander.isConnected).toBe(false);
+  for (const name of NINE_SERVERS) expect(namesOf(rowFor("mcpServers"))).toContain(name);
+  expect(sheet.contains(document.activeElement)).toBe(true);
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("dialog")).toBeNull();
 });
 
 test("a manifest-only object reads as the empty case, never as an error or empty-styled list", () => {

@@ -53,6 +53,18 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
 
   const [pendingRemove, setPendingRemove] = useState(false);
   const [pendingInstall, setPendingInstall] = useState(false);
+  const currentSheet = useRef<object | null>(null);
+  const mode = target?.mode;
+  const plugin = target?.plugin;
+  const marketplace = target?.marketplace;
+  // Each committed open owns a distinct identity, even when the same plugin
+  // is reopened. Retire it on dismissal, target replacement, or unmount.
+  useEffect(() => {
+    currentSheet.current = mode === undefined ? null : { mode, plugin, marketplace };
+    return () => {
+      currentSheet.current = null;
+    };
+  }, [mode, plugin, marketplace]);
   // Any commit that takes away the control holding the keyboard - the
   // Upgrade button a successful upgrade unmounts, or the remove confirm's
   // buttons disabled while the remove runs - would drop focus to <body>; the
@@ -117,13 +129,15 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
       setPendingInstall(false);
       return;
     }
+    const installingSheet = currentSheet.current;
     try {
       await store.getState().installPlugin(pair.plugin, pair.marketplace);
       toasts.push("success", `Installed ${pair.plugin}`);
-      setPendingInstall(false);
-      // The catalog sheet's whole purpose is fulfilled; the browse list it
-      // returns to now shows the installed row.
-      onClose();
+      // Completion belongs to this open, not a later sheet or its confirm.
+      if (installingSheet !== null && currentSheet.current === installingSheet) {
+        setPendingInstall(false);
+        onClose();
+      }
     } catch (err) {
       toasts.push("error", isHubWriteBusy(err) ? HUB_WRITE_BUSY : `Install failed: ${errorText(err)}`);
     }

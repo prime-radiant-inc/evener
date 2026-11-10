@@ -4,8 +4,8 @@
 import type { PluginComponents } from "@evener/appwire-client";
 import type { PluginComponentsEntry } from "@evener/appwire-client/state/extensions";
 import type { ReactElement } from "react";
-import { useState } from "react";
-import { Badge, Button, Eyebrow, InlineNotice } from "../../widgets";
+import { useRef, useState } from "react";
+import { Badge, Button, Eyebrow, InlineNotice, useFocusRehome } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./pluginContents.module.css";
 import { hookTotal } from "./pluginCounts";
@@ -46,10 +46,13 @@ function ContentsRow({
   count: number;
 }): ReactElement {
   const [showAll, setShowAll] = useState(false);
+  // Expansion removes its own focused control without rerendering the sheet.
+  const focusRoot = useRef<HTMLDivElement>(null);
+  useFocusRehome(focusRoot);
   const visible = showAll ? names : names.slice(0, MAX_NAMES);
   const rest = names.length - visible.length;
   return (
-    <div className={CLASS.row} data-kind={kind}>
+    <div ref={focusRoot} className={CLASS.row} data-kind={kind}>
       <span className={CLASS.kindLabel}>{label}</span>
       <Badge count={count} />
       <span className={CLASS.names}>
