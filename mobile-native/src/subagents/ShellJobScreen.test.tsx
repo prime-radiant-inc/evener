@@ -292,7 +292,7 @@ it("reads a running job's output again on its own, and an ended job's only once"
 			endedAt: undefined,
 		}),
 	);
-	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 	try {
 		const screen = await mount();
 		expect(outputCalls()).toHaveLength(1);

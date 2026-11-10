@@ -770,11 +770,21 @@ one file with `--maxWorkers=1` is fine. Workers are recycled at `vmMemoryLimit`
 A test that has to get past a real debounce or timer uses Vitest's fake timers
 rather than waiting it out, with two pieces of wiring so Testing Library keeps
 working: `vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime })`,
-because `waitFor` and `findBy*` only advance a faked clock when they find a
-`jest` global, and `userEvent.setup({ advanceTimers: vi.advanceTimersByTime })`,
-so typing delays advance it too. Fake only the timer functions (`toFake:
-["setTimeout", "clearTimeout", "setInterval", "clearInterval"]`);
-src/panes/spawn/Spawn.test.tsx is the worked example. To read a Tooltip from a
+because user-event's drain after each action, `waitFor` and `findBy*` wait on a
+`setTimeout` and only advance a faked one when they find a `jest` global, and
+`userEvent.setup({ advanceTimers: vi.advanceTimersByTime })`, so typing delays
+advance it too. `useTestDrivenFakeTimers` (src/testing/fakeTimers.ts) installs
+the fake timers and that stub, and removes the stub when the test finishes.
+Fake only the timer functions (`toFake: ["setTimeout", "clearTimeout",
+"setInterval", "clearInterval"]`) unless the test pins `Date` with
+`vi.setSystemTime`, which needs the default set; src/panes/spawn/Spawn.test.tsx
+is the worked example. The fake clock moves only when the test moves it:
+advance it with `vi.advanceTimersByTimeAsync`, or `vi.runOnlyPendingTimersAsync`,
+and assert the state right after. Never pass `shouldAdvanceTime`, which lets the
+fake clock follow wall time and so makes a debounce or countdown fire earlier
+on a loaded host; `make lint-repo-audit`'s `fake-timers-no-wall-clock-drift`
+check fails on it anywhere tracked in the frontend, `appwire-client/typescript`
+and `mobile-native`, Vitest configs included. To read a Tooltip from a
 test that otherwise runs on real timers, use `hoverForTooltip`
 (src/widgets/tooltip/tooltipTestUtils.ts): it crosses the show delay on a fake
 clock scoped to the hover, so it needs none of that wiring, and it must be called

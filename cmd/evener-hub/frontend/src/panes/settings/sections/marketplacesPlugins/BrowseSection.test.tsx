@@ -12,6 +12,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { resetConnectionStoreForTests } from "../../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
+import { useTestDrivenFakeTimers } from "../../../../testing/fakeTimers";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { BrowseSection } from "./BrowseSection";
 import { chipKinds, showsEmptyRow } from "./marketplacesTestUtils";
@@ -349,7 +350,7 @@ test("the install confirm's buttons disable while the install is in flight", asy
 });
 
 test("typing a filter query auto-expands (after the debounce) a marketplace with a matching plugin and hides a successfully-loaded, zero-match one entirely", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  useTestDrivenFakeTimers();
   const user = userEvent.setup({ delay: null, advanceTimers: vi.advanceTimersByTime });
   const fake = connectReadyFakeClient();
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A, MARKETPLACE_B], plugins: [] });
@@ -361,7 +362,7 @@ test("typing a filter query auto-expands (after the debounce) a marketplace with
   render(<Harness />);
   await user.type(screen.getByPlaceholderText("Filter plugins…"), "lint");
   await act(() => vi.advanceTimersByTimeAsync(150));
-  await waitFor(() => expect(isExpanded("acme-plugins")).toBe(true));
+  expect(isExpanded("acme-plugins")).toBe(true);
   // other-plugins' catalog resolved with zero matches for "lint" - per the
   // floor doc ("only a successfully-loaded, zero-match catalog is hidden
   // entirely"), it's not merely collapsed, it's absent from the tree.
@@ -370,7 +371,7 @@ test("typing a filter query auto-expands (after the debounce) a marketplace with
 });
 
 test("clearing the filter immediately collapses every node with no debounce", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  useTestDrivenFakeTimers();
   const user = userEvent.setup({ delay: null, advanceTimers: vi.advanceTimersByTime });
   const fake = connectReadyFakeClient();
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
@@ -388,7 +389,7 @@ test("clearing the filter immediately collapses every node with no debounce", as
 // expands its matches, and the outrun query returns without clearing a flag
 // that is no longer its to clear.
 test("a filter query outrun by a newer one leaves the tree loading no longer than the newer one", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  useTestDrivenFakeTimers();
   const user = userEvent.setup({ delay: null, advanceTimers: vi.advanceTimersByTime });
   const fake = connectReadyFakeClient();
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
@@ -414,7 +415,7 @@ test("a filter query outrun by a newer one leaves the tree loading no longer tha
     await gate;
   });
 
-  await waitFor(() => expect(screen.queryByRole("status", { name: "Loading marketplaces" })).toBeNull());
+  expect(screen.queryByRole("status", { name: "Loading marketplaces" })).toBeNull();
   expect(isExpanded("acme-plugins")).toBe(true);
   expect(screen.getByText("linter")).toBeTruthy();
 });
@@ -426,7 +427,7 @@ test("a filter query outrun by a newer one leaves the tree loading no longer tha
 // match while its plugins are still on the wire, and nothing reruns the
 // filter afterwards.
 test("the filter waits for a catalog that was already loading when the query ran", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  useTestDrivenFakeTimers();
   const user = userEvent.setup({ delay: null, advanceTimers: vi.advanceTimersByTime });
   const fake = connectReadyFakeClient();
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
@@ -442,22 +443,20 @@ test("the filter waits for a catalog that was already loading when the query ran
   await user.click(marketplaceToggle("acme-plugins"));
   await user.type(screen.getByPlaceholderText("Filter plugins…"), "lin");
   await act(() => vi.advanceTimersByTimeAsync(150));
-  // findByText, not getByText: this query starts no request of its own, so
-  // no store update comes along to flush the filterLoading render with it.
-  expect(await screen.findByRole("status", { name: "Loading marketplaces" })).toBeTruthy();
+  expect(screen.getByRole("status", { name: "Loading marketplaces" })).toBeTruthy();
 
   await act(async () => {
     release();
     await gate;
   });
 
-  await waitFor(() => expect(screen.queryByRole("status", { name: "Loading marketplaces" })).toBeNull());
+  expect(screen.queryByRole("status", { name: "Loading marketplaces" })).toBeNull();
   expect(isExpanded("acme-plugins")).toBe(true);
   expect(screen.getByText("linter")).toBeTruthy();
 });
 
 test("zero matches anywhere shows a not-found message quoting the query", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  useTestDrivenFakeTimers();
   const user = userEvent.setup({ delay: null, advanceTimers: vi.advanceTimersByTime });
   const fake = connectReadyFakeClient();
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
@@ -465,5 +464,5 @@ test("zero matches anywhere shows a not-found message quoting the query", async 
   render(<Harness />);
   await user.type(screen.getByPlaceholderText("Filter plugins…"), "zzz");
   await act(() => vi.advanceTimersByTimeAsync(150));
-  expect(await screen.findByText('No plugins match "zzz".')).toBeTruthy();
+  expect(screen.getByText('No plugins match "zzz".')).toBeTruthy();
 });

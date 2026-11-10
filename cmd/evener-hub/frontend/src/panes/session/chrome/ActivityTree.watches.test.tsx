@@ -14,6 +14,7 @@ import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { watchDurationLabel } from "../../../shell/rail/RailRow";
+import { useTestDrivenFakeTimers } from "../../../testing/fakeTimers";
 import { ActivityTree } from "./ActivityTree";
 
 const NOW = Date.parse("2026-08-05T15:00:12.000Z");
@@ -81,7 +82,7 @@ function renderTree(
 // The tree no longer takes a clock prop - TreeNowContext reads Date.now() - so
 // these DOM assertions pin the system clock they build their expectations from.
 beforeEach(() => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  useTestDrivenFakeTimers();
   vi.setSystemTime(NOW);
 });
 
@@ -171,7 +172,7 @@ describe("ActivityTree watch rows", () => {
   });
 
   test("the row defaults open and its toggle button is a real aria-expanded disclosure", async () => {
-    const user = userEvent.setup();
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     renderTree([watch({ note: "Poll the queue depth", cadence: [{ kind: "every", seconds: 600 }], deliveries: 0 })]);
 
     const row = screen.getByRole("treeitem", { name: "Watch: Poll the queue depth" });
@@ -330,7 +331,7 @@ describe("ActivityTree watch rows", () => {
   // it read when the panel mounted. The tree is rendered WITHOUT a `now` prop
   // here on purpose: the ticking context is the only clock this case has.
   test("a session whose only work is watches still runs the clock", () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.useFakeTimers();
     vi.setSystemTime(NOW);
     try {
       render(
