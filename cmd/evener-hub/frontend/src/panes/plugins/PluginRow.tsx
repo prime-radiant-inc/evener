@@ -119,6 +119,12 @@ export function CatalogPluginRow({
   );
 }
 
+function launcherSource(candidate: PluginLaunchCandidate): string {
+  if (candidate.source === "installed" && candidate.marketplace) return `installed from ${candidate.marketplace}`;
+  if (candidate.path) return `${candidate.source}: ${candidate.path}`;
+  return candidate.source;
+}
+
 /** Launcher mode keeps selection on the Switch and inspection on Details. */
 export function LauncherPluginRow({
   candidate,
@@ -133,12 +139,7 @@ export function LauncherPluginRow({
   onToggleSelected: (next: boolean) => void;
   onOpen: () => void;
 }): ReactElement {
-  const source =
-    candidate.source === "installed" && candidate.marketplace
-      ? `installed from ${candidate.marketplace}`
-      : candidate.path
-        ? `${candidate.source}: ${candidate.path}`
-        : candidate.source;
+  const source = launcherSource(candidate);
   return (
     <div className={CLASS.row} data-kind="plugin-row" data-mode="launcher">
       <Switch

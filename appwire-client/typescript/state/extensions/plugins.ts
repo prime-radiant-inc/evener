@@ -220,9 +220,6 @@ export function createPluginsStore(client: PluginsClient, gate: HubWriteGate): P
   const store = createFrameworkFreeStore<PluginsState>((publish, get) => {
     const set = lifecycle.guard(publish);
 
-    const setEntry = (key: string, entry: PluginComponentsEntry): void =>
-      set((s) => ({ pluginComponents: new Map(s.pluginComponents).set(key, entry) }));
-
     const entryFor = (row: PluginComponentsResult | undefined): PluginComponentsEntry => {
       const result = pluginComponentsResultOrMissing(row);
       if (!row) return { status: "error", source: "request", error: result.error ?? "" };
@@ -239,22 +236,20 @@ export function createPluginsStore(client: PluginsClient, gate: HubWriteGate): P
     const readPluginComponents = async (
       missing: { key: string; target: PluginComponentsReadTarget }[],
     ): Promise<void> => {
-      const issued = new Map<
-        string,
-        { revision: number; settle: (value: void | PromiseLike<void>) => void; read: Promise<void> }
-      >();
-      const reads: Promise<void>[] = [];
-      for (const { key } of missing) {
+      const issued = missing.map(({ key }) => {
         const revision = components.issue(key);
         let settle!: (value: void | PromiseLike<void>) => void;
         const read = new Promise<void>((resolve) => {
           settle = resolve;
         });
-        issued.set(key, { revision, settle, read });
-        reads.push(read);
         components.begin(key, read);
-        setEntry(key, { status: "loading" });
-      }
+        return { key, revision, settle, read };
+      });
+      set((s) => {
+        const pluginComponents = new Map(s.pluginComponents);
+        for (const { key } of issued) pluginComponents.set(key, { status: "loading" });
+        return { pluginComponents };
+      });
       // The whole call's answer is one shape: the rows, or the failure that
       // reached no rows (an older hub without the method, a dropped
       // connection). Either way every requested key lands - rows under their
@@ -270,20 +265,22 @@ export function createPluginsStore(client: PluginsClient, gate: HubWriteGate): P
         failed = true;
         failure = err;
       }
-      missing.forEach(({ key }, index) => {
-        const entry = issued.get(key);
-        if (!entry || !components.current(key, entry.revision)) return;
-        if (failed) {
-          setEntry(key, { status: "error", source: "request", error: friendlyErrorMessage(failure) });
-          return;
-        }
-        setEntry(key, entryFor(rows?.[index]));
+      let landed: Map<string, PluginComponentsEntry> | undefined;
+      issued.forEach(({ key, revision }, index) => {
+        if (!components.current(key, revision)) return;
+        landed ??= new Map(get().pluginComponents);
+        landed.set(
+          key,
+          failed
+            ? { status: "error", source: "request", error: friendlyErrorMessage(failure) }
+            : entryFor(rows?.[index]),
+        );
       });
-      for (const { key } of missing) {
-        const entry = issued.get(key);
-        if (entry) entry.settle(components.settle(key, entry.read));
+      if (landed) set({ pluginComponents: landed });
+      for (const entry of issued) {
+        entry.settle(components.settle(entry.key, entry.read));
       }
-      await Promise.all(reads);
+      await Promise.all(issued.map((entry) => entry.read));
     };
 
     /** Runs one mutation under the shared hub write gate: its response's list

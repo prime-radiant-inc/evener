@@ -2,6 +2,7 @@
 // Target and request failures belong to the sheet. This block never fetches.
 
 import type { PluginComponents } from "@evener/appwire-client";
+import type { PluginComponentsEntry } from "@evener/appwire-client/state/extensions";
 import type { ReactElement } from "react";
 import { useState } from "react";
 import { Badge, Button, Eyebrow, InlineNotice } from "../../widgets";
@@ -60,7 +61,10 @@ function ContentsRow({
 }
 
 export function PluginContents({ components }: { components: PluginComponents }): ReactElement {
-  const present = CONTENT_KINDS.filter((kind) => kind.names(components).length > 0);
+  const present = CONTENT_KINDS.map((kind) => {
+    const names = kind.names(components);
+    return { kind, names, count: kind.key === "hooks" ? hookTotal(components) : names.length };
+  }).filter(({ names }) => names.length > 0);
   return (
     <div className={CLASS.contents} data-kind="plugin-contents">
       <Eyebrow as="h3">Contents</Eyebrow>
@@ -75,17 +79,42 @@ export function PluginContents({ components }: { components: PluginComponents })
         </p>
       ) : (
         <div className={CLASS.list}>
-          {present.map((kind) => (
-            <ContentsRow
-              key={kind.key}
-              kind={kind.key}
-              label={kind.label}
-              names={kind.names(components)}
-              count={kind.key === "hooks" ? hookTotal(components) : kind.names(components).length}
-            />
+          {present.map(({ kind, names, count }) => (
+            <ContentsRow key={kind.key} kind={kind.key} label={kind.label} names={names} count={count} />
           ))}
         </div>
       )}
     </div>
+  );
+}
+
+export function PluginContentsBlock({
+  entry,
+  onRetry,
+}: {
+  entry: PluginComponentsEntry | undefined;
+  onRetry: () => void;
+}): ReactElement | null {
+  if (entry === undefined || entry.status === "loading") return null;
+  if (entry.status === "loaded") return <PluginContents components={entry.components} />;
+  if (entry.source === "target") {
+    return (
+      <InlineNotice tone="danger" data-reason="plugin-broken">
+        {entry.error}
+      </InlineNotice>
+    );
+  }
+  return (
+    <InlineNotice
+      tone="neutral"
+      data-reason="components-degraded"
+      action={
+        <Button size="sm" type="button" onClick={onRetry}>
+          Retry
+        </Button>
+      }
+    >
+      {entry.error}
+    </InlineNotice>
   );
 }

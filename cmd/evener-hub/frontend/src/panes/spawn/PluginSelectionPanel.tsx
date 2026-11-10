@@ -57,6 +57,8 @@ export function PluginSelectionPanel({
     if (sheetName !== null && sheetCandidate === undefined) setSheetName(null);
   }, [sheetName, sheetCandidate]);
   const selectedNames = selection.mode === "explicit" ? new Set(selection.names) : null;
+  const sheetSelected =
+    sheetCandidate !== undefined && (selectedNames?.has(sheetCandidate.name) ?? sheetCandidate.selected);
   const issueNames =
     selectedNames ?? new Set(preview.plugins.filter((plugin) => plugin.selected).map((plugin) => plugin.name));
   const selectedCount = selectedPluginNames(selection, preview).length;
@@ -139,8 +141,8 @@ export function PluginSelectionPanel({
             candidate={sheetCandidate}
             client={client}
             host={host}
-            selected={selectedNames?.has(sheetCandidate.name) ?? sheetCandidate.selected}
-            selectionDisabled={removeOnly && !(selectedNames?.has(sheetCandidate.name) ?? sheetCandidate.selected)}
+            selected={sheetSelected}
+            selectionDisabled={removeOnly && !sheetSelected}
             onToggleSelected={(next) => {
               // The same remove-only guard the row's own switch applies: an
               // unreadable preview still allows taking plugins out.

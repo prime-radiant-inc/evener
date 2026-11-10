@@ -13,9 +13,9 @@
 import { errorText, marketplaceSourceLabel } from "@evener/appwire-client";
 import { HUB_WRITE_BUSY, isHubWriteBusy, pluginComponentsKey } from "@evener/appwire-client/state/extensions";
 import { useEffect, useRef, useState } from "react";
-import { Button, ConfirmDialog, InlineNotice, Switch, useFocusRehome, useToasts } from "../../../../widgets";
+import { Button, ConfirmDialog, Switch, useFocusRehome, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { PluginContents } from "../../../plugins/PluginContents";
+import { PluginContentsBlock } from "../../../plugins/PluginContents";
 import { type PluginMetadataRow, PluginSheet } from "../../../plugins/PluginSheet";
 import { pluginStatusChips } from "../../../plugins/pluginStatusChips";
 import { useExtensionsHostState, useExtensionsHostStore } from "./hostStore";
@@ -207,27 +207,9 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
   // takes its place, never "Manifest only" (that reading is reserved for a
   // loadable plugin that ships nothing).
   const contentsBlock =
-    target?.mode !== "installed" ||
-    componentsEntry === undefined ||
-    componentsEntry.status === "loading" ? null : componentsEntry.status === "loaded" ? (
-      <PluginContents components={componentsEntry.components} />
-    ) : componentsEntry.source === "target" ? (
-      <InlineNotice tone="danger" data-reason="plugin-broken">
-        {componentsEntry.error}
-      </InlineNotice>
-    ) : (
-      <InlineNotice
-        tone="neutral"
-        data-reason="components-degraded"
-        action={
-          <Button size="sm" onClick={handleRetryComponents}>
-            Retry
-          </Button>
-        }
-      >
-        {componentsEntry.error}
-      </InlineNotice>
-    );
+    target?.mode === "installed" ? (
+      <PluginContentsBlock entry={componentsEntry} onRetry={handleRetryComponents} />
+    ) : null;
 
   return (
     <div ref={focusRoot} className={CLASS.focusRoot}>

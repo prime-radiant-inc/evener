@@ -376,8 +376,7 @@ function countsSummary(contents: MockContents): string {
   add(contents.agents.length, "agent");
   add(contents.commands.length, "command");
   add(contents.hooks.length, "hook");
-  if (contents.mcpServers.length > 0)
-    parts.push(`${contents.mcpServers.length} MCP server${contents.mcpServers.length === 1 ? "" : "s"}`);
+  add(contents.mcpServers.length, "MCP server");
   return parts.length > 0 ? parts.join(" · ") : "no components";
 }
 
@@ -499,7 +498,7 @@ function ContentsRow({ label, names }: { label: string; names: string[] }) {
 }
 
 function DetailBody({ plugin, mode, diagnostics }: { plugin: MockPlugin; mode: SheetMode; diagnostics?: ReactNode }) {
-  const chips = mode === "catalog" ? (plugin.installed ? statusChips(plugin) : []) : statusChips(plugin);
+  const chips = mode !== "catalog" || plugin.installed ? statusChips(plugin) : [];
   const present = CONTENT_KINDS.filter(([key]) => plugin.contents[key].length > 0);
   const metaRows: PropertyListRow[] = [];
   if (mode !== "catalog") metaRows.push({ label: "Version", value: `v${plugin.version || "unknown"}`, mono: true });
@@ -694,8 +693,37 @@ function TodayBrowseNode() {
   );
 }
 
-function TodaySection() {
+function LauncherCard({ renderRow }: { renderRow: (plugin: MockPlugin) => ReactNode }) {
   const launcherSelected = LAUNCHER.filter((p) => p.selected).length;
+  return (
+    <Card variant="outlined" role="region" aria-label="Plugins for this session">
+      <div className={psStyles.content}>
+        <div className={psStyles.tools}>
+          <div className={psStyles.resultCount} role="status">
+            {launcherSelected} of {LAUNCHER.length} selected
+          </div>
+          <div className={psStyles.actions}>
+            <Button variant="quiet" size="xs" type="button" aria-label="All" onClick={() => {}}>
+              All
+            </Button>
+            <Button variant="quiet" size="xs" type="button" aria-label="None" onClick={() => {}}>
+              None
+            </Button>
+          </div>
+        </div>
+        <div className={psStyles.list}>
+          {LAUNCHER.map((p) => (
+            <div className={psStyles.row} key={p.name}>
+              {renderRow(p)}
+            </div>
+          ))}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function TodaySection() {
   return (
     <section id="today" className={styles.section}>
       <h2 className={styles.sectionTitle}>1 · Today</h2>
@@ -730,30 +758,7 @@ function TodaySection() {
         </div>
         <div className={styles.column}>
           <Eyebrow as="h3">Session launcher (spawn)</Eyebrow>
-          <Card variant="outlined" role="region" aria-label="Plugins for this session">
-            <div className={psStyles.content}>
-              <div className={psStyles.tools}>
-                <div className={psStyles.resultCount} role="status">
-                  {launcherSelected} of {LAUNCHER.length} selected
-                </div>
-                <div className={psStyles.actions}>
-                  <Button variant="quiet" size="xs" type="button" aria-label="All" onClick={() => {}}>
-                    All
-                  </Button>
-                  <Button variant="quiet" size="xs" type="button" aria-label="None" onClick={() => {}}>
-                    None
-                  </Button>
-                </div>
-              </div>
-              <div className={psStyles.list}>
-                {LAUNCHER.map((p) => (
-                  <div className={psStyles.row} key={p.name}>
-                    <LauncherSwitchRow plugin={p} />
-                  </div>
-                ))}
-              </div>
-            </div>
-          </Card>
+          <LauncherCard renderRow={(plugin) => <LauncherSwitchRow plugin={plugin} />} />
         </div>
       </div>
     </section>
@@ -929,7 +934,6 @@ function SheetSection({ live }: { live: boolean }) {
 // ---------------------------------------------------------------------------
 
 function LauncherSection({ live }: { live: boolean }) {
-  const launcherSelected = LAUNCHER.filter((p) => p.selected).length;
   return (
     <section id="launcher" className={styles.section}>
       <h2 className={styles.sectionTitle}>4 · Session launcher</h2>
@@ -941,30 +945,7 @@ function LauncherSection({ live }: { live: boolean }) {
       <div className={styles.frameGrid}>
         <div className={styles.frameCell}>
           <p className={styles.frameLabel}>Launcher - shared vocabulary, Switch rows (primary)</p>
-          <Card variant="outlined" role="region" aria-label="Plugins for this session">
-            <div className={psStyles.content}>
-              <div className={psStyles.tools}>
-                <div className={psStyles.resultCount} role="status">
-                  {launcherSelected} of {LAUNCHER.length} selected
-                </div>
-                <div className={psStyles.actions}>
-                  <Button variant="quiet" size="xs" type="button" aria-label="All" onClick={() => {}}>
-                    All
-                  </Button>
-                  <Button variant="quiet" size="xs" type="button" aria-label="None" onClick={() => {}}>
-                    None
-                  </Button>
-                </div>
-              </div>
-              <div className={psStyles.list}>
-                {LAUNCHER.map((p) => (
-                  <div className={psStyles.row} key={p.name}>
-                    <LauncherSwitchRow plugin={p} />
-                  </div>
-                ))}
-              </div>
-            </div>
-          </Card>
+          <LauncherCard renderRow={(plugin) => <LauncherSwitchRow plugin={plugin} />} />
           <p className={styles.frameNote}>
             Rejected alternative (decision 4): drill-in rows with the toggle in the sheet - one extra tap per toggle:
           </p>
@@ -1063,6 +1044,8 @@ function SpecSection() {
   );
 }
 
+const SECTIONS = new Set(["today", "rows", "sheets", "launcher", "spec"]);
+
 export default function PluginsMockups() {
   const [liveSheets, setLiveSheets] = useState(false);
   // ?section=<today|rows|sheets|launcher|spec> renders only that section, so
@@ -1084,19 +1067,15 @@ export default function PluginsMockups() {
         label="Live sheets"
         description="Sheet mocks render as static panels by default (headless screenshot tooling cannot rasterize fixed-position overlays). Turn this on to interact with the real Sheet widget instead - same content, plus the scrim, slide-in, and Escape handling."
       />
-      {sectionParam !== "today" &&
-        sectionParam !== "rows" &&
-        sectionParam !== "sheets" &&
-        sectionParam !== "launcher" &&
-        sectionParam !== "spec" && (
-          <>
-            <TodaySection />
-            <SharedRowSection />
-            <SheetSection live={liveSheets} />
-            <LauncherSection live={liveSheets} />
-            <SpecSection />
-          </>
-        )}
+      {!SECTIONS.has(sectionParam ?? "") && (
+        <>
+          <TodaySection />
+          <SharedRowSection />
+          <SheetSection live={liveSheets} />
+          <LauncherSection live={liveSheets} />
+          <SpecSection />
+        </>
+      )}
       {sectionParam === "today" && <TodaySection />}
       {sectionParam === "rows" && <SharedRowSection />}
       {sectionParam === "sheets" && <SheetSection live={liveSheets} />}

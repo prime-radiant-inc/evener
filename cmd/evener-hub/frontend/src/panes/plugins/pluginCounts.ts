@@ -6,6 +6,10 @@ export function hookTotal(components: PluginComponents): number {
   return (components.hooks ?? []).reduce((total, hook) => total + hook.count, 0);
 }
 
+function part(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
 export function countsSummary(
   skills: number,
   agents: number,
@@ -14,10 +18,10 @@ export function countsSummary(
   mcpServers: number,
 ): string {
   const counts: string[] = [];
-  if (skills > 0) counts.push(`${skills} skill${skills === 1 ? "" : "s"}`);
-  if (agents > 0) counts.push(`${agents} agent${agents === 1 ? "" : "s"}`);
-  if (commands > 0) counts.push(`${commands} command${commands === 1 ? "" : "s"}`);
-  if (hooks > 0) counts.push(`${hooks} hook${hooks === 1 ? "" : "s"}`);
-  if (mcpServers > 0) counts.push(`${mcpServers} MCP server${mcpServers === 1 ? "" : "s"}`);
+  if (skills > 0) counts.push(part(skills, "skill"));
+  if (agents > 0) counts.push(part(agents, "agent"));
+  if (commands > 0) counts.push(part(commands, "command"));
+  if (hooks > 0) counts.push(part(hooks, "hook"));
+  if (mcpServers > 0) counts.push(part(mcpServers, "MCP server"));
   return counts.length > 0 ? counts.join(" · ") : "No components";
 }

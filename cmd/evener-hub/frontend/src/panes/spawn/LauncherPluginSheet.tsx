@@ -11,9 +11,10 @@
 // selection work around it.
 
 import type { AppwireClientLike, PluginComponentsReadArgs, PluginLaunchCandidate } from "@evener/appwire-client";
+import type { PluginComponentsEntry } from "@evener/appwire-client/state/extensions";
 import type { ReactElement } from "react";
-import { Button, InlineNotice, Switch } from "../../widgets";
-import { PluginContents } from "../plugins/PluginContents";
+import { Switch } from "../../widgets";
+import { PluginContentsBlock } from "../plugins/PluginContents";
 import { type PluginMetadataRow, PluginSheet } from "../plugins/PluginSheet";
 import { usePluginComponents } from "./usePluginComponents";
 
@@ -29,6 +30,15 @@ export interface LauncherPluginSheetProps {
   /** The launch source whose hub resolved the preview; the read follows it so
    * the Contents describe the plugins that host would load. */
   host?: string;
+}
+
+function contentsEntry(state: ReturnType<typeof usePluginComponents>["state"]): PluginComponentsEntry | undefined {
+  if (state.status === "error") return { status: "error", source: "request", error: state.message };
+  if (state.status !== "ready") return undefined;
+  if (state.response.error !== undefined) {
+    return { status: "error", source: "target", error: state.response.error };
+  }
+  return { status: "loaded", components: state.response.components ?? {} };
 }
 
 export function LauncherPluginSheet({
@@ -66,30 +76,7 @@ export function LauncherPluginSheet({
   // plugin's own load, or the read itself - takes its place, never "Manifest
   // only" (that reading stays reserved for a plugin that loads and ships
   // nothing, the same rule the settings detail sheet follows).
-  const contentsBlock =
-    read.state.status === "error" ? (
-      // The read failed for the whole method, not for this plugin: a quiet
-      // degrade notice where Contents would be, with the read's own retry.
-      <InlineNotice
-        tone="neutral"
-        data-reason="components-degraded"
-        action={
-          <Button size="sm" type="button" onClick={read.retry}>
-            Retry
-          </Button>
-        }
-      >
-        {read.state.message}
-      </InlineNotice>
-    ) : read.state.status === "ready" && read.state.response.error !== undefined ? (
-      // The row carries the plugin's own load failure: the plugin is the
-      // problem, not the read, so no retry and no Contents.
-      <InlineNotice tone="danger" data-reason="plugin-broken">
-        {read.state.response.error}
-      </InlineNotice>
-    ) : read.state.status === "ready" ? (
-      <PluginContents components={read.state.response.components ?? {}} />
-    ) : null;
+  const contentsBlock = <PluginContentsBlock entry={contentsEntry(read.state)} onRetry={read.retry} />;
 
   return (
     <PluginSheet
