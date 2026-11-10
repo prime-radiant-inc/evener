@@ -1034,3 +1034,17 @@ func (s *Session) idleReleasePregatesClear() bool {
 	}
 	return true
 }
+
+// admitRuntimeInput counts an input in flight on runtime unless a
+// reclamation claim already covers its delegate. It runs under c.mu, the
+// lock claimableRuntimeSubtreeLocked reads the count under, so a claim and
+// an admission are ordered: whichever comes second sees the other.
+func (c *delegateTreeController) admitRuntimeInput(runtime *Session) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, reclaiming := c.reclaiming[runtime.owningDelegateID]; reclaiming {
+		return false
+	}
+	runtime.inputsInFlight.Add(1)
+	return true
+}

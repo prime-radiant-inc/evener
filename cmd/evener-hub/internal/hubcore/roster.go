@@ -99,7 +99,14 @@ type LiveEntry struct {
 	// own, never merged across sessions, matching Watches' rollup rule. An older
 	// daemon that carries no per-child watches omits the entry entirely.
 	ChildWatches map[string][]appwire.EvenerWatchInfo
-	Project      identifier.Project // canonical identity resolved at hub ingestion, when available
+	// ChildQuotaWaits carries each listed in-process child whose model call
+	// is waiting out a provider usage limit: the limit's summary, with the
+	// time the call resumes, keyed by child session ID. A child has no
+	// LiveEntry of its own, so this is how the child's thread-list row (the
+	// hub's read-only alias) says it waits (S09). A child not waiting is
+	// absent.
+	ChildQuotaWaits map[string]*appwire.ThreadFailure
+	Project         identifier.Project // canonical identity resolved at hub ingestion, when available
 	// Lifecycle is the daemon's retirement lifecycle as of the probe that
 	// produced this entry; nil when the daemon could not answer
 	// evener/daemon/status (capability unknown). A failed lifecycle probe
@@ -184,6 +191,8 @@ type ProbeResult struct {
 	LifecycleFresh bool
 	Watches        []appwire.EvenerWatchInfo
 	ChildWatches   map[string][]appwire.EvenerWatchInfo
+	// ChildQuotaWaits mirrors LiveEntry.ChildQuotaWaits.
+	ChildQuotaWaits map[string]*appwire.ThreadFailure
 	// Tasks mirrors LiveEntry.Tasks: the root's task-list progress from the
 	// same projection cut as Status.
 	Tasks *appwire.TaskAggregate
@@ -251,6 +260,17 @@ func cloneChildWatches(in map[string][]appwire.EvenerWatchInfo) map[string][]app
 	return out
 }
 
+func cloneChildQuotaWaits(in map[string]*appwire.ThreadFailure) map[string]*appwire.ThreadFailure {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]*appwire.ThreadFailure, len(in))
+	for childID, failure := range in {
+		out[childID] = appwire.CloneThreadFailure(failure)
+	}
+	return out
+}
+
 // CloneLiveEntry returns a copy of in that shares no slice, map or pointer
 // with it, so a roster hand-off never aliases the roster's own snapshot.
 func CloneLiveEntry(in LiveEntry) LiveEntry {
@@ -267,6 +287,7 @@ func CloneLiveEntry(in LiveEntry) LiveEntry {
 	out.Lifecycle = cloneDaemonLifecycle(in.Lifecycle)
 	out.Watches = cloneWatches(in.Watches)
 	out.ChildWatches = cloneChildWatches(in.ChildWatches)
+	out.ChildQuotaWaits = cloneChildQuotaWaits(in.ChildQuotaWaits)
 	out.Tasks = appwire.CloneTaskAggregate(in.Tasks)
 	out.Activity = appwire.CloneThreadActivity(in.Activity)
 	return out
@@ -1324,6 +1345,7 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 		Lifecycle:             result.Lifecycle,
 		LifecycleFresh:        result.LifecycleFresh,
 		ChildWatches:          result.ChildWatches,
+		ChildQuotaWaits:       result.ChildQuotaWaits,
 	}, result)
 }
 

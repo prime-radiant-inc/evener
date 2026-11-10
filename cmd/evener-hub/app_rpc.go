@@ -183,6 +183,7 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 				Watches:           appwire.CloneEvenerWatches(item.ChildWatches[childID]),
 				Capabilities:      entry.Capabilities,
 				CapabilitiesKnown: entry.CapabilitiesKnown,
+				Failure:           appwire.CloneThreadFailure(item.ChildQuotaWaits[childID]), // the child's own usage-limit wait
 				ReadOnlyAlias:     true,
 			})
 		}

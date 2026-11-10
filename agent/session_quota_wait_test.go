@@ -714,6 +714,10 @@ func TestIdleDelegateNotificationDriveWaitsForQuota(t *testing.T) {
 	if !sub.sess.waitingForQuota() || !driving(sub) {
 		t.Fatalf("after the drive's bound: waiting=%t driving=%t, want the drive turn still waiting", sub.sess.waitingForQuota(), driving(sub))
 	}
+	// The root answers the waiting delegate's usage limit for its list row.
+	if wait := root.DescendantQuotaWaits([]string{sub.sess.ID()})[sub.sess.ID()]; wait == nil || wait.ResumesAt != quotaResetAt.UnixMilli() {
+		t.Fatalf("the root's answer for the waiting delegate = %+v, want it resuming at %d", wait, quotaResetAt.UnixMilli())
+	}
 
 	recoverProvider(adapter)
 	reachReset(clk)
@@ -1261,5 +1265,38 @@ func TestStopDuringTheSwitchAfterAWaitLeavesSteeringQueued(t *testing.T) {
 	s.mu.Unlock()
 	if !queued {
 		t.Fatal("the Stopped turn consumed steering its retry never carried")
+	}
+}
+
+// A notification drive and a retained-capacity reclamation can start at the
+// same moment on one finished delegate. They must not both proceed: here the
+// reclamation runs in the window after the drive marked the delegate driving
+// and before its turn started, and it leaves the runtime alone, so the drive's
+// turn runs and delivers.
+func TestCapacityReclamationDoesNotRaceALaunchingDrive(t *testing.T) {
+	adapter := &streamingAdapter{name: "openai"}
+	recoverProvider(adapter)
+	root, _ := newQuotaDelegateRootWith(t, adapter, func(cfg *SessionConfig) { cfg.MaxRetainedTerminal = 1 })
+	trip := tripwireCtx(t).Done()
+	driven, _ := startQuotaDelegate(t, root)
+	waitUntil(t, trip, "the delegate's first run finishes", func() bool { return subagentDone(driven) })
+	enqueueCompletedJobNotification(t, driven.sess, "job_for_racing_drive")
+	root.cfg.testOnly.driveLaunching = func() {
+		root.cfg.testOnly.driveLaunching = nil
+		_ = root.createDelegate(context.Background(), delegateArgs{Task: "another piece of work"})
+	}
+
+	if !root.driveSubagentNotificationTurn(driven) {
+		t.Fatal("the notification drive did not launch")
+	}
+	if driven.sess.isClosingOrClosed() {
+		t.Fatal("a reclamation tore down the runtime a launching drive was about to run its turn on")
+	}
+	waitUntil(t, trip, "the drive delivers", func() bool { return driven.sess.jobNotificationsDelivered() == 1 && !driving(driven) })
+	driven.mu.Lock()
+	fatal := driven.fatalRunGated
+	driven.mu.Unlock()
+	if fatal {
+		t.Fatal("the drive's turn failed")
 	}
 }

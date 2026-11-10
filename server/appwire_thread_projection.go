@@ -342,6 +342,29 @@ func (s *Server) attachLiveWatches(data []appwire.Thread) {
 	}
 }
 
+// attachDescendantQuotaWaits puts each waiting descendant's usage-limit
+// summary on its row, as the root's envelope puts the root's on its own
+// (appThreadWithDiagnosticsLocked lets a summary with a resume time through on
+// a working thread). The summary is attached to the returned copy only.
+func (s *Server) attachDescendantQuotaWaits(descendants []appwire.Thread) {
+	s.mu.RLock()
+	fn := s.appDescendantQuotaWaitsFunc
+	s.mu.RUnlock()
+	if fn == nil || len(descendants) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(descendants))
+	for i := range descendants {
+		ids = append(ids, descendants[i].ID)
+	}
+	waits := fn(ids)
+	for i := range descendants {
+		if failure := waits[descendants[i].ID]; failure != nil {
+			descendants[i].Evener.Failure = appwire.CloneThreadFailure(failure)
+		}
+	}
+}
+
 // attachSubagentTally stamps the root row with its tree's subagent
 // tally. A nested delegate's lifecycle change is emitted on its owner's stream
 // and never samples the root's envelope, so the tally is read when the row is

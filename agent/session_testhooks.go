@@ -49,6 +49,11 @@ type testConfig struct {
 	// concurrent at-rest pick can commit and publish in, so it is the only
 	// place a test can make that interleaving deterministic. Nil in production.
 	beforeModelSwitchPublish func()
+	// driveLaunching observes a notification drive on a parent at the point
+	// its child is marked driving and the drive's turn has not started: the
+	// window a concurrent runtime reclamation could select the child in.
+	// Nil in production.
+	driveLaunching func()
 	// steeringCarrierClaimed observes the drain ladder claiming a steering
 	// carrier turn, before that turn is accepted -- the window a Stop or a
 	// write fault can land in. Nil in production.

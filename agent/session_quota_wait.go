@@ -324,3 +324,53 @@ func (d *driveTurn) end() {
 	d.slot = nil
 	d.timer.Stop()
 }
+
+// DescendantQuotaWaits answers, for the descendant sessions among
+// sessionIDs, the usage-limit summary of each one whose model call is
+// waiting out a usage limit (RestingFailure while it waits). A descendant's
+// thread projection is built from its events and samples no envelope, so
+// the thread list attaches this to the descendant rows, the way the root's
+// envelope carries its own. Sessions not waiting are absent.
+func (s *Session) DescendantQuotaWaits(sessionIDs []string) map[string]*appwire.ThreadFailure {
+	if s == nil || len(sessionIDs) == 0 {
+		return nil
+	}
+	wanted := make(map[string]bool, len(sessionIDs))
+	for _, id := range sessionIDs {
+		wanted[id] = true
+	}
+	var out map[string]*appwire.ThreadFailure
+	for _, descendant := range s.liveDescendantSessions() {
+		if descendant == nil || !wanted[descendant.ID()] {
+			continue
+		}
+		descendant.mu.Lock()
+		var failure *appwire.ThreadFailure
+		if descendant.quotaWait != nil {
+			failure = appwire.CloneThreadFailure(&descendant.quotaWait.failure)
+		}
+		descendant.mu.Unlock()
+		if failure == nil {
+			continue
+		}
+		if out == nil {
+			out = make(map[string]*appwire.ThreadFailure)
+		}
+		out[descendant.ID()] = failure
+	}
+	return out
+}
+
+// admitIdleRuntimeInput counts an input about to run on this session as in
+// flight, unless a runtime reclamation already holds it. For a delegate
+// runtime the decision is the controller's, under the lock its reclamation
+// claims take, so no reclamation and no input can both proceed on one
+// runtime. It reports whether the input may run; one that may is counted and
+// its runner uncounts it when done.
+func (s *Session) admitIdleRuntimeInput() bool {
+	if s.delegateController == nil || s.owningDelegateID == "" {
+		s.inputsInFlight.Add(1)
+		return true
+	}
+	return s.delegateController.admitRuntimeInput(s)
+}

@@ -3,6 +3,7 @@ package hub
 import (
 	"slices"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
@@ -102,5 +103,39 @@ func TestLocalDaemonEntriesFromRosterAliasesInheritNoAskOrApproval(t *testing.T)
 	}
 	if childRow.Evener.Kind != "subagent" || childRow.Evener.AskPending || len(childRow.Evener.PendingEscalations) != 0 {
 		t.Fatalf("child row = %+v, want a subagent row with no question and no card", childRow.Evener)
+	}
+}
+
+// A delegate whose model call waits out a usage limit is a working child
+// with no live entry of its own; the root's entry carries its wait. The
+// child's own thread-list row must say it waits and when it resumes, while
+// the root's row and a child that is not waiting carry no such summary.
+func TestLocalDaemonEntriesFromRosterCarryAChildQuotaWait(t *testing.T) {
+	resumesAt := time.Date(2026, 11, 10, 14, 0, 0, 0, time.UTC).UnixMilli()
+	live := hubcore.LiveEntry{
+		Entry:                 rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1:50001/rpc", ThreadID: "sess_root", SessionID: "sess_root"},
+		SessionID:             "sess_root",
+		Status:                appwire.ThreadStatusIdle,
+		RunningSubagentIDs:    []string{"sess_waiting", "sess_working"},
+		RunningSubagentStates: map[string]string{"sess_waiting": appwire.ThreadStatusActive, "sess_working": appwire.ThreadStatusActive},
+		ChildQuotaWaits: map[string]*appwire.ThreadFailure{"sess_waiting": {
+			Title: "Usage limit reached", Cause: &appwire.DiagnosticCause{Kind: "provider", Provider: "openai", Status: 429}, ResumesAt: resumesAt,
+		}},
+	}
+	entries := localDaemonEntriesFromRoster([]hubcore.LiveEntry{live})
+	listed := listRowsFromLocalDaemonSource(t, func() []appsource.LocalDaemonEntry { return entries })
+	rows := make(map[string]appwire.Thread, len(listed))
+	for _, row := range listed {
+		rows[row.ID] = row
+	}
+	waiting := rows["sess_waiting"]
+	if waiting.Status.Type != appwire.ThreadStatusActive || waiting.Evener.Failure == nil || waiting.Evener.Failure.ResumesAt != resumesAt {
+		t.Fatalf("waiting child row = status %q failure %+v, want a working row resuming at %d", waiting.Status.Type, waiting.Evener.Failure, resumesAt)
+	}
+	if f := rows["sess_working"].Evener.Failure; f != nil {
+		t.Fatalf("working child row carries %+v", f)
+	}
+	if f := rows["sess_root"].Evener.Failure; f != nil {
+		t.Fatalf("root row carries its child's wait %+v", f)
 	}
 }

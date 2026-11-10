@@ -1450,8 +1450,25 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 		s.recordDrainAbandonedChildOnLaneRefusal(sub, "its lane failed revalidation before a notification turn")
 		return false
 	}
+	// Admit the drive's turn on the child runtime before marking it driving:
+	// admission and a runtime reclamation's claim decide under one controller
+	// lock, so either the reclamation already holds the runtime and the drive
+	// does not launch, or the turn counts as in flight and no reclamation can
+	// select the runtime (claimableRuntimeSubtreeLocked).
 	sub.mu.Lock()
-	if sub.notificationDriveBlockedLocked(s) {
+	admittedSess := sub.sess
+	sub.mu.Unlock()
+	if admittedSess == nil || !admittedSess.admitIdleRuntimeInput() {
+		return false
+	}
+	inputHandedOff := false
+	defer func() {
+		if !inputHandedOff {
+			admittedSess.inputsInFlight.Add(-1)
+		}
+	}()
+	sub.mu.Lock()
+	if sub.notificationDriveBlockedLocked(s) || sub.sess != admittedSess {
 		sub.mu.Unlock()
 		return false
 	}
@@ -1500,10 +1517,15 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 	sub.driveCancel = driveCancel
 	childSess := sub.sess
 	sub.mu.Unlock()
+	if hook := s.cfg.testOnly.driveLaunching; hook != nil {
+		hook()
+	}
 
 	launched = true
+	inputHandedOff = true
 	go func() {
 		defer release()
+		defer childSess.inputsInFlight.Add(-1)
 		defer s.sendersWG.Done()
 		defer driveCancel()
 		// The re-check defer is registered BEFORE drive.end so LIFO runs

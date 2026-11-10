@@ -41,7 +41,7 @@ var rosterShownFields = []string{
 	"PendingEscalations.EscalationID",
 	"PendingQuestion", "PendingAskState", "Failure",
 	"Capabilities", "CapabilitiesKnown",
-	"RunningSubagentIDs", "RunningSubagentStates", "ChildWatches",
+	"RunningSubagentIDs", "RunningSubagentStates", "ChildWatches", "ChildQuotaWaits",
 	"RunningJobs.JobID", "RunningJobs.JobType", "RunningJobs.Status",
 	"RunningJobs.Command", "RunningJobs.Task", "RunningJobs.Reason",
 	"CompletedJobs.JobID", "CompletedJobs.JobType", "CompletedJobs.Status",
