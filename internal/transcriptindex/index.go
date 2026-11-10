@@ -824,8 +824,8 @@ func (x *Index) repairBuilder(length int64) error {
 //
 // The boolean reports whether any of those rows rewrote a turn summary. Such a
 // summary already counts the items the interrupted entries appended, and replay
-// cannot recompute their ordinals from the entry alone, so the caller rebuilds
-// instead of replaying.
+// cannot recompute their ordinals from the entry alone, so the caller recovers
+// each touched turn's committed count from the item records the replay extends.
 func (x *Index) leftoverUpdatesToCommittedSlots() ([]int64, bool, error) {
 	available, err := x.updates.available()
 	if err != nil {
