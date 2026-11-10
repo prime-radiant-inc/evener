@@ -1044,8 +1044,8 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 // error_details value: the HTTP status and provider error code, whichever are
 // known, never a value the error does not carry. It is empty when neither is.
 func hookErrorDetails(err error) string {
-	var providerErr llm.Error
-	if !errors.As(err, &providerErr) {
+	providerErr, ok := errors.AsType[llm.Error](err)
+	if !ok {
 		return ""
 	}
 	var parts []string
@@ -1062,8 +1062,8 @@ func hookErrorDetails(err error) string {
 // (and any underlying provider error it carries) so the outer drain loop does
 // not repeat goal termination or the idle-boundary provenance transition.
 func isProviderTerminalError(err error) bool {
-	var providerErr llm.Error
-	return strings.HasPrefix(err.Error(), "provider error: ") && errors.As(err, &providerErr)
+	_, ok := errors.AsType[llm.Error](err)
+	return strings.HasPrefix(err.Error(), "provider error: ") && ok
 }
 
 // takeRoundFallbackMessages returns and clears the round's untrimmed request
@@ -1145,8 +1145,7 @@ func documentRejectionEvidence(err error) bool {
 	if hint := llm.ErrorHint(err); hint != "" {
 		text = strings.Replace(text, " (hint: "+hint+")", "", 1)
 	}
-	var providerErr llm.Error
-	if errors.As(err, &providerErr) {
+	if providerErr, ok := errors.AsType[llm.Error](err); ok {
 		if name := providerErr.Provider(); name != "" {
 			text = strings.ReplaceAll(text, name, "")
 		}
@@ -1159,8 +1158,8 @@ func documentRejectionEvidence(err error) bool {
 // its error code). Compaction cannot recover one caused by the newest tool
 // results, because compaction preserves that tail (#4465).
 func isDocumentPayloadSizeRejection(err error) bool {
-	var providerErr llm.Error
-	if !errors.As(err, &providerErr) {
+	providerErr, ok := errors.AsType[llm.Error](err)
+	if !ok {
 		return false
 	}
 	if providerErr.StatusCode() == 413 {

@@ -1630,6 +1630,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			s.resetCommunicatePreviews(communicatePreviewCalls)
 		}
 		if prepareErr != nil {
+			// A speculative document strip this attempt never dispatched cannot
+			// have resolved anything; restore the payload before another
+			// recovery branch runs (#4465).
+			s.rollbackSpeculativeToolResultDocuments()
 			if isLocalContextCompactionError(prepareErr) && !localAdmissionCompacted && s.contextMgr != nil {
 				s.emit(warningDataFromError(
 					"Local context admission failed; compacting context and retrying", prepareErr))
@@ -1653,6 +1657,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 
 		if err != nil {
+			// The attempt carrying a speculative strip failed, so the strip did
+			// not resolve the error: restore the payload before any recovery
+			// branch below, including compaction (#4465).
+			s.rollbackSpeculativeToolResultDocuments()
 			if isLocalContextCompactionError(err) && !localAdmissionCompacted && s.contextMgr != nil {
 				s.emit(warningDataFromError(
 					"Local context admission failed; compacting context and retrying", err))
@@ -1690,6 +1698,20 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				providerContextRecovered = true
 				s.forceCompactForModelRecovery(ctx)
 				continue
+			}
+			// Compaction preserves the newest tool results, so a context-length
+			// rejection caused by a document batch survives it. After the one
+			// bounded compaction, retry once with the documents stripped and
+			// annotated (#4465).
+			if isProviderContextLengthError(err) && !documentRejectRetried {
+				if ids := toolResultDocumentCallIDs(req); len(ids) > 0 {
+					documentRejectRetried = true
+					s.speculateRejectedToolResultDocuments(ids)
+					s.emit(bareWarningDataFromError(
+						"Context length exceeded with tool-result documents — retrying without the document payload", err))
+					s.resetCommunicatePreviews(communicatePreviewCalls)
+					continue
+				}
 			}
 			retry, ferr := s.handleModelError(ctx, err, req, &contentFilterRetried, &documentRejectRetried, providerContextRecovered)
 			if retry {

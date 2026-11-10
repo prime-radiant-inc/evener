@@ -290,8 +290,8 @@ func TestProviderDocumentSuppressionIgnoresHintProse(t *testing.T) {
 	classified := llm.ClassifyHTTPError("messages", 400, nil,
 		[]byte(`{"error":{"type":"invalid_request_error","code":"unknown_parameter","param":"foo","message":"unknown parameter: 'foo'"}}`),
 		profile.Resolved())
-	if !strings.Contains(classified.Error(), "documentation") {
-		t.Fatalf("test premise: the classifier attached no documentation hint: %v", classified)
+	if llm.Kind(classified) != llm.KindInvalidRequest || llm.RejectedParameter(classified) != "foo" {
+		t.Fatalf("test premise: classified error = %v, want an invalid request naming foo", classified)
 	}
 	var calls atomic.Int32
 	adapter := &agenttest.ScriptedAdapter{
@@ -328,6 +328,101 @@ func TestProviderDocumentSuppressionIgnoresHintProse(t *testing.T) {
 	}
 	if !docRejectionHasDocument(reqs[len(reqs)-1]) {
 		t.Fatal("a hint that mentions documentation permanently suppressed the document")
+	}
+}
+
+// TestProviderDocumentContextLengthRecoveryStripsAfterCompaction pins the
+// 400 context-length arm: a document batch over the model's token window is
+// rejected as KindContextLength, and compaction preserves the newest tool
+// results, so after the one bounded compaction the retry must strip and
+// annotate the documents (#4465).
+func TestProviderDocumentContextLengthRecoveryStripsAfterCompaction(t *testing.T) {
+	t.Parallel()
+	contextErr := llm.ErrorFromHTTPStatus("anthropic", 400, "prompt is too long", nil, nil)
+	if llm.Kind(contextErr) != llm.KindContextLength {
+		t.Fatalf("test premise: prompt-too-long classified as %v, want context length", llm.Kind(contextErr))
+	}
+	var calls atomic.Int32
+	adapter := &agenttest.ScriptedAdapter{
+		Provider: "anthropic",
+		FaultResponder: func(llm.Request) error {
+			switch calls.Add(1) {
+			case 1, 2:
+				return contextErr
+			}
+			return nil
+		},
+		Responder: func(llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(communicateCall("c1", "ok"))
+		},
+	}
+	profile := newAnthropicProfile("claude-opus-4-6")
+	sess := newSession(t, withProfile(profile), withAdapter(adapter))
+	sess.appendTurn(schema.TurnToolResults, documentToolResultMessage("call_pdf"))
+
+	// TRIPWIRE: scripted in-process adapter; 30s only catches a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "continue", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	reqs := adapter.Requests()
+	if len(reqs) < 3 {
+		t.Fatalf("requests = %d, want the rejection, its compaction retry, and the document-stripped retry", len(reqs))
+	}
+	if !docRejectionHasDocument(reqs[0]) || !docRejectionHasDocument(reqs[1]) {
+		t.Fatal("test premise: the rejection and its compaction retry carried the document")
+	}
+	if docRejectionHasDocument(reqs[2]) {
+		t.Fatal("the post-compaction retry still carried the oversized document")
+	}
+	if tr := docRejectionToolResult(reqs[2]); tr == nil || !tr.IsError {
+		t.Fatal("the document-stripped retry did not mark the tool result as a delivery failure")
+	}
+}
+
+// TestFailedSpeculativeRetryRollsBackBeforeContextCompaction pins the rollback
+// ordering: a 413 strips a valid document speculatively, the stripped retry
+// fails with another 413, and compaction then succeeds. The pending strip must
+// be cleared before compaction, so the valid document returns (#4465).
+func TestFailedSpeculativeRetryRollsBackBeforeContextCompaction(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	adapter := &agenttest.ScriptedAdapter{
+		Provider: "anthropic",
+		FaultResponder: func(llm.Request) error {
+			switch calls.Add(1) {
+			case 1, 2:
+				return llm.ErrorFromHTTPStatus("anthropic", 413, "request too large", nil, nil)
+			}
+			return nil
+		},
+		Responder: func(llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(communicateCall("c1", "ok"))
+		},
+	}
+	profile := newAnthropicProfile("claude-opus-4-6")
+	sess := newSession(t, withProfile(profile), withAdapter(adapter))
+	sess.appendTurn(schema.TurnToolResults, documentToolResultMessage("call_pdf"))
+
+	// TRIPWIRE: scripted in-process adapter; 30s only catches a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "continue", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	reqs := adapter.Requests()
+	if len(reqs) < 3 {
+		t.Fatalf("requests = %d, want the rejection, the stripped retry, and the compaction retry", len(reqs))
+	}
+	if !docRejectionHasDocument(reqs[0]) {
+		t.Fatal("test premise: the rejected request carried the document")
+	}
+	if docRejectionHasDocument(reqs[1]) {
+		t.Fatal("test premise: the speculative retry still carried the document")
+	}
+	if !docRejectionHasDocument(reqs[2]) {
+		t.Fatal("a failed speculative strip was committed by a successful compaction")
 	}
 }
 
