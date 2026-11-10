@@ -986,7 +986,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// the continuation's acceptance drains steering, and the parked steer
 		// belongs to the carrier the next external wake runs; the goal is
 		// untouched in the store and the settle after that carrier kicks it.
-		if !awaiting && haveDeferredCont && !s.steeringParkedNow() {
+		if !awaiting && haveDeferredCont && !hookStoppedInput && !s.steeringParkedNow() {
 			haveDeferredCont = false
 			// Re-validate against the goal store before running: the user may have
 			// cleared (/goal clear) or retargeted (/goal <new>) the goal during the
