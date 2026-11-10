@@ -139,32 +139,10 @@ func (o *sessionOperations) retainRemoteWindowItems(
 	// The owning hub's retained encoding of the item behind each returned token
 	// is what the window showed. Resolving it from the token keeps file-backed
 	// descriptors stable even when they changed, without an item-version change,
-	// between the window and this retention. Only an owner that cannot resolve
-	// the token — an older hub, or one that already retired the entry — falls
-	// back to the ordinary re-read this retention used before.
-	var fallback map[appwire.ThreadItemPosition]appwire.ThreadItem
-	fallbackItems := func() (map[appwire.ThreadItemPosition]appwire.ThreadItem, error) {
-		if fallback != nil {
-			return fallback, nil
-		}
-		full, err := remote.ReadThread(ctx, appwire.ThreadReadParams{
-			Ref: ref, IncludeTurns: true, ItemsView: string(appwire.TurnItemsViewFragment), ItemLimit: appwire.TranscriptItemPageLimit,
-		})
-		if err != nil {
-			return nil, err
-		}
-		full.Thread = enrichSourcedThreadImages(remote, full.Thread)
-		items := make(map[appwire.ThreadItemPosition]appwire.ThreadItem)
-		for _, turn := range full.Thread.Turns {
-			for _, item := range turn.Items {
-				if item.Position != nil {
-					items[*item.Position] = item
-				}
-			}
-		}
-		fallback = items
-		return fallback, nil
-	}
+	// between the window and this retention. An owner that cannot resolve the
+	// token — an older hub, or one that already retired the entry — leaves the
+	// item without a controller entry: its fetch fails typed stale rather than
+	// serving a freshly enriched encoding the cursor never named.
 	for turnIndex := range window.Turns {
 		items := window.Turns[turnIndex].Items
 		for itemIndex := range items {
@@ -177,32 +155,16 @@ func (o *sessionOperations) retainRemoteWindowItems(
 				return err
 			}
 			item, resolved, err := remote.FetchRetainedItem(ctx, ref, identity, cursor)
-			if err == nil && resolved {
-				item = translateRetainedRemoteItem(remote, item)
-			} else {
-				if err != nil && !retainedFetchUnavailable(err) {
-					return err
-				}
-				byPosition, fallbackErr := fallbackItems()
-				if fallbackErr != nil {
-					return fallbackErr
-				}
-				var ok bool
-				item, ok = byPosition[cursor.Position]
-				if !ok {
-					// The window can address an exact older item beyond the
-					// ordinary inter-hub read's reach. Preserve that valid
-					// window; its fetch repeats this origin check and returns
-					// fetch-unavailable-remote.
+			if err != nil {
+				if retainedFetchUnavailable(err) {
 					continue
 				}
-				if item.Version != cursor.ItemVersion {
-					// A change between the window and this retention read belongs
-					// to the fetch-time version fence, not to the read that minted
-					// it.
-					continue
-				}
+				return err
 			}
+			if !resolved {
+				continue
+			}
+			item = translateRetainedRemoteItem(remote, item)
 			triple := remoteCanonicalTriple(identity, cursor.Token)
 			key := store.tokenFor(triple)
 			// The owning hub's token is stable across re-retentions, so it cannot
@@ -234,9 +196,10 @@ func translateRetainedRemoteItem(remote *appsource.RemoteHubSource, item appwire
 }
 
 // retainedFetchUnavailable reports whether the owning hub refused to resolve
-// the token itself: an owner that predates token resolution re-reads ordinary
-// fetches and answers stale here, and one that retired the entry says so typed.
-// Both keep the window readable through the ordinary re-read fallback.
+// the token itself: an owner that predates token resolution answers stale, and
+// one that retired the entry says so typed. The item keeps its displayed form
+// and no controller entry; its fetch is typed stale rather than resolving to a
+// different encoding.
 func retainedFetchUnavailable(err error) bool {
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
