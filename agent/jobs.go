@@ -598,6 +598,11 @@ type jobNotification struct {
 	// delivered within watchBackstopWindow; the rendered notification then
 	// carries the hourly backstop notice (watchBackstopNotice).
 	backstopFires int
+	// ownMessageHops, when set, is how many of the receiving session's own
+	// messages this fire's event descends from; the rendered notification then
+	// says the event was caused by the receiver's own message
+	// (ownMessageNotice).
+	ownMessageHops int
 	// receiverSessionID/receiverNotify route no-send watch notifications for
 	// concrete descendant watches back to the ancestor session that installed
 	// them. They are in-memory only; active watches are not restored without a

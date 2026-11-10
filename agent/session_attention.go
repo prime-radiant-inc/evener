@@ -2301,7 +2301,28 @@ func (s *Session) resolveAttentionDurablyForGeneration(ids []string, disposition
 			return fmt.Errorf("attention %q resolution was not durably appended", attentionID)
 		}
 	}
+	if s.delegateController != nil {
+		s.delegateController.attentionCauses.forget(ids...)
+	}
 	return nil
+}
+
+// adoptPendingAttentionCauses folds the causes of this session's pending
+// attention (a delegate's update, a stable watch frame) into the turn's
+// provenance, so what the turn does in reply descends from what caused the
+// attention. A cause the controller no longer holds (after a restart) adds
+// nothing.
+func (s *Session) adoptPendingAttentionCauses() {
+	if s.delegateController == nil {
+		return
+	}
+	s.attentionMu.Lock()
+	fold, err := s.delegateAttentionFoldLocked()
+	s.attentionMu.Unlock()
+	if err != nil {
+		return
+	}
+	s.unionActiveProvenance(s.delegateController.attentionCauses.union(fold.pendingIDs()))
 }
 
 // reopenAttentionTranscriptDurably reopens the writer from complete records

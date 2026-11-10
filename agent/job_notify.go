@@ -227,6 +227,9 @@ func notificationAttr(key, value string) string {
 // tool the receiver cannot call.
 func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt, canReadTranscript bool) string {
 	block := formatJobNotificationBody(n, excerpt, canReadTranscript)
+	if n.ownMessageHops > 0 {
+		block += "\n" + ownMessageNotice(n.ownMessageHops)
+	}
 	if n.backstopFires > 0 {
 		block += "\n" + watchBackstopNotice(n.OriginWatchID, n.backstopFires)
 	}

@@ -56,6 +56,9 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 	if notice := selfInfluenceNotice(d.selfInfluence, d.gradientDepth, d.truncated); notice != "" {
 		d.frame = notice + "\n" + d.frame
 	}
+	if d.ownMessageHops > 0 {
+		d.frame = ownMessageNotice(d.ownMessageHops) + "\n" + d.frame
+	}
 	if d.backstopFires > 0 && d.cfg != nil {
 		d.frame = watchBackstopNotice(d.cfg.watchID, d.backstopFires) + "\n" + d.frame
 	}
@@ -239,6 +242,9 @@ func (jm *jobManager) dropWatchSend(state jobstore.WatchSendState, cfg *watchCon
 	if !jm.isCurrentPendingWatchSend(cfg, state) {
 		return nil
 	}
+	if state.StableReceiver && jm.delegateController != nil {
+		jm.delegateController.attentionCauses.forget(stableWatchAttentionID(state))
+	}
 	dropped := state
 	dropped.DiagnosticReason = limitWatchText(reason, watchReadErrorMaxChars)
 	if err := jm.appendWatchSendEvents([]jobstore.Event{{
@@ -316,6 +322,8 @@ func (jm *jobManager) deliverStableWatchSend(cfg *watchConfig, state jobstore.Wa
 		return false, err
 	}
 	attentionID := stableWatchAttentionID(state)
+	// The receiver's turn that consumes the frame adopts the frame's lineage.
+	controller.attentionCauses.remember(attentionID, state.Provenance)
 	_, appendErr := receiver.appendDelegateNotificationDurably(attentionID, stableWatchNotificationContent(state))
 	if !jm.isCurrentPendingWatchSend(cfg, state) {
 		if appendErr != nil {

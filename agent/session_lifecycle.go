@@ -2389,6 +2389,7 @@ func (s *Session) acceptContinuationInput(_ context.Context, input, stableTurnID
 
 func (s *Session) acceptDelegateAttentionInput() {
 	s.replaceActiveProvenance(nil)
+	s.adoptPendingAttentionCauses()
 	s.repairOrphanedToolResults(context.Background(), "before accepting delegate attention")
 }
 

@@ -456,7 +456,11 @@ type watchSendDelivery struct {
 	frame                    string
 	// backstopFires, when set, is the watch's delivery count within
 	// watchBackstopWindow, and the frame leads with the hourly backstop notice.
-	backstopFires     int
+	backstopFires int
+	// ownMessageHops, when set, is how many of the receiving session's own
+	// messages the event descends from, and the frame leads with
+	// ownMessageNotice.
+	ownMessageHops    int
 	visibleSessionID  string
 	watchTarget       string
 	watchedIdentity   string

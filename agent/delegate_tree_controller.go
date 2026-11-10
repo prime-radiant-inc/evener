@@ -101,17 +101,20 @@ type delegateTreeController struct {
 	idleReleaseArmSeq uint64
 	watchEnqueues     map[uint64]*delegateWatchReceipt
 	watchDeliveries   map[uint64]*delegateWatchReceipt
-	reclamations      map[uint64]*delegateRuntimeReclamationClaim
-	reclaiming        map[string]uint64
-	stop              *delegateStopState
-	stopDriver        *delegateStopDriver
-	evidenceVersion   uint64
-	retirementClaim   *RetirementClaim
-	closing           bool
-	reconcileOrder    []delegateLease
-	runStarts         map[delegateLease]delegatestore.RunTrigger
-	owedAdmission     bool
-	emitUpdate        func(delegateUpdatePlan)
+	// attentionCauses carries provenance across the delegate hop; it has its
+	// own lock.
+	attentionCauses delegateAttentionCauses
+	reclamations    map[uint64]*delegateRuntimeReclamationClaim
+	reclaiming      map[string]uint64
+	stop            *delegateStopState
+	stopDriver      *delegateStopDriver
+	evidenceVersion uint64
+	retirementClaim *RetirementClaim
+	closing         bool
+	reconcileOrder  []delegateLease
+	runStarts       map[delegateLease]delegatestore.RunTrigger
+	owedAdmission   bool
+	emitUpdate      func(delegateUpdatePlan)
 	// appendFault, when set, fails appendLocked's durable append before it
 	// reaches the store. Tests inject a chosen append error; nil in
 	// production.

@@ -18,6 +18,10 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 
 	jm.mu.Lock()
 	for _, cfg := range jm.watches {
+		// A watch never wakes its receiver with the receiver's own event.
+		if cfg.receiverSessionID != "" && ev.SessionID == cfg.receiverSessionID {
+			continue
+		}
 		dec := evaluateWatchEvent(cfg.eventSnapshot(isActiveWatchTargetLocked(jm, cfg.target)), ev)
 		cfg.eventCount = dec.eventCount
 		if !dec.matched {
@@ -218,6 +222,7 @@ func (jm *jobManager) conditionFireNotificationLocked(cfg *watchConfig, jobID, r
 	}
 	n := jm.watchNotificationWithDelivery(cfg, jobID, reason, root, jobstore.NewWatchSendDeliveryID())
 	n.backstopFires = jm.watchBackstopNoticeLocked(cfg)
+	n.ownMessageHops = provenance.MessagesFrom(root, jm.watchReceiverSession(cfg))
 	return []jobNotification{n}, true
 }
 
@@ -226,7 +231,23 @@ func (jm *jobManager) conditionFireNotificationLocked(cfg *watchConfig, jobID, r
 // must hold jm.mu.
 func (jm *jobManager) conditionFireSendLocked(d watchSendDelivery) watchSendDelivery {
 	d.backstopFires = jm.watchBackstopNoticeLocked(d.cfg)
+	d.ownMessageHops = provenance.MessagesFrom(d.triggerProvenance, jm.watchReceiverSession(d.cfg))
 	return d
+}
+
+// watchReceiverSession is the session cfg delivers to: its receiver, or this
+// manager's own session.
+func (jm *jobManager) watchReceiverSession(cfg *watchConfig) string {
+	if cfg.receiverSessionID != "" {
+		return cfg.receiverSessionID
+	}
+	return jm.sessionID
+}
+
+// ownMessageNotice marks a delivery whose event was directly caused by the
+// receiving session's own message, hops of them in this back-and-forth.
+func ownMessageNotice(hops int) string {
+	return systemNotificationf("This event was directly caused by your own message (exchange %d of this back-and-forth).", hops)
 }
 
 // watchBackstopNoticeLocked records one condition delivery of cfg and returns
