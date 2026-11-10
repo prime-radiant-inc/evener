@@ -9,18 +9,24 @@
 # It measures the SAME surface ROOT_FULL=1 make test proves, reusing
 # gate-surface-lib.sh exactly like `evener dev coverage-floor`: -short on every
 # module except root, the gate's Test/Example filter, and the fuzz-owned name
-# skip. A Go package's duration is its own wall time, read from the package-level
-# terminal event `go test -json` emits for it (the Elapsed field); the per-test
-# and per-subtest Elapsed values feed only the per-test ceiling below, never the
-# per-package number (issue #172). `evener-dev timing-parse` reads that stream and the vitest report.
-# The frontend has no per-package shape, so its whole vitest run rolls up under
-# the single key "web", read from the vitest JSON reporter.
+# skip. A Go package is budgeted on its test binary's CPU time, which
+# `evener-dev test-cpu-exec` (the go test -exec wrapper) puts into the package's
+# stream, and checked against a wall-time backstop: its own wall time, read from
+# the package-level terminal event `go test -json` emits for it (the Elapsed
+# field). The per-test and per-subtest Elapsed values feed only the per-test
+# ceiling below, never the per-package numbers (issue #172). `evener-dev
+# timing-parse` reads that stream and the vitest report. The frontend has no
+# per-package shape and no CPU time, so its whole vitest run rolls up under the
+# single key "web", read from the vitest JSON reporter, and keeps the wall rule.
 #
 # Two independent things are checked, both from the same measurement:
 #
-#   - Per-package budget: fail at 1.5x the checked-in budget, warn at 1.1x.
-#     Fail limits (this and the class ceilings below) scale by the run's median
-#     ratio when that is above 1: a uniformly slow runner is not a regression.
+#   - Per-package budget: fail at 1.5x the checked-in CPU budget (packages),
+#     warn at 1.1x, and fail at 2.5x the wall budget (wallPackages); a row with
+#     no CPU (web) fails at 1.5x and warns at 1.1x of its wall budget. Fail
+#     limits scale by the run's median ratio when that is above 1, the CPU
+#     median for the CPU limit and the wall median for the wall limits and the
+#     class ceilings below: a uniformly slow runner is not a regression.
 #   - Per-test ceiling, SEGMENTED BY TEST CLASS (testing-budget.json's
 #     perTestCeilingClasses; ruling, 2026-10-13, issue #4601):
 #       * A test named in a class — or a subtest of one (Name/sub) — is compared
@@ -102,6 +108,7 @@
 #   scripts/gate/test-timing-budget.sh --measured FILE  # skip go test/vitest entirely
 #                                                   # and compare FILE's already-
 #                                                   # measured "SUM\t<pkg>\t<secs>" /
+#                                                   # "CPU\t<pkg>\t<secs>" /
 #                                                   # "TEST\t<pkg>\t<name>\t<secs>" /
 #                                                   # "PKG\t<pkg>" rows — how a
 #                                                   # caller drives
@@ -207,6 +214,18 @@ else
 			module_missing=1
 			continue
 		fi
+		# Every test binary runs under evener-dev's test-cpu-exec, which puts the
+		# binary's CPU time into the package's stream; the parser reuses the
+		# build. It is built once, before the first module that needs it, in
+		# the repository's own workspace whatever GOWORK the modules run under.
+		if [ -z "${EVENER_DEV_BIN:-}" ]; then
+			EVENER_DEV_BIN="$work/evener-dev"
+			if ! ( cd "$repo_root" && GOWORK= GOFLAGS= go build -o "$EVENER_DEV_BIN" ./cmd/evener-dev/bin ) >"$work/evener-dev-build.log" 2>&1; then
+				echo "test-timing-budget: could not build evener-dev (see $work/evener-dev-build.log)" >&2
+				run_failed=1; exit 1
+			fi
+			export EVENER_DEV_BIN
+		fi
 		name="$m"; [ "$name" = "." ] && name="root"
 		base="$work/$(printf '%s' "$name" | tr / _)"
 		log="$base.jsonl"
@@ -238,7 +257,7 @@ else
 		# Same capture-before-negation shape as the go list block above, for
 		# the same bash 3.2 reason: a failed outer redirection must land here,
 		# not be eaten by `!`.
-		( cd "$repo_root/$m" && go test -json -count=1 $short \
+		( cd "$repo_root/$m" && go test -json -count=1 $short -exec "$EVENER_DEV_BIN dev test-cpu-exec" \
 			-run "$GATE_TEST_RUN" -skip "$(gate_shard_skip "$GATE_FUZZ_TEST_SKIP" "$GATE_HUB_INTEGRATION_RUN")" "${pkgs[@]}" ) >"$log" 2>"$log.stderr"
 		gt_status=$?
 		if [ "$gt_status" -ne 0 ]; then
@@ -329,34 +348,37 @@ bless_full = bless_full == "true"
 DEFAULT_CEILING = 2.0
 FAIL_RATIO = 1.5
 WARN_RATIO = 1.1
+# A package's wall time is mostly how long its threads waited for a core on an
+# oversubscribed runner, so it is checked only for a gross wait: a package with
+# a CPU row fails when its scaled wall ratio passes this backstop.
+WALL_BACKSTOP_RATIO = 2.5
 
 # A slow runner slows every package at once, which no package's code earned. The
 # run's own slowdown is the median measured/budget ratio over the packages whose
 # budget is big enough to be signal (a 2s floor entry is all noise), and only
 # with enough of them for a median to mean "the runner" and not "one package".
-# FAIL verdicts, package ratios and blessed-class ceilings alike, are judged
-# against that slowdown: one package far above its peers still fails, a whole
-# run uniformly above its budgets does not. Warnings stay on the raw ratio.
+# FAIL verdicts are judged against that slowdown: one package far above its peers
+# still fails, a whole run uniformly above its budgets does not. Warnings stay on
+# the raw ratio. Each measure has its own median: CPU ratios scale the CPU limit
+# (the hardware's speed), and wall ratios scale the wall limits and the per-test
+# class ceilings (the hardware's speed and how busy the run kept it).
 SLOWDOWN_MIN_BUDGET = 5.0
 SLOWDOWN_MIN_PACKAGES = 3
 
-# The metric the recorded numbers were blessed under. A budget whose "metric"
-# is not this was measured under the pre-#172 sum-of-test-Elapsed metric, whose
-# numbers are not comparable to the package wall time measured now: comparing
-# them can read high (setup/TestMain overhead) or low (parallel overlap). Until
-# a rebaseline rewrites them, a would-be ratio FAIL is a WARNING, never fatal —
-# enforcing numbers in the wrong units would be worse than not enforcing them
-# (issue #172 review).
-WALL_METRIC = "package-wall-seconds"
+# The metric the recorded numbers were blessed under: `packages` holds each Go
+# package's test CPU seconds and `wallPackages` each row's wall seconds. A budget
+# whose "metric" is not this holds numbers in another unit, which are not
+# comparable to this measurement; until a rebaseline rewrites them, a would-be
+# ratio FAIL is a WARNING, never fatal — enforcing numbers in the wrong units
+# would be worse than not enforcing them.
+CPU_METRIC = "package-cpu-seconds"
 
-# The frontend rolls up under this one key. Its number is the vitest reporter's
-# assertion durations, the same metric issue #172 left unchanged, but the
-# checked-in entry was blessed on a different host than a CI runner, so its
-# measurement is not comparable to this run's either and it warns with the Go
-# rows until #141 re-blesses the baseline for the host class CI uses.
+# The frontend rolls up under this one key. vitest reports no CPU time, so the
+# row has none and keeps the wall rule.
 WEB_KEY = "web"
 
 sums = {}
+cpus = {}
 tests = []  # (package, name, seconds)
 with open(measured_path) as fh:
 	for line in fh:
@@ -364,6 +386,10 @@ with open(measured_path) as fh:
 		if parts[0] == "SUM":
 			_, pkg, secs = parts
 			sums[pkg] = sums.get(pkg, 0.0) + float(secs)
+		elif parts[0] == "CPU":
+			_, pkg, secs = parts
+			cpus[pkg] = cpus.get(pkg, 0.0) + float(secs)
+			sums.setdefault(pkg, 0.0)
 		elif parts[0] == "TEST":
 			_, pkg, name, secs = parts
 			tests.append((pkg, name, float(secs)))
@@ -375,6 +401,17 @@ with open(measured_path) as fh:
 			# producer vouches for must be recorded, not just what ran.
 			if parts[1]:
 				sums.setdefault(parts[1], 0.0)
+
+# A Go package whose tests ran under test-cpu-exec carries a CPU row. One that
+# ran tests without it was measured without the number its budget is in, which
+# is a broken measurement in every mode, not a reason to judge it by wall time.
+uncounted = sorted({pkg for pkg, _, _ in tests if pkg != WEB_KEY and pkg not in cpus})
+if uncounted:
+	with open(out_path, "w") as fh:
+		for pkg in uncounted:
+			fh.write(f"FAIL  BROKEN MEASUREMENT: {pkg} ran tests but has no CPU row "
+				"(its test binary did not run under test-cpu-exec)\n")
+	sys.exit(1)
 
 def fail_malformed(what):
 	# A malformed budget is a broken config, not an absent one. The missing-file
@@ -448,6 +485,17 @@ for pkg, budget_secs in packages.items():
 	if problem:
 		fail_malformed("packages[" + json.dumps(pkg) + "] must be a number of seconds (" + problem + ")")
 
+# wallPackages, each row's wall budget, is the same shape and is validated the
+# same way.
+if "wallPackages" in budget and not isinstance(budget["wallPackages"], dict):
+	fail_malformed("wallPackages must be an object mapping each package to its wall seconds (got "
+		+ type(budget["wallPackages"]).__name__ + ")")
+wall_packages = budget.get("wallPackages", {})
+for pkg, budget_secs in wall_packages.items():
+	problem = seconds_error(budget_secs)
+	if problem:
+		fail_malformed("wallPackages[" + json.dumps(pkg) + "] must be a number of seconds (" + problem + ")")
+
 # The flat ceiling is read with budget.get, so a present null cannot be told from
 # an absent key — test the KEY, as `packages` and the class map do. A string,
 # null, list or object crashes the `secs > ceiling` comparison with a TypeError
@@ -492,8 +540,8 @@ def class_memberships(name):
 				break
 	return found
 
-no_baseline = len(packages) == 0
-had_metric = budget.get("metric") == WALL_METRIC
+no_baseline = len(packages) == 0 and len(wall_packages) == 0
+had_metric = budget.get("metric") == CPU_METRIC
 stale_units = not no_baseline and not had_metric
 
 lines = []
@@ -546,50 +594,75 @@ if no_baseline:
 		"result below is informational only and --check always exits 0 until "
 		"`make test-rebaseline` lands a measured baseline (kata b6rv).")
 elif stale_units:
-	lines.append("STALE UNITS: testing-budget.json's Go-package numbers were blessed "
-		"under the pre-#172 sum-of-test-Elapsed metric and its "
-		f"\"{WEB_KEY}\" entry on a different host than this run, so no ratio in it is "
-		"comparable to what this run measured; every ratio failure below warns, with its "
-		"numbers, until #141 re-blesses the baseline for the host class CI uses "
-		f"(a rebaseline records \"metric\": \"{WALL_METRIC}\").")
+	lines.append("STALE UNITS: testing-budget.json does not record \"metric\": "
+		f"\"{CPU_METRIC}\", so its numbers are not in the units this run measured; every "
+		"ratio failure below warns, with its numbers, until a rebaseline records them.")
 
-def runner_slowdown():
+def ratio_of(m, b):
+	return (m / b) if b > 0 else (float("inf") if m > 0 else 0.0)
+
+def runner_slowdown(measured, budgets):
 	if stale_units:
 		return 1.0  # Stale-unit ratios are not comparable measurements of the runner.
-	ratios = sorted(sums[pkg] / b for pkg, b in packages.items()
-		if pkg in sums and b >= SLOWDOWN_MIN_BUDGET)
+	ratios = sorted(measured[pkg] / b for pkg, b in budgets.items()
+		if pkg in measured and b >= SLOWDOWN_MIN_BUDGET)
 	if len(ratios) < SLOWDOWN_MIN_PACKAGES:
 		return 1.0
 	mid = len(ratios) // 2
 	median = ratios[mid] if len(ratios) % 2 else (ratios[mid - 1] + ratios[mid]) / 2
 	return max(1.0, median)
 
-slowdown = runner_slowdown()
-if slowdown > WARN_RATIO:
-	lines.append(f"NOTE  this run's packages sit at a median {slowdown:.2f}x of their budgets: "
-		f"the runner is slow, so failure limits below are scaled by {slowdown:.2f}x")
+cpu_slowdown = runner_slowdown(cpus, packages)
+wall_slowdown = runner_slowdown(sums, wall_packages)
+for what, factor in (("CPU", cpu_slowdown), ("wall", wall_slowdown)):
+	if factor > WARN_RATIO:
+		lines.append(f"NOTE  this run's packages sit at a median {factor:.2f}x of their {what} budgets: "
+			f"the runner is slow, so {what} failure limits below are scaled by {factor:.2f}x")
 
-for pkg in sorted(sums):
-	m = sums[pkg]
-	b = packages.get(pkg)
-	if b is None:
-		lines.append(f"WARN  {pkg}: {m:.2f}s, no budget entry (add one to testing-budget.json)")
-		raise_worst("warn")
-		continue
-	ratio = (m / b) if b > 0 else (float("inf") if m > 0 else 0.0)
-	if ratio / slowdown > FAIL_RATIO:
+def judge(pkg, m, b, unit, fail_ratio, slowdown, warn):
+	ratio = ratio_of(m, b)
+	if ratio / slowdown > fail_ratio:
 		if stale_units:
-			lines.append(f"WARN  {pkg}: {m:.2f}s over stale budget {b:.2f}s "
-				f"({ratio:.2f}x > {FAIL_RATIO}x; not enforced until the #141 rebaseline)")
+			lines.append(f"WARN  {pkg}: {m:.2f}s {unit} over stale budget {b:.2f}s "
+				f"({ratio:.2f}x > {fail_ratio}x; not enforced until a rebaseline)")
 			raise_worst("warn")
 		else:
-			lines.append(f"FAIL  {pkg}: {m:.2f}s over budget {b:.2f}s ({ratio:.2f}x > {FAIL_RATIO}x)")
+			lines.append(f"FAIL  {pkg}: {m:.2f}s {unit} over budget {b:.2f}s ({ratio:.2f}x > {fail_ratio}x)")
 			raise_worst("fail")
-	elif ratio > WARN_RATIO:
-		lines.append(f"WARN  {pkg}: {m:.2f}s over budget {b:.2f}s ({ratio:.2f}x > {WARN_RATIO}x)")
+		return False
+	if warn and ratio > WARN_RATIO:
+		lines.append(f"WARN  {pkg}: {m:.2f}s {unit} over budget {b:.2f}s ({ratio:.2f}x > {WARN_RATIO}x)")
 		raise_worst("warn")
-	else:
-		lines.append(f"OK    {pkg}: {m:.2f}s (budget {b:.2f}s)")
+		return False
+	return True
+
+# A package with a CPU row is budgeted on CPU at the fail and warn ratios, and
+# its wall time is checked only against the backstop. A row with no CPU (the
+# frontend, and a package with no test binary) keeps the wall rule.
+for pkg in sorted(sums):
+	wall = sums[pkg]
+	wall_budget = wall_packages.get(pkg)
+	if pkg in cpus:
+		cpu = cpus[pkg]
+		cpu_budget = packages.get(pkg)
+		ok = True
+		if cpu_budget is None:
+			lines.append(f"WARN  {pkg}: {cpu:.2f}s cpu, {wall:.2f}s wall, no budget entry (add one to testing-budget.json)")
+			raise_worst("warn")
+			ok = False
+		else:
+			ok = judge(pkg, cpu, cpu_budget, "cpu", FAIL_RATIO, cpu_slowdown, True)
+		if wall_budget is not None:
+			ok = judge(pkg, wall, wall_budget, "wall", WALL_BACKSTOP_RATIO, wall_slowdown, False) and ok
+		if ok:
+			lines.append(f"OK    {pkg}: {cpu:.2f}s cpu (budget {cpu_budget:.2f}s), {wall:.2f}s wall")
+		continue
+	if wall_budget is None:
+		lines.append(f"WARN  {pkg}: {wall:.2f}s, no budget entry (add one to testing-budget.json)")
+		raise_worst("warn")
+		continue
+	if judge(pkg, wall, wall_budget, "wall", FAIL_RATIO, wall_slowdown, True):
+		lines.append(f"OK    {pkg}: {wall:.2f}s wall (budget {wall_budget:.2f}s)")
 
 for pkg, name, secs in tests:
 	# A test in a class is compared STRICTLY against that class's ceiling
@@ -605,7 +678,7 @@ for pkg, name, secs in tests:
 		continue
 	if memberships:
 		class_name, class_ceiling = memberships[0]
-		if secs > class_ceiling * slowdown:
+		if secs > class_ceiling * wall_slowdown:
 			lines.append(f"FAIL  {pkg}: test {name} took {secs:.2f}s, over its {class_ceiling:g}s "
 				f"'{class_name}' class ceiling")
 			raise_worst("fail")
@@ -641,25 +714,23 @@ if bless:
 	# bless is different — go list enumerated every package, so an entry with no
 	# measurement this run is a package gone from the tree, not one skipped, and
 	# is dropped below.
-	order = list(packages) + sorted(pkg for pkg in sums if pkg not in packages)
-	measured = {pkg: round(sums[pkg], 2) for pkg in sums}
-	if bless_full:
-		# Full surface: every recorded package was measured, so the whole file is
-		# package wall time. Drop entries go list no longer reports (they hold
-		# the old units, and keeping one would either enforce it as wall time or
-		# pin the file to the old units forever) and stamp the marker.
-		budget["packages"] = {pkg: measured[pkg] for pkg in order if pkg in measured}
-		budget["metric"] = WALL_METRIC
-	else:
-		budget["packages"] = {
-			pkg: (measured[pkg] if pkg in measured else packages[pkg]) for pkg in order
-		}
-		# A narrowed bless keeps an existing marker — the entries it preserves
-		# are already wall time — but never adds one: stamping a stale file here
-		# would enforce ratios against the old-unit entries it preserved (issue
-		# #172 review).
-		if had_metric:
-			budget["metric"] = WALL_METRIC
+	def blessed(recorded, measured_secs):
+		order = list(recorded) + sorted(pkg for pkg in measured_secs if pkg not in recorded)
+		measured = {pkg: round(measured_secs[pkg], 2) for pkg in measured_secs}
+		if bless_full:
+			# Full surface: every recorded package was measured, so an entry with
+			# no measurement is a package gone from the tree (or one holding the
+			# old units): drop it.
+			return {pkg: measured[pkg] for pkg in order if pkg in measured}
+		return {pkg: measured[pkg] if pkg in measured else recorded[pkg] for pkg in order}
+	budget["packages"] = blessed(packages, cpus)
+	budget["wallPackages"] = blessed(wall_packages, sums)
+	# A full bless stamps the marker. A narrowed bless keeps an existing one —
+	# the entries it preserves are already in these units — but never adds one:
+	# stamping a stale file would enforce ratios against the old-unit entries it
+	# preserved.
+	if bless_full or had_metric:
+		budget["metric"] = CPU_METRIC
 	budget.setdefault("perTestCeilingSeconds", DEFAULT_CEILING)
 	with open(budget_path, "w") as fh:
 		# indent=1 (spaces) is the checked-in file's format, so a rebaseline

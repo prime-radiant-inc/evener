@@ -1,6 +1,7 @@
 package evener_test
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -70,43 +71,19 @@ func runTimingBudgetCompareMode(t *testing.T, measured, budget string, strict bo
 	return runTimingBudgetScript(t, measured, budget, []string{"--check", mode}, nil)
 }
 
-// TestTimingBudgetWarnsOnBudgetsInThePreWallTimeUnits pins issue #172 review
-// finding 1. The checked-in testing-budget.json numbers were blessed under the
-// old sum-of-test-Elapsed metric, so comparing them to the package wall time
-// measured now is not meaningful. Until #141 regenerates the baseline, a budget
-// in the old units must be warned about, never enforced: the ratio is reported
-// as a WARN naming #141, and --check --strict still exits zero.
-func TestTimingBudgetWarnsOnBudgetsInThePreWallTimeUnits(t *testing.T) {
-	measured := "SUM\texample.com/mod\t10.00\n"
-	budget := `{"perTestCeilingSeconds":3,"packages":{"example.com/mod":1}}`
-
-	out, err := runTimingBudgetCompare(t, measured, budget)
-	if err != nil {
-		t.Fatalf("a budget blessed under the old metric must not fail the run: %v\n%s", err, out)
-	}
-	if !strings.Contains(out, "STALE UNITS") || !strings.Contains(out, "#141") {
-		t.Fatalf("no explicit stale-units warning naming #141:\n%s", out)
-	}
-	if !strings.Contains(out, "WARN  example.com/mod") {
-		t.Fatalf("a stale number over 1.5x must be reported as a warning:\n%s", out)
-	}
-	if strings.Contains(out, "FAIL") {
-		t.Fatalf("a stale number was enforced as a failure:\n%s", out)
-	}
-}
-
-// TestTimingBudgetFailsOnWallTimeBudgets is the other half: once a rebaseline
-// records the wall-time metric marker, the same excess is enforced again.
-func TestTimingBudgetFailsOnWallTimeBudgets(t *testing.T) {
-	measured := "SUM\texample.com/mod\t10.00\n"
-	budget := `{"metric":"package-wall-seconds","perTestCeilingSeconds":3,"packages":{"example.com/mod":1}}`
+// TestTimingBudgetFailsOnCPUTimeBudgets pins the marker's other half (a wall-
+// unit file only warns, TestTimingBudgetWarnsOnWallUnitBudgets): once a
+// rebaseline records the CPU metric marker, the same excess is enforced.
+func TestTimingBudgetFailsOnCPUTimeBudgets(t *testing.T) {
+	measured := "SUM\texample.com/mod\t10.00\nCPU\texample.com/mod\t10.00\n"
+	budget := `{"metric":"package-cpu-seconds","perTestCeilingSeconds":3,"packages":{"example.com/mod":1}}`
 
 	out, err := runTimingBudgetCompare(t, measured, budget)
 	if err == nil {
-		t.Fatalf("a wall-time budget over 1.5x must fail under --strict:\n%s", out)
+		t.Fatalf("a CPU budget over 1.5x must fail under --strict:\n%s", out)
 	}
 	if !strings.Contains(out, "FAIL  example.com/mod") {
-		t.Fatalf("no FAIL for a wall-time budget over 1.5x:\n%s", out)
+		t.Fatalf("no FAIL for a CPU budget over 1.5x:\n%s", out)
 	}
 }
 
@@ -182,32 +159,64 @@ func runBless(t *testing.T, budgetJSON string, args ...string) string {
 	return got
 }
 
-// TestTimingBudgetBlessKeepsAWallTimeMarker pins the marker rule for a narrowed
-// bless. A file already blessed under the wall-time metric keeps its marker when
-// a run refreshes only part of it: the preserved entries are still wall time, so
-// enforcement stays safe, and dropping the marker would silently disable the
-// ratchet (issue #172 review).
-func TestTimingBudgetBlessKeepsAWallTimeMarker(t *testing.T) {
+// TestTimingBudgetBlessKeepsTheMetricMarker pins the marker rule for a narrowed
+// bless. A file already blessed under the current metric keeps its marker when
+// a run refreshes only part of it: the preserved entries are still in its
+// units, so enforcement stays safe, and dropping the marker would silently
+// disable the ratchet.
+func TestTimingBudgetBlessKeepsTheMetricMarker(t *testing.T) {
 	got := runBless(t,
-		`{"metric":"package-wall-seconds","perTestCeilingSeconds":3,"packages":{"example.com/other":1}}`,
+		`{"metric":"package-cpu-seconds","perTestCeilingSeconds":3,"packages":{"example.com/other":1}}`,
 		"--modules", "no-such-module")
-	if !strings.Contains(got, `"metric": "package-wall-seconds"`) {
-		t.Fatalf("a narrowed bless of an already wall-time file dropped the marker:\n%s", got)
+	if !strings.Contains(got, `"metric": "package-cpu-seconds"`) {
+		t.Fatalf("a narrowed bless of an already-marked file dropped the marker:\n%s", got)
 	}
 	if !strings.Contains(got, `"example.com/other": 1`) {
 		t.Fatalf("the preserved, unmeasured entry was not kept:\n%s", got)
 	}
 }
 
+// A bless from a real measurement records each package's CPU as its budget and
+// its wall time as its backstop budget: the fixture module's tests run under
+// test-cpu-exec, through the same go test the ratchet's own pass runs.
+func TestTimingBudgetBlessRecordsCPUAndWallBudgets(t *testing.T) {
+	dir := t.TempDir()
+	budget := filepath.Join(dir, "budget.json")
+	writeAuditScriptFixture(t, budget, `{"perTestCeilingSeconds":3,"packages":{}}`)
+	cmd := exec.Command("bash", timingBudgetScript, "--budget", budget, "--no-web", "--bless",
+		"--modules", "cmd/evener-dev/testdata/shardfixture")
+	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=", "SHARD_FIXTURE_BURN=200ms")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("bless over the fixture module: %v\n%s", err, out)
+	}
+	raw, err := os.ReadFile(budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Packages     map[string]float64 `json:"packages"`
+		WallPackages map[string]float64 `json:"wallPackages"` //nolint:tagliatelle // testing-budget.json's key
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("parse blessed budget: %v\n%s", err, raw)
+	}
+	if got.Packages["shardfixture"] < 0.2 {
+		t.Fatalf("CPU budget = %v, want at least the 0.2s the fixture burned:\n%s", got.Packages["shardfixture"], raw)
+	}
+	if _, ok := got.WallPackages["shardfixture"]; !ok {
+		t.Fatalf("no wall budget recorded:\n%s", raw)
+	}
+}
+
 // TestTimingBudgetBlessDoesNotStampAStaleFile is the other half: a narrowed
-// bless of a file still in the old sum units must NOT add the wall-time marker,
+// bless of a file still in old units must NOT add the metric marker,
 // or it would enforce ratios against the old-unit entries it preserved.
 func TestTimingBudgetBlessDoesNotStampAStaleFile(t *testing.T) {
 	got := runBless(t,
 		`{"perTestCeilingSeconds":3,"packages":{"example.com/other":1}}`,
 		"--modules", "no-such-module")
 	if strings.Contains(got, `"metric"`) {
-		t.Fatalf("a narrowed bless of a stale file stamped the wall-time marker:\n%s", got)
+		t.Fatalf("a narrowed bless of a stale file stamped the metric marker:\n%s", got)
 	}
 }
 
@@ -221,15 +230,13 @@ func TestTimingBudgetBlessDoesNotStampAStaleFile(t *testing.T) {
 // exit status is the assertion.
 func TestTimingBudgetWarnsOnTheWebRowWithoutTheMarker(t *testing.T) {
 	measured := "SUM\tweb\t10.00\n"
-	budget := `{"perTestCeilingSeconds":3,"packages":{"web":1}}`
+	budget := `{"perTestCeilingSeconds":3,"wallPackages":{"web":1}}`
 	out, err := runTimingBudgetCompare(t, measured, budget)
 	if err != nil {
 		t.Fatalf("an incomparable-baseline ratio must warn, not fail:\n%s", out)
 	}
-	for _, want := range []string{"WARN  web", "#141"} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("web-row warning missing %q:\n%s", want, out)
-		}
+	if !strings.Contains(out, "WARN  web") {
+		t.Fatalf("the web row's over-ratio number went unreported:\n%s", out)
 	}
 	if strings.Contains(out, "FAIL") {
 		t.Fatalf("the stale web ratio was enforced as a failure:\n%s", out)
@@ -247,7 +254,7 @@ func TestTimingBudgetWarnsOnTheWebRowWithoutTheMarker(t *testing.T) {
 // TestTimingBudgetFailsWhenTheMeasuredFileIsMissing). The exit status is the
 // assertion.
 func TestTimingBudgetWarnsOnThePreExistingCeilingBreach(t *testing.T) {
-	measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestSlow\t9.00\n"
+	measured := "SUM\tpkg\t0.10\nCPU\tpkg\t0.10\nTEST\tpkg\tTestSlow\t9.00\n"
 	budget := `{"perTestCeilingSeconds":3,"packages":{"pkg":100}}`
 	out, err := runTimingBudgetCompare(t, measured, budget)
 	if err != nil {
@@ -274,7 +281,7 @@ func TestTimingBudgetFailsWhenTheMeasuredFileIsMissing(t *testing.T) {
 	dir := t.TempDir()
 	budget := filepath.Join(dir, "budget.json")
 	writeAuditScriptFixture(t, budget,
-		`{"metric":"package-wall-seconds","perTestCeilingSeconds":3,"packages":{"example.com/mod":1}}`)
+		`{"metric":"package-cpu-seconds","perTestCeilingSeconds":3,"packages":{"example.com/mod":1}}`)
 	tmpDir := filepath.Join(dir, "tmp")
 	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", tmpDir, err)
@@ -316,7 +323,7 @@ func TestTimingBudgetRecordsAPackageWithNoDuration(t *testing.T) {
 // nonzero under the strict (CI) policy — unlike an unclassified test, which
 // only warns. The exit status and the named class are the assertions.
 func TestTimingBudgetFailsABlessedClassBreach(t *testing.T) {
-	measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestClassed\t31.00\n"
+	measured := "SUM\tpkg\t0.10\nCPU\tpkg\t0.10\nTEST\tpkg\tTestClassed\t31.00\n"
 	budget := `{"perTestCeilingSeconds":3,` +
 		`"perTestCeilingClasses":{"deploy-host integration":{"ceilingSeconds":30,"tests":["TestClassed"]}},` +
 		`"packages":{"pkg":100}}`
@@ -337,7 +344,7 @@ func TestTimingBudgetFailsABlessedClassBreach(t *testing.T) {
 // map that merely silenced tests would look the same as one that re-ceilings
 // them.
 func TestTimingBudgetPassesAClassifiedTestUnderItsClassCeiling(t *testing.T) {
-	measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestClassed\t9.00\n"
+	measured := "SUM\tpkg\t0.10\nCPU\tpkg\t0.10\nTEST\tpkg\tTestClassed\t9.00\n"
 	budget := `{"perTestCeilingSeconds":3,` +
 		`"perTestCeilingClasses":{"retirement":{"ceilingSeconds":20,"tests":["TestClassed"]}},` +
 		`"packages":{"pkg":100}}`
@@ -359,7 +366,7 @@ func TestTimingBudgetPassesAClassifiedTestUnderItsClassCeiling(t *testing.T) {
 // test in no class keeps the flat ceiling and warns — never fails, even under
 // --strict — so the unclassified backlog cannot red the gate (#4601).
 func TestTimingBudgetKeepsUnclassifiedBreachesWarnOnly(t *testing.T) {
-	measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestUnclassed\t9.00\n"
+	measured := "SUM\tpkg\t0.10\nCPU\tpkg\t0.10\nTEST\tpkg\tTestUnclassed\t9.00\n"
 	budget := `{"perTestCeilingSeconds":3,` +
 		`"perTestCeilingClasses":{"retirement":{"ceilingSeconds":20,"tests":["TestOther"]}},` +
 		`"packages":{"pkg":100}}`
@@ -382,7 +389,7 @@ func TestTimingBudgetKeepsUnclassifiedBreachesWarnOnly(t *testing.T) {
 // would hide), so a subtest of a classified parent must be compared strictly
 // against the parent's class ceiling, not left on the flat warn-only default.
 func TestTimingBudgetComparesASubtestUnderItsParentsClass(t *testing.T) {
-	measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestClassed/shadow\t31.00\n"
+	measured := "SUM\tpkg\t0.10\nCPU\tpkg\t0.10\nTEST\tpkg\tTestClassed/shadow\t31.00\n"
 	budget := `{"perTestCeilingSeconds":3,` +
 		`"perTestCeilingClasses":{"deploy-host integration":{"ceilingSeconds":30,"tests":["TestClassed"]}},` +
 		`"packages":{"pkg":100}}`
@@ -400,7 +407,7 @@ func TestTimingBudgetComparesASubtestUnderItsParentsClass(t *testing.T) {
 // strict policy the exit status is the assertion: only the duplicate can make
 // it nonzero.
 func TestTimingBudgetFailsWhenATestIsListedInTwoClasses(t *testing.T) {
-	measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestClassed\t1.00\n"
+	measured := "SUM\tpkg\t0.10\nCPU\tpkg\t0.10\nTEST\tpkg\tTestClassed\t1.00\n"
 	budget := `{"perTestCeilingSeconds":3,` +
 		`"perTestCeilingClasses":{"a":{"ceilingSeconds":10,"tests":["TestClassed"]},` +
 		`"b":{"ceilingSeconds":20,"tests":["TestClassed"]}},` +
@@ -432,7 +439,7 @@ func TestTimingBudgetFailsAMalformedClassSpec(t *testing.T) {
 	}
 	for name, spec := range cases {
 		t.Run(name, func(t *testing.T) {
-			measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestClassed\t1.00\n"
+			measured := "SUM\tpkg\t0.10\nCPU\tpkg\t0.10\nTEST\tpkg\tTestClassed\t1.00\n"
 			budget := `{"perTestCeilingSeconds":3,"perTestCeilingClasses":{"broken":` + spec + `},"packages":{"pkg":100}}`
 			out, err := runTimingBudgetCompare(t, measured, budget)
 			if err == nil || !strings.Contains(out, "broken") {
@@ -452,7 +459,7 @@ func TestTimingBudgetFailsAMalformedClassSpec(t *testing.T) {
 // value, not copy (docs/developing-evener/testing.md's "Copy Is Not a Test
 // Oracle").
 func TestTimingBudgetFailsOnAnUnusableClassCeilingInEveryMode(t *testing.T) {
-	const measured = "SUM\tpkg\t0.10\nTEST\tpkg\tTestClassed\t1.00\n"
+	const measured = "SUM\tpkg\t0.10\nCPU\tpkg\t0.10\nTEST\tpkg\tTestClassed\t1.00\n"
 	for name, value := range map[string]string{
 		"huge-int": hugeCeilingSeconds,
 		"infinity": "1e309",
@@ -475,8 +482,8 @@ func TestTimingBudgetFailsOnAnUnusableClassCeilingInEveryMode(t *testing.T) {
 // class's huge finite ceiling can clear it. The exit status and the absence of a
 // FAIL/WARN line are the assertions, never the diagnostic wording.
 func TestTimingBudgetKeepsAHugeFiniteClassCeiling(t *testing.T) {
-	measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestClassed\t1000.00\n"
-	budget := `{"metric":"package-wall-seconds","perTestCeilingSeconds":3,` +
+	measured := "SUM\tpkg\t0.10\nCPU\tpkg\t0.10\nTEST\tpkg\tTestClassed\t1000.00\n"
+	budget := `{"metric":"package-cpu-seconds","perTestCeilingSeconds":3,` +
 		`"perTestCeilingClasses":{"retirement":{"ceilingSeconds":1e300,"tests":["TestClassed"]}},` +
 		`"packages":{"pkg":100}}`
 	out, err := runTimingBudgetCompare(t, measured, budget)
@@ -494,7 +501,7 @@ func TestTimingBudgetKeepsAHugeFiniteClassCeiling(t *testing.T) {
 // field name and the class key are data values, not copy
 // (docs/developing-evener/testing.md's "Copy Is Not a Test Oracle").
 func TestTimingBudgetNamesTheClassAndFieldForAnUnusableClassCeiling(t *testing.T) {
-	measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestClassed\t1.00\n"
+	measured := "SUM\tpkg\t0.10\nCPU\tpkg\t0.10\nTEST\tpkg\tTestClassed\t1.00\n"
 	budget := `{"perTestCeilingSeconds":3,"perTestCeilingClasses":{"retirement":{"ceilingSeconds":` +
 		hugeCeilingSeconds + `,"tests":["TestClassed"]}},"packages":{"pkg":100}}`
 	out, err := runTimingBudgetCompare(t, measured, budget)
@@ -510,7 +517,7 @@ func TestTimingBudgetNamesTheClassAndFieldForAnUnusableClassCeiling(t *testing.T
 // enforcement path the other tests do not: strictness comes from $CI being set,
 // with no --strict/--local flag at all (the way the gate's own lanes call it).
 func TestTimingBudgetFailsABlessedClassBreachUnderTheCIEnvOnly(t *testing.T) {
-	measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestClassed\t31.00\n"
+	measured := "SUM\tpkg\t0.10\nCPU\tpkg\t0.10\nTEST\tpkg\tTestClassed\t31.00\n"
 	budget := `{"perTestCeilingSeconds":3,` +
 		`"perTestCeilingClasses":{"deploy-host integration":{"ceilingSeconds":30,"tests":["TestClassed"]}},` +
 		`"packages":{"pkg":100}}`
@@ -540,7 +547,7 @@ func TestTimingBudgetBlessPreservesTheClassMap(t *testing.T) {
 // but the warn-only run still exits 0, exactly like the package ratios; the
 // class and its number are named so the local report says what to fix.
 func TestTimingBudgetWarnsOnAClassBreachOnALocalRun(t *testing.T) {
-	measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestClassed\t31.00\n"
+	measured := "SUM\tpkg\t0.10\nCPU\tpkg\t0.10\nTEST\tpkg\tTestClassed\t31.00\n"
 	budget := `{"perTestCeilingSeconds":3,` +
 		`"perTestCeilingClasses":{"deploy-host integration":{"ceilingSeconds":30,"tests":["TestClassed"]}},` +
 		`"packages":{"pkg":100}}`
@@ -562,7 +569,7 @@ func TestTimingBudgetWarnsOnAClassBreachOnALocalRun(t *testing.T) {
 func TestTimingBudgetFailsWhenTheClassMapIsNotAnObject(t *testing.T) {
 	for _, value := range []string{`["nope"]`, `[]`, `false`, `0`, `""`, `"a string"`, `null`} {
 		t.Run(value, func(t *testing.T) {
-			measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestClassed\t1.00\n"
+			measured := "SUM\tpkg\t0.10\nCPU\tpkg\t0.10\nTEST\tpkg\tTestClassed\t1.00\n"
 			budget := `{"perTestCeilingSeconds":3,"perTestCeilingClasses":` + value + `,"packages":{"pkg":100}}`
 			out, err := runTimingBudgetCompare(t, measured, budget)
 			if err == nil {
@@ -669,7 +676,7 @@ func TestTimingBudgetFailsOnANonNumericPackageValue(t *testing.T) {
 	measured := "SUM\tslowpkg\t1.00\n"
 	for _, value := range []string{`"x"`, `true`, `null`, `[]`, `{}`} {
 		t.Run(value, func(t *testing.T) {
-			budget := `{"metric":"package-wall-seconds","packages":{"slowpkg":` + value + `}}`
+			budget := `{"metric":"package-cpu-seconds","packages":{"slowpkg":` + value + `}}`
 			out, err := runTimingBudgetCompare(t, measured, budget)
 			assertBrokenConfigFails(t, out, err)
 			if !strings.Contains(out, "slowpkg") {
@@ -703,7 +710,7 @@ func TestTimingBudgetFailsOnANonNumericPackageValueInEveryMode(t *testing.T) {
 // config as a non-object packages value, so it fails in every posture, --bless
 // included, not only under --strict.
 func TestTimingBudgetFailsOnANonObjectClassMapInEveryMode(t *testing.T) {
-	const measured = "SUM\tpkg\t0.10\nTEST\tpkg\tTestClassed\t1.00\n"
+	const measured = "SUM\tpkg\t0.10\nCPU\tpkg\t0.10\nTEST\tpkg\tTestClassed\t1.00\n"
 	for _, value := range []string{`null`, `[]`} {
 		assertBudgetFailsInEveryMode(t, value, measured,
 			`{"perTestCeilingClasses":`+value+`,"packages":{"pkg":100}}`)
@@ -889,7 +896,7 @@ func TestTimingBudgetRunnerBoundMemberWarnsWhileKeptClassMemberFails(t *testing.
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			measured := filepath.Join(dir, tc.test+".tsv")
-			writeAuditScriptFixture(t, measured, "TEST\t"+tc.pkg+"\t"+tc.test+"\t"+tc.seconds+"\n")
+			writeAuditScriptFixture(t, measured, "CPU\t"+tc.pkg+"\t0.10\nTEST\t"+tc.pkg+"\t"+tc.test+"\t"+tc.seconds+"\n")
 			out, err := runTimingBudgetFixture(t, measured, "testing-budget.json", dir, []string{"--check", "--strict"}, nil)
 			if !tc.wantFail {
 				if err != nil {
@@ -926,7 +933,7 @@ func TestTimingBudgetRunnerBoundMemberWarnsWhileKeptClassMemberFails(t *testing.
 // disarms the check, so it is rejected too. The field name is a data value, not
 // copy (docs/developing-evener/testing.md's "Copy Is Not a Test Oracle").
 func TestTimingBudgetFailsOnANonNumericPerTestCeiling(t *testing.T) {
-	measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestX\t9.00\n"
+	measured := "SUM\tpkg\t0.10\nCPU\tpkg\t0.10\nTEST\tpkg\tTestX\t9.00\n"
 	cases := map[string]string{
 		"string":   `"x"`,
 		"null":     `null`,
@@ -956,7 +963,7 @@ func TestTimingBudgetFailsOnANonNumericPerTestCeiling(t *testing.T) {
 // or --bless. On --bless the file is left byte-for-byte untouched, because
 // failing before the bless write is the observable behavior that matters.
 func TestTimingBudgetFailsOnANonNumericPerTestCeilingInEveryMode(t *testing.T) {
-	const measured = "SUM\tpkg\t0.10\nTEST\tpkg\tTestX\t9.00\n"
+	const measured = "SUM\tpkg\t0.10\nCPU\tpkg\t0.10\nTEST\tpkg\tTestX\t9.00\n"
 	for _, value := range []string{`true`, `null`} {
 		assertBudgetFailsInEveryMode(t, value, measured,
 			`{"perTestCeilingSeconds":`+value+`,"packages":{"pkg":100}}`)
@@ -979,7 +986,7 @@ func TestTimingBudgetFailsOnANonFinitePackageValue(t *testing.T) {
 	}
 	for name, value := range cases {
 		t.Run(name, func(t *testing.T) {
-			budget := `{"metric":"package-wall-seconds","packages":{"slowpkg":` + value + `}}`
+			budget := `{"metric":"package-cpu-seconds","packages":{"slowpkg":` + value + `}}`
 			out, err := runTimingBudgetCompare(t, measured, budget)
 			assertBrokenConfigFails(t, out, err)
 			if !strings.Contains(out, "slowpkg") {
@@ -1033,14 +1040,14 @@ func TestTimingBudgetFailsOnANonObjectTopLevelBudgetInEveryMode(t *testing.T) {
 }
 
 // TestCheckedInTimingBudgetEnforcesPackageRatios guards the ratchet against
-// silently disarming: the checked-in budget must carry the wall-time metric
+// silently disarming: the checked-in budget must carry the CPU metric
 // marker, so a package far over its recorded budget fails under --strict
 // instead of downgrading to a stale-units warning.
 func TestCheckedInTimingBudgetEnforcesPackageRatios(t *testing.T) {
 	dir := t.TempDir()
 	measured := filepath.Join(dir, "measured.tsv")
 	const pkg = "primeradiant.com/evener/agent"
-	writeAuditScriptFixture(t, measured, "SUM\t"+pkg+"\t100000.00\n")
+	writeAuditScriptFixture(t, measured, "SUM\t"+pkg+"\t100000.00\nCPU\t"+pkg+"\t100000.00\n")
 	out, err := runTimingBudgetFixture(t, measured, "testing-budget.json", dir, []string{"--check", "--strict"}, nil)
 	if err == nil {
 		t.Fatalf("a package far over its checked-in budget must fail the strict check:\n%s", out)
@@ -1084,15 +1091,15 @@ func TestTimingTSVLibParsesFromAnyDirectoryWithoutRepoRoot(t *testing.T) {
 
 // slowRunnerBudget has five packages whose 10s budgets are big enough to count
 // toward the run's slowdown.
-const slowRunnerBudget = `{"metric":"package-wall-seconds","perTestCeilingSeconds":3,` +
+const slowRunnerBudget = `{"metric":"package-cpu-seconds","perTestCeilingSeconds":3,` +
 	`"perTestCeilingClasses":{"eval harness":{"ceilingSeconds":20,"tests":["TestClassed"]}},` +
-	`"packages":{"a":10,"b":10,"c":10,"d":10,"e":10}}`
+	`"wallPackages":{"a":10,"b":10,"c":10,"d":10,"e":10}}`
 
 // A runner twice as slow as the budgets' host slows every package at once.
 // That is no package's regression, so the strict check must not fail it.
 func TestTimingBudgetForgivesAUniformlySlowRunner(t *testing.T) {
 	measured := "SUM\ta\t20.00\nSUM\tb\t20.00\nSUM\tc\t20.00\nSUM\td\t21.00\nSUM\te\t20.00\n" +
-		"TEST\ta\tTestClassed\t39.00\n"
+		"CPU\ta\t1.00\nTEST\ta\tTestClassed\t39.00\n"
 	out, err := runTimingBudgetCompare(t, measured, slowRunnerBudget)
 	if err != nil || strings.Contains(out, "FAIL") {
 		t.Fatalf("a uniformly slow run failed the strict check: %v\n%s", err, out)
@@ -1114,7 +1121,7 @@ func TestTimingBudgetStillFailsAnOutlierOnASlowRunner(t *testing.T) {
 // A class ceiling is scaled by the same slowdown, and still binds beyond it.
 func TestTimingBudgetScalesClassCeilingsBySlowdownOnly(t *testing.T) {
 	slow := "SUM\ta\t20.00\nSUM\tb\t20.00\nSUM\tc\t20.00\nSUM\td\t20.00\nSUM\te\t20.00\n"
-	out, err := runTimingBudgetCompare(t, slow+"TEST\ta\tTestClassed\t41.00\n", slowRunnerBudget)
+	out, err := runTimingBudgetCompare(t, slow+"CPU\ta\t1.00\nTEST\ta\tTestClassed\t41.00\n", slowRunnerBudget)
 	if err == nil || !strings.Contains(out, "TestClassed") {
 		t.Fatalf("a class breach beyond the scaled ceiling passed: %v\n%s", err, out)
 	}
@@ -1123,9 +1130,9 @@ func TestTimingBudgetScalesClassCeilingsBySlowdownOnly(t *testing.T) {
 // Package ratios against a markerless (stale-unit) budget say nothing about the
 // runner, so they must not stretch a blessed class ceiling.
 func TestTimingBudgetIgnoresStaleUnitRatiosWhenScalingCeilings(t *testing.T) {
-	budget := strings.Replace(slowRunnerBudget, `"metric":"package-wall-seconds",`, "", 1)
+	budget := strings.Replace(slowRunnerBudget, `"metric":"package-cpu-seconds",`, "", 1)
 	measured := "SUM\ta\t20.00\nSUM\tb\t20.00\nSUM\tc\t20.00\nSUM\td\t20.00\nSUM\te\t30.00\n" +
-		"TEST\ta\tTestClassed\t25.00\n"
+		"CPU\ta\t1.00\nTEST\ta\tTestClassed\t25.00\n"
 	out, err := runTimingBudgetCompare(t, measured, budget)
 	if err == nil || !strings.Contains(out, "TestClassed") {
 		t.Fatalf("a class breach passed because stale package ratios scaled its ceiling: %v\n%s", err, out)
@@ -1135,13 +1142,129 @@ func TestTimingBudgetIgnoresStaleUnitRatiosWhenScalingCeilings(t *testing.T) {
 // The nonroot lane budgets only four packages at 5s or more; a uniformly slow
 // run of just those must still be forgiven.
 func TestTimingBudgetForgivesAUniformlySlowFourPackageLane(t *testing.T) {
-	budget := `{"metric":"package-wall-seconds","perTestCeilingSeconds":3,` +
+	budget := `{"metric":"package-cpu-seconds","perTestCeilingSeconds":3,` +
 		`"perTestCeilingClasses":{"eval harness":{"ceilingSeconds":20,"tests":["TestClassed"]}},` +
-		`"packages":{"agent":130,"agent/execenv":10,"llm":15,"llm/registry":6,"small":2}}`
+		`"wallPackages":{"agent":130,"agent/execenv":10,"llm":15,"llm/registry":6,"small":2}}`
 	measured := "SUM\tagent\t260.00\nSUM\tagent/execenv\t20.00\nSUM\tllm\t30.00\nSUM\tllm/registry\t12.00\nSUM\tsmall\t1.00\n" +
-		"TEST\tagent\tTestClassed\t39.00\n"
+		"CPU\tagent\t1.00\nTEST\tagent\tTestClassed\t39.00\n"
 	out, err := runTimingBudgetCompare(t, measured, budget)
 	if err != nil || strings.Contains(out, "FAIL") {
 		t.Fatalf("a uniformly slow four-package lane failed the strict check: %v\n%s", err, out)
+	}
+}
+
+// cpuBudget budgets five packages on CPU time (packages) and on wall time
+// (wallPackages, the backstop), each big enough to count toward a run's
+// slowdown, plus the frontend's wall-only row.
+const cpuBudget = `{"metric":"package-cpu-seconds","perTestCeilingSeconds":3,` +
+	`"perTestCeilingClasses":{"eval harness":{"ceilingSeconds":20,"tests":["TestClassed"]}},` +
+	`"packages":{"a":10,"b":10,"c":10,"d":10,"e":10},` +
+	`"wallPackages":{"a":20,"b":20,"c":20,"d":20,"e":20,"web":100}}`
+
+// cpuRun is a measurement of cpuBudget's packages with package e's CPU and wall
+// seconds given, and every other package exactly on budget.
+func cpuRun(eCPU, eWall string) string {
+	var b strings.Builder
+	for _, pkg := range []string{"a", "b", "c", "d"} {
+		b.WriteString("SUM\t" + pkg + "\t20.00\nCPU\t" + pkg + "\t10.00\nTEST\t" + pkg + "\tTestX\t0.10\n")
+	}
+	b.WriteString("SUM\te\t" + eWall + "\nCPU\te\t" + eCPU + "\nTEST\te\tTestX\t0.10\n")
+	return b.String()
+}
+
+// A package that does twice the work spends twice the CPU, and fails.
+func TestTimingBudgetFailsAPackageWhoseCPUDoubles(t *testing.T) {
+	out, err := runTimingBudgetCompare(t, cpuRun("20.00", "20.00"), cpuBudget)
+	if err == nil || !strings.Contains(out, "FAIL  e") {
+		t.Fatalf("a package whose CPU doubled passed the strict check: %v\n%s", err, out)
+	}
+}
+
+// A package that waited behind its neighbours for a core shows a longer wall
+// time and the same CPU: that is the runner, not the code, so it passes.
+func TestTimingBudgetPassesAPackageSlowedOnlyByContention(t *testing.T) {
+	out, err := runTimingBudgetCompare(t, cpuRun("10.00", "36.00"), cpuBudget)
+	if err != nil || strings.Contains(out, "FAIL") {
+		t.Fatalf("a package at 1.8x wall with unchanged CPU failed: %v\n%s", err, out)
+	}
+}
+
+// A package whose wall time triples with unchanged CPU is waiting on something
+// far beyond contention: the wall backstop fails it.
+func TestTimingBudgetWallBackstopFailsAGrossWait(t *testing.T) {
+	out, err := runTimingBudgetCompare(t, cpuRun("10.00", "60.00"), cpuBudget)
+	if err == nil || !strings.Contains(out, "FAIL  e") {
+		t.Fatalf("a package at 3x wall with unchanged CPU passed: %v\n%s", err, out)
+	}
+}
+
+// A Go package that ran tests but has no CPU row was measured without its CPU,
+// which is a broken measurement in every mode, not a reason to judge its wall
+// time instead.
+func TestTimingBudgetFailsAMissingCPURowInEveryMode(t *testing.T) {
+	measured := strings.Replace(cpuRun("10.00", "20.00"), "CPU\te\t10.00\n", "", 1)
+	for _, strict := range []bool{true, false} {
+		out, err := runTimingBudgetCompareMode(t, measured, cpuBudget, strict)
+		if err == nil || !strings.Contains(out, "e") {
+			t.Fatalf("strict=%v: a package with tests and no CPU row passed: %v\n%s", strict, err, out)
+		}
+	}
+}
+
+// A budget file whose numbers are still wall seconds cannot be compared to CPU
+// time: an over-ratio package warns with its numbers and does not fail.
+func TestTimingBudgetWarnsOnWallUnitBudgets(t *testing.T) {
+	budget := `{"metric":"package-wall-seconds","perTestCeilingSeconds":3,"packages":{"a":1}}`
+	out, err := runTimingBudgetCompare(t, "SUM\ta\t10.00\nCPU\ta\t5.00\nTEST\ta\tTestX\t0.10\n", budget)
+	if err != nil || strings.Contains(out, "FAIL") {
+		t.Fatalf("a wall-unit budget was enforced against CPU time: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "WARN  a") {
+		t.Fatalf("the incomparable ratio went unreported:\n%s", out)
+	}
+}
+
+// The frontend row has no CPU measurement and keeps the wall rule: 1.6x of its
+// wall budget fails, 1.3x warns.
+func TestTimingBudgetKeepsTheWallRuleForARowWithoutCPU(t *testing.T) {
+	out, err := runTimingBudgetCompare(t, cpuRun("10.00", "20.00")+"SUM\tweb\t160.00\n", cpuBudget)
+	if err == nil || !strings.Contains(out, "FAIL  web") {
+		t.Fatalf("the web row at 1.6x of its wall budget passed: %v\n%s", err, out)
+	}
+	out, err = runTimingBudgetCompare(t, cpuRun("10.00", "20.00")+"SUM\tweb\t130.00\n", cpuBudget)
+	if err != nil || !strings.Contains(out, "WARN  web") {
+		t.Fatalf("the web row at 1.3x of its wall budget did not warn without failing: %v\n%s", err, out)
+	}
+}
+
+// Slower hardware raises every package's CPU at once: the CPU median scales the
+// CPU limit, so a uniformly slower run passes and an outlier on it still fails.
+func TestTimingBudgetScalesTheCPULimitByTheCPUMedian(t *testing.T) {
+	slow := cpuRun("20.00", "40.00")
+	for _, pkg := range []string{"a", "b", "c", "d"} {
+		slow = strings.Replace(slow, "CPU\t"+pkg+"\t10.00", "CPU\t"+pkg+"\t20.00", 1)
+	}
+	if out, err := runTimingBudgetCompare(t, slow, cpuBudget); err != nil || strings.Contains(out, "FAIL") {
+		t.Fatalf("a uniformly 2x-CPU run failed: %v\n%s", err, out)
+	}
+	outlier := strings.Replace(slow, "CPU\te\t20.00", "CPU\te\t40.00", 1)
+	if out, err := runTimingBudgetCompare(t, outlier, cpuBudget); err == nil || !strings.Contains(out, "FAIL  e") {
+		t.Fatalf("a 2x-CPU outlier on a 2x run passed: %v\n%s", err, out)
+	}
+}
+
+// A runner where every package waits longer raises the wall median, which
+// scales the backstop and the class ceilings, and not the CPU limit.
+func TestTimingBudgetScalesTheBackstopAndClassesByTheWallMedian(t *testing.T) {
+	busy := cpuRun("10.00", "60.00")
+	for _, pkg := range []string{"a", "b", "c", "d"} {
+		busy = strings.Replace(busy, "SUM\t"+pkg+"\t20.00", "SUM\t"+pkg+"\t60.00", 1)
+	}
+	if out, err := runTimingBudgetCompare(t, busy+"CPU\ta\t1.00\nTEST\ta\tTestClassed\t50.00\n", cpuBudget); err != nil || strings.Contains(out, "FAIL") {
+		t.Fatalf("a uniformly 3x-wall run failed the backstop or a class ceiling: %v\n%s", err, out)
+	}
+	cpuOutlier := strings.Replace(busy, "CPU\te\t10.00", "CPU\te\t20.00", 1)
+	if out, err := runTimingBudgetCompare(t, cpuOutlier, cpuBudget); err == nil || !strings.Contains(out, "FAIL  e") {
+		t.Fatalf("a 2x-CPU package passed because the wall median scaled the CPU limit: %v\n%s", err, out)
 	}
 }

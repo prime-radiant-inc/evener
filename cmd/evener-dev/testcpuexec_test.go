@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -54,6 +56,27 @@ func TestTestCPUExecPutsThePackagesCPUInItsStream(t *testing.T) {
 	}
 	if cpu := cpuRowSeconds(t, rows, "shardfixture"); cpu < 0.3 {
 		t.Fatalf("CPU row = %vs, want at least the 0.3s the fixture burned", cpu)
+	}
+}
+
+// A sharded package's CPU row is every shard process's CPU summed: the shards
+// split one package's work, so the package spent what they spent together.
+func TestShardRunnerSumsTheShardsCPUIntoThePackageRow(t *testing.T) {
+	cfg, stdout, stderr, _ := e2eConfig(t)
+	cfg.noSurvey = true
+	cfg.flags = []string{"-count=1"}
+	cfg.jsonDir = t.TempDir()
+	cfg.jsonPackage = "shardfixture"
+	t.Setenv("SHARD_FIXTURE_BURN", "300ms")
+	if rc := runShards(cfg); rc != 0 {
+		t.Fatalf("runShards = %d, want 0\nstdout:\n%s\nstderr:\n%s", rc, stdout, stderr)
+	}
+	data, err := os.ReadFile(filepath.Join(cfg.jsonDir, "agent.package.tsv"))
+	if err != nil {
+		t.Fatalf("reading the package row: %v", err)
+	}
+	if cpu := cpuRowSeconds(t, strings.Split(strings.TrimSpace(string(data)), "\n"), "shardfixture"); cpu < 0.3 {
+		t.Fatalf("CPU row = %vs, want at least the 0.3s the burning shard spent", cpu)
 	}
 }
 

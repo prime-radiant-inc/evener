@@ -580,6 +580,9 @@ func runShards(cfg shardsConfig) int {
 	type shardResult struct {
 		err     error
 		seconds float64
+		// cpu is the shard process's user+system CPU, children it waited for
+		// included.
+		cpu float64
 	}
 	results := make([]chan shardResult, len(bins))
 	launchFailed := false
@@ -652,16 +655,22 @@ func runShards(cfg shardsConfig) int {
 		go func() {
 			err := cmd.Wait()
 			<-slots
-			result <- shardResult{err: err, seconds: time.Since(started).Seconds()}
+			r := shardResult{err: err, seconds: time.Since(started).Seconds()}
+			if state := cmd.ProcessState; state != nil {
+				r.cpu = (state.UserTime() + state.SystemTime()).Seconds()
+			}
+			result <- r
 		}()
 	}
 
 	var failed []int
+	shardCPU := 0.0
 	for i, result := range results {
 		if result == nil {
 			continue
 		}
 		r := <-result
+		shardCPU += r.cpu
 		if r.err == nil {
 			_, _ = fmt.Fprintf(cfg.stdout, "PASS  %s:%-2d %8s (%d tests)\n", cfg.label, i, fmt.Sprintf("%.2fs", r.seconds), len(bins[i]))
 		} else {
@@ -677,10 +686,13 @@ func runShards(cfg shardsConfig) int {
 	// The package's own wall time under the sharded surface is the shard
 	// phase, not the sum of overlapping shards (issue #172's contention trap):
 	// the shards run concurrently, so one SUM row for the phase is the honest
-	// number. A failed phase is no measurement, so it is not written.
+	// number. Its CPU row is the shards' CPU summed: they split the one
+	// package's work between them. A failed phase is no measurement, so it is
+	// not written.
 	if jsonShards && cfg.jsonPackage != "" && !fail {
 		phase := time.Since(phaseStart).Seconds()
-		row := fmt.Sprintf("PKG\t%s\nSUM\t%s\t%s\n", cfg.jsonPackage, cfg.jsonPackage, formatSeconds(phase))
+		row := fmt.Sprintf("PKG\t%s\nSUM\t%s\t%s\nCPU\t%s\t%s\n", cfg.jsonPackage, cfg.jsonPackage, formatSeconds(phase),
+			cfg.jsonPackage, formatSeconds(shardCPU))
 		if err := os.WriteFile(filepath.Join(cfg.jsonDir, cfg.label+".package.tsv"), []byte(row), 0o644); err != nil {
 			_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %v\n", cfg.label, err)
 			return 1

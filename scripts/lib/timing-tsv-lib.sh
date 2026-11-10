@@ -2,11 +2,12 @@
 # place. Sourced, never executed.
 #
 # The ratchet's comparison (scripts/gate/test-timing-budget.sh, compare.py)
-# reads three tab-separated row kinds:
+# reads four tab-separated row kinds:
 #
 #   PKG  <package>                    one per package-level terminal event
 #   TEST <package> <name> <seconds>   one per test AND subtest result
 #   SUM  <package> <seconds>          the package's own wall time
+#   CPU  <package> <seconds>          its test binary's (or shards') CPU time
 #
 # Two producers emit them today and must agree on that shape, so it lives here
 # rather than copied into each: the ratchet's own measurement pass (which runs
