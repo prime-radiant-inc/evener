@@ -10,9 +10,12 @@ import {
   type MutationProjectionRefresh,
   outboxEntriesByState,
   ownPendingTurnInput,
+  type PendingMessage,
   type PendingTurnsDraftPort,
   type PendingTurnsThreadsPort,
+  projectPendingMessages,
   recoveryEntries,
+  transcriptMutationIds,
   wireMutationCommitFeed,
 } from "@evener/appwire-client/state/mutation";
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
@@ -59,7 +62,7 @@ export type { PendingMethod, PendingTurnEntry } from "./pendingReconcile";
 // Presentation ownership only. The durable selector includes Remove-only
 // promotion and empty drain commands, not just messages with editable input.
 // Do not filter the underlying pending projection used by submission routing.
-export function useQueueStripMutationIds(ref: string): ReadonlySet<string> {
+export function useEditablePendingMutationIds(ref: string): ReadonlySet<string> {
   const records = useEditableQueuedMutationEntries(ref);
   return useMemo(() => new Set(records.map((record) => record.clientMutationId)), [records]);
 }
@@ -109,6 +112,11 @@ installQueuedMutationProjection({
 // flight, so the stale projection cannot answer for it. Cleared by the test
 // reset hook too.
 const loadedRefs = new Set<string>();
+
+// Identities this page has already seen as recorded transcript items. A later
+// bounded read can drop the item from the model; the delivered fact must not
+// resurrect the pending row. Page-lifetime only, like submittedHere.
+const deliveredHere = new Set<string>();
 
 // The ref's standing delivery-uncertain rows in one pass, unsorted: the fence
 // predicate needs only WHETHER any stand, so this never pays the sorted
@@ -365,6 +373,7 @@ export function submitWithPendingTracking(
 const NO_ENTRIES: PendingTurnEntry[] = [];
 const NO_RECOVERY: MutationRecoveryRecord[] = [];
 const NO_BLOCKED: MutationOutboxRecord[] = [];
+const NO_PENDING_MESSAGES: PendingMessage[] = [];
 
 type ThreadsPortModel = ReturnType<typeof threadsPort.getThreadModel>;
 
@@ -461,6 +470,74 @@ export function useRetryPendingState(ref: string): { loaded: boolean; unresolved
   return { loaded, unresolved: ownPendingTurnInput(entries) };
 }
 
+// The session's one pending-message stack: every undelivered user message,
+// keyed by clientMutationId, with queue rows and pending executions merged into
+// the same row. A row leaves only when a recorded transcript item with that
+// identity is visible; queue consumption and pendingMutations disappearance
+// update the row, never delete it.
+export function usePendingMessages(ref: string): PendingMessage[] {
+  useEffect(() => {
+    if (ref === "") return;
+    void refreshPendingTurnsProjection(ref);
+  }, [ref]);
+
+  const subscribe = useCallback(
+    (onStoreChange: () => void) => {
+      const unsubscribePending = pendingTurnsStore.subscribe(onStoreChange);
+      const unsubscribeThreads = threadsStore.subscribe((state, previous) => {
+        if (state.threads.get(ref) !== previous.threads.get(ref)) onStoreChange();
+      });
+      return () => {
+        unsubscribePending();
+        unsubscribeThreads();
+      };
+    },
+    [ref],
+  );
+
+  const cacheRef = useRef<{
+    outbox: ReturnType<typeof pendingTurnsStore.getState>["outbox"];
+    optimistic: ReturnType<typeof pendingTurnsStore.getState>["optimistic"];
+    recovery: ReturnType<typeof pendingTurnsStore.getState>["recovery"];
+    submittedHere: ReturnType<typeof pendingTurnsStore.getState>["submittedHere"];
+    model: ThreadsPortModel;
+    ref: string;
+    rows: PendingMessage[];
+  } | null>(null);
+  const getSnapshot = useCallback((): PendingMessage[] => {
+    const { outbox, optimistic, recovery, submittedHere } = pendingTurnsStore.getState();
+    const model = threadsPort.getThreadModel(ref);
+    for (const id of transcriptMutationIds(model)) deliveredHere.add(id);
+    const cached = cacheRef.current;
+    if (
+      cached &&
+      cached.outbox === outbox &&
+      cached.optimistic === optimistic &&
+      cached.recovery === recovery &&
+      cached.submittedHere === submittedHere &&
+      cached.model === model &&
+      cached.ref === ref
+    ) {
+      return cached.rows;
+    }
+    const rows = projectPendingMessages({
+      ref,
+      outbox: [...outbox.values()],
+      optimistic: [...optimistic.values()],
+      recovery: [...recovery.values()],
+      model,
+      deliveredHere,
+      submittedHere,
+      isOwnMutationRecord,
+    });
+    const result = rows.length > 0 ? rows : NO_PENDING_MESSAGES;
+    cacheRef.current = { outbox, optimistic, recovery, submittedHere, model, ref, rows: result };
+    return result;
+  }, [ref]);
+
+  return useSyncExternalStore(subscribe, getSnapshot);
+}
+
 // The same projection read from the stores as they are now, not as a component
 // rendered them: for the press handlers that re-derive their verdict at the
 // press (stores/liveControls.ts is the rule; this is its pending-send input).
@@ -505,7 +582,7 @@ export function useBlockedMutationEntries(ref: string): MutationOutboxRecord[] {
   return useOutboxRecordsByState(ref, "blockedUnknown");
 }
 
-// Stop-canceled rows (stop-cancellation-outbox §6): QueueStrip surfaces them
+// Stop-canceled rows (stop-cancellation-outbox §6): the pending stack surfaces them
 // in the same durable-rows slot as blocked ones, where their explicit Retry
 // affordance lives. The canceled state is the one projected by displayedRef
 // too (canceledEntries): a retargeted resend's born-canceled row is the
@@ -689,6 +766,7 @@ export function resetPendingTurnsStoreForTests(): void {
   clearProjectionWorkForTests();
   for (const ref of loadedRefs) setPendingProjectionLoaded(ref, false);
   loadedRefs.clear();
+  deliveredHere.clear();
   pendingTurnsStore.setState({
     outbox: new Map(),
     optimistic: new Map(),

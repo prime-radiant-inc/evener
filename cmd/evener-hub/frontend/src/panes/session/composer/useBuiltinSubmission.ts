@@ -80,3 +80,5 @@ export function useBuiltinSubmission(source: ComposerSourceState, paneId?: strin
 
   return { actions, sessionBuiltins, submitBuiltin };
 }
+
+export type ComposerSubmission = ReturnType<typeof useBuiltinSubmission>;

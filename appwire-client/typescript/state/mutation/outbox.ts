@@ -160,7 +160,10 @@ export interface MutationOutboxStorage<A extends MutationAttachmentRef = Mutatio
   // answer from the settlement, the one home of wire-family resolution,
   // rather than enumerating stores by wire id. Undefined when nothing
   // carrying the id, by key or by wire, settled.
-  settleApplied(clientMutationId: string): Promise<MutationRecord<A> | undefined>;
+  settleApplied(
+    clientMutationId: string,
+    options?: { retainDisplayCopy?: boolean },
+  ): Promise<MutationRecord<A> | undefined>;
   // Records the authoritative snapshot proves never landed, re-queued for
   // another dispatch attempt; returns the ROWS this pass re-queued (a host
   // may reopen the record in place or mint a fresh row for its work - the

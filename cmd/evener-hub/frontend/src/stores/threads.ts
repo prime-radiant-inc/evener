@@ -72,6 +72,9 @@ import {
   MutationDispatcher,
   notificationMutationIdentities,
   type PendingTurnEntry,
+  reflectedMutationIds,
+  transcriptMutationIds,
+  validConsumedClientMutationIds,
 } from "@evener/appwire-client/state/mutation";
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { useStore } from "zustand";
@@ -2485,8 +2488,8 @@ function getMutationRuntime(): MutationRuntime | null {
     return settled;
   };
   const settleApplied = storage.settleApplied.bind(storage);
-  storage.settleApplied = async (clientMutationId) => {
-    const settled = await settleApplied(clientMutationId);
+  storage.settleApplied = async (clientMutationId, options) => {
+    const settled = await settleApplied(clientMutationId, options);
     if (settled) noteHandledMutation(clientMutationId);
     return settled;
   };
@@ -3556,7 +3559,7 @@ async function retargetParkedMutations(
 // The snapshot-level refusals of retryBlockedMutation: a target the store
 // cannot act on regardless of what the retry would find -- no live status, a
 // restartRequired or notLoaded snapshot, no mutation authority, or a
-// restart-blocking obligation. Shared with QueueStrip's Retry button, which
+// restart-blocking obligation. Shared with pending stack's Retry button, which
 // disables on exactly these so a fenced row never offers a Retry that always
 // fails; the remaining refusals (an in-flight reconciliation or hydration, a
 // reconciliation failure, a missing dispatch client) stay retry-time checks.
@@ -3643,7 +3646,7 @@ export async function retryBlockedMutation(
   const rowInstance = record.instanceId ?? record.threadId;
   if (rowInstance !== undefined && threadInstanceID(pressModel) !== rowInstance) return false;
   // The snapshot refusals and the storage-blocked fence are per-TARGET (the
-  // row's own destination), shared with QueueStrip's per-row button via
+  // row's own destination), shared with pending stack's per-row button via
   // retryBlockedForTarget.
   if (retryBlockedForTarget(record.targetRef)) return false;
   if (
@@ -4729,7 +4732,7 @@ export function resumeOnlyDispatchable(ref: string): boolean {
 }
 
 // The verbs the shared admission fences, each mapped to the refusal its own
-// surface already renders (Composer's Send/Steer sentences, QueueStrip's
+// surface already renders (Composer's Send/Steer sentences, pending stack's
 // queue-actions sentence, the typed /clear idiom): the hub's recovery
 // admission refuses exactly these methods for an obligation's whole window -
 // turn/start, turn/steer, turn/queue, turn/drainAsSteer,
@@ -5994,7 +5997,25 @@ async function publishAndReconcileThreadHydration(
         if (!current()) return;
         const authoritativeIds = collectAuthoritativeMutationIds(hydration.response);
         const mutationStateAuthoritative = hydration.response.thread.evener.mutationStateAuthoritative === true;
-        await runtime.dispatcher.reconcileIdentities(authoritativeIds);
+        const responseTranscriptIds = new Set<string>();
+        for (const turn of hydration.response.thread.turns ?? []) {
+          for (const item of turn.items ?? []) {
+            if (item.clientMutationId) responseTranscriptIds.add(item.clientMutationId);
+          }
+        }
+        const responsePendingIds = new Set(
+          (hydration.response.thread.evener.pendingMutations ?? []).map((entry) => entry.clientMutationId),
+        );
+        const responseQueueIds = new Set(hydration.response.thread.evener.queue?.clientMutationIds ?? []);
+        await runtime.dispatcher.reconcileIdentities(
+          [...authoritativeIds].filter((id) => responseTranscriptIds.has(id) || responsePendingIds.has(id)),
+        );
+        await runtime.dispatcher.reconcileIdentities(
+          [...authoritativeIds].filter(
+            (id) => responseQueueIds.has(id) && !responseTranscriptIds.has(id) && !responsePendingIds.has(id),
+          ),
+          { retainDisplayCopy: true },
+        );
         if (!current()) return;
         // A bounded transcript or a clear can omit an accepted mutation from
         // the live projection. Retry unresolved records with their original
@@ -6438,20 +6459,6 @@ function handleNotification(n: AnyNotification): void {
     inflightModelsListIsRefresh = false;
   }
   const mutationIdentities = notificationMutationIdentities(n);
-  if (mutationIdentities.length > 0) {
-    const runtime = getMutationRuntime();
-    if (runtime) {
-      void runtime.dispatcher
-        .reconcileIdentities(mutationIdentities)
-        .then(() => {
-          const ref = notificationRef(n);
-          return ref ? refreshMutationPins(runtime, [ref]) : undefined;
-        })
-        .catch(() => {
-          // A later snapshot or receipt retries the same identity settlement.
-        });
-    }
-  }
   const now = Date.now();
   const wiredClient = getWiredClient();
   const route = notificationRoutingKey(n);
@@ -6609,6 +6616,48 @@ function handleNotification(n: AnyNotification): void {
   // A retained receipt prevents tail replay from counting the same arrival again.
   const acceptedFrameRefs = new Set(publishableChangedThreads);
   for (const ref of entryAcceptedRefs) acceptedFrameRefs.add(ref);
+
+  // Settle a durable mutation only once the accepted model makes its message
+  // visible: a recorded transcript item, or a queue row that is the pending
+  // representation. A history frame this client ignored or invalidated must not
+  // delete the only pending row and leave nothing behind. Consumed queue ids
+  // are the one positive-evidence exception: the drain's own row carries them,
+  // and a drain's queueChanged must settle them even when no model fold is
+  // tracked here.
+  const settlementRef = notificationRef(n);
+  if (mutationIdentities.length > 0 && settlementRef) {
+    const settledModel =
+      publishableThreads?.get(settlementRef) ??
+      nextWatchedThreads?.get(settlementRef) ??
+      threads.get(settlementRef) ??
+      watchedThreads.get(settlementRef);
+    const visible = settledModel ? reflectedMutationIds(settledModel) : undefined;
+    const transcriptIds = settledModel ? transcriptMutationIds(settledModel) : undefined;
+    const queueIds = new Set(settledModel?.queue?.clientMutationIds ?? []);
+    const consumed =
+      n.method === "thread/queueChanged" ? validConsumedClientMutationIds(n.params.consumedClientMutationIds) : [];
+    const retireIds = visible
+      ? mutationIdentities.filter((id) => transcriptIds?.has(id) || consumed.includes(id))
+      : consumed;
+    const retainIds = visible ? mutationIdentities.filter((id) => queueIds.has(id) && !transcriptIds?.has(id)) : [];
+    const runtime = getMutationRuntime();
+    if (runtime && retireIds.length > 0) {
+      void runtime.dispatcher
+        .reconcileIdentities(retireIds)
+        .then(() => refreshMutationPins(runtime, [settlementRef]))
+        .catch(() => {
+          // A later snapshot or receipt retries the same identity settlement.
+        });
+    }
+    if (runtime && retainIds.length > 0) {
+      void runtime.dispatcher
+        .reconcileIdentities(retainIds, { retainDisplayCopy: true })
+        .then(() => refreshMutationPins(runtime, [settlementRef]))
+        .catch(() => {
+          // A later snapshot or receipt retries the same identity settlement.
+        });
+    }
+  }
   if (!nextThreads && !nextWatchedThreads && acceptedFrameRefs.size === 0) return;
 
   // history.invalidatedAtGeneration becoming set - or moving to a newer

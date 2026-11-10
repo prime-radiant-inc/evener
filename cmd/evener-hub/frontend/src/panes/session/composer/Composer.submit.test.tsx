@@ -897,7 +897,7 @@ test("a phone-width draft keeps Send in the row and Stop and Steer in the sessio
   expect(screen.getByTestId("composer-submit")).toBeTruthy();
   // ...and the verbs answer from the session menu. Its items carry the
   // SessionMenu-owned labels, not the row buttons' testids (the menu has
-  // none), and "Steer" alone stays unambiguous - QueueStrip's longer
+  // none), and "Steer" alone stays unambiguous - pending stack's longer
   // "Steer queue now" does not exact-match.
   await user.click(screen.getByRole("button", { name: /session actions/i }));
   await user.click(screen.getByRole("menuitem", { name: "Steer" }));

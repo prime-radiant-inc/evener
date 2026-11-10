@@ -1,0 +1,344 @@
+// @vitest-environment node
+
+import { expect, test } from "vitest";
+import type { InputItem, PendingMutation } from "../../types.gen";
+import { type PendingMessagesInput, projectPendingMessages } from "./pendingMessages";
+import type { MutationOptimisticRecord, MutationOutboxRecord, MutationRecoveryRecord } from "./records";
+import { outboxRecord, recoveryRecord, threadModel } from "./testing";
+
+const identity = (record: { originClientId?: string }): boolean => record.originClientId === undefined;
+const NOTHING_SUBMITTED_HERE: ReadonlyMap<string, number> = new Map();
+
+function textInput(text: string): InputItem[] {
+  return [{ type: "text", text }];
+}
+
+function local(
+  id: string,
+  method = "turn/queue",
+  text = "hello",
+  overrides: Partial<MutationOutboxRecord> = {},
+): MutationOutboxRecord {
+  return outboxRecord({
+    clientMutationId: id,
+    targetRef: "ref_a",
+    method,
+    payload: { ref: "ref_a", input: textInput(text), clientMutationId: id },
+    optimisticDisplay: { method, input: textInput(text) },
+    ...overrides,
+  });
+}
+
+function accepted(
+  id: string,
+  method = "turn/start",
+  text = "hello",
+  overrides: Partial<MutationOptimisticRecord> = {},
+): MutationOptimisticRecord {
+  const { state: _state, ...base } = local(id, method, text);
+  return { ...base, state: "accepted", ...overrides };
+}
+
+function recovery(
+  id: string,
+  kind: MutationRecoveryRecord["recoveryKind"],
+  method = "turn/start",
+  text = "hello",
+): MutationRecoveryRecord {
+  return recoveryRecord({
+    ...local(id, method, text),
+    recoveryKind: kind,
+  });
+}
+
+function pending(id: string, method: string, text: string, overrides: Partial<PendingMutation> = {}): PendingMutation {
+  return {
+    clientMutationId: id,
+    method,
+    input: textInput(text),
+    executionState: "accepted",
+    projectionState: "pending",
+    ...overrides,
+  };
+}
+
+function project(overrides: Partial<PendingMessagesInput> = {}) {
+  return projectPendingMessages({
+    ref: "ref_a",
+    outbox: [],
+    optimistic: [],
+    recovery: [],
+    model: threadModel(),
+    submittedHere: NOTHING_SUBMITTED_HERE,
+    isOwnMutationRecord: identity,
+    ...overrides,
+  });
+}
+
+test("a daemon queue row and its local pending row project as one message", () => {
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 2,
+      ids: ["q1"],
+      clientMutationIds: ["m1"],
+      texts: ["hello"],
+      preview: ["hello"],
+    },
+  });
+  const rows = project({ outbox: [local("m1")], model });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({
+    id: "m1",
+    method: "queue",
+    state: "queued",
+    text: "hello",
+    queueIndex: 0,
+    queueEntryId: "q1",
+  });
+});
+
+test("a visible transcript item suppresses its queue row even when the queue snapshot still lists it", () => {
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 2,
+      ids: ["q1"],
+      clientMutationIds: ["m1"],
+      texts: ["hello"],
+      preview: ["hello"],
+    },
+    turns: [
+      {
+        id: "t1",
+        status: "inProgress",
+        items: [{ id: "i1", turnId: "t1", type: "userMessage", text: "hello", clientMutationId: "m1" }],
+      },
+    ],
+  });
+  expect(project({ model })).toEqual([]);
+});
+
+test("a visible transcript item suppresses its local pending row", () => {
+  const model = threadModel({
+    turns: [
+      {
+        id: "t1",
+        status: "inProgress",
+        items: [{ id: "i1", turnId: "t1", type: "userMessage", text: "hello", clientMutationId: "m1" }],
+      },
+    ],
+  });
+  expect(project({ outbox: [local("m1", "turn/start")], model })).toEqual([]);
+});
+
+test("a drain's authoritative queueEntryIds suppress the consumed queue rows", () => {
+  const model = threadModel({
+    queue: {
+      depth: 2,
+      revision: 4,
+      ids: ["q1", "q2"],
+      clientMutationIds: ["m1", "m2"],
+      texts: ["one", "two"],
+      preview: ["one", "two"],
+    },
+    pendingMutations: [
+      pending("m3", "turn/drainAsSteer", "three", {
+        queueEntryIds: ["q1", "q2"],
+      }),
+    ],
+  });
+  const rows = project({
+    model,
+    outbox: [local("m3", "turn/drainAsSteer", "three")],
+  });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: "m3", method: "drain", state: "steering" });
+  expect(rows[0]!.text).toBe("three");
+});
+
+test("a promote row suppresses its queue entry", () => {
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 3,
+      ids: ["q1"],
+      clientMutationIds: ["m1"],
+      texts: ["the message"],
+      preview: ["the message"],
+    },
+    pendingMutations: [
+      pending("m2", "turn/promoteQueuedAsSteer", "the message", {
+        queueEntryIds: ["q1"],
+      }),
+    ],
+  });
+  const rows = project({
+    model,
+    outbox: [local("m2", "turn/promoteQueuedAsSteer", "the message")],
+  });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: "m2", method: "promote", state: "steering" });
+});
+
+test("an accepted send with no daemon pending entry and no visible item stays as a delivering row", () => {
+  const rows = project({ optimistic: [accepted("m1")] });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: "m1", state: "delivering", text: "hello" });
+});
+
+test("two messages with identical text stay two rows", () => {
+  const rows = project({ outbox: [local("m1", "turn/start"), local("m2", "turn/start")] });
+  expect(rows.map((row) => row.id)).toEqual(["m1", "m2"]);
+});
+
+test("a legacy queue row without clientMutationIds merges with the pending mutation by queue entry id", () => {
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 2,
+      ids: ["q1"],
+      texts: ["hello"],
+      preview: ["hello"],
+    },
+    pendingMutations: [pending("m1", "turn/queue", "hello", { queueEntryIds: ["q1"] })],
+  });
+  const rows = project({ model });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: "m1", method: "queue", state: "queued", queueIndex: 0 });
+});
+
+test("a queue row with no mutation identity still renders once", () => {
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 2,
+      ids: ["q1"],
+      texts: ["hello"],
+      preview: ["hello"],
+    },
+  });
+  const rows = project({ model });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({
+    id: "queue:q1",
+    method: "queue",
+    state: "queued",
+    queueIndex: 0,
+    textComplete: true,
+  });
+});
+
+test("a legacy queue row with no texts array keeps its preview but is not editable", () => {
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 2,
+      ids: ["q1"],
+      texts: undefined,
+      preview: ["truncated…"],
+    },
+  });
+  const rows = project({ model });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: "queue:q1", text: "truncated…", textComplete: false });
+});
+
+test("durable local and recovery states map to their pending states", () => {
+  const rows = project({
+    outbox: [
+      local("m1", "turn/start", "waiting", { state: "submitting", attempted: false }),
+      local("m2", "turn/start", "sending", { state: "submitting", attempted: true }),
+      local("m3", "turn/start", "uncertain", { state: "blockedUnknown" }),
+      local("m4", "turn/start", "canceled", { state: "canceled" }),
+    ],
+    recovery: [recovery("m5", "rejected"), recovery("m6", "orphaned")],
+  });
+  expect(Object.fromEntries(rows.map((row) => [row.id, row.state]))).toEqual({
+    m1: "waiting",
+    m2: "sending",
+    m3: "uncertain",
+    m4: "canceled",
+    m5: "refused",
+    m6: "orphaned",
+  });
+});
+
+test("a queue resting after Stop projects as held", () => {
+  const model = threadModel({
+    status: { type: "idle" },
+    queue: {
+      depth: 1,
+      revision: 2,
+      ids: ["q1"],
+      clientMutationIds: ["m1"],
+      texts: ["hello"],
+      preview: ["hello"],
+    },
+  });
+  expect(project({ model })).toMatchObject([{ id: "m1", state: "held" }]);
+});
+
+test("image bytes and selections survive into the pending row", () => {
+  const input: InputItem[] = [
+    { type: "text", text: "look" },
+    { type: "image", mediaType: "image/png", data: "AAAA", name: "a.png" },
+    { type: "skill", name: "pkg:probe" },
+    { type: "command", name: "compact" },
+  ];
+  const record = outboxRecord({
+    clientMutationId: "m1",
+    targetRef: "ref_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input, clientMutationId: "m1" },
+    optimisticDisplay: { method: "turn/start", input },
+  });
+  const rows = project({ outbox: [record] });
+  expect(rows[0]).toMatchObject({
+    text: "look",
+    displayText: "look [skill: pkg:probe] [command: compact]",
+    images: [{ src: "data:image/png;base64,AAAA", name: "a.png" }],
+    skillNames: ["pkg:probe"],
+    commandNames: ["compact"],
+  });
+});
+
+test("a skill-only row displays its marker while keeping the raw text empty", () => {
+  const input: InputItem[] = [{ type: "skill", name: "pkg:probe" }];
+  const record = outboxRecord({
+    clientMutationId: "m1",
+    targetRef: "ref_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input, clientMutationId: "m1" },
+    optimisticDisplay: { method: "turn/start", input },
+  });
+  const rows = project({ outbox: [record] });
+  expect(rows[0]).toMatchObject({
+    text: "",
+    displayText: "[skill: pkg:probe]",
+    skillNames: ["pkg:probe"],
+  });
+});
+
+test("a delivered identity recorded earlier cannot resurrect after a bounded read drops the item", () => {
+  expect(project({ outbox: [local("m1", "turn/start")], deliveredHere: new Set(["m1"]) })).toEqual([]);
+});
+
+test("authoritative pending input replaces the local preview for the same identity", () => {
+  const model = threadModel({ pendingMutations: [pending("m1", "turn/steer", "new")] });
+  const rows = project({ outbox: [local("m1", "turn/steer", "old")], model });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: "m1", text: "new", state: "steering" });
+});
+
+test("known submission times order first, unknown times after them", () => {
+  const model = threadModel({ pendingMutations: [pending("m3", "turn/steer", "foreign")] });
+  const rows = project({
+    model,
+    outbox: [
+      local("m2", "turn/start", "second", { createdAt: 20 }),
+      local("m1", "turn/start", "first", { createdAt: 10 }),
+    ],
+  });
+  expect(rows.map((row) => row.id)).toEqual(["m1", "m2", "m3"]);
+});

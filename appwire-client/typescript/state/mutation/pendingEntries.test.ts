@@ -3,13 +3,35 @@
 import { expect, test } from "vitest";
 import type { InputItem, PendingMutation } from "../../types.gen";
 import type { PendingTurnEntry } from "./pendingEntries";
-import { ownPendingSend, ownPendingTurnInput, queueEntryPreviewText, reconcilePendingEntries } from "./pendingEntries";
+import {
+  imagePlaceholder,
+  normalizeText,
+  ownPendingSend,
+  ownPendingTurnInput,
+  queueEntryPreviewText,
+  reconcilePendingEntries,
+} from "./pendingEntries";
 import type { MutationOutboxRecord } from "./records";
 import { threadModel as model } from "./testing";
 
-test("queueEntryPreviewText still returns the empty string for contentless input", () => {
+test("normalizeText collapses whitespace and trims", () => {
+  expect(normalizeText("fix   the\n\nlint   errors")).toBe("fix the lint errors");
+  expect(normalizeText("  hello world  ")).toBe("hello world");
+  expect(normalizeText("   \n\t  ")).toBe("");
+});
+
+test("imagePlaceholder names the image count", () => {
+  expect(imagePlaceholder(0)).toBe("");
+  expect(imagePlaceholder(1)).toBe("[image]");
+  expect(imagePlaceholder(2)).toBe("[2 images]");
+  expect(imagePlaceholder(8)).toBe("[8 images]");
+});
+
+test("queueEntryPreviewText prefers normalized text and falls back to images", () => {
+  expect(queueEntryPreviewText("  Fix the lint errors  ", 3)).toBe("Fix the lint errors");
+  expect(queueEntryPreviewText("", 1)).toBe("[image]");
+  expect(queueEntryPreviewText("   ", 2)).toBe("[2 images]");
   expect(queueEntryPreviewText("", 0)).toBe("");
-  expect(queueEntryPreviewText("   ", 0)).toBe("");
 });
 
 function outbox(
@@ -287,7 +309,7 @@ test("a transcript item with the identity removes the optimistic projection rega
   ).toEqual([]);
 });
 
-test("an authoritative queue identity is rendered by QueueStrip rather than duplicated as pending", () => {
+test("an authoritative queue identity is rendered once rather than duplicated as pending", () => {
   expect(
     reconcilePendingEntries(
       "ref_a",

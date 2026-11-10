@@ -238,6 +238,98 @@ describe("Manager start-time projection", () => {
   });
 });
 
+test("an ignored history frame keeps the accepted copy until a visible item settles it", async () => {
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "m1" });
+  const outbox = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thr_ref_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", clientMutationId: "m1", input: [{ type: "text", text: "hello" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "hello" }] },
+  });
+  await storage.markAttempted(outbox.clientMutationId);
+  expect(await storage.settleReceipt(outbox.clientMutationId, "pending")).toBe(true);
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  await threadsStore.getState().ensureThread("ref_a");
+  const settleSpy = vi.spyOn(storage, "settleApplied");
+
+  const history = (epoch: number) => ({
+    method: "history/updated" as const,
+    params: {
+      threadId: "thr_ref_a",
+      ref: "ref_a",
+      bootGeneration: "1",
+      epoch,
+      snapshot: { incarnation: "inc-1", length: 1 },
+      turns: [{ id: "turn_m1", status: "inProgress", itemsView: "full", version: 1 }],
+      items: [
+        {
+          id: "item_m1",
+          turnId: "turn_m1",
+          type: "userMessage",
+          text: "hello",
+          clientMutationId: "m1",
+          version: 1,
+        },
+      ],
+    },
+  });
+
+  // An older epoch is ignored by the history state machine, so the item never
+  // enters the model. Settlement must not delete the only pending copy.
+  fake.emitNotification(history(0));
+  await flushIndexedDBUntil(() => false);
+  expect(settleSpy).not.toHaveBeenCalled();
+  expect(await storage.getOptimistic("m1")).toBeDefined();
+
+  // The same item on the current epoch becomes visible, and only then settles.
+  fake.emitNotification(history(1));
+  await flushIndexedDBUntil(async () => (await storage.getOptimistic("m1")) === undefined);
+  expect(await storage.getOptimistic("m1")).toBeUndefined();
+  storage.close();
+});
+
+test("queue evidence keeps the accepted display copy through the handoff", async () => {
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "m1" });
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  await threadsStore.getState().ensureThread("ref_a");
+  const outbox = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thr_ref_a",
+    method: "turn/queue",
+    payload: { ref: "ref_a", clientMutationId: "m1", input: [{ type: "text", text: "hello" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "hello" }] },
+  });
+  await storage.markAttempted(outbox.clientMutationId);
+  expect(await storage.settleReceipt(outbox.clientMutationId, "pending")).toBe(true);
+  expect(await storage.getOptimistic(outbox.clientMutationId)).toBeDefined();
+  const settleSpy = vi.spyOn(storage, "settleApplied");
+
+  fake.emitNotification({
+    method: "thread/queueChanged",
+    params: {
+      threadId: "thr_ref_a",
+      ref: "ref_a",
+      queue: {
+        revision: 1,
+        depth: 1,
+        ids: ["q1"],
+        clientMutationIds: ["m1"],
+        texts: ["hello"],
+        preview: ["hello"],
+      },
+    },
+  });
+  await flushIndexedDBUntil(() => false);
+  expect(settleSpy.mock.calls).toEqual([["m1", { retainDisplayCopy: true }]]);
+  expect(await storage.getOptimistic("m1")).toBeDefined();
+  storage.close();
+});
+
 describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/rename/compact/shutdown/clearThread/forkFromTurn)", () => {
   test("setModel sends thread/model/set with {ref, modelProvider, model}", async () => {
     const fake = connectFakeClient();

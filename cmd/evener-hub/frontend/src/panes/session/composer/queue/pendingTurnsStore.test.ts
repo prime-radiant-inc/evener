@@ -1207,7 +1207,7 @@ test("an applied pending receipt settles transport without dropping optimistic s
 // turn is coming because of it - so it must not hold the skeleton up; the
 // session shows its empty state instead of a loading frame that only Retry
 // or teardown could clear. The same exclusion class the Composer's
-// ownPendingSend and PendingChips' isOptimistic already carry.
+// ownPendingSend and the pending projection's isOptimistic already carry.
 test("a born-canceled send does not hold the cold-start skeleton", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
@@ -1229,7 +1229,7 @@ test("a born-canceled send does not hold the cold-start skeleton", async () => {
   await flushPendingTurnsProjectionForTests();
 
   // The canceled row stays visible where its Retry affordance lives (the
-  // queue strip's durable rows) - the exclusion lives in the skeleton's
+  // pending stack's durable rows) - the exclusion lives in the skeleton's
   // predicate, not in the projection.
   expect(pending.result.current).toEqual([expect.objectContaining({ state: "canceled" })]);
   // ... but a turn that provably never sent does not mean a turn is coming:

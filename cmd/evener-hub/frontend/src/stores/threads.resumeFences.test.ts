@@ -368,7 +368,7 @@ describe("pending shared membership acquisition", () => {
 
 // RoboRev Medium (PR 1393 fresh review, b04a358): the local recovery fence was
 // enforced only by the surfaces that render their own refusal - Composer's
-// availabilityFor and QueueStrip's press handlers, both of which check above
+// availabilityFor and pending stack's press handlers, both of which check above
 // the store's send action. The alternate send paths call threadsStore.send
 // directly - the palette's slash fallthrough and the ask dock's batch send
 // pass text alone, a failed turn's Retry passes text with attachments - and
@@ -381,7 +381,7 @@ test("a recovery-fenced local session's send refuses at admission for every call
   setMutationStorageForTests(storage);
   const fake = connectMutationClient();
   // A Stop in flight arms the fence while the snapshot still reads idle -
-  // the window the liveControls predicate exists for. QueueStrip.test seeds
+  // the window the liveControls predicate exists for. The pending stack tests seed
   // this same obligation directly.
   threadsStore.setState((state) => ({
     restartBlockingObligations: new Map(state.restartBlockingObligations).set("local:session", Symbol()),

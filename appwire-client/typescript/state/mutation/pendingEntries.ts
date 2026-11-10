@@ -70,19 +70,16 @@ export function queueEntryPreviewText(text: string, imageCount: number): string 
 // an entry that is distinct from its typed text. Without it a skill-only entry
 // previews blank and copies as an empty string.
 //
-// One definition shared by QueueStrip's durable/daemon/pending rows and
-// PendingChips' in-flight chips, so every surface of the same submission names
-// a selection identically - the split that let a skill-only pending chip
-// render an empty body while the queue row named it.
+// One definition shared by the projection's durable, daemon and pending rows,
+// so every representation of the same submission names a selection
+// identically.
 export function skillMarkers(names: readonly string[]): string {
   return names.map((name) => `[skill: ${name}]`).join(" ");
 }
 
-// The one entry-body composition every in-flight surface renders - the
-// chips for sends, the held-steer ghost stack for steer/drain/promote:
-// the matching text-plus-markers preview PendingChips used to compose inline, extracted so the ghost is not a
-// second copy of the chip's composition. Contentless input still composes
-// to "" - the matching-key contract queueEntryPreviewText carries above.
+// The one entry-body composition the pending stack renders: the matching
+// text-plus-markers preview. Contentless input still composes to "" - the
+// matching-key contract queueEntryPreviewText carries above.
 export function pendingEntryPreview(entry: {
   text: string;
   imageCount: number;
@@ -142,16 +139,6 @@ function ownUnsettledInput(
   methods: readonly PendingTurnEntry["method"][],
 ): boolean {
   return (entries ?? []).some((entry) => methods.includes(entry.method) && isOwnUnsettledEntry(entry));
-}
-
-const DEFAULT_MAX_DISPLAY_LENGTH = 140;
-
-// The client-side visual cap layered on top of the daemon's own first-line
-// truncation - independent of and smaller than
-// most real messages, so this mostly matters for a single very long line.
-export function truncateForDisplay(text: string, max: number = DEFAULT_MAX_DISPLAY_LENGTH): string {
-  if (text.length <= max) return text;
-  return `${text.slice(0, max)}…`;
 }
 
 export function commandMarkers(names: readonly string[]): string {

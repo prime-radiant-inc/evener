@@ -1,11 +1,11 @@
-// Wave-5 integration wiring: T2's Composer.tsx mounts T3's QueueStrip and
+// Wave-5 integration wiring: T2's Composer.tsx mounts T3's pending stack and
 // T4's AskDock inside its own tree (the wave controller's own task, per
 // w5-integration-wiring-report.md - every stream's own test suite already
 // covers ITS component in isolation; these tests instead drive the REAL
 // assembled tree through the real stores with wire-true FakeClient
 // notifications, proving the seam props (getComposerText/
 // onRestoreToComposer/onDrainSuccess/useAskDockPending) are wired correctly
-// - not re-deriving QueueStrip's or
+// - not re-deriving the pending stack's or
 // AskDock's own already-covered internal behavior.
 
 import { type MethodTypes, type Thread, type ThreadReadResponse, WireError } from "@evener/appwire-client";
@@ -42,10 +42,14 @@ import { installControlledImageEncoding } from "../testing/imageEncoding";
 import { askDockStore, resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { ackAskUserCall } from "./askDock/askDockTestUtils";
 import { Composer as ComposerView } from "./Composer";
-import { stampRecoveryOwner } from "./composerTestUtils";
+import { ComposerWithPendingStack, stampRecoveryOwner } from "./composerTestUtils";
 import { readComposerDraft, readDraft, writeComposerDraft } from "./draft";
-import { usePendingTurnEntries } from "./queue";
-import { resetPendingTurnsStoreForTests, subscribeComposerSubmissionCommitted } from "./queue/pendingTurnsStore";
+import {
+  resetPendingTurnsStoreForTests,
+  subscribeComposerSubmissionCommitted,
+  usePendingMessages,
+  usePendingTurnEntries,
+} from "./queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
 
 function Composer(props: React.ComponentProps<typeof ComposerView>) {
@@ -156,7 +160,7 @@ async function mountComposer(
   render(
     <ClientProvider client={fake}>
       <Toast />
-      <Composer ref={ref} source={source} focused={false} />
+      <ComposerWithPendingStack ref={ref} source={source} />
     </ClientProvider>,
   );
   await flushPendingTurnsProjectionForTests();
@@ -199,7 +203,7 @@ function textarea(): HTMLDivElement | null {
   return screen.queryByRole("textbox", { name: /message/i }) as HTMLDivElement | null;
 }
 
-// QueueStrip's drain-as-steer button. Its accessible name is exactly
+// pending stack's drain-as-steer button. Its accessible name is exactly
 // "Steer queue now" (no KeyHint), so match it exactly.
 function drainButton(): HTMLButtonElement {
   return screen.getByRole("button", { name: "Steer queue now" }) as HTMLButtonElement;
@@ -1286,24 +1290,24 @@ test("a second message queues behind a committed start even when recovery projec
 });
 
 test.each([
-  { edited: false, fromStrip: false, remount: true },
-  { edited: false, fromStrip: false, remount: false },
-  { edited: true, fromStrip: false, remount: true },
-  { edited: true, fromStrip: false, remount: false },
-  { edited: false, fromStrip: true, remount: true },
-  { edited: false, fromStrip: true, remount: false },
-  { edited: true, fromStrip: true, remount: true },
-  { edited: true, fromStrip: true, remount: false },
-  { edited: "same", fromStrip: false, remount: true },
-  { edited: "same", fromStrip: false, remount: false },
-  { edited: "same", fromStrip: true, remount: true },
-  { edited: "same", fromStrip: true, remount: false },
+  { edited: false, fromPendingStack: false, remount: true },
+  { edited: false, fromPendingStack: false, remount: false },
+  { edited: true, fromPendingStack: false, remount: true },
+  { edited: true, fromPendingStack: false, remount: false },
+  { edited: false, fromPendingStack: true, remount: true },
+  { edited: false, fromPendingStack: true, remount: false },
+  { edited: true, fromPendingStack: true, remount: true },
+  { edited: true, fromPendingStack: true, remount: false },
+  { edited: "same", fromPendingStack: false, remount: true },
+  { edited: "same", fromPendingStack: false, remount: false },
+  { edited: "same", fromPendingStack: true, remount: true },
+  { edited: "same", fromPendingStack: true, remount: false },
 ])(
-  "pending submissions preserve draft ownership ($edited, strip $fromStrip, remount $remount)",
-  async ({ edited, fromStrip, remount }) => {
+  "pending submissions preserve draft ownership ($edited, pending stack $fromPendingStack, remount $remount)",
+  async ({ edited, fromPendingStack, remount }) => {
     const fake = await mountComposer(
       "ref_a",
-      fromStrip
+      fromPendingStack
         ? {
             evener: {
               ref: "ref_a",
@@ -1314,8 +1318,8 @@ test.each([
           }
         : {},
     );
-    const method = fromStrip ? "turn/drainAsSteer" : "turn/steer";
-    const actionButton = fromStrip ? drainButton : composerSteerButton;
+    const method = fromPendingStack ? "turn/drainAsSteer" : "turn/steer";
+    const actionButton = fromPendingStack ? drainButton : composerSteerButton;
     fake.on(method, (params) => ({
       receipt: appliedReceipt(params.clientMutationId, "thr_ref_a"),
     }));
@@ -1331,7 +1335,11 @@ test.each([
       });
       if (remount) {
         cleanup();
-        render(<Composer ref="ref_a" source={createTestComposerSource("ref_a")} focused={false} />);
+        render(
+          <ClientProvider client={fake}>
+            <ComposerWithPendingStack ref="ref_a" source={createTestComposerSource("ref_a")} />
+          </ClientProvider>,
+        );
       }
       expect(actionButton().disabled).toBe(true);
       fireEvent.click(actionButton());
@@ -1519,9 +1527,9 @@ function startTurn(fake: FakeClient, ref: string, turnId: string): void {
   });
 }
 
-// --- T3: queue strip wiring --------------------------------------------------
+// --- T3: pending stack wiring --------------------------------------------------
 
-test("the strip's drain-as-steer reads the composer's live text at click time, not a stale snapshot", async () => {
+test("the pending stack's drain-as-steer reads the composer's live text at click time, not a stale snapshot", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     evener: {
@@ -1543,7 +1551,7 @@ test("the strip's drain-as-steer reads the composer's live text at click time, n
   expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "st" }] });
 });
 
-test("a successful strip-triggered drain clears the composer's own text and draft", async () => {
+test("a successful pending-stack-triggered drain clears the composer's own text and draft", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     evener: {
@@ -1565,14 +1573,14 @@ test("a successful strip-triggered drain clears the composer's own text and draf
 });
 
 // Mirrors this file's own "text typed while a send is still in flight
-// survives" idiom (Composer.test.tsx) for the strip-triggered drain path:
+// survives" idiom (Composer.test.tsx) for the pending-stack-triggered drain path:
 // onDrainSuccess previously cleared the composer's CURRENT text/attachments
 // unconditionally, with no snapshot to compare against (unlike this
 // component's own classic drain, which uses clearIfUnchanged) - so an edit
-// landing while a strip-triggered drain was still in flight would be
+// landing while a pending-stack-triggered drain was still in flight would be
 // silently discarded once the drain resolved (w5-integration-wiring-
 // report.md Concern #2).
-test("text changed while a strip-triggered drain is in flight survives the drain's own success (not cleared) - the same unchanged-since-submit asymmetry as the classic drain path", async () => {
+test("text changed while a pending-stack-triggered drain is in flight survives the drain's own success (not cleared) - the same unchanged-since-submit asymmetry as the classic drain path", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     evener: {
@@ -1760,7 +1768,7 @@ test("clicking Edit on a queued entry whose daemon skillNames slot is null resto
       // A plain queued entry has no skill selection, and the daemon emits a JSON
       // null slot for it (`slices.Clone(nil)` with no custom marshaler) rather
       // than an absent field. The restore path must tolerate that shape: the
-      // other strip-edit tests seed no `skillNames` at all, or a non-empty
+      // other pending-stack-edit tests seed no `skillNames` at all, or a non-empty
       // selection, so neither exercises it.
       queue: {
         revision: 0,
@@ -2043,14 +2051,14 @@ test("mobile source-backed session omits repository metadata without a local git
   expect(fake.calls.some((call) => call.method === "evener/git/head")).toBe(false);
 });
 
-// --- shared busy gate across Composer and QueueStrip (item 6) ---------------
-// Composer's own busyAction and QueueStrip's drain previously tracked busy
-// state independently, so a user could fire the classic drain (Shift+Enter
-// or this component's own "Steer" button) and QueueStrip's "Steer queue now"
+// --- shared busy gate across Composer and the pending stack (item 6) ----------
+// Composer's own busyAction and the pending stack's drain previously tracked
+// busy state independently, so a user could fire the classic drain (Shift+Enter
+// or this component's own "Steer" button) and the pending stack's "Steer queue now"
 // button concurrently - both ultimately call the SAME drainAsSteer RPC,
 // neither button disabling the other.
 
-test("while a strip-triggered drain is in flight, the composer's own classic steer control is also disabled (shared busy gate)", async () => {
+test("while a pending-stack-triggered drain is in flight, the composer's own classic steer control is also disabled (shared busy gate)", async () => {
   const storage = new PausedCommitStorage();
   setMutationStorageForTests(storage);
   const user = userEvent.setup();
@@ -2075,7 +2083,7 @@ test("while a strip-triggered drain is in flight, the composer's own classic ste
   expect(fake.calls.some((c) => c.method === "turn/drainAsSteer")).toBe(true);
 });
 
-test("while the composer's own classic drain is in flight, the strip's Steer-now button is also disabled (shared busy gate)", async () => {
+test("while the composer's own classic drain is in flight, the pending stack's Steer-now button is also disabled (shared busy gate)", async () => {
   const storage = new PausedCommitStorage();
   setMutationStorageForTests(storage);
   const user = userEvent.setup();
@@ -2135,7 +2143,7 @@ test("a queue submit also exposes its durable pending entry in the composed UI w
     evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
   });
   fake.on("turn/queue", () => new Promise(() => {}));
-  const { result } = renderHook(() => usePendingTurnEntries("ref_a", "queue"));
+  const { result } = renderHook(() => usePendingMessages("ref_a"));
 
   await user.type(textarea() as HTMLDivElement, "qm");
   // "Send" in every state - a mid-turn submit still queues (that is the ROUTE,
@@ -2144,15 +2152,7 @@ test("a queue submit also exposes its durable pending entry in the composed UI w
   await user.click(screen.getByTestId("composer-submit"));
 
   await waitFor(() => expect(result.current).toHaveLength(1));
-  // QueueStrip.test.tsx's own "a pending queue-method entry from another
-  // submission renders as an extra, action-less row" test already proves
-  // QueueStrip renders a pending row given the right store state, but only
-  // in isolation (props handed to it directly) - this is the missing
-  // end-to-end proof that the pending row is ALSO visible once driven
-  // through the REAL, fully composed Composer+QueueStrip tree via an actual
-  // user submit, not just the store's own hook state (queue-strip stream
-  // review, Minor).
-  expect(await screen.findByText("qm")).toBeTruthy();
+  expect(result.current[0]).toMatchObject({ method: "queue", text: "qm" });
 });
 
 test("relay recovery refreshes stale queue capability without reconnecting or remounting the composer", async () => {
@@ -2336,7 +2336,7 @@ test("resolving the pending ask announces the composer's restoration via this co
 
 // --- full-tree sweep: cross-seam scenarios (task 5) -------------------------
 
-test("the queue strip stays rendered while an ask is pending, with the dock no longer in the composer", async () => {
+test("the pending stack stays rendered while an ask is pending, with the dock no longer in the composer", async () => {
   const fake = await mountComposer("ref_a", {
     status: { type: "idle" },
     evener: {
@@ -2349,16 +2349,16 @@ test("the queue strip stays rendered while an ask is pending, with the dock no l
 
   startTurn(fake, "ref_a", "turn_1");
   act(() => ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1"));
-  // The queue strip is not part of the ask-pending hide: queued messages
+  // The pending stack is not part of the ask-pending hide: queued messages
   // stay visible (and manageable) while the input row is replaced.
-  const queueStrip = await screen.findByTestId("queue-strip");
-  expect(queueStrip.dataset.queuedCount).toBe("1");
+  const stack = await screen.findByTestId("pending-message-stack");
+  expect(stack.querySelectorAll("[data-testid='pending-message-row']")).toHaveLength(1);
   // The dock moved to the transcript's trailing row (Session.tsx) - it
   // renders nowhere under this component.
   expect(document.querySelector("[data-ask-response-dock]")).toBeNull();
 });
 
-test("queuing a message end to end: queue -> strip renders -> edit restores text -> cancel fires with expectedEntryId", async () => {
+test("queuing a message end to end: queue -> stack renders -> edit restores text -> cancel fires with expectedEntryId", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
@@ -2384,7 +2384,7 @@ test("queuing a message end to end: queue -> strip renders -> edit restores text
   expect(clientMutationId).toBeTruthy();
 
   // The daemon's own wire echo is what actually reconciles the pending
-  // entry AND is the strip's only source of queue rows (no local mutation)
+  // entry AND is the pending stack's only source of queue rows (no local mutation)
   // - a successful RPC response alone never does either (pendingTurnsStore's
   // own documented contract).
   await act(async () => {
@@ -2405,7 +2405,9 @@ test("queuing a message end to end: queue -> strip renders -> edit restores text
     });
   });
 
-  expect((await screen.findByTestId("queue-strip")).dataset.queuedCount).toBe("1");
+  expect(
+    screen.getByTestId("pending-message-stack").querySelectorAll("[data-testid='pending-message-row']"),
+  ).toHaveLength(1);
   expect(screen.getByText("fq")).toBeTruthy();
 
   fake.on("turn/cancelQueued", (params) => ({
@@ -2418,4 +2420,40 @@ test("queuing a message end to end: queue -> strip renders -> edit restores text
   await flushPendingTurnsProjectionForTests();
   const call = fake.calls.find((c) => c.method === "turn/cancelQueued");
   expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
+});
+
+test("a queue row's Steer now and Remove actions send the live entry identity", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    status: { type: "active" },
+    evener: {
+      ref: "ref_a",
+      capabilities: FULL_CAPABILITIES,
+      queue: { revision: 3, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
+      activeTurnId: "turn_1",
+    },
+  });
+  fake.on("turn/promoteQueuedAsSteer", (params) => ({
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
+  }));
+  fake.on("turn/cancelQueued", (params) => ({
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
+    removedText: "queued",
+  }));
+
+  await user.click(screen.getByRole("button", { name: "Steer now" }));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.find((call) => call.method === "turn/promoteQueuedAsSteer")?.params).toMatchObject({
+    ref: "ref_a",
+    index: 0,
+    expectedEntryId: "q1",
+  });
+
+  await user.click(screen.getByRole("button", { name: "Remove from queue" }));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.find((call) => call.method === "turn/cancelQueued")?.params).toMatchObject({
+    ref: "ref_a",
+    index: 0,
+    expectedEntryId: "q1",
+  });
 });

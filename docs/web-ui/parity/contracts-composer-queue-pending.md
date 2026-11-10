@@ -1,5 +1,10 @@
 # Behavior contracts: composer, queue, pending/optimistic, attachments, drafts, ask_user, escalations
 
+> The queue strip, optimistic send chips and steering ghosts are one
+> identity-keyed pending-message stack at the transcript's trailing row. The
+> behavior lines below remain the contract the stack preserves; their old
+> surface names describe where the behavior came from.
+
 Mined from `cmd/evener-hub/jstest/`. Each line is a behavior a new Vitest suite must
 re-cover, tagged with the jstest file it currently comes from. CSS/template-token-only
 files (no runtime/DOM-interaction behavior, just regex assertions over `style.css` /
@@ -210,7 +215,7 @@ except where a line says so itself.
 - clicking edit appends the FULL untruncated queued text (not the truncated preview line) to any existing composer text (separated by a blank line), persists it through the same sticky-draft path as real typing, focuses the composer, and cancels the queued copy by index+entry_id — the composer text then survives the queue's re-render once the daemon confirms (test-queue-edit-cancel.js)
 - if the edit's underlying cancel fails (409, already consumed), the restored text still stays in the composer (never silently duplicated) with an honest banner ("in composer" + "could not be removed"), and queue state is unchanged (test-queue-edit-cancel.js)
 - if canceling a queued entry that had image attachments succeeds, a banner warns the user to re-attach the images since they aren't restored automatically (test-queue-edit-cancel.js)
-  - **Implementation note (wave 5 close):** confirmed as implemented — `QueueStrip.tsx`'s edit path (`onRestoreToComposer`) restores text only; dropped image attachments surface via its own `reportRemovedImages` warning toast, never auto-restored. See `w5-integration-wiring-report.md`'s "Seam contradictions found" §1 for why the task brief's own literal wording (merge attachments into pending state too) was not implemented as written.
+  - **Implementation note (wave 5 close):** confirmed as implemented — the pending row's edit path (`onRestoreToComposer`) restores text only; dropped image attachments surface via its own `reportRemovedImages` warning toast, never auto-restored. See `w5-integration-wiring-report.md`'s "Seam contradictions found" §1 for why the task brief's own literal wording (merge attachments into pending state too) was not implemented as written.
 - an image-only queued entry (no text) has its edit button disabled — clicking it fires no fetch and doesn't touch the composer — while cancel still works normally (test-queue-edit-cancel.js)
 - if the daemon's `queueChanged` payload lacks the full `texts` array (old daemon), edit does not restore the truncated preview line as if it were the real message — it no-ops with an "edit not available" banner, while cancel is unaffected (test-queue-edit-cancel.js)
 - while an edit/cancel request for a row is in flight, both its edit and cancel buttons are disabled so a double-click can't duplicate the composer text or fire a second conflicting request; both re-enable once the request settles (test-queue-edit-cancel.js)

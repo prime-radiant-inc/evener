@@ -19,7 +19,13 @@ import type {
   MutationStopBarrier,
   MutationStopCapture,
 } from "./mutationOutbox";
-import { acceptedRecord, effectiveWireId, retainsAcceptedCopy, settlementRetiresRecovery } from "./mutationOutbox";
+import {
+  acceptedRecord,
+  carriesOptimisticInput,
+  effectiveWireId,
+  retainsAcceptedCopy,
+  settlementRetiresRecovery,
+} from "./mutationOutbox";
 import { trackProjectionWork } from "./projectionWork";
 import { createSecureUUID } from "./secureUUID";
 
@@ -362,7 +368,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
       // this submission was in flight - after the click, before this write
       // issued - has left the ref's durable stop epoch past the click-time
       // capture. The row commits born-"canceled": announced for the canceled
-      // queue strip, never dispatched, released only by an explicit Retry.
+      // pending stack, never dispatched, released only by an explicit Retry.
       const stopEpoch = await this.#stopEpochOf(transaction, intent.targetRef);
       const canceledByBarrier = barrier !== undefined && stopEpoch > barrier.stopEpoch;
       const intentSequence = await this.#allocateSequence(transaction, intent.targetRef);
@@ -576,14 +582,14 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
   //  - Birth fence: a Stop whose cancel transaction committed between the
   //    capture and this mint bumped an epoch past its capture half. The mint
   //    never absorbs it: the fresh row commits born-"canceled" for it -
-  //    announced for the canceled strip, never dispatched - the same
+  //    announced in the pending stack, never dispatched - the same
   //    commit-order comparison the enqueue barrier carries. A capture taken
   //    after the newest Stop compares equal and mints born-submitting: that
   //    Retry is §4's deliberate post-Stop send.
   // The terminal settlement differs by predecessor: a canceled row is
   // REMOVED (§6's removal on explicit Retry - it provably never left any
-  // tab, holds no evidence a receipt could settle, and its chip must leave
-  // the canceled strip so a second press cannot mint the same send twice);
+  // tab, holds no evidence a receipt could settle, and its row must leave
+  // the pending stack so a second press cannot mint the same send twice);
   // a blockedUnknown row keeps its id and attempt evidence as "superseded"
   // - never dispatched again (nextDispatchable returns only submitting
   // rows), still settleable by the receipt or in-band refusal of the real
@@ -656,7 +662,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
 
   // The displayed-ref half of the persistence read: a retargeted row's
   // durable destination is the resumed ref, but the pane that surfaces it -
-  // the canceled strip's projection - is the displayed one it was
+  // the pending stack's projection - is the displayed one it was
   // retargeted from. This read lists the outbox rows whose displayedRef
   // names the given ref, whatever their destination; rows whose own
   // targetRef is the ref are listOutbox's, so callers merge without
@@ -684,7 +690,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
   // new ref (keeping the relative order). The clientMutationId is PRESERVED: the
   // resumed hydration's reconciliation and every settle lookup key on it. The
   // matching optimistic copies and the recovery rows (a rejected turn awaiting
-  // Retry) move too, so the new ref's queue strip and recovery list show them
+  // Retry) move too, so the new ref's pending stack and recovery list show them
   // and Retry's fused-identity check (retryBlockedMutation) matches the resumed
   // model. Canceled rows stay behind - a Stop canceled them, and only an
   // explicit Retry on the identity that owns them revives one. Callers
@@ -745,7 +751,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         );
         // The accepted-but-unreflected copies follow whether or not their outbox
         // row is still present: the resumed ref's reconciliation settles them by
-        // clientMutationId, and the new ref's strip renders them.
+        // clientMutationId, and the new ref's pending stack renders them.
         const eligibleOptimistic = bySequence(
           (await requestResult<MutationOptimisticRecord[]>(optimisticStore.getAll())).filter(
             (record) => record.targetRef === fromRef,
@@ -935,12 +941,16 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
     return settled;
   }
 
-  async settleApplied(clientMutationId: string): Promise<MutationRecord | undefined> {
-    return (await this.settleAppliedResult(clientMutationId)).record;
+  async settleApplied(
+    clientMutationId: string,
+    options?: { retainDisplayCopy?: boolean },
+  ): Promise<MutationRecord | undefined> {
+    return (await this.settleAppliedResult(clientMutationId, options)).record;
   }
 
   async settleAppliedResult(
     clientMutationId: string,
+    options?: { retainDisplayCopy?: boolean },
   ): Promise<{ settled: boolean; retiredIds: string[]; record?: MutationRecord }> {
     let settledSource: MutationRecord | undefined;
     let settledWireId: string | undefined;
@@ -993,9 +1003,11 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         const subject = (named ?? siblings[0] ?? wireCarriers[0]) as MutationRecord;
         await this.#discardSupersededNoteRecovery(transaction, subject);
         const supersededNoteIds = await this.#retireOlderBlockedNoteRows(transaction, subject);
+        const retainDisplay = options?.retainDisplayCopy === true && carriesOptimisticInput(subject);
         if (named) {
           if (outboxRecord) await requestResult(outbox.delete(clientMutationId));
-          if (optimisticRecord) await requestResult(optimistic.delete(clientMutationId));
+          if (retainDisplay) await requestResult(optimistic.put(acceptedRecord(subject)));
+          else if (optimisticRecord) await requestResult(optimistic.delete(clientMutationId));
           if (recoveryRecord && settlementRetiresRecovery(recoveryRecord))
             await requestResult(recovery.delete(clientMutationId));
         } else if (wireCarriers.length > 0) {
@@ -1004,7 +1016,8 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
           await requestResult(recovery.delete(subject.clientMutationId));
         } else {
           await requestResult(outbox.delete(subject.clientMutationId));
-          await requestResult(optimistic.delete(subject.clientMutationId));
+          if (retainDisplay) await requestResult(optimistic.put(acceptedRecord(subject)));
+          else await requestResult(optimistic.delete(subject.clientMutationId));
         }
         // The same one sibling sweep as settleReceipt.
         const retiredIds = await this.#retireWireFamily(transaction, family, {
@@ -1743,7 +1756,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         // independently edited draft, the user's live work) - or a delayed
         // terminal refusal for the wire would resurrect work the user
         // removed. The retired keys - INCLUDING the removed row's own, a live
-        // strip row carrying a registration - reach the retiredIds
+        // pending row carrying a registration - reach the retiredIds
         // post-commit notification so the runtime clears without waiting for
         // a background read. No state filter here, unlike the mint's
         // generation bound: remove ends the composition entirely, exactly like
@@ -1775,7 +1788,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
 
   // The displayed-ref half of the recovery read: an edited retargeted row's
   // recovery row carries the resumed ref as its durable destination while
-  // the pane that must show it - the tray the strip's own Edit opened - is
+  // the pane that must show it - the tray the pending stack's own Edit opened - is
   // the displayed ref it was retargeted from.
   async listRecoveryDisplayedAt(targetRef: string): Promise<MutationRecoveryRecord[]> {
     return this.#read(RECOVERY_STORE, async (transaction) => {
@@ -2169,7 +2182,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
       // it - the settled superseded predecessor, a replacement still
       // submitting mid-flight (its late outcomes land inert on a missing
       // row, the same semantics a late receipt against a settled row already
-      // has), and a canceled duplicate whose chip leaves the strip with the
+      // has), and a canceled duplicate whose row leaves the pending stack with the
       // consumption, the same tail-position surface an explicit requeue
       // already has. The wire's one live row is the fresh row this resend
       // just created, excluded by key.

@@ -117,7 +117,7 @@ export interface UseTranscriptScrollOptions {
   heldVisible?: boolean;
   /**
    * The held-steering ghost stack's arrival counter (Session's
-   * useHeldSteerEpoch). Same role as askDockActivationEpoch: a held steer
+   * usePendingArrivalEpoch). Same role as askDockActivationEpoch: a held steer
    * APPEARING changes no turn/item shape, so this carries the arrival edge
    * for the pill. Removals never bump it (announced, not counted), so a
    * departure leaves the pill alone.

@@ -126,7 +126,10 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
     return restored;
   }
 
-  async reconcileIdentities(clientMutationIds: Iterable<string>): Promise<void> {
+  async reconcileIdentities(
+    clientMutationIds: Iterable<string>,
+    options?: { retainDisplayCopy?: boolean },
+  ): Promise<void> {
     const targetRefs = new Set<string>();
     await Promise.all(
       [...new Set(clientMutationIds)].map(async (clientMutationId) => {
@@ -138,7 +141,7 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
         // wire carrier), so the note acknowledgement reads its answer from
         // the one home of wire-family resolution and fires only for a
         // settlement that actually proved the composition applied.
-        const record = await this.#storage.settleApplied(clientMutationId);
+        const record = await this.#storage.settleApplied(clientMutationId, options);
         if (record?.method === "notes/human/set") this.#onHumanNoteReconciled(record);
         if (record) targetRefs.add(record.targetRef);
       }),

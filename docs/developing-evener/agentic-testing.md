@@ -740,20 +740,20 @@ inventing a CSS path; if you need one that isn't here, grep
 | `[data-testid="composer-stop"]` | **Stop** (interrupt). In the control row above the phone-width boundary; in the session menu's leading group at or below it |
 | `[data-testid="composer-attach"]` | the paperclip; opens the hidden `input[type=file]` |
 | `[data-testid="current-work-goal"]` | the CurrentWork goal row, present only while a goal is set; its value button `[data-testid="current-work-goal-value"]` reopens the composer with the `/goal` draft, and the goal's live status word is `[data-testid="current-work-goal-status"]` |
-| `[data-testid="pending-chips"]` | optimistic in-flight chips, labelled `Sending` / `Steering` / `Draining` (`pending/PendingChips.tsx:38-42,56`) |
+| `[data-testid="pending-message-stack"]` | the transcript's trailing pending-message stack; each row is `[data-testid="pending-message-row"]` with `data-state` and `data-message-id` (`pending/PendingMessageStack.tsx`) |
 
 Shift+Enter is the Steer chord and reaches `handleSteerClick`
 (`Composer.tsx:685-689`) **even when the Steer button is not rendered** —
 that is the only way to attempt a steer against an idle session from the
 UI. `/` in an empty composer opens the command palette (`:673-676`).
 
-**Queue strip** (`composer/queue/QueueStrip.tsx`) has no testids; address
-it by its text: the heading `Queued messages (N)` (`:278`), the
-drain-everything button `Steer queue now` (`:282`), and per-row actions
-`Steer now`, `Edit message`, `Remove from queue` (`:305-333`). Rows for
-mutations whose fate is unknown read `Delivery uncertain — <text>` with a
-`Retry` button; rows whose session was deleted read `Destination
-deleted — <text>` with `Copy` (`:349-374`).
+**Pending message stack** (`pending/PendingMessageStack.tsx`) renders each
+undelivered user message as the delivered user row, with the status caption in
+the timestamp slot and actions in a footer. Address the drain-everything button
+by its text `Steer queue now`; per-row actions are `Steer now`, `Edit message`,
+`Remove from queue`, `Retry`, `Dismiss` and `Copy`. The caption reads
+`Delivery uncertain` for a mutation whose fate is unknown and `Destination
+deleted` for a row whose session was deleted.
 
 **Rail** (`shell/rail/RailRow.tsx`, `Rail.tsx`): a session row is
 `[data-session-ref="local:<SID>"]` — note
@@ -843,16 +843,16 @@ again:
 
 ```javascript
 (async () => {
-  const chips = () => Array.from(
-    document.querySelectorAll('[data-testid="pending-chips"] li'),
+  const rows = () => Array.from(
+    document.querySelectorAll('[data-testid="pending-message-stack"] li'),
     (li) => li.textContent,
   );
-  const before = chips();
+  const before = rows();
   document.querySelector('[data-testid="composer-steer"]').click();
   // Synchronous: the optimistic chip is in the DOM RIGHT NOW.
-  const sync = chips();
+  const sync = rows();
   await new Promise((r) => setTimeout(r, 2000)); // let the ack land
-  const after = chips();
+  const after = rows();
   const toast = document.querySelector('[aria-label="Notifications"]')?.textContent;
   return JSON.stringify({ port: location.port, before, sync, after, toast }, null, 2);
 })()

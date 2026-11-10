@@ -278,6 +278,21 @@ test("settlement leaves recovery advanced to revision one for reconciliation", a
   });
 });
 
+test("settleApplied can keep the accepted display copy for the queue handoff", async () => {
+  const f = fixture();
+  const outbox = await f.storage.enqueueIntent(queuedIntent());
+  await f.storage.markAttempted(outbox.clientMutationId);
+  expect(await f.storage.settleReceipt(outbox.clientMutationId, "pending")).toBe(true);
+  expect(await f.storage.getOptimistic(outbox.clientMutationId)).toBeDefined();
+
+  await f.storage.settleApplied(outbox.clientMutationId, { retainDisplayCopy: true });
+
+  expect(await f.storage.getOptimistic(outbox.clientMutationId)).toMatchObject({
+    clientMutationId: outbox.clientMutationId,
+    state: "accepted",
+  });
+});
+
 test("stale cross-adapter recovery consolidation refuses without deleting the secondary", async () => {
   const f = fixture();
   const seedImageRecovery = async (text: string, imageName: string) => {

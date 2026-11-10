@@ -28,9 +28,12 @@ Controls follow that ownership, not the preview text or connection status.
   an attempt already in flight may still land and appear in the conversation.
 - Promotion and input-empty drain commands offer Remove only. Editing a
   content-bearing drain restores its composer input, not the daemon queue preview.
-- Unattempted rows appear once in QueueStrip, not also in optimistic send chips
-  or steering ghosts. In-flight and remote ghosts remain. A move back to the
-  local queue after an explicit refusal is not announced as delivery or failure.
+- Every undelivered message appears once, in the pending stack at the bottom of
+  the transcript. Local unattempted rows, daemon queue rows, in-flight sends and
+  steering, and recovery rows share one identity-keyed row. A queue row is
+  suppressed once a recorded transcript item with the same identity is visible.
+  A move back to the local queue after an explicit refusal is not announced as
+  delivery or failure.
 
 A **Retry** of a canceled or delivery-uncertain row mints a fresh row at the
 queue's tail and settles the predecessor terminal. The predecessor keeps its
@@ -110,7 +113,7 @@ not scope user selections; they keep pane identity stable and scope automatic
 restoration: a recovery row records the composer seat that last wrote it as
 its composition owner, and an empty composer at mount restores only the
 newest rejected row its own seat owns - the pane's own bounced work, one tap
-back. Every row stays reachable through QueueStrip's explicit Edit, Remove, Retry
+back. Every row stays reachable through the pending stack's explicit Edit, Remove, Retry
 and Send now regardless of owner. A pane's own send carries its seat, so the row
 a refusal bounces from it restores to that pane's next mount under the same
 seat. A resumed nested session carries the authoring pane's seat to its
@@ -264,10 +267,13 @@ duplicate; only a reproduced identity/projection case can establish that cause.
 - Browser transactions: `cmd/evener-hub/frontend/src/stores/mutationOutboxIndexedDB.ts`.
 - Browser identity checks, dispatch and resume-retry pacing:
   `cmd/evener-hub/frontend/src/stores/threads.ts`.
-- Projection and presentation membership: `composer/queue/pendingTurnsStore.ts`.
-  Presentation filtering does not change submission routing.
+- Projection and presentation membership:
+  `appwire-client/typescript/state/mutation/pendingMessages.ts` and
+  `panes/session/pending/PendingMessageStack.tsx`. Presentation filtering does
+  not change submission routing.
 - Pane lifetime and durable recovery owner: `composer/sourceState.ts`.
-- Controls: `composer/queue/QueueStrip.tsx` and `composer/Composer.tsx`.
+- Controls: `panes/session/pending/usePendingMessageActions.ts` and
+  `composer/Composer.tsx`.
 - Decisions both controls share (selection capability gate, store dispatch by
   route, changed or already-sent recovery refusals): `composer/submitProtocol.ts`.
 - End-to-end component checks: `composer/Composer.queuedMessages.test.tsx`, using

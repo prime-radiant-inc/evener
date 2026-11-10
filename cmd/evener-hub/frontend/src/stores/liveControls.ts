@@ -1,7 +1,7 @@
 // The web's one derivation of what a session may be asked to do, and its
 // press-time reading of it.
 //
-// Every control surface (the composer's Stop/Steer/Send, the queue strip's
+// Every control surface (the composer's Stop/Steer/Send, the pending stack's
 // drain and promote, the palette's session commands) derives a session's
 // controls from the SDK's sessionControls over the wire's status, the harness's
 // capabilities and the queue depth: controlsFor. A render offers a control from
@@ -56,10 +56,10 @@ export function pressRefusal(ref: string, control: SessionControl): string | und
 
 // The local recovery fence's shared predicate lives in recoveryFence.ts, where
 // the store's own mutation admission uses it too. Re-exported here so the
-// control surfaces keep one import site for the fence and its press-time reading; Composer.tsx's availabilityFor and QueueStrip's
-// press handlers derive from this one predicate (the composer module cannot
-// lend QueueStrip its copy: Composer imports QueueStrip), and each call site
-// adds the shape its own surface needs.
+// control surfaces keep one import site for the fence and its press-time reading;
+// Composer.tsx's availabilityFor and the pending stack's press handlers derive
+// from this one predicate, and each call site adds the shape its own surface
+// needs.
 export { isRecoveryFenced, isResumeOnly, isSendResumes };
 
 // The recovery fence as one reading, so its three consumers cannot drift:

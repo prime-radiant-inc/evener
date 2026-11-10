@@ -201,7 +201,7 @@ test.each([
     const committed = hold.reached;
     try {
       await user.click(actionButton());
-      // The commit's store publications re-render the queue strip; they land
+      // The commit's store publications re-render the pending stack; they land
       // inside this act() rather than after it.
       await act(async () => {
         await committed;

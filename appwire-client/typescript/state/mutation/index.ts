@@ -31,18 +31,20 @@ export type {
 export { isClientReady, MutationOutbox } from "./outbox";
 export type { PendingMethod, PendingTurnEntry, PendingTurnState } from "./pendingEntries";
 export {
-  commandMarkers,
-  imagePlaceholder,
   normalizeText,
   ownPendingSend,
   ownPendingTurnInput,
   pendingEntryPreview,
-  queueEntryPreviewText,
   reconcilePendingEntries,
   reflectedMutationIds,
-  skillMarkers,
-  truncateForDisplay,
 } from "./pendingEntries";
+export type {
+  PendingMessage,
+  PendingMessageImage,
+  PendingMessageState,
+  PendingMessagesInput,
+} from "./pendingMessages";
+export { projectPendingMessages, transcriptMutationIds } from "./pendingMessages";
 export type {
   PendingTurnsDraftPort,
   PendingTurnsState,

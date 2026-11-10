@@ -52,7 +52,7 @@ export function decideSteerRoute(opts: {
 // Session controls: what may this session be asked to do right now.
 //
 // One derivation, read by the composer (Stop, Steer, the Shift+Enter routes),
-// the queue strip (Steer queue now, Steer now) and the palette (/steer,
+// the pending stack (Steer queue now, Steer now) and the palette (/steer,
 // /queue, /drain-as-steer). Each surface reads a field; none composes a
 // predicate of its own, so a harness that cannot steer is never sent a
 // turn/steer, turn/drainAsSteer or turn/promoteQueuedAsSteer it would answer

@@ -63,7 +63,7 @@ const theme = params.get("theme");
 const settingsMode = params.get("settings") === "1";
 const pagingMode = params.get("paging") === "1";
 const intentTailMode = params.get("intenttail") === "1";
-// ?heldtail=1: the trailing held-steer ghost fixture for the stack's column
+// ?heldtail=1: the trailing pending-stack fixture for its column
 // alignment (see inspectHeldSteerColumn below).
 const heldTailMode = params.get("heldtail") === "1";
 // The guard sweeps busy sessions with and without advertised Steer.
@@ -317,8 +317,8 @@ const intentTailSnapshot: ThreadReadResponse = {
   },
 };
 
-// ?heldtail=1: the trailing held-steer ghost fixture. HeldSteerStack renders
-// as Session's trailing virtual-list row, so this reuses the main snapshot's
+// ?heldtail=1: the trailing pending-stack fixture. The stack renders as
+// Session's trailing virtual-list row, so this reuses the main snapshot's
 // settled turn (a real [data-testid="turn-block"] to measure against) under a
 // ref of its own, keeping the thread active (the live gate Session's
 // heldSurfaceLive reads). The ghost itself is seeded below through the REAL
@@ -1549,8 +1549,8 @@ interface HeldSteerColumnMeasurement {
   turnRight: number | null;
 }
 
-// The trailing held-steer ghost stack (HeldSteerStack, Session's second
-// trailing-row tenant) must share the content column every .turn row reads:
+// The trailing pending stack (Session's second trailing-row tenant) must
+// share the content column every .turn row reads:
 // same left edge, same right edge. It renders as the transcript's trailing
 // virtual-list row without TurnBlock's .turn wrapper, so the horizontal-
 // overflow scan cannot see this either - nothing escapes a scroller, the
@@ -1562,9 +1562,9 @@ async function inspectHeldSteerColumn(): Promise<HeldSteerColumnMeasurement> {
   const pane = document.getElementById("oh-pane");
   if (!pane) throw new Error("Held steer column harness pane never mounted");
   const stack = await waitFor(
-    () => pane.querySelector<HTMLElement>('[data-testid="held-steer-stack"]'),
-    "Held steer column",
-    "held steer stack",
+    () => pane.querySelector<HTMLElement>('[data-testid="pending-message-stack"]'),
+    "Pending stack column",
+    "pending message stack",
   );
   const turn = await waitFor(
     () => pane.querySelector<HTMLElement>('[data-testid="turn-block"]'),

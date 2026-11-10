@@ -97,14 +97,14 @@ fixture mode disturbs nothing else.
 ## Trailing held-steer stack column (`verifyHeldSteerColumn()` /
 `inspectHeldSteerColumn()`, the `?heldtail=1` fixture)
 
-Asserts the pending-ghost column regression: HeldSteerStack renders every
-held steer/drain/promote entry as the transcript's trailing virtual-list row
+Asserts the pending-stack column regression: the pending stack renders every
+  held steer/drain/promote entry as the transcript's trailing virtual-list row
 (Session's `trailingRow`), outside TurnBlock's `.turn` column, so without a
 measure rule of its own the ghosts start at the pane's raw left edge while
 every delivered message above sits clamped and centered - the same
 trailing-row rule `.intentGroup` and AskDock's `.dock` already carry. The
 horizontal-overflow scan cannot see this (nothing escapes a scroller), so
-this compares the `[data-testid="held-steer-stack"]` box against a
+this compares the `[data-testid="pending-message-stack"]` box against a
 `[data-testid="turn-block"]` box directly at 1024px. The fixture seeds its
 one ghost through the real durable outbox path (`enqueueIntent` + the shared
 projection refresh), never a direct store write.
