@@ -42,7 +42,7 @@ func TestManagerWatchAdmissionRequiresTargetSessionTools(t *testing.T) {
 			source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry { return entries }, nil)
 			sources := appsource.NewRegistry()
 			sources.Add(source)
-			cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+			cfg := testWebConfig(t, hubcore.WebConfig{})
 			server := newHubAppServer(cfg, sources)
 			defer server.Shutdown(ctx)
 			owner := &sessionOperations{cfg: cfg, sources: sources, server: server}

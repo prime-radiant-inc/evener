@@ -208,7 +208,7 @@ func testManagerOwnedDescendantWatch(t *testing.T, missingGeneration, lateTermin
 	if err := roster.RefreshAndWait(ctx); err != nil {
 		t.Fatal(err)
 	}
-	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), StateDir: stateDir, RunDir: runDir, Past: hubcore.NewPastIndex(stateDir), Roster: roster, ResumeLocks: hubcore.NewResumeLocks()}
+	cfg := testWebConfig(t, hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, Past: hubcore.NewPastIndex(stateDir), Roster: roster, ResumeLocks: hubcore.NewResumeLocks()})
 	sources := newHubSourceRegistry(cfg)
 	server := newHubAppServer(cfg, sources)
 	t.Cleanup(func() { _ = server.Shutdown(context.Background()) })

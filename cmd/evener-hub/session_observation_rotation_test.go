@@ -26,7 +26,7 @@ func TestManagerWatchSurvivesSameTargetHistoryRotation(t *testing.T) {
 	sources := appsource.NewRegistry()
 	sources.Add(targetSource)
 	ref := "local:target"
-	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	cfg := testWebConfig(t, hubcore.WebConfig{})
 	local := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
 		return []appsource.LocalDaemonEntry{{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, SourceID: "local", SessionID: "manager", InstanceID: "manager", WorkspaceRef: "local:manager"}, SessionID: "manager", Manager: true}}
 	}, nil)

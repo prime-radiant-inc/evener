@@ -221,7 +221,7 @@ func testSessionActivityRelay(t *testing.T, checkpoint func(activityRelayFixture
 	}, daemonHTTP.Client())
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: entry, SessionID: rootID, Status: "active"})}
+	cfg := testWebConfig(t, hubcore.WebConfig{Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: entry, SessionID: rootID, Status: "active"})})
 	cfg.Archive = hubcore.NewArchiveStore(filepath.Join(cfg.HubStateRoot, "index.db"))
 	cfg.Past = hubcore.NewPastIndex(stateDir)
 	web := NewWebServer(cfg)
