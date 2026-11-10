@@ -10,6 +10,7 @@ import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../motion";
 import { openDocBeside } from "../../panes/doc/openDoc";
 import { installMobileViewport } from "../../panes/session/testing/mobileViewport";
+import { MOBILE_QUERY } from "../useIsMobile";
 import "../../panes/transcript";
 import { cascadeClient, cascadeContext } from "../../panes/zoom/cascadeTestUtils";
 import type { SessionZoomParams } from "../../panes/zoom/intent";
@@ -473,7 +474,7 @@ test("a restored cascade renders only its selected reader on mobile and restores
   Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, value: 500 });
   const media = Object.assign(new EventTarget(), {
     matches: true,
-    media: "(max-width: 899px)",
+    media: MOBILE_QUERY,
     onchange: null,
     addListener() {},
     removeListener() {},

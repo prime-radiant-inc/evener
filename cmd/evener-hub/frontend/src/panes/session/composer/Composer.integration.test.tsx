@@ -18,7 +18,7 @@ import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { appliedReceipt } from "../../../mutationReceiptTestUtils";
 import { ClientProvider } from "../../../shell/clientContext";
 import { conversationPaneLifetime } from "../../../shell/paneLifetime";
-import { resetMobileViewportForTests } from "../../../shell/useIsMobile";
+import { MOBILE_QUERY, resetMobileViewportForTests } from "../../../shell/useIsMobile";
 import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
@@ -188,7 +188,7 @@ function installMobileViewport(): void {
     "matchMedia",
     vi.fn((media: string) => ({
       media,
-      matches: media === "(max-width: 899px)",
+      matches: media === MOBILE_QUERY,
       addEventListener: () => {},
       removeEventListener: () => {},
     })),

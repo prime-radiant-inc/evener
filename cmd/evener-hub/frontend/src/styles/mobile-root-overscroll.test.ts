@@ -4,12 +4,14 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
+import { MOBILE_QUERY } from "../shell/useIsMobile";
+import { escapeRegExp } from "./cssBlock";
 
 const STYLES_DIR = dirname(fileURLToPath(import.meta.url));
 const GLOBAL_CSS = readFileSync(join(STYLES_DIR, "global.css"), "utf8");
 
 function removeMobileMediaBlock(source: string): string {
-  const start = source.indexOf("@media (max-width: 899px) {");
+  const start = source.indexOf(`@media ${MOBILE_QUERY} {`);
   expect(start).toBeGreaterThanOrEqual(0);
 
   let depth = 0;
@@ -29,7 +31,7 @@ function removeMobileMediaBlock(source: string): string {
 }
 
 test("mobile: html suppresses root overscroll while panes retain scroll ownership", () => {
-  const mobile = GLOBAL_CSS.match(/@media \(max-width: 899px\) \{([\s\S]*?)\n\}/);
+  const mobile = GLOBAL_CSS.match(new RegExp(`@media ${escapeRegExp(MOBILE_QUERY)} \\{([\\s\\S]*?)\\n\\}`));
   expect(mobile).not.toBeNull();
 
   const htmlRule = mobile![1]!.match(/html \{([^}]*)\}/);

@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import sheetStyles from "../../widgets/sheet/sheet.module.css";
+import { MOBILE_QUERY } from "../useIsMobile";
 import type { PinSectionSummary } from "./actions";
 import { PinSectionPicker, type PinSectionPickerProps } from "./PinSectionPicker";
 
@@ -305,7 +306,7 @@ describe("PinSectionPicker", () => {
       render(<PinSectionPicker {...props()} />);
       await screen.findByRole("dialog", { name: /pin session one/i });
       expect(screen.getByRole("dialog").className.split(" ")).toContain(sheetStyles.bottom);
-      expect(vi.mocked(window.matchMedia)).toHaveBeenCalledWith("(max-width: 899px)");
+      expect(vi.mocked(window.matchMedia)).toHaveBeenCalledWith(MOBILE_QUERY);
     } finally {
       vi.unstubAllGlobals();
     }

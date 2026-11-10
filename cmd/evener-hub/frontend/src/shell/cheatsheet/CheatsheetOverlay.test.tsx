@@ -32,7 +32,7 @@ import { resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import { AppShell } from "../AppShell";
 import { paletteStore } from "../palette/paletteController";
-import { resetMobileViewportForTests } from "../useIsMobile";
+import { MOBILE_QUERY, resetMobileViewportForTests } from "../useIsMobile";
 import { resetWorkspaceStoreForTests } from "../workspace";
 import { CheatsheetOverlay } from "./CheatsheetOverlay";
 import { cheatsheetStore, closeCheatsheet, openCheatsheet } from "./cheatsheetController";
@@ -45,7 +45,7 @@ function installMobileViewport(): void {
     "matchMedia",
     vi.fn((media: string) => ({
       media,
-      matches: media === "(max-width: 899px)",
+      matches: media === MOBILE_QUERY,
       addEventListener: () => {},
       removeEventListener: () => {},
     })),

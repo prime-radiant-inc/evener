@@ -27,6 +27,7 @@ import { hoverForTooltip } from "../../widgets/tooltip/tooltipTestUtils";
 import { Tree, type TreeRowInfo } from "../../widgets/tree";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { registerPaneForTests } from "../paneRegistry";
+import { MOBILE_QUERY } from "../useIsMobile";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import {
   watchGloss as domainWatchGloss,
@@ -2275,7 +2276,7 @@ describe("shared right slot (RailRow.module.css)", () => {
     // Occupant side: the same three conditions hide the timestamp/Badge
     // under the menu. The flip lives inside a hover-capable desktop media
     // block - on touch the actions are always visible BESIDE the occupant
-    // (the 899px block below), and a sticky tap-hover or treeitem focus
+    // (the mobile block below), and a sticky tap-hover or treeitem focus
     // must never make the timestamp vanish out from under the row. Rules
     // nested in @media mangle the flat matchAll above, so this half is
     // pinned against the media block's own text.
@@ -2331,7 +2332,8 @@ describe("shared right slot (RailRow.module.css)", () => {
     // with, so this block forces them visible AND turns the shared cell back
     // into an ordinary flex row - on touch the occupant and the menu sit
     // side by side; the visibility swap above is a desktop-hover mechanism.
-    const mobileRules = mediaBlock(RAIL_CSS, "max-width: 899px");
+    // mediaBlock takes the condition without the query's outer parentheses.
+    const mobileRules = mediaBlock(RAIL_CSS, MOBILE_QUERY.slice(1, -1));
     const rightSlotBlock = nestedRuleBlock(mobileRules, ".rightSlot");
     const actionsBlock = nestedRuleBlock(mobileRules, ".actions");
     expect(rightSlotBlock).toMatch(/display:\s*flex/);

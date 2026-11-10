@@ -2,10 +2,11 @@ import type { ThreadModel } from "@evener/appwire-client";
 import { act, cleanup, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { MOBILE_QUERY } from "../../../shell/useIsMobile";
 import { resetHumanNoteDrafts, useHumanNoteDraft } from "../../../stores/humanNoteDrafts";
 import { putThreadModel, resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { topNotesStore } from "../../../stores/topNotes";
-import { readModuleCss } from "../../../styles/cssBlock";
+import { escapeRegExp, readModuleCss } from "../../../styles/cssBlock";
 import { ALL_CAPABILITIES } from "../../../threadTestUtils";
 import { TopNotesPanel } from "./TopNotesPanel";
 
@@ -543,7 +544,9 @@ test("the panel sits flush in both states, and the card's border cannot clip", (
   const css = readModuleCss(import.meta.url, "topnotespanel.module.css");
   const root = css.match(/\.topNotesPanel\s*\{([^}]*)\}/);
   expect(root?.[1]).toContain("margin-top: calc(-1 * var(--space-5))");
-  const mobile = css.match(/@media \(max-width: 899px\)\s*\{\s*\.topNotesPanel\s*\{([^}]*)\}/);
+  const mobile = css.match(
+    new RegExp(`@media ${escapeRegExp(MOBILE_QUERY)}\\s*\\{\\s*\\.topNotesPanel\\s*\\{([^}]*)\\}`),
+  );
   expect(mobile?.[1]).toContain("margin-top: calc(-1 * var(--space-4))");
 
   // The expanded card draws its boundary as a real border, not

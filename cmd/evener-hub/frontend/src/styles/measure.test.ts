@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
+import { MOBILE_QUERY } from "../shell/useIsMobile";
 
 const SRC = dirname(dirname(fileURLToPath(import.meta.url)));
 const read = (path: string): string => readFileSync(join(SRC, path), "utf8");
@@ -26,8 +27,8 @@ test("the ramp is 12/13/15/20/26/34 with a 16px body on phones", () => {
       new RegExp(`--font-size-${name}: calc\\(${px}px \\* var\\(--font-scale\\)\\);`),
     );
   }
-  const phoneStart = tokens.indexOf("@media (max-width: 899px)");
-  expect(phoneStart, "tokens.css phone block uses the 899px boundary").toBeGreaterThan(0);
+  const phoneStart = tokens.indexOf(`@media ${MOBILE_QUERY}`);
+  expect(phoneStart, "tokens.css phone block uses the mobile boundary").toBeGreaterThan(0);
   const phone = tokens.slice(phoneStart);
   expect(phone).toMatch(/--font-size-body: calc\(16px \* var\(--font-scale\)\);/);
 });
