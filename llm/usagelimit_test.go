@@ -3,8 +3,8 @@ package llm
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -282,7 +282,7 @@ func TestJSONInt64(t *testing.T) {
 		wantOK bool
 	}{
 		{"json.Number fraction truncates", json.Number("1.5"), 1, true},
-		{"json.Number past the cap", json.Number(fmt.Sprint(maxSecs + 1)), 0, false},
+		{"json.Number past the cap", json.Number(strconv.FormatInt(maxSecs+1, 10)), 0, false},
 		{"huge json.Number", json.Number("99999999999999999999999"), 0, false},
 		{"float64", float64(42), 42, true},
 		{"float64 overflow", 1e30, 0, false},
@@ -308,11 +308,11 @@ func TestJSONInt64(t *testing.T) {
 // before its plan and reset details.
 func TestUsagelimitMessageEmpty(t *testing.T) {
 	msg := usageLimitMessage(usageLimit{planType: "pro", resetsAt: time.Now().Add(time.Hour)}, time.Now())
-	detail := strings.Index(msg, "pro")
-	if detail < 0 {
+	lead, _, found := strings.Cut(msg, "pro")
+	if !found {
 		t.Fatalf("message %q does not carry the plan", msg)
 	}
-	if lead := msg[:detail]; strings.TrimSpace(lead) == "" || lead[0] == ' ' || lead[0] == '(' {
+	if strings.TrimSpace(lead) == "" || lead[0] == ' ' || lead[0] == '(' {
 		t.Fatalf("message %q has no headline before its details", msg)
 	}
 }
