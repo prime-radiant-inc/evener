@@ -407,9 +407,20 @@ func executeDelegateShellRepair(plan delegateShellRepairPlan, now time.Time) (er
 	}
 	sort.Strings(clearedIDs)
 	for _, jobID := range clearedIDs {
-		events = append(events, recoveredTerminalWatchClearEvents(watches, jobID, now)...)
+		events = append(events, recoveredTerminalSendWatchClearEvents(watches, jobID, now)...)
 	}
 	return store.AppendBatch(events)
+}
+
+// recoveredTerminalSendWatchClearEvents clears the send watches for a job the
+// cold repair just made terminal. A no-send callback watch is left active for
+// the child's restore, which is the only path that can cancel it and route its
+// receiver's cancellation notice; clearing it here would drop that notice
+// permanently (#5834 review).
+func recoveredTerminalSendWatchClearEvents(watches map[string]*jobstore.WatchRecord, jobID string, ts time.Time) []jobstore.Event {
+	return watchClearEventsForRecords(watches, ts, "auto_removed_terminal", func(watch *jobstore.WatchRecord) bool {
+		return watch.Target == jobID && watch.SendTo != ""
+	})
 }
 
 // watchEndNoticeEvents builds the clear for every active send watch targeting a

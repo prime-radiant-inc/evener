@@ -28,8 +28,11 @@ func TestDelegateShellRepairAppendsRuntimeLostAndConsumesCoveredNotification(t *
 	if record == nil || record.Status != jobstore.StatusStopped || record.Reason != "runtime_lost" || record.TerminalGen == "" || record.NotifyState != jobstore.NotifyConsumed {
 		t.Fatalf("repaired shell = %#v", record)
 	}
-	if watch := watches["watch-shell"]; watch == nil || watch.Active || watch.EndReason != "auto_removed_terminal" {
-		t.Fatalf("repaired watch = %#v", watch)
+	// The running-job repair must leave a no-send callback watch active for the
+	// child's restore, the only path that can cancel it and tell its receiver
+	// (#5834 review).
+	if watch := watches["watch-shell"]; watch == nil || !watch.Active || watch.EndReason != "" {
+		t.Fatalf("repaired callback watch = %#v, want left active for restore", watch)
 	}
 }
 
