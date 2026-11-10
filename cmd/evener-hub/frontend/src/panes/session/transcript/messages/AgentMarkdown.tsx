@@ -56,7 +56,7 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
       sessionRef && isValidTranscriptRef(qualifiedRef) && cwd && sourcePaneId
         ? { sessionRef, cwd, sourcePaneId, artifactsDir, scratchDir }
         : undefined;
-    if (!context && sessionRef && sourcePaneId) {
+    if (!context && sessionRef && sourcePaneId && isValidTranscriptRef(qualifiedRef)) {
       const onClick = (event: MouseEvent) => {
         if (
           event.defaultPrevented ||
@@ -74,7 +74,6 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
         const href = target.getAttribute("href") ?? "";
         if (!deferrableFileHref(href)) return;
         event.preventDefault();
-        event.stopPropagation();
         pendingFileClick.current = { href, sessionRef, sourcePaneId };
       };
       element.addEventListener("click", onClick, true);
