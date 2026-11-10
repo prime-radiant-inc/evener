@@ -250,6 +250,92 @@ test("a resync keeps an approval that remains pending in the activity runtime", 
   expect(store.getSnapshot().runtime?.pendingEscalationIds).toEqual(["esc_1"]);
 });
 
+test("a same-thread resync lets the recovery read replace a cached idle status", async () => {
+  const client = runtimeClient();
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().runtime?.status.type === "idle");
+  client.emitNotification({
+    method: "thread/status/changed",
+    params: { ref: activityRef, threadId: "wire-root", status: { type: "idle" } },
+  });
+  client.on("thread/read", () => ({
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-root",
+      sessionId: "root-session",
+      status: { type: "awaiting" },
+      evener: { ...threadFixture().thread.evener, askPending: true },
+    },
+  }));
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref: activityRef, threadId: "wire-root" },
+  });
+  await activityState(store, () => store.getSnapshot().runtime?.askPending === true);
+  expect(store.getSnapshot().runtime?.status.type).toBe("awaiting");
+  await store.refresh("summary");
+  expect(store.getSnapshot().runtime?.status.type).toBe("awaiting");
+});
+
+test("a resync refreshes thread metadata even when the summary read had failed", async () => {
+  const client = activityClient();
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().summary !== null);
+  const before = callsTo(client, "thread/read");
+  client.on("evener/thread/activity/read", () => {
+    throw new WireError("old source failed", -32014, {
+      evenerErrorInfo: "actionUnavailable",
+      retryDisposition: "automatic",
+    });
+  });
+  await store.refresh("summary");
+  expect(store.getSnapshot().summaryState.error).not.toBeNull();
+  client.on("thread/read", () => ({
+    thread: {
+      ...threadFixture().thread,
+      status: { type: "awaiting" },
+      evener: { ...threadFixture().thread.evener, askPending: true },
+    },
+  }));
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref: activityRef, threadId: "session" },
+  });
+  await vi.waitFor(() => expect(store.getSnapshot().runtime?.askPending).toBe(true));
+  expect(store.getSnapshot().runtime?.status.type).toBe("awaiting");
+  expect(callsTo(client, "thread/read")).toBe(before + 1);
+});
+
+test("a resync retries recovery metadata after a transient read failure", async () => {
+  const client = runtimeClient();
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().runtime?.status.type === "idle");
+  let reads = 0;
+  client.on("thread/read", () => {
+    reads += 1;
+    if (reads === 1) throw new WireError("temporary failure", -32000, { retryDisposition: "automatic" });
+    return {
+      thread: {
+        ...threadFixture().thread,
+        id: "wire-root",
+        sessionId: "root-session",
+        status: { type: "awaiting" },
+        evener: { ...threadFixture().thread.evener, askPending: true },
+      },
+    };
+  });
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref: activityRef, threadId: "wire-root" },
+  });
+  await vi.advanceTimersByTimeAsync(1000);
+  await activityState(store, () => store.getSnapshot().runtime?.askPending === true);
+  expect(reads).toBe(2);
+});
+
 test("replacement activity identity retires the previous runtime atomically", async () => {
   const client = runtimeClient(),
     store = owner(client);

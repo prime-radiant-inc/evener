@@ -1198,22 +1198,29 @@ export class SessionActivityStore {
         // cleared. It must not publish after this resync boundary.
         this.generation += 1;
         this.runtimeThreadId = notification.params.threadId;
-        if (this.statusUpdate?.threadId !== this.runtimeThreadId) this.statusUpdate = null;
+        // The recovery thread read is newer than any status cached before the
+        // interruption, even when it names the same thread.
+        this.statusUpdate = null;
+        // The previous source's summary failure cannot describe the recovered
+        // connection. Clearing it here also keeps a recovered runtime publish
+        // from carrying a stale error across the resync boundary.
+        if (this.state.summaryState.error !== null)
+          this.change("summary", { error: null, unavailable: false, permanent: false });
         if (this.state.runtime && this.state.runtime.threadId !== this.runtimeThreadId) this.publish({ runtime: null });
-        else if (this.state.runtime && this.state.summaryState.error === null) {
-          // A relay interruption can hide a resolution or a new question. The
-          // recovery thread read is authoritative; keep the current glyph until
-          // it lands, then reconcile from it.
+        // A relay interruption can hide a resolution or a new question. For
+        // the same thread, the recovery thread read is authoritative even when
+        // activity reads are still failing; retry it rather than leaving
+        // metadata stale. An activity-only scope retries activity via
+        // lease.ensure() without refreshing metadata, so this read cannot
+        // depend on summary success. A resync naming a replacement thread
+        // retires the old runtime instead: that subscription describes the
+        // thread being left behind.
+        else if (this.state.runtime && this.lease) {
           const lease = this.lease;
-          if (lease) {
-            void lease
-              .read({ includeTurns: false })
-              .then(() => {
-                const metadata = lease.metadata();
-                if (metadata) this.publish({ runtime: this.seedEscalations(metadata) });
-              })
-              .catch(() => {});
-          }
+          // Let every notification listener for this resync run first: the
+          // subscription registry advances its resync revision there, so the
+          // refresh read is issued against the new boundary.
+          void Promise.resolve().then(() => this.refreshThreadMetadata(lease));
         }
         // A resync re-establishes the source identity, so the pushed-frame merge
         // waits for the refreshed context as it does across a reconnect. Without
@@ -1256,6 +1263,22 @@ export class SessionActivityStore {
     this.pendingEscalations.clear();
     for (const id of metadata.pendingEscalationIds) this.pendingEscalations.add(id);
     return metadata;
+  }
+
+  private refreshThreadMetadata(lease: ThreadSubscriptionLease, attempt = 0): void {
+    if (this.disposed || this.lease !== lease) return;
+    void lease
+      .read({ includeTurns: false })
+      .then(() => {
+        if (this.disposed || this.lease !== lease) return;
+        const metadata = lease.metadata();
+        if (metadata) this.publish({ runtime: this.seedEscalations(metadata) });
+      })
+      .catch((error: unknown) => {
+        if (this.disposed || this.lease !== lease || permanentError(error)) return;
+        const delay = Math.min(1000 * 2 ** Math.min(attempt, 5), 30000);
+        this.clock.setTimeout(() => this.refreshThreadMetadata(lease, attempt + 1), delay);
+      });
   }
   /** Whether this invalidation refreshes a resource other than delegates, so an
    * accepted response can carry a capability or availability change back to this

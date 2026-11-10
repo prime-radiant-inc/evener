@@ -363,6 +363,50 @@ test("a resync lets the recovery snapshot restore an ask hidden by the cached an
   lease.release();
 });
 
+test("a read in flight across a resync cannot reseed stale ask metadata", async () => {
+  const client = activityClient(),
+    old = deferred<ThreadReadResponse>(),
+    entered = deferred<void>();
+  const idle: ThreadReadResponse = {
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-root",
+      sessionId: "root-session",
+      evener: { ...threadFixture().thread.evener, askPending: false },
+    },
+  };
+  const question: ThreadReadResponse = {
+    thread: {
+      ...idle.thread,
+      status: { type: "awaiting" },
+      evener: { ...idle.thread.evener, askPending: true },
+    },
+  };
+  let reads = 0;
+  client.on("thread/read", () => {
+    reads += 1;
+    if (reads === 1) return idle;
+    if (reads === 2) {
+      entered.resolve();
+      return old.promise;
+    }
+    return question;
+  });
+  const lease = acquireThreadSubscription(client, activityRef);
+  await lease.ensure();
+  const beforeResync = lease.read({ includeTurns: true });
+  await entered.promise;
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref: activityRef, threadId: "wire-root" },
+  });
+  old.resolve(idle);
+  await beforeResync;
+  await lease.read({ includeTurns: true });
+  expect(lease.metadata?.()?.askPending).toBe(true);
+  lease.release();
+});
+
 test("shared leases expose only admitted runtime metadata, including after a rich read", async () => {
   const client = activityClient(),
     removed = deferred<void>();

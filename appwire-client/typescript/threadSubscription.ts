@@ -60,6 +60,9 @@ interface Membership {
   // replacement thread retires it so the recovery snapshot can seed the value;
   // a status frame received during that read sets it again.
   askAuthoritative: boolean;
+  // Reads started before the latest resync cannot admit their snapshots after
+  // it; the recovery read is the one that gets to seed the retired answers.
+  resyncRevision: number;
   // Escalation frames received before or during a read. The snapshot seeds the
   // set and these frame facts overlay it, so a resolved(A) before the response
   // cannot discard a still-pending B from that response.
@@ -97,6 +100,7 @@ class ThreadSubscriptions {
         member.statusThreadId = "";
         member.pendingAsk = undefined;
         member.askAuthoritative = false;
+        member.resyncRevision = 0;
         member.requestedEscalations.clear();
         member.resolvedEscalations.clear();
         member.pendingEscalations.clear();
@@ -198,6 +202,7 @@ class ThreadSubscriptions {
     member.requestedEscalations.clear();
     member.resolvedEscalations.clear();
     member.askAuthoritative = false;
+    member.resyncRevision += 1;
   }
 
   acquire(ref: string): ThreadSubscriptionLease {
@@ -217,6 +222,7 @@ class ThreadSubscriptions {
         statusThreadId: "",
         pendingAsk: undefined,
         askAuthoritative: false,
+        resyncRevision: 0,
         requestedEscalations: new Set(),
         resolvedEscalations: new Set(),
         pendingEscalations: new Set(),
@@ -243,13 +249,14 @@ class ThreadSubscriptions {
       if (!held.subscribed) return this.acquireWire(held, params);
       const generation = this.generation;
       const statusRevision = held.statusRevision;
+      const resyncRevision = held.resyncRevision;
       const response = await this.client.request("thread/read", {
         ...params,
         ref,
         subscribe: false,
         replaceSubscription: false,
       });
-      if (!released) this.admitMetadata(held, response, generation, statusRevision);
+      if (!released) this.admitMetadata(held, response, generation, statusRevision, resyncRevision);
       return response;
     };
     return {
@@ -294,6 +301,7 @@ class ThreadSubscriptions {
     const generation = this.generation;
     const epoch = ++member.transitionEpoch;
     const statusRevision = member.statusRevision;
+    const resyncRevision = member.resyncRevision;
     member.outstandingAcquisitions += 1;
     const response = this.client.request("thread/read", {
       ...params,
@@ -310,7 +318,7 @@ class ThreadSubscriptions {
       // A failure propagates: reads joined on this transition must see it.
       if (generation === this.generation && epoch === member.transitionEpoch) {
         member.subscribed = true;
-        this.admitMetadata(member, result, generation, statusRevision);
+        this.admitMetadata(member, result, generation, statusRevision, resyncRevision);
         return;
       }
       if (generation !== this.generation || member.subscribed) return;
@@ -339,8 +347,10 @@ class ThreadSubscriptions {
     { thread }: ThreadReadResponse,
     generation: number,
     readStatusRevision: number,
+    readResyncRevision: number,
   ): void {
     if (generation !== this.generation || this.client.state !== "ready" || member.holders === 0) return;
+    if (readResyncRevision !== member.resyncRevision) return;
     // A status frame that landed after this read was issued is newer than the
     // read's snapshot: keep it rather than letting the late read revert the
     // status a re-acquired store would see.
