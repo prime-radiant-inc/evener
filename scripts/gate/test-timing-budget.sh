@@ -433,16 +433,29 @@ if isinstance(budget, dict) and isinstance(budget.get("perTestCeiling"), dict):
 	# any duplicate, so the collision is only visible in the source.
 	with open(budget_path) as fh:
 		raw = fh.read()
-	start = raw.find('"perTestCeiling"')
-	if start >= 0:
-		brace = raw.find("{", start)
-		if brace >= 0:
-			try:
-				per_test_obj, _ = json.JSONDecoder(object_pairs_hook=_object_without_duplicate_keys).raw_decode(raw[brace:])
-			except ValueError:
-				per_test_obj = None
-			if isinstance(per_test_obj, dict):
-				budget["perTestCeiling"] = per_test_obj
+	# Scan EVERY occurrence and keep the last, matching json.load's own
+	# last-wins. Reading only the first would let a file that repeats the key
+	# replace its populated map with an earlier empty one, dropping every
+	# ceiling to warn-only.
+	decoder = json.JSONDecoder(object_pairs_hook=_object_without_duplicate_keys)
+	pos = 0
+	per_test_obj = None
+	while True:
+		key_at = raw.find('"perTestCeiling"', pos)
+		if key_at < 0:
+			break
+		brace = raw.find("{", key_at)
+		if brace < 0:
+			break
+		try:
+			value, consumed = decoder.raw_decode(raw[brace:])
+		except ValueError:
+			value, consumed = None, 1
+		if isinstance(value, dict):
+			per_test_obj = value
+		pos = brace + consumed
+	if per_test_obj is not None:
+		budget["perTestCeiling"] = per_test_obj
 
 # A budget whose TOP level is not an object is a broken config, not an empty one:
 # budget.get below would crash a list, number, string, null or bool with an

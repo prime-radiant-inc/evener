@@ -398,6 +398,27 @@ func TestTimingBudgetComparesASubtestUnderItsParentsCeiling(t *testing.T) {
 // test's ceiling but not its old line would enforce whichever came second, with
 // nothing naming the collision. The fixture is otherwise valid, so only the
 // duplicate can make it fail.
+// TestTimingBudgetKeepsTheLastOfTwoCeilingMaps pins that the duplicate-key scan
+// and json.load agree on which map wins. A hand edit that leaves an empty
+// perTestCeiling above a populated one is malformed either way, but the scan that
+// rejects duplicate keys must look at the same object json.load kept; reading the
+// first occurrence would replace the populated map with the empty one and
+// silently drop every ceiling to warn-only.
+func TestTimingBudgetKeepsTheLastOfTwoCeilingMaps(t *testing.T) {
+	measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestClassed\t31.00\n"
+	budget := `{"perTestCeilingSeconds":3,` +
+		`"perTestCeiling":{},` +
+		`"perTestCeiling":{"TestClassed":30,"TestOther":30},` +
+		`"packages":{"pkg":100}}`
+	out, err := runTimingBudgetCompare(t, measured, budget)
+	if err == nil {
+		t.Fatalf("a repeated perTestCeiling key must fail as a malformed config:\n%s", out)
+	}
+	if !strings.Contains(out, "TestClassed") {
+		t.Fatalf("the failure must name the duplicated key:\n%s", out)
+	}
+}
+
 func TestTimingBudgetRejectsATestNamedTwice(t *testing.T) {
 	measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestClassed\t1.00\n"
 	budget := `{"perTestCeilingSeconds":3,` +
