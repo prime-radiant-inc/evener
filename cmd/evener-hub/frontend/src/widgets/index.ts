@@ -10,7 +10,7 @@ export { Banner } from "./banner";
 export type { ButtonProps, ButtonSize, ButtonVariant } from "./button";
 export { Button } from "./button";
 export type { CadenceProps, CadenceState } from "./cadence";
-export { Cadence } from "./cadence";
+export { Cadence, STATE_LABELS } from "./cadence";
 export type { CardProps } from "./card";
 export { Card } from "./card";
 export type { ChevronDirection, ChevronProps } from "./chevron";

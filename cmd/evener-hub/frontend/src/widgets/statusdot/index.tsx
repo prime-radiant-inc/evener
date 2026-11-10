@@ -1,6 +1,7 @@
 import type { DelegateDotFields, DelegateDotState } from "@evener/appwire-client";
 import { delegateDotState } from "@evener/appwire-client";
 import type { CadenceState } from "../cadence";
+import { STATE_LABELS } from "../cadence";
 import { requireClass } from "../internal/requireClass";
 import styles from "./statusdot.module.css";
 
@@ -29,15 +30,9 @@ const STATE_FAMILY: Record<CadenceState, Family> = {
   ended: "neutral",
 };
 
-/** The one session-status vocabulary: StatusDot's accessible names, reused
- * by any text that names a session's state (a hover card's status line). */
-export const STATUS_LABEL: Record<CadenceState, string> = {
-  idle: "Idle",
-  working: "Working",
-  "needs-you": "Needs you",
-  failed: "Failed",
-  ended: "Ended",
-};
+/** StatusDot's accessible names. Re-exported from the one table so a caller
+ * that already imports this widget keeps working without a second spelling. */
+export const STATUS_LABEL = STATE_LABELS;
 
 const FAMILY_CLASS: Record<Family, string> = {
   alive: requireClass(styles.alive, "statusdot.module.css", "alive"),
