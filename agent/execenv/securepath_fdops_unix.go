@@ -165,6 +165,18 @@ func (s *sandboxFS) rootFd(root string) (int, error) {
 		_ = unix.Close(fd)
 		return -1, errEscapesRoot
 	}
+	// The candidate policy captured this worktree root when the environment was
+	// resolved. If the path has since been replaced by a symlink, the directory
+	// just opened is not the retained root; refuse it rather than grant the
+	// replacement target. This closes the window between candidate resolution
+	// and the installed file layer's first root open (#3724 review).
+	if worktree := filepath.Clean(s.policy.Git.WorktreeRoot); worktree != "" && worktree != "." && filepath.Clean(root) == worktree {
+		canonical, canonicalErr := canonicalPathForFd(fd)
+		if canonicalErr != nil || canonical == "" || canonical != worktree {
+			_ = unix.Close(fd)
+			return -1, errEscapesRoot
+		}
+	}
 	s.rootFds[root] = fd
 	return fd, nil
 }

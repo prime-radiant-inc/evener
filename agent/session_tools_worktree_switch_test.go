@@ -1739,3 +1739,42 @@ func TestWorktreeSwitchByPath_RejectsExternalCheckoutThroughSymlinkedNestedGit(t
 		t.Fatal("candidate environment accepted an external checkout whose pointer crosses a nested .git symlink")
 	}
 }
+
+// A background shell can replace an in-workspace linked checkout with a symlink
+// to an external directory after WithWorkingDirectory resolved the candidate
+// policies. The installed file layer must open the retained worktree root, not
+// the replacement symlink, so the write stays outside the external directory
+// (#3724 review).
+func TestWorktreeSwitch_FileLayerRefusesSwappedWorktreeRoot(t *testing.T) {
+	repo := canonicalFixtureTempDir(t, "worktree-rootswap-main-*")
+	copyWorktreeBaseRepo(t, repo)
+	_, head := worktreeBaseRepo(t)
+	inside := filepath.Join(repo, "inside-lane")
+	wtGit(t, repo, "worktree", "add", "-q", "-b", "inside-lane", inside, head)
+	external := canonicalFixtureTempDir(t, "worktree-rootswap-external-*")
+
+	s, _, env := newSandboxedFixtureSession(t, repo, "worktree-rootswap-state-*")
+	if env.Sandbox.Git.Kind == sandbox.NonGit {
+		t.Fatalf("fixture sandbox kind = %v, want a Git layout", env.Sandbox.Git.Kind)
+	}
+	if _, err := s.worktreeSwitchByPath(context.Background(), inside); err != nil {
+		t.Fatalf("switch to the in-workspace linked checkout: %v", err)
+	}
+	current := s.currentEnv().(*execenv.LocalExecutionEnvironment)
+
+	// The candidate policies are already resolved and installed; only now does
+	// the path become a symlink to an external directory.
+	if err := os.RemoveAll(inside); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, inside); err != nil {
+		t.Fatal(err)
+	}
+	writeErr := current.WriteFileRaw(filepath.Join(inside, "escaped.txt"), []byte("escaped"), 0o644)
+	if _, err := os.Stat(filepath.Join(external, "escaped.txt")); err == nil {
+		t.Fatal("file layer followed a swapped worktree root into an external directory")
+	}
+	if writeErr == nil {
+		t.Fatal("write through a swapped worktree root succeeded")
+	}
+}
