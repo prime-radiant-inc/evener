@@ -75,6 +75,7 @@ test("summary-only runtime is qualified by resolved session without adding any w
     threadId: "wire-root",
     sessionId: "root-session",
     status: { type: "idle" },
+    askPending: false,
   });
   expect(client.calls.map(({ method }) => method)).toEqual(["thread/read", "evener/thread/activity/read"]);
   expect(client.calls[0]?.params).toEqual({
@@ -215,6 +216,40 @@ test("a resolved frame before the initial response keeps the other approval in t
   });
 });
 
+test("a resync clears obsolete approval attention from the activity runtime", async () => {
+  const client = activityClient();
+  const escalation = {
+    threadId: "wire-root",
+    ref: activityRef,
+    escalationId: "esc_1",
+    mode: "read-only",
+    tool: "read_file",
+    kind: "file",
+    deniedPath: "/outside",
+  };
+  client.on("thread/read", () => ({
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-root",
+      sessionId: "root-session",
+      evener: { ...threadFixture().thread.evener, pendingEscalations: [escalation] },
+    },
+  }));
+  client.on("evener/thread/activity/read", () => ({
+    ...summaryFixture(),
+    context: { ...activityContext(), sessionId: "root-session", ref: "remote:canonical-root" },
+  }));
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().runtime?.approvalPending === true);
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref: activityRef, threadId: "wire-root" },
+  });
+  expect(store.getSnapshot().runtime?.approvalPending).toBe(false);
+  expect(store.getSnapshot().runtime?.pendingEscalationIds).toEqual([]);
+});
+
 test("replacement activity identity retires the previous runtime atomically", async () => {
   const client = runtimeClient(),
     store = owner(client);
@@ -258,6 +293,7 @@ test.each([activityRef, "remote:canonical-root"])(
       threadId: "wire-root",
       sessionId: "root-session",
       status: { type: "active", activeFlags: ["waitingOnTool"] },
+      askPending: false,
     });
     await store.refresh("summary");
     expect(store.getSnapshot().runtime?.status.type).toBe("active");
@@ -357,6 +393,7 @@ test("a reconnect snapshot begun before a matching status cannot overwrite the n
     threadId: "wire-root",
     sessionId: "root-session",
     status: { type: "active" },
+    askPending: false,
   });
   expect(callsTo(client, "thread/read")).toBe(2);
   expect(callsTo(client, "evener/thread/jobs/list")).toBe(0);
@@ -386,6 +423,7 @@ test("a status before the first lean reply waits for both wire and activity iden
     threadId: "wire-root",
     sessionId: "root-session",
     status: { type: "active" },
+    askPending: false,
   });
   expect(callsTo(client, "thread/read")).toBe(1);
 });
@@ -471,6 +509,7 @@ test("replacement status waits for its context and survives retirement of the fo
       threadId: "wire-replacement",
       sessionId: "replacement-session",
       status: { type: "active" },
+      askPending: false,
     });
     expect(callsTo(client, "thread/read")).toBe(2);
     expect(callsTo(client, "evener/thread/jobs/list")).toBe(0);
@@ -498,6 +537,7 @@ test("same-session opaque summary epoch changes retain qualified live status", a
     threadId: "wire-root",
     sessionId: "root-session",
     status: { type: "active" },
+    askPending: false,
   });
   expect(callsTo(client, "thread/read")).toBe(1);
 });

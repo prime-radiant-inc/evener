@@ -45,6 +45,7 @@ test("a status frame keeps shared metadata current across a closed and re-opened
     threadId: "wire-root",
     sessionId: "root-session",
     status: { type: "idle" },
+    askPending: false,
   });
   reopened.release();
   transcript.release();
@@ -206,7 +207,7 @@ test("escalation frames keep shared approval metadata current across multiple ap
     params: { threadId: "wire-root", ref: activityRef, escalationId: "esc_2" },
   });
   expect(lease.metadata?.()?.approvalPending).toBe(false);
-  expect(lease.metadata?.()?.pendingEscalationIds).toEqual([]);
+  expect(lease.metadata?.()?.pendingEscalationIds ?? []).toEqual([]);
 
   client.emitNotification({
     method: "evener/sandbox/escalation/requested",
@@ -263,6 +264,74 @@ test("a resolved frame before the initial response keeps the other pending appro
   lease.release();
 });
 
+test("a read started after an askPending=false frame cannot restore the older question snapshot", async () => {
+  const client = activityClient();
+  const question = {
+    ...threadFixture().thread,
+    id: "wire-root",
+    sessionId: "root-session",
+    status: { type: "awaiting" as const },
+    evener: { ...threadFixture().thread.evener, askPending: true },
+  };
+  let reads = 0;
+  client.on("thread/read", () => {
+    reads += 1;
+    return { thread: question };
+  });
+  const lease = acquireThreadSubscription(client, activityRef);
+  await lease.ensure();
+  expect(lease.metadata?.()?.askPending).toBe(true);
+  client.emitNotification({
+    method: "thread/status/changed",
+    params: { ref: activityRef, threadId: "wire-root", status: { type: "idle" }, askPending: false },
+  });
+  expect(lease.metadata?.()?.askPending).toBe(false);
+  await lease.read({ includeTurns: true });
+  expect(lease.metadata?.()?.askPending).toBe(false);
+  lease.release();
+});
+
+test("a resync clears requested approvals that the recovery snapshot resolves", async () => {
+  const client = activityClient();
+  const escalation = (escalationId: string) => ({
+    threadId: "wire-root",
+    ref: activityRef,
+    escalationId,
+    mode: "read-only",
+    tool: "read_file",
+    kind: "file",
+    deniedPath: "/outside",
+  });
+  const pending: ThreadReadResponse = {
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-root",
+      sessionId: "root-session",
+      evener: { ...threadFixture().thread.evener, pendingEscalations: [escalation("esc_1")] },
+    },
+  };
+  const recovered: ThreadReadResponse = {
+    thread: { ...pending.thread, evener: { ...threadFixture().thread.evener } },
+  };
+  let reads = 0;
+  client.on("thread/read", () => {
+    reads += 1;
+    return reads === 1 ? pending : recovered;
+  });
+  const lease = acquireThreadSubscription(client, activityRef);
+  await lease.ensure();
+  expect(lease.metadata?.()?.pendingEscalationIds).toEqual(["esc_1"]);
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref: activityRef, threadId: "wire-root" },
+  });
+  expect(lease.metadata?.()?.approvalPending).toBeFalsy();
+  await lease.read({ includeTurns: true });
+  expect(lease.metadata?.()?.approvalPending).toBeFalsy();
+  expect(lease.metadata?.()?.pendingEscalationIds ?? []).toEqual([]);
+  lease.release();
+});
+
 test("shared leases expose only admitted runtime metadata, including after a rich read", async () => {
   const client = activityClient(),
     removed = deferred<void>();
@@ -289,6 +358,7 @@ test("shared leases expose only admitted runtime metadata, including after a ric
     threadId: "wire-root",
     sessionId: "root-session",
     status: { type: "active", activeFlags: ["waitingOnTool"] },
+    askPending: false,
   });
   expect(second.metadata?.()).toEqual(first.metadata?.());
   const rich: ThreadReadResponse = { thread: { ...response.thread, status: { type: "idle" } } };
@@ -298,6 +368,7 @@ test("shared leases expose only admitted runtime metadata, including after a ric
     threadId: "wire-root",
     sessionId: "root-session",
     status: { type: "idle" },
+    askPending: false,
   });
   expect(client.calls.filter((call) => call.method === "thread/read").map((call) => call.params)).toEqual([
     { ref: activityRef, includeTurns: false, subscribe: true, replaceSubscription: false },
@@ -320,7 +391,12 @@ test("metadata uses the thread identity when the resolved session id is absent",
   client.on("thread/read", () => response);
   const lease = acquireThreadSubscription(client, activityRef);
   await lease.ensure();
-  expect(lease.metadata?.()).toEqual({ threadId: "wire-only", sessionId: "wire-only", status: { type: "idle" } });
+  expect(lease.metadata?.()).toEqual({
+    threadId: "wire-only",
+    sessionId: "wire-only",
+    status: { type: "idle" },
+    askPending: false,
+  });
   lease.release();
 });
 
@@ -351,6 +427,7 @@ test("disconnect clears metadata and fences a late rich read from the former gen
     threadId: "wire-new",
     sessionId: "replacement-session",
     status: { type: "idle" },
+    askPending: false,
   });
   expect(callsTo(client, "thread/read")).toBe(3);
   lease.release();

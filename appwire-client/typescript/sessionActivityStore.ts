@@ -1200,6 +1200,15 @@ export class SessionActivityStore {
         this.runtimeThreadId = notification.params.threadId;
         if (this.statusUpdate?.threadId !== this.runtimeThreadId) this.statusUpdate = null;
         if (this.state.runtime && this.state.runtime.threadId !== this.runtimeThreadId) this.publish({ runtime: null });
+        else if (this.state.runtime?.approvalPending) {
+          // A relay interruption can hide an escalation resolution. The
+          // recovery read is authoritative; clear the stale approval now and
+          // let that read add back anything still pending.
+          this.pendingEscalations.clear();
+          this.publish({
+            runtime: { ...this.state.runtime, approvalPending: false, pendingEscalationIds: [] },
+          });
+        }
         // A resync re-establishes the source identity, so the pushed-frame merge
         // waits for the refreshed context as it does across a reconnect. Without
         // this a frame racing the resync's delegate read merges against the epoch

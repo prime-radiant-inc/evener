@@ -110,6 +110,7 @@ class ThreadSubscriptions {
         notification.method === "evener/sandbox/escalation/resolved"
       )
         this.admitEscalation(notification);
+      else if (notification.method === "evener/thread/resync") this.admitResync(notification);
     });
   }
 
@@ -175,6 +176,23 @@ class ThreadSubscriptions {
         ? { approvalPending: true, pendingEscalationIds: ids }
         : { approvalPending: false, pendingEscalationIds: [] }),
     };
+  }
+
+  private admitResync(notification: Extract<AnyNotification, { method: "evener/thread/resync" }>): void {
+    const { ref, threadId } = notification.params;
+    const member =
+      this.members.get(ref) ??
+      [...this.members.values()].find((candidate) => candidate.metadata?.threadId === threadId);
+    if (!member) return;
+    // The source is authoritative again: requests from before the interruption
+    // may have resolved while the relay was down. A frame arriving after this
+    // resync re-adds itself.
+    member.requestedEscalations.clear();
+    member.resolvedEscalations.clear();
+    member.pendingEscalations.clear();
+    if (member.metadata) {
+      member.metadata = { ...member.metadata, approvalPending: false, pendingEscalationIds: [] };
+    }
   }
 
   acquire(ref: string): ThreadSubscriptionLease {
@@ -323,13 +341,14 @@ class ThreadSubscriptions {
     const newer = member.statusRevision > readStatusRevision && member.statusThreadId === thread.id;
     // The same rule protects the pending-question flag: a status frame that
     // carried askPending (true or false) is newer than this read's snapshot.
-    // When that frame did not carry it, the read remains the only evidence.
+    // Once metadata has an explicit value, later snapshots cannot revert it;
+    // a fresh status frame is what changes the question state.
     const earlyAsk = member.pendingAsk?.threadId === thread.id ? member.pendingAsk.askPending : undefined;
     member.pendingAsk = undefined;
     const askPending =
       earlyAsk !== undefined
         ? earlyAsk
-        : newer && member.metadata?.askPending !== undefined
+        : member.metadata?.askPending !== undefined
           ? member.metadata.askPending
           : thread.evener?.askPending === true;
     // Seed from the snapshot, then overlay every escalation frame received
@@ -347,11 +366,7 @@ class ThreadSubscriptions {
       threadId: thread.id,
       sessionId: thread.sessionId ?? thread.id,
       status: copyStatus((newer ? member.metadata?.status : undefined) ?? thread.status),
-      ...(askPending
-        ? { askPending: true }
-        : newer && member.metadata?.askPending === false
-          ? { askPending: false }
-          : {}),
+      askPending,
       ...approvalFields,
     };
   }
