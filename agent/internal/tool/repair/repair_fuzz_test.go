@@ -221,6 +221,8 @@ func FuzzRepairSuggestions(f *testing.F) {
 	f.Add("tool_00", "", true)
 	f.Add("", "", false)
 	f.Add("cafe", "cafe,cafes", false)
+	f.Add("job_notification", "", false)
+	f.Add("job-notification", "read_file", true)
 
 	f.Fuzz(func(t *testing.T, requested, joined string, longList bool) {
 		if len(requested) > 512 || len(joined) > 4096 {
@@ -238,6 +240,14 @@ func FuzzRepairSuggestions(f *testing.F) {
 		message := UnknownToolMessage(requested, available)
 		if !strings.HasPrefix(message, fmt.Sprintf("unknown tool: %q.", requested)) {
 			t.Fatalf("unknown-tool prefix mismatch: %q", message)
+		}
+		if DiagnoseUnknownTool(requested, available).Kind == UnknownToolKindSystemMessage {
+			// A name Evener itself injects into the conversation is explained
+			// as a system message and carries no tool list or suggestion.
+			if strings.Contains(message, "\nAvailable tools: ") {
+				t.Fatalf("system-message diagnostic listed tools: %q", message)
+			}
+			return
 		}
 		listed := available
 		if len(listed) > maxAvailableListed {
