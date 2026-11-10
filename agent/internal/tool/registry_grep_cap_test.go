@@ -27,12 +27,12 @@ func grepThroughRegistry(t *testing.T, lines []string, args string) ExecResult {
 		Definition: DefGrep(),
 		ReadOnly:   true,
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			max := execenv.DefaultGrepMaxResults
+			limit := execenv.DefaultGrepMaxResults
 			if v, ok := args["max_results"].(float64); ok {
-				max = int(v)
+				limit = int(v)
 			}
 			// A skip predicate selects the deterministic native reader.
-			return env.(*execenv.LocalExecutionEnvironment).GrepSkipping(ctx, "x", "matches.txt", "", false, max, "content", 0, func(string) bool { return false })
+			return env.(*execenv.LocalExecutionEnvironment).GrepSkipping(ctx, "x", "matches.txt", "", false, limit, "content", 0, func(string) bool { return false })
 		},
 		Limit: defaultToolLimit("grep"),
 	}); err != nil {

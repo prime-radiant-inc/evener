@@ -43,23 +43,28 @@ func TestRepeatReadOfUnchangedFileIsMarkedUnchanged(t *testing.T) {
 		return res
 	}
 
+	s.mu.Lock()
+	firstTurn := s.totalRounds
+	s.mu.Unlock()
 	first := read("r1", map[string]any{})
 	if first.UnchangedSinceTurn != nil {
 		t.Fatal("first read must not be marked unchanged")
 	}
 	s.mu.Lock()
 	s.totalRounds += 3
-	wantTurn := s.totalRounds
 	s.mu.Unlock()
 
 	second := read("r2", map[string]any{})
-	if second.UnchangedSinceTurn == nil || *second.UnchangedSinceTurn >= wantTurn {
+	if second.UnchangedSinceTurn == nil || *second.UnchangedSinceTurn != firstTurn {
 		t.Fatalf("repeat read: UnchangedSinceTurn=%v, want the earlier read's turn", second.UnchangedSinceTurn)
 	}
 	if !strings.Contains(second.Output, "three") {
 		t.Fatal("the content must still be returned")
 	}
 
+	if explicit := read("r2b", map[string]any{"offset": 1}); explicit.UnchangedSinceTurn == nil {
+		t.Fatal("offset=1 is the default range")
+	}
 	if other := read("r3", map[string]any{"offset": 2}); other.UnchangedSinceTurn != nil {
 		t.Fatal("a different range is not a repeat")
 	}

@@ -1093,7 +1093,7 @@ func truncateCharsWithStatus(s string, limit int, strategy schema.TruncationStra
 	}
 }
 
-// truncateHeadCount bounds glob/grep-shaped output (one match per line, though
+// truncateHeadCountReason bounds glob/grep-shaped output (one match per line, though
 // grep's context_lines can add several output lines per match plus "--" group
 // separators, so this counts LINES, not matches) by keeping the first
 // maxEntries lines and appending a count-only structural summary. Unlike truncateChars'
@@ -1107,19 +1107,9 @@ func truncateCharsWithStatus(s string, limit int, strategy schema.TruncationStra
 // appending a warning. The earliest entries survive; trailing notes, including
 // the line-count summary, are dropped whole when the character bound fires.
 // A single enormous matched line still cannot balloon past both bounds.
-func truncateHeadCount(s string, maxEntries, maxChars int) string {
-	out, _ := truncateHeadCountWithStatus(s, maxEntries, maxChars)
-	return out
-}
-
-func truncateHeadCountWithStatus(s string, maxEntries, maxChars int) (string, bool) {
-	out, reason := truncateHeadCountReason(s, maxEntries, maxChars)
-	return out, reason != ""
-}
-
-// truncateHeadCountReason is truncateHeadCountWithStatus naming the limit that
-// cut the output. The character cap is reported when both fire: it is the one
-// a larger entry cap cannot lift.
+//
+// It names the limit that cut the output. The character cap is reported when
+// both fire: it is the one a larger entry cap cannot lift.
 func truncateHeadCountReason(s string, maxEntries, maxChars int) (string, TruncationReason) {
 	if maxEntries <= 0 || s == "" {
 		return s, ""

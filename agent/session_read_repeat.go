@@ -2,10 +2,10 @@ package agent
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"time"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 )
 
@@ -22,7 +22,7 @@ type priorRead struct {
 	turn  int
 }
 
-// readRangeKey names one path and line range as the caller asked for it.
+// readRangeKey names one path and the normalized line range read from it.
 type readRangeKey struct {
 	path          string
 	offset, limit int
@@ -39,16 +39,21 @@ func (s *Session) readFileKey(call []byte) (readRangeKey, bool) {
 	if path == "" {
 		return readRangeKey{}, false
 	}
-	key := readRangeKey{path: s.resolveFilePath(path)}
-	if v := optionalIntArg(args, "offset"); v != nil {
+	// Defaults and non-positive values normalize as NumberLines reads them, so
+	// an omitted offset and offset=1 name the same range.
+	key := readRangeKey{path: s.resolveFilePath(path), offset: 1, limit: execenv.DefaultReadLines}
+	if v := optionalIntArg(args, "offset"); v != nil && *v > 0 {
 		key.offset = *v
 	}
-	if v := optionalIntArg(args, "limit"); v != nil {
+	if v := optionalIntArg(args, "limit"); v != nil && *v > 0 {
 		key.limit = *v
 	}
 	return key, true
 }
 
+// statReadStamp stats path on the host filesystem. That is the file the read
+// sees only because LocalExecutionEnvironment is the sole ExecutionEnvironment;
+// an environment whose files live elsewhere must not reuse this stat.
 func statReadStamp(path string) (readStamp, bool) {
 	info, err := os.Stat(path)
 	if err != nil || !info.Mode().IsRegular() {
@@ -77,6 +82,6 @@ func (s *Session) noteReadFileRepeat(key readRangeKey, before readStamp, res *to
 
 	if seen && prior.stamp.size == before.size && prior.stamp.mtime.Equal(before.mtime) {
 		res.UnchangedSinceTurn = &prior.turn
-		res.Output += fmt.Sprintf("\n[Unchanged since your read at turn %d: same file, same range.]", prior.turn)
+		res.Output += "\n[Unchanged since your earlier read: same file, same range.]"
 	}
 }
