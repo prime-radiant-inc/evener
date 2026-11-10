@@ -628,7 +628,15 @@ export class TranscriptRepository {
     // accepted read replace it, so the fresh latest boundary and its returned
     // cursor win.
     if (this.#model) {
-      this.#model = invalidateHistory(this.#model);
+      // The foldable bit is the outgoing connection's answer, and the store
+      // clears its own copy at this same boundary. Retire it here too, because
+      // the publish path reads the model from this repository: a frame that
+      // carries no read would otherwise hand the retired bit back to the store.
+      // Only a fresh read on the current connection stamps it again.
+      this.#model =
+        this.#model.resumeOnlyFoldable === true
+          ? invalidateHistory({ ...this.#model, resumeOnlyFoldable: false })
+          : invalidateHistory(this.#model);
       this.#recoveryNeeded = true;
     }
   }
