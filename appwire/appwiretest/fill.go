@@ -13,19 +13,6 @@ func FillNonZero(v any) {
 	fill(reflect.ValueOf(v).Elem(), "x")
 }
 
-// ZeroFields returns the names of the exported top-level fields of the struct
-// pointed to by v that hold their zero value.
-func ZeroFields(v any) []string {
-	rv := reflect.ValueOf(v).Elem()
-	var zero []string
-	for i := range rv.NumField() {
-		if rv.Type().Field(i).IsExported() && rv.Field(i).IsZero() {
-			zero = append(zero, rv.Type().Field(i).Name)
-		}
-	}
-	return zero
-}
-
 func fill(v reflect.Value, name string) {
 	switch v.Kind() {
 	case reflect.String:
