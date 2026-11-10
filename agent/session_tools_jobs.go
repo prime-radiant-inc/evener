@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/internal/worktree"
 	"primeradiant.com/evener/agent/schema"
 	taskpkg "primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/llm"
 )
 
 const (
@@ -68,20 +70,21 @@ func registerJobTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 // inject a failure at each registration boundary.
 func registerJobToolsWith(reg *tool.Registry, register func(tool.RegisteredTool) error, s *Session) error {
 	if err := register(tool.RegisteredTool{
-		Definition: tool.DefJobStatus(), ReadOnly: true,
+		Definition: tool.DefJobStatusNamed(s.resultToolName(), s.hasHumanPartnerToAsk()), ReadOnly: true,
 		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			if _, hub := args["hub"]; hub {
 				return s.invokeHubRead(ctx, "job_status", args)
 			}
 			_ = env
-			return jobStatusTool(s, args, jobToolResultMaxChars(reg, "job_status"))
+			value, err := jobStatusTool(s, args, jobToolResultMaxChars(reg, "job_status"))
+			return s.refuseRepeatedJobStatus(strings.TrimSpace(stringArg(args, "target")), value, err)
 		},
 	}); err != nil {
 		return err
 	}
 	if err := register(tool.RegisteredTool{
-		Definition: tool.DefJobListNamed(s.resultToolName()), ReadOnly: true,
+		Definition: tool.DefJobListNamed(s.resultToolName(), s.hasHumanPartnerToAsk()), ReadOnly: true,
 		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			if _, hub := args["hub"]; hub {
@@ -223,6 +226,81 @@ func decodeDelegateArgs(args map[string]any) (delegateArgs, error) {
 	return a, nil
 }
 
+// normalizeDelegateArgs is the delegate tool's NormalizeArgs. createDelegate
+// already accepted disable aliases and mixed-case levels (it validates the
+// normalized value), but the schema enum listed only the canonical literals,
+// so dispatch refused them first. Normalizing here, where dispatch runs it
+// before validation, makes the advertised contract and the handler's real
+// contract the same. Both effort fields canonicalize through the same helpers
+// task_list uses, so a seeded task accepts the task_list levels and its
+// "inherit" sentinel; it also tolerates the disable aliases the handler
+// accepts, which task_list's own schema does not. An effort that normalizes to
+// nothing configured is dropped, which is what "inherit" and omission mean.
+func normalizeDelegateArgs(args map[string]any) (map[string]any, error) {
+	// Rewrite only what needs it: the common call carries no effort or an
+	// already-canonical one, and this runs several times per dispatch.
+	var normalized map[string]any
+	ensureClone := func() {
+		if normalized == nil {
+			normalized = maps.Clone(args)
+		}
+	}
+	if raw, ok := args["reasoning_effort"].(string); ok {
+		if effort := llm.NormalizeReasoningEffort(raw); rewriteEffort(raw, effort) {
+			ensureClone()
+			setEffort(normalized, "reasoning_effort", effort)
+		}
+	}
+	if items, ok := args["task_list"].([]any); ok {
+		var tasks []any
+		for i, item := range items {
+			fields, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			raw, ok := fields["reasoning_effort"].(string)
+			if !ok {
+				continue
+			}
+			effort := normalizeTaskEffort(raw)
+			if !rewriteEffort(raw, effort) {
+				continue
+			}
+			if tasks == nil {
+				tasks = append([]any(nil), items...)
+			}
+			clean := maps.Clone(fields)
+			setEffort(clean, "reasoning_effort", effort)
+			tasks[i] = clean
+		}
+		if tasks != nil {
+			ensureClone()
+			normalized["task_list"] = tasks
+		}
+	}
+	if normalized == nil {
+		return args, nil
+	}
+	return normalized, nil
+}
+
+// rewriteEffort reports whether an effort argument must be rewritten: the
+// normalized value differs, or it means "nothing configured" and so must be
+// dropped rather than left for the enum to reject.
+func rewriteEffort(raw, effort string) bool {
+	return effort != raw || effort == ""
+}
+
+// setEffort writes effort to key, or drops the key when the normalized value
+// means "nothing configured".
+func setEffort(fields map[string]any, key, effort string) {
+	if effort == "" {
+		delete(fields, key)
+		return
+	}
+	fields[key] = effort
+}
+
 // delegateTaskListArg decodes the delegate tool's task_list items into task
 // templates. Every item needs a title and a prompt that defines its own step,
 // so an empty prompt is an error rather than a blank task.
@@ -249,9 +327,13 @@ func delegateTaskListArg(args map[string]any) ([]taskpkg.TaskTemplate, error) {
 		if prompt == "" {
 			return nil, fmt.Errorf("invalid_request: task_list[%d].prompt is required", i)
 		}
-		effort := strings.TrimSpace(stringArg(fields, "reasoning_effort"))
-		if effort != "" && effort != "low" && effort != "medium" && effort != "high" {
-			return nil, fmt.Errorf("invalid_request: task_list[%d].reasoning_effort must be one of low, medium, high", i)
+		// A seeded task is a per-task override, so it accepts the levels the
+		// task_list tool accepts, including the "inherit" sentinel (stored as
+		// no override) and the disable aliases, canonicalized so the request
+		// path reads one form.
+		effort, err := validateTaskEffort(stringArg(fields, "reasoning_effort"))
+		if err != nil {
+			return nil, fmt.Errorf("invalid_request: task_list[%d].reasoning_effort: %w", i, err)
 		}
 		kind := strings.TrimSpace(stringArg(fields, "type"))
 		switch taskpkg.TaskType(kind) {

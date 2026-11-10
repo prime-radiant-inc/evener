@@ -17,7 +17,7 @@ func newSeenTestStore(path string, now *time.Time) *SessionSeenStore {
 }
 
 // setupErrorSeenStore returns a SessionSeenStore whose openDB routes through
-// the shared error-injecting driver (pin_section_nonretry_test.go), so a test
+// the shared error-injecting driver (store_fault_helpers_test.go), so a test
 // can fail one exec inside MarkBatch's transaction on demand.
 func setupErrorSeenStore(t *testing.T, path string) *SessionSeenStore {
 	t.Helper()

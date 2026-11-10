@@ -9,6 +9,14 @@ checkout, so another session's stashes sit in the same list: inspect
 `git stash list` before creating or popping one, and prefer file-scoped
 `git restore` over stash for mutation checks inside worktrees.
 
+## Supported platforms
+
+Nothing ships for Windows: `.goreleaser.yml` builds Linux and Darwin only.
+Do not add Windows-only work, findings, coverage or checks, and do not
+treat an existing Windows compile check as a support promise.
+`GOOS=windows` remains a compile target only for the build-tag cross-vet
+(`docs/developing-evener/conventions/go-workspace.md`).
+
 ## Product behavior and evergreen documentation
 
 Read [the product guide](docs/product/README.md) and the relevant row in
@@ -230,6 +238,26 @@ loading them, since each opens a socket the moment its body runs.
   coverage-percentage label.
 - New compatibility code names its removal condition in the PR description.
 
+## Agent workflow budget
+
+- **Review.** Run par once on the finished change, before the PR. After that,
+  RoboRev is the review: do not add reviewer fan-out on each round.
+- **Spec review.** A spec judged ready stays ready unless implementation shows
+  a defect in it. Three spec-review rounds without convergence go to Jesse.
+- **Duplicate delegates.** Before you start a delegate, check your running
+  delegates for one already working on the same question or commit.
+- **Waiting.** Long work runs as a background job. When you have nothing else
+  to do until it finishes, end your turn; its completion wakes you. Do not
+  write `sleep` or polling loops, and give any server or loop you start a
+  time bound.
+- **Host load.** No stress or CPU-burner jobs on this machine. Run `make lint`
+  once before you push, not after each edit.
+- **Scope.** A request to find, research or audit something does not become an
+  implementation PR without asking. Do not commit to a repository the request
+  did not name. A layout redesign keeps the workflow as it is.
+- **Missing skill.** If a skill you were asked to use is not installed, say
+  so. Do not search the filesystem for it.
+
 ## Shepherding a PR through RoboRev
 
 - **Simplify-code**
@@ -261,9 +289,12 @@ loading them, since each opens a socket the moment its body runs.
   head), never on comment identity or a coarse CI-state string; a verdict on a
   new head rides the same comment id with an unchanged CI reason.
 - **Triage each finding by evidence, not reflex.** Fix at the root
-  red-test-first: watch the reviewer's scenario fail, then pass, and post both
+  red-test-first: extend the nearest existing test or table with the
+  reviewer's scenario, watch it fail, then pass, and post both
   runs in a PR comment — the repo's convention is one evidence comment per
-  round covering every finding. When the finding is wrong, refute it with the
+  round covering every finding. Add a new test function only when no existing
+  test reaches that code path; the evidence comment says which was done.
+  When the finding is wrong, refute it with the
   code's own construction (e.g. Summarize counts every non-done/cancelled
   status as remaining, so the aggregate cannot claim completion) or the
   pinned toolchain (tsc 6.0.3 types `Element.textContent` as non-null,

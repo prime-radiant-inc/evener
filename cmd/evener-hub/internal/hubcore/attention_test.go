@@ -256,3 +256,18 @@ func fuzzScenarioAttentionWatcher_TicksOnNeedsResponseOnlyFlip(t *testing.T) {
 		t.Fatalf("payloads = %+v, want the gone entry with NeedsResponse cleared", got)
 	}
 }
+
+// A live entry with no session ID has nothing to attach attention to, so it
+// gets no entry while its sessioned neighbours still do.
+func TestDeriveAttentionSkipsALiveEntryWithoutSession(t *testing.T) {
+	attn, _ := DeriveAttention(nil, []LiveEntry{
+		{SessionID: "abcdefghijklmnop", Status: "active"},
+		{SessionID: "", Status: "active"},
+	}, nil)
+	if _, ok := attn[""]; ok {
+		t.Fatalf("attention = %#v, want no entry for a live entry without a session", attn)
+	}
+	if _, ok := attn["abcdefghijklmnop"]; !ok || len(attn) != 1 {
+		t.Fatalf("attention = %#v, want exactly the sessioned entry", attn)
+	}
+}

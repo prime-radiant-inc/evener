@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"context"
 	"encoding/json"
 	"path/filepath"
 	"strings"
@@ -189,7 +190,7 @@ func healthFixture(t *testing.T) (base, sid string) {
 
 func TestTranscriptHealth_ToolCallsAndErrorClasses(t *testing.T) {
 	base, sid := healthFixture(t)
-	h, err := TranscriptHealth(base, sid)
+	h, err := TranscriptHealth(context.Background(), base, sid)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +224,7 @@ func TestTranscriptHealth_ToolCallsAndErrorClasses(t *testing.T) {
 
 func TestTranscriptHealth_LongestIdenticalRun(t *testing.T) {
 	base, sid := healthFixture(t)
-	h, err := TranscriptHealth(base, sid)
+	h, err := TranscriptHealth(context.Background(), base, sid)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +242,7 @@ func TestTranscriptHealth_LongestIdenticalRun(t *testing.T) {
 
 func TestTranscriptHealth_TruncationWarnings(t *testing.T) {
 	base, sid := healthFixture(t)
-	h, err := TranscriptHealth(base, sid)
+	h, err := TranscriptHealth(context.Background(), base, sid)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +253,7 @@ func TestTranscriptHealth_TruncationWarnings(t *testing.T) {
 
 func TestTranscriptHealth_SteeringByKind(t *testing.T) {
 	base, sid := healthFixture(t)
-	h, err := TranscriptHealth(base, sid)
+	h, err := TranscriptHealth(context.Background(), base, sid)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +267,7 @@ func TestTranscriptHealth_SteeringByKind(t *testing.T) {
 
 func TestTranscriptHealth_Jobs(t *testing.T) {
 	base, sid := healthFixture(t)
-	h, err := TranscriptHealth(base, sid)
+	h, err := TranscriptHealth(context.Background(), base, sid)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +281,7 @@ func TestTranscriptHealth_Jobs(t *testing.T) {
 
 func TestTranscriptHealth_StaleNotificationsAndUserCorrections(t *testing.T) {
 	base, sid := healthFixture(t)
-	h, err := TranscriptHealth(base, sid)
+	h, err := TranscriptHealth(context.Background(), base, sid)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +299,7 @@ func TestTranscriptHealth_StaleNotificationsAndUserCorrections(t *testing.T) {
 
 func TestTranscriptHealth_JSONFields(t *testing.T) {
 	base, sid := healthFixture(t)
-	h, err := TranscriptHealth(base, sid)
+	h, err := TranscriptHealth(context.Background(), base, sid)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +323,7 @@ func TestTranscriptHealth_JSONFields(t *testing.T) {
 
 func TestRenderHealth_CompactTable(t *testing.T) {
 	base, sid := healthFixture(t)
-	h, err := TranscriptHealth(base, sid)
+	h, err := TranscriptHealth(context.Background(), base, sid)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +355,7 @@ func TestTranscriptHealth_NoResultToolCall(t *testing.T) {
 	jobsPath := filepath.Join(bucket, "sessions", sid, "jobs.jsonl")
 	writeFile(t, jobsPath, "")
 
-	h, err := TranscriptHealth(base, sid)
+	h, err := TranscriptHealth(context.Background(), base, sid)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,7 +374,7 @@ func TestTranscriptHealth_UnreadableTranscriptIsLoudError(t *testing.T) {
 	base := t.TempDir()
 	bucket := stateHomeBucket(base, hash1)
 	writeFile(t, filepath.Join(bucket, "sessions", sidA+".transcript.jsonl"), "not valid json\n")
-	_, err := TranscriptHealth(base, sidA)
+	_, err := TranscriptHealth(context.Background(), base, sidA)
 	if err == nil {
 		t.Fatal("want error for unparseable transcript, got nil")
 	}
@@ -417,7 +418,7 @@ func TestTranscriptHealth_RejectedCallsDistinctSignatures(t *testing.T) {
 		}}),
 	}
 	base, sid := rejectedSignatureFixture(t, turns)
-	h, err := TranscriptHealth(base, sid)
+	h, err := TranscriptHealth(context.Background(), base, sid)
 	if err != nil {
 		t.Fatalf("TranscriptHealth: %v", err)
 	}

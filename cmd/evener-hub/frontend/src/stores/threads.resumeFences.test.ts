@@ -18,8 +18,14 @@ import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { connectionStore, resetConnectionStoreForTests } from "./connection";
 import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+import { deleteMutationDatabase } from "./mutationOutboxTestUtils";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { holdNextWriteTransaction } from "./testing/stalledIndexedDB";
+import {
+  runScheduledHydrationRetry,
+  type ScheduledHydrationRetry,
+  scheduledHydrationRetries,
+} from "./threadHydrationTestUtils";
 import {
   hasBlockedUnknown,
   hasQueuedNonSend,
@@ -48,14 +54,6 @@ import {
   settleCallerContinuations,
 } from "./threadsSessionActionsTestUtils";
 
-interface ScheduledHydrationRetry {
-  attempt: number;
-  retry: () => void;
-  cancelled: boolean;
-}
-
-let scheduledHydrationRetries: ScheduledHydrationRetry[] = [];
-
 let restoreHydrationRetryScheduler: (() => void) | null = null;
 
 let cache: SessionEntryCache;
@@ -66,7 +64,7 @@ beforeEach(async () => {
   resetPendingTurnsStoreForTests();
   resetWorkspaceStoreForTests();
   resetSubagentModuleStoreForTests();
-  scheduledHydrationRetries = [];
+  scheduledHydrationRetries.length = 0;
   restoreHydrationRetryScheduler = installHydrationRetrySchedulerForTests((attempt, retry) => {
     const scheduled: ScheduledHydrationRetry = { attempt, retry, cancelled: false };
     scheduledHydrationRetries.push(scheduled);
@@ -93,24 +91,6 @@ afterEach(() => {
   cache.close();
   vi.restoreAllMocks();
 });
-
-async function deleteMutationDatabase(): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const request = indexedDB.deleteDatabase("evener-mutation-outbox");
-    request.addEventListener("success", () => resolve(), { once: true });
-    request.addEventListener("error", () => reject(request.error), { once: true });
-    request.addEventListener("blocked", () => reject(new Error("mutation database deletion blocked")), {
-      once: true,
-    });
-  });
-}
-
-function runScheduledHydrationRetry(index = 0): void {
-  const scheduled = scheduledHydrationRetries[index];
-  expect(scheduled, `no hydration retry scheduled at index ${index}`).toBeDefined();
-  expect(scheduled?.cancelled).toBe(false);
-  scheduled?.retry();
-}
 
 // RoboRev Medium (round 13): the off-shut-down clear ends only the
 // merely-resumable window a genuinely resume-only snapshot opened. A ref that

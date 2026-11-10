@@ -26,7 +26,7 @@ type ConfigSnapshot struct {
 	// Manager records this session's start-time Manager property. Resume
 	// restores it from here; the hub never re-asserts it and it cannot be off.
 	Manager                     bool     `json:"manager,omitempty"`
-	ReasoningEffort             string   `json:"reasoning_effort,omitempty"`              // reasoning-effort passthrough (low|medium|high)
+	ReasoningEffort             string   `json:"reasoning_effort,omitempty"`              // reasoning-effort passthrough (minimal|low|medium|high|xhigh|max|none)
 	SkillsDirs                  []string `json:"skills_dirs,omitempty"`                   // extra directories scanned for skills
 	MCPConfigFiles              []string `json:"mcp_config_files,omitempty"`              // paths to .mcp.json files
 	MCPInline                   []string `json:"mcp_inline,omitempty"`                    // inline MCP server specs
@@ -47,6 +47,7 @@ type ConfigSnapshot struct {
 	ProviderIdleTimeout         string   `json:"provider_idle_timeout,omitempty"`         // positive response-byte idle duration; default 10m
 	Sandbox                     string   `json:"sandbox,omitempty"`                       // sandbox mode name (off|read-only|workspace-write|restricted); empty = off
 	SandboxNet                  *bool    `json:"sandbox_net,omitempty"`                   // sandbox network decision; nil = default (on when sandboxed)
+	CommitProvenance            string   `json:"commit_provenance,omitempty"`             // commit message provenance: empty/coauthor = on, off = omit the instruction
 	VisionModel                 string   `json:"vision_model,omitempty"`                  // vision side-channel routing: "" | "off" | "model" | "provider/model"
 }
 

@@ -298,7 +298,7 @@ func TestNeedsResponseRestArmsBesideAParkedQueue(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !sess.clientMutations.queueHeld() || sess.QueueDepth() == 0 {
+	if !sess.clientMutations.queueHeld() || sess.queueDepth() == 0 {
 		t.Fatal("precondition: the queue is not parked with a message in it")
 	}
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {

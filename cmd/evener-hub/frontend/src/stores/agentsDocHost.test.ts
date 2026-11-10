@@ -1,4 +1,4 @@
-import type { AgentsDocResponse, AnyNotification, HostRow } from "@evener/appwire-client";
+import type { AgentsDocResponse, AnyNotification } from "@evener/appwire-client";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { connectReadyFakeClient } from "../testing/connectionTestUtils";
 import {
@@ -9,6 +9,7 @@ import {
 } from "./agentsDoc";
 import { connectionStore, resetConnectionStoreForTests } from "./connection";
 import { hostsStore } from "./hosts";
+import { hostRow } from "./hostsTestUtils";
 
 // The AGENTS.md store's host scope (component 07b): the controller's own
 // document is the singleton over the plain connection; a remote host's own file
@@ -17,18 +18,6 @@ import { hostsStore } from "./hosts";
 // host's file, never this hub's.
 
 const DOC: AgentsDocResponse = { path: "/home/u/.config/evener/AGENTS.md", exists: true, content: "# hi\n" };
-
-function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
-  return {
-    generation: 1,
-    incarnationId: "inc-1",
-    origin: "hub.toml",
-    attached: false,
-    midAttach: false,
-    removed: false,
-    ...overrides,
-  };
-}
 
 beforeEach(() => {
   resetConnectionStoreForTests();

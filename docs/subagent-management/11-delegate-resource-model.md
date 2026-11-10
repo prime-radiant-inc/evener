@@ -255,9 +255,15 @@ delegate_send accepts to=dlg_..., message, and max_wait_ms:
   that generation's input, and returns action=started.
 - If the delegate is starting, settling, or stopping, the call returns a typed
   target_busy error. It does not guess which generation should receive the
-  message.
-- If the delegate is permanently non-resumable, the call returns
-  target_not_resumable with the durable reason.
+  message. The error carries a reason (finalizing, stopping, concurrent_send,
+  reclaiming, lane_handoff, closing or not_resumable). No guidance depends on a
+  notification. Transient reasons carry a retry-after delay; closing (the
+  session is shutting down) and not_resumable (the delegate is closed or out
+  of turns) are permanent, carry no retry-after, and tell the caller to stop
+  retrying and start a new delegate or report.
+- If the delegate is permanently non-resumable (closed, or out of turns), the
+  call returns target_busy with reason not_resumable and no retry-after; the
+  durable not_resumable_reason stays on the delegate's status.
 
 delegate_send never accepts a job_... target and never returns a job ID.
 A positive max_wait_ms applies only when that call starts an idle delegate. A

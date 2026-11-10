@@ -84,9 +84,7 @@ func TestHubRPCThreadReasoningEffortSetNotifiesColdSubscriber(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	mustInitializeHubClient(t, client)
 	// The pane is open on the exited session, so it subscribed while cold.
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID, Subscribe: true}); err != nil {
 		t.Fatalf("thread/read subscribe on the cold session: %v", err)
@@ -209,9 +207,7 @@ func TestHubRPCThreadReasoningEffortSetReachesSubscriberAfterColdModelSet(t *tes
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	mustInitializeHubClient(t, client)
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID, Subscribe: true}); err != nil {
 		t.Fatalf("thread/read subscribe on the cold session: %v", err)
 	}
@@ -331,9 +327,7 @@ func TestHubRPCThreadModelSetCarriesReasoningProfileToColdSubscriber(t *testing.
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	mustInitializeHubClient(t, client)
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID, Subscribe: true}); err != nil {
 		t.Fatalf("thread/read subscribe on the cold session: %v", err)
 	}
@@ -440,9 +434,7 @@ func TestHubRPCThreadReasoningEffortSetResumesPastThread(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	mustInitializeHubClient(t, client)
 	if err := client.ThreadReasoningEffortSet(context.Background(), appwire.ThreadReasoningEffortSetParams{
 		Ref:             "local:" + sessionID,
 		ReasoningEffort: "high",

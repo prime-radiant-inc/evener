@@ -216,7 +216,7 @@ func stmRunRoundContracts(t *testing.T, program []byte) {
 	ctx := context.Background()
 
 	value := r.word()
-	s.RegisterTool("fuzz_echo", "deterministic fuzz echo", map[string]any{
+	s.registerTool("fuzz_echo", "deterministic fuzz echo", map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"value": map[string]any{"type": "string"},
@@ -323,9 +323,10 @@ func stmRunRoundContracts(t *testing.T, program []byte) {
 		t.Fatalf("goal status = %q ok=%v, want complete", status, ok)
 	}
 
+	forcePressureAbove(t, s, compactPressureFloor)
 	compact := stmExec(t, s, ctx, "compact", "compact_context", map[string]any{"note_to_self": value, "compaction_instructions": "retain " + value})
-	if compact.IsError || s.PinnedNote() != value {
-		t.Fatalf("compact request = %#v pinned=%q", compact, s.PinnedNote())
+	if compact.IsError || s.pinnedNote() != value {
+		t.Fatalf("compact request = %#v pinned=%q", compact, s.pinnedNote())
 	}
 	if instructions, ok := s.takeForceRequest(); !ok || instructions != "retain "+value {
 		t.Fatalf("force compact request = %q %v", instructions, ok)

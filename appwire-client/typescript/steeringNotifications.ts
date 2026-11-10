@@ -52,6 +52,11 @@ export interface ParsedNotification {
   // the delegate's own text, and it settles nothing, so it claims no outcome.
   update?: true;
   watchId?: string;
+  // Set on the session's periodic reminder about its long-running shell jobs.
+  // It travels as a job-less watch-typed frame (so existing consumers treat it
+  // as a neutral delivery) whose reason attr is the producer's tag; clients
+  // that care read this flag instead of the tag.
+  reminder?: "long-running-jobs";
   // The caller's stated one-line rationale for the run (the shell tool call's
   // `intent` argument, carried on the wire as the block's intent attribute).
   intent?: string;
@@ -744,8 +749,19 @@ function jobNotificationTone(
   return "neutral";
 }
 
+// LONG_RUNNING_JOBS_REASON is the reason attr agent/job_long_running_reminder.go
+// stamps on the long-running-jobs reminder.
+const LONG_RUNNING_JOBS_REASON = "long_running_jobs";
+
+function isLongRunningJobsReminder(attrs: Record<string, string>, type: string): boolean {
+  return (
+    type === "watch" && (attrs.job_id ?? "").trim() === "" && (attrs.reason ?? "").trim() === LONG_RUNNING_JOBS_REASON
+  );
+}
+
 function titleForJobNotification(attrs: Record<string, string>, type: string, prose?: string): string {
   if (type === "watch-send") return "Watch delivered";
+  if (isLongRunningJobsReminder(attrs, type)) return "Long-running jobs";
   if (type === "watch") {
     // Derive the title from the trigger, not from job presence: only an output_match fire is an "Output matched on …". A timer
     // prose lead ("Timer fired …") keeps a timer title; an event fire
@@ -858,6 +874,8 @@ function notificationSecondary(
   // from the prose lead's seconds instead ("after 5m" / "every 5m"), falling
   // back to the raw reason when the prose does not match.
   if (notificationType === "watch") {
+    // The reminder's reason is a producer tag, not a trigger worth showing.
+    if (isLongRunningJobsReminder(attrs, notificationType)) return "";
     const reason = decodeNotificationAttributeEntities(attrs.reason ?? "").trim();
     // A watch_id-reclassified completion carries the job's completion reason,
     // not a trigger: it surfaces verbatim as the honest fallback (never a
@@ -1050,6 +1068,7 @@ function parseJobNotification(block: string): ParsedNotification | null {
     jobId: attrs.job_id?.trim() || undefined,
     jobType: attrs.job_type?.trim() || undefined,
     watchId: attrs.watch_id?.trim() || undefined,
+    reminder: isLongRunningJobsReminder(attrs, type) ? "long-running-jobs" : undefined,
     intent: intent || undefined,
     description: description || undefined,
     status: attrs.status?.trim() || undefined,

@@ -1,11 +1,12 @@
 // @vitest-environment node
 
-import type { HostRow, MarketplaceEntry } from "@evener/appwire-client";
+import type { MarketplaceEntry } from "@evener/appwire-client";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { connectReadyFakeClient } from "../testing/connectionTestUtils";
 import { connectionStore, resetConnectionStoreForTests } from "./connection";
 import { extensionsInstanceForHost, extensionsStore, resetExtensionsStoreForTests } from "./extensions";
 import { hostsStore } from "./hosts";
+import { hostRow } from "./hostsTestUtils";
 
 // Host-scoped extensions instances (component 07b): the marketplaces, plugins
 // and global launch-layer cores for the selected host. Local is the app's one
@@ -17,18 +18,6 @@ const MARKETPLACE: MarketplaceEntry = {
   source: { kind: "github", repo: "acme/plugins" },
   lastUpdated: 1000,
 };
-
-function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
-  return {
-    generation: 1,
-    incarnationId: "inc-1",
-    origin: "hub.toml",
-    attached: false,
-    midAttach: false,
-    removed: false,
-    ...overrides,
-  };
-}
 
 beforeEach(() => {
   resetConnectionStoreForTests();

@@ -6,7 +6,7 @@
 // output with production copy) may not land unless allowlist.tsv names it with
 // a reason. The allowlist should only shrink: an entry whose test is
 // converted, deleted or renamed is stale and must go. Go tests have the same
-// audit in copyonly_audit_test.go.
+// audit in `make lint-repo-audit` (internal/devtool/repoaudit).
 //
 // Scanning every tracked TypeScript test file in one test took 10.51s in CI
 // (issue #4608), over the per-test ceiling. So the audit is split: one case

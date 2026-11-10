@@ -159,6 +159,10 @@ func eachLine(text string, visit func(line string) bool) {
 	}
 }
 
+// DefaultReadLines is the line count a read returns when the caller gives no
+// positive limit.
+const DefaultReadLines = 2000
+
 // NumberLines presents text as ReadFile presents a text file: CRLF
 // normalized to LF, lines numbered from offsetLine (default 1), at most
 // limitLines lines (default 2000), and "" past the end. The window is
@@ -170,7 +174,7 @@ func NumberLines(text string, offsetLine, limitLines *int) string {
 	if offsetLine != nil && *offsetLine > 0 {
 		start = *offsetLine
 	}
-	limit := 2000
+	limit := DefaultReadLines
 	if limitLines != nil && *limitLines > 0 {
 		limit = *limitLines
 	}

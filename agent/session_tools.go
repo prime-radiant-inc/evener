@@ -97,8 +97,8 @@ func (s *Session) resultToolName() string {
 	return tool.DefaultResultToolName
 }
 
-// RegisterTool registers a custom tool at runtime.
-func (s *Session) RegisterTool(name, description string, params map[string]any, fn func(ctx context.Context, args any) (any, error)) {
+// registerTool registers a custom tool at runtime.
+func (s *Session) registerTool(name, description string, params map[string]any, fn func(ctx context.Context, args any) (any, error)) {
 	// s.reg self-synchronizes (see the Session.mu lock discipline comment), so
 	// Register itself can happen outside s.mu. But the cache rebuild below
 	// writes s.cachedToolDefs/s.cachedSystemPrompt and reads s.env/s.envInfo,
@@ -346,6 +346,15 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		return skippedToolResult(call, err)
 	}
 	var res tool.ExecResult
+	var readKey readRangeKey
+	var readBefore readStamp
+	trackRepeat := false
+	if call.Name == "read_file" && prep.PrevalErr == "" {
+		if key, ok := s.readFileKey(call.Arguments); ok {
+			readBefore, trackRepeat = statReadStamp(key.path)
+			readKey = key
+		}
+	}
 	if prep.PrevalErr != "" {
 		res = tool.ExecResult{
 			ToolName:   call.Name,
@@ -364,6 +373,9 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		}
 	}
 	res.DurationMS = time.Since(toolStart).Milliseconds()
+	if trackRepeat && !res.IsError {
+		s.noteReadFileRepeat(readKey, readBefore, &res)
+	}
 	// M7: on a sandbox denial in an interactive root session, raise a human approval
 	// card and block HERE — between dispatch and the TOOL_CALL_END emit, so the tool
 	// item stays "in progress" while the human decides. On approve, re-dispatch this

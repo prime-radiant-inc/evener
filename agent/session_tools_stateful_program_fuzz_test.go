@@ -152,12 +152,12 @@ func stpRun(t *testing.T, program []byte) stpTrace {
 	s.mu.Unlock()
 	return stpTrace{
 		Results:      strings.Join(results, "|"),
-		Communicated: s.Communicated(),
-		Output:       s.CommunicateOutput(),
+		Communicated: s.communicated(),
+		Output:       s.communicateOutput(),
 		AskPending:   s.askPendingCount(),
 		GoalStatus:   status,
 		GoalIters:    iterations,
-		PinnedNote:   s.PinnedNote(),
+		PinnedNote:   s.pinnedNote(),
 		ForcePending: forcePending,
 		Instructions: instructions,
 	}
@@ -218,20 +218,20 @@ func stpExercisePinnedContracts(t *testing.T, s *Session, env *agenttest.DenyEnv
 	t.Helper()
 	s.Steer("queued before terminal communicate")
 	first := stpCall(t, s, env, ctx, "communicate-first", "communicate", stpCommunicateArgs("first", true))
-	if first.IsError || !s.Communicated() || s.CommunicateOutput() == "" {
+	if first.IsError || !s.communicated() || s.communicateOutput() == "" {
 		t.Fatalf("first terminal communicate did not establish result state: %#v", first)
 	}
-	firstOutput := s.CommunicateOutput()
+	firstOutput := s.communicateOutput()
 	stpRecord(results, first)
 
 	second := stpCall(t, s, env, ctx, "communicate-second", "communicate", stpCommunicateArgs("second", true))
-	if second.IsError || s.CommunicateOutput() != firstOutput {
-		t.Fatalf("later terminal communicate replaced first result: first=%q now=%q result=%#v", firstOutput, s.CommunicateOutput(), second)
+	if second.IsError || s.communicateOutput() != firstOutput {
+		t.Fatalf("later terminal communicate replaced first result: first=%q now=%q result=%#v", firstOutput, s.communicateOutput(), second)
 	}
 	stpRecord(results, second)
 
 	nonTerminal := stpCall(t, s, env, ctx, "communicate-progress", "communicate", stpCommunicateArgs("progress", false))
-	if nonTerminal.IsError || s.CommunicateOutput() != firstOutput {
+	if nonTerminal.IsError || s.communicateOutput() != firstOutput {
 		t.Fatalf("non-terminal communicate changed terminal result: %#v", nonTerminal)
 	}
 	stpRecord(results, nonTerminal)
@@ -264,28 +264,29 @@ func stpExercisePinnedContracts(t *testing.T, s *Session, env *agenttest.DenyEnv
 	}
 	stpRecord(results, noActive)
 
+	forcePressureAbove(t, s, compactPressureFloor)
 	compact := stpCall(t, s, env, ctx, "compact-first", "compact_context", map[string]any{
 		"note_to_self":            "retain this evidence",
 		"compaction_instructions": "keep protocol details",
 	})
-	if compact.IsError || s.PinnedNote() != "retain this evidence" {
-		t.Fatalf("first compact did not retain note: %#v note=%q", compact, s.PinnedNote())
+	if compact.IsError || s.pinnedNote() != "retain this evidence" {
+		t.Fatalf("first compact did not retain note: %#v note=%q", compact, s.pinnedNote())
 	}
 	stpRecord(results, compact)
 	duplicateCompact := stpCall(t, s, env, ctx, "compact-duplicate", "compact_context", map[string]any{
 		"note_to_self":            "must not replace",
 		"compaction_instructions": "must not replace",
 	})
-	if !duplicateCompact.IsError || s.PinnedNote() != "retain this evidence" {
-		t.Fatalf("duplicate compact clobbered pending note: %#v note=%q", duplicateCompact, s.PinnedNote())
+	if !duplicateCompact.IsError || s.pinnedNote() != "retain this evidence" {
+		t.Fatalf("duplicate compact clobbered pending note: %#v note=%q", duplicateCompact, s.pinnedNote())
 	}
 	stpRecord(results, duplicateCompact)
 	if instructions, ok := s.takeForceRequest(); !ok || instructions != "keep protocol details" {
 		t.Fatalf("force compact request = %q, %v", instructions, ok)
 	}
 	clear := stpCall(t, s, env, ctx, "compact-clear", "compact_context", map[string]any{"note_to_self": ""})
-	if clear.IsError || s.PinnedNote() != "" {
-		t.Fatalf("compact clear did not clear note: %#v note=%q", clear, s.PinnedNote())
+	if clear.IsError || s.pinnedNote() != "" {
+		t.Fatalf("compact clear did not clear note: %#v note=%q", clear, s.pinnedNote())
 	}
 	stpRecord(results, clear)
 }

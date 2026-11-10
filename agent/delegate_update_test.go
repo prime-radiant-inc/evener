@@ -1207,7 +1207,7 @@ func drainingCoordinatorReport(t *testing.T, undisposedJob bool, drainTurns ...f
 	}
 	if undisposedJob {
 		startWork = func(llm.Request) llm.Response {
-			args, _ := json.Marshal(map[string]any{"command": "sleep 600", "mode": "background"})
+			args, _ := json.Marshal(map[string]any{"command": idleShellCommand, "mode": "background"})
 			return agenttest.ToolCallResponse(llm.ToolCallData{ID: "job", Name: "shell", Arguments: args, Type: "function"})
 		}
 	}

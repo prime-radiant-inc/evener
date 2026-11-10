@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
 )
 
 // standDownHarness is a served session on a fake clock with a notify counter,
@@ -41,7 +43,7 @@ type standDownHarness struct {
 	warnings []string
 }
 
-func newStandDownHarness(t *testing.T) *standDownHarness {
+func newStandDownHarness(t *testing.T, opts ...sessionOpt) *standDownHarness {
 	t.Helper()
 	h := &standDownHarness{
 		clock:   agenttest.NewFakeClock(),
@@ -49,7 +51,7 @@ func newStandDownHarness(t *testing.T) *standDownHarness {
 		drained: make(chan struct{}, 1),
 		warned:  make(chan string, 64),
 	}
-	h.sess = newTestSessionForEnvctx(t)
+	h.sess = newTestSessionForEnvctx(t, opts...)
 	h.sess.clock = h.clock
 	// A real drain, not a flag: ConsumeEventsLossless is the only writer of
 	// authoritativeConsumer, and an unserved session never stands down at all.
@@ -376,5 +378,53 @@ func TestNotificationStandDownWarnsOncePerStorageEpisode(t *testing.T) {
 	h.standDown(t)
 	if got := h.warningsMatching("name running turn failed"); got != 2 {
 		t.Fatalf("store-failure warnings after recovery and a fresh failure = %d, want 2", got)
+	}
+}
+
+// TestNotificationStandDownDoesNotSpendAnOwedCompletionsRetry pins that a wake
+// which stands down before it is admitted is not one of the turns an owed
+// completion is allowed to end without a request. The completion is left owed
+// by a turn whose requests local admission refused; the next wake cannot be
+// named while the mutation store refuses writes; once the store recovers, the
+// following wake still carries the completion to the model.
+func TestNotificationStandDownDoesNotSpendAnOwedCompletionsRetry(t *testing.T) {
+	t.Parallel()
+	const jobA = "job_owed_across_stand_down"
+	adapter := &fakeAdapter{
+		name:  "openai",
+		steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return agenttest.FinalResponse("handled it") }},
+	}
+	// The first turn's request and its post-compaction retry are both refused.
+	h := newStandDownHarness(t, withClient(admissionRefusingClient(adapter, func(call int) bool { return call < 2 })))
+	enqueueCompletedJobNotification(t, h.sess, jobA)
+
+	// The refused turn fails; that error is expected.
+	_, _ = h.sess.ProcessInputKind(context.Background(), "", nil, EntryNotification)
+	if h.sess.peekNotifications() != 1 || notificationDeliveredCount(t, h.sess.jobManager, jobA) != 0 {
+		t.Fatal("this test is not in the state it means to be: job A should be owed after the refused turn")
+	}
+
+	h.failWrites(t)
+	h.standDown(t)
+	if n := notificationDeliveredCount(t, h.sess.jobManager, jobA); n != 0 {
+		t.Fatalf("job A recorded delivered %d times by a wake that stood down before any turn ran", n)
+	}
+	if h.sess.peekNotifications() != 1 {
+		t.Fatal("job A is no longer owed after a wake that stood down")
+	}
+
+	h.sess.clientMutations.faults.BeforeEffectSnapshotRename = nil
+	if _, err := h.sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("notification turn after the store recovered: %v", err)
+	}
+	reqs := adapter.Requests()
+	if len(reqs) != 1 || !requestsContain(reqs, "<job-notification", fmt.Sprintf(`job_id=%q`, jobA)) {
+		t.Fatalf("the turn after recovery did not carry job A in its one request (requests sent = %d)", len(reqs))
+	}
+	if n := notificationDeliveredCount(t, h.sess.jobManager, jobA); n != 1 {
+		t.Errorf("job A recorded delivered %d times, want 1", n)
+	}
+	if n := countHistoryNeedle(h.sess, fmt.Sprintf(`job_id=%q`, jobA)); n != 1 {
+		t.Errorf("job A appears in the transcript %d times, want 1", n)
 	}
 }

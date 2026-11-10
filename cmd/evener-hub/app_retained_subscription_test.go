@@ -86,9 +86,7 @@ func TestHubRPCRetainedHydrationLifecycle(t *testing.T) {
 			sender := dialHubRPC(t, hub)
 			defer sender.Close()
 			for _, client := range []*appwire.Client{reader, sender} {
-				if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-					t.Fatal(err)
-				}
+				mustInitializeHubClient(t, client)
 			}
 			readDone := make(chan error, 1)
 			go func() {

@@ -79,6 +79,7 @@ import { createStore } from "zustand/vanilla";
 import { releaseSubagentRows } from "../panes/session/transcript/tools/subagentModuleStore";
 import { resetActivityPanelStoreForTests } from "./activityPanel";
 import { backgroundTranscriptOptions } from "./backgroundTranscriptOptions";
+import { browserBroadcastChannelFactory } from "./browserBroadcastChannel";
 import {
   applyCacheGapRule,
   attachCacheChannel,
@@ -2605,7 +2606,7 @@ function getMutationRuntime(): MutationRuntime | null {
     // for inside the shared class: sibling tabs over BroadcastChannel, the
     // window's online/focus, the document's visibility, and a timer. A host
     // without them passes nothing and the class does nothing with them.
-    createBroadcastChannel: createMutationBroadcastChannelForTests ?? ((name) => new BroadcastChannel(name)),
+    createBroadcastChannel: createMutationBroadcastChannelForTests ?? browserBroadcastChannelFactory(),
     lifecycleWindow: typeof window === "undefined" ? undefined : window,
     lifecycleDocument: typeof document === "undefined" ? undefined : document,
     setInterval: (callback, milliseconds) => globalThis.setInterval(callback, milliseconds),

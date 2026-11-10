@@ -95,6 +95,97 @@ func TestDelegateControllerPermanentRefusalIsNotRetryable(t *testing.T) {
 	}
 }
 
+// A plan whose claim was dropped while its durable head stayed pending is not a
+// delivered parcel. Delivering the stale plan must re-plan the head and deliver
+// it, not report nil success and strand the report until a restore replay.
+func TestDelegateControllerStalePlanDeliversPendingHead(t *testing.T) {
+	fixture := newColdDelegateFixture(t, "")
+	root := restoreSupervisionRoot(t, fixture, nil)
+	owner := warmDelegateUnservedRoot(t, root, fixture).sess
+	c := root.delegateController
+	seedDelegateControllerIdle(t, c, "dlg_child", fixture.delegateID)
+	seedDelegateControllerDelivery(t, c, "dlg_child")
+	plans := c.ReplayDeliveries()
+	if len(plans) != 1 {
+		t.Fatalf("nested delivery plans = %#v", plans)
+	}
+	plan := plans[0]
+	c.dropDeliveryClaim(plan)
+	c.mu.Lock()
+	_, claimed := c.deliveryClaims[plan.deliveryID]
+	c.mu.Unlock()
+	if claimed {
+		t.Fatal("test setup: the plan still holds its claim")
+	}
+	if _, err := deliverDelegatePacket(plan, plan.receiver); err != nil {
+		t.Fatalf("deliver stale plan: %v", err)
+	}
+	c.mu.Lock()
+	pending := append([]delegatestore.PendingDelivery(nil), c.durable["dlg_child"].PendingDeliveries...)
+	c.mu.Unlock()
+	if len(pending) != 0 {
+		t.Fatalf("stale plan left %d pending deliveries: %+v", len(pending), pending)
+	}
+	attention, err := owner.pendingDelegateAttentionIDs()
+	if err != nil {
+		t.Fatalf("owner attention: %v", err)
+	}
+	want := delegateAttentionID(delegateDeliveryID("dlg_child", 1))
+	if len(attention) != 1 || attention[0] != want {
+		t.Fatalf("owner pending attention = %v, want %q", attention, want)
+	}
+}
+
+// A re-planned claim must not outlive a transient refusal. The caller requeues
+// its original stale plan, so keeping the replan's claim makes the retry fail
+// the claim-token match and strands the head.
+func TestDelegateControllerStaleReplanReleasesClaimOnTransientRefusal(t *testing.T) {
+	fixture := newColdDelegateFixture(t, "")
+	root := restoreSupervisionRoot(t, fixture, nil)
+	owner := warmDelegateUnservedRoot(t, root, fixture).sess
+	c := root.delegateController
+	seedDelegateControllerIdle(t, c, "dlg_child", fixture.delegateID)
+	seedDelegateControllerDelivery(t, c, "dlg_child")
+	plans := c.ReplayDeliveries()
+	if len(plans) != 1 {
+		t.Fatalf("nested delivery plans = %#v", plans)
+	}
+	stale := plans[0]
+	c.dropDeliveryClaim(stale)
+
+	c.mu.Lock()
+	c.reservations[9101] = &delegateStartRecord{token: 9101, delegateID: fixture.delegateID, trigger: delegatestore.TriggerAttention}
+	c.mu.Unlock()
+	if _, err := deliverDelegatePacket(stale, stale.receiver); !errors.Is(err, errDelegateDeliveryRetry) {
+		t.Fatalf("delivery under an attention reservation = %v, want a retryable refusal", err)
+	}
+	c.mu.Lock()
+	_, claimKept := c.deliveryClaims[stale.deliveryID]
+	delete(c.reservations, 9101)
+	c.mu.Unlock()
+	if claimKept {
+		t.Fatal("a transient refusal kept the re-planned claim; the requeued stale plan cannot re-plan")
+	}
+
+	if _, err := deliverDelegatePacket(stale, stale.receiver); err != nil {
+		t.Fatalf("retry after the reservation cleared: %v", err)
+	}
+	c.mu.Lock()
+	pending := append([]delegatestore.PendingDelivery(nil), c.durable["dlg_child"].PendingDeliveries...)
+	c.mu.Unlock()
+	if len(pending) != 0 {
+		t.Fatalf("retry left %d pending deliveries: %+v", len(pending), pending)
+	}
+	attention, err := owner.pendingDelegateAttentionIDs()
+	if err != nil {
+		t.Fatalf("owner attention: %v", err)
+	}
+	want := delegateAttentionID(delegateDeliveryID("dlg_child", 1))
+	if len(attention) != 1 || attention[0] != want {
+		t.Fatalf("owner pending attention = %v, want %q", attention, want)
+	}
+}
+
 // A transient refusal must move the plan in hand to the owner's live receiver
 // and keep it there until that receiver's own flush delivers it. A live nested
 // owner with no root pump is the shape the orphan-arm wake test builds: a
@@ -187,6 +278,13 @@ func TestDelegateControllerRefusedBatchQueuesOnlyTheRefusedPlan(t *testing.T) {
 	c.mu.Lock()
 	c.reservations[9010] = &delegateStartRecord{token: 9010, delegateID: fixture.delegateID, trigger: delegatestore.TriggerAttention}
 	c.mu.Unlock()
+	// The hand-made reservation stands for a start that neither commits nor
+	// aborts here: withdraw it before the root closes, or the close waits on it.
+	t.Cleanup(func() {
+		c.mu.Lock()
+		delete(c.reservations, 9010)
+		c.mu.Unlock()
+	})
 	batch := delegateMutationPlans{deliveries: []delegateDeliveryPlan{refusedPlans[0], delivered[0]}}
 	if err := root.executeDelegateMutationPlans(batch); err != nil {
 		t.Fatalf("execute refused batch: %v", err)
@@ -199,6 +297,7 @@ func TestDelegateControllerRefusedBatchQueuesOnlyTheRefusedPlan(t *testing.T) {
 		if resolution.fallback || resolution.packet == nil || resolution.commit == nil {
 			t.Fatalf("second plan resolution = %#v, want the delivered report", resolution)
 		}
+		settleSendDelivery(t, root, inlineOutcome(sendMessageResult{}, resolution))
 	default:
 		t.Fatal("the never-tried waiter-bearing plan was not delivered normally")
 	}
@@ -235,6 +334,13 @@ func TestDelegateControllerFlushKeepsDrainingAfterTransientRefusal(t *testing.T)
 	c.mu.Lock()
 	c.reservations[9011] = &delegateStartRecord{token: 9011, delegateID: "dlg_other", trigger: delegatestore.TriggerAttention}
 	c.mu.Unlock()
+	// The hand-made reservation stands for a start that neither commits nor
+	// aborts here: withdraw it before the root closes, or the close waits on it.
+	t.Cleanup(func() {
+		c.mu.Lock()
+		delete(c.reservations, 9011)
+		c.mu.Unlock()
+	})
 	if err := root.flushPendingDelegateDeliveries(); err != nil {
 		t.Fatalf("flush root: %v", err)
 	}
@@ -350,9 +456,13 @@ func TestDelegateControllerTransientRefusalDoesNotBlockAttentionStart(t *testing
 
 	// The start commits normally: the kept claim is deferred delivery, not work
 	// in flight.
-	if _, err := c.CommitStart(reservation); err != nil {
+	started, err := c.CommitStart(reservation)
+	if err != nil {
 		t.Fatalf("CommitStart after the transient refusal = %v, want success", err)
 	}
+	// No run launches the committed generation: end it before the root
+	// closes and waits on it.
+	t.Cleanup(func() { endUnlaunchedDelegate(root, started) })
 	// The queued retry then delivers the child's report as durable attention.
 	if err := owner.flushPendingDelegateDeliveries(); err != nil {
 		t.Fatalf("flush owner: %v", err)

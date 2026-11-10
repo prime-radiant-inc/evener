@@ -12,7 +12,6 @@ import { resetActivitySidebarStoreForTests } from "../../shell/activitybar/activ
 import { ClientProvider } from "../../shell/clientContext";
 import { urlToPane } from "../../shell/routing";
 import { openNestedSessionWithOwner } from "../../shell/sessionPlacement";
-import * as StatusBarModule from "../../shell/statusbar/StatusBar";
 import { resetMobileViewportForTests } from "../../shell/useIsMobile";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { resetActivityPanelStoreForTests } from "../../stores/activityPanel";
@@ -47,34 +46,11 @@ import {
   FAKE_CLOCK_ONLY,
   readResponse,
   resumeViaSend,
+  seedPendingSend,
+  stubSessionSlots,
   turnFixture,
   versionedReadResponse,
 } from "./sessionTestUtils";
-
-// The session footer's composer boundary is swapped for a visible stub here
-// ONLY to prove Session.tsx mounts it with the right ref and no longer adds a
-// standalone SessionChrome sibling. Composer.test.tsx proves the real composer
-// owns the inline SessionChrome; its marker is mirrored inside this boundary so
-// this suite can pin the Session-level placement without duplicating Composer's
-// own behavior tests.
-//
-// vi.spyOn, not a hoisted vi.mock, so individual tests can hand the real
-// Composer/SessionChrome back mid-file and render them. Re-stubbed in
-// beforeEach below too, not just once here: a test that restores a slot
-// without re-stubbing it (test.each has no onTestFinished) would otherwise
-// leave the real component in place for every later test in this file.
-function stubSessionSlots(): void {
-  vi.spyOn(ComposerModule, "Composer").mockImplementation(({ ref }: { ref: string }) => (
-    <div data-testid="composer-slot">
-      {ref}
-      <div data-testid="session-chrome-inline" />
-    </div>
-  ));
-  vi.spyOn(SessionChromeModule, "SessionChrome").mockImplementation(({ ref }: { ref: string }) => (
-    <div data-testid="session-chrome">{ref}</div>
-  ));
-  vi.spyOn(StatusBarModule, "StatusBar").mockImplementation(() => <></>);
-}
 
 stubSessionSlots();
 
@@ -136,21 +112,6 @@ afterEach(() => {
     Object.defineProperty(HTMLElement.prototype, "offsetHeight", offsetHeightDescriptor);
   }
 });
-
-async function seedPendingSend(ref = "ref_a", options: { attempted?: boolean } = {}): Promise<string> {
-  const record = await mutationStorage.enqueueIntent({
-    targetRef: ref,
-    threadId: `thr_${ref}`,
-    method: "turn/start",
-    payload: { ref, input: [{ type: "text", text: "hello" }] },
-    attachments: [],
-    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "hello" }] },
-  });
-  if (options.attempted) await mutationStorage.markAttempted(record.clientMutationId);
-  await refreshPendingTurnsProjection(ref);
-  await flushPendingTurnsProjectionForTests();
-  return record.clientMutationId;
-}
 
 test("an incompatible session shows a plain degraded notice with no buttons", async () => {
   const fake = connectReadyFakeClient();
@@ -679,7 +640,7 @@ test.each([false, true])("restart-required empty transcript suppresses first-sen
     </ClientProvider>,
   );
   await screen.findByRole("alert");
-  if (pending) await act(async () => seedPendingSend());
+  if (pending) await act(async () => seedPendingSend(mutationStorage));
   expect(emptyStateReasons(document.body)).not.toContain("no-turns");
   expect(screen.queryByTestId("cold-start-skeleton")).toBeNull();
   expect(emptyStateReasons(document.body)).toEqual(["version-mismatch"]);

@@ -408,15 +408,15 @@ func TestBuildBwrapArgvReadOnlyRebindsDevShmCwd(t *testing.T) {
 // re-bound after --dev, so its secrets need their masks.
 func TestMaskHandledByNamespaceExemptsOnlyTrulyHiddenPaths(t *testing.T) {
 	for path, handled := range map[string]bool{
-		"/proc":              true,
-		"/dev":               true,
-		"/dev/mem":           true,
-		"/dev/fd":            true,
-		"/dev/shm":           false,
-		"/dev/shm/work/.ssh": false,
-		"/home/someone/.ssh": false,
-		"/dev/shmother/x":    true,
-		"/tmp/work/.ssh":     false,
+		"/proc":                      true,
+		"/dev":                       true,
+		"/dev/mem":                   true,
+		"/dev/fd":                    true,
+		"/dev/shm":                   false,
+		"/dev/shm/work/.ssh":         false,
+		"/fixture-home/someone/.ssh": false,
+		"/dev/shmother/x":            true,
+		"/tmp/work/.ssh":             false,
 	} {
 		if got := maskHandledByNamespace(path); got != handled {
 			t.Errorf("maskHandledByNamespace(%q) = %v, want %v", path, got, handled)

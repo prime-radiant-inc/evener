@@ -3,7 +3,6 @@ import type {
   AuthTestResponse,
   HostForwardedResult,
   HostRequestParams,
-  HostRow,
   InstanceEntry,
   InstanceListResponse,
 } from "@evener/appwire-client";
@@ -32,6 +31,7 @@ import {
   useHostInstances,
 } from "./credentials";
 import { hostsStore } from "./hosts";
+import { registryRow } from "./hostsTestUtils";
 import { setMutationClientIdentityForTests } from "./mutationClientIdentity";
 
 const ONE_INSTANCE: InstanceEntry = {
@@ -2715,20 +2715,6 @@ describe("notification-triggered refetch", () => {
     );
   });
 });
-
-// registryRow builds one registry row for the invalidation tests below - the
-// same shape stores/hosts.ts publishes in its ready snapshot.
-function registryRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
-  return {
-    generation: 1,
-    incarnationId: "inc-1",
-    origin: "hub.toml",
-    attached: true,
-    midAttach: false,
-    removed: false,
-    ...overrides,
-  };
-}
 
 function remoteReads(fake: FakeClient): number {
   return fake.calls.filter((call) => call.method === "evener/host/request").length;

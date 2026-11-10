@@ -1,6 +1,3 @@
-import type { NavigationReadParams, NavigationReadResponse, NavigationSessionLocation } from "@evener/appwire-client";
-import { APPWIRE_PROTOCOL_VERSION, type ConnectionState } from "@evener/appwire-client";
-import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -28,255 +25,21 @@ import {
   activitySidebarStore,
   resetActivitySidebarStoreForTests,
 } from "./activitybar/activitySidebarStore";
-import { rail, threadStartResponse } from "./appShellTestUtils";
+import {
+  installLocation,
+  installLocationForRoute,
+  navClient,
+  navigationRead,
+  rail,
+  TREE_SESSION,
+  threadStartResponse,
+  warmRoute,
+} from "./appShellTestUtils";
 import { paletteStore } from "./palette/paletteController";
 import { conversationPaneLifetime } from "./paneLifetime";
 import { paneFor } from "./paneRegistry";
 import { navigate, refParam } from "./routing";
 import { getDockviewApi, type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
-
-const TREE_SESSION = {
-  row_id: "project:proj1:local:s1",
-  ref: "local:s1",
-  host_id: "local",
-  session_id: "s1",
-  title: "Session one",
-  project: "prime-radiant",
-  state: "idle",
-  kind: "session",
-  live: true,
-  children: [],
-};
-
-let stoppedTreeSession = false;
-
-const EMPTY_NAV_RESPONSE = {
-  generation_id: "generation_test",
-  revision: 1,
-  sources: [],
-  attentionSummary: { needsYou: 0, error: 0, working: 0 },
-  sections: { live: { count: 1 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
-  catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
-};
-
-function navigationRead(params: NavigationReadParams): NavigationReadResponse {
-  const treeSession = stoppedTreeSession ? { ...TREE_SESSION, state: "ended", live: false } : TREE_SESSION;
-  switch (params.resource) {
-    case "manifest":
-      return wireSnapshot(params, EMPTY_NAV_RESPONSE, '"test"');
-    case "section":
-      return wireSnapshot(
-        params,
-        {
-          sessions: params.section === "live" ? [treeSession] : [],
-          remaining: 0,
-          truncated: false,
-        },
-        '"test"',
-      );
-    case "pin_catalog":
-      return wireSnapshot(params, { pin_sections: [], remaining: 0 }, '"test"');
-    case "pin_section":
-      return wireSnapshot(
-        params,
-        {
-          sessions: [],
-          remaining: 0,
-          truncated: false,
-        },
-        '"test"',
-      );
-    case "catalog":
-      return wireSnapshot(
-        params,
-        {
-          projects:
-            params.catalog === "projects"
-              ? [{ key: "proj1", name: "Project one", session_count: 1, working_dir: "" }]
-              : [],
-          remaining: 0,
-        },
-        '"test"',
-      );
-    case "project":
-      return wireSnapshot(
-        params,
-        {
-          key: "proj1",
-          current: { sessions: [treeSession], remaining: 0 },
-          recent: { sessions: [], remaining: 0 },
-          archived: { sessions: [], remaining: 0 },
-          truncated: false,
-        },
-        '"test"',
-      );
-    case "project_page":
-      return wireSnapshot(
-        params,
-        {
-          key: params.projectKey,
-          tier: params.tier,
-          offset: params.offset,
-          sessions: [],
-          remaining: 0,
-          truncated: false,
-        },
-        '"test"',
-      );
-    case "location":
-      return wireSnapshot(
-        params,
-        {
-          ref: params.ref,
-          top_level_ref: params.ref,
-          top_level: true,
-          session: { ...treeSession, ref: params.ref, session_id: params.ref },
-        },
-        '"test"',
-      );
-    case "subagents":
-      // Session activity surfaces can demand the scope's subagents page;
-      // answer with an empty one (tests that need rows install them into the
-      // store directly).
-      return wireSnapshot(
-        params,
-        {
-          offset: params.offset,
-          sessions: [],
-          remaining: 0,
-          truncated: false,
-        },
-        '"test"',
-      );
-  }
-  throw new Error(`unsupported navigation resource: ${params.resource}`);
-}
-
-// A FakeClient whose connect() advertises a v2 navigation capability with a
-// generation matching EMPTY_NAV_RESPONSE. Tests that render <AppShell/> and
-// depend on the navigation store being in mode "v3" (rather than "error")
-// must use this instead of a bare `new FakeClient("ready")`, whose default
-// InitializeResponse has no navigation capability.
-function navClient(initialState: ConnectionState = "ready"): FakeClient {
-  const client = new FakeClient(initialState);
-  client.on("evener/navigation/read", navigationRead);
-  client.scriptConnect(() => ({
-    serverInfo: { name: "fake", version: "1" },
-    protocolVersion: APPWIRE_PROTOCOL_VERSION,
-    sourceId: "fake",
-    features: {} as never,
-    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [3] },
-  }));
-  return client;
-}
-
-function installLocation(location: NavigationSessionLocation): void {
-  const key = { kind: "location", ref: location.ref } as const;
-  const resources = new Map(navigationStore.getState().resources);
-  resources.set(keyID(key), {
-    key,
-    data: location,
-    loadedRevision: location.revision,
-    targetRevision: null,
-    forceToken: 0,
-    etag: '"test"',
-    loading: false,
-    stale: false,
-    error: null,
-    generationID: location.generation_id,
-  });
-  navigationStore.setState({
-    mode: "v3",
-    clientGenerationID: location.generation_id,
-    resources,
-  });
-}
-
-function installLocationForRoute(ref: string, ownerRef?: string): void {
-  const owner = ownerRef ?? (ref === "local:child" ? "local:owner" : ref === "local:sub1" ? "local:s1" : ref);
-  installLocation({
-    generation_id: "generation_test",
-    revision: 1,
-    ref,
-    top_level_ref: owner,
-    top_level: owner === ref,
-    tier: "current",
-    session: {
-      ref,
-      host_id: "local",
-      session_id: ref,
-      title: ref,
-      project: "test-project",
-      state: "idle",
-      kind: owner === ref ? "session" : "subagent",
-      live: false,
-      children: [],
-    },
-  });
-}
-
-// Renders a route to completion so both halves of its lazy-loading cost are
-// already paid by the time a test measures it. The module cache is only the
-// first half: React.lazy keeps a payload of its own that stays uninitialized
-// until React first RENDERS the component, so a warm module cache still
-// leaves the first render suspending. The welcome route crosses two nested
-// boundaries (AppShell's lazy DockHost, then PaneHost's lazy Welcome); each
-// other pane crosses one more of its own. Rendering inside an awaited act
-// lets each reveal commit as soon as its already-imported chunk resolves;
-// outside act, react-dom holds every reveal for FALLBACK_THROTTLE_MS (300ms,
-// react-dom 19.2) on a real timer. Mirrors App.test.tsx's own warmRoute.
-//
-// The landmark wait gets WARM_ROUTE_TRIPWIRE_MS rather than findBy's 1000ms
-// default. That default is an assertion window - it exists to hold a test to a
-// responsiveness bar - and a warm-up has no such bar to hold, so the deadline
-// here is a tripwire for a hung render.
-const WARM_ROUTE_TRIPWIRE_MS = 10_000;
-
-async function warmRoute(
-  path: string,
-  findLandmark: (options: { timeout: number }) => Promise<unknown>,
-): Promise<void> {
-  window.history.pushState({}, "", path);
-  if (path.startsWith("/s/")) {
-    const ref = decodeURIComponent(path.slice("/s/".length));
-    installLocation({
-      generation_id: "generation_test",
-      revision: 1,
-      ref,
-      top_level_ref: ref,
-      top_level: true,
-      session: {
-        ref,
-        host_id: "local",
-        session_id: ref,
-        title: ref,
-        project: "",
-        state: "idle",
-        kind: "session",
-        live: false,
-        children: [],
-      },
-    });
-  }
-  await act(async () => {
-    render(<AppShell client={new FakeClient("ready")} />);
-  });
-  await findLandmark({ timeout: WARM_ROUTE_TRIPWIRE_MS });
-  // Unmounting also clears DockHost's pending debounced layout save (its own
-  // effect cleanup), so no warm render leaks a write into a later test.
-  cleanup();
-  resetWorkspaceStoreForTests();
-  // The /settings/hub warm route mounts the real HubSection, whose
-  // mount effect calls settingsOverviewStore.getState().fetch() for real
-  // against this warm-up's own FakeClient (no handler scripted for
-  // "evener/settings/overview", so it settles into a scripted-looking
-  // "no handler" error) - settingsOverviewStore is a module singleton, so
-  // that leftover error/inflight bookkeeping must not survive into this
-  // file's own tests.
-  resetSettingsOverviewStoreForTests();
-  localStorage.clear();
-  window.history.pushState({}, "", "/");
-}
 
 // Await the welcome/session panes' lazy-loaded modules ONCE up front so
 // React.lazy resolves from a warm module cache - mirrors App.test.tsx's own
@@ -317,7 +80,7 @@ beforeAll(async () => {
   }
 
   // Then render each pane once, for the React.lazy half of the cost - see
-  // warmRoute above. Awaiting real completion, in a hook whose ceiling is a
+  // warmRoute (appShellTestUtils). Awaiting real completion, in a hook whose ceiling is a
   // tripwire, rather than spending it inside a test's assertion window.
   await warmRoute("/", (wait) => screen.findByText("No session open", undefined, wait));
   await warmRoute("/new", (wait) => screen.findByRole("button", { name: "Start" }, wait));
@@ -326,7 +89,6 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
-  stoppedTreeSession = false;
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();
@@ -375,7 +137,7 @@ afterEach(() => {
   paletteStore.setState({ open: false, query: "" });
   // Several tests below navigate to /settings/* and mount the real
   // HubSection, whose mount effect touches settingsOverviewStore for
-  // real - same module-singleton reasoning as warmRoute's own reset above.
+  // real - same module-singleton reasoning as warmRoute's own reset (appShellTestUtils).
   resetSettingsOverviewStoreForTests();
   vi.unstubAllGlobals();
 });

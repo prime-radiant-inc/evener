@@ -14,7 +14,6 @@ import (
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/task"
-	"primeradiant.com/evener/appwire"
 )
 
 func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subagent, bool, error) {
@@ -140,7 +139,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			descendantPublication:         s.cfg.spawn.descendantPublication,
 			treeCounter:                   s.cfg.spawn.treeCounter,
 			driveCounter:                  s.cfg.spawn.driveCounter,
-			parentSteer:                   s.SteerWithProvenance,
+			parentSteer:                   s.steerWithProvenance,
 			parentSystemNotification:      s.routeSystemNotification,
 			subagentTask:                  descriptor.Task,
 			depth:                         s.depth + 1,
@@ -165,12 +164,10 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	}
 	child.recordEnvironmentOwnership(childEnv, ownsFresh)
 	discardEnv = false
-	bootGeneration, err := schema.NextBootGeneration(child.stateDir, child.ID(), 0)
-	if err != nil {
+	if err := child.mintBootGeneration(); err != nil {
 		child.discardRestoredCandidate()
 		return nil, false, fmt.Errorf("child boot generation: %w", err)
 	}
-	child.SetBootGeneration(appwire.BootGeneration(bootGeneration))
 	if child.delegateController != s.delegateController || child.owningDelegateID != started.lease.delegateID {
 		child.discardRestoredCandidate()
 		return nil, false, errors.New("restored delegate did not inherit the exact controller binding")
@@ -207,7 +204,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		// never announced. Keep the single current-task reminder for it.
 		if descriptor.SharedTaskStoreOwnerSessionID != "" {
 			if current, ok := childStore.CurrentInProgress(); ok {
-				if err := child.SteerKind(formatCurrentTaskSteering(current, child.canInstructTool("task_list")), events.SteeringKindCurrentTask); err != nil {
+				if err := child.steerKind(formatCurrentTaskSteering(current, child.canInstructTool("task_list")), events.SteeringKindCurrentTask); err != nil {
 					child.discardRestoredCandidate()
 					return nil, false, err
 				}

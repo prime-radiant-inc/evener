@@ -204,10 +204,7 @@ func TestToolDefs_WebSearchExcludedForNonGemini(t *testing.T) {
 			c := llm.NewClient()
 			c.Register(&fakeAdapter{name: tc.adapter})
 
-			sess, err := NewSession(c, tc.profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-			if err != nil {
-				t.Fatalf("NewSession: %v", err)
-			}
+			sess := newSession(t, withClient(c), withProfile(tc.profile), withDir(dir), withConfig(SessionConfig{}))
 			defer sess.Close()
 
 			defs := sess.allToolDefinitions(0)
@@ -248,10 +245,7 @@ func TestToolDefs_NoDuplicateNames(t *testing.T) {
 			c := llm.NewClient()
 			c.Register(&fakeAdapter{name: tc.adapter})
 
-			sess, err := NewSession(c, tc.profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-			if err != nil {
-				t.Fatalf("NewSession: %v", err)
-			}
+			sess := newSession(t, withClient(c), withProfile(tc.profile), withDir(dir), withConfig(SessionConfig{}))
 			defer sess.Close()
 
 			defs := sess.allToolDefinitions(0)
@@ -275,10 +269,7 @@ func TestToolDefs_MCPToolSameNameAsProfileTool_NoDuplicate(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "anthropic"})
 
-	sess, err := NewSession(c, withTestSessionNamer(c, newAnthropicProfile("claude-test")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withProfile(newAnthropicProfile("claude-test")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
 
 	// Inject an MCP tool with the same name as a profile tool.

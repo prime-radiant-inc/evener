@@ -34,7 +34,9 @@ func defCompact() llm.ToolDefinition {
 						"IDs, paths, numbers, decisions, next steps. Empty string clears a pending note. " +
 						"It requests no new compaction only when compaction_instructions is also empty " +
 						"and reload_skills is absent or null; any present reload_skills value, even [], " +
-						"requests one. A compaction requested by an earlier call still runs.",
+						"requests one. A request made while context pressure is below the floor (0.30) " +
+						"is a no-op: nothing is scheduled or pinned and the result says it is not needed, " +
+						"with the current pressure. A compaction requested by an earlier call still runs.",
 				},
 				"compaction_instructions": map[string]any{
 					"type": "string",
@@ -74,6 +76,24 @@ func registerCompactTool(reg *tool.Registry, deps *toolDeps) {
 			}
 			selection := parseSkillReloadSelection(selRaw, deps.skillInventory())
 
+			// Clearing a note requests no compaction and works at any
+			// pressure. Any other call asks for one, and below the floor
+			// there is nothing worth folding: report that without pinning a
+			// note or scheduling anything.
+			clearOnly := note == "" && instructions == "" && selection.State == "absent"
+			if pressure := deps.pressure(); !clearOnly && pressure < compactPressureFloor {
+				out, err := json.Marshal(map[string]any{
+					"compacted": false,
+					"reason":    "not_needed",
+					"pressure":  pressure,
+					"floor":     compactPressureFloor,
+				})
+				if err != nil {
+					return nil, fmt.Errorf("compact: %w", err)
+				}
+				return tool.StateResult{Output: string(out)}, nil
+			}
+
 			// The request is atomic and generation-owned: an empty note with
 			// no instructions and an absent selection clears without
 			// compaction; a present selection — even an explicit empty array —
@@ -82,12 +102,12 @@ func registerCompactTool(reg *tool.Registry, deps *toolDeps) {
 			if _, err := deps.requestSkillCompaction(ctx, note, instructions, selection); err != nil {
 				return nil, fmt.Errorf("compact: %w", err)
 			}
-			if note == "" && instructions == "" && selection.State == "absent" {
+			if clearOnly {
 				return tool.StateResult{Output: "Note cleared. No compaction requested."}, nil
 			}
 			// Compaction runs at the round tail, AFTER this returns — the message is a
 			// prediction from current pressure, never past-tense.
-			out := predictionMessage(note == "", deps.pressure())
+			out := predictionMessage(note == "")
 			if selection.State == "invalid" {
 				out += " The reload_skills selection was invalid (" + selection.ErrorCode + ") and authorizes no reload."
 			}
@@ -96,19 +116,17 @@ func registerCompactTool(reg *tool.Registry, deps *toolDeps) {
 	})
 }
 
+// compactPressureFloor is the context pressure below which compact_context is
+// a no-op: accumulated history is small enough that a compaction would condense
+// little.
+const compactPressureFloor = 0.30
+
 // predictionMessage describes what the compact tool just scheduled. The compaction
 // runs later at the round tail, so the wording is a prediction, never past-tense.
-// pressure < lowPressurePredict means the history is light enough that the
-// checkpoint/summary may condense little — but a compaction is still scheduled.
-const lowPressurePredict = 0.30 // below this, accumulated history is small; condensation is likely minor
-
-func predictionMessage(noteCleared bool, pressure float64) string {
+func predictionMessage(noteCleared bool) string {
 	lead := "Note pinned."
 	if noteCleared {
 		lead = "Note cleared."
-	}
-	if pressure < lowPressurePredict {
-		return lead + " Context is light, so the compaction will run but may condense little; your note will be handed back to you right after."
 	}
 	return lead + " A compaction will run at the seam, honoring your instructions; your note will be handed back to you right after."
 }

@@ -29,13 +29,13 @@ func TestManagerWatchResyncReReadsWithoutStatusSelector(t *testing.T) {
 			targetSource := &aliasRelaySource{pool: pool}
 			sources := appsource.NewRegistry()
 			ref := "local:target"
-			cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+			cfg := testWebConfig(t, hubcore.WebConfig{})
 			if remoteTarget {
 				remoteSources := appsource.NewRegistry()
 				remoteSources.Add(targetSource)
 				// The remote peer is a current hub, so it carries a hub identity
 				// and advertises session tools over Initialize.
-				remoteServer := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), HubID: "hub-test"}, remoteSources)
+				remoteServer := newHubAppServer(testWebConfig(t, hubcore.WebConfig{HubID: "hub-test"}), remoteSources)
 				defer remoteServer.Shutdown(ctx)
 				remoteHTTP := httptest.NewServer(http.HandlerFunc(remoteServer.ServeWebSocket))
 				defer remoteHTTP.Close()

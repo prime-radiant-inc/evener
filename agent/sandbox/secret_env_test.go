@@ -27,12 +27,12 @@ func TestScrubSecretEnv(t *testing.T) {
 	in := []string{
 		"PATH=/usr/bin",
 		"OPENAI_API_KEY=sk-leak",
-		"HOME=/home/u",
+		"HOME=/fixture-home/u",
 		"MY_SECRET=nope",
 		"MALFORMED_NO_EQUALS",
 	}
 	got := ScrubSecretEnv(in)
-	want := []string{"PATH=/usr/bin", "HOME=/home/u", "MALFORMED_NO_EQUALS"}
+	want := []string{"PATH=/usr/bin", "HOME=/fixture-home/u", "MALFORMED_NO_EQUALS"}
 	if !slices.Equal(got, want) {
 		t.Errorf("ScrubSecretEnv(%v) = %v, want %v", in, got, want)
 	}

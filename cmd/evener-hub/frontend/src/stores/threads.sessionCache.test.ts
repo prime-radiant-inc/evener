@@ -30,6 +30,7 @@ import {
   setProductionEntryCacheForTests,
 } from "./entryTranscriptRoutes";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+import { deleteMutationDatabase } from "./mutationOutboxTestUtils";
 import { entryHistoryKey, type TranscriptResolvedIdentity } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { observeProductionEntryForTests } from "./testing/entryProductionHarness";
@@ -105,17 +106,6 @@ function connectFakeClient(): FakeClient {
   const fake = connectReadyFakeClient();
   connectedFakeClient = fake;
   return fake;
-}
-
-async function deleteMutationDatabase(): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const request = indexedDB.deleteDatabase("evener-mutation-outbox");
-    request.addEventListener("success", () => resolve(), { once: true });
-    request.addEventListener("error", () => reject(request.error), { once: true });
-    request.addEventListener("blocked", () => reject(new Error("mutation database deletion blocked")), {
-      once: true,
-    });
-  });
 }
 
 // echoingReadHandler answers a thread/read with the file's fixture, echoing

@@ -211,9 +211,9 @@ func newGlobBudget(op string) *GlobBudget {
 }
 
 // NewGlobBudget constructs a GlobBudget for a glob call, for a caller that
-// wants to supply its own budget to GlobBudgeter.GlobWithBudget rather than
-// go through GlobExcluder.GlobWithExclusions, which creates one internally
-// and has nowhere to report a truncation it finds.
+// wants to supply its own budget to GlobWithBudget rather than go through
+// GlobWithExclusions, which creates one internally and has nowhere to report a
+// truncation it finds.
 func NewGlobBudget() *GlobBudget {
 	return newGlobBudget("glob")
 }

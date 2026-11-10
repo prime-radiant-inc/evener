@@ -33,9 +33,7 @@ func seedSubscription(t *testing.T, server *appserver.Server, threadID string) {
 	client := appwire.NewClient(transport)
 	client.Start(context.Background())
 	t.Cleanup(func() { _ = client.Close() })
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("initialize subscriber: %v", err)
-	}
+	mustInitializeHubClient(t, client)
 	if err := client.Request(context.Background(), seedSubscriptionMethod, seedSubscriptionParams{ThreadID: threadID}, nil); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}

@@ -658,9 +658,10 @@ agent still talks to its model — `net=off` never promised otherwise.
 A denied operation returns a **typed, legible error** the model can reason about
 (the tool, the mode, and the offending path by basename), not a silent failure or a
 retry loop. In-process file-tool denials know the exact path; kernel denials are
-attributed best-effort from the command and its output-so-far. Denials are
-audit-logged with a redaction contract — the log records the mode, tool, a redacted
-path, and a truncated command, never the file contents or a full secret path.
+attributed best-effort from the command and its output-so-far. Every denial carries
+a redaction contract — `sandbox.DeniedError.Redacted` reduces the path to a
+basename, or to `<denied>` for a secret surface — so nothing that logs a denial
+records the file contents or a full secret path. (No audit sink is wired yet.)
 
 In a non-interactive session a denial is final. In an interactive root session with a
 UI client attached (subscribed to the thread), a `read_file`, `write_file`, or

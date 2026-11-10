@@ -1463,12 +1463,6 @@ func sortNeedsYou(needsYou []TreeNode) {
 	})
 }
 
-// BuildProjectTree builds the single TreeProject identified by canonical ID, for the lazy
-// sidebar expand endpoint, using the current wall clock.
-func BuildProjectTree(metas []schema.SessionMeta, live []LiveEntry, decisions map[ArchiveKey]bool, projectID string) (TreeProject, bool) {
-	return BuildProjectTreeAt(metas, live, decisions, time.Now(), projectID)
-}
-
 // BuildProjectTreeAt is BuildProjectTree with an injected clock. It filters the
 // effective metadata to the requested canonical project ID, runs the normal
 // tree build on that subset, and returns the resulting TreeProject (searching

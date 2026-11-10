@@ -501,7 +501,7 @@ func TestDisclosureClaimRejectsKnownWindowArrival(t *testing.T) {
 
 // TestEstimateUsageMarksAssumedWindow pins the meter's honesty (#4596): the
 // assumed window reaches clients as plain fact unless the flag rides with it.
-// EstimateUsage is the wire's source (Session.ContextMetrics feeds the hub
+// EstimateUsage is the wire's source (Session.ContextStatus feeds the hub
 // envelope), so Assumed must be true exactly while the budgeting window is the
 // assumption — and flip false the moment a real window arrives, the same
 // assumptionStillGoverns discipline the tripwire and the disclosure follow.

@@ -1,0 +1,182 @@
+/* Page scaffolding for /dev/plugins-mockups. Sheet panels are position:fixed,
+ * so each .sheetFrame is the gallery's containing-block trick (see
+ * dev/gallery-sections/sheet.module.css): position:relative + contain:layout
+ * scopes the fixed panel to the frame, overflow:hidden clips it, and the
+ * frame's width matches the Sheet's own --sheet-inline-size (420px) so the
+ * anchored right edge sits exactly on the frame edge. The frame's min-height
+ * controls how much of the full-height panel is visible. */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  padding: var(--space-6);
+  max-width: 1280px;
+}
+
+.pageTitle {
+  margin: 0;
+  color: var(--ink-hi);
+  font-size: var(--font-size-pane-title);
+  font-weight: var(--font-weight-semibold);
+}
+
+.intro {
+  margin: 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-ui);
+  max-width: 90ch;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.sectionTitle {
+  margin: 0;
+  color: var(--ink-hi);
+  font-size: var(--font-size-pane-title);
+  font-weight: var(--font-weight-semibold);
+}
+
+.sectionNote {
+  margin: 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-ui);
+  max-width: 100ch;
+}
+
+.columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: var(--space-5);
+  align-items: start;
+}
+
+.column {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.frameGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(440px, 1fr));
+  gap: var(--space-5);
+  align-items: start;
+}
+
+.frameCell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.frameLabel {
+  margin: 0;
+  color: var(--ink-hi);
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-semibold);
+}
+
+.frameNote {
+  margin: 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  max-width: 72ch;
+}
+
+.sheetFrame {
+  position: relative;
+  contain: layout;
+  overflow: hidden;
+  width: min(420px, 100%);
+  min-height: 700px;
+  border: 1px dashed var(--edge);
+  border-radius: var(--radius-pane);
+  background: var(--surface-0);
+}
+
+/* The static sheet stand-in: the real dialog .panel + sheet .standard
+ * classes carry the look (surface, shadow, header/body/footer, 420px
+ * width); this only sizes the panel to its content instead of 100vh. */
+.staticWrap {
+  display: flex;
+}
+
+.staticSheet {
+  width: 100%;
+  max-width: min(420px, 100%);
+}
+
+.reopen {
+  position: absolute;
+  top: var(--space-3);
+  left: var(--space-3);
+  z-index: var(--z-raised);
+}
+
+/* The Contents block inside the detail sheet: an eyebrow, then one grid row
+ * per component kind - kind label, count badge, wrapped mono names. */
+.contents {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: var(--space-4) 0;
+}
+
+.contentsList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.contentsRow {
+  display: grid;
+  grid-template-columns: minmax(11ch, auto) auto minmax(0, 1fr);
+  gap: var(--space-2);
+  align-items: baseline;
+}
+
+.kindLabel {
+  color: var(--ink-hi);
+  font-size: var(--font-size-ui);
+}
+
+.names {
+  color: var(--ink-mid);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  overflow-wrap: anywhere;
+}
+
+.noContents {
+  margin: 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-ui);
+}
+
+.plainList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding-left: var(--space-5);
+  color: var(--ink-mid);
+  font-size: var(--font-size-ui);
+}
+
+.questionList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding-left: var(--space-5);
+  color: var(--ink-mid);
+  font-size: var(--font-size-ui);
+  max-width: 100ch;
+}

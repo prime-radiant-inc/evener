@@ -47,7 +47,7 @@ func TestAskUser_RejectedInterruptUsesDurableBoundary(t *testing.T) {
 	markerFailure := errors.New("interrupt marker rejected after clean rollback")
 	toolResultsFailure := errors.New("tool results record rejected")
 	var fs *environmentSyncFailureFS
-	sess.RegisterTool("cancel_tool", "cancels after ask_user posts",
+	sess.registerTool("cancel_tool", "cancels after ask_user posts",
 		map[string]any{"type": "object", "properties": map[string]any{}},
 		func(context.Context, any) (any, error) {
 			fs.mu.Lock()

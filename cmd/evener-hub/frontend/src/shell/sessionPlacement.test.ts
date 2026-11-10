@@ -3,6 +3,7 @@ import { openAttentionSession } from "./attentionHistory";
 import { captureAttentionPlacement, presentAttentionTarget } from "./attentionPlacement";
 import { openNestedSessionWithOwner, openSessionByRef, openTopLevelSession } from "./sessionPlacement";
 import {
+  carryComposerSeatForPlacement,
   conversationOpenParentRef,
   recordConversationOpenParent,
   resetWorkspaceStoreForTests,
@@ -105,7 +106,7 @@ describe("openNestedSessionWithOwner", () => {
   // An owner-promotion implementation that moves only the child, or promotes
   // the child itself, leaves the unrelated main pane in place and violates
   // the route's owner/main invariant.
-  test("promotes local:owner to main, keeps local:child secondary and focused, and removes unrelated main", () => {
+  test("promotes the retained local:owner to main, keeps local:child secondary and focused, and removes unrelated main", () => {
     const workspace = workspaceStore.getState();
 
     const unrelated = workspace.openPane("session", { ref: "local:unrelated" });
@@ -127,7 +128,7 @@ describe("openNestedSessionWithOwner", () => {
     expect(ownerMain).not.toBeUndefined();
     expect(ownerMain?.slot).toBe("main");
     expect(ownerSecondary).toBeUndefined();
-    expect(ownerMain?.id).not.toBe(owner);
+    expect(ownerMain?.id).toBe(owner);
     expect(childPane?.slot).toBe("secondary");
     expect(workspaceStore.getState().mainPane()?.id).toBe(ownerMain?.id);
     expect(workspaceStore.getState().focusedPaneId).toBe(childPane?.id);
@@ -154,6 +155,98 @@ describe("openNestedSessionWithOwner", () => {
     expect(state.focusedPaneId).toBe(child.id);
     expect(preserved && conversationOpenParentRef(preserved)).toBe("local:owner");
     expect(state.panes).toHaveLength(2);
+  });
+
+  test("keeps neighboring nested tabs when the owner already occupies main", () => {
+    const workspace = workspaceStore.getState();
+    workspace.replacePrimary("session", { ref: "local:owner" });
+    const a = workspace.openPane("session", { ref: "local:a" }, { slot: "secondary" });
+    const b = workspace.openPane("session", { ref: "local:b" }, { slot: "secondary" });
+
+    openNestedSessionWithOwner("local:a", "local:owner");
+
+    const panes = workspaceStore.getState().panes;
+    expect(panes.some((pane) => pane.id === b)).toBe(true);
+    const aPane = panes.find((pane) => pane.id === a);
+    expect(aPane?.slot).toBe("secondary");
+    expect(workspaceStore.getState().focusedPaneId).toBe(a);
+    expect(aPane && conversationOpenParentRef(aPane)).toBe("local:owner");
+  });
+
+  test("publishes an update when only the child's parent edge changes", () => {
+    openTopLevelSession("local:owner");
+    const childId = workspaceStore.getState().openPane("session", { ref: "local:child" }, { slot: "secondary" });
+    expect(workspaceStore.getState().focusedPaneId).toBe(childId);
+    const before = workspaceStore.getState().panes;
+
+    openNestedSessionWithOwner("local:child", "local:owner");
+
+    expect(workspaceStore.getState().panes).not.toBe(before);
+    const child = workspaceStore.getState().panes.find((pane) => pane.id === childId);
+    expect(child && conversationOpenParentRef(child)).toBe("local:owner");
+  });
+
+  test("retaining an open nested child cancels a pending carried seat", () => {
+    openTopLevelSession("local:owner");
+    const childId = workspaceStore.getState().openPane("session", { ref: "local:child" }, { slot: "secondary" });
+    const authorSeat = "author-seat";
+    carryComposerSeatForPlacement("local:child", authorSeat);
+
+    openNestedSessionWithOwner("local:child", "local:owner");
+    workspaceStore.getState().closePane(childId);
+    const reopenedId = workspaceStore.getState().openPane("session", { ref: "local:child" });
+
+    const reopened = workspaceStore.getState().panes.find((pane) => pane.id === reopenedId);
+    expect(reopened?.composerSeatId).not.toBe(authorSeat);
+  });
+
+  test("keeps a matching cascade and child when a duplicate owner sits secondary", () => {
+    const cascade = promoteMainToCascade("local:owner");
+    const workspace = workspaceStore.getState();
+    const duplicate = workspace.openPane("session", { ref: "local:owner" }, { slot: "secondary" });
+    const child = workspace.openPane("session", { ref: "local:child" }, { slot: "secondary" });
+
+    openNestedSessionWithOwner("local:child", "local:owner");
+
+    const state = workspaceStore.getState();
+    expect(state.mainPane()?.id).toBe(cascade);
+    expect(state.panes.some((pane) => pane.id === duplicate)).toBe(false);
+    expect(state.panes.find((pane) => pane.id === child)?.slot).toBe("secondary");
+    expect(state.focusedPaneId).toBe(child);
+    const childPane = state.panes.find((pane) => pane.id === child);
+    expect(childPane && conversationOpenParentRef(childPane)).toBe("local:owner");
+  });
+
+  test("a link to a cascade's source focuses the retained cascade", () => {
+    const cascade = promoteMainToCascade("local:child");
+
+    openSessionByRef("local:child");
+
+    const panes = workspaceStore.getState().panes;
+    expect(panes.filter((pane) => pane.type === "session" && sessionRefOf(pane) === "local:child")).toHaveLength(0);
+    expect(workspaceStore.getState().focusedPaneId).toBe(cascade);
+  });
+
+  test("retaining a cascade child keeps its recorded parent edge", () => {
+    const workspace = workspaceStore.getState();
+    workspace.replacePrimary("session", { ref: "local:owner" });
+    const sourceId = workspace.openPane("session", { ref: "local:child" }, { slot: "secondary" });
+    const source = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+    if (!source) throw new Error("missing nested cascade source");
+    workspaceStore.getState().retypePane(source, "sessionZoom", {
+      ref: "local:child",
+      source: { type: "session", params: { ref: "local:child" } },
+      edges: [],
+    });
+    const cascade = workspaceStore.getState().panes.find((pane) => pane.type === "sessionZoom");
+    if (!cascade) throw new Error("missing nested cascade");
+    recordConversationOpenParent(cascade, "local:owner");
+    expect(conversationOpenParentRef(cascade)).toBe("local:owner");
+
+    openNestedSessionWithOwner("local:child", "local:owner");
+
+    expect(conversationOpenParentRef(cascade)).toBe("local:owner");
+    expect(workspaceStore.getState().focusedPaneId).toBe(cascade.id);
   });
 });
 
@@ -187,19 +280,27 @@ test("session links request live routing instead of reusing read-only transcript
   expect(window.location.pathname).toBe("/s/local%3Achild");
   openSessionByRef("local:root");
   expect(workspaceStore.getState().focusedPaneId).toBe(root?.id);
-  expect(workspaceStore.getState().panes).toHaveLength(3);
+  expect(workspaceStore.getState().panes).toHaveLength(4);
 });
 
-test("an unopened parent still requests normal routing without inventing placement", () => {
+test("an unopened parent opens a live session pane and requests normal routing", () => {
   window.history.replaceState({}, "", "/s/local%3Aroot");
   openTopLevelSession("local:root");
-  const child = workspaceStore
+  workspaceStore
     .getState()
     .openPane("transcript", { ref: "local:child", parentRef: "local:unloaded" }, { slot: "secondary" });
+  const before = workspaceStore
+    .getState()
+    .panes.find((pane) => pane.type === "session" && sessionRefOf(pane) === "local:unloaded");
   openSessionByRef("local:unloaded");
   expect(window.location.pathname).toBe("/s/local%3Aunloaded");
-  expect(workspaceStore.getState().focusedPaneId).toBe(child);
-  expect(workspaceStore.getState().panes).toHaveLength(2);
+  expect(before).toBeUndefined();
+  const opened = workspaceStore
+    .getState()
+    .panes.find((pane) => pane.type === "session" && sessionRefOf(pane) === "local:unloaded");
+  expect(opened).toBeDefined();
+  expect(workspaceStore.getState().focusedPaneId).toBe(opened?.id);
+  expect(workspaceStore.getState().panes).toHaveLength(3);
 });
 
 // The main pane zoomed on a session is a sessionZoom record in the SAME slot:

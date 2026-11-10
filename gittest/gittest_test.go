@@ -2,6 +2,7 @@ package gittest
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -164,4 +165,41 @@ func TestRunIgnoresAmbientGitConfigFile(t *testing.T) {
 	if _, err := os.Stat(external); err == nil {
 		t.Fatal("fixture config write reached the file named by ambient GIT_CONFIG")
 	}
+}
+
+// A fixture command must not start automatic maintenance or gc: either leaves
+// a detached writer in the repository after the command returns, racing the
+// test's cleanup of it.
+func TestRunDisablesAutomaticMaintenance(t *testing.T) {
+	RequireIsolated(t, func(dir string, args ...string) (string, error) {
+		return Run(t, dir, args...), nil
+	})
+}
+
+// IsolateProcess must reach a git that inherits the process environment, the
+// way code under test spawns it, and win over the host's global file, system
+// file and injected config.
+func TestIsolateProcessReachesGitThatInheritsTheEnvironment(t *testing.T) {
+	hostConfig := filepath.Join(t.TempDir(), "host.config")
+	if err := os.WriteFile(hostConfig, []byte("[maintenance]\n\tauto = true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", hostConfig)
+	t.Setenv("GIT_CONFIG_SYSTEM", hostConfig)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "")
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "gc.auto")
+	t.Setenv("GIT_CONFIG_VALUE_0", "1")
+
+	remove, err := IsolateProcess()
+	if err != nil {
+		t.Fatalf("IsolateProcess: %v", err)
+	}
+	t.Cleanup(remove)
+	RequireIsolated(t, func(dir string, args ...string) (string, error) {
+		cmd := exec.CommandContext(t.Context(), "git", args...)
+		cmd.Dir = dir
+		out, err := cmd.Output()
+		return string(out), err
+	})
 }

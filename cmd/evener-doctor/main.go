@@ -25,6 +25,7 @@
 package doctor
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -245,7 +246,7 @@ func cmdTranscript(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if *health {
-		res, err := doctor.TranscriptHealth(base, sel)
+		res, err := doctor.TranscriptHealth(context.Background(), base, sel)
 		if err != nil {
 			return fail(stderr, "transcript", err)
 		}
@@ -317,7 +318,7 @@ func cmdAPILog(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if *health {
-		res, err := doctor.APIHealth(base, sel)
+		res, err := doctor.APIHealth(context.Background(), base, sel)
 		if err != nil {
 			return fail(stderr, "apilog", err)
 		}
@@ -335,7 +336,7 @@ func cmdAPILog(args []string, stdout, stderr io.Writer) int {
 		SummaryOnly:    *summary,
 		Recompute:      *recompute,
 	}
-	res, err := doctor.APILog(base, sel, opts)
+	res, err := doctor.APILog(context.Background(), base, sel, opts)
 	if err != nil {
 		return fail(stderr, "apilog", err)
 	}
@@ -498,7 +499,7 @@ func cmdSessions(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, "state", err)
 	}
-	res, err := doctor.ListSessions(base, doctor.SessionsOpts{Since: sinceDur, Bucket: *bucketFlag})
+	res, err := doctor.ListSessions(context.Background(), base, doctor.SessionsOpts{Since: sinceDur, Bucket: *bucketFlag})
 	if err != nil {
 		return fail(stderr, "sessions", err)
 	}
@@ -566,7 +567,7 @@ func cmdAudit(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, "state", err)
 	}
-	res, err := doctor.RunAudit(base, runbook, opts)
+	res, err := doctor.RunAudit(context.Background(), base, runbook, opts)
 	if err != nil {
 		return fail(stderr, "audit", err)
 	}

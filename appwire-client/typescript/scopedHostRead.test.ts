@@ -3,11 +3,13 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   createScopedHostReadStore,
+  pluginComponentsReadInputs,
   pluginPreviewReadInputs,
   SCOPED_HOST_READ_DEBOUNCE_MS,
   type ScopedHostReadInputs,
 } from "./scopedHostRead";
 import { FakeClient } from "./testing/fakeClient";
+import type { HostForwardedResult } from "./types.gen";
 
 const client = {};
 
@@ -145,5 +147,49 @@ describe("pluginPreviewReadInputs", () => {
       { cwd: "/a" },
       { cwd: "/a", launchOverrides: { enabledPlugins: ["p"] } },
     ]);
+  });
+});
+
+describe("pluginComponentsReadInputs", () => {
+  const PAIR = { plugin: "linter", marketplace: "acme" };
+  const PATH = { path: "/opt/plugin" };
+
+  test.each([
+    ["an installed pair", PAIR],
+    ["a path target", PATH],
+  ] as const)("reads %s on the local host in a one-target batch and unwraps its result row", async (_label, target) => {
+    const fake = new FakeClient("ready");
+    const row = { ...target, components: { skills: ["lint"] } };
+    fake.on("evener/plugin/components", () => ({ results: [row] }));
+    const inputs = pluginComponentsReadInputs({ client: fake, target });
+    expect(inputs.inputKey).toBe(JSON.stringify(target));
+    await expect(inputs.read()).resolves.toBe(row);
+    expect(fake.calls).toEqual([{ method: "evener/plugin/components", params: { targets: [target] } }]);
+  });
+
+  test.each([
+    ["an installed pair", PAIR],
+    ["a path target", PATH],
+  ] as const)("reads %s through a remote host's request path", async (_label, target) => {
+    const fake = new FakeClient("ready");
+    fake.on(
+      "evener/host/request",
+      () => ({ results: [{ ...target, components: {} }] }) as unknown as HostForwardedResult,
+    );
+    await pluginComponentsReadInputs({ client: fake, host: "buildbox", target }).read();
+    expect(fake.calls).toEqual([
+      {
+        method: "evener/host/request",
+        params: { host: "buildbox", method: "evener/plugin/components", params: { targets: [target] } },
+      },
+    ]);
+  });
+
+  test("an answer with no result row reads as an error row, not an empty inventory", async () => {
+    const fake = new FakeClient("ready");
+    fake.on("evener/plugin/components", () => ({ results: [] }));
+    const row = await pluginComponentsReadInputs({ client: fake, target: PAIR }).read();
+    expect(row.components).toBeUndefined();
+    expect(row.error).toEqual(expect.any(String));
   });
 });

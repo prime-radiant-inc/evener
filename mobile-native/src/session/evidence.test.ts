@@ -200,7 +200,7 @@ describe("each tool's evidence, as the tools print it", () => {
 
 	it("shows a job's status and what it runs, not the JSON around them", () => {
 		expect(real("call_job_status")).toEqual([
-			{ kind: "output", text: "running — printf 'started\\n'; sleep 600", lines: 1 },
+			{ kind: "output", text: "running — printf 'started\\n'; exec tail -f /dev/null", lines: 1 },
 		]);
 	});
 
@@ -399,7 +399,7 @@ describe("each tool's evidence, as the tools print it", () => {
 		expect(evidence?.kind === "output" && evidence.text.split("\n")).toEqual([
 			"# id  type  status  label  [started · reason · exit · bytes]",
 			"job_fixture_2  shell  completed  seq 1 3000  [started 2026-09-28 20:00 · exit zero · exit 0 · 13893 bytes]",
-			"job_fixture_1  shell  running  printf 'started\\n'; sleep 600  [started 2026-09-28 20:00 · 8 bytes]",
+			"job_fixture_1  shell  running  printf 'started\\n'; exec tail -f /dev/null  [started 2026-09-28 20:00 · 8 bytes]",
 			"",
 			"2 job(s).",
 		]);

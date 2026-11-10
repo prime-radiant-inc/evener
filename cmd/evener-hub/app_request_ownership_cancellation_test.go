@@ -215,11 +215,14 @@ func TestHubRPCProjectDeleteCanceledAliasWaitReleasesAcquiredPrefix(t *testing.T
 		buildRPCSessionWithWorkingDir(t, stateDir, first, workDir)
 		buildRPCSessionWithWorkingDir(t, stateDir, second, workDir)
 		locks := hubcore.NewResumeLocks()
-		web := NewWebServer(hubcore.WebConfig{
-			StateDir: root, HubStateRoot: t.TempDir(), LaunchConfigRoot: t.TempDir(), PluginRoot: t.TempDir(),
-			Past: hubcore.NewPastIndex(filepath.Join(root, "projects", "*")), ResumeLocks: locks,
-			CredsStore: newTestCredentialsStore(t),
-		})
+		web := NewWebServer(testWebConfig(t, hubcore.WebConfig{
+			StateDir:         root,
+			LaunchConfigRoot: t.TempDir(),
+			PluginRoot:       t.TempDir(),
+			Past:             hubcore.NewPastIndex(filepath.Join(root, "projects", "*")),
+			ResumeLocks:      locks,
+			CredsStore:       newTestCredentialsStore(t),
+		}))
 		// Begin only after construction: this is request-driven retry, not
 		// startup's intentionally background cleanup.
 		if _, err := web.cfg.DeletionStore.Begin(project.ID, []hubcore.DeletionTarget{
@@ -315,11 +318,14 @@ func TestHubRPCProjectDeleteRetryCanceledPropagatesCancellation(t *testing.T) {
 		buildRPCSessionWithWorkingDir(t, stateDir, first, workDir)
 		buildRPCSessionWithWorkingDir(t, stateDir, second, workDir)
 		locks := hubcore.NewResumeLocks()
-		web := NewWebServer(hubcore.WebConfig{
-			StateDir: root, HubStateRoot: t.TempDir(), LaunchConfigRoot: t.TempDir(), PluginRoot: t.TempDir(),
-			Past: hubcore.NewPastIndex(filepath.Join(root, "projects", "*")), ResumeLocks: locks,
-			CredsStore: newTestCredentialsStore(t),
-		})
+		web := NewWebServer(testWebConfig(t, hubcore.WebConfig{
+			StateDir:         root,
+			LaunchConfigRoot: t.TempDir(),
+			PluginRoot:       t.TempDir(),
+			Past:             hubcore.NewPastIndex(filepath.Join(root, "projects", "*")),
+			ResumeLocks:      locks,
+			CredsStore:       newTestCredentialsStore(t),
+		}))
 		// A committed record selects the existing-deletion resume path.
 		if _, err := web.cfg.DeletionStore.Begin(project.ID, []hubcore.DeletionTarget{
 			{Ref: "local:" + first, ThreadID: first}, {Ref: "local:" + second, ThreadID: second},
@@ -383,11 +389,14 @@ func TestProjectDeleteRetryCanceledAfterOwnershipReportsError(t *testing.T) {
 	id := projectDeleteCanonicalSessionIDs[0]
 	buildRPCSessionWithWorkingDir(t, stateDir, id, workDir)
 	locks := hubcore.NewResumeLocks()
-	web := NewWebServer(hubcore.WebConfig{
-		StateDir: root, HubStateRoot: t.TempDir(), LaunchConfigRoot: t.TempDir(), PluginRoot: t.TempDir(),
-		Past: hubcore.NewPastIndex(filepath.Join(root, "projects", "*")), ResumeLocks: locks,
-		CredsStore: newTestCredentialsStore(t),
-	})
+	web := NewWebServer(testWebConfig(t, hubcore.WebConfig{
+		StateDir:         root,
+		LaunchConfigRoot: t.TempDir(),
+		PluginRoot:       t.TempDir(),
+		Past:             hubcore.NewPastIndex(filepath.Join(root, "projects", "*")),
+		ResumeLocks:      locks,
+		CredsStore:       newTestCredentialsStore(t),
+	}))
 	// A committed record selects the existing-deletion resume path.
 	if _, err := web.cfg.DeletionStore.Begin(project.ID, []hubcore.DeletionTarget{
 		{Ref: "local:" + id, ThreadID: id},

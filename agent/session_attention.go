@@ -589,6 +589,9 @@ func (s *Session) appendDelegateAttentionMessageDurably(attentionID string, mess
 	if attentionID == "" {
 		return false, errors.New("delegate attention ID is empty")
 	}
+	// An attention report about a delegate is news: the agent's next status
+	// check on a delegate is not a repeat.
+	s.jobStatusPolls.forgetDelegates()
 	if message.Role != llm.RoleUser || len(message.Content) == 0 {
 		return false, errors.New("delegate attention message is invalid")
 	}

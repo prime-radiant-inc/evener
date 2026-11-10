@@ -989,6 +989,7 @@ func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.Li
 		},
 		ParentSessionID: appThreadTreeParentSessionID(thread, ref),
 		IsSubagent:      thread.Evener.Kind == "subagent",
+		ForkLabel:       thread.Evener.ForkLabel,
 		// The row's last message reaches the tree through the meta too, so an
 		// offline host's last-known row, which is not live, keeps it (S1d).
 		LastMessage: thread.Evener.LastMessage,

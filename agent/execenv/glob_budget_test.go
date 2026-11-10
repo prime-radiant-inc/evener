@@ -15,6 +15,15 @@ import (
 	"primeradiant.com/evener/agent/sandbox"
 )
 
+// TestLocalExecutionEnvironmentImplementsTheBudgetCapabilities pins the
+// capability both glob and list_dir type-assert for. Losing either method is
+// otherwise silent: the tool falls to its unbudgeted arm with no error, so
+// only a compile-time assertion catches a rename.
+func TestLocalExecutionEnvironmentImplementsTheBudgetCapabilities(t *testing.T) {
+	var _ GlobBudgeter = (*LocalExecutionEnvironment)(nil)
+	var _ DirListBudgeter = (*LocalExecutionEnvironment)(nil)
+}
+
 // stubMaxGlobMatches lowers the match-count budget for a test and restores it
 // when the test ends.
 func stubMaxGlobMatches(t *testing.T, n int) {

@@ -49,7 +49,7 @@ same accepted capture under the session lock
 (`delegateTerminalRunInputs.captureCommunicateReport`, `agent/subagents.go`).
 Competing terminal calls cannot replace that capture. Failed, cancelled,
 exhausted, and unreported runs retain their diagnostic result semantics, and
-root-session return values and `CommunicateOutput` keep their structured-output
+root-session return values and `communicateOutput` keep their structured-output
 semantics.
 
 Settlement persists an immutable terminal packet. Owner notifications and

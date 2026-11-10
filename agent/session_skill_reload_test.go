@@ -702,6 +702,7 @@ func TestSkillReload_Budget_OrderedPriority(t *testing.T) {
 		}
 	}, reloadSummaryResponder("SUMMARY_reload_7", &summarizeCalls))
 	seedNumberedSessionHistory(t, s, 12)
+	forcePressureAbove(t, s, compactPressureFloor)
 	plantOrdinaryRecord(t, s, root, "skA", false)
 	plantOrdinaryRecord(t, s, root, "skB", false)
 	evs, stop := captureEvents(s)

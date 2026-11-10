@@ -41,6 +41,7 @@ import {
 } from "./sessionCacheSchema";
 import { type EntryCoverageInput, mayMatchCapacityIdentity, type SessionEntryCache } from "./sessionEntryCache";
 import { encodedPayloadBytes } from "./transcriptPayloadBudget";
+import { withDeadline } from "./withDeadline";
 
 // A changed offer is eligible for an actual write, not proof that its merged
 // persisted plan differs. Hash synchronously: no lookup may retain these bodies
@@ -1224,22 +1225,15 @@ export class TranscriptRepository {
         const turns = await this.#readTurnMetadata(this.#turnIDsForRows(rows, []));
         return { rows, turns };
       };
-      let timer: ReturnType<typeof setTimeout> | undefined;
       let payload: Awaited<ReturnType<typeof lookup>> | undefined;
       try {
-        payload = await Promise.race([
-          lookup(),
-          new Promise<undefined>((resolve) => {
-            timer = setTimeout(() => resolve(undefined), SESSION_CACHE_LOOKUP_DEADLINE_MS);
-          }),
-        ]);
+        payload = await withDeadline(lookup(), SESSION_CACHE_LOOKUP_DEADLINE_MS);
       } catch {
         // This known local continuation may have no server cursor. Ordinary
         // server paging would then strand its omitted bodies.
         return { kind: "reconcile" };
       } finally {
         lookupActive = false;
-        if (timer !== undefined) clearTimeout(timer);
       }
       if (!this.#acceptsLifetime(lifetime)) return { kind: "server" };
       if (this.#sourceRevision !== revisionAtStart) return { kind: "reconcile" };
@@ -1321,20 +1315,13 @@ export class TranscriptRepository {
       const turnMetadata = await this.#readTurnMetadata(turnIds);
       return { window, turnMetadata };
     };
-    let timer: ReturnType<typeof setTimeout> | undefined;
     let payload: Awaited<ReturnType<typeof lookup>> | undefined;
     try {
-      payload = await Promise.race([
-        lookup(),
-        new Promise<undefined>((resolve) => {
-          timer = setTimeout(() => resolve(undefined), SESSION_CACHE_LOOKUP_DEADLINE_MS);
-        }),
-      ]);
+      payload = await withDeadline(lookup(), SESSION_CACHE_LOOKUP_DEADLINE_MS);
     } catch {
       return { kind: "server" };
     } finally {
       lookupActive = false;
-      if (timer !== undefined) clearTimeout(timer);
     }
     if (!this.#acceptsLifetime(lifetime)) return { kind: "server" };
     // An authoritative reconciliation during the lookup retires this window's
@@ -2460,22 +2447,17 @@ export class TranscriptRepository {
    * oldest recorded rows body-less — a user-visible blank transcript.
    */
   async #durableAuthoritiesState(): Promise<"unchanged" | "changed" | "unestablished"> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const authorities = await Promise.race([
+      const authorities = await withDeadline(
         Promise.all([this.#cache.getClearEpoch(), this.#cache.getHistoryGeneration(this.#binding.historyKey)]),
-        new Promise<undefined>((resolve) => {
-          timer = setTimeout(() => resolve(undefined), SESSION_CACHE_LOOKUP_DEADLINE_MS);
-        }),
-      ]);
+        SESSION_CACHE_LOOKUP_DEADLINE_MS,
+      );
       if (authorities === undefined) return "unestablished";
       return authorities[0] === this.#binding.clearEpoch && authorities[1] === (this.#binding.historyGeneration ?? 0)
         ? "unchanged"
         : "changed";
     } catch {
       return "unestablished";
-    } finally {
-      if (timer !== undefined) clearTimeout(timer);
     }
   }
 

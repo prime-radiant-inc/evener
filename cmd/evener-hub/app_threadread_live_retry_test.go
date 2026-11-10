@@ -79,11 +79,10 @@ func newLiveReadHub(t *testing.T, read func(sessionID string) (appsource.RelayRe
 	source := &relaySessionTestSource{thread: liveRetryingThread(sessionID), lease: lease}
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	appServer := newHubAppServer(hubcore.WebConfig{
-		HubStateRoot: t.TempDir(),
-		Past:         past,
-		RelayHooks:   hooks,
-	}, sources)
+	appServer := newHubAppServer(testWebConfig(t, hubcore.WebConfig{
+		Past:       past,
+		RelayHooks: hooks,
+	}), sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	t.Cleanup(hub.Close)
 	return dialHubRPCInitialized(t, hub), lease, sessionID
@@ -115,7 +114,7 @@ func newDaemonLiveReadHub(t *testing.T, read func(sessionID string, call int32) 
 	}, http.DefaultClient)
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: past, RelayHooks: hooks}
+	cfg := testWebConfig(t, hubcore.WebConfig{Past: past, RelayHooks: hooks})
 	if withRoster {
 		cfg.Roster = hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: entry, SessionID: sessionID})
 		previous := hubRosterRefresh

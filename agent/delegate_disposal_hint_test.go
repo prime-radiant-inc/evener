@@ -250,6 +250,7 @@ func TestDelegateDisposalHint_UsesImmediateParentToolCapability(t *testing.T) {
 			if outcome.result.Err != nil {
 				t.Fatalf("send nested-create to coordinator: %v", outcome.result.Err)
 			}
+			settleSendDelivery(t, root, outcome)
 
 			var nestedID string
 			root.delegateController.mu.Lock()

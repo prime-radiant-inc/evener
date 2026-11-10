@@ -1,7 +1,6 @@
 package hub
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -86,9 +85,7 @@ func TestModelListExplicitRefreshRecoversProvider(t *testing.T) {
 			defer hub.Close()
 			client := dialHubRPC(t, hub)
 			defer client.Close()
-			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-				t.Fatal(err)
-			}
+			mustInitializeHubClient(t, client)
 			list := func(refresh bool) appwire.ModelListResponse {
 				t.Helper()
 				var resp appwire.ModelListResponse

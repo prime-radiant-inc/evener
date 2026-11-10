@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -99,7 +100,7 @@ func apilogFixture(t *testing.T) (base, sid string, attempts []apilog.APIAttempt
 
 func TestAPILogCanonicalTotalsFiltersAndSettlementIdentity(t *testing.T) {
 	base, sid, attempts := apilogFixture(t)
-	res, err := APILog(base, sid, APILogOpts{})
+	res, err := APILog(context.Background(), base, sid, APILogOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,19 +129,19 @@ func TestAPILogCanonicalTotalsFiltersAndSettlementIdentity(t *testing.T) {
 		t.Fatalf("finality = final %v state %q count %v", first.Final, first.SettlementState, first.FinalAttemptCount)
 	}
 
-	empty, err := APILog(base, sid, APILogOpts{EmptyOnly: true})
+	empty, err := APILog(context.Background(), base, sid, APILogOpts{EmptyOnly: true})
 	if err != nil || len(empty.Calls) != 1 || !empty.Calls[0].Empty {
 		t.Fatalf("empty filter = %+v, err %v", empty.Calls, err)
 	}
-	failures, err := APILog(base, sid, APILogOpts{ErrorsOnly: true})
+	failures, err := APILog(context.Background(), base, sid, APILogOpts{ErrorsOnly: true})
 	if err != nil || len(failures.Calls) != 1 || failures.Calls[0].Outcome != apilog.AttemptProviderTimeout {
 		t.Fatalf("error filter = %+v, err %v", failures.Calls, err)
 	}
-	spikes, err := APILog(base, sid, APILogOpts{CacheSpikes: true})
+	spikes, err := APILog(context.Background(), base, sid, APILogOpts{CacheSpikes: true})
 	if err != nil || len(spikes.Calls) != 1 || !hasIntValue(spikes.Calls[0].UncachedInput, 60000) {
 		t.Fatalf("spike filter = %+v, err %v", spikes.Calls, err)
 	}
-	low, err := APILog(base, sid, APILogOpts{CacheSpikes: true, SpikeThreshold: 500})
+	low, err := APILog(context.Background(), base, sid, APILogOpts{CacheSpikes: true, SpikeThreshold: 500})
 	if err != nil || len(low.Calls) != 3 {
 		t.Fatalf("low spike filter rows = %d, err %v", len(low.Calls), err)
 	}
@@ -161,13 +162,13 @@ func TestAPILogMetadataOnlyDecodeMatchesStrictDecode(t *testing.T) {
 		{CacheSpikes: true, SpikeThreshold: 500},
 		{SummaryOnly: true},
 	} {
-		strict, err := apiLog(base, sid, opts, apilog.DecodeStrict)
+		strict, err := apiLog(context.Background(), base, sid, opts, apilog.DecodeStrict)
 		if err != nil {
-			t.Fatalf("apiLog(strict, %+v): %v", opts, err)
+			t.Fatalf("apiLog(context.Background(), strict, %+v): %v", opts, err)
 		}
-		metadataOnly, err := apiLog(base, sid, opts, apilog.DecodeMetadataOnly)
+		metadataOnly, err := apiLog(context.Background(), base, sid, opts, apilog.DecodeMetadataOnly)
 		if err != nil {
-			t.Fatalf("apiLog(metadata-only, %+v): %v", opts, err)
+			t.Fatalf("apiLog(context.Background(), metadata-only, %+v): %v", opts, err)
 		}
 		if !reflect.DeepEqual(strict, metadataOnly) {
 			t.Fatalf("opts %+v: metadata-only result diverges from strict\nstrict:        %+v\nmetadata-only: %+v", opts, strict, metadataOnly)
@@ -207,7 +208,7 @@ func TestAPILogPreservesOptionalNumericPresence(t *testing.T) {
 			}
 			writeRichSession(t, bucket, sidA, nil, []apilog.APILogRecord{attempt}, schema.SessionMeta{})
 
-			result, err := APILog(base, sidA, APILogOpts{})
+			result, err := APILog(context.Background(), base, sidA, APILogOpts{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -273,7 +274,7 @@ func TestAPILogRetainsLatestBoundedCallRowsAndScansAllTotals(t *testing.T) {
 	}
 	writeRichSession(t, bucket, sidA, nil, records, schema.SessionMeta{})
 
-	result, err := APILog(base, sidA, APILogOpts{})
+	result, err := APILog(context.Background(), base, sidA, APILogOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +309,7 @@ func TestAPILogCacheSpikesUseNormalizedUncachedInput(t *testing.T) {
 	attempt := doctorAttempt("ag_normalized", 1, apilog.AttemptSuccess, 1, 100, 0, 90, 1, 0)
 	writeRichSession(t, bucket, sidA, nil, []apilog.APILogRecord{attempt, doctorSettlement(attempt, 1)}, schema.SessionMeta{})
 
-	res, err := APILog(base, sidA, APILogOpts{CacheSpikes: true, SpikeThreshold: 50})
+	res, err := APILog(context.Background(), base, sidA, APILogOpts{CacheSpikes: true, SpikeThreshold: 50})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,7 +332,7 @@ func TestAPILogContinuationCountsByEndpointFamily(t *testing.T) {
 		records = append(records, attempt, doctorSettlement(attempt, 1))
 	}
 	writeRichSession(t, bucket, sidA, nil, records, schema.SessionMeta{})
-	res, err := APILog(base, sidA, APILogOpts{})
+	res, err := APILog(context.Background(), base, sidA, APILogOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,7 +354,7 @@ func TestAPILogContinuationEndpointFamiliesAreBounded(t *testing.T) {
 	}
 	writeRichSession(t, bucket, sidA, nil, records, schema.SessionMeta{})
 
-	result, err := APILog(base, sidA, APILogOpts{})
+	result, err := APILog(context.Background(), base, sidA, APILogOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,7 +375,7 @@ func TestAPILogCleanEOFMakesMissingSettlementUnsettled(t *testing.T) {
 	attempt := doctorAttempt("ag_crash", 1, apilog.AttemptSuccess, 1, 1, 1, 0, 1, 0)
 	writeRichSession(t, bucket, sidA, nil, []apilog.APILogRecord{attempt}, schema.SessionMeta{})
 
-	res, err := APILog(base, sidA, APILogOpts{})
+	res, err := APILog(context.Background(), base, sidA, APILogOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -401,7 +402,7 @@ func TestAPILogPartialTailMakesUnsettledGroupUnknown(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := APILog(base, sidA, APILogOpts{})
+	res, err := APILog(context.Background(), base, sidA, APILogOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,14 +428,14 @@ func TestAPILogInteriorCorruptionIsError(t *testing.T) {
 	if err := f.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := APILog(base, sidA, APILogOpts{}); err == nil {
+	if _, err := APILog(context.Background(), base, sidA, APILogOpts{}); err == nil {
 		t.Fatal("APILog accepted interior corruption")
 	}
 }
 
 func TestRenderAPILogSummaryAndIdentity(t *testing.T) {
 	base, sid, attempts := apilogFixture(t)
-	res, err := APILog(base, sid, APILogOpts{})
+	res, err := APILog(context.Background(), base, sid, APILogOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -508,7 +509,7 @@ func TestAPILogProjectsStructuredFailureWithoutProviderBodyMessage(t *testing.T)
 	}
 	writeRichSession(t, bucket, sidA, nil, []apilog.APILogRecord{attempt, doctorSettlement(attempt, 1)}, schema.SessionMeta{})
 
-	result, err := APILog(base, sidA, APILogOpts{})
+	result, err := APILog(context.Background(), base, sidA, APILogOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -567,7 +568,7 @@ func TestAPILogSettlementCollectionIsBoundedAndIndependentOfCallFilters(t *testi
 	records = append(records, filteredAttempt, filteredSettlement, zeroAttemptSettlement)
 	writeRichSession(t, bucket, sidA, nil, records, schema.SessionMeta{})
 
-	result, err := APILog(base, sidA, APILogOpts{ErrorsOnly: true})
+	result, err := APILog(context.Background(), base, sidA, APILogOpts{ErrorsOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1005,7 +1006,7 @@ func TestAPIHealthVerdict(t *testing.T) {
 
 	writeRichSession(t, bucket, sidA, nil, records, schema.SessionMeta{})
 
-	res, err := APIHealth(base, sidA)
+	res, err := APIHealth(context.Background(), base, sidA)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1059,7 +1060,7 @@ func TestAPIHealthRecordedEmptyCountsCompactZeroResponses(t *testing.T) {
 	attempt := doctorAttempt("ag_empty_health", 1, apilog.AttemptSuccess, 1, 0, 0, 0, 0, 0)
 	writeRichSession(t, bucket, sidA, nil, []apilog.APILogRecord{attempt, doctorSettlement(attempt, 1)}, schema.SessionMeta{})
 
-	res, err := APIHealth(base, sidA)
+	res, err := APIHealth(context.Background(), base, sidA)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1089,7 +1090,7 @@ func TestAPIHealthQuotaClassCountsExplicitQuotaExceeded(t *testing.T) {
 	}
 	writeRichSession(t, bucket, sidA, nil, []apilog.APILogRecord{attempt, doctorSettlement(attempt, 1)}, schema.SessionMeta{})
 
-	res, err := APIHealth(base, sidA)
+	res, err := APIHealth(context.Background(), base, sidA)
 	if err != nil {
 		t.Fatal(err)
 	}

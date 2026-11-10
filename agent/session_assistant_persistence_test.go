@@ -212,7 +212,7 @@ func TestSession_AssistantTranscriptFailureStopsBeforeToolDispatch(t *testing.T)
 	}()
 
 	var toolRuns int
-	sess.RegisterTool("my_tool", "must not run after persistence failure", map[string]any{
+	sess.registerTool("my_tool", "must not run after persistence failure", map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
 	}, func(context.Context, any) (any, error) {

@@ -29,6 +29,19 @@ test("absent thread usage falls back to the sum over the turns the client loaded
   expect(tokens).toEqual({ inputTokens: 8237, outputTokens: 120, scope: "session" });
 });
 
+// A fork child's transcript opens with the parent's prefix; never sum it.
+test("a fork child with no cumulative total does not sum its inherited turns", () => {
+  expect(sessionTokens(model({ kind: "fork", turns: [turn(6961, 73), turn(1276, 47)] }))).toBeNull();
+});
+
+// The hub's divergence-scoped total is the fork's own spend and still wins.
+test("a fork child's cumulative total is preferred over the inherited turns", () => {
+  const tokens = sessionTokens(
+    model({ kind: "fork", usage: { inputTokens: 10, outputTokens: 20 }, turns: [turn(999, 999)] }),
+  );
+  expect(tokens).toEqual({ inputTokens: 10, outputTokens: 20, scope: "session" });
+});
+
 // thread/read windows items via itemLimit and reports the truncation with
 // olderCursor. A sum over a truncated window is NOT the session total, so the
 // scope has to say so - never label a partial figure as a full session.

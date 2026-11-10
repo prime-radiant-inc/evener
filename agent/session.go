@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -442,6 +443,11 @@ type Session struct {
 	// DrainJobTree invocation and generation-scoped for the same reason as the
 	// final abandonment record.
 	drainGraceChildren map[string]drainGraceChild
+	// drainParkMu guards drainParked, the channel nextDrainPark hands out and
+	// the job-tree drain closes when it parks.
+	// LOCK ORDER: leaf.
+	drainParkMu sync.Mutex
+	drainParked chan struct{}
 	// childCommittedSendMu guards childCommittedSendChildren. It is a leaf lock of
 	// its own — nothing is acquired under it — and is deliberately separate from
 	// drainAbandonedMu so the send-start claim never couples to drain state.
@@ -862,6 +868,15 @@ type Session struct {
 	// one second.
 	pendingJobNotifsMu sync.Mutex
 	pendingJobNotifs   []jobNotification
+	// jobStatusPolls backs the refusal of repeated job_status calls that carry no news.
+	jobStatusPolls jobStatusPolls
+	// jobNotifsAwaitingRequest holds the durable completions whose reminder
+	// is in the transcript but which no dispatched model request has carried
+	// yet. They settle as delivered when one is dispatched; until then they
+	// stay owed, so a turn that ends first leaves them to the next wake, which
+	// carries them without writing their reminder again. Guarded by
+	// pendingJobNotifsMu.
+	jobNotifsAwaitingRequest []awaitedJobNotification
 	// jobNotifsDelivered counts the job notifications acceptNotificationInput
 	// has delivered to the model over the session's lifetime. The one-shot
 	// drain reads it across an undisposed-job announcement turn: growth means a
@@ -985,6 +1000,9 @@ type Session struct {
 	// read-before-write guardrail
 	readFiles   map[string]bool
 	readFilesMu sync.RWMutex
+	// priorReads remembers each read_file path and range with the file's state
+	// at that read. Guarded by readFilesMu.
+	priorReads map[readRangeKey]priorRead
 
 	// SESSION_END deduplication: emitted exactly once across ProcessInput and Close.
 	// Guarded by mu; read and written only in session_end.go.
@@ -1079,8 +1097,8 @@ type Session struct {
 	// operation persisted on the skill lifecycle snapshot
 	// (skillLifecycle.PendingCompaction), which applyPendingForceCompact reads
 	// for instructions and resumeSkillCompaction re-arms after a restart.
-	pinnedNote    string // note awaiting handoff at the next compaction (agent- or elicitor-authored); injected verbatim then cleared
-	pinnedNoteGen uint64 // bumped on every pinnedNote set/clear/claim; lets a fold's publication claim consume exactly the note it captured, never a newer one pinned mid-fold. Guarded by mu.
+	pinnedNoteText string // note awaiting handoff at the next compaction (agent- or elicitor-authored); injected verbatim then cleared
+	pinnedNoteGen  uint64 // bumped on every pinnedNoteText set/clear/claim; lets a fold's publication claim consume exactly the note it captured, never a newer one pinned mid-fold. Guarded by mu.
 	// shared-notes state (human/agent whiteboards plus URL list)
 	agentNote   string              // agent's session whiteboard (a short capsule in lines); persisted via Meta().AgentNote. Guarded by mu.
 	sessionURLs []schema.SessionURL // agent-curated session URL list; persisted via Meta().SessionURLs. Guarded by mu.
@@ -1273,6 +1291,13 @@ func (s *Session) enqueueJobNotification(n jobNotification) {
 // The caller holds pendingJobNotifsMu; this must never take jm.mu, because
 // the established order is jm.mu then pendingJobNotifsMu.
 func (s *Session) appendOrFoldJobNotificationLocked(n jobNotification) {
+	if n.JobID == "" {
+		// A self timer is about no one job: the recheck it schedules is news
+		// for every running target.
+		s.jobStatusPolls.forgetAll()
+	} else {
+		s.jobStatusPolls.forget(n.JobID)
+	}
 	if n.WatchID != "" && !n.Terminal {
 		for i := range s.pendingJobNotifs {
 			p := &s.pendingJobNotifs[i]
@@ -1282,6 +1307,12 @@ func (s *Session) appendOrFoldJobNotificationLocked(n jobNotification) {
 				return
 			}
 		}
+	}
+	// A long-running-jobs reminder is a snapshot of the jobs running when it was
+	// built, so a newer one replaces any still undelivered rather than queueing
+	// behind it listing jobs that may have finished.
+	if n.isLongRunningJobsReminder() {
+		s.pendingJobNotifs = slices.DeleteFunc(s.pendingJobNotifs, jobNotification.isLongRunningJobsReminder)
 	}
 	s.pendingJobNotifs = append(s.pendingJobNotifs, n)
 }
@@ -1367,14 +1398,21 @@ func (s *Session) drainJobNotifications() []jobNotification {
 	return drained
 }
 
-// peekNotifications reports how many notifications are pending WITHOUT draining
-// them. The drain-loop tail uses it to decide whether to run a notification turn
-// next; the actual drain stays in acceptNotificationInput so the queue is consumed
-// exactly once, inside the turn that surfaces it.
+// peekNotifications reports how many notifications are still owed to the model
+// WITHOUT draining them: those queued, and those whose reminder no dispatched
+// request has carried yet. The drain-loop tail uses it to decide whether to run
+// a notification turn next; the actual drain stays in acceptNotificationInput so
+// the queue is consumed exactly once, inside the turn that surfaces it.
 func (s *Session) peekNotifications() int {
 	s.pendingJobNotifsMu.Lock()
 	defer s.pendingJobNotifsMu.Unlock()
-	return len(s.pendingJobNotifs)
+	return s.owedJobNotificationsLocked()
+}
+
+// owedJobNotificationsLocked counts the notifications a notification wake still
+// has to bring to the model. The caller holds pendingJobNotifsMu.
+func (s *Session) owedJobNotificationsLocked() int {
+	return len(s.pendingJobNotifs) + len(s.jobNotifsAwaitingRequest)
 }
 
 // countJobNotificationsDelivered records n job notifications delivered to the
@@ -1408,7 +1446,7 @@ func (s *Session) SetNotifyFunc(f func()) {
 		return
 	}
 	s.pendingJobNotifsMu.Lock()
-	pending := len(s.pendingJobNotifs) > 0
+	pending := s.owedJobNotificationsLocked() > 0
 	s.pendingJobNotifsMu.Unlock()
 	// The USER's steering and queued input both count as pending work here for
 	// the same reason the rest does. Either one accepted durably and then lost
@@ -1427,7 +1465,7 @@ func (s *Session) SetNotifyFunc(f func()) {
 	// the user, not work in progress, and waking for it at attach would restart
 	// the session and deliver the steer the user just stopped -- the open
 	// steering rail issue #174 closes (issue #146, Option C — park in place).
-	if pending || s.hasRunnableUserSteering() || s.QueueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.pendingRootDelegateAttention() || s.hasPendingDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) {
+	if pending || s.hasRunnableUserSteering() || s.queueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.pendingRootDelegateAttention() || s.hasPendingDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) {
 		f()
 	}
 }
@@ -1501,7 +1539,7 @@ func (s *Session) scheduleJobNotificationRetryLocked() {
 			s.pendingJobNotifsMu.Unlock()
 			return
 		}
-		pending := len(s.pendingJobNotifs) > 0
+		pending := s.owedJobNotificationsLocked() > 0
 		s.jobNotifyRetry.settle(pending, delay, jobNotificationRetryMaxDelay)
 		s.pendingJobNotifsMu.Unlock()
 		if pending {
@@ -1512,7 +1550,7 @@ func (s *Session) scheduleJobNotificationRetryLocked() {
 
 func (s *Session) resetJobNotificationRetry() {
 	s.pendingJobNotifsMu.Lock()
-	if len(s.pendingJobNotifs) > 0 {
+	if s.owedJobNotificationsLocked() > 0 {
 		s.pendingJobNotifsMu.Unlock()
 		return
 	}
@@ -1522,14 +1560,14 @@ func (s *Session) resetJobNotificationRetry() {
 
 // communicateResult records whether and how the agent delivered a result via
 // the communicate/result tool during the current ProcessInput call. It is
-// transient — reset at the top of each call, then read back by Communicated,
-// CommunicateOutput, and the turn loop's deliver step. Guarded by s.mu.
+// transient — reset at the top of each call, then read back by communicated,
+// communicateOutput, and the turn loop's deliver step. Guarded by s.mu.
 type communicateResult struct {
 	called     bool // terminal communicate/result was invoked this turn
 	updated    bool // non-terminal communicate (end_turn=false) was invoked this turn
 	text       string
 	reply      string
-	output     string // canonical structured output (CommunicateOutput)
+	output     string // canonical structured output (communicateOutput)
 	structured any    // raw args["output"] object before communicate canonicalization
 	endReason  string // why the terminal call ended the turn (tool.CommunicateEndReasons); "" on a delegate
 }
@@ -2282,35 +2320,35 @@ func (s *Session) applyModelRequestMetadata(req *llm.Request) {
 	}
 }
 
-// Communicated reports whether communicate was called during the most recent
+// communicated reports whether communicate was called during the most recent
 // ProcessInput invocation.
-func (s *Session) Communicated() bool {
+func (s *Session) communicated() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.comm.called
 }
 
-// CommunicateUpdate reports whether a NON-terminal communicate (end_turn=false)
+// communicateUpdate reports whether a NON-terminal communicate (end_turn=false)
 // was called during the most recent ProcessInput invocation. A delegate's
 // missing-report reminder can then acknowledge the update instead of claiming
 // the delegate never called the result tool (#3734).
-func (s *Session) CommunicateUpdate() bool {
+func (s *Session) communicateUpdate() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.comm.updated
 }
 
-// CommunicateOutput returns the canonical structured output from the most recent
+// communicateOutput returns the canonical structured output from the most recent
 // communicate call in the current ProcessInput invocation.
-func (s *Session) CommunicateOutput() string {
+func (s *Session) communicateOutput() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.comm.output
 }
 
-// CommunicateStructured returns the raw structured output object from the most
+// communicateStructured returns the raw structured output object from the most
 // recent communicate call, before normalizeNodeOutput canonicalization.
-func (s *Session) CommunicateStructured() any {
+func (s *Session) communicateStructured() any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.comm.structured

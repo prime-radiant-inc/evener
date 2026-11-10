@@ -817,11 +817,14 @@ type RestoreSessionConfig struct {
 	ModelFallbacks              []string
 	OpenAIResponsesContinuation string
 	ProviderIdleTimeout         string
-	LLMRetryPolicy              *llm.RetryPolicy
-	LLMSleep                    llm.SleepFunc
-	spawn                       spawnConfig
-	resumeHistory               []schema.Turn
-	deferRestoreSideEffects     bool
+	// CommitProvenance replaces the persisted mode when non-empty. Empty keeps
+	// the session's saved value, which may itself be empty (default on).
+	CommitProvenance        string
+	LLMRetryPolicy          *llm.RetryPolicy
+	LLMSleep                llm.SleepFunc
+	spawn                   spawnConfig
+	resumeHistory           []schema.Turn
+	deferRestoreSideEffects bool
 	// sandboxProvisioned is set only by the stable-delegate restore path after it
 	// has re-resolved and enabled the descriptor's complete sandbox policy. That
 	// policy contains delegate-only axes (such as WriteBlocked) which the ordinary
@@ -997,6 +1000,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	cfg.AgentsDocPath = strings.TrimSpace(restoreCfg.AgentsDocPath)
 	if strings.TrimSpace(restoreCfg.OpenAIResponsesContinuation) != "" {
 		cfg.OpenAIResponsesContinuation = strings.TrimSpace(restoreCfg.OpenAIResponsesContinuation)
+	}
+	if strings.TrimSpace(restoreCfg.CommitProvenance) != "" {
+		cfg.CommitProvenance = strings.TrimSpace(restoreCfg.CommitProvenance)
 	}
 	cfg.LLMRetryPolicy = restoreCfg.LLMRetryPolicy
 	cfg.LLMSleep = restoreCfg.LLMSleep
@@ -1290,7 +1296,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		g := meta.Goal
 		s.getOrCreateGoalStore().Restore(g.Objective, g.Status, g.StopReason, g.Iterations, g.NoProgressStreak, g.MadeProgressOnce, g.CreatedAt, g.UpdatedAt)
 	}
-	s.pinnedNote = meta.PinnedNote
+	s.pinnedNoteText = meta.PinnedNote
 	// Legacy values predate the write-path control strip: a note or URL label
 	// persisted then can still drive a terminal through the details drawer, the
 	// model copy or the tool output. Normalizing at the load boundary closes
@@ -1843,6 +1849,10 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		// Role preloads join the skill inventory only after the permanent
 		// prompt carrying their complete instructions was admitted.
 		s.seedFrozenSkillPreloads()
+	}
+	if warning := s.commitProvenanceWarning(); warning != "" {
+		s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings,
+			events.WarningData{Message: warning})
 	}
 
 	// Take the root session's process livelock (issue #5471): the lifetime

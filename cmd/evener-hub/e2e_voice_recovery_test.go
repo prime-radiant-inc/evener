@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -296,6 +297,54 @@ func TestE2E_VoiceReconnectAfterRepeatedInterruptions(t *testing.T) {
 	deliveries, _, err := f.journal.ListSpeechDeliveries(f.ctx, f.armed.BindingID, 0, 20)
 	if err != nil || len(deliveries) != 3 {
 		t.Fatalf("reconnect created duplicate or missing speech: count=%d err=%v", len(deliveries), err)
+	}
+}
+
+// A replaced device socket retires its subscription while the successor's
+// baseline read is on the relay, and the relay reports that cut as a
+// retryable outage. The successor must read again, become ready and speak.
+func TestE2E_VoiceReconnectRetriesRelayOutageBeforeReady(t *testing.T) {
+	f := newVoiceCorrectionStack(t)
+	var cut atomic.Bool
+	voiceStopRecoveryHub(t, f, nil, false, func(ctx context.Context, params appwire.ThreadReadParams) error {
+		if bridge, _ := ctx.Value(voicePresentationContextKey{}).(bool); bridge && params.Subscribe && cut.CompareAndSwap(false, true) {
+			return appwire.RetryableSessionUnavailable("relay connection ended before route publication")
+		}
+		return nil
+	})
+	if !cut.Load() {
+		t.Fatal("the bridge's baseline read never met the relay outage")
+	}
+	f.admit(t, "RELAY-CUT-INPUT-91", false)
+	f.next(t).RespondToolCall("communicate", communicateArgs("RELAY-CUT-OUTPUT-91"))
+	start := voiceJourneyEvent(t, f.device, "speech_start")
+	f.speechRequest(t, f.openSpeaker(t), start, "RELAY-CUT-OUTPUT-91")
+}
+
+// A retry that blocks past the retry budget must not leave the device waiting
+// for ready: the budget ends it and the device is told the session is
+// unavailable, so it can reconnect.
+func TestE2E_VoiceReconnectReportsRelayOutageOutlastingRetryBudget(t *testing.T) {
+	f := newVoiceCorrectionStack(t)
+	var reads atomic.Int32
+	_, _, addr := voiceStopRecoveryServer(t, f, nil, false, func(ctx context.Context, params appwire.ThreadReadParams) error {
+		if bridge, _ := ctx.Value(voicePresentationContextKey{}).(bool); !bridge || !params.Subscribe {
+			return nil
+		}
+		if reads.Add(1) == 1 {
+			return appwire.RetryableSessionUnavailable("relay connection ended before route publication")
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	conn := voiceJourneyConnect(f.ctx, t, "ws://"+addr+f.armed.SocketPath, f.headers)
+	t.Cleanup(func() { _ = conn.CloseNow() })
+	device := realtimePeer{conn: conn, ctx: f.ctx, t: t}
+	if event := device.read(); event["type"] != "error" || event["code"] != "session_unavailable" {
+		t.Fatalf("blocked retry answered the device with %v", event)
+	}
+	if reads.Load() != 2 {
+		t.Fatalf("baseline reads = %d, want the cut read and one blocked retry", reads.Load())
 	}
 }
 

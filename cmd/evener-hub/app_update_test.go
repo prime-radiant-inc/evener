@@ -725,10 +725,7 @@ func TestHubUpdateApplyRestartsAfterTheResponseIsWritten(t *testing.T) {
 
 	// A real appserver round trip: only that gives the handler a context
 	// carrying the connection AfterResponseWritten needs.
-	appServer := newHubAppServer(hubcore.WebConfig{
-		HubStateRoot: t.TempDir(),
-		Past:         hubcore.NewPastIndex(""),
-	}, appsource.NewRegistry())
+	appServer := newHubAppServer(testWebConfig(t, hubcore.WebConfig{}), appsource.NewRegistry())
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)

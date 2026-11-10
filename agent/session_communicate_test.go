@@ -89,13 +89,10 @@ func TestCommunicate_ToolChoiceNotForced_OnEveryRequest(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "hi", nil)
+	_, err := sess.ProcessInput(ctx, "hi", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -1108,10 +1105,7 @@ func TestCommunicate_EmitsEvent(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
 	var evs []events.SessionEvent
 	evDone := make(chan struct{})
@@ -1124,7 +1118,7 @@ func TestCommunicate_EmitsEvent(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "hi", nil)
+	_, err := sess.ProcessInput(ctx, "hi", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -1204,7 +1198,7 @@ func TestCommunicate_EndTurnWarnsAboutRunningJobs(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
+		Arguments: idleShellJSON(`,"mode":"background"`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)

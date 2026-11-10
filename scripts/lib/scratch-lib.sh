@@ -11,7 +11,7 @@
 # directory: a recursive delete must never take an argument a caller could
 # clobber. scratch_dir validates every step of creation and registers the
 # result; scratch_rm takes no argument and removes only what scratch_dir
-# registered. TestNoScriptFeedsVariableToRecursiveDelete keeps every other
+# registered. `make lint`'s script-recursive-delete check keeps every other
 # recursive delete in scripts/ on a count-pinned list.
 
 # scratch_lib_dirs are the directories scratch_dir has created, and the only
@@ -32,7 +32,7 @@ scratch_lib_dirs=()
 #
 # The wrong spelling runs the guard in a subshell, where `exit 1` ends only
 # that subshell and hands the caller an empty path.
-# TestScratchDirSubstitutionDoesNotSwallowFailure fails on it so the mistake
+# `make lint`'s scratch-dir-not-substituted check fails on it so the mistake
 # cannot reach a run.
 #
 # The guard exists because the idiom it replaces aimed a recursive delete at

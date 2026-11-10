@@ -1,5 +1,5 @@
 import {
-  type PluginLaunchCandidate,
+  type AppwireClientLike,
   type PluginPreviewResponse,
   type PluginSelectionState,
   pluginSelectionIssues,
@@ -8,15 +8,22 @@ import {
   selectNoPlugins,
   setPluginSelected,
 } from "@evener/appwire-client";
-import { type ReactElement, useState } from "react";
-import { Button, Card, Disclosure, EmptyState, InlineNotice, Switch } from "../../widgets";
+import { type ReactElement, useEffect, useState } from "react";
+import { Button, Card, Disclosure, EmptyState, InlineNotice } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { LauncherPluginRow } from "../plugins/PluginRow";
+import { LauncherPluginSheet } from "./LauncherPluginSheet";
 import styles from "./pluginSelection.module.css";
 
 export interface PluginSelectionPanelProps {
   preview: PluginPreviewResponse;
   selection: PluginSelectionState;
   removeOnly?: boolean;
+  /** The client a Details-opened sheet reads component inventories through. */
+  client: Pick<AppwireClientLike, "request">;
+  /** The launch source the preview resolved against; the sheet's read follows
+   * it so its Contents describe the plugins that host would load. */
+  host?: string;
   onSelectionChange(next: PluginSelectionState): void;
   onRetry(): void;
 }
@@ -26,41 +33,32 @@ const CLASS = {
   tools: requireClass(styles.tools, "pluginSelection.module.css", "tools"),
   actions: requireClass(styles.actions, "pluginSelection.module.css", "actions"),
   list: requireClass(styles.list, "pluginSelection.module.css", "list"),
-  row: requireClass(styles.row, "pluginSelection.module.css", "row"),
-  metadata: requireClass(styles.metadata, "pluginSelection.module.css", "metadata"),
-  source: requireClass(styles.source, "pluginSelection.module.css", "source"),
-  counts: requireClass(styles.counts, "pluginSelection.module.css", "counts"),
-  description: requireClass(styles.description, "pluginSelection.module.css", "description"),
   resultCount: requireClass(styles.resultCount, "pluginSelection.module.css", "resultCount"),
   diagnostics: requireClass(styles.diagnostics, "pluginSelection.module.css", "diagnostics"),
   issueList: requireClass(styles.issueList, "pluginSelection.module.css", "issueList"),
 };
 
-function sourceLabel(plugin: PluginLaunchCandidate): string {
-  if (plugin.source === "installed" && plugin.marketplace) return `installed from ${plugin.marketplace}`;
-  if (plugin.path) return `${plugin.source}: ${plugin.path}`;
-  return plugin.source;
-}
-
-function componentCounts(plugin: PluginLaunchCandidate): string {
-  const counts: string[] = [];
-  if (plugin.skillCount > 0) counts.push(`${plugin.skillCount} skill${plugin.skillCount === 1 ? "" : "s"}`);
-  if (plugin.agentCount > 0) counts.push(`${plugin.agentCount} agent${plugin.agentCount === 1 ? "" : "s"}`);
-  if (plugin.commandCount > 0) counts.push(`${plugin.commandCount} command${plugin.commandCount === 1 ? "" : "s"}`);
-  if (plugin.hookCount > 0) counts.push(`${plugin.hookCount} hook${plugin.hookCount === 1 ? "" : "s"}`);
-  if (plugin.mcpCount > 0) counts.push(`${plugin.mcpCount} MCP server${plugin.mcpCount === 1 ? "" : "s"}`);
-  return counts.length > 0 ? counts.join(" · ") : "No components";
-}
-
 export function PluginSelectionPanel({
   preview,
   selection,
   removeOnly = false,
+  client,
+  host,
   onSelectionChange,
   onRetry,
 }: PluginSelectionPanelProps): ReactElement {
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  // The panel owns the one open sheet: a row's Details opens its candidate,
+  // and only one candidate is open at a time. The sheet mounts only while it
+  // is open, so its read starts when the sheet does.
+  const [sheetName, setSheetName] = useState<string | null>(null);
+  const sheetCandidate = preview.plugins.find((plugin) => plugin.name === sheetName);
+  useEffect(() => {
+    if (sheetName !== null && sheetCandidate === undefined) setSheetName(null);
+  }, [sheetName, sheetCandidate]);
   const selectedNames = selection.mode === "explicit" ? new Set(selection.names) : null;
+  const sheetSelected =
+    sheetCandidate !== undefined && (selectedNames?.has(sheetCandidate.name) ?? sheetCandidate.selected);
   const issueNames =
     selectedNames ?? new Set(preview.plugins.filter((plugin) => plugin.selected).map((plugin) => plugin.name));
   const selectedCount = selectedPluginNames(selection, preview).length;
@@ -125,27 +123,34 @@ export function PluginSelectionPanel({
           {preview.plugins.map((plugin) => {
             const selected = selectedNames?.has(plugin.name) ?? plugin.selected;
             return (
-              <div className={CLASS.row} key={plugin.name}>
-                <Switch
-                  checked={selected}
-                  label={plugin.name}
-                  disabled={removeOnly && !selected}
-                  onChange={(next) => {
-                    if (!removeOnly || !next)
-                      onSelectionChange(setPluginSelected(selection, preview, plugin.name, next));
-                  }}
-                  description={
-                    <span className={CLASS.metadata} data-testid="plugin-row-metadata">
-                      <span className={CLASS.source}>{sourceLabel(plugin)}</span>
-                      <span className={CLASS.counts}>{componentCounts(plugin)}</span>
-                      {plugin.description && <span className={CLASS.description}>{plugin.description}</span>}
-                    </span>
-                  }
-                />
-              </div>
+              <LauncherPluginRow
+                key={plugin.name}
+                candidate={plugin}
+                selected={selected}
+                removeOnly={removeOnly}
+                onToggleSelected={(next) => onSelectionChange(setPluginSelected(selection, preview, plugin.name, next))}
+                onOpen={() => setSheetName(plugin.name)}
+              />
             );
           })}
         </div>
+        {sheetCandidate !== undefined && (
+          <LauncherPluginSheet
+            open
+            onClose={() => setSheetName(null)}
+            candidate={sheetCandidate}
+            client={client}
+            host={host}
+            selected={sheetSelected}
+            selectionDisabled={removeOnly && !sheetSelected}
+            onToggleSelected={(next) => {
+              // The same remove-only guard the row's own switch applies: an
+              // unreadable preview still allows taking plugins out.
+              if (!removeOnly || !next)
+                onSelectionChange(setPluginSelected(selection, preview, sheetCandidate.name, next));
+            }}
+          />
+        )}
         {preview.plugins.length === 0 && (
           <EmptyState size="compact" title="No plugins are available for this session." />
         )}

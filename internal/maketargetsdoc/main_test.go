@@ -361,18 +361,3 @@ func TestGenerateErrorsWhenRootHoldsNoFamilyFiles(t *testing.T) {
 		t.Fatalf("error does not name the empty family set: %v", err)
 	}
 }
-
-// TestPrintHelpErrorsWhenRootHoldsNoFamilyFiles is the same guard on the
-// help path: `make help` listing nothing is a failure, not an empty repo.
-func TestPrintHelpErrorsWhenRootHoldsNoFamilyFiles(t *testing.T) {
-	root := t.TempDir()
-
-	var buf bytes.Buffer
-	err := printHelp(&buf, root)
-	if err == nil {
-		t.Fatal("printHelp succeeded with no make/*.mk under root")
-	}
-	if !errors.Is(err, errNoFamilyFiles) {
-		t.Fatalf("error does not name the empty family set: %v", err)
-	}
-}

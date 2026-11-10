@@ -100,6 +100,44 @@ test("expanding a node lazily fetches its catalog once; re-expanding does not re
   expect(browseSpy).toHaveBeenCalledTimes(1);
 });
 
+test("an inline install returns focus to the row it reshaped", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
+  fake.on("evener/marketplace/browse", () => ({
+    name: MARKETPLACE_A.name,
+    plugins: [{ name: "formatter", description: "Formats code" }],
+  }));
+  fake.on("evener/plugin/install", () => ({
+    plugins: [
+      {
+        plugin: "formatter",
+        marketplace: MARKETPLACE_A.name,
+        version: "1.4.0",
+        enabled: true,
+        autoUpgrade: false,
+        broken: false,
+        installPath: "/formatter",
+        installedAt: 1,
+        lastUpdated: 1,
+      },
+    ],
+  }));
+  render(<Harness />);
+  await user.click(marketplaceToggle("acme-plugins"));
+  await screen.findByRole("list", { name: "acme-plugins plugins" });
+  // Confirm from the trailing Install control, so the confirm's FocusScope
+  // remembers that button as its opener.
+  await user.click(screen.getByRole("button", { name: "Install" }));
+  const confirm = screen.getByRole("dialog", { name: "Install plugin" });
+  await user.click(within(confirm).getByRole("button", { name: "Install" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  // The install's fresh list reshapes the row - the split row with its
+  // trailing Install becomes the whole-row button.
+  const reshapedRow = screen.getByRole("button", { name: /formatter/ });
+  expect(document.activeElement).toBe(reshapedRow);
+});
+
 // A marketplace change from another client retires every cached catalog,
 // including the one an expanded node is showing. Nothing toggles, so the node
 // is the only thing that can ask for the replacement.
@@ -198,8 +236,37 @@ test("an already-installed plugin shows an Installed badge instead of an Install
   const linterRow = screen.getByText("linter").closest("li") as HTMLElement;
   expect(chipKinds(linterRow)).toEqual(["installed"]);
   expect(within(linterRow).queryByRole("button", { name: "Install" })).toBeNull();
+  // The shared row with no trailing control: the whole row is one button.
+  expect(within(linterRow).getAllByRole("button")).toHaveLength(1);
   const formatterRow = screen.getByText("formatter").closest("li") as HTMLElement;
   expect(within(formatterRow).getByRole("button", { name: "Install" })).toBeTruthy();
+});
+
+test("rows are the shared shape: the plugin name is the row's main button, Install rides the trailing slot", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
+  fake.on("evener/marketplace/browse", () => ({
+    name: "acme-plugins",
+    plugins: [{ name: "linter", description: "Lints code" }],
+  }));
+  render(<Harness />);
+  await user.click(marketplaceToggle("acme-plugins"));
+  await screen.findByText("linter");
+  const main = screen.getByRole("button", { name: /linter/ });
+  const install = screen.getByRole("button", { name: "Install" });
+  expect(main.closest('[data-kind="plugin-row"]')?.getAttribute("data-mode")).toBe("catalog");
+  // No nested buttons: the shared row's split shape.
+  expect(main.closest("button")).toBe(main);
+  expect(install.closest("button")).toBe(install);
+  // Only the trailing Install opens the install confirm; the main area is
+  // the row's own target and does not install.
+  await user.click(main);
+  expect(screen.queryByRole("dialog", { name: "Install plugin" })).toBeNull();
+  await user.click(install);
+  expect(screen.getByRole("dialog", { name: "Install plugin" })).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByRole("dialog", { name: "Install plugin" })).toBeNull();
 });
 
 test("Install opens a non-destructive confirm; confirming installs and toasts success", async () => {

@@ -179,7 +179,7 @@ func TestReRootOffIsNil(t *testing.T) {
 	}
 
 	// An off policy produced by Resolve re-roots to an equivalent off policy.
-	off, err := Resolve(SandboxPolicy{Mode: ModeOff}, HostFacts{OS: "linux", Home: "/home/x"}, "/work")
+	off, err := Resolve(SandboxPolicy{Mode: ModeOff}, HostFacts{OS: "linux", Home: "/fixture-home/x"}, "/work")
 	if err != nil {
 		t.Fatalf("resolve off: %v", err)
 	}

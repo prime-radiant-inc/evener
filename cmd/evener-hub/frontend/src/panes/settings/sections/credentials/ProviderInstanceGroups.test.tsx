@@ -1,26 +1,13 @@
-import type { InstanceEntry } from "@evener/appwire-client";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
+import { instance } from "./credentialsTestUtils";
 import { ProviderInstanceGroups } from "./ProviderInstanceGroups";
 
 // The interactive half of the shared listing. Its sibling InstanceRow enforces
 // this contract in its props type; this half has to as well, or a caller passing
 // neither readOnly nor onSelect compiles and renders a full-width
 // tappable-looking row whose button silently does nothing (round-4 M-2).
-
-function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
-  return {
-    protocol: "openai-chat",
-    auth: "bearer",
-    implicit: false,
-    isDefault: false,
-    activeSource: "none",
-    hasStoredOAuth: false,
-    credentialRequired: true,
-    ...overrides,
-  };
-}
 
 test("an interactive row hands its instance name to onSelect", async () => {
   const onSelect = vi.fn();

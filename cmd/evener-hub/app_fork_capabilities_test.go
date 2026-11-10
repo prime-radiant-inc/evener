@@ -45,7 +45,7 @@ func TestHubForkCapabilityReadAndStatusMatchHubOwnership(t *testing.T) {
 	})
 	roster := hubcore.NewRoster(runDir, nil)
 	roster.Refresh()
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, StateDir: runDir, Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, StateDir: runDir}))
 	t.Cleanup(hub.Close)
 	client := dialHubRPC(t, hub)
 	t.Cleanup(func() { _ = client.Close() })
@@ -741,9 +741,12 @@ func TestHubRelayedForkCapabilityFollowsLiveRecovery(t *testing.T) {
 	roster.Refresh()
 	locks := hubcore.NewResumeLocks()
 	finishForceStop := locks.BeginForceStop([]string{sessionID})
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		RunDir: runDir, Roster: roster, StateDir: runDir, Past: hubcore.NewPastIndex(""), ResumeLocks: locks,
-	})
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
+		RunDir:      runDir,
+		Roster:      roster,
+		StateDir:    runDir,
+		ResumeLocks: locks,
+	}))
 	t.Cleanup(hub.Close)
 	client := dialHubRPC(t, hub)
 	t.Cleanup(func() { _ = client.Close() })
@@ -1171,15 +1174,15 @@ func TestHubForkCapabilityHonoursDaemonReportedRecoveryFlags(t *testing.T) {
 			if !ok || !slices.Equal(owner.ActiveFlags, tc.flags) {
 				t.Fatalf("roster owner=%+v ok=%v, want the daemon's reported flags %v", owner, ok, tc.flags)
 			}
-			hub := newHubRPCTestServer(t, hubcore.WebConfig{
-				RunDir: runDir, Roster: roster, StateDir: runDir, Past: hubcore.NewPastIndex(""),
-			})
+			hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
+				RunDir:   runDir,
+				Roster:   roster,
+				StateDir: runDir,
+			}))
 			t.Cleanup(hub.Close)
 			client := dialHubRPC(t, hub)
 			t.Cleanup(func() { _ = client.Close() })
-			if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-				t.Fatal(err)
-			}
+			mustInitializeHubClient(t, client)
 			list, err := client.ThreadList(t.Context(), appwire.ThreadListParams{})
 			if err != nil {
 				t.Fatal(err)
@@ -2052,9 +2055,7 @@ func TestHubForkCapabilityFencesTheSessionAStableRefResolvesTo(t *testing.T) {
 			t.Cleanup(hub.Close)
 			client := dialHubRPC(t, hub)
 			t.Cleanup(func() { _ = client.Close() })
-			if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-				t.Fatal(err)
-			}
+			mustInitializeHubClient(t, client)
 			list, err := client.ThreadList(t.Context(), appwire.ThreadListParams{})
 			if err != nil {
 				t.Fatal(err)
@@ -2553,9 +2554,11 @@ func TestHubRelayProjectsForkOnlyForStatusNotifications(t *testing.T) {
 	}
 	t.Cleanup(func() { hubRosterList = previousList })
 
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		RunDir: runDir, Roster: roster, StateDir: runDir, Past: hubcore.NewPastIndex(""),
-	})
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
+		RunDir:   runDir,
+		Roster:   roster,
+		StateDir: runDir,
+	}))
 	t.Cleanup(hub.Close)
 	client := dialHubRPC(t, hub)
 	t.Cleanup(func() { _ = client.Close() })

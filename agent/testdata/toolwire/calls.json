@@ -218,7 +218,7 @@
       "turnId": "turn_1",
       "toolName": "shell",
       "callId": "call_shell_timeout",
-      "argumentsJson": "{\"command\":\"printf 'started\\\\n'; sleep 600\"}",
+      "argumentsJson": "{\"command\":\"printf 'started\\\\n'; exec tail -f /dev/null\"}",
       "status": "inProgress",
       "startedAt": 1790625600000
     },
@@ -823,7 +823,7 @@
       "turnId": "turn_1",
       "toolName": "job_status",
       "callId": "call_job_status",
-      "output": "{\"job_id\":\"job_fixture_1\",\"kind\":\"shell\",\"status\":\"running\",\"description\":\"printf 'started\\\\n'; sleep 600\",\"phase\":\"process_running\",\"running_for_ms\":2000,\"quiet_for_ms\":2000,\"started_at\":\"2026-09-28T20:00:00Z\",\"last_event_at\":\"2026-09-28T20:00:00Z\",\"transcript_ref\":\"job:job_fixture_1\"}",
+      "output": "{\"job_id\":\"job_fixture_1\",\"kind\":\"shell\",\"status\":\"running\",\"description\":\"printf 'started\\\\n'; exec tail -f /dev/null\",\"phase\":\"process_running\",\"running_for_ms\":2000,\"quiet_for_ms\":2000,\"started_at\":\"2026-09-28T20:00:00Z\",\"last_event_at\":\"2026-09-28T20:00:00Z\",\"transcript_ref\":\"job:job_fixture_1\"}",
       "status": "completed",
       "completedAt": 1790625602000
     },
@@ -833,7 +833,7 @@
       "turnId": "turn_1",
       "toolName": "job_list",
       "callId": "call_job_list",
-      "output": "# id  type  status  label  [started · reason · exit · bytes]\njob_fixture_2  shell  completed  seq 1 3000  [started 2026-09-28 20:00 · exit_zero · exit 0 · 13893 bytes]\njob_fixture_1  shell  running  printf 'started\\n'; sleep 600  [started 2026-09-28 20:00 · 8 bytes]\n\n2 job(s).",
+      "output": "# id  type  status  label  [started · reason · exit · bytes]\njob_fixture_2  shell  completed  seq 1 3000  [started 2026-09-28 20:00 · exit_zero · exit 0 · 13893 bytes]\njob_fixture_1  shell  running  printf 'started\\n'; exec tail -f /dev/null  [started 2026-09-28 20:00 · 8 bytes]\n\n2 job(s).",
       "status": "completed",
       "completedAt": 1790625602000
     },
@@ -1214,7 +1214,7 @@
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_exit_again",
-      "output": "{\n  \"left_path\": \"/home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix\",\n  \"message\": \"Exited worktree /home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix; restored to /home/jesse/git/evener.\",\n  \"restored_root\": \"/home/jesse/git/evener\",\n  \"status\": \"exited\"\n}\n\nYou have now made this same call and received the identical result 2 times in a row. Repeating it will not change the answer — use the result you already have, or change your approach.",
+      "output": "{\n  \"left_path\": \"/home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix\",\n  \"message\": \"Exited worktree /home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix; restored to /home/jesse/git/evener.\",\n  \"restored_root\": \"/home/jesse/git/evener\",\n  \"status\": \"exited\"\n}\n\nYou have now made this same call and received the identical result 2 times in a row. Repeating it will not change the answer — use the result you already have, or change your approach. If you are repeating it to wait for something, end your turn with your result tool: the completion wakes you, and to wake on a condition you set a job_watch with output_match.",
       "status": "completed",
       "completedAt": 1790625602000
     },

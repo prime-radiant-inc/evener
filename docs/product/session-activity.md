@@ -893,7 +893,11 @@ About is the last sidebar category and has no count or chip. Its
 holds the shared thread model for the sidebar's explicit public session ref and
 renders the existing details body. That model owner supplies hydration,
 accounting, subscriptions and reconnect recovery. About adds no collection
-demand, lifecycle mutation, provider call, cache or retry owner. Its category
+demand, lifecycle mutation or cache of its own: a local session's branch row
+resolves at view time through the [shared git-head
+lookup](../../cmd/evener-hub/frontend/src/shell/gitLocation.ts) the session
+location line rides — for local refs only, suppressed while the wire's own
+gitBranch answers, and failing soft to no row. Its category
 choice uses the same per-session persistence without changing another category's
 disclosure or scroll intent.
 

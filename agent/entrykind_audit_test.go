@@ -288,7 +288,7 @@ func observeTurnOpeningServed(t *testing.T, kind EntryKind) turnOpeningObservati
 		if kind == EntryNotification {
 			// A wake with nothing to deliver stands down as a no-op and opens no
 			// turn at all, so give this one a single thing to deliver.
-			s.SteerKind("probe", events.SteeringKindNotification)
+			s.steerKind("probe", events.SteeringKindNotification)
 		}
 		if _, err := s.ProcessInputKind(context.Background(), "probe", nil, kind); err != nil {
 			t.Fatalf("ProcessInputKind(EntryKind %d): %v", kind, err)

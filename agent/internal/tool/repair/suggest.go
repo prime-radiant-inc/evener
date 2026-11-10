@@ -2,8 +2,11 @@ package repair
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
+
+	"primeradiant.com/evener/agent/internal/tool/wirenames"
 )
 
 // maxAvailableListed caps the available-tools list so an unknown-tool error
@@ -58,13 +61,85 @@ func TopMatches(requested string, candidates []string, n int) []string {
 	return out
 }
 
+// UnknownToolKind classifies why a requested tool name is not callable.
+type UnknownToolKind string
+
+const (
+	// UnknownToolKindMissing: no tool by that name is registered.
+	UnknownToolKindMissing UnknownToolKind = "unknown_tool"
+	// UnknownToolKindSystemMessage: the name is a tag Evener injects into
+	// messages, not a tool.
+	UnknownToolKindSystemMessage UnknownToolKind = "system_message"
+)
+
+// toolNameAliases maps names other harnesses use to the Evener tools that do
+// the same job, in suggestion order. Edit distance cannot bridge these.
+var toolNameAliases = map[string][]string{
+	"exec_command":       {"shell"},
+	"bash":               {"shell"},
+	"run_shell_command":  {"shell"},
+	"execute_command":    {"shell"},
+	"str_replace_editor": {"edit_file", "apply_patch"},
+	"edit":               {"edit_file", "apply_patch"},
+}
+
+// systemMessageTags are names of tags Evener injects into messages that
+// models try to call as tools.
+var systemMessageTags = map[string]bool{
+	"job-notification": true,
+	"job_notification": true,
+}
+
+// UnknownToolDiagnosis says what an unknown tool name is and which registered
+// tools the model probably meant.
+type UnknownToolDiagnosis struct {
+	Kind        UnknownToolKind
+	Suggestions []string
+}
+
+// DiagnoseUnknownTool classifies requested against the registered names in
+// available. Aliases are checked before edit distance, and only registered
+// targets are suggested.
+func DiagnoseUnknownTool(requested string, available []string) UnknownToolDiagnosis {
+	key := strings.ToLower(strings.TrimSpace(requested))
+	if systemMessageTags[key] {
+		return UnknownToolDiagnosis{Kind: UnknownToolKindSystemMessage}
+	}
+	var suggestions []string
+	for _, target := range toolNameAliases[key] {
+		// The name the model just called is not a suggestion, and only the
+		// session's own surface name for the tool is.
+		for _, name := range wirenames.NamesOf(target) {
+			if name != requested && slices.Contains(available, name) {
+				suggestions = append(suggestions, name)
+				break
+			}
+		}
+	}
+	if len(suggestions) == 0 {
+		if s := SuggestToolName(requested, available); s != "" {
+			suggestions = []string{s}
+		}
+	}
+	return UnknownToolDiagnosis{Kind: UnknownToolKindMissing, Suggestions: suggestions}
+}
+
 // UnknownToolMessage renders the model-facing error for an unknown tool name.
 // requested and available must already be provider-visible names.
 func UnknownToolMessage(requested string, available []string) string {
+	diagnosis := DiagnoseUnknownTool(requested, available)
 	var b strings.Builder
 	fmt.Fprintf(&b, "unknown tool: %q.", requested)
-	if s := SuggestToolName(requested, available); s != "" {
-		fmt.Fprintf(&b, " Did you mean %q?", s)
+	if diagnosis.Kind == UnknownToolKindSystemMessage {
+		b.WriteString(" That is a system message Evener adds to your conversation, not a tool; read it and do not call it.")
+		return b.String()
+	}
+	if len(diagnosis.Suggestions) > 0 {
+		quoted := make([]string, len(diagnosis.Suggestions))
+		for i, name := range diagnosis.Suggestions {
+			quoted[i] = fmt.Sprintf("%q", name)
+		}
+		fmt.Fprintf(&b, " Did you mean %s?", strings.Join(quoted, " or "))
 	}
 	listed := available
 	if len(listed) > maxAvailableListed {
